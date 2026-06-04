@@ -101,6 +101,72 @@ impl ConvNextConfig {
         }
     }
 
+    /// ConvNeXt V2-Atto (3.7M). dims = [40, 80, 160, 320], depths = [2, 2, 6, 2].
+    /// Block layout same as V1; V2 weights carry GRN + drop layer-scale.
+    pub fn v2_atto() -> Self {
+        Self {
+            dims: vec![40, 80, 160, 320],
+            depths: vec![2, 2, 6, 2],
+            ..Self::tiny()
+        }
+    }
+    /// ConvNeXt V2-Femto (5.2M).
+    pub fn v2_femto() -> Self {
+        Self {
+            dims: vec![48, 96, 192, 384],
+            depths: vec![2, 2, 6, 2],
+            ..Self::tiny()
+        }
+    }
+    /// ConvNeXt V2-Pico (9.1M).
+    pub fn v2_pico() -> Self {
+        Self {
+            dims: vec![64, 128, 256, 512],
+            depths: vec![2, 2, 6, 2],
+            ..Self::tiny()
+        }
+    }
+    /// ConvNeXt V2-Nano (15.6M).
+    pub fn v2_nano() -> Self {
+        Self {
+            dims: vec![80, 160, 320, 640],
+            depths: vec![2, 2, 8, 2],
+            ..Self::tiny()
+        }
+    }
+    /// ConvNeXt V2-Tiny (28M).
+    pub fn v2_tiny() -> Self {
+        Self {
+            dims: vec![96, 192, 384, 768],
+            depths: vec![3, 3, 9, 3],
+            ..Self::tiny()
+        }
+    }
+    /// ConvNeXt V2-Base (89M).
+    pub fn v2_base() -> Self {
+        Self {
+            dims: vec![128, 256, 512, 1024],
+            depths: vec![3, 3, 27, 3],
+            ..Self::tiny()
+        }
+    }
+    /// ConvNeXt V2-Large (198M).
+    pub fn v2_large() -> Self {
+        Self {
+            dims: vec![192, 384, 768, 1536],
+            depths: vec![3, 3, 27, 3],
+            ..Self::tiny()
+        }
+    }
+    /// ConvNeXt V2-Huge (658M).
+    pub fn v2_huge() -> Self {
+        Self {
+            dims: vec![352, 704, 1408, 2816],
+            depths: vec![3, 3, 27, 3],
+            ..Self::tiny()
+        }
+    }
+
     pub fn from_hf_json_str(s: &str) -> crate::Result<Self> {
         serde_json::from_str::<Self>(s)
             .map_err(|e| crate::Error::Msg(format!("parsing convnext config: {e}")).bt())
@@ -108,6 +174,17 @@ impl ConvNextConfig {
 }
 
 // ---- Weight storage --------------------------------------------------------
+
+/// Global Response Normalization (V2). Applied between MLP's
+/// fc1+GELU and fc2 on the channels-last tensor.
+/// `gx = sqrt(sum_over_spatial(x²))`, `nx = gx / (mean_over_channel(gx) + ε)`,
+/// `y = x · nx · γ + β + residual_x`.
+#[derive(Debug, Clone)]
+pub struct ConvNext2GrnWeights {
+    /// `[4C]`.
+    pub gamma: Arc<[f32]>,
+    pub beta: Arc<[f32]>,
+}
 
 #[derive(Debug, Clone)]
 pub struct ConvNextBlockWeights {
@@ -123,8 +200,12 @@ pub struct ConvNextBlockWeights {
     /// MLP fc2: `[C, 4C]` → stored as `[4C, C]`.
     pub fc2_w: Arc<[f32]>,
     pub fc2_b: Arc<[f32]>,
-    /// Layer-scale γ, shape `[C]`, applied elementwise before the residual.
-    pub gamma: Arc<[f32]>,
+    /// V1 layer-scale γ, shape `[C]`, applied elementwise before the
+    /// residual. V2 models omit this (set to `None`); they use GRN
+    /// instead.
+    pub layer_scale_gamma: Option<Arc<[f32]>>,
+    /// V2 Global Response Normalization. V1 models set to `None`.
+    pub grn: Option<ConvNext2GrnWeights>,
 }
 
 #[derive(Debug, Clone)]
@@ -262,20 +343,68 @@ fn convnext_block(
     // Flatten spatial for the LN + linear ops we already have: [1, H*W, C].
     let flat = dw_nhwc.reshape(Shape::from_dims(&[1, h * w, c])).unwrap();
     let normed = layer_norm_affine(&flat, &bw.ln_g, &bw.ln_b, eps, c, h * w);
-    // MLP: C → 4C → C with GELU. Linear already wants [1, seq, C].
+    // MLP: C → 4C → [V2 GRN] → C with GELU. Linear already wants [1, seq, C].
     let hidden = linear(&normed, &bw.fc1_w, Some(&bw.fc1_b), c, 4 * c, h * w).gelu();
+    let hidden = if let Some(grn) = &bw.grn {
+        apply_grn(&hidden, &grn.gamma, &grn.beta, 4 * c, h * w)
+    } else {
+        hidden
+    };
     let projected = linear(&hidden, &bw.fc2_w, Some(&bw.fc2_b), 4 * c, c, h * w);
-    // Layer-scale γ, per-channel.
-    let gamma = projected
-        .const_f32_like(bw.gamma.clone(), Shape::from_dims(&[c]))
-        .reshape(Shape::from_dims(&[1, 1, c])).unwrap()
-        .broadcast_to(Shape::from_dims(&[1, h * w, c])).unwrap();
-    let scaled = projected.mul(&gamma).unwrap();
+    // V1 layer-scale γ (V2 models omit this — GRN replaces it).
+    let scaled = if let Some(gamma_arr) = &bw.layer_scale_gamma {
+        let gamma = projected
+            .const_f32_like(gamma_arr.clone(), Shape::from_dims(&[c]))
+            .reshape(Shape::from_dims(&[1, 1, c])).unwrap()
+            .broadcast_to(Shape::from_dims(&[1, h * w, c])).unwrap();
+        projected.mul(&gamma).unwrap()
+    } else {
+        projected
+    };
     // Back to channels-first: [1, H, W, C] → [1, C, H, W].
     let scaled_chw = scaled
         .reshape(Shape::from_dims(&[1, h, w, c])).unwrap()
         .permute([0, 3, 1, 2_usize]).unwrap();
     x.add(&scaled_chw).unwrap()
+}
+
+/// Global Response Normalization on a `[1, seq, c4]` tensor (seq = H·W).
+/// Matches the V2 paper / timm reference:
+///   `gx = sqrt(sum_over_seq(x²))`           — `[1, 1, c4]`
+///   `gxmean = mean_over_channel(gx)`        — `[1, 1, 1]`
+///   `nx = gx / (gxmean + 1e-6)`             — `[1, 1, c4]`
+///   `y = x · nx · γ + β + x`                — residual added back
+fn apply_grn(
+    x: &LazyTensor,
+    gamma_arr: &Arc<[f32]>,
+    beta_arr: &Arc<[f32]>,
+    c4: usize,
+    seq: usize,
+) -> LazyTensor {
+    let residual = x.clone();
+    let sqr = x.mul(x).unwrap();
+    // sum over seq → [1, 1, c4]
+    let gx_sum = sqr.reduce_sum_to(Shape::from_dims(&[1, 1, c4]));
+    let gx = gx_sum.sqrt();
+    // mean over channel via reduce_sum + scalar mul → [1, 1, 1]
+    let gx_chan_sum = gx.reduce_sum_to(Shape::from_dims(&[1, 1, 1]));
+    let gxmean = gx_chan_sum.mul_scalar(1.0_f64 / c4 as f64);
+    let gxmean_eps = gxmean
+        .add_scalar(1e-6_f64)
+        .broadcast_to(Shape::from_dims(&[1, 1, c4])).unwrap();
+    let nx = gx.div(&gxmean_eps).unwrap();
+    let nx_b = nx.broadcast_to(Shape::from_dims(&[1, seq, c4])).unwrap();
+    let gamma = x
+        .const_f32_like(gamma_arr.clone(), Shape::from_dims(&[c4]))
+        .reshape(Shape::from_dims(&[1, 1, c4])).unwrap()
+        .broadcast_to(Shape::from_dims(&[1, seq, c4])).unwrap();
+    let beta = x
+        .const_f32_like(beta_arr.clone(), Shape::from_dims(&[c4]))
+        .reshape(Shape::from_dims(&[1, 1, c4])).unwrap()
+        .broadcast_to(Shape::from_dims(&[1, seq, c4])).unwrap();
+    let scaled = x.mul(&nx_b).unwrap().mul(&gamma).unwrap();
+    let with_beta = scaled.add(&beta).unwrap();
+    with_beta.add(&residual).unwrap()
 }
 
 // ---- Primitives ----------------------------------------------------------
@@ -476,13 +605,25 @@ impl ConvNextWeights {
                 let fc1_b = load_f32(st, &format!("{p}.mlp.fc1.bias"))?;
                 let fc2_w = load_transposed(st, &format!("{p}.mlp.fc2.weight"), c, 4 * c)?;
                 let fc2_b = load_f32(st, &format!("{p}.mlp.fc2.bias"))?;
-                let gamma = load_f32(st, &format!("{p}.gamma"))?;
+                // V1: `gamma` present. V2: missing; GRN present instead.
+                let layer_scale_gamma = load_f32(st, &format!("{p}.gamma")).ok()
+                    .map(Arc::<[f32]>::from);
+                let grn = {
+                    let g = load_f32(st, &format!("{p}.mlp.grn.weight")).ok();
+                    let b = load_f32(st, &format!("{p}.mlp.grn.bias")).ok();
+                    match (g, b) {
+                        (Some(g), Some(b)) => Some(ConvNext2GrnWeights {
+                            gamma: Arc::from(g), beta: Arc::from(b),
+                        }),
+                        _ => None,
+                    }
+                };
                 blocks.push(ConvNextBlockWeights {
                     dw_w: Arc::from(dw_w), dw_b: Arc::from(dw_b),
                     ln_g: Arc::from(ln_g), ln_b: Arc::from(ln_b),
                     fc1_w: Arc::from(fc1_w), fc1_b: Arc::from(fc1_b),
                     fc2_w: Arc::from(fc2_w), fc2_b: Arc::from(fc2_b),
-                    gamma: Arc::from(gamma),
+                    layer_scale_gamma, grn,
                 });
             }
             stages.push(ConvNextStageWeights { downsample, blocks });
@@ -643,7 +784,8 @@ pub fn zero_weights(cfg: &ConvNextConfig) -> ConvNextWeights {
                 ln_g: o(c), ln_b: z(c),
                 fc1_w: z(c * 4 * c), fc1_b: z(4 * c),
                 fc2_w: z(4 * c * c), fc2_b: z(c),
-                gamma: eps_init(c),
+                layer_scale_gamma: Some(eps_init(c)),
+                grn: None,
             });
         }
         stages.push(ConvNextStageWeights { downsample, blocks });
@@ -660,6 +802,23 @@ pub fn zero_weights(cfg: &ConvNextConfig) -> ConvNextWeights {
         head_fc_w: z(cfg.num_classes * cfg.dims.last().unwrap()),
         head_fc_b: z(cfg.num_classes),
     }
+}
+
+/// V2 zero weights: same shape as [`zero_weights`] but flips
+/// `layer_scale_gamma` off and populates `grn` with γ = 1.0 and β = 0.0.
+pub fn zero_weights_v2(cfg: &ConvNextConfig) -> ConvNextWeights {
+    let mut w = zero_weights(cfg);
+    for stage in &mut w.stages {
+        for block in &mut stage.blocks {
+            let c = block.ln_g.len();
+            block.layer_scale_gamma = None;
+            block.grn = Some(ConvNext2GrnWeights {
+                gamma: arc(vec![1.0_f32; 4 * c]),
+                beta: arc(vec![0.0_f32; 4 * c]),
+            });
+        }
+    }
+    w
 }
 
 // ---- Tests -----------------------------------------------------------------
@@ -713,5 +872,82 @@ mod tests {
         for &v in &feats.realize_f32() {
             assert!(v.is_finite(), "non-finite feature: {v}");
         }
+    }
+
+    /// V2 fixture: layer_scale_gamma = None + grn = Some with γ=1, β=0.
+    /// Forward must run end-to-end and return finite logits with the
+    /// V2 weight layout.
+    #[test]
+    fn forward_v2_shape_and_finite_tiny() {
+        let cfg = tiny_cfg();
+        let model = ConvNextModel { weights: zero_weights_v2(&cfg), config: cfg.clone() };
+        let image = vec![0.0_f32; cfg.in_channels * cfg.image_size * cfg.image_size];
+        let logits = model.forward(&image).unwrap();
+        let flat = logits.realize_f32();
+        assert_eq!(flat.len(), cfg.num_classes);
+        for (i, &v) in flat.iter().enumerate() {
+            assert!(v.is_finite(), "v2 logits[{i}] not finite: {v}");
+        }
+    }
+
+    /// Direct GRN math check: on input `x = [1, 1, 2, 2, 3]` (one
+    /// row of seq=1, c4=5) with γ=[1,1,1,1,1], β=[0,0,0,0,0]:
+    /// `gx = sqrt(x²) = |x| = [1,1,2,2,3]`,
+    /// `gxmean = sum(gx)/5 = 9/5 = 1.8`,
+    /// `nx = gx / (1.8 + 1e-6)`,
+    /// `y = x · nx · 1 + 0 + x` per-element.
+    #[test]
+    fn grn_matches_reference_computation() {
+        let dev = crate::Device::cpu();
+        let x_data = vec![1.0_f32, 1.0, 2.0, 2.0, 3.0];
+        let c4 = 5;
+        let seq = 1;
+        let x = LazyTensor::from_f32(
+            x_data.clone(), Shape::from_dims(&[1, seq, c4]), &dev,
+        );
+        let gamma = arc(vec![1.0_f32; c4]);
+        let beta = arc(vec![0.0_f32; c4]);
+        let out = apply_grn(&x, &gamma, &beta, c4, seq).realize_f32();
+        let gxmean = (1.0 + 1.0 + 2.0 + 2.0 + 3.0) / c4 as f32;
+        let denom = gxmean + 1e-6;
+        let expected: Vec<f32> = x_data.iter().map(|&xv| {
+            let gx = xv.abs();
+            let nx = gx / denom;
+            xv * nx * 1.0_f32 + 0.0 + xv  // residual
+        }).collect();
+        for (i, (a, e)) in out.iter().zip(expected.iter()).enumerate() {
+            assert!((a - e).abs() < 1e-5,
+                "GRN[{i}] expected {e}, got {a}");
+        }
+    }
+
+    /// GRN with γ=0 and β=0 should reduce to the residual `x`:
+    /// `y = x · nx · 0 + 0 + x = x`. Proves the residual path
+    /// is wired and gamma actually scales the contribution.
+    #[test]
+    fn grn_gamma_zero_is_identity() {
+        let dev = crate::Device::cpu();
+        let x_data = vec![0.5_f32, -0.25, 0.75, 1.0];
+        let c4 = 4;
+        let seq = 1;
+        let x = LazyTensor::from_f32(
+            x_data.clone(), Shape::from_dims(&[1, seq, c4]), &dev,
+        );
+        let gamma = arc(vec![0.0_f32; c4]);
+        let beta = arc(vec![0.0_f32; c4]);
+        let out = apply_grn(&x, &gamma, &beta, c4, seq).realize_f32();
+        for (i, (a, b)) in out.iter().zip(x_data.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-6,
+                "γ=0, β=0 should be identity: [{i}] expected {b}, got {a}");
+        }
+    }
+
+    /// V2 presets all share the same block shape — just different
+    /// dims/depths. Spot-check the v2_atto preset constructs.
+    #[test]
+    fn v2_preset_constructs() {
+        let cfg = ConvNextConfig::v2_atto();
+        assert_eq!(cfg.dims, vec![40, 80, 160, 320]);
+        assert_eq!(cfg.depths, vec![2, 2, 6, 2]);
     }
 }
