@@ -297,19 +297,8 @@ impl ResNetModel {
 
 /// Apply fused-affine BatchNorm to a 4-D NCHW tensor.
 fn apply_bn(x: &LazyTensor, bn: &BatchNormParams, channels: usize) -> Result<LazyTensor> {
-    assert_eq!(bn.w.len(), channels, "BN gain length must equal channels");
-    assert_eq!(bn.b.len(), channels, "BN bias length must equal channels");
-    let dims = x.shape();
-    let dims = dims.dims();
-    assert_eq!(dims.len(), 4, "BN input must be rank 4");
-    assert_eq!(dims[1], channels, "BN input channels must equal weight count");
-    let w_t = x
-        .const_f32_like(Arc::clone(&bn.w), Shape::from_dims(&[channels]))
-        .reshape(Shape::from_dims(&[1, channels, 1, 1]))?;
-    let b_t = x
-        .const_f32_like(Arc::clone(&bn.b), Shape::from_dims(&[channels]))
-        .reshape(Shape::from_dims(&[1, channels, 1, 1]))?;
-    x.broadcast_mul(&w_t)?.broadcast_add(&b_t)
+    let _ = channels;
+    x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
 }
 
 /// Tiny adapter: LazyTensor::relu returns a LazyTensor by value;

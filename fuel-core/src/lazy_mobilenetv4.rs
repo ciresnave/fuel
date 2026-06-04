@@ -267,14 +267,8 @@ impl Mv4Model {
 fn apply_bn(
     x: &LazyTensor, bn: &BatchNormParams, channels: usize,
 ) -> Result<LazyTensor> {
-    assert_eq!(bn.w.len(), channels);
-    let w_t = x
-        .const_f32_like(Arc::clone(&bn.w), Shape::from_dims(&[channels]))
-        .reshape(Shape::from_dims(&[1, channels, 1, 1]))?;
-    let b_t = x
-        .const_f32_like(Arc::clone(&bn.b), Shape::from_dims(&[channels]))
-        .reshape(Shape::from_dims(&[1, channels, 1, 1]))?;
-    x.broadcast_mul(&w_t)?.broadcast_add(&b_t)
+    let _ = channels;
+    x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
 }
 
 fn apply_conv_bn(
