@@ -212,6 +212,16 @@ impl DacModel {
 /// Build the dilation-expanded weight tensor: pad each kernel tap
 /// with (dilation - 1) zeros between consecutive taps. For
 /// dilation = 1 this is the identity.
+///
+/// Shared infrastructure: also used by the EnCodec / SNAC / Mimi
+/// audio codec ports — they all dispatch dilated Conv1d through
+/// the plain Conv1d primitive using this weight-expansion trick.
+pub fn expand_conv1d_weight_for_dilation_if_needed(
+    w: &[f32], c_out: usize, c_in: usize, k: usize, dilation: usize,
+) -> (Vec<f32>, usize) {
+    expand_conv1d_weight_for_dilation(w, c_out, c_in, k, dilation)
+}
+
 fn expand_conv1d_weight_for_dilation(
     w: &[f32], c_out: usize, c_in: usize, k: usize, dilation: usize,
 ) -> (Vec<f32>, usize) {
