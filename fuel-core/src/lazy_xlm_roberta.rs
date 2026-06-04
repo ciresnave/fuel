@@ -306,15 +306,10 @@ impl XlmrModel {
         let v = layer.v_proj.apply_linear(x, d, d);
         let v = bias_add(v, &layer.v_proj_bias, d, x)?;
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(n_heads, head_dim)?;
+        let k = k.split_heads(n_heads, head_dim)?;
+        let v = v.split_heads(n_heads, head_dim)?;
 
         let k_t = k.transpose()?;
         let scale = 1.0_f64 / (head_dim as f64).sqrt();
@@ -325,9 +320,7 @@ impl XlmrModel {
         };
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
-        let merged = ctx
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, d]))?;
+        let merged = ctx.merge_heads()?;
         let attn_out = layer.out_proj.apply_linear(&merged, d, d);
         let attn_out = bias_add(attn_out, &layer.out_proj_bias, d, x)?;
 

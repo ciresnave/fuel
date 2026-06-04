@@ -355,24 +355,17 @@ impl JinaBertModel {
         let v = layer.v.apply_linear(x, h, h);
         let v = bias_add(v, &layer.v_bias, h, x)?;
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(n_heads, head_dim)?;
+        let k = k.split_heads(n_heads, head_dim)?;
+        let v = v.split_heads(n_heads, head_dim)?;
 
         let scale = 1.0 / (head_dim as f64).sqrt();
         let scores = q.matmul(&k.transpose()?)?.mul_scalar(scale);
         let scores = scores.broadcast_add(bias)?;
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
-        let merged = ctx
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, h]))?;
+        let merged = ctx.merge_heads()?;
         let attn_out = layer.attn_out.apply_linear(&merged, h, h);
         let attn_out = bias_add(attn_out, &layer.attn_out_bias, h, x)?;
 

@@ -382,17 +382,10 @@ fn encoder_layer(x: &LazyTensor, lw: &BertLayerWeights, cfg: &BertConfig, seq: u
     let k = linear(x, &lw.attn_k_w, &lw.attn_k_b, h, h, seq);
     let v = linear(x, &lw.attn_v_w, &lw.attn_v_b, h, h, seq);
 
-    // Reshape each to `[1, seq, n_heads, d_head]` and permute to
-    // `[1, n_heads, seq, d_head]` for per-head attention.
-    let q = q
-        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
-    let k = k
-        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
-    let v = v
-        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
+    // Reshape each to `[1, n_heads, seq, d_head]` for per-head attention.
+    let q = q.split_heads(n_heads, d_head).unwrap();
+    let k = k.split_heads(n_heads, d_head).unwrap();
+    let v = v.split_heads(n_heads, d_head).unwrap();
 
     // Attention scores: `q @ k^T` → `[1, n_heads, seq, seq]`. We transpose
     // the last two dims of k to build k^T.
@@ -407,8 +400,7 @@ fn encoder_layer(x: &LazyTensor, lw: &BertLayerWeights, cfg: &BertConfig, seq: u
     // to `[1, seq, h]`.
     let ctx = probs
         .matmul(&v).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap()
-        .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
+        .merge_heads().unwrap();
     let attn_out = linear(&ctx, &lw.attn_out_w, &lw.attn_out_b, h, h, seq);
 
     // Residual + LayerNorm (post-norm, BERT style).

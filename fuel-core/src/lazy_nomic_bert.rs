@@ -416,15 +416,10 @@ impl NomicBertModel {
         let k = qkv.slice(2_usize, d, d)?;
         let v = qkv.slice(2_usize, 2 * d, d)?;
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(n_heads, head_dim)?;
+        let k = k.split_heads(n_heads, head_dim)?;
+        let v = v.split_heads(n_heads, head_dim)?;
 
         // RoPE on the rotary prefix.
         let rope_dim = cfg.rotary_emb_dim();
@@ -439,9 +434,7 @@ impl NomicBertModel {
         };
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
-        let merged = ctx
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, d]))?;
+        let merged = ctx.merge_heads()?;
         let out = layer.out_proj.apply_linear(&merged, d, d);
         opt_bias(out, layer.out_proj_bias.as_ref(), d, x)
     }
