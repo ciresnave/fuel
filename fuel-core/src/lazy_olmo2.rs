@@ -165,12 +165,10 @@ impl Olmo2Model {
             &k, &extras.k_norm_gain, kv_dim, cfg.rms_norm_eps,
         );
 
-        let q = q.reshape(Shape::from_dims(&[batch, seq, cfg.num_attention_heads, cfg.head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k.reshape(Shape::from_dims(&[batch, seq, cfg.num_key_value_heads, cfg.head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v.reshape(Shape::from_dims(&[batch, seq, cfg.num_key_value_heads, cfg.head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
+        let k = k.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
+        let v = v.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
 
         let q_r = q.rope_with_tables(rope_cos, rope_sin)?;
         let k_r = k.rope_with_tables(rope_cos, rope_sin)?;
@@ -201,8 +199,7 @@ impl Olmo2Model {
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&v_full)?;
 
-        let merged = attn_v.permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+        let merged = attn_v.merge_heads()?;
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size);
 
         let h1 = x.add(&attn_out)?;
