@@ -73,6 +73,7 @@ pub mod lazy_based;
 pub mod lazy_beit;
 pub mod lazy_bert;
 pub mod lazy_bigcode;
+pub mod lazy_blip_vision;
 pub mod lazy_chatglm;
 pub mod lazy_clip;
 pub mod lazy_colpali;
