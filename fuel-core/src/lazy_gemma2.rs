@@ -239,15 +239,10 @@ impl Gemma2Model {
             layer.v_bias.as_ref(), kv_dim,
         )?;
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, cfg.num_attention_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, cfg.num_key_value_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, cfg.num_key_value_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
+        let k = k.split_heads(cfg.num_key_value_heads, head_dim)?;
+        let v = v.split_heads(cfg.num_key_value_heads, head_dim)?;
 
         let q_r = q.rope_with_tables(rope_cos, rope_sin)?;
         let k_r = k.rope_with_tables(rope_cos, rope_sin)?;
@@ -277,9 +272,7 @@ impl Gemma2Model {
         let scores = scores.broadcast_add(mask)?;
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v_full)?;
-        let merged = ctx
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+        let merged = ctx.merge_heads()?;
         let attn_out = apply_optional_bias(
             layer.o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size),
             layer.o_bias.as_ref(), cfg.hidden_size,
