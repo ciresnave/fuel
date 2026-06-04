@@ -242,19 +242,7 @@ impl ConvMixerModel {
     /// Apply fused-affine BatchNorm `y = x * w[c] + b[c]` across
     /// the channel dim of a `(N, C, H, W)` tensor.
     fn apply_bn(&self, x: &LazyTensor, bn: &BatchNormParams) -> Result<LazyTensor> {
-        let cfg = &self.config;
-        let dims = x.shape();
-        let dims = dims.dims();
-        assert_eq!(dims.len(), 4, "BN input must be rank 4");
-        assert_eq!(dims[1], cfg.dim, "BN input channels must equal cfg.dim");
-        let w_t = x
-            .const_f32_like(Arc::clone(&bn.w), Shape::from_dims(&[cfg.dim]))
-            .reshape(Shape::from_dims(&[1, cfg.dim, 1, 1]))?;
-        let b_t = x
-            .const_f32_like(Arc::clone(&bn.b), Shape::from_dims(&[cfg.dim]))
-            .reshape(Shape::from_dims(&[1, cfg.dim, 1, 1]))?;
-        let scaled = x.broadcast_mul(&w_t)?;
-        scaled.broadcast_add(&b_t)
+        x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
     }
 }
 

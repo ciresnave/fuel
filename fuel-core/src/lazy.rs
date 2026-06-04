@@ -2986,6 +2986,37 @@ impl LazyTensor {
         if dtype == DType::F32 { base } else { base.to_dtype(dtype).unwrap() }
     }
 
+    /// Apply a per-channel affine `gain · x + bias` to a rank-4
+    /// `(B, C, H, W)` tensor. Both `gain` and `bias` are length-`C`
+    /// vectors materialized fresh on the receiver's graph and
+    /// broadcast across the spatial axes.
+    ///
+    /// Equivalent to fused-affine BatchNorm at inference time:
+    /// the running mean / running var / eps are absorbed at load
+    /// time into `gain = γ / sqrt(var + eps)` and
+    /// `bias = β - μ · γ / sqrt(var + eps)`, so the runtime forward
+    /// is just this multiply-add. Used by inference-only conv
+    /// vision ports (ResNet, EfficientNet, FastViT, etc.).
+    pub fn channel_affine_4d(
+        &self, gain: std::sync::Arc<[f32]>, bias: std::sync::Arc<[f32]>,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let dims = self.inner.shape().dims().to_vec();
+        debug_assert_eq!(dims.len(), 4,
+            "channel_affine_4d: input must be rank 4 (B, C, H, W), got {dims:?}");
+        let channels = dims[1];
+        debug_assert_eq!(gain.len(), channels,
+            "channel_affine_4d: gain len ({}) != C ({})", gain.len(), channels);
+        debug_assert_eq!(bias.len(), channels,
+            "channel_affine_4d: bias len ({}) != C ({})", bias.len(), channels);
+        let w_t = self
+            .const_f32_like(gain, Shape::from_dims(&[channels]))
+            .reshape(Shape::from_dims(&[1, channels, 1, 1]))?;
+        let b_t = self
+            .const_f32_like(bias, Shape::from_dims(&[channels]))
+            .reshape(Shape::from_dims(&[1, channels, 1, 1]))?;
+        self.broadcast_mul(&w_t)?.broadcast_add(&b_t)
+    }
+
     /// Build the strict additive causal mask `(seq_len, seq_len)`
     /// anchored on `anchor`'s graph: 0 on and below the diagonal,
     /// `f32::NEG_INFINITY` above it. Add to attention scores before
@@ -10108,6 +10139,26 @@ mod phase_a2_composite_tests {
         let t = cpu_f32(vec![0.0; 6], &[2, 3]);
         assert!(t.flatten(0, 5).is_err());
         assert!(t.flatten(2, 1).is_err()); // start > end
+    }
+
+    #[test]
+    fn channel_affine_4d_applies_per_channel_gain_and_bias() {
+        // (1, 2, 2, 2) — two channels, each a 2×2 spatial map.
+        let x = cpu_f32(
+            vec![
+                1.0_f32, 2.0, 3.0, 4.0,    // channel 0
+                10.0,    20.0, 30.0, 40.0, // channel 1
+            ],
+            &[1, 2, 2, 2],
+        );
+        let gain = std::sync::Arc::<[f32]>::from(vec![2.0_f32, 0.5]);
+        let bias = std::sync::Arc::<[f32]>::from(vec![1.0_f32, -10.0]);
+        let out = x.channel_affine_4d(gain, bias).unwrap();
+        let v = out.realize_f32();
+        // Channel 0: gain=2, bias=1 → 2x+1
+        assert_eq!(&v[0..4], &[3.0, 5.0, 7.0, 9.0]);
+        // Channel 1: gain=0.5, bias=-10 → 0.5x-10
+        assert_eq!(&v[4..8], &[-5.0, 0.0, 5.0, 10.0]);
     }
 
     #[test]

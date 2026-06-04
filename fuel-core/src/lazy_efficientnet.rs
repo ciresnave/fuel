@@ -320,17 +320,8 @@ fn pad_same(x: &LazyTensor, k: usize, s: usize) -> Result<LazyTensor> {
 
 /// Apply fused-affine BN to a 4-D NCHW tensor.
 fn apply_bn(x: &LazyTensor, bn: &BatchNormParams, channels: usize) -> Result<LazyTensor> {
-    let dims = x.shape();
-    let dims = dims.dims();
-    assert_eq!(dims.len(), 4, "BN input must be rank 4");
-    assert_eq!(dims[1], channels);
-    let w_t = x
-        .const_f32_like(Arc::clone(&bn.w), Shape::from_dims(&[channels]))
-        .reshape(Shape::from_dims(&[1, channels, 1, 1]))?;
-    let b_t = x
-        .const_f32_like(Arc::clone(&bn.b), Shape::from_dims(&[channels]))
-        .reshape(Shape::from_dims(&[1, channels, 1, 1]))?;
-    x.broadcast_mul(&w_t)?.broadcast_add(&b_t)
+    let _ = channels;
+    x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
 }
 
 /// Swish / SiLU: `x * sigmoid(x)`. EfficientNet's standard activation.
