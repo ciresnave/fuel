@@ -254,15 +254,10 @@ impl DistilBertModel {
         let v = layer.v_lin.apply_linear(x, d, d);
         let v = bias_add(v, &layer.v_lin_bias, d, x)?;
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(n_heads, head_dim)?;
+        let k = k.split_heads(n_heads, head_dim)?;
+        let v = v.split_heads(n_heads, head_dim)?;
 
         // Q-scale (matches eager: scaling applied to Q, not the matmul).
         let q_scaled = q.mul_scalar(1.0 / (head_dim as f64).sqrt());
@@ -274,9 +269,7 @@ impl DistilBertModel {
         };
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
-        let merged = ctx
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, d]))?;
+        let merged = ctx.merge_heads()?;
         let attn_out = layer.out_lin.apply_linear(&merged, d, d);
         let attn_out = bias_add(attn_out, &layer.out_lin_bias, d, x)?;
 

@@ -394,15 +394,10 @@ impl ModernBertModel {
         let k = qkv.slice(2_usize, h, h)?;
         let v = qkv.slice(2_usize, 2 * h, h)?;
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(n_heads, head_dim)?;
+        let k = k.split_heads(n_heads, head_dim)?;
+        let v = v.split_heads(n_heads, head_dim)?;
 
         let q_r = q.rope_with_tables(rope_cos, rope_sin)?;
         let k_r = k.rope_with_tables(rope_cos, rope_sin)?;
@@ -415,9 +410,7 @@ impl ModernBertModel {
         };
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
-        let merged = ctx
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, h]))?;
+        let merged = ctx.merge_heads()?;
         Ok(layer.wo.apply_linear(&merged, h, h))
     }
 
