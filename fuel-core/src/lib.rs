@@ -116,6 +116,7 @@ pub mod lazy_mamba2;
 pub mod lazy_metavoice_speaker_encoder;
 pub mod lazy_mimi_quantization;
 pub mod lazy_mimi_seanet;
+pub mod lazy_mimi_transformer;
 pub mod lazy_marian;
 pub mod lazy_mistral;
 pub mod lazy_mixformer;
