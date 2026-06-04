@@ -298,9 +298,8 @@ impl DeepSeek2Model {
                 b.apply_linear(&lo_norm, norm_gain.len(), n_heads * q_head_dim)
             }
         };
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, q_head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(n_heads, q_head_dim)?;
         // Split Q on the last dim into (q_nope, q_pe).
         let q_nope = q.slice(3_usize, 0, nope)?;
         let q_pe = q.slice(3_usize, nope, rope)?;
@@ -312,9 +311,7 @@ impl DeepSeek2Model {
         let compressed_kv = kv_a.slice(2_usize, 0, cfg.kv_lora_rank)?;
         let k_pe_single = kv_a.slice(2_usize, cfg.kv_lora_rank, rope)?;
         // k_pe shape (b, seq, rope) → (b, 1, seq, rope) for MQA broadcast.
-        let k_pe_single_h = k_pe_single
-            .reshape(Shape::from_dims(&[batch, seq, 1, rope]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let k_pe_single_h = k_pe_single.split_heads(1, rope)?;
 
         let compressed_kv_norm = crate::lazy::apply_affine_rms_norm_pub(
             &compressed_kv, &w.kv_a_layernorm_gain,
@@ -323,9 +320,7 @@ impl DeepSeek2Model {
         let kv = w.kv_b_proj.apply_linear(
             &compressed_kv_norm, cfg.kv_lora_rank, n_heads * (nope + v_dim),
         );
-        let kv = kv
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, nope + v_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let kv = kv.split_heads(n_heads, nope + v_dim)?;
         let k_nope = kv.slice(3_usize, 0, nope)?;
         let v = kv.slice(3_usize, nope, v_dim)?;
 
@@ -352,9 +347,7 @@ impl DeepSeek2Model {
         let probs = scores_masked.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?; // (b, n_heads, seq, v_dim)
 
-        let merged = ctx
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, n_heads * v_dim]))?;
+        let merged = ctx.merge_heads()?;
         Ok(w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size))
     }
 

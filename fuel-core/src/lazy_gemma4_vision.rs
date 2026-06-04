@@ -325,15 +325,10 @@ impl Gemma4VisionModel {
         let k = layer.k_proj.apply_linear(x, cfg.hidden_size, kv_dim);
         let v = layer.v_proj.apply_linear(x, cfg.hidden_size, kv_dim);
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, n_kv, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, n_kv, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(n_heads, head_dim)?;
+        let k = k.split_heads(n_kv, head_dim)?;
+        let v = v.split_heads(n_kv, head_dim)?;
 
         // Q/K norms with `(gain + 1)` offset, V pure RmsNorm.
         let q = apply_offset_rms_norm(
@@ -371,9 +366,7 @@ impl Gemma4VisionModel {
         let scores = q_r.matmul(&k_t)?;
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v_full)?;
-        let merged = ctx
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, q_dim]))?;
+        let merged = ctx.merge_heads()?;
         Ok(layer.o_proj.apply_linear(&merged, q_dim, cfg.hidden_size))
     }
 

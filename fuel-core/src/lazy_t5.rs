@@ -395,15 +395,10 @@ impl T5Model {
         let k = w.k.apply_linear(kv_src, cfg.d_model, inner);
         let v = w.v.apply_linear(kv_src, cfg.d_model, inner);
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, q_len, cfg.num_heads, cfg.d_kv]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, kv_len, cfg.num_heads, cfg.d_kv]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, kv_len, cfg.num_heads, cfg.d_kv]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, q_len, kv_len);
+        let q = q.split_heads(cfg.num_heads, cfg.d_kv)?;
+        let k = k.split_heads(cfg.num_heads, cfg.d_kv)?;
+        let v = v.split_heads(cfg.num_heads, cfg.d_kv)?;
 
         // T5 does NOT scale Q/K — unlike standard attention.
         let k_t = k.transpose()?;
@@ -416,9 +411,7 @@ impl T5Model {
         }
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
-        let merged = ctx
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, q_len, inner]))?;
+        let merged = ctx.merge_heads()?;
         Ok(w.o.apply_linear(&merged, inner, cfg.d_model))
     }
 

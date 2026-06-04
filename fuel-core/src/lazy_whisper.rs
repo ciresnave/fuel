@@ -580,16 +580,11 @@ fn multi_head_attn(
     let k = linear(k_src, k_w, None, d, d, kv_seq);  // no K bias
     let v = linear(v_src, v_w, Some(v_b), d, d, kv_seq);
 
-    // [1, seq, n_heads, d_head] → [1, n_heads, seq, d_head]
-    let q = q
-        .reshape(Shape::from_dims(&[1, q_seq, n_heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
-    let k = k
-        .reshape(Shape::from_dims(&[1, kv_seq, n_heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
-    let v = v
-        .reshape(Shape::from_dims(&[1, kv_seq, n_heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
+    // (1, seq, n_heads * d_head) → (1, n_heads, seq, d_head)
+    let _ = (q_seq, kv_seq);
+    let q = q.split_heads(n_heads, d_head).unwrap();
+    let k = k.split_heads(n_heads, d_head).unwrap();
+    let v = v.split_heads(n_heads, d_head).unwrap();
 
     let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();  // [1, n_heads, d_head, kv_seq]
     let scale = 1.0_f64 / (d_head as f64).sqrt();
@@ -615,8 +610,7 @@ fn multi_head_attn(
     let probs = scores.softmax_last_dim().unwrap();
     let ctx = probs
         .matmul(&v).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap()
-        .reshape(Shape::from_dims(&[1, q_seq, d])).unwrap();
+        .merge_heads().unwrap();
     linear(&ctx, out_w, Some(out_b), d, d, q_seq)
 }
 
