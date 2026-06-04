@@ -113,6 +113,7 @@ pub mod lazy_hiera;
 pub mod lazy_jina_bert;
 pub mod lazy_mamba;
 pub mod lazy_mamba2;
+pub mod lazy_metavoice_speaker_encoder;
 pub mod lazy_marian;
 pub mod lazy_mistral;
 pub mod lazy_mixformer;
