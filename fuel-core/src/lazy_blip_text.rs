@@ -204,16 +204,11 @@ impl BlipTextModel {
         let mut x = tok.add(&pos)?;
         x = apply_layer_norm(&x, &w.embed_ln, h, cfg.layer_norm_eps)?;
 
-        // Strict causal mask `(1, 1, t, t)`.
-        let mut mask_data = vec![0.0_f32; t * t];
-        for i in 0..t {
-            for j in (i + 1)..t {
-                mask_data[i * t + j] = f32::NEG_INFINITY;
-            }
-        }
-        let causal_mask = anchor.const_f32_like(
-            mask_data, Shape::from_dims(&[1, 1, t, t]),
-        );
+        // Strict causal mask `(1, 1, t, t)` — reshape the (t, t)
+        // mask from the public helper to add the leading batch +
+        // heads broadcast axes.
+        let causal_mask = LazyTensor::additive_causal_mask_like(anchor, t)
+            .reshape(Shape::from_dims(&[1, 1, t, t]))?;
 
         for layer in &w.layers {
             x = apply_decoder_layer(&x, layer, encoder_hidden_states, &causal_mask, cfg, anchor)?;

@@ -323,13 +323,7 @@ fn apply_rope_interleaved(
 }
 
 fn build_causal_mask(anchor: &LazyTensor, t: usize) -> LazyTensor {
-    let mut data = vec![0.0_f32; t * t];
-    for i in 0..t {
-        for j in (i + 1)..t {
-            data[i * t + j] = f32::NEG_INFINITY;
-        }
-    }
-    anchor.const_f32_like(Arc::from(data), Shape::from_dims(&[t, t]))
+    LazyTensor::additive_causal_mask_like(anchor, t)
 }
 
 // ---- Tests -----------------------------------------------------------------
