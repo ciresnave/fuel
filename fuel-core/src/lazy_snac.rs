@@ -228,12 +228,9 @@ impl SnacModel {
                 .permute([0, 2, 1_usize])?;
             // out_proj 1×1 conv: codebook_dim → input_dim.
             let z_q = apply_conv1d(&z_p, &q.out_proj, anchor)?;
-            // Upsample by `q.stride` if needed via repeat-interleave.
-            let z_q = if q.stride > 1 {
-                repeat_interleave_last_dim(&z_q, q.stride)?
-            } else {
-                z_q
-            };
+            // Upsample by `q.stride` if needed via repeat-interleave
+            // along the last (time) axis.
+            let z_q = z_q.repeat_interleave(2_usize, q.stride)?;
             // Sanity: shapes match the target resolution.
             let z_dims = z_q.shape();
             let z_dims = z_dims.dims();
@@ -423,31 +420,9 @@ fn apply_affine_layer_norm(
     normed.mul(&g).unwrap().add(&b).unwrap()
 }
 
-/// Repeat each element along the last (time) dim `repeats` times.
-/// Equivalent to `torch.repeat_interleave(x, repeats, dim=-1)`.
-/// Implemented via `unsqueeze` + `broadcast_to` + flatten.
-fn repeat_interleave_last_dim(
-    x: &LazyTensor, repeats: usize,
-) -> Result<LazyTensor> {
-    if repeats == 1 {
-        return Ok(x.clone());
-    }
-    let dims = x.shape();
-    let dims_v = dims.dims().to_vec();
-    // For x: (B, C, T), produce (B, C, T, R) by broadcasting an
-    // unsqueezed copy along a new last axis, then reshape to
-    // (B, C, T*R).
-    let n = dims_v.len();
-    let mut unsq_shape = dims_v.clone();
-    unsq_shape.push(1);
-    let mut bc_shape = dims_v.clone();
-    bc_shape.push(repeats);
-    let unsq = x.reshape(Shape::from_dims(&unsq_shape))?;
-    let broadcast = unsq.broadcast_to(Shape::from_dims(&bc_shape))?;
-    let mut out_shape = dims_v.clone();
-    out_shape[n - 1] *= repeats;
-    broadcast.reshape(Shape::from_dims(&out_shape))
-}
+// `repeat_interleave_last_dim` retired — call sites now use the
+// public `LazyTensor::repeat_interleave(dim, repeats)` method
+// shipped earlier this session.
 
 // ---- Tests -----------------------------------------------------------------
 
@@ -577,14 +552,14 @@ mod tests {
     }
 
     #[test]
-    fn repeat_interleave_correctness() {
+    fn repeat_interleave_last_dim_via_public_api() {
         let dev = Device::cpu();
         // (1, 2, 3) → repeat last dim by 2 → (1, 2, 6).
         let x = LazyTensor::from_f32(
             vec![1.0_f32, 2.0, 3.0, 10.0, 20.0, 30.0],
             Shape::from_dims(&[1, 2, 3]), &dev,
         );
-        let y = repeat_interleave_last_dim(&x, 2).unwrap();
+        let y = x.repeat_interleave(2_usize, 2).unwrap();
         assert_eq!(y.shape().dims(), &[1, 2, 6]);
         let got = y.realize_f32();
         assert_eq!(got, vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 10.0, 10.0, 20.0, 20.0, 30.0, 30.0]);
