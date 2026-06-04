@@ -134,13 +134,7 @@ impl ChineseClipModel {
 }
 
 fn l2_normalize_last(x: &LazyTensor) -> Result<LazyTensor> {
-    let sq = x.mul(x)?;
-    let sum = sq.sum_dim(1_usize)?;
-    let norm = sum
-        .sqrt()
-        .reshape(Shape::from_dims(&[x.shape().dims()[0], 1]))?
-        .broadcast_to(Shape::from_dims(x.shape().dims()))?;
-    x.div(&norm)
+    x.l2_normalize(1_usize, 0.0)
 }
 
 // ---- Tests -----------------------------------------------------------------

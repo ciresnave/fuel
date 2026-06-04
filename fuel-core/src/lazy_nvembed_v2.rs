@@ -293,10 +293,7 @@ impl NvEmbedV2Model {
 }
 
 fn l2_normalize(x: &LazyTensor) -> Result<LazyTensor> {
-    let sq = x.mul(x)?;
-    let summed = sq.sum_keepdim(1_usize)?;
-    let norm = summed.sqrt();
-    x.broadcast_div(&norm)
+    x.l2_normalize(1_usize, 0.0)
 }
 
 #[cfg(test)]
