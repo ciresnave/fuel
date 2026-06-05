@@ -332,15 +332,10 @@ impl RecurrentGemmaModel {
             a.v_b.as_ref(), kv_dim,
         )?;
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, cfg.num_attention_heads, cfg.head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, cfg.num_key_value_heads, cfg.head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, cfg.num_key_value_heads, cfg.head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
+        let k = k.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
+        let v = v.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
 
         // Partial rotary on first head_dim/2 features.
         let q_r = apply_partial_rotary(&q, rope_cos, rope_sin, cfg.head_dim, rope_dim)?;
@@ -383,9 +378,7 @@ impl RecurrentGemmaModel {
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&v_full)?;
 
-        let merged = attn_v
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, q_dim]))?;
+        let merged = attn_v.merge_heads()?;
         let attn_out = a.o_w.apply_linear(&merged, q_dim, cfg.hidden_size);
         add_bias(attn_out, &a.o_b, cfg.hidden_size)
     }

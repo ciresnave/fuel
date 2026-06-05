@@ -282,13 +282,10 @@ fn apply_attention(
     let scaling = 1.0_f64 / (head_dim as f64).sqrt();
     let q = q.mul_scalar(scaling);
 
-    // [B, L, n_heads, head_dim] → [B, n_heads, L, head_dim]
-    let q = q.reshape(Shape::from_dims(&[batch, q_len, n_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let k = k.reshape(Shape::from_dims(&[batch, kv_len, n_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let v = v.reshape(Shape::from_dims(&[batch, kv_len, n_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
+    // (B, L, n_heads * head_dim) → (B, n_heads, L, head_dim)
+    let q = q.split_heads(n_heads, head_dim)?;
+    let k = k.split_heads(n_heads, head_dim)?;
+    let v = v.split_heads(n_heads, head_dim)?;
 
     // Scores [B, n_heads, q_len, kv_len].
     let kt = k.permute([0, 1, 3, 2_usize])?;
@@ -299,10 +296,8 @@ fn apply_attention(
     }
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?;
-    // [B, n_heads, q_len, head_dim] → [B, q_len, n_heads, head_dim] → [B, q_len, d_model]
-    let ctx = ctx
-        .permute([0, 2, 1, 3_usize])?
-        .reshape(Shape::from_dims(&[batch, q_len, d_model]))?;
+    let _ = (batch, q_len, kv_len, d_model);
+    let ctx = ctx.merge_heads()?;
     Ok(w.out_proj.apply_linear(&ctx, d_model, d_model))
 }
 

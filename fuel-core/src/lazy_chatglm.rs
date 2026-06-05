@@ -298,15 +298,10 @@ impl ChatGlmModel {
         let k = qkv.slice(2_usize, q_dim, kv_dim)?;
         let v = qkv.slice(2_usize, q_dim + kv_dim, kv_dim)?;
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, hpa]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, n_groups, hpa]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, n_groups, hpa]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(n_heads, hpa)?;
+        let k = k.split_heads(n_groups, hpa)?;
+        let v = v.split_heads(n_groups, hpa)?;
 
         // Halved-pair RoPE on the FIRST half of head_dim, pair-adjacent.
         let rope_dim = cfg.rope_dim();
@@ -337,9 +332,7 @@ impl ChatGlmModel {
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&v_full)?;
 
-        let merged = attn_v
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, q_dim]))?;
+        let merged = attn_v.merge_heads()?;
         // Note: q_dim = n_heads * hpa may not equal hidden_size when the
         // model uses a separate kv_channels — the eager reference relies
         // on `n_heads * kv_channels == hidden_size` (GLM3-6B: 32 * 128 = 4096).
