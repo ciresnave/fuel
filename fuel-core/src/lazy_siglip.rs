@@ -436,11 +436,11 @@ impl SiglipVisionModel {
 
         // Cross-attention: Q = probe, K = V = xs.
         let q = head.q_proj.apply_linear(&probe_bc, h, h);
-        let q = bias_add(q, &head.q_proj_bias, h, xs)?;
+        let q = q.add_trailing_bias(std::sync::Arc::clone(&head.q_proj_bias))?;
         let k = head.k_proj.apply_linear(xs, h, h);
-        let k = bias_add(k, &head.k_proj_bias, h, xs)?;
+        let k = k.add_trailing_bias(std::sync::Arc::clone(&head.k_proj_bias))?;
         let v = head.v_proj.apply_linear(xs, h, h);
-        let v = bias_add(v, &head.v_proj_bias, h, xs)?;
+        let v = v.add_trailing_bias(std::sync::Arc::clone(&head.v_proj_bias))?;
 
         let _ = (batch, seq);
         let q = q.split_heads(n_heads, head_dim)?;
@@ -454,17 +454,17 @@ impl SiglipVisionModel {
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
         let attn_out = head.out_proj.apply_linear(&merged, h, h);
-        let attn_out = bias_add(attn_out, &head.out_proj_bias, h, xs)?;
+        let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&head.out_proj_bias))?;
 
         // MLP residual: residual + mlp(LN(attn_out)) → take token 0.
         let residual = attn_out.clone();
         let attn_ln = attn_out.layer_norm_affine(std::sync::Arc::clone(&head.ln_gain), std::sync::Arc::clone(&head.ln_bias), cfg.layer_norm_eps)?;
         let inter_dim = head.mlp_fc1_bias.len();
         let fc1 = head.mlp_fc1.apply_linear(&attn_ln, h, inter_dim);
-        let fc1 = bias_add(fc1, &head.mlp_fc1_bias, inter_dim, xs)?;
+        let fc1 = fc1.add_trailing_bias(std::sync::Arc::clone(&head.mlp_fc1_bias))?;
         let act = activate(&fc1, cfg.hidden_activation);
         let fc2 = head.mlp_fc2.apply_linear(&act, inter_dim, h);
-        let fc2 = bias_add(fc2, &head.mlp_fc2_bias, h, xs)?;
+        let fc2 = fc2.add_trailing_bias(std::sync::Arc::clone(&head.mlp_fc2_bias))?;
         let with_res = residual.add(&fc2)?;
         // The eager takes the first token; with seq=1 the result is already (b, 1, h).
         with_res.reshape(Shape::from_dims(&[batch, h]))
@@ -511,11 +511,11 @@ fn apply_encoder_layer(
     let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln1_gain), std::sync::Arc::clone(&layer.ln1_bias), layer_norm_eps)?;
 
     let q = layer.q_proj.apply_linear(&x_norm, h, h);
-    let q = bias_add(q, &layer.q_proj_bias, h, x)?;
+    let q = q.add_trailing_bias(std::sync::Arc::clone(&layer.q_proj_bias))?;
     let k = layer.k_proj.apply_linear(&x_norm, h, h);
-    let k = bias_add(k, &layer.k_proj_bias, h, x)?;
+    let k = k.add_trailing_bias(std::sync::Arc::clone(&layer.k_proj_bias))?;
     let v = layer.v_proj.apply_linear(&x_norm, h, h);
-    let v = bias_add(v, &layer.v_proj_bias, h, x)?;
+    let v = v.add_trailing_bias(std::sync::Arc::clone(&layer.v_proj_bias))?;
 
     let _ = (batch, seq);
     let q = q.split_heads(n_heads, head_dim)?;
@@ -533,16 +533,16 @@ fn apply_encoder_layer(
     let ctx = probs.matmul(&v)?;
     let merged = ctx.merge_heads()?;
     let attn_out = layer.out_proj.apply_linear(&merged, h, h);
-    let attn_out = bias_add(attn_out, &layer.out_proj_bias, h, x)?;
+    let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.out_proj_bias))?;
     let h1 = x.add(&attn_out)?;
 
     let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), layer_norm_eps)?;
     let inter_dim = layer.fc1_bias.len();
     let fc1 = layer.fc1.apply_linear(&h1_norm, h, inter_dim);
-    let fc1 = bias_add(fc1, &layer.fc1_bias, inter_dim, x)?;
+    let fc1 = fc1.add_trailing_bias(std::sync::Arc::clone(&layer.fc1_bias))?;
     let act = activate(&fc1, activation);
     let fc2 = layer.fc2.apply_linear(&act, inter_dim, h);
-    let fc2 = bias_add(fc2, &layer.fc2_bias, h, x)?;
+    let fc2 = fc2.add_trailing_bias(std::sync::Arc::clone(&layer.fc2_bias))?;
     h1.add(&fc2)
 }
 
@@ -555,15 +555,6 @@ fn activate(x: &LazyTensor, kind: SiglipActivation) -> LazyTensor {
     }
 }
 
-fn bias_add(
-    x: LazyTensor,
-    bias: &Arc<[f32]>,
-    n: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
-    let _ = (n, anchor);
-    x.add_trailing_bias(Arc::clone(bias))
-}
 
 #[cfg(test)]
 mod tests {

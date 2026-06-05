@@ -294,11 +294,11 @@ impl XlmrModel {
         let head_dim = cfg.head_dim();
 
         let q = layer.q_proj.apply_linear(x, d, d);
-        let q = bias_add(q, &layer.q_proj_bias, d, x)?;
+        let q = q.add_trailing_bias(std::sync::Arc::clone(&layer.q_proj_bias))?;
         let k = layer.k_proj.apply_linear(x, d, d);
-        let k = bias_add(k, &layer.k_proj_bias, d, x)?;
+        let k = k.add_trailing_bias(std::sync::Arc::clone(&layer.k_proj_bias))?;
         let v = layer.v_proj.apply_linear(x, d, d);
-        let v = bias_add(v, &layer.v_proj_bias, d, x)?;
+        let v = v.add_trailing_bias(std::sync::Arc::clone(&layer.v_proj_bias))?;
 
         let _ = (batch, seq);
         let q = q.split_heads(n_heads, head_dim)?;
@@ -316,14 +316,14 @@ impl XlmrModel {
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
         let attn_out = layer.out_proj.apply_linear(&merged, d, d);
-        let attn_out = bias_add(attn_out, &layer.out_proj_bias, d, x)?;
+        let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.out_proj_bias))?;
 
         // Post-LN: LN(attn + x).
         let h1 = x.add(&attn_out)?.layer_norm_affine(std::sync::Arc::clone(&layer.attn_ln_gain), std::sync::Arc::clone(&layer.attn_ln_bias), cfg.layer_norm_eps)?;
 
         // FFN.
         let fc1 = layer.fc1.apply_linear(&h1, d, cfg.intermediate_size);
-        let fc1 = bias_add(fc1, &layer.fc1_bias, cfg.intermediate_size, x)?;
+        let fc1 = fc1.add_trailing_bias(std::sync::Arc::clone(&layer.fc1_bias))?;
         let act = match cfg.hidden_activation {
             XlmrActivation::Gelu => fc1.gelu_erf(),
             XlmrActivation::GeluPytorchTanh => fc1.gelu(),
@@ -331,22 +331,13 @@ impl XlmrModel {
             XlmrActivation::Silu => fc1.silu(),
         };
         let fc2 = layer.fc2.apply_linear(&act, cfg.intermediate_size, d);
-        let fc2 = bias_add(fc2, &layer.fc2_bias, d, x)?;
+        let fc2 = fc2.add_trailing_bias(std::sync::Arc::clone(&layer.fc2_bias))?;
 
         // Post-LN: LN(ffn + h1).
         Ok(h1.add(&fc2)?.layer_norm_affine(std::sync::Arc::clone(&layer.ffn_ln_gain), std::sync::Arc::clone(&layer.ffn_ln_bias), cfg.layer_norm_eps)?)
     }
 }
 
-fn bias_add(
-    x: LazyTensor,
-    bias: &Arc<[f32]>,
-    n: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
-    let _ = (n, anchor);
-    x.add_trailing_bias(Arc::clone(bias))
-}
 
 #[cfg(test)]
 mod tests {

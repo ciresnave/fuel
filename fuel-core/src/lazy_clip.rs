@@ -557,11 +557,11 @@ fn apply_clip_layer(
 
     // Q, K, V projections with biases.
     let q = layer.q_proj.apply_linear(&x_norm, h, h);
-    let q = bias_add(q, &layer.q_proj_bias, h, x)?;
+    let q = q.add_trailing_bias(std::sync::Arc::clone(&layer.q_proj_bias))?;
     let k = layer.k_proj.apply_linear(&x_norm, h, h);
-    let k = bias_add(k, &layer.k_proj_bias, h, x)?;
+    let k = k.add_trailing_bias(std::sync::Arc::clone(&layer.k_proj_bias))?;
     let v = layer.v_proj.apply_linear(&x_norm, h, h);
-    let v = bias_add(v, &layer.v_proj_bias, h, x)?;
+    let v = v.add_trailing_bias(std::sync::Arc::clone(&layer.v_proj_bias))?;
 
     let _ = (batch, seq);
     let q = q.split_heads(n_heads, head_dim)?;
@@ -580,17 +580,17 @@ fn apply_clip_layer(
     let ctx = probs.matmul(&v)?;
     let merged = ctx.merge_heads()?;
     let attn_out = layer.out_proj.apply_linear(&merged, h, h);
-    let attn_out = bias_add(attn_out, &layer.out_proj_bias, h, x)?;
+    let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.out_proj_bias))?;
     let h1 = x.add(&attn_out)?;
 
     // Pre-LN before MLP.
     let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), 1e-5)?;
 
     let inter = layer.fc1.apply_linear(&h1_norm, h, layer.fc1_bias.len());
-    let inter = bias_add(inter, &layer.fc1_bias, layer.fc1_bias.len(), x)?;
+    let inter = inter.add_trailing_bias(std::sync::Arc::clone(&layer.fc1_bias))?;
     let activated = quick_gelu(&inter);
     let mlp_out = layer.fc2.apply_linear(&activated, layer.fc1_bias.len(), h);
-    let mlp_out = bias_add(mlp_out, &layer.fc2_bias, h, x)?;
+    let mlp_out = mlp_out.add_trailing_bias(std::sync::Arc::clone(&layer.fc2_bias))?;
     h1.add(&mlp_out)
 }
 
@@ -601,15 +601,6 @@ fn quick_gelu(x: &LazyTensor) -> LazyTensor {
     x.mul(&sig).unwrap()
 }
 
-fn bias_add(
-    x: LazyTensor,
-    bias: &Arc<[f32]>,
-    n: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
-    let _ = (n, anchor);
-    x.add_trailing_bias(Arc::clone(bias))
-}
 
 #[cfg(test)]
 mod tests {
