@@ -255,9 +255,7 @@ impl RecurrentGemmaModel {
         for (layer_idx, layer) in weights.layers.iter().enumerate() {
             h = self.apply_layer(&h, layer, layer_idx, &rope_cos, &rope_sin)?;
         }
-        apply_offset_rms_norm(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )
+        h.rms_norm_affine_with_offset(&weights.final_norm_gain, 1.0, cfg.rms_norm_eps)
     }
 
     fn apply_layer(
@@ -273,9 +271,7 @@ impl RecurrentGemmaModel {
 
         // Temporal sublayer: pre_norm → temporal_block → residual add.
         let residual = x.clone();
-        let x_norm = apply_offset_rms_norm(
-            x, &layer.temporal_pre_norm_gain, h, cfg.rms_norm_eps,
-        )?;
+        let x_norm = x.rms_norm_affine_with_offset(&layer.temporal_pre_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let temporal_out = match (&layer.temporal, cfg.block_type(layer_idx)) {
             (TemporalBlockWeights::Attention(a), TemporalBlockType::Attention) => {
                 self.apply_attention(&x_norm, a, rope_cos, rope_sin)?
@@ -292,9 +288,7 @@ impl RecurrentGemmaModel {
 
         // Channel sublayer: pre_norm → MLP → residual add.
         let residual2 = h1.clone();
-        let h1_norm = apply_offset_rms_norm(
-            &h1, &layer.channel_pre_norm_gain, h, cfg.rms_norm_eps,
-        )?;
+        let h1_norm = h1.rms_norm_affine_with_offset(&layer.channel_pre_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let mlp_out = self.apply_mlp(&h1_norm, layer)?;
         residual2.add(&mlp_out)
     }
@@ -547,15 +541,6 @@ impl RecurrentGemmaModel {
     }
 }
 
-fn apply_offset_rms_norm(
-    x: &LazyTensor,
-    gain: &Arc<[f32]>,
-    dim: usize,
-    eps: f64,
-) -> Result<LazyTensor> {
-    let _ = dim;
-    x.rms_norm_affine_with_offset(gain, 1.0, eps)
-}
 
 
 

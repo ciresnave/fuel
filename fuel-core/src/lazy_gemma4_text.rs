@@ -213,9 +213,7 @@ impl Gemma4TextModel {
                 &h, layer, head_dim, num_kv, rope_cos, rope_sin, rope_dim, mask, is_global,
             )?;
         }
-        apply_offset_rms_norm(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )
+        h.rms_norm_affine_with_offset(&weights.final_norm_gain, 1.0, cfg.rms_norm_eps)
     }
 
     fn build_mask(&self, anchor: &LazyTensor, seq: usize, sliding: Option<usize>) -> LazyTensor {
@@ -255,9 +253,7 @@ impl Gemma4TextModel {
 
         // Pre-attention norm.
         let residual = x.clone();
-        let x_norm = apply_offset_rms_norm(
-            x, &layer.input_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let x_norm = x.rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         // Q / K / V projections.
         let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, q_dim).add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
@@ -270,12 +266,8 @@ impl Gemma4TextModel {
         let v = v.split_heads(num_kv, head_dim)?;
 
         // Per-head Q/K RmsNorm with `(gain + 1)` offset.
-        let q = apply_offset_rms_norm(
-            &q, &layer.q_norm_gain, head_dim, cfg.rms_norm_eps,
-        )?;
-        let k = apply_offset_rms_norm(
-            &k, &layer.k_norm_gain, head_dim, cfg.rms_norm_eps,
-        )?;
+        let q = q.rms_norm_affine_with_offset(&layer.q_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let k = k.rms_norm_affine_with_offset(&layer.k_norm_gain, 1.0, cfg.rms_norm_eps)?;
         // V normalization: pure RmsNorm without a learned weight.
         let v = v_rms_norm(&v, cfg.rms_norm_eps)?;
 
@@ -298,16 +290,12 @@ impl Gemma4TextModel {
 
         let merged = attn_v.merge_heads()?;
         let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size).add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
-        let attn_out_norm = apply_offset_rms_norm(
-            &attn_out, &layer.post_attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let attn_out_norm = attn_out.rms_norm_affine_with_offset(&layer.post_attn_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let h1 = residual.add(&attn_out_norm)?;
 
         // FFN sublayer.
         let residual2 = h1.clone();
-        let h1_norm = apply_offset_rms_norm(
-            &h1, &layer.pre_ffn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let h1_norm = h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
         let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
         let activated = match cfg.hidden_activation {
@@ -316,22 +304,11 @@ impl Gemma4TextModel {
         };
         let ffn_in = activated.mul(&up)?;
         let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size);
-        let ffn_out_norm = apply_offset_rms_norm(
-            &ffn_out, &layer.post_ffn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let ffn_out_norm = ffn_out.rms_norm_affine_with_offset(&layer.post_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
         residual2.add(&ffn_out_norm)
     }
 }
 
-fn apply_offset_rms_norm(
-    x: &LazyTensor,
-    gain: &Arc<[f32]>,
-    dim: usize,
-    eps: f64,
-) -> Result<LazyTensor> {
-    let _ = dim;
-    x.rms_norm_affine_with_offset(gain, 1.0, eps)
-}
 
 /// V RmsNorm: pure rsqrt(mean of squares + eps), no learned weight.
 fn v_rms_norm(v: &LazyTensor, eps: f64) -> Result<LazyTensor> {

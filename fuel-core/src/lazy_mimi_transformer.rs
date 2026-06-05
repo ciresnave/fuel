@@ -148,7 +148,7 @@ impl ProjectedTransformerModel {
         let head_dim = cfg.head_dim();
         let (cos, sin) = build_rope_tables(&h, t, head_dim, cfg.max_period);
         // Build the strict causal mask `(t, t)`.
-        let causal_mask = build_causal_mask(&h, t);
+        let causal_mask = LazyTensor::additive_causal_mask_like(&h, t);
 
         let mut hidden = h;
         for layer in &self.weights.transformer.layers {
@@ -314,10 +314,6 @@ fn apply_rope_interleaved(
     // Re-interleave via stack along a fresh axis + reshape.
     let stacked = LazyTensor::stack(&[&new_even, &new_odd], 4_usize)?;
     stacked.reshape(Shape::from_dims(&[b, heads, t, head_dim]))
-}
-
-fn build_causal_mask(anchor: &LazyTensor, t: usize) -> LazyTensor {
-    LazyTensor::additive_causal_mask_like(anchor, t)
 }
 
 // ---- Tests -----------------------------------------------------------------

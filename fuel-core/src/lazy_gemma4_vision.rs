@@ -275,20 +275,14 @@ impl Gemma4VisionModel {
 
         // Pre-attn norm.
         let residual = x.clone();
-        let x_norm = apply_offset_rms_norm(
-            x, &layer.input_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let x_norm = x.rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let attn = self.attention(&x_norm, layer, cos, sin)?;
-        let attn_normed = apply_offset_rms_norm(
-            &attn, &layer.post_attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let attn_normed = attn.rms_norm_affine_with_offset(&layer.post_attn_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let h1 = residual.add(&attn_normed)?;
 
         // Pre-FFN norm.
         let residual2 = h1.clone();
-        let h1_norm = apply_offset_rms_norm(
-            &h1, &layer.pre_ffn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let h1_norm = h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
         let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
         let activated = match cfg.hidden_activation {
@@ -297,9 +291,7 @@ impl Gemma4VisionModel {
         };
         let ffn_inner = activated.mul(&up)?;
         let ffn_out = layer.ffn_down.apply_linear(&ffn_inner, cfg.intermediate_size, cfg.hidden_size);
-        let ffn_normed = apply_offset_rms_norm(
-            &ffn_out, &layer.post_ffn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let ffn_normed = ffn_out.rms_norm_affine_with_offset(&layer.post_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
         residual2.add(&ffn_normed)
     }
 
@@ -331,12 +323,8 @@ impl Gemma4VisionModel {
         let v = v.split_heads(n_kv, head_dim)?;
 
         // Q/K norms with `(gain + 1)` offset, V pure RmsNorm.
-        let q = apply_offset_rms_norm(
-            &q, &layer.q_norm_gain, head_dim, cfg.rms_norm_eps,
-        )?;
-        let k = apply_offset_rms_norm(
-            &k, &layer.k_norm_gain, head_dim, cfg.rms_norm_eps,
-        )?;
+        let q = q.rms_norm_affine_with_offset(&layer.q_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let k = k.rms_norm_affine_with_offset(&layer.k_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let v = v.rms_norm_last_dim(cfg.rms_norm_eps)?;
 
         // 2D RoPE: apply standard split-half RoPE on the combined
@@ -422,15 +410,6 @@ impl Gemma4VisionModel {
     }
 }
 
-fn apply_offset_rms_norm(
-    x: &LazyTensor,
-    gain: &Arc<[f32]>,
-    dim: usize,
-    eps: f64,
-) -> Result<LazyTensor> {
-    let _ = dim;
-    x.rms_norm_affine_with_offset(gain, 1.0, eps)
-}
 
 #[cfg(test)]
 mod tests {

@@ -152,9 +152,7 @@ impl GemmaModel {
         }
 
         // Final offset RmsNorm + lm_head.
-        let h_norm = apply_offset_rms_norm(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let h_norm = h.rms_norm_affine_with_offset(&weights.final_norm_gain, 1.0, cfg.rms_norm_eps)?;
         Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
     }
 
@@ -206,7 +204,7 @@ impl GemmaModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
-        apply_offset_rms_norm(&h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps)
+        h.rms_norm_affine_with_offset(&weights.final_norm_gain, 1.0, cfg.rms_norm_eps)
     }
 
     fn apply_layer(
@@ -224,9 +222,7 @@ impl GemmaModel {
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
         // Pre-attention offset RmsNorm.
-        let x_norm = apply_offset_rms_norm(
-            x, &layer.attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let x_norm = x.rms_norm_affine_with_offset(&layer.attn_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         // Q / K / V — biases are honored when the config flag is on.
         let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
@@ -271,9 +267,7 @@ impl GemmaModel {
         let h1 = x.add(&attn_out)?;
 
         // Pre-FFN offset RmsNorm.
-        let h1_norm = apply_offset_rms_norm(
-            &h1, &layer.ffn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let h1_norm = h1.rms_norm_affine_with_offset(&layer.ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         // GELU gated FFN: `down(gelu(gate) * up)`.
         let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
@@ -291,15 +285,6 @@ impl GemmaModel {
 
 /// Gemma's offset RmsNorm: `y = (x / rms) * (gamma + 1)`. The `+ 1`
 /// matches the reference Gemma forward pass.
-fn apply_offset_rms_norm(
-    x: &LazyTensor,
-    gain: &Arc<[f32]>,
-    dim: usize,
-    eps: f64,
-) -> Result<LazyTensor> {
-    let _ = dim;
-    x.rms_norm_affine_with_offset(gain, 1.0, eps)
-}
 
 
 #[cfg(test)]
@@ -379,7 +364,7 @@ mod tests {
         );
         let zero_gain: Arc<[f32]> = Arc::from(vec![0.0_f32; dim]);
         let unity_gain: Arc<[f32]> = Arc::from(vec![1.0_f32; dim]);
-        let offset = apply_offset_rms_norm(&x, &zero_gain, dim, 1e-6).unwrap();
+        let offset = x.rms_norm_affine_with_offset(&zero_gain, 1.0, 1e-6).unwrap();
         let unity = x.rms_norm_affine(Arc::clone(&unity_gain), 1e-6).unwrap();
         let a = offset.realize_f32();
         let b = unity.realize_f32();

@@ -181,9 +181,7 @@ impl Gemma3Model {
             let mask = if uses_window { &sliding_mask } else { &full_mask };
             h = self.apply_layer(&h, layer, rope_cos, rope_sin, mask)?;
         }
-        apply_offset_rms_norm(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )
+        h.rms_norm_affine_with_offset(&weights.final_norm_gain, 1.0, cfg.rms_norm_eps)
     }
 
     fn build_mask(&self, anchor: &LazyTensor, seq: usize, sliding: Option<usize>) -> LazyTensor {
@@ -217,9 +215,7 @@ impl Gemma3Model {
 
         // Pre-attention offset RmsNorm.
         let residual = x.clone();
-        let x_norm = apply_offset_rms_norm(
-            x, &layer.input_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let x_norm = x.rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         // Q / K / V projections; note Q goes to num_heads*head_dim
         // which is NOT necessarily equal to hidden_size.
@@ -234,12 +230,8 @@ impl Gemma3Model {
         let v = v.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
 
         // Per-head Q/K RmsNorm on head_dim (POST-reshape, like eager Gemma3).
-        let q = apply_offset_rms_norm(
-            &q, &layer.q_norm_gain, cfg.head_dim, cfg.rms_norm_eps,
-        )?;
-        let k = apply_offset_rms_norm(
-            &k, &layer.k_norm_gain, cfg.head_dim, cfg.rms_norm_eps,
-        )?;
+        let q = q.rms_norm_affine_with_offset(&layer.q_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let k = k.rms_norm_affine_with_offset(&layer.k_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         let q_r = q.rope_with_tables(rope_cos, rope_sin)?;
         let k_r = k.rope_with_tables(rope_cos, rope_sin)?;
@@ -265,16 +257,12 @@ impl Gemma3Model {
         let merged = attn_v.merge_heads()?;
         let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size).add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
         // post_attention_layernorm wraps the attn output BEFORE the residual add.
-        let attn_out_norm = apply_offset_rms_norm(
-            &attn_out, &layer.post_attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let attn_out_norm = attn_out.rms_norm_affine_with_offset(&layer.post_attn_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let h1 = residual.add(&attn_out_norm)?;
 
         // Pre-FFN offset RmsNorm.
         let residual2 = h1.clone();
-        let h1_norm = apply_offset_rms_norm(
-            &h1, &layer.pre_ffn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let h1_norm = h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         // GELU gated FFN.
         let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
@@ -286,24 +274,13 @@ impl Gemma3Model {
         let ffn_in = activated.mul(&up)?;
         let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size);
         // post_feedforward_layernorm wraps the FFN output BEFORE the residual add.
-        let ffn_out_norm = apply_offset_rms_norm(
-            &ffn_out, &layer.post_ffn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        )?;
+        let ffn_out_norm = ffn_out.rms_norm_affine_with_offset(&layer.post_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         residual2.add(&ffn_out_norm)
     }
 }
 
 /// Gemma's offset RmsNorm: `y = (x / rms) * (gain + 1)`.
-fn apply_offset_rms_norm(
-    x: &LazyTensor,
-    gain: &Arc<[f32]>,
-    dim: usize,
-    eps: f64,
-) -> Result<LazyTensor> {
-    let _ = dim;
-    x.rms_norm_affine_with_offset(gain, 1.0, eps)
-}
 
 
 #[cfg(test)]
