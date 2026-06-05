@@ -447,7 +447,7 @@ mod tests {
         let zero_gain: Arc<[f32]> = Arc::from(vec![0.0_f32; h]);
         let one_gain: Arc<[f32]> = Arc::from(vec![1.0_f32; h]);
         let g2_out = apply_gemma2_rms_norm(&x, &zero_gain, h, 1e-6).realize_f32();
-        let baseline = crate::lazy::apply_affine_rms_norm_pub(&x, &one_gain, h, 1e-6).realize_f32();
+        let baseline = x.rms_norm_affine(Arc::clone(&one_gain), 1e-6).unwrap().realize_f32();
         for (a, b) in g2_out.iter().zip(baseline.iter()) {
             assert!((a - b).abs() < 1e-6,
                 "gemma2 RmsNorm with gain=0 must equal standard RmsNorm with gain=1, {a} vs {b}");

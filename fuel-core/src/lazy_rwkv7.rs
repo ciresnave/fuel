@@ -193,14 +193,11 @@ impl Rwkv7Model {
 
         for (li, layer) in weights.layers.iter().enumerate() {
             let xs = if let Some((g, b)) = &layer.pre_ln {
-                crate::lazy::apply_affine_layer_norm_pub(&h, g, b, cfg.hidden_size, cfg.layer_norm_epsilon)
+                h.layer_norm_affine(Arc::clone(g), Arc::clone(b), cfg.layer_norm_epsilon)?
             } else {
                 h.clone()
             };
-            let xs_ln1 = crate::lazy::apply_affine_layer_norm_pub(
-                &xs, &layer.ln1_gain, &layer.ln1_bias,
-                cfg.hidden_size, cfg.layer_norm_epsilon,
-            );
+            let xs_ln1 = xs.layer_norm_affine(std::sync::Arc::clone(&layer.ln1_gain), std::sync::Arc::clone(&layer.ln1_bias), cfg.layer_norm_epsilon)?;
             let (attn, v_first_layer) = self.time_mix(
                 &xs_ln1, layer, batch, seq, n_heads, head_size, li, v_first.as_ref(),
             )?;
@@ -209,17 +206,11 @@ impl Rwkv7Model {
             }
             let h_post_attn = xs.add(&attn)?;
 
-            let xs_ln2 = crate::lazy::apply_affine_layer_norm_pub(
-                &h_post_attn, &layer.ln2_gain, &layer.ln2_bias,
-                cfg.hidden_size, cfg.layer_norm_epsilon,
-            );
+            let xs_ln2 = h_post_attn.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), cfg.layer_norm_epsilon)?;
             let ff = self.channel_mix(&xs_ln2, layer, batch, seq)?;
             h = h_post_attn.add(&ff)?;
         }
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &h, &weights.final_ln_gain, &weights.final_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_epsilon,
-        ))
+        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_epsilon)?)
     }
 
     /// TimeMix forward over the full sequence; unrolls the time

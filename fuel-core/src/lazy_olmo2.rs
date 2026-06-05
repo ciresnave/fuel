@@ -118,9 +118,7 @@ impl Olmo2Model {
         for (layer, extras) in weights.layers.iter().zip(weights.layer_extras.iter()) {
             h = self.apply_layer(&h, layer, extras, &rope_cos, &rope_sin)?;
         }
-        Ok(crate::lazy::apply_affine_rms_norm_pub(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        ))
+        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
     }
 
     fn apply_layer(
@@ -138,9 +136,7 @@ impl Olmo2Model {
         let seq = dims[1];
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
-        let x_norm = crate::lazy::apply_affine_rms_norm_pub(
-            x, &layer.attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
 
         let q = optional_bias(
             layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size),
@@ -156,12 +152,8 @@ impl Olmo2Model {
         )?;
 
         // QK-norm — RmsNorm Q and K BEFORE head reshape.
-        let q = crate::lazy::apply_affine_rms_norm_pub(
-            &q, &extras.q_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
-        let k = crate::lazy::apply_affine_rms_norm_pub(
-            &k, &extras.k_norm_gain, kv_dim, cfg.rms_norm_eps,
-        );
+        let q = q.rms_norm_affine(std::sync::Arc::clone(&extras.q_norm_gain), cfg.rms_norm_eps)?;
+        let k = k.rms_norm_affine(std::sync::Arc::clone(&extras.k_norm_gain), cfg.rms_norm_eps)?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -189,9 +181,7 @@ impl Olmo2Model {
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size);
 
         let h1 = x.add(&attn_out)?;
-        let h1_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h1, &layer.ffn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
         let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
         let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
         let swiglu = gate.silu().mul(&up)?;

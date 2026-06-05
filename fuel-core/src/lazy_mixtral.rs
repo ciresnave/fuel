@@ -169,9 +169,7 @@ impl MixtralModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
-        Ok(crate::lazy::apply_affine_rms_norm_pub(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        ))
+        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
     }
 
     fn build_sliding_window_mask(&self, anchor: &LazyTensor, seq: usize) -> LazyTensor {
@@ -203,9 +201,7 @@ impl MixtralModel {
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
         // Pre-attention RmsNorm.
-        let x_norm = crate::lazy::apply_affine_rms_norm_pub(
-            x, &layer.attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
 
         // Q / K / V — bias-free Mistral-style.
         let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size);
@@ -240,9 +236,7 @@ impl MixtralModel {
         let h1 = x.add(&attn_out)?;
 
         // Pre-FFN RmsNorm + MoE block.
-        let h1_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h1, &layer.ffn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
         let ffn_out = self.apply_moe(&h1_norm, layer, batch, seq)?;
         h1.add(&ffn_out)
     }

@@ -382,11 +382,13 @@ fn apply_norm(
     match kind {
         ChatGlmNorm::Rms => {
             assert!(bias.is_none(), "RmsNorm: bias must be None");
-            Ok(crate::lazy::apply_affine_rms_norm_pub(x, gain, dim, eps))
+            let _ = dim;
+            x.rms_norm_affine(Arc::clone(gain), eps)
         }
         ChatGlmNorm::Layer => {
             let bias = bias.expect("LayerNorm: bias required");
-            Ok(crate::lazy::apply_affine_layer_norm_pub(x, gain, bias, dim, eps))
+            let _ = dim;
+            x.layer_norm_affine(Arc::clone(gain), Arc::clone(bias), eps)
         }
     }
 }

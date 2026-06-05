@@ -175,10 +175,7 @@ impl FalconModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &h, &weights.final_ln_gain, &weights.final_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_epsilon,
-        ))
+        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_epsilon)?)
     }
 
     fn apply_layer(
@@ -197,10 +194,7 @@ impl FalconModel {
         let kv_dim = cfg.n_head_kv * head_dim;
 
         // Shared input LayerNorm for attention (and FFN in parallel mode).
-        let x_ln = crate::lazy::apply_affine_layer_norm_pub(
-            x, &layer.input_ln_gain, &layer.input_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_epsilon,
-        );
+        let x_ln = x.layer_norm_affine(std::sync::Arc::clone(&layer.input_ln_gain), std::sync::Arc::clone(&layer.input_ln_bias), cfg.layer_norm_epsilon)?;
 
         let attn_output = self.attention(&x_ln, layer, rope_cos, rope_sin, batch, seq, head_dim, kv_dim)?;
 
@@ -214,9 +208,7 @@ impl FalconModel {
             // Serial: `h1 = attn(ln(x)) + x; out = mlp(ln'(h1)) + h1`.
             let h1 = x.add(&attn_output)?;
             let h1_ln = match &layer.post_attn_ln {
-                Some((g, b)) => crate::lazy::apply_affine_layer_norm_pub(
-                    &h1, g, b, cfg.hidden_size, cfg.layer_norm_epsilon,
-                ),
+                Some((g, b)) => h1.layer_norm_affine(std::sync::Arc::clone(&g), std::sync::Arc::clone(&b), cfg.layer_norm_epsilon)?,
                 None => h1.clone(),
             };
             let mlp_output = self.mlp(&h1_ln, layer, batch, seq)?;

@@ -124,10 +124,7 @@ impl PersimmonModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &h, &weights.final_ln_gain, &weights.final_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_eps,
-        ))
+        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?)
     }
 
     fn apply_layer(
@@ -145,10 +142,7 @@ impl PersimmonModel {
         let seq = dims[1];
         let kv_dim = cfg.num_key_value_heads * head_dim;
 
-        let x_norm = crate::lazy::apply_affine_layer_norm_pub(
-            x, &layer.input_ln_gain, &layer.input_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_eps,
-        );
+        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.input_ln_gain), std::sync::Arc::clone(&layer.input_ln_bias), cfg.layer_norm_eps)?;
 
         // Q/K/V projections — always have biases on Persimmon.
         let q = bias_add(
@@ -167,12 +161,8 @@ impl PersimmonModel {
         // QK-LayerNorm BEFORE head reshape.
         let (q, k) = match (&layer.q_norm, &layer.k_norm) {
             (Some((qg, qb)), Some((kg, kb))) => {
-                let q = crate::lazy::apply_affine_layer_norm_pub(
-                    &q, qg, qb, cfg.hidden_size, cfg.layer_norm_eps,
-                );
-                let k = crate::lazy::apply_affine_layer_norm_pub(
-                    &k, kg, kb, kv_dim, cfg.layer_norm_eps,
-                );
+                let q = q.layer_norm_affine(std::sync::Arc::clone(&qg), std::sync::Arc::clone(&qb), cfg.layer_norm_eps)?;
+                let k = k.layer_norm_affine(std::sync::Arc::clone(&kg), std::sync::Arc::clone(&kb), cfg.layer_norm_eps)?;
                 (q, k)
             }
             _ => (q, k),
@@ -207,10 +197,7 @@ impl PersimmonModel {
         )?;
 
         let h1 = x.add(&attn_out)?;
-        let h1_norm = crate::lazy::apply_affine_layer_norm_pub(
-            &h1, &layer.post_attn_ln_gain, &layer.post_attn_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_eps,
-        );
+        let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.post_attn_ln_gain), std::sync::Arc::clone(&layer.post_attn_ln_bias), cfg.layer_norm_eps)?;
         // MLP: simple `down(relu(up(x)))`.
         let up = bias_add(
             layer.mlp_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size),

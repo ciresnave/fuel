@@ -185,9 +185,7 @@ impl MistralModel {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask)?;
         }
 
-        let h_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let h_norm = h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?;
         Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
     }
 
@@ -273,9 +271,7 @@ impl MistralModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, mask)?;
         }
-        Ok(crate::lazy::apply_affine_rms_norm_pub(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        ))
+        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
     }
 
     /// Build the sliding-window causal mask for a single forward
@@ -322,9 +318,7 @@ impl MistralModel {
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
         // Pre-attention RmsNorm (affine).
-        let x_norm = crate::lazy::apply_affine_rms_norm_pub(
-            x, &layer.attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
 
         // Q / K / V projections (bias-free for Mistral).
         let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size);
@@ -363,9 +357,7 @@ impl MistralModel {
         let h1 = x.add(&attn_out)?;
 
         // Pre-FFN RmsNorm (affine).
-        let h1_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h1, &layer.ffn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
 
         // SwiGLU FFN: `down(silu(gate) * up)`.
         let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);

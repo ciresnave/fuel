@@ -390,7 +390,6 @@ mod tests {
     /// (because (0 + 1) == 1).
     #[test]
     fn offset_rms_norm_with_zero_gain_matches_unity() {
-        use crate::lazy::apply_affine_rms_norm_pub;
         let device = Device::cpu();
         let dim = 8;
         let x = LazyTensor::from_f32(
@@ -401,7 +400,7 @@ mod tests {
         let zero_gain: Arc<[f32]> = Arc::from(vec![0.0_f32; dim]);
         let unity_gain: Arc<[f32]> = Arc::from(vec![1.0_f32; dim]);
         let offset = apply_offset_rms_norm(&x, &zero_gain, dim, 1e-6).unwrap();
-        let unity = apply_affine_rms_norm_pub(&x, &unity_gain, dim, 1e-6);
+        let unity = x.rms_norm_affine(Arc::clone(&unity_gain), 1e-6).unwrap();
         let a = offset.realize_f32();
         let b = unity.realize_f32();
         assert_eq!(a.len(), b.len());

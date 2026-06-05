@@ -154,13 +154,7 @@ impl ModernBertModel {
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
         // ModernBERT's embedding LayerNorm has no bias.
-        let mut x = crate::lazy::apply_affine_layer_norm_pub(
-            &embeds,
-            &weights.embed_ln_gain,
-            &Arc::from(vec![0.0_f32; h]),
-            h,
-            cfg.layer_norm_eps,
-        );
+        let mut x = embeds.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), Arc::<[f32]>::from(vec![0.0_f32; h]), cfg.layer_norm_eps)?;
 
         // ---- RoPE tables (global + local, shared across layers) ------------
         let head_dim = cfg.head_dim();
@@ -207,13 +201,7 @@ impl ModernBertModel {
         }
 
         // Final LN (no bias).
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &x,
-            &weights.final_norm_gain,
-            &Arc::from(vec![0.0_f32; h]),
-            h,
-            cfg.layer_norm_eps,
-        ))
+        Ok(x.layer_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), Arc::<[f32]>::from(vec![0.0_f32; h]), cfg.layer_norm_eps)?)
     }
 
     /// Extract per-token features at the requested layer
@@ -276,13 +264,7 @@ impl ModernBertModel {
         let embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
-        let mut x = crate::lazy::apply_affine_layer_norm_pub(
-            &embeds,
-            &weights.embed_ln_gain,
-            &Arc::from(vec![0.0_f32; h]),
-            h,
-            cfg.layer_norm_eps,
-        );
+        let mut x = embeds.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), Arc::<[f32]>::from(vec![0.0_f32; h]), cfg.layer_norm_eps)?;
 
         let head_dim = cfg.head_dim();
         let (global_cos, global_sin) = x.rope_tables_const(
@@ -346,17 +328,13 @@ impl ModernBertModel {
         // Pre-LN attention sublayer (skipped on layer 0 if attn_norm is None).
         let x_normed = match &layer.attn_norm_gain {
             None => x.clone(),
-            Some(gain) => crate::lazy::apply_affine_layer_norm_pub(
-                x, gain, &zero_bias, h, cfg.layer_norm_eps,
-            ),
+            Some(gain) => x.layer_norm_affine(std::sync::Arc::clone(&gain), std::sync::Arc::clone(&zero_bias), cfg.layer_norm_eps)?,
         };
         let attn_out = self.attention(&x_normed, layer, rope_cos, rope_sin, attention_mask)?;
         let y = x.add(&attn_out)?;
 
         // Pre-LN MLP sublayer.
-        let y_normed = crate::lazy::apply_affine_layer_norm_pub(
-            &y, &layer.mlp_norm_gain, &zero_bias, h, cfg.layer_norm_eps,
-        );
+        let y_normed = y.layer_norm_affine(std::sync::Arc::clone(&layer.mlp_norm_gain), std::sync::Arc::clone(&zero_bias), cfg.layer_norm_eps)?;
         let mlp_out = self.geglu(&y_normed, layer)?;
         y.add(&mlp_out)
     }

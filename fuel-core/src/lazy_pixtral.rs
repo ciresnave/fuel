@@ -226,10 +226,7 @@ impl PixtralModel {
             .permute([0, 2, 1_usize])?;
 
         // Pre-encoder RmsNorm (Mistral-shape, no offset).
-        let pre = crate::lazy::apply_affine_rms_norm_pub(
-            &patches, &weights.ln_pre_gain,
-            cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let pre = patches.rms_norm_affine(std::sync::Arc::clone(&weights.ln_pre_gain), cfg.rms_norm_eps)?;
 
         // Precompute 2D RoPE cos/sin tables for all patches.
         let head_dim = cfg.head_dim_resolved();
@@ -270,9 +267,7 @@ impl PixtralModel {
         let head_dim = cfg.head_dim_resolved();
 
         // Pre-attn RmsNorm.
-        let x_norm = crate::lazy::apply_affine_rms_norm_pub(
-            x, &block.attn_norm_gain, h, cfg.rms_norm_eps,
-        );
+        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&block.attn_norm_gain), cfg.rms_norm_eps)?;
 
         let q = block.q_proj.apply_linear(&x_norm, h, h);
         let k = block.k_proj.apply_linear(&x_norm, h, h);
@@ -298,9 +293,7 @@ impl PixtralModel {
         let h1 = x.add(&attn_out)?;
 
         // Pre-FFN RmsNorm.
-        let h1_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h1, &block.ffn_norm_gain, h, cfg.rms_norm_eps,
-        );
+        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&block.ffn_norm_gain), cfg.rms_norm_eps)?;
         let gate = block.gate_proj.apply_linear(&h1_norm, h, cfg.intermediate_size);
         let up = block.up_proj.apply_linear(&h1_norm, h, cfg.intermediate_size);
         let activated = match cfg.activation {

@@ -191,12 +191,7 @@ impl NvEmbedV2Model {
 
         // ---- Latent attention head (Perceiver-style) ----------------------
         // norm(hidden) → Q; norm(latents) → K, V.
-        let hidden_normed = crate::lazy::apply_affine_layer_norm_pub(
-            &hidden,
-            &self.weights.cross_attn_norm_gain,
-            &self.weights.cross_attn_norm_bias,
-            bcfg.hidden_size, cfg.layer_norm_eps,
-        );
+        let hidden_normed = hidden.layer_norm_affine(std::sync::Arc::clone(&self.weights.cross_attn_norm_gain), std::sync::Arc::clone(&self.weights.cross_attn_norm_bias), cfg.layer_norm_eps)?;
         let latents = embeds.const_f32_like(
             Arc::clone(&self.weights.latents),
             Shape::from_dims(&[cfg.num_latents, bcfg.hidden_size]),
@@ -204,12 +199,7 @@ impl NvEmbedV2Model {
         let latents = latents
             .reshape(Shape::from_dims(&[1, cfg.num_latents, bcfg.hidden_size]))?
             .broadcast_to(Shape::from_dims(&[batch, cfg.num_latents, bcfg.hidden_size]))?;
-        let latents_normed = crate::lazy::apply_affine_layer_norm_pub(
-            &latents,
-            &self.weights.cross_attn_context_norm_gain,
-            &self.weights.cross_attn_context_norm_bias,
-            bcfg.hidden_size, cfg.layer_norm_eps,
-        );
+        let latents_normed = latents.layer_norm_affine(std::sync::Arc::clone(&self.weights.cross_attn_context_norm_gain), std::sync::Arc::clone(&self.weights.cross_attn_context_norm_bias), cfg.layer_norm_eps)?;
         let inner = cfg.latent_heads * cfg.latent_head_dim;
         let q = self.weights.to_q.apply_linear(&hidden_normed, bcfg.hidden_size, inner);
         let kv = self.weights.to_kv.apply_linear(&latents_normed, bcfg.hidden_size, 2 * inner);
@@ -230,12 +220,7 @@ impl NvEmbedV2Model {
         let cross_hidden = hidden.add(&cross_out)?;
 
         // ---- GeGLU FFN with residual --------------------------------------
-        let ff_in = crate::lazy::apply_affine_layer_norm_pub(
-            &cross_hidden,
-            &self.weights.ff_norm_gain,
-            &self.weights.ff_norm_bias,
-            bcfg.hidden_size, cfg.layer_norm_eps,
-        );
+        let ff_in = cross_hidden.layer_norm_affine(std::sync::Arc::clone(&self.weights.ff_norm_gain), std::sync::Arc::clone(&self.weights.ff_norm_bias), cfg.layer_norm_eps)?;
         let ff_hidden = bcfg.hidden_size * cfg.ff_mult;
         let ff_up = self.weights.ff_proj.apply_linear(&ff_in, bcfg.hidden_size, 2 * ff_hidden);
         let ff_value = ff_up.slice(2_usize, 0, ff_hidden)?;

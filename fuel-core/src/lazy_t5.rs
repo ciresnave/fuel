@@ -270,10 +270,7 @@ impl T5Model {
             x = self.apply_encoder_layer(&x, layer, &pos_bias)?;
         }
 
-        Ok(crate::lazy::apply_affine_rms_norm_pub(
-            &x, &self.weights.encoder_final_norm_gain,
-            cfg.d_model, cfg.layer_norm_epsilon,
-        ))
+        Ok(x.rms_norm_affine(std::sync::Arc::clone(&self.weights.encoder_final_norm_gain), cfg.layer_norm_epsilon)?)
     }
 
     fn decode(
@@ -313,10 +310,7 @@ impl T5Model {
             x = self.apply_decoder_layer(&x, layer, enc_out, &pos_bias, &causal)?;
         }
 
-        Ok(crate::lazy::apply_affine_rms_norm_pub(
-            &x, &self.weights.decoder_final_norm_gain,
-            cfg.d_model, cfg.layer_norm_epsilon,
-        ))
+        Ok(x.rms_norm_affine(std::sync::Arc::clone(&self.weights.decoder_final_norm_gain), cfg.layer_norm_epsilon)?)
     }
 
     fn apply_encoder_layer(
@@ -326,15 +320,11 @@ impl T5Model {
         pos_bias: &LazyTensor,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let x_norm = crate::lazy::apply_affine_rms_norm_pub(
-            x, &layer.self_attn_norm_gain, cfg.d_model, cfg.layer_norm_epsilon,
-        );
+        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.self_attn_norm_gain), cfg.layer_norm_epsilon)?;
         let attn = self.attention(&x_norm, &x_norm, &layer.self_attn, Some(pos_bias), None)?;
         let h1 = x.add(&attn)?;
 
-        let h1_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h1, &layer.ffn_norm_gain, cfg.d_model, cfg.layer_norm_epsilon,
-        );
+        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.ffn_norm_gain), cfg.layer_norm_epsilon)?;
         let ffn = self.feed_forward(&h1_norm, &layer.ffn)?;
         h1.add(&ffn)
     }
@@ -348,27 +338,21 @@ impl T5Model {
         causal_mask: &LazyTensor,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let x_norm = crate::lazy::apply_affine_rms_norm_pub(
-            x, &layer.self_attn_norm_gain, cfg.d_model, cfg.layer_norm_epsilon,
-        );
+        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.self_attn_norm_gain), cfg.layer_norm_epsilon)?;
         let self_attn = self.attention(
             &x_norm, &x_norm, &layer.self_attn,
             Some(pos_bias), Some(causal_mask),
         )?;
         let h1 = x.add(&self_attn)?;
 
-        let h1_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h1, &layer.cross_attn_norm_gain, cfg.d_model, cfg.layer_norm_epsilon,
-        );
+        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.cross_attn_norm_gain), cfg.layer_norm_epsilon)?;
         let cross_attn = self.attention(
             &h1_norm, enc_out, &layer.cross_attn,
             None, None,
         )?;
         let h2 = h1.add(&cross_attn)?;
 
-        let h2_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h2, &layer.ffn_norm_gain, cfg.d_model, cfg.layer_norm_epsilon,
-        );
+        let h2_norm = h2.rms_norm_affine(std::sync::Arc::clone(&layer.ffn_norm_gain), cfg.layer_norm_epsilon)?;
         let ffn = self.feed_forward(&h2_norm, &layer.ffn)?;
         h2.add(&ffn)
     }

@@ -264,10 +264,7 @@ impl MoondreamModel {
         }
 
         // ---- Final LayerNorm ---------------------------------------------
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &h, &weights.norm_gain, &weights.norm_bias,
-            cfg.embed_dim, cfg.layer_norm_eps,
-        ))
+        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.norm_gain), std::sync::Arc::clone(&weights.norm_bias), cfg.layer_norm_eps)?)
     }
 
     fn apply_block(
@@ -285,9 +282,7 @@ impl MoondreamModel {
         let head_dim = cfg.embed_dim / cfg.num_heads;
 
         // Pre-LN before attention.
-        let x_norm = crate::lazy::apply_affine_layer_norm_pub(
-            x, &block.norm1_gain, &block.norm1_bias, h, cfg.layer_norm_eps,
-        );
+        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&block.norm1_gain), std::sync::Arc::clone(&block.norm1_bias), cfg.layer_norm_eps)?;
 
         // Fused Wqkv: hidden → 3 * hidden.
         let qkv_lin = block.qkv.apply_linear(&x_norm, h, 3 * h);
@@ -320,9 +315,7 @@ impl MoondreamModel {
         let h1 = x.add(&attn_out)?;
 
         // Pre-LN before MLP.
-        let h1_norm = crate::lazy::apply_affine_layer_norm_pub(
-            &h1, &block.norm2_gain, &block.norm2_bias, h, cfg.layer_norm_eps,
-        );
+        let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&block.norm2_gain), std::sync::Arc::clone(&block.norm2_bias), cfg.layer_norm_eps)?;
         let mlp_h = cfg.mlp_hidden;
         let fc1 = block.fc1.apply_linear(&h1_norm, h, mlp_h);
         let fc1_b_t = x.const_f32_like(

@@ -187,10 +187,7 @@ impl MptModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &mask)?;
         }
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &h, &weights.final_ln_gain, &weights.final_ln_bias,
-            cfg.d_model, cfg.layer_norm_eps,
-        ))
+        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?)
     }
 
     fn apply_layer(
@@ -207,10 +204,7 @@ impl MptModel {
         let seq = dims[1];
         let kv_dim = cfg.kv_n_heads * head_dim;
 
-        let x_norm = crate::lazy::apply_affine_layer_norm_pub(
-            x, &layer.norm1_gain, &layer.norm1_bias,
-            cfg.d_model, cfg.layer_norm_eps,
-        );
+        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.norm1_gain), std::sync::Arc::clone(&layer.norm1_bias), cfg.layer_norm_eps)?;
 
         // Bias-free Q/K/V.
         let q = layer.attn_q.apply_linear(&x_norm, cfg.d_model, cfg.d_model);
@@ -241,10 +235,7 @@ impl MptModel {
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.d_model, cfg.d_model);
 
         let h1 = x.add(&attn_out)?;
-        let h1_norm = crate::lazy::apply_affine_layer_norm_pub(
-            &h1, &layer.norm2_gain, &layer.norm2_bias,
-            cfg.d_model, cfg.layer_norm_eps,
-        );
+        let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.norm2_gain), std::sync::Arc::clone(&layer.norm2_bias), cfg.layer_norm_eps)?;
 
         let mid = layer.mlp_up.apply_linear(&h1_norm, cfg.d_model, cfg.ffn_dim());
         let mid_act = mid.gelu_erf();

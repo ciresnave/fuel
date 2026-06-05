@@ -204,9 +204,7 @@ impl Glm4NewModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask, q_dim, kv_dim)?;
         }
-        Ok(crate::lazy::apply_affine_rms_norm_pub(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        ))
+        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
     }
 
     fn build_mask(&self, anchor: &LazyTensor, seq: usize) -> LazyTensor {
@@ -249,9 +247,7 @@ impl Glm4NewModel {
         let seq = dims[1];
 
         // Attention sublayer: post_self_attn_norm(attn(input_norm(x))) + x.
-        let x_in = crate::lazy::apply_affine_rms_norm_pub(
-            x, &layer.input_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let x_in = x.rms_norm_affine(std::sync::Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
         let q = opt_bias(
             layer.q.apply_linear(&x_in, cfg.hidden_size, q_dim),
             layer.q_bias.as_ref(), q_dim,
@@ -284,15 +280,11 @@ impl Glm4NewModel {
         let ctx = probs.matmul(&v_full)?;
         let merged = ctx.merge_heads()?;
         let attn_out = layer.o.apply_linear(&merged, q_dim, cfg.hidden_size);
-        let attn_post = crate::lazy::apply_affine_rms_norm_pub(
-            &attn_out, &layer.post_self_attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let attn_post = attn_out.rms_norm_affine(std::sync::Arc::clone(&layer.post_self_attn_norm_gain), cfg.rms_norm_eps)?;
         let h1 = x.add(&attn_post)?;
 
         // MLP sublayer: post_mlp_norm(mlp(post_attn_norm(h1))) + h1.
-        let h1_in = crate::lazy::apply_affine_rms_norm_pub(
-            &h1, &layer.post_attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let h1_in = h1.rms_norm_affine(std::sync::Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
         let gate_up = layer.gate_up.apply_linear(&h1_in, cfg.hidden_size, 2 * cfg.intermediate_size);
         let gate = gate_up.slice(2_usize, 0, cfg.intermediate_size)?;
         let up = gate_up.slice(2_usize, cfg.intermediate_size, cfg.intermediate_size)?;
@@ -303,9 +295,7 @@ impl Glm4NewModel {
         };
         let inner = act.mul(&up)?;
         let mlp_out = layer.down.apply_linear(&inner, cfg.intermediate_size, cfg.hidden_size);
-        let mlp_post = crate::lazy::apply_affine_rms_norm_pub(
-            &mlp_out, &layer.post_mlp_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let mlp_post = mlp_out.rms_norm_affine(std::sync::Arc::clone(&layer.post_mlp_norm_gain), cfg.rms_norm_eps)?;
         h1.add(&mlp_post)
     }
 }

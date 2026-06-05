@@ -254,10 +254,7 @@ impl SiglipTextModel {
             )?;
         }
 
-        let h_norm = crate::lazy::apply_affine_layer_norm_pub(
-            &h, &weights.final_ln_gain, &weights.final_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_eps,
-        );
+        let h_norm = h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?;
 
         // Pool last position.
         let last = h_norm
@@ -330,10 +327,7 @@ impl SiglipVisionModel {
             )?;
         }
         // Post-LayerNorm on all tokens.
-        let h_norm = crate::lazy::apply_affine_layer_norm_pub(
-            &h, &weights.post_ln_gain, &weights.post_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_eps,
-        );
+        let h_norm = h.layer_norm_affine(std::sync::Arc::clone(&weights.post_ln_gain), std::sync::Arc::clone(&weights.post_ln_bias), cfg.layer_norm_eps)?;
 
         match &weights.head {
             None => Ok(h_norm),
@@ -464,9 +458,7 @@ impl SiglipVisionModel {
 
         // MLP residual: residual + mlp(LN(attn_out)) → take token 0.
         let residual = attn_out.clone();
-        let attn_ln = crate::lazy::apply_affine_layer_norm_pub(
-            &attn_out, &head.ln_gain, &head.ln_bias, h, cfg.layer_norm_eps,
-        );
+        let attn_ln = attn_out.layer_norm_affine(std::sync::Arc::clone(&head.ln_gain), std::sync::Arc::clone(&head.ln_bias), cfg.layer_norm_eps)?;
         let inter_dim = head.mlp_fc1_bias.len();
         let fc1 = head.mlp_fc1.apply_linear(&attn_ln, h, inter_dim);
         let fc1 = bias_add(fc1, &head.mlp_fc1_bias, inter_dim, xs)?;
@@ -516,9 +508,7 @@ fn apply_encoder_layer(
     let seq = dims[1];
     let h = dims[2];
 
-    let x_norm = crate::lazy::apply_affine_layer_norm_pub(
-        x, &layer.ln1_gain, &layer.ln1_bias, h, layer_norm_eps,
-    );
+    let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln1_gain), std::sync::Arc::clone(&layer.ln1_bias), layer_norm_eps)?;
 
     let q = layer.q_proj.apply_linear(&x_norm, h, h);
     let q = bias_add(q, &layer.q_proj_bias, h, x)?;
@@ -546,9 +536,7 @@ fn apply_encoder_layer(
     let attn_out = bias_add(attn_out, &layer.out_proj_bias, h, x)?;
     let h1 = x.add(&attn_out)?;
 
-    let h1_norm = crate::lazy::apply_affine_layer_norm_pub(
-        &h1, &layer.ln2_gain, &layer.ln2_bias, h, layer_norm_eps,
-    );
+    let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), layer_norm_eps)?;
     let inter_dim = layer.fc1_bias.len();
     let fc1 = layer.fc1.apply_linear(&h1_norm, h, inter_dim);
     let fc1 = bias_add(fc1, &layer.fc1_bias, inter_dim, x)?;

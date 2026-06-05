@@ -209,10 +209,7 @@ impl VitModel {
         }
 
         // ---- Final LayerNorm ------------------------------------------------
-        let h_norm = crate::lazy::apply_affine_layer_norm_pub(
-            &h_states, &weights.final_ln_gain, &weights.final_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_eps,
-        );
+        let h_norm = h_states.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?;
 
         // ---- Optional classifier on CLS -------------------------------------
         match &weights.classifier {
@@ -329,10 +326,7 @@ impl VitModel {
         let head_dim = cfg.head_dim();
 
         // Pre-LN before attention.
-        let x_norm = crate::lazy::apply_affine_layer_norm_pub(
-            x, &layer.ln_before_gain, &layer.ln_before_bias,
-            h, cfg.layer_norm_eps,
-        );
+        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln_before_gain), std::sync::Arc::clone(&layer.ln_before_bias), cfg.layer_norm_eps)?;
 
         // Q/K/V projections with optional biases.
         let q = opt_bias(
@@ -372,10 +366,7 @@ impl VitModel {
         let h1 = x.add(&attn_out)?;
 
         // Pre-LN before MLP.
-        let h1_norm = crate::lazy::apply_affine_layer_norm_pub(
-            &h1, &layer.ln_after_gain, &layer.ln_after_bias,
-            h, cfg.layer_norm_eps,
-        );
+        let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.ln_after_gain), std::sync::Arc::clone(&layer.ln_after_bias), cfg.layer_norm_eps)?;
 
         // Intermediate: linear + activation.
         let inter_proj = layer.intermediate_proj.apply_linear(&h1_norm, h, cfg.intermediate_size);
