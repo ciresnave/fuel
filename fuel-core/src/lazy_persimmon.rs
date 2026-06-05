@@ -7,7 +7,7 @@
 //!   and K BEFORE head reshape (`q_norm` shape `[hidden_size]`,
 //!   `k_norm` shape `[num_kv_heads * head_dim]`).
 //! - **Partial rotary** (factor 0.5 for the 8B base model). Reuses
-//!   `crate::lazy_stablelm::apply_partial_rotary`.
+//!   `LazyTensor::rope_partial`.
 //! - **ReLU MLP** — `down(relu(up(x)))`, no gate path.
 //! - **Q/K/V/O biases** always present (no gating flag).
 //!
@@ -15,7 +15,6 @@
 //! QK-LN structure don't fit `LayerWeights`.
 
 use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_stablelm::apply_partial_rotary;
 use crate::{Device, Result};
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -173,8 +172,8 @@ impl PersimmonModel {
         let k = k.split_heads(cfg.num_key_value_heads, head_dim)?;
         let v = v.split_heads(cfg.num_key_value_heads, head_dim)?;
 
-        let q_r = apply_partial_rotary(&q, rope_cos, rope_sin, head_dim, cfg.rope_dim())?;
-        let k_r = apply_partial_rotary(&k, rope_cos, rope_sin, head_dim, cfg.rope_dim())?;
+        let q_r = q.rope_partial(rope_cos, rope_sin, cfg.rope_dim())?;
+        let k_r = k.rope_partial(rope_cos, rope_sin, cfg.rope_dim())?;
 
         let n_rep = cfg.num_attention_heads / cfg.num_key_value_heads;
         let k_full = k_r.repeat_interleave(1_usize, n_rep)?;

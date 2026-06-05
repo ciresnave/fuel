@@ -171,8 +171,8 @@ impl StableLmModel {
 
         // Partial rotary: slice [..., :rope_dim] → apply RoPE → concat
         // with [..., rope_dim:].
-        let q_r = apply_partial_rotary(&q, rope_cos, rope_sin, head_dim, rope_dim)?;
-        let k_r = apply_partial_rotary(&k, rope_cos, rope_sin, head_dim, rope_dim)?;
+        let q_r = q.rope_partial(rope_cos, rope_sin, rope_dim)?;
+        let k_r = k.rope_partial(rope_cos, rope_sin, rope_dim)?;
 
         let n_rep = cfg.num_attention_heads / cfg.num_key_value_heads;
         let k_full = k_r.repeat_interleave(1_usize, n_rep)?;
@@ -202,28 +202,6 @@ impl StableLmModel {
         let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size);
         h1.add(&ffn_out)
     }
-}
-
-/// Apply RoPE to the first `rope_dim` features of each head, leave
-/// the rest passing through unchanged. Caller passes Q (or K)
-/// shaped `[batch, heads, seq, head_dim]` and `rope_cos`/`rope_sin`
-/// tables shaped `[seq, rope_dim]`. When `rope_dim == head_dim` this
-/// degenerates to full rotary.
-pub fn apply_partial_rotary(
-    qk: &LazyTensor,
-    rope_cos: &LazyTensor,
-    rope_sin: &LazyTensor,
-    head_dim: usize,
-    rope_dim: usize,
-) -> Result<LazyTensor> {
-    if rope_dim == head_dim {
-        return qk.rope_with_tables(rope_cos, rope_sin);
-    }
-    let pass_dim = head_dim - rope_dim;
-    let rot = qk.slice(3_usize, 0, rope_dim)?;
-    let pass = qk.slice(3_usize, rope_dim, pass_dim)?;
-    let rot_rotated = rot.rope_with_tables(rope_cos, rope_sin)?;
-    rot_rotated.concat(&pass, 3_usize)
 }
 
 fn opt_bias(x: LazyTensor, b: Option<&Arc<[f32]>>, n: usize) -> Result<LazyTensor> {

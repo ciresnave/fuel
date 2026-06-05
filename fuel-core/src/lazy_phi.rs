@@ -12,7 +12,7 @@
 //!      `partial_rotary_factor * head_dim` features of each
 //!      head are rotated; the tail passes through unchanged.
 //!      Same shape as the StableLM / Persimmon partial rotary
-//!      handled by [`crate::lazy_stablelm::apply_partial_rotary`].
+//!      handled by [`LazyTensor::rope_partial`].
 //!   3. **LayerNorm (with bias) on hidden_size** — not RmsNorm.
 //!   4. **Sequential MLP** — `fc2(act(fc1(x)))`. No SwiGLU gate.
 //!      Activation is config-driven (the reference Phi-2 uses
@@ -34,7 +34,6 @@
 //! (recomputes each call), F32 activations.
 
 use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_stablelm::apply_partial_rotary;
 use crate::{Device, Result};
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -216,8 +215,8 @@ impl PhiModel {
         let v = v.split_heads(n_kv, cfg.head_dim)?;
 
         // Partial rotary on the first `rope_dim` features.
-        let q_r = apply_partial_rotary(&q, rope_cos, rope_sin, cfg.head_dim, rope_dim)?;
-        let k_r = apply_partial_rotary(&k, rope_cos, rope_sin, cfg.head_dim, rope_dim)?;
+        let q_r = q.rope_partial(rope_cos, rope_sin, rope_dim)?;
+        let k_r = k.rope_partial(rope_cos, rope_sin, rope_dim)?;
 
         // GQA replication (Phi-2 uses MHA so n_rep = 1 usually).
         let n_rep = cfg.num_attention_heads / n_kv;
