@@ -106,7 +106,13 @@ pub struct PhiWeights {
     pub final_ln_gain: Arc<[f32]>,
     pub final_ln_bias: Arc<[f32]>,
     pub lm_head: WeightStorage,
-    pub lm_head_bias: Arc<[f32]>,
+    /// Optional `lm_head` bias. HF Phi-2 ships with this bias present;
+    /// some Phi forks (Dolphin-Phi, fine-tunes) drop it. Loaders MUST
+    /// produce `None` rather than zero-padded all-zeros when the bias
+    /// is absent on disk — this preserves the no-bias semantics
+    /// instead of doing a redundant broadcast-add of zeros and avoids
+    /// a panic on checkpoints that genuinely lack the parameter.
+    pub lm_head_bias: Option<Arc<[f32]>>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,12 +126,14 @@ impl PhiModel {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone(tokens, start_pos)?;
-        let logits = weights.lm_head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size);
-        let bias_t = h_norm.const_f32_like(
-            Arc::clone(&weights.lm_head_bias),
-            Shape::from_dims(&[cfg.vocab_size]),
-        );
-        logits.broadcast_add(&bias_t)
+        match &weights.lm_head_bias {
+            Some(b) => weights.lm_head.apply_linear_with_bias(
+                &h_norm, cfg.hidden_size, cfg.vocab_size, Arc::clone(b),
+            ),
+            None => Ok(weights.lm_head.apply_linear(
+                &h_norm, cfg.hidden_size, cfg.vocab_size,
+            )),
+        }
     }
 
     /// Run the decoder forward up to the final LayerNorm and
@@ -282,7 +290,7 @@ mod tests {
         let final_ln_gain = Arc::from(vec![1.0_f32; h]);
         let final_ln_bias = Arc::from(vec![0.0_f32; h]);
         let lm_head = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
-        let lm_head_bias = vec_of(cfg.vocab_size, &mut *nb);
+        let lm_head_bias = Some(vec_of(cfg.vocab_size, &mut *nb));
         PhiWeights {
             token_embedding, layers,
             final_ln_gain, final_ln_bias,
@@ -312,6 +320,50 @@ mod tests {
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
         for &v in &logits.realize_f32() {
             assert!(v.is_finite(), "got non-finite logit {v}");
+        }
+    }
+
+    /// No-lm-head-bias checkpoints (some Phi fine-tunes drop the
+    /// bias) must run without panic via the `None` branch.
+    /// Regression guard for the previous panicking design where
+    /// `lm_head_bias` was a non-Optional `Arc<[f32]>`.
+    #[test]
+    fn forward_without_lm_head_bias() {
+        let cfg = tiny_config();
+        let mut weights = tiny_weights(&cfg);
+        weights.lm_head_bias = None;
+        let model = PhiModel { config: cfg.clone(), weights };
+        let tokens: Vec<u32> = vec![1, 2, 3];
+        let logits = model.forward(&tokens, 0).unwrap();
+        assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite(), "got non-finite logit {v}");
+        }
+    }
+
+    /// With lm_head_bias = Some(zeros), output must equal the
+    /// no-bias forward. Verifies the Option branch produces
+    /// arithmetically equivalent results.
+    #[test]
+    fn lm_head_bias_zero_matches_none() {
+        let cfg = tiny_config();
+        let base = tiny_weights(&cfg);
+
+        // Path A: bias = None.
+        let mut weights_none = base.clone();
+        weights_none.lm_head_bias = None;
+        let m_none = PhiModel { config: cfg.clone(), weights: weights_none };
+        let a = m_none.forward(&[1, 2, 3], 0).unwrap().realize_f32();
+
+        // Path B: bias = Some(zeros).
+        let mut weights_zero = base.clone();
+        weights_zero.lm_head_bias = Some(Arc::from(vec![0.0_f32; cfg.vocab_size]));
+        let m_zero = PhiModel { config: cfg.clone(), weights: weights_zero };
+        let b = m_zero.forward(&[1, 2, 3], 0).unwrap().realize_f32();
+
+        assert_eq!(a.len(), b.len());
+        for (i, (av, bv)) in a.iter().zip(b.iter()).enumerate() {
+            assert!((av - bv).abs() < 1e-5, "logit[{i}]: none={av} vs zero-bias={bv}");
         }
     }
 
