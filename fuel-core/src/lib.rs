@@ -150,6 +150,7 @@ pub mod lazy_repvgg;
 pub mod lazy_resnet;
 pub mod lazy_segformer;
 pub mod lazy_vgg;
+pub mod lazy_sam;
 pub mod lazy_rwkv5;
 pub mod lazy_rwkv6;
 pub mod lazy_rwkv7;
