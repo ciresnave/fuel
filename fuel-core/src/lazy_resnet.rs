@@ -310,6 +310,245 @@ impl LazyTensorResultExt for LazyTensor {
     fn to_result(self) -> Result<LazyTensor> { Ok(self) }
 }
 
+// ---- Safetensors loader ----------------------------------------------------
+
+impl ResNetWeights {
+    /// Load weights from a torchvision-format ResNet safetensors file.
+    /// Key layout (top-level): `conv1.weight`, `bn1.{weight,bias,
+    /// running_mean,running_var}`, `layer{1..4}.{i}.conv{1,2,3}.weight`,
+    /// `layer{1..4}.{i}.bn{1,2,3}.*`, `layer{1..4}.{0}.downsample.0.weight`
+    /// (conv) + `downsample.1.*` (bn), `fc.weight` (shape
+    /// `[nclasses, features]` — transposed to `[features, nclasses]`
+    /// to match `WeightStorage::apply_linear`'s `[in, out]` convention),
+    /// `fc.bias`.
+    ///
+    /// Eps for BatchNorm baking is the torchvision default `1e-5`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &ResNetConfig,
+    ) -> crate::Result<Self> {
+        const EPS: f64 = 1e-5;
+
+        // Stem.
+        let stem_conv = WeightStorage::F32(Arc::from(resnet_load_f32(st, "conv1.weight")?));
+        let stem_bn = resnet_load_bn(st, "bn1", 64, EPS)?;
+
+        // Four residual stages.
+        let kind = cfg.kind;
+        let stage1 = resnet_load_stage(st, 1, kind, 64,  64, 1, cfg.blocks_per_stage[0], EPS)?;
+        let in2 = match kind { ResNetKind::Basic => 64,  ResNetKind::Bottleneck => 256 };
+        let stage2 = resnet_load_stage(st, 2, kind, in2, 128, 2, cfg.blocks_per_stage[1], EPS)?;
+        let in3 = match kind { ResNetKind::Basic => 128, ResNetKind::Bottleneck => 512 };
+        let stage3 = resnet_load_stage(st, 3, kind, in3, 256, 2, cfg.blocks_per_stage[2], EPS)?;
+        let in4 = match kind { ResNetKind::Basic => 256, ResNetKind::Bottleneck => 1024 };
+        let stage4 = resnet_load_stage(st, 4, kind, in4, 512, 2, cfg.blocks_per_stage[3], EPS)?;
+
+        // Classifier head.
+        let fc = if let Some(n) = cfg.nclasses {
+            let fc_w_t = resnet_load_transposed(st, "fc.weight", n, cfg.features())?;
+            let fc_b = resnet_load_f32(st, "fc.bias")?;
+            Some((WeightStorage::F32(Arc::from(fc_w_t)), Arc::from(fc_b)))
+        } else {
+            None
+        };
+
+        Ok(Self {
+            stem_conv,
+            stem_bn,
+            stages: [stage1, stage2, stage3, stage4],
+            fc,
+        })
+    }
+}
+
+fn resnet_load_stage(
+    st: &crate::safetensors::MmapedSafetensors,
+    stage_idx: usize,
+    kind: ResNetKind,
+    c_in: usize,
+    c_out: usize,
+    stride: usize,
+    n_blocks: usize,
+    eps: f64,
+) -> crate::Result<ResNetStageWeights> {
+    let block_out = match kind {
+        ResNetKind::Basic => c_out,
+        ResNetKind::Bottleneck => 4 * c_out,
+    };
+    let mut blocks = Vec::with_capacity(n_blocks);
+    for bi in 0..n_blocks {
+        let l_in = if bi == 0 { c_in } else { block_out };
+        let s = if bi == 0 { stride } else { 1 };
+        blocks.push(resnet_load_block(st, stage_idx, bi, kind, l_in, c_out, s, eps)?);
+    }
+    Ok(ResNetStageWeights { blocks })
+}
+
+fn resnet_load_block(
+    st: &crate::safetensors::MmapedSafetensors,
+    stage_idx: usize,
+    block_idx: usize,
+    kind: ResNetKind,
+    c_in: usize,
+    c_out: usize,
+    stride: usize,
+    eps: f64,
+) -> crate::Result<ResNetBlockWeights> {
+    let p = format!("layer{stage_idx}.{block_idx}");
+    let conv1 = WeightStorage::F32(Arc::from(resnet_load_f32(st, &format!("{p}.conv1.weight"))?));
+    let bn1 = resnet_load_bn(st, &format!("{p}.bn1"), c_out, eps)?;
+    let conv2 = WeightStorage::F32(Arc::from(resnet_load_f32(st, &format!("{p}.conv2.weight"))?));
+    let bn2 = resnet_load_bn(st, &format!("{p}.bn2"), c_out, eps)?;
+    let (conv3, bn3) = match kind {
+        ResNetKind::Basic => (None, None),
+        ResNetKind::Bottleneck => (
+            Some(WeightStorage::F32(Arc::from(resnet_load_f32(st, &format!("{p}.conv3.weight"))?))),
+            Some(resnet_load_bn(st, &format!("{p}.bn3"), 4 * c_out, eps)?),
+        ),
+    };
+    let block_out = match kind {
+        ResNetKind::Basic => c_out,
+        ResNetKind::Bottleneck => 4 * c_out,
+    };
+    let needs_ds = stride != 1 || c_in != block_out;
+    let downsample = if needs_ds {
+        let conv = WeightStorage::F32(Arc::from(resnet_load_f32(
+            st, &format!("{p}.downsample.0.weight"),
+        )?));
+        let bn = resnet_load_bn(st, &format!("{p}.downsample.1"), block_out, eps)?;
+        Some(DownsampleWeights { conv, bn })
+    } else {
+        None
+    };
+    Ok(ResNetBlockWeights {
+        stride, c_in, c_out, conv1, bn1, conv2, bn2, conv3, bn3, downsample,
+    })
+}
+
+fn resnet_load_bn(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    channels: usize,
+    eps: f64,
+) -> crate::Result<BatchNormParams> {
+    let gain = resnet_load_f32(st, &format!("{prefix}.weight"))?;
+    let bias = resnet_load_f32(st, &format!("{prefix}.bias"))?;
+    let running_mean = resnet_load_f32(st, &format!("{prefix}.running_mean"))?;
+    let running_var = resnet_load_f32(st, &format!("{prefix}.running_var"))?;
+    if gain.len() != channels || bias.len() != channels
+        || running_mean.len() != channels || running_var.len() != channels {
+        return Err(crate::Error::Msg(format!(
+            "ResNet load_bn {prefix}: expected {channels} elements per stat, \
+             got gain={} bias={} mean={} var={}",
+            gain.len(), bias.len(), running_mean.len(), running_var.len(),
+        )).bt());
+    }
+    Ok(BatchNormParams::from_raw(&gain, &bias, &running_mean, &running_var, eps))
+}
+
+fn resnet_load_f32(
+    st: &crate::safetensors::MmapedSafetensors,
+    name: &str,
+) -> crate::Result<Vec<f32>> {
+    use safetensors::Dtype;
+    let view = st
+        .get(name)
+        .map_err(|e| crate::Error::Msg(format!("resnet load_f32 {name:?}: {e}")).bt())?;
+    let bytes = view.data();
+    match view.dtype() {
+        Dtype::F32 => {
+            let mut out = Vec::with_capacity(bytes.len() / 4);
+            for chunk in bytes.chunks_exact(4) {
+                out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+            }
+            Ok(out)
+        }
+        Dtype::F16 => {
+            let mut out = Vec::with_capacity(bytes.len() / 2);
+            for chunk in bytes.chunks_exact(2) {
+                let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
+                out.push(half::f16::from_bits(raw).to_f32());
+            }
+            Ok(out)
+        }
+        Dtype::BF16 => {
+            let mut out = Vec::with_capacity(bytes.len() / 2);
+            for chunk in bytes.chunks_exact(2) {
+                let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
+                out.push(half::bf16::from_bits(raw).to_f32());
+            }
+            Ok(out)
+        }
+        other => Err(crate::Error::Msg(format!(
+            "resnet load_f32: unsupported dtype {other:?} for {name:?}",
+        )).bt()),
+    }
+}
+
+fn resnet_load_transposed(
+    st: &crate::safetensors::MmapedSafetensors,
+    name: &str,
+    out_features: usize,
+    in_features: usize,
+) -> crate::Result<Vec<f32>> {
+    let flat = resnet_load_f32(st, name)?;
+    if flat.len() != out_features * in_features {
+        return Err(crate::Error::Msg(format!(
+            "resnet load_transposed {name:?}: has {} elements, expected {}",
+            flat.len(), out_features * in_features,
+        )).bt());
+    }
+    let mut out = vec![0.0_f32; out_features * in_features];
+    for i in 0..out_features {
+        for j in 0..in_features {
+            out[j * out_features + i] = flat[i * in_features + j];
+        }
+    }
+    Ok(out)
+}
+
+// ---- HuggingFace Hub integration -------------------------------------------
+
+impl ResNetModel {
+    /// Downloads a torchvision-format ResNet checkpoint and loads into a
+    /// model. Defaults to ResNet-18 with 1000-class classifier; override
+    /// via [`Self::from_hub_with_config`] for ResNet-{34,50,101,152} or
+    /// classifier-free pooling-only feature extraction.
+    pub fn from_hub(repo_id: &str) -> crate::Result<Self> {
+        Self::from_hub_with_config(repo_id, ResNetConfig::resnet18(Some(1000)))
+    }
+
+    /// Downloads + loads a ResNet checkpoint with caller-supplied config.
+    /// Expects `<repo_id>/model.safetensors` in the HF repo layout (the
+    /// classic torchvision `lmz/fuel-resnet` repo stores per-variant
+    /// files — pass `&filename` to `from_hub_with_filename` if you need
+    /// to point at a specific one).
+    pub fn from_hub_with_config(
+        repo_id: &str,
+        config: ResNetConfig,
+    ) -> crate::Result<Self> {
+        Self::from_hub_with_filename(repo_id, "model.safetensors", config)
+    }
+
+    /// Like [`Self::from_hub_with_config`] but explicit about the
+    /// safetensors filename inside the HF repo.
+    pub fn from_hub_with_filename(
+        repo_id: &str,
+        filename: &str,
+        config: ResNetConfig,
+    ) -> crate::Result<Self> {
+        let api = hf_hub::api::sync::Api::new()
+            .map_err(|e| crate::Error::Msg(format!("hf-hub api init: {e}")))?;
+        let repo = api.model(repo_id.to_string());
+        let weights_path = repo
+            .get(filename)
+            .map_err(|e| crate::Error::Msg(format!("hf-hub resnet safetensors: {e}")))?;
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&weights_path) }?;
+        let weights = ResNetWeights::load_from_mmapped(&st, &config)?;
+        Ok(Self { config, weights })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
