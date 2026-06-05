@@ -92,6 +92,60 @@ impl Llama2cModel {
         llama.forward_hidden(tokens, start_pos, &anchor)
     }
 
+    /// Multimodal forward: run the decoder on pre-computed input
+    /// embeddings of shape `(batch, seq, dim)`. Returns logits
+    /// `(batch, seq, vocab)`. Used by vision-language models
+    /// (LLaVA, PaliGemma, Pixtral) that interleave image patch
+    /// embeddings with text embeddings before running the LLM.
+    ///
+    /// Delegates to [`LlamaModel::forward_embeds`].
+    pub fn forward_embeds(
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
+    ) -> Result<LazyTensor> {
+        let llama = LlamaModel {
+            config: self.config.to_llama_config(),
+            weights: self.weights.clone(),
+        };
+        llama.forward_embeds(embeds, start_pos)
+    }
+
+    /// Multimodal forward returning hidden states (post-final-RmsNorm,
+    /// pre-lm_head) instead of logits. Used by adapters / embeddings
+    /// pipelines that need the raw representation. Delegates to
+    /// [`LlamaModel::forward_hidden_embeds`].
+    pub fn forward_hidden_embeds(
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
+    ) -> Result<LazyTensor> {
+        let llama = LlamaModel {
+            config: self.config.to_llama_config(),
+            weights: self.weights.clone(),
+        };
+        llama.forward_hidden_embeds(embeds, start_pos)
+    }
+
+    /// [`Self::forward_hidden_embeds`] with a caller-supplied additive
+    /// attention mask of shape `(1, 1, seq, seq)` instead of the
+    /// internal strict-causal mask. Used by NV-Embed-v2 and other
+    /// bidirectional / padded inputs that need a custom mask.
+    ///
+    /// Delegates to [`LlamaModel::forward_hidden_embeds_with_mask`].
+    pub fn forward_hidden_embeds_with_mask(
+        &self,
+        embeds: &LazyTensor,
+        attention_mask: &LazyTensor,
+        start_pos: usize,
+    ) -> Result<LazyTensor> {
+        let llama = LlamaModel {
+            config: self.config.to_llama_config(),
+            weights: self.weights.clone(),
+        };
+        llama.forward_hidden_embeds_with_mask(embeds, attention_mask, start_pos)
+    }
+
     /// KV-cache-aware forward. Delegates to
     /// [`LlamaModel::forward_with_kv_context`] by building an inline
     /// `LlamaModel` from the current weights + adapted config. The
@@ -326,6 +380,71 @@ mod tests {
         assert_eq!(cfg.head_dim, 128);   // 4096 / 32
         assert!((cfg.norm_eps - 1e-5).abs() < 1e-12);
         assert!((cfg.rope_theta - 10000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn forward_embeds_matches_forward_after_token_lookup() {
+        // Verifies that `forward_embeds` (LLaVA-style multimodal entry)
+        // produces the same logits as `forward` when the embeddings
+        // input is the token embedding table indexed by the same
+        // tokens — i.e. the multimodal path is a strict superset of
+        // the token-lookup path, with the lookup factored out.
+        let cfg = Llama2cConfig {
+            dim: 16, hidden_dim: 32, n_layers: 2,
+            n_heads: 4, n_kv_heads: 2, vocab_size: 32,
+            head_dim: 4, norm_eps: 1e-5, rope_theta: 10_000.0,
+        };
+        let mut s: u32 = 24680;
+        let mut next = || -> f32 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+        };
+        let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
+            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
+        };
+        let h = cfg.dim; let i = cfg.hidden_dim;
+        let kv = cfg.n_kv_heads * cfg.head_dim;
+        let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
+        let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
+        let layers: Vec<LayerWeights> = (0..cfg.n_layers).map(|_| LayerWeights {
+            attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)), attn_q_bias: None,
+            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_k_bias: None,
+            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_v_bias: None,
+            attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+            ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+            ffn_up:   WeightStorage::F32(vec_of(h * i, &mut *nb)),
+            ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
+            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
+        }).collect();
+        let weights = LlamaWeights {
+            token_embedding: Arc::clone(&token_embedding),
+            layers,
+            final_norm_gain: Arc::from(vec![1.0_f32; h]),
+            output: WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb)),
+        };
+        let model = Llama2cModel { config: cfg.clone(), weights };
+
+        let tokens: Vec<u32> = vec![5, 10, 15];
+
+        // Path A: forward(tokens, 0) — the standard path that does
+        // an internal token-embedding lookup.
+        let logits_a = model.forward(&tokens, 0).unwrap().realize_f32();
+
+        // Path B: pre-compute the embeddings and call forward_embeds.
+        let embeds = LazyTensor::embed_tokens(
+            Arc::clone(&token_embedding), cfg.vocab_size, cfg.dim,
+            &tokens, &crate::Device::cpu(),
+        ).unwrap();
+        let logits_b = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
+
+        assert_eq!(logits_a.len(), logits_b.len());
+        for (i, (a, b)) in logits_a.iter().zip(logits_b.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "logit[{i}]: forward={a} vs forward_embeds={b}",
+            );
+        }
     }
 
     #[test]
