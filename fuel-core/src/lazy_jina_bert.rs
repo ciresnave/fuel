@@ -339,11 +339,11 @@ impl JinaBertModel {
 
         // ---- Self-attention (separate Q/K/V) ------------------------------
         let q = layer.q.apply_linear(x, h, h);
-        let q = bias_add(q, &layer.q_bias, h, x)?;
+        let q = q.add_trailing_bias(std::sync::Arc::clone(&layer.q_bias))?;
         let k = layer.k.apply_linear(x, h, h);
-        let k = bias_add(k, &layer.k_bias, h, x)?;
+        let k = k.add_trailing_bias(std::sync::Arc::clone(&layer.k_bias))?;
         let v = layer.v.apply_linear(x, h, h);
-        let v = bias_add(v, &layer.v_bias, h, x)?;
+        let v = v.add_trailing_bias(std::sync::Arc::clone(&layer.v_bias))?;
 
         let _ = (batch, seq);
         let q = q.split_heads(n_heads, head_dim)?;
@@ -357,7 +357,7 @@ impl JinaBertModel {
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
         let attn_out = layer.attn_out.apply_linear(&merged, h, h);
-        let attn_out = bias_add(attn_out, &layer.attn_out_bias, h, x)?;
+        let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.attn_out_bias))?;
 
         // Post-LN attention residual: LN(x + attn).
         let h1 = x.add(&attn_out)?.layer_norm_affine(std::sync::Arc::clone(&layer.attn_ln_gain), std::sync::Arc::clone(&layer.attn_ln_bias), cfg.layer_norm_eps)?;
@@ -375,22 +375,13 @@ impl JinaBertModel {
         };
         let inner = gated.mul(&value)?;
         let down = layer.mlp_wo.apply_linear(&inner, i, h);
-        let down = bias_add(down, &layer.mlp_wo_bias, h, x)?;
+        let down = down.add_trailing_bias(std::sync::Arc::clone(&layer.mlp_wo_bias))?;
 
         // Post-LN MLP residual: LN(h1 + mlp).
         Ok(h1.add(&down)?.layer_norm_affine(std::sync::Arc::clone(&layer.mlp_ln_gain), std::sync::Arc::clone(&layer.mlp_ln_bias), cfg.layer_norm_eps)?)
     }
 }
 
-fn bias_add(
-    x: LazyTensor,
-    bias: &Arc<[f32]>,
-    n: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
-    let _ = (n, anchor);
-    x.add_trailing_bias(Arc::clone(bias))
-}
 
 #[cfg(test)]
 mod tests {

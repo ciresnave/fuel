@@ -242,11 +242,11 @@ impl DistilBertModel {
 
         // ---- Self-attention -----------------------------------------------
         let q = layer.q_lin.apply_linear(x, d, d);
-        let q = bias_add(q, &layer.q_lin_bias, d, x)?;
+        let q = q.add_trailing_bias(std::sync::Arc::clone(&layer.q_lin_bias))?;
         let k = layer.k_lin.apply_linear(x, d, d);
-        let k = bias_add(k, &layer.k_lin_bias, d, x)?;
+        let k = k.add_trailing_bias(std::sync::Arc::clone(&layer.k_lin_bias))?;
         let v = layer.v_lin.apply_linear(x, d, d);
-        let v = bias_add(v, &layer.v_lin_bias, d, x)?;
+        let v = v.add_trailing_bias(std::sync::Arc::clone(&layer.v_lin_bias))?;
 
         let _ = (batch, seq);
         let q = q.split_heads(n_heads, head_dim)?;
@@ -265,20 +265,20 @@ impl DistilBertModel {
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
         let attn_out = layer.out_lin.apply_linear(&merged, d, d);
-        let attn_out = bias_add(attn_out, &layer.out_lin_bias, d, x)?;
+        let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.out_lin_bias))?;
 
         // Post-LN: LN(attn + x).
         let h1 = x.add(&attn_out)?.layer_norm_affine(std::sync::Arc::clone(&layer.sa_ln_gain), std::sync::Arc::clone(&layer.sa_ln_bias), cfg.layer_norm_eps)?;
 
         // ---- FFN ----------------------------------------------------------
         let fc1 = layer.lin1.apply_linear(&h1, d, cfg.hidden_dim);
-        let fc1 = bias_add(fc1, &layer.lin1_bias, cfg.hidden_dim, x)?;
+        let fc1 = fc1.add_trailing_bias(std::sync::Arc::clone(&layer.lin1_bias))?;
         let act = match cfg.activation {
             DistilBertActivation::Gelu => fc1.gelu_erf(),
             DistilBertActivation::Relu => fc1.relu(),
         };
         let fc2 = layer.lin2.apply_linear(&act, cfg.hidden_dim, d);
-        let fc2 = bias_add(fc2, &layer.lin2_bias, d, x)?;
+        let fc2 = fc2.add_trailing_bias(std::sync::Arc::clone(&layer.lin2_bias))?;
 
         // Post-LN: LN(ffn + h1).
         let h2 = h1.add(&fc2)?.layer_norm_affine(std::sync::Arc::clone(&layer.output_ln_gain), std::sync::Arc::clone(&layer.output_ln_bias), cfg.layer_norm_eps)?;
@@ -286,15 +286,6 @@ impl DistilBertModel {
     }
 }
 
-fn bias_add(
-    x: LazyTensor,
-    bias: &Arc<[f32]>,
-    n: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
-    let _ = (n, anchor);
-    x.add_trailing_bias(Arc::clone(bias))
-}
 
 #[cfg(test)]
 mod tests {
