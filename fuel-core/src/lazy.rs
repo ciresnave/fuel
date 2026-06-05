@@ -3037,6 +3037,23 @@ impl LazyTensor {
         self.broadcast_add(&bias_t)
     }
 
+    /// Apply RMSNorm along the last dim with `(gain + offset) · x`.
+    /// Equivalent to [`Self::rms_norm_affine`] after adding a scalar
+    /// to every gain element — used by Gemma-family ports where
+    /// the stored gain represents `gain - 1` and the runtime path
+    /// must reconstruct `gain + 1`.
+    ///
+    /// Materializes the shifted gain on the receiver's graph; one
+    /// allocation per call.
+    pub fn rms_norm_affine_with_offset(
+        &self, gain: &[f32], offset: f32, eps: f64,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shifted: std::sync::Arc<[f32]> = std::sync::Arc::from(
+            gain.iter().map(|g| *g + offset).collect::<Vec<_>>(),
+        );
+        self.rms_norm_affine(shifted, eps)
+    }
+
     /// Apply RMSNorm along the last dim with an affine `gain · x`
     /// post-step (no bias — RMSNorm has no β term). `gain` is a
     /// length-`gain.len()` vector materialized fresh on the
@@ -10256,6 +10273,20 @@ mod phase_a2_composite_tests {
         assert_eq!(out.shape().dims(), &[2, 3]);
         let v = out.realize_f32();
         assert_eq!(v, vec![101.0, 202.0, 303.0, 110.0, 220.0, 330.0]);
+    }
+
+    #[test]
+    fn rms_norm_affine_with_offset_adds_offset_to_each_gain() {
+        let x = cpu_f32(vec![1.0_f32, 2.0, 3.0], &[1, 3]);
+        let gain_raw: [f32; 3] = [-0.5, 0.0, 0.5];
+        let via_offset = x.rms_norm_affine_with_offset(&gain_raw, 1.0, 1e-6).unwrap();
+        let gain_shifted = std::sync::Arc::<[f32]>::from(vec![0.5_f32, 1.0, 1.5]);
+        let via_plain = x.rms_norm_affine(gain_shifted, 1e-6).unwrap();
+        let a = via_offset.realize_f32();
+        let b = via_plain.realize_f32();
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert!((x - y).abs() < 1e-6, "{x} vs {y}");
+        }
     }
 
     #[test]

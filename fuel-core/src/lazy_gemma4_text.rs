@@ -362,11 +362,8 @@ fn apply_offset_rms_norm(
     dim: usize,
     eps: f64,
 ) -> Result<LazyTensor> {
-    assert_eq!(gain.len(), dim);
-    let normalized = x.rms_norm_last_dim(eps)?;
-    let shifted: Vec<f32> = gain.iter().map(|g| g + 1.0).collect();
-    let gain_t = x.const_f32_like(shifted, Shape::from_dims(&[dim]));
-    normalized.broadcast_mul(&gain_t)
+    let _ = dim;
+    x.rms_norm_affine_with_offset(gain, 1.0, eps)
 }
 
 /// V RmsNorm: pure rsqrt(mean of squares + eps), no learned weight.
