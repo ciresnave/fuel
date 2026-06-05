@@ -12,7 +12,8 @@
 // This model is gated — accept the license at
 // https://huggingface.co/google/gemma-2-2b-it and set HF_TOKEN first.
 
-use fuel::lazy::{Gemma2Model, LlamaTokenizer, SamplingStrategy};
+use fuel::lazy::{LlamaTokenizer, SamplingStrategy};
+use fuel::lazy_gemma2::Gemma2Model;
 use std::io::Write;
 use std::time::Instant;
 
@@ -47,11 +48,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = Gemma2Model::from_hub(&model_id)?;
     eprintln!("done in {:.2?}", t0.elapsed());
     eprintln!(
-        "  config: dim={}  layers={}  heads={}  kv_heads={}  head_dim={}  vocab={}",
-        model.config.dim,
-        model.config.n_layers,
-        model.config.n_heads,
-        model.config.n_kv_heads,
+        "  config: hidden_size={}  layers={}  heads={}  kv_heads={}  head_dim={}  vocab={}",
+        model.config.hidden_size,
+        model.config.num_hidden_layers,
+        model.config.num_attention_heads,
+        model.config.num_key_value_heads,
         model.config.head_dim,
         model.config.vocab_size,
     );
@@ -85,11 +86,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rng_state: u64 = 42;
     let t0 = Instant::now();
     for _ in 0..max_new {
-        let logits = model.forward(&all_tokens, 0);
+        let logits = model.forward(&all_tokens, 0)?;
         let last_pos = all_tokens.len() - 1;
         let last_logits = logits
-            .slice(1, last_pos, 1)
-            .reshape(fuel::Shape::from_dims(&[model.config.vocab_size]))
+            .slice(1, last_pos, 1)?
+            .reshape(fuel::Shape::from_dims(&[model.config.vocab_size]))?
             .realize_f32();
         let next = fuel::lazy::sample_logits(
             &last_logits,
