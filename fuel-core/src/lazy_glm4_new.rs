@@ -274,22 +274,8 @@ impl Glm4NewModel {
         let k_r = apply_interleaved_partial_rope(&k, rope_cos, rope_sin, head_dim, rope_dim)?;
 
         let n_rep = cfg.num_attention_heads / cfg.num_key_value_heads;
-        let (k_full, v_full) = if n_rep == 1 {
-            (k_r, v)
-        } else {
-            let expand = |t: LazyTensor| -> Result<LazyTensor> {
-                let s5 = t.reshape(Shape::from_dims(&[
-                    batch, cfg.num_key_value_heads, 1, seq, head_dim,
-                ]))?;
-                let bcast = s5.broadcast_to(Shape::from_dims(&[
-                    batch, cfg.num_key_value_heads, n_rep, seq, head_dim,
-                ]))?;
-                bcast.reshape(Shape::from_dims(&[
-                    batch, cfg.num_attention_heads, seq, head_dim,
-                ]))
-            };
-            (expand(k_r)?, expand(v)?)
-        };
+        let k_full = k_r.repeat_interleave(1_usize, n_rep)?;
+        let v_full = v.repeat_interleave(1_usize, n_rep)?;
 
         let scale = 1.0_f64 / (head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_full.transpose()?)?.mul_scalar(scale);

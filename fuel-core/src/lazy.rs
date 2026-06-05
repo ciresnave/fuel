@@ -4697,54 +4697,9 @@ impl LlamaModel {
         let q_r = q_h.rope_with_tables(rope_cos, rope_sin).unwrap();
         let k_r = k_h.rope_with_tables(rope_cos, rope_sin).unwrap();
 
-        // If GQA (n_kv_heads < n_heads), replicate each KV head
-        // `n_heads / n_kv_heads` times along the head dim so Q and K/V
-        // have the same number of heads for the attention matmul. We
-        // expand via reshape + broadcast_to + reshape:
-        //
-        //   [batch, n_kv_heads, seq, head_dim]
-        //     → reshape [batch, n_kv_heads, 1, seq, head_dim]
-        //     → broadcast_to [batch, n_kv_heads, n_rep, seq, head_dim]
-        //     → reshape [batch, n_heads, seq, head_dim]
-        //
-        // When n_kv_heads == n_heads (standard MHA), n_rep == 1 and
-        // these reshape/broadcast steps are no-ops in effect.
-        let (k_r, v_h) = if cfg.n_kv_heads == cfg.n_heads {
-            (k_r, v_h)
-        } else {
-            assert_eq!(
-                cfg.n_heads % cfg.n_kv_heads,
-                0,
-                "GQA: n_heads ({}) must be divisible by n_kv_heads ({})",
-                cfg.n_heads,
-                cfg.n_kv_heads,
-            );
-            let n_rep = cfg.n_heads / cfg.n_kv_heads;
-            let expand = |t: LazyTensor| -> LazyTensor {
-                t.reshape(Shape::from_dims(&[
-                    batch,
-                    cfg.n_kv_heads,
-                    1,
-                    seq,
-                    cfg.head_dim,
-                ])).unwrap()
-                .broadcast_to(Shape::from_dims(&[
-                    batch,
-                    cfg.n_kv_heads,
-                    n_rep,
-                    seq,
-                    cfg.head_dim,
-                ]))
-                .unwrap()
-                .reshape(Shape::from_dims(&[
-                    batch,
-                    cfg.n_heads,
-                    seq,
-                    cfg.head_dim,
-                ])).unwrap()
-            };
-            (expand(k_r), expand(v_h))
-        };
+        let n_rep = cfg.n_heads / cfg.n_kv_heads;
+        let k_r = k_r.repeat_interleave(1_usize, n_rep).unwrap();
+        let v_h = v_h.repeat_interleave(1_usize, n_rep).unwrap();
 
         // Scaled dot-product attention with caller-supplied mask.
         // The default forward path passes the strict-causal mask
@@ -7066,20 +7021,9 @@ impl Gemma2Model {
         let q_r = q_h.rope_with_tables(rope_cos, rope_sin).unwrap();
         let k_r = k_h.rope_with_tables(rope_cos, rope_sin).unwrap();
 
-        // GQA expansion.
-        let (k_r, v_h) = if cfg.n_kv_heads == cfg.n_heads {
-            (k_r, v_h)
-        } else {
-            assert_eq!(cfg.n_heads % cfg.n_kv_heads, 0);
-            let n_rep = cfg.n_heads / cfg.n_kv_heads;
-            let expand = |t: LazyTensor| -> LazyTensor {
-                t.reshape(Shape::from_dims(&[batch, cfg.n_kv_heads, 1, seq, cfg.head_dim])).unwrap()
-                    .broadcast_to(Shape::from_dims(&[batch, cfg.n_kv_heads, n_rep, seq, cfg.head_dim]))
-                    .unwrap()
-                    .reshape(Shape::from_dims(&[batch, cfg.n_heads, seq, cfg.head_dim])).unwrap()
-            };
-            (expand(k_r), expand(v_h))
-        };
+        let n_rep = cfg.n_heads / cfg.n_kv_heads;
+        let k_r = k_r.repeat_interleave(1_usize, n_rep).unwrap();
+        let v_h = v_h.repeat_interleave(1_usize, n_rep).unwrap();
 
         // Attention with query_pre_attn_scalar and optional softcapping.
         let k_t = k_r.transpose().unwrap();

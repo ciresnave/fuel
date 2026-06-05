@@ -295,22 +295,8 @@ impl Gemma4TextModel {
 
         // GQA expand.
         let n_rep = n_heads / num_kv;
-        let (k_full, v_full) = if n_rep == 1 {
-            (k_r, v)
-        } else {
-            let expand = |t: LazyTensor| -> Result<LazyTensor> {
-                let s5 = t.reshape(Shape::from_dims(&[
-                    batch, num_kv, 1, seq, head_dim,
-                ]))?;
-                let bc = s5.broadcast_to(Shape::from_dims(&[
-                    batch, num_kv, n_rep, seq, head_dim,
-                ]))?;
-                bc.reshape(Shape::from_dims(&[
-                    batch, n_heads, seq, head_dim,
-                ]))
-            };
-            (expand(k_r)?, expand(v)?)
-        };
+        let k_full = k_r.repeat_interleave(1_usize, n_rep)?;
+        let v_full = v.repeat_interleave(1_usize, n_rep)?;
 
         let k_t = k_full.transpose()?;
         let scale = 1.0_f64 / (head_dim as f64).sqrt();
