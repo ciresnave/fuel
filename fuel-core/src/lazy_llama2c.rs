@@ -93,6 +93,26 @@ impl Llama2cModel {
         llama.forward_hidden(tokens, start_pos, &anchor)
     }
 
+    /// Variant of [`Self::forward_hidden`] that takes a caller-supplied
+    /// graph anchor instead of bootstrapping its own. Used by training
+    /// loops that need the model's frozen forward to land on the same
+    /// graph as the trainable parameters (e.g. the lm_head being
+    /// fine-tuned).
+    ///
+    /// Delegates to [`LlamaModel::forward_hidden`].
+    pub fn forward_hidden_anchored(
+        &self,
+        tokens: &[u32],
+        start_pos: usize,
+        anchor: &LazyTensor,
+    ) -> Result<LazyTensor> {
+        let llama = LlamaModel {
+            config: self.config.to_llama_config(),
+            weights: self.weights.clone(),
+        };
+        llama.forward_hidden(tokens, start_pos, anchor)
+    }
+
     /// Multimodal forward: run the decoder on pre-computed input
     /// embeddings of shape `(batch, seq, dim)`. Returns logits
     /// `(batch, seq, vocab)`. Used by vision-language models

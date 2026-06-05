@@ -17,7 +17,8 @@ fn main() {
 
 #[cfg(feature = "cuda")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use fuel::lazy::{LlamaModel, LlamaTokenizer, SamplingStrategy};
+    use fuel::lazy::{LlamaTokenizer, SamplingStrategy};
+    use fuel::lazy_llama2c::Llama2cModel;
     use fuel::DType;
     use std::io::Write;
     use std::time::Instant;
@@ -67,12 +68,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprint!("Downloading + loading model weights... ");
     std::io::stderr().flush().ok();
     let t0 = Instant::now();
-    let model = LlamaModel::from_hub(&model_id)?;
+    let model = Llama2cModel::from_hub(&model_id)?;
     eprintln!("done in {:.2?}", t0.elapsed());
     eprintln!(
-        "  config: dim={}  layers={}  heads={}  kv_heads={}  vocab={}  rope_base={}",
+        "  config: dim={}  layers={}  heads={}  kv_heads={}  vocab={}  rope_theta={}",
         model.config.dim, model.config.n_layers, model.config.n_heads,
-        model.config.n_kv_heads, model.config.vocab_size, model.config.rope_base,
+        model.config.n_kv_heads, model.config.vocab_size, model.config.rope_theta,
     );
 
     eprint!("Loading tokenizer...             ");

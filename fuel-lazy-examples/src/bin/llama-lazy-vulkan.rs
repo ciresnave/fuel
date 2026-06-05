@@ -22,7 +22,8 @@ fn main() {
 
 #[cfg(feature = "vulkan")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use fuel::lazy::{LlamaModel, LlamaTokenizer, SamplingStrategy};
+    use fuel::lazy::{LlamaTokenizer, SamplingStrategy};
+    use fuel::lazy_llama2c::Llama2cModel;
     use fuel_graph_executor::GraphExecutor;
     use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
     use std::io::Write;
@@ -95,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprint!("Downloading + loading model weights... ");
     std::io::stderr().flush().ok();
     let t0 = Instant::now();
-    let model = LlamaModel::from_hub(model_id)?;
+    let model = Llama2cModel::from_hub(model_id)?;
     eprintln!("done in {:.2?}", t0.elapsed());
     eprintln!(
         "  config: dim={}  layers={}  heads={}  kv_heads={}  vocab={}",
