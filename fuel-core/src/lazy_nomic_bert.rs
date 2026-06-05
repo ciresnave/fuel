@@ -506,14 +506,8 @@ fn opt_bias(
     n: usize,
     anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
-    match b {
-        None => Ok(x),
-        Some(bv) => {
-            assert_eq!(bv.len(), n);
-            let bt = anchor.const_f32_like(Arc::clone(bv), Shape::from_dims(&[n]));
-            x.broadcast_add(&bt)
-        }
-    }
+    let _ = (n, anchor);
+    x.add_optional_trailing_bias(b)
 }
 
 #[cfg(test)]

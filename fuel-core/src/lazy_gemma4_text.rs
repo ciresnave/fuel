@@ -372,14 +372,8 @@ fn v_rms_norm(v: &LazyTensor, eps: f64) -> Result<LazyTensor> {
 }
 
 fn opt_bias(x: LazyTensor, bias: Option<&Arc<[f32]>>, n: usize) -> Result<LazyTensor> {
-    match bias {
-        None => Ok(x),
-        Some(b) => {
-            assert_eq!(b.len(), n);
-            let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[n]));
-            x.broadcast_add(&bt)
-        }
-    }
+    let _ = n;
+    x.add_optional_trailing_bias(bias)
 }
 
 #[cfg(test)]

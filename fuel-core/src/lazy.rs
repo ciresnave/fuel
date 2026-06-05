@@ -3037,6 +3037,19 @@ impl LazyTensor {
         self.broadcast_add(&bias_t)
     }
 
+    /// `Option<Arc<[f32]>>` variant of [`Self::add_trailing_bias`]: if
+    /// `bias.is_none()`, return `self` unchanged; else apply
+    /// `add_trailing_bias`. Models the `linear_b` / `linear_no_bias`
+    /// branch every per-port `optional_bias` / `opt_bias` helper does.
+    pub fn add_optional_trailing_bias(
+        &self, bias: Option<&std::sync::Arc<[f32]>>,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        match bias {
+            None => Ok(self.clone()),
+            Some(b) => self.add_trailing_bias(std::sync::Arc::clone(b)),
+        }
+    }
+
     /// Apply RMSNorm along the last dim with `(gain + offset) · x`.
     /// Equivalent to [`Self::rms_norm_affine`] after adding a scalar
     /// to every gain element — used by Gemma-family ports where
@@ -10262,6 +10275,22 @@ mod phase_a2_composite_tests {
         for (a, b) in m.iter().zip(original.iter()) {
             assert!((a - b).abs() < 1e-7, "{a} vs {b}");
         }
+    }
+
+    #[test]
+    fn add_optional_trailing_bias_none_returns_input_unchanged() {
+        let a = cpu_f32(vec![1.0_f32, 2.0, 3.0], &[1, 3]);
+        let original = a.realize_f32();
+        let out = a.add_optional_trailing_bias(None).unwrap();
+        assert_eq!(out.realize_f32(), original);
+    }
+
+    #[test]
+    fn add_optional_trailing_bias_some_applies_add() {
+        let a = cpu_f32(vec![1.0_f32, 2.0, 3.0], &[1, 3]);
+        let bias = std::sync::Arc::<[f32]>::from(vec![10.0_f32, 20.0, 30.0]);
+        let out = a.add_optional_trailing_bias(Some(&bias)).unwrap();
+        assert_eq!(out.realize_f32(), vec![11.0, 22.0, 33.0]);
     }
 
     #[test]
