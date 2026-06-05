@@ -90,10 +90,8 @@ pub struct StableLmModel {
 
 impl StableLmModel {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
-        let cfg = &self.config;
-        let weights = &self.weights;
         let h_norm = self.run_backbone(tokens, start_pos)?;
-        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        self.apply_lm_head(&h_norm)
     }
 
     /// Run the decoder forward up to the final LayerNorm and
@@ -104,17 +102,75 @@ impl StableLmModel {
         self.run_backbone(tokens, start_pos)
     }
 
+    /// Multimodal entry point. Skips token embedding; runs the decoder
+    /// over pre-embedded inputs. StableLM does NOT scale embeddings.
+    pub fn forward_embeds(
+        &self, embeds: &LazyTensor, start_pos: usize,
+    ) -> Result<LazyTensor> {
+        let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
+        self.apply_lm_head(&h_norm)
+    }
+
+    /// Hidden-state variant of [`Self::forward_embeds`].
+    pub fn forward_hidden_embeds(
+        &self, embeds: &LazyTensor, start_pos: usize,
+    ) -> Result<LazyTensor> {
+        self.run_backbone_embeds(embeds, start_pos)
+    }
+
+    /// Build per-token embeddings without running the decoder.
+    pub fn embed_tokens_anchored(
+        &self, anchor: &LazyTensor, tokens: &[u32],
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        anchor.embed_tokens_anchored(
+            self.weights.token_embedding.clone(),
+            cfg.vocab_size, cfg.hidden_size, tokens,
+        )
+    }
+
+    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size))
+    }
+
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
-        let batch = 1;
         assert!(seq > 0);
-        assert_eq!(cfg.num_attention_heads * cfg.head_dim, cfg.hidden_size);
 
-        let mut h = LazyTensor::embed_tokens(
+        let h = LazyTensor::embed_tokens(
             weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
         )?;
+        self.run_backbone_embeds(&h, start_pos)
+    }
+
+    fn run_backbone_embeds(
+        &self, embeds: &LazyTensor, start_pos: usize,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = embeds.shape();
+        let dims = dims.dims();
+        if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
+            return Err(crate::Error::Msg(format!(
+                "StableLmModel::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
+                cfg.hidden_size, dims,
+            )).bt());
+        }
+        let seq = dims[1];
+        if seq == 0 {
+            return Err(crate::Error::Msg(
+                "StableLmModel::forward_embeds: seq must be > 0".into(),
+            ).bt());
+        }
+        if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
+            return Err(crate::Error::Msg(
+                "StableLmConfig: num_attention_heads * head_dim must equal hidden_size".into(),
+            ).bt());
+        }
+        let mut h = embeds.clone();
 
         let rope_dim = cfg.rope_dim();
         let (rope_cos, rope_sin) = h.rope_tables_const(
@@ -124,7 +180,11 @@ impl StableLmModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
-        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?)
+        h.layer_norm_affine(
+            std::sync::Arc::clone(&weights.final_ln_gain),
+            std::sync::Arc::clone(&weights.final_ln_bias),
+            cfg.layer_norm_eps,
+        )
     }
 
     fn apply_layer(
@@ -287,5 +347,60 @@ mod tests {
         for &v in &hidden.realize_f32() {
             assert!(v.is_finite(), "non-finite hidden: {v}");
         }
+    }
+
+    fn forward_embeds_test_cfg() -> StableLmConfig {
+        StableLmConfig {
+            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
+            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 4,
+            head_dim: 4, layer_norm_eps: 1e-5, rope_theta: 10_000.0,
+            max_position_embeddings: 64, partial_rotary_factor: 1.0,
+            use_qkv_bias: false,
+        }
+    }
+
+    #[test]
+    fn forward_embeds_matches_forward_after_token_lookup() {
+        let cfg = forward_embeds_test_cfg();
+        let model = StableLmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3];
+        let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
+        let anchor = LazyTensor::from_f32(
+            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
+        );
+        let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
+        let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
+        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-5,
+            "StableLm forward vs forward_embeds must agree (max diff {max_diff})");
+    }
+
+    #[test]
+    fn forward_embeds_rejects_bad_shape() {
+        let cfg = forward_embeds_test_cfg();
+        let model = StableLmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let bad = LazyTensor::from_f32(
+            vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+        );
+        assert!(model.forward_embeds(&bad, 0).is_err());
+    }
+
+    #[test]
+    fn forward_hidden_embeds_matches_forward_hidden() {
+        let cfg = forward_embeds_test_cfg();
+        let model = StableLmModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![5, 7];
+        let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
+        let anchor = LazyTensor::from_f32(
+            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
+        );
+        let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
+        let h_via_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
+        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-5,
+            "StableLm forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
     }
 }
