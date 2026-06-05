@@ -83,6 +83,7 @@ pub mod lazy_colpali;
 pub mod lazy_kv_cache;
 pub mod lazy_kv_cache_device;
 pub mod lazy_llama2c;
+pub mod lazy_llama_full;
 pub mod lazy_lstm;
 pub mod lazy_llava;
 pub mod lazy_convmixer;

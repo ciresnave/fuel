@@ -4809,6 +4809,39 @@ impl LlamaModel {
         Ok(apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps))
     }
 
+    /// Internal entry that runs the LLaMA backbone given pre-built RoPE
+    /// cos/sin tables and an attention mask. The standard
+    /// [`forward_embeds`] path computes cos/sin from `cfg.rope_base`
+    /// via [`LazyTensor::rope_tables_const`] and uses a strict-causal
+    /// mask; [`crate::lazy_llama_full::Llama3Model`] uses this hook to
+    /// inject Llama-3 long-context scaled RoPE tables without
+    /// duplicating the forward path.
+    ///
+    /// `rope_cos` / `rope_sin` must have shape `[seq, head_dim]` and
+    /// live on the same graph as `embeds`. `mask` is additive,
+    /// broadcast-compatible with `(B, n_heads, seq, kv_seq)`.
+    pub(crate) fn run_backbone_with_rope_tables(
+        &self,
+        embeds: &LazyTensor,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+        mask: &LazyTensor,
+    ) -> crate::Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = embeds.shape();
+        let dims = dims.dims();
+        assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, dim]");
+        assert_eq!(dims[2], cfg.dim, "embeds last dim must equal cfg.dim");
+        assert_eq!(cfg.n_heads * cfg.head_dim, cfg.dim, "LlamaConfig: n_heads * head_dim must equal dim");
+
+        let mut h = embeds.clone();
+        for layer in &weights.layers {
+            h = self.apply_layer(&h, layer, rope_cos, rope_sin, mask);
+        }
+        Ok(apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps))
+    }
+
     fn apply_layer(
         &self,
         x: &LazyTensor,
