@@ -90,6 +90,125 @@ impl Llama2cModel {
         );
         llama.forward_hidden(tokens, start_pos, &anchor)
     }
+
+    /// Download a Llama-2-shape checkpoint (TinyLlama, Llama-2-7B,
+    /// etc.) from the HuggingFace Hub and build a ready-to-forward
+    /// `Llama2cModel`.
+    ///
+    /// Parses `config.json` via [`Llama2cConfig::from_hf_json_str`]
+    /// and loads weights via the shared
+    /// [`crate::lazy::LlamaWeights::load_from_mmapped`] path. Works
+    /// with single-file and sharded checkpoints (uses
+    /// `model.safetensors.index.json` when present).
+    pub fn from_hub(repo_id: &str) -> Result<Self> {
+        let api = hf_hub::api::sync::Api::new()
+            .map_err(|e| crate::Error::Msg(format!("hf-hub api init: {e}")))?;
+        let repo = api.model(repo_id.to_string());
+
+        let config_path = repo
+            .get("config.json")
+            .map_err(|e| crate::Error::Msg(format!("hf-hub config.json: {e}")))?;
+        let config_str = std::fs::read_to_string(&config_path)?;
+        let config = Llama2cConfig::from_hf_json_str(&config_str)?;
+
+        let weight_paths: Vec<std::path::PathBuf> = match repo.get("model.safetensors.index.json") {
+            Ok(index_path) => {
+                let index_str = std::fs::read_to_string(&index_path)?;
+                let index: serde_json::Value = serde_json::from_str(&index_str)
+                    .map_err(|e| crate::Error::Msg(format!("parsing index: {e}")))?;
+                let weight_map = index
+                    .get("weight_map")
+                    .and_then(|x| x.as_object())
+                    .ok_or_else(|| crate::Error::Msg("index: missing weight_map".into()))?;
+                let mut unique = std::collections::HashSet::new();
+                for v in weight_map.values() {
+                    if let Some(s) = v.as_str() {
+                        unique.insert(s.to_string());
+                    }
+                }
+                let mut paths = Vec::new();
+                for name in &unique {
+                    paths.push(
+                        repo.get(name)
+                            .map_err(|e| crate::Error::Msg(format!("hf-hub {name}: {e}")))?,
+                    );
+                }
+                paths
+            }
+            Err(_) => vec![repo
+                .get("model.safetensors")
+                .map_err(|e| {
+                    crate::Error::Msg(format!("hf-hub model.safetensors: {e}"))
+                })?],
+        };
+
+        let st = unsafe { crate::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
+        let weights = LlamaWeights::load_from_mmapped(&st, &config.to_llama_config())?;
+
+        Ok(Llama2cModel { config, weights })
+    }
+}
+
+impl Llama2cConfig {
+    /// Parse a Llama-shape `config.json` from HuggingFace. Field
+    /// map: HF native names → `Llama2cConfig` native names.
+    ///
+    ///   `hidden_size` → `dim`,
+    ///   `intermediate_size` → `hidden_dim`,
+    ///   `num_hidden_layers` → `n_layers`,
+    ///   `num_attention_heads` → `n_heads`,
+    ///   `num_key_value_heads` → `n_kv_heads` (defaults to `n_heads`
+    ///   for non-GQA configs),
+    ///   `head_dim` → `head_dim` (defaults to `dim / n_heads`),
+    ///   `rms_norm_eps` → `norm_eps` (defaults to 1e-5),
+    ///   `rope_theta` → `rope_theta` (defaults to 10000.0).
+    ///
+    /// Compatible with TinyLlama, Llama-2-7B, Llama-3, Mistral, and
+    /// any Llama-shape HF checkpoint.
+    pub fn from_hf_json_str(json: &str) -> Result<Self> {
+        let v: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing Llama2c config.json: {e}")))?;
+
+        let get_usize = |key: &str| -> Result<usize> {
+            v.get(key)
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .ok_or_else(|| {
+                    crate::Error::Msg(format!("Llama2c config.json: missing/invalid {key:?}"))
+                })
+        };
+        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+
+        let vocab_size = get_usize("vocab_size")?;
+        let dim = get_usize("hidden_size")?;
+        let n_layers = get_usize("num_hidden_layers")?;
+        let n_heads = get_usize("num_attention_heads")?;
+        let n_kv_heads = v
+            .get("num_key_value_heads")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(n_heads);
+        let hidden_dim = get_usize("intermediate_size")?;
+        let head_dim = v
+            .get("head_dim")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(dim / n_heads);
+        let norm_eps = get_f64("rms_norm_eps").unwrap_or(1e-5);
+        let rope_theta = get_f64("rope_theta").unwrap_or(10_000.0);
+
+        Ok(Self {
+            dim,
+            hidden_dim,
+            n_layers,
+            n_heads,
+            n_kv_heads,
+            vocab_size,
+            head_dim,
+            norm_eps,
+            rope_theta,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -98,6 +217,77 @@ mod tests {
     use crate::lazy::{LayerWeights, WeightStorage};
     use fuel_core_types::Shape;
     use std::sync::Arc;
+
+    #[test]
+    fn from_hf_json_str_parses_canonical_tinyllama_fields() {
+        // Excerpt from TinyLlama/TinyLlama-1.1B-Chat-v1.0/config.json.
+        let json = r#"{
+            "vocab_size": 32000,
+            "hidden_size": 2048,
+            "intermediate_size": 5632,
+            "num_hidden_layers": 22,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 4,
+            "rms_norm_eps": 1e-5,
+            "rope_theta": 10000.0,
+            "max_position_embeddings": 2048
+        }"#;
+        let cfg = Llama2cConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.vocab_size, 32000);
+        assert_eq!(cfg.dim, 2048);
+        assert_eq!(cfg.hidden_dim, 5632);
+        assert_eq!(cfg.n_layers, 22);
+        assert_eq!(cfg.n_heads, 32);
+        assert_eq!(cfg.n_kv_heads, 4);  // GQA model
+        assert_eq!(cfg.head_dim, 64);   // 2048 / 32 default
+        assert!((cfg.norm_eps - 1e-5).abs() < 1e-12);
+        assert!((cfg.rope_theta - 10000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn from_hf_json_str_applies_optional_defaults() {
+        // Minimal Llama-shape config (Llama-2-7B style — no GQA,
+        // no head_dim override, no rope_theta override).
+        let json = r#"{
+            "vocab_size": 32000,
+            "hidden_size": 4096,
+            "intermediate_size": 11008,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32
+        }"#;
+        let cfg = Llama2cConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.n_kv_heads, 32);  // defaults to n_heads (no GQA)
+        assert_eq!(cfg.head_dim, 128);   // 4096 / 32
+        assert!((cfg.norm_eps - 1e-5).abs() < 1e-12);
+        assert!((cfg.rope_theta - 10000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn from_hf_json_str_round_trips_through_to_llama_config() {
+        // After from_hf_json_str() + to_llama_config(), the LlamaConfig
+        // should match what the inline `LlamaConfig::from_hf_json_str`
+        // would produce. (Documents the field-rename adapter.)
+        let json = r#"{
+            "vocab_size": 32000,
+            "hidden_size": 2048,
+            "intermediate_size": 5632,
+            "num_hidden_layers": 22,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 4
+        }"#;
+        let llama2c_cfg = Llama2cConfig::from_hf_json_str(json).unwrap();
+        let llama_cfg = llama2c_cfg.to_llama_config();
+        let direct_llama_cfg = LlamaConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(llama_cfg.vocab_size, direct_llama_cfg.vocab_size);
+        assert_eq!(llama_cfg.dim, direct_llama_cfg.dim);
+        assert_eq!(llama_cfg.n_layers, direct_llama_cfg.n_layers);
+        assert_eq!(llama_cfg.n_heads, direct_llama_cfg.n_heads);
+        assert_eq!(llama_cfg.n_kv_heads, direct_llama_cfg.n_kv_heads);
+        assert_eq!(llama_cfg.head_dim, direct_llama_cfg.head_dim);
+        assert_eq!(llama_cfg.ffn_dim, direct_llama_cfg.ffn_dim);
+        assert!((llama_cfg.norm_eps - direct_llama_cfg.norm_eps).abs() < 1e-12);
+        assert!((llama_cfg.rope_base - direct_llama_cfg.rope_base).abs() < 1e-9);
+    }
 
     #[test]
     fn forward_shape_and_finite_2_layer() {
