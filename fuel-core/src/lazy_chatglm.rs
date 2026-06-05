@@ -308,16 +308,8 @@ impl ChatGlmModel {
 
         // GQA expand K, V from n_groups → n_heads.
         let n_rep = n_heads / n_groups;
-        let (k_full, v_full) = if n_rep == 1 {
-            (k_r, v)
-        } else {
-            let expand = |t: LazyTensor| -> Result<LazyTensor> {
-                let s5 = t.reshape(Shape::from_dims(&[batch, n_groups, 1, seq, hpa]))?;
-                let bc = s5.broadcast_to(Shape::from_dims(&[batch, n_groups, n_rep, seq, hpa]))?;
-                bc.reshape(Shape::from_dims(&[batch, n_heads, seq, hpa]))
-            };
-            (expand(k_r)?, expand(v)?)
-        };
+        let k_full = k_r.repeat_interleave(1_usize, n_rep)?;
+        let v_full = v.repeat_interleave(1_usize, n_rep)?;
 
         let k_t = k_full.transpose()?;
         let scale = 1.0_f64 / (hpa as f64).sqrt();

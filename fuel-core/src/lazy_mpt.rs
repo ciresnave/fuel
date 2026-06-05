@@ -223,20 +223,8 @@ impl MptModel {
 
         // GQA replication.
         let n_rep = cfg.n_heads / cfg.kv_n_heads;
-        let (k_full, v_full) = if n_rep == 1 { (k, v) } else {
-            let expand = |t: LazyTensor| -> Result<LazyTensor> {
-                let s5 = t.reshape(Shape::from_dims(&[
-                    batch, cfg.kv_n_heads, 1, seq, head_dim,
-                ]))?;
-                let bc = s5.broadcast_to(Shape::from_dims(&[
-                    batch, cfg.kv_n_heads, n_rep, seq, head_dim,
-                ]))?;
-                bc.reshape(Shape::from_dims(&[
-                    batch, cfg.n_heads, seq, head_dim,
-                ]))
-            };
-            (expand(k)?, expand(v)?)
-        };
+        let k_full = k.repeat_interleave(1_usize, n_rep)?;
+        let v_full = v.repeat_interleave(1_usize, n_rep)?;
 
         let k_t = k_full.transpose()?;
         let scale = 1.0_f64 / (head_dim as f64).sqrt();

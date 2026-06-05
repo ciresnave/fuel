@@ -172,20 +172,8 @@ impl Olmo2Model {
         let k_r = k.rope_with_tables(rope_cos, rope_sin)?;
 
         let n_rep = cfg.num_attention_heads / cfg.num_key_value_heads;
-        let (k_full, v_full) = if n_rep == 1 { (k_r, v) } else {
-            let expand = |t: LazyTensor| -> Result<LazyTensor> {
-                let s5 = t.reshape(Shape::from_dims(&[
-                    batch, cfg.num_key_value_heads, 1, seq, cfg.head_dim,
-                ]))?;
-                let bc = s5.broadcast_to(Shape::from_dims(&[
-                    batch, cfg.num_key_value_heads, n_rep, seq, cfg.head_dim,
-                ]))?;
-                bc.reshape(Shape::from_dims(&[
-                    batch, cfg.num_attention_heads, seq, cfg.head_dim,
-                ]))
-            };
-            (expand(k_r)?, expand(v)?)
-        };
+        let k_full = k_r.repeat_interleave(1_usize, n_rep)?;
+        let v_full = v.repeat_interleave(1_usize, n_rep)?;
 
         let k_t = k_full.transpose()?;
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
