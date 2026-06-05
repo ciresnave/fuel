@@ -172,9 +172,9 @@ impl BigCodeModel {
 
         let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.input_ln_gain), std::sync::Arc::clone(&layer.input_ln_bias), cfg.layer_norm_epsilon)?;
 
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size).add_trailing_bias(std::sync::Arc::clone(&layer.attn_q_bias))?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_trailing_bias(std::sync::Arc::clone(&layer.attn_k_bias))?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_trailing_bias(std::sync::Arc::clone(&layer.attn_v_bias))?;
+        let q = layer.attn_q.apply_linear_with_bias(&x_norm, cfg.hidden_size, cfg.hidden_size, std::sync::Arc::clone(&layer.attn_q_bias))?;
+        let k = layer.attn_k.apply_linear_with_bias(&x_norm, cfg.hidden_size, kv_dim, std::sync::Arc::clone(&layer.attn_k_bias))?;
+        let v = layer.attn_v.apply_linear_with_bias(&x_norm, cfg.hidden_size, kv_dim, std::sync::Arc::clone(&layer.attn_v_bias))?;
 
         let n_kv_heads = if cfg.multi_query { 1 } else { cfg.num_attention_heads };
         let _ = (batch, seq);
@@ -198,15 +198,15 @@ impl BigCodeModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size).add_trailing_bias(std::sync::Arc::clone(&layer.attn_o_bias))?;
+        let attn_out = layer.attn_o.apply_linear_with_bias(&merged, cfg.hidden_size, cfg.hidden_size, std::sync::Arc::clone(&layer.attn_o_bias))?;
 
         let h1 = x.add(&attn_out)?;
         let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.post_attn_ln_gain), std::sync::Arc::clone(&layer.post_attn_ln_bias), cfg.layer_norm_epsilon)?;
 
         // GELU MLP.
-        let mid = layer.mlp_fc.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size).add_trailing_bias(std::sync::Arc::clone(&layer.mlp_fc_bias))?;
+        let mid = layer.mlp_fc.apply_linear_with_bias(&h1_norm, cfg.hidden_size, cfg.intermediate_size, std::sync::Arc::clone(&layer.mlp_fc_bias))?;
         let mid_act = mid.gelu_erf();
-        let ffn_out = layer.mlp_proj.apply_linear(&mid_act, cfg.intermediate_size, cfg.hidden_size).add_trailing_bias(std::sync::Arc::clone(&layer.mlp_proj_bias))?;
+        let ffn_out = layer.mlp_proj.apply_linear_with_bias(&mid_act, cfg.intermediate_size, cfg.hidden_size, std::sync::Arc::clone(&layer.mlp_proj_bias))?;
 
         h1.add(&ffn_out)
     }
