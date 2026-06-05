@@ -3037,6 +3037,32 @@ impl LazyTensor {
         self.broadcast_add(&bias_t)
     }
 
+    /// Build the standard (non-interleaved) RoPE cos/sin tables for
+    /// `seq` positions starting at `start_pos`, anchored on the
+    /// receiver's graph. Returns `(cos, sin)`, each with shape
+    /// `[seq, head_dim]`.
+    ///
+    /// Delegates the actual `(theta, position) → (cos, sin)` host
+    /// computation to [`fuel_graph::build_rope_tables`] (the canonical
+    /// reference); only the const-tensor materialization is folded
+    /// into one method to retire the per-port 4-line ceremony every
+    /// LLM port did before calling `rope_with_tables`.
+    pub fn rope_tables_const(
+        &self,
+        theta: f64,
+        start_pos: usize,
+        seq: usize,
+        head_dim: usize,
+    ) -> (Self, Self) {
+        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+            theta, start_pos, seq, head_dim,
+        );
+        let rope_shape = Shape::from_dims(&[seq, head_dim]);
+        let rope_cos = self.const_f32_like(cos_data, rope_shape.clone());
+        let rope_sin = self.const_f32_like(sin_data, rope_shape);
+        (rope_cos, rope_sin)
+    }
+
     /// `Option<Arc<[f32]>>` variant of [`Self::add_trailing_bias`]: if
     /// `bias.is_none()`, return `self` unchanged; else apply
     /// `add_trailing_bias`. Models the `linear_b` / `linear_no_bias`
@@ -10274,6 +10300,22 @@ mod phase_a2_composite_tests {
         let original = x.realize_f32();
         for (a, b) in m.iter().zip(original.iter()) {
             assert!((a - b).abs() < 1e-7, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn rope_tables_const_shapes_and_anchoring() {
+        let anchor = cpu_f32(vec![0.0_f32; 8], &[1, 4, 2]);
+        let (cos, sin) = anchor.rope_tables_const(10_000.0, 0, 4, 8);
+        assert_eq!(cos.shape().dims(), &[4, 8]);
+        assert_eq!(sin.shape().dims(), &[4, 8]);
+        // First row at position 0: cos = 1.0, sin = 0.0 for every pair.
+        let cv = cos.realize_f32();
+        let sv = sin.realize_f32();
+        // cos[0,...] should all be 1.0 (RoPE at position 0).
+        for i in 0..8 {
+            assert!((cv[i] - 1.0).abs() < 1e-5, "cos[0,{i}] = {}", cv[i]);
+            assert!(sv[i].abs() < 1e-5, "sin[0,{i}] = {}", sv[i]);
         }
     }
 
