@@ -331,35 +331,21 @@ fn encoder_layer(
     let k = linear(&x_ln, &lw.k_w, Some(&lw.k_b), h, h, seq);
     let v = linear(&x_ln, &lw.v_w, Some(&lw.v_b), h, h, seq);
 
-    let q = q
-        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
-    let k = k
-        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
-    let v = v
-        .reshape(Shape::from_dims(&[1, seq, n_heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
+    let q = q.split_heads(n_heads, d_head).unwrap();
+    let k = k.split_heads(n_heads, d_head).unwrap();
+    let v = v.split_heads(n_heads, d_head).unwrap();
     let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();
     let scale = 1.0_f64 / (d_head as f64).sqrt();
     let mut scores = q.matmul(&k_t).unwrap().mul_scalar(scale);
     // Causal mask: -inf above the diagonal.
-    let mut mask = vec![0.0_f32; seq * seq];
-    for i in 0..seq {
-        for j in 0..seq {
-            if j > i { mask[i * seq + j] = f32::NEG_INFINITY; }
-        }
-    }
-    let mask_t = scores
-        .const_f32_like(mask, Shape::from_dims(&[seq, seq]))
+    let mask_t = LazyTensor::additive_causal_mask_like(&scores, seq)
         .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap()
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq])).unwrap();
     scores = scores.add(&mask_t).unwrap();
     let probs = scores.softmax_last_dim().unwrap();
     let ctx = probs
         .matmul(&v).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap()
-        .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
+        .merge_heads().unwrap();
     let attn_out = linear(&ctx, &lw.out_w, Some(&lw.out_b), h, h, seq);
     let x = x.add(&attn_out).unwrap();
 

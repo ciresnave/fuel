@@ -216,22 +216,15 @@ impl NvEmbedV2Model {
         let k = kv.slice(2_usize, 0, inner)?;
         let v = kv.slice(2_usize, inner, inner)?;
         // Heads split: (batch, len, heads, head_dim) → permute(0, 2, 1, 3).
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, cfg.latent_heads, cfg.latent_head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, cfg.num_latents, cfg.latent_heads, cfg.latent_head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, cfg.num_latents, cfg.latent_heads, cfg.latent_head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = batch;
+        let q = q.split_heads(cfg.latent_heads, cfg.latent_head_dim)?;
+        let k = k.split_heads(cfg.latent_heads, cfg.latent_head_dim)?;
+        let v = v.split_heads(cfg.latent_heads, cfg.latent_head_dim)?;
         let scale = 1.0_f64 / (cfg.latent_head_dim as f64).sqrt();
         let scores = q.matmul(&k.transpose()?)?.mul_scalar(scale);
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?; // (batch, heads, seq, head_dim)
-        let merged = ctx
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, inner]))?;
+        let merged = ctx.merge_heads()?;
         let cross_out = self.weights.to_out.apply_linear(&merged, inner, bcfg.hidden_size);
         // Residual: hidden + cross_out.
         let cross_hidden = hidden.add(&cross_out)?;
