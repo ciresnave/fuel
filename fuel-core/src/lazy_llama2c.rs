@@ -271,6 +271,44 @@ impl Llama2cModel {
         )
     }
 
+    /// Speculative decode against a `draft` Llama2cModel. The draft
+    /// model proposes up to `k` next tokens; the target (this model)
+    /// then verifies them in a single parallel forward and accepts a
+    /// prefix. On rejection, the draft cache is rolled back via
+    /// `KVCache::truncate_to`.
+    ///
+    /// `draft.config.vocab_size` must equal `self.config.vocab_size`.
+    ///
+    /// Delegates to [`LlamaModel::generate_streaming_spec`]. The draft
+    /// Llama2cModel is converted to an inline LlamaModel on entry; both
+    /// the target and draft executors are caller-owned.
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_streaming_spec<B: GraphBackend>(
+        &self,
+        draft: &Llama2cModel,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        k: usize,
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        target_executor: &mut GraphExecutor<B>,
+        draft_executor: &mut GraphExecutor<B>,
+        on_token: impl FnMut(u32),
+    ) -> Result<Vec<u32>> {
+        let target_inline = LlamaModel {
+            config: self.config.to_llama_config(),
+            weights: self.weights.clone(),
+        };
+        let draft_inline = LlamaModel {
+            config: draft.config.to_llama_config(),
+            weights: draft.weights.clone(),
+        };
+        target_inline.generate_streaming_spec(
+            &draft_inline, prompt_tokens, max_new_tokens, k, strategy, eos_id,
+            target_executor, draft_executor, on_token,
+        )
+    }
+
     /// CUDA-specific convenience wrapper around
     /// [`Self::generate_streaming_gpu_on`] for callers that already
     /// hold a `GraphExecutor<CudaBackend>`. Delegates to
