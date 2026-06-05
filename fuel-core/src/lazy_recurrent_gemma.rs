@@ -273,10 +273,11 @@ impl RecurrentGemmaModel {
             (TemporalBlockWeights::Recurrent(r), TemporalBlockType::Recurrent) => {
                 self.apply_recurrent(&x_norm, r)?
             }
-            _ => panic!(
-                "Layer {layer_idx}: weight kind does not match block_types[{layer_idx} % {}]",
+            _ => return Err(crate::Error::Msg(format!(
+                "RecurrentGemma layer {layer_idx}: weight kind does not match \
+                 block_types[{layer_idx} % {}] — config + weights are inconsistent",
                 cfg.block_types.len(),
-            ),
+            )).bt()),
         };
         let h1 = residual.add(&temporal_out)?;
 

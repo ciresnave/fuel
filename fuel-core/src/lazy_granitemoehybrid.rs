@@ -207,11 +207,15 @@ impl GraniteMoeHybridModel {
                     h = self.apply_attn_block(&h, input_norm_gain, attn, post_attn_norm_gain, mlp, &rope_cos, &rope_sin)?;
                 }
                 (GraniteMoeHybridLayerWeights::Mamba, GraniteLayerType::Mamba) => {
-                    panic!("Granite Mamba layers not yet supported (matches eager scope)");
+                    return Err(crate::Error::Msg(format!(
+                        "GraniteMoeHybrid layer {idx}: Mamba layers not yet supported \
+                         (matches eager scope); use a non-Mamba layer kind",
+                    )).bt());
                 }
-                _ => panic!(
-                    "layer {idx}: weight kind does not match layer_types[{idx}]",
-                ),
+                _ => return Err(crate::Error::Msg(format!(
+                    "GraniteMoeHybrid layer {idx}: weight kind does not match \
+                     layer_types[{idx}] — config + weights are inconsistent",
+                )).bt()),
             }
         }
 
@@ -509,16 +513,20 @@ mod tests {
             "Granite RoPE scaling must change the tables, max_diff = {max_diff}");
     }
 
-    /// Mamba layers panic in v1 (matches eager scope).
+    /// Mamba layers return Err in v1 (matches eager scope; was a panic
+    /// pre-2026-06, retired per "never panic in production").
     #[test]
-    #[should_panic(expected = "Granite Mamba layers not yet supported")]
-    fn mamba_layer_panics() {
+    fn mamba_layer_returns_err() {
         let cfg = GraniteMoeHybridConfig {
             layer_types: vec![GraniteLayerType::Mamba, GraniteLayerType::Attention],
             ..tiny_config()
         };
         let model = GraniteMoeHybridModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
-        let _ = model.forward(&[1, 2], 0);
+        let res = model.forward(&[1, 2], 0);
+        assert!(res.is_err(), "Mamba layer should return Err, got Ok");
+        let err = format!("{}", res.unwrap_err());
+        assert!(err.contains("Mamba layers not yet supported"),
+            "unexpected error message: {err}");
     }
 
     #[test]
