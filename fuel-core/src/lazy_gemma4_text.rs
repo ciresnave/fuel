@@ -260,18 +260,9 @@ impl Gemma4TextModel {
         )?;
 
         // Q / K / V projections.
-        let q = opt_bias(
-            layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, q_dim),
-            layer.attn_q_bias.as_ref(), q_dim,
-        )?;
-        let k = opt_bias(
-            layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim),
-            layer.attn_k_bias.as_ref(), kv_dim,
-        )?;
-        let v = opt_bias(
-            layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim),
-            layer.attn_v_bias.as_ref(), kv_dim,
-        )?;
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, q_dim).add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(n_heads, head_dim)?;
@@ -306,10 +297,7 @@ impl Gemma4TextModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = opt_bias(
-            layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size),
-            layer.attn_o_bias.as_ref(), cfg.hidden_size,
-        )?;
+        let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size).add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
         let attn_out_norm = apply_offset_rms_norm(
             &attn_out, &layer.post_attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
         )?;
@@ -350,10 +338,6 @@ fn v_rms_norm(v: &LazyTensor, eps: f64) -> Result<LazyTensor> {
     v.rms_norm_last_dim(eps)
 }
 
-fn opt_bias(x: LazyTensor, bias: Option<&Arc<[f32]>>, n: usize) -> Result<LazyTensor> {
-    let _ = n;
-    x.add_optional_trailing_bias(bias)
-}
 
 #[cfg(test)]
 mod tests {

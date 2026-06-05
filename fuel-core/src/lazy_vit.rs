@@ -329,18 +329,9 @@ impl VitModel {
         let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln_before_gain), std::sync::Arc::clone(&layer.ln_before_bias), cfg.layer_norm_eps)?;
 
         // Q/K/V projections with optional biases.
-        let q = opt_bias(
-            layer.q_proj.apply_linear(&x_norm, h, h),
-            layer.q_proj_bias.as_ref(), h,
-        )?;
-        let k = opt_bias(
-            layer.k_proj.apply_linear(&x_norm, h, h),
-            layer.k_proj_bias.as_ref(), h,
-        )?;
-        let v = opt_bias(
-            layer.v_proj.apply_linear(&x_norm, h, h),
-            layer.v_proj_bias.as_ref(), h,
-        )?;
+        let q = layer.q_proj.apply_linear(&x_norm, h, h).add_optional_trailing_bias(layer.q_proj_bias.as_ref())?;
+        let k = layer.k_proj.apply_linear(&x_norm, h, h).add_optional_trailing_bias(layer.k_proj_bias.as_ref())?;
+        let v = layer.v_proj.apply_linear(&x_norm, h, h).add_optional_trailing_bias(layer.v_proj_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(n_heads, head_dim)?;
@@ -391,17 +382,6 @@ impl VitModel {
         let mlp_out = mlp_out.broadcast_add(&mlp_bias_t)?;
         // Second residual.
         h1.add(&mlp_out)
-    }
-}
-
-fn opt_bias(x: LazyTensor, bias: Option<&Arc<[f32]>>, n: usize) -> Result<LazyTensor> {
-    match bias {
-        None => Ok(x),
-        Some(b) => {
-            assert_eq!(b.len(), n);
-            let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[n]));
-            x.broadcast_add(&bt)
-        }
     }
 }
 
