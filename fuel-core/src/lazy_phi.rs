@@ -248,6 +248,208 @@ impl PhiModel {
     }
 }
 
+// ---- HuggingFace config + safetensors loading ----------------------------
+
+impl PhiConfig {
+    /// Parse a Phi-2 `config.json` from HuggingFace.
+    ///
+    /// HF native names mapped to standalone field names:
+    ///   `hidden_size` → `hidden_size`,
+    ///   `intermediate_size` → `intermediate_size`,
+    ///   `num_hidden_layers` → `num_hidden_layers`,
+    ///   `num_attention_heads` → `num_attention_heads`,
+    ///   `num_key_value_heads` → `num_key_value_heads` (Option — falls
+    ///   back to `num_attention_heads` for MHA configs),
+    ///   `head_dim` → `head_dim` (defaults to `hidden_size / num_attention_heads`),
+    ///   `layer_norm_eps` → `layer_norm_eps` (defaults to 1e-5),
+    ///   `rope_theta` → `rope_theta` (defaults to 10000.0),
+    ///   `max_position_embeddings` → `max_position_embeddings`,
+    ///   `partial_rotary_factor` → `partial_rotary_factor` (defaults to 0.4 — Phi-2's),
+    ///   `qk_layernorm` → `qk_layernorm` (defaults to false; v1 only
+    ///   supports false — set to true bails at load time).
+    pub fn from_hf_json_str(json: &str) -> Result<Self> {
+        let v: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing Phi config.json: {e}")))?;
+        let get_usize = |key: &str| -> Result<usize> {
+            v.get(key)
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .ok_or_else(|| {
+                    crate::Error::Msg(format!("Phi config.json: missing/invalid {key:?}"))
+                })
+        };
+        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+        let get_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|x| x.as_bool()) };
+
+        let vocab_size = get_usize("vocab_size")?;
+        let hidden_size = get_usize("hidden_size")?;
+        let intermediate_size = get_usize("intermediate_size")?;
+        let num_hidden_layers = get_usize("num_hidden_layers")?;
+        let num_attention_heads = get_usize("num_attention_heads")?;
+        let num_key_value_heads = v
+            .get("num_key_value_heads")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize);
+        let head_dim = v
+            .get("head_dim")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(hidden_size / num_attention_heads);
+        let layer_norm_eps = get_f64("layer_norm_eps").unwrap_or(1e-5);
+        let rope_theta = get_f64("rope_theta").unwrap_or(10_000.0);
+        let max_position_embeddings = get_usize("max_position_embeddings")?;
+        let partial_rotary_factor = get_f64("partial_rotary_factor").unwrap_or(0.4);
+        let qk_layernorm = get_bool("qk_layernorm").unwrap_or(false);
+        if qk_layernorm {
+            return Err(crate::Error::Msg(
+                "Phi: qk_layernorm=true is not yet supported by the standalone port (v1)".into(),
+            ).bt());
+        }
+
+        Ok(PhiConfig {
+            vocab_size,
+            hidden_size,
+            intermediate_size,
+            num_hidden_layers,
+            num_attention_heads,
+            num_key_value_heads,
+            head_dim,
+            layer_norm_eps,
+            rope_theta,
+            max_position_embeddings,
+            partial_rotary_factor,
+            qk_layernorm,
+            hidden_activation: PhiActivation::GeluPytorchTanh,
+        })
+    }
+}
+
+impl PhiWeights {
+    /// Load Phi-2 weights from memory-mapped safetensors. Loads weights
+    /// as `WeightStorage::F32` after on-load transposition from HF's
+    /// `[out, in]` layout to fuel's `[in, out]`.
+    ///
+    /// `lm_head.bias` is loaded as `None` when absent on disk — matches
+    /// the `Option<Arc<[f32]>>` field type and avoids the previous
+    /// panicking design (closed in commit b723ddf8).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &PhiConfig,
+    ) -> Result<Self> {
+        let h = cfg.hidden_size;
+        let i = cfg.intermediate_size;
+        let n_kv = cfg.num_kv_heads();
+        let kv_dim = n_kv * cfg.head_dim;
+
+        let token_embedding = Arc::from(
+            crate::lazy::load_tensor_as_f32(st, "model.embed_tokens.weight")?,
+        );
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for li in 0..cfg.num_hidden_layers {
+            let load_lin = |suffix: &str, out_f: usize, in_f: usize| -> Result<WeightStorage> {
+                let name = format!("model.layers.{li}.{suffix}");
+                let v = crate::lazy::load_transposed_matrix(st, &name, out_f, in_f)?;
+                Ok(WeightStorage::F32(Arc::from(v)))
+            };
+            let load_vec = |suffix: &str| -> Result<Arc<[f32]>> {
+                let name = format!("model.layers.{li}.{suffix}");
+                Ok(Arc::from(crate::lazy::load_tensor_as_f32(st, &name)?))
+            };
+
+            layers.push(PhiLayerWeights {
+                input_ln_gain: load_vec("input_layernorm.weight")?,
+                input_ln_bias: load_vec("input_layernorm.bias")?,
+                attn_q: load_lin("self_attn.q_proj.weight", h, h)?,
+                attn_q_bias: load_vec("self_attn.q_proj.bias")?,
+                attn_k: load_lin("self_attn.k_proj.weight", kv_dim, h)?,
+                attn_k_bias: load_vec("self_attn.k_proj.bias")?,
+                attn_v: load_lin("self_attn.v_proj.weight", kv_dim, h)?,
+                attn_v_bias: load_vec("self_attn.v_proj.bias")?,
+                attn_dense: load_lin("self_attn.dense.weight", h, h)?,
+                attn_dense_bias: load_vec("self_attn.dense.bias")?,
+                fc1: load_lin("mlp.fc1.weight", i, h)?,
+                fc1_bias: load_vec("mlp.fc1.bias")?,
+                fc2: load_lin("mlp.fc2.weight", h, i)?,
+                fc2_bias: load_vec("mlp.fc2.bias")?,
+            });
+        }
+
+        let final_ln_gain = Arc::from(
+            crate::lazy::load_tensor_as_f32(st, "model.final_layernorm.weight")?,
+        );
+        let final_ln_bias = Arc::from(
+            crate::lazy::load_tensor_as_f32(st, "model.final_layernorm.bias")?,
+        );
+        let lm_head = WeightStorage::F32(Arc::from(
+            crate::lazy::load_transposed_matrix(st, "lm_head.weight", cfg.vocab_size, h)?,
+        ));
+        let lm_head_bias = crate::lazy::load_tensor_as_f32(st, "lm_head.bias")
+            .ok()
+            .map(Arc::from);
+
+        Ok(PhiWeights {
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            lm_head,
+            lm_head_bias,
+        })
+    }
+}
+
+impl PhiModel {
+    /// Download a Phi-2 checkpoint from the HuggingFace Hub and build
+    /// a ready-to-forward `PhiModel`.
+    pub fn from_hub(repo_id: &str) -> Result<Self> {
+        let api = hf_hub::api::sync::Api::new()
+            .map_err(|e| crate::Error::Msg(format!("hf-hub api init: {e}")))?;
+        let repo = api.model(repo_id.to_string());
+
+        let config_path = repo
+            .get("config.json")
+            .map_err(|e| crate::Error::Msg(format!("hf-hub config.json: {e}")))?;
+        let config_str = std::fs::read_to_string(&config_path)?;
+        let config = PhiConfig::from_hf_json_str(&config_str)?;
+
+        let weight_paths: Vec<std::path::PathBuf> = match repo.get("model.safetensors.index.json") {
+            Ok(index_path) => {
+                let index_str = std::fs::read_to_string(&index_path)?;
+                let index: serde_json::Value = serde_json::from_str(&index_str)
+                    .map_err(|e| crate::Error::Msg(format!("parsing index: {e}")))?;
+                let weight_map = index
+                    .get("weight_map")
+                    .and_then(|x| x.as_object())
+                    .ok_or_else(|| crate::Error::Msg("index: missing weight_map".into()))?;
+                let mut unique = std::collections::HashSet::new();
+                for v in weight_map.values() {
+                    if let Some(s) = v.as_str() {
+                        unique.insert(s.to_string());
+                    }
+                }
+                let mut paths = Vec::new();
+                for name in &unique {
+                    paths.push(
+                        repo.get(name)
+                            .map_err(|e| crate::Error::Msg(format!("hf-hub {name}: {e}")))?,
+                    );
+                }
+                paths
+            }
+            Err(_) => vec![repo
+                .get("model.safetensors")
+                .map_err(|e| {
+                    crate::Error::Msg(format!("hf-hub model.safetensors: {e}"))
+                })?],
+        };
+
+        let st = unsafe { crate::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
+        let weights = PhiWeights::load_from_mmapped(&st, &config)?;
+
+        Ok(PhiModel { config, weights })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -296,6 +498,84 @@ mod tests {
             final_ln_gain, final_ln_bias,
             lm_head, lm_head_bias,
         }
+    }
+
+    #[test]
+    fn from_hf_json_str_parses_canonical_phi2_fields() {
+        // Excerpt from microsoft/phi-2/config.json (excluding the
+        // wrapper fields like `model_type`, `transformers_version`,
+        // etc. — only the architecture-relevant subset is needed).
+        let json = r#"{
+            "vocab_size": 51200,
+            "hidden_size": 2560,
+            "intermediate_size": 10240,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 32,
+            "head_dim": 80,
+            "layer_norm_eps": 1e-5,
+            "rope_theta": 10000.0,
+            "max_position_embeddings": 2048,
+            "partial_rotary_factor": 0.4
+        }"#;
+        let cfg = PhiConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.vocab_size, 51200);
+        assert_eq!(cfg.hidden_size, 2560);
+        assert_eq!(cfg.intermediate_size, 10240);
+        assert_eq!(cfg.num_hidden_layers, 32);
+        assert_eq!(cfg.num_attention_heads, 32);
+        assert_eq!(cfg.num_key_value_heads, Some(32));
+        assert_eq!(cfg.head_dim, 80);
+        assert!((cfg.layer_norm_eps - 1e-5).abs() < 1e-12);
+        assert!((cfg.rope_theta - 10000.0).abs() < 1e-9);
+        assert_eq!(cfg.max_position_embeddings, 2048);
+        assert!((cfg.partial_rotary_factor - 0.4).abs() < 1e-9);
+        assert!(!cfg.qk_layernorm);
+        // rope_dim = (0.4 * 80) & !1 = 32 — even
+        assert_eq!(cfg.rope_dim(), 32);
+    }
+
+    #[test]
+    fn from_hf_json_str_applies_optional_defaults() {
+        // Minimal Phi-2-like config (no rope_theta, no head_dim,
+        // no partial_rotary_factor, no GQA).
+        let json = r#"{
+            "vocab_size": 51200,
+            "hidden_size": 1024,
+            "intermediate_size": 4096,
+            "num_hidden_layers": 16,
+            "num_attention_heads": 16,
+            "max_position_embeddings": 2048
+        }"#;
+        let cfg = PhiConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, None);  // MHA — no GQA
+        assert_eq!(cfg.head_dim, 64);  // 1024 / 16
+        assert!((cfg.layer_norm_eps - 1e-5).abs() < 1e-12);
+        assert!((cfg.rope_theta - 10000.0).abs() < 1e-9);
+        assert!((cfg.partial_rotary_factor - 0.4).abs() < 1e-9);
+        assert!(!cfg.qk_layernorm);
+    }
+
+    #[test]
+    fn from_hf_json_str_bails_on_qk_layernorm_true() {
+        // v1 only supports qk_layernorm = false; setting it true must
+        // fail explicitly (not silently produce wrong results).
+        let json = r#"{
+            "vocab_size": 51200,
+            "hidden_size": 1024,
+            "intermediate_size": 4096,
+            "num_hidden_layers": 16,
+            "num_attention_heads": 16,
+            "max_position_embeddings": 2048,
+            "qk_layernorm": true
+        }"#;
+        let result = PhiConfig::from_hf_json_str(json);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("qk_layernorm"),
+            "expected error to mention qk_layernorm, got: {err}",
+        );
     }
 
     fn tiny_config() -> PhiConfig {
