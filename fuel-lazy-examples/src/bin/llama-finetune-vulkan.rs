@@ -32,7 +32,8 @@ fn main() {
 
 #[cfg(feature = "vulkan")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use fuel::lazy::{LlamaModel, LlamaTokenizer, WeightStorage};
+    use fuel::lazy::{LlamaTokenizer, WeightStorage};
+    use fuel::lazy_llama2c::Llama2cModel;
     use fuel::train::{self, OptimizerConfig, Parameter, TrainState};
     use fuel_graph_executor::GraphExecutor;
     use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
@@ -48,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprint!("Loading model... ");
     std::io::stderr().flush().ok();
     let t0 = Instant::now();
-    let model = LlamaModel::from_hub(model_id)?;
+    let model = Llama2cModel::from_hub(model_id)?;
     eprintln!("done in {:.2?}", t0.elapsed());
     let cfg = &model.config;
     eprintln!("  dim={} layers={} vocab={}", cfg.dim, cfg.n_layers, cfg.vocab_size);
@@ -121,12 +122,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Forward: all 22 frozen layers → hidden state.
             // Pass lm_head as the graph anchor so all nodes land on
             // the same graph the parameters live on.
-            let hidden = model_ref.forward_hidden(&ids, 0, lm_head);
+            let hidden = model_ref.forward_hidden_anchored(&ids, 0, lm_head)?;
             // [1, input_seq, dim] → [input_seq, dim]
-            let hidden = hidden.reshape(Shape::from_dims(&[iseq, dim]));
+            let hidden = hidden.reshape(Shape::from_dims(&[iseq, dim]))?;
 
             // Trainable output head → logits [input_seq, vocab_size]
-            let logits = hidden.matmul(lm_head);
+            let logits = hidden.matmul(lm_head)?;
 
             // Cross-entropy loss against next-token targets.
             let target = lm_head.const_f32_like(tgt, Shape::from_dims(&[iseq, vocab]));
