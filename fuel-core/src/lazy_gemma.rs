@@ -349,17 +349,8 @@ fn optional_bias(
     bias: Option<&Arc<[f32]>>,
     last_dim: usize,
 ) -> Result<LazyTensor> {
-    match bias {
-        None => Ok(x),
-        Some(b) => {
-            assert_eq!(
-                b.len(), last_dim,
-                "optional_bias: bias length {} != last_dim {last_dim}", b.len(),
-            );
-            let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[last_dim]));
-            x.broadcast_add(&b_t)
-        }
-    }
+    let _ = last_dim;
+    x.add_optional_trailing_bias(bias)
 }
 
 #[cfg(test)]

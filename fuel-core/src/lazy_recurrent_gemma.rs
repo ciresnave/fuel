@@ -596,10 +596,8 @@ fn apply_offset_rms_norm(
 }
 
 fn opt_bias(x: LazyTensor, b: Option<&Arc<[f32]>>, n: usize) -> Result<LazyTensor> {
-    match b {
-        None => Ok(x),
-        Some(bv) => add_bias(x, bv, n),
-    }
+    let _ = n;
+    x.add_optional_trailing_bias(b)
 }
 
 fn add_bias(x: LazyTensor, bias: &Arc<[f32]>, n: usize) -> Result<LazyTensor> {

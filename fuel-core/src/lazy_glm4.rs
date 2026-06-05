@@ -340,14 +340,8 @@ pub fn apply_interleaved_partial_rope(
 }
 
 fn opt_bias(x: LazyTensor, b: Option<&Arc<[f32]>>, n: usize) -> Result<LazyTensor> {
-    match b {
-        None => Ok(x),
-        Some(bv) => {
-            assert_eq!(bv.len(), n);
-            let bt = x.const_f32_like(Arc::clone(bv), Shape::from_dims(&[n]));
-            x.broadcast_add(&bt)
-        }
-    }
+    let _ = n;
+    x.add_optional_trailing_bias(b)
 }
 
 #[cfg(test)]
