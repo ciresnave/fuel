@@ -25,7 +25,9 @@
 // Qwen2 0.5B is ~1GB on disk and runs in roughly the same
 // time-per-token range as TinyLlama on a modern desktop CPU.
 
-use fuel::lazy::{LlamaModel, LlamaTokenizer, SamplingStrategy};
+use fuel::lazy::{LlamaTokenizer, SamplingStrategy};
+use fuel::lazy_llama2c::Llama2cModel;
+use fuel::{DType, Device};
 use std::io::Write;
 use std::time::Instant;
 
@@ -57,16 +59,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprint!("Downloading + loading model weights... ");
     std::io::stderr().flush().ok();
     let t0 = Instant::now();
-    let model = LlamaModel::from_hub(&model_id)?;
+    let model = Llama2cModel::from_hub(&model_id)?;
     eprintln!("done in {:.2?}", t0.elapsed());
     eprintln!(
-        "  config: dim={}  layers={}  heads={}  kv_heads={}  vocab={}  rope_base={}",
+        "  config: dim={}  layers={}  heads={}  kv_heads={}  vocab={}  rope_theta={}",
         model.config.dim,
         model.config.n_layers,
         model.config.n_heads,
         model.config.n_kv_heads,
         model.config.vocab_size,
-        model.config.rope_base,
+        model.config.rope_theta,
     );
     let layer0 = &model.weights.layers[0];
     eprintln!(
@@ -92,12 +94,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::io::stdout().flush().ok();
     let mut streamed: Vec<u32> = prompt_tokens.clone();
     let mut printed_text = tokenizer.decode(&streamed, true)?;
+    let device = Device::cpu();
     let t0 = Instant::now();
-    let output_tokens = model.generate_streaming(
+    let output_tokens = model.generate_streaming_with_kv_context(
         &prompt_tokens,
         max_new,
         SamplingStrategy::Temperature { temp: 0.8, seed: 42 },
         tokenizer.eos_id(),
+        &device,
+        DType::F32,
         |tok| {
             streamed.push(tok);
             if let Ok(full) = tokenizer.decode(&streamed, true) {
