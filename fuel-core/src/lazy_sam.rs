@@ -383,7 +383,7 @@ impl SamImageEncoderVit {
 /// axis NOT at the end. The lazy port uses the same manual
 /// formulation rather than the `LazyTensor::layer_norm_affine`
 /// method (which reduces over the LAST dim).
-fn layer_norm_2d(
+pub(crate) fn layer_norm_2d(
     x: &LazyTensor,
     ln: &SamLayerNormWeights,
     num_channels: usize,
