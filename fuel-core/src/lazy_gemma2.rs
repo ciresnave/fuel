@@ -168,9 +168,7 @@ impl Gemma2Model {
         }
 
         // ---- Final RmsNorm + tied lm_head + final softcapping --------------
-        let h_norm = apply_gemma2_rms_norm(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let h_norm = h.rms_norm_affine_with_offset(&weights.final_norm_gain, 1.0, cfg.rms_norm_eps).unwrap();
         // Tied lm_head reuses the token embedding weight (vocab, hidden) —
         // logits = h_norm @ embed.T. We assemble it as a Linear: hidden -> vocab.
         let lm_head_w = h.const_f32_like(
@@ -219,9 +217,7 @@ impl Gemma2Model {
         let kv_dim = cfg.num_key_value_heads * head_dim;
 
         // Attention sublayer: post_attn_norm(attn(input_norm(x))) + x.
-        let x_in = apply_gemma2_rms_norm(
-            x, &layer.input_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let x_in = x.rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps).unwrap();
         let q = layer.q.apply_linear(&x_in, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.q_bias.as_ref())?;
         let k = layer.k.apply_linear(&x_in, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.k_bias.as_ref())?;
         let v = layer.v.apply_linear(&x_in, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.v_bias.as_ref())?;
@@ -248,15 +244,11 @@ impl Gemma2Model {
         let merged = ctx.merge_heads()?;
         let attn_out = layer.o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.o_bias.as_ref())?;
         // Post-attn norm BEFORE the residual add.
-        let attn_post = apply_gemma2_rms_norm(
-            &attn_out, &layer.post_attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let attn_post = attn_out.rms_norm_affine_with_offset(&layer.post_attn_norm_gain, 1.0, cfg.rms_norm_eps).unwrap();
         let h1 = x.add(&attn_post)?;
 
         // MLP sublayer: post_ffn_norm(mlp(pre_ffn_norm(h1))) + h1.
-        let h1_in = apply_gemma2_rms_norm(
-            &h1, &layer.pre_ffn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let h1_in = h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps).unwrap();
         let gate = layer.gate.apply_linear(&h1_in, cfg.hidden_size, cfg.intermediate_size);
         let up = layer.up.apply_linear(&h1_in, cfg.hidden_size, cfg.intermediate_size);
         // Gemma 2 default activation is GeGLU-tanh (HiddenAct::GeluPytorchTanh
@@ -265,9 +257,7 @@ impl Gemma2Model {
         // is GELU-tanh (used by the public release).
         let swi = gate.gelu().mul(&up)?;
         let ffn_out = layer.down.apply_linear(&swi, cfg.intermediate_size, cfg.hidden_size);
-        let ffn_post = apply_gemma2_rms_norm(
-            &ffn_out, &layer.post_ffn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let ffn_post = ffn_out.rms_norm_affine_with_offset(&layer.post_ffn_norm_gain, 1.0, cfg.rms_norm_eps).unwrap();
         h1.add(&ffn_post)
     }
 }
@@ -275,15 +265,6 @@ impl Gemma2Model {
 /// Gemma-style RmsNorm: scale by `gamma + 1.0` rather than
 /// `gamma`. The +1 is folded into a separate constant tensor
 /// on the graph so the underlying RmsNorm op stays standard.
-fn apply_gemma2_rms_norm(
-    x: &LazyTensor,
-    gain: &Arc<[f32]>,
-    hidden_size: usize,
-    eps: f64,
-) -> LazyTensor {
-    let _ = hidden_size;
-    x.rms_norm_affine_with_offset(gain, 1.0, eps).unwrap()
-}
 
 
 
@@ -416,7 +397,7 @@ mod tests {
         let x = LazyTensor::from_f32(data, Shape::from_dims(&[1, 1, h]), &Device::cpu());
         let zero_gain: Arc<[f32]> = Arc::from(vec![0.0_f32; h]);
         let one_gain: Arc<[f32]> = Arc::from(vec![1.0_f32; h]);
-        let g2_out = apply_gemma2_rms_norm(&x, &zero_gain, h, 1e-6).realize_f32();
+        let g2_out = x.rms_norm_affine_with_offset(&zero_gain, 1.0, 1e-6).unwrap().realize_f32();
         let baseline = x.rms_norm_affine(Arc::clone(&one_gain), 1e-6).unwrap().realize_f32();
         for (a, b) in g2_out.iter().zip(baseline.iter()) {
             assert!((a - b).abs() < 1e-6,

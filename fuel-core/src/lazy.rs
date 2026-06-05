@@ -4601,7 +4601,8 @@ impl LlamaModel {
             cfg.rope_base, start_pos, seq, cfg.head_dim,
         );
 
-        let mask = build_strict_causal_mask(embeds, seq);
+        let mask = LazyTensor::additive_causal_mask_like(embeds, seq)
+            .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap();
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask);
@@ -4689,7 +4690,8 @@ impl LlamaModel {
         );
 
         // Build the strict-causal mask once for all layers.
-        let mask = build_strict_causal_mask(&h, seq);
+        let mask = LazyTensor::additive_causal_mask_like(&h, seq)
+            .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap();
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask);
@@ -5270,16 +5272,6 @@ pub struct LayerKVCache {
 /// `0` at `j <= i` and `-inf` at `j > i`, ready to
 /// broadcast-add onto attention scores. Anchored on `g` so
 /// the mask shares its graph with the rest of the model.
-fn build_strict_causal_mask(g: &LazyTensor, seq: usize) -> LazyTensor {
-    let mut mask_data = vec![0.0_f32; seq * seq];
-    for q in 0..seq {
-        for k in (q + 1)..seq {
-            mask_data[q * seq + k] = f32::NEG_INFINITY;
-        }
-    }
-    g.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
-}
-
 fn apply_affine_rms_norm(
     x: &LazyTensor,
     gain: &Arc<[f32]>,
@@ -6882,17 +6874,6 @@ pub struct Gemma2Model {
 
 /// Gemma's RmsNorm: `(gain + 1) * (x / rms)`. The `+1` centers the
 /// initial gain around 1 (HF initializes to 0 rather than 1).
-fn apply_gemma_rms_norm(
-    x: &LazyTensor,
-    gain: &Arc<[f32]>,
-    dim: usize,
-    eps: f64,
-) -> LazyTensor {
-    let normalized = x.rms_norm_last_dim(eps).unwrap();
-    let gain_t = x.const_f32_like(Arc::clone(gain), Shape::from_dims(&[dim]));
-    let gain_plus_one = gain_t.add_scalar(1.0);
-    normalized.broadcast_mul(&gain_plus_one).unwrap()
-}
 
 /// Softcapping: `tanh(x / cap) * cap`. Bounds values to `[-cap, cap]`.
 impl Gemma2Model {
@@ -6925,12 +6906,7 @@ impl Gemma2Model {
         }
 
         // Final norm.
-        let h_norm = apply_gemma_rms_norm(
-            &h,
-            &weights.final_norm_gain,
-            cfg.dim,
-            cfg.norm_eps,
-        );
+        let h_norm = h.rms_norm_affine_with_offset(&weights.final_norm_gain, 1.0, cfg.norm_eps).unwrap();
 
         // Output projection (tied embeddings — transpose embed_tokens).
         // embed_tokens is [vocab_size, dim]; for `h @ W` we need [dim, vocab_size].
@@ -6973,7 +6949,7 @@ impl Gemma2Model {
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
 
         // Pre-attention RmsNorm (Gemma offset style).
-        let x_norm = apply_gemma_rms_norm(x, &layer.input_layernorm, cfg.dim, cfg.norm_eps);
+        let x_norm = x.rms_norm_affine_with_offset(&layer.input_layernorm, 1.0, cfg.norm_eps).unwrap();
 
         // Q/K/V projections. Note: Gemma 2 projects to head_dim * n_heads
         // which may differ from dim when head_dim != dim/n_heads.
@@ -7040,23 +7016,13 @@ impl Gemma2Model {
         let attn_out = merged.matmul(&w_o).unwrap();
 
         // Post-attention RmsNorm (Gemma has this; LLaMA does not).
-        let attn_out_norm = apply_gemma_rms_norm(
-            &attn_out,
-            &layer.post_attention_layernorm,
-            cfg.dim,
-            cfg.norm_eps,
-        );
+        let attn_out_norm = attn_out.rms_norm_affine_with_offset(&layer.post_attention_layernorm, 1.0, cfg.norm_eps).unwrap();
 
         // First residual.
         let h1 = x.add(&attn_out_norm).unwrap();
 
         // Pre-FFN RmsNorm.
-        let h1_norm = apply_gemma_rms_norm(
-            &h1,
-            &layer.pre_feedforward_layernorm,
-            cfg.dim,
-            cfg.norm_eps,
-        );
+        let h1_norm = h1.rms_norm_affine_with_offset(&layer.pre_feedforward_layernorm, 1.0, cfg.norm_eps).unwrap();
 
         // GeGLU FFN (GELU activation instead of SiLU).
         let w_gate = x.const_f32_like(layer.ffn_gate.clone(), Shape::from_dims(&[cfg.dim, cfg.ffn_dim]));
@@ -7068,12 +7034,7 @@ impl Gemma2Model {
         let ffn_out = geglu.matmul(&w_down).unwrap();
 
         // Post-FFN RmsNorm.
-        let ffn_out_norm = apply_gemma_rms_norm(
-            &ffn_out,
-            &layer.post_feedforward_layernorm,
-            cfg.dim,
-            cfg.norm_eps,
-        );
+        let ffn_out_norm = ffn_out.rms_norm_affine_with_offset(&layer.post_feedforward_layernorm, 1.0, cfg.norm_eps).unwrap();
 
         // Second residual.
         h1.add(&ffn_out_norm).unwrap()
@@ -7376,21 +7337,6 @@ pub struct PhiModel {
 /// Apply LayerNorm with affine gain + bias along the last dim.
 /// `y = (x - mean) / sqrt(var + eps) * gain + bias`, where gain and
 /// bias are per-channel vectors of length `dim`.
-fn apply_affine_layer_norm(
-    x: &LazyTensor,
-    gain: &Arc<[f32]>,
-    bias: &Arc<[f32]>,
-    dim: usize,
-    eps: f64,
-) -> LazyTensor {
-    assert_eq!(gain.len(), dim, "apply_affine_layer_norm: gain length must equal dim");
-    assert_eq!(bias.len(), dim, "apply_affine_layer_norm: bias length must equal dim");
-    let normalized = x.layer_norm_last_dim(eps).unwrap();
-    let gain_t = x.const_f32_like(Arc::clone(gain), Shape::from_dims(&[dim]));
-    let bias_t = x.const_f32_like(Arc::clone(bias), Shape::from_dims(&[dim]));
-    normalized.broadcast_mul(&gain_t).unwrap().broadcast_add(&bias_t).unwrap()
-}
-
 /// Apply `x @ W + b` where `W` is a `WeightStorage` projection and
 /// `b` is a `[out_features]` bias vector. Dispatches to qmatmul for
 /// Q4_0 weights.
@@ -7435,8 +7381,10 @@ impl PhiModel {
         let total_seq = cached_len + seq;
 
         // Shared pre-block LayerNorm.
-        let x_norm = apply_affine_layer_norm(
-            x, &layer.norm_gain, &layer.norm_bias, cfg.dim, cfg.layer_norm_eps);
+        let x_norm = x.layer_norm_affine(
+            Arc::clone(&layer.norm_gain), Arc::clone(&layer.norm_bias),
+            cfg.layer_norm_eps,
+        ).unwrap();
 
         // Q/K/V projections with bias.
         let (q, k, v) = match &layer.attn_qkv {
@@ -7610,10 +7558,10 @@ impl PhiModel {
         }
 
         // Final LayerNorm, output projection (+ optional bias).
-        let h_norm = apply_affine_layer_norm(
-            &h, &weights.final_norm_gain, &weights.final_norm_bias,
-            cfg.dim, cfg.layer_norm_eps,
-        );
+        let h_norm = h.layer_norm_affine(
+            Arc::clone(&weights.final_norm_gain), Arc::clone(&weights.final_norm_bias),
+            cfg.layer_norm_eps,
+        ).unwrap();
         let logits_no_bias = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
         let logits = match &weights.output_bias {
             Some(b) => {

@@ -368,7 +368,10 @@ fn apply_local_mha(
     let residual = x.clone();
     // (B, C, T) → (B, T, C) for LN.
     let x_btc = x.permute([0, 2, 1_usize])?;
-    let normed = apply_affine_layer_norm(&x_btc, &w.norm_gain, &w.norm_bias, c, 1e-5);
+    let _ = c;
+    let normed = x_btc.layer_norm_affine(
+        Arc::clone(&w.norm_gain), Arc::clone(&w.norm_bias), 1e-5,
+    )?;
     // qkv: linear B,T,C → B,T,3C.
     let qkv = w.to_qkv.apply_linear(&normed, c, 3 * c);
     let q = qkv.narrow(2_usize, 0, c)?;
@@ -389,30 +392,6 @@ fn apply_local_mha(
     // (B, T, C) → (B, C, T) for residual add.
     let out_chw = out.permute([0, 2, 1_usize])?;
     out_chw.add(&residual)
-}
-
-fn apply_affine_layer_norm(
-    x: &LazyTensor,
-    gain: &Arc<[f32]>,
-    bias: &Arc<[f32]>,
-    hidden: usize,
-    eps: f64,
-) -> LazyTensor {
-    let normed = x.layer_norm_last_dim(eps).unwrap();
-    let dims = x.shape();
-    let dims_v = dims.dims().to_vec();
-    let bc_shape = Shape::from_dims(&dims_v);
-    let mut bias_shape = vec![1_usize; dims_v.len()];
-    bias_shape[dims_v.len() - 1] = hidden;
-    let g = normed
-        .const_f32_like(Arc::clone(gain), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&bias_shape)).unwrap()
-        .broadcast_to(bc_shape.clone()).unwrap();
-    let b = normed
-        .const_f32_like(Arc::clone(bias), Shape::from_dims(&[hidden]))
-        .reshape(Shape::from_dims(&bias_shape)).unwrap()
-        .broadcast_to(bc_shape).unwrap();
-    normed.mul(&g).unwrap().add(&b).unwrap()
 }
 
 // `repeat_interleave_last_dim` retired — call sites now use the
