@@ -161,6 +161,7 @@ pub mod lazy_starcoder2;
 pub mod lazy_t5;
 pub mod lazy_trocr;
 pub mod lazy_vit;
+pub mod lazy_voxtral;
 pub mod lazy_xlm_roberta;
 pub mod lazy_yi;
 pub mod lazy_sd_text_encoder;
