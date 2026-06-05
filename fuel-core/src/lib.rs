@@ -104,6 +104,7 @@ pub mod lazy_fastvit;
 pub mod lazy_gemma;
 pub mod lazy_gemma2;
 pub mod lazy_gemma3;
+pub mod lazy_gemma4_mm_embed;
 pub mod lazy_gemma4_text;
 pub mod lazy_gemma4_vision;
 pub mod lazy_glm4;
