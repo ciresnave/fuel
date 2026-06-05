@@ -208,9 +208,9 @@ fn apply_attention(
     let head_dim = cfg.head_dim();
     let scale = 1.0_f64 / (head_dim as f64).sqrt();
 
-    let q = apply_linear_with_bias(x, &w.q_proj, &w.q_proj_bias, embed, embed, anchor)?;
-    let k = apply_linear_with_bias(x, &w.k_proj, &w.k_proj_bias, embed, embed, anchor)?;
-    let v = apply_linear_with_bias(x, &w.v_proj, &w.v_proj_bias, embed, embed, anchor)?;
+    let q = w.q_proj.apply_linear_with_bias(x, embed, embed, std::sync::Arc::clone(&w.q_proj_bias))?;
+    let k = w.k_proj.apply_linear_with_bias(x, embed, embed, std::sync::Arc::clone(&w.k_proj_bias))?;
+    let v = w.v_proj.apply_linear_with_bias(x, embed, embed, std::sync::Arc::clone(&w.v_proj_bias))?;
 
     let q = q.mul_scalar(scale);
 
@@ -224,7 +224,7 @@ fn apply_attention(
     let scores = q.matmul(&kt)?;
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?.merge_heads()?;
-    apply_linear_with_bias(&ctx, &w.out_proj, &w.out_proj_bias, embed, embed, anchor)
+    w.out_proj.apply_linear_with_bias(&ctx, embed, embed, std::sync::Arc::clone(&w.out_proj_bias))
 }
 
 fn apply_mlp(
@@ -234,9 +234,9 @@ fn apply_mlp(
     hidden_dim: usize,
     anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
-    let h1 = apply_linear_with_bias(x, &m.fc1, &m.fc1_bias, in_dim, hidden_dim, anchor)?;
+    let h1 = m.fc1.apply_linear_with_bias(x, in_dim, hidden_dim, std::sync::Arc::clone(&m.fc1_bias))?;
     let h1 = h1.gelu_erf();
-    apply_linear_with_bias(&h1, &m.fc2, &m.fc2_bias, hidden_dim, in_dim, anchor)
+    m.fc2.apply_linear_with_bias(&h1, hidden_dim, in_dim, std::sync::Arc::clone(&m.fc2_bias))
 }
 
 fn apply_layer_norm(
@@ -249,17 +249,6 @@ fn apply_layer_norm(
     x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), eps)
 }
 
-fn apply_linear_with_bias(
-    x: &LazyTensor,
-    w: &WeightStorage,
-    b: &Arc<[f32]>,
-    in_features: usize,
-    out_features: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
-    let _ = anchor;
-    w.apply_linear_with_bias(x, in_features, out_features, Arc::clone(b))
-}
 
 // ---- Tests -----------------------------------------------------------------
 

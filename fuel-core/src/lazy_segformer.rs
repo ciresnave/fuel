@@ -336,9 +336,7 @@ fn apply_efficient_attention(
         .permute([0, 2, 1_usize])?;
     let q_len = h * w_sp;
 
-    let q = apply_linear_with_bias(
-        &x_seq, &attn.query, &attn.query_bias, hidden_size, hidden_size, anchor,
-    )?;
+    let q = attn.query.apply_linear_with_bias(&x_seq, hidden_size, hidden_size, std::sync::Arc::clone(&attn.query_bias))?;
 
     let kv_seq = if let (Some(sr), Some(sr_norm)) = (&attn.sr, &attn.sr_norm) {
         let sr_out = apply_conv2d(x, sr, anchor)?;
@@ -355,12 +353,8 @@ fn apply_efficient_attention(
 
     let kv_dims = kv_seq.shape();
     let kv_len = kv_dims.dims()[1];
-    let k = apply_linear_with_bias(
-        &kv_seq, &attn.key, &attn.key_bias, hidden_size, hidden_size, anchor,
-    )?;
-    let v = apply_linear_with_bias(
-        &kv_seq, &attn.value, &attn.value_bias, hidden_size, hidden_size, anchor,
-    )?;
+    let k = attn.key.apply_linear_with_bias(&kv_seq, hidden_size, hidden_size, std::sync::Arc::clone(&attn.key_bias))?;
+    let v = attn.value.apply_linear_with_bias(&kv_seq, hidden_size, hidden_size, std::sync::Arc::clone(&attn.value_bias))?;
 
     let _ = (q_len, kv_len);
     let q = q.split_heads(num_heads, head_dim)?;
@@ -372,9 +366,7 @@ fn apply_efficient_attention(
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?.merge_heads()?;
     let _ = (b, hidden_size);
-    apply_linear_with_bias(
-        &ctx, &out.dense, &out.dense_bias, hidden_size, hidden_size, anchor,
-    )
+    out.dense.apply_linear_with_bias(&ctx, hidden_size, hidden_size, std::sync::Arc::clone(&out.dense_bias))
 }
 
 fn apply_mix_ffn(
@@ -392,9 +384,7 @@ fn apply_mix_ffn(
     let seq = x
         .reshape(Shape::from_dims(&[b, hidden_size, h * w_sp]))?
         .permute([0, 2, 1_usize])?;
-    let h1 = apply_linear_with_bias(
-        &seq, &m.dense1, &m.dense1_bias, hidden_size, hidden_features, anchor,
-    )?;
+    let h1 = m.dense1.apply_linear_with_bias(&seq, hidden_size, hidden_features, std::sync::Arc::clone(&m.dense1_bias))?;
     let chw = h1
         .permute([0, 2, 1_usize])?
         .reshape(Shape::from_dims(&[b, hidden_features, h, w_sp]))?;
@@ -406,9 +396,7 @@ fn apply_mix_ffn(
     let seq = h2
         .reshape(Shape::from_dims(&[b, hidden_features, h * w_sp]))?
         .permute([0, 2, 1_usize])?;
-    let h3 = apply_linear_with_bias(
-        &seq, &m.dense2, &m.dense2_bias, hidden_features, hidden_size, anchor,
-    )?;
+    let h3 = m.dense2.apply_linear_with_bias(&seq, hidden_features, hidden_size, std::sync::Arc::clone(&m.dense2_bias))?;
     Ok(h3
         .permute([0, 2, 1_usize])?
         .reshape(Shape::from_dims(&[b, hidden_size, h, w_sp]))?)
@@ -435,9 +423,7 @@ fn decode_head_forward(
         let seq = hs
             .reshape(Shape::from_dims(&[b, c, h * w_sp]))?
             .permute([0, 2, 1_usize])?;
-        let projected = apply_linear_with_bias(
-            &seq, w, bias, c, cfg.decoder_hidden_size, anchor,
-        )?;
+        let projected = w.apply_linear_with_bias(&seq, c, cfg.decoder_hidden_size, std::sync::Arc::clone(&bias))?;
         let chw = projected
             .permute([0, 2, 1_usize])?
             .reshape(Shape::from_dims(&[b, cfg.decoder_hidden_size, h, w_sp]))?;
@@ -468,17 +454,6 @@ fn apply_layer_norm(
     x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), eps)
 }
 
-fn apply_linear_with_bias(
-    x: &LazyTensor,
-    w: &WeightStorage,
-    b: &Arc<[f32]>,
-    in_features: usize,
-    out_features: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
-    let _ = anchor;
-    w.apply_linear_with_bias(x, in_features, out_features, Arc::clone(b))
-}
 
 fn apply_conv2d(
     x: &LazyTensor,

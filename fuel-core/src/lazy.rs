@@ -7340,17 +7340,6 @@ pub struct PhiModel {
 /// Apply `x @ W + b` where `W` is a `WeightStorage` projection and
 /// `b` is a `[out_features]` bias vector. Dispatches to qmatmul for
 /// Q4_0 weights.
-fn apply_linear_with_bias(
-    x: &LazyTensor,
-    w: &WeightStorage,
-    b: &Arc<[f32]>,
-    in_features: usize,
-    out_features: usize,
-) -> LazyTensor {
-    let y = w.apply_linear(x, in_features, out_features);
-    let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[out_features]));
-    y.broadcast_add(&b_t).unwrap()
-}
 
 impl PhiModel {
     /// Apply one Phi-2 transformer block to `x` (parallel attention + MLP).
@@ -7389,9 +7378,9 @@ impl PhiModel {
         // Q/K/V projections with bias.
         let (q, k, v) = match &layer.attn_qkv {
             PhiQkv::Split { q, q_bias, k, k_bias, v, v_bias } => {
-                let q_out = apply_linear_with_bias(&x_norm, q, q_bias, cfg.dim, cfg.dim);
-                let k_out = apply_linear_with_bias(&x_norm, k, k_bias, cfg.dim, kv_dim);
-                let v_out = apply_linear_with_bias(&x_norm, v, v_bias, cfg.dim, kv_dim);
+                let q_out = q.apply_linear_with_bias(&x_norm, cfg.dim, cfg.dim, Arc::clone(&q_bias)).unwrap();
+                let k_out = k.apply_linear_with_bias(&x_norm, cfg.dim, kv_dim, Arc::clone(&k_bias)).unwrap();
+                let v_out = v.apply_linear_with_bias(&x_norm, cfg.dim, kv_dim, Arc::clone(&v_bias)).unwrap();
                 (q_out, k_out, v_out)
             }
             PhiQkv::Packed { qkv, qkv_bias } => {
@@ -7400,8 +7389,7 @@ impl PhiModel {
                 // Matches Candle's
                 //   .reshape(b, s, 3, n_head, head_dim).i((.., .., 0/1/2))
                 // layout exactly (Q is first on the output side).
-                let combined = apply_linear_with_bias(
-                    &x_norm, qkv, qkv_bias, cfg.dim, 3 * cfg.dim);
+                let combined = qkv.apply_linear_with_bias(&x_norm, cfg.dim, 3 * cfg.dim, Arc::clone(&qkv_bias)).unwrap();
                 let last = combined.rank() - 1;
                 let q_out = combined.slice(last, 0, cfg.dim).unwrap();
                 let k_out = combined.slice(last, cfg.dim, cfg.dim).unwrap();
@@ -7465,15 +7453,12 @@ impl PhiModel {
         let merged = attn_v
             .permute([0, 2, 1, 3_usize]).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
-        let attn_out = apply_linear_with_bias(
-            &merged, &layer.attn_dense, &layer.attn_dense_bias, cfg.dim, cfg.dim);
+        let attn_out = layer.attn_dense.apply_linear_with_bias(&merged, cfg.dim, cfg.dim, Arc::clone(&layer.attn_dense_bias)).unwrap();
 
         // MLP branch (shares x_norm with attention branch).
-        let fc1_out = apply_linear_with_bias(
-            &x_norm, &layer.mlp_fc1, &layer.mlp_fc1_bias, cfg.dim, cfg.ffn_dim);
+        let fc1_out = layer.mlp_fc1.apply_linear_with_bias(&x_norm, cfg.dim, cfg.ffn_dim, Arc::clone(&layer.mlp_fc1_bias)).unwrap();
         let gelu_out = fc1_out.gelu();
-        let mlp_out = apply_linear_with_bias(
-            &gelu_out, &layer.mlp_fc2, &layer.mlp_fc2_bias, cfg.ffn_dim, cfg.dim);
+        let mlp_out = layer.mlp_fc2.apply_linear_with_bias(&gelu_out, cfg.ffn_dim, cfg.dim, Arc::clone(&layer.mlp_fc2_bias)).unwrap();
 
         // Parallel residual: x + attn_out + mlp_out.
         let h = x.add(&attn_out).unwrap().add(&mlp_out).unwrap();
