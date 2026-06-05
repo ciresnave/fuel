@@ -2895,83 +2895,102 @@ impl LazyTensor {
     // a fresh graph anchored on a host-allocated buffer.
 
     /// New tensor with the same shape, dtype, and graph as `self`, filled
-    /// with ones.
-    pub fn ones_like(&self) -> Self {
+    /// with ones. Returns Err for unsupported dtypes (anything outside
+    /// F32/F64/BF16/F16/U32/I64) — matches eager `Tensor::ones_like` parity.
+    pub fn ones_like(&self) -> std::result::Result<Self, fuel_core_types::Error> {
         let n = self.elem_count();
         let shape = self.shape();
         match self.dtype() {
-            DType::F32 => self.const_f32_like(vec![1.0_f32; n], shape),
-            DType::F64 => self.const_f64_like(vec![1.0_f64; n], shape),
-            DType::BF16 => self.const_bf16_like(vec![half::bf16::ONE; n], shape),
-            DType::F16 => self.const_f16_like(vec![half::f16::ONE; n], shape),
-            DType::U32 => self.const_u32_like(vec![1_u32; n], shape),
-            DType::I64 => self.const_i64_like(vec![1_i64; n], shape),
-            other => panic!("ones_like: unsupported dtype {other:?}"),
+            DType::F32 => Ok(self.const_f32_like(vec![1.0_f32; n], shape)),
+            DType::F64 => Ok(self.const_f64_like(vec![1.0_f64; n], shape)),
+            DType::BF16 => Ok(self.const_bf16_like(vec![half::bf16::ONE; n], shape)),
+            DType::F16 => Ok(self.const_f16_like(vec![half::f16::ONE; n], shape)),
+            DType::U32 => Ok(self.const_u32_like(vec![1_u32; n], shape)),
+            DType::I64 => Ok(self.const_i64_like(vec![1_i64; n], shape)),
+            other => Err(fuel_core_types::Error::Msg(format!(
+                "ones_like: unsupported dtype {other:?}",
+            )).bt()),
         }
     }
 
     /// New tensor with the same shape, dtype, and graph as `self`, filled
-    /// with zeros.
-    pub fn zeros_like(&self) -> Self {
+    /// with zeros. Returns Err for unsupported dtypes (anything outside
+    /// F32/F64/BF16/F16/U32/I64) — matches eager `Tensor::zeros_like` parity.
+    pub fn zeros_like(&self) -> std::result::Result<Self, fuel_core_types::Error> {
         let n = self.elem_count();
         let shape = self.shape();
         match self.dtype() {
-            DType::F32 => self.const_f32_like(vec![0.0_f32; n], shape),
-            DType::F64 => self.const_f64_like(vec![0.0_f64; n], shape),
-            DType::BF16 => self.const_bf16_like(vec![half::bf16::ZERO; n], shape),
-            DType::F16 => self.const_f16_like(vec![half::f16::ZERO; n], shape),
-            DType::U32 => self.const_u32_like(vec![0_u32; n], shape),
-            DType::I64 => self.const_i64_like(vec![0_i64; n], shape),
-            other => panic!("zeros_like: unsupported dtype {other:?}"),
+            DType::F32 => Ok(self.const_f32_like(vec![0.0_f32; n], shape)),
+            DType::F64 => Ok(self.const_f64_like(vec![0.0_f64; n], shape)),
+            DType::BF16 => Ok(self.const_bf16_like(vec![half::bf16::ZERO; n], shape)),
+            DType::F16 => Ok(self.const_f16_like(vec![half::f16::ZERO; n], shape)),
+            DType::U32 => Ok(self.const_u32_like(vec![0_u32; n], shape)),
+            DType::I64 => Ok(self.const_i64_like(vec![0_i64; n], shape)),
+            other => Err(fuel_core_types::Error::Msg(format!(
+                "zeros_like: unsupported dtype {other:?}",
+            )).bt()),
         }
     }
 
     /// New tensor with `shape`/`dtype`/`device`, every element set to `1`.
-    /// Static factory equivalent of eager's `Tensor::ones`.
-    pub fn ones(shape: impl Into<Shape>, dtype: DType, device: &Device) -> Self {
+    /// Static factory equivalent of eager's `Tensor::ones`. Returns Err for
+    /// dtypes outside F32/F64/BF16/F16/U32.
+    pub fn ones(
+        shape: impl Into<Shape>, dtype: DType, device: &Device,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
         let shape = shape.into();
         let n = shape.elem_count();
         match dtype {
-            DType::F32 => Self::from_f32(vec![1.0_f32; n], shape, device),
-            DType::F64 => Self::from_f64(vec![1.0_f64; n], shape, device),
-            DType::BF16 => Self::from_bf16(vec![half::bf16::ONE; n], shape, device),
-            DType::F16 => Self::from_f16(vec![half::f16::ONE; n], shape, device),
-            DType::U32 => Self::from_u32(vec![1_u32; n], shape, device),
-            other => panic!("ones: unsupported dtype {other:?}"),
+            DType::F32 => Ok(Self::from_f32(vec![1.0_f32; n], shape, device)),
+            DType::F64 => Ok(Self::from_f64(vec![1.0_f64; n], shape, device)),
+            DType::BF16 => Ok(Self::from_bf16(vec![half::bf16::ONE; n], shape, device)),
+            DType::F16 => Ok(Self::from_f16(vec![half::f16::ONE; n], shape, device)),
+            DType::U32 => Ok(Self::from_u32(vec![1_u32; n], shape, device)),
+            other => Err(fuel_core_types::Error::Msg(format!(
+                "ones: unsupported dtype {other:?}",
+            )).bt()),
         }
     }
 
     /// New tensor with `shape`/`dtype`/`device`, every element set to `0`.
-    /// Static factory equivalent of eager's `Tensor::zeros`.
-    pub fn zeros(shape: impl Into<Shape>, dtype: DType, device: &Device) -> Self {
+    /// Static factory equivalent of eager's `Tensor::zeros`. Returns Err for
+    /// dtypes outside F32/F64/BF16/F16/U32.
+    pub fn zeros(
+        shape: impl Into<Shape>, dtype: DType, device: &Device,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
         let shape = shape.into();
         let n = shape.elem_count();
         match dtype {
-            DType::F32 => Self::from_f32(vec![0.0_f32; n], shape, device),
-            DType::F64 => Self::from_f64(vec![0.0_f64; n], shape, device),
-            DType::BF16 => Self::from_bf16(vec![half::bf16::ZERO; n], shape, device),
-            DType::F16 => Self::from_f16(vec![half::f16::ZERO; n], shape, device),
-            DType::U32 => Self::from_u32(vec![0_u32; n], shape, device),
-            other => panic!("zeros: unsupported dtype {other:?}"),
+            DType::F32 => Ok(Self::from_f32(vec![0.0_f32; n], shape, device)),
+            DType::F64 => Ok(Self::from_f64(vec![0.0_f64; n], shape, device)),
+            DType::BF16 => Ok(Self::from_bf16(vec![half::bf16::ZERO; n], shape, device)),
+            DType::F16 => Ok(Self::from_f16(vec![half::f16::ZERO; n], shape, device)),
+            DType::U32 => Ok(Self::from_u32(vec![0_u32; n], shape, device)),
+            other => Err(fuel_core_types::Error::Msg(format!(
+                "zeros: unsupported dtype {other:?}",
+            )).bt()),
         }
     }
 
     /// New tensor of `shape`/`device` filled with `value`. The scalar's
-    /// dtype determines the tensor's dtype.
+    /// dtype determines the tensor's dtype. Returns Err for scalar dtypes
+    /// outside F32/F64/BF16/F16/U32.
     pub fn full(
         shape: impl Into<Shape>,
         value: fuel_core_types::Scalar,
         device: &Device,
-    ) -> Self {
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
         let shape = shape.into();
         let n = shape.elem_count();
         match value {
-            fuel_core_types::Scalar::F32(v) => Self::from_f32(vec![v; n], shape, device),
-            fuel_core_types::Scalar::F64(v) => Self::from_f64(vec![v; n], shape, device),
-            fuel_core_types::Scalar::BF16(v) => Self::from_bf16(vec![v; n], shape, device),
-            fuel_core_types::Scalar::F16(v) => Self::from_f16(vec![v; n], shape, device),
-            fuel_core_types::Scalar::U32(v) => Self::from_u32(vec![v; n], shape, device),
-            other => panic!("full: unsupported scalar dtype {:?}", other.dtype()),
+            fuel_core_types::Scalar::F32(v) => Ok(Self::from_f32(vec![v; n], shape, device)),
+            fuel_core_types::Scalar::F64(v) => Ok(Self::from_f64(vec![v; n], shape, device)),
+            fuel_core_types::Scalar::BF16(v) => Ok(Self::from_bf16(vec![v; n], shape, device)),
+            fuel_core_types::Scalar::F16(v) => Ok(Self::from_f16(vec![v; n], shape, device)),
+            fuel_core_types::Scalar::U32(v) => Ok(Self::from_u32(vec![v; n], shape, device)),
+            other => Err(fuel_core_types::Error::Msg(format!(
+                "full: unsupported scalar dtype {:?}", other.dtype(),
+            )).bt()),
         }
     }
 
@@ -3444,26 +3463,31 @@ impl LazyTensor {
     }
 
     /// Uniform random tensor in `[lo, up)` with shape/dtype/device matching `self`.
-    /// Backed by [`rand::thread_rng`].
-    pub fn rand_like(&self, lo: f64, up: f64) -> Self {
+    /// Backed by [`rand::thread_rng`]. Returns Err for unsupported dtypes.
+    pub fn rand_like(
+        &self, lo: f64, up: f64,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
         Self::rand(self.shape(), lo, up, self.dtype(), &Device::cpu())
     }
 
     /// Normal random tensor with shape/dtype/device matching `self`.
-    pub fn randn_like(&self, mean: f64, stdev: f64) -> Self {
+    /// Returns Err for unsupported dtypes or invalid stdev.
+    pub fn randn_like(
+        &self, mean: f64, stdev: f64,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
         Self::randn(self.shape(), mean, stdev, self.dtype(), &Device::cpu())
     }
 
     /// Uniform random tensor in `[lo, up)`. Static factory.
     /// Supported dtypes: F32, F64, BF16, F16. F32 is the typical
-    /// initialization target.
+    /// initialization target. Returns Err for any other dtype.
     pub fn rand(
         shape: impl Into<Shape>,
         lo: f64,
         up: f64,
         dtype: DType,
         device: &Device,
-    ) -> Self {
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
         use rand::Rng;
         let shape = shape.into();
         let n = shape.elem_count();
@@ -3471,64 +3495,73 @@ impl LazyTensor {
         match dtype {
             DType::F32 => {
                 let data: Vec<f32> = (0..n).map(|_| rng.random_range(lo..up) as f32).collect();
-                Self::from_f32(data, shape, device)
+                Ok(Self::from_f32(data, shape, device))
             }
             DType::F64 => {
                 let data: Vec<f64> = (0..n).map(|_| rng.random_range(lo..up)).collect();
-                Self::from_f64(data, shape, device)
+                Ok(Self::from_f64(data, shape, device))
             }
             DType::BF16 => {
                 let data: Vec<half::bf16> = (0..n)
                     .map(|_| half::bf16::from_f64(rng.random_range(lo..up)))
                     .collect();
-                Self::from_bf16(data, shape, device)
+                Ok(Self::from_bf16(data, shape, device))
             }
             DType::F16 => {
                 let data: Vec<half::f16> = (0..n)
                     .map(|_| half::f16::from_f64(rng.random_range(lo..up)))
                     .collect();
-                Self::from_f16(data, shape, device)
+                Ok(Self::from_f16(data, shape, device))
             }
-            other => panic!("LazyTensor::rand: unsupported dtype {other:?}"),
+            other => Err(fuel_core_types::Error::Msg(format!(
+                "LazyTensor::rand: unsupported dtype {other:?}",
+            )).bt()),
         }
     }
 
     /// Normal random tensor with given `mean` and `stdev`. Static factory.
-    /// Supported dtypes: F32, F64, BF16, F16.
+    /// Supported dtypes: F32, F64, BF16, F16. Returns Err on any other
+    /// dtype, or if `stdev` is not finite / not positive.
     pub fn randn(
         shape: impl Into<Shape>,
         mean: f64,
         stdev: f64,
         dtype: DType,
         device: &Device,
-    ) -> Self {
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
         use rand_distr::{Distribution, Normal};
         let shape = shape.into();
         let n = shape.elem_count();
-        let normal = Normal::new(mean, stdev).expect("randn: bad stdev");
+        let normal = Normal::new(mean, stdev).map_err(|e| {
+            fuel_core_types::Error::Msg(format!(
+                "LazyTensor::randn: invalid stdev={stdev}: {e}",
+            )).bt()
+        })?;
         let mut rng = rand::rng();
         match dtype {
             DType::F32 => {
                 let data: Vec<f32> = (0..n).map(|_| normal.sample(&mut rng) as f32).collect();
-                Self::from_f32(data, shape, device)
+                Ok(Self::from_f32(data, shape, device))
             }
             DType::F64 => {
                 let data: Vec<f64> = (0..n).map(|_| normal.sample(&mut rng)).collect();
-                Self::from_f64(data, shape, device)
+                Ok(Self::from_f64(data, shape, device))
             }
             DType::BF16 => {
                 let data: Vec<half::bf16> = (0..n)
                     .map(|_| half::bf16::from_f64(normal.sample(&mut rng)))
                     .collect();
-                Self::from_bf16(data, shape, device)
+                Ok(Self::from_bf16(data, shape, device))
             }
             DType::F16 => {
                 let data: Vec<half::f16> = (0..n)
                     .map(|_| half::f16::from_f64(normal.sample(&mut rng)))
                     .collect();
-                Self::from_f16(data, shape, device)
+                Ok(Self::from_f16(data, shape, device))
             }
-            other => panic!("LazyTensor::randn: unsupported dtype {other:?}"),
+            other => Err(fuel_core_types::Error::Msg(format!(
+                "LazyTensor::randn: unsupported dtype {other:?}",
+            )).bt()),
         }
     }
 
@@ -4368,22 +4401,25 @@ impl WeightStorage {
     /// For `Q4_0`, the emitted tensor is a 1-D `U32` const of length
     /// `bytes.len() / 4` holding the raw block byte stream. Callers
     /// must pair this with `Tensor::qmatmul` rather than `matmul`.
-    pub fn const_like(&self, anchor: &LazyTensor, shape: Shape) -> LazyTensor {
+    ///
+    /// Returns Err for `WithLoRA` — the base + LoRA update can only be
+    /// applied via `apply_linear` so the right graph structure is built.
+    pub fn const_like(
+        &self, anchor: &LazyTensor, shape: Shape,
+    ) -> std::result::Result<LazyTensor, fuel_core_types::Error> {
         match self {
-            Self::F32(a) => anchor.const_f32_like(a.clone(), shape),
-            Self::BF16(a) => anchor.const_bf16_like(a.clone(), shape),
+            Self::F32(a) => Ok(anchor.const_f32_like(a.clone(), shape)),
+            Self::BF16(a) => Ok(anchor.const_bf16_like(a.clone(), shape)),
             Self::Q4_0 { words, .. } => {
                 let _ = shape; // shape arg unused — Q4_0 const is 1-D U32
                 // Arc-clone the precomputed u32 view; no byte copy.
-                anchor.const_u32_like(Arc::clone(words), Shape::from_dims(&[words.len()]))
+                Ok(anchor.const_u32_like(Arc::clone(words), Shape::from_dims(&[words.len()])))
             }
-            Self::WithLoRA { .. } => {
-                panic!(
-                    "WeightStorage::WithLoRA::const_like is not supported \
-                     — the base + LoRA update must be applied via \
-                     apply_linear to produce the right graph structure."
-                );
-            }
+            Self::WithLoRA { .. } => Err(fuel_core_types::Error::Msg(
+                "WeightStorage::WithLoRA::const_like is not supported \
+                 — the base + LoRA update must be applied via \
+                 apply_linear to produce the right graph structure.".into(),
+            ).bt()),
         }
     }
 
@@ -4423,7 +4459,10 @@ impl WeightStorage {
     ) -> LazyTensor {
         match self {
             Self::F32(_) | Self::BF16(_) => {
-                let w = self.const_like(x, Shape::from_dims(&[in_features, out_features]));
+                // const_like only errors on WithLoRA; we're statically in
+                // the F32/BF16 arm so the call is infallible here.
+                let w = self.const_like(x, Shape::from_dims(&[in_features, out_features]))
+                    .expect("apply_linear F32/BF16 arm: const_like cannot fail for non-LoRA variants");
                 x.matmul(&w).unwrap()
             }
             Self::Q4_0 { in_features: expected_in, out_features: expected_out, .. } => {
@@ -4437,8 +4476,10 @@ impl WeightStorage {
                     "WeightStorage::Q4_0 out_features mismatch: stored {}, requested {out_features}",
                     expected_out,
                 );
-                // const_like for Q4_0 emits a flat U32 tensor.
-                let w_bytes = self.const_like(x, Shape::from_dims(&[in_features, out_features]));
+                // const_like for Q4_0 emits a flat U32 tensor. Q4_0 arm is
+                // statically known here so the call is infallible.
+                let w_bytes = self.const_like(x, Shape::from_dims(&[in_features, out_features]))
+                    .expect("apply_linear Q4_0 arm: const_like cannot fail for non-LoRA variants");
                 x.qmatmul(&w_bytes, fuel_graph::QuantType::Q4_0, in_features, out_features).unwrap()
             }
             Self::WithLoRA {
@@ -9973,7 +10014,7 @@ mod phase_a5_factory_tests {
     #[test]
     fn ones_like_matches_shape_dtype_graph() {
         let t = cpu_f32(vec![5.0, 6.0, 7.0, 8.0], &[2, 2]);
-        let ones = t.ones_like();
+        let ones = t.ones_like().unwrap();
         assert_eq!(ones.shape().dims(), t.shape().dims());
         assert_eq!(ones.dtype(), t.dtype());
         assert_eq!(ones.realize_f32(), vec![1.0; 4]);
@@ -9982,27 +10023,29 @@ mod phase_a5_factory_tests {
     #[test]
     fn zeros_like_matches_shape_dtype_graph() {
         let t = cpu_f32(vec![5.0, 6.0, 7.0], &[3]);
-        let zeros = t.zeros_like();
+        let zeros = t.zeros_like().unwrap();
         assert_eq!(zeros.realize_f32(), vec![0.0; 3]);
     }
 
     #[test]
     fn static_ones_f32() {
-        let t = LazyTensor::ones(vec![2, 3], DType::F32, &Device::cpu());
+        let t = LazyTensor::ones(vec![2, 3], DType::F32, &Device::cpu()).unwrap();
         assert_eq!(t.shape().dims(), &[2, 3]);
         assert_eq!(t.realize_f32(), vec![1.0; 6]);
     }
 
     #[test]
     fn static_zeros_f64() {
-        let t = LazyTensor::zeros(vec![4], DType::F64, &Device::cpu());
+        let t = LazyTensor::zeros(vec![4], DType::F64, &Device::cpu()).unwrap();
         assert_eq!(t.dtype(), DType::F64);
         assert_eq!(t.realize_f64(), vec![0.0; 4]);
     }
 
     #[test]
     fn full_with_f32_scalar() {
-        let t = LazyTensor::full(vec![5], fuel_core_types::Scalar::F32(2.5), &Device::cpu());
+        let t = LazyTensor::full(
+            vec![5], fuel_core_types::Scalar::F32(2.5), &Device::cpu(),
+        ).unwrap();
         assert_eq!(t.realize_f32(), vec![2.5; 5]);
     }
 
@@ -10169,7 +10212,7 @@ mod phase_a5_factory_tests {
     #[test]
     fn rand_like_matches_shape_dtype() {
         let t = cpu_f32(vec![0.0; 6], &[2, 3]);
-        let r = t.rand_like(-1.0, 1.0);
+        let r = t.rand_like(-1.0, 1.0).unwrap();
         assert_eq!(r.shape().dims(), t.shape().dims());
         assert_eq!(r.dtype(), t.dtype());
         // Every sample must be in [-1, 1).
@@ -10181,7 +10224,7 @@ mod phase_a5_factory_tests {
     #[test]
     fn randn_like_matches_shape_dtype() {
         let t = cpu_f32(vec![0.0; 4], &[4]);
-        let r = t.randn_like(0.0, 1.0);
+        let r = t.randn_like(0.0, 1.0).unwrap();
         assert_eq!(r.shape().dims(), &[4]);
         assert_eq!(r.dtype(), DType::F32);
         // Samples are random — just sanity-check they're finite.
@@ -10192,7 +10235,7 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn static_rand_f32() {
-        let t = LazyTensor::rand(vec![100], 0.0, 1.0, DType::F32, &Device::cpu());
+        let t = LazyTensor::rand(vec![100], 0.0, 1.0, DType::F32, &Device::cpu()).unwrap();
         let v = t.realize_f32();
         // Mean of uniform [0,1) should be ~0.5; tolerate sample noise.
         let mean: f32 = v.iter().sum::<f32>() / v.len() as f32;
@@ -10201,7 +10244,7 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn static_randn_f64() {
-        let t = LazyTensor::randn(vec![1000], 0.0, 1.0, DType::F64, &Device::cpu());
+        let t = LazyTensor::randn(vec![1000], 0.0, 1.0, DType::F64, &Device::cpu()).unwrap();
         let v = t.realize_f64();
         let mean: f64 = v.iter().sum::<f64>() / v.len() as f64;
         // Normal(0,1) mean should be near 0; n=1000 gives stderr ~0.03.

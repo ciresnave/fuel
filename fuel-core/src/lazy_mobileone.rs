@@ -193,7 +193,7 @@ impl MobileOneModel {
         let w_shape = Shape::from_dims(&[
             layer.c_out, layer.c_in / layer.groups, layer.kernel, layer.kernel,
         ]);
-        let w = layer.conv_w.const_like(x, w_shape);
+        let w = layer.conv_w.const_like(x, w_shape)?;
         let pad = if layer.kernel > 1 { 1 } else { 0 };
         let conv_out = x.conv2d(
             &w, None,
@@ -227,7 +227,7 @@ impl MobileOneModel {
         b: &Arc<[f32]>,
         c_in: usize, c_out: usize,
     ) -> Result<LazyTensor> {
-        let wt = w.const_like(x, Shape::from_dims(&[c_out, c_in, 1, 1]));
+        let wt = w.const_like(x, Shape::from_dims(&[c_out, c_in, 1, 1]))?;
         let conv = x.conv2d(&wt, None, (1, 1), (0, 0), 1)?;
         let bt = x
             .const_f32_like(Arc::clone(b), Shape::from_dims(&[c_out]))

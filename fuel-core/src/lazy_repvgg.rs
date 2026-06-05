@@ -187,7 +187,7 @@ impl RepVggModel {
 
     fn apply_layer(&self, x: &LazyTensor, layer: &RepVggLayerWeights) -> Result<LazyTensor> {
         let w_shape = Shape::from_dims(&[layer.c_out, layer.c_in / layer.groups, 3, 3]);
-        let w = layer.conv_w.const_like(x, w_shape);
+        let w = layer.conv_w.const_like(x, w_shape)?;
         let conv_out = x.conv2d(
             &w, None,
             (layer.stride, layer.stride),

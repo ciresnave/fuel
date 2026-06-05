@@ -193,7 +193,7 @@ impl VggModel {
     fn apply_conv(&self, x: &LazyTensor, conv: &VggConvWeights) -> Result<LazyTensor> {
         let w = conv.w.const_like(
             x, Shape::from_dims(&[conv.c_out, conv.c_in, 3, 3]),
-        );
+        )?;
         let out = x.conv2d(&w, None, (1, 1), (1, 1), 1)?;
         let bias_t = x
             .const_f32_like(Arc::clone(&conv.b), Shape::from_dims(&[conv.c_out]))
