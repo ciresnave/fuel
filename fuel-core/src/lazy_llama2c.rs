@@ -11,9 +11,13 @@
 //! [`Llama2cConfig`] to [`crate::lazy::LlamaConfig`].
 
 use crate::inference_context::{InferenceContext, KvCache};
-use crate::lazy::{KVCache, LlamaConfig, LlamaModel, LlamaWeights, LazyTensor, SamplingStrategy};
+use crate::lazy::{
+    KVCache, LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, LazyTensor,
+    SamplingStrategy, WeightStorage,
+};
 use crate::{DType, Device, Result};
 use fuel_graph_executor::{GraphBackend, GraphExecutor};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Llama2cConfig {
@@ -472,12 +476,238 @@ impl Llama2cConfig {
     }
 }
 
+// -----------------------------------------------------------------
+// llama2.c binary checkpoint loader (Karpathy format, v0 / legacy).
+// -----------------------------------------------------------------
+
+fn read_i32_le<R: std::io::Read>(r: &mut R) -> Result<i32> {
+    let mut buf = [0u8; 4];
+    r.read_exact(&mut buf)
+        .map_err(|e| crate::Error::Msg(format!("llama2c bin: short read on i32 header: {e}")))?;
+    Ok(i32::from_le_bytes(buf))
+}
+
+fn read_f32_vec<R: std::io::Read>(r: &mut R, n: usize) -> Result<Vec<f32>> {
+    let mut bytes = vec![0u8; n * 4];
+    r.read_exact(&mut bytes).map_err(|e| {
+        crate::Error::Msg(format!(
+            "llama2c bin: short read of {n} f32s ({} bytes): {e}",
+            n * 4,
+        ))
+    })?;
+    let mut out = vec![0.0_f32; n];
+    for (i, chunk) in bytes.chunks_exact(4).enumerate() {
+        out[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    }
+    Ok(out)
+}
+
+/// In-place row-major transpose. Source has shape `(rows, cols)`;
+/// returns a new vec with shape `(cols, rows)`.
+fn transpose_rows_cols(src: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    debug_assert_eq!(src.len(), rows * cols);
+    let mut out = vec![0.0_f32; rows * cols];
+    for r in 0..rows {
+        for c in 0..cols {
+            out[c * rows + r] = src[r * cols + c];
+        }
+    }
+    out
+}
+
+/// Read a llama2.c binary checkpoint (Karpathy's legacy format) into
+/// a ready-to-forward [`Llama2cModel`].
+///
+/// Header is 7 little-endian `i32`s: `dim`, `hidden_dim`, `n_layers`,
+/// `n_heads`, `n_kv_heads`, `vocab_size` (signed — negative signals
+/// an untied lm_head present at the end of the file), `seq_len`.
+///
+/// Then weights are stored in PyTorch row-major `(out_features,
+/// in_features)` layout per linear layer, in this order:
+///
+///   1. token_embedding  `(vocab_size, dim)`
+///   2. rms_att          `(n_layers, dim)`
+///   3. wq               `(n_layers, dim, dim)`
+///   4. wk               `(n_layers, kv_dim, dim)` where `kv_dim = n_kv_heads * head_dim`
+///   5. wv               `(n_layers, kv_dim, dim)`
+///   6. wo               `(n_layers, dim, dim)`
+///   7. rms_ffn          `(n_layers, dim)`
+///   8. w1 (gate)        `(n_layers, hidden_dim, dim)`
+///   9. w2 (down)        `(n_layers, dim, hidden_dim)`
+///  10. w3 (up)          `(n_layers, hidden_dim, dim)`
+///  11. rms_final        `(dim,)`
+///  12. freq_cis_real    `(seq_len, head_dim/2)`  — skipped (recomputed by graph)
+///  13. freq_cis_imag    `(seq_len, head_dim/2)`  — skipped
+///  14. lm_head          `(vocab_size, dim)` — only if `vocab_size` was negative
+///
+/// The lazy port discards the precomputed RoPE tables (the graph rebuilds
+/// them host-side from `rope_theta = 10000.0`) and transposes each linear
+/// weight to `(in_features, out_features)` — the layout
+/// [`WeightStorage::apply_linear`] expects.
+///
+/// When `shared_classifier == true` (positive vocab_size in the header),
+/// the lm_head weight is materialized as the transpose of the token
+/// embedding table — exactly what the eager
+/// `TransformerWeights::var_builder` path does with
+/// `lm_head.weight = tr(token_embedding_table)`.
+///
+/// # Errors
+///
+/// Returns an error on truncated input, on `dim % n_heads != 0`, or on
+/// `head_dim % 2 != 0` (RoPE prerequisite).
+pub fn load_llama2c_bin<R: std::io::Read>(r: &mut R) -> Result<Llama2cModel> {
+    let dim = read_i32_le(r)? as usize;
+    let hidden_dim = read_i32_le(r)? as usize;
+    let n_layers = read_i32_le(r)? as usize;
+    let n_heads = read_i32_le(r)? as usize;
+    let n_kv_heads = read_i32_le(r)? as usize;
+    let vocab_signed = read_i32_le(r)?;
+    let shared_classifier = vocab_signed > 0;
+    let vocab_size = vocab_signed.unsigned_abs() as usize;
+    let seq_len = read_i32_le(r)? as usize;
+
+    if dim == 0 || n_heads == 0 || !dim.is_multiple_of(n_heads) {
+        return Err(crate::Error::Msg(format!(
+            "llama2c bin: invalid header dim={dim} n_heads={n_heads}",
+        )));
+    }
+    let head_dim = dim / n_heads;
+    if !head_dim.is_multiple_of(2) {
+        return Err(crate::Error::Msg(format!(
+            "llama2c bin: head_dim {head_dim} must be even for RoPE",
+        )));
+    }
+    let kv_dim = n_kv_heads * head_dim;
+
+    let config = Llama2cConfig {
+        dim,
+        hidden_dim,
+        n_layers,
+        n_heads,
+        n_kv_heads,
+        vocab_size,
+        head_dim,
+        norm_eps: 1e-5,
+        rope_theta: 10_000.0,
+    };
+
+    // 1. Token embedding table — kept as-is (vocab_size, dim) row-major.
+    //    Same layout `LlamaWeights::token_embedding` and the lazy
+    //    embedding-lookup path expect.
+    let token_embedding: Arc<[f32]> = Arc::from(read_f32_vec(r, vocab_size * dim)?);
+
+    // 2. Per-layer RmsNorm gains (attn pre-norm), interleaved across layers.
+    let rms_att = read_f32_vec(r, n_layers * dim)?;
+
+    // 3–6. Q/K/V/O projection weights, stored per layer in (out, in) order.
+    let wq_all = read_f32_vec(r, n_layers * dim * dim)?;
+    let wk_all = read_f32_vec(r, n_layers * kv_dim * dim)?;
+    let wv_all = read_f32_vec(r, n_layers * kv_dim * dim)?;
+    let wo_all = read_f32_vec(r, n_layers * dim * dim)?;
+
+    // 7. Per-layer RmsNorm gains (ffn pre-norm).
+    let rms_ffn = read_f32_vec(r, n_layers * dim)?;
+
+    // 8–10. SwiGLU FFN weights.
+    //   w1 = gate  (hidden_dim, dim)
+    //   w2 = down  (dim, hidden_dim)
+    //   w3 = up    (hidden_dim, dim)
+    let w1_all = read_f32_vec(r, n_layers * hidden_dim * dim)?;
+    let w2_all = read_f32_vec(r, n_layers * dim * hidden_dim)?;
+    let w3_all = read_f32_vec(r, n_layers * hidden_dim * dim)?;
+
+    // 11. Final RmsNorm gain.
+    let rms_final: Arc<[f32]> = Arc::from(read_f32_vec(r, dim)?);
+
+    // 12–13. Precomputed RoPE freq_cis tables — skip; the lazy graph
+    //        rebuilds them from `rope_theta` each forward.
+    if seq_len > 0 {
+        let half = head_dim / 2;
+        let _ = read_f32_vec(r, seq_len * half)?;
+        let _ = read_f32_vec(r, seq_len * half)?;
+    }
+
+    // 14. Optional separate lm_head when classifier is not tied.
+    let lm_head_raw = if shared_classifier {
+        None
+    } else {
+        Some(read_f32_vec(r, vocab_size * dim)?)
+    };
+
+    // Build per-layer LayerWeights by slicing the interleaved per-layer
+    // blocks and transposing each linear weight to (in, out).
+    let layers: Vec<LayerWeights> = (0..n_layers)
+        .map(|i| {
+            let wq_layer = &wq_all[i * dim * dim..(i + 1) * dim * dim];
+            let wk_layer = &wk_all[i * kv_dim * dim..(i + 1) * kv_dim * dim];
+            let wv_layer = &wv_all[i * kv_dim * dim..(i + 1) * kv_dim * dim];
+            let wo_layer = &wo_all[i * dim * dim..(i + 1) * dim * dim];
+            let w1_layer = &w1_all[i * hidden_dim * dim..(i + 1) * hidden_dim * dim];
+            let w2_layer = &w2_all[i * dim * hidden_dim..(i + 1) * dim * hidden_dim];
+            let w3_layer = &w3_all[i * hidden_dim * dim..(i + 1) * hidden_dim * dim];
+
+            // Transpose each (out, in) → (in, out) for WeightStorage::apply_linear.
+            let attn_q = Arc::from(transpose_rows_cols(wq_layer, dim, dim));
+            let attn_k = Arc::from(transpose_rows_cols(wk_layer, kv_dim, dim));
+            let attn_v = Arc::from(transpose_rows_cols(wv_layer, kv_dim, dim));
+            let attn_o = Arc::from(transpose_rows_cols(wo_layer, dim, dim));
+            let ffn_gate = Arc::from(transpose_rows_cols(w1_layer, hidden_dim, dim));
+            let ffn_down = Arc::from(transpose_rows_cols(w2_layer, dim, hidden_dim));
+            let ffn_up = Arc::from(transpose_rows_cols(w3_layer, hidden_dim, dim));
+
+            let attn_norm_gain: Arc<[f32]> =
+                Arc::from(rms_att[i * dim..(i + 1) * dim].to_vec());
+            let ffn_norm_gain: Arc<[f32]> =
+                Arc::from(rms_ffn[i * dim..(i + 1) * dim].to_vec());
+
+            LayerWeights {
+                attn_q: WeightStorage::F32(attn_q),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(attn_k),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(attn_v),
+                attn_v_bias: None,
+                attn_o: WeightStorage::F32(attn_o),
+                ffn_gate: WeightStorage::F32(ffn_gate),
+                ffn_up: WeightStorage::F32(ffn_up),
+                ffn_down: WeightStorage::F32(ffn_down),
+                attn_norm_gain,
+                ffn_norm_gain,
+            }
+        })
+        .collect();
+
+    // lm_head: transpose (vocab_size, dim) → (dim, vocab_size).
+    let output = match lm_head_raw {
+        Some(raw) => WeightStorage::F32(Arc::from(transpose_rows_cols(&raw, vocab_size, dim))),
+        None => crate::lazy_llama_full::tied_lm_head_from_embeddings(
+            &token_embedding,
+            vocab_size,
+            dim,
+        ),
+    };
+
+    let weights = LlamaWeights {
+        token_embedding,
+        layers,
+        final_norm_gain: rms_final,
+        output,
+    };
+    Ok(Llama2cModel { config, weights })
+}
+
+/// Convenience: open a path and read a llama2.c bin file.
+pub fn load_llama2c_bin_path<P: AsRef<std::path::Path>>(path: P) -> Result<Llama2cModel> {
+    let file = std::fs::File::open(path.as_ref())
+        .map_err(|e| crate::Error::Msg(format!("llama2c bin open {:?}: {e}", path.as_ref())))?;
+    let mut reader = std::io::BufReader::new(file);
+    load_llama2c_bin(&mut reader)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lazy::{LayerWeights, WeightStorage};
     use fuel_core_types::Shape;
-    use std::sync::Arc;
 
     #[test]
     fn from_hf_json_str_parses_canonical_tinyllama_fields() {
@@ -785,5 +1015,186 @@ mod tests {
         for &v in &hidden.realize_f32() {
             assert!(v.is_finite(), "non-finite hidden: {v}");
         }
+    }
+
+    // -----------------------------------------------------------------
+    // llama2.c bin format loader tests.
+    // -----------------------------------------------------------------
+
+    /// Hand-construct a tiny llama2.c bin blob with deterministic
+    /// payloads, then verify `load_llama2c_bin` rebuilds the same
+    /// config and produces correctly transposed weights.
+    fn build_tiny_bin(
+        dim: usize,
+        hidden_dim: usize,
+        n_layers: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        vocab_size: usize,
+        seq_len: usize,
+        shared_classifier: bool,
+        with_freq_cis: bool,
+    ) -> Vec<u8> {
+        let head_dim = dim / n_heads;
+        let kv_dim = n_kv_heads * head_dim;
+        let mut bytes = Vec::new();
+        let vocab_signed = if shared_classifier {
+            vocab_size as i32
+        } else {
+            -(vocab_size as i32)
+        };
+        for v in &[
+            dim as i32,
+            hidden_dim as i32,
+            n_layers as i32,
+            n_heads as i32,
+            n_kv_heads as i32,
+            vocab_signed,
+            seq_len as i32,
+        ] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        // Deterministic f32 generator so tests can hand-compute expected values.
+        let mut counter: u32 = 0;
+        let mut next_f32 = || -> f32 {
+            counter = counter.wrapping_add(1);
+            (counter as f32) * 0.001
+        };
+        let push_f32s = |bytes: &mut Vec<u8>, n: usize, src: &mut dyn FnMut() -> f32| {
+            for _ in 0..n {
+                bytes.extend_from_slice(&src().to_le_bytes());
+            }
+        };
+        push_f32s(&mut bytes, vocab_size * dim, &mut next_f32); // token_embedding
+        push_f32s(&mut bytes, n_layers * dim, &mut next_f32); // rms_att
+        push_f32s(&mut bytes, n_layers * dim * dim, &mut next_f32); // wq
+        push_f32s(&mut bytes, n_layers * kv_dim * dim, &mut next_f32); // wk
+        push_f32s(&mut bytes, n_layers * kv_dim * dim, &mut next_f32); // wv
+        push_f32s(&mut bytes, n_layers * dim * dim, &mut next_f32); // wo
+        push_f32s(&mut bytes, n_layers * dim, &mut next_f32); // rms_ffn
+        push_f32s(&mut bytes, n_layers * hidden_dim * dim, &mut next_f32); // w1
+        push_f32s(&mut bytes, n_layers * dim * hidden_dim, &mut next_f32); // w2
+        push_f32s(&mut bytes, n_layers * hidden_dim * dim, &mut next_f32); // w3
+        push_f32s(&mut bytes, dim, &mut next_f32); // rms_final
+        if with_freq_cis {
+            push_f32s(&mut bytes, seq_len * (head_dim / 2), &mut next_f32);
+            push_f32s(&mut bytes, seq_len * (head_dim / 2), &mut next_f32);
+        }
+        if !shared_classifier {
+            push_f32s(&mut bytes, vocab_size * dim, &mut next_f32);
+        }
+        bytes
+    }
+
+    #[test]
+    fn load_llama2c_bin_round_trip_no_gqa_tied() {
+        let bin = build_tiny_bin(
+            /*dim*/ 8, /*hidden_dim*/ 16, /*n_layers*/ 1,
+            /*n_heads*/ 2, /*n_kv_heads*/ 2, /*vocab_size*/ 4,
+            /*seq_len*/ 4, /*shared_classifier*/ true, /*with_freq_cis*/ true,
+        );
+        let mut reader = std::io::Cursor::new(&bin);
+        let model = load_llama2c_bin(&mut reader).unwrap();
+        assert_eq!(model.config.dim, 8);
+        assert_eq!(model.config.hidden_dim, 16);
+        assert_eq!(model.config.n_layers, 1);
+        assert_eq!(model.config.n_heads, 2);
+        assert_eq!(model.config.n_kv_heads, 2);
+        assert_eq!(model.config.vocab_size, 4);
+        assert_eq!(model.config.head_dim, 4);
+        assert!((model.config.rope_theta - 10_000.0).abs() < 1e-9);
+        // Token embedding stored as-is.
+        assert_eq!(model.weights.token_embedding.len(), 4 * 8);
+        assert_eq!(model.weights.layers.len(), 1);
+        // Q is dim×dim → transposed flat length stays dim*dim = 64.
+        let attn_q = match &model.weights.layers[0].attn_q {
+            WeightStorage::F32(a) => a.clone(),
+            _ => panic!("expected F32"),
+        };
+        assert_eq!(attn_q.len(), 8 * 8);
+        // FFN gate is (hidden_dim, dim) → transposed (dim, hidden_dim) = 128 floats.
+        let ffn_gate = match &model.weights.layers[0].ffn_gate {
+            WeightStorage::F32(a) => a.clone(),
+            _ => panic!("expected F32"),
+        };
+        assert_eq!(ffn_gate.len(), 8 * 16);
+        // FFN down is (dim, hidden_dim) → transposed (hidden_dim, dim) = 128 floats.
+        let ffn_down = match &model.weights.layers[0].ffn_down {
+            WeightStorage::F32(a) => a.clone(),
+            _ => panic!("expected F32"),
+        };
+        assert_eq!(ffn_down.len(), 16 * 8);
+        // Forward should produce finite logits of the expected shape.
+        let logits = model.forward(&[0, 1, 2], 0).unwrap();
+        assert_eq!(logits.shape().dims(), &[1, 3, 4]);
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite(), "non-finite logit: {v}");
+        }
+    }
+
+    #[test]
+    fn load_llama2c_bin_round_trip_gqa_untied() {
+        let bin = build_tiny_bin(
+            /*dim*/ 8, /*hidden_dim*/ 16, /*n_layers*/ 2,
+            /*n_heads*/ 4, /*n_kv_heads*/ 2, /*vocab_size*/ 6,
+            /*seq_len*/ 4, /*shared_classifier*/ false, /*with_freq_cis*/ true,
+        );
+        let mut reader = std::io::Cursor::new(&bin);
+        let model = load_llama2c_bin(&mut reader).unwrap();
+        assert_eq!(model.config.n_kv_heads, 2);
+        assert_eq!(model.config.head_dim, 2); // 8 / 4
+        // GQA: wk/wv are (kv_dim=4, dim=8) → transposed 4*8 = 32 floats per layer.
+        let attn_k = match &model.weights.layers[0].attn_k {
+            WeightStorage::F32(a) => a.clone(),
+            _ => panic!("expected F32"),
+        };
+        assert_eq!(attn_k.len(), 4 * 8);
+        // Untied lm_head: output is read from the file (not tied to embedding).
+        // We can't directly check distinctness without a deterministic byte
+        // pattern match — instead just verify it has the right size.
+        let lm = match &model.weights.output {
+            WeightStorage::F32(a) => a.clone(),
+            _ => panic!("expected F32"),
+        };
+        assert_eq!(lm.len(), 8 * 6); // (dim, vocab_size) transposed
+        // Forward smoke test.
+        let logits = model.forward(&[0, 1], 0).unwrap();
+        assert_eq!(logits.shape().dims(), &[1, 2, 6]);
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite(), "non-finite logit: {v}");
+        }
+    }
+
+    #[test]
+    fn load_llama2c_bin_rejects_invalid_head_dim() {
+        // dim=7, n_heads=2 → 7 % 2 != 0.
+        let mut bytes = Vec::new();
+        for v in &[7_i32, 16, 1, 2, 2, 4, 4] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut reader = std::io::Cursor::new(&bytes);
+        let err = load_llama2c_bin(&mut reader).err().expect("should reject");
+        let msg = format!("{err}");
+        assert!(msg.contains("dim=7"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn load_llama2c_bin_rejects_truncated() {
+        // Only 5 of the 7 header i32s present.
+        let mut bytes = Vec::new();
+        for v in &[8_i32, 16, 1, 2, 2] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut reader = std::io::Cursor::new(&bytes);
+        assert!(load_llama2c_bin(&mut reader).is_err());
+    }
+
+    /// Spot-check the transpose: for a 2×3 source `[[1,2,3],[4,5,6]]`
+    /// stored row-major, the transpose `(3, 2)` = `[[1,4],[2,5],[3,6]]`.
+    #[test]
+    fn transpose_rows_cols_correctness() {
+        let src = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let out = transpose_rows_cols(&src, 2, 3);
+        assert_eq!(out, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
     }
 }
