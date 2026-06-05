@@ -167,15 +167,9 @@ impl MptModel {
         assert_eq!(cfg.n_heads * cfg.head_dim(), cfg.d_model);
         assert_eq!(cfg.n_heads % cfg.kv_n_heads, 0);
 
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
-            &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let mut h = embed
-            .index_select(0_usize, &token_ids)?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.d_model]))?;
+        let mut h = LazyTensor::embed_tokens(
+            weights.token_embedding.clone(), cfg.vocab_size, cfg.d_model, tokens, &Device::cpu(),
+        )?;
 
         let slopes = cfg.alibi_slopes();
         let mask_data = build_alibi_causal_mask(seq, &slopes);

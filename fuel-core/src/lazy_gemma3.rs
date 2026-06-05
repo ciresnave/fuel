@@ -150,15 +150,9 @@ impl Gemma3Model {
             "Gemma3Config: sliding_window_pattern must be > 0",
         );
 
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
-            &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let mut h = embed
-            .index_select(0_usize, &token_ids)?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+        let mut h = LazyTensor::embed_tokens(
+            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+        )?;
         h = h.mul_scalar((cfg.hidden_size as f64).sqrt());
 
         let (rope_cos_g, rope_sin_g) = h.rope_tables_const(

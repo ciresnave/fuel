@@ -3037,6 +3037,74 @@ impl LazyTensor {
         self.broadcast_add(&bias_t)
     }
 
+    /// Embed `tokens` against an `[vocab_size, hidden]` embedding
+    /// table held as `Arc<[f32]>`. Returns `(1, seq, hidden)`
+    /// rank-3 hidden states ready to feed into a decoder backbone.
+    ///
+    /// Bootstraps a fresh graph anchored on a new const-f32 node.
+    /// For composition with an already-built tensor (e.g.,
+    /// multimodal models that need text embeddings on the audio
+    /// graph), use [`Self::embed_tokens_anchored`] instead.
+    ///
+    /// Retires the 7-line `from_f32 + const_u32_like + index_select
+    /// + reshape` ceremony every LLM port carried.
+    pub fn embed_tokens(
+        embed_table: std::sync::Arc<[f32]>,
+        vocab_size: usize,
+        hidden: usize,
+        tokens: &[u32],
+        device: &crate::Device,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let seq = tokens.len();
+        if seq == 0 {
+            return Err(fuel_core_types::Error::Msg(
+                "embed_tokens: tokens must be non-empty".into(),
+            ).bt());
+        }
+        let embed = Self::from_f32(
+            embed_table,
+            Shape::from_dims(&[vocab_size, hidden]),
+            device,
+        );
+        let token_ids = embed.const_u32_like(
+            tokens.to_vec(), Shape::from_dims(&[seq]),
+        );
+        embed
+            .index_select(0_usize, &token_ids)?
+            .reshape(Shape::from_dims(&[1, seq, hidden]))
+    }
+
+    /// Variant of [`Self::embed_tokens`] that anchors the embedding
+    /// table and token-id constants on the receiver's graph, so the
+    /// resulting embeddings can compose with `self` and other
+    /// tensors already on that graph. Used by multimodal models
+    /// (vision + text, audio + text) where the text embeddings must
+    /// live on the modality encoder's graph for cross-substitution
+    /// to work.
+    pub fn embed_tokens_anchored(
+        &self,
+        embed_table: std::sync::Arc<[f32]>,
+        vocab_size: usize,
+        hidden: usize,
+        tokens: &[u32],
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let seq = tokens.len();
+        if seq == 0 {
+            return Err(fuel_core_types::Error::Msg(
+                "embed_tokens_anchored: tokens must be non-empty".into(),
+            ).bt());
+        }
+        let embed = self.const_f32_like(
+            embed_table, Shape::from_dims(&[vocab_size, hidden]),
+        );
+        let token_ids = self.const_u32_like(
+            tokens.to_vec(), Shape::from_dims(&[seq]),
+        );
+        embed
+            .index_select(0_usize, &token_ids)?
+            .reshape(Shape::from_dims(&[1, seq, hidden]))
+    }
+
     /// Build the standard (non-interleaved) RoPE cos/sin tables for
     /// `seq` positions starting at `start_pos`, anchored on the
     /// receiver's graph. Returns `(cos, sin)`, each with shape
@@ -10146,6 +10214,75 @@ mod phase_a2_composite_tests {
             assert!((cv[i] - 1.0).abs() < 1e-5, "cos[0,{i}] = {}", cv[i]);
             assert!(sv[i].abs() < 1e-5, "sin[0,{i}] = {}", sv[i]);
         }
+    }
+
+    #[test]
+    fn embed_tokens_shape_and_lookup() {
+        // 5-token vocab, 3-dim hidden. Vocab embedding table contains
+        // row i = (i, i+0.5, i+1) so the lookup result is verifiable.
+        let vocab_size = 5;
+        let hidden = 3;
+        let table: Vec<f32> = (0..vocab_size).flat_map(|i| {
+            vec![i as f32, i as f32 + 0.5, i as f32 + 1.0]
+        }).collect();
+        let tokens = vec![1_u32, 3, 0];
+        let out = LazyTensor::embed_tokens(
+            std::sync::Arc::from(table), vocab_size, hidden,
+            &tokens, &crate::Device::cpu(),
+        ).unwrap();
+        assert_eq!(out.shape().dims(), &[1, 3, hidden]);
+        let v = out.realize_f32();
+        let want = [
+            1.0_f32, 1.5, 2.0,  // token 1
+            3.0, 3.5, 4.0,      // token 3
+            0.0, 0.5, 1.0,      // token 0
+        ];
+        for (i, (&got, &exp)) in v.iter().zip(want.iter()).enumerate() {
+            assert!((got - exp).abs() < 1e-5, "row {i}: got={got} want={exp}");
+        }
+    }
+
+    #[test]
+    fn embed_tokens_anchored_lives_on_receiver_graph() {
+        // Two paths: one bootstrapped via embed_tokens, one anchored
+        // on a pre-existing tensor. Both produce identical values,
+        // but only the anchored one can compose with the anchor.
+        let vocab_size = 4;
+        let hidden = 2;
+        let table: Vec<f32> = (0..vocab_size).flat_map(|i| {
+            vec![i as f32, i as f32 * 2.0]
+        }).collect();
+        let table_arc: std::sync::Arc<[f32]> = std::sync::Arc::from(table);
+        let tokens = vec![2_u32, 1];
+
+        let anchor = cpu_f32(vec![0.0_f32], &[1]);
+        let embedded = anchor.embed_tokens_anchored(
+            std::sync::Arc::clone(&table_arc), vocab_size, hidden, &tokens,
+        ).unwrap();
+        assert_eq!(embedded.shape().dims(), &[1, 2, hidden]);
+
+        // Anchored: composes with the anchor.
+        let one_scaled = anchor.const_f32_like(
+            std::sync::Arc::from(vec![1.0_f32]),
+            Shape::from_dims(&[1]),
+        );
+        let _ = embedded.add(&one_scaled.reshape(Shape::from_dims(&[1, 1, 1])).unwrap().broadcast_to(Shape::from_dims(&[1, 2, hidden])).unwrap()).unwrap();
+        let v = embedded.realize_f32();
+        let want = [
+            2.0_f32, 4.0,  // token 2
+            1.0, 2.0,      // token 1
+        ];
+        for (i, (&got, &exp)) in v.iter().zip(want.iter()).enumerate() {
+            assert!((got - exp).abs() < 1e-5, "row {i}: got={got} want={exp}");
+        }
+    }
+
+    #[test]
+    fn embed_tokens_empty_returns_error() {
+        let r = LazyTensor::embed_tokens(
+            std::sync::Arc::from(vec![0.0_f32]), 1, 1, &[], &crate::Device::cpu(),
+        );
+        assert!(r.is_err());
     }
 
     #[test]

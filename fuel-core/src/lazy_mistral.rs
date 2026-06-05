@@ -138,15 +138,9 @@ impl MistralModel {
         assert!(seq > 0, "MistralModel::forward: tokens must be non-empty");
 
         // Embedding lookup.
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
-            &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let h = embed
-            .index_select(0_usize, &token_ids)?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+        let h = LazyTensor::embed_tokens(
+            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+        )?;
 
         self.forward_embeds(&h, start_pos)
     }
@@ -202,15 +196,9 @@ impl MistralModel {
         let batch = 1;
         assert!(seq > 0, "MistralModel::forward_hidden: tokens must be non-empty");
 
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
-            &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let h = embed
-            .index_select(0_usize, &token_ids)?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+        let h = LazyTensor::embed_tokens(
+            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+        )?;
         self.forward_hidden_embeds(&h, start_pos)
     }
 

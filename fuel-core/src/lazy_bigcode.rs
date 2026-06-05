@@ -130,22 +130,16 @@ impl BigCodeModel {
             start_pos + seq, cfg.max_position_embeddings,
         );
 
-        let wte = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
-            &Device::cpu(),
-        );
-        let token_ids = wte.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let token_emb = wte
-            .index_select(0_usize, &token_ids)?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+        let token_emb = LazyTensor::embed_tokens(
+            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+        )?;
 
-        let wpe = wte.const_f32_like(
+        let wpe = token_emb.const_f32_like(
             weights.position_embedding.clone(),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.hidden_size]),
         );
         let pos_ids: Vec<u32> = (0..seq).map(|i| (start_pos + i) as u32).collect();
-        let pos_ids_t = wte.const_u32_like(pos_ids, Shape::from_dims(&[seq]));
+        let pos_ids_t = token_emb.const_u32_like(pos_ids, Shape::from_dims(&[seq]));
         let pos_emb = wpe
             .index_select(0_usize, &pos_ids_t)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;

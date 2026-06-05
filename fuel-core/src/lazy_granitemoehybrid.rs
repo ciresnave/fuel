@@ -181,15 +181,9 @@ impl GraniteMoeHybridModel {
             "layer_types length must match num_hidden_layers",
         );
 
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
-            &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let mut h = embed
-            .index_select(0_usize, &token_ids)?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
+        let mut h = LazyTensor::embed_tokens(
+            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+        )?;
         if (cfg.embedding_multiplier - 1.0).abs() > f32::EPSILON {
             h = h.mul_scalar(cfg.embedding_multiplier as f64);
         }

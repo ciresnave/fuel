@@ -198,18 +198,12 @@ impl ClipTextModel {
         assert!(seq <= cfg.max_position_embeddings);
 
         // Anchor on a single embedding tensor.
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.embed_dim]),
-            &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let token_embeds = embed
-            .index_select(0_usize, &token_ids)?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.embed_dim]))?;
+        let token_embeds = LazyTensor::embed_tokens(
+            weights.token_embedding.clone(), cfg.vocab_size, cfg.embed_dim, tokens, &Device::cpu(),
+        )?;
 
         // Position embedding for [0..seq).
-        let pos_full = embed.const_f32_like(
+        let pos_full = token_embeds.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.embed_dim]),
         );
@@ -294,16 +288,10 @@ impl ClipTextModel {
             "layer_ids must all be in [0, num_hidden_layers = {depth})",
         );
 
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.embed_dim]),
-            &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let token_embeds = embed
-            .index_select(0_usize, &token_ids)?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.embed_dim]))?;
-        let pos_full = embed.const_f32_like(
+        let token_embeds = LazyTensor::embed_tokens(
+            weights.token_embedding.clone(), cfg.vocab_size, cfg.embed_dim, tokens, &Device::cpu(),
+        )?;
+        let pos_full = token_embeds.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.embed_dim]),
         );
