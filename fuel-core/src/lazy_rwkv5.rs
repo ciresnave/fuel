@@ -146,10 +146,8 @@ pub struct Rwkv5Model {
 
 impl Rwkv5Model {
     pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
-        let cfg = &self.config;
-        let weights = &self.weights;
         let h_norm = self.run_backbone(tokens)?;
-        Ok(weights.head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size))
+        self.apply_lm_head(&h_norm)
     }
 
     /// Run the RWKV-v5 stack forward up to the final LayerNorm
@@ -160,26 +158,83 @@ impl Rwkv5Model {
         self.run_backbone(tokens)
     }
 
+    /// Multimodal entry point. Skips token embedding; runs the RWKV-v5
+    /// stack over pre-embedded inputs. RWKV does NOT scale embeddings
+    /// and has no `start_pos` parameter — recurrent state is implicit
+    /// in the time-mix (v1 is prefill only).
+    pub fn forward_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+        let h_norm = self.run_backbone_embeds(embeds)?;
+        self.apply_lm_head(&h_norm)
+    }
+
+    /// Hidden-state variant of [`Self::forward_embeds`].
+    pub fn forward_hidden_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+        self.run_backbone_embeds(embeds)
+    }
+
+    /// Build per-token embeddings without running the decoder.
+    pub fn embed_tokens_anchored(
+        &self, anchor: &LazyTensor, tokens: &[u32],
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        anchor.embed_tokens_anchored(
+            self.weights.token_embedding.clone(),
+            cfg.vocab_size, cfg.hidden_size, tokens,
+        )
+    }
+
+    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        Ok(self.weights.head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size))
+    }
+
     fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
-        let batch = 1;
         assert!(seq > 0, "Rwkv5Model::forward: tokens must be non-empty");
-        let n_heads = cfg.n_heads();
-        let head_size = cfg.head_size;
-        assert_eq!(
-            n_heads * head_size, cfg.hidden_size,
-            "Rwkv5Config: n_heads({n_heads}) * head_size({head_size}) must equal hidden_size",
-        );
-        let mut h = LazyTensor::embed_tokens(
+
+        let h = LazyTensor::embed_tokens(
             weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
         )?;
+        self.run_backbone_embeds(&h)
+    }
+
+    fn run_backbone_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = embeds.shape();
+        let dims = dims.dims();
+        if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
+            return Err(crate::Error::Msg(format!(
+                "Rwkv5Model::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
+                cfg.hidden_size, dims,
+            )).bt());
+        }
+        let seq = dims[1];
+        let batch = dims[0];
+        if seq == 0 {
+            return Err(crate::Error::Msg(
+                "Rwkv5Model::forward_embeds: seq must be > 0".into(),
+            ).bt());
+        }
+        let n_heads = cfg.n_heads();
+        let head_size = cfg.head_size;
+        if n_heads * head_size != cfg.hidden_size {
+            return Err(crate::Error::Msg(format!(
+                "Rwkv5Config: n_heads({n_heads}) * head_size({head_size}) must equal hidden_size",
+            )).bt());
+        }
+        let mut h = embeds.clone();
 
         for layer in &weights.layers {
             h = self.apply_block(&h, layer, batch, seq, n_heads, head_size)?;
         }
-        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_epsilon)?)
+        h.layer_norm_affine(
+            std::sync::Arc::clone(&weights.final_ln_gain),
+            std::sync::Arc::clone(&weights.final_ln_bias),
+            cfg.layer_norm_epsilon,
+        )
     }
 
     fn apply_block(
@@ -590,5 +645,50 @@ mod tests {
         for &v in &hidden.realize_f32() {
             assert!(v.is_finite(), "non-finite hidden: {v}");
         }
+    }
+
+    #[test]
+    fn forward_embeds_matches_forward_after_token_lookup() {
+        let cfg = tiny_config();
+        let model = Rwkv5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3];
+        let logits_ref = model.forward(&tokens).unwrap().realize_f32();
+        let anchor = LazyTensor::from_f32(
+            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
+        );
+        let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
+        let logits_via_embeds = model.forward_embeds(&embeds).unwrap().realize_f32();
+        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-5,
+            "Rwkv5 forward vs forward_embeds must agree (max diff {max_diff})");
+    }
+
+    #[test]
+    fn forward_embeds_rejects_bad_shape() {
+        let cfg = tiny_config();
+        let model = Rwkv5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let bad = LazyTensor::from_f32(
+            vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+        );
+        assert!(model.forward_embeds(&bad).is_err());
+    }
+
+    #[test]
+    fn forward_hidden_embeds_matches_forward_hidden() {
+        let cfg = tiny_config();
+        let model = Rwkv5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![5, 7];
+        let h_ref = model.forward_hidden(&tokens).unwrap().realize_f32();
+        let anchor = LazyTensor::from_f32(
+            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
+        );
+        let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
+        let h_via_embeds = model.forward_hidden_embeds(&embeds).unwrap().realize_f32();
+        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-5,
+            "Rwkv5 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
     }
 }
