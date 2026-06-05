@@ -278,15 +278,10 @@ impl PixtralModel {
         let k = block.k_proj.apply_linear(&x_norm, h, h);
         let v = block.v_proj.apply_linear(&x_norm, h, h);
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(n_heads, head_dim)?;
+        let k = k.split_heads(n_heads, head_dim)?;
+        let v = v.split_heads(n_heads, head_dim)?;
 
         // Apply 2D RoPE to Q and K.
         let q_r = q.rope_with_tables(cos, sin)?;
@@ -298,9 +293,7 @@ impl PixtralModel {
         // No causal mask — bidirectional vision attention.
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
-        let merged = ctx
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, h]))?;
+        let merged = ctx.merge_heads()?;
         let attn_out = block.o_proj.apply_linear(&merged, h, h);
         let h1 = x.add(&attn_out)?;
 

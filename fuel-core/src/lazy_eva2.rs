@@ -216,16 +216,10 @@ fn apply_attention(
     let v_bias = anchor.const_f32_like(Arc::clone(&a.v_b), Shape::from_dims(&[e]));
     let v = v.broadcast_add(&v_bias)?;
 
-    // (B, N, E) → (B, N, heads, head_dim) → (B, heads, N, head_dim)
-    let q = q
-        .reshape(Shape::from_dims(&[b, n, heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let k = k
-        .reshape(Shape::from_dims(&[b, n, heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let v = v
-        .reshape(Shape::from_dims(&[b, n, heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
+    // (B, N, E) → (B, heads, N, head_dim)
+    let q = q.split_heads(heads, head_dim)?;
+    let k = k.split_heads(heads, head_dim)?;
+    let v = v.split_heads(heads, head_dim)?;
 
     // Apply RoPE to patch tokens of Q and K (skip CLS at position 0).
     let q = apply_rope_skip_cls(&q, cos_emb, sin_emb, b, heads, n, head_dim)?;
@@ -243,8 +237,8 @@ fn apply_attention(
     // (batch, N, head_dim) → (B, heads, N, head_dim) → (B, N, E)
     let ctx = ctx
         .reshape(Shape::from_dims(&[b, heads, n, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?
-        .reshape(Shape::from_dims(&[b, n, e]))?;
+        .merge_heads()?;
+    let _ = e;
     let projected = a.proj_w.apply_linear(&ctx, e, e);
     let proj_bias = anchor.const_f32_like(Arc::clone(&a.proj_b), Shape::from_dims(&[e]));
     projected.broadcast_add(&proj_bias)
