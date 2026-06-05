@@ -368,14 +368,14 @@ impl RecurrentGemmaModel {
         let kernel = cfg.conv1d_width;
 
         // Gating branch.
-        let y = r.linear_y_w.apply_linear(x, h, lru_width).add_trailing_bias(std::sync::Arc::clone(&r.linear_y_b))?;
+        let y = r.linear_y_w.apply_linear_with_bias(x, h, lru_width, std::sync::Arc::clone(&r.linear_y_b))?;
         let y_act = match cfg.hidden_activation {
             GemmaActivation::Gelu => y.gelu_erf(),
             GemmaActivation::GeluPytorchTanh => y.gelu(),
         };
 
         // Recurrence input.
-        let x_branch = r.linear_x_w.apply_linear(x, h, lru_width).add_trailing_bias(std::sync::Arc::clone(&r.linear_x_b))?;
+        let x_branch = r.linear_x_w.apply_linear_with_bias(x, h, lru_width, std::sync::Arc::clone(&r.linear_x_b))?;
 
         // Causal conv1d: (batch, seq, lru_width) → (batch, lru_width, seq),
         // pad left with (kernel - 1) zeros, run causal_conv1d, transpose back.
@@ -529,8 +529,8 @@ impl RecurrentGemmaModel {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let inter = cfg.mlp_intermediate();
-        let gate = layer.mlp_gate_w.apply_linear(x, h, inter).add_trailing_bias(std::sync::Arc::clone(&layer.mlp_gate_b))?;
-        let up = layer.mlp_up_w.apply_linear(x, h, inter).add_trailing_bias(std::sync::Arc::clone(&layer.mlp_up_b))?;
+        let gate = layer.mlp_gate_w.apply_linear_with_bias(x, h, inter, std::sync::Arc::clone(&layer.mlp_gate_b))?;
+        let up = layer.mlp_up_w.apply_linear_with_bias(x, h, inter, std::sync::Arc::clone(&layer.mlp_up_b))?;
         let activated = match cfg.hidden_activation {
             GemmaActivation::Gelu => gate.gelu_erf(),
             GemmaActivation::GeluPytorchTanh => gate.gelu(),

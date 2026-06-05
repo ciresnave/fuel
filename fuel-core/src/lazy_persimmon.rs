@@ -144,9 +144,9 @@ impl PersimmonModel {
         let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.input_ln_gain), std::sync::Arc::clone(&layer.input_ln_bias), cfg.layer_norm_eps)?;
 
         // Q/K/V projections — always have biases on Persimmon.
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size).add_trailing_bias(std::sync::Arc::clone(&layer.attn_q_bias))?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_trailing_bias(std::sync::Arc::clone(&layer.attn_k_bias))?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_trailing_bias(std::sync::Arc::clone(&layer.attn_v_bias))?;
+        let q = layer.attn_q.apply_linear_with_bias(&x_norm, cfg.hidden_size, cfg.hidden_size, std::sync::Arc::clone(&layer.attn_q_bias))?;
+        let k = layer.attn_k.apply_linear_with_bias(&x_norm, cfg.hidden_size, kv_dim, std::sync::Arc::clone(&layer.attn_k_bias))?;
+        let v = layer.attn_v.apply_linear_with_bias(&x_norm, cfg.hidden_size, kv_dim, std::sync::Arc::clone(&layer.attn_v_bias))?;
 
         // QK-LayerNorm BEFORE head reshape.
         let (q, k) = match (&layer.q_norm, &layer.k_norm) {
@@ -181,14 +181,14 @@ impl PersimmonModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size).add_trailing_bias(std::sync::Arc::clone(&layer.attn_o_bias))?;
+        let attn_out = layer.attn_o.apply_linear_with_bias(&merged, cfg.hidden_size, cfg.hidden_size, std::sync::Arc::clone(&layer.attn_o_bias))?;
 
         let h1 = x.add(&attn_out)?;
         let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.post_attn_ln_gain), std::sync::Arc::clone(&layer.post_attn_ln_bias), cfg.layer_norm_eps)?;
         // MLP: simple `down(relu(up(x)))`.
-        let up = layer.mlp_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size).add_trailing_bias(std::sync::Arc::clone(&layer.mlp_up_bias))?;
+        let up = layer.mlp_up.apply_linear_with_bias(&h1_norm, cfg.hidden_size, cfg.intermediate_size, std::sync::Arc::clone(&layer.mlp_up_bias))?;
         let up_act = up.relu();
-        let ffn_out = layer.mlp_down.apply_linear(&up_act, cfg.intermediate_size, cfg.hidden_size).add_trailing_bias(std::sync::Arc::clone(&layer.mlp_down_bias))?;
+        let ffn_out = layer.mlp_down.apply_linear_with_bias(&up_act, cfg.intermediate_size, cfg.hidden_size, std::sync::Arc::clone(&layer.mlp_down_bias))?;
         h1.add(&ffn_out)
     }
 }

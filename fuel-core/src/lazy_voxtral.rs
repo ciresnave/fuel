@@ -274,11 +274,11 @@ fn encoder_layer(
     )?;
 
     // Q (biased) / K (bias-free) / V (biased).
-    let q = lw.self_attn_q.apply_linear(&x_ln, d, d)
-        .add_trailing_bias(Arc::clone(&lw.self_attn_q_bias))?;
+    let q = lw.self_attn_q.apply_linear_with_bias(
+        &x_ln, d, d, Arc::clone(&lw.self_attn_q_bias))?;
     let k = lw.self_attn_k.apply_linear(&x_ln, d, d);
-    let v = lw.self_attn_v.apply_linear(&x_ln, d, d)
-        .add_trailing_bias(Arc::clone(&lw.self_attn_v_bias))?;
+    let v = lw.self_attn_v.apply_linear_with_bias(
+        &x_ln, d, d, Arc::clone(&lw.self_attn_v_bias))?;
 
     // Match the eager reference: scaling is folded into Q rather than
     // into the post-matmul scores. Equivalent at F32.
@@ -293,8 +293,8 @@ fn encoder_layer(
     let attn = scores.softmax_last_dim()?;
     let ctx = attn.matmul(&v)?;
     let merged = ctx.merge_heads()?;
-    let attn_out = lw.self_attn_o.apply_linear(&merged, d, d)
-        .add_trailing_bias(Arc::clone(&lw.self_attn_o_bias))?;
+    let attn_out = lw.self_attn_o.apply_linear_with_bias(
+        &merged, d, d, Arc::clone(&lw.self_attn_o_bias))?;
     let h1 = x.add(&attn_out)?;
 
     // Pre-LN FFN block (Linear → GELU → Linear).
@@ -303,11 +303,10 @@ fn encoder_layer(
         Arc::clone(&lw.final_ln_bias),
         1e-5,
     )?;
-    let hidden = lw.fc1.apply_linear(&h1_ln, d, cfg.intermediate_size)
-        .add_trailing_bias(Arc::clone(&lw.fc1_bias))?;
-    let hidden = hidden.gelu();
-    let ffn_out = lw.fc2.apply_linear(&hidden, cfg.intermediate_size, d)
-        .add_trailing_bias(Arc::clone(&lw.fc2_bias))?;
+    let hidden = lw.fc1.apply_linear_with_bias(
+        &h1_ln, d, cfg.intermediate_size, Arc::clone(&lw.fc1_bias))?.gelu();
+    let ffn_out = lw.fc2.apply_linear_with_bias(
+        &hidden, cfg.intermediate_size, d, Arc::clone(&lw.fc2_bias))?;
     h1.add(&ffn_out)
 }
 

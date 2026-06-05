@@ -196,9 +196,9 @@ impl PhiModel {
         let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.input_ln_gain), std::sync::Arc::clone(&layer.input_ln_bias), cfg.layer_norm_eps)?;
 
         // ---- Attention path -------------------------------------------------
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size).add_trailing_bias(std::sync::Arc::clone(&layer.attn_q_bias))?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_trailing_bias(std::sync::Arc::clone(&layer.attn_k_bias))?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_trailing_bias(std::sync::Arc::clone(&layer.attn_v_bias))?;
+        let q = layer.attn_q.apply_linear_with_bias(&x_norm, cfg.hidden_size, cfg.hidden_size, std::sync::Arc::clone(&layer.attn_q_bias))?;
+        let k = layer.attn_k.apply_linear_with_bias(&x_norm, cfg.hidden_size, kv_dim, std::sync::Arc::clone(&layer.attn_k_bias))?;
+        let v = layer.attn_v.apply_linear_with_bias(&x_norm, cfg.hidden_size, kv_dim, std::sync::Arc::clone(&layer.attn_v_bias))?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -231,15 +231,15 @@ impl PhiModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_dense.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size).add_trailing_bias(std::sync::Arc::clone(&layer.attn_dense_bias))?;
+        let attn_out = layer.attn_dense.apply_linear_with_bias(&merged, cfg.hidden_size, cfg.hidden_size, std::sync::Arc::clone(&layer.attn_dense_bias))?;
 
         // ---- MLP path (uses the SAME x_norm) --------------------------------
-        let fc1_out = layer.fc1.apply_linear(&x_norm, cfg.hidden_size, cfg.intermediate_size).add_trailing_bias(std::sync::Arc::clone(&layer.fc1_bias))?;
+        let fc1_out = layer.fc1.apply_linear_with_bias(&x_norm, cfg.hidden_size, cfg.intermediate_size, std::sync::Arc::clone(&layer.fc1_bias))?;
         let activated = match cfg.hidden_activation {
             PhiActivation::Gelu => fc1_out.gelu_erf(),
             PhiActivation::GeluPytorchTanh => fc1_out.gelu(),
         };
-        let mlp_out = layer.fc2.apply_linear(&activated, cfg.intermediate_size, cfg.hidden_size).add_trailing_bias(std::sync::Arc::clone(&layer.fc2_bias))?;
+        let mlp_out = layer.fc2.apply_linear_with_bias(&activated, cfg.intermediate_size, cfg.hidden_size, std::sync::Arc::clone(&layer.fc2_bias))?;
 
         // Parallel combine: residual + attn + mlp.
         x.add(&attn_out)?.add(&mlp_out)
