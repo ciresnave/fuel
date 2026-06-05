@@ -4720,15 +4720,9 @@ impl LlamaModel {
         // routes F32/BF16 through standard matmul and Q4_0 through
         // fused qmatmul. Under GQA, W_k and W_v have fewer output
         // features (kv_dim instead of dim).
-        let q = apply_optional_bias(
-            layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim),
-            layer.attn_q_bias.as_ref(), cfg.dim);
-        let k = apply_optional_bias(
-            layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim),
-            layer.attn_k_bias.as_ref(), kv_dim);
-        let v = apply_optional_bias(
-            layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim),
-            layer.attn_v_bias.as_ref(), kv_dim);
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim).add_optional_trailing_bias(layer.attn_q_bias.as_ref()).unwrap();
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref()).unwrap();
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref()).unwrap();
 
         // Split heads.
         // Q: [batch, seq, dim] → [batch, seq, n_heads, head_dim] → [batch, n_heads, seq, head_dim]
@@ -4826,15 +4820,9 @@ impl LlamaModel {
 
         // Q/K/V projections via WeightStorage::apply_linear (handles F32,
         // BF16, Q4_0 variants uniformly). Optional Qwen2-style biases.
-        let q = apply_optional_bias(
-            layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim),
-            layer.attn_q_bias.as_ref(), cfg.dim);
-        let k = apply_optional_bias(
-            layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim),
-            layer.attn_k_bias.as_ref(), kv_dim);
-        let v = apply_optional_bias(
-            layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim),
-            layer.attn_v_bias.as_ref(), kv_dim);
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim).add_optional_trailing_bias(layer.attn_q_bias.as_ref()).unwrap();
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref()).unwrap();
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref()).unwrap();
 
         let q_h = q
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
@@ -5002,15 +4990,9 @@ impl LlamaModel {
         let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
 
         // Q/K/V projections + optional biases — identical to apply_layer_with_cache.
-        let q = apply_optional_bias(
-            layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim),
-            layer.attn_q_bias.as_ref(), cfg.dim);
-        let k = apply_optional_bias(
-            layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim),
-            layer.attn_k_bias.as_ref(), kv_dim);
-        let v = apply_optional_bias(
-            layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim),
-            layer.attn_v_bias.as_ref(), kv_dim);
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim).add_optional_trailing_bias(layer.attn_q_bias.as_ref()).unwrap();
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref()).unwrap();
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref()).unwrap();
 
         let q_h = q
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
@@ -5275,28 +5257,7 @@ pub struct LayerKVCache {
 // `forward_with_kv_context` writes into via `Op::WriteSlice`.
 
 /// Broadcast-add a 1-D bias along the last axis of `x`, or return
-/// `x` unchanged if `bias` is `None`. Used for the Qwen2-style
-/// Q/K/V attention biases — LLaMA's `bias` is always `None`, so the
-/// early return makes this a no-op for the LLaMA path.
-fn apply_optional_bias(
-    x: LazyTensor,
-    bias: Option<&Arc<[f32]>>,
-    last_dim: usize,
-) -> LazyTensor {
-    match bias {
-        None => x,
-        Some(b) => {
-            assert_eq!(
-                b.len(),
-                last_dim,
-                "apply_optional_bias: bias length {} does not match last_dim {last_dim}",
-                b.len(),
-            );
-            let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[last_dim]));
-            x.broadcast_add(&b_t).unwrap()
-        }
-    }
-}
+
 
 /// RmsNorm with a learned per-channel gain, applied along the last dim.
 /// This is the affine version used by LLaMA: `y = (x / rms) * gain`.
@@ -8454,7 +8415,7 @@ mod generate_tests {
             .any(|(a, b)| (a - b).abs() > 1e-6);
         assert!(
             any_different,
-            "bias had no effect — check that apply_optional_bias is actually called",
+            "bias had no effect — check that add_optional_trailing_bias is actually called",
         );
     }
 

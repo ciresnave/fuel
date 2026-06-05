@@ -222,18 +222,9 @@ impl Gemma2Model {
         let x_in = apply_gemma2_rms_norm(
             x, &layer.input_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
         );
-        let q = apply_optional_bias(
-            layer.q.apply_linear(&x_in, cfg.hidden_size, cfg.hidden_size),
-            layer.q_bias.as_ref(), cfg.hidden_size,
-        )?;
-        let k = apply_optional_bias(
-            layer.k.apply_linear(&x_in, cfg.hidden_size, kv_dim),
-            layer.k_bias.as_ref(), kv_dim,
-        )?;
-        let v = apply_optional_bias(
-            layer.v.apply_linear(&x_in, cfg.hidden_size, kv_dim),
-            layer.v_bias.as_ref(), kv_dim,
-        )?;
+        let q = layer.q.apply_linear(&x_in, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.q_bias.as_ref())?;
+        let k = layer.k.apply_linear(&x_in, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.k_bias.as_ref())?;
+        let v = layer.v.apply_linear(&x_in, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
@@ -255,10 +246,7 @@ impl Gemma2Model {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v_full)?;
         let merged = ctx.merge_heads()?;
-        let attn_out = apply_optional_bias(
-            layer.o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size),
-            layer.o_bias.as_ref(), cfg.hidden_size,
-        )?;
+        let attn_out = layer.o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.o_bias.as_ref())?;
         // Post-attn norm BEFORE the residual add.
         let attn_post = apply_gemma2_rms_norm(
             &attn_out, &layer.post_attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
@@ -298,14 +286,6 @@ fn apply_gemma2_rms_norm(
 }
 
 
-fn apply_optional_bias(
-    x: LazyTensor,
-    bias: Option<&Arc<[f32]>>,
-    last_dim: usize,
-) -> Result<LazyTensor> {
-    let _ = last_dim;
-    x.add_optional_trailing_bias(bias)
-}
 
 #[cfg(test)]
 mod tests {

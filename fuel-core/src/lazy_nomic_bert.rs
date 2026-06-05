@@ -378,7 +378,7 @@ impl NomicBertModel {
         let head_dim = cfg.head_dim();
 
         let qkv = layer.wqkv.apply_linear(x, d, 3 * d);
-        let qkv = opt_bias(qkv, layer.wqkv_bias.as_ref(), 3 * d, x)?;
+        let qkv = qkv.add_optional_trailing_bias(layer.wqkv_bias.as_ref())?;
         // (batch, seq, 3 * d) → split Q / K / V on last dim.
         let q = qkv.slice(2_usize, 0, d)?;
         let k = qkv.slice(2_usize, d, d)?;
@@ -404,7 +404,7 @@ impl NomicBertModel {
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
         let out = layer.out_proj.apply_linear(&merged, d, d);
-        opt_bias(out, layer.out_proj_bias.as_ref(), d, x)
+        out.add_optional_trailing_bias(layer.out_proj_bias.as_ref())
     }
 
     fn mlp(&self, x: &LazyTensor, layer: &NomicBertLayerWeights) -> Result<LazyTensor> {
@@ -414,26 +414,26 @@ impl NomicBertModel {
         match cfg.activation {
             NomicBertActivation::SwiGlu => {
                 let val = layer.fc11.apply_linear(x, d, h);
-                let val = opt_bias(val, layer.fc11_bias.as_ref(), h, x)?;
+                let val = val.add_optional_trailing_bias(layer.fc11_bias.as_ref())?;
                 let gate = layer.fc12.apply_linear(x, d, h);
-                let gate = opt_bias(gate, layer.fc12_bias.as_ref(), h, x)?;
+                let gate = gate.add_optional_trailing_bias(layer.fc12_bias.as_ref())?;
                 let inner = val.mul(&gate.silu())?;
                 let down = layer.fc2.apply_linear(&inner, h, d);
-                opt_bias(down, layer.fc2_bias.as_ref(), d, x)
+                down.add_optional_trailing_bias(layer.fc2_bias.as_ref())
             }
             NomicBertActivation::Gelu => {
                 let up = layer.fc11.apply_linear(x, d, h);
-                let up = opt_bias(up, layer.fc11_bias.as_ref(), h, x)?;
+                let up = up.add_optional_trailing_bias(layer.fc11_bias.as_ref())?;
                 let act = up.gelu_erf();
                 let down = layer.fc2.apply_linear(&act, h, d);
-                opt_bias(down, layer.fc2_bias.as_ref(), d, x)
+                down.add_optional_trailing_bias(layer.fc2_bias.as_ref())
             }
             NomicBertActivation::Relu => {
                 let up = layer.fc11.apply_linear(x, d, h);
-                let up = opt_bias(up, layer.fc11_bias.as_ref(), h, x)?;
+                let up = up.add_optional_trailing_bias(layer.fc11_bias.as_ref())?;
                 let act = up.relu();
                 let down = layer.fc2.apply_linear(&act, h, d);
-                opt_bias(down, layer.fc2_bias.as_ref(), d, x)
+                down.add_optional_trailing_bias(layer.fc2_bias.as_ref())
             }
         }
     }
@@ -468,15 +468,6 @@ fn apply_rope(
     rotated.concat(&pass, 3_usize)
 }
 
-fn opt_bias(
-    x: LazyTensor,
-    b: Option<&Arc<[f32]>>,
-    n: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
-    let _ = (n, anchor);
-    x.add_optional_trailing_bias(b)
-}
 
 #[cfg(test)]
 mod tests {

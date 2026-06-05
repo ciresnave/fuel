@@ -223,18 +223,9 @@ impl Gemma3Model {
 
         // Q / K / V projections; note Q goes to num_heads*head_dim
         // which is NOT necessarily equal to hidden_size.
-        let q = opt_bias(
-            layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, q_dim),
-            layer.attn_q_bias.as_ref(), q_dim,
-        )?;
-        let k = opt_bias(
-            layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim),
-            layer.attn_k_bias.as_ref(), kv_dim,
-        )?;
-        let v = opt_bias(
-            layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim),
-            layer.attn_v_bias.as_ref(), kv_dim,
-        )?;
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, q_dim).add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         // (b, seq, n_heads, head_dim) -> (b, n_heads, seq, head_dim).
         let _ = (batch, seq);
@@ -272,10 +263,7 @@ impl Gemma3Model {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = opt_bias(
-            layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size),
-            layer.attn_o_bias.as_ref(), cfg.hidden_size,
-        )?;
+        let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size).add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
         // post_attention_layernorm wraps the attn output BEFORE the residual add.
         let attn_out_norm = apply_offset_rms_norm(
             &attn_out, &layer.post_attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
@@ -317,14 +305,6 @@ fn apply_offset_rms_norm(
     x.rms_norm_affine_with_offset(gain, 1.0, eps)
 }
 
-fn opt_bias(
-    x: LazyTensor,
-    bias: Option<&Arc<[f32]>>,
-    last_dim: usize,
-) -> Result<LazyTensor> {
-    let _ = last_dim;
-    x.add_optional_trailing_bias(bias)
-}
 
 #[cfg(test)]
 mod tests {

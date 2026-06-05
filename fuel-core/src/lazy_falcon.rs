@@ -228,18 +228,9 @@ impl FalconModel {
         kv_dim: usize,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let q = optional_bias(
-            layer.attn_q.apply_linear(x_ln, cfg.hidden_size, cfg.hidden_size),
-            layer.attn_q_bias.as_ref(), cfg.hidden_size,
-        )?;
-        let k = optional_bias(
-            layer.attn_k.apply_linear(x_ln, cfg.hidden_size, kv_dim),
-            layer.attn_k_bias.as_ref(), kv_dim,
-        )?;
-        let v = optional_bias(
-            layer.attn_v.apply_linear(x_ln, cfg.hidden_size, kv_dim),
-            layer.attn_v_bias.as_ref(), kv_dim,
-        )?;
+        let q = layer.attn_q.apply_linear(x_ln, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer.attn_k.apply_linear(x_ln, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer.attn_v.apply_linear(x_ln, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
@@ -265,10 +256,7 @@ impl FalconModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        optional_bias(
-            layer.attn_dense.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size),
-            layer.attn_dense_bias.as_ref(), cfg.hidden_size,
-        )
+        layer.attn_dense.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.attn_dense_bias.as_ref())
     }
 
     fn mlp(
@@ -280,22 +268,12 @@ impl FalconModel {
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let inter = 4 * cfg.hidden_size;
-        let up = optional_bias(
-            layer.mlp_up.apply_linear(x_ln, cfg.hidden_size, inter),
-            layer.mlp_up_bias.as_ref(), inter,
-        )?;
+        let up = layer.mlp_up.apply_linear(x_ln, cfg.hidden_size, inter).add_optional_trailing_bias(layer.mlp_up_bias.as_ref())?;
         let up_act = up.gelu();
-        optional_bias(
-            layer.mlp_down.apply_linear(&up_act, inter, cfg.hidden_size),
-            layer.mlp_down_bias.as_ref(), cfg.hidden_size,
-        )
+        layer.mlp_down.apply_linear(&up_act, inter, cfg.hidden_size).add_optional_trailing_bias(layer.mlp_down_bias.as_ref())
     }
 }
 
-fn optional_bias(x: LazyTensor, bias: Option<&Arc<[f32]>>, last_dim: usize) -> Result<LazyTensor> {
-    let _ = last_dim;
-    x.add_optional_trailing_bias(bias)
-}
 
 #[cfg(test)]
 mod tests {

@@ -316,18 +316,9 @@ impl RecurrentGemmaModel {
         let rope_dim = cfg.head_dim / 2;
         let window = cfg.attention_window_size;
 
-        let q = opt_bias(
-            a.q_w.apply_linear(x, cfg.hidden_size, q_dim),
-            a.q_b.as_ref(), q_dim,
-        )?;
-        let k = opt_bias(
-            a.k_w.apply_linear(x, cfg.hidden_size, kv_dim),
-            a.k_b.as_ref(), kv_dim,
-        )?;
-        let v = opt_bias(
-            a.v_w.apply_linear(x, cfg.hidden_size, kv_dim),
-            a.v_b.as_ref(), kv_dim,
-        )?;
+        let q = a.q_w.apply_linear(x, cfg.hidden_size, q_dim).add_optional_trailing_bias(a.q_b.as_ref())?;
+        let k = a.k_w.apply_linear(x, cfg.hidden_size, kv_dim).add_optional_trailing_bias(a.k_b.as_ref())?;
+        let v = a.v_w.apply_linear(x, cfg.hidden_size, kv_dim).add_optional_trailing_bias(a.v_b.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -578,10 +569,6 @@ fn apply_offset_rms_norm(
     x.rms_norm_affine_with_offset(gain, 1.0, eps)
 }
 
-fn opt_bias(x: LazyTensor, b: Option<&Arc<[f32]>>, n: usize) -> Result<LazyTensor> {
-    let _ = n;
-    x.add_optional_trailing_bias(b)
-}
 
 fn add_bias(x: LazyTensor, bias: &Arc<[f32]>, n: usize) -> Result<LazyTensor> {
     let _ = n;

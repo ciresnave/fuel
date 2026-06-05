@@ -229,18 +229,9 @@ impl GemmaModel {
         )?;
 
         // Q / K / V — biases are honored when the config flag is on.
-        let q = optional_bias(
-            layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size),
-            layer.attn_q_bias.as_ref(), cfg.hidden_size,
-        )?;
-        let k = optional_bias(
-            layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim),
-            layer.attn_k_bias.as_ref(), kv_dim,
-        )?;
-        let v = optional_bias(
-            layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim),
-            layer.attn_v_bias.as_ref(), kv_dim,
-        )?;
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -272,14 +263,11 @@ impl GemmaModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = optional_bias(
-            layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size),
-            // LayerWeights doesn't carry an explicit attn_o_bias; reuse
+        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(// LayerWeights doesn't carry an explicit attn_o_bias; reuse
             // attn_q_bias's None branch by passing None here. Gemma's
             // o_proj bias support would need a LayerWeights extension if
             // a checkpoint requires it (rare).
-            None, cfg.hidden_size,
-        )?;
+            None)?;
         let h1 = x.add(&attn_out)?;
 
         // Pre-FFN offset RmsNorm.
@@ -313,14 +301,6 @@ fn apply_offset_rms_norm(
     x.rms_norm_affine_with_offset(gain, 1.0, eps)
 }
 
-fn optional_bias(
-    x: LazyTensor,
-    bias: Option<&Arc<[f32]>>,
-    last_dim: usize,
-) -> Result<LazyTensor> {
-    let _ = last_dim;
-    x.add_optional_trailing_bias(bias)
-}
 
 #[cfg(test)]
 mod tests {

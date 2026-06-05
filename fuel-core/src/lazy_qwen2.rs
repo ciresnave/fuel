@@ -301,21 +301,9 @@ impl Qwen2Model {
         let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
 
         // Q / K / V projections with optional biases (Qwen2 has them).
-        let q = apply_optional_bias(
-            layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size),
-            layer.attn_q_bias.as_ref(),
-            cfg.hidden_size,
-        )?;
-        let k = apply_optional_bias(
-            layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim),
-            layer.attn_k_bias.as_ref(),
-            kv_dim,
-        )?;
-        let v = apply_optional_bias(
-            layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim),
-            layer.attn_v_bias.as_ref(),
-            kv_dim,
-        )?;
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
@@ -360,14 +348,6 @@ impl Qwen2Model {
 /// Delegates to `LazyTensor::add_optional_trailing_bias` — the
 /// per-port wrapper is preserved so call sites inside this module
 /// keep their existing signature.
-fn apply_optional_bias(
-    x: LazyTensor,
-    bias: Option<&Arc<[f32]>>,
-    last_dim: usize,
-) -> Result<LazyTensor> {
-    let _ = last_dim;
-    x.add_optional_trailing_bias(bias)
-}
 
 #[cfg(test)]
 mod tests {

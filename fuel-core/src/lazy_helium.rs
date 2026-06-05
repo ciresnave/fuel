@@ -121,18 +121,9 @@ impl HeliumModel {
 
         let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
 
-        let q = opt_bias(
-            layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size),
-            layer.attn_q_bias.as_ref(), cfg.hidden_size,
-        )?;
-        let k = opt_bias(
-            layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim),
-            layer.attn_k_bias.as_ref(), kv_dim,
-        )?;
-        let v = opt_bias(
-            layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim),
-            layer.attn_v_bias.as_ref(), kv_dim,
-        )?;
+        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size).add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -169,10 +160,6 @@ impl HeliumModel {
     }
 }
 
-fn opt_bias(x: LazyTensor, b: Option<&Arc<[f32]>>, n: usize) -> Result<LazyTensor> {
-    let _ = n;
-    x.add_optional_trailing_bias(b)
-}
 
 #[cfg(test)]
 mod tests {

@@ -248,18 +248,9 @@ impl Glm4NewModel {
 
         // Attention sublayer: post_self_attn_norm(attn(input_norm(x))) + x.
         let x_in = x.rms_norm_affine(std::sync::Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
-        let q = opt_bias(
-            layer.q.apply_linear(&x_in, cfg.hidden_size, q_dim),
-            layer.q_bias.as_ref(), q_dim,
-        )?;
-        let k = opt_bias(
-            layer.k.apply_linear(&x_in, cfg.hidden_size, kv_dim),
-            layer.k_bias.as_ref(), kv_dim,
-        )?;
-        let v = opt_bias(
-            layer.v.apply_linear(&x_in, cfg.hidden_size, kv_dim),
-            layer.v_bias.as_ref(), kv_dim,
-        )?;
+        let q = layer.q.apply_linear(&x_in, cfg.hidden_size, q_dim).add_optional_trailing_bias(layer.q_bias.as_ref())?;
+        let k = layer.k.apply_linear(&x_in, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.k_bias.as_ref())?;
+        let v = layer.v.apply_linear(&x_in, cfg.hidden_size, kv_dim).add_optional_trailing_bias(layer.v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
@@ -300,14 +291,6 @@ impl Glm4NewModel {
     }
 }
 
-fn opt_bias(
-    x: LazyTensor,
-    bias: Option<&Arc<[f32]>>,
-    last_dim: usize,
-) -> Result<LazyTensor> {
-    let _ = last_dim;
-    x.add_optional_trailing_bias(bias)
-}
 
 #[cfg(test)]
 mod tests {
