@@ -213,7 +213,7 @@ impl HieraModel {
             None => Ok(pooled),
             Some(head) => {
                 let h = apply_layer_norm_last(&pooled, &head.norm, head.fc.in_features)?;
-                apply_linear(&h, &head.fc, image)
+                head.fc.w.apply_linear_with_bias(&h, head.fc.in_features, head.fc.out_features, Arc::clone(&head.fc.b))
             }
         }
     }
@@ -250,7 +250,7 @@ fn apply_block(
     let residual = match &blk.proj {
         None => x.clone(),
         Some(proj) => {
-            let projected = apply_linear(&xs_norm, proj, anchor)?;
+            let projected = proj.w.apply_linear_with_bias(&xs_norm, proj.in_features, proj.out_features, Arc::clone(&proj.b))?;
             // (B, N, C_out) → (B, q_stride=4, N/4, C_out) → max → (B, N/4, C_out)
             // The pool stride here is fixed at 4 in the eager port.
             let stride = 4;
@@ -267,8 +267,8 @@ fn apply_block(
 
     let normed = apply_layer_norm_last(&after_attn, &blk.norm2, c_out)?;
     let mlp_out = {
-        let h = apply_linear(&normed, &blk.mlp_fc1, anchor)?.gelu();
-        apply_linear(&h, &blk.mlp_fc2, anchor)?
+        let h = blk.mlp_fc1.w.apply_linear_with_bias(&normed, blk.mlp_fc1.in_features, blk.mlp_fc1.out_features, Arc::clone(&blk.mlp_fc1.b))?.gelu();
+        blk.mlp_fc2.w.apply_linear_with_bias(&h, blk.mlp_fc2.in_features, blk.mlp_fc2.out_features, Arc::clone(&blk.mlp_fc2.b))?
     };
     after_attn.add(&mlp_out)
 }
@@ -293,7 +293,7 @@ fn apply_attention(
     let s_in = n_in / num_windows;
 
     // qkv: (B, N, 3*C_out)
-    let qkv = apply_linear(x, &blk.qkv, anchor)?;
+    let qkv = blk.qkv.w.apply_linear_with_bias(x, blk.qkv.in_features, blk.qkv.out_features, Arc::clone(&blk.qkv.b))?;
     // Reshape: (B, s_in, num_windows, 3, heads, head_dim) → permute
     // (3, B, heads, num_windows, s_in, head_dim).
     let qkv = qkv
@@ -337,7 +337,7 @@ fn apply_attention(
         // (B, num_windows, s_q, heads, head_dim).
         .permute([0, 2, 3, 1, 4_usize])?
         .reshape(Shape::from_dims(&[b, num_windows * s_q, c_out]))?;
-    apply_linear(&ctx, &blk.attn_proj, anchor)
+    blk.attn_proj.w.apply_linear_with_bias(&ctx, blk.attn_proj.in_features, blk.attn_proj.out_features, Arc::clone(&blk.attn_proj.b))
 }
 
 fn apply_layer_norm_last(
@@ -347,12 +347,6 @@ fn apply_layer_norm_last(
     x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), 1e-6)
 }
 
-fn apply_linear(
-    x: &LazyTensor, lw: &LinearWeights, anchor: &LazyTensor,
-) -> Result<LazyTensor> {
-    let _ = anchor;
-    lw.w.apply_linear_with_bias(x, lw.in_features, lw.out_features, Arc::clone(&lw.b))
-}
 
 // ---- Tests -----------------------------------------------------------------
 
