@@ -173,7 +173,7 @@ impl OpenClipTextModel {
         for layer in &w.layers {
             x = apply_layer(&x, layer, cfg, &token_table)?;
         }
-        Ok(apply_layer_norm(&x, &w.final_ln, cfg.embed_dim, 1e-5)?)
+        Ok(x.layer_norm_affine(Arc::clone(&w.final_ln.gain), Arc::clone(&w.final_ln.bias), 1e-5)?)
     }
 }
 
@@ -184,12 +184,12 @@ fn apply_layer(
     anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let residual = x.clone();
-    let normed = apply_layer_norm(x, &w.ln1, cfg.embed_dim, 1e-5)?;
+    let normed = x.layer_norm_affine(Arc::clone(&w.ln1.gain), Arc::clone(&w.ln1.bias), 1e-5)?;
     let attn_out = apply_attention(&normed, &w.attn, cfg, anchor)?;
     let x = residual.add(&attn_out)?;
 
     let residual = x.clone();
-    let normed = apply_layer_norm(&x, &w.ln2, cfg.embed_dim, 1e-5)?;
+    let normed = x.layer_norm_affine(Arc::clone(&w.ln2.gain), Arc::clone(&w.ln2.bias), 1e-5)?;
     let mlp_out = apply_mlp(&normed, &w.mlp, cfg.embed_dim, cfg.intermediate_size, anchor)?;
     residual.add(&mlp_out)
 }
@@ -239,15 +239,6 @@ fn apply_mlp(
     m.fc2.apply_linear_with_bias(&h1, hidden_dim, in_dim, std::sync::Arc::clone(&m.fc2_bias))
 }
 
-fn apply_layer_norm(
-    x: &LazyTensor,
-    ln: &LayerNormWeights,
-    hidden: usize,
-    eps: f64,
-) -> Result<LazyTensor> {
-    let _ = hidden;
-    x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), eps)
-}
 
 
 // ---- Tests -----------------------------------------------------------------

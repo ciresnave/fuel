@@ -239,7 +239,7 @@ impl ParlerDecoderModel {
             x = apply_decoder_layer(&x, layer, &enc_proj, &causal_mask, cfg, anchor)?;
         }
         // Final LN.
-        let x = apply_layer_norm(&x, &w.final_ln, h_dim, 1e-5)?;
+        let x = x.layer_norm_affine(Arc::clone(&w.final_ln.gain), Arc::clone(&w.final_ln.bias), 1e-5)?;
 
         // Per-codebook LM heads.
         let mut logits = Vec::with_capacity(cfg.num_codebooks);
@@ -262,7 +262,7 @@ fn apply_decoder_layer(
 
     // Self-attention with causal mask.
     let residual = x.clone();
-    let normed = apply_layer_norm(x, &w.self_attn_ln, h_dim, 1e-5)?;
+    let normed = x.layer_norm_affine(Arc::clone(&w.self_attn_ln.gain), Arc::clone(&w.self_attn_ln.bias), 1e-5)?;
     let attn_out = apply_attention(
         &normed, None, &w.self_attn,
         cfg.num_attention_heads, cfg.num_kv_heads_resolved(), cfg.head_dim(),
@@ -272,7 +272,7 @@ fn apply_decoder_layer(
 
     // Cross-attention to encoder states.
     let residual = x.clone();
-    let normed = apply_layer_norm(&x, &w.cross_attn_ln, h_dim, 1e-5)?;
+    let normed = x.layer_norm_affine(Arc::clone(&w.cross_attn_ln.gain), Arc::clone(&w.cross_attn_ln.bias), 1e-5)?;
     let cross_out = apply_attention(
         &normed, Some(enc_states), &w.cross_attn,
         cfg.num_attention_heads, cfg.num_cross_kv_heads_resolved(), cfg.head_dim(),
@@ -282,7 +282,7 @@ fn apply_decoder_layer(
 
     // FFN.
     let residual = x.clone();
-    let normed = apply_layer_norm(&x, &w.final_ln, h_dim, 1e-5)?;
+    let normed = x.layer_norm_affine(Arc::clone(&w.final_ln.gain), Arc::clone(&w.final_ln.bias), 1e-5)?;
     let h = w.fc1.apply_linear(&normed, h_dim, cfg.ffn_dim);
     let h = match cfg.activation_function {
         ParlerActivation::Gelu => h.gelu(),
@@ -369,15 +369,6 @@ fn repeat_along_head_dim(
     bc.reshape(Shape::from_dims(&[b, n_kv * n_rep, l, d]))
 }
 
-fn apply_layer_norm(
-    x: &LazyTensor,
-    ln: &LayerNormWeights,
-    hidden: usize,
-    eps: f64,
-) -> Result<LazyTensor> {
-    let _ = hidden;
-    x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), eps)
-}
 
 fn apply_linear_with_bias(
     x: &LazyTensor,

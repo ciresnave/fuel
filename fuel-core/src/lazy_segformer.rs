@@ -264,7 +264,7 @@ fn layer_norm_chw(
     let seq = x
         .reshape(Shape::from_dims(&[b, c, h * w]))?
         .permute([0, 2, 1_usize])?;
-    let normed = apply_layer_norm(&seq, ln, c, eps)?;
+    let normed = seq.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), eps)?;
     Ok(normed
         .permute([0, 2, 1_usize])?
         .reshape(Shape::from_dims(&[b, c, h, w]))?)
@@ -286,7 +286,7 @@ fn apply_segformer_layer(
         .permute([0, 2, 1_usize])?;
 
     // LN1 on the [B, H*W, C] form.
-    let normed = apply_layer_norm(&seq_orig, &w.layer_norm_1, c, cfg.layer_norm_eps)?;
+    let normed = seq_orig.layer_norm_affine(Arc::clone(&w.layer_norm_1.gain), Arc::clone(&w.layer_norm_1.bias), cfg.layer_norm_eps)?;
     let norm_chw = normed
         .permute([0, 2, 1_usize])?
         .reshape(Shape::from_dims(&[b, c, h, w_sp]))?;
@@ -298,7 +298,7 @@ fn apply_segformer_layer(
     let hidden = attn_out.add(&seq_orig)?;
 
     // LN2 on (B, H*W, C).
-    let normed = apply_layer_norm(&hidden, &w.layer_norm_2, c, cfg.layer_norm_eps)?;
+    let normed = hidden.layer_norm_affine(Arc::clone(&w.layer_norm_2.gain), Arc::clone(&w.layer_norm_2.bias), cfg.layer_norm_eps)?;
     let norm_chw = normed
         .permute([0, 2, 1_usize])?
         .reshape(Shape::from_dims(&[b, c, h, w_sp]))?;
@@ -346,7 +346,7 @@ fn apply_efficient_attention(
         let flat = sr_out
             .reshape(Shape::from_dims(&[b, hidden_size, h2 * w2]))?
             .permute([0, 2, 1_usize])?;
-        apply_layer_norm(&flat, sr_norm, hidden_size, eps)?
+        flat.layer_norm_affine(Arc::clone(&sr_norm.gain), Arc::clone(&sr_norm.bias), eps)?
     } else {
         x_seq.clone()
     };
@@ -443,16 +443,6 @@ fn decode_head_forward(
 
 // ---- Primitives ------------------------------------------------------------
 
-fn apply_layer_norm(
-    x: &LazyTensor,
-    ln: &LayerNormWeights,
-    hidden: usize,
-    eps: f64,
-) -> Result<LazyTensor> {
-    let last = x.shape().dims().last().copied().unwrap();
-    assert_eq!(last, hidden);
-    x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), eps)
-}
 
 
 fn apply_conv2d(

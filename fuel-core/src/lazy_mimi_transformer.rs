@@ -177,13 +177,13 @@ fn apply_layer(
     b: usize, t: usize,
 ) -> Result<LazyTensor> {
     // Pre-LN self-attention.
-    let n1 = apply_layer_norm(x, &w.norm1, cfg.d_model, cfg.layer_norm_eps)?;
+    let n1 = x.layer_norm_affine(Arc::clone(&w.norm1.gain), Arc::clone(&w.norm1.bias), cfg.layer_norm_eps)?;
     let attn = apply_attention(&n1, &w.attn, cos, sin, causal_mask, cfg, b, t)?;
     let scaled = apply_per_channel_scale(&attn, &w.layer_scale_1, cfg.d_model)?;
     let after_attn = x.add(&scaled)?;
 
     // Pre-LN MLP.
-    let n2 = apply_layer_norm(&after_attn, &w.norm2, cfg.d_model, cfg.layer_norm_eps)?;
+    let n2 = after_attn.layer_norm_affine(Arc::clone(&w.norm2.gain), Arc::clone(&w.norm2.bias), cfg.layer_norm_eps)?;
     let mlp = apply_mlp(&n2, &w.mlp, cfg)?;
     let scaled_mlp = apply_per_channel_scale(&mlp, &w.layer_scale_2, cfg.d_model)?;
     after_attn.add(&scaled_mlp)
@@ -239,12 +239,6 @@ fn apply_mlp(
     Ok(w.fc2.apply_linear(&h, hidden, d))
 }
 
-fn apply_layer_norm(
-    x: &LazyTensor, ln: &LayerNormWeights, hidden: usize, eps: f64,
-) -> Result<LazyTensor> {
-    let _ = hidden;
-    x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), eps)
-}
 
 fn apply_per_channel_scale(
     x: &LazyTensor, scale: &Arc<[f32]>, hidden: usize,
