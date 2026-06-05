@@ -29,7 +29,6 @@
 //! (recomputes each call), F32 activations.
 
 use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_stablelm::apply_partial_rotary;
 use crate::{Device, Result};
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -271,8 +270,8 @@ impl MixFormerModel {
         let v = v.split_heads(n_heads, head_dim)?;
 
         // Partial rotary on first `rotary_dim` features.
-        let q_r = apply_partial_rotary(&q, rope_cos, rope_sin, head_dim, rotary_dim)?;
-        let k_r = apply_partial_rotary(&k, rope_cos, rope_sin, head_dim, rotary_dim)?;
+        let q_r = q.rope_partial(rope_cos, rope_sin, rotary_dim)?;
+        let k_r = k.rope_partial(rope_cos, rope_sin, rotary_dim)?;
 
         let k_t = k_r.transpose()?;
         let scale = 1.0_f64 / (head_dim as f64).sqrt();

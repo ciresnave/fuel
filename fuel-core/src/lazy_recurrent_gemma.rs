@@ -69,7 +69,6 @@
 //! prompts produce large but well-formed graphs).
 
 use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_stablelm::apply_partial_rotary;
 use crate::{Device, Result};
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -336,8 +335,8 @@ impl RecurrentGemmaModel {
         let v = v.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
 
         // Partial rotary on first head_dim/2 features.
-        let q_r = apply_partial_rotary(&q, rope_cos, rope_sin, cfg.head_dim, rope_dim)?;
-        let k_r = apply_partial_rotary(&k, rope_cos, rope_sin, cfg.head_dim, rope_dim)?;
+        let q_r = q.rope_partial(rope_cos, rope_sin, rope_dim)?;
+        let k_r = k.rope_partial(rope_cos, rope_sin, rope_dim)?;
 
         // GQA expand.
         let n_rep = cfg.num_attention_heads / cfg.num_key_value_heads;

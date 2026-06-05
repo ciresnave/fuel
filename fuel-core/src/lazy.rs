@@ -3063,6 +3063,45 @@ impl LazyTensor {
         (rope_cos, rope_sin)
     }
 
+    /// Apply RoPE to the first `rope_dim` entries of each head and
+    /// pass the remaining `head_dim - rope_dim` features through
+    /// unchanged. `head_dim` is derived from the receiver's last-dim
+    /// size. When `rope_dim == head_dim` this reduces to
+    /// [`Self::rope_with_tables`].
+    ///
+    /// Implements the partial-rotary convention used by StableLM,
+    /// Phi, Persimmon, MixFormer, RecurrentGemma, and Gemma-4 text —
+    /// all the ports that carried an identical 5-line `slice + rope +
+    /// concat` helper before this method.
+    pub fn rope_partial(
+        &self,
+        rope_cos: &Self,
+        rope_sin: &Self,
+        rope_dim: usize,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        let dims = self.inner.shape();
+        let dims = dims.dims();
+        let head_dim = *dims.last().ok_or_else(|| {
+            fuel_core_types::Error::Msg(
+                "rope_partial: receiver must have at least one dimension".into(),
+            ).bt()
+        })?;
+        if rope_dim == head_dim {
+            return self.rope_with_tables(rope_cos, rope_sin);
+        }
+        if rope_dim > head_dim {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "rope_partial: rope_dim={rope_dim} exceeds head_dim={head_dim}",
+            )).bt());
+        }
+        let last = dims.len() - 1;
+        let pass_dim = head_dim - rope_dim;
+        let rot = self.slice(last, 0, rope_dim)?;
+        let pass = self.slice(last, rope_dim, pass_dim)?;
+        let rot_rotated = rot.rope_with_tables(rope_cos, rope_sin)?;
+        rot_rotated.concat(&pass, last)
+    }
+
     /// `Option<Arc<[f32]>>` variant of [`Self::add_trailing_bias`]: if
     /// `bias.is_none()`, return `self` unchanged; else apply
     /// `add_trailing_bias`. Models the `linear_b` / `linear_no_bias`
@@ -10203,6 +10242,40 @@ mod phase_a2_composite_tests {
         for i in 0..8 {
             assert!((cv[i] - 1.0).abs() < 1e-5, "cos[0,{i}] = {}", cv[i]);
             assert!(sv[i].abs() < 1e-5, "sin[0,{i}] = {}", sv[i]);
+        }
+    }
+
+    #[test]
+    fn rope_partial_full_dim_matches_rope_with_tables() {
+        // head_dim == rope_dim ⇒ should degenerate to full rope.
+        let qk = cpu_f32(vec![1.0_f32; 1 * 1 * 2 * 4], &[1, 1, 2, 4]);
+        let (cos, sin) = qk.rope_tables_const(10_000.0, 0, 2, 4);
+        let via_partial = qk.rope_partial(&cos, &sin, 4).unwrap();
+        let via_full = qk.rope_with_tables(&cos, &sin).unwrap();
+        let a = via_partial.realize_f32();
+        let b = via_full.realize_f32();
+        for (i, (av, bv)) in a.iter().zip(b.iter()).enumerate() {
+            assert!((av - bv).abs() < 1e-6, "{i}: {av} vs {bv}");
+        }
+    }
+
+    #[test]
+    fn rope_partial_pass_through_suffix_unchanged() {
+        // rope_dim=2, head_dim=4 ⇒ first 2 features rotated, last 2
+        // unchanged. At position 0 the rotation is identity, so all 4
+        // features should equal the input.
+        let qk = cpu_f32(
+            vec![
+                // shape [1, 1, 1, 4] — one position, one head
+                1.0_f32, 2.0, 3.0, 4.0,
+            ],
+            &[1, 1, 1, 4],
+        );
+        let (cos, sin) = qk.rope_tables_const(10_000.0, 0, 1, 2);
+        let out = qk.rope_partial(&cos, &sin, 2).unwrap().realize_f32();
+        for (i, &v) in out.iter().enumerate() {
+            let expect = [1.0_f32, 2.0, 3.0, 4.0][i];
+            assert!((v - expect).abs() < 1e-6, "{i}: {v} != {expect}");
         }
     }
 

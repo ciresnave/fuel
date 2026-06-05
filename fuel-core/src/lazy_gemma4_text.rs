@@ -45,7 +45,6 @@
 //! interleaved with text token embeddings via mask) is deferred.
 
 use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_stablelm::apply_partial_rotary;
 use crate::{Device, Result};
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -290,8 +289,8 @@ impl Gemma4TextModel {
         let v = v_rms_norm(&v, cfg.rms_norm_eps)?;
 
         // RoPE. Global uses partial rotary; sliding uses full.
-        let q_r = apply_partial_rotary(&q, rope_cos, rope_sin, head_dim, rope_dim)?;
-        let k_r = apply_partial_rotary(&k, rope_cos, rope_sin, head_dim, rope_dim)?;
+        let q_r = q.rope_partial(rope_cos, rope_sin, rope_dim)?;
+        let k_r = k.rope_partial(rope_cos, rope_sin, rope_dim)?;
 
         // GQA expand.
         let n_rep = n_heads / num_kv;
