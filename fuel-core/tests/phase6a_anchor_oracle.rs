@@ -17,7 +17,8 @@
 //! No feature gating, no skip-if-missing: this is a load-bearing CI
 //! gate that must run on every PR.
 
-use fuel_core::lazy::{LayerWeights, LazyTensor, LlamaConfig, LlamaModel, LlamaWeights};
+use fuel_core::lazy::{LayerWeights, LazyTensor, LlamaWeights};
+use fuel_core::lazy_llama2c::{Llama2cConfig, Llama2cModel};
 use fuel_core::lazy_convnext::ConvNextModel;
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -91,7 +92,7 @@ fn conv_transpose2d_cpu_matches_reference() {
 
 /// LCG-backed tiny LLaMA weights. Same recipe as
 /// `phase6b_cuda_anchor::tiny_llama_weights`.
-fn tiny_llama_weights(cfg: &LlamaConfig) -> LlamaWeights {
+fn tiny_llama_weights(cfg: &Llama2cConfig) -> LlamaWeights {
     let mut s: u32 = 9999;
     let mut next = || -> f32 {
         s = s.wrapping_mul(1103515245).wrapping_add(12345);
@@ -111,9 +112,9 @@ fn tiny_llama_weights(cfg: &LlamaConfig) -> LlamaWeights {
             attn_v:         vec_of(cfg.dim * kv_dim).into(),
             attn_v_bias:    None,
             attn_o:         vec_of(cfg.dim * cfg.dim).into(),
-            ffn_gate:       vec_of(cfg.dim * cfg.ffn_dim).into(),
-            ffn_up:         vec_of(cfg.dim * cfg.ffn_dim).into(),
-            ffn_down:       vec_of(cfg.ffn_dim * cfg.dim).into(),
+            ffn_gate:       vec_of(cfg.dim * cfg.hidden_dim).into(),
+            ffn_up:         vec_of(cfg.dim * cfg.hidden_dim).into(),
+            ffn_down:       vec_of(cfg.hidden_dim * cfg.dim).into(),
             attn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
             ffn_norm_gain:  Arc::from(vec![1.0; cfg.dim]),
         }).collect(),
@@ -124,19 +125,19 @@ fn tiny_llama_weights(cfg: &LlamaConfig) -> LlamaWeights {
 
 #[test]
 fn llama_2layer_cpu_matches_reference() {
-    let cfg = LlamaConfig {
+    let cfg = Llama2cConfig {
         vocab_size:     32,
         dim:            16,
+        hidden_dim:     32,
         n_layers:       2,
         n_heads:        4,
         n_kv_heads:     2,
         head_dim:       4,
-        ffn_dim:        32,
         norm_eps:       1e-5,
-        rope_base:      10_000.0,
+        rope_theta:     10_000.0,
     };
     let weights = tiny_llama_weights(&cfg);
-    let model = LlamaModel { config: cfg.clone(), weights };
+    let model = Llama2cModel { config: cfg.clone(), weights };
     let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
     let logits: LazyTensor = model.forward(&tokens, 0).unwrap();
     // Tighter tolerance than the CUDA equivalent (5e-3) since both
