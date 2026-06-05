@@ -394,25 +394,16 @@ impl Qwen2Model {
 
 /// Add an optional `[last_dim]` bias to `x`'s last dim via
 /// `broadcast_add`. Returns `x` unchanged when `bias` is `None`.
-/// Sibling of `crate::lazy::apply_optional_bias` (which is module-
-/// private); duplicated here to keep `lazy.rs` API unchanged.
+/// Delegates to `LazyTensor::add_optional_trailing_bias` — the
+/// per-port wrapper is preserved so call sites inside this module
+/// keep their existing signature.
 fn apply_optional_bias(
     x: LazyTensor,
     bias: Option<&Arc<[f32]>>,
     last_dim: usize,
 ) -> Result<LazyTensor> {
-    match bias {
-        None => Ok(x),
-        Some(b) => {
-            assert_eq!(
-                b.len(), last_dim,
-                "apply_optional_bias: bias length {} != last_dim {last_dim}",
-                b.len(),
-            );
-            let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[last_dim]));
-            x.broadcast_add(&b_t)
-        }
-    }
+    let _ = last_dim;
+    x.add_optional_trailing_bias(bias)
 }
 
 #[cfg(test)]
