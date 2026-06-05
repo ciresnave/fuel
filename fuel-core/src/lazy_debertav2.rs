@@ -242,7 +242,7 @@ impl DebertaV2Model {
         let x = table
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[1, t, h]))?;
-        let mut x = apply_layer_norm(&x, &w.embed_ln, h, cfg.layer_norm_eps)?;
+        let mut x = x.layer_norm_affine(Arc::clone(&w.embed_ln.gain), Arc::clone(&w.embed_ln.bias), cfg.layer_norm_eps)?;
 
         // Build / normalize rel_embeddings once per forward.
         let rel_table = ids.const_f32_like(
@@ -251,10 +251,7 @@ impl DebertaV2Model {
         );
         let rel_table = match &w.rel_emb_ln {
             None => rel_table,
-            Some(ln) => apply_layer_norm(
-                &rel_table.reshape(Shape::from_dims(&[1, 2 * cfg.position_buckets, h]))?,
-                ln, h, cfg.layer_norm_eps,
-            )?.reshape(Shape::from_dims(&[2 * cfg.position_buckets, h]))?,
+            Some(ln) => rel_table.reshape(Shape::from_dims(&[1, 2 * cfg.position_buckets, h]))?.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), cfg.layer_norm_eps)?.reshape(Shape::from_dims(&[2 * cfg.position_buckets, h]))?,
         };
 
         // Build c2p / p2c gather index tables (depend on T).
@@ -290,13 +287,13 @@ fn apply_layer(
     let attn_out = apply_attention(x, &w.attn, rel_table, c2p_idx, p2c_idx, cfg, anchor)?;
     // Post-LN inside the attention sublayer.
     let projected = apply_linear(&attn_out, &w.attn.out_dense, anchor)?;
-    let x = apply_layer_norm(&projected.add(x)?, &w.attn.out_ln, cfg.hidden_size, cfg.layer_norm_eps)?;
+    let x = &projected.add(x)?.layer_norm_affine(Arc::clone(&w.attn.out_ln.gain), Arc::clone(&w.attn.out_ln.bias), cfg.layer_norm_eps)?;
 
     // FFN.
     let inter = apply_linear(&x, &w.ffn.intermediate, anchor)?;
     let inter = inter.gelu();
     let out = apply_linear(&inter, &w.ffn.output, anchor)?;
-    apply_layer_norm(&out.add(&x)?, &w.ffn.output_ln, cfg.hidden_size, cfg.layer_norm_eps)
+    out.add(&x)?.layer_norm_affine(Arc::clone(&w.ffn.output_ln.gain), Arc::clone(&w.ffn.output_ln.bias), cfg.layer_norm_eps)
 }
 
 fn apply_attention(
@@ -398,12 +395,6 @@ fn apply_attention(
     Ok(ctx)
 }
 
-fn apply_layer_norm(
-    x: &LazyTensor, ln: &LayerNormWeights, hidden: usize, eps: f64,
-) -> Result<LazyTensor> {
-    let _ = hidden;
-    x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), eps)
-}
 
 fn apply_linear(
     x: &LazyTensor, lw: &LinearWeights, anchor: &LazyTensor,

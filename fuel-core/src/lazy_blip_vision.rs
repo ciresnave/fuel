@@ -189,7 +189,7 @@ impl BlipVisionModel {
         }
 
         // Post-encoder LN.
-        apply_layer_norm(&x, &weights.post_layernorm, cfg.hidden_size, cfg.layer_norm_eps)
+        x.layer_norm_affine(Arc::clone(&weights.post_layernorm.gain), Arc::clone(&weights.post_layernorm.bias), cfg.layer_norm_eps)
     }
 }
 
@@ -200,12 +200,12 @@ fn apply_layer(
     anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let residual = x.clone();
-    let normed = apply_layer_norm(x, &w.ln1, cfg.hidden_size, cfg.layer_norm_eps)?;
+    let normed = x.layer_norm_affine(Arc::clone(&w.ln1.gain), Arc::clone(&w.ln1.bias), cfg.layer_norm_eps)?;
     let attn_out = apply_attention(&normed, &w.attn, cfg, anchor)?;
     let x = residual.add(&attn_out)?;
 
     let residual = x.clone();
-    let normed = apply_layer_norm(&x, &w.ln2, cfg.hidden_size, cfg.layer_norm_eps)?;
+    let normed = x.layer_norm_affine(Arc::clone(&w.ln2.gain), Arc::clone(&w.ln2.bias), cfg.layer_norm_eps)?;
     let mlp_out = apply_mlp(&normed, &w.mlp, cfg, anchor)?;
     residual.add(&mlp_out)
 }
@@ -258,15 +258,6 @@ fn apply_mlp(
     m.fc2.apply_linear_with_bias(&h1, cfg.intermediate_size, cfg.hidden_size, std::sync::Arc::clone(&m.fc2_bias))
 }
 
-fn apply_layer_norm(
-    x: &LazyTensor,
-    ln: &LayerNormWeights,
-    hidden: usize,
-    eps: f64,
-) -> Result<LazyTensor> {
-    let _ = hidden;
-    x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), eps)
-}
 
 
 // ---- Tests -----------------------------------------------------------------

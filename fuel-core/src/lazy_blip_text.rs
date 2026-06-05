@@ -202,7 +202,7 @@ impl BlipTextModel {
             .index_select(0_usize, &pos_idx)?
             .reshape(Shape::from_dims(&[1, t, h]))?;
         let mut x = tok.add(&pos)?;
-        x = apply_layer_norm(&x, &w.embed_ln, h, cfg.layer_norm_eps)?;
+        x = x.layer_norm_affine(Arc::clone(&w.embed_ln.gain), Arc::clone(&w.embed_ln.bias), cfg.layer_norm_eps)?;
 
         // Strict causal mask `(1, 1, t, t)` — reshape the (t, t)
         // mask from the public helper to add the leading batch +
@@ -221,7 +221,7 @@ impl BlipTextModel {
             BlipTextActivation::GeluPytorchTanh => h_pred.gelu_erf(),
             BlipTextActivation::Relu => h_pred.relu(),
         };
-        let h_pred = apply_layer_norm(&h_pred, &w.pred_ln, h, cfg.layer_norm_eps)?;
+        let h_pred = h_pred.layer_norm_affine(Arc::clone(&w.pred_ln.gain), Arc::clone(&w.pred_ln.bias), cfg.layer_norm_eps)?;
         w.lm_head.apply_linear_with_bias(&h_pred, h, cfg.vocab_size, std::sync::Arc::clone(&w.lm_head_bias))
     }
 }
@@ -245,9 +245,7 @@ fn apply_decoder_layer(
         h, h, Some(causal_mask), anchor,
     )?;
     let y = w.self_attn.out_dense.apply_linear_with_bias(&attn_out, h, h, std::sync::Arc::clone(&w.self_attn.out_dense_bias))?;
-    let x = apply_layer_norm(
-        &y.add(&residual)?, &w.self_attn.out_ln, h, cfg.layer_norm_eps,
-    )?;
+    let x = &y.add(&residual)?.layer_norm_affine(Arc::clone(&w.self_attn.out_ln.gain), Arc::clone(&w.self_attn.out_ln.bias), cfg.layer_norm_eps)?;
 
     // Cross-attention to encoder states.
     let residual = x.clone();
@@ -257,9 +255,7 @@ fn apply_decoder_layer(
         h, cfg.encoder_hidden_size, None, anchor,
     )?;
     let y = w.cross_attn.out_dense.apply_linear_with_bias(&cross_out, h, h, std::sync::Arc::clone(&w.cross_attn.out_dense_bias))?;
-    let x = apply_layer_norm(
-        &y.add(&residual)?, &w.cross_attn.out_ln, h, cfg.layer_norm_eps,
-    )?;
+    let x = &y.add(&residual)?.layer_norm_affine(Arc::clone(&w.cross_attn.out_ln.gain), Arc::clone(&w.cross_attn.out_ln.bias), cfg.layer_norm_eps)?;
 
     // FFN.
     let residual = x.clone();
@@ -270,9 +266,7 @@ fn apply_decoder_layer(
         BlipTextActivation::Relu => inter.relu(),
     };
     let out = w.ffn.output.apply_linear_with_bias(&inter, cfg.intermediate_size, h, std::sync::Arc::clone(&w.ffn.output_bias))?;
-    apply_layer_norm(
-        &out.add(&residual)?, &w.ffn.output_ln, h, cfg.layer_norm_eps,
-    )
+    out.add(&residual)?.layer_norm_affine(Arc::clone(&w.ffn.output_ln.gain), Arc::clone(&w.ffn.output_ln.bias), cfg.layer_norm_eps)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -320,15 +314,6 @@ fn apply_attention(
     ctx.merge_heads()
 }
 
-fn apply_layer_norm(
-    x: &LazyTensor,
-    ln: &LayerNormWeights,
-    hidden: usize,
-    eps: f64,
-) -> Result<LazyTensor> {
-    let _ = hidden;
-    x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), eps)
-}
 
 
 // ---- Tests -----------------------------------------------------------------
