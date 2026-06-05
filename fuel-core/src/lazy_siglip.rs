@@ -226,16 +226,10 @@ impl SiglipTextModel {
         assert!(seq > 0);
         assert!(seq <= cfg.max_position_embeddings);
 
-        let embed = LazyTensor::from_f32(
-            weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
-            &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let token_embeds = embed
-            .index_select(0_usize, &token_ids)?
-            .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
-        let pos_full = embed.const_f32_like(
+        let token_embeds = LazyTensor::embed_tokens(
+            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+        )?;
+        let pos_full = token_embeds.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.hidden_size]),
         );
@@ -262,7 +256,7 @@ impl SiglipTextModel {
             .reshape(Shape::from_dims(&[batch, cfg.hidden_size]))?;
         let head_out = weights.head_w.apply_linear(&last, cfg.hidden_size, cfg.hidden_size);
         // Bias on head.
-        let bias_t = embed.const_f32_like(
+        let bias_t = head_out.const_f32_like(
             Arc::clone(&weights.head_bias),
             Shape::from_dims(&[cfg.hidden_size]),
         );

@@ -164,15 +164,9 @@ impl NvEmbedV2Model {
             "attention_mask length must equal tokens length");
 
         // ---- Embedding lookup --------------------------------------------
-        let embed = LazyTensor::from_f32(
-            self.weights.backbone.token_embedding.clone(),
-            Shape::from_dims(&[bcfg.vocab_size, bcfg.hidden_size]),
-            &Device::cpu(),
-        );
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let embeds = embed
-            .index_select(0_usize, &token_ids)?
-            .reshape(Shape::from_dims(&[batch, seq, bcfg.hidden_size]))?;
+        let embeds = LazyTensor::embed_tokens(
+            self.weights.backbone.token_embedding.clone(), bcfg.vocab_size, bcfg.hidden_size, tokens, &Device::cpu(),
+        )?;
 
         // ---- Build bidirectional 4-D pad mask -----------------------------
         // shape (1, 1, seq, seq). `keep & keep` → 0; either-pad → -inf.
