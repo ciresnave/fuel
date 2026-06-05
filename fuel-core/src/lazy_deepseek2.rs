@@ -245,9 +245,10 @@ impl DeepSeek2Model {
         let mlp_out = match (&layer.ffn, expected_moe) {
             (DeepSeek2FfnWeights::Dense(w), false) => self.apply_dense_mlp(&h1_norm, w)?,
             (DeepSeek2FfnWeights::Moe(w), true) => self.apply_moe(&h1_norm, w)?,
-            _ => panic!(
-                "layer {layer_idx}: FFN weight kind does not match config-derived kind (uses_moe={expected_moe})",
-            ),
+            _ => return Err(crate::Error::Msg(format!(
+                "DeepSeek-V2 layer {layer_idx}: FFN weight kind does not match \
+                 config-derived kind (uses_moe={expected_moe}) — config + weights are inconsistent",
+            )).bt()),
         };
         h1.add(&mlp_out)
     }

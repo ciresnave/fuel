@@ -242,9 +242,10 @@ impl BasedModel {
             (BasedMixerWeights::Sliding(w), BasedMixerKind::Sliding) => {
                 self.apply_sliding(x, w, rope_cos, rope_sin)
             }
-            _ => panic!(
-                "layer {layer_idx}: mixer weight kind does not match config-derived kind {expected:?}",
-            ),
+            _ => Err(crate::Error::Msg(format!(
+                "Based layer {layer_idx}: mixer weight kind does not match \
+                 config-derived kind {expected:?} — config + weights are inconsistent",
+            )).bt()),
         }
     }
 
