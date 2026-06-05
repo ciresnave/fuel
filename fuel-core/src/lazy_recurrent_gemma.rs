@@ -601,9 +601,8 @@ fn opt_bias(x: LazyTensor, b: Option<&Arc<[f32]>>, n: usize) -> Result<LazyTenso
 }
 
 fn add_bias(x: LazyTensor, bias: &Arc<[f32]>, n: usize) -> Result<LazyTensor> {
-    assert_eq!(bias.len(), n, "add_bias: bias length {} != n {n}", bias.len());
-    let bt = x.const_f32_like(Arc::clone(bias), Shape::from_dims(&[n]));
-    x.broadcast_add(&bt)
+    let _ = n;
+    x.add_trailing_bias(Arc::clone(bias))
 }
 
 #[cfg(test)]

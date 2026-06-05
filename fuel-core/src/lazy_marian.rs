@@ -511,9 +511,8 @@ fn build_sinusoidal_table(max_positions: usize, d_model: usize) -> Vec<f32> {
 }
 
 fn add_bias_3d(x: LazyTensor, bias: &Arc<[f32]>, n: usize) -> Result<LazyTensor> {
-    assert_eq!(bias.len(), n, "add_bias_3d: bias length {} != n {n}", bias.len());
-    let bt = x.const_f32_like(Arc::clone(bias), Shape::from_dims(&[n]));
-    x.broadcast_add(&bt)
+    let _ = n;
+    x.add_trailing_bias(Arc::clone(bias))
 }
 
 #[cfg(test)]
