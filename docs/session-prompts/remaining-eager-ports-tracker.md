@@ -26,9 +26,12 @@ These unblock multiple downstream model ports. Ship these first.
       with LlamaFullConfig + Llama3RopeConfig + LlamaEosToks +
       Llama3Model + build_llama3_rope_tables; injected via
       LlamaModel::run_backbone_with_rope_tables hook; 9 tests).
-- [ ] [Llama2.c binary weight loader](port-llama2-c-weights.md)
+- [x] [Llama2.c binary weight loader](shipped/port-llama2-c-weights.md)
       — `llm/llama2_c_weights.rs` (239 LOC). Karpathy binary format
-      I/O. Trivial but completes the llama2c story.
+      I/O. Trivial but completes the llama2c story. **Shipped**
+      (lazy_llama2c::load_llama2c_bin + load_llama2c_bin_path; v0
+      format with optional untied lm_head via signed vocab; freq_cis
+      tables discarded, rebuilt host-side; 5 loader tests).
 - [ ] [Conv3D primitive (decomposition path)](port-conv3d.md)
       — `multimodal/qwen3_vl/conv3d_temporal_2.rs` (80 LOC).
       No native lazy Conv3D — decompose via slicing + matmul. Blocks
