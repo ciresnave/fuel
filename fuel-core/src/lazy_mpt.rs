@@ -144,10 +144,8 @@ pub struct MptModel {
 
 impl MptModel {
     pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
-        let cfg = &self.config;
-        let weights = &self.weights;
         let h_norm = self.run_backbone(tokens)?;
-        Ok(weights.output.apply_linear(&h_norm, cfg.d_model, cfg.vocab_size))
+        self.apply_lm_head(&h_norm)
     }
 
     /// Run the decoder forward up to the final LayerNorm and
@@ -158,18 +156,75 @@ impl MptModel {
         self.run_backbone(tokens)
     }
 
+    /// Multimodal entry point. Skips token embedding; runs the decoder
+    /// over pre-embedded inputs. MPT does NOT scale embeddings and
+    /// has no `start_pos` (ALiBi positional bias is purely relative).
+    pub fn forward_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+        let h_norm = self.run_backbone_embeds(embeds)?;
+        self.apply_lm_head(&h_norm)
+    }
+
+    /// Hidden-state variant of [`Self::forward_embeds`].
+    pub fn forward_hidden_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+        self.run_backbone_embeds(embeds)
+    }
+
+    /// Build per-token embeddings without running the decoder.
+    pub fn embed_tokens_anchored(
+        &self, anchor: &LazyTensor, tokens: &[u32],
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        anchor.embed_tokens_anchored(
+            self.weights.token_embedding.clone(),
+            cfg.vocab_size, cfg.d_model, tokens,
+        )
+    }
+
+    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        Ok(self.weights.output.apply_linear(h_norm, cfg.d_model, cfg.vocab_size))
+    }
+
     fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
-        let batch = 1;
         assert!(seq > 0);
-        assert_eq!(cfg.n_heads * cfg.head_dim(), cfg.d_model);
-        assert_eq!(cfg.n_heads % cfg.kv_n_heads, 0);
 
-        let mut h = LazyTensor::embed_tokens(
+        let h = LazyTensor::embed_tokens(
             weights.token_embedding.clone(), cfg.vocab_size, cfg.d_model, tokens, &Device::cpu(),
         )?;
+        self.run_backbone_embeds(&h)
+    }
+
+    fn run_backbone_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = embeds.shape();
+        let dims = dims.dims();
+        if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.d_model {
+            return Err(crate::Error::Msg(format!(
+                "MptModel::forward_embeds: expected embeds shape (1, seq, d_model={}), got {:?}",
+                cfg.d_model, dims,
+            )).bt());
+        }
+        let seq = dims[1];
+        if seq == 0 {
+            return Err(crate::Error::Msg(
+                "MptModel::forward_embeds: seq must be > 0".into(),
+            ).bt());
+        }
+        if cfg.n_heads * cfg.head_dim() != cfg.d_model {
+            return Err(crate::Error::Msg(
+                "MptConfig: n_heads * head_dim must equal d_model".into(),
+            ).bt());
+        }
+        if cfg.n_heads % cfg.kv_n_heads != 0 {
+            return Err(crate::Error::Msg(
+                "MptConfig: n_heads must be a multiple of kv_n_heads".into(),
+            ).bt());
+        }
+        let mut h = embeds.clone();
 
         let slopes = cfg.alibi_slopes();
         let mask_data = build_alibi_causal_mask(seq, &slopes);
@@ -181,7 +236,11 @@ impl MptModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &mask)?;
         }
-        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?)
+        h.layer_norm_affine(
+            std::sync::Arc::clone(&weights.final_ln_gain),
+            std::sync::Arc::clone(&weights.final_ln_bias),
+            cfg.layer_norm_eps,
+        )
     }
 
     fn apply_layer(
@@ -340,5 +399,58 @@ mod tests {
         for &v in &hidden.realize_f32() {
             assert!(v.is_finite(), "non-finite hidden: {v}");
         }
+    }
+
+    fn forward_embeds_test_cfg() -> MptConfig {
+        MptConfig {
+            d_model: 16, n_heads: 4, n_layers: 2, expansion_ratio: 4,
+            max_seq_len: 16, vocab_size: 32, kv_n_heads: 1,
+            alibi_bias_max: 8, layer_norm_eps: 1e-5,
+        }
+    }
+
+    #[test]
+    fn forward_embeds_matches_forward_after_token_lookup() {
+        let cfg = forward_embeds_test_cfg();
+        let model = MptModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3];
+        let logits_ref = model.forward(&tokens).unwrap().realize_f32();
+        let anchor = LazyTensor::from_f32(
+            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
+        );
+        let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
+        let logits_via_embeds = model.forward_embeds(&embeds).unwrap().realize_f32();
+        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-5,
+            "MPT forward vs forward_embeds must agree (max diff {max_diff})");
+    }
+
+    #[test]
+    fn forward_embeds_rejects_bad_shape() {
+        let cfg = forward_embeds_test_cfg();
+        let model = MptModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let bad = LazyTensor::from_f32(
+            vec![0.0_f32; 3 * (cfg.d_model + 1)],
+            Shape::from_dims(&[1, 3, cfg.d_model + 1]), &Device::cpu(),
+        );
+        assert!(model.forward_embeds(&bad).is_err());
+    }
+
+    #[test]
+    fn forward_hidden_embeds_matches_forward_hidden() {
+        let cfg = forward_embeds_test_cfg();
+        let model = MptModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![5, 7];
+        let h_ref = model.forward_hidden(&tokens).unwrap().realize_f32();
+        let anchor = LazyTensor::from_f32(
+            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
+        );
+        let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
+        let h_via_embeds = model.forward_hidden_embeds(&embeds).unwrap().realize_f32();
+        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-5,
+            "MPT forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
     }
 }
