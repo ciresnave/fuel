@@ -179,8 +179,7 @@ impl Gemma2Model {
         );
         // h_norm @ lm_head_w.T: shape (batch, seq, vocab_size).
         let logits = h_norm.matmul(&lm_head_w.transpose()?)?;
-        let logits = apply_softcap(&logits, cfg.final_logit_softcapping);
-        Ok(logits)
+        Ok(logits.softcap_optional(cfg.final_logit_softcapping))
     }
 
     fn build_mask(&self, anchor: &LazyTensor, seq: usize) -> LazyTensor {
@@ -251,7 +250,7 @@ impl Gemma2Model {
         let scale = 1.0_f64 / (head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_full.transpose()?)?.mul_scalar(scale);
         // Attention logit softcapping (BEFORE the mask).
-        let scores = apply_softcap(&scores, cfg.attn_logit_softcapping);
+        let scores = scores.softcap_optional(cfg.attn_logit_softcapping);
         let scores = scores.broadcast_add(mask)?;
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v_full)?;
@@ -298,15 +297,6 @@ fn apply_gemma2_rms_norm(
     x.rms_norm_affine_with_offset(gain, 1.0, eps).unwrap()
 }
 
-fn apply_softcap(x: &LazyTensor, cap: Option<f64>) -> LazyTensor {
-    match cap {
-        None => x.clone(),
-        Some(c) => {
-            let scaled = x.mul_scalar(1.0 / c);
-            scaled.tanh().mul_scalar(c)
-        }
-    }
-}
 
 fn apply_optional_bias(
     x: LazyTensor,

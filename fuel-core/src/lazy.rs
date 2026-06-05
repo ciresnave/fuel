@@ -3115,6 +3115,25 @@ impl LazyTensor {
         }
     }
 
+    /// Logit-softcap: `cap · tanh(self / cap)`. Used by the Gemma-2 /
+    /// Gemma-3 attention-logit and final-logit softcap branches. The
+    /// math is identical regardless of where the cap is applied;
+    /// retired the two per-port `softcap` / `apply_softcap` helpers in
+    /// favor of this method.
+    pub fn softcap(&self, cap: f64) -> Self {
+        self.mul_scalar(1.0 / cap).tanh().mul_scalar(cap)
+    }
+
+    /// `Option<f64>` variant of [`Self::softcap`]: when `cap.is_none()`
+    /// or `cap <= 0.0`, return `self` unchanged; else apply
+    /// [`Self::softcap`]. Mirrors the optional-bias pattern.
+    pub fn softcap_optional(&self, cap: Option<f64>) -> Self {
+        match cap {
+            Some(c) if c > 0.0 => self.softcap(c),
+            _ => self.clone(),
+        }
+    }
+
     /// Apply RMSNorm along the last dim with `(gain + offset) · x`.
     /// Equivalent to [`Self::rms_norm_affine`] after adding a scalar
     /// to every gain element — used by Gemma-family ports where
@@ -6915,10 +6934,6 @@ fn apply_gemma_rms_norm(
 }
 
 /// Softcapping: `tanh(x / cap) * cap`. Bounds values to `[-cap, cap]`.
-fn softcap(x: &LazyTensor, cap: f64) -> LazyTensor {
-    x.mul_scalar(1.0 / cap).tanh().mul_scalar(cap)
-}
-
 impl Gemma2Model {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
@@ -6976,10 +6991,7 @@ impl Gemma2Model {
         let logits = h_norm.matmul(&w_out).unwrap();
 
         // Final logit softcapping.
-        Ok(match cfg.final_logit_softcapping {
-            Some(cap) if cap > 0.0 => softcap(&logits, cap),
-            _ => logits,
-        })
+        Ok(logits.softcap_optional(cfg.final_logit_softcapping))
     }
 
     fn apply_layer(
@@ -7038,10 +7050,7 @@ impl Gemma2Model {
         let scores_scaled = scores.mul_scalar(scale);
 
         // Attention logit softcapping.
-        let scores_capped = match cfg.attn_logit_softcapping {
-            Some(cap) if cap > 0.0 => softcap(&scores_scaled, cap),
-            _ => scores_scaled,
-        };
+        let scores_capped = scores_scaled.softcap_optional(cfg.attn_logit_softcapping);
 
         // Causal mask (with optional sliding window on alternating layers).
         let use_sliding = cfg.sliding_window.is_some() && layer_idx % 2 == 0;
@@ -10242,6 +10251,33 @@ mod phase_a2_composite_tests {
         for i in 0..8 {
             assert!((cv[i] - 1.0).abs() < 1e-5, "cos[0,{i}] = {}", cv[i]);
             assert!(sv[i].abs() < 1e-5, "sin[0,{i}] = {}", sv[i]);
+        }
+    }
+
+    #[test]
+    fn softcap_matches_tanh_form() {
+        // Tiny input; verify cap·tanh(x/cap) at known points.
+        let x = cpu_f32(vec![0.0_f32, 5.0, -5.0, 30.0], &[1, 4]);
+        let capped = x.softcap(10.0).realize_f32();
+        // tanh(0)=0; tanh(0.5)≈0.4621; tanh(-0.5)≈-0.4621; tanh(3)≈0.9951.
+        let expect = [0.0_f32, 4.6212, -4.6212, 9.9505];
+        for (i, (&got, &want)) in capped.iter().zip(expect.iter()).enumerate() {
+            assert!((got - want).abs() < 1e-3, "softcap[{i}] got={got} want={want}");
+        }
+    }
+
+    #[test]
+    fn softcap_optional_none_returns_input_unchanged() {
+        let x = cpu_f32(vec![1.0_f32, -2.0, 30.0], &[1, 3]);
+        let out = x.softcap_optional(None).realize_f32();
+        let expect = [1.0_f32, -2.0, 30.0];
+        for (g, w) in out.iter().zip(expect.iter()) {
+            assert!((g - w).abs() < 1e-6);
+        }
+        // Some(0.0) or negative cap also returns unchanged (guard).
+        let out = x.softcap_optional(Some(0.0)).realize_f32();
+        for (g, w) in out.iter().zip(expect.iter()) {
+            assert!((g - w).abs() < 1e-6);
         }
     }
 
