@@ -225,7 +225,7 @@ fn apply_attention(
     let scale = 1.0_f64 / (head_dim as f64).sqrt();
 
     // Fused QKV: project to 3·hidden then split.
-    let qkv = apply_linear_with_bias(x, &w.qkv, &w.qkv_bias, embed, 3 * embed, anchor)?;
+    let qkv = w.qkv.apply_linear_with_bias(x, embed, 3 * embed, std::sync::Arc::clone(&w.qkv_bias))?;
     let q = qkv.narrow(2_usize, 0, embed)?;
     let k = qkv.narrow(2_usize, embed, embed)?;
     let v = qkv.narrow(2_usize, 2 * embed, embed)?;
@@ -240,7 +240,7 @@ fn apply_attention(
     let scores = q.matmul(&kt)?.mul_scalar(scale);
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?.merge_heads()?;
-    apply_linear_with_bias(&ctx, &w.projection, &w.projection_bias, embed, embed, anchor)
+    w.projection.apply_linear_with_bias(&ctx, embed, embed, std::sync::Arc::clone(&w.projection_bias))
 }
 
 fn apply_mlp(
@@ -249,17 +249,13 @@ fn apply_mlp(
     cfg: &BlipVisionConfig,
     anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
-    let h1 = apply_linear_with_bias(
-        x, &m.fc1, &m.fc1_bias, cfg.hidden_size, cfg.intermediate_size, anchor,
-    )?;
+    let h1 = m.fc1.apply_linear_with_bias(x, cfg.hidden_size, cfg.intermediate_size, std::sync::Arc::clone(&m.fc1_bias))?;
     let h1 = match cfg.hidden_activation {
         BlipVisionActivation::Gelu => h1.gelu(),
         BlipVisionActivation::GeluPytorchTanh => h1.gelu_erf(),
         BlipVisionActivation::Relu => h1.relu(),
     };
-    apply_linear_with_bias(
-        &h1, &m.fc2, &m.fc2_bias, cfg.intermediate_size, cfg.hidden_size, anchor,
-    )
+    m.fc2.apply_linear_with_bias(&h1, cfg.intermediate_size, cfg.hidden_size, std::sync::Arc::clone(&m.fc2_bias))
 }
 
 fn apply_layer_norm(
@@ -272,17 +268,6 @@ fn apply_layer_norm(
     x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), eps)
 }
 
-fn apply_linear_with_bias(
-    x: &LazyTensor,
-    w: &WeightStorage,
-    b: &Arc<[f32]>,
-    in_features: usize,
-    out_features: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
-    let _ = anchor;
-    w.apply_linear_with_bias(x, in_features, out_features, Arc::clone(b))
-}
 
 // ---- Tests -----------------------------------------------------------------
 

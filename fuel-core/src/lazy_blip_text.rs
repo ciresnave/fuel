@@ -215,18 +215,14 @@ impl BlipTextModel {
         }
 
         // LM head: dense → act → LN → vocab linear + bias.
-        let h_pred = apply_linear_with_bias(
-            &x, &w.pred_dense, &w.pred_dense_bias, h, h, anchor,
-        )?;
+        let h_pred = w.pred_dense.apply_linear_with_bias(&x, h, h, std::sync::Arc::clone(&w.pred_dense_bias))?;
         let h_pred = match cfg.hidden_activation {
             BlipTextActivation::Gelu => h_pred.gelu(),
             BlipTextActivation::GeluPytorchTanh => h_pred.gelu_erf(),
             BlipTextActivation::Relu => h_pred.relu(),
         };
         let h_pred = apply_layer_norm(&h_pred, &w.pred_ln, h, cfg.layer_norm_eps)?;
-        apply_linear_with_bias(
-            &h_pred, &w.lm_head, &w.lm_head_bias, h, cfg.vocab_size, anchor,
-        )
+        w.lm_head.apply_linear_with_bias(&h_pred, h, cfg.vocab_size, std::sync::Arc::clone(&w.lm_head_bias))
     }
 }
 
@@ -248,9 +244,7 @@ fn apply_decoder_layer(
         cfg.num_attention_heads, cfg.head_dim(),
         h, h, Some(causal_mask), anchor,
     )?;
-    let y = apply_linear_with_bias(
-        &attn_out, &w.self_attn.out_dense, &w.self_attn.out_dense_bias, h, h, anchor,
-    )?;
+    let y = w.self_attn.out_dense.apply_linear_with_bias(&attn_out, h, h, std::sync::Arc::clone(&w.self_attn.out_dense_bias))?;
     let x = apply_layer_norm(
         &y.add(&residual)?, &w.self_attn.out_ln, h, cfg.layer_norm_eps,
     )?;
@@ -262,26 +256,20 @@ fn apply_decoder_layer(
         cfg.num_attention_heads, cfg.head_dim(),
         h, cfg.encoder_hidden_size, None, anchor,
     )?;
-    let y = apply_linear_with_bias(
-        &cross_out, &w.cross_attn.out_dense, &w.cross_attn.out_dense_bias, h, h, anchor,
-    )?;
+    let y = w.cross_attn.out_dense.apply_linear_with_bias(&cross_out, h, h, std::sync::Arc::clone(&w.cross_attn.out_dense_bias))?;
     let x = apply_layer_norm(
         &y.add(&residual)?, &w.cross_attn.out_ln, h, cfg.layer_norm_eps,
     )?;
 
     // FFN.
     let residual = x.clone();
-    let inter = apply_linear_with_bias(
-        &x, &w.ffn.intermediate, &w.ffn.intermediate_bias, h, cfg.intermediate_size, anchor,
-    )?;
+    let inter = w.ffn.intermediate.apply_linear_with_bias(&x, h, cfg.intermediate_size, std::sync::Arc::clone(&w.ffn.intermediate_bias))?;
     let inter = match cfg.hidden_activation {
         BlipTextActivation::Gelu => inter.gelu(),
         BlipTextActivation::GeluPytorchTanh => inter.gelu_erf(),
         BlipTextActivation::Relu => inter.relu(),
     };
-    let out = apply_linear_with_bias(
-        &inter, &w.ffn.output, &w.ffn.output_bias, cfg.intermediate_size, h, anchor,
-    )?;
+    let out = w.ffn.output.apply_linear_with_bias(&inter, cfg.intermediate_size, h, std::sync::Arc::clone(&w.ffn.output_bias))?;
     apply_layer_norm(
         &out.add(&residual)?, &w.ffn.output_ln, h, cfg.layer_norm_eps,
     )
@@ -308,9 +296,9 @@ fn apply_attention(
     let kv_len = kv_dims[1];
     let embed = num_heads * head_dim;
 
-    let q = apply_linear_with_bias(q_input, &w.query, &w.query_bias, q_in_dim, embed, anchor)?;
-    let k = apply_linear_with_bias(kv_src, &w.key, &w.key_bias, kv_in_dim, embed, anchor)?;
-    let v = apply_linear_with_bias(kv_src, &w.value, &w.value_bias, kv_in_dim, embed, anchor)?;
+    let q = w.query.apply_linear_with_bias(q_input, q_in_dim, embed, std::sync::Arc::clone(&w.query_bias))?;
+    let k = w.key.apply_linear_with_bias(kv_src, kv_in_dim, embed, std::sync::Arc::clone(&w.key_bias))?;
+    let v = w.value.apply_linear_with_bias(kv_src, kv_in_dim, embed, std::sync::Arc::clone(&w.value_bias))?;
 
     let scaling = 1.0_f64 / (head_dim as f64).sqrt();
     let q = q.mul_scalar(scaling);
@@ -342,17 +330,6 @@ fn apply_layer_norm(
     x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), eps)
 }
 
-fn apply_linear_with_bias(
-    x: &LazyTensor,
-    w: &WeightStorage,
-    b: &Arc<[f32]>,
-    in_features: usize,
-    out_features: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
-    let _ = anchor;
-    w.apply_linear_with_bias(x, in_features, out_features, Arc::clone(b))
-}
 
 // ---- Tests -----------------------------------------------------------------
 
