@@ -113,16 +113,8 @@ impl Gemma3Model {
     }
 
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
-        let cfg = &self.config;
-        let weights = &self.weights;
         let h_norm = self.run_backbone(tokens, start_pos)?;
-        let lm_head = WeightStorage::F32(weights.token_embedding.clone());
-        let logits = lm_head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size);
-        let logits = match cfg.final_logit_softcapping {
-            None => logits,
-            Some(sc) => logits.mul_scalar(1.0 / sc).tanh().mul_scalar(sc),
-        };
-        Ok(logits)
+        self.apply_lm_head(&h_norm)
     }
 
     /// Run the decoder forward up to the final offset RmsNorm
@@ -135,25 +127,103 @@ impl Gemma3Model {
         self.run_backbone(tokens, start_pos)
     }
 
+    /// Multimodal entry point. Skips the token-embedding step and
+    /// runs the decoder over pre-embedded inputs (typically the
+    /// concatenation of vision-projected embeddings + text token
+    /// embeddings).
+    ///
+    /// `scaled_embeds` shape: `(1, seq, hidden_size)`. The caller
+    /// must apply Gemma's `sqrt(hidden_size)` scaling before
+    /// invoking — matching the convention used by lazy_paligemma /
+    /// lazy_llava / lazy_voxtral so the multimodal composition
+    /// layer owns the scaling decision.
+    pub fn forward_embeds(
+        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+    ) -> Result<LazyTensor> {
+        let h_norm = self.decode_from_scaled_embeds(scaled_embeds, start_pos)?;
+        self.apply_lm_head(&h_norm)
+    }
+
+    /// Hidden-state variant of [`Self::forward_embeds`]. Returns the
+    /// post-final-RmsNorm states `(1, seq, hidden_size)`. Used by
+    /// retrieval / embedding consumers.
+    pub fn forward_hidden_embeds(
+        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+    ) -> Result<LazyTensor> {
+        self.decode_from_scaled_embeds(scaled_embeds, start_pos)
+    }
+
+    /// Build per-token embeddings without running the decoder. Used by
+    /// multimodal compositions to obtain text-side embeddings that
+    /// will be spliced with vision features before
+    /// [`Self::forward_embeds`].
+    ///
+    /// Returns shape `(1, seq, hidden_size)`. The caller is responsible
+    /// for the `sqrt(hidden_size)` scaling.
+    pub fn embed_tokens_anchored(
+        &self, anchor: &LazyTensor, tokens: &[u32],
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        anchor.embed_tokens_anchored(
+            self.weights.token_embedding.clone(),
+            cfg.vocab_size, cfg.hidden_size, tokens,
+        )
+    }
+
+    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let lm_head = WeightStorage::F32(self.weights.token_embedding.clone());
+        let logits = lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size);
+        match cfg.final_logit_softcapping {
+            None => Ok(logits),
+            Some(sc) => Ok(logits.mul_scalar(1.0 / sc).tanh().mul_scalar(sc)),
+        }
+    }
+
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
-        let batch = 1;
         assert!(seq > 0, "Gemma3Model: tokens must be non-empty");
-        assert_eq!(
-            cfg.num_attention_heads % cfg.num_key_value_heads, 0,
-            "Gemma3Config: num_attention_heads must be a multiple of num_key_value_heads",
-        );
-        assert!(
-            cfg.sliding_window_pattern > 0,
-            "Gemma3Config: sliding_window_pattern must be > 0",
-        );
 
-        let mut h = LazyTensor::embed_tokens(
+        let h = LazyTensor::embed_tokens(
             weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
         )?;
-        h = h.mul_scalar((cfg.hidden_size as f64).sqrt());
+        let h = h.mul_scalar((cfg.hidden_size as f64).sqrt());
+        self.decode_from_scaled_embeds(&h, start_pos)
+    }
+
+    fn decode_from_scaled_embeds(
+        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let dims = scaled_embeds.shape();
+        let dims = dims.dims();
+        if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.hidden_size {
+            return Err(crate::Error::Msg(format!(
+                "Gemma3Model::forward_embeds: expected scaled_embeds shape \
+                 (1, seq, hidden_size={}), got {:?}",
+                cfg.hidden_size, dims,
+            )).bt());
+        }
+        let seq = dims[1];
+        if seq == 0 {
+            return Err(crate::Error::Msg(
+                "Gemma3Model::forward_embeds: seq must be > 0".into(),
+            ).bt());
+        }
+        if cfg.num_attention_heads % cfg.num_key_value_heads != 0 {
+            return Err(crate::Error::Msg(
+                "Gemma3Config: num_attention_heads must be a multiple of num_key_value_heads".into(),
+            ).bt());
+        }
+        if cfg.sliding_window_pattern == 0 {
+            return Err(crate::Error::Msg(
+                "Gemma3Config: sliding_window_pattern must be > 0".into(),
+            ).bt());
+        }
+        let mut h = scaled_embeds.clone();
 
         let (rope_cos_g, rope_sin_g) = h.rope_tables_const(
             cfg.rope_theta, start_pos, seq, cfg.head_dim,
@@ -462,5 +532,59 @@ mod tests {
         for &v in &hidden.realize_f32() {
             assert!(v.is_finite(), "non-finite hidden: {v}");
         }
+    }
+
+    #[test]
+    fn forward_embeds_matches_forward_after_token_lookup() {
+        let cfg = tiny_config();
+        let model = Gemma3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![1, 2, 3];
+        let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
+        let anchor = LazyTensor::from_f32(
+            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
+        );
+        let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
+        let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
+        let logits_via_embeds = model.forward_embeds(&scaled, 0).unwrap().realize_f32();
+        assert_eq!(logits_ref.len(), logits_via_embeds.len());
+        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-5,
+            "Gemma3 forward vs forward_embeds (post-scale) must agree (max diff {max_diff})");
+    }
+
+    #[test]
+    fn forward_embeds_rejects_bad_shape() {
+        let cfg = tiny_config();
+        let model = Gemma3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let bad_embeds = LazyTensor::from_f32(
+            vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
+        );
+        assert!(model.forward_embeds(&bad_embeds, 0).is_err());
+        let rank2 = LazyTensor::from_f32(
+            vec![0.0_f32; cfg.hidden_size], Shape::from_dims(&[1, cfg.hidden_size]),
+            &Device::cpu(),
+        );
+        assert!(model.forward_embeds(&rank2, 0).is_err());
+    }
+
+    #[test]
+    fn forward_hidden_embeds_matches_forward_hidden() {
+        let cfg = tiny_config();
+        let model = Gemma3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let tokens: Vec<u32> = vec![5, 7];
+        let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
+        let anchor = LazyTensor::from_f32(
+            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
+        );
+        let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
+        let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
+        let h_via_embeds = model.forward_hidden_embeds(&scaled, 0).unwrap().realize_f32();
+        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-5,
+            "Gemma3 forward_hidden vs forward_hidden_embeds (post-scale) must agree (max diff {max_diff})");
     }
 }
