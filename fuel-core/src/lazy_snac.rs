@@ -377,19 +377,14 @@ fn apply_local_mha(
     let n_heads = w.num_heads;
     let head_dim = w.head_dim;
     let scale = 1.0_f64 / (head_dim as f64).sqrt();
-    let q = q.reshape(Shape::from_dims(&[b, t, n_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let k = k.reshape(Shape::from_dims(&[b, t, n_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let v = v.reshape(Shape::from_dims(&[b, t, n_heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
+    let _ = (b, t, c);
+    let q = q.split_heads(n_heads, head_dim)?;
+    let k = k.split_heads(n_heads, head_dim)?;
+    let v = v.split_heads(n_heads, head_dim)?;
     let kt = k.permute([0, 1, 3, 2_usize])?;
     let scores = q.matmul(&kt)?.mul_scalar(scale);
     let probs = scores.softmax_last_dim()?;
-    let ctx = probs.matmul(&v)?;
-    let ctx = ctx
-        .permute([0, 2, 1, 3_usize])?
-        .reshape(Shape::from_dims(&[b, t, c]))?;
+    let ctx = probs.matmul(&v)?.merge_heads()?;
     let out = w.to_out.apply_linear(&ctx, c, c);
     // (B, T, C) → (B, C, T) for residual add.
     let out_chw = out.permute([0, 2, 1_usize])?;

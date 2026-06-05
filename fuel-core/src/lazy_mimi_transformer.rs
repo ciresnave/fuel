@@ -201,16 +201,10 @@ fn apply_attention(
     let head_dim = cfg.head_dim();
     let scale = 1.0_f64 / (head_dim as f64).sqrt();
 
-    // (B, T, D) → (B, T, heads, head_dim) → (B, heads, T, head_dim)
-    let q = w.q_proj.apply_linear(x, d, d)
-        .reshape(Shape::from_dims(&[b, t, heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let k = w.k_proj.apply_linear(x, d, d)
-        .reshape(Shape::from_dims(&[b, t, heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
-    let v = w.v_proj.apply_linear(x, d, d)
-        .reshape(Shape::from_dims(&[b, t, heads, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?;
+    // (B, T, D) → (B, heads, T, head_dim)
+    let q = w.q_proj.apply_linear(x, d, d).split_heads(heads, head_dim)?;
+    let k = w.k_proj.apply_linear(x, d, d).split_heads(heads, head_dim)?;
+    let v = w.v_proj.apply_linear(x, d, d).split_heads(heads, head_dim)?;
 
     // Apply RoPE-interleaved to q and k.
     let q = apply_rope_interleaved(&q, cos, sin, b, heads, t, head_dim)?;
@@ -231,8 +225,8 @@ fn apply_attention(
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v3)?
         .reshape(Shape::from_dims(&[b, heads, t, head_dim]))?
-        .permute([0, 2, 1, 3_usize])?
-        .reshape(Shape::from_dims(&[b, t, d]))?;
+        .merge_heads()?;
+    let _ = d;
     Ok(w.o_proj.apply_linear(&ctx, d, d))
 }
 

@@ -412,23 +412,15 @@ fn multi_head_attn(
     n_heads: usize,
     d_head: usize,
 ) -> LazyTensor {
-    let q = q
-        .reshape(Shape::from_dims(&[1, q_n, n_heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();  // [1, H, Q, D]
-    let k = k
-        .reshape(Shape::from_dims(&[1, kv_n, n_heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
-    let v = v
-        .reshape(Shape::from_dims(&[1, kv_n, n_heads, d_head])).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap();
+    let _ = (q_n, kv_n, c);
+    let q = q.split_heads(n_heads, d_head).unwrap();  // [1, H, Q, D]
+    let k = k.split_heads(n_heads, d_head).unwrap();
+    let v = v.split_heads(n_heads, d_head).unwrap();
     let k_t = k.permute([0, 1, 3, 2_usize]).unwrap();  // [1, H, D, KV]
     let scale = 1.0 / (d_head as f64).sqrt();
     let scores = q.matmul(&k_t).unwrap().mul_scalar(scale);  // [1, H, Q, KV]
     let probs = scores.softmax_last_dim().unwrap();
-    probs
-        .matmul(&v).unwrap()
-        .permute([0, 2, 1, 3_usize]).unwrap()
-        .reshape(Shape::from_dims(&[1, q_n, c])).unwrap()
+    probs.matmul(&v).unwrap().merge_heads().unwrap()
 }
 
 // ---- Sinusoidal timestep embedding ----------------------------------------
