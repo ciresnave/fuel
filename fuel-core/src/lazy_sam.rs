@@ -725,9 +725,13 @@ impl SamPromptEncoder {
     /// embedding. Returns shape `(1, embed_dim, h, w)` where
     /// `(h, w) = image_embedding_size`.
     ///
+    /// `anchor` selects the graph the result lives on — constants
+    /// are emitted via `anchor.const_f32_like`. Pass the image
+    /// embedding tensor when composing with `SamMaskDecoder`.
+    ///
     /// This is the broadcast positional encoding the mask decoder
     /// adds to image-encoder features during cross-attention.
-    pub fn dense_pe(&self) -> Result<LazyTensor> {
+    pub fn dense_pe(&self, anchor: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
         let (h, w) = cfg.image_embedding_size;
         // Build a (h, w, 2) tensor of normalized (x, y) cell-centers.
@@ -738,13 +742,12 @@ impl SamPromptEncoder {
                 coords.push((yi as f32 + 0.5) / h as f32);
             }
         }
-        let anchor = self.weights_anchor();
         let coords_t = anchor.const_f32_like(
             Arc::<[f32]>::from(coords),
             Shape::from_dims(&[h, w, 2]),
         );
         // pe_encoding: project, scale, sin+cos cat, then transpose.
-        let pe = self.pe_encoding(&anchor, &coords_t)?;
+        let pe = self.pe_encoding(anchor, &coords_t)?;
         // (h, w, embed_dim) → (1, embed_dim, h, w).
         let pe_chw = pe.permute([2, 0, 1_usize])?;
         pe_chw.reshape(Shape::from_dims(&[1, cfg.embed_dim, h, w]))
@@ -762,7 +765,7 @@ impl SamPromptEncoder {
     /// Pass `pad=true` when only points (no boxes) are supplied —
     /// this matches the official SAM forward path.
     pub fn embed_points(
-        &self, points_xy: &[f32], labels: &[f32], pad: bool,
+        &self, anchor: &LazyTensor, points_xy: &[f32], labels: &[f32], pad: bool,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let n = labels.len();
@@ -780,7 +783,6 @@ impl SamPromptEncoder {
         }
         let n_padded = labels_owned.len();
 
-        let anchor = self.weights_anchor();
         // Normalize coords: x by W, y by H — same convention as
         // PositionEmbeddingRandom::forward_with_coords.
         for i in 0..n_padded {
@@ -797,7 +799,7 @@ impl SamPromptEncoder {
         );
 
         // pe_encoding(coords) → (1, n_padded, embed_dim).
-        let pos_emb = self.pe_encoding(&anchor, &coords_t)?;
+        let pos_emb = self.pe_encoding(anchor, &coords_t)?;
 
         // Per-label addition:
         //   label == -1 → swap in `not_a_point_embed` (replacement, not add)
@@ -808,7 +810,7 @@ impl SamPromptEncoder {
             .broadcast_to(Shape::from_dims(&[1, n_padded, cfg.embed_dim]))?;
 
         let not_a_point = self.broadcast_per_point_emb(
-            &anchor, &self.weights.not_a_point_embed, n_padded)?;
+            anchor, &self.weights.not_a_point_embed, n_padded)?;
         let neg1_mask = labels_bc.eq(&labels_bc.const_f32_like(
             Arc::<[f32]>::from(vec![-1.0_f32; 1]),
             Shape::from_dims(&[1]),
@@ -816,7 +818,7 @@ impl SamPromptEncoder {
         let pos_emb = neg1_mask.where_cond(&not_a_point, &pos_emb)?;
 
         let bg_emb = self.broadcast_per_point_emb(
-            &anchor, &self.weights.point_embeddings[0], n_padded)?;
+            anchor, &self.weights.point_embeddings[0], n_padded)?;
         let zeros = pos_emb.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 1]),
             Shape::from_dims(&[1]),
@@ -829,7 +831,7 @@ impl SamPromptEncoder {
         let pos_emb = pos_emb.add(&label0_contrib)?;
 
         let fg_emb = self.broadcast_per_point_emb(
-            &anchor, &self.weights.point_embeddings[1], n_padded)?;
+            anchor, &self.weights.point_embeddings[1], n_padded)?;
         let one_mask = labels_bc.eq(&labels_bc.const_f32_like(
             Arc::<[f32]>::from(vec![1.0_f32; 1]),
             Shape::from_dims(&[1]),
@@ -842,7 +844,7 @@ impl SamPromptEncoder {
     /// `(x1, y1, x2, y2)` per box in original image pixels.
     /// Returns shape `(1, 2*N, embed_dim)` — two embeddings per
     /// box, one for each corner.
-    pub fn embed_boxes(&self, boxes_xyxy: &[f32]) -> Result<LazyTensor> {
+    pub fn embed_boxes(&self, anchor: &LazyTensor, boxes_xyxy: &[f32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         assert_eq!(boxes_xyxy.len() % 4, 0,
             "embed_boxes: input length {} not divisible by 4", boxes_xyxy.len());
@@ -861,22 +863,21 @@ impl SamPromptEncoder {
             corners[4 * i + 3] /= cfg.input_image_size.0 as f32;
         }
 
-        let anchor = self.weights_anchor();
         let coords_t = anchor.const_f32_like(
             Arc::<[f32]>::from(corners),
             Shape::from_dims(&[n_boxes, 2, 2]),
         );
-        let pe = self.pe_encoding(&anchor, &coords_t)?;  // (n_boxes, 2, embed_dim)
+        let pe = self.pe_encoding(anchor, &coords_t)?;  // (n_boxes, 2, embed_dim)
 
         // Add per-corner type embeddings:
         //   corner 0 (top-left) gets point_embeddings[2]
         //   corner 1 (bottom-right) gets point_embeddings[3]
         let tl = self.broadcast_per_point_emb(
-            &anchor, &self.weights.point_embeddings[2], 1)?
+            anchor, &self.weights.point_embeddings[2], 1)?
             .reshape(Shape::from_dims(&[1, 1, cfg.embed_dim]))?
             .broadcast_to(Shape::from_dims(&[n_boxes, 1, cfg.embed_dim]))?;
         let br = self.broadcast_per_point_emb(
-            &anchor, &self.weights.point_embeddings[3], 1)?
+            anchor, &self.weights.point_embeddings[3], 1)?
             .reshape(Shape::from_dims(&[1, 1, cfg.embed_dim]))?
             .broadcast_to(Shape::from_dims(&[n_boxes, 1, cfg.embed_dim]))?;
         let pe_tl = pe.slice(1_usize, 0, 1)?.add(&tl)?;
@@ -934,10 +935,9 @@ impl SamPromptEncoder {
     /// Convenience: if no mask is supplied, return the
     /// `no_mask_embed` broadcast across the image embedding grid.
     /// Shape: `(1, embed_dim, h, w)`.
-    pub fn no_mask_dense(&self) -> Result<LazyTensor> {
+    pub fn no_mask_dense(&self, anchor: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
         let (h, w) = cfg.image_embedding_size;
-        let anchor = self.weights_anchor();
         let no_mask = anchor.const_f32_like(
             Arc::clone(&self.weights.no_mask_embed),
             Shape::from_dims(&[1, cfg.embed_dim, 1, 1]),
@@ -946,16 +946,6 @@ impl SamPromptEncoder {
     }
 
     // -- Internal helpers ---------------------------------------------------
-
-    fn weights_anchor(&self) -> LazyTensor {
-        // The Gaussian matrix is required and present unconditionally;
-        // use it as the canonical anchor for all const-emission paths.
-        LazyTensor::from_f32(
-            Arc::clone(&self.weights.positional_encoding_gaussian).to_vec(),
-            Shape::from_dims(&[2, self.config.embed_dim / 2]),
-            &Device::cpu(),
-        )
-    }
 
     /// Project coordinates through the Gaussian matrix and emit
     /// sin/cos features. Input shape `(..., 2)`, output shape
@@ -1494,6 +1484,207 @@ impl SamMaskDecoder {
     }
 }
 
+// ===========================================================================
+// SAM Model — end-to-end composition
+// ===========================================================================
+
+/// Composed configuration for a full SAM model: image encoder + prompt
+/// encoder + mask decoder, bundled so a single preset constructor (e.g.
+/// `vit_b()`) yields a mutually-consistent triple.
+#[derive(Debug, Clone)]
+pub struct SamModelConfig {
+    pub image_encoder: SamImageEncoderConfig,
+    pub prompt_encoder: SamPromptEncoderConfig,
+    pub mask_decoder: SamMaskDecoderConfig,
+}
+
+impl SamModelConfig {
+    fn derive_from_image_encoder(image_encoder: SamImageEncoderConfig) -> Self {
+        let pps = image_encoder.patches_per_side();
+        let img = image_encoder.img_size;
+        let oc = image_encoder.out_chans;
+        let prompt_encoder = SamPromptEncoderConfig {
+            embed_dim: oc,
+            image_embedding_size: (pps, pps),
+            input_image_size: (img, img),
+            mask_in_chans: 16,
+        };
+        let mask_decoder = SamMaskDecoderConfig {
+            transformer_dim: oc,
+            ..SamMaskDecoderConfig::sam_default()
+        };
+        Self { image_encoder, prompt_encoder, mask_decoder }
+    }
+
+    /// SAM ViT-B preset (img_size=1024, depth=12, embed_dim=768).
+    pub fn vit_b() -> Self {
+        Self::derive_from_image_encoder(SamImageEncoderConfig::vit_b())
+    }
+    /// SAM ViT-L preset (img_size=1024, depth=24, embed_dim=1024).
+    pub fn vit_l() -> Self {
+        Self::derive_from_image_encoder(SamImageEncoderConfig::vit_l())
+    }
+    /// SAM ViT-H preset (img_size=1024, depth=32, embed_dim=1280).
+    pub fn vit_h() -> Self {
+        Self::derive_from_image_encoder(SamImageEncoderConfig::vit_h())
+    }
+}
+
+/// End-to-end SAM model — wraps the three SAM sub-modules and exposes a
+/// composed `forward` that takes raw image pixels + point prompts and
+/// returns segmentation masks + IoU scores.
+#[derive(Debug)]
+pub struct SamModel {
+    pub config: SamModelConfig,
+    pub image_encoder: SamImageEncoderVit,
+    pub prompt_encoder: SamPromptEncoder,
+    pub mask_decoder: SamMaskDecoder,
+}
+
+impl SamModel {
+    /// ImageNet RGB mean used by SAM preprocessing (Meta reference).
+    pub const PIXEL_MEAN: [f32; 3] = [123.675, 116.28, 103.53];
+    /// ImageNet RGB std used by SAM preprocessing (Meta reference).
+    pub const PIXEL_STD: [f32; 3] = [58.395, 57.12, 57.375];
+
+    pub fn new(
+        config: SamModelConfig,
+        image_encoder_weights: SamImageEncoderWeights,
+        prompt_encoder_weights: SamPromptEncoderWeights,
+        mask_decoder_weights: SamMaskDecoderWeights,
+    ) -> Self {
+        let image_encoder = SamImageEncoderVit {
+            config: config.image_encoder.clone(),
+            weights: image_encoder_weights,
+        };
+        let prompt_encoder = SamPromptEncoder {
+            config: config.prompt_encoder.clone(),
+            weights: prompt_encoder_weights,
+        };
+        let mask_decoder = SamMaskDecoder {
+            config: config.mask_decoder.clone(),
+            weights: mask_decoder_weights,
+        };
+        Self { config, image_encoder, prompt_encoder, mask_decoder }
+    }
+
+    /// Host-side preprocess: subtract ImageNet RGB mean, divide by std,
+    /// then zero-pad to `image_size × image_size`. `image_chw` is
+    /// row-major `(3, h, w)` raw pixel f32 (typically `0..=255`).
+    /// Returns the `(3, image_size, image_size)` f32 buffer the image
+    /// encoder consumes.
+    pub fn preprocess(&self, image_chw: &[f32], h: usize, w: usize) -> Result<Vec<f32>> {
+        let s = self.config.image_encoder.img_size;
+        if h > s || w > s {
+            return Err(crate::Error::Msg(format!(
+                "SAM preprocess: image ({w}x{h}) exceeds max side {s}",
+            )).bt());
+        }
+        if image_chw.len() != 3 * h * w {
+            return Err(crate::Error::Msg(format!(
+                "SAM preprocess: expected {} f32s (3x{}x{}), got {}",
+                3 * h * w, h, w, image_chw.len(),
+            )).bt());
+        }
+        let mut out = vec![0.0_f32; 3 * s * s];
+        for c in 0..3 {
+            let mean = Self::PIXEL_MEAN[c];
+            let std = Self::PIXEL_STD[c];
+            let src_plane = &image_chw[c * h * w..(c + 1) * h * w];
+            let dst_plane = &mut out[c * s * s..(c + 1) * s * s];
+            for y in 0..h {
+                let src_row = &src_plane[y * w..(y + 1) * w];
+                let dst_row = &mut dst_plane[y * s..y * s + w];
+                for (di, &px) in dst_row.iter_mut().zip(src_row.iter()) {
+                    *di = (px - mean) / std;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Encode the raw image into the dense feature map. Returns shape
+    /// `(1, out_chans, patches_per_side, patches_per_side)`.
+    pub fn embeddings(&self, image_chw: &[f32], h: usize, w: usize) -> Result<LazyTensor> {
+        let padded = self.preprocess(image_chw, h, w)?;
+        self.image_encoder.forward(&padded)
+    }
+
+    /// Prompt-encode + mask-decode + upsample + crop, starting from a
+    /// precomputed image embedding.
+    ///
+    /// Inputs:
+    ///   - `img_embeddings`: from `embeddings()`.
+    ///   - `orig_h`, `orig_w`: pre-padding image size — the mask is
+    ///     cropped to this extent after upsampling.
+    ///   - `points_xy`: row-major `(N, 2)` pixel coordinates relative to
+    ///     the original (pre-padding) image. The +0.5 cell-center shift
+    ///     and the not-a-point padding marker are handled internally.
+    ///   - `point_labels`: `(N,)` with values in `{0, 1}` (background /
+    ///     foreground); the `-1` padding marker is appended internally.
+    ///   - `multimask_output`: when true, returns the 3 multi-task masks;
+    ///     when false, the single mask.
+    ///
+    /// Returns `(masks, iou_pred)`:
+    ///   - `masks`: `(num_returned, orig_h, orig_w)` — batch dim squeezed.
+    ///   - `iou_pred`: `(1, num_returned)` quality scores.
+    pub fn forward_for_embeddings(
+        &self,
+        img_embeddings: &LazyTensor,
+        orig_h: usize, orig_w: usize,
+        points_xy: &[f32], point_labels: &[f32],
+        multimask_output: bool,
+    ) -> Result<(LazyTensor, LazyTensor)> {
+        if point_labels.is_empty() {
+            return Err(crate::Error::Msg(
+                "SAM forward: no prompts supplied (point_labels is empty)".into(),
+            ).bt());
+        }
+        let img_size = self.config.image_encoder.img_size;
+        if orig_h == 0 || orig_w == 0 || orig_h > img_size || orig_w > img_size {
+            return Err(crate::Error::Msg(format!(
+                "SAM forward: orig ({orig_w}x{orig_h}) must be within (0, {img_size}]",
+            )).bt());
+        }
+        let dense_pe = self.prompt_encoder.dense_pe(img_embeddings)?;
+        let sparse = self.prompt_encoder.embed_points(
+            img_embeddings, points_xy, point_labels, true,
+        )?;
+        let dense = self.prompt_encoder.no_mask_dense(img_embeddings)?;
+        let (low_res, iou) = self.mask_decoder.forward(
+            img_embeddings, &dense_pe, &sparse, &dense, multimask_output,
+        )?;
+        let pps = self.config.image_encoder.patches_per_side();
+        let decoder_side = 4 * pps;
+        if img_size % decoder_side != 0 {
+            return Err(crate::Error::Msg(format!(
+                "SAM upsample: img_size={img_size} not divisible by decoder spatial side {decoder_side}",
+            )).bt());
+        }
+        let scale = img_size / decoder_side;
+        let upsampled = low_res.upsample_nearest2d(scale)?;
+        let cropped = upsampled
+            .narrow(2_usize, 0, orig_h)?
+            .narrow(3_usize, 0, orig_w)?;
+        let masks = cropped.squeeze(0_usize)?;
+        Ok((masks, iou))
+    }
+
+    /// End-to-end composed forward: preprocess → image encode → prompt
+    /// encode → mask decode → upsample → crop.
+    pub fn forward(
+        &self,
+        image_chw: &[f32], orig_h: usize, orig_w: usize,
+        points_xy: &[f32], point_labels: &[f32],
+        multimask_output: bool,
+    ) -> Result<(LazyTensor, LazyTensor)> {
+        let img_embeddings = self.embeddings(image_chw, orig_h, orig_w)?;
+        self.forward_for_embeddings(
+            &img_embeddings, orig_h, orig_w, points_xy, point_labels, multimask_output,
+        )
+    }
+}
+
 // ---- Tests ---------------------------------------------------------------
 
 #[cfg(test)]
@@ -1718,12 +1909,17 @@ mod tests {
         }
     }
 
+    fn dummy_anchor() -> LazyTensor {
+        LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu())
+    }
+
     #[test]
     fn dense_pe_shape_and_finite() {
         let cfg = tiny_prompt_cfg();
         let weights = tiny_prompt_weights(&cfg);
         let enc = SamPromptEncoder { config: cfg.clone(), weights };
-        let pe = enc.dense_pe().unwrap();
+        let anchor = dummy_anchor();
+        let pe = enc.dense_pe(&anchor).unwrap();
         assert_eq!(pe.shape().dims(), &[1, cfg.embed_dim, 4, 4]);
         for &v in &pe.realize_f32() {
             assert!(v.is_finite(), "non-finite dense pe element: {v}");
@@ -1735,10 +1931,11 @@ mod tests {
         let cfg = tiny_prompt_cfg();
         let weights = tiny_prompt_weights(&cfg);
         let enc = SamPromptEncoder { config: cfg.clone(), weights };
+        let anchor = dummy_anchor();
         // 3 points: 2 foreground (label 1) + 1 background (label 0).
         let points = vec![10.0_f32, 20.0, 30.0, 30.0, 50.0, 5.0];
         let labels = vec![1.0_f32, 1.0, 0.0];
-        let out = enc.embed_points(&points, &labels, /* pad */ false).unwrap();
+        let out = enc.embed_points(&anchor, &points, &labels, /* pad */ false).unwrap();
         assert_eq!(out.shape().dims(), &[1, 3, cfg.embed_dim]);
         for &v in &out.realize_f32() {
             assert!(v.is_finite(), "non-finite point embedding: {v}");
@@ -1750,9 +1947,10 @@ mod tests {
         let cfg = tiny_prompt_cfg();
         let weights = tiny_prompt_weights(&cfg);
         let enc = SamPromptEncoder { config: cfg.clone(), weights };
+        let anchor = dummy_anchor();
         let points = vec![10.0_f32, 20.0, 30.0, 30.0];
         let labels = vec![1.0_f32, 0.0];
-        let out = enc.embed_points(&points, &labels, /* pad */ true).unwrap();
+        let out = enc.embed_points(&anchor, &points, &labels, /* pad */ true).unwrap();
         assert_eq!(out.shape().dims(), &[1, 3, cfg.embed_dim]);  // +1 padding row
     }
 
@@ -1761,12 +1959,13 @@ mod tests {
         let cfg = tiny_prompt_cfg();
         let weights = tiny_prompt_weights(&cfg);
         let enc = SamPromptEncoder { config: cfg.clone(), weights };
+        let anchor = dummy_anchor();
         // 2 boxes (4 corners total).
         let boxes = vec![
             5.0_f32, 10.0, 30.0, 40.0,
             15.0,    20.0, 50.0, 55.0,
         ];
-        let out = enc.embed_boxes(&boxes).unwrap();
+        let out = enc.embed_boxes(&anchor, &boxes).unwrap();
         assert_eq!(out.shape().dims(), &[1, 4, cfg.embed_dim]);
         for &v in &out.realize_f32() {
             assert!(v.is_finite(), "non-finite box embedding: {v}");
@@ -1803,7 +2002,8 @@ mod tests {
         let cfg = tiny_prompt_cfg();
         let weights = tiny_prompt_weights(&cfg);
         let enc = SamPromptEncoder { config: cfg.clone(), weights };
-        let out = enc.no_mask_dense().unwrap();
+        let anchor = dummy_anchor();
+        let out = enc.no_mask_dense(&anchor).unwrap();
         assert_eq!(
             out.shape().dims(),
             &[1, cfg.embed_dim, cfg.image_embedding_size.0, cfg.image_embedding_size.1],
@@ -2055,6 +2255,206 @@ mod tests {
         // 3 multi-task masks at 16×16.
         assert_eq!(masks.shape().dims(), &[1, cfg.num_multimask_outputs, 16, 16]);
         assert_eq!(iou_pred.shape().dims(), &[1, cfg.num_multimask_outputs]);
+    }
+
+    fn consistent_model_cfg() -> SamModelConfig {
+        // pps = 32/4 = 8; decoder_side = 4*pps = 32 == img_size → scale=1.
+        let image_encoder = SamImageEncoderConfig {
+            img_size: 32,
+            patch_size: 4,
+            in_chans: 3,
+            embed_dim: 16,
+            depth: 2,
+            num_heads: 2,
+            out_chans: 8,
+            qkv_bias: true,
+            use_rel_pos: true,
+            use_abs_pos: true,
+            window_size: 4,
+            global_attn_indexes: vec![1],
+        };
+        let pps = image_encoder.patches_per_side();
+        let prompt_encoder = SamPromptEncoderConfig {
+            embed_dim: image_encoder.out_chans,
+            image_embedding_size: (pps, pps),
+            input_image_size: (image_encoder.img_size, image_encoder.img_size),
+            mask_in_chans: 16,
+        };
+        let mask_decoder = SamMaskDecoderConfig {
+            transformer_dim: image_encoder.out_chans,
+            num_multimask_outputs: 3,
+            iou_head_depth: 2,
+            iou_head_hidden_dim: 8,
+            transformer_depth: 2,
+            transformer_num_heads: 4,
+            transformer_mlp_dim: 16,
+        };
+        SamModelConfig { image_encoder, prompt_encoder, mask_decoder }
+    }
+
+    #[test]
+    fn sam_model_config_vit_b_is_consistent() {
+        let cfg = SamModelConfig::vit_b();
+        assert_eq!(cfg.image_encoder.out_chans, cfg.prompt_encoder.embed_dim);
+        assert_eq!(cfg.image_encoder.out_chans, cfg.mask_decoder.transformer_dim);
+        let pps = cfg.image_encoder.patches_per_side();
+        assert_eq!(cfg.prompt_encoder.image_embedding_size, (pps, pps));
+        assert_eq!(
+            cfg.prompt_encoder.input_image_size,
+            (cfg.image_encoder.img_size, cfg.image_encoder.img_size),
+        );
+    }
+
+    #[test]
+    fn sam_model_config_vit_l_and_h_share_neck() {
+        let cfg_l = SamModelConfig::vit_l();
+        let cfg_h = SamModelConfig::vit_h();
+        // All three SAM ViT presets share out_chans=256 → same prompt/decoder dims.
+        assert_eq!(cfg_l.prompt_encoder.embed_dim, 256);
+        assert_eq!(cfg_h.prompt_encoder.embed_dim, 256);
+        assert_eq!(cfg_l.mask_decoder.transformer_dim, 256);
+        assert_eq!(cfg_h.mask_decoder.transformer_dim, 256);
+    }
+
+    #[test]
+    fn sam_model_preprocess_normalizes_and_pads() {
+        let model_cfg = consistent_model_cfg();
+        let img_size = model_cfg.image_encoder.img_size;
+        let model = SamModel::new(
+            model_cfg.clone(),
+            tiny_weights(&model_cfg.image_encoder),
+            tiny_prompt_weights(&model_cfg.prompt_encoder),
+            tiny_decoder_weights(&model_cfg.mask_decoder),
+        );
+        // 24x28 raw image filled with the per-channel mean → preprocess
+        // result should be 0 in the populated region and 0 in the pad.
+        let (h, w) = (24, 28);
+        let mut raw = vec![0.0_f32; 3 * h * w];
+        for c in 0..3 {
+            for i in 0..h * w {
+                raw[c * h * w + i] = SamModel::PIXEL_MEAN[c];
+            }
+        }
+        let out = model.preprocess(&raw, h, w).unwrap();
+        assert_eq!(out.len(), 3 * img_size * img_size);
+        for c in 0..3 {
+            for y in 0..img_size {
+                for x in 0..img_size {
+                    let v = out[c * img_size * img_size + y * img_size + x];
+                    if y < h && x < w {
+                        assert!((v - 0.0).abs() < 1e-6,
+                            "(c={c},y={y},x={x}): expected 0 (mean-subtracted) got {v}");
+                    } else {
+                        assert_eq!(v, 0.0, "pad at (c={c},y={y},x={x}) should be 0");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sam_model_preprocess_rejects_oversize_image() {
+        let model_cfg = consistent_model_cfg();
+        let model = SamModel::new(
+            model_cfg.clone(),
+            tiny_weights(&model_cfg.image_encoder),
+            tiny_prompt_weights(&model_cfg.prompt_encoder),
+            tiny_decoder_weights(&model_cfg.mask_decoder),
+        );
+        // 33 > img_size=32 → bail.
+        let raw = vec![0.0_f32; 3 * 33 * 33];
+        assert!(model.preprocess(&raw, 33, 33).is_err());
+    }
+
+    #[test]
+    fn sam_model_forward_singlemask_shape_and_finite() {
+        let model_cfg = consistent_model_cfg();
+        let img_size = model_cfg.image_encoder.img_size;
+        let model = SamModel::new(
+            model_cfg.clone(),
+            tiny_weights(&model_cfg.image_encoder),
+            tiny_prompt_weights(&model_cfg.prompt_encoder),
+            tiny_decoder_weights(&model_cfg.mask_decoder),
+        );
+        let (h, w) = (24, 28);
+        let raw: Vec<f32> = (0..3 * h * w).map(|i| (i as f32) * 0.1).collect();
+        let points_xy = vec![5.0_f32, 7.0, 12.0, 15.0];
+        let point_labels = vec![1.0_f32, 0.0];
+        let (masks, iou) = model.forward(
+            &raw, h, w, &points_xy, &point_labels, false,
+        ).unwrap();
+        // singlemask → 1 mask channel, cropped to (h, w).
+        // decoder_side = 4 * pps = 32 == img_size → scale=1.
+        // upsample (1, 1, 32, 32) → narrow to (1, 1, 24, 28) → squeeze → (1, 24, 28).
+        assert_eq!(masks.shape().dims(), &[1, h, w]);
+        assert_eq!(iou.shape().dims(), &[1, 1]);
+        let _ = img_size; // silence unused if the constant changes
+        for &v in &masks.realize_f32() {
+            assert!(v.is_finite(), "non-finite mask: {v}");
+        }
+        for &v in &iou.realize_f32() {
+            assert!(v.is_finite(), "non-finite iou: {v}");
+        }
+    }
+
+    #[test]
+    fn sam_model_forward_multimask_shape() {
+        let model_cfg = consistent_model_cfg();
+        let model = SamModel::new(
+            model_cfg.clone(),
+            tiny_weights(&model_cfg.image_encoder),
+            tiny_prompt_weights(&model_cfg.prompt_encoder),
+            tiny_decoder_weights(&model_cfg.mask_decoder),
+        );
+        let (h, w) = (20, 22);
+        let raw: Vec<f32> = (0..3 * h * w).map(|i| (i as f32) * 0.05).collect();
+        let points_xy = vec![3.0_f32, 4.0];
+        let point_labels = vec![1.0_f32];
+        let (masks, iou) = model.forward(
+            &raw, h, w, &points_xy, &point_labels, true,
+        ).unwrap();
+        // multimask → 3 mask channels.
+        assert_eq!(masks.shape().dims(), &[3, h, w]);
+        assert_eq!(iou.shape().dims(), &[1, 3]);
+    }
+
+    #[test]
+    fn sam_model_forward_rejects_empty_prompts() {
+        let model_cfg = consistent_model_cfg();
+        let model = SamModel::new(
+            model_cfg.clone(),
+            tiny_weights(&model_cfg.image_encoder),
+            tiny_prompt_weights(&model_cfg.prompt_encoder),
+            tiny_decoder_weights(&model_cfg.mask_decoder),
+        );
+        let (h, w) = (16, 16);
+        let raw = vec![0.0_f32; 3 * h * w];
+        let res = model.forward(&raw, h, w, &[], &[], false);
+        assert!(res.is_err(), "empty prompts should bail");
+    }
+
+    #[test]
+    fn sam_model_forward_for_embeddings_skips_image_encode() {
+        let model_cfg = consistent_model_cfg();
+        let model = SamModel::new(
+            model_cfg.clone(),
+            tiny_weights(&model_cfg.image_encoder),
+            tiny_prompt_weights(&model_cfg.prompt_encoder),
+            tiny_decoder_weights(&model_cfg.mask_decoder),
+        );
+        let (h, w) = (24, 28);
+        let raw: Vec<f32> = (0..3 * h * w).map(|i| (i as f32) * 0.1).collect();
+        // Precompute embeddings once, then exercise mask decode twice with
+        // different prompts off the same embeddings.
+        let img_embeddings = model.embeddings(&raw, h, w).unwrap();
+        let (m1, _) = model.forward_for_embeddings(
+            &img_embeddings, h, w, &[5.0, 7.0], &[1.0], false,
+        ).unwrap();
+        let (m2, _) = model.forward_for_embeddings(
+            &img_embeddings, h, w, &[12.0, 15.0], &[0.0], false,
+        ).unwrap();
+        assert_eq!(m1.shape().dims(), &[1, h, w]);
+        assert_eq!(m2.shape().dims(), &[1, h, w]);
     }
 
     #[test]
