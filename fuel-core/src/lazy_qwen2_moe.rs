@@ -128,13 +128,8 @@ impl Qwen2MoeModel {
     /// `[1, seq, vocab_size]` logits. No KV cache — this is the
     /// "prefill from scratch" path.
     pub fn forward(&self, tokens: &[u32]) -> crate::Result<LazyTensor> {
-        let cfg = &self.config;
         let h_norm = self.run_backbone(tokens)?;
-        let lm = h_norm.const_f32_like(
-            self.weights.lm_head.clone(),
-            Shape::from_dims(&[cfg.hidden_size, cfg.vocab_size]),
-        );
-        Ok(h_norm.matmul(&lm).unwrap())
+        self.apply_lm_head(&h_norm)
     }
 
     /// Run the decoder forward up to the final RmsNorm and
@@ -146,6 +141,39 @@ impl Qwen2MoeModel {
     /// backbone.
     pub fn forward_hidden(&self, tokens: &[u32]) -> crate::Result<LazyTensor> {
         self.run_backbone(tokens)
+    }
+
+    /// Multimodal entry point. Skips token embedding; runs the decoder
+    /// over pre-embedded inputs. Qwen2-MoE does NOT scale embeddings
+    /// and has no start_pos (matches eager forward signature).
+    pub fn forward_embeds(&self, embeds: &LazyTensor) -> crate::Result<LazyTensor> {
+        let h_norm = self.run_backbone_embeds(embeds)?;
+        self.apply_lm_head(&h_norm)
+    }
+
+    /// Hidden-state variant of [`Self::forward_embeds`].
+    pub fn forward_hidden_embeds(&self, embeds: &LazyTensor) -> crate::Result<LazyTensor> {
+        self.run_backbone_embeds(embeds)
+    }
+
+    /// Build per-token embeddings without running the decoder.
+    pub fn embed_tokens_anchored(
+        &self, anchor: &LazyTensor, tokens: &[u32],
+    ) -> crate::Result<LazyTensor> {
+        let cfg = &self.config;
+        anchor.embed_tokens_anchored(
+            self.weights.token_embedding.clone(),
+            cfg.vocab_size, cfg.hidden_size, tokens,
+        )
+    }
+
+    fn apply_lm_head(&self, h_norm: &LazyTensor) -> crate::Result<LazyTensor> {
+        let cfg = &self.config;
+        let lm = h_norm.const_f32_like(
+            self.weights.lm_head.clone(),
+            Shape::from_dims(&[cfg.hidden_size, cfg.vocab_size]),
+        );
+        Ok(h_norm.matmul(&lm).unwrap())
     }
 
     /// Shared backbone: embed → per-layer attn+MoE → final
@@ -163,10 +191,30 @@ impl Qwen2MoeModel {
             &crate::Device::cpu(),
         );
         let input_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
-        let mut x = embed
+        let x = embed
             .index_select(0, &input_ids).unwrap()
             .reshape(Shape::from_dims(&[1, seq, h])).unwrap();
+        self.run_backbone_embeds(&x)
+    }
 
+    fn run_backbone_embeds(&self, embeds: &LazyTensor) -> crate::Result<LazyTensor> {
+        let cfg = &self.config;
+        let h = cfg.hidden_size;
+        let dims = embeds.shape();
+        let dims = dims.dims();
+        if dims.len() != 3 || dims[0] != 1 || dims[2] != h {
+            return Err(crate::Error::Msg(format!(
+                "Qwen2MoeModel::forward_embeds: expected embeds shape (1, seq, hidden_size={}), got {:?}",
+                h, dims,
+            )).bt());
+        }
+        let seq = dims[1];
+        if seq == 0 {
+            return Err(crate::Error::Msg(
+                "Qwen2MoeModel::forward_embeds: seq must be > 0".into(),
+            ).bt());
+        }
+        let mut x = embeds.clone();
         for lw in &self.weights.layers {
             x = decoder_layer(&x, lw, cfg, seq);
         }
@@ -498,5 +546,86 @@ mod tests {
         for &v in &hidden.realize_f32() {
             assert!(v.is_finite(), "non-finite hidden: {v}");
         }
+    }
+
+    fn build_test_model() -> (Qwen2MoeConfig, Qwen2MoeModel) {
+        let cfg = tiny_cfg();
+        let h = cfg.hidden_size;
+        let moe_int = cfg.moe_intermediate_size;
+        let shared_int = cfg.shared_expert_intermediate_size;
+        let z = |n| Arc::from(vec![0.0_f32; n]) as Arc<[f32]>;
+        let o = |n| Arc::from(vec![1.0_f32; n]) as Arc<[f32]>;
+        let experts: Vec<ExpertWeights> = (0..cfg.num_experts)
+            .map(|_| ExpertWeights {
+                gate_w: z(h * moe_int),
+                up_w:   z(h * moe_int),
+                down_w: z(moe_int * h),
+            })
+            .collect();
+        let layer = Qwen2MoeLayerWeights {
+            input_ln: o(h),
+            q_w: z(h * h), q_b: z(h),
+            k_w: z(h * h), k_b: z(h),
+            v_w: z(h * h), v_b: z(h),
+            o_w: z(h * h),
+            post_attn_ln: o(h),
+            gate_w: z(h * cfg.num_experts),
+            experts,
+            shared_gate_w: z(h * shared_int),
+            shared_up_w:   z(h * shared_int),
+            shared_down_w: z(shared_int * h),
+            shared_expert_gate_w: z(h),
+        };
+        let weights = Qwen2MoeWeights {
+            token_embedding: z(cfg.vocab_size * h),
+            layers: vec![layer],
+            final_ln: o(h),
+            lm_head: z(h * cfg.vocab_size),
+        };
+        let model = Qwen2MoeModel { config: cfg.clone(), weights };
+        (cfg, model)
+    }
+
+    #[test]
+    fn forward_embeds_matches_forward_after_token_lookup() {
+        let (cfg, model) = build_test_model();
+        let tokens: Vec<u32> = vec![1, 2, 3];
+        let logits_ref = model.forward(&tokens).unwrap().realize_f32();
+        let anchor = LazyTensor::from_f32(
+            vec![0.0_f32], Shape::from_dims(&[1]), &crate::Device::cpu(),
+        );
+        let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
+        let logits_via_embeds = model.forward_embeds(&embeds).unwrap().realize_f32();
+        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-5,
+            "Qwen2MoE forward vs forward_embeds must agree (max diff {max_diff})");
+        let _ = cfg;
+    }
+
+    #[test]
+    fn forward_embeds_rejects_bad_shape() {
+        let (cfg, model) = build_test_model();
+        let bad = LazyTensor::from_f32(
+            vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &crate::Device::cpu(),
+        );
+        assert!(model.forward_embeds(&bad).is_err());
+    }
+
+    #[test]
+    fn forward_hidden_embeds_matches_forward_hidden() {
+        let (_cfg, model) = build_test_model();
+        let tokens: Vec<u32> = vec![5, 7];
+        let h_ref = model.forward_hidden(&tokens).unwrap().realize_f32();
+        let anchor = LazyTensor::from_f32(
+            vec![0.0_f32], Shape::from_dims(&[1]), &crate::Device::cpu(),
+        );
+        let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
+        let h_via_embeds = model.forward_hidden_embeds(&embeds).unwrap().realize_f32();
+        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-5,
+            "Qwen2MoE forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
     }
 }
