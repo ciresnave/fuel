@@ -79,6 +79,7 @@ pub mod lazy_blip_vision;
 pub mod lazy_chatglm;
 pub mod lazy_chinese_clip;
 pub mod lazy_clip;
+pub mod lazy_conv3d;
 pub mod lazy_colpali;
 pub mod lazy_kv_cache;
 pub mod lazy_kv_cache_device;
