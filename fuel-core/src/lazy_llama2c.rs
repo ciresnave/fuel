@@ -11,8 +11,9 @@
 //! [`Llama2cConfig`] to [`crate::lazy::LlamaConfig`].
 
 use crate::inference_context::{InferenceContext, KvCache};
-use crate::lazy::{LlamaConfig, LlamaModel, LlamaWeights, LazyTensor, SamplingStrategy};
+use crate::lazy::{KVCache, LlamaConfig, LlamaModel, LlamaWeights, LazyTensor, SamplingStrategy};
 use crate::{DType, Device, Result};
+use fuel_graph_executor::{GraphBackend, GraphExecutor};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Llama2cConfig {
@@ -208,6 +209,88 @@ impl Llama2cModel {
         };
         llama.generate_streaming_with_kv_context(
             prompt_tokens, max_new_tokens, strategy, eos_id, device, dtype, on_token,
+        )
+    }
+
+    /// Device-resident KV-aware forward, backend-generic. Keys and
+    /// values stay on the device that owns `B::Storage` across decode
+    /// steps — no D2H/H2D round-trip per token. Used by `llama-lazy-
+    /// cuda` and `llama-lazy-vulkan` binaries.
+    ///
+    /// Delegates to [`LlamaModel::forward_with_cache_gpu_on`].
+    pub fn forward_with_cache_gpu_on<B: GraphBackend>(
+        &self,
+        tokens: &[u32],
+        cache: &mut KVCache<B>,
+        executor: &mut GraphExecutor<B>,
+    ) -> Vec<f32> {
+        let llama = LlamaModel {
+            config: self.config.to_llama_config(),
+            weights: self.weights.clone(),
+        };
+        llama.forward_with_cache_gpu_on(tokens, cache, executor)
+    }
+
+    /// Same as [`Self::forward_with_cache_gpu_on`] but returns logits
+    /// for ALL positions (used by speculative decode's accept/reject
+    /// path) instead of just the last position.
+    pub fn forward_with_cache_gpu_on_all_positions<B: GraphBackend>(
+        &self,
+        tokens: &[u32],
+        cache: &mut KVCache<B>,
+        executor: &mut GraphExecutor<B>,
+    ) -> Vec<f32> {
+        let llama = LlamaModel {
+            config: self.config.to_llama_config(),
+            weights: self.weights.clone(),
+        };
+        llama.forward_with_cache_gpu_on_all_positions(tokens, cache, executor)
+    }
+
+    /// Backend-generic streaming decode with device-resident KV cache.
+    /// For `B = CudaBackend` / `VulkanBackend` / future GPU backends
+    /// the K/V bytes never leave the device. Collapses to a
+    /// host-resident cache for `B = CpuBackend`.
+    ///
+    /// Delegates to [`LlamaModel::generate_streaming_gpu_on`].
+    pub fn generate_streaming_gpu_on<B: GraphBackend>(
+        &self,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        executor: &mut GraphExecutor<B>,
+        on_token: impl FnMut(u32),
+    ) -> Result<Vec<u32>> {
+        let llama = LlamaModel {
+            config: self.config.to_llama_config(),
+            weights: self.weights.clone(),
+        };
+        llama.generate_streaming_gpu_on(
+            prompt_tokens, max_new_tokens, strategy, eos_id, executor, on_token,
+        )
+    }
+
+    /// CUDA-specific convenience wrapper around
+    /// [`Self::generate_streaming_gpu_on`] for callers that already
+    /// hold a `GraphExecutor<CudaBackend>`. Delegates to
+    /// [`LlamaModel::generate_streaming_cuda`].
+    #[cfg(feature = "cuda")]
+    pub fn generate_streaming_cuda(
+        &self,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        executor: &mut GraphExecutor<fuel_cuda_backend::CudaBackend>,
+        on_token: impl FnMut(u32),
+    ) -> Result<Vec<u32>> {
+        let llama = LlamaModel {
+            config: self.config.to_llama_config(),
+            weights: self.weights.clone(),
+        };
+        llama.generate_streaming_cuda(
+            prompt_tokens, max_new_tokens, strategy, eos_id, executor, on_token,
         )
     }
 
