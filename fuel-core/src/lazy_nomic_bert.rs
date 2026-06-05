@@ -230,15 +230,9 @@ impl NomicBertModel {
 
         // ---- RoPE tables ----------------------------------------------------
         let rope_dim = cfg.rotary_emb_dim();
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
-            cfg.rotary_emb_base,
-            0,
-            seq,
-            rope_dim,
+        let (rope_cos, rope_sin) = h.rope_tables_const(
+            cfg.rotary_emb_base, 0, seq, rope_dim,
         );
-        let rope_shape = Shape::from_dims(&[seq, rope_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
         // ---- Encoder blocks -------------------------------------------------
         for layer in &weights.layers {
@@ -333,12 +327,9 @@ impl NomicBertModel {
         );
 
         let rope_dim = cfg.rotary_emb_dim();
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+        let (rope_cos, rope_sin) = h.rope_tables_const(
             cfg.rotary_emb_base, 0, seq, rope_dim,
         );
-        let rope_shape = Shape::from_dims(&[seq, rope_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
         let mut out = Vec::with_capacity(layer_ids.len());
         let mut next_capture = 0;

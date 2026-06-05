@@ -4545,12 +4545,9 @@ impl LlamaModel {
         assert_eq!(cfg.n_heads * cfg.head_dim, cfg.dim, "LlamaConfig: n_heads * head_dim must equal dim");
 
         let mut h = embeds.clone();
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+        let (rope_cos, rope_sin) = h.rope_tables_const(
             cfg.rope_base, start_pos, seq, cfg.head_dim,
         );
-        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
         let mask = build_strict_causal_mask(embeds, seq);
 
@@ -4585,12 +4582,9 @@ impl LlamaModel {
         assert_eq!(dims[2], cfg.dim, "embeds last dim must equal cfg.dim");
 
         let mut h = embeds.clone();
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+        let (rope_cos, rope_sin) = h.rope_tables_const(
             cfg.rope_base, start_pos, seq, cfg.head_dim,
         );
-        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, attention_mask);
@@ -4638,12 +4632,9 @@ impl LlamaModel {
             .index_select(0, &token_ids).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
 
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+        let (rope_cos, rope_sin) = h.rope_tables_const(
             cfg.rope_base, start_pos, seq, cfg.head_dim,
         );
-        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
         // Build the strict-causal mask once for all layers.
         let mask = build_strict_causal_mask(&h, seq);
@@ -5170,12 +5161,9 @@ impl LlamaModel {
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
 
         // RoPE cos/sin tables shared across layers.
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+        let (rope_cos, rope_sin) = h.rope_tables_const(
             cfg.rope_base, cached_len, seq, cfg.head_dim,
         );
-        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
         // Per-layer: bind the cache K + V Arcs to fresh Const NodeIds,
         // dispatch through the WriteSlice variant. Track the NodeIds
@@ -6546,12 +6534,9 @@ impl LlamaModel {
             .index_select(0, &token_ids).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
 
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+        let (rope_cos, rope_sin) = h.rope_tables_const(
             cfg.rope_base, cached_len, seq, cfg.head_dim,
         );
-        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
         // Track the NodeIds of the placeholder K/V const nodes so we
         // can pre_populate them with real device storage before realize.
@@ -6994,15 +6979,9 @@ impl Gemma2Model {
             .mul_scalar((cfg.dim as f64).sqrt());
 
         // Shared RoPE tables.
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
-            cfg.rope_base,
-            start_pos,
-            seq,
-            cfg.head_dim,
+        let (rope_cos, rope_sin) = h.rope_tables_const(
+            cfg.rope_base, start_pos, seq, cfg.head_dim,
         );
-        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
         for (li, layer) in weights.layers.iter().enumerate() {
             h = self.apply_layer(&h, layer, li, start_pos, &rope_cos, &rope_sin);
@@ -7665,12 +7644,9 @@ impl PhiModel {
 
         // RoPE tables are sized for `rotary_dim`, not the full head_dim —
         // partial RoPE rotates only the first `rotary_dim` entries.
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+        let (rope_cos, rope_sin) = h.rope_tables_const(
             cfg.rope_base, cached_len, seq, cfg.rotary_dim,
         );
-        let rope_shape = Shape::from_dims(&[seq, cfg.rotary_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
         let mut cached_kv_nodes: Vec<(fuel_graph::NodeId, fuel_graph::NodeId)> = Vec::new();
         let mut full_ks: Vec<LazyTensor> = Vec::with_capacity(cfg.n_layers);

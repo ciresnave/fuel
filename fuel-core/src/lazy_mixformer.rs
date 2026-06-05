@@ -162,11 +162,9 @@ impl MixFormerModel {
 
         let mut h = embeds.clone();
 
-        let (cos_data, sin_data) =
-            fuel_graph::build_rope_tables(cfg.rope_theta, start_pos, seq, rotary_dim);
-        let rope_shape = Shape::from_dims(&[seq, rotary_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+        let (rope_cos, rope_sin) = h.rope_tables_const(
+            cfg.rope_theta, start_pos, seq, rotary_dim,
+        );
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, head_dim, rotary_dim)?;
@@ -230,11 +228,9 @@ impl MixFormerModel {
         let rotary_dim = cfg.effective_rotary_dim();
 
         let mut h = embeds.clone();
-        let (cos_data, sin_data) =
-            fuel_graph::build_rope_tables(cfg.rope_theta, start_pos, seq, rotary_dim);
-        let rope_shape = Shape::from_dims(&[seq, rotary_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+        let (rope_cos, rope_sin) = h.rope_tables_const(
+            cfg.rope_theta, start_pos, seq, rotary_dim,
+        );
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, head_dim, rotary_dim)?;
         }

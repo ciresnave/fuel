@@ -155,12 +155,9 @@ impl Gemma2Model {
         h = h.mul_scalar(embed_scale);
 
         // ---- Shared RoPE tables --------------------------------------------
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+        let (rope_cos, rope_sin) = h.rope_tables_const(
             cfg.rope_theta, start_pos, seq, head_dim,
         );
-        let rope_shape = Shape::from_dims(&[seq, head_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
 
         // ---- Causal (optionally sliding) mask, shared across layers --------
         let mask = self.build_mask(&h, seq);

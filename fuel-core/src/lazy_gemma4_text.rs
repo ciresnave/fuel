@@ -184,20 +184,14 @@ impl Gemma4TextModel {
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
         h = h.mul_scalar((cfg.hidden_size as f64).sqrt());
 
-        let (cos_l, sin_l) = fuel_graph::build_rope_tables(
+        let (rope_cos_l, rope_sin_l) = h.rope_tables_const(
             cfg.rope_local_base_freq, start_pos, seq, cfg.head_dim,
         );
-        let rope_l_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos_l = h.const_f32_like(cos_l, rope_l_shape.clone());
-        let rope_sin_l = h.const_f32_like(sin_l, rope_l_shape);
 
         let rope_dim_global = cfg.global_rope_dim();
-        let (cos_g, sin_g) = fuel_graph::build_rope_tables(
+        let (rope_cos_g, rope_sin_g) = h.rope_tables_const(
             cfg.rope_theta, start_pos, seq, rope_dim_global,
         );
-        let rope_g_shape = Shape::from_dims(&[seq, rope_dim_global]);
-        let rope_cos_g = h.const_f32_like(cos_g, rope_g_shape.clone());
-        let rope_sin_g = h.const_f32_like(sin_g, rope_g_shape);
 
         let full_mask = self.build_mask(&h, seq, None);
         let sliding_mask = self.build_mask(&h, seq, Some(cfg.sliding_window));
