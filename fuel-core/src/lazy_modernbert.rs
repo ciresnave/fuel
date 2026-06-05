@@ -164,17 +164,12 @@ impl ModernBertModel {
 
         // ---- RoPE tables (global + local, shared across layers) ------------
         let head_dim = cfg.head_dim();
-        let (g_cos, g_sin) = fuel_graph::build_rope_tables(
+        let (global_cos, global_sin) = x.rope_tables_const(
             cfg.global_rope_theta, 0, seq, head_dim,
         );
-        let (l_cos, l_sin) = fuel_graph::build_rope_tables(
+        let (local_cos, local_sin) = x.rope_tables_const(
             cfg.local_rope_theta, 0, seq, head_dim,
         );
-        let rope_shape = Shape::from_dims(&[seq, head_dim]);
-        let global_cos = x.const_f32_like(g_cos, rope_shape.clone());
-        let global_sin = x.const_f32_like(g_sin, rope_shape.clone());
-        let local_cos = x.const_f32_like(l_cos, rope_shape.clone());
-        let local_sin = x.const_f32_like(l_sin, rope_shape);
 
         // ---- Local sliding-window additive mask `(seq, seq)` ---------------
         // Tokens `i, j` with `|i - j| > local_attention / 2` are masked
@@ -290,17 +285,12 @@ impl ModernBertModel {
         );
 
         let head_dim = cfg.head_dim();
-        let (g_cos, g_sin) = fuel_graph::build_rope_tables(
+        let (global_cos, global_sin) = x.rope_tables_const(
             cfg.global_rope_theta, 0, seq, head_dim,
         );
-        let (l_cos, l_sin) = fuel_graph::build_rope_tables(
+        let (local_cos, local_sin) = x.rope_tables_const(
             cfg.local_rope_theta, 0, seq, head_dim,
         );
-        let rope_shape = Shape::from_dims(&[seq, head_dim]);
-        let global_cos = x.const_f32_like(g_cos, rope_shape.clone());
-        let global_sin = x.const_f32_like(g_sin, rope_shape.clone());
-        let local_cos = x.const_f32_like(l_cos, rope_shape.clone());
-        let local_sin = x.const_f32_like(l_sin, rope_shape);
 
         let half_window = cfg.local_attention / 2;
         let mut local_mask = vec![0.0_f32; seq * seq];
