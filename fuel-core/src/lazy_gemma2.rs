@@ -311,12 +311,8 @@ fn apply_gemma2_rms_norm(
     hidden_size: usize,
     eps: f64,
 ) -> LazyTensor {
-    // Build an effective gain = gain + 1.0 const, then apply the
-    // standard affine RmsNorm helper.
-    let gain_plus_one: Arc<[f32]> = Arc::from(
-        gain.iter().map(|v| v + 1.0).collect::<Vec<_>>(),
-    );
-    crate::lazy::apply_affine_rms_norm_pub(x, &gain_plus_one, hidden_size, eps)
+    let _ = hidden_size;
+    x.rms_norm_affine_with_offset(gain, 1.0, eps).unwrap()
 }
 
 fn apply_softcap(x: &LazyTensor, cap: Option<f64>) -> LazyTensor {
