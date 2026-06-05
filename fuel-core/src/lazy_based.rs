@@ -341,15 +341,10 @@ impl BasedModel {
         let k = w.k_proj.apply_linear(x, h, n_heads * d_feat);
         let v = w.v_proj.apply_linear(x, h, h);
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, d_feat]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, d_feat]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v_h = v
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, d_h_v]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = (batch, seq);
+        let q = q.split_heads(n_heads, d_feat)?;
+        let k = k.split_heads(n_heads, d_feat)?;
+        let v_h = v.split_heads(n_heads, d_h_v)?;
 
         // Apply the Taylor feature map.
         let phi_q = taylor_feature_map(&q, d_feat, batch, n_heads, seq)?;
@@ -400,9 +395,7 @@ impl BasedModel {
             .broadcast_to(Shape::from_dims(&[batch, n_heads, seq, d_h_v]))?;
         let out_h = aqk_v.mul(&z_bc)?;
 
-        let merged = out_h
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, h]))?;
+        let merged = out_h.merge_heads()?;
         Ok(w.out_proj.apply_linear(&merged, h, h))
     }
 
@@ -429,15 +422,10 @@ impl BasedModel {
         let k = qkv.slice(2_usize, h, h)?;
         let v = qkv.slice(2_usize, 2 * h, h)?;
 
-        let q = q
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let k = k
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
-        let v = v
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_dim]))?
-            .permute([0, 2, 1, 3_usize])?;
+        let _ = batch;
+        let q = q.split_heads(n_heads, head_dim)?;
+        let k = k.split_heads(n_heads, head_dim)?;
+        let v = v.split_heads(n_heads, head_dim)?;
 
         let q_r = q.rope_with_tables(rope_cos, rope_sin)?;
         let k_r = k.rope_with_tables(rope_cos, rope_sin)?;
@@ -459,9 +447,7 @@ impl BasedModel {
         let scores_masked = scores_scaled.broadcast_add(&mask)?;
         let probs = scores_masked.softmax_last_dim()?;
         let attn_v = probs.matmul(&v)?;
-        let merged = attn_v
-            .permute([0, 2, 1, 3_usize])?
-            .reshape(Shape::from_dims(&[batch, seq, h]))?;
+        let merged = attn_v.merge_heads()?;
         Ok(w.out_proj.apply_linear(&merged, h, h))
     }
 
