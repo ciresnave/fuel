@@ -260,7 +260,199 @@ impl Gemma2Model {
 /// `gamma`. The +1 is folded into a separate constant tensor
 /// on the graph so the underlying RmsNorm op stays standard.
 
+// ---- HuggingFace config + weight loading ----------------------------------
 
+impl Gemma2Config {
+    /// Parse a Gemma-2 `config.json` from HuggingFace.
+    ///
+    /// Field map (HF → standalone Gemma2Config):
+    ///   `hidden_size` → `hidden_size`,
+    ///   `intermediate_size` → `intermediate_size`,
+    ///   `num_hidden_layers` → `num_hidden_layers`,
+    ///   `num_attention_heads` → `num_attention_heads`,
+    ///   `num_key_value_heads` → `num_key_value_heads` (defaults to
+    ///   `num_attention_heads` when absent — Gemma 2 always sets it),
+    ///   `head_dim` → `head_dim` (defaults to
+    ///   `hidden_size / num_attention_heads` when absent),
+    ///   `rms_norm_eps` → `rms_norm_eps` (defaults to 1e-6),
+    ///   `rope_theta` → `rope_theta` (defaults to 10000.0),
+    ///   `attention_bias` → `attention_bias` (defaults to false),
+    ///   `max_position_embeddings` → `max_position_embeddings`,
+    ///   `attn_logit_softcapping` → `attn_logit_softcapping`,
+    ///   `final_logit_softcapping` → `final_logit_softcapping`,
+    ///   `sliding_window` → `sliding_window`.
+    pub fn from_hf_json_str(json: &str) -> crate::Result<Self> {
+        let v: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing Gemma2 config.json: {e}")))?;
+        let get_usize = |key: &str| -> crate::Result<usize> {
+            v.get(key)
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .ok_or_else(|| {
+                    crate::Error::Msg(format!("Gemma2 config.json: missing/invalid {key:?}"))
+                })
+        };
+        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+        let get_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|x| x.as_bool()) };
+
+        let vocab_size = get_usize("vocab_size")?;
+        let hidden_size = get_usize("hidden_size")?;
+        let num_hidden_layers = get_usize("num_hidden_layers")?;
+        let num_attention_heads = get_usize("num_attention_heads")?;
+        let num_key_value_heads = v
+            .get("num_key_value_heads")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(num_attention_heads);
+        let intermediate_size = get_usize("intermediate_size")?;
+        let head_dim = v
+            .get("head_dim")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(hidden_size / num_attention_heads);
+        let rms_norm_eps = get_f64("rms_norm_eps").unwrap_or(1e-6);
+        let rope_theta = get_f64("rope_theta").unwrap_or(10000.0);
+        let attention_bias = get_bool("attention_bias").unwrap_or(false);
+        let max_position_embeddings = get_usize("max_position_embeddings")?;
+        let attn_logit_softcapping = get_f64("attn_logit_softcapping");
+        let final_logit_softcapping = get_f64("final_logit_softcapping");
+        let sliding_window = v
+            .get("sliding_window")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize);
+
+        Ok(Self {
+            vocab_size,
+            hidden_size,
+            intermediate_size,
+            num_hidden_layers,
+            num_attention_heads,
+            num_key_value_heads,
+            head_dim,
+            rms_norm_eps,
+            rope_theta,
+            attention_bias,
+            max_position_embeddings,
+            attn_logit_softcapping,
+            final_logit_softcapping,
+            sliding_window,
+        })
+    }
+}
+
+impl Gemma2Weights {
+    /// Load Gemma-2 weights from a memory-mapped safetensors file
+    /// (or sharded set thereof). Weights are stored as
+    /// `WeightStorage::F32` after on-load transposition from the
+    /// HuggingFace `[out, in]` layout to fuel's `[in, out]` layout.
+    ///
+    /// Gemma 2 doesn't carry attention biases in the published
+    /// checkpoints (`attention_bias=false`), so q/k/v/o biases are
+    /// always loaded as `None`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Gemma2Config,
+    ) -> crate::Result<Self> {
+        let h = cfg.hidden_size;
+        let i = cfg.intermediate_size;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+
+        let token_embedding = Arc::from(
+            crate::lazy::load_tensor_as_f32(st, "model.embed_tokens.weight")?,
+        );
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for li in 0..cfg.num_hidden_layers {
+            let load_lin = |suffix: &str, out_f: usize, in_f: usize| -> crate::Result<WeightStorage> {
+                let name = format!("model.layers.{li}.{suffix}");
+                let v = crate::lazy::load_transposed_matrix(st, &name, out_f, in_f)?;
+                Ok(WeightStorage::F32(Arc::from(v)))
+            };
+            let load_norm = |suffix: &str| -> crate::Result<Arc<[f32]>> {
+                let name = format!("model.layers.{li}.{suffix}");
+                Ok(Arc::from(crate::lazy::load_tensor_as_f32(st, &name)?))
+            };
+
+            layers.push(Gemma2LayerWeights {
+                input_norm_gain: load_norm("input_layernorm.weight")?,
+                post_attn_norm_gain: load_norm("post_attention_layernorm.weight")?,
+                pre_ffn_norm_gain: load_norm("pre_feedforward_layernorm.weight")?,
+                post_ffn_norm_gain: load_norm("post_feedforward_layernorm.weight")?,
+                q: load_lin("self_attn.q_proj.weight", q_dim, h)?,
+                q_bias: None,
+                k: load_lin("self_attn.k_proj.weight", kv_dim, h)?,
+                k_bias: None,
+                v: load_lin("self_attn.v_proj.weight", kv_dim, h)?,
+                v_bias: None,
+                o: load_lin("self_attn.o_proj.weight", h, q_dim)?,
+                o_bias: None,
+                gate: load_lin("mlp.gate_proj.weight", i, h)?,
+                up: load_lin("mlp.up_proj.weight", i, h)?,
+                down: load_lin("mlp.down_proj.weight", h, i)?,
+            });
+        }
+
+        let final_norm_gain = Arc::from(
+            crate::lazy::load_tensor_as_f32(st, "model.norm.weight")?,
+        );
+
+        Ok(Gemma2Weights { token_embedding, layers, final_norm_gain })
+    }
+}
+
+impl Gemma2Model {
+    /// Download a Gemma-2 checkpoint from the HuggingFace Hub and
+    /// build a ready-to-forward `Gemma2Model`. Requires
+    /// `HF_TOKEN` for gated repos like `google/gemma-2-2b-it`.
+    pub fn from_hub(repo_id: &str) -> crate::Result<Self> {
+        let api = hf_hub::api::sync::Api::new()
+            .map_err(|e| crate::Error::Msg(format!("hf-hub api init: {e}")))?;
+        let repo = api.model(repo_id.to_string());
+
+        let config_path = repo
+            .get("config.json")
+            .map_err(|e| crate::Error::Msg(format!("hf-hub config.json: {e}")))?;
+        let config_str = std::fs::read_to_string(&config_path)?;
+        let config = Gemma2Config::from_hf_json_str(&config_str)?;
+
+        let weight_paths: Vec<std::path::PathBuf> = match repo.get("model.safetensors.index.json") {
+            Ok(index_path) => {
+                let index_str = std::fs::read_to_string(&index_path)?;
+                let index: serde_json::Value = serde_json::from_str(&index_str)
+                    .map_err(|e| crate::Error::Msg(format!("parsing index: {e}")))?;
+                let weight_map = index
+                    .get("weight_map")
+                    .and_then(|x| x.as_object())
+                    .ok_or_else(|| crate::Error::Msg("index: missing weight_map".into()))?;
+                let mut unique = std::collections::HashSet::new();
+                for v in weight_map.values() {
+                    if let Some(s) = v.as_str() {
+                        unique.insert(s.to_string());
+                    }
+                }
+                let mut paths = Vec::new();
+                for name in &unique {
+                    paths.push(
+                        repo.get(name)
+                            .map_err(|e| crate::Error::Msg(format!("hf-hub {name}: {e}")))?,
+                    );
+                }
+                paths
+            }
+            Err(_) => vec![repo
+                .get("model.safetensors")
+                .map_err(|e| {
+                    crate::Error::Msg(format!("hf-hub model.safetensors: {e}"))
+                })?],
+        };
+
+        let st = unsafe { crate::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
+        let weights = Gemma2Weights::load_from_mmapped(&st, &config)?;
+
+        Ok(Gemma2Model { config, weights })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -276,6 +468,66 @@ mod tests {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         }
+    }
+
+    #[test]
+    fn from_hf_json_str_parses_canonical_gemma2_2b_fields() {
+        // Excerpt from google/gemma-2-2b config.json plus a fake
+        // sliding_window field to verify all the optional-default
+        // branches are exercised.
+        let json = r#"{
+            "vocab_size": 256000,
+            "hidden_size": 2304,
+            "intermediate_size": 9216,
+            "num_hidden_layers": 26,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 4,
+            "head_dim": 256,
+            "rms_norm_eps": 1e-6,
+            "rope_theta": 10000.0,
+            "attention_bias": false,
+            "max_position_embeddings": 8192,
+            "attn_logit_softcapping": 50.0,
+            "final_logit_softcapping": 30.0,
+            "sliding_window": 4096
+        }"#;
+        let cfg = Gemma2Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.vocab_size, 256000);
+        assert_eq!(cfg.hidden_size, 2304);
+        assert_eq!(cfg.intermediate_size, 9216);
+        assert_eq!(cfg.num_hidden_layers, 26);
+        assert_eq!(cfg.num_attention_heads, 8);
+        assert_eq!(cfg.num_key_value_heads, 4);
+        assert_eq!(cfg.head_dim, 256);
+        assert!((cfg.rms_norm_eps - 1e-6).abs() < 1e-12);
+        assert!((cfg.rope_theta - 10000.0).abs() < 1e-9);
+        assert!(!cfg.attention_bias);
+        assert_eq!(cfg.max_position_embeddings, 8192);
+        assert_eq!(cfg.attn_logit_softcapping, Some(50.0));
+        assert_eq!(cfg.final_logit_softcapping, Some(30.0));
+        assert_eq!(cfg.sliding_window, Some(4096));
+    }
+
+    #[test]
+    fn from_hf_json_str_applies_optional_defaults() {
+        // Minimal config — every optional defaults applied.
+        let json = r#"{
+            "vocab_size": 100,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "max_position_embeddings": 512
+        }"#;
+        let cfg = Gemma2Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 4);  // defaults to num_attention_heads
+        assert_eq!(cfg.head_dim, 16);            // defaults to hidden / heads
+        assert!((cfg.rms_norm_eps - 1e-6).abs() < 1e-12);
+        assert!((cfg.rope_theta - 10000.0).abs() < 1e-9);
+        assert!(!cfg.attention_bias);
+        assert_eq!(cfg.attn_logit_softcapping, None);
+        assert_eq!(cfg.final_logit_softcapping, None);
+        assert_eq!(cfg.sliding_window, None);
     }
 
     fn tiny_cfg() -> Gemma2Config {
