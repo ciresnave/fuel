@@ -226,6 +226,80 @@ impl MarianModel {
         self.encode(&embed, &pos_full, src_tokens)
     }
 
+    /// Multimodal encoder entry point. Runs the Marian encoder over
+    /// pre-embedded inputs `(1, src_len, d_model)`. Marian applies
+    /// `scale_embedding` and the sinusoidal positional add internally
+    /// (matches Qwen2 raw-embeds convention — caller passes token-
+    /// level embeds; model handles seq-position-dependent positional
+    /// encoding).
+    pub fn forward_encoder_embeds(&self, src_embeds: &LazyTensor) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model);
+        let pos_full = src_embeds.const_f32_like(
+            Arc::from(pos_table),
+            Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]),
+        );
+        self.encode_from_embeds(src_embeds, &pos_full)
+    }
+
+    /// Multimodal decoder entry point. Skips token embedding; runs the
+    /// Marian decoder over pre-embedded inputs + cached encoder output
+    /// and returns logits `(1, tgt_len, target_vocab)`. `enc_out`
+    /// serves as the graph anchor for sinusoidal positional encoding
+    /// + lm_head bias.
+    pub fn forward_decoder_embeds(
+        &self,
+        tgt_embeds: &LazyTensor,
+        enc_out: &LazyTensor,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model);
+        let pos_full = enc_out.const_f32_like(
+            Arc::from(pos_table),
+            Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]),
+        );
+        let dec_out = self.decode_from_embeds(tgt_embeds, &pos_full, enc_out)?;
+
+        let lm_head = WeightStorage::F32(self.weights.shared_embedding.clone());
+        let target_vocab = cfg.target_vocab_size();
+        let logits = lm_head.apply_linear(&dec_out, cfg.d_model, target_vocab);
+        let bias_t = enc_out.const_f32_like(
+            Arc::clone(&self.weights.final_logits_bias),
+            Shape::from_dims(&[target_vocab]),
+        );
+        logits.broadcast_add(&bias_t)
+    }
+
+    /// Hidden-state variant of [`Self::forward_decoder_embeds`].
+    /// Returns `(1, tgt_len, d_model)` post-cross-attention states
+    /// without the LM head + final-logits bias.
+    pub fn forward_decoder_hidden_embeds(
+        &self,
+        tgt_embeds: &LazyTensor,
+        enc_out: &LazyTensor,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model);
+        let pos_full = enc_out.const_f32_like(
+            Arc::from(pos_table),
+            Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]),
+        );
+        self.decode_from_embeds(tgt_embeds, &pos_full, enc_out)
+    }
+
+    /// Build per-token embeddings without running encoder or decoder.
+    /// Returns `(1, seq, d_model)`. Marian shares the embedding
+    /// matrix between encoder and decoder (v1 only supports this).
+    pub fn embed_tokens_anchored(
+        &self, anchor: &LazyTensor, tokens: &[u32],
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        anchor.embed_tokens_anchored(
+            self.weights.shared_embedding.clone(),
+            cfg.vocab_size, cfg.d_model, tokens,
+        )
+    }
+
     /// Run only the Marian decoder, given a precomputed encoder
     /// output and target tokens, and return logits of shape
     /// `(1, tgt_len, target_vocab)`. Mirrors
@@ -284,9 +358,34 @@ impl MarianModel {
         let batch = 1;
 
         let ids = embed.const_u32_like(src_tokens.to_vec(), Shape::from_dims(&[src_len]));
-        let mut x = embed
+        let src_embeds = embed
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[batch, src_len, cfg.d_model]))?;
+        self.encode_from_embeds(&src_embeds, pos_full)
+    }
+
+    fn encode_from_embeds(
+        &self,
+        src_embeds: &LazyTensor,
+        pos_full: &LazyTensor,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let dims = src_embeds.shape();
+        let dims = dims.dims();
+        if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.d_model {
+            return Err(crate::Error::Msg(format!(
+                "MarianModel::forward_encoder_embeds: expected shape (1, src_len, d_model={}), got {:?}",
+                cfg.d_model, dims,
+            )).bt());
+        }
+        let src_len = dims[1];
+        let batch = dims[0];
+        if src_len == 0 {
+            return Err(crate::Error::Msg(
+                "MarianModel::forward_encoder_embeds: src_len must be > 0".into(),
+            ).bt());
+        }
+        let mut x = src_embeds.clone();
         if cfg.scale_embedding {
             x = x.mul_scalar((cfg.d_model as f64).sqrt());
         }
@@ -313,9 +412,35 @@ impl MarianModel {
         let batch = 1;
 
         let ids = embed.const_u32_like(tgt_tokens.to_vec(), Shape::from_dims(&[tgt_len]));
-        let mut x = embed
+        let tgt_embeds = embed
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[batch, tgt_len, cfg.d_model]))?;
+        self.decode_from_embeds(&tgt_embeds, pos_full, enc_out)
+    }
+
+    fn decode_from_embeds(
+        &self,
+        tgt_embeds: &LazyTensor,
+        pos_full: &LazyTensor,
+        enc_out: &LazyTensor,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let dims = tgt_embeds.shape();
+        let dims = dims.dims();
+        if dims.len() != 3 || dims[0] != 1 || dims[2] != cfg.d_model {
+            return Err(crate::Error::Msg(format!(
+                "MarianModel::forward_decoder_embeds: expected tgt shape (1, tgt_len, d_model={}), got {:?}",
+                cfg.d_model, dims,
+            )).bt());
+        }
+        let tgt_len = dims[1];
+        let batch = dims[0];
+        if tgt_len == 0 {
+            return Err(crate::Error::Msg(
+                "MarianModel::forward_decoder_embeds: tgt_len must be > 0".into(),
+            ).bt());
+        }
+        let mut x = tgt_embeds.clone();
         if cfg.scale_embedding {
             x = x.mul_scalar((cfg.d_model as f64).sqrt());
         }
@@ -720,6 +845,65 @@ mod tests {
         for (a, b) in full.iter().zip(split.iter()) {
             assert!((a - b).abs() < 1e-5,
                 "forward_decoder must match forward: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn forward_encoder_embeds_matches_forward_encoder() {
+        let cfg = tiny_config();
+        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let src = [1_u32, 2, 3];
+        let enc_ref = model.forward_encoder(&src).unwrap().realize_f32();
+        let anchor = LazyTensor::from_f32(
+            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
+        );
+        let src_embeds = model.embed_tokens_anchored(&anchor, &src).unwrap();
+        let enc_via_embeds = model.forward_encoder_embeds(&src_embeds).unwrap().realize_f32();
+        let max_diff = enc_ref.iter().zip(enc_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-5,
+            "Marian forward_encoder vs forward_encoder_embeds must agree (max diff {max_diff})");
+    }
+
+    #[test]
+    fn forward_decoder_embeds_matches_forward_decoder() {
+        let cfg = tiny_config();
+        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let src = [1_u32, 2, 3];
+        let tgt = [5_u32, 6, 7];
+        let enc = model.forward_encoder(&src).unwrap();
+        let dec_ref = model.forward_decoder(&tgt, &enc).unwrap().realize_f32();
+        let tgt_embeds = model.embed_tokens_anchored(&enc, &tgt).unwrap();
+        let dec_via_embeds = model.forward_decoder_embeds(&tgt_embeds, &enc).unwrap().realize_f32();
+        let max_diff = dec_ref.iter().zip(dec_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-5,
+            "Marian forward_decoder vs forward_decoder_embeds must agree (max diff {max_diff})");
+    }
+
+    #[test]
+    fn forward_encoder_embeds_rejects_bad_shape() {
+        let cfg = tiny_config();
+        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let bad = LazyTensor::from_f32(
+            vec![0.0_f32; 3 * (cfg.d_model + 1)],
+            Shape::from_dims(&[1, 3, cfg.d_model + 1]), &Device::cpu(),
+        );
+        assert!(model.forward_encoder_embeds(&bad).is_err());
+    }
+
+    #[test]
+    fn forward_decoder_hidden_embeds_skips_lm_head() {
+        let cfg = tiny_config();
+        let model = MarianModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let src = [1_u32, 2, 3];
+        let tgt = [5_u32, 6, 7];
+        let enc = model.forward_encoder(&src).unwrap();
+        let tgt_embeds = model.embed_tokens_anchored(&enc, &tgt).unwrap();
+        let hidden = model.forward_decoder_hidden_embeds(&tgt_embeds, &enc).unwrap();
+        assert_eq!(hidden.shape().dims(), &[1, tgt.len(), cfg.d_model]);
+        for &v in &hidden.realize_f32() {
+            assert!(v.is_finite(), "non-finite hidden: {v}");
         }
     }
 }
