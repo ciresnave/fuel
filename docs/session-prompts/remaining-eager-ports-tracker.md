@@ -32,10 +32,13 @@ These unblock multiple downstream model ports. Ship these first.
       (lazy_llama2c::load_llama2c_bin + load_llama2c_bin_path; v0
       format with optional untied lm_head via signed vocab; freq_cis
       tables discarded, rebuilt host-side; 5 loader tests).
-- [ ] [Conv3D primitive (decomposition path)](port-conv3d.md)
+- [x] [Conv3D primitive (decomposition path)](shipped/port-conv3d.md)
       — `multimodal/qwen3_vl/conv3d_temporal_2.rs` (80 LOC).
       No native lazy Conv3D — decompose via slicing + matmul. Blocks
-      Qwen3-VL vision.
+      Qwen3-VL vision. **Shipped** (lazy_conv3d::Conv3dTemporal2Weights
+      + Conv3dTemporal2Config; weight pre-split in from_raw_weight,
+      apply uses narrow + squeeze + 2× conv2d + add + unsqueeze;
+      6 tests including hand-computed kernel-1×1 verification).
 - [ ] [Causal/streaming Conv1d (Mimi conv)](port-mimi-conv.md)
       — `audio/mimi/conv.rs` (688 LOC). Streaming Conv1d primitive +
       ConvDownsample / ConvTrUpsample variants. Blocks Mimi encodec
