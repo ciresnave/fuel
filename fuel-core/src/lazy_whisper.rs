@@ -445,7 +445,7 @@ fn pad_t_axis_one_each_side(x: &LazyTensor, c: usize, t: usize) -> LazyTensor {
 /// windows, concat them along the channel axis (so the combined slice
 /// has `3*in_c` channels), and matmul with the kernel reshaped to
 /// `[3*in_c, out_c]`.
-fn conv1d_k3_s1_p1(
+pub(crate) fn conv1d_k3_s1_p1(
     x: &LazyTensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
@@ -495,7 +495,7 @@ fn conv1d_k3_s1_p1(
 /// one at position 1, one at position 2, each sub-sampling every
 /// other element). The even/odd indexing is expressed via reshape to
 /// a `[_, T/2, 2]` tile then a dim-3 slice.
-fn conv1d_k3_s2_p1(
+pub(crate) fn conv1d_k3_s2_p1(
     x: &LazyTensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
