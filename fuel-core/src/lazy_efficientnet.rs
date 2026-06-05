@@ -249,7 +249,7 @@ impl EfficientNetModel {
         let x_padded = pad_same(x, cb.kernel, cb.stride)?;
         let w = cb.w.const_like(
             x, Shape::from_dims(&[cb.c_out, cb.c_in / cb.groups, cb.kernel, cb.kernel]),
-        );
+        )?;
         let conv = x_padded.conv2d(&w, None, (cb.stride, cb.stride), (0, 0), cb.groups)?;
         apply_bn(&conv, &cb.bn, cb.c_out)
     }
@@ -258,7 +258,7 @@ impl EfficientNetModel {
         // 1×1 conv → broadcast-add bias on channel dim.
         let w = cb.w.const_like(
             x, Shape::from_dims(&[cb.c_out, cb.c_in, 1, 1]),
-        );
+        )?;
         let conv = x.conv2d(&w, None, (1, 1), (0, 0), 1)?;
         let b_t = x
             .const_f32_like(Arc::clone(&cb.b), Shape::from_dims(&[cb.c_out]))

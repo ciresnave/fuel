@@ -193,7 +193,7 @@ impl ResNetModel {
 
         let stem_w = self.weights.stem_conv.const_like(
             image, Shape::from_dims(&[64, 3, 7, 7]),
-        );
+        )?;
         let mut x = image.conv2d(&stem_w, None, (2, 2), (3, 3), 1)?;
         x = apply_bn(&x, &self.weights.stem_bn, 64)?.relu();
         x = x.max_pool2d((3, 3), (2, 2), (1, 1))?;
@@ -227,10 +227,10 @@ impl ResNetModel {
         let s = block.stride;
         let conv1_w = block.conv1.const_like(
             x, Shape::from_dims(&[c_out, c_in, 3, 3]),
-        );
+        )?;
         let conv2_w = block.conv2.const_like(
             x, Shape::from_dims(&[c_out, c_out, 3, 3]),
-        );
+        )?;
         let y = x.conv2d(&conv1_w, None, (s, s), (1, 1), 1)?;
         let y = apply_bn(&y, &block.bn1, c_out)?.relu();
         let y = y.conv2d(&conv2_w, None, (1, 1), (1, 1), 1)?;
@@ -250,15 +250,15 @@ impl ResNetModel {
         let s = block.stride;
         let conv1_w = block.conv1.const_like(
             x, Shape::from_dims(&[c_out, c_in, 1, 1]),
-        );
+        )?;
         let conv2_w = block.conv2.const_like(
             x, Shape::from_dims(&[c_out, c_out, 3, 3]),
-        );
+        )?;
         let conv3 = block.conv3.as_ref().expect("bottleneck block must carry conv3");
         let bn3 = block.bn3.as_ref().expect("bottleneck block must carry bn3");
         let conv3_w = conv3.const_like(
             x, Shape::from_dims(&[c_expanded, c_out, 1, 1]),
-        );
+        )?;
 
         let y = x.conv2d(&conv1_w, None, (1, 1), (0, 0), 1)?;
         let y = apply_bn(&y, &block.bn1, c_out)?.relu();
@@ -286,7 +286,7 @@ impl ResNetModel {
                 let s = block.stride;
                 let w = ds.conv.const_like(
                     x, Shape::from_dims(&[block_out, c_in, 1, 1]),
-                );
+                )?;
                 let y = x.conv2d(&w, None, (s, s), (0, 0), 1)?;
                 apply_bn(&y, &ds.bn, block_out)
             }

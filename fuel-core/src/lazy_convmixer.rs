@@ -198,7 +198,7 @@ impl ConvMixerModel {
         let stem_w = self.weights.stem.const_like(
             image,
             Shape::from_dims(&[cfg.dim, 3, cfg.patch_size, cfg.patch_size]),
-        );
+        )?;
         let mut x = image
             .conv2d(&stem_w, None, (cfg.patch_size, cfg.patch_size), (0, 0), 1)?
             .gelu_erf();
@@ -221,7 +221,7 @@ impl ConvMixerModel {
         let dw_w = block.depthwise.const_like(
             x,
             Shape::from_dims(&[cfg.dim, 1, cfg.kernel_size, cfg.kernel_size]),
-        );
+        )?;
         let dw_out = x.conv2d(&dw_w, None, (1, 1), (pad, pad), cfg.dim)?;
         let dw_out = dw_out.gelu_erf();
         let dw_out = self.apply_bn(&dw_out, &block.depthwise_bn)?;
@@ -232,7 +232,7 @@ impl ConvMixerModel {
         let pw_w = block.pointwise.const_like(
             x,
             Shape::from_dims(&[cfg.dim, cfg.dim, 1, 1]),
-        );
+        )?;
         let pw_out = residual.conv2d(&pw_w, None, (1, 1), (0, 0), 1)?;
         let pw_out = pw_out.gelu_erf();
         self.apply_bn(&pw_out, &block.pointwise_bn)
