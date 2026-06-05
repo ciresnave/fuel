@@ -168,9 +168,7 @@ impl Qwen2Model {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, attention_mask)?;
         }
-        Ok(crate::lazy::apply_affine_rms_norm_pub(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        ))
+        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
     }
 
     /// Shared backbone for the causal-mask paths
@@ -264,9 +262,7 @@ impl Qwen2Model {
             };
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, mask)?;
         }
-        Ok(crate::lazy::apply_affine_rms_norm_pub(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        ))
+        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
     }
 
     /// Build the attention mask for one layer. `uses_window == true`
@@ -302,9 +298,7 @@ impl Qwen2Model {
         let seq = dims[1];
         let kv_dim = cfg.num_key_value_heads * head_dim;
 
-        let x_norm = crate::lazy::apply_affine_rms_norm_pub(
-            x, &layer.attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
 
         // Q / K / V projections with optional biases (Qwen2 has them).
         let q = apply_optional_bias(
@@ -350,9 +344,7 @@ impl Qwen2Model {
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size);
 
         let h1 = x.add(&attn_out)?;
-        let h1_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h1, &layer.ffn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
 
         let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);
         let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size);

@@ -229,18 +229,14 @@ fn apply_decoder_layer(
         x, x, &w.self_attn, n_heads, head_dim, d, d, Some(causal_mask),
     )?;
     let h1 = x.add(&self_attn_out)?;
-    let h1 = crate::lazy::apply_affine_layer_norm_pub(
-        &h1, &w.self_attn_ln_gain, &w.self_attn_ln_bias, d, 1e-5,
-    );
+    let h1 = h1.layer_norm_affine(std::sync::Arc::clone(&w.self_attn_ln_gain), std::sync::Arc::clone(&w.self_attn_ln_bias), 1e-5)?;
 
     // Cross-attention: Q from decoder state, K/V from encoder output.
     let cross_attn_out = apply_attention(
         &h1, enc_out, &w.encoder_attn, n_heads, head_dim, d, kv_in, None,
     )?;
     let h2 = h1.add(&cross_attn_out)?;
-    let h2 = crate::lazy::apply_affine_layer_norm_pub(
-        &h2, &w.encoder_attn_ln_gain, &w.encoder_attn_ln_bias, d, 1e-5,
-    );
+    let h2 = h2.layer_norm_affine(std::sync::Arc::clone(&w.encoder_attn_ln_gain), std::sync::Arc::clone(&w.encoder_attn_ln_bias), 1e-5)?;
 
     // FFN: fc1 → activation → fc2.
     let h_ffn = w.fc1.apply_linear(&h2, d, cfg.decoder_ffn_dim);
@@ -250,9 +246,7 @@ fn apply_decoder_layer(
     };
     let h_ffn = w.fc2.apply_linear(&h_ffn, cfg.decoder_ffn_dim, d);
     let h3 = h2.add(&h_ffn)?;
-    Ok(crate::lazy::apply_affine_layer_norm_pub(
-        &h3, &w.final_ln_gain, &w.final_ln_bias, d, 1e-5,
-    ))
+    Ok(h3.layer_norm_affine(std::sync::Arc::clone(&w.final_ln_gain), std::sync::Arc::clone(&w.final_ln_bias), 1e-5)?)
 }
 
 #[allow(clippy::too_many_arguments)]

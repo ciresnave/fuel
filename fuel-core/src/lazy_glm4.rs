@@ -167,9 +167,7 @@ impl Glm4Model {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
-        Ok(crate::lazy::apply_affine_rms_norm_pub(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        ))
+        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
     }
 
     fn apply_layer(
@@ -190,9 +188,7 @@ impl Glm4Model {
 
         // ---- Attention sublayer ---------------------------------------------
         let residual = x.clone();
-        let x_norm = crate::lazy::apply_affine_rms_norm_pub(
-            x, &layer.input_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
 
         let q = opt_bias(
             layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, q_dim),
@@ -234,17 +230,12 @@ impl Glm4Model {
 
         let merged = attn_v.merge_heads()?;
         let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size);
-        let attn_normed = crate::lazy::apply_affine_rms_norm_pub(
-            &attn_out, &layer.post_self_attn_norm_gain,
-            cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let attn_normed = attn_out.rms_norm_affine(std::sync::Arc::clone(&layer.post_self_attn_norm_gain), cfg.rms_norm_eps)?;
         let h1 = residual.add(&attn_normed)?;
 
         // ---- FFN sublayer ---------------------------------------------------
         let residual2 = h1.clone();
-        let h1_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h1, &layer.post_attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
 
         // Fused gate_up: [hidden, 2 * intermediate]. Split last dim.
         let gate_up = layer.ffn_gate_up.apply_linear(
@@ -259,9 +250,7 @@ impl Glm4Model {
         };
         let ffn_in = activated.mul(&up)?;
         let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size);
-        let ffn_normed = crate::lazy::apply_affine_rms_norm_pub(
-            &ffn_out, &layer.post_mlp_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let ffn_normed = ffn_out.rms_norm_affine(std::sync::Arc::clone(&layer.post_mlp_norm_gain), cfg.rms_norm_eps)?;
         residual2.add(&ffn_normed)
     }
 }

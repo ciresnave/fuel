@@ -3097,12 +3097,6 @@ impl LazyTensor {
     /// post-step (no bias — RMSNorm has no β term). `gain` is a
     /// length-`gain.len()` vector materialized fresh on the
     /// receiver's graph and broadcast across all leading dims.
-    ///
-    /// Equivalent to the existing `apply_affine_rms_norm_pub` free
-    /// function — promoted to a method to match the rest of the
-    /// Phase A.2 composite primitives (`layer_norm_affine`,
-    /// `l2_normalize`, etc.). The free function is kept for
-    /// backward compatibility but new code should prefer this.
     pub fn rms_norm_affine(
         &self, gain: std::sync::Arc<[f32]>, eps: f64,
     ) -> std::result::Result<Self, fuel_core_types::Error> {
@@ -5279,33 +5273,6 @@ fn apply_affine_rms_norm(
     normalized.broadcast_mul(&gain_t).unwrap()
 }
 
-/// Public re-export of `apply_affine_rms_norm` for sibling lazy
-/// modules. Now a thin wrapper around the canonical
-/// [`LazyTensor::rms_norm_affine`] method — new code should
-/// prefer the method form directly.
-pub fn apply_affine_rms_norm_pub(
-    x: &LazyTensor,
-    gain: &Arc<[f32]>,
-    dim: usize,
-    eps: f64,
-) -> LazyTensor {
-    debug_assert_eq!(gain.len(), dim,
-        "apply_affine_rms_norm_pub: gain length must equal dim");
-    x.rms_norm_affine(Arc::clone(gain), eps).unwrap()
-}
-
-/// Public re-export of `apply_affine_layer_norm` (defined further
-/// down in this file) so sibling lazy modules can reuse it without
-/// duplicating the gain/bias broadcasts.
-pub fn apply_affine_layer_norm_pub(
-    x: &LazyTensor,
-    gain: &Arc<[f32]>,
-    bias: &Arc<[f32]>,
-    dim: usize,
-    eps: f64,
-) -> LazyTensor {
-    apply_affine_layer_norm(x, gain, bias, dim, eps)
-}
 
 // ---- HuggingFace Hub and safetensors weight loading ----------------------
 
@@ -10277,20 +10244,6 @@ mod phase_a2_composite_tests {
         let b = via_plain.realize_f32();
         for (x, y) in a.iter().zip(b.iter()) {
             assert!((x - y).abs() < 1e-6, "{x} vs {y}");
-        }
-    }
-
-    #[test]
-    fn rms_norm_affine_matches_apply_affine_rms_norm_pub() {
-        // 1×3 input, hand-built gain.
-        let x = cpu_f32(vec![1.0_f32, 2.0, 3.0], &[1, 3]);
-        let gain = std::sync::Arc::<[f32]>::from(vec![2.0_f32, 3.0, 4.0]);
-        let via_method = x.rms_norm_affine(std::sync::Arc::clone(&gain), 1e-6).unwrap();
-        let via_pub = super::apply_affine_rms_norm_pub(&x, &gain, 3, 1e-6);
-        let m = via_method.realize_f32();
-        let p = via_pub.realize_f32();
-        for (a, b) in m.iter().zip(p.iter()) {
-            assert!((a - b).abs() < 1e-6, "{a} vs {b}");
         }
     }
 

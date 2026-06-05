@@ -182,10 +182,7 @@ impl LlavaModel {
         let pre = with_cls.add(&pos_bc)?;
 
         // Pre-LayerNorm.
-        let pre_ln = crate::lazy::apply_affine_layer_norm_pub(
-            &pre, &weights.pre_ln_gain, &weights.pre_ln_bias,
-            v_cfg.embed_dim, 1e-5,
-        );
+        let pre_ln = pre.layer_norm_affine(std::sync::Arc::clone(&weights.pre_ln_gain), std::sync::Arc::clone(&weights.pre_ln_bias), 1e-5)?;
 
         // Encoder layers (call the CLIP shared apply via the
         // public ClipVisionModel forward — but we need to override
@@ -201,10 +198,7 @@ impl LlavaModel {
         let patches_only = h.slice(1_usize, 1, np)?;
 
         // Post-LayerNorm on the patch tokens.
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &patches_only, &weights.post_ln_gain, &weights.post_ln_bias,
-            v_cfg.embed_dim, 1e-5,
-        ))
+        Ok(patches_only.layer_norm_affine(std::sync::Arc::clone(&weights.post_ln_gain), std::sync::Arc::clone(&weights.post_ln_bias), 1e-5)?)
     }
 }
 
@@ -224,9 +218,7 @@ fn clip_encoder_layer(
     let seq = dims[1];
     let h = dims[2];
 
-    let x_norm = crate::lazy::apply_affine_layer_norm_pub(
-        x, &layer.ln1_gain, &layer.ln1_bias, h, 1e-5,
-    );
+    let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln1_gain), std::sync::Arc::clone(&layer.ln1_bias), 1e-5)?;
 
     let q = layer.q_proj.apply_linear(&x_norm, h, h);
     let q = bias_add(q, &layer.q_proj_bias, h, x)?;
@@ -254,9 +246,7 @@ fn clip_encoder_layer(
     let attn_out = bias_add(attn_out, &layer.out_proj_bias, h, x)?;
     let h1 = x.add(&attn_out)?;
 
-    let h1_norm = crate::lazy::apply_affine_layer_norm_pub(
-        &h1, &layer.ln2_gain, &layer.ln2_bias, h, 1e-5,
-    );
+    let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), 1e-5)?;
 
     let inter_dim = layer.fc1_bias.len();
     let inter = layer.fc1.apply_linear(&h1_norm, h, inter_dim);

@@ -174,10 +174,7 @@ impl PhiModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &h, &weights.final_ln_gain, &weights.final_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_eps,
-        ))
+        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?)
     }
 
     fn apply_layer(
@@ -197,10 +194,7 @@ impl PhiModel {
         let rope_dim = cfg.rope_dim();
 
         // Single LN feeds BOTH attention and MLP paths (Phi parallel block).
-        let x_norm = crate::lazy::apply_affine_layer_norm_pub(
-            x, &layer.input_ln_gain, &layer.input_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_eps,
-        );
+        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.input_ln_gain), std::sync::Arc::clone(&layer.input_ln_bias), cfg.layer_norm_eps)?;
 
         // ---- Attention path -------------------------------------------------
         let q = add_bias(

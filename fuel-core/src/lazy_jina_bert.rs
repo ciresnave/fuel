@@ -209,13 +209,7 @@ impl JinaBertModel {
             .index_select(0_usize, &tt_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
 
-        let mut x = crate::lazy::apply_affine_layer_norm_pub(
-            &word_embeds.add(&tt_embeds)?,
-            &weights.embed_ln_gain,
-            &weights.embed_ln_bias,
-            h,
-            cfg.layer_norm_eps,
-        );
+        let mut x = word_embeds.add(&tt_embeds)?.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), std::sync::Arc::clone(&weights.embed_ln_bias), cfg.layer_norm_eps)?;
 
         // ---- ALiBi bias (shared across layers) -----------------------------
         let alibi_data = build_alibi_bias(n_heads, seq);
@@ -304,11 +298,7 @@ impl JinaBertModel {
         let tt_embeds = tte_t
             .index_select(0_usize, &tt_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
-        let mut x = crate::lazy::apply_affine_layer_norm_pub(
-            &word_embeds.add(&tt_embeds)?,
-            &weights.embed_ln_gain, &weights.embed_ln_bias,
-            h, cfg.layer_norm_eps,
-        );
+        let mut x = word_embeds.add(&tt_embeds)?.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), std::sync::Arc::clone(&weights.embed_ln_bias), cfg.layer_norm_eps)?;
 
         // Shared ALiBi bias (optionally folded with pad mask).
         let alibi_data = build_alibi_bias(n_heads, seq);
@@ -370,11 +360,7 @@ impl JinaBertModel {
         let attn_out = bias_add(attn_out, &layer.attn_out_bias, h, x)?;
 
         // Post-LN attention residual: LN(x + attn).
-        let h1 = crate::lazy::apply_affine_layer_norm_pub(
-            &x.add(&attn_out)?,
-            &layer.attn_ln_gain, &layer.attn_ln_bias,
-            h, cfg.layer_norm_eps,
-        );
+        let h1 = x.add(&attn_out)?.layer_norm_affine(std::sync::Arc::clone(&layer.attn_ln_gain), std::sync::Arc::clone(&layer.attn_ln_bias), cfg.layer_norm_eps)?;
 
         // ---- GeGLU MLP -----------------------------------------------------
         let i = cfg.intermediate_size;
@@ -392,11 +378,7 @@ impl JinaBertModel {
         let down = bias_add(down, &layer.mlp_wo_bias, h, x)?;
 
         // Post-LN MLP residual: LN(h1 + mlp).
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &h1.add(&down)?,
-            &layer.mlp_ln_gain, &layer.mlp_ln_bias,
-            h, cfg.layer_norm_eps,
-        ))
+        Ok(h1.add(&down)?.layer_norm_affine(std::sync::Arc::clone(&layer.mlp_ln_gain), std::sync::Arc::clone(&layer.mlp_ln_bias), cfg.layer_norm_eps)?)
     }
 }
 

@@ -220,13 +220,7 @@ impl NomicBertModel {
             embeds = embeds.add(&tt_emb)?;
         }
 
-        let mut h = crate::lazy::apply_affine_layer_norm_pub(
-            &embeds,
-            &weights.embed_ln_gain,
-            &weights.embed_ln_bias,
-            cfg.n_embd,
-            cfg.layer_norm_epsilon,
-        );
+        let mut h = embeds.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), std::sync::Arc::clone(&weights.embed_ln_bias), cfg.layer_norm_epsilon)?;
 
         // ---- RoPE tables ----------------------------------------------------
         let rope_dim = cfg.rotary_emb_dim();
@@ -321,10 +315,7 @@ impl NomicBertModel {
                 .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;
             embeds = embeds.add(&tt_emb)?;
         }
-        let mut h = crate::lazy::apply_affine_layer_norm_pub(
-            &embeds, &weights.embed_ln_gain, &weights.embed_ln_bias,
-            cfg.n_embd, cfg.layer_norm_epsilon,
-        );
+        let mut h = embeds.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), std::sync::Arc::clone(&weights.embed_ln_bias), cfg.layer_norm_epsilon)?;
 
         let rope_dim = cfg.rotary_emb_dim();
         let (rope_cos, rope_sin) = h.rope_tables_const(
@@ -354,32 +345,18 @@ impl NomicBertModel {
         let cfg = &self.config;
         if cfg.prenorm {
             // Pre-LN: y = x + attn(LN(x)); z = y + ffn(LN(y)).
-            let x_norm = crate::lazy::apply_affine_layer_norm_pub(
-                x, &layer.norm1_gain, &layer.norm1_bias,
-                cfg.n_embd, cfg.layer_norm_epsilon,
-            );
+            let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.norm1_gain), std::sync::Arc::clone(&layer.norm1_bias), cfg.layer_norm_epsilon)?;
             let attn = self.attention(&x_norm, layer, rope_cos, rope_sin, attention_mask)?;
             let y = x.add(&attn)?;
-            let y_norm = crate::lazy::apply_affine_layer_norm_pub(
-                &y, &layer.norm2_gain, &layer.norm2_bias,
-                cfg.n_embd, cfg.layer_norm_epsilon,
-            );
+            let y_norm = y.layer_norm_affine(std::sync::Arc::clone(&layer.norm2_gain), std::sync::Arc::clone(&layer.norm2_bias), cfg.layer_norm_epsilon)?;
             let mlp = self.mlp(&y_norm, layer)?;
             y.add(&mlp)
         } else {
             // Post-LN (BERT-shape): y = LN(x + attn(x)); z = LN(y + ffn(y)).
             let attn = self.attention(x, layer, rope_cos, rope_sin, attention_mask)?;
-            let y = crate::lazy::apply_affine_layer_norm_pub(
-                &x.add(&attn)?,
-                &layer.norm1_gain, &layer.norm1_bias,
-                cfg.n_embd, cfg.layer_norm_epsilon,
-            );
+            let y = x.add(&attn)?.layer_norm_affine(std::sync::Arc::clone(&layer.norm1_gain), std::sync::Arc::clone(&layer.norm1_bias), cfg.layer_norm_epsilon)?;
             let mlp = self.mlp(&y, layer)?;
-            Ok(crate::lazy::apply_affine_layer_norm_pub(
-                &y.add(&mlp)?,
-                &layer.norm2_gain, &layer.norm2_bias,
-                cfg.n_embd, cfg.layer_norm_epsilon,
-            ))
+            Ok(y.add(&mlp)?.layer_norm_affine(std::sync::Arc::clone(&layer.norm2_gain), std::sync::Arc::clone(&layer.norm2_bias), cfg.layer_norm_epsilon)?)
         }
     }
 

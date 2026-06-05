@@ -211,9 +211,7 @@ impl BasedModel {
         for (idx, layer) in weights.layers.iter().enumerate() {
             h = self.apply_block(&h, layer, idx, &rope_cos, &rope_sin)?;
         }
-        Ok(crate::lazy::apply_affine_rms_norm_pub(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.layer_norm_epsilon,
-        ))
+        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.layer_norm_epsilon)?)
     }
 
     fn apply_block(
@@ -226,14 +224,10 @@ impl BasedModel {
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
-        let x_norm = crate::lazy::apply_affine_rms_norm_pub(
-            x, &layer.norm1_gain, h, cfg.layer_norm_epsilon,
-        );
+        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.norm1_gain), cfg.layer_norm_epsilon)?;
         let mixed = self.apply_mixer(&x_norm, &layer.mixer, layer_idx, rope_cos, rope_sin)?;
         let h1 = x.add(&mixed)?;
-        let h1_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h1, &layer.norm2_gain, h, cfg.layer_norm_epsilon,
-        );
+        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.norm2_gain), cfg.layer_norm_epsilon)?;
         let mlp_out = self.apply_mlp(&h1_norm, &layer.fc1, &layer.fc2)?;
         h1.add(&mlp_out)
     }

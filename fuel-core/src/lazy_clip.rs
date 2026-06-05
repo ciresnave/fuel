@@ -237,10 +237,7 @@ impl ClipTextModel {
         }
 
         // Final LayerNorm.
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &h, &weights.final_ln_gain, &weights.final_ln_bias,
-            cfg.embed_dim, 1e-5,
-        ))
+        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), 1e-5)?)
     }
 
     /// Pool the last hidden state by selecting position `eos_pos`,
@@ -396,10 +393,7 @@ impl ClipVisionModel {
         let pre = with_cls.add(&pos_bc)?;
 
         // Pre-LayerNorm (CLIP vision has a pre-encoder LN).
-        let pre_ln = crate::lazy::apply_affine_layer_norm_pub(
-            &pre, &weights.pre_ln_gain, &weights.pre_ln_bias,
-            cfg.embed_dim, 1e-5,
-        );
+        let pre_ln = pre.layer_norm_affine(std::sync::Arc::clone(&weights.pre_ln_gain), std::sync::Arc::clone(&weights.pre_ln_bias), 1e-5)?;
 
         // Encoder layers (no causal mask for vision).
         let mut h = pre_ln;
@@ -415,10 +409,7 @@ impl ClipVisionModel {
         let cls_pooled = h
             .slice(1_usize, 0, 1)?
             .reshape(Shape::from_dims(&[batch, cfg.embed_dim]))?;
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &cls_pooled, &weights.post_ln_gain, &weights.post_ln_bias,
-            cfg.embed_dim, 1e-5,
-        ))
+        Ok(cls_pooled.layer_norm_affine(std::sync::Arc::clone(&weights.post_ln_gain), std::sync::Arc::clone(&weights.post_ln_bias), 1e-5)?)
     }
 
     /// Extract per-token features at the requested layer
@@ -495,10 +486,7 @@ impl ClipVisionModel {
             .reshape(Shape::from_dims(&[1, np + 1, cfg.embed_dim]))?
             .broadcast_to(Shape::from_dims(&[batch, np + 1, cfg.embed_dim]))?;
         let pre = with_cls.add(&pos_bc)?;
-        let pre_ln = crate::lazy::apply_affine_layer_norm_pub(
-            &pre, &weights.pre_ln_gain, &weights.pre_ln_bias,
-            cfg.embed_dim, 1e-5,
-        );
+        let pre_ln = pre.layer_norm_affine(std::sync::Arc::clone(&weights.pre_ln_gain), std::sync::Arc::clone(&weights.pre_ln_bias), 1e-5)?;
 
         let mut h = pre_ln;
         let mut out = Vec::with_capacity(layer_ids.len());
@@ -565,9 +553,7 @@ fn apply_clip_layer(
     let h = dims[2];
 
     // Pre-LN before attention.
-    let x_norm = crate::lazy::apply_affine_layer_norm_pub(
-        x, &layer.ln1_gain, &layer.ln1_bias, h, 1e-5,
-    );
+    let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln1_gain), std::sync::Arc::clone(&layer.ln1_bias), 1e-5)?;
 
     // Q, K, V projections with biases.
     let q = layer.q_proj.apply_linear(&x_norm, h, h);
@@ -598,9 +584,7 @@ fn apply_clip_layer(
     let h1 = x.add(&attn_out)?;
 
     // Pre-LN before MLP.
-    let h1_norm = crate::lazy::apply_affine_layer_norm_pub(
-        &h1, &layer.ln2_gain, &layer.ln2_bias, h, 1e-5,
-    );
+    let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), 1e-5)?;
 
     let inter = layer.fc1.apply_linear(&h1_norm, h, layer.fc1_bias.len());
     let inter = bias_add(inter, &layer.fc1_bias, layer.fc1_bias.len(), x)?;

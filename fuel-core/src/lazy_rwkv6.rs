@@ -154,10 +154,7 @@ impl Rwkv6Model {
         for layer in &weights.layers {
             h = self.apply_block(&h, layer, batch, seq, n_heads, head_size)?;
         }
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &h, &weights.final_ln_gain, &weights.final_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_epsilon,
-        ))
+        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_epsilon)?)
     }
 
     fn apply_block(
@@ -172,23 +169,20 @@ impl Rwkv6Model {
         let cfg = &self.config;
         let h = cfg.hidden_size;
 
+        let _ = h;
         let xs = if let Some((g, b)) = &layer.pre_ln {
-            crate::lazy::apply_affine_layer_norm_pub(xs, g, b, h, cfg.layer_norm_epsilon)
+            xs.layer_norm_affine(Arc::clone(g), Arc::clone(b), cfg.layer_norm_epsilon)?
         } else {
             xs.clone()
         };
 
         // Attention sublayer.
-        let xs_ln1 = crate::lazy::apply_affine_layer_norm_pub(
-            &xs, &layer.ln1_gain, &layer.ln1_bias, h, cfg.layer_norm_epsilon,
-        );
+        let xs_ln1 = xs.layer_norm_affine(std::sync::Arc::clone(&layer.ln1_gain), std::sync::Arc::clone(&layer.ln1_bias), cfg.layer_norm_epsilon)?;
         let attn = self.time_mix(&xs_ln1, layer, batch, seq, n_heads, head_size)?;
         let xs = xs.add(&attn)?;
 
         // FFN sublayer.
-        let xs_ln2 = crate::lazy::apply_affine_layer_norm_pub(
-            &xs, &layer.ln2_gain, &layer.ln2_bias, h, cfg.layer_norm_epsilon,
-        );
+        let xs_ln2 = xs.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), cfg.layer_norm_epsilon)?;
         let ff = self.channel_mix(&xs_ln2, layer, batch, seq)?;
         xs.add(&ff)
     }

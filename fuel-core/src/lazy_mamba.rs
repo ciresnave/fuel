@@ -179,9 +179,7 @@ impl MambaModel {
         for layer in &weights.layers {
             h = self.apply_residual_block(&h, layer)?;
         }
-        Ok(crate::lazy::apply_affine_rms_norm_pub(
-            &h, &weights.final_norm_gain, cfg.d_model, cfg.rms_norm_eps,
-        ))
+        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
     }
 
     fn apply_residual_block(
@@ -190,9 +188,7 @@ impl MambaModel {
         layer: &MambaLayerWeights,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let x_norm = crate::lazy::apply_affine_rms_norm_pub(
-            x, &layer.norm_gain, cfg.d_model, cfg.rms_norm_eps,
-        );
+        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.norm_gain), cfg.rms_norm_eps)?;
         let mixer_out = self.apply_mixer(&x_norm, layer)?;
         x.add(&mixer_out)
     }

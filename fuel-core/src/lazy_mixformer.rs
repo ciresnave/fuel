@@ -170,10 +170,7 @@ impl MixFormerModel {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, head_dim, rotary_dim)?;
         }
 
-        let h_norm = crate::lazy::apply_affine_layer_norm_pub(
-            &h, &weights.final_ln_gain, &weights.final_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_eps,
-        );
+        let h_norm = h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?;
         let lm_w = match &weights.lm_head {
             Some(w) => w.clone(),
             None => WeightStorage::F32(weights.token_embedding.clone()),
@@ -234,10 +231,7 @@ impl MixFormerModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, head_dim, rotary_dim)?;
         }
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &h, &weights.final_ln_gain, &weights.final_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_eps,
-        ))
+        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?)
     }
 
     fn apply_layer(
@@ -258,9 +252,7 @@ impl MixFormerModel {
         let n_heads = cfg.num_attention_heads;
 
         // Single LN feeds BOTH attention and MLP paths (parallel block).
-        let x_norm = crate::lazy::apply_affine_layer_norm_pub(
-            x, &layer.ln_gain, &layer.ln_bias, h, cfg.layer_norm_eps,
-        );
+        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln_gain), std::sync::Arc::clone(&layer.ln_bias), cfg.layer_norm_eps)?;
 
         // ---- Attention path: fused Wqkv -------------------------------------
         let qkv_lin = layer.wqkv.apply_linear(&x_norm, h, 3 * h);

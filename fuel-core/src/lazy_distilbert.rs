@@ -147,10 +147,7 @@ impl DistilBertModel {
             .reshape(Shape::from_dims(&[1, seq, cfg.dim]))?;
         let pos_bc = pos_slice.broadcast_to(Shape::from_dims(&[batch, seq, cfg.dim]))?;
         let sum = word_embeds.add(&pos_bc)?;
-        let mut h = crate::lazy::apply_affine_layer_norm_pub(
-            &sum, &weights.embed_ln_gain, &weights.embed_ln_bias,
-            cfg.dim, cfg.layer_norm_eps,
-        );
+        let mut h = sum.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), std::sync::Arc::clone(&weights.embed_ln_bias), cfg.layer_norm_eps)?;
 
         // Encoder blocks.
         for layer in &weights.layers {
@@ -214,10 +211,7 @@ impl DistilBertModel {
             .reshape(Shape::from_dims(&[1, seq, cfg.dim]))?;
         let pos_bc = pos_slice.broadcast_to(Shape::from_dims(&[batch, seq, cfg.dim]))?;
         let sum = word_embeds.add(&pos_bc)?;
-        let mut h = crate::lazy::apply_affine_layer_norm_pub(
-            &sum, &weights.embed_ln_gain, &weights.embed_ln_bias,
-            cfg.dim, cfg.layer_norm_eps,
-        );
+        let mut h = sum.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), std::sync::Arc::clone(&weights.embed_ln_bias), cfg.layer_norm_eps)?;
 
         let mut out = Vec::with_capacity(layer_ids.len());
         let mut next_capture = 0;
@@ -274,11 +268,7 @@ impl DistilBertModel {
         let attn_out = bias_add(attn_out, &layer.out_lin_bias, d, x)?;
 
         // Post-LN: LN(attn + x).
-        let h1 = crate::lazy::apply_affine_layer_norm_pub(
-            &x.add(&attn_out)?,
-            &layer.sa_ln_gain, &layer.sa_ln_bias,
-            d, cfg.layer_norm_eps,
-        );
+        let h1 = x.add(&attn_out)?.layer_norm_affine(std::sync::Arc::clone(&layer.sa_ln_gain), std::sync::Arc::clone(&layer.sa_ln_bias), cfg.layer_norm_eps)?;
 
         // ---- FFN ----------------------------------------------------------
         let fc1 = layer.lin1.apply_linear(&h1, d, cfg.hidden_dim);
@@ -291,11 +281,7 @@ impl DistilBertModel {
         let fc2 = bias_add(fc2, &layer.lin2_bias, d, x)?;
 
         // Post-LN: LN(ffn + h1).
-        let h2 = crate::lazy::apply_affine_layer_norm_pub(
-            &h1.add(&fc2)?,
-            &layer.output_ln_gain, &layer.output_ln_bias,
-            d, cfg.layer_norm_eps,
-        );
+        let h2 = h1.add(&fc2)?.layer_norm_affine(std::sync::Arc::clone(&layer.output_ln_gain), std::sync::Arc::clone(&layer.output_ln_bias), cfg.layer_norm_eps)?;
         Ok(h2)
     }
 }

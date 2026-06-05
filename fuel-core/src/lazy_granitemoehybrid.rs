@@ -221,9 +221,7 @@ impl GraniteMoeHybridModel {
             }
         }
 
-        Ok(crate::lazy::apply_affine_rms_norm_pub(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        ))
+        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
     }
 
     fn apply_attn_block(
@@ -237,12 +235,9 @@ impl GraniteMoeHybridModel {
         rope_sin: &LazyTensor,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let h = cfg.hidden_size;
 
         // Pre-attention norm.
-        let x_norm = crate::lazy::apply_affine_rms_norm_pub(
-            x, input_norm_gain, h, cfg.rms_norm_eps,
-        );
+        let x_norm = x.rms_norm_affine(Arc::clone(input_norm_gain), cfg.rms_norm_eps)?;
         let attn_out = self.attention(&x_norm, attn, rope_cos, rope_sin)?;
         // Residual multiplier (scales attn_out BEFORE the residual add).
         let attn_scaled = if (cfg.residual_multiplier - 1.0).abs() > f32::EPSILON {
@@ -253,9 +248,7 @@ impl GraniteMoeHybridModel {
         let h1 = x.add(&attn_scaled)?;
 
         // Pre-MLP norm.
-        let h1_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h1, post_attn_norm_gain, h, cfg.rms_norm_eps,
-        );
+        let h1_norm = h1.rms_norm_affine(Arc::clone(post_attn_norm_gain), cfg.rms_norm_eps)?;
         let mlp_out = self.apply_mlp(&h1_norm, mlp)?;
         let mlp_scaled = if (cfg.residual_multiplier - 1.0).abs() > f32::EPSILON {
             mlp_out.mul_scalar(cfg.residual_multiplier as f64)

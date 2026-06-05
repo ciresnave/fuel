@@ -154,10 +154,7 @@ impl BigCodeModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer)?;
         }
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &h, &weights.final_ln_gain, &weights.final_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_epsilon,
-        ))
+        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_epsilon)?)
     }
 
     fn apply_layer(
@@ -173,10 +170,7 @@ impl BigCodeModel {
         let batch = dims[0];
         let seq = dims[1];
 
-        let x_norm = crate::lazy::apply_affine_layer_norm_pub(
-            x, &layer.input_ln_gain, &layer.input_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_epsilon,
-        );
+        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.input_ln_gain), std::sync::Arc::clone(&layer.input_ln_bias), cfg.layer_norm_epsilon)?;
 
         let q = bias_add(
             layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size),
@@ -219,10 +213,7 @@ impl BigCodeModel {
         )?;
 
         let h1 = x.add(&attn_out)?;
-        let h1_norm = crate::lazy::apply_affine_layer_norm_pub(
-            &h1, &layer.post_attn_ln_gain, &layer.post_attn_ln_bias,
-            cfg.hidden_size, cfg.layer_norm_epsilon,
-        );
+        let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.post_attn_ln_gain), std::sync::Arc::clone(&layer.post_attn_ln_bias), cfg.layer_norm_epsilon)?;
 
         // GELU MLP.
         let mid = bias_add(

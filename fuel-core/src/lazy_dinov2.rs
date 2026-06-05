@@ -185,10 +185,7 @@ impl Dinov2Model {
         }
 
         // Final LayerNorm.
-        let h_norm = crate::lazy::apply_affine_layer_norm_pub(
-            &h, &weights.final_ln_gain, &weights.final_ln_bias,
-            cfg.embed_dim, cfg.layer_norm_eps,
-        );
+        let h_norm = h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?;
 
         // Feature: cat(cls_norm, mean(patch_norm)) → (1, 2 * embed_dim).
         let cls_feat = h_norm
@@ -308,9 +305,7 @@ impl Dinov2Model {
         let head_dim = cfg.head_dim();
 
         // Pre-LN before attention.
-        let x_norm = crate::lazy::apply_affine_layer_norm_pub(
-            x, &block.norm1_gain, &block.norm1_bias, h, cfg.layer_norm_eps,
-        );
+        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&block.norm1_gain), std::sync::Arc::clone(&block.norm1_bias), cfg.layer_norm_eps)?;
 
         // Fused Wqkv: hidden → 3 * hidden.
         let qkv_lin = block.qkv.apply_linear(&x_norm, h, 3 * h);
@@ -350,9 +345,7 @@ impl Dinov2Model {
         let h1 = x.add(&attn_scaled)?;
 
         // Pre-LN before MLP.
-        let h1_norm = crate::lazy::apply_affine_layer_norm_pub(
-            &h1, &block.norm2_gain, &block.norm2_bias, h, cfg.layer_norm_eps,
-        );
+        let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&block.norm2_gain), std::sync::Arc::clone(&block.norm2_bias), cfg.layer_norm_eps)?;
         let mlp_hidden = cfg.mlp_hidden();
         let fc1 = block.fc1.apply_linear(&h1_norm, h, mlp_hidden);
         let fc1_b_t = x.const_f32_like(

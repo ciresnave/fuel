@@ -352,20 +352,12 @@ impl MarianModel {
             cfg.encoder_attention_heads, cfg.encoder_head_dim(),
             None,
         )?;
-        let h1 = crate::lazy::apply_affine_layer_norm_pub(
-            &x.add(&attn)?,
-            &layer.self_attn_ln_gain, &layer.self_attn_ln_bias,
-            cfg.d_model, 1e-5,
-        );
+        let h1 = x.add(&attn)?.layer_norm_affine(std::sync::Arc::clone(&layer.self_attn_ln_gain), std::sync::Arc::clone(&layer.self_attn_ln_bias), 1e-5)?;
         let ffn = self.feed_forward(
             &h1, &layer.fc1, &layer.fc1_bias, &layer.fc2, &layer.fc2_bias,
             cfg.encoder_ffn_dim,
         )?;
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &h1.add(&ffn)?,
-            &layer.final_ln_gain, &layer.final_ln_bias,
-            cfg.d_model, 1e-5,
-        ))
+        Ok(h1.add(&ffn)?.layer_norm_affine(std::sync::Arc::clone(&layer.final_ln_gain), std::sync::Arc::clone(&layer.final_ln_bias), 1e-5)?)
     }
 
     fn apply_decoder_layer(
@@ -382,31 +374,19 @@ impl MarianModel {
             cfg.decoder_attention_heads, cfg.decoder_head_dim(),
             Some(causal_mask),
         )?;
-        let h1 = crate::lazy::apply_affine_layer_norm_pub(
-            &x.add(&self_attn)?,
-            &layer.self_attn_ln_gain, &layer.self_attn_ln_bias,
-            cfg.d_model, 1e-5,
-        );
+        let h1 = x.add(&self_attn)?.layer_norm_affine(std::sync::Arc::clone(&layer.self_attn_ln_gain), std::sync::Arc::clone(&layer.self_attn_ln_bias), 1e-5)?;
         // Cross-attention: Q from decoder state, K/V from encoder output.
         let cross_attn = self.attention(
             &h1, enc_out, &layer.encoder_attn,
             cfg.decoder_attention_heads, cfg.decoder_head_dim(),
             None,
         )?;
-        let h2 = crate::lazy::apply_affine_layer_norm_pub(
-            &h1.add(&cross_attn)?,
-            &layer.encoder_attn_ln_gain, &layer.encoder_attn_ln_bias,
-            cfg.d_model, 1e-5,
-        );
+        let h2 = h1.add(&cross_attn)?.layer_norm_affine(std::sync::Arc::clone(&layer.encoder_attn_ln_gain), std::sync::Arc::clone(&layer.encoder_attn_ln_bias), 1e-5)?;
         let ffn = self.feed_forward(
             &h2, &layer.fc1, &layer.fc1_bias, &layer.fc2, &layer.fc2_bias,
             cfg.decoder_ffn_dim,
         )?;
-        Ok(crate::lazy::apply_affine_layer_norm_pub(
-            &h2.add(&ffn)?,
-            &layer.final_ln_gain, &layer.final_ln_bias,
-            cfg.d_model, 1e-5,
-        ))
+        Ok(h2.add(&ffn)?.layer_norm_affine(std::sync::Arc::clone(&layer.final_ln_gain), std::sync::Arc::clone(&layer.final_ln_bias), 1e-5)?)
     }
 
     /// Generic multi-head attention. `q_src` provides Q; `kv_src`

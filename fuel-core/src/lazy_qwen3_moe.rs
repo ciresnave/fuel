@@ -143,9 +143,7 @@ impl Qwen3MoeModel {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, uses_window)?;
         }
 
-        Ok(crate::lazy::apply_affine_rms_norm_pub(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        ))
+        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
     }
 
     fn build_layer_mask(&self, anchor: &LazyTensor, seq: usize, uses_window: bool) -> LazyTensor {
@@ -175,9 +173,7 @@ impl Qwen3MoeModel {
         let seq = dims[1];
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
-        let x_norm = crate::lazy::apply_affine_rms_norm_pub(
-            x, &layer.attn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
 
         let q = opt_bias(
             layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size),
@@ -198,12 +194,8 @@ impl Qwen3MoeModel {
         let v = v.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
 
         // Per-head QK-norm.
-        let q = crate::lazy::apply_affine_rms_norm_pub(
-            &q, &layer.q_norm_gain, cfg.head_dim, cfg.rms_norm_eps,
-        );
-        let k = crate::lazy::apply_affine_rms_norm_pub(
-            &k, &layer.k_norm_gain, cfg.head_dim, cfg.rms_norm_eps,
-        );
+        let q = q.rms_norm_affine(std::sync::Arc::clone(&layer.q_norm_gain), cfg.rms_norm_eps)?;
+        let k = k.rms_norm_affine(std::sync::Arc::clone(&layer.k_norm_gain), cfg.rms_norm_eps)?;
 
         let q_r = q.rope_with_tables(rope_cos, rope_sin)?;
         let k_r = k.rope_with_tables(rope_cos, rope_sin)?;
@@ -225,9 +217,7 @@ impl Qwen3MoeModel {
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size);
 
         let h1 = x.add(&attn_out)?;
-        let h1_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h1, &layer.ffn_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        );
+        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
 
         let ffn_out = self.apply_ffn(&h1_norm, &layer.ffn, batch, seq)?;
         h1.add(&ffn_out)

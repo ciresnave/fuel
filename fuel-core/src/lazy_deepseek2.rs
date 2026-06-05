@@ -228,9 +228,7 @@ impl DeepSeek2Model {
         for (idx, layer) in weights.layers.iter().enumerate() {
             h = self.apply_layer(&h, layer, idx, &rope_cos, &rope_sin)?;
         }
-        Ok(crate::lazy::apply_affine_rms_norm_pub(
-            &h, &weights.final_norm_gain, cfg.hidden_size, cfg.rms_norm_eps,
-        ))
+        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
     }
 
     fn apply_layer(
@@ -244,15 +242,11 @@ impl DeepSeek2Model {
         let cfg = &self.config;
         let h = cfg.hidden_size;
 
-        let x_norm = crate::lazy::apply_affine_rms_norm_pub(
-            x, &layer.input_norm_gain, h, cfg.rms_norm_eps,
-        );
+        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
         let attn = self.mla_attention(&x_norm, &layer.mla, rope_cos, rope_sin)?;
         let h1 = x.add(&attn)?;
 
-        let h1_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &h1, &layer.post_attn_norm_gain, h, cfg.rms_norm_eps,
-        );
+        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
         let expected_moe = cfg.layer_uses_moe(layer_idx);
         let mlp_out = match (&layer.ffn, expected_moe) {
             (DeepSeek2FfnWeights::Dense(w), false) => self.apply_dense_mlp(&h1_norm, w)?,
@@ -289,9 +283,7 @@ impl DeepSeek2Model {
             }
             DeepSeek2QProj::Lora { a, norm_gain, b } => {
                 let lo = a.apply_linear(x, cfg.hidden_size, norm_gain.len());
-                let lo_norm = crate::lazy::apply_affine_rms_norm_pub(
-                    &lo, norm_gain, norm_gain.len(), cfg.rms_norm_eps,
-                );
+                let lo_norm = lo.rms_norm_affine(Arc::clone(norm_gain), cfg.rms_norm_eps)?;
                 b.apply_linear(&lo_norm, norm_gain.len(), n_heads * q_head_dim)
             }
         };
@@ -310,10 +302,7 @@ impl DeepSeek2Model {
         // k_pe shape (b, seq, rope) → (b, 1, seq, rope) for MQA broadcast.
         let k_pe_single_h = k_pe_single.split_heads(1, rope)?;
 
-        let compressed_kv_norm = crate::lazy::apply_affine_rms_norm_pub(
-            &compressed_kv, &w.kv_a_layernorm_gain,
-            cfg.kv_lora_rank, cfg.rms_norm_eps,
-        );
+        let compressed_kv_norm = compressed_kv.rms_norm_affine(std::sync::Arc::clone(&w.kv_a_layernorm_gain), cfg.rms_norm_eps)?;
         let kv = w.kv_b_proj.apply_linear(
             &compressed_kv_norm, cfg.kv_lora_rank, n_heads * (nope + v_dim),
         );
