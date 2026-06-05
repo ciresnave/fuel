@@ -19,10 +19,13 @@ Conventions:
 
 These unblock multiple downstream model ports. Ship these first.
 
-- [ ] [Llama-3 RoPE scaling + full Llama port](port-llama-full.md)
+- [x] [Llama-3 RoPE scaling + full Llama port](shipped/port-llama-full.md)
       — `llm/llama.rs` (673 LOC). Needs Llama-3 per-band frequency
       scaling. Foundation for LLaVA composition and any future
-      Llama-3.1+ multimodal.
+      Llama-3.1+ multimodal. **Shipped** in commit (lazy_llama_full
+      with LlamaFullConfig + Llama3RopeConfig + LlamaEosToks +
+      Llama3Model + build_llama3_rope_tables; injected via
+      LlamaModel::run_backbone_with_rope_tables hook; 9 tests).
 - [ ] [Llama2.c binary weight loader](port-llama2-c-weights.md)
       — `llm/llama2_c_weights.rs` (239 LOC). Karpathy binary format
       I/O. Trivial but completes the llama2c story.
