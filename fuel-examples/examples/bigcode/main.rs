@@ -1,4 +1,4 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
@@ -6,80 +6,11 @@ extern crate accelerate_src;
 
 use anyhow::{Error as E, Result};
 use clap::Parser;
+use std::io::Write;
 
-use fuel_transformers::models::bigcode::{Config, GPTBigCode};
-
-use fuel::{DType, Device, Tensor};
-use fuel_nn::VarBuilder;
-use fuel_transformers::generation::LogitsProcessor;
+use fuel::lazy_bigcode::{BigCodeConfig, BigCodeModel, BigCodeWeights};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
-
-struct TextGeneration {
-    model: GPTBigCode,
-    device: Device,
-    tokenizer: Tokenizer,
-    logits_processor: LogitsProcessor,
-}
-
-impl TextGeneration {
-    fn new(
-        model: GPTBigCode,
-        tokenizer: Tokenizer,
-        seed: u64,
-        temp: Option<f64>,
-        top_p: Option<f64>,
-        device: &Device,
-    ) -> Self {
-        let logits_processor = LogitsProcessor::new(seed, temp, top_p);
-        Self {
-            model,
-            tokenizer,
-            logits_processor,
-            device: device.clone(),
-        }
-    }
-
-    fn run(&mut self, prompt: &str, sample_len: usize) -> Result<()> {
-        use std::io::Write;
-        println!("starting the inference loop");
-        print!("{prompt}");
-        std::io::stdout().flush()?;
-        let mut tokens = self
-            .tokenizer
-            .encode(prompt, true)
-            .map_err(E::msg)?
-            .get_ids()
-            .to_vec();
-
-        let mut new_tokens = vec![];
-        let start_gen = std::time::Instant::now();
-        for index in 0..sample_len {
-            let (context_size, past_len) = if self.model.config().use_cache && index > 0 {
-                (1, tokens.len().saturating_sub(1))
-            } else {
-                (tokens.len(), 0)
-            };
-            let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
-            let input = Tensor::new(ctxt, &self.device)?.unsqueeze(0)?;
-            let logits = self.model.forward(&input, past_len)?;
-            let logits = logits.squeeze(0)?.to_dtype(DType::F32)?;
-
-            let next_token = self.logits_processor.sample(&logits)?;
-            tokens.push(next_token);
-            new_tokens.push(next_token);
-            let token = self.tokenizer.decode(&[next_token], true).map_err(E::msg)?;
-            print!("{token}");
-            std::io::stdout().flush()?;
-        }
-        let dt = start_gen.elapsed();
-        println!(
-            "{sample_len} tokens generated ({:.3} token/s)",
-            sample_len as f64 / dt.as_secs_f64(),
-        );
-        Ok(())
-    }
-}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -119,6 +50,7 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    let _ = fuel_examples::device(args.cpu)?;
 
     let start = std::time::Instant::now();
     let api = Api::new()?;
@@ -139,20 +71,115 @@ fn main() -> Result<()> {
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
 
     let start = std::time::Instant::now();
-    let device = fuel_examples::device(args.cpu)?;
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, DType::F32, &device)? };
-    let config = Config::starcoder_1b();
-    let model = GPTBigCode::load(vb, config)?;
+    let config = BigCodeConfig::starcoder_1b();
+    let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
+        .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+    let weights = BigCodeWeights::load_from_mmapped(&st, &config)
+        .map_err(|e| E::msg(format!("load weights: {e}")))?;
+    let model = BigCodeModel { config: config.clone(), weights };
     println!("loaded the model in {:?}", start.elapsed());
 
-    let mut pipeline = TextGeneration::new(
-        model,
-        tokenizer,
-        args.seed,
-        args.temperature,
-        args.top_p,
-        &device,
+    print!("{}", args.prompt);
+    std::io::stdout().flush()?;
+    let mut tokens = tokenizer
+        .encode(args.prompt.clone(), true)
+        .map_err(E::msg)?
+        .get_ids()
+        .to_vec();
+
+    let start_gen = std::time::Instant::now();
+    for index in 0..args.sample_len {
+        let logits = model
+            .forward(&tokens, 0)
+            .map_err(|e| E::msg(format!("forward: {e}")))?;
+        let logits_data = logits.realize_f32();
+        let vocab_size = config.vocab_size;
+        let seq = tokens.len();
+        let last_off = (seq - 1) * vocab_size;
+        let last_logits: Vec<f32> = logits_data[last_off..last_off + vocab_size].to_vec();
+        let next_token = sample(
+            &last_logits,
+            args.temperature.map(|t| t as f32).unwrap_or(0.0),
+            args.top_p.map(|p| p as f32),
+            args.seed.wrapping_add(index as u64),
+        );
+        tokens.push(next_token);
+        let token = tokenizer.decode(&[next_token], true).map_err(E::msg)?;
+        print!("{token}");
+        std::io::stdout().flush()?;
+    }
+    let dt = start_gen.elapsed();
+    println!(
+        "\n{} tokens generated ({:.3} token/s)",
+        args.sample_len,
+        args.sample_len as f64 / dt.as_secs_f64(),
     );
-    pipeline.run(&args.prompt, args.sample_len)?;
     Ok(())
+}
+
+fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u32 {
+    if temperature <= 0.0 {
+        let mut best_i = 0usize;
+        let mut best = logits[0];
+        for (i, &v) in logits.iter().enumerate().skip(1) {
+            if v > best {
+                best = v;
+                best_i = i;
+            }
+        }
+        return best_i as u32;
+    }
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let inv_t = 1.0 / temperature.max(1e-6);
+    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    for p in &mut probs {
+        *p /= sum.max(1e-30);
+    }
+    let mut idx: Vec<usize> = (0..probs.len()).collect();
+    idx.sort_unstable_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap());
+    let mut keep_mask: Vec<bool> = vec![true; probs.len()];
+    if let Some(p_cut) = top_p {
+        let mut cum2 = 0.0;
+        let mut allow = true;
+        for &i in &idx {
+            if !keep_mask[i] {
+                continue;
+            }
+            if !allow {
+                keep_mask[i] = false;
+                continue;
+            }
+            cum2 += probs[i];
+            if cum2 >= p_cut {
+                allow = false;
+            }
+        }
+    }
+    let mut filtered: Vec<f32> = probs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| if keep_mask[i] { *p } else { 0.0 })
+        .collect();
+    let s: f32 = filtered.iter().sum();
+    if s > 0.0 {
+        for v in &mut filtered {
+            *v /= s;
+        }
+    } else {
+        return 0;
+    }
+    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    state ^= state >> 33;
+    state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    state ^= state >> 33;
+    let r = (state as f32) / (u64::MAX as f32);
+    let mut cum = 0.0;
+    for (i, p) in filtered.iter().enumerate() {
+        cum += *p;
+        if r <= cum {
+            return i as u32;
+        }
+    }
+    (filtered.len() - 1) as u32
 }

@@ -1,4 +1,4 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
@@ -6,107 +6,11 @@ extern crate accelerate_src;
 
 use anyhow::{Error as E, Result};
 use clap::Parser;
+use std::io::Write;
 
-use fuel_transformers::models::chatglm::{Config, Model};
-
-use fuel::{DType, Device, Tensor};
-use fuel_nn::VarBuilder;
-use fuel_transformers::generation::LogitsProcessor;
+use fuel::lazy_chatglm::{ChatGlmConfig, ChatGlmModel, ChatGlmWeights};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
-
-struct TextGeneration {
-    model: Model,
-    device: Device,
-    tokenizer: Tokenizer,
-    logits_processor: LogitsProcessor,
-    repeat_penalty: f32,
-    repeat_last_n: usize,
-    verbose_prompt: bool,
-}
-
-impl TextGeneration {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        model: Model,
-        tokenizer: Tokenizer,
-        seed: u64,
-        temp: Option<f64>,
-        top_p: Option<f64>,
-        repeat_penalty: f32,
-        repeat_last_n: usize,
-        verbose_prompt: bool,
-        device: &Device,
-    ) -> Self {
-        let logits_processor = LogitsProcessor::new(seed, temp, top_p);
-        Self {
-            model,
-            tokenizer,
-            logits_processor,
-            repeat_penalty,
-            repeat_last_n,
-            verbose_prompt,
-            device: device.clone(),
-        }
-    }
-
-    fn run(&mut self, prompt: &str, sample_len: usize) -> Result<()> {
-        use std::io::Write;
-        println!("starting the inference loop");
-        let tokens = self.tokenizer.encode(prompt, true).map_err(E::msg)?;
-        if tokens.is_empty() {
-            anyhow::bail!("Empty prompts are not supported in the chatglm model.")
-        }
-        if self.verbose_prompt {
-            for (token, id) in tokens.get_tokens().iter().zip(tokens.get_ids().iter()) {
-                let token = token.replace('▁', " ").replace("<0x0A>", "\n");
-                println!("{id:7} -> '{token}'");
-            }
-        }
-        let mut tokens = tokens.get_ids().to_vec();
-        let mut generated_tokens = 0usize;
-        let eos_token = match self.tokenizer.get_vocab(true).get("</s>") {
-            Some(token) => *token,
-            None => anyhow::bail!("cannot find the endoftext token"),
-        };
-        print!("{prompt}");
-        std::io::stdout().flush()?;
-        let start_gen = std::time::Instant::now();
-        for index in 0..sample_len {
-            let context_size = if index > 0 { 1 } else { tokens.len() };
-            let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
-            let input = Tensor::new(ctxt, &self.device)?.unsqueeze(0)?;
-            let logits = self.model.forward(&input)?;
-            let logits = logits.squeeze(0)?.to_dtype(DType::F32)?;
-            let logits = if self.repeat_penalty == 1. {
-                logits
-            } else {
-                let start_at = tokens.len().saturating_sub(self.repeat_last_n);
-                fuel_transformers::utils::apply_repeat_penalty(
-                    &logits,
-                    self.repeat_penalty,
-                    &tokens[start_at..],
-                )?
-            };
-
-            let next_token = self.logits_processor.sample(&logits)?;
-            tokens.push(next_token);
-            generated_tokens += 1;
-            if next_token == eos_token {
-                break;
-            }
-            let token = self.tokenizer.decode(&[next_token], true).map_err(E::msg)?;
-            print!("{token}");
-            std::io::stdout().flush()?;
-        }
-        let dt = start_gen.elapsed();
-        println!(
-            "\n{generated_tokens} tokens generated ({:.2} token/s)",
-            generated_tokens as f64 / dt.as_secs_f64(),
-        );
-        Ok(())
-    }
-}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -175,19 +79,8 @@ fn main() -> Result<()> {
     } else {
         None
     };
-    println!(
-        "avx: {}, neon: {}, simd128: {}, f16c: {}",
-        fuel::utils::with_avx(),
-        fuel::utils::with_neon(),
-        fuel::utils::with_simd128(),
-        fuel::utils::with_f16c()
-    );
-    println!(
-        "temp: {:.2} repeat-penalty: {:.2} repeat-last-n: {}",
-        args.temperature.unwrap_or(0.),
-        args.repeat_penalty,
-        args.repeat_last_n
-    );
+
+    let _device = fuel_examples::device(args.cpu)?;
 
     let start = std::time::Instant::now();
     let api = Api::new()?;
@@ -214,24 +107,148 @@ fn main() -> Result<()> {
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
 
     let start = std::time::Instant::now();
-    let config = Config::glm3_6b();
-    let device = fuel_examples::device(args.cpu)?;
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, DType::F32, &device)? };
-    let model = Model::new(&config, vb)?;
-
+    let config = ChatGlmConfig::glm3_6b();
+    let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
+        .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+    let weights = ChatGlmWeights::load_from_mmapped(&st, &config)
+        .map_err(|e| E::msg(format!("load weights: {e}")))?;
+    let model = ChatGlmModel { config: config.clone(), weights };
     println!("loaded the model in {:?}", start.elapsed());
 
-    let mut pipeline = TextGeneration::new(
-        model,
-        tokenizer,
-        args.seed,
-        args.temperature,
-        args.top_p,
-        args.repeat_penalty,
-        args.repeat_last_n,
-        args.verbose_prompt,
-        &device,
+    println!("starting the inference loop");
+    let tokens = tokenizer.encode(args.prompt.as_str(), true).map_err(E::msg)?;
+    if tokens.is_empty() {
+        anyhow::bail!("Empty prompts are not supported in the chatglm model.")
+    }
+    if args.verbose_prompt {
+        for (token, id) in tokens.get_tokens().iter().zip(tokens.get_ids().iter()) {
+            let token = token.replace('\u{2581}', " ").replace("<0x0A>", "\n");
+            println!("{id:7} -> '{token}'");
+        }
+    }
+    let mut tokens = tokens.get_ids().to_vec();
+    let mut generated_tokens = 0usize;
+    let eos_token = match tokenizer.get_vocab(true).get("</s>") {
+        Some(token) => *token,
+        None => anyhow::bail!("cannot find the endoftext token"),
+    };
+    print!("{}", args.prompt);
+    std::io::stdout().flush()?;
+
+    let start_gen = std::time::Instant::now();
+    for index in 0..args.sample_len {
+        let logits = model
+            .forward(&tokens, 0)
+            .map_err(|e| E::msg(format!("forward: {e}")))?;
+        let logits_data = logits.realize_f32();
+        let vocab_size = config.padded_vocab_size;
+        let seq = tokens.len();
+        let last_off = (seq - 1) * vocab_size;
+        let mut last_logits: Vec<f32> = logits_data[last_off..last_off + vocab_size].to_vec();
+        if args.repeat_penalty != 1.0 {
+            let start_at = tokens.len().saturating_sub(args.repeat_last_n);
+            apply_repeat_penalty(&mut last_logits, args.repeat_penalty, &tokens[start_at..]);
+        }
+        let next_token = sample(
+            &last_logits,
+            args.temperature.map(|t| t as f32).unwrap_or(0.0),
+            args.top_p.map(|p| p as f32),
+            args.seed.wrapping_add(index as u64),
+        );
+        tokens.push(next_token);
+        generated_tokens += 1;
+        if next_token == eos_token {
+            break;
+        }
+        let token = tokenizer.decode(&[next_token], true).map_err(E::msg)?;
+        print!("{token}");
+        std::io::stdout().flush()?;
+    }
+    let dt = start_gen.elapsed();
+    println!(
+        "\n{generated_tokens} tokens generated ({:.2} token/s)",
+        generated_tokens as f64 / dt.as_secs_f64(),
     );
-    pipeline.run(&args.prompt, args.sample_len)?;
     Ok(())
+}
+
+fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
+    let mut seen = std::collections::HashSet::new();
+    for &t in context {
+        if !seen.insert(t) {
+            continue;
+        }
+        let idx = t as usize;
+        if idx < logits.len() {
+            let v = logits[idx];
+            logits[idx] = if v >= 0.0 { v / penalty } else { v * penalty };
+        }
+    }
+}
+
+fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u32 {
+    if temperature <= 0.0 {
+        let mut best_i = 0usize;
+        let mut best = logits[0];
+        for (i, &v) in logits.iter().enumerate().skip(1) {
+            if v > best {
+                best = v;
+                best_i = i;
+            }
+        }
+        return best_i as u32;
+    }
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let inv_t = 1.0 / temperature.max(1e-6);
+    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    for p in &mut probs {
+        *p /= sum.max(1e-30);
+    }
+    let mut idx: Vec<usize> = (0..probs.len()).collect();
+    idx.sort_unstable_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap());
+    let mut keep_mask: Vec<bool> = vec![true; probs.len()];
+    if let Some(p_cut) = top_p {
+        let mut cum2 = 0.0;
+        let mut allow = true;
+        for &i in &idx {
+            if !keep_mask[i] {
+                continue;
+            }
+            if !allow {
+                keep_mask[i] = false;
+                continue;
+            }
+            cum2 += probs[i];
+            if cum2 >= p_cut {
+                allow = false;
+            }
+        }
+    }
+    let mut filtered: Vec<f32> = probs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| if keep_mask[i] { *p } else { 0.0 })
+        .collect();
+    let s: f32 = filtered.iter().sum();
+    if s > 0.0 {
+        for v in &mut filtered {
+            *v /= s;
+        }
+    } else {
+        return 0;
+    }
+    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    state ^= state >> 33;
+    state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    state ^= state >> 33;
+    let r = (state as f32) / (u64::MAX as f32);
+    let mut cum = 0.0;
+    for (i, p) in filtered.iter().enumerate() {
+        cum += *p;
+        if r <= cum {
+            return i as u32;
+        }
+    }
+    (filtered.len() - 1) as u32
 }
