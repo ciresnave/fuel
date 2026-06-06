@@ -7,16 +7,31 @@
 //! shape for `LazyTensor` so downstream lazy ports can build their
 //! layer graphs out of named building blocks rather than ad-hoc
 //! per-port helpers.
-//!
-//! Sub-port 1: `LazyModule` trait + `LazyLinear` + `LazyEmbedding`.
-//! Conv / norm / activation / sequential / lora / moe / sampling
-//! ship as separate sub-ports.
 
+pub mod activation;
+pub mod conv;
 pub mod embedding;
+pub mod init;
 pub mod linear;
+pub mod lora;
+pub mod moe;
+pub mod norm;
+pub mod quantizable_linear;
+pub mod sampling;
+pub mod sequential;
 
+pub use activation::{
+    LazyElu, LazyGelu, LazyGeluPytorchTanh, LazyLeakyRelu, LazyRelu, LazySigmoid, LazySilu,
+    LazyTanh,
+};
+pub use conv::{LazyConv1d, LazyConv1dConfig, LazyConv2d, LazyConv2dConfig};
 pub use embedding::LazyEmbedding;
 pub use linear::LazyLinear;
+pub use lora::LazyLoraLinear;
+pub use moe::{LazyMoeExpert, LazyMoeLayer, LazyMoeRouter};
+pub use norm::{LazyBatchNorm2d, LazyGroupNorm, LazyLayerNorm, LazyRmsNorm};
+pub use quantizable_linear::LazyQuantizableLinear;
+pub use sequential::LazySequential;
 
 use crate::Result;
 use crate::lazy::LazyTensor;
