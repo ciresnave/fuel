@@ -328,6 +328,110 @@ fn swish(x: &LazyTensor) -> Result<LazyTensor> {
     Ok(x.silu())
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+/// Load ConvBN from `prefix` where the conv weight sits at `{prefix}.0.weight`
+/// and BN parameters at `{prefix}.1.{weight,bias,running_mean,running_var}`.
+fn load_conv_bn(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    c_in: usize, c_out: usize, kernel: usize, stride: usize, groups: usize,
+    bn_eps: f64,
+) -> Result<ConvBN> {
+    use crate::lazy::load_tensor_as_f32;
+    let w = WeightStorage::F32(Arc::from(
+        load_tensor_as_f32(st, &format!("{prefix}.0.weight"))?,
+    ));
+    let gain = load_tensor_as_f32(st, &format!("{prefix}.1.weight"))?;
+    let bias = load_tensor_as_f32(st, &format!("{prefix}.1.bias"))?;
+    let mean = load_tensor_as_f32(st, &format!("{prefix}.1.running_mean"))?;
+    let var = load_tensor_as_f32(st, &format!("{prefix}.1.running_var"))?;
+    let bn = BatchNormParams::from_raw(&gain, &bias, &mean, &var, bn_eps);
+    Ok(ConvBN { w, bn, c_in, c_out, kernel, stride, groups })
+}
+
+fn load_conv_bias(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str, c_in: usize, c_out: usize,
+) -> Result<ConvBias> {
+    use crate::lazy::load_tensor_as_f32;
+    let w = WeightStorage::F32(Arc::from(
+        load_tensor_as_f32(st, &format!("{prefix}.weight"))?,
+    ));
+    let b = Arc::from(load_tensor_as_f32(st, &format!("{prefix}.bias"))?);
+    Ok(ConvBias { w, b, c_in, c_out })
+}
+
+impl EfficientNetWeights {
+    /// Load EfficientNet (torchvision "efficientnet_b{0..7}") weights from HF
+    /// safetensors. Follows torchvision Sequential indexing for ConvBNActivation.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &EfficientNetConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let bn_eps = cfg.bn_eps;
+        let first_in = 3;
+        let first_out = cfg.stages[0].input_channels;
+
+        // features.0 = init ConvBNActivation(3, first_out)
+        let init_cna = load_conv_bn(st, "features.0", first_in, first_out, 3, 2, 1, bn_eps)?;
+
+        let mut blocks = Vec::new();
+        // features.1..7 = MBConv stages.
+        for (s, stage) in cfg.stages.iter().enumerate() {
+            let stage_idx = s + 1;
+            let mut in_c = stage.input_channels;
+            for li in 0..stage.num_layers {
+                let stride = if li == 0 { stage.stride } else { 1 };
+                let out_c = stage.out_channels;
+                let exp_c = (in_c as f64 * stage.expand_ratio).round() as usize;
+                let p = format!("features.{stage_idx}.{li}.block");
+                let expand = if (stage.expand_ratio - 1.0).abs() > 1e-6 {
+                    Some(load_conv_bn(st, &format!("{p}.0"), in_c, exp_c, 1, 1, 1, bn_eps)?)
+                } else { None };
+                // depthwise index: 0 if no expand, 1 if expand
+                let dw_idx = if expand.is_some() { 1 } else { 0 };
+                let depthwise = load_conv_bn(
+                    st, &format!("{p}.{dw_idx}"),
+                    exp_c, exp_c, stage.kernel, stride, exp_c, bn_eps,
+                )?;
+                // SE module after depthwise.
+                let se_idx = dw_idx + 1;
+                let se_c = (in_c / 4).max(1);
+                let se_fc1 = load_conv_bias(
+                    st, &format!("{p}.{se_idx}.fc1"), exp_c, se_c,
+                )?;
+                let se_fc2 = load_conv_bias(
+                    st, &format!("{p}.{se_idx}.fc2"), se_c, exp_c,
+                )?;
+                let se = SqueezeExciteWeights { fc1: se_fc1, fc2: se_fc2 };
+                // Project ConvBN at last index.
+                let proj_idx = se_idx + 1;
+                let project = load_conv_bn(
+                    st, &format!("{p}.{proj_idx}"), exp_c, out_c, 1, 1, 1, bn_eps,
+                )?;
+                blocks.push(MBConvWeights {
+                    expand, depthwise, se, project, config: *stage,
+                });
+                in_c = out_c;
+            }
+        }
+
+        // features.8 = final ConvBNActivation(last_out, final_channels)
+        let last_stage_out = cfg.stages.last().unwrap().out_channels;
+        let final_cna = load_conv_bn(
+            st, "features.8", last_stage_out, cfg.final_channels, 1, 1, 1, bn_eps,
+        )?;
+
+        let classifier_w = ltm(st, "classifier.1.weight", cfg.nclasses, cfg.final_channels)?;
+        let classifier_b = Arc::from(load_tensor_as_f32(st, "classifier.1.bias")
+            .unwrap_or_else(|_| vec![0.0_f32; cfg.nclasses]));
+
+        Ok(Self { init_cna, blocks, final_cna, classifier_w, classifier_b })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

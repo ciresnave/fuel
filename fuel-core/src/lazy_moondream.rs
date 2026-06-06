@@ -359,6 +359,25 @@ fn activate(x: &LazyTensor, kind: MoondreamActivation) -> LazyTensor {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl MoondreamWeights {
+    /// Load Moondream (vikhyatk/moondream{1,2}) weights from HF safetensors.
+    /// Moondream composes a SigLIP-like vision encoder with a Phi-2 text
+    /// decoder; this loader stub is pending the multimodal projector mapping.
+    pub fn load_from_mmapped(
+        _st: &crate::safetensors::MmapedSafetensors,
+        _cfg: &MoondreamConfig,
+    ) -> crate::Result<Self> {
+        Err(crate::Error::Msg(
+            "MoondreamWeights::load_from_mmapped: vision+projector+text \
+             composition pending; construct MoondreamWeights via explicit \
+             struct literal or contribute the loader."
+            .to_string()
+        ).bt())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

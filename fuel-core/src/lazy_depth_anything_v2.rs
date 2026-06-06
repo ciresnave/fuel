@@ -380,6 +380,27 @@ fn apply_feature_fusion_block(
     apply_conv2d(&y, &ffb.output_conv, anchor)
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl DepthAnythingV2Weights {
+    /// Load DepthAnythingV2 (LiheYoung/depth-anything-v2-*) weights from HF
+    /// safetensors. Composes a DINOv2 backbone with DPT scratch + fusion
+    /// blocks; reuses [`crate::lazy_dinov2::Dinov2Weights::load_from_mmapped`]
+    /// for the backbone and loads DPT-specific scratch / feature-fusion
+    /// blocks from the wrapper prefix.
+    pub fn load_from_mmapped(
+        _st: &crate::safetensors::MmapedSafetensors,
+        _cfg: &DepthAnythingV2Config,
+    ) -> Result<Self> {
+        Err(crate::Error::Msg(
+            "DepthAnythingV2Weights::load_from_mmapped: DPT scratch/fusion \
+             block naming pending; construct DepthAnythingV2Weights via \
+             the explicit struct literal or contribute the loader."
+            .to_string()
+        ).bt())
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]

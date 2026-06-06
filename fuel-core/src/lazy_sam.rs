@@ -1685,6 +1685,48 @@ impl SamModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl SamImageEncoderWeights {
+    /// Load SAM image encoder (Meta SAM ViT-B/L/H) from HF safetensors.
+    /// Stub: ViT backbone naming pending.
+    pub fn load_from_mmapped(
+        _st: &crate::safetensors::MmapedSafetensors,
+        _cfg: &SamImageEncoderConfig,
+    ) -> Result<Self> {
+        Err(crate::Error::Msg(
+            "SamImageEncoderWeights::load_from_mmapped: HF SAM checkpoint \
+             tensor naming pending; construct via explicit struct literal \
+             or contribute the loader."
+            .to_string()
+        ).bt())
+    }
+}
+
+impl SamPromptEncoderWeights {
+    pub fn load_from_mmapped(
+        _st: &crate::safetensors::MmapedSafetensors,
+        _cfg: &SamPromptEncoderConfig,
+    ) -> Result<Self> {
+        Err(crate::Error::Msg(
+            "SamPromptEncoderWeights::load_from_mmapped: pending — see lazy_sam."
+            .to_string()
+        ).bt())
+    }
+}
+
+impl SamMaskDecoderWeights {
+    pub fn load_from_mmapped(
+        _st: &crate::safetensors::MmapedSafetensors,
+        _cfg: &SamMaskDecoderConfig,
+    ) -> Result<Self> {
+        Err(crate::Error::Msg(
+            "SamMaskDecoderWeights::load_from_mmapped: pending — see lazy_sam."
+            .to_string()
+        ).bt())
+    }
+}
+
 // ---- Tests ---------------------------------------------------------------
 
 #[cfg(test)]

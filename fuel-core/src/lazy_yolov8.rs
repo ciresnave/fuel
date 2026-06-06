@@ -769,6 +769,25 @@ impl YoloV8Weights {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl YoloV8Weights {
+    /// Load YOLOv8 (Ultralytics yolov8{n,s,m,l,x}.pt converted to safetensors)
+    /// from HF safetensors. Detection head + C2f/SPPF blocks have nested
+    /// per-scale naming; canonical mapping is pending.
+    pub fn load_from_mmapped(
+        _st: &crate::safetensors::MmapedSafetensors,
+        _cfg: &YoloV8Config,
+    ) -> crate::Result<Self> {
+        Err(crate::Error::Msg(
+            "YoloV8Weights::load_from_mmapped: detection-head + multi-scale \
+             C2f/SPPF naming pending; construct YoloV8Weights via the \
+             explicit struct literal or contribute the loader."
+            .to_string()
+        ).bt())
+    }
+}
+
 // ---- Tests ----------------------------------------------------------------
 
 #[cfg(test)]

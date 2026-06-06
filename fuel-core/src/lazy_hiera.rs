@@ -348,6 +348,87 @@ fn apply_layer_norm_last(
 }
 
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl HieraWeights {
+    /// Load Hiera (timm "hiera_{tiny,small,base,base_plus,large,huge}_224")
+    /// weights from HF safetensors. Uses the upstream block-schedule derivation
+    /// to figure out per-block dims at load time.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &HieraConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+
+        let conv_w = Arc::from(load_tensor_as_f32(
+            st, "patch_embed.proj.weight",
+        )?);
+        let conv_b = Arc::from(load_tensor_as_f32(
+            st, "patch_embed.proj.bias",
+        )?);
+        let pos_embed = Arc::from(load_tensor_as_f32(st, "pos_embed")?);
+        let embed = HieraEmbeddingWeights { conv_w, conv_b, pos_embed };
+
+        let load_ln = |prefix: &str| -> Result<LayerNormWeights> {
+            Ok(LayerNormWeights {
+                gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.weight"))?),
+                bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.bias"))?),
+            })
+        };
+
+        let load_linear = |prefix: &str, in_f: usize, out_f: usize| -> Result<LinearWeights> {
+            let w = ltm(st, &format!("{prefix}.weight"), out_f, in_f)?;
+            let b = Arc::from(load_tensor_as_f32(st, &format!("{prefix}.bias"))?);
+            Ok(LinearWeights { w, b, in_features: in_f, out_features: out_f })
+        };
+
+        let schedule = block_schedule(cfg);
+        let mut blocks = Vec::with_capacity(schedule.len());
+        for (i, sched) in schedule.iter().enumerate() {
+            let p = format!("blocks.{i}");
+            let norm1 = load_ln(&format!("{p}.norm1"))?;
+            let norm2 = load_ln(&format!("{p}.norm2"))?;
+            let proj = if sched.in_channels != sched.out_channels {
+                Some(load_linear(
+                    &format!("{p}.proj"), sched.in_channels, sched.out_channels,
+                )?)
+            } else { None };
+            let qkv = load_linear(
+                &format!("{p}.attn.qkv"), sched.out_channels, 3 * sched.out_channels,
+            )?;
+            let attn_proj = load_linear(
+                &format!("{p}.attn.proj"), sched.out_channels, sched.out_channels,
+            )?;
+            let mlp_fc1 = load_linear(
+                &format!("{p}.mlp.fc1"), sched.out_channels, sched.out_channels * 4,
+            )?;
+            let mlp_fc2 = load_linear(
+                &format!("{p}.mlp.fc2"), sched.out_channels * 4, sched.out_channels,
+            )?;
+            blocks.push(HieraBlockWeights {
+                norm1, norm2, proj, qkv, attn_proj, mlp_fc1, mlp_fc2,
+                heads: sched.heads,
+                in_channels: sched.in_channels,
+                out_channels: sched.out_channels,
+                q_stride: sched.q_stride,
+                window_size: sched.window_size,
+                use_mask_attention: sched.use_mask_attention,
+            });
+        }
+
+        let head = if let Some(nc) = cfg.num_classes {
+            let last = blocks.last().map(|b| b.out_channels).unwrap_or(cfg.channels);
+            Some(HieraHeadWeights {
+                norm: load_ln("norm")?,
+                fc: load_linear("head.fc", last, nc)?,
+            })
+        } else { None };
+
+        Ok(Self { embed, blocks, head })
+    }
+}
+
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
