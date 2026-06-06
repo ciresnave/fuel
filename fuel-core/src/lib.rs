@@ -142,6 +142,7 @@ pub mod lazy_mobilenetv4;
 pub mod lazy_mobileone;
 pub mod lazy_moondream;
 pub mod lazy_mpt;
+pub mod lazy_musicgen;
 pub mod lazy_nn;
 pub mod lazy_nn_loss;
 pub mod lazy_nn_optim;
@@ -202,6 +203,7 @@ pub mod lazy_sd_vae;
 pub mod lazy_whisper;
 pub mod lazy_whisper_audio;
 pub mod lazy_wuerstchen;
+pub mod lazy_yolov3;
 pub mod lazy_yolov8;
 pub mod layout;
 // `seq_bucketing` removed in Phase 6d: paged attention via

@@ -520,6 +520,232 @@ pub fn chunked_band_mask_values(t_seq: usize, chunk_size: usize, left_chunks: us
     out
 }
 
+// ---- Safetensors loader ----------------------------------------------------
+
+impl Gemma4AudioWeights {
+    /// Load Gemma 4 audio-tower weights from a `MmapedSafetensors`
+    /// file using HuggingFace's `<prefix>` naming. The prefix is
+    /// usually `"audio_tower."` inside a full Gemma 4 multimodal
+    /// checkpoint, or empty when loading a stand-alone audio tower.
+    ///
+    /// Tensor names mirrored from
+    /// `fuel_transformers::models::llm::gemma4::audio`:
+    ///   - `<prefix>subsample_conv_projection.layer{0,1}.conv.weight`
+    ///     (`[Cout, Cin, K, K]` — no transposition, loaded as F32).
+    ///     The SSCP block's LayerNorm has no learnable parameters in
+    ///     eager, so the lazy `norm_gain` / `norm_bias` are
+    ///     synthesised as `1.0` / `0.0`.
+    ///   - `<prefix>subsample_conv_projection.input_proj_linear.weight`
+    ///     (HF `[hidden_size, Cout * F_out]`, transposed).
+    ///   - `<prefix>conformer.{i}.feed_forward1.{pre,post}_layer_norm.weight`
+    ///   - `<prefix>conformer.{i}.feed_forward1.ffw_layer_{1,2}.weight`
+    ///   - `<prefix>conformer.{i}.feed_forward2.*` (mirror of feed_forward1)
+    ///   - `<prefix>conformer.{i}.norm_pre_attn.weight`,
+    ///     `<prefix>conformer.{i}.norm_post_attn.weight`
+    ///   - `<prefix>conformer.{i}.self_attn.{q,k,v}_proj.weight`,
+    ///     `<prefix>conformer.{i}.self_attn.post.weight` (mapped to
+    ///     `attn_o`)
+    ///   - `<prefix>conformer.{i}.lconv1d.pre_layer_norm.weight`,
+    ///     `<prefix>conformer.{i}.lconv1d.conv_norm.weight`
+    ///   - `<prefix>conformer.{i}.lconv1d.linear_{start,end}.weight`
+    ///   - `<prefix>conformer.{i}.lconv1d.depthwise_conv1d.weight`
+    ///     (`[hidden_size, 1, K]` — no transposition).
+    ///   - `<prefix>conformer.{i}.norm_out.weight` → `out_norm`
+    ///   - `<prefix>output_proj.weight` (optional, transposed)
+    ///
+    /// The lazy port uses a **Shaw-style learnable rel-pos bias
+    /// table** (`[2*max_rel + 1, num_heads]`) while the eager
+    /// reference uses a sinusoidal relative-position scheme with a
+    /// `relative_k_proj`. There is no HF tensor matching the lazy
+    /// scheme, so `rel_pos_bias` is initialised to zeros — bit-exact
+    /// parity with eager checkpoints isn't expected for v1.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Gemma4AudioConfig,
+    ) -> Result<Self> {
+        Self::load_from_mmapped_with_prefix(st, cfg, "")
+    }
+
+    /// Prefix-aware variant of [`Self::load_from_mmapped`]. Pass
+    /// `"audio_tower."` (note the trailing dot) when loading from a
+    /// full Gemma 4 multimodal checkpoint.
+    pub fn load_from_mmapped_with_prefix(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Gemma4AudioConfig,
+        prefix: &str,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+
+        let h = cfg.hidden_size;
+        let n_heads = cfg.conf_num_attention_heads;
+        let head_dim = cfg.head_dim();
+        let q_dim = n_heads * head_dim;
+        let k_lc = cfg.conf_conv_kernel_size;
+        let span = 2 * cfg.max_rel() + 1;
+
+        // ---- SSCP front-end -------------------------------------------------
+        let mut sscp_blocks: Vec<SscpBlockWeights> = Vec::with_capacity(2);
+        let mut current_f = cfg.input_feat_size;
+        for i in 0..2 {
+            let cin = if i == 0 { 1 } else { cfg.sscp_conv_channel_size[i - 1] };
+            let cout = cfg.sscp_conv_channel_size[i];
+            let kt = cfg.sscp_conv_kernel_size[i][0];
+            let kf = cfg.sscp_conv_kernel_size[i][1];
+            let conv_flat = load_tensor_as_f32(
+                st,
+                &format!("{prefix}subsample_conv_projection.layer{i}.conv.weight"),
+            )?;
+            let expected = cout * cin * kt * kf;
+            if conv_flat.len() != expected {
+                crate::bail!(
+                    "{prefix}subsample_conv_projection.layer{i}.conv.weight: \
+                     {} elts, expected {} ({}×{}×{}×{})",
+                    conv_flat.len(), expected, cout, cin, kt, kf,
+                );
+            }
+            sscp_blocks.push(SscpBlockWeights {
+                conv: WeightStorage::F32(Arc::from(conv_flat)),
+                norm_gain: Arc::from(vec![1.0_f32; cout]),
+                norm_bias: Arc::from(vec![0.0_f32; cout]),
+            });
+            // Track f_out for the input_proj sanity check.
+            let kf_i = cfg.sscp_conv_kernel_size[i][1];
+            let sf_i = cfg.sscp_conv_stride_size[i][1];
+            current_f = (current_f + 2 - kf_i) / sf_i + 1;
+        }
+        let final_c_out = cfg.sscp_conv_channel_size[1];
+        let final_f_out = current_f;
+        let sscp_input_proj = load_transposed_matrix_preserve_dtype(
+            st,
+            &format!("{prefix}subsample_conv_projection.input_proj_linear.weight"),
+            h,
+            final_c_out * final_f_out,
+        )?;
+
+        // ---- Conformer layers ----------------------------------------------
+        let mut layers: Vec<ConformerLayerWeights> =
+            Vec::with_capacity(cfg.conf_num_hidden_layers);
+        for li in 0..cfg.conf_num_hidden_layers {
+            let p = format!("{prefix}conformer.{li}");
+
+            // FF1
+            let ff1_pre_norm = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.feed_forward1.pre_layer_norm.weight"))?,
+            );
+            let ff1_post_norm = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.feed_forward1.post_layer_norm.weight"))?,
+            );
+            let ff1_w1 = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.feed_forward1.ffw_layer_1.weight"), h * 4, h,
+            )?;
+            let ff1_w2 = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.feed_forward1.ffw_layer_2.weight"), h, h * 4,
+            )?;
+
+            // Attention norms
+            let attn_pre_norm = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.norm_pre_attn.weight"))?,
+            );
+            let attn_post_norm = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.norm_post_attn.weight"))?,
+            );
+
+            // Attention projections
+            let attn_q = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h,
+            )?;
+            let attn_k = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.k_proj.weight"), q_dim, h,
+            )?;
+            let attn_v = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.v_proj.weight"), q_dim, h,
+            )?;
+            let attn_o = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.post.weight"), h, q_dim,
+            )?;
+
+            // Shaw-style rel-pos table — no HF source; default to zeros.
+            let rel_pos_bias = Arc::from(vec![0.0_f32; span * n_heads]);
+
+            // Light Conv1D
+            let lconv_pre_norm = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.lconv1d.pre_layer_norm.weight"))?,
+            );
+            let lconv_inner_norm = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.lconv1d.conv_norm.weight"))?,
+            );
+            let lconv_linear_start = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.lconv1d.linear_start.weight"), h * 2, h,
+            )?;
+            let lconv_linear_end = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.lconv1d.linear_end.weight"), h, h,
+            )?;
+            let lconv_depthwise_flat = load_tensor_as_f32(
+                st, &format!("{p}.lconv1d.depthwise_conv1d.weight"),
+            )?;
+            let expected_dw = h * k_lc;
+            if lconv_depthwise_flat.len() != expected_dw {
+                crate::bail!(
+                    "{p}.lconv1d.depthwise_conv1d.weight: {} elts, expected {} ({}×1×{})",
+                    lconv_depthwise_flat.len(), expected_dw, h, k_lc,
+                );
+            }
+            let lconv_depthwise = WeightStorage::F32(Arc::from(lconv_depthwise_flat));
+
+            // FF2
+            let ff2_pre_norm = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.feed_forward2.pre_layer_norm.weight"))?,
+            );
+            let ff2_post_norm = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.feed_forward2.post_layer_norm.weight"))?,
+            );
+            let ff2_w1 = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.feed_forward2.ffw_layer_1.weight"), h * 4, h,
+            )?;
+            let ff2_w2 = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.feed_forward2.ffw_layer_2.weight"), h, h * 4,
+            )?;
+
+            let out_norm = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.norm_out.weight"))?,
+            );
+
+            layers.push(ConformerLayerWeights {
+                ff1_pre_norm, ff1_post_norm, ff1_w1, ff1_w2,
+                attn_pre_norm, attn_post_norm,
+                attn_q, attn_k, attn_v, attn_o,
+                rel_pos_bias,
+                lconv_pre_norm, lconv_inner_norm,
+                lconv_linear_start, lconv_linear_end, lconv_depthwise,
+                ff2_pre_norm, ff2_post_norm, ff2_w1, ff2_w2,
+                out_norm,
+            });
+        }
+
+        // ---- Output projection (optional) ----------------------------------
+        let output_proj = if let Some(out_dim) = cfg.output_proj_dims {
+            Some(load_transposed_matrix_preserve_dtype(
+                st, &format!("{prefix}output_proj.weight"), out_dim, h,
+            )?)
+        } else {
+            None
+        };
+
+        let sscp: [SscpBlockWeights; 2] = sscp_blocks
+            .try_into()
+            .map_err(|_| crate::Error::Msg(
+                "Gemma4AudioWeights::load_from_mmapped: SSCP block count mismatch".into(),
+            ).bt())?;
+
+        Ok(Gemma4AudioWeights {
+            sscp,
+            sscp_input_proj,
+            layers,
+            output_proj,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

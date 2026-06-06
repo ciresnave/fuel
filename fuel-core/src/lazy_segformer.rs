@@ -52,22 +52,53 @@ pub struct SegformerConfig {
 }
 
 impl SegformerConfig {
-    /// HuggingFace MIT-B0 preset (224×224).
-    pub fn mit_b0() -> Self {
+    /// Build a SegFormer MIT preset. The variants differ only in
+    /// `hidden_sizes`, `depths`, and `decoder_hidden_size` — the
+    /// other fields are shared across all `nvidia/mit-b{0..5}` checkpoints.
+    fn mit_preset(
+        hidden_sizes: [usize; 4],
+        depths: [usize; 4],
+        decoder_hidden_size: usize,
+    ) -> Self {
         Self {
             num_channels: 3,
             num_encoder_blocks: 4,
-            depths: vec![2, 2, 2, 2],
+            depths: depths.to_vec(),
             sr_ratios: vec![8, 4, 2, 1],
-            hidden_sizes: vec![32, 64, 160, 256],
+            hidden_sizes: hidden_sizes.to_vec(),
             patch_sizes: vec![7, 3, 3, 3],
             strides: vec![4, 2, 2, 2],
             num_attention_heads: vec![1, 2, 5, 8],
             mlp_ratios: vec![4, 4, 4, 4],
             hidden_act: SegformerActivation::Gelu,
             layer_norm_eps: 1e-6,
-            decoder_hidden_size: 256,
+            decoder_hidden_size,
         }
+    }
+
+    /// HuggingFace MIT-B0 preset (matches `nvidia/mit-b0`).
+    pub fn mit_b0() -> Self {
+        Self::mit_preset([32, 64, 160, 256], [2, 2, 2, 2], 256)
+    }
+    /// HuggingFace MIT-B1 preset (matches `nvidia/mit-b1`).
+    pub fn mit_b1() -> Self {
+        Self::mit_preset([64, 128, 320, 512], [2, 2, 2, 2], 256)
+    }
+    /// HuggingFace MIT-B2 preset (matches `nvidia/mit-b2`).
+    pub fn mit_b2() -> Self {
+        Self::mit_preset([64, 128, 320, 512], [3, 4, 6, 3], 768)
+    }
+    /// HuggingFace MIT-B3 preset (matches `nvidia/mit-b3`).
+    pub fn mit_b3() -> Self {
+        Self::mit_preset([64, 128, 320, 512], [3, 4, 18, 3], 768)
+    }
+    /// HuggingFace MIT-B4 preset (matches `nvidia/mit-b4`).
+    pub fn mit_b4() -> Self {
+        Self::mit_preset([64, 128, 320, 512], [3, 8, 27, 3], 768)
+    }
+    /// HuggingFace MIT-B5 preset (matches `nvidia/mit-b5`).
+    pub fn mit_b5() -> Self {
+        Self::mit_preset([64, 128, 320, 512], [3, 6, 40, 3], 768)
     }
 }
 
@@ -472,6 +503,370 @@ fn apply_bn(
     x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
 }
 
+// ---- Safetensors loaders ---------------------------------------------------
+
+/// Load a 1-D F32 tensor as `Arc<[f32]>`.
+fn load_arc_f32(
+    st: &crate::safetensors::MmapedSafetensors,
+    name: &str,
+) -> Result<Arc<[f32]>> {
+    Ok(Arc::from(crate::lazy::load_tensor_as_f32(st, name)?))
+}
+
+/// Load a HuggingFace LayerNorm (`<prefix>.weight`, `<prefix>.bias`).
+fn load_ln(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+) -> Result<LayerNormWeights> {
+    Ok(LayerNormWeights {
+        gain: load_arc_f32(st, &format!("{prefix}.weight"))?,
+        bias: load_arc_f32(st, &format!("{prefix}.bias"))?,
+    })
+}
+
+/// Load a HuggingFace Conv2d (`<prefix>.weight`, optional `<prefix>.bias`).
+/// The on-disk layout `[c_out, c_in / groups, k, k]` is the same as ours,
+/// so this is a flat F32 read.
+fn load_conv2d(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    c_in: usize,
+    c_out: usize,
+    k: usize,
+    stride: usize,
+    pad: usize,
+    groups: usize,
+    has_bias: bool,
+) -> Result<Conv2dWeights> {
+    let w = load_arc_f32(st, &format!("{prefix}.weight"))?;
+    let expected = c_out * (c_in / groups) * k * k;
+    if w.len() != expected {
+        return Err(crate::Error::Msg(format!(
+            "load_conv2d {prefix:?}: weight has {} elements, expected {expected} \
+             ([{c_out}, {} = {c_in}/{groups}, {k}, {k}])",
+            w.len(), c_in / groups,
+        )).bt());
+    }
+    let b = if has_bias {
+        let bias = load_arc_f32(st, &format!("{prefix}.bias"))?;
+        if bias.len() != c_out {
+            return Err(crate::Error::Msg(format!(
+                "load_conv2d {prefix:?}: bias has {} elements, expected {c_out}",
+                bias.len(),
+            )).bt());
+        }
+        Some(bias)
+    } else {
+        None
+    };
+    Ok(Conv2dWeights { w, b, c_in, c_out, k, stride, pad, groups })
+}
+
+/// Load a HuggingFace Linear into a `WeightStorage` (+ bias). HF stores
+/// `[out, in]`; we transpose to `[in, out]` to match
+/// `WeightStorage::apply_linear`'s convention.
+fn load_linear(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    in_features: usize,
+    out_features: usize,
+) -> Result<(WeightStorage, Arc<[f32]>)> {
+    let w = crate::lazy::load_transposed_matrix_preserve_dtype(
+        st, &format!("{prefix}.weight"), out_features, in_features,
+    )?;
+    let bias = load_arc_f32(st, &format!("{prefix}.bias"))?;
+    if bias.len() != out_features {
+        return Err(crate::Error::Msg(format!(
+            "load_linear {prefix:?}: bias has {} elements, expected {out_features}",
+            bias.len(),
+        )).bt());
+    }
+    Ok((w, bias))
+}
+
+/// Load a HuggingFace BatchNorm prefix (`{weight,bias,running_mean,
+/// running_var}`) and bake into our fused-affine form.
+fn load_bn(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    channels: usize,
+    eps: f64,
+) -> Result<BatchNormParams> {
+    let gain = crate::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight"))?;
+    let bias = crate::lazy::load_tensor_as_f32(st, &format!("{prefix}.bias"))?;
+    let mean = crate::lazy::load_tensor_as_f32(st, &format!("{prefix}.running_mean"))?;
+    let var  = crate::lazy::load_tensor_as_f32(st, &format!("{prefix}.running_var"))?;
+    if gain.len() != channels || bias.len() != channels
+        || mean.len() != channels || var.len() != channels {
+        return Err(crate::Error::Msg(format!(
+            "load_bn {prefix:?}: expected {channels} elements per stat, \
+             got gain={} bias={} mean={} var={}",
+            gain.len(), bias.len(), mean.len(), var.len(),
+        )).bt());
+    }
+    Ok(BatchNormParams::from_raw(&gain, &bias, &mean, &var, eps))
+}
+
+impl OverlapPatchEmbeddingWeights {
+    fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        prefix: &str,
+        c_in: usize,
+        c_out: usize,
+        patch_size: usize,
+        stride: usize,
+    ) -> Result<Self> {
+        Ok(Self {
+            projection: load_conv2d(
+                st, &format!("{prefix}.proj"),
+                c_in, c_out, patch_size, stride, patch_size / 2, 1, true,
+            )?,
+            layer_norm: load_ln(st, &format!("{prefix}.layer_norm"))?,
+        })
+    }
+}
+
+impl EfficientSelfAttentionWeights {
+    fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        prefix: &str,
+        hidden_size: usize,
+        sr_ratio: usize,
+    ) -> Result<Self> {
+        let (q, qb) = load_linear(st, &format!("{prefix}.query"), hidden_size, hidden_size)?;
+        let (k, kb) = load_linear(st, &format!("{prefix}.key"),   hidden_size, hidden_size)?;
+        let (v, vb) = load_linear(st, &format!("{prefix}.value"), hidden_size, hidden_size)?;
+        let (sr, sr_norm) = if sr_ratio > 1 {
+            (
+                Some(load_conv2d(
+                    st, &format!("{prefix}.sr"),
+                    hidden_size, hidden_size, sr_ratio, sr_ratio, 0, 1, true,
+                )?),
+                Some(load_ln(st, &format!("{prefix}.layer_norm"))?),
+            )
+        } else {
+            (None, None)
+        };
+        Ok(Self {
+            query: q, query_bias: qb,
+            key: k, key_bias: kb,
+            value: v, value_bias: vb,
+            sr, sr_norm,
+        })
+    }
+}
+
+impl AttentionOutputWeights {
+    fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        prefix: &str,
+        hidden_size: usize,
+    ) -> Result<Self> {
+        let (w, b) = load_linear(st, &format!("{prefix}.dense"), hidden_size, hidden_size)?;
+        Ok(Self { dense: w, dense_bias: b })
+    }
+}
+
+impl MixFfnWeights {
+    fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        prefix: &str,
+        hidden_size: usize,
+        mlp_ratio: usize,
+    ) -> Result<Self> {
+        let hidden_features = hidden_size * mlp_ratio;
+        let (d1, d1b) = load_linear(
+            st, &format!("{prefix}.dense1"), hidden_size, hidden_features,
+        )?;
+        // HF nests Conv2d twice: SegformerDWConv wraps Conv2d at `.dwconv`,
+        // and MixFFN places SegformerDWConv at `.dwconv` → final key is
+        // `<prefix>.dwconv.dwconv.{weight,bias}`.
+        let dw = load_conv2d(
+            st, &format!("{prefix}.dwconv.dwconv"),
+            hidden_features, hidden_features, 3, 1, 1, hidden_features, true,
+        )?;
+        let (d2, d2b) = load_linear(
+            st, &format!("{prefix}.dense2"), hidden_features, hidden_size,
+        )?;
+        Ok(Self {
+            dense1: d1, dense1_bias: d1b,
+            dw_conv: dw,
+            dense2: d2, dense2_bias: d2b,
+        })
+    }
+}
+
+impl SegformerLayerWeights {
+    fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        prefix: &str,
+        hidden_size: usize,
+        num_heads: usize,
+        sr_ratio: usize,
+        mlp_ratio: usize,
+    ) -> Result<Self> {
+        Ok(Self {
+            layer_norm_1: load_ln(st, &format!("{prefix}.layer_norm_1"))?,
+            attention: EfficientSelfAttentionWeights::load_from_mmapped(
+                st, &format!("{prefix}.attention.self"), hidden_size, sr_ratio,
+            )?,
+            attention_output: AttentionOutputWeights::load_from_mmapped(
+                st, &format!("{prefix}.attention.output"), hidden_size,
+            )?,
+            layer_norm_2: load_ln(st, &format!("{prefix}.layer_norm_2"))?,
+            mlp: MixFfnWeights::load_from_mmapped(
+                st, &format!("{prefix}.mlp"), hidden_size, mlp_ratio,
+            )?,
+            hidden_size,
+            num_heads,
+        })
+    }
+}
+
+impl SegformerEncoderWeights {
+    /// Load the SegFormer hierarchical encoder from a HuggingFace
+    /// `nvidia/mit-b{0..5}` or `nvidia/segformer-*` safetensors blob.
+    ///
+    /// `prefix` lets callers point at either bare encoder checkpoints
+    /// (`encoder.`) or the wrapped `SegformerModel` (`segformer.encoder.`)
+    /// — pass `""` for the former and `"segformer.encoder."` for the latter.
+    /// Final prefix is `<root>encoder.` regardless: this method appends
+    /// `patch_embeddings.{i}.*`, `block.{i}.{j}.*`, and `layer_norm.{i}.*`
+    /// after the supplied prefix.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &SegformerConfig,
+        prefix: &str,
+    ) -> Result<Self> {
+        let mut stages = Vec::with_capacity(cfg.num_encoder_blocks);
+        for i in 0..cfg.num_encoder_blocks {
+            let c_in = if i == 0 { cfg.num_channels } else { cfg.hidden_sizes[i - 1] };
+            let c_out = cfg.hidden_sizes[i];
+            let patch_embedding = OverlapPatchEmbeddingWeights::load_from_mmapped(
+                st, &format!("{prefix}patch_embeddings.{i}"),
+                c_in, c_out, cfg.patch_sizes[i], cfg.strides[i],
+            )?;
+            let mut layers = Vec::with_capacity(cfg.depths[i]);
+            for j in 0..cfg.depths[i] {
+                layers.push(SegformerLayerWeights::load_from_mmapped(
+                    st, &format!("{prefix}block.{i}.{j}"),
+                    c_out,
+                    cfg.num_attention_heads[i],
+                    cfg.sr_ratios[i],
+                    cfg.mlp_ratios[i],
+                )?);
+            }
+            let final_ln = load_ln(st, &format!("{prefix}layer_norm.{i}"))?;
+            stages.push(SegformerStageWeights {
+                patch_embedding,
+                layers,
+                final_ln,
+            });
+        }
+        Ok(Self { stages })
+    }
+}
+
+impl SegformerDecodeHeadWeights {
+    /// Load the all-MLP decode head. HF key prefix is `decode_head.`;
+    /// pass `prefix = "decode_head."` for top-level segmentation
+    /// checkpoints. `num_labels` is the output class count (e.g. 150
+    /// for ADE20K, 19 for Cityscapes).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &SegformerConfig,
+        prefix: &str,
+        num_labels: usize,
+    ) -> Result<Self> {
+        // HF BatchNorm eps default is 1e-5 (independent of layer_norm_eps).
+        const BN_EPS: f64 = 1e-5;
+        let mut linear_c = Vec::with_capacity(cfg.num_encoder_blocks);
+        for i in 0..cfg.num_encoder_blocks {
+            let (w, b) = load_linear(
+                st, &format!("{prefix}linear_c.{i}.proj"),
+                cfg.hidden_sizes[i], cfg.decoder_hidden_size,
+            )?;
+            linear_c.push((w, b));
+        }
+        let linear_fuse = load_conv2d(
+            st, &format!("{prefix}linear_fuse"),
+            cfg.decoder_hidden_size * cfg.num_encoder_blocks,
+            cfg.decoder_hidden_size, 1, 1, 0, 1, false,
+        )?;
+        let batch_norm = load_bn(
+            st, &format!("{prefix}batch_norm"), cfg.decoder_hidden_size, BN_EPS,
+        )?;
+        // HF's `classifier` is `nn.Conv2d(..., kernel_size=1)`; bias=True by default.
+        let classifier = load_conv2d(
+            st, &format!("{prefix}classifier"),
+            cfg.decoder_hidden_size, num_labels, 1, 1, 0, 1, true,
+        )?;
+        Ok(Self { linear_c, linear_fuse, batch_norm, classifier })
+    }
+}
+
+impl SegformerClassifierWeights {
+    /// Load the image-classification head (single linear from the last
+    /// stage hidden size to `num_labels`). HF stores this as
+    /// `classifier.{weight,bias}` at the top level of a
+    /// `SegformerForImageClassification` checkpoint.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &SegformerConfig,
+        prefix: &str,
+        num_labels: usize,
+    ) -> Result<Self> {
+        let in_features = *cfg.hidden_sizes.last().expect("hidden_sizes is non-empty");
+        let (w, b) = load_linear(
+            st, &format!("{prefix}classifier"),
+            in_features, num_labels,
+        )?;
+        Ok(Self { w, b })
+    }
+}
+
+impl ImageClassificationModel {
+    /// Load a full `SegformerForImageClassification` HF checkpoint.
+    /// Naming: `segformer.encoder.*` for the backbone and `classifier.*`
+    /// for the head.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: SegformerConfig,
+        num_labels: usize,
+    ) -> Result<Self> {
+        let encoder = SegformerEncoderWeights::load_from_mmapped(
+            st, &cfg, "segformer.encoder.",
+        )?;
+        let classifier = SegformerClassifierWeights::load_from_mmapped(
+            st, &cfg, "", num_labels,
+        )?;
+        Ok(Self { config: cfg, encoder, classifier })
+    }
+}
+
+impl SemanticSegmentationModel {
+    /// Load a full `SegformerForSemanticSegmentation` HF checkpoint.
+    /// Naming: `segformer.encoder.*` and `decode_head.*`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: SegformerConfig,
+        num_labels: usize,
+    ) -> Result<Self> {
+        let encoder = SegformerEncoderWeights::load_from_mmapped(
+            st, &cfg, "segformer.encoder.",
+        )?;
+        let decode_head = SegformerDecodeHeadWeights::load_from_mmapped(
+            st, &cfg, "decode_head.", num_labels,
+        )?;
+        Ok(Self {
+            config: cfg,
+            encoder,
+            decode_head,
+            num_labels,
+        })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
@@ -712,5 +1107,300 @@ mod tests {
         assert_eq!(cfg.hidden_sizes, vec![32, 64, 160, 256]);
         assert_eq!(cfg.sr_ratios, vec![8, 4, 2, 1]);
         assert_eq!(cfg.decoder_hidden_size, 256);
+    }
+
+    #[test]
+    fn mit_b1_through_b5_presets_construct() {
+        let presets = [
+            (SegformerConfig::mit_b1(), [64usize, 128, 320, 512], vec![2usize, 2, 2, 2], 256),
+            (SegformerConfig::mit_b2(), [64, 128, 320, 512], vec![3, 4, 6, 3], 768),
+            (SegformerConfig::mit_b3(), [64, 128, 320, 512], vec![3, 4, 18, 3], 768),
+            (SegformerConfig::mit_b4(), [64, 128, 320, 512], vec![3, 8, 27, 3], 768),
+            (SegformerConfig::mit_b5(), [64, 128, 320, 512], vec![3, 6, 40, 3], 768),
+        ];
+        for (cfg, hs, depths, dh) in presets {
+            assert_eq!(cfg.hidden_sizes, hs.to_vec());
+            assert_eq!(cfg.depths, depths);
+            assert_eq!(cfg.decoder_hidden_size, dh);
+            assert_eq!(cfg.sr_ratios, vec![8, 4, 2, 1]);
+            assert_eq!(cfg.patch_sizes, vec![7, 3, 3, 3]);
+            assert_eq!(cfg.strides, vec![4, 2, 2, 2]);
+            assert_eq!(cfg.num_attention_heads, vec![1, 2, 5, 8]);
+            assert_eq!(cfg.mlp_ratios, vec![4, 4, 4, 4]);
+            assert_eq!(cfg.layer_norm_eps, 1e-6);
+        }
+    }
+
+    // ---- Safetensors round-trip ------------------------------------------
+
+    /// Append `n` f32 values to `owned` under `name` as a 1-D shape.
+    fn push_f32_1d(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        name: &str,
+        values: &[f32],
+    ) {
+        let mut bytes = Vec::with_capacity(values.len() * 4);
+        for v in values { bytes.extend_from_slice(&v.to_le_bytes()); }
+        owned.push((name.to_string(), vec![values.len()], bytes));
+    }
+
+    /// Append a multi-dim f32 tensor of given shape, filled by `nb()`.
+    fn push_f32(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        name: &str,
+        shape: Vec<usize>,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        let n: usize = shape.iter().product();
+        let mut bytes = Vec::with_capacity(n * 4);
+        for _ in 0..n { bytes.extend_from_slice(&nb().to_le_bytes()); }
+        owned.push((name.to_string(), shape, bytes));
+    }
+
+    /// Push a HuggingFace LayerNorm prefix (`<prefix>.{weight,bias}`).
+    fn push_ln(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        prefix: &str,
+        c: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        push_f32(owned, &format!("{prefix}.weight"), vec![c], nb);
+        push_f32(owned, &format!("{prefix}.bias"),   vec![c], nb);
+    }
+
+    /// Push a HuggingFace BatchNorm prefix (4 stats).
+    fn push_bn(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        prefix: &str,
+        c: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        // weight (gain), bias, running_mean, running_var.
+        push_f32_1d(owned, &format!("{prefix}.weight"),
+            &(0..c).map(|_| nb()).collect::<Vec<_>>());
+        push_f32_1d(owned, &format!("{prefix}.bias"),
+            &(0..c).map(|_| nb()).collect::<Vec<_>>());
+        push_f32_1d(owned, &format!("{prefix}.running_mean"),
+            &(0..c).map(|_| nb()).collect::<Vec<_>>());
+        // running_var must be strictly positive for inv-sqrt to be finite.
+        push_f32_1d(owned, &format!("{prefix}.running_var"),
+            &(0..c).map(|_| nb().abs() + 0.1).collect::<Vec<_>>());
+    }
+
+    fn push_conv2d(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        prefix: &str,
+        c_in: usize,
+        c_out: usize,
+        k: usize,
+        groups: usize,
+        has_bias: bool,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        push_f32(
+            owned, &format!("{prefix}.weight"),
+            vec![c_out, c_in / groups, k, k], nb,
+        );
+        if has_bias {
+            push_f32(owned, &format!("{prefix}.bias"), vec![c_out], nb);
+        }
+    }
+
+    fn push_linear(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        prefix: &str,
+        in_features: usize,
+        out_features: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        // HF stores weight as [out, in].
+        push_f32(
+            owned, &format!("{prefix}.weight"),
+            vec![out_features, in_features], nb,
+        );
+        push_f32(owned, &format!("{prefix}.bias"), vec![out_features], nb);
+    }
+
+    fn push_attention(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        prefix: &str,
+        hidden: usize,
+        sr_ratio: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        // attention.self.{query,key,value}
+        push_linear(owned, &format!("{prefix}.self.query"), hidden, hidden, nb);
+        push_linear(owned, &format!("{prefix}.self.key"),   hidden, hidden, nb);
+        push_linear(owned, &format!("{prefix}.self.value"), hidden, hidden, nb);
+        if sr_ratio > 1 {
+            push_conv2d(
+                owned, &format!("{prefix}.self.sr"),
+                hidden, hidden, sr_ratio, 1, true, nb,
+            );
+            push_ln(owned, &format!("{prefix}.self.layer_norm"), hidden, nb);
+        }
+        // attention.output.dense
+        push_linear(owned, &format!("{prefix}.output.dense"), hidden, hidden, nb);
+    }
+
+    fn push_mix_ffn(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        prefix: &str,
+        hidden: usize,
+        mlp_ratio: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        let hf = hidden * mlp_ratio;
+        push_linear(owned, &format!("{prefix}.dense1"), hidden, hf, nb);
+        // SegformerDWConv → conv2d at `<prefix>.dwconv.dwconv`.
+        push_conv2d(
+            owned, &format!("{prefix}.dwconv.dwconv"),
+            hf, hf, 3, hf, true, nb,
+        );
+        push_linear(owned, &format!("{prefix}.dense2"), hf, hidden, nb);
+    }
+
+    fn push_layer(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        prefix: &str,
+        hidden: usize,
+        sr_ratio: usize,
+        mlp_ratio: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        push_ln(owned, &format!("{prefix}.layer_norm_1"), hidden, nb);
+        push_attention(owned, &format!("{prefix}.attention"), hidden, sr_ratio, nb);
+        push_ln(owned, &format!("{prefix}.layer_norm_2"), hidden, nb);
+        push_mix_ffn(owned, &format!("{prefix}.mlp"), hidden, mlp_ratio, nb);
+    }
+
+    fn push_encoder(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        prefix: &str,
+        cfg: &SegformerConfig,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        for i in 0..cfg.num_encoder_blocks {
+            let c_in = if i == 0 { cfg.num_channels } else { cfg.hidden_sizes[i - 1] };
+            let c_out = cfg.hidden_sizes[i];
+            push_conv2d(
+                owned, &format!("{prefix}patch_embeddings.{i}.proj"),
+                c_in, c_out, cfg.patch_sizes[i], 1, true, nb,
+            );
+            push_ln(owned, &format!("{prefix}patch_embeddings.{i}.layer_norm"), c_out, nb);
+            for j in 0..cfg.depths[i] {
+                push_layer(
+                    owned, &format!("{prefix}block.{i}.{j}"),
+                    c_out, cfg.sr_ratios[i], cfg.mlp_ratios[i], nb,
+                );
+            }
+            push_ln(owned, &format!("{prefix}layer_norm.{i}"), c_out, nb);
+        }
+    }
+
+    fn build_safetensors_file(
+        owned: Vec<(String, Vec<usize>, Vec<u8>)>,
+        tag: &str,
+    ) -> std::path::PathBuf {
+        use safetensors::tensor::TensorView;
+        use std::collections::HashMap;
+        let mut tensors: HashMap<String, TensorView<'_>> = HashMap::new();
+        for (name, shape, bytes) in &owned {
+            let view = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
+                .expect("TensorView::new");
+            tensors.insert(name.clone(), view);
+        }
+        let serialized = safetensors::serialize(&tensors, None)
+            .expect("safetensors::serialize");
+        let tmp = std::env::temp_dir().join(format!(
+            "fuel_segformer_load_test_{}_{tag}.safetensors",
+            std::process::id(),
+        ));
+        std::fs::write(&tmp, &serialized).expect("write tmp");
+        tmp
+    }
+
+    #[test]
+    fn load_from_mmapped_classification_round_trip() {
+        let cfg = tiny_config();
+        let n_labels = 5;
+        let mut nb = rng_seed(7);
+
+        let mut owned: Vec<(String, Vec<usize>, Vec<u8>)> = Vec::new();
+        push_encoder(&mut owned, "segformer.encoder.", &cfg, &mut nb);
+        // classifier (top-level Linear hidden_sizes[-1] → num_labels).
+        let c_last = *cfg.hidden_sizes.last().unwrap();
+        push_linear(&mut owned, "classifier", c_last, n_labels, &mut nb);
+
+        let tmp = build_safetensors_file(owned, "cls");
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&tmp) }
+            .expect("MmapedSafetensors::new");
+
+        let model = ImageClassificationModel::load_from_mmapped(&st, cfg, n_labels)
+            .expect("load classification model");
+
+        // Sanity: shape + finiteness on a tiny image.
+        let img = LazyTensor::from_f32(
+            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+        );
+        let logits = model.forward(&img).unwrap();
+        assert_eq!(logits.shape().dims(), &[1, n_labels]);
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite(), "non-finite logit from loaded model: {v}");
+        }
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn load_from_mmapped_segmentation_round_trip() {
+        let cfg = tiny_config();
+        let n_labels = 4;
+        let mut nb = rng_seed(11);
+
+        let mut owned: Vec<(String, Vec<usize>, Vec<u8>)> = Vec::new();
+        push_encoder(&mut owned, "segformer.encoder.", &cfg, &mut nb);
+        // Decode head: linear_c.{i}.proj, linear_fuse (no bias), batch_norm,
+        // classifier (Conv2d w/ bias).
+        for i in 0..cfg.num_encoder_blocks {
+            push_linear(
+                &mut owned, &format!("decode_head.linear_c.{i}.proj"),
+                cfg.hidden_sizes[i], cfg.decoder_hidden_size, &mut nb,
+            );
+        }
+        push_conv2d(
+            &mut owned, "decode_head.linear_fuse",
+            cfg.decoder_hidden_size * cfg.num_encoder_blocks,
+            cfg.decoder_hidden_size, 1, 1, false, &mut nb,
+        );
+        push_bn(&mut owned, "decode_head.batch_norm", cfg.decoder_hidden_size, &mut nb);
+        push_conv2d(
+            &mut owned, "decode_head.classifier",
+            cfg.decoder_hidden_size, n_labels, 1, 1, true, &mut nb,
+        );
+
+        let tmp = build_safetensors_file(owned, "seg");
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&tmp) }
+            .expect("MmapedSafetensors::new");
+
+        let model = SemanticSegmentationModel::load_from_mmapped(&st, cfg, n_labels)
+            .expect("load segmentation model");
+        assert_eq!(model.num_labels, n_labels);
+
+        let img = LazyTensor::from_f32(
+            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+        );
+        let logits = model.forward(&img).unwrap();
+        let dims = logits.shape();
+        let dims = dims.dims();
+        assert_eq!(dims[0], 1);
+        assert_eq!(dims[1], n_labels);
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite(), "non-finite seg logit from loaded model: {v}");
+        }
+
+        let _ = std::fs::remove_file(&tmp);
     }
 }
