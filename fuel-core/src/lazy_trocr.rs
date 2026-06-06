@@ -18,8 +18,10 @@
 //!     `cross_attention_hidden_size` (= ViT hidden) as input,
 //!     project to decoder `d_model`.
 
-use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_vit::{VitConfig, VitModel, VitWeights};
+use crate::lazy::{
+    load_tensor_as_f32, load_transposed_matrix_preserve_dtype, LazyTensor, WeightStorage,
+};
+use crate::lazy_vit::{VitConfig, VitLayerWeights, VitModel, VitWeights};
 use crate::Result;
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -295,6 +297,245 @@ fn apply_attention(
     Ok(w.out_proj.apply_linear(&ctx, d_model, d_model))
 }
 
+// ---- Safetensors loader ----------------------------------------------------
+
+/// Load HF ViT weights under `<prefix>` using the standard HF ViT naming:
+///   - `embeddings.patch_embeddings.projection.{weight,bias}`
+///   - `embeddings.cls_token`
+///   - `embeddings.position_embeddings`
+///   - `encoder.layer.{i}.attention.attention.{query,key,value}.{weight,bias}` (bias optional via cfg.qkv_bias)
+///   - `encoder.layer.{i}.attention.output.dense.{weight,bias}`
+///   - `encoder.layer.{i}.intermediate.dense.{weight,bias}`
+///   - `encoder.layer.{i}.output.dense.{weight,bias}`
+///   - `encoder.layer.{i}.layernorm_before.{weight,bias}`
+///   - `encoder.layer.{i}.layernorm_after.{weight,bias}`
+///   - `layernorm.{weight,bias}` (final post-encoder LN)
+pub fn load_vit_weights(
+    st: &crate::safetensors::MmapedSafetensors,
+    cfg: &VitConfig,
+    prefix: &str,
+) -> Result<VitWeights> {
+    let h = cfg.hidden_size;
+    let np = cfg.num_patches();
+    let inter = cfg.intermediate_size;
+    let patch_proj = load_tensor_as_f32(
+        st, &format!("{prefix}embeddings.patch_embeddings.projection.weight"),
+    )?;
+    let patch_proj_bias = load_tensor_as_f32(
+        st, &format!("{prefix}embeddings.patch_embeddings.projection.bias"),
+    )?;
+    let cls_token = load_tensor_as_f32(st, &format!("{prefix}embeddings.cls_token"))?;
+    let position_embeddings = load_tensor_as_f32(
+        st, &format!("{prefix}embeddings.position_embeddings"),
+    )?;
+    if position_embeddings.len() != (np + 1) * h {
+        crate::bail!(
+            "{prefix}embeddings.position_embeddings: {} elts, expected {}",
+            position_embeddings.len(), (np + 1) * h,
+        );
+    }
+    let final_ln_gain = load_tensor_as_f32(st, &format!("{prefix}layernorm.weight"))?;
+    let final_ln_bias = load_tensor_as_f32(st, &format!("{prefix}layernorm.bias"))?;
+
+    let mut layers: Vec<VitLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+    for i in 0..cfg.num_hidden_layers {
+        let p = format!("{prefix}encoder.layer.{i}");
+        let ln_before_gain = load_tensor_as_f32(st, &format!("{p}.layernorm_before.weight"))?;
+        let ln_before_bias = load_tensor_as_f32(st, &format!("{p}.layernorm_before.bias"))?;
+        let ln_after_gain = load_tensor_as_f32(st, &format!("{p}.layernorm_after.weight"))?;
+        let ln_after_bias = load_tensor_as_f32(st, &format!("{p}.layernorm_after.bias"))?;
+        let q_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.attention.attention.query.weight"), h, h,
+        )?;
+        let k_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.attention.attention.key.weight"), h, h,
+        )?;
+        let v_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.attention.attention.value.weight"), h, h,
+        )?;
+        let (q_proj_bias, k_proj_bias, v_proj_bias) = if cfg.qkv_bias {
+            (
+                load_tensor_as_f32(st, &format!("{p}.attention.attention.query.bias")).ok().map(Arc::from),
+                load_tensor_as_f32(st, &format!("{p}.attention.attention.key.bias")).ok().map(Arc::from),
+                load_tensor_as_f32(st, &format!("{p}.attention.attention.value.bias")).ok().map(Arc::from),
+            )
+        } else {
+            (None, None, None)
+        };
+        let attn_output_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.attention.output.dense.weight"), h, h,
+        )?;
+        let attn_output_proj_bias = load_tensor_as_f32(
+            st, &format!("{p}.attention.output.dense.bias"),
+        )?;
+        let intermediate_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.intermediate.dense.weight"), inter, h,
+        )?;
+        let intermediate_proj_bias = load_tensor_as_f32(
+            st, &format!("{p}.intermediate.dense.bias"),
+        )?;
+        let mlp_output_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.output.dense.weight"), h, inter,
+        )?;
+        let mlp_output_proj_bias = load_tensor_as_f32(
+            st, &format!("{p}.output.dense.bias"),
+        )?;
+        layers.push(VitLayerWeights {
+            ln_before_gain: Arc::from(ln_before_gain),
+            ln_before_bias: Arc::from(ln_before_bias),
+            q_proj, q_proj_bias,
+            k_proj, k_proj_bias,
+            v_proj, v_proj_bias,
+            attn_output_proj,
+            attn_output_proj_bias: Arc::from(attn_output_proj_bias),
+            ln_after_gain: Arc::from(ln_after_gain),
+            ln_after_bias: Arc::from(ln_after_bias),
+            intermediate_proj,
+            intermediate_proj_bias: Arc::from(intermediate_proj_bias),
+            mlp_output_proj,
+            mlp_output_proj_bias: Arc::from(mlp_output_proj_bias),
+        });
+    }
+
+    Ok(VitWeights {
+        patch_proj: Arc::from(patch_proj),
+        patch_proj_bias: Arc::from(patch_proj_bias),
+        cls_token: Arc::from(cls_token),
+        position_embeddings: Arc::from(position_embeddings),
+        layers,
+        final_ln_gain: Arc::from(final_ln_gain),
+        final_ln_bias: Arc::from(final_ln_bias),
+        classifier: None,
+    })
+}
+
+/// Load TrOCR decoder weights from a safetensors file using the HF
+/// `decoder.model.decoder.*` prefix:
+///   - `embed_tokens.weight`
+///   - `embed_positions.weight`
+///   - `layers.{i}.self_attn.{q,k,v,out}_proj.weight`
+///   - `layers.{i}.self_attn_layer_norm.{weight,bias}`
+///   - `layers.{i}.encoder_attn.{q,k,v,out}_proj.weight`
+///   - `layers.{i}.encoder_attn_layer_norm.{weight,bias}`
+///   - `layers.{i}.fc1.weight`, `layers.{i}.fc2.weight`
+///   - `layers.{i}.final_layer_norm.{weight,bias}`
+///   - `decoder.output_projection.weight` (when tie_word_embeddings is false)
+pub fn load_trocr_decoder_weights(
+    st: &crate::safetensors::MmapedSafetensors,
+    cfg: &TrocrDecoderConfig,
+) -> Result<TrocrDecoderWeights> {
+    let pfx = "decoder.model.decoder.";
+    let d = cfg.d_model;
+    let kv_in = cfg.cross_attention_hidden_size;
+    let embed_tokens = load_tensor_as_f32(
+        st, &format!("{pfx}embed_tokens.weight"),
+    )?;
+    let embed_positions = load_tensor_as_f32(
+        st, &format!("{pfx}embed_positions.weight"),
+    )?;
+    let mut layers: Vec<TrocrDecoderLayerWeights> = Vec::with_capacity(cfg.decoder_layers);
+    for i in 0..cfg.decoder_layers {
+        let p = format!("{pfx}layers.{i}");
+        let self_attn = TrocrAttentionWeights {
+            q_proj: load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.q_proj.weight"), d, d,
+            )?,
+            k_proj: load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.k_proj.weight"), d, d,
+            )?,
+            v_proj: load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.v_proj.weight"), d, d,
+            )?,
+            out_proj: load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.out_proj.weight"), d, d,
+            )?,
+        };
+        let self_attn_ln_gain = load_tensor_as_f32(
+            st, &format!("{p}.self_attn_layer_norm.weight"),
+        )?;
+        let self_attn_ln_bias = load_tensor_as_f32(
+            st, &format!("{p}.self_attn_layer_norm.bias"),
+        )?;
+        let encoder_attn = TrocrAttentionWeights {
+            q_proj: load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.encoder_attn.q_proj.weight"), d, d,
+            )?,
+            k_proj: load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.encoder_attn.k_proj.weight"), d, kv_in,
+            )?,
+            v_proj: load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.encoder_attn.v_proj.weight"), d, kv_in,
+            )?,
+            out_proj: load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.encoder_attn.out_proj.weight"), d, d,
+            )?,
+        };
+        let encoder_attn_ln_gain = load_tensor_as_f32(
+            st, &format!("{p}.encoder_attn_layer_norm.weight"),
+        )?;
+        let encoder_attn_ln_bias = load_tensor_as_f32(
+            st, &format!("{p}.encoder_attn_layer_norm.bias"),
+        )?;
+        let fc1 = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.fc1.weight"), cfg.decoder_ffn_dim, d,
+        )?;
+        let fc2 = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.fc2.weight"), d, cfg.decoder_ffn_dim,
+        )?;
+        let final_ln_gain = load_tensor_as_f32(
+            st, &format!("{p}.final_layer_norm.weight"),
+        )?;
+        let final_ln_bias = load_tensor_as_f32(
+            st, &format!("{p}.final_layer_norm.bias"),
+        )?;
+        layers.push(TrocrDecoderLayerWeights {
+            self_attn,
+            self_attn_ln_gain: Arc::from(self_attn_ln_gain),
+            self_attn_ln_bias: Arc::from(self_attn_ln_bias),
+            encoder_attn,
+            encoder_attn_ln_gain: Arc::from(encoder_attn_ln_gain),
+            encoder_attn_ln_bias: Arc::from(encoder_attn_ln_bias),
+            fc1, fc2,
+            final_ln_gain: Arc::from(final_ln_gain),
+            final_ln_bias: Arc::from(final_ln_bias),
+        });
+    }
+    let output_projection = if cfg.tie_word_embeddings {
+        None
+    } else {
+        Some(load_transposed_matrix_preserve_dtype(
+            st, "decoder.output_projection.weight", cfg.vocab_size, d,
+        )?)
+    };
+    Ok(TrocrDecoderWeights {
+        embed_tokens: Arc::from(embed_tokens),
+        embed_positions: Arc::from(embed_positions),
+        layers,
+        output_projection,
+    })
+}
+
+impl TrocrModel {
+    /// Load a TrOCR model (ViT encoder + BART-style decoder) from a
+    /// HuggingFace safetensors file. Encoder weights live under
+    /// `encoder.*` and decoder under `decoder.model.decoder.*` per the
+    /// `microsoft/trocr-*` convention.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        encoder_config: VitConfig,
+        decoder_config: TrocrDecoderConfig,
+    ) -> Result<Self> {
+        let encoder_weights = load_vit_weights(st, &encoder_config, "encoder.")?;
+        let decoder_weights = load_trocr_decoder_weights(st, &decoder_config)?;
+        Ok(Self {
+            encoder_config,
+            encoder_weights,
+            decoder_config,
+            decoder_weights,
+        })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
@@ -526,6 +767,169 @@ mod tests {
                 assert!((a[i] - b[i]).abs() < 1e-5,
                     "causal mask violated at t={t}, c={c}: {} vs {}", a[i], b[i]);
             }
+        }
+    }
+
+    mod load {
+        use super::*;
+        use safetensors::tensor::TensorView;
+        use safetensors::Dtype;
+        use std::collections::HashMap;
+
+        fn put(
+            map: &mut HashMap<String, (Dtype, Vec<usize>, Vec<u8>)>,
+            name: &str,
+            shape: &[usize],
+            data: &[f32],
+        ) {
+            let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
+            map.insert(name.to_string(), (Dtype::F32, shape.to_vec(), bytes));
+        }
+
+        fn serialize_to_tempfile(
+            map: &HashMap<String, (Dtype, Vec<usize>, Vec<u8>)>,
+        ) -> std::path::PathBuf {
+            let mut views: HashMap<String, TensorView<'_>> = HashMap::new();
+            for (k, (dt, shape, data)) in map {
+                let v = TensorView::new(*dt, shape.clone(), data).expect("TensorView");
+                views.insert(k.clone(), v);
+            }
+            let bytes = safetensors::serialize(&views, None).expect("serialize");
+            let path = std::env::temp_dir().join(format!(
+                "lazy_trocr_load_{}_{}.safetensors",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            ));
+            std::fs::write(&path, bytes).expect("write tempfile");
+            path
+        }
+
+        fn build_tiny_safetensors(
+            v_cfg: &VitConfig,
+            d_cfg: &TrocrDecoderConfig,
+        ) -> std::path::PathBuf {
+            let mut map: HashMap<String, (Dtype, Vec<usize>, Vec<u8>)> = HashMap::new();
+            let mut s: u32 = 5511;
+            let mut nxt = || -> f32 {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.01
+            };
+            let mut vec_n = |n: usize| -> Vec<f32> { (0..n).map(|_| nxt()).collect() };
+
+            // ViT encoder under encoder.*
+            let ep = "encoder.";
+            let h = v_cfg.hidden_size;
+            let np = v_cfg.num_patches();
+            put(&mut map, &format!("{ep}embeddings.patch_embeddings.projection.weight"),
+                &[h, v_cfg.num_channels, v_cfg.patch_size, v_cfg.patch_size],
+                &vec_n(h * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size));
+            put(&mut map, &format!("{ep}embeddings.patch_embeddings.projection.bias"),
+                &[h], &vec_n(h));
+            put(&mut map, &format!("{ep}embeddings.cls_token"),
+                &[1, 1, h], &vec_n(h));
+            put(&mut map, &format!("{ep}embeddings.position_embeddings"),
+                &[1, np + 1, h], &vec_n((np + 1) * h));
+            put(&mut map, &format!("{ep}layernorm.weight"), &[h], &vec_n(h));
+            put(&mut map, &format!("{ep}layernorm.bias"),   &[h], &vec_n(h));
+            for i in 0..v_cfg.num_hidden_layers {
+                let p = format!("{ep}encoder.layer.{i}");
+                put(&mut map, &format!("{p}.layernorm_before.weight"), &[h], &vec_n(h));
+                put(&mut map, &format!("{p}.layernorm_before.bias"),   &[h], &vec_n(h));
+                put(&mut map, &format!("{p}.layernorm_after.weight"),  &[h], &vec_n(h));
+                put(&mut map, &format!("{p}.layernorm_after.bias"),    &[h], &vec_n(h));
+                for kn in &["query", "key", "value"] {
+                    put(&mut map, &format!("{p}.attention.attention.{kn}.weight"),
+                        &[h, h], &vec_n(h * h));
+                    if v_cfg.qkv_bias {
+                        put(&mut map, &format!("{p}.attention.attention.{kn}.bias"),
+                            &[h], &vec_n(h));
+                    }
+                }
+                put(&mut map, &format!("{p}.attention.output.dense.weight"),
+                    &[h, h], &vec_n(h * h));
+                put(&mut map, &format!("{p}.attention.output.dense.bias"),
+                    &[h], &vec_n(h));
+                put(&mut map, &format!("{p}.intermediate.dense.weight"),
+                    &[v_cfg.intermediate_size, h], &vec_n(v_cfg.intermediate_size * h));
+                put(&mut map, &format!("{p}.intermediate.dense.bias"),
+                    &[v_cfg.intermediate_size], &vec_n(v_cfg.intermediate_size));
+                put(&mut map, &format!("{p}.output.dense.weight"),
+                    &[h, v_cfg.intermediate_size], &vec_n(h * v_cfg.intermediate_size));
+                put(&mut map, &format!("{p}.output.dense.bias"),
+                    &[h], &vec_n(h));
+            }
+
+            // Decoder under decoder.model.decoder.*
+            let pfx = "decoder.model.decoder.";
+            let d = d_cfg.d_model;
+            let kv_in = d_cfg.cross_attention_hidden_size;
+            put(&mut map, &format!("{pfx}embed_tokens.weight"),
+                &[d_cfg.vocab_size, d], &vec_n(d_cfg.vocab_size * d));
+            put(&mut map, &format!("{pfx}embed_positions.weight"),
+                &[d_cfg.max_position_embeddings + d_cfg.learned_pos_offset, d],
+                &vec_n((d_cfg.max_position_embeddings + d_cfg.learned_pos_offset) * d));
+            for i in 0..d_cfg.decoder_layers {
+                let p = format!("{pfx}layers.{i}");
+                for proj in &["q_proj", "k_proj", "v_proj", "out_proj"] {
+                    put(&mut map, &format!("{p}.self_attn.{proj}.weight"),
+                        &[d, d], &vec_n(d * d));
+                }
+                put(&mut map, &format!("{p}.self_attn_layer_norm.weight"),
+                    &[d], &vec_n(d));
+                put(&mut map, &format!("{p}.self_attn_layer_norm.bias"),
+                    &[d], &vec_n(d));
+                // encoder_attn: q/out project from d to d, k/v project from kv_in to d.
+                put(&mut map, &format!("{p}.encoder_attn.q_proj.weight"),
+                    &[d, d], &vec_n(d * d));
+                put(&mut map, &format!("{p}.encoder_attn.k_proj.weight"),
+                    &[d, kv_in], &vec_n(d * kv_in));
+                put(&mut map, &format!("{p}.encoder_attn.v_proj.weight"),
+                    &[d, kv_in], &vec_n(d * kv_in));
+                put(&mut map, &format!("{p}.encoder_attn.out_proj.weight"),
+                    &[d, d], &vec_n(d * d));
+                put(&mut map, &format!("{p}.encoder_attn_layer_norm.weight"),
+                    &[d], &vec_n(d));
+                put(&mut map, &format!("{p}.encoder_attn_layer_norm.bias"),
+                    &[d], &vec_n(d));
+                put(&mut map, &format!("{p}.fc1.weight"),
+                    &[d_cfg.decoder_ffn_dim, d], &vec_n(d_cfg.decoder_ffn_dim * d));
+                put(&mut map, &format!("{p}.fc2.weight"),
+                    &[d, d_cfg.decoder_ffn_dim], &vec_n(d * d_cfg.decoder_ffn_dim));
+                put(&mut map, &format!("{p}.final_layer_norm.weight"),
+                    &[d], &vec_n(d));
+                put(&mut map, &format!("{p}.final_layer_norm.bias"),
+                    &[d], &vec_n(d));
+            }
+            serialize_to_tempfile(&map)
+        }
+
+        #[test]
+        fn round_trip_synthetic_safetensors() {
+            let v_cfg = tiny_vit_config();
+            let d_cfg = tiny_trocr_config(v_cfg.hidden_size);
+            let path = build_tiny_safetensors(&v_cfg, &d_cfg);
+            let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path) }
+                .expect("mmap safetensors");
+            let model = TrocrModel::load_from_mmapped(&st, v_cfg.clone(), d_cfg.clone())
+                .expect("TrocrModel::load_from_mmapped");
+            assert_eq!(model.encoder_weights.layers.len(), v_cfg.num_hidden_layers);
+            assert_eq!(model.decoder_weights.layers.len(), d_cfg.decoder_layers);
+            assert!(model.decoder_weights.output_projection.is_none(),
+                "tie_word_embeddings=true => output_projection should be None");
+            let image: Vec<f32> = (0..(3 * 8 * 8)).map(|i| (i as f32) * 0.01).collect();
+            let img = LazyTensor::from_f32(
+                image, Shape::from_dims(&[1, 3, 8, 8]), &crate::Device::cpu(),
+            );
+            let logits = model.forward(&img, &[1_u32, 2, 3]).unwrap().realize_f32();
+            for v in &logits { assert!(v.is_finite()); }
+            let _ = std::fs::remove_file(&path);
+        }
+
+        #[test]
+        #[ignore]
+        fn from_hub_smoke_trocr_base_handwritten() {
+            // Canonical: microsoft/trocr-base-handwritten — encoder.* + decoder.model.decoder.*
         }
     }
 }

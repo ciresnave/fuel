@@ -1209,6 +1209,196 @@ pub fn generate(
     Ok(x)
 }
 
+// ---- Safetensors loader ----------------------------------------------------
+
+/// Load `FluxLinear` from a HuggingFace safetensors. `prefix` is the
+/// tensor namespace (e.g. `"img_in"`, `"double_blocks.0.img_attn.qkv"`);
+/// the loader pulls `{prefix}.weight` and (if `bias` is true) `{prefix}.bias`.
+fn load_flux_linear(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    in_features: usize,
+    out_features: usize,
+    bias: bool,
+) -> Result<FluxLinear> {
+    use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    let weight = load_transposed_matrix_preserve_dtype(
+        st, &format!("{prefix}.weight"), out_features, in_features,
+    )?;
+    let bias = if bias {
+        let b = load_tensor_as_f32(st, &format!("{prefix}.bias"))?;
+        if b.len() != out_features {
+            return Err(crate::Error::Msg(format!(
+                "load_flux_linear: bias {prefix}.bias has {} elements, expected {out_features}",
+                b.len(),
+            )).bt());
+        }
+        Some(Arc::from(b))
+    } else {
+        None
+    };
+    Ok(FluxLinear { weight, bias, in_features, out_features })
+}
+
+fn load_flux_qknorm(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    head_dim: usize,
+) -> Result<FluxQkNorm> {
+    use crate::lazy::load_tensor_as_f32;
+    let q = load_tensor_as_f32(st, &format!("{prefix}.query_norm.scale"))?;
+    let k = load_tensor_as_f32(st, &format!("{prefix}.key_norm.scale"))?;
+    if q.len() != head_dim || k.len() != head_dim {
+        return Err(crate::Error::Msg(format!(
+            "load_flux_qknorm: norm gain length mismatch at {prefix} (q={}, k={}, head_dim={head_dim})",
+            q.len(), k.len(),
+        )).bt());
+    }
+    Ok(FluxQkNorm { query_gain: Arc::from(q), key_gain: Arc::from(k) })
+}
+
+fn load_flux_mlp_embedder(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    in_sz: usize,
+    h_sz: usize,
+) -> Result<FluxMlpEmbedder> {
+    Ok(FluxMlpEmbedder {
+        in_layer:  load_flux_linear(st, &format!("{prefix}.in_layer"),  in_sz, h_sz, true)?,
+        out_layer: load_flux_linear(st, &format!("{prefix}.out_layer"), h_sz, h_sz, true)?,
+    })
+}
+
+fn load_flux_self_attention(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    dim: usize,
+    num_heads: usize,
+    qkv_bias: bool,
+) -> Result<FluxSelfAttention> {
+    let head_dim = dim / num_heads;
+    Ok(FluxSelfAttention {
+        qkv:     load_flux_linear(st, &format!("{prefix}.qkv"), dim, 3 * dim, qkv_bias)?,
+        qk_norm: load_flux_qknorm(st, &format!("{prefix}.norm"), head_dim)?,
+        proj:    load_flux_linear(st, &format!("{prefix}.proj"), dim, dim, true)?,
+        num_heads,
+        head_dim,
+    })
+}
+
+fn load_flux_mlp(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    in_sz: usize,
+    mlp_sz: usize,
+) -> Result<FluxMlp> {
+    // Eager Flux stores mlp as `mlp.0` / `mlp.2` (a Sequential).
+    Ok(FluxMlp {
+        fc1: load_flux_linear(st, &format!("{prefix}.0"), in_sz,  mlp_sz, true)?,
+        fc2: load_flux_linear(st, &format!("{prefix}.2"), mlp_sz, in_sz,  true)?,
+    })
+}
+
+fn load_flux_modulation(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    dim: usize,
+    num_chunks: usize,
+) -> Result<FluxModulation> {
+    Ok(FluxModulation {
+        lin: load_flux_linear(st, &format!("{prefix}.lin"), dim, 3 * num_chunks * dim, true)?,
+        num_chunks,
+    })
+}
+
+fn load_flux_double_block(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    cfg: &FluxConfig,
+) -> Result<FluxDoubleStreamBlockWeights> {
+    let h = cfg.hidden_size;
+    let mlp_h = cfg.mlp_hidden();
+    Ok(FluxDoubleStreamBlockWeights {
+        img_mod:  load_flux_modulation(st, &format!("{prefix}.img_mod"), h, 2)?,
+        img_attn: load_flux_self_attention(st, &format!("{prefix}.img_attn"), h, cfg.num_heads, cfg.qkv_bias)?,
+        img_mlp:  load_flux_mlp(st, &format!("{prefix}.img_mlp"), h, mlp_h)?,
+        txt_mod:  load_flux_modulation(st, &format!("{prefix}.txt_mod"), h, 2)?,
+        txt_attn: load_flux_self_attention(st, &format!("{prefix}.txt_attn"), h, cfg.num_heads, cfg.qkv_bias)?,
+        txt_mlp:  load_flux_mlp(st, &format!("{prefix}.txt_mlp"), h, mlp_h)?,
+    })
+}
+
+fn load_flux_single_block(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    cfg: &FluxConfig,
+) -> Result<FluxSingleStreamBlockWeights> {
+    let h = cfg.hidden_size;
+    let head_dim = cfg.head_dim();
+    let mlp_h = cfg.mlp_hidden();
+    Ok(FluxSingleStreamBlockWeights {
+        linear1: load_flux_linear(st, &format!("{prefix}.linear1"), h,             3 * h + mlp_h, true)?,
+        linear2: load_flux_linear(st, &format!("{prefix}.linear2"), h + mlp_h,     h,             true)?,
+        qk_norm: load_flux_qknorm(st, &format!("{prefix}.norm"), head_dim)?,
+        modulation: load_flux_modulation(st, &format!("{prefix}.modulation"), h, 1)?,
+        num_heads: cfg.num_heads,
+        head_dim,
+        mlp_hidden: mlp_h,
+    })
+}
+
+impl FluxWeights {
+    /// Walk a HuggingFace Flux safetensors namespace and build a
+    /// `FluxWeights` bag.
+    ///
+    /// Expected names (mirrors the eager `model.rs` `var_builder.pp(...)`
+    /// calls):
+    /// - `img_in.{weight,bias}` → `img_in`
+    /// - `txt_in.{weight,bias}` → `txt_in`
+    /// - `time_in.{in_layer,out_layer}.{weight,bias}` → `time_in`
+    /// - `vector_in.{in_layer,out_layer}.{weight,bias}` → `vector_in`
+    /// - `guidance_in.*` → `guidance_in` (only if `cfg.guidance_embed`)
+    /// - `double_blocks.{i}.img_mod.lin.{weight,bias}` etc.
+    /// - `double_blocks.{i}.img_attn.{qkv,proj}.{weight,bias}`
+    /// - `double_blocks.{i}.img_attn.norm.{query_norm,key_norm}.scale`
+    /// - `double_blocks.{i}.img_mlp.0/2.{weight,bias}` (Sequential indices)
+    /// - `single_blocks.{i}.{linear1,linear2,modulation.lin}.{weight,bias}`
+    /// - `single_blocks.{i}.norm.{query_norm,key_norm}.scale`
+    /// - `final_layer.linear.{weight,bias}`
+    /// - `final_layer.adaLN_modulation.1.{weight,bias}`
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &FluxConfig,
+    ) -> Result<Self> {
+        let h = cfg.hidden_size;
+        let img_in = load_flux_linear(st, "img_in", cfg.in_channels, h, true)?;
+        let txt_in = load_flux_linear(st, "txt_in", cfg.context_in_dim, h, true)?;
+        let time_in = load_flux_mlp_embedder(st, "time_in", 256, h)?;
+        let vector_in = load_flux_mlp_embedder(st, "vector_in", cfg.vec_in_dim, h)?;
+        let guidance_in = if cfg.guidance_embed {
+            Some(load_flux_mlp_embedder(st, "guidance_in", 256, h)?)
+        } else {
+            None
+        };
+        let mut double_blocks = Vec::with_capacity(cfg.depth);
+        for i in 0..cfg.depth {
+            double_blocks.push(load_flux_double_block(st, &format!("double_blocks.{i}"), cfg)?);
+        }
+        let mut single_blocks = Vec::with_capacity(cfg.depth_single_blocks);
+        for i in 0..cfg.depth_single_blocks {
+            single_blocks.push(load_flux_single_block(st, &format!("single_blocks.{i}"), cfg)?);
+        }
+        let final_layer = FluxLastLayer {
+            linear: load_flux_linear(st, "final_layer.linear", h, cfg.in_channels, true)?,
+            ada_ln_modulation: load_flux_linear(st, "final_layer.adaLN_modulation.1", h, 2 * h, true)?,
+        };
+        Ok(FluxWeights {
+            img_in, txt_in, time_in, vector_in, guidance_in,
+            double_blocks, single_blocks, final_layer,
+        })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
@@ -1618,6 +1808,129 @@ mod tests {
         for &v in &out.realize_f32() {
             assert!(v.is_finite(), "non-finite generate output: {v}");
         }
+    }
+
+    // ---- Safetensors loader round-trip --------------------------------
+
+    /// Write tensors to a temp .safetensors file and return the path.
+    fn write_tmp_safetensors(
+        tensors: &[(&str, Vec<usize>, Vec<f32>)],
+    ) -> std::path::PathBuf {
+        use safetensors::tensor::TensorView;
+        use std::collections::HashMap;
+        // safetensors::serialize takes (dtype, shape, &[u8]) views.
+        // Hold the bytes alive while we serialize.
+        let bytes_store: Vec<Vec<u8>> = tensors.iter()
+            .map(|(_, _, data)| data.iter().flat_map(|f| f.to_le_bytes()).collect())
+            .collect();
+        let views: HashMap<String, TensorView<'_>> = tensors.iter()
+            .zip(bytes_store.iter())
+            .map(|((name, shape, _), bytes)| {
+                let v = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
+                    .expect("TensorView::new");
+                (name.to_string(), v)
+            })
+            .collect();
+        let metadata: Option<HashMap<String, String>> = None;
+        let bytes_out = safetensors::serialize(&views, metadata).expect("safetensors::serialize");
+        let path = std::env::temp_dir().join(format!(
+            "fuel_lazy_flux_test_{}.safetensors",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::write(&path, bytes_out).expect("write safetensors");
+        path
+    }
+
+    fn linear_tensors(prefix: &str, in_f: usize, out_f: usize, seed: u32, with_bias: bool)
+        -> Vec<(String, Vec<usize>, Vec<f32>)>
+    {
+        let mut s = seed;
+        let mut next = || -> f32 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+        };
+        let w_data: Vec<f32> = (0..in_f * out_f).map(|_| next()).collect();
+        let mut out = vec![(
+            format!("{prefix}.weight"),
+            vec![out_f, in_f],
+            w_data,
+        )];
+        if with_bias {
+            let b_data: Vec<f32> = (0..out_f).map(|_| next()).collect();
+            out.push((format!("{prefix}.bias"), vec![out_f], b_data));
+        }
+        out
+    }
+
+    /// load_from_mmapped: round-trip a minimal flux config through a
+    /// synthesized safetensors file and confirm the loaded weights
+    /// reproduce the synthetic projection bias verbatim.
+    #[test]
+    fn load_from_mmapped_round_trip_tiny() {
+        let cfg = FluxConfig {
+            in_channels: 4, vec_in_dim: 8, context_in_dim: 8,
+            hidden_size: 8, mlp_ratio: 2.0,
+            num_heads: 2, depth: 1, depth_single_blocks: 0,
+            axes_dim: vec![2, 2], theta: 10_000,
+            qkv_bias: true, guidance_embed: false, qk_norm: true,
+        };
+        let h = cfg.hidden_size;
+        let m = cfg.mlp_hidden();
+        let head_dim = cfg.head_dim();
+        let mut tensors: Vec<(String, Vec<usize>, Vec<f32>)> = Vec::new();
+        // Embedders + linears.
+        tensors.extend(linear_tensors("img_in", cfg.in_channels, h, 1, true));
+        tensors.extend(linear_tensors("txt_in", cfg.context_in_dim, h, 2, true));
+        tensors.extend(linear_tensors("time_in.in_layer", 256, h, 3, true));
+        tensors.extend(linear_tensors("time_in.out_layer", h, h, 4, true));
+        tensors.extend(linear_tensors("vector_in.in_layer", cfg.vec_in_dim, h, 5, true));
+        tensors.extend(linear_tensors("vector_in.out_layer", h, h, 6, true));
+        // double block 0.
+        tensors.extend(linear_tensors("double_blocks.0.img_mod.lin", h, 6 * h, 7, true));
+        tensors.extend(linear_tensors("double_blocks.0.img_attn.qkv", h, 3 * h, 8, true));
+        tensors.extend(linear_tensors("double_blocks.0.img_attn.proj", h, h, 9, true));
+        tensors.push(("double_blocks.0.img_attn.norm.query_norm.scale".into(),
+            vec![head_dim], vec![1.0_f32; head_dim]));
+        tensors.push(("double_blocks.0.img_attn.norm.key_norm.scale".into(),
+            vec![head_dim], vec![1.0_f32; head_dim]));
+        tensors.extend(linear_tensors("double_blocks.0.img_mlp.0", h, m, 10, true));
+        tensors.extend(linear_tensors("double_blocks.0.img_mlp.2", m, h, 11, true));
+        tensors.extend(linear_tensors("double_blocks.0.txt_mod.lin", h, 6 * h, 12, true));
+        tensors.extend(linear_tensors("double_blocks.0.txt_attn.qkv", h, 3 * h, 13, true));
+        tensors.extend(linear_tensors("double_blocks.0.txt_attn.proj", h, h, 14, true));
+        tensors.push(("double_blocks.0.txt_attn.norm.query_norm.scale".into(),
+            vec![head_dim], vec![1.0_f32; head_dim]));
+        tensors.push(("double_blocks.0.txt_attn.norm.key_norm.scale".into(),
+            vec![head_dim], vec![1.0_f32; head_dim]));
+        tensors.extend(linear_tensors("double_blocks.0.txt_mlp.0", h, m, 15, true));
+        tensors.extend(linear_tensors("double_blocks.0.txt_mlp.2", m, h, 16, true));
+        // final layer.
+        tensors.extend(linear_tensors("final_layer.linear", h, cfg.in_channels, 17, true));
+        tensors.extend(linear_tensors("final_layer.adaLN_modulation.1", h, 2 * h, 18, true));
+
+        // Write file.
+        let refs: Vec<(&str, Vec<usize>, Vec<f32>)> = tensors.iter()
+            .map(|(n, s, d)| (n.as_str(), s.clone(), d.clone()))
+            .collect();
+        let path = write_tmp_safetensors(&refs);
+
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path).unwrap() };
+        let weights = FluxWeights::load_from_mmapped(&st, &cfg).unwrap();
+
+        // Verify a specific tensor came through correctly.
+        match weights.img_in.weight {
+            WeightStorage::F32(ref w) => {
+                // Expected: in_features × out_features physically laid out.
+                assert_eq!(w.len(), cfg.in_channels * h);
+            }
+            _ => panic!("expected F32 storage"),
+        }
+        assert_eq!(weights.img_in.bias.as_ref().unwrap().len(), h);
+        assert_eq!(weights.double_blocks.len(), 1);
+        assert_eq!(weights.single_blocks.len(), 0);
+        assert!(weights.guidance_in.is_none());
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

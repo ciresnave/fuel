@@ -40,7 +40,10 @@
 //!     - `lm_head.weight` → `output` (or tied to embedding if
 //!       `tie_word_embeddings`).
 
-use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
+use crate::lazy::{
+    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+    LayerWeights, LazyTensor, WeightStorage,
+};
 use crate::{Device, Result};
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -432,6 +435,117 @@ fn build_causal_mask(anchor: &LazyTensor, seq: usize) -> LazyTensor {
     anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
 }
 
+// ---- Safetensors loader ----------------------------------------------------
+
+/// Load PaddleOCR-VL text-stack weights under the given HF prefix
+/// (`""` for a plain checkpoint; the multimodal composition uses
+/// the empty prefix because the text decoder lives at the top level
+/// of the released checkpoint). Weight names follow the LLaMA /
+/// Mistral convention:
+///   - `<prefix>model.embed_tokens.weight`
+///   - `<prefix>model.layers.{i}.self_attn.{q,k,v,o}_proj.weight` (+ optional `.bias`)
+///   - `<prefix>model.layers.{i}.mlp.{gate,up,down}_proj.weight` (+ optional `.bias`)
+///   - `<prefix>model.layers.{i}.input_layernorm.weight`
+///   - `<prefix>model.layers.{i}.post_attention_layernorm.weight`
+///   - `<prefix>model.norm.weight`
+///   - `<prefix>lm_head.weight` (absent when `tie_word_embeddings`)
+pub fn load_paddleocr_vl_text_weights_with_prefix(
+    st: &crate::safetensors::MmapedSafetensors,
+    cfg: &PaddleOcrVlTextConfig,
+    prefix: &str,
+) -> Result<PaddleOcrVlTextWeights> {
+    let h = cfg.hidden_size;
+    let kv = cfg.num_key_value_heads * cfg.head_dim;
+    let token_embedding = load_tensor_as_f32(
+        st, &format!("{prefix}model.embed_tokens.weight"),
+    )?;
+    if token_embedding.len() != cfg.vocab_size * h {
+        crate::bail!(
+            "{prefix}model.embed_tokens.weight: {} elts, expected {}",
+            token_embedding.len(), cfg.vocab_size * h,
+        );
+    }
+
+    let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+    for i in 0..cfg.num_hidden_layers {
+        let p = format!("{prefix}model.layers.{i}");
+        let attn_q = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+        )?;
+        let attn_k = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.k_proj.weight"), kv, h,
+        )?;
+        let attn_v = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.v_proj.weight"), kv, h,
+        )?;
+        let attn_o = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.o_proj.weight"), h, h,
+        )?;
+        let ffn_gate = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.mlp.gate_proj.weight"), cfg.intermediate_size, h,
+        )?;
+        let ffn_up = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.mlp.up_proj.weight"), cfg.intermediate_size, h,
+        )?;
+        let ffn_down = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.mlp.down_proj.weight"), h, cfg.intermediate_size,
+        )?;
+        let attn_norm_gain = load_tensor_as_f32(
+            st, &format!("{p}.input_layernorm.weight"),
+        )?;
+        let ffn_norm_gain = load_tensor_as_f32(
+            st, &format!("{p}.post_attention_layernorm.weight"),
+        )?;
+        let (attn_q_bias, attn_k_bias, attn_v_bias) = if cfg.use_bias {
+            (
+                load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias")).ok().map(Arc::from),
+                load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias")).ok().map(Arc::from),
+                load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias")).ok().map(Arc::from),
+            )
+        } else {
+            (None, None, None)
+        };
+        layers.push(LayerWeights {
+            attn_q, attn_q_bias,
+            attn_k, attn_k_bias,
+            attn_v, attn_v_bias,
+            attn_o,
+            ffn_gate, ffn_up, ffn_down,
+            attn_norm_gain: Arc::from(attn_norm_gain),
+            ffn_norm_gain: Arc::from(ffn_norm_gain),
+        });
+    }
+
+    let final_norm_gain = load_tensor_as_f32(st, &format!("{prefix}model.norm.weight"))?;
+    let output: Option<WeightStorage> = if cfg.tie_word_embeddings {
+        None
+    } else {
+        Some(load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}lm_head.weight"), cfg.vocab_size, h,
+        )?)
+    };
+
+    Ok(PaddleOcrVlTextWeights {
+        token_embedding: Arc::from(token_embedding),
+        layers,
+        final_norm_gain: Arc::from(final_norm_gain),
+        output,
+    })
+}
+
+impl PaddleOcrVlTextWeights {
+    /// Load PaddleOCR-VL text-stack weights from a HuggingFace
+    /// safetensors file using the standard top-level HF naming
+    /// (no prefix). See [`load_paddleocr_vl_text_weights_with_prefix`]
+    /// for the multimodal-embedded form.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &PaddleOcrVlTextConfig,
+    ) -> Result<Self> {
+        load_paddleocr_vl_text_weights_with_prefix(st, cfg, "")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,6 +807,113 @@ mod tests {
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
         for &v in &hidden.realize_f32() {
             assert!(v.is_finite());
+        }
+    }
+
+    mod load {
+        use super::*;
+        use safetensors::tensor::TensorView;
+        use safetensors::Dtype;
+        use std::collections::HashMap;
+
+        fn put(
+            map: &mut HashMap<String, (Dtype, Vec<usize>, Vec<u8>)>,
+            name: &str,
+            shape: &[usize],
+            data: &[f32],
+        ) {
+            let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
+            map.insert(name.to_string(), (Dtype::F32, shape.to_vec(), bytes));
+        }
+
+        fn serialize_to_tempfile(
+            map: &HashMap<String, (Dtype, Vec<usize>, Vec<u8>)>,
+        ) -> std::path::PathBuf {
+            let mut views: HashMap<String, TensorView<'_>> = HashMap::new();
+            for (k, (dt, shape, data)) in map {
+                let v = TensorView::new(*dt, shape.clone(), data).expect("TensorView");
+                views.insert(k.clone(), v);
+            }
+            let bytes = safetensors::serialize(&views, None).expect("serialize");
+            let path = std::env::temp_dir().join(format!(
+                "lazy_paddleocr_vl_text_load_{}_{}.safetensors",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            ));
+            std::fs::write(&path, bytes).expect("write tempfile");
+            path
+        }
+
+        fn build_tiny_safetensors(cfg: &PaddleOcrVlTextConfig) -> std::path::PathBuf {
+            let mut map: HashMap<String, (Dtype, Vec<usize>, Vec<u8>)> = HashMap::new();
+            let mut s: u32 = 4321;
+            let mut nxt = || -> f32 {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.01
+            };
+            let mut vec_n = |n: usize| -> Vec<f32> { (0..n).map(|_| nxt()).collect() };
+
+            let d = cfg.hidden_size;
+            let kv = cfg.num_key_value_heads * cfg.head_dim;
+            put(&mut map, "model.embed_tokens.weight",
+                &[cfg.vocab_size, d], &vec_n(cfg.vocab_size * d));
+            for i in 0..cfg.num_hidden_layers {
+                let p = format!("model.layers.{i}");
+                put(&mut map, &format!("{p}.self_attn.q_proj.weight"),
+                    &[d, d], &vec_n(d * d));
+                put(&mut map, &format!("{p}.self_attn.k_proj.weight"),
+                    &[kv, d], &vec_n(kv * d));
+                put(&mut map, &format!("{p}.self_attn.v_proj.weight"),
+                    &[kv, d], &vec_n(kv * d));
+                put(&mut map, &format!("{p}.self_attn.o_proj.weight"),
+                    &[d, d], &vec_n(d * d));
+                put(&mut map, &format!("{p}.mlp.gate_proj.weight"),
+                    &[cfg.intermediate_size, d], &vec_n(cfg.intermediate_size * d));
+                put(&mut map, &format!("{p}.mlp.up_proj.weight"),
+                    &[cfg.intermediate_size, d], &vec_n(cfg.intermediate_size * d));
+                put(&mut map, &format!("{p}.mlp.down_proj.weight"),
+                    &[d, cfg.intermediate_size], &vec_n(d * cfg.intermediate_size));
+                put(&mut map, &format!("{p}.input_layernorm.weight"),
+                    &[d], &vec_n(d));
+                put(&mut map, &format!("{p}.post_attention_layernorm.weight"),
+                    &[d], &vec_n(d));
+            }
+            put(&mut map, "model.norm.weight", &[d], &vec_n(d));
+            if !cfg.tie_word_embeddings {
+                put(&mut map, "lm_head.weight",
+                    &[cfg.vocab_size, d], &vec_n(cfg.vocab_size * d));
+            }
+            serialize_to_tempfile(&map)
+        }
+
+        #[test]
+        fn round_trip_synthetic_safetensors() {
+            let cfg = tiny_cfg();
+            let path = build_tiny_safetensors(&cfg);
+            let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path) }
+                .expect("mmap safetensors");
+            let weights = PaddleOcrVlTextWeights::load_from_mmapped(&st, &cfg)
+                .expect("PaddleOcrVlTextWeights::load_from_mmapped");
+            assert_eq!(weights.layers.len(), cfg.num_hidden_layers);
+            assert_eq!(weights.token_embedding.len(), cfg.vocab_size * cfg.hidden_size);
+            assert!(weights.output.is_some(), "non-tied lm_head must materialize");
+
+            let model = PaddleOcrVlTextModel { config: cfg.clone(), weights };
+            let tokens: Vec<u32> = vec![1, 2, 3];
+            let logits = model.forward(&tokens, 0).unwrap();
+            assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
+            for &v in &logits.realize_f32() {
+                assert!(v.is_finite(), "non-finite logit");
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+
+        #[test]
+        #[ignore]
+        fn from_hub_smoke_paddleocr_vl_text() {
+            // Canonical: PaddlePaddle/PaddleOCR-VL (text decoder lives
+            // under top-level `model.*` + `lm_head.weight`).
         }
     }
 }

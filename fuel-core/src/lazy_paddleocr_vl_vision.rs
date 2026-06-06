@@ -39,7 +39,10 @@
 //! resolution variant is deferred to a follow-up alongside Pixtral's
 //! variable-image-size work.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{
+    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+    LazyTensor, WeightStorage,
+};
 use crate::{Device, Result};
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -530,6 +533,178 @@ pub fn partition_image(
     tiles
 }
 
+// ---- Safetensors loader ----------------------------------------------------
+
+/// Load PaddleOCR-VL vision-tower weights under the given HF
+/// prefixes. `vision_prefix` is the prefix for the NaViT encoder
+/// itself (typically `"visual.vision_model."`); `projector_prefix`
+/// names the `mlp_AR` projector (typically `"mlp_AR."`). HF
+/// tensor names:
+///   - `{vision_prefix}embeddings.patch_embedding.{weight,bias}`
+///   - `{vision_prefix}embeddings.position_embedding.weight`
+///   - `{vision_prefix}encoder.layers.{i}.layer_norm{1,2}.{weight,bias}`
+///   - `{vision_prefix}encoder.layers.{i}.self_attn.{q,k,v,out}_proj.{weight,bias}`
+///   - `{vision_prefix}encoder.layers.{i}.mlp.fc{1,2}.{weight,bias}`
+///   - `{vision_prefix}post_layernorm.{weight,bias}`
+///   - `{projector_prefix}pre_norm.{weight,bias}`
+///   - `{projector_prefix}linear_{1,2}.{weight,bias}`
+pub fn load_paddleocr_vl_vision_weights(
+    st: &crate::safetensors::MmapedSafetensors,
+    cfg: &PaddleOcrVlVisionConfig,
+    text_hidden_size: usize,
+    vision_prefix: &str,
+    projector_prefix: &str,
+) -> Result<PaddleOcrVlVisionWeights> {
+    let h = cfg.hidden_size;
+    let inter = cfg.intermediate_size;
+    let np = cfg.num_patches_per_tile();
+    let m = cfg.spatial_merge_size;
+    let merged_hidden = h * m * m;
+
+    let patch_proj = load_tensor_as_f32(
+        st, &format!("{vision_prefix}embeddings.patch_embedding.weight"),
+    )?;
+    let expected_patch = h * cfg.num_channels * cfg.patch_size * cfg.patch_size;
+    if patch_proj.len() != expected_patch {
+        crate::bail!(
+            "{vision_prefix}embeddings.patch_embedding.weight: {} elts, expected {}",
+            patch_proj.len(), expected_patch,
+        );
+    }
+    let patch_proj_bias = load_tensor_as_f32(
+        st, &format!("{vision_prefix}embeddings.patch_embedding.bias"),
+    )?;
+    if patch_proj_bias.len() != h {
+        crate::bail!(
+            "{vision_prefix}embeddings.patch_embedding.bias: {} elts, expected {}",
+            patch_proj_bias.len(), h,
+        );
+    }
+    let position_embedding = load_tensor_as_f32(
+        st, &format!("{vision_prefix}embeddings.position_embedding.weight"),
+    )?;
+    if position_embedding.len() != np * h {
+        crate::bail!(
+            "{vision_prefix}embeddings.position_embedding.weight: {} elts, expected {}",
+            position_embedding.len(), np * h,
+        );
+    }
+
+    let post_ln_gain = load_tensor_as_f32(
+        st, &format!("{vision_prefix}post_layernorm.weight"),
+    )?;
+    let post_ln_bias = load_tensor_as_f32(
+        st, &format!("{vision_prefix}post_layernorm.bias"),
+    )?;
+
+    let mut blocks: Vec<PaddleOcrVlVisionBlockWeights> =
+        Vec::with_capacity(cfg.num_hidden_layers);
+    for i in 0..cfg.num_hidden_layers {
+        let p = format!("{vision_prefix}encoder.layers.{i}");
+        let ln1_gain = load_tensor_as_f32(st, &format!("{p}.layer_norm1.weight"))?;
+        let ln1_bias = load_tensor_as_f32(st, &format!("{p}.layer_norm1.bias"))?;
+        let ln2_gain = load_tensor_as_f32(st, &format!("{p}.layer_norm2.weight"))?;
+        let ln2_bias = load_tensor_as_f32(st, &format!("{p}.layer_norm2.bias"))?;
+        let q_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+        )?;
+        let q_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?;
+        let k_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.k_proj.weight"), h, h,
+        )?;
+        let k_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))?;
+        let v_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.v_proj.weight"), h, h,
+        )?;
+        let v_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?;
+        let out_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.out_proj.weight"), h, h,
+        )?;
+        let out_proj_bias = load_tensor_as_f32(
+            st, &format!("{p}.self_attn.out_proj.bias"),
+        )?;
+        let fc1 = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.mlp.fc1.weight"), inter, h,
+        )?;
+        let fc1_bias = load_tensor_as_f32(st, &format!("{p}.mlp.fc1.bias"))?;
+        let fc2 = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.mlp.fc2.weight"), h, inter,
+        )?;
+        let fc2_bias = load_tensor_as_f32(st, &format!("{p}.mlp.fc2.bias"))?;
+        blocks.push(PaddleOcrVlVisionBlockWeights {
+            ln1_gain: Arc::from(ln1_gain),
+            ln1_bias: Arc::from(ln1_bias),
+            q_proj, q_proj_bias: Arc::from(q_proj_bias),
+            k_proj, k_proj_bias: Arc::from(k_proj_bias),
+            v_proj, v_proj_bias: Arc::from(v_proj_bias),
+            out_proj, out_proj_bias: Arc::from(out_proj_bias),
+            ln2_gain: Arc::from(ln2_gain),
+            ln2_bias: Arc::from(ln2_bias),
+            fc1, fc1_bias: Arc::from(fc1_bias),
+            fc2, fc2_bias: Arc::from(fc2_bias),
+        });
+    }
+
+    // Projector (`mlp_AR` in HF): pre_norm + 2-layer MLP.
+    let pre_norm_gain = load_tensor_as_f32(
+        st, &format!("{projector_prefix}pre_norm.weight"),
+    )?;
+    let pre_norm_bias = load_tensor_as_f32(
+        st, &format!("{projector_prefix}pre_norm.bias"),
+    )?;
+    let linear_1 = load_transposed_matrix_preserve_dtype(
+        st, &format!("{projector_prefix}linear_1.weight"),
+        merged_hidden, merged_hidden,
+    )?;
+    let linear_1_bias = load_tensor_as_f32(
+        st, &format!("{projector_prefix}linear_1.bias"),
+    )?;
+    let linear_2 = load_transposed_matrix_preserve_dtype(
+        st, &format!("{projector_prefix}linear_2.weight"),
+        text_hidden_size, merged_hidden,
+    )?;
+    let linear_2_bias = load_tensor_as_f32(
+        st, &format!("{projector_prefix}linear_2.bias"),
+    )?;
+
+    let projector = PaddleOcrVlVisionProjectorWeights {
+        pre_norm_gain: Arc::from(pre_norm_gain),
+        pre_norm_bias: Arc::from(pre_norm_bias),
+        linear_1,
+        linear_1_bias: Arc::from(linear_1_bias),
+        linear_2,
+        linear_2_bias: Arc::from(linear_2_bias),
+    };
+
+    Ok(PaddleOcrVlVisionWeights {
+        patch_proj: Arc::from(patch_proj),
+        patch_proj_bias: Arc::from(patch_proj_bias),
+        position_embedding: Arc::from(position_embedding),
+        blocks,
+        post_ln_gain: Arc::from(post_ln_gain),
+        post_ln_bias: Arc::from(post_ln_bias),
+        projector,
+    })
+}
+
+impl PaddleOcrVlVisionWeights {
+    /// Load PaddleOCR-VL vision weights from a HuggingFace
+    /// safetensors file. The PaddleOCR-VL release puts the vision
+    /// encoder under `visual.vision_model.*` and the projector
+    /// under `mlp_AR.*` at the top level. `text_hidden_size` is the
+    /// language model's hidden size — the projector's `linear_2`
+    /// projects into it.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &PaddleOcrVlVisionConfig,
+        text_hidden_size: usize,
+    ) -> Result<Self> {
+        load_paddleocr_vl_vision_weights(
+            st, cfg, text_hidden_size, "visual.vision_model.", "mlp_AR.",
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -745,6 +920,147 @@ mod tests {
         for i in 0..8 {
             assert!((cos[i] - 1.0).abs() < 1e-6, "cos[0, {i}] = {} != 1", cos[i]);
             assert!(sin[i].abs() < 1e-6, "sin[0, {i}] = {} != 0", sin[i]);
+        }
+    }
+
+    mod load {
+        use super::*;
+        use safetensors::tensor::TensorView;
+        use safetensors::Dtype;
+        use std::collections::HashMap;
+
+        fn put(
+            map: &mut HashMap<String, (Dtype, Vec<usize>, Vec<u8>)>,
+            name: &str,
+            shape: &[usize],
+            data: &[f32],
+        ) {
+            let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
+            map.insert(name.to_string(), (Dtype::F32, shape.to_vec(), bytes));
+        }
+
+        fn serialize_to_tempfile(
+            map: &HashMap<String, (Dtype, Vec<usize>, Vec<u8>)>,
+        ) -> std::path::PathBuf {
+            let mut views: HashMap<String, TensorView<'_>> = HashMap::new();
+            for (k, (dt, shape, data)) in map {
+                let v = TensorView::new(*dt, shape.clone(), data).expect("TensorView");
+                views.insert(k.clone(), v);
+            }
+            let bytes = safetensors::serialize(&views, None).expect("serialize");
+            let path = std::env::temp_dir().join(format!(
+                "lazy_paddleocr_vl_vision_load_{}_{}.safetensors",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            ));
+            std::fs::write(&path, bytes).expect("write tempfile");
+            path
+        }
+
+        fn build_tiny_safetensors(
+            cfg: &PaddleOcrVlVisionConfig,
+            text_hidden: usize,
+        ) -> std::path::PathBuf {
+            let mut map: HashMap<String, (Dtype, Vec<usize>, Vec<u8>)> = HashMap::new();
+            let mut s: u32 = 5252;
+            let mut nxt = || -> f32 {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.01
+            };
+            let mut vec_n = |n: usize| -> Vec<f32> { (0..n).map(|_| nxt()).collect() };
+
+            let h = cfg.hidden_size;
+            let inter = cfg.intermediate_size;
+            let np = cfg.num_patches_per_tile();
+            let m = cfg.spatial_merge_size;
+            let merged_hidden = h * m * m;
+
+            let vp = "visual.vision_model.";
+            put(&mut map, &format!("{vp}embeddings.patch_embedding.weight"),
+                &[h, cfg.num_channels, cfg.patch_size, cfg.patch_size],
+                &vec_n(h * cfg.num_channels * cfg.patch_size * cfg.patch_size));
+            put(&mut map, &format!("{vp}embeddings.patch_embedding.bias"),
+                &[h], &vec_n(h));
+            put(&mut map, &format!("{vp}embeddings.position_embedding.weight"),
+                &[np, h], &vec_n(np * h));
+            put(&mut map, &format!("{vp}post_layernorm.weight"), &[h], &vec_n(h));
+            put(&mut map, &format!("{vp}post_layernorm.bias"), &[h], &vec_n(h));
+            for i in 0..cfg.num_hidden_layers {
+                let p = format!("{vp}encoder.layers.{i}");
+                put(&mut map, &format!("{p}.layer_norm1.weight"), &[h], &vec_n(h));
+                put(&mut map, &format!("{p}.layer_norm1.bias"), &[h], &vec_n(h));
+                put(&mut map, &format!("{p}.layer_norm2.weight"), &[h], &vec_n(h));
+                put(&mut map, &format!("{p}.layer_norm2.bias"), &[h], &vec_n(h));
+                for proj in &["q_proj", "k_proj", "v_proj", "out_proj"] {
+                    put(&mut map, &format!("{p}.self_attn.{proj}.weight"),
+                        &[h, h], &vec_n(h * h));
+                    put(&mut map, &format!("{p}.self_attn.{proj}.bias"),
+                        &[h], &vec_n(h));
+                }
+                put(&mut map, &format!("{p}.mlp.fc1.weight"),
+                    &[inter, h], &vec_n(inter * h));
+                put(&mut map, &format!("{p}.mlp.fc1.bias"),
+                    &[inter], &vec_n(inter));
+                put(&mut map, &format!("{p}.mlp.fc2.weight"),
+                    &[h, inter], &vec_n(h * inter));
+                put(&mut map, &format!("{p}.mlp.fc2.bias"),
+                    &[h], &vec_n(h));
+            }
+            let pp = "mlp_AR.";
+            put(&mut map, &format!("{pp}pre_norm.weight"), &[h], &vec_n(h));
+            put(&mut map, &format!("{pp}pre_norm.bias"), &[h], &vec_n(h));
+            put(&mut map, &format!("{pp}linear_1.weight"),
+                &[merged_hidden, merged_hidden],
+                &vec_n(merged_hidden * merged_hidden));
+            put(&mut map, &format!("{pp}linear_1.bias"),
+                &[merged_hidden], &vec_n(merged_hidden));
+            put(&mut map, &format!("{pp}linear_2.weight"),
+                &[text_hidden, merged_hidden],
+                &vec_n(text_hidden * merged_hidden));
+            put(&mut map, &format!("{pp}linear_2.bias"),
+                &[text_hidden], &vec_n(text_hidden));
+            serialize_to_tempfile(&map)
+        }
+
+        #[test]
+        fn round_trip_synthetic_safetensors() {
+            let cfg = tiny_cfg();
+            let text_hidden = 16;
+            let path = build_tiny_safetensors(&cfg, text_hidden);
+            let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path) }
+                .expect("mmap safetensors");
+            let weights = PaddleOcrVlVisionWeights::load_from_mmapped(
+                &st, &cfg, text_hidden,
+            ).expect("PaddleOcrVlVisionWeights::load_from_mmapped");
+            assert_eq!(weights.blocks.len(), cfg.num_hidden_layers);
+            assert_eq!(weights.patch_proj.len(),
+                cfg.hidden_size * cfg.num_channels * cfg.patch_size * cfg.patch_size);
+            assert_eq!(weights.position_embedding.len(),
+                cfg.num_patches_per_tile() * cfg.hidden_size);
+
+            let model = PaddleOcrVlVisionModel {
+                config: cfg.clone(),
+                text_hidden_size: text_hidden,
+                weights,
+            };
+            let pixels = tiny_pixels(&cfg, 1);
+            let out = model.forward(&pixels, (1, 1)).unwrap();
+            let merge = cfg.spatial_merge_size;
+            let expected = cfg.num_patches_per_tile() / (merge * merge);
+            assert_eq!(out.shape().dims(), &[expected, text_hidden]);
+            for &v in &out.realize_f32() {
+                assert!(v.is_finite(), "non-finite vision feature");
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+
+        #[test]
+        #[ignore]
+        fn from_hub_smoke_paddleocr_vl_vision() {
+            // Canonical: PaddlePaddle/PaddleOCR-VL — vision encoder
+            // lives under `visual.vision_model.*`, projector under
+            // `mlp_AR.*` at the top level of the checkpoint.
         }
     }
 }
