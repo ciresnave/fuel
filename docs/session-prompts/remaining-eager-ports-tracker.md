@@ -52,13 +52,18 @@ These unblock multiple downstream model ports. Ship these first.
 
 ## Multimodal vision-language
 
-- [ ] [Qwen3-VL (text + vision + composition)](port-qwen3-vl.md)
-      — `multimodal/qwen3_vl/*` (1418 LOC total). Vision tower uses
-      Conv3D + cu_seqlens variable-length attention + DeepStack
-      residual injection.
-- [ ] [PaddleOCR-VL (text + vision + composition)](port-paddleocr-vl.md)
-      — `multimodal/paddleocr_vl/*` (3983 LOC total). Ernie-style text
-      LM + OCR-specific ViT with window/patch logic.
+- [~] [Qwen3-VL (text + vision + composition)](shipped/port-qwen3-vl.md)
+      — `multimodal/qwen3_vl/*` (1418 LOC total). **Sub-ports 1 + 2
+      shipped** (lazy_qwen3_vl_text with MROPE; lazy_qwen3_vl_vision
+      with Conv3D patch embed + cu_seqlens block-diagonal mask +
+      DeepStack hooks; 10 tests). Sub-port 3 (composition) ships in
+      the next workflow round.
+- [~] [PaddleOCR-VL (text + vision + composition)](shipped/port-paddleocr-vl.md)
+      — `multimodal/paddleocr_vl/*` (3983 LOC total). **Sub-ports 1 + 2
+      shipped** (lazy_paddleocr_vl_text Ernie-style decoder with MROPE
+      deviations; lazy_paddleocr_vl_vision with tile-grid ViT + aspect-
+      ratio chooser + Siglip-style block; 10 tests). Sub-port 3
+      (composition) ships in the next workflow round.
 - [x] [Gemma4 audio (Conformer)](shipped/port-gemma4-audio.md)
       — `llm/gemma4/audio.rs` (874 LOC). **Shipped** as
       lazy_gemma4_audio (SSCP conv front-end + Conformer with
@@ -81,10 +86,12 @@ These unblock multiple downstream model ports. Ship these first.
       as lazy_wuerstchen (PaellaVQ decoder + Prior + DiffNext UNet
       with GlobalResponseNorm + end-to-end deterministic generate;
       5 tests including end_to_end_generate_tiny).
-- [ ] [Z-Image (T2I diffusion-class)](port-z-image.md)
-      — `diffusion/z_image/*` (2829 LOC across 7 files). Largest
-      single diffusion port. Transformer + VAE + text encoder +
-      scheduler + sampling + preprocess.
+- [x] [Z-Image (T2I diffusion-class)](shipped/port-z-image.md)
+      — `diffusion/z_image/*` (2829 LOC across 7 files). **Shipped**
+      as lazy_z_image (Flow-Matching DiT with 3D RoPE + AdaLN-Zero;
+      Qwen3-based text encoder; AutoencoderKL with 16-channel latent;
+      FlowMatchEulerDiscrete scheduler; 5 tests including
+      generate_end_to_end_tiny).
 - [~] [Stable Diffusion samplers + attention](shipped/port-sd-samplers.md)
       — `diffusion/stable_diffusion/{ddim,ddpm,uni_pc,euler_ancestral_discrete,schedulers,attention}.rs`
       (2294 LOC). **Sub-port 2 shipped** as lazy_sd_samplers (SdScheduler
