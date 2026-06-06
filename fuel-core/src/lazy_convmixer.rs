@@ -245,6 +245,63 @@ impl ConvMixerModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl ConvMixerWeights {
+    /// Load ConvMixer (timm "convmixer_{1024,1536}_20") weights from HF
+    /// safetensors. Stem at `stem.{0,1,3}.{...}` (conv→GELU→BN sequence),
+    /// blocks at `blocks.{i}.0.{0,1,3}.{...}` (depthwise+BN) and
+    /// `blocks.{i}.{2,3,5}.{...}` (pointwise+BN), classifier at `head.{...}`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &ConvMixerConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+
+        let load_bn = |prefix: &str| -> Result<BatchNormParams> {
+            let gain = load_tensor_as_f32(st, &format!("{prefix}.weight"))?;
+            let bias = load_tensor_as_f32(st, &format!("{prefix}.bias"))?;
+            let mean = load_tensor_as_f32(st, &format!("{prefix}.running_mean"))?;
+            let var = load_tensor_as_f32(st, &format!("{prefix}.running_var"))?;
+            Ok(BatchNormParams::from_raw(&gain, &bias, &mean, &var, cfg.bn_eps))
+        };
+
+        // Stem: Conv2d(3, dim, patch, patch) → GELU → BatchNorm.
+        let stem = WeightStorage::F32(Arc::from(
+            load_tensor_as_f32(st, "stem.0.weight")?,
+        ));
+        let stem_bn = load_bn("stem.2")?;
+
+        let mut blocks = Vec::with_capacity(cfg.depth);
+        for i in 0..cfg.depth {
+            // Block layout (Sequential of two Residual+Sequential):
+            //   blocks.{i}.0.0  : depthwise k×k conv
+            //   blocks.{i}.0.2  : depthwise BN  (after GELU)
+            //   blocks.{i}.2    : pointwise 1×1 conv
+            //   blocks.{i}.4    : pointwise BN  (after GELU)
+            let depthwise = WeightStorage::F32(Arc::from(
+                load_tensor_as_f32(st, &format!("blocks.{i}.0.fn.0.weight"))
+                    .or_else(|_| load_tensor_as_f32(st, &format!("blocks.{i}.0.0.weight")))?,
+            ));
+            let depthwise_bn = load_bn(&format!("blocks.{i}.0.fn.2"))
+                .or_else(|_| load_bn(&format!("blocks.{i}.0.2")))?;
+            let pointwise = WeightStorage::F32(Arc::from(
+                load_tensor_as_f32(st, &format!("blocks.{i}.2.weight"))?,
+            ));
+            let pointwise_bn = load_bn(&format!("blocks.{i}.4"))?;
+            blocks.push(ConvMixerBlockWeights {
+                depthwise, depthwise_bn, pointwise, pointwise_bn,
+            });
+        }
+
+        let head = ltm(st, "head.weight", cfg.nclasses, cfg.dim)?;
+        let head_bias = Arc::from(load_tensor_as_f32(st, "head.bias")
+            .unwrap_or_else(|_| vec![0.0_f32; cfg.nclasses]));
+
+        Ok(Self { stem, stem_bn, blocks, head, head_bias })
+    }
+}
+
 /// Build a tiny ConvMixer image for tests: 3 channels, (1, 3, H, W).
 #[cfg(test)]
 fn tiny_image(h: usize, w: usize, device: &Device) -> LazyTensor {

@@ -323,6 +323,89 @@ fn apply_layer_norm_last(
     x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), 1e-6)
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl EvaWeights {
+    /// Load EVA-02 (timm "eva02_{base,large}_patch14_*") weights from HF
+    /// safetensors. Q/V have biases; K has none. MLP uses SwiGLU with
+    /// separate gate/x projections and a sub-LayerNorm between them.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &EvaConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.embed_dim;
+        let mlp = cfg.hidden_mlp_dim();
+        let num_classes = cfg.num_classes.unwrap_or(0);
+
+        let patch_conv_w = Arc::from(load_tensor_as_f32(
+            st, "patch_embed.proj.weight",
+        )?);
+        let patch_conv_b = Arc::from(load_tensor_as_f32(
+            st, "patch_embed.proj.bias",
+        )?);
+        let cls_token = Arc::from(load_tensor_as_f32(st, "cls_token")?);
+        let pos_embed = Arc::from(load_tensor_as_f32(st, "pos_embed")?);
+        // RoPE table is precomputed and stored as a buffer.
+        let rot_pos_embed = load_tensor_as_f32(st, "rope.freqs")
+            .or_else(|_| load_tensor_as_f32(st, "pos_embed_rot"))
+            .map(Arc::from)
+            .unwrap_or_else(|_| Arc::from(vec![0.0_f32; cfg.num_patches() * 2 * cfg.head_dim()]));
+
+        let load_ln = |prefix: &str| -> Result<LayerNormWeights> {
+            Ok(LayerNormWeights {
+                gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.weight"))?),
+                bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.bias"))?),
+            })
+        };
+
+        let mut blocks = Vec::with_capacity(cfg.depth);
+        for i in 0..cfg.depth {
+            let p = format!("blocks.{i}");
+            let norm1 = load_ln(&format!("{p}.norm1"))?;
+            let q_w = ltm(st, &format!("{p}.attn.q_proj.weight"), h, h)?;
+            let q_b = Arc::from(load_tensor_as_f32(st, &format!("{p}.attn.q_proj.bias"))?);
+            let k_w = ltm(st, &format!("{p}.attn.k_proj.weight"), h, h)?;
+            let v_w = ltm(st, &format!("{p}.attn.v_proj.weight"), h, h)?;
+            let v_b = Arc::from(load_tensor_as_f32(st, &format!("{p}.attn.v_proj.bias"))?);
+            let proj_w = ltm(st, &format!("{p}.attn.proj.weight"), h, h)?;
+            let proj_b = Arc::from(load_tensor_as_f32(st, &format!("{p}.attn.proj.bias"))?);
+            let attn = EvaAttentionWeights { q_w, q_b, k_w, v_w, v_b, proj_w, proj_b };
+
+            let norm2 = load_ln(&format!("{p}.norm2"))?;
+            // SwiGLU MLP: gate path (w1) + value path (w3) + sub-norm + down (w2).
+            let fc1_g_w = ltm(st, &format!("{p}.mlp.w1.weight"), mlp, h)?;
+            let fc1_g_b = Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.w1.bias"))?);
+            let fc1_x_w = ltm(st, &format!("{p}.mlp.w2.weight"), mlp, h)?;
+            let fc1_x_b = Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.w2.bias"))?);
+            let norm = load_ln(&format!("{p}.mlp.ffn_ln"))?;
+            let fc2_w = ltm(st, &format!("{p}.mlp.w3.weight"), h, mlp)?;
+            let fc2_b = Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.w3.bias"))?);
+            let mlp_w = EvaMlpWeights {
+                fc1_g_w, fc1_g_b, fc1_x_w, fc1_x_b, norm, fc2_w, fc2_b,
+            };
+
+            blocks.push(EvaBlockWeights { norm1, attn, norm2, mlp: mlp_w });
+        }
+
+        let norm = load_ln("norm")?;
+        let (head_w, head_b) = if num_classes > 0 {
+            (
+                ltm(st, "head.weight", num_classes, h)?,
+                Arc::from(load_tensor_as_f32(st, "head.bias")
+                    .unwrap_or_else(|_| vec![0.0_f32; num_classes])),
+            )
+        } else {
+            (WeightStorage::F32(Arc::from(vec![0.0_f32; 0])), Arc::from(vec![0.0_f32; 0]))
+        };
+
+        Ok(Self {
+            patch_conv_w, patch_conv_b, cls_token, pos_embed, rot_pos_embed,
+            blocks, norm, head_w, head_b,
+        })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
