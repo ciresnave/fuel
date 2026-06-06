@@ -370,6 +370,81 @@ impl Dinov2Model {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl Dinov2Weights {
+    /// Load DINOv2 (facebook/dinov2-{small,base,large}) weights from HF
+    /// safetensors. Wrapper prefix `dinov2.`; classifier is `classifier.weight`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Dinov2Config,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.embed_dim;
+        let mlp = cfg.mlp_hidden();
+
+        let patch_proj = Arc::from(load_tensor_as_f32(
+            st, "dinov2.embeddings.patch_embeddings.projection.weight",
+        )?);
+        let patch_proj_bias = Arc::from(load_tensor_as_f32(
+            st, "dinov2.embeddings.patch_embeddings.projection.bias",
+        )?);
+        let cls_token = Arc::from(load_tensor_as_f32(
+            st, "dinov2.embeddings.cls_token",
+        )?);
+        let pos_embed = Arc::from(load_tensor_as_f32(
+            st, "dinov2.embeddings.position_embeddings",
+        )?);
+
+        let mut blocks = Vec::with_capacity(cfg.depth);
+        for i in 0..cfg.depth {
+            let p = format!("dinov2.encoder.layer.{i}");
+            let norm1_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm1.weight"))?);
+            let norm1_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm1.bias"))?);
+            let qkv = ltm(st, &format!("{p}.attention.attention.qkv.weight"), 3 * h, h)?;
+            let qkv_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.attention.qkv.bias"),
+            )?);
+            let proj = ltm(st, &format!("{p}.attention.output.dense.weight"), h, h)?;
+            let proj_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.output.dense.bias"),
+            )?);
+            let ls1_gamma = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.layer_scale1.lambda1"),
+            )?);
+            let norm2_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm2.weight"))?);
+            let norm2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm2.bias"))?);
+            let fc1 = ltm(st, &format!("{p}.mlp.fc1.weight"), mlp, h)?;
+            let fc1_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mlp.fc1.bias"),
+            )?);
+            let fc2 = ltm(st, &format!("{p}.mlp.fc2.weight"), h, mlp)?;
+            let fc2_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mlp.fc2.bias"),
+            )?);
+            let ls2_gamma = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.layer_scale2.lambda1"),
+            )?);
+            blocks.push(Dinov2BlockWeights {
+                norm1_gain, norm1_bias, qkv, qkv_bias, proj, proj_bias, ls1_gamma,
+                norm2_gain, norm2_bias, fc1, fc1_bias, fc2, fc2_bias, ls2_gamma,
+            });
+        }
+
+        let final_ln_gain = Arc::from(load_tensor_as_f32(st, "dinov2.layernorm.weight")?);
+        let final_ln_bias = Arc::from(load_tensor_as_f32(st, "dinov2.layernorm.bias")?);
+        // DINOv2 head concatenates cls + mean-patch features → 2*h → num_classes.
+        let head = ltm(st, "classifier.weight", cfg.num_classes, 2 * h)?;
+        let head_bias = Arc::from(load_tensor_as_f32(st, "classifier.bias")
+            .unwrap_or_else(|_| vec![0.0_f32; cfg.num_classes]));
+
+        Ok(Self {
+            patch_proj, patch_proj_bias, cls_token, pos_embed, blocks,
+            final_ln_gain, final_ln_bias, head, head_bias,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
