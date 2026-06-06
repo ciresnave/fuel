@@ -303,6 +303,79 @@ impl Mamba2Model {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl Mamba2Weights {
+    /// Load Mamba2 (state-spaces/mamba2-*) weights from HF safetensors.
+    /// Tensor names follow the reference repo at `backbone.*` + `lm_head.weight`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Mamba2Config,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let d = cfg.d_model;
+        let d_inner = cfg.d_inner();
+        let d_xbc = cfg.d_xbc();
+        let n_heads = cfg.n_heads();
+        let v_padded = cfg.vocab_size();
+
+        let raw_embed = load_tensor_as_f32(st, "backbone.embedding.weight")?;
+        let token_embedding: Arc<[f32]> = if raw_embed.len() == v_padded * d {
+            Arc::from(raw_embed)
+        } else {
+            let mut padded = vec![0.0_f32; v_padded * d];
+            padded[..raw_embed.len()].copy_from_slice(&raw_embed);
+            Arc::from(padded)
+        };
+
+        let in_proj_out = d_inner + d_xbc + n_heads;
+
+        let mut layers = Vec::with_capacity(cfg.n_layer);
+        for i in 0..cfg.n_layer {
+            let p = format!("backbone.layers.{i}");
+            let norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.norm.weight"),
+            )?);
+            let in_proj = ltm(st, &format!("{p}.mixer.in_proj.weight"), in_proj_out, d)?;
+            let conv1d_weight = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mixer.conv1d.weight"),
+            )?);
+            let conv1d_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mixer.conv1d.bias"),
+            )?);
+            let a_log = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mixer.A_log"),
+            )?);
+            let d_skip = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mixer.D"),
+            )?);
+            let dt_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mixer.dt_bias"),
+            )?);
+            let out_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mixer.norm.weight"),
+            )?);
+            let out_proj = ltm(st, &format!("{p}.mixer.out_proj.weight"), d, d_inner)?;
+            layers.push(Mamba2LayerWeights {
+                norm_gain, in_proj, conv1d_weight, conv1d_bias,
+                a_log, d: d_skip, dt_bias, out_norm_gain, out_proj,
+            });
+        }
+
+        let final_norm_gain = Arc::from(load_tensor_as_f32(
+            st, "backbone.norm_f.weight",
+        )?);
+        let output = match ltm(st, "lm_head.weight", v_padded, d) {
+            Ok(w) => w,
+            Err(_) => crate::lazy_llama_full::tied_lm_head_from_embeddings(
+                &token_embedding, v_padded, d,
+            ),
+        };
+
+        Ok(Self { token_embedding, layers, final_norm_gain, output })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

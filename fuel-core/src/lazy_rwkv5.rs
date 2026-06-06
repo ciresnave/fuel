@@ -494,6 +494,101 @@ fn group_norm(
     scaled.reshape(Shape::from_dims(&[batch, seq, hidden]))
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl Rwkv5Weights {
+    /// Load RWKV-v5 (RWKV/v5-Eagle-7B-HF and siblings) weights from HF
+    /// safetensors. Tensor names follow the HF wrapper at `rwkv.embeddings.*`
+    /// and `rwkv.blocks.{i}.*`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Rwkv5Config,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let att_h = cfg.attention_hidden_size;
+        let ffn_inter = cfg.ffn_intermediate();
+
+        let token_embedding = Arc::from(load_tensor_as_f32(
+            st, "rwkv.embeddings.weight",
+        )?);
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("rwkv.blocks.{i}");
+            let ln1_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.ln1.weight"))?);
+            let ln1_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.ln1.bias"))?);
+            let ln2_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.ln2.weight"))?);
+            let ln2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.ln2.bias"))?);
+            let pre_ln = if i == 0 {
+                let g = load_tensor_as_f32(st, &format!("{p}.pre_ln.weight"))
+                    .ok().map(Arc::from);
+                let b = load_tensor_as_f32(st, &format!("{p}.pre_ln.bias"))
+                    .ok().map(Arc::from);
+                match (g, b) { (Some(g), Some(b)) => Some((g, b)), _ => None }
+            } else { None };
+
+            let attn_time_mix_key = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.time_mix_key"),
+            )?);
+            let attn_time_mix_value = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.time_mix_value"),
+            )?);
+            let attn_time_mix_receptance = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.time_mix_receptance"),
+            )?);
+            let attn_time_mix_gate = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.time_mix_gate"),
+            )?);
+            let attn_time_decay = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.time_decay"),
+            )?);
+            let attn_time_faaaa = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.time_faaaa"),
+            )?);
+            let attn_key = ltm(st, &format!("{p}.attention.key.weight"), att_h, h)?;
+            let attn_value = ltm(st, &format!("{p}.attention.value.weight"), att_h, h)?;
+            let attn_receptance = ltm(st, &format!("{p}.attention.receptance.weight"), att_h, h)?;
+            let attn_gate = ltm(st, &format!("{p}.attention.gate.weight"), att_h, h)?;
+            let attn_output = ltm(st, &format!("{p}.attention.output.weight"), h, att_h)?;
+            let attn_ln_x_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.ln_x.weight"),
+            )?);
+            let attn_ln_x_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.ln_x.bias"),
+            )?);
+
+            let ffn_time_mix_key = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.feed_forward.time_mix_key"),
+            )?);
+            let ffn_time_mix_receptance = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.feed_forward.time_mix_receptance"),
+            )?);
+            let ffn_key = ltm(st, &format!("{p}.feed_forward.key.weight"), ffn_inter, h)?;
+            let ffn_value = ltm(st, &format!("{p}.feed_forward.value.weight"), h, ffn_inter)?;
+            let ffn_receptance = ltm(st, &format!("{p}.feed_forward.receptance.weight"), h, h)?;
+
+            layers.push(Rwkv5LayerWeights {
+                ln1_gain, ln1_bias, ln2_gain, ln2_bias, pre_ln,
+                attn_time_mix_key, attn_time_mix_value, attn_time_mix_receptance,
+                attn_time_mix_gate, attn_time_decay, attn_time_faaaa,
+                attn_key, attn_value, attn_receptance, attn_gate, attn_output,
+                attn_ln_x_gain, attn_ln_x_bias,
+                ffn_time_mix_key, ffn_time_mix_receptance,
+                ffn_key, ffn_value, ffn_receptance,
+            });
+        }
+
+        let final_ln_gain = Arc::from(load_tensor_as_f32(st, "rwkv.ln_out.weight")?);
+        let final_ln_bias = Arc::from(load_tensor_as_f32(st, "rwkv.ln_out.bias")?);
+        let head = ltm(st, "head.weight", cfg.vocab_size, h)?;
+
+        Ok(Self {
+            token_embedding, layers, final_ln_gain, final_ln_bias, head,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
