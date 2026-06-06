@@ -107,6 +107,30 @@ fn l2_normalize_last(x: &LazyTensor, eps: f64) -> Result<LazyTensor> {
     x.l2_normalize(last, eps)
 }
 
+// ---- HuggingFace safetensors composer --------------------------------------
+
+impl ColPaliWeights {
+    /// Load a ColPali checkpoint (e.g.
+    /// `vidore/colpali-v1.2`). Wraps PaligemmaWeights and reads
+    /// the 128-d late-interaction projection head.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &PaligemmaConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let paligemma = PaligemmaWeights::load_from_mmapped(st, cfg)?;
+        let text_hidden = cfg.text_config.hidden_size;
+        let custom_text_projection = load_transposed_matrix_preserve_dtype(
+            st, "custom_text_proj.weight", COLPALI_PROJ_DIM, text_hidden,
+        )?;
+        let custom_text_projection_bias = Arc::from(
+            load_tensor_as_f32(st, "custom_text_proj.bias")?,
+        );
+        Ok(Self { paligemma, custom_text_projection, custom_text_projection_bias })
+    }
+}
+
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
