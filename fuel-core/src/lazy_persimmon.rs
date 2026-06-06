@@ -247,6 +247,106 @@ impl PersimmonModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl PersimmonWeights {
+    /// Load Persimmon (adept/persimmon-8b-{chat,base}) weights from HF safetensors.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &PersimmonConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+
+        let token_embedding = Arc::from(load_tensor_as_f32(
+            st, "model.embed_tokens.weight",
+        )?);
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{i}");
+            let input_ln_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.input_layernorm.weight"),
+            )?);
+            let input_ln_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.input_layernorm.bias"),
+            )?);
+            let post_attn_ln_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+            let post_attn_ln_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.bias"),
+            )?);
+            let attn_q = ltm(st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h)?;
+            let attn_q_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.self_attn.q_proj.bias"),
+            )?);
+            let attn_k = ltm(st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h)?;
+            let attn_k_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.self_attn.k_proj.bias"),
+            )?);
+            let attn_v = ltm(st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h)?;
+            let attn_v_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.self_attn.v_proj.bias"),
+            )?);
+            let attn_o = ltm(st, &format!("{p}.self_attn.dense.weight"), h, q_dim)?;
+            let attn_o_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.self_attn.dense.bias"),
+            )?);
+
+            let q_norm = if cfg.qk_layernorm {
+                let g = Arc::from(load_tensor_as_f32(
+                    st, &format!("{p}.self_attn.q_layernorm.weight"),
+                )?);
+                let b = Arc::from(load_tensor_as_f32(
+                    st, &format!("{p}.self_attn.q_layernorm.bias"),
+                )?);
+                Some((g, b))
+            } else { None };
+            let k_norm = if cfg.qk_layernorm {
+                let g = Arc::from(load_tensor_as_f32(
+                    st, &format!("{p}.self_attn.k_layernorm.weight"),
+                )?);
+                let b = Arc::from(load_tensor_as_f32(
+                    st, &format!("{p}.self_attn.k_layernorm.bias"),
+                )?);
+                Some((g, b))
+            } else { None };
+
+            let mlp_up = ltm(st, &format!("{p}.mlp.dense_h_to_4h.weight"), inter, h)?;
+            let mlp_up_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mlp.dense_h_to_4h.bias"),
+            )?);
+            let mlp_down = ltm(st, &format!("{p}.mlp.dense_4h_to_h.weight"), h, inter)?;
+            let mlp_down_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mlp.dense_4h_to_h.bias"),
+            )?);
+
+            layers.push(PersimmonLayerWeights {
+                input_ln_gain, input_ln_bias, post_attn_ln_gain, post_attn_ln_bias,
+                attn_q, attn_q_bias, attn_k, attn_k_bias, attn_v, attn_v_bias,
+                attn_o, attn_o_bias, q_norm, k_norm,
+                mlp_up, mlp_up_bias, mlp_down, mlp_down_bias,
+            });
+        }
+
+        let final_ln_gain = Arc::from(load_tensor_as_f32(
+            st, "model.final_layernorm.weight",
+        )?);
+        let final_ln_bias = Arc::from(load_tensor_as_f32(
+            st, "model.final_layernorm.bias",
+        )?);
+        let output = ltm(st, "lm_head.weight", cfg.vocab_size, h)?;
+
+        Ok(Self {
+            token_embedding, layers, final_ln_gain, final_ln_bias, output,
+        })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

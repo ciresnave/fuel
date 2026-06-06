@@ -304,6 +304,78 @@ impl MixFormerModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl MixFormerWeights {
+    /// Load MixFormer (microsoft/phi-1_5, phi-2 weights converted to MixFormer
+    /// layout) from HuggingFace safetensors. Tensor names follow the upstream
+    /// MixFormerSequentialForCausalLM layout under `transformer.*` + `lm_head.*`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &MixFormerConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let inter = cfg.inner_dim();
+
+        let token_embedding = Arc::from(load_tensor_as_f32(
+            st, "transformer.embd.wte.weight",
+        )?);
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("transformer.h.{i}");
+            let ln_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.ln.weight"),
+            )?);
+            let ln_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.ln.bias"),
+            )?);
+            let wqkv = ltm(st, &format!("{p}.mixer.Wqkv.weight"), 3 * h, h)?;
+            let wqkv_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mixer.Wqkv.bias"),
+            )?);
+            let out_proj = ltm(st, &format!("{p}.mixer.out_proj.weight"), h, h)?;
+            let out_proj_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mixer.out_proj.bias"),
+            )?);
+            let fc1 = ltm(st, &format!("{p}.mlp.fc1.weight"), inter, h)?;
+            let fc1_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mlp.fc1.bias"),
+            )?);
+            let fc2 = ltm(st, &format!("{p}.mlp.fc2.weight"), h, inter)?;
+            let fc2_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mlp.fc2.bias"),
+            )?);
+            layers.push(MixFormerLayerWeights {
+                ln_gain, ln_bias, wqkv, wqkv_bias, out_proj, out_proj_bias,
+                fc1, fc1_bias, fc2, fc2_bias,
+            });
+        }
+
+        let final_ln_gain = Arc::from(load_tensor_as_f32(
+            st, "lm_head.ln.weight",
+        )?);
+        let final_ln_bias = Arc::from(load_tensor_as_f32(
+            st, "lm_head.ln.bias",
+        )?);
+
+        let lm_head = if cfg.tie_word_embeddings {
+            None
+        } else {
+            Some(ltm(st, "lm_head.linear.weight", cfg.vocab_size, h)?)
+        };
+        let lm_head_bias = load_tensor_as_f32(st, "lm_head.linear.bias")
+            .ok().map(Arc::from)
+            .unwrap_or_else(|| Arc::from(vec![0.0_f32; cfg.vocab_size]));
+
+        Ok(Self {
+            token_embedding, layers, final_ln_gain, final_ln_bias,
+            lm_head, lm_head_bias,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
