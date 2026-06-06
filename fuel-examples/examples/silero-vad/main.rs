@@ -1,4 +1,4 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
@@ -7,7 +7,9 @@ extern crate accelerate_src;
 use anyhow::Result;
 use clap::Parser;
 
-use fuel::{DType, Tensor};
+use fuel::lazy::LazyTensor;
+use fuel::Device;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum Which {
@@ -127,10 +129,6 @@ fn main() -> Result<()> {
             Which::Silero => hf_hub::api::sync::Api::new()?
                 .model("onnx-community/silero-vad".into())
                 .get("onnx/model.onnx")?,
-            // TODO: fuel-onnx doesn't support Int8 dtype
-            // Which::SileroQuantized => hf_hub::api::sync::Api::new()?
-            //     .model("onnx-community/silero-vad".into())
-            //     .get("onnx/model_quantized.onnx")?,
         },
     };
     let (sample_rate, frame_size, context_size): (i64, usize, usize) = match args.sample_rate {
@@ -140,53 +138,66 @@ fn main() -> Result<()> {
     println!("retrieved the files in {:?}", start.elapsed());
 
     let start = std::time::Instant::now();
-    let device = fuel_examples::device(args.cpu)?;
-    let model = fuel_onnx::read_file(model_id)?;
+    let _device = if args.cpu { Device::cpu() } else { Device::cpu() };
+    let evaluator = fuel_onnx::LazyOnnxEval::from_path(&model_id)?;
 
     println!("loaded the model in {:?}", start.elapsed());
 
     let start = std::time::Instant::now();
-    struct State {
-        frame_size: usize,
-        sample_rate: Tensor,
-        state: Tensor,
-        context: Tensor,
-    }
+    // Persistent state across frames: f32 vector of shape (2, 1, 128).
+    let mut state_host: Vec<f32> = vec![0.0_f32; 2 * 1 * 128];
+    // Persistent context (carried across frames): f32 vector of shape
+    // (1, context_size).
+    let mut context_host: Vec<f32> = vec![0.0_f32; context_size];
 
-    let mut state = State {
-        frame_size,
-        sample_rate: Tensor::new(sample_rate, &device)?,
-        state: Tensor::zeros((2, 1, 128), DType::F32, &device)?,
-        context: Tensor::zeros((1, context_size), DType::F32, &device)?,
-    };
+    let out_names = evaluator
+        .model()
+        .graph
+        .as_ref()
+        .map(|g| g.output.clone())
+        .unwrap_or_default();
+
     let mut res = vec![];
-    for chunk in I16Frames::new(std::io::stdin().lock(), state.frame_size) {
+    for chunk in I16Frames::new(std::io::stdin().lock(), frame_size) {
         let chunk = chunk.unwrap();
-        if chunk.len() < state.frame_size {
+        if chunk.len() < frame_size {
             continue;
         }
-        let next_context = Tensor::from_slice(
-            &chunk[state.frame_size - context_size..],
-            (1, context_size),
-            &device,
-        )?;
-        let chunk = Tensor::from_vec(chunk, (1, state.frame_size), &device)?;
-        let chunk = Tensor::cat(&[&state.context, &chunk], 1)?;
-        let inputs = std::collections::HashMap::from_iter([
-            ("input".to_string(), chunk),
-            ("sr".to_string(), state.sample_rate.clone()),
-            ("state".to_string(), state.state.clone()),
-        ]);
-        let out = fuel_onnx::simple_eval(&model, inputs).unwrap();
-        let out_names = &model.graph.as_ref().unwrap().output;
-        let output = out.get(&out_names[0].name).unwrap().clone();
-        state.state = out.get(&out_names[1].name).unwrap().clone();
-        assert_eq!(state.state.dims(), &[2, 1, 128]);
-        state.context = next_context;
+        let next_context: Vec<f32> = chunk[frame_size - context_size..].to_vec();
 
-        let output = output.flatten_all()?.to_vec1::<f32>()?;
-        assert_eq!(output.len(), 1);
-        let output = output[0];
+        // Build a fresh graph this frame: anchor on the audio chunk (f32),
+        // then build sample_rate (i64 scalar) and state (f32) as siblings.
+        let device = Device::cpu();
+        let chunk_only =
+            LazyTensor::from_f32(chunk.clone(), (1, frame_size), &device);
+        let context_t = chunk_only.const_f32_like(
+            Arc::<[f32]>::from(context_host.clone().into_boxed_slice()),
+            (1, context_size),
+        );
+        let input_full = context_t.concat(&chunk_only, 1)?;
+        let sr_t = chunk_only.const_i64_like(vec![sample_rate], ());
+        let state_t = chunk_only.const_f32_like(
+            Arc::<[f32]>::from(state_host.clone().into_boxed_slice()),
+            (2, 1, 128),
+        );
+
+        let inputs = std::collections::HashMap::from_iter([
+            ("input".to_string(), input_full),
+            ("sr".to_string(), sr_t),
+            ("state".to_string(), state_t),
+        ]);
+        let outputs = evaluator.run(&inputs)?;
+        let output = outputs.get(&out_names[0].name).unwrap().clone();
+        let new_state = outputs.get(&out_names[1].name).unwrap().clone();
+        assert_eq!(new_state.shape().dims(), &[2, 1, 128]);
+
+        // Persist state for next frame.
+        state_host = new_state.realize_f32();
+        context_host = next_context;
+
+        let output_vec = output.flatten_all()?.realize_f32();
+        assert_eq!(output_vec.len(), 1);
+        let output = output_vec[0];
         println!("vad chunk prediction: {output}");
         res.push(output);
     }

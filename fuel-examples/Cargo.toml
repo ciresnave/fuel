@@ -135,7 +135,6 @@ required-features = ["fuel-datasets"]
 
 [[example]]
 name = "llama2-c"
-required-features = ["fuel-datasets"]
 
 [[example]]
 name = "mimi"

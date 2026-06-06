@@ -1,4 +1,4 @@
-﻿// An implementation of different Granite models https://www.ibm.com/granite
+// An implementation of different Granite models https://www.ibm.com/granite
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
@@ -6,25 +6,19 @@ extern crate accelerate_src;
 #[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
-use anyhow::{bail, Error as E, Result};
+use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
 
-use fuel::{DType, Tensor};
-use fuel_nn::VarBuilder;
-use fuel_transformers::generation::{LogitsProcessor, Sampling};
+use fuel::lazy::{LlamaConfig, LlamaWeights};
+use fuel::lazy_granite::{GraniteConfig, GraniteModel, GraniteWeights};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use std::io::Write;
-
-use fuel_transformers::models::granite as model;
-use model::{Granite, GraniteConfig};
-
-use std::time::Instant;
 
 const EOS_TOKEN: &str = "</s>";
 const DEFAULT_PROMPT: &str = "How Fault Tolerant Quantum Computers will help humanity?";
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq, ValueEnum)]
-enum GraniteModel {
+enum GraniteModelKind {
     Granite7bInstruct,
 }
 
@@ -78,7 +72,7 @@ struct Args {
     revision: Option<String>,
 
     #[arg(long, default_value = "granite7b-instruct")]
-    model_type: GraniteModel,
+    model_type: GraniteModelKind,
 
     #[arg(long)]
     use_flash_attn: bool,
@@ -106,52 +100,57 @@ fn main() -> Result<()> {
         None
     };
 
-    let device = fuel_examples::device(args.cpu)?;
-    let dtype = match args.dtype.as_deref() {
-        Some("f16") => DType::F16,
-        Some("bf16") => DType::BF16,
-        Some("f32") => DType::F32,
-        Some(dtype) => bail!("Unsupported dtype {dtype}"),
-        None => DType::F16,
-    };
-    let (granite, tokenizer_filename, mut cache, config) = {
-        let api = Api::new()?;
-        let model_id = args.model_id.unwrap_or_else(|| match args.model_type {
-            GraniteModel::Granite7bInstruct => "ibm-granite/granite-7b-instruct".to_string(),
-        });
-        println!("loading the model weights from {model_id}");
-        let revision = args.revision.unwrap_or("main".to_string());
-        let api = api.repo(Repo::with_revision(model_id, RepoType::Model, revision));
+    let _device = fuel_examples::device(args.cpu)?;
+    let _ = args.dtype;
+    let _ = args.use_flash_attn;
+    let _ = args.no_kv_cache;
 
-        let tokenizer_filename = api.get("tokenizer.json")?;
-        let config_filename = api.get("config.json")?;
-        let config: GraniteConfig = serde_json::from_slice(&std::fs::read(config_filename)?)?;
-        let config = config.into_config(args.use_flash_attn);
-
-        let filenames = match args.model_type {
-            GraniteModel::Granite7bInstruct => {
-                fuel_examples::hub_load_safetensors(&api, "model.safetensors.index.json")?
-            }
-        };
-        let cache = model::Cache::new(!args.no_kv_cache, dtype, &config, &device)?;
-
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, dtype, &device)? };
-        (
-            Granite::load(vb, &config)?,
-            tokenizer_filename,
-            cache,
-            config,
-        )
-    };
-    let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
-    let eos_token_id = config.eos_token_id.or_else(|| {
-        tokenizer
-            .token_to_id(EOS_TOKEN)
-            .map(model::GraniteEosToks::Single)
+    let api = Api::new()?;
+    let model_id = args.model_id.unwrap_or_else(|| match args.model_type {
+        GraniteModelKind::Granite7bInstruct => "ibm-granite/granite-7b-instruct".to_string(),
     });
+    println!("loading the model weights from {model_id}");
+    let revision = args.revision.unwrap_or("main".to_string());
+    let api = api.repo(Repo::with_revision(model_id, RepoType::Model, revision));
+
+    let tokenizer_filename = api.get("tokenizer.json")?;
+    let config_filename = api.get("config.json")?;
+    let config_json = std::fs::read_to_string(config_filename)?;
+    let granite_cfg: GraniteConfig = granite_config_from_hf_json_str(&config_json)?;
+    let eos_token_id_from_cfg: Option<u32> = parse_eos_token_id(&config_json);
+
+    let filenames =
+        fuel_examples::hub_load_safetensors(&api, "model.safetensors.index.json")?;
+
+    let llama_cfg = LlamaConfig {
+        vocab_size: granite_cfg.vocab_size,
+        dim:        granite_cfg.hidden_size,
+        n_layers:   granite_cfg.num_hidden_layers,
+        n_heads:    granite_cfg.num_attention_heads,
+        n_kv_heads: granite_cfg.num_key_value_heads,
+        head_dim:   granite_cfg.head_dim(),
+        ffn_dim:    granite_cfg.intermediate_size,
+        norm_eps:   granite_cfg.rms_norm_eps,
+        rope_base:  granite_cfg.rope_theta,
+    };
+
+    let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
+        .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+    let llama_weights: LlamaWeights = LlamaWeights::load_from_mmapped(&st, &llama_cfg)
+        .map_err(|e| E::msg(format!("load weights: {e}")))?;
+    let weights = GraniteWeights {
+        token_embedding: llama_weights.token_embedding,
+        layers: llama_weights.layers,
+        final_norm_gain: llama_weights.final_norm_gain,
+        output: llama_weights.output,
+    };
+    let model = GraniteModel { config: granite_cfg.clone(), weights };
+
+    let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
+    let eos_token_id = eos_token_id_from_cfg.or_else(|| tokenizer.token_to_id(EOS_TOKEN));
 
     let default_prompt = match args.model_type {
-        GraniteModel::Granite7bInstruct => DEFAULT_PROMPT,
+        GraniteModelKind::Granite7bInstruct => DEFAULT_PROMPT,
     };
 
     let prompt = args.prompt.as_ref().map_or(default_prompt, |p| p.as_str());
@@ -160,84 +159,51 @@ fn main() -> Result<()> {
         .map_err(E::msg)?
         .get_ids()
         .to_vec();
-    let mut tokenizer = fuel_examples::token_output_stream::TokenOutputStream::new(tokenizer);
+    let mut tok_stream = fuel_examples::token_output_stream::TokenOutputStream::new(tokenizer);
 
     println!("Starting the inference loop:");
     print!("{prompt}");
-    let mut logits_processor = {
-        let temperature = args.temperature;
-        let sampling = if temperature <= 0. {
-            Sampling::ArgMax
-        } else {
-            match (args.top_k, args.top_p) {
-                (None, None) => Sampling::All { temperature },
-                (Some(k), None) => Sampling::TopK { k, temperature },
-                (None, Some(p)) => Sampling::TopP { p, temperature },
-                (Some(k), Some(p)) => Sampling::TopKThenTopP { k, p, temperature },
-            }
-        };
-        LogitsProcessor::from_sampling(args.seed, sampling)
-    };
 
     let mut start_gen = std::time::Instant::now();
-    let mut index_pos = 0;
-    let mut token_generated = 0;
-    let use_cache_kv = cache.use_kv_cache;
+    let mut token_generated: usize = 0;
+    for index in 0..args.sample_len {
+        if index == 1 {
+            start_gen = std::time::Instant::now();
+        }
+        let logits = model
+            .forward(&tokens, 0)
+            .map_err(|e| E::msg(format!("forward: {e}")))?;
+        let logits_data = logits.realize_f32();
+        let vocab_size = granite_cfg.vocab_size;
+        let seq = tokens.len();
+        let last_off = (seq - 1) * vocab_size;
+        let mut last_logits: Vec<f32> = logits_data[last_off..last_off + vocab_size].to_vec();
 
-    (0..args.sample_len)
-        .inspect(|index| {
-            if *index == 1 {
-                start_gen = Instant::now();
-            }
-        })
-        .try_for_each(|index| -> Result<()> {
-            let (context_size, context_index) = if use_cache_kv && index > 0 {
-                (1, index_pos)
-            } else {
-                (tokens.len(), 0)
-            };
-            let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
-            let input = Tensor::new(ctxt, &device)?.unsqueeze(0)?;
-            let logits = granite
-                .forward(&input, context_index, &mut cache)?
-                .squeeze(0)?;
+        if args.repeat_penalty != 1.0 {
+            let start_at = tokens.len().saturating_sub(args.repeat_last_n);
+            apply_repeat_penalty(&mut last_logits, args.repeat_penalty, &tokens[start_at..]);
+        }
 
-            let logits = if args.repeat_penalty == 1. {
-                logits
-            } else {
-                let start_at = tokens.len().saturating_sub(args.repeat_last_n);
-                fuel_transformers::utils::apply_repeat_penalty(
-                    &logits,
-                    args.repeat_penalty,
-                    &tokens[start_at..],
-                )?
-            };
+        let next_token = sample(
+            &last_logits,
+            args.temperature as f32,
+            args.top_k,
+            args.top_p.map(|p| p as f32),
+            args.seed.wrapping_add(index as u64),
+        );
+        token_generated += 1;
+        tokens.push(next_token);
 
-            index_pos += ctxt.len();
+        if Some(next_token) == eos_token_id {
+            break;
+        }
+        if let Some(t) = tok_stream.next_token(next_token)? {
+            print!("{t}");
+            std::io::stdout().flush()?;
+        }
+    }
 
-            let next_token = logits_processor.sample(&logits)?;
-            token_generated += 1;
-            tokens.push(next_token);
-
-            if let Some(model::GraniteEosToks::Single(eos_tok_id)) = eos_token_id {
-                if next_token == eos_tok_id {
-                    return Err(E::msg("EOS token found"));
-                }
-            } else if let Some(model::GraniteEosToks::Multiple(ref eos_ids)) = eos_token_id {
-                if eos_ids.contains(&next_token) {
-                    return Err(E::msg("EOS token found"));
-                }
-            }
-
-            if let Some(t) = tokenizer.next_token(next_token)? {
-                print!("{t}");
-                std::io::stdout().flush()?;
-            }
-            Ok(())
-        })
-        .unwrap_or(());
-
-    if let Some(rest) = tokenizer.decode_rest().map_err(E::msg)? {
+    if let Some(rest) = tok_stream.decode_rest().map_err(E::msg)? {
         print!("{rest}");
     }
 
@@ -245,7 +211,144 @@ fn main() -> Result<()> {
     println!(
         "\n\n{} tokens generated ({} token/s)\n",
         token_generated,
-        (token_generated - 1) as f64 / dt.as_secs_f64(),
+        (token_generated.saturating_sub(1)) as f64 / dt.as_secs_f64(),
     );
     Ok(())
+}
+
+fn granite_config_from_hf_json_str(json: &str) -> Result<GraniteConfig> {
+    let v: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let get_usize = |key: &str| -> Result<usize> {
+        v.get(key)
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .ok_or_else(|| E::msg(format!("config.json: missing/invalid field {key:?}")))
+    };
+    let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+    let vocab_size = get_usize("vocab_size")?;
+    let hidden_size = get_usize("hidden_size")?;
+    let intermediate_size = get_usize("intermediate_size")?;
+    let num_hidden_layers = get_usize("num_hidden_layers")?;
+    let num_attention_heads = get_usize("num_attention_heads")?;
+    let num_key_value_heads = v
+        .get("num_key_value_heads")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as usize)
+        .unwrap_or(num_attention_heads);
+    let rms_norm_eps = get_f64("rms_norm_eps").unwrap_or(1e-5);
+    let rope_theta = get_f64("rope_theta").unwrap_or(10_000.0);
+    let max_position_embeddings = v
+        .get("max_position_embeddings")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as usize)
+        .unwrap_or(4096);
+    Ok(GraniteConfig {
+        vocab_size,
+        hidden_size,
+        intermediate_size,
+        num_hidden_layers,
+        num_attention_heads,
+        num_key_value_heads,
+        rms_norm_eps,
+        rope_theta,
+        max_position_embeddings,
+    })
+}
+
+fn parse_eos_token_id(json: &str) -> Option<u32> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    v.get("eos_token_id").and_then(|x| x.as_u64()).map(|x| x as u32)
+}
+
+fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
+    let mut seen = std::collections::HashSet::new();
+    for &t in context {
+        if !seen.insert(t) {
+            continue;
+        }
+        let idx = t as usize;
+        if idx < logits.len() {
+            let v = logits[idx];
+            logits[idx] = if v >= 0.0 { v / penalty } else { v * penalty };
+        }
+    }
+}
+
+fn sample(
+    logits: &[f32],
+    temperature: f32,
+    top_k: Option<usize>,
+    top_p: Option<f32>,
+    seed: u64,
+) -> u32 {
+    if temperature <= 0.0 {
+        let mut best_i = 0usize;
+        let mut best = logits[0];
+        for (i, &v) in logits.iter().enumerate().skip(1) {
+            if v > best {
+                best = v;
+                best_i = i;
+            }
+        }
+        return best_i as u32;
+    }
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let inv_t = 1.0 / temperature.max(1e-6);
+    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    for p in &mut probs {
+        *p /= sum.max(1e-30);
+    }
+    let mut idx: Vec<usize> = (0..probs.len()).collect();
+    idx.sort_unstable_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap());
+    let mut keep_mask: Vec<bool> = vec![true; probs.len()];
+    if let Some(k) = top_k {
+        for &i in idx.iter().skip(k) {
+            keep_mask[i] = false;
+        }
+    }
+    if let Some(p_cut) = top_p {
+        let mut cum2 = 0.0;
+        let mut allow = true;
+        for &i in &idx {
+            if !keep_mask[i] {
+                continue;
+            }
+            if !allow {
+                keep_mask[i] = false;
+                continue;
+            }
+            cum2 += probs[i];
+            if cum2 >= p_cut {
+                allow = false;
+            }
+        }
+    }
+    let mut filtered: Vec<f32> = probs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| if keep_mask[i] { *p } else { 0.0 })
+        .collect();
+    let s: f32 = filtered.iter().sum();
+    if s > 0.0 {
+        for v in &mut filtered {
+            *v /= s;
+        }
+    } else {
+        return 0;
+    }
+    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    state ^= state >> 33;
+    state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    state ^= state >> 33;
+    let r = (state as f32) / (u64::MAX as f32);
+    let mut cum = 0.0;
+    for (i, p) in filtered.iter().enumerate() {
+        cum += *p;
+        if r <= cum {
+            return i as u32;
+        }
+    }
+    (filtered.len() - 1) as u32
 }

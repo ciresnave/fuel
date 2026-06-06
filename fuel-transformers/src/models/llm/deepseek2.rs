@@ -50,6 +50,7 @@ impl CustomOp1 for NonZero {
         let result = match storage {
             fuel::HostBuffer::U8(vs) => self.nonzero(vs, layout),
             fuel::HostBuffer::U32(vs) => self.nonzero(vs, layout),
+            fuel::HostBuffer::I8(vs) => self.nonzero(vs, layout),
             fuel::HostBuffer::I16(vs) => self.nonzero(vs, layout),
             fuel::HostBuffer::I32(vs) => self.nonzero(vs, layout),
             fuel::HostBuffer::I64(vs) => self.nonzero(vs, layout),

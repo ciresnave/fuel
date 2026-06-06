@@ -1,16 +1,17 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
 use anyhow::Result;
-use fuel::{DType, Tensor};
-use fuel_transformers::generation::{LogitsProcessor, Sampling};
 use clap::{Parser, ValueEnum};
+use fuel::lazy::LazyTensor;
+use fuel::Device;
 use hf_hub::api::sync::Api;
 use serde::Deserialize;
 use std::io::Write;
+use std::sync::Arc;
 use tokenizers::Tokenizer;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -61,9 +62,86 @@ struct Args {
     seed: u64,
 }
 
+// Simple LCG for reproducible sampling.
+struct Lcg(u64);
+impl Lcg {
+    fn new(seed: u64) -> Self {
+        Self(seed.wrapping_mul(2862933555777941757).wrapping_add(3037000493))
+    }
+    fn next_f32(&mut self) -> f32 {
+        self.0 = self
+            .0
+            .wrapping_mul(2862933555777941757)
+            .wrapping_add(3037000493);
+        ((self.0 >> 11) as f64 / (1u64 << 53) as f64) as f32
+    }
+}
+
+fn sample(
+    logits: &[f32],
+    temperature: f32,
+    top_k: Option<usize>,
+    top_p: Option<f64>,
+    rng: &mut Lcg,
+) -> usize {
+    if temperature <= 0.0 {
+        // Greedy.
+        let mut best_i = 0;
+        let mut best = f32::NEG_INFINITY;
+        for (i, &v) in logits.iter().enumerate() {
+            if v > best {
+                best = v;
+                best_i = i;
+            }
+        }
+        return best_i;
+    }
+    // Apply temperature.
+    let scaled: Vec<f32> = logits.iter().map(|&l| l / temperature).collect();
+    // Softmax (numerically stable).
+    let max = scaled.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+    let exp: Vec<f32> = scaled.iter().map(|&l| (l - max).exp()).collect();
+    let sum: f32 = exp.iter().sum();
+    let mut probs: Vec<(usize, f32)> = exp
+        .iter()
+        .enumerate()
+        .map(|(i, &e)| (i, e / sum))
+        .collect();
+    // Top-k filter.
+    if let Some(k) = top_k {
+        probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        probs.truncate(k);
+    }
+    // Top-p (nucleus) filter.
+    if let Some(p) = top_p {
+        probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let mut acc = 0.0_f64;
+        let mut cut = probs.len();
+        for (i, (_, pr)) in probs.iter().enumerate() {
+            acc += *pr as f64;
+            if acc >= p {
+                cut = i + 1;
+                break;
+            }
+        }
+        probs.truncate(cut);
+    }
+    // Renormalize.
+    let s: f32 = probs.iter().map(|(_, p)| *p).sum();
+    let r = rng.next_f32() * s;
+    let mut acc = 0.0_f32;
+    for (i, pr) in &probs {
+        acc += *pr;
+        if acc >= r {
+            return *i;
+        }
+    }
+    probs.last().map(|(i, _)| *i).unwrap_or(0)
+}
+
 pub fn main() -> Result<()> {
     let args = Args::parse();
-    let device = fuel_examples::device(args.cpu)?;
+    let _device = if args.cpu { Device::cpu() } else { Device::cpu() };
 
     let (model_id, tokenizer_id) = match args.which {
         Which::SmolLM135M => ("HuggingFaceTB/SmolLM-135M", "HuggingFaceTB/SmolLM-135M"),
@@ -89,119 +167,148 @@ pub fn main() -> Result<()> {
     let tokens: Vec<i64> = tokens_u32.iter().map(|&t| t as i64).collect();
 
     println!("Loading ONNX model from {:?}", model_path);
-    let model = fuel_onnx::read_file(model_path)?;
+    let evaluator = fuel_onnx::LazyOnnxEval::from_path(&model_path)?;
 
     let mut generated_tokens = tokens.clone();
     print!("{}", args.prompt);
     std::io::stdout().flush()?;
 
-    let mut logits_processor = {
-        let temperature = args.temperature as f64;
-        let sampling = if temperature <= 0. {
-            Sampling::ArgMax
-        } else {
-            match (args.top_k, args.top_p) {
-                (None, None) => Sampling::All { temperature },
-                (Some(k), None) => Sampling::TopK { k, temperature },
-                (None, Some(p)) => Sampling::TopP { p, temperature },
-                (Some(k), Some(p)) => Sampling::TopKThenTopP { k, p, temperature },
-            }
-        };
-        LogitsProcessor::from_sampling(args.seed, sampling)
-    };
+    let mut rng = Lcg::new(args.seed);
 
-    let mut past_key_values: Option<Vec<(Tensor, Tensor)>> = None;
+    // Past key/value state lives on the host between frames; rebuilt as
+    // fresh LazyTensors each iteration so the graph stays small.
     let num_layers = config.num_hidden_layers;
+    let num_kv_heads = config.num_key_value_heads;
+    let head_dim = config.hidden_size / config.num_attention_heads;
+
+    // (past_kv[layer].0 = key flat host data, key shape ; past_kv[layer].1 = value flat, shape).
+    let mut past_kv: Option<Vec<((Vec<f32>, (usize, usize, usize, usize)), (Vec<f32>, (usize, usize, usize, usize)))>> =
+        None;
+
+    let device = Device::cpu();
 
     for _ in 0..args.max_tokens {
-        let mut inputs = std::collections::HashMap::new();
+        // Build a fresh graph this iteration: anchor on the f32
+        // sample-rate-like dummy — but we need a real F32 anchor. Use
+        // the first KV tensor (always present) or a fresh zero f32
+        // anchor.
+        let anchor =
+            LazyTensor::from_f32(vec![0.0_f32; 1], (1usize,), &device);
 
-        if let Some(past_kv) = &past_key_values {
-            let last_token = vec![generated_tokens[generated_tokens.len() - 1]];
-            let input_tensor = Tensor::new(last_token, &device)?.unsqueeze(0)?;
-            inputs.insert("input_ids".to_string(), input_tensor);
+        let mut inputs: std::collections::HashMap<String, LazyTensor> =
+            std::collections::HashMap::new();
+
+        if let Some(past) = &past_kv {
+            // Single-token continuation.
+            let last_token = generated_tokens[generated_tokens.len() - 1];
+            let input_ids = anchor.const_i64_like(vec![last_token], (1usize, 1usize));
+            inputs.insert("input_ids".to_string(), input_ids);
 
             let seq_len = generated_tokens.len();
-            let attention_mask = vec![vec![1i64; seq_len]];
-            let attention_mask_tensor = Tensor::new(attention_mask, &device)?;
-            inputs.insert("attention_mask".to_string(), attention_mask_tensor);
+            let attn = anchor.const_i64_like(vec![1_i64; seq_len], (1usize, seq_len));
+            inputs.insert("attention_mask".to_string(), attn);
 
-            let position_ids = vec![vec![(seq_len - 1) as i64]];
-            let position_ids_tensor = Tensor::new(position_ids, &device)?;
-            inputs.insert("position_ids".to_string(), position_ids_tensor);
+            let pos =
+                anchor.const_i64_like(vec![(seq_len - 1) as i64], (1usize, 1usize));
+            inputs.insert("position_ids".to_string(), pos);
 
-            for (i, (key, value)) in past_kv.iter().enumerate() {
-                inputs.insert(format!("past_key_values.{}.key", i), key.clone());
-                inputs.insert(format!("past_key_values.{}.value", i), value.clone());
+            for (i, (k_pair, v_pair)) in past.iter().enumerate() {
+                let k_lazy = anchor.const_f32_like(
+                    Arc::<[f32]>::from(k_pair.0.clone().into_boxed_slice()),
+                    k_pair.1,
+                );
+                let v_lazy = anchor.const_f32_like(
+                    Arc::<[f32]>::from(v_pair.0.clone().into_boxed_slice()),
+                    v_pair.1,
+                );
+                inputs.insert(format!("past_key_values.{}.key", i), k_lazy);
+                inputs.insert(format!("past_key_values.{}.value", i), v_lazy);
             }
         } else {
-            let input_tensor = Tensor::new(generated_tokens.clone(), &device)?.unsqueeze(0)?;
-            inputs.insert("input_ids".to_string(), input_tensor);
-
+            // Prefill: feed full prompt.
             let seq_len = generated_tokens.len();
-            let attention_mask = vec![vec![1i64; seq_len]];
-            let attention_mask_tensor = Tensor::new(attention_mask, &device)?;
-            inputs.insert("attention_mask".to_string(), attention_mask_tensor);
+            let input_ids = anchor.const_i64_like(
+                generated_tokens.clone(),
+                (1usize, seq_len),
+            );
+            inputs.insert("input_ids".to_string(), input_ids);
 
-            let position_ids: Vec<i64> = (0..seq_len as i64).collect();
-            let position_ids_tensor = Tensor::new(position_ids, &device)?.unsqueeze(0)?;
-            inputs.insert("position_ids".to_string(), position_ids_tensor);
+            let attn = anchor.const_i64_like(vec![1_i64; seq_len], (1usize, seq_len));
+            inputs.insert("attention_mask".to_string(), attn);
 
-            // Create empty key and value tensors
+            let pos: Vec<i64> = (0..seq_len as i64).collect();
+            let pos_t = anchor.const_i64_like(pos, (1usize, seq_len));
+            inputs.insert("position_ids".to_string(), pos_t);
+
+            // Empty key/value tensors (shape ..., 0, head_dim).
             for i in 0..num_layers {
-                let batch_size = 1;
-                let num_heads = config.num_key_value_heads;
-                let head_dim = config.hidden_size / config.num_attention_heads;
-                let seq_len = 0;
-
-                let empty_key = Tensor::zeros(
-                    &[batch_size, num_heads, seq_len, head_dim],
-                    DType::F32,
-                    &device,
-                )?;
-                let empty_value = Tensor::zeros(
-                    &[batch_size, num_heads, seq_len, head_dim],
-                    DType::F32,
-                    &device,
-                )?;
-
-                inputs.insert(format!("past_key_values.{}.key", i), empty_key);
-                inputs.insert(format!("past_key_values.{}.value", i), empty_value);
+                let empty_shape = (1usize, num_kv_heads, 0usize, head_dim);
+                let empty: Vec<f32> = vec![];
+                let k = anchor.const_f32_like(
+                    Arc::<[f32]>::from(empty.clone().into_boxed_slice()),
+                    empty_shape,
+                );
+                let v = anchor.const_f32_like(
+                    Arc::<[f32]>::from(empty.into_boxed_slice()),
+                    empty_shape,
+                );
+                inputs.insert(format!("past_key_values.{}.key", i), k);
+                inputs.insert(format!("past_key_values.{}.value", i), v);
             }
         }
 
-        let outputs = fuel_onnx::simple_eval(&model, inputs)?;
+        let outputs = evaluator.run(&inputs)?;
 
-        let logits = outputs.get("logits").unwrap();
+        let logits = outputs
+            .get("logits")
+            .ok_or_else(|| anyhow::anyhow!("missing logits output"))?;
+        let logits_dims = logits.shape();
+        let dims = logits_dims.dims();
+        let batch = dims[0];
+        let seq = dims[1];
+        let vocab = dims[2];
+        assert_eq!(batch, 1);
+        let logits_vec = logits.realize_f32();
+        let last_row = &logits_vec[(seq - 1) * vocab..seq * vocab];
 
-        let mut new_past_kv = Vec::with_capacity(num_layers);
-        for i in 0..num_layers {
-            let key = outputs
-                .get(&format!("present.{}.key", i))
-                .ok_or_else(|| anyhow::anyhow!("Missing present.{}.key", i))?;
-            let value = outputs
-                .get(&format!("present.{}.value", i))
-                .ok_or_else(|| anyhow::anyhow!("Missing present.{}.value", i))?;
-            new_past_kv.push((key.clone(), value.clone()));
-        }
-        past_key_values = Some(new_past_kv);
-
-        let logits_dim = logits.dims();
-        let seq_len = logits_dim[1];
-
-        let next_token_id = logits_processor.sample(&logits.get(0)?.get(seq_len - 1)?)?;
+        let next_id = sample(
+            last_row,
+            args.temperature,
+            args.top_k,
+            args.top_p,
+            &mut rng,
+        );
+        let next_token_id = next_id as u32;
         generated_tokens.push(next_token_id as i64);
 
         if let Some(token_str) = tokenizer.decode(&[next_token_id], true).ok() {
             print!("{}", token_str);
             std::io::stdout().flush()?;
         }
-
         if let Some(eos_id) = tokenizer.token_to_id("<|endoftext|>") {
             if next_token_id == eos_id {
                 break;
             }
         }
+
+        // Stash present.*.key / value as host f32 vectors for next iter.
+        let mut new_past = Vec::with_capacity(num_layers);
+        for i in 0..num_layers {
+            let k = outputs
+                .get(&format!("present.{}.key", i))
+                .ok_or_else(|| anyhow::anyhow!("missing present.{}.key", i))?;
+            let v = outputs
+                .get(&format!("present.{}.value", i))
+                .ok_or_else(|| anyhow::anyhow!("missing present.{}.value", i))?;
+            let k_shape = k.shape();
+            let k_dims = k_shape.dims();
+            let k_tuple = (k_dims[0], k_dims[1], k_dims[2], k_dims[3]);
+            let v_shape = v.shape();
+            let v_dims = v_shape.dims();
+            let v_tuple = (v_dims[0], v_dims[1], v_dims[2], v_dims[3]);
+            new_past.push(((k.realize_f32(), k_tuple), (v.realize_f32(), v_tuple)));
+        }
+        past_kv = Some(new_past);
     }
 
     println!("\nGeneration complete!");

@@ -1,4 +1,4 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
@@ -7,136 +7,10 @@ extern crate accelerate_src;
 use anyhow::{Error as E, Result};
 use clap::Parser;
 
-use fuel_transformers::models::qwen2::{Config as ConfigBase, ModelForCausalLM as ModelBase};
-use fuel_transformers::models::qwen2_moe::{Config as ConfigMoe, Model as ModelMoe};
-use fuel_transformers::models::qwen3::{Config as Config3, ModelForCausalLM as Model3};
-use fuel_transformers::models::qwen3_moe::{Config as ConfigMoe3, ModelForCausalLM as ModelMoe3};
-
-use fuel::{DType, Device, Tensor};
-use fuel_examples::token_output_stream::TokenOutputStream;
-use fuel_nn::VarBuilder;
-use fuel_transformers::generation::LogitsProcessor;
-use hf_hub::{api::sync::Api, Repo, RepoType};
-use tokenizers::Tokenizer;
-
-enum Model {
-    Base(ModelBase),
-    Moe(ModelMoe),
-    Base3(Model3),
-    Moe3(ModelMoe3),
-}
-
-impl Model {
-    fn forward(&mut self, xs: &Tensor, s: usize) -> fuel::Result<Tensor> {
-        match self {
-            Self::Moe(m) => m.forward(xs, s),
-            Self::Base(m) => m.forward(xs, s),
-            Self::Base3(m) => m.forward(xs, s),
-            Self::Moe3(m) => m.forward(xs, s),
-        }
-    }
-}
-
-struct TextGeneration {
-    model: Model,
-    device: Device,
-    tokenizer: TokenOutputStream,
-    logits_processor: LogitsProcessor,
-    repeat_penalty: f32,
-    repeat_last_n: usize,
-}
-
-impl TextGeneration {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        model: Model,
-        tokenizer: Tokenizer,
-        seed: u64,
-        temp: Option<f64>,
-        top_p: Option<f64>,
-        repeat_penalty: f32,
-        repeat_last_n: usize,
-        device: &Device,
-    ) -> Self {
-        let logits_processor = LogitsProcessor::new(seed, temp, top_p);
-        Self {
-            model,
-            tokenizer: TokenOutputStream::new(tokenizer),
-            logits_processor,
-            repeat_penalty,
-            repeat_last_n,
-            device: device.clone(),
-        }
-    }
-
-    fn run(&mut self, prompt: &str, sample_len: usize) -> Result<()> {
-        use std::io::Write;
-        self.tokenizer.clear();
-        let mut tokens = self
-            .tokenizer
-            .tokenizer()
-            .encode(prompt, true)
-            .map_err(E::msg)?
-            .get_ids()
-            .to_vec();
-        for &t in tokens.iter() {
-            if let Some(t) = self.tokenizer.next_token(t)? {
-                print!("{t}")
-            }
-        }
-        std::io::stdout().flush()?;
-
-        let mut generated_tokens = 0usize;
-        let eos_token = match self.tokenizer.get_token("<|endoftext|>") {
-            Some(token) => token,
-            None => anyhow::bail!("cannot find the <|endoftext|> token"),
-        };
-        let eos_token2 = match self.tokenizer.get_token("<|im_end|>") {
-            Some(token) => token,
-            None => anyhow::bail!("cannot find the <|im_end|> token"),
-        };
-        let start_gen = std::time::Instant::now();
-        for index in 0..sample_len {
-            let context_size = if index > 0 { 1 } else { tokens.len() };
-            let start_pos = tokens.len().saturating_sub(context_size);
-            let ctxt = &tokens[start_pos..];
-            let input = Tensor::new(ctxt, &self.device)?.unsqueeze(0)?;
-            let logits = self.model.forward(&input, start_pos)?;
-            let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
-            let logits = if self.repeat_penalty == 1. {
-                logits
-            } else {
-                let start_at = tokens.len().saturating_sub(self.repeat_last_n);
-                fuel_transformers::utils::apply_repeat_penalty(
-                    &logits,
-                    self.repeat_penalty,
-                    &tokens[start_at..],
-                )?
-            };
-
-            let next_token = self.logits_processor.sample(&logits)?;
-            tokens.push(next_token);
-            generated_tokens += 1;
-            if next_token == eos_token || next_token == eos_token2 {
-                break;
-            }
-            if let Some(t) = self.tokenizer.next_token(next_token)? {
-                print!("{t}");
-                std::io::stdout().flush()?;
-            }
-        }
-        let dt = start_gen.elapsed();
-        if let Some(rest) = self.tokenizer.decode_rest().map_err(E::msg)? {
-            print!("{rest}");
-        }
-        std::io::stdout().flush()?;
-        println!(
-            "\n{generated_tokens} tokens generated ({:.2} token/s)",
-            generated_tokens as f64 / dt.as_secs_f64(),
-        );
-        Ok(())
-    }
-}
+use fuel::lazy::{LlamaTokenizer, SamplingStrategy};
+use fuel::lazy_llama2c::Llama2cModel;
+use fuel::{DType, Device};
+use std::io::Write;
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum, PartialEq, Eq)]
 enum WhichModel {
@@ -286,11 +160,9 @@ fn main() -> Result<()> {
         args.repeat_last_n
     );
 
-    let start = std::time::Instant::now();
-    let api = Api::new()?;
     let use_chat_template = args.should_use_chat_template();
     let thinking = args.thinking;
-    let model_id = match args.model_id {
+    let model_id = match args.model_id.clone() {
         Some(model_id) => model_id,
         None => {
             let (version, size) = match args.model {
@@ -314,100 +186,62 @@ fn main() -> Result<()> {
             format!("Qwen/Qwen{version}-{size}")
         }
     };
-    let repo = api.repo(Repo::with_revision(
-        model_id,
-        RepoType::Model,
-        args.revision,
-    ));
-
-    let tokenizer_filename = match (args.weight_path.as_ref(), args.tokenizer_file.as_ref()) {
-        (Some(_), Some(file)) => std::path::PathBuf::from(file),
-        (None, Some(file)) => std::path::PathBuf::from(file),
-        (Some(path), None) => std::path::Path::new(path).join("tokenizer.json"),
-        (None, None) => repo.get("tokenizer.json")?,
-    };
-    let config_file = match &args.weight_path {
-        Some(path) => std::path::Path::new(path).join("config.json"),
-        _ => repo.get("config.json")?,
-    };
-
-    let filenames = match args.weight_path {
-        Some(path) => {
-            if std::path::Path::new(&path)
-                .join("model.safetensors.index.json")
-                .exists()
-            {
-                fuel_examples::hub_load_local_safetensors(path, "model.safetensors.index.json")?
-            } else {
-                vec!["model.safetensors".into()]
-            }
-        }
-        None => match args.model {
-            WhichModel::W0_5b
-            | WhichModel::W2_0_5b
-            | WhichModel::W2_1_5b
-            | WhichModel::W1_8b
-            | WhichModel::W3_0_6b => {
-                vec![repo.get("model.safetensors")?]
-            }
-            WhichModel::W4b
-            | WhichModel::W7b
-            | WhichModel::W2_7b
-            | WhichModel::W14b
-            | WhichModel::W72b
-            | WhichModel::W2_72b
-            | WhichModel::MoeA27b
-            | WhichModel::W3_1_7b
-            | WhichModel::W3_4b
-            | WhichModel::W3_8b
-            | WhichModel::W3MoeA3b => {
-                fuel_examples::hub_load_safetensors(&repo, "model.safetensors.index.json")?
-            }
-        },
-    };
-    println!("retrieved the files in {:?}", start.elapsed());
-    let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
 
     let start = std::time::Instant::now();
-    let device = fuel_examples::device(args.cpu)?;
-    let dtype = if device.is_cuda() || device.is_metal() {
-        DType::BF16
-    } else {
-        DType::F32
-    };
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, dtype, &device)? };
-    let model = match args.model {
-        WhichModel::MoeA27b => {
-            let config: ConfigMoe = serde_json::from_slice(&std::fs::read(config_file)?)?;
-            Model::Moe(ModelMoe::new(&config, vb)?)
-        }
-        WhichModel::W3_0_6b | WhichModel::W3_1_7b | WhichModel::W3_4b | WhichModel::W3_8b => {
-            let config: Config3 = serde_json::from_slice(&std::fs::read(config_file)?)?;
-            Model::Base3(Model3::new(&config, vb)?)
-        }
-        WhichModel::W3MoeA3b => {
-            let config: ConfigMoe3 = serde_json::from_slice(&std::fs::read(config_file)?)?;
-            Model::Moe3(ModelMoe3::new(&config, vb)?)
-        }
-        _ => {
-            let config: ConfigBase = serde_json::from_slice(&std::fs::read(config_file)?)?;
-            Model::Base(ModelBase::new(&config, vb)?)
-        }
-    };
-
+    println!("loading model from {model_id}");
+    let model = Llama2cModel::from_hub(&model_id)?;
     println!("loaded the model in {:?}", start.elapsed());
 
-    let mut pipeline = TextGeneration::new(
-        model,
-        tokenizer,
-        args.seed,
-        args.temperature,
-        args.top_p,
-        args.repeat_penalty,
-        args.repeat_last_n,
-        &device,
-    );
+    let start = std::time::Instant::now();
+    let tokenizer = LlamaTokenizer::from_hub(&model_id).map_err(E::msg)?;
+    println!("loaded the tokenizer in {:?}", start.elapsed());
+
     let prompt = format_prompt(&args.prompt, use_chat_template, thinking);
-    pipeline.run(&prompt, args.sample_len)?;
+    let prompt_tokens = tokenizer.encode(&prompt, true).map_err(E::msg)?;
+    let mut streamed: Vec<u32> = prompt_tokens.clone();
+    let mut printed_text = tokenizer.decode(&streamed, true).map_err(E::msg)?;
+    print!("{}", printed_text);
+    std::io::stdout().flush()?;
+
+    let strategy = match args.temperature {
+        Some(t) if t > 0.0 => SamplingStrategy::Temperature {
+            temp: t as f32,
+            seed: args.seed,
+        },
+        _ => SamplingStrategy::Greedy,
+    };
+
+    let device = if args.cpu {
+        Device::cpu()
+    } else {
+        Device::cpu()
+    };
+
+    let start_gen = std::time::Instant::now();
+    let output_tokens = model.generate_streaming_with_kv_context(
+        &prompt_tokens,
+        args.sample_len,
+        strategy,
+        tokenizer.eos_id(),
+        &device,
+        DType::F32,
+        |tok| {
+            streamed.push(tok);
+            if let Ok(full) = tokenizer.decode(&streamed, true) {
+                if let Some(delta) = full.strip_prefix(&printed_text) {
+                    print!("{delta}");
+                    std::io::stdout().flush().ok();
+                }
+                printed_text = full;
+            }
+        },
+    )?;
+    let dt = start_gen.elapsed();
+    let generated_tokens = output_tokens.len().saturating_sub(prompt_tokens.len());
+    println!();
+    println!(
+        "\n{generated_tokens} tokens generated ({:.2} token/s)",
+        generated_tokens as f64 / dt.as_secs_f64(),
+    );
     Ok(())
 }
