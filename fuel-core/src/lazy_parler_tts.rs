@@ -384,6 +384,226 @@ fn apply_linear_with_bias(
     }
 }
 
+// ---- Safetensors loader ----------------------------------------------------
+
+impl ParlerDecoderWeights {
+    /// Load Parler-TTS decoder weights from a `MmapedSafetensors` file
+    /// using the HuggingFace tensor naming convention.
+    ///
+    /// HF lays Parler weights out as follows. The decoder lives under
+    /// `decoder.model.decoder.*` (the outer `decoder.` comes from the
+    /// `Model::new` wrapping `Decoder::new(.., vb.pp("decoder"))`, and
+    /// the inner `model.decoder.` is `Decoder::new` itself). The
+    /// per-codebook LM heads sit at `decoder.lm_heads.{cb}.weight`. The
+    /// optional `enc_to_dec_proj` is at the top level when the T5 text
+    /// encoder's `d_model` differs from the audio decoder's
+    /// `hidden_size`.
+    ///
+    /// Expected names:
+    /// - `decoder.model.decoder.embed_tokens.{cb}.weight` — per-codebook
+    ///   embedding `[vocab_size + 1, hidden_size]` (1:1, not transposed).
+    /// - `decoder.model.decoder.embed_positions.weights` (plural!) —
+    ///   learned absolute positions `[max_position_embeddings, hidden_size]`.
+    /// - `decoder.model.decoder.layers.{i}.self_attn.{q,k,v,out}_proj.weight`
+    ///   — projections, transposed at load. Q/Out are `[hidden, hidden]`;
+    ///   K/V follow `num_key_value_heads * head_dim`.
+    /// - `decoder.model.decoder.layers.{i}.self_attn_layer_norm.{weight,bias}`
+    /// - `decoder.model.decoder.layers.{i}.encoder_attn.{q,k,v,out}_proj.weight`
+    ///   — cross-attention, same shape rules as self-attn but with
+    ///   `num_cross_attention_key_value_heads`.
+    /// - `decoder.model.decoder.layers.{i}.encoder_attn_layer_norm.{weight,bias}`
+    /// - `decoder.model.decoder.layers.{i}.fc1.weight` `[ffn_dim, hidden]`
+    ///   (transposed); `fc2.weight` `[hidden, ffn_dim]` (transposed).
+    /// - `decoder.model.decoder.layers.{i}.final_layer_norm.{weight,bias}`
+    /// - `decoder.model.decoder.layer_norm.{weight,bias}` — final LN.
+    /// - `decoder.lm_heads.{cb}.weight` `[vocab_size, hidden]` (transposed).
+    /// - `enc_to_dec_proj.{weight,bias}` `[hidden_size, text_d_model]`
+    ///   when `cfg.has_enc_proj` is true. The weight is transposed at
+    ///   load; the bias is a flat `[hidden_size]` vector.
+    ///
+    /// All projections + LM heads go through
+    /// [`crate::lazy::load_transposed_matrix_preserve_dtype`] so bf16
+    /// source weights stay bf16 on-device. LayerNorm gain/bias and
+    /// embedding tables stay 1:1 with HF via
+    /// [`crate::lazy::load_tensor_as_f32`].
+    ///
+    /// `text_d_model` is only consulted when `cfg.has_enc_proj` is
+    /// true. Pass any value (e.g. `0`) when the projection is absent.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &ParlerDecoderConfig,
+        text_d_model: usize,
+    ) -> crate::Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+
+        let h = cfg.hidden_size;
+        let n_kv = cfg.num_kv_heads_resolved();
+        let n_xkv = cfg.num_cross_kv_heads_resolved();
+        let head_dim = cfg.head_dim();
+        let kv_out = n_kv * head_dim;
+        let xkv_out = n_xkv * head_dim;
+
+        // --- per-codebook token embeddings -----------------------------
+        let mut embed_tokens: Vec<Arc<[f32]>> = Vec::with_capacity(cfg.num_codebooks);
+        for cb in 0..cfg.num_codebooks {
+            let v = load_tensor_as_f32(
+                st,
+                &format!("decoder.model.decoder.embed_tokens.{cb}.weight"),
+            )?;
+            let expected = (cfg.vocab_size + 1) * h;
+            if v.len() != expected {
+                crate::bail!(
+                    "embed_tokens.{cb}.weight: {} elements, expected {expected} ({}×{h})",
+                    v.len(), cfg.vocab_size + 1,
+                );
+            }
+            embed_tokens.push(Arc::from(v));
+        }
+
+        // --- learned absolute positional embedding ---------------------
+        let embed_positions = load_tensor_as_f32(
+            st,
+            "decoder.model.decoder.embed_positions.weights",
+        )?;
+        let expected_pos = cfg.max_position_embeddings * h;
+        if embed_positions.len() != expected_pos {
+            crate::bail!(
+                "embed_positions.weights: {} elements, expected {expected_pos} ({}×{h})",
+                embed_positions.len(), cfg.max_position_embeddings,
+            );
+        }
+        let embed_positions: Arc<[f32]> = Arc::from(embed_positions);
+
+        // --- decoder layers --------------------------------------------
+        let mut layers: Vec<ParlerDecoderLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("decoder.model.decoder.layers.{i}");
+
+            // self-attention projections
+            let self_q = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+            )?;
+            let self_k = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.k_proj.weight"), kv_out, h,
+            )?;
+            let self_v = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.v_proj.weight"), kv_out, h,
+            )?;
+            let self_out = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.out_proj.weight"), h, h,
+            )?;
+            let self_ln_g = load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.weight"))?;
+            let self_ln_b = load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.bias"))?;
+
+            // cross-attention projections
+            let cross_q = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.encoder_attn.q_proj.weight"), h, h,
+            )?;
+            let cross_k = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.encoder_attn.k_proj.weight"), xkv_out, h,
+            )?;
+            let cross_v = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.encoder_attn.v_proj.weight"), xkv_out, h,
+            )?;
+            let cross_out = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.encoder_attn.out_proj.weight"), h, h,
+            )?;
+            let cross_ln_g = load_tensor_as_f32(st, &format!("{p}.encoder_attn_layer_norm.weight"))?;
+            let cross_ln_b = load_tensor_as_f32(st, &format!("{p}.encoder_attn_layer_norm.bias"))?;
+
+            // FFN
+            let fc1 = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.fc1.weight"), cfg.ffn_dim, h,
+            )?;
+            let fc2 = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.fc2.weight"), h, cfg.ffn_dim,
+            )?;
+            let final_ln_g = load_tensor_as_f32(st, &format!("{p}.final_layer_norm.weight"))?;
+            let final_ln_b = load_tensor_as_f32(st, &format!("{p}.final_layer_norm.bias"))?;
+
+            layers.push(ParlerDecoderLayerWeights {
+                self_attn: AttnProjections {
+                    q_proj: self_q,
+                    k_proj: self_k,
+                    v_proj: self_v,
+                    out_proj: self_out,
+                },
+                self_attn_ln: LayerNormWeights {
+                    gain: Arc::from(self_ln_g),
+                    bias: Arc::from(self_ln_b),
+                },
+                cross_attn: AttnProjections {
+                    q_proj: cross_q,
+                    k_proj: cross_k,
+                    v_proj: cross_v,
+                    out_proj: cross_out,
+                },
+                cross_attn_ln: LayerNormWeights {
+                    gain: Arc::from(cross_ln_g),
+                    bias: Arc::from(cross_ln_b),
+                },
+                fc1,
+                fc2,
+                final_ln: LayerNormWeights {
+                    gain: Arc::from(final_ln_g),
+                    bias: Arc::from(final_ln_b),
+                },
+            });
+        }
+
+        // --- final LN --------------------------------------------------
+        let final_ln_g = load_tensor_as_f32(st, "decoder.model.decoder.layer_norm.weight")?;
+        let final_ln_b = load_tensor_as_f32(st, "decoder.model.decoder.layer_norm.bias")?;
+        let final_ln = LayerNormWeights {
+            gain: Arc::from(final_ln_g),
+            bias: Arc::from(final_ln_b),
+        };
+
+        // --- per-codebook LM heads -------------------------------------
+        let mut lm_heads: Vec<WeightStorage> = Vec::with_capacity(cfg.num_codebooks);
+        for cb in 0..cfg.num_codebooks {
+            let w = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("decoder.lm_heads.{cb}.weight"),
+                cfg.vocab_size,
+                h,
+            )?;
+            lm_heads.push(w);
+        }
+
+        // --- optional encoder → decoder projection ---------------------
+        let enc_to_dec_proj = if cfg.has_enc_proj {
+            let w = load_transposed_matrix_preserve_dtype(
+                st, "enc_to_dec_proj.weight", h, text_d_model,
+            )?;
+            let b = load_tensor_as_f32(st, "enc_to_dec_proj.bias")?;
+            if b.len() != h {
+                crate::bail!(
+                    "enc_to_dec_proj.bias: {} elements, expected {h}",
+                    b.len(),
+                );
+            }
+            Some(LinearWeights {
+                w,
+                b: Some(Arc::from(b)),
+                in_features: text_d_model,
+                out_features: h,
+            })
+        } else {
+            None
+        };
+
+        Ok(Self {
+            embed_tokens,
+            embed_positions,
+            layers,
+            final_ln,
+            lm_heads,
+            enc_to_dec_proj,
+        })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]

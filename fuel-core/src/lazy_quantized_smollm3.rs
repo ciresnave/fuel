@@ -80,6 +80,17 @@ impl QuantizedSmolLm3Model {
     /// of the Q4_0 block size (32). Source weights follow the same
     /// `[in_features, out_features]` row-major layout as
     /// [`SmolLm3Weights`].
+    /// Convenience: load f32 SmolLM3 weights from HF safetensors and
+    /// quantize each Linear weight to Q4_0. Equivalent to
+    /// `Self::from_f32_bake(cfg, SmolLm3Weights::load_from_mmapped(st, &cfg)?)`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: SmolLm3Config,
+    ) -> Result<Self> {
+        let src = SmolLm3Weights::load_from_mmapped(st, &cfg)?;
+        Self::from_f32_bake(cfg, src)
+    }
+
     pub fn from_f32_bake(cfg: SmolLm3Config, src: SmolLm3Weights) -> Result<Self> {
         let h = cfg.hidden_size;
         let i = cfg.intermediate_size;

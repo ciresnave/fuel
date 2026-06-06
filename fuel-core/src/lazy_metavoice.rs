@@ -27,7 +27,10 @@
 //! is not used — every `forward` call recomputes attention over
 //! the full input (matches the LLaMA / Mistral lazy v1 contract).
 
-use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
+use crate::lazy::{
+    load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype,
+    LayerWeights, LazyTensor, WeightStorage,
+};
 use crate::{Device, Result};
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -280,6 +283,272 @@ impl MetaVoiceModel {
             layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size);
 
         h1.add(&ffn_out)
+    }
+}
+
+// ---- Safetensors loader ----------------------------------------------------
+
+/// Split the fused MetaVoice `wqkv` weight matrix (HF `[out, in]`
+/// layout, where `out = hidden + 2 * kv_dim`) into three physically-
+/// transposed Q / K / V sub-matrices in fuel's `[in, out]` layout.
+///
+/// The HF source is concatenated along the output axis as
+/// `[Q; K; V]` so that the eager forward can do a single matmul and
+/// then `narrow` along the last axis. We undo the concat here so the
+/// lazy decoder can reuse the same per-projection `apply_linear` path
+/// it uses for all other models.
+fn split_fused_wqkv(
+    fused: &[f32],
+    q_out: usize,
+    kv_out: usize,
+    in_dim: usize,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let mut q = vec![0.0_f32; in_dim * q_out];
+    let mut k = vec![0.0_f32; in_dim * kv_out];
+    let mut v = vec![0.0_f32; in_dim * kv_out];
+    // Q rows: 0 .. q_out
+    for i in 0..q_out {
+        for j in 0..in_dim {
+            q[j * q_out + i] = fused[i * in_dim + j];
+        }
+    }
+    // K rows: q_out .. q_out + kv_out
+    for i in 0..kv_out {
+        for j in 0..in_dim {
+            k[j * kv_out + i] = fused[(q_out + i) * in_dim + j];
+        }
+    }
+    // V rows: q_out + kv_out .. q_out + 2 * kv_out
+    for i in 0..kv_out {
+        for j in 0..in_dim {
+            v[j * kv_out + i] = fused[(q_out + kv_out + i) * in_dim + j];
+        }
+    }
+    (q, k, v)
+}
+
+impl MetaVoiceWeights {
+    /// Load MetaVoice stage-2 transformer weights from a
+    /// `MmapedSafetensors` file using the standard HuggingFace
+    /// naming convention used by the eager
+    /// `fuel_transformers::models::audio::metavoice::transformer`
+    /// module.
+    ///
+    /// Eager-to-lazy naming map (HF `[out, in]` weights are physically
+    /// transposed to fuel's `[in, out]` layout on load):
+    ///
+    /// - `tok_embeddings.weight` → [`MetaVoiceWeights::token_embedding`]
+    /// - `speaker_cond_pos.weight` → [`MetaVoiceWeights::speaker_proj`]
+    ///   (bias-free linear `speaker_emb_dim → hidden_size`)
+    /// - `layers.{i}.attention.wqkv.weight` → fused
+    ///   `[(n_head + 2 * n_local_heads) * head_dim, hidden_size]` matrix;
+    ///   split here into separate `attn_q`, `attn_k`, `attn_v` entries
+    ///   (all bias-free).
+    /// - `layers.{i}.attention.wo.weight` → `attn_o`
+    /// - `layers.{i}.feed_forward.swiglu.w1.weight` → `ffn_gate`
+    /// - `layers.{i}.feed_forward.swiglu.w3.weight` → `ffn_up`
+    /// - `layers.{i}.feed_forward.w2.weight` → `ffn_down`
+    /// - `layers.{i}.attention_norm.weight` → `attn_norm_gain`
+    /// - `layers.{i}.ffn_norm.weight` → `ffn_norm_gain`
+    /// - `norm.weight` → [`MetaVoiceWeights::final_norm_gain`]
+    /// - `lm_heads.{i}.weight` (preferred multi-codebook form) or
+    ///   `output.weight` (single-codebook eager form, broadcast to
+    ///   all `num_codebooks` heads as a fallback) → `lm_heads`
+    ///
+    /// Notes / divergences from eager:
+    ///
+    /// - The eager transformer uses **learned** position embeddings
+    ///   (`pos_embeddings.weight`) but the lazy port uses RoPE — so
+    ///   `pos_embeddings.weight` is intentionally not loaded.
+    /// - The eager transformer has a single `output` lm head; the
+    ///   lazy port supports a per-codebook head bank. We first look
+    ///   for `lm_heads.{i}.weight` and fall back to broadcasting a
+    ///   single `output.weight` across all heads when the multi-
+    ///   codebook bank is absent. This matches the multi-codebook
+    ///   stage-1 GPT naming in the eager `gpt::Model::new` (where
+    ///   `lm_heads` is also a `Vec`).
+    /// - Q/K/V biases are always `None` (MetaVoice's `wqkv` is
+    ///   bias-free in the eager source).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &MetaVoiceConfig,
+    ) -> Result<Self> {
+        let h = cfg.hidden_size;
+        let i_dim = cfg.intermediate_size;
+        let kv = cfg.num_key_value_heads * cfg.head_dim;
+        let qkv_out = h + 2 * kv;
+
+        // Token embedding table — raw `[vocab, hidden]`, no transpose.
+        let token_embedding_v = load_tensor_as_f32(st, "tok_embeddings.weight")?;
+        if token_embedding_v.len() != cfg.vocab_size * h {
+            crate::bail!(
+                "tok_embeddings.weight: {} elts, expected {} ({}×{})",
+                token_embedding_v.len(),
+                cfg.vocab_size * h,
+                cfg.vocab_size,
+                h,
+            );
+        }
+        let token_embedding: Arc<[f32]> = Arc::from(token_embedding_v);
+
+        // Speaker conditioning projection (bias-free linear
+        // `speaker_emb_dim → hidden_size`).
+        let speaker_proj = load_transposed_matrix_preserve_dtype(
+            st,
+            "speaker_cond_pos.weight",
+            h,
+            cfg.speaker_emb_dim,
+        )?;
+
+        // Per-layer weights.
+        let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        for li in 0..cfg.num_hidden_layers {
+            let p = format!("layers.{li}");
+
+            // Fused QKV — HF stores `[hidden + 2*kv, hidden]` (out, in).
+            // We read as f32, split along the output axis, and
+            // physically transpose each piece into fuel's `[in, out]`
+            // layout.
+            let fused = load_tensor_as_f32(
+                st,
+                &format!("{p}.attention.wqkv.weight"),
+            )?;
+            if fused.len() != qkv_out * h {
+                crate::bail!(
+                    "{p}.attention.wqkv.weight: {} elts, expected {} ({}×{})",
+                    fused.len(),
+                    qkv_out * h,
+                    qkv_out,
+                    h,
+                );
+            }
+            let (q_buf, k_buf, v_buf) = split_fused_wqkv(&fused, h, kv, h);
+            let attn_q = WeightStorage::F32(Arc::from(q_buf));
+            let attn_k = WeightStorage::F32(Arc::from(k_buf));
+            let attn_v = WeightStorage::F32(Arc::from(v_buf));
+
+            // Attention output projection — standard `[out, in]` HF
+            // layout, dtype preserved.
+            let attn_o = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.attention.wo.weight"),
+                h,
+                h,
+            )?;
+
+            // SwiGLU FFN: `down(silu(gate) * up)` where:
+            //   gate = `swiglu.w1`  (`hidden → intermediate`)
+            //   up   = `swiglu.w3`  (`hidden → intermediate`)
+            //   down = `w2`         (`intermediate → hidden`)
+            let ffn_gate = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.feed_forward.swiglu.w1.weight"),
+                i_dim,
+                h,
+            )?;
+            let ffn_up = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.feed_forward.swiglu.w3.weight"),
+                i_dim,
+                h,
+            )?;
+            let ffn_down = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.feed_forward.w2.weight"),
+                h,
+                i_dim,
+            )?;
+
+            // Per-layer RmsNorm gains.
+            let attn_norm_gain = load_tensor_as_f32(
+                st,
+                &format!("{p}.attention_norm.weight"),
+            )?;
+            if attn_norm_gain.len() != h {
+                crate::bail!(
+                    "{p}.attention_norm.weight: {} elts, expected {}",
+                    attn_norm_gain.len(),
+                    h,
+                );
+            }
+            let ffn_norm_gain = load_tensor_as_f32(
+                st,
+                &format!("{p}.ffn_norm.weight"),
+            )?;
+            if ffn_norm_gain.len() != h {
+                crate::bail!(
+                    "{p}.ffn_norm.weight: {} elts, expected {}",
+                    ffn_norm_gain.len(),
+                    h,
+                );
+            }
+
+            layers.push(LayerWeights {
+                attn_q,
+                attn_q_bias: None,
+                attn_k,
+                attn_k_bias: None,
+                attn_v,
+                attn_v_bias: None,
+                attn_o,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
+                attn_norm_gain: Arc::from(attn_norm_gain),
+                ffn_norm_gain: Arc::from(ffn_norm_gain),
+            });
+        }
+
+        // Final RmsNorm gain.
+        let final_norm_gain_v = load_tensor_as_f32(st, "norm.weight")?;
+        if final_norm_gain_v.len() != h {
+            crate::bail!(
+                "norm.weight: {} elts, expected {}",
+                final_norm_gain_v.len(),
+                h,
+            );
+        }
+        let final_norm_gain: Arc<[f32]> = Arc::from(final_norm_gain_v);
+
+        // Multi-codebook lm_heads. Prefer the per-head bank
+        // (`lm_heads.{i}.weight`); fall back to a single `output.weight`
+        // broadcast across all `num_codebooks` heads. The single-output
+        // fallback materializes the same transposed `[hidden, vocab]`
+        // buffer once and shares it via `Arc::clone` across heads.
+        let mut lm_heads: Vec<WeightStorage> =
+            Vec::with_capacity(cfg.num_codebooks);
+        let first_head_name = format!("lm_heads.0.weight");
+        if st.get(&first_head_name).is_ok() {
+            for ci in 0..cfg.num_codebooks {
+                let head = load_transposed_matrix_preserve_dtype(
+                    st,
+                    &format!("lm_heads.{ci}.weight"),
+                    cfg.vocab_size,
+                    h,
+                )?;
+                lm_heads.push(head);
+            }
+        } else {
+            // Single-output eager form — broadcast across all heads.
+            let single = load_transposed_matrix(
+                st,
+                "output.weight",
+                cfg.vocab_size,
+                h,
+            )?;
+            let shared: Arc<[f32]> = Arc::from(single);
+            for _ in 0..cfg.num_codebooks {
+                lm_heads.push(WeightStorage::F32(Arc::clone(&shared)));
+            }
+        }
+
+        Ok(MetaVoiceWeights {
+            token_embedding,
+            speaker_proj,
+            layers,
+            final_norm_gain,
+            lm_heads,
+        })
     }
 }
 
