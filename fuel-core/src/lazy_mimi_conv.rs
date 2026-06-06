@@ -98,15 +98,15 @@ pub fn pad_last_1d(
                 ));
             }
             let mut out = xs.clone();
+            let _ = (b, c);
             if left > 0 {
-                // narrow → (B, C, 1) → repeat → (B, C, left).
                 let head = xs.narrow(2_usize, 0, 1)?;
-                let left_block = head.repeat(Shape::from_dims(&[b, c, left]))?;
+                let left_block = head.repeat(Shape::from_dims(&[1, 1, left]))?;
                 out = left_block.concat(&out, 2_usize)?;
             }
             if right > 0 {
                 let tail = xs.narrow(2_usize, t - 1, 1)?;
-                let right_block = tail.repeat(Shape::from_dims(&[b, c, right]))?;
+                let right_block = tail.repeat(Shape::from_dims(&[1, 1, right]))?;
                 out = out.concat(&right_block, 2_usize)?;
             }
             Ok(out)
@@ -460,6 +460,20 @@ mod tests {
         let y = pad_last_1d(&xs, 2, 1, LazyPadMode::Replicate).unwrap();
         let got = y.realize_f32();
         assert_eq!(got, vec![1.0, 1.0, 1.0, 2.0, 3.0, 3.0]);
+    }
+
+    #[test]
+    fn pad_last_1d_replicate_multi_channel_preserves_channels() {
+        // 2 channels: c0 = [10, 20, 30], c1 = [40, 50, 60].
+        let xs = const_xs(1, 2, 3, &[10.0, 20.0, 30.0, 40.0, 50.0, 60.0]);
+        let y = pad_last_1d(&xs, 1, 2, LazyPadMode::Replicate).unwrap();
+        assert_eq!(y.shape().dims(), &[1, 2, 6]);
+        let got = y.realize_f32();
+        // c0: [10, 10, 20, 30, 30, 30]; c1: [40, 40, 50, 60, 60, 60].
+        assert_eq!(
+            got,
+            vec![10.0, 10.0, 20.0, 30.0, 30.0, 30.0, 40.0, 40.0, 50.0, 60.0, 60.0, 60.0],
+        );
     }
 
     #[test]
