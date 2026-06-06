@@ -210,6 +210,73 @@ impl VggModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl VggWeights {
+    /// Load VGG (timm "vgg13" / "vgg16" / "vgg19") weights from HF safetensors.
+    /// timm naming: `features.{N}.weight` + `features.{N}.bias` for convs at
+    /// indices that depend on the variant (intermixed with MaxPool sentinels).
+    /// FC head: `pre_logits.fc1.{weight,bias}`, `pre_logits.fc2.{weight,bias}`,
+    /// `head.fc.{weight,bias}` (timm) or `classifier.{0,3,6}.{weight,bias}`
+    /// (torchvision-style). This loader checks both and chooses what's present.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &VggConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        // Conv index sequence for each variant (features.{i}.weight).
+        // VGG-{13,16,19} = N convs interleaved with MaxPool2d at boundaries.
+        let convs_per_block = cfg.variant.convs_per_block();
+
+        let mut blocks: Vec<Vec<VggConvWeights>> = Vec::with_capacity(5);
+        // Build (in_ch, out_ch) per conv. Block channel widths: 64, 128, 256, 512, 512.
+        let channel_widths: [usize; 5] = [64, 128, 256, 512, 512];
+        let mut feature_idx: usize = 0;
+        let mut prev_c = 3_usize;
+        for (b, &n_convs) in convs_per_block.iter().enumerate() {
+            let c_out = channel_widths[b];
+            let mut convs = Vec::with_capacity(n_convs);
+            for _ in 0..n_convs {
+                let w_name = format!("features.{feature_idx}.weight");
+                let b_name = format!("features.{feature_idx}.bias");
+                // Conv2d weight is `[c_out, c_in, 3, 3]` stored row-major;
+                // load as f32 flat (treated as opaque buffer by conv2d code).
+                let w = WeightStorage::F32(Arc::from(
+                    load_tensor_as_f32(st, &w_name)?,
+                ));
+                let bias = Arc::from(load_tensor_as_f32(st, &b_name)?);
+                convs.push(VggConvWeights {
+                    w, b: bias, c_in: prev_c, c_out,
+                });
+                prev_c = c_out;
+                // Each conv in timm vgg features takes 2 indices (Conv + ReLU)
+                // except the final conv of a block where ReLU precedes MaxPool.
+                feature_idx += 2;
+            }
+            // MaxPool at end of block.
+            feature_idx += 1;
+            blocks.push(convs);
+        }
+
+        let head_dim = channel_widths[4] * cfg.head_spatial * cfg.head_spatial;
+        // Try timm naming first; fall back to torchvision.
+        let load_fc = |prefix: &str, in_f: usize, out_f: usize| -> Result<VggHeadFc> {
+            let w = ltm(st, &format!("{prefix}.weight"), out_f, in_f)?;
+            let b = Arc::from(load_tensor_as_f32(st, &format!("{prefix}.bias"))?);
+            Ok(VggHeadFc { w, b, in_features: in_f, out_features: out_f })
+        };
+
+        let fc1 = load_fc("pre_logits.fc1", head_dim, cfg.head_hidden)
+            .or_else(|_| load_fc("classifier.0", head_dim, cfg.head_hidden))?;
+        let fc2 = load_fc("pre_logits.fc2", cfg.head_hidden, cfg.head_hidden)
+            .or_else(|_| load_fc("classifier.3", cfg.head_hidden, cfg.head_hidden))?;
+        let fc3 = load_fc("head.fc", cfg.head_hidden, cfg.nclasses)
+            .or_else(|_| load_fc("classifier.6", cfg.head_hidden, cfg.nclasses))?;
+
+        Ok(Self { blocks, fc1, fc2, fc3 })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
