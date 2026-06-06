@@ -286,6 +286,160 @@ impl DistilBertModel {
     }
 }
 
+impl DistilBertWeights {
+    /// Load DistilBERT weights from a memory-mapped safetensors file
+    /// using the standard HuggingFace naming convention.
+    ///
+    /// Expected tensor names (with optional `distilbert.` prefix):
+    ///
+    /// * `embeddings.word_embeddings.weight`
+    /// * `embeddings.position_embeddings.weight`
+    /// * `embeddings.LayerNorm.{weight,bias}`
+    /// * `transformer.layer.{i}.attention.{q_lin,k_lin,v_lin,out_lin}.{weight,bias}`
+    /// * `transformer.layer.{i}.sa_layer_norm.{weight,bias}`
+    /// * `transformer.layer.{i}.ffn.{lin1,lin2}.{weight,bias}`
+    /// * `transformer.layer.{i}.output_layer_norm.{weight,bias}`
+    ///
+    /// Linear weights are stored in HuggingFace's `[out, in]` layout
+    /// and transposed to `[in, out]` for fuel-graph's `matmul`. BF16
+    /// linears are preserved through `WeightStorage::BF16` to avoid
+    /// the 2× memory tax of an f32 copy; all other tensors (1-D
+    /// gains/biases, embedding tables) round-trip through f32.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &DistilBertConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+
+        // Prefix detection: HF's `distilbert-base-uncased` and
+        // friends save weights under the `distilbert.` wrapper, but
+        // task-finetuned checkpoints sometimes drop it. Probe both.
+        let prefix = {
+            let probe = "distilbert.embeddings.word_embeddings.weight";
+            if st.get(probe).is_ok() {
+                "distilbert."
+            } else {
+                ""
+            }
+        };
+
+        let d = cfg.dim;
+        let hidden = cfg.hidden_dim;
+
+        let word_embedding = load_tensor_as_f32(
+            st,
+            &format!("{prefix}embeddings.word_embeddings.weight"),
+        )?;
+        if word_embedding.len() != cfg.vocab_size * d {
+            crate::bail!(
+                "{prefix}embeddings.word_embeddings.weight: {} elts, expected {} ({}×{})",
+                word_embedding.len(), cfg.vocab_size * d, cfg.vocab_size, d,
+            );
+        }
+        let position_embedding = load_tensor_as_f32(
+            st,
+            &format!("{prefix}embeddings.position_embeddings.weight"),
+        )?;
+        if position_embedding.len() != cfg.max_position_embeddings * d {
+            crate::bail!(
+                "{prefix}embeddings.position_embeddings.weight: {} elts, expected {} ({}×{})",
+                position_embedding.len(),
+                cfg.max_position_embeddings * d,
+                cfg.max_position_embeddings,
+                d,
+            );
+        }
+        let embed_ln_gain = load_tensor_as_f32(
+            st,
+            &format!("{prefix}embeddings.LayerNorm.weight"),
+        )?;
+        let embed_ln_bias = load_tensor_as_f32(
+            st,
+            &format!("{prefix}embeddings.LayerNorm.bias"),
+        )?;
+
+        let mut layers: Vec<DistilBertLayerWeights> =
+            Vec::with_capacity(cfg.n_layers);
+        for i in 0..cfg.n_layers {
+            let p = format!("{prefix}transformer.layer.{i}");
+            let q_lin = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.attention.q_lin.weight"), d, d,
+            )?;
+            let q_lin_bias = load_tensor_as_f32(
+                st, &format!("{p}.attention.q_lin.bias"),
+            )?;
+            let k_lin = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.attention.k_lin.weight"), d, d,
+            )?;
+            let k_lin_bias = load_tensor_as_f32(
+                st, &format!("{p}.attention.k_lin.bias"),
+            )?;
+            let v_lin = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.attention.v_lin.weight"), d, d,
+            )?;
+            let v_lin_bias = load_tensor_as_f32(
+                st, &format!("{p}.attention.v_lin.bias"),
+            )?;
+            let out_lin = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.attention.out_lin.weight"), d, d,
+            )?;
+            let out_lin_bias = load_tensor_as_f32(
+                st, &format!("{p}.attention.out_lin.bias"),
+            )?;
+            let sa_ln_gain = load_tensor_as_f32(
+                st, &format!("{p}.sa_layer_norm.weight"),
+            )?;
+            let sa_ln_bias = load_tensor_as_f32(
+                st, &format!("{p}.sa_layer_norm.bias"),
+            )?;
+            let lin1 = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.ffn.lin1.weight"), hidden, d,
+            )?;
+            let lin1_bias = load_tensor_as_f32(
+                st, &format!("{p}.ffn.lin1.bias"),
+            )?;
+            let lin2 = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.ffn.lin2.weight"), d, hidden,
+            )?;
+            let lin2_bias = load_tensor_as_f32(
+                st, &format!("{p}.ffn.lin2.bias"),
+            )?;
+            let output_ln_gain = load_tensor_as_f32(
+                st, &format!("{p}.output_layer_norm.weight"),
+            )?;
+            let output_ln_bias = load_tensor_as_f32(
+                st, &format!("{p}.output_layer_norm.bias"),
+            )?;
+            layers.push(DistilBertLayerWeights {
+                q_lin,
+                q_lin_bias: Arc::from(q_lin_bias),
+                k_lin,
+                k_lin_bias: Arc::from(k_lin_bias),
+                v_lin,
+                v_lin_bias: Arc::from(v_lin_bias),
+                out_lin,
+                out_lin_bias: Arc::from(out_lin_bias),
+                sa_ln_gain: Arc::from(sa_ln_gain),
+                sa_ln_bias: Arc::from(sa_ln_bias),
+                lin1,
+                lin1_bias: Arc::from(lin1_bias),
+                lin2,
+                lin2_bias: Arc::from(lin2_bias),
+                output_ln_gain: Arc::from(output_ln_gain),
+                output_ln_bias: Arc::from(output_ln_bias),
+            });
+        }
+
+        Ok(Self {
+            word_embedding: Arc::from(word_embedding),
+            position_embedding: Arc::from(position_embedding),
+            embed_ln_gain: Arc::from(embed_ln_gain),
+            embed_ln_bias: Arc::from(embed_ln_bias),
+            layers,
+        })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

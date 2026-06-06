@@ -180,6 +180,256 @@ pub struct DeepSeek2Model {
     pub weights: DeepSeek2Weights,
 }
 
+impl DeepSeek2Weights {
+    /// Load DeepSeek-V2 weights from a memory-mapped safetensors file
+    /// using the standard HuggingFace top-level naming.
+    ///
+    /// # Tensor naming convention
+    ///
+    /// - `model.embed_tokens.weight` → `token_embedding` (row-major
+    ///   `[vocab, hidden]`).
+    /// - Per layer `i` (`model.layers.{i}`):
+    ///   - `input_layernorm.weight` → `input_norm_gain`
+    ///   - `post_attention_layernorm.weight` → `post_attn_norm_gain`
+    ///   - **MLA attention** (`self_attn.*`):
+    ///     - Q-LoRA case (`cfg.q_lora_rank == Some(r)`):
+    ///       - `q_a_proj.weight` (`[r, hidden]` HF) →
+    ///         `DeepSeek2QProj::Lora.a` (transposed to `[hidden, r]`).
+    ///       - `q_a_layernorm.weight` (`[r]`) → `norm_gain`.
+    ///       - `q_b_proj.weight` (`[n_heads * q_head_dim, r]` HF) →
+    ///         `b` (transposed to `[r, n_heads * q_head_dim]`).
+    ///     - Plain Q case: `q_proj.weight`
+    ///       (`[n_heads * q_head_dim, hidden]` HF) → `Plain`
+    ///       (transposed to `[hidden, n_heads * q_head_dim]`).
+    ///     - `kv_a_proj_with_mqa.weight`
+    ///       (`[kv_lora_rank + qk_rope_head_dim, hidden]` HF) →
+    ///       `kv_a_proj_with_mqa` (transposed).
+    ///     - `kv_a_layernorm.weight` (`[kv_lora_rank]`) →
+    ///       `kv_a_layernorm_gain`.
+    ///     - `kv_b_proj.weight`
+    ///       (`[n_heads * (qk_nope_head_dim + v_head_dim), kv_lora_rank]`
+    ///       HF) → `kv_b_proj` (transposed).
+    ///     - `o_proj.weight` (`[hidden, n_heads * v_head_dim]` HF) →
+    ///       `o_proj` (transposed to `[n_heads * v_head_dim, hidden]`).
+    ///   - **FFN** depends on `cfg.layer_uses_moe(i)`:
+    ///     - Dense (`mlp.*`): `gate_proj.weight`, `up_proj.weight`,
+    ///       `down_proj.weight` — same layout as LLaMA.
+    ///     - MoE:
+    ///       - `mlp.gate.weight` (`[n_routed_experts, hidden]` HF) →
+    ///         `router` (transposed to flat row-major
+    ///         `[hidden, n_routed_experts]`).
+    ///       - `mlp.experts.{ei}.{gate_proj,up_proj,down_proj}.weight`
+    ///         per routed expert. Intermediate size is
+    ///         `cfg.moe_intermediate_size`.
+    ///       - `mlp.shared_experts.{gate_proj,up_proj,down_proj}.weight`
+    ///         with intermediate size
+    ///         `n_shared_experts * moe_intermediate_size`.
+    /// - `model.norm.weight` → `final_norm_gain`.
+    /// - `lm_head.weight` (optional, falls back to tied embeddings) →
+    ///   `lm_head`.
+    ///
+    /// # Deferrals
+    ///
+    /// `attention_bias=true` biases (`q_a_proj.bias`,
+    /// `kv_a_proj_with_mqa.bias`, `o_proj.bias`) are not loaded — the
+    /// current `DeepSeek2MlaWeights` struct has no bias fields, matching
+    /// the v1 forward path which uses `apply_linear` without bias. Most
+    /// public DeepSeek-V2 checkpoints set `attention_bias=false`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &DeepSeek2Config,
+    ) -> Result<Self> {
+        use crate::lazy::{
+            load_tensor_as_f32, load_transposed_matrix,
+            load_transposed_matrix_preserve_dtype,
+        };
+
+        let h = cfg.hidden_size;
+        let n_heads = cfg.num_attention_heads;
+        let q_head_dim = cfg.q_head_dim();
+        let nope = cfg.qk_nope_head_dim;
+        let rope = cfg.qk_rope_head_dim;
+        let v_dim = cfg.v_head_dim;
+        let kv_lora = cfg.kv_lora_rank;
+
+        let token_embedding = load_tensor_as_f32(st, "model.embed_tokens.weight")?;
+        if token_embedding.len() != cfg.vocab_size * h {
+            crate::bail!(
+                "model.embed_tokens.weight: {} elts, expected {} ({}×{})",
+                token_embedding.len(), cfg.vocab_size * h, cfg.vocab_size, h,
+            );
+        }
+
+        let mut layers: Vec<DeepSeek2LayerWeights> =
+            Vec::with_capacity(cfg.num_hidden_layers);
+        for li in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{li}");
+
+            // --- Norms -------------------------------------------------
+            let input_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.input_layernorm.weight"),
+            )?);
+            let post_attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+
+            // --- MLA attention ----------------------------------------
+            let q_proj = match cfg.q_lora_rank {
+                Some(lora) => {
+                    let a = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{p}.self_attn.q_a_proj.weight"), lora, h,
+                    )?;
+                    let norm_gain = Arc::from(load_tensor_as_f32(
+                        st, &format!("{p}.self_attn.q_a_layernorm.weight"),
+                    )?);
+                    let b = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{p}.self_attn.q_b_proj.weight"),
+                        n_heads * q_head_dim, lora,
+                    )?;
+                    DeepSeek2QProj::Lora { a, norm_gain, b }
+                }
+                None => {
+                    let plain = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{p}.self_attn.q_proj.weight"),
+                        n_heads * q_head_dim, h,
+                    )?;
+                    DeepSeek2QProj::Plain(plain)
+                }
+            };
+
+            let kv_a_proj_with_mqa = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.kv_a_proj_with_mqa.weight"),
+                kv_lora + rope, h,
+            )?;
+            let kv_a_layernorm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.self_attn.kv_a_layernorm.weight"),
+            )?);
+            let kv_b_proj = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.kv_b_proj.weight"),
+                n_heads * (nope + v_dim), kv_lora,
+            )?;
+            let o_proj = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.o_proj.weight"),
+                h, n_heads * v_dim,
+            )?;
+
+            let mla = DeepSeek2MlaWeights {
+                q_proj,
+                kv_a_proj_with_mqa,
+                kv_a_layernorm_gain,
+                kv_b_proj,
+                o_proj,
+            };
+
+            // --- FFN (dense or MoE) -----------------------------------
+            let ffn = if cfg.layer_uses_moe(li) {
+                let n_routed = cfg.n_routed_experts.unwrap_or(0);
+                let n_shared = cfg.n_shared_experts.unwrap_or(0);
+                let inter = cfg.moe_intermediate_size;
+
+                // Router: HF `[n_routed_experts, hidden_size]` →
+                // flat `[hidden_size, n_routed_experts]`.
+                let router_flat = load_transposed_matrix(
+                    st, &format!("{p}.mlp.gate.weight"), n_routed, h,
+                )?;
+                let router: Arc<[f32]> = Arc::from(router_flat);
+
+                let mut experts: Vec<DeepSeek2ExpertWeights> =
+                    Vec::with_capacity(n_routed);
+                for ei in 0..n_routed {
+                    let ep = format!("{p}.mlp.experts.{ei}");
+                    let gate = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{ep}.gate_proj.weight"), inter, h,
+                    )?;
+                    let up = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{ep}.up_proj.weight"), inter, h,
+                    )?;
+                    let down = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{ep}.down_proj.weight"), h, inter,
+                    )?;
+                    experts.push(DeepSeek2ExpertWeights { gate, up, down });
+                }
+
+                // Shared experts. When `n_shared_experts == 0`, the
+                // forward path early-returns before consuming the
+                // shared tensors, so we stash zero-length placeholders.
+                let shared_inter = n_shared * inter;
+                let (shared_gate, shared_up, shared_down) = if n_shared > 0 {
+                    let sp = format!("{p}.mlp.shared_experts");
+                    let g = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{sp}.gate_proj.weight"), shared_inter, h,
+                    )?;
+                    let u = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{sp}.up_proj.weight"), shared_inter, h,
+                    )?;
+                    let d = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{sp}.down_proj.weight"), h, shared_inter,
+                    )?;
+                    (g, u, d)
+                } else {
+                    let empty: Arc<[f32]> = Arc::from(Vec::<f32>::new());
+                    (
+                        WeightStorage::F32(empty.clone()),
+                        WeightStorage::F32(empty.clone()),
+                        WeightStorage::F32(empty),
+                    )
+                };
+
+                DeepSeek2FfnWeights::Moe(DeepSeek2MoeWeights {
+                    router,
+                    experts,
+                    shared_gate,
+                    shared_up,
+                    shared_down,
+                })
+            } else {
+                let inter = cfg.intermediate_size;
+                let gate = load_transposed_matrix_preserve_dtype(
+                    st, &format!("{p}.mlp.gate_proj.weight"), inter, h,
+                )?;
+                let up = load_transposed_matrix_preserve_dtype(
+                    st, &format!("{p}.mlp.up_proj.weight"), inter, h,
+                )?;
+                let down = load_transposed_matrix_preserve_dtype(
+                    st, &format!("{p}.mlp.down_proj.weight"), h, inter,
+                )?;
+                DeepSeek2FfnWeights::Dense(DeepSeek2DenseMlpWeights {
+                    gate, up, down,
+                })
+            };
+
+            layers.push(DeepSeek2LayerWeights {
+                input_norm_gain,
+                mla,
+                post_attn_norm_gain,
+                ffn,
+            });
+        }
+
+        let final_norm_gain = Arc::from(load_tensor_as_f32(
+            st, "model.norm.weight",
+        )?);
+
+        // Optional separate lm_head. None ⇒ tied to token_embedding at
+        // apply_lm_head time. Honour cfg.tie_word_embeddings first: when
+        // the user requested tying, we don't even look for lm_head.
+        let lm_head = if cfg.tie_word_embeddings {
+            None
+        } else {
+            load_transposed_matrix_preserve_dtype(
+                st, "lm_head.weight", cfg.vocab_size, h,
+            ).ok()
+        };
+
+        Ok(DeepSeek2Weights {
+            token_embedding: Arc::from(token_embedding),
+            layers,
+            final_norm_gain,
+            lm_head,
+        })
+    }
+}
+
 impl DeepSeek2Model {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;

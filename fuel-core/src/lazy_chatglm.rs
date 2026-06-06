@@ -419,6 +419,188 @@ impl ChatGlmModel {
     }
 }
 
+// ---- Safetensors loader ----------------------------------------------------
+
+impl ChatGlmWeights {
+    /// Load ChatGLM2 / ChatGLM3 weights from a `MmapedSafetensors`
+    /// file using the THUDM HuggingFace naming convention. The
+    /// ChatGLM checkpoint roots every parameter under the
+    /// `transformer.` prefix; layers live under
+    /// `transformer.encoder.layers.{i}` with a single fused
+    /// `query_key_value` projection (Q + grouped K + grouped V along
+    /// the output axis):
+    ///
+    ///   - `transformer.embedding.word_embeddings.weight` →
+    ///     [`ChatGlmWeights::token_embedding`]
+    ///   - `transformer.encoder.layers.{i}.input_layernorm.weight`
+    ///     (+ `.bias` for LayerNorm) → `input_norm_{gain,bias}`
+    ///   - `transformer.encoder.layers.{i}.self_attention.query_key_value.weight`
+    ///     (+ `.bias` when `add_qkv_bias || add_bias_linear`) →
+    ///     `query_key_value{,_bias}`
+    ///   - `transformer.encoder.layers.{i}.self_attention.dense.weight`
+    ///     (+ `.bias` when `add_bias_linear`) → `dense{,_bias}`
+    ///   - `transformer.encoder.layers.{i}.post_attention_layernorm.weight`
+    ///     (+ `.bias` for LayerNorm) → `post_attn_norm_{gain,bias}`
+    ///   - `transformer.encoder.layers.{i}.mlp.dense_h_to_4h.weight`
+    ///     (+ `.bias` when `add_bias_linear`) → `dense_h_to_4h{,_bias}`
+    ///   - `transformer.encoder.layers.{i}.mlp.dense_4h_to_h.weight`
+    ///     (+ `.bias` when `add_bias_linear`) → `dense_4h_to_h{,_bias}`
+    ///   - `transformer.encoder.final_layernorm.weight`
+    ///     (+ `.bias` for LayerNorm) → `final_norm_{gain,bias}`,
+    ///     loaded only when `post_layer_norm == true`
+    ///   - `transformer.output_layer.weight` → `output_layer`
+    ///
+    /// The on-disk fused-QKV shape is `[qkv_hidden_size, hidden_size]`;
+    /// `load_transposed_matrix_preserve_dtype` produces the
+    /// `[hidden_size, qkv_hidden_size]` layout that `apply_linear`
+    /// consumes for `x @ W` with `x.shape() = (b, s, hidden_size)`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &ChatGlmConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+
+        let h = cfg.hidden_size;
+        let ffn = cfg.ffn_hidden_size;
+        let hpa = cfg.head_dim();
+        let q_dim = cfg.num_attention_heads * hpa;
+        let qkv_dim = cfg.qkv_hidden_size();
+
+        let token_embedding = load_tensor_as_f32(
+            st, "transformer.embedding.word_embeddings.weight",
+        )?;
+        if token_embedding.len() != cfg.padded_vocab_size * h {
+            crate::bail!(
+                "transformer.embedding.word_embeddings.weight: {} elts, expected {} ({}×{})",
+                token_embedding.len(), cfg.padded_vocab_size * h,
+                cfg.padded_vocab_size, h,
+            );
+        }
+
+        let layer_norm = matches!(cfg.norm_kind, ChatGlmNorm::Layer);
+        let want_dense_bias = cfg.add_bias_linear;
+        let want_qkv_bias = cfg.add_qkv_bias || cfg.add_bias_linear;
+
+        let mut layers: Vec<ChatGlmLayerWeights> = Vec::with_capacity(cfg.num_layers);
+        for li in 0..cfg.num_layers {
+            let p = format!("transformer.encoder.layers.{li}");
+
+            let input_norm_gain = load_tensor_as_f32(
+                st, &format!("{p}.input_layernorm.weight"),
+            )?;
+            let input_norm_bias = if layer_norm {
+                Some(Arc::from(load_tensor_as_f32(
+                    st, &format!("{p}.input_layernorm.bias"),
+                )?))
+            } else {
+                None
+            };
+            let post_attn_norm_gain = load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.weight"),
+            )?;
+            let post_attn_norm_bias = if layer_norm {
+                Some(Arc::from(load_tensor_as_f32(
+                    st, &format!("{p}.post_attention_layernorm.bias"),
+                )?))
+            } else {
+                None
+            };
+
+            let query_key_value = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attention.query_key_value.weight"),
+                qkv_dim, h,
+            )?;
+            let query_key_value_bias = if want_qkv_bias {
+                Some(Arc::from(load_tensor_as_f32(
+                    st, &format!("{p}.self_attention.query_key_value.bias"),
+                )?))
+            } else {
+                None
+            };
+
+            let dense = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attention.dense.weight"),
+                h, q_dim,
+            )?;
+            let dense_bias = if want_dense_bias {
+                Some(Arc::from(load_tensor_as_f32(
+                    st, &format!("{p}.self_attention.dense.bias"),
+                )?))
+            } else {
+                None
+            };
+
+            let dense_h_to_4h = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.dense_h_to_4h.weight"),
+                2 * ffn, h,
+            )?;
+            let dense_h_to_4h_bias = if want_dense_bias {
+                Some(Arc::from(load_tensor_as_f32(
+                    st, &format!("{p}.mlp.dense_h_to_4h.bias"),
+                )?))
+            } else {
+                None
+            };
+
+            let dense_4h_to_h = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.dense_4h_to_h.weight"),
+                h, ffn,
+            )?;
+            let dense_4h_to_h_bias = if want_dense_bias {
+                Some(Arc::from(load_tensor_as_f32(
+                    st, &format!("{p}.mlp.dense_4h_to_h.bias"),
+                )?))
+            } else {
+                None
+            };
+
+            layers.push(ChatGlmLayerWeights {
+                input_norm_gain: Arc::from(input_norm_gain),
+                input_norm_bias,
+                post_attn_norm_gain: Arc::from(post_attn_norm_gain),
+                post_attn_norm_bias,
+                query_key_value,
+                query_key_value_bias,
+                dense,
+                dense_bias,
+                dense_h_to_4h,
+                dense_h_to_4h_bias,
+                dense_4h_to_h,
+                dense_4h_to_h_bias,
+            });
+        }
+
+        let (final_norm_gain, final_norm_bias) = if cfg.post_layer_norm {
+            let gain = Arc::from(load_tensor_as_f32(
+                st, "transformer.encoder.final_layernorm.weight",
+            )?);
+            let bias = if layer_norm {
+                Some(Arc::from(load_tensor_as_f32(
+                    st, "transformer.encoder.final_layernorm.bias",
+                )?))
+            } else {
+                None
+            };
+            (Some(gain), bias)
+        } else {
+            (None, None)
+        };
+
+        let output_layer = load_transposed_matrix_preserve_dtype(
+            st, "transformer.output_layer.weight",
+            cfg.padded_vocab_size, h,
+        )?;
+
+        Ok(ChatGlmWeights {
+            token_embedding: Arc::from(token_embedding),
+            layers,
+            final_norm_gain,
+            final_norm_bias,
+            output_layer,
+        })
+    }
+}
+
 fn apply_norm(
     x: &LazyTensor,
     gain: &Arc<[f32]>,

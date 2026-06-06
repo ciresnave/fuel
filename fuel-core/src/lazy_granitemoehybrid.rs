@@ -133,6 +133,123 @@ pub struct GraniteMoeHybridModel {
     pub weights: GraniteMoeHybridWeights,
 }
 
+impl GraniteMoeHybridWeights {
+    /// Load Granite-MoE-Hybrid weights from a `MmapedSafetensors` file
+    /// using the standard HuggingFace naming. Granite-MoE-Hybrid is
+    /// declared as a hybrid attention/Mamba layer scheme via
+    /// `cfg.layer_types`; per the v1 forward (and matching eager
+    /// scope), only the Attention branch carries loadable weights —
+    /// Mamba layers materialize as the unit
+    /// [`GraniteMoeHybridLayerWeights::Mamba`] variant and the forward
+    /// pass returns `Err` if any Mamba layer is exercised.
+    ///
+    /// Tied lm_head: Granite-MoE-Hybrid ties `lm_head.weight` to
+    /// `model.embed_tokens.weight` (the eager model projects via
+    /// `embeddings().t()`), so no `lm_head.*` tensor is loaded — the
+    /// lazy model holds only the token embedding and reuses it on the
+    /// output side at forward time.
+    ///
+    /// Tensor names mirrored from
+    /// `fuel_transformers::models::llm::granitemoehybrid`:
+    ///   - `model.embed_tokens.weight` → [`GraniteMoeHybridWeights::token_embedding`]
+    ///   - `model.layers.{i}.self_attn.{q,k,v,o}_proj.weight` → `attn.{q,k,v,o}_proj`
+    ///   - `model.layers.{i}.shared_mlp.input_linear.weight` → `mlp.input_linear`
+    ///   - `model.layers.{i}.shared_mlp.output_linear.weight` → `mlp.output_linear`
+    ///   - `model.layers.{i}.input_layernorm.weight` → `input_norm_gain`
+    ///   - `model.layers.{i}.post_attention_layernorm.weight` → `post_attn_norm_gain`
+    ///   - `model.norm.weight` → `final_norm_gain`
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &GraniteMoeHybridConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+
+        if cfg.layer_types.len() != cfg.num_hidden_layers {
+            return Err(crate::Error::Msg(format!(
+                "GraniteMoeHybridWeights::load_from_mmapped: \
+                 cfg.layer_types length ({}) must match num_hidden_layers ({})",
+                cfg.layer_types.len(), cfg.num_hidden_layers,
+            )).bt());
+        }
+
+        let h = cfg.hidden_size;
+        let head_dim = cfg.head_dim();
+        let q_dim = cfg.num_attention_heads * head_dim;
+        let kv_dim = cfg.num_key_value_heads * head_dim;
+        let inter = cfg.shared_intermediate_size;
+
+        let token_embedding = load_tensor_as_f32(st, "model.embed_tokens.weight")?;
+        if token_embedding.len() != cfg.vocab_size * h {
+            crate::bail!(
+                "model.embed_tokens.weight: {} elts, expected {} ({}×{})",
+                token_embedding.len(), cfg.vocab_size * h, cfg.vocab_size, h,
+            );
+        }
+
+        let mut layers: Vec<GraniteMoeHybridLayerWeights> =
+            Vec::with_capacity(cfg.num_hidden_layers);
+        for (li, kind) in cfg.layer_types.iter().enumerate() {
+            match kind {
+                GraniteLayerType::Attention => {
+                    let p = format!("model.layers.{li}");
+                    let q_proj = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h,
+                    )?;
+                    let k_proj = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+                    )?;
+                    let v_proj = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+                    )?;
+                    let o_proj = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim,
+                    )?;
+                    let input_linear = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{p}.shared_mlp.input_linear.weight"), 2 * inter, h,
+                    )?;
+                    let output_linear = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{p}.shared_mlp.output_linear.weight"), h, inter,
+                    )?;
+                    let input_norm_gain = load_tensor_as_f32(
+                        st, &format!("{p}.input_layernorm.weight"),
+                    )?;
+                    let post_attn_norm_gain = load_tensor_as_f32(
+                        st, &format!("{p}.post_attention_layernorm.weight"),
+                    )?;
+                    layers.push(GraniteMoeHybridLayerWeights::Attention {
+                        input_norm_gain: Arc::from(input_norm_gain),
+                        attn: GraniteMoeHybridAttnWeights {
+                            q_proj, k_proj, v_proj, o_proj,
+                        },
+                        post_attn_norm_gain: Arc::from(post_attn_norm_gain),
+                        mlp: GraniteMoeHybridMlpWeights {
+                            input_linear, output_linear,
+                        },
+                    });
+                }
+                GraniteLayerType::Mamba => {
+                    // v1 scope: Mamba layers are loaded as the unit
+                    // variant; the forward pass returns Err if one is
+                    // exercised. Matches eager (which also bails on
+                    // Mamba). Tensor names like
+                    // `{p}.mamba.{A_log,D,in_proj,...}` are documented
+                    // here for the future expansion that will materialize
+                    // them, but skipped today.
+                    layers.push(GraniteMoeHybridLayerWeights::Mamba);
+                }
+            }
+        }
+
+        let final_norm_gain = load_tensor_as_f32(st, "model.norm.weight")?;
+
+        Ok(GraniteMoeHybridWeights {
+            token_embedding: Arc::from(token_embedding),
+            layers,
+            final_norm_gain: Arc::from(final_norm_gain),
+        })
+    }
+}
+
 impl GraniteMoeHybridModel {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;
