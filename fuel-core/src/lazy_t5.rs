@@ -611,6 +611,148 @@ fn compute_position_bias(
         .reshape(Shape::from_dims(&[1, n_heads, q_len, kv_len]))
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl T5AttentionWeights {
+    fn load(
+        st: &crate::safetensors::MmapedSafetensors,
+        prefix: &str,
+        d_model: usize,
+        inner_dim: usize,
+    ) -> Result<Self> {
+        use crate::lazy::load_transposed_matrix_preserve_dtype as ltm;
+        let q = ltm(st, &format!("{prefix}.q.weight"), inner_dim, d_model)?;
+        let k = ltm(st, &format!("{prefix}.k.weight"), inner_dim, d_model)?;
+        let v = ltm(st, &format!("{prefix}.v.weight"), inner_dim, d_model)?;
+        let o = ltm(st, &format!("{prefix}.o.weight"), d_model, inner_dim)?;
+        Ok(Self { q, k, v, o })
+    }
+}
+
+impl T5FfnWeights {
+    fn load(
+        st: &crate::safetensors::MmapedSafetensors,
+        prefix: &str,
+        d_model: usize,
+        d_ff: usize,
+        gated: bool,
+    ) -> Result<Self> {
+        use crate::lazy::load_transposed_matrix_preserve_dtype as ltm;
+        if gated {
+            let wi_0 = ltm(st, &format!("{prefix}.wi_0.weight"), d_ff, d_model)?;
+            let wi_1 = ltm(st, &format!("{prefix}.wi_1.weight"), d_ff, d_model)?;
+            let wo = ltm(st, &format!("{prefix}.wo.weight"), d_model, d_ff)?;
+            Ok(T5FfnWeights::Gated { wi_0, wi_1, wo })
+        } else {
+            let wi = ltm(st, &format!("{prefix}.wi.weight"), d_ff, d_model)?;
+            let wo = ltm(st, &format!("{prefix}.wo.weight"), d_model, d_ff)?;
+            Ok(T5FfnWeights::Dense { wi, wo })
+        }
+    }
+}
+
+impl T5Weights {
+    /// Load T5 (t5-small/base/large/Flan-T5) weights from a HuggingFace
+    /// safetensors file.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &T5Config,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let d = cfg.d_model;
+        let inner = cfg.inner_dim();
+        let d_ff = cfg.d_ff;
+        let n_enc = cfg.num_layers;
+        let n_dec = cfg.num_decoder_layers_resolved();
+        let gated = cfg.gated_ffn;
+        let ffn_name = if gated { "DenseGatedActDense" } else { "DenseReluDense" };
+
+        let shared_embedding = Arc::from(load_tensor_as_f32(st, "shared.weight")?);
+        let encoder_rel_bias = Arc::from(load_tensor_as_f32(
+            st,
+            "encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight",
+        )?);
+        let decoder_rel_bias = Arc::from(load_tensor_as_f32(
+            st,
+            "decoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight",
+        )?);
+
+        let mut encoder_layers = Vec::with_capacity(n_enc);
+        for i in 0..n_enc {
+            let p = format!("encoder.block.{i}");
+            let self_attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.layer.0.layer_norm.weight"),
+            )?);
+            let self_attn = T5AttentionWeights::load(
+                st, &format!("{p}.layer.0.SelfAttention"), d, inner,
+            )?;
+            let ffn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.layer.1.layer_norm.weight"),
+            )?);
+            let ffn = T5FfnWeights::load(
+                st, &format!("{p}.layer.1.{ffn_name}"), d, d_ff, gated,
+            )?;
+            encoder_layers.push(T5EncoderLayerWeights {
+                self_attn_norm_gain, self_attn, ffn_norm_gain, ffn,
+            });
+        }
+
+        let mut decoder_layers = Vec::with_capacity(n_dec);
+        for i in 0..n_dec {
+            let p = format!("decoder.block.{i}");
+            let self_attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.layer.0.layer_norm.weight"),
+            )?);
+            let self_attn = T5AttentionWeights::load(
+                st, &format!("{p}.layer.0.SelfAttention"), d, inner,
+            )?;
+            let cross_attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.layer.1.layer_norm.weight"),
+            )?);
+            let cross_attn = T5AttentionWeights::load(
+                st, &format!("{p}.layer.1.EncDecAttention"), d, inner,
+            )?;
+            let ffn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.layer.2.layer_norm.weight"),
+            )?);
+            let ffn = T5FfnWeights::load(
+                st, &format!("{p}.layer.2.{ffn_name}"), d, d_ff, gated,
+            )?;
+            decoder_layers.push(T5DecoderLayerWeights {
+                self_attn_norm_gain, self_attn,
+                cross_attn_norm_gain, cross_attn,
+                ffn_norm_gain, ffn,
+            });
+        }
+
+        let encoder_final_norm_gain = Arc::from(load_tensor_as_f32(
+            st, "encoder.final_layer_norm.weight",
+        )?);
+        let decoder_final_norm_gain = Arc::from(load_tensor_as_f32(
+            st, "decoder.final_layer_norm.weight",
+        )?);
+
+        let lm_head = if cfg.tie_word_embeddings {
+            None
+        } else {
+            Some(load_transposed_matrix_preserve_dtype(
+                st, "lm_head.weight", cfg.vocab_size, d,
+            )?)
+        };
+
+        Ok(Self {
+            shared_embedding,
+            encoder_rel_bias,
+            decoder_rel_bias,
+            encoder_layers,
+            decoder_layers,
+            encoder_final_norm_gain,
+            decoder_final_norm_gain,
+            lm_head,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -933,6 +1075,13 @@ mod tests {
             Shape::from_dims(&[1, 3, cfg.d_model + 1]), &Device::cpu(),
         );
         assert!(model.forward_encoder_embeds(&bad).is_err());
+    }
+
+    #[test]
+    fn load_from_mmapped_smoke() {
+        // Smoke: dummy MmapedSafetensors cannot be constructed without disk I/O;
+        // this test asserts the function's signature compiles by reference only.
+        let _ = T5Weights::load_from_mmapped;
     }
 
     #[test]

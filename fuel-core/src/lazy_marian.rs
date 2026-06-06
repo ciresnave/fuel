@@ -620,6 +620,121 @@ fn add_bias_3d(x: LazyTensor, bias: &Arc<[f32]>, n: usize) -> Result<LazyTensor>
     x.add_trailing_bias(Arc::clone(bias))
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl MarianAttentionWeights {
+    fn load(
+        st: &crate::safetensors::MmapedSafetensors,
+        prefix: &str,
+        d_model: usize,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let q_proj = ltm(st, &format!("{prefix}.q_proj.weight"), d_model, d_model)?;
+        let q_proj_bias = Arc::from(load_tensor_as_f32(st, &format!("{prefix}.q_proj.bias"))?);
+        let k_proj = ltm(st, &format!("{prefix}.k_proj.weight"), d_model, d_model)?;
+        let k_proj_bias = Arc::from(load_tensor_as_f32(st, &format!("{prefix}.k_proj.bias"))?);
+        let v_proj = ltm(st, &format!("{prefix}.v_proj.weight"), d_model, d_model)?;
+        let v_proj_bias = Arc::from(load_tensor_as_f32(st, &format!("{prefix}.v_proj.bias"))?);
+        let out_proj = ltm(st, &format!("{prefix}.out_proj.weight"), d_model, d_model)?;
+        let out_proj_bias = Arc::from(load_tensor_as_f32(st, &format!("{prefix}.out_proj.bias"))?);
+        Ok(Self {
+            q_proj, q_proj_bias, k_proj, k_proj_bias,
+            v_proj, v_proj_bias, out_proj, out_proj_bias,
+        })
+    }
+}
+
+impl MarianWeights {
+    /// Load Marian (Helsinki-NLP/opus-mt-*) weights from HuggingFace safetensors.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &MarianConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let d = cfg.d_model;
+        let enc_ffn = cfg.encoder_ffn_dim;
+        let dec_ffn = cfg.decoder_ffn_dim;
+
+        let shared_embedding = Arc::from(load_tensor_as_f32(st, "model.shared.weight")?);
+
+        let mut encoder_layers = Vec::with_capacity(cfg.encoder_layers);
+        for i in 0..cfg.encoder_layers {
+            let p = format!("model.encoder.layers.{i}");
+            let self_attn = MarianAttentionWeights::load(st, &format!("{p}.self_attn"), d)?;
+            let self_attn_ln_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.self_attn_layer_norm.weight"),
+            )?);
+            let self_attn_ln_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.self_attn_layer_norm.bias"),
+            )?);
+            let fc1 = ltm(st, &format!("{p}.fc1.weight"), enc_ffn, d)?;
+            let fc1_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.fc1.bias"))?);
+            let fc2 = ltm(st, &format!("{p}.fc2.weight"), d, enc_ffn)?;
+            let fc2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.fc2.bias"))?);
+            let final_ln_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.final_layer_norm.weight"),
+            )?);
+            let final_ln_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.final_layer_norm.bias"),
+            )?);
+            encoder_layers.push(MarianEncoderLayerWeights {
+                self_attn, self_attn_ln_gain, self_attn_ln_bias,
+                fc1, fc1_bias, fc2, fc2_bias,
+                final_ln_gain, final_ln_bias,
+            });
+        }
+
+        let mut decoder_layers = Vec::with_capacity(cfg.decoder_layers);
+        for i in 0..cfg.decoder_layers {
+            let p = format!("model.decoder.layers.{i}");
+            let self_attn = MarianAttentionWeights::load(st, &format!("{p}.self_attn"), d)?;
+            let self_attn_ln_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.self_attn_layer_norm.weight"),
+            )?);
+            let self_attn_ln_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.self_attn_layer_norm.bias"),
+            )?);
+            let encoder_attn = MarianAttentionWeights::load(st, &format!("{p}.encoder_attn"), d)?;
+            let encoder_attn_ln_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.encoder_attn_layer_norm.weight"),
+            )?);
+            let encoder_attn_ln_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.encoder_attn_layer_norm.bias"),
+            )?);
+            let fc1 = ltm(st, &format!("{p}.fc1.weight"), dec_ffn, d)?;
+            let fc1_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.fc1.bias"))?);
+            let fc2 = ltm(st, &format!("{p}.fc2.weight"), d, dec_ffn)?;
+            let fc2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.fc2.bias"))?);
+            let final_ln_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.final_layer_norm.weight"),
+            )?);
+            let final_ln_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.final_layer_norm.bias"),
+            )?);
+            decoder_layers.push(MarianDecoderLayerWeights {
+                self_attn, self_attn_ln_gain, self_attn_ln_bias,
+                encoder_attn, encoder_attn_ln_gain, encoder_attn_ln_bias,
+                fc1, fc1_bias, fc2, fc2_bias,
+                final_ln_gain, final_ln_bias,
+            });
+        }
+
+        // `final_logits_bias` is a registered buffer; tolerate absence (zeros).
+        let target_vocab = cfg.target_vocab_size();
+        let final_logits_bias = match load_tensor_as_f32(st, "final_logits_bias") {
+            Ok(v) => Arc::from(v),
+            Err(_) => Arc::from(vec![0.0_f32; target_vocab]),
+        };
+
+        Ok(Self {
+            shared_embedding,
+            encoder_layers,
+            decoder_layers,
+            final_logits_bias,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

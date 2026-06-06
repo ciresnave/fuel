@@ -338,6 +338,98 @@ impl XlmrModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl XlmrWeights {
+    /// Load XLM-RoBERTa (xlm-roberta-{base,large}) weights from a HuggingFace
+    /// safetensors file. Naming follows the upstream RoBERTa layout at
+    /// `roberta.embeddings.*` / `roberta.encoder.layer.{i}.*`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &XlmrConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+
+        // Some XLM-R checkpoints prefix with "roberta." and some don't;
+        // probe both, prefer the prefixed form (standard HF).
+        let prefix = if load_tensor_as_f32(st, "roberta.embeddings.word_embeddings.weight").is_ok() {
+            "roberta."
+        } else {
+            ""
+        };
+
+        let word_embedding = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.word_embeddings.weight"),
+        )?);
+        let position_embedding = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.position_embeddings.weight"),
+        )?);
+        let token_type_embedding = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.token_type_embeddings.weight"),
+        )?);
+        let embed_ln_gain = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.LayerNorm.weight"),
+        )?);
+        let embed_ln_bias = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.LayerNorm.bias"),
+        )?);
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("{prefix}encoder.layer.{i}");
+            let q_proj = ltm(st, &format!("{p}.attention.self.query.weight"), h, h)?;
+            let q_proj_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.self.query.bias"),
+            )?);
+            let k_proj = ltm(st, &format!("{p}.attention.self.key.weight"), h, h)?;
+            let k_proj_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.self.key.bias"),
+            )?);
+            let v_proj = ltm(st, &format!("{p}.attention.self.value.weight"), h, h)?;
+            let v_proj_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.self.value.bias"),
+            )?);
+            let out_proj = ltm(st, &format!("{p}.attention.output.dense.weight"), h, h)?;
+            let out_proj_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.output.dense.bias"),
+            )?);
+            let attn_ln_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.output.LayerNorm.weight"),
+            )?);
+            let attn_ln_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.output.LayerNorm.bias"),
+            )?);
+            let fc1 = ltm(st, &format!("{p}.intermediate.dense.weight"), inter, h)?;
+            let fc1_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.intermediate.dense.bias"),
+            )?);
+            let fc2 = ltm(st, &format!("{p}.output.dense.weight"), h, inter)?;
+            let fc2_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.output.dense.bias"),
+            )?);
+            let ffn_ln_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.output.LayerNorm.weight"),
+            )?);
+            let ffn_ln_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.output.LayerNorm.bias"),
+            )?);
+            layers.push(XlmrLayerWeights {
+                q_proj, q_proj_bias, k_proj, k_proj_bias,
+                v_proj, v_proj_bias, out_proj, out_proj_bias,
+                attn_ln_gain, attn_ln_bias,
+                fc1, fc1_bias, fc2, fc2_bias, ffn_ln_gain, ffn_ln_bias,
+            });
+        }
+
+        Ok(Self {
+            word_embedding, position_embedding, token_type_embedding,
+            embed_ln_gain, embed_ln_bias, layers,
+        })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

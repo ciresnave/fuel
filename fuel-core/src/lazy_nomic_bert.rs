@@ -468,6 +468,89 @@ fn apply_rope(
     rotated.concat(&pass, 3_usize)
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl NomicBertWeights {
+    /// Load Nomic-BERT (nomic-ai/nomic-embed-text-v1*) weights from HF safetensors.
+    /// Tensor names follow the upstream layout under `embeddings.*` and
+    /// `encoder.layer.{i}.*` (no `model.` / `bert.` prefix).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &NomicBertConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.n_embd;
+        let inter = cfg.n_inner;
+
+        let word_embedding = Arc::from(load_tensor_as_f32(
+            st, "embeddings.word_embeddings.weight",
+        )?);
+        let token_type_embedding = if cfg.type_vocab_size > 0 {
+            load_tensor_as_f32(st, "embeddings.token_type_embeddings.weight")
+                .ok().map(Arc::from)
+        } else {
+            None
+        };
+        let embed_ln_gain = Arc::from(load_tensor_as_f32(
+            st, "emb_ln.weight",
+        )?);
+        let embed_ln_bias = Arc::from(load_tensor_as_f32(
+            st, "emb_ln.bias",
+        )?);
+
+        let opt_bias = |name: String| -> Option<Arc<[f32]>> {
+            load_tensor_as_f32(st, &name).ok().map(Arc::from)
+        };
+
+        let mut layers = Vec::with_capacity(cfg.n_layer);
+        for i in 0..cfg.n_layer {
+            let p = format!("encoder.layers.{i}");
+            let wqkv = ltm(st, &format!("{p}.attn.Wqkv.weight"), 3 * h, h)?;
+            let wqkv_bias = if cfg.qkv_proj_bias {
+                opt_bias(format!("{p}.attn.Wqkv.bias"))
+            } else { None };
+            let out_proj = ltm(st, &format!("{p}.attn.out_proj.weight"), h, h)?;
+            let out_proj_bias = opt_bias(format!("{p}.attn.out_proj.bias"));
+            let norm1_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.norm1.weight"),
+            )?);
+            let norm1_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.norm1.bias"),
+            )?);
+            // Nomic SwiGLU stores fc11/fc12 separately.
+            let fc11 = ltm(st, &format!("{p}.mlp.fc11.weight"), inter, h)?;
+            let fc11_bias = if cfg.mlp_fc1_bias {
+                opt_bias(format!("{p}.mlp.fc11.bias"))
+            } else { None };
+            let fc12 = ltm(st, &format!("{p}.mlp.fc12.weight"), inter, h)?;
+            let fc12_bias = if cfg.mlp_fc1_bias {
+                opt_bias(format!("{p}.mlp.fc12.bias"))
+            } else { None };
+            let fc2 = ltm(st, &format!("{p}.mlp.fc2.weight"), h, inter)?;
+            let fc2_bias = if cfg.mlp_fc2_bias {
+                opt_bias(format!("{p}.mlp.fc2.bias"))
+            } else { None };
+            let norm2_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.norm2.weight"),
+            )?);
+            let norm2_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.norm2.bias"),
+            )?);
+            layers.push(NomicBertLayerWeights {
+                wqkv, wqkv_bias, out_proj, out_proj_bias,
+                norm1_gain, norm1_bias,
+                fc11, fc11_bias, fc12, fc12_bias, fc2, fc2_bias,
+                norm2_gain, norm2_bias,
+            });
+        }
+
+        Ok(Self {
+            word_embedding, token_type_embedding,
+            embed_ln_gain, embed_ln_bias, layers,
+        })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
