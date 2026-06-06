@@ -59,24 +59,28 @@ These unblock multiple downstream model ports. Ship these first.
 - [ ] [PaddleOCR-VL (text + vision + composition)](port-paddleocr-vl.md)
       — `multimodal/paddleocr_vl/*` (3983 LOC total). Ernie-style text
       LM + OCR-specific ViT with window/patch logic.
-- [ ] [Gemma4 audio (Conformer)](port-gemma4-audio.md)
-      — `llm/gemma4/audio.rs` (874 LOC). SSCP conv + Conformer blocks
-      with chunked attention + relative-position embeddings + light
-      Conv1d. Completes Gemma4 multimodal arc.
+- [x] [Gemma4 audio (Conformer)](shipped/port-gemma4-audio.md)
+      — `llm/gemma4/audio.rs` (874 LOC). **Shipped** as
+      lazy_gemma4_audio (SSCP conv front-end + Conformer with
+      chunked-attention block-band mask + Shaw-style rel-pos bias +
+      depthwise light-conv with GLU; 3 tests).
 
 ## Diffusion (Phase F)
 
-- [ ] [MMDiT (SD3 + Flux foundation)](port-mmdit.md)
-      — `diffusion/mmdit/*` (1118 LOC across 4 files). Joint
-      text/image transformer with modulated layers. Shared substrate
-      for Flux.
+- [x] [MMDiT (SD3 + Flux foundation)](shipped/port-mmdit.md)
+      — `diffusion/mmdit/*` (1118 LOC across 4 files). **Shipped** as
+      lazy_mmdit (DoubleStreamBlock + SingleStreamBlock + AdaLN
+      modulation + 2D RoPE patch positions; 3 tests including
+      zero-scale/zero-gate modulation regressions).
 - [ ] [Flux (model + autoencoder + sampling + quantized)](port-flux.md)
       — `diffusion/flux/*` (1689 LOC across 4 files). DiT with
       double + single stream blocks; flow-matching scheduler;
       GGUF-quantized variant.
-- [ ] [Wuerstchen (cascaded diffusion)](port-wuerstchen.md)
-      — `diffusion/wuerstchen/*` (1176 LOC across 7 files). PaellaVQ
-      VAE + Prior + DiffNext + scheduler.
+- [x] [Wuerstchen (cascaded diffusion)](shipped/port-wuerstchen.md)
+      — `diffusion/wuerstchen/*` (1176 LOC across 7 files). **Shipped**
+      as lazy_wuerstchen (PaellaVQ decoder + Prior + DiffNext UNet
+      with GlobalResponseNorm + end-to-end deterministic generate;
+      5 tests including end_to_end_generate_tiny).
 - [ ] [Z-Image (T2I diffusion-class)](port-z-image.md)
       — `diffusion/z_image/*` (2829 LOC across 7 files). Largest
       single diffusion port. Transformer + VAE + text encoder +
