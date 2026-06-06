@@ -154,33 +154,39 @@ Eager-only surfaces outside `fuel-transformers/*` that need lazy
 ports before the eager `fuel_core::Tensor` type-alias flip
 (Phase H) can land.
 
-- [ ] [Eager fuel-nn loss functions](port-nn-loss.md)
-      — `fuel-nn/src/loss.rs` (~250 LOC). `cross_entropy`, `nll`,
-      `mse`, `huber`, `binary_cross_entropy`. Reuse already-shipped
-      `FusedSoftmaxCrossEntropy` fused op for CE; the rest are
-      thin LazyTensor compositions.
-- [ ] [Eager fuel-nn optimizers](port-nn-optim.md)
-      — `fuel-nn/src/optim.rs` (~600 LOC). `Optimizer` trait +
-      `SGD` + `AdamW`. Lazy `fuel-core::train` already has its own
-      Parameter/TrainState surface; this port is the public
-      `Optimizer` trait + concrete impls for nn consumers, on a
-      `LazyVar` (lazy-resident parameter) substrate.
-- [ ] [Eager fuel-nn Module wrappers](port-nn-layers.md)
+- [x] [Eager fuel-nn loss functions](shipped/port-nn-loss.md)
+      — `fuel-nn/src/loss.rs` (~250 LOC). **Shipped** as
+      `fuel-core/src/lazy_nn_loss.rs` (Reduction + nll + cross_entropy
+      via shipped FusedSoftmaxCrossEntropy + binary_cross_entropy_with_logit
+      + mse + huber; 7 tests).
+- [x] [Eager fuel-nn optimizers](shipped/port-nn-optim.md)
+      — `fuel-nn/src/optim.rs` (~600 LOC). **Shipped** as
+      `fuel-core/src/lazy_nn_optim.rs` (LazyOptimizer trait + LazySgd +
+      LazyAdamW + LazyVar wrapper; 9 tests including textbook-formula
+      goldens for AdamW first-step + decoupled weight decay).
+- [~] [Eager fuel-nn Module wrappers](port-nn-layers.md)
       — `fuel-nn/src/{linear,conv,layer_norm,batch_norm,group_norm,embedding,sequential,rnn,lora,quantizable_linear,activation,encoding,init,kv_cache,rotary_emb,fused_ops,cpu_flash_attention,moe,sampling,func,training_context,var_builder,var_map}.rs`
-      (~15k LOC eager across the crate). Each module is a thin
-      `Module` trait wrapper around lazy primitives the graph
-      already has. Largest strand — split into sub-ports by file
-      family.
-- [ ] [Training augmentations](port-training-augmentations.md)
-      — Items explicitly TODO'd in `fuel-core/src/train.rs`:
-      gradient accumulation across micro-batches, gradient
-      clipping, LR schedulers (cosine, linear-warmup, polynomial,
-      step), mixed-precision (bf16 forward + fp32 master weights),
-      in-place parameter update primitive.
-- [ ] [Eager fuel-onnx eval](port-onnx-eval.md)
-      — `fuel-onnx/src/eval.rs`. ONNX-model evaluator over lazy
-      graph; covers the IR op set the existing eager evaluator
-      supports.
+      (~15k LOC eager). **Sub-port 1 shipped** as
+      `fuel-core/src/lazy_nn/{mod,linear,embedding}.rs` (LazyModule
+      trait + LazyLinear + LazyEmbedding; 5 tests). Sub-ports 2-7
+      remain: Conv, Norm, Sequential+Activation, LoRA+QuantizableLinear,
+      MoE, Sampling+Init.
+- [~] [Training augmentations](port-training-augmentations.md)
+      — **Sub-ports 1+2 shipped** as
+      `fuel-core/src/lazy_training_augmentations.rs` (LrSchedule trait +
+      Cosine/LinearWarmup/Polynomial/Step + clip_grad_norm + clip_grad_value;
+      7 tests). Sub-ports 3-5 remain: gradient accumulation,
+      mixed-precision (bf16 forward + fp32 master), in-place parameter
+      update primitive.
+- [~] [Eager fuel-onnx eval](port-onnx-eval.md)
+      — `fuel-onnx/src/eval.rs`. **Sub-port 1 shipped** as
+      `fuel-onnx/src/lazy_eval.rs` (core arithmetic + Reshape +
+      Transpose + Squeeze/Unsqueeze + Flatten + Gather + Reduce ops +
+      Constant + ConstantOfShape + Concat + Split + Cast;
+      5 tests). Sub-ports 2-4 remain: Conv+Pad+Pool, Norm+Activation+Softmax,
+      optional Quantized ops. (Side effect: pre-existing `Device::Cpu`
+      breakage on the eager eval.rs was fixed to `Device::cpu()` so the
+      crate compiles on this branch.)
 
 ## Out of scope for this tracker
 
