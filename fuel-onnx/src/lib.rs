@@ -1,4 +1,4 @@
-﻿//! # fuel-onnx
+//! # fuel-onnx
 //!
 //! **Layer**: IO — provides bidirectional ONNX interchange for the Fuel stack.
 //!
@@ -49,6 +49,8 @@ pub mod onnx {
 
 pub mod eval;
 pub mod lazy_eval;
+pub mod lazy_eval_conv;
+pub mod lazy_eval_norm;
 pub use eval::{dtype, simple_eval};
 pub use lazy_eval::LazyOnnxEval;
 

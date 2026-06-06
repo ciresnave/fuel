@@ -19,7 +19,9 @@
 //!   - Dtype: `Cast` (via [`LazyTensor::to_dtype`]).
 //!   - Multi-input shape glue: `Concat`, `Split`.
 //!
-//! Conv / ConvTranspose / Pooling / Pad land in sub-port 2.
+//! Conv / ConvTranspose / Pooling / Pad land in sub-port 2 — see the
+//! sibling [`crate::lazy_eval_conv`] module which hooks into the same
+//! [`LazyOnnxEval`] dispatch path via [`crate::lazy_eval_conv::try_dispatch_node`].
 //! BatchNorm / LayerNorm / activations / Softmax land in sub-port 3.
 //! Quantized ops (`QLinearMatMul`, `Quantize/DequantizeLinear`) land
 //! in sub-port 4.
@@ -473,8 +475,15 @@ fn dispatch_node(
             }
         }
 
-        // ---- explicitly unsupported in sub-port 1 ----
+        // ---- sub-port 2: conv / conv-transpose / pad / pooling ----
+        // ---- sub-port 3: norm / activations / softmax            ----
         op_type => {
+            if crate::lazy_eval_conv::try_dispatch_node(node, values, device, anchor, i64_cache)? {
+                return Ok(());
+            }
+            if crate::lazy_eval_norm::try_dispatch(node, values, device, anchor)? {
+                return Ok(());
+            }
             let sub_port = classify_op_sub_port(op_type);
             return Err(Error::Msg(format!(
                 "ONNX op '{}' (node '{}') is not supported in sub-port 1; \
@@ -487,7 +496,7 @@ fn dispatch_node(
     Ok(())
 }
 
-fn set_output(
+pub(crate) fn set_output(
     node: &onnx::NodeProto,
     i: usize,
     v: LazyTensor,
@@ -653,7 +662,7 @@ fn load_initializer(
     Ok(built)
 }
 
-fn ensure_anchor(anchor: &mut Option<LazyTensor>, device: &Device) -> LazyTensor {
+pub(crate) fn ensure_anchor(anchor: &mut Option<LazyTensor>, device: &Device) -> LazyTensor {
     if anchor.is_none() {
         *anchor = Some(LazyTensor::from_f32(
             Arc::<[f32]>::from(vec![0.0f32]),
@@ -841,7 +850,21 @@ fn onnx_dtype_to_fuel(dt: i32) -> Result<DType> {
     }
 }
 
-fn realize_i64_vec(t: &LazyTensor) -> Result<Vec<i64>> {
+pub(crate) fn get_i64_vec(
+    values: &HashMap<String, LazyTensor>,
+    i64_cache: &HashMap<String, Vec<i64>>,
+    name: &str,
+) -> Result<Vec<i64>> {
+    if let Some(cached) = i64_cache.get(name) {
+        return Ok(cached.clone());
+    }
+    let t = values.get(name).ok_or_else(|| {
+        Error::Msg(format!("missing tensor '{}' (expected i64 vector)", name)).bt()
+    })?;
+    realize_i64_vec(t)
+}
+
+pub(crate) fn realize_i64_vec(t: &LazyTensor) -> Result<Vec<i64>> {
     // Float-only path keeps fuel-graph-cpu adopt off the I64 slot.
     // Known-integer initializers / Constant outputs are read host-side
     // via the i64_cache; this fallback runs only for runtime-computed
@@ -858,7 +881,7 @@ fn realize_i64_vec(t: &LazyTensor) -> Result<Vec<i64>> {
     }
 }
 
-fn get_attr_int(node: &onnx::NodeProto, name: &str) -> Result<i64> {
+pub(crate) fn get_attr_int(node: &onnx::NodeProto, name: &str) -> Result<i64> {
     node.attribute
         .iter()
         .find(|a| a.name == name)
@@ -872,18 +895,36 @@ fn get_attr_int(node: &onnx::NodeProto, name: &str) -> Result<i64> {
         })
 }
 
-fn get_attr_int_opt(node: &onnx::NodeProto, name: &str) -> Option<i64> {
+pub(crate) fn get_attr_int_opt(node: &onnx::NodeProto, name: &str) -> Option<i64> {
     node.attribute.iter().find(|a| a.name == name).map(|a| a.i)
 }
 
-fn get_attr_ints_opt<'a>(node: &'a onnx::NodeProto, name: &str) -> Option<&'a [i64]> {
+pub(crate) fn get_attr_float_opt(node: &onnx::NodeProto, name: &str) -> Option<f32> {
+    node.attribute.iter().find(|a| a.name == name).map(|a| a.f)
+}
+
+pub(crate) fn get_attr_ints_opt<'a>(node: &'a onnx::NodeProto, name: &str) -> Option<&'a [i64]> {
     node.attribute
         .iter()
         .find(|a| a.name == name)
         .map(|a| a.ints.as_slice())
 }
 
-fn normalize_axis(axis: i64, rank: usize) -> Result<usize> {
+/// Sub-port-2 helper: look up a string attribute (returns `None` if
+/// the attribute is absent). UTF-8 decoding errors surface as
+/// [`Error::Msg`] at build time.
+pub(crate) fn get_attr_string_opt(node: &onnx::NodeProto, name: &str) -> Result<Option<String>> {
+    match node.attribute.iter().find(|a| a.name == name) {
+        None => Ok(None),
+        Some(a) => {
+            let s = std::str::from_utf8(&a.s)
+                .map_err(|e| Error::Msg(format!("attribute '{}': invalid UTF-8 ({e})", name)).bt())?;
+            Ok(Some(s.to_string()))
+        }
+    }
+}
+
+pub(crate) fn normalize_axis(axis: i64, rank: usize) -> Result<usize> {
     let n = if axis < 0 { axis + rank as i64 } else { axis };
     if n < 0 || n >= rank as i64 {
         return Err(Error::Msg(format!(
@@ -1110,11 +1151,12 @@ mod tests {
 
     #[test]
     fn unsupported_op_errors_cleanly() {
+        // Sub-port 3 territory: a softmax-class op still routes through the
+        // sub-port pointer pattern.
         let graph = onnx::GraphProto {
-            node: vec![node("Conv", "cv", &["X", "W"], &["Y"])],
+            node: vec![node("Softmax", "sm", &["X"], &["Y"])],
             input: vec![value_info("X")],
             output: vec![value_info("Y")],
-            initializer: vec![tp_float("W", &[1, 1, 1, 1], vec![1.0])],
             ..Default::default()
         };
         let mut buf = Vec::new();
@@ -1124,7 +1166,7 @@ mod tests {
         let device = Device::cpu();
         let x = LazyTensor::from_f32(
             vec![1.0f32; 4],
-            Shape::from_dims(&[1, 1, 2, 2]),
+            Shape::from_dims(&[1, 4]),
             &device,
         );
         let mut inputs = HashMap::new();
@@ -1132,9 +1174,9 @@ mod tests {
 
         let err = evaluator.run(&inputs).unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("Conv"), "error must mention op name: {msg}");
+        assert!(msg.contains("Softmax"), "error must mention op name: {msg}");
         assert!(
-            msg.contains("sub-port 2"),
+            msg.contains("sub-port 3"),
             "error must mention target sub-port: {msg}"
         );
     }

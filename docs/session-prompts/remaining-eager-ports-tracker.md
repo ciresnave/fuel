@@ -164,29 +164,29 @@ ports before the eager `fuel_core::Tensor` type-alias flip
       `fuel-core/src/lazy_nn_optim.rs` (LazyOptimizer trait + LazySgd +
       LazyAdamW + LazyVar wrapper; 9 tests including textbook-formula
       goldens for AdamW first-step + decoupled weight decay).
-- [~] [Eager fuel-nn Module wrappers](port-nn-layers.md)
+- [x] [Eager fuel-nn Module wrappers](shipped/port-nn-layers.md)
       — `fuel-nn/src/{linear,conv,layer_norm,batch_norm,group_norm,embedding,sequential,rnn,lora,quantizable_linear,activation,encoding,init,kv_cache,rotary_emb,fused_ops,cpu_flash_attention,moe,sampling,func,training_context,var_builder,var_map}.rs`
-      (~15k LOC eager). **Sub-port 1 shipped** as
-      `fuel-core/src/lazy_nn/{mod,linear,embedding}.rs` (LazyModule
-      trait + LazyLinear + LazyEmbedding; 5 tests). Sub-ports 2-7
-      remain: Conv, Norm, Sequential+Activation, LoRA+QuantizableLinear,
-      MoE, Sampling+Init.
-- [~] [Training augmentations](port-training-augmentations.md)
-      — **Sub-ports 1+2 shipped** as
-      `fuel-core/src/lazy_training_augmentations.rs` (LrSchedule trait +
-      Cosine/LinearWarmup/Polynomial/Step + clip_grad_norm + clip_grad_value;
-      7 tests). Sub-ports 3-5 remain: gradient accumulation,
-      mixed-precision (bf16 forward + fp32 master), in-place parameter
-      update primitive.
-- [~] [Eager fuel-onnx eval](port-onnx-eval.md)
-      — `fuel-onnx/src/eval.rs`. **Sub-port 1 shipped** as
-      `fuel-onnx/src/lazy_eval.rs` (core arithmetic + Reshape +
-      Transpose + Squeeze/Unsqueeze + Flatten + Gather + Reduce ops +
-      Constant + ConstantOfShape + Concat + Split + Cast;
-      5 tests). Sub-ports 2-4 remain: Conv+Pad+Pool, Norm+Activation+Softmax,
-      optional Quantized ops. (Side effect: pre-existing `Device::Cpu`
-      breakage on the eager eval.rs was fixed to `Device::cpu()` so the
-      crate compiles on this branch.)
+      (~15k LOC eager). **All 7 sub-ports shipped** as the
+      `fuel-core/src/lazy_nn/` directory module
+      (mod + linear + embedding + conv + norm + activation +
+      sequential + lora + quantizable_linear + moe + sampling + init;
+      33 tests covering each wrapper's golden against its underlying
+      LazyTensor primitive).
+- [x] [Training augmentations](shipped/port-training-augmentations.md)
+      — **All 5 sub-ports shipped** as
+      `fuel-core/src/lazy_training_augmentations{,_extras}.rs`
+      (LrSchedule + 4 schedulers + clip_grad_{norm,value} +
+      GradAccumulator + MixedPrecisionConfig +
+      apply_inplace_sgd_step; 17 tests).
+- [~] [Eager fuel-onnx eval](shipped/port-onnx-eval.md)
+      — `fuel-onnx/src/eval.rs`. **Sub-ports 1 + 2 + 3 shipped** as
+      `fuel-onnx/src/{lazy_eval,lazy_eval_conv,lazy_eval_norm}.rs`
+      (sub-port 1 arithmetic/reshape/reduce; sub-port 2
+      conv/conv_transpose/pad/max+avg+global pool; sub-port 3
+      batchnorm/layernorm/softmax/relu/gelu/sigmoid/tanh/leaky_relu/elu;
+      21 tests). Sub-port 4 (Quantized ops — QLinearMatMul,
+      QuantizeLinear, DequantizeLinear) remains; gated on a real
+      consumer needing it.
 
 ## Binary migrations
 
