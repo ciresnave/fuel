@@ -48,7 +48,9 @@ pub mod onnx {
 }
 
 pub mod eval;
+pub mod lazy_eval;
 pub use eval::{dtype, simple_eval};
+pub use lazy_eval::LazyOnnxEval;
 
 /// Reads and deserializes an ONNX model from a file on disk.
 ///
