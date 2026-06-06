@@ -1,13 +1,19 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-use fuel::{DType, Device, Tensor};
-use fuel_nn as nn;
-use fuel_transformers::models::chinese_clip::{ChineseClipConfig, ChineseClipModel};
+use anyhow::Result;
 use clap::Parser;
+use std::sync::Arc;
+
+use fuel::lazy::LazyTensor;
+use fuel::lazy_chinese_clip::{
+    ChineseClipConfig, ChineseClipModel, ChineseClipWeights,
+};
+use fuel::safetensors::MmapedSafetensors;
+use fuel::{Device, Shape};
 use tokenizers::Tokenizer;
 
 #[derive(Parser)]
@@ -28,38 +34,105 @@ struct Args {
     sequences: Option<Vec<String>>,
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<()> {
     let args = Args::parse();
 
     tracing_subscriber::fmt::init();
 
-    let device = fuel_examples::device(args.cpu)?;
-    let var = load_weights(args.model, &device)?;
-    let clip_model = ChineseClipModel::new(var, &ChineseClipConfig::clip_vit_base_patch16())?;
+    // `--cpu` preserved for CLI parity; lazy realize defaults to CPU.
+    let _ = args.cpu;
+    let device = Device::cpu();
+
+    let config = ChineseClipConfig::clip_vit_base_patch16();
+
+    let model_file = match args.model {
+        None => {
+            let api = hf_hub::api::sync::Api::new()?;
+            let repo = hf_hub::Repo::with_revision(
+                "OFA-Sys/chinese-clip-vit-base-patch16".to_string(),
+                hf_hub::RepoType::Model,
+                "refs/pr/3".to_string(),
+            );
+            let api = api.repo(repo);
+            api.get("model.safetensors")?
+        }
+        Some(model) => model.into(),
+    };
+
+    let st = unsafe { MmapedSafetensors::multi(&[model_file]) }
+        .map_err(|e| anyhow::Error::msg(format!("mmap safetensors: {e}")))?;
+    let weights = ChineseClipWeights::load_from_mmapped(&st, &config)
+        .map_err(|e| anyhow::Error::msg(format!("load chinese-clip weights: {e}")))?;
+    let clip_model = ChineseClipModel {
+        config: config.clone(),
+        weights,
+    };
     tracing::info!("Transformer loaded. ");
 
-    let (pixel_values, vec_imgs) = load_images(args.images, &device)?;
+    let vec_imgs = match args.images.clone() {
+        Some(imgs) => imgs,
+        None => vec![
+            "fuel-examples/examples/stable-diffusion/assets/stable-diffusion-xl.jpg".to_string(),
+            "fuel-examples/examples/yolo-v8/assets/bike.jpg".to_string(),
+        ],
+    };
+
+    // Per-image features (1, projection_dim).
+    let mut image_feats: Vec<Vec<f32>> = Vec::with_capacity(vec_imgs.len());
+    for img_path in &vec_imgs {
+        let pixels = load_image_as_vec(img_path, config.vision.image_size)?;
+        let pixels = LazyTensor::from_f32(
+            Arc::<[f32]>::from(pixels),
+            Shape::from_dims(&[1, 3, config.vision.image_size, config.vision.image_size]),
+            &device,
+        );
+        let f = clip_model.get_image_features(&pixels)?;
+        image_feats.push(f.realize_f32());
+    }
     tracing::info!("Images loaded. ");
 
     let tokenizer = load_tokenizer()?;
-    let (input_ids, type_ids, attention_mask, text_sequences) =
-        tokenize_sequences(args.sequences, &tokenizer, &device)?;
+    let (token_lists, text_sequences) =
+        tokenize_sequences(args.sequences, &tokenizer)?;
+
+    // Per-text features (1, projection_dim).
+    let mut text_feats: Vec<Vec<f32>> = Vec::with_capacity(token_lists.len());
+    for tokens in &token_lists {
+        let f = clip_model.get_text_features(tokens)?;
+        text_feats.push(f.realize_f32());
+    }
 
     tracing::info!("Computing ... ");
-    let (_logits_per_text, logits_per_image) = clip_model.forward(
-        &pixel_values,
-        &input_ids,
-        Some(&type_ids),
-        Some(&attention_mask),
-    )?;
-    let softmax_image = nn::ops::softmax(&logits_per_image, 1)?;
 
-    let softmax_image_vec = softmax_image.flatten_all()?.to_vec1::<f32>()?;
+    // Contrastive logits: scale * (l2norm(text) @ l2norm(image).T).
+    // We build logits_per_image[image_i][text_j] directly from the
+    // already-realized feature vectors.
+    let logit_scale = clip_model.weights.logit_scale.exp();
+    let n_img = image_feats.len();
+    let n_txt = text_feats.len();
+    let mut logits_per_image = vec![0.0f32; n_img * n_txt];
+    for (i, ifeat) in image_feats.iter().enumerate() {
+        let i_norm = l2_norm(ifeat);
+        for (j, tfeat) in text_feats.iter().enumerate() {
+            let t_norm = l2_norm(tfeat);
+            let dot: f32 = ifeat.iter().zip(tfeat.iter())
+                .map(|(a, b)| a * b).sum();
+            let denom = (i_norm * t_norm).max(1e-12);
+            logits_per_image[i * n_txt + j] = logit_scale * dot / denom;
+        }
+    }
 
-    let probability_vec = softmax_image_vec
-        .iter()
-        .map(|v| v * 100.0)
-        .collect::<Vec<f32>>();
+    // Softmax across text axis for each image.
+    let mut probability_vec = Vec::with_capacity(n_img * n_txt);
+    for i in 0..n_img {
+        let row = &logits_per_image[i * n_txt..(i + 1) * n_txt];
+        let max = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exp: Vec<f32> = row.iter().map(|v| (v - max).exp()).collect();
+        let sum: f32 = exp.iter().sum();
+        for e in exp {
+            probability_vec.push(100.0 * e / sum.max(1e-30));
+        }
+    }
 
     let probability_per_image = probability_vec.len() / vec_imgs.len();
 
@@ -77,25 +150,11 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn load_weights(model: Option<String>, device: &Device) -> anyhow::Result<nn::VarBuilder<'_>> {
-    let model_file = match model {
-        None => {
-            let api = hf_hub::api::sync::Api::new()?;
-            let repo = hf_hub::Repo::with_revision(
-                "OFA-Sys/chinese-clip-vit-base-patch16".to_string(),
-                hf_hub::RepoType::Model,
-                "refs/pr/3".to_string(),
-            );
-            let api = api.repo(repo);
-            api.get("model.safetensors")?
-        }
-        Some(model) => model.into(),
-    };
-
-    Ok(unsafe { nn::VarBuilder::from_mmaped_safetensors(&[model_file], DType::F32, device)? })
+fn l2_norm(v: &[f32]) -> f32 {
+    v.iter().map(|x| x * x).sum::<f32>().sqrt()
 }
 
-pub fn load_tokenizer() -> anyhow::Result<Tokenizer> {
+pub fn load_tokenizer() -> Result<Tokenizer> {
     let tokenizer_file = {
         let api = hf_hub::api::sync::Api::new()?;
         let repo = hf_hub::Repo::with_revision(
@@ -110,11 +169,12 @@ pub fn load_tokenizer() -> anyhow::Result<Tokenizer> {
     Tokenizer::from_file(tokenizer_file).map_err(anyhow::Error::msg)
 }
 
+/// Tokenize each sequence and pad to `max_len` with [PAD]. Returns
+/// the per-sequence token lists and the original strings.
 pub fn tokenize_sequences(
     sequences: Option<Vec<String>>,
     tokenizer: &Tokenizer,
-    device: &Device,
-) -> anyhow::Result<(Tensor, Tensor, Tensor, Vec<String>)> {
+) -> Result<(Vec<Vec<u32>>, Vec<String>)> {
     let vec_seq = match sequences {
         Some(seq) => seq,
         None => vec![
@@ -124,16 +184,12 @@ pub fn tokenize_sequences(
         ],
     };
 
-    let mut input_ids = vec![];
-    let mut type_ids = vec![];
-    let mut attention_mask = vec![];
+    let mut input_ids: Vec<Vec<u32>> = vec![];
     let mut max_len = 0;
 
     for seq in vec_seq.clone() {
         let encoding = tokenizer.encode(seq, true).map_err(anyhow::Error::msg)?;
         input_ids.push(encoding.get_ids().to_vec());
-        type_ids.push(encoding.get_type_ids().to_vec());
-        attention_mask.push(encoding.get_attention_mask().to_vec());
         if encoding.get_ids().len() > max_len {
             max_len = encoding.get_ids().len();
         }
@@ -152,73 +208,35 @@ pub fn tokenize_sequences(
         })
         .collect();
 
-    let type_ids: Vec<Vec<u32>> = type_ids
-        .iter_mut()
-        .map(|item| {
-            item.extend(vec![0; max_len - item.len()]);
-            item.to_vec()
-        })
-        .collect();
-
-    let attention_mask: Vec<Vec<u32>> = attention_mask
-        .iter_mut()
-        .map(|item| {
-            item.extend(vec![0; max_len - item.len()]);
-            item.to_vec()
-        })
-        .collect();
-
-    let input_ids = Tensor::new(input_ids, device)?;
-    let type_ids = Tensor::new(type_ids, device)?;
-    let attention_mask = Tensor::new(attention_mask, device)?;
-
-    Ok((input_ids, type_ids, attention_mask, vec_seq))
+    Ok((input_ids, vec_seq))
 }
 
-pub fn load_images(
-    images: Option<Vec<String>>,
-    device: &Device,
-) -> anyhow::Result<(Tensor, Vec<String>)> {
-    let vec_imgs = match images {
-        Some(imgs) => imgs,
-        None => vec![
-            "fuel-examples/examples/stable-diffusion/assets/stable-diffusion-xl.jpg".to_string(),
-            "fuel-examples/examples/yolo-v8/assets/bike.jpg".to_string(),
-        ],
-    };
-
-    let mut images = vec![];
-
-    for path in vec_imgs.iter() {
-        let tensor = load_image(path, 224, device)?;
-        images.push(tensor);
-    }
-
-    let images = Tensor::stack(&images, 0)?.to_device(device)?;
-    Ok((images, vec_imgs))
-}
-
-fn load_image<T: AsRef<std::path::Path>>(
-    path: T,
-    image_size: usize,
-    device: &Device,
-) -> anyhow::Result<Tensor> {
+/// Load image, resize to (image_size, image_size), apply OpenAI
+/// normalization, return CHW row-major f32 vector.
+fn load_image_as_vec<T: AsRef<std::path::Path>>(
+    path: T, image_size: usize,
+) -> Result<Vec<f32>> {
     let img = image::ImageReader::open(path)?.decode()?;
-    let (height, width) = (image_size, image_size);
     let img = img.resize_to_fill(
-        width as u32,
-        height as u32,
+        image_size as u32, image_size as u32,
         image::imageops::FilterType::Triangle,
     );
+    let img = img.to_rgb8().into_raw(); // HWC u8
 
-    let img = img.to_rgb8().into_raw();
-    let img = Tensor::from_vec(img, (height, width, 3), device)?.permute((2, 0, 1))?;
-    let mean = Tensor::new(&[0.48145466f32, 0.4578275, 0.40821073], device)?.reshape((3, 1, 1))?;
-    let std =
-        Tensor::new(&[0.26862954f32, 0.261_302_6, 0.275_777_1], device)?.reshape((3, 1, 1))?;
-    let img = (img.to_dtype(DType::F32)? / 255.)?
-        .broadcast_sub(&mean)?
-        .broadcast_div(&std)?;
+    let mean = [0.48145466f32, 0.4578275, 0.40821073];
+    let std = [0.26862954f32, 0.261_302_6, 0.275_777_1];
 
-    Ok(img)
+    let h = image_size;
+    let w = image_size;
+    let mut out = vec![0.0f32; 3 * h * w];
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3 {
+                let v = img[(y * w + x) * 3 + c] as f32 / 255.0;
+                let v = (v - mean[c]) / std[c];
+                out[(c * h + y) * w + x] = v;
+            }
+        }
+    }
+    Ok(out)
 }
