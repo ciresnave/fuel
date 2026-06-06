@@ -554,6 +554,161 @@ fn taylor_feature_map(
     part_1.concat(&outer_flat, 3_usize)
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl BasedWeights {
+    /// Load Based (Hazy Research) weights from a HuggingFace safetensors
+    /// checkpoint. Layout follows the eager port in
+    /// `fuel-transformers::models::llm::based`:
+    ///
+    /// - Token embedding is tied to `lm_head.weight`.
+    /// - Backbone is rooted at `transformer.`; layers under
+    ///   `transformer.layers.{i}`; final norm at `transformer.ln_f`.
+    /// - Per-layer norms: `norm1`, `norm2`.
+    /// - Mixer prefix is `mixer.` and the three families surface as:
+    ///   - Conv: `in_proj` (with bias), `out_proj` (with bias),
+    ///     `conv.conv.weight` (depthwise; eager runs without bias —
+    ///     we synthesise a zero bias to match `causal_conv1d`'s
+    ///     mandatory-bias signature).
+    ///   - LinearAttention: `proj_q`, `proj_k`, `proj_v`, `out_proj`
+    ///     (all no-bias).
+    ///   - SlidingWindow: `Wqkv` (fused, no-bias), `out_proj`.
+    /// - MLP: `mlp.fc1`, `mlp.fc2` (eager uses bias-free `fc1`/`fc2`).
+    ///
+    /// Mixer kind per layer is driven entirely by config — the loader
+    /// dispatches on `cfg.mixer_kind(i)`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &BasedConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let h = cfg.hidden_size;
+        let dim2 = 2 * h;
+        let kernel: usize = 3;
+        let n_heads_la = cfg.la.num_heads;
+        let d_feat = cfg.la.feature_dim;
+
+        // Token embedding is tied to lm_head in eager. HF checkpoints
+        // store the shared matrix at `lm_head.weight` (shape
+        // `[vocab, hidden]`). Fall back to a conventional
+        // `transformer.wte.weight` slot if the checkpoint stores it
+        // separately. The result is a flat `[vocab * hidden]` f32
+        // buffer in HF row-major (token-major) order — the same shape
+        // `LazyTensor::embed_tokens` consumes.
+        let token_embedding_vec = load_tensor_as_f32(st, "lm_head.weight")
+            .or_else(|_| load_tensor_as_f32(st, "transformer.wte.weight"))?;
+        let token_embedding: Arc<[f32]> = Arc::from(token_embedding_vec);
+
+        let mut layers: Vec<BasedLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("transformer.layers.{i}");
+
+            let norm1_gain: Arc<[f32]> =
+                Arc::from(load_tensor_as_f32(st, &format!("{p}.norm1.weight"))?);
+            let norm2_gain: Arc<[f32]> =
+                Arc::from(load_tensor_as_f32(st, &format!("{p}.norm2.weight"))?);
+
+            // MLP: fc1 is `[4*hidden, hidden]` HF → `[hidden, 4*hidden]` fuel;
+            // fc2 is `[hidden, intermediate]` HF → `[intermediate, hidden]`.
+            let fc1 = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.fc1.weight"), 4 * h, h,
+            )?;
+            let fc2 = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.fc2.weight"), h, cfg.intermediate_size,
+            )?;
+
+            let mixer = match cfg.mixer_kind(i) {
+                BasedMixerKind::Conv => {
+                    let mp = format!("{p}.mixer");
+                    // in_proj: [4*hidden, hidden] HF → [hidden, 4*hidden]
+                    let in_proj_w = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{mp}.in_proj.weight"), 4 * h, h,
+                    )?;
+                    let in_proj_b: Arc<[f32]> = load_tensor_as_f32(
+                        st, &format!("{mp}.in_proj.bias"),
+                    )
+                    .ok()
+                    .map(Arc::from)
+                    .unwrap_or_else(|| Arc::from(vec![0.0_f32; 4 * h]));
+
+                    // Depthwise conv kernel: HF shape `[2*hidden, 1, 3]`
+                    // (out_channels = in_channels = groups = 2*hidden,
+                    // kernel = 3). The data layout matches what
+                    // `causal_conv1d` consumes directly.
+                    let conv_w: Arc<[f32]> = Arc::from(load_tensor_as_f32(
+                        st, &format!("{mp}.conv.conv.weight"),
+                    )?);
+                    // Eager runs `conv1d_no_bias`, so the bias is
+                    // optional in the checkpoint; synthesise zeros if
+                    // the tensor is absent. Length = 2*hidden.
+                    let conv_b: Arc<[f32]> = load_tensor_as_f32(
+                        st, &format!("{mp}.conv.conv.bias"),
+                    )
+                    .ok()
+                    .map(Arc::from)
+                    .unwrap_or_else(|| Arc::from(vec![0.0_f32; dim2]));
+
+                    // out_proj: [hidden, 2*hidden] HF → [2*hidden, hidden]
+                    let out_proj_w = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{mp}.out_proj.weight"), h, dim2,
+                    )?;
+                    let out_proj_b: Arc<[f32]> = load_tensor_as_f32(
+                        st, &format!("{mp}.out_proj.bias"),
+                    )
+                    .ok()
+                    .map(Arc::from)
+                    .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+
+                    let _ = (conv_w.len(), kernel); // silence unused if k changes
+                    BasedMixerWeights::Conv(BasedConvWeights {
+                        in_proj_w, in_proj_b, conv_w, conv_b, out_proj_w, out_proj_b,
+                    })
+                }
+                BasedMixerKind::Linear => {
+                    let mp = format!("{p}.mixer");
+                    // proj_q / proj_k: [n_heads*feature_dim, hidden] HF
+                    //   → [hidden, n_heads*feature_dim]
+                    let q_proj = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{mp}.proj_q.weight"), n_heads_la * d_feat, h,
+                    )?;
+                    let k_proj = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{mp}.proj_k.weight"), n_heads_la * d_feat, h,
+                    )?;
+                    // proj_v: [hidden, hidden]
+                    let v_proj = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{mp}.proj_v.weight"), h, h,
+                    )?;
+                    // out_proj: [hidden, hidden]
+                    let out_proj = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{mp}.out_proj.weight"), h, h,
+                    )?;
+                    BasedMixerWeights::Linear(BasedLinearAttentionWeights {
+                        q_proj, k_proj, v_proj, out_proj,
+                    })
+                }
+                BasedMixerKind::Sliding => {
+                    let mp = format!("{p}.mixer");
+                    // Wqkv: fused [3*hidden, hidden] HF → [hidden, 3*hidden]
+                    let wqkv = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{mp}.Wqkv.weight"), 3 * h, h,
+                    )?;
+                    let out_proj = load_transposed_matrix_preserve_dtype(
+                        st, &format!("{mp}.out_proj.weight"), h, h,
+                    )?;
+                    BasedMixerWeights::Sliding(BasedSlidingWeights { wqkv, out_proj })
+                }
+            };
+
+            layers.push(BasedLayerWeights { norm1_gain, norm2_gain, mixer, fc1, fc2 });
+        }
+
+        let final_norm_gain: Arc<[f32]> =
+            Arc::from(load_tensor_as_f32(st, "transformer.ln_f.weight")?);
+
+        Ok(Self { token_embedding, layers, final_norm_gain })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

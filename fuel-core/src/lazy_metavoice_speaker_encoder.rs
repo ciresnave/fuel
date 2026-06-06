@@ -104,6 +104,105 @@ fn l2_normalize_last(
     x.l2_normalize(2_usize, 0.0)
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl SpeakerEncoderWeights {
+    /// Load MetaVoice speaker-encoder weights from a HuggingFace
+    /// `MmapedSafetensors` checkpoint.
+    ///
+    /// Naming convention (matches the eager port at
+    /// `fuel-transformers/src/models/audio/metavoice.rs::speaker_encoder`):
+    ///   - LSTM stack: `lstm.{layer_idx}.weight_ih_l{layer_idx}`,
+    ///     `lstm.{layer_idx}.weight_hh_l{layer_idx}`,
+    ///     `lstm.{layer_idx}.bias_ih_l{layer_idx}`,
+    ///     `lstm.{layer_idx}.bias_hh_l{layer_idx}`
+    ///     (PyTorch's `nn.LSTM` per-layer tensor names plus the
+    ///     `fuel_nn::lstm` `layer_idx` sub-module prefix from
+    ///     `vb.pp("lstm").pp(layer_idx)`).
+    ///   - Linear: `linear.weight` `[embedding, hidden]`,
+    ///     `linear.bias` `[embedding]`.
+    ///
+    /// LSTM gate ordering matches PyTorch's `[i, f, g, o]` layout
+    /// along the leading axis — same as [`LstmCellWeights`], so no
+    /// re-shuffle is needed.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &SpeakerEncoderConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+
+        let h = cfg.model_hidden_size;
+        let e = cfg.model_embedding_size;
+        let four_h = 4 * h;
+
+        // LSTM stack — first layer takes mel_n_channels, the rest take
+        // hidden_size as input.
+        let mut layers: Vec<LstmCellWeights> = Vec::with_capacity(cfg.model_num_layers);
+        for li in 0..cfg.model_num_layers {
+            let in_dim = if li == 0 { cfg.mel_n_channels } else { h };
+            let w_ih = load_tensor_as_f32(
+                st, &format!("lstm.{li}.weight_ih_l{li}"),
+            )?;
+            let w_hh = load_tensor_as_f32(
+                st, &format!("lstm.{li}.weight_hh_l{li}"),
+            )?;
+            let b_ih = load_tensor_as_f32(
+                st, &format!("lstm.{li}.bias_ih_l{li}"),
+            )?;
+            let b_hh = load_tensor_as_f32(
+                st, &format!("lstm.{li}.bias_hh_l{li}"),
+            )?;
+            if w_ih.len() != four_h * in_dim {
+                crate::bail!(
+                    "lstm.{li}.weight_ih_l{li}: {} elts, expected {}",
+                    w_ih.len(), four_h * in_dim,
+                );
+            }
+            if w_hh.len() != four_h * h {
+                crate::bail!(
+                    "lstm.{li}.weight_hh_l{li}: {} elts, expected {}",
+                    w_hh.len(), four_h * h,
+                );
+            }
+            if b_ih.len() != four_h {
+                crate::bail!(
+                    "lstm.{li}.bias_ih_l{li}: {} elts, expected {}",
+                    b_ih.len(), four_h,
+                );
+            }
+            if b_hh.len() != four_h {
+                crate::bail!(
+                    "lstm.{li}.bias_hh_l{li}: {} elts, expected {}",
+                    b_hh.len(), four_h,
+                );
+            }
+            layers.push(LstmCellWeights {
+                w_ih: Arc::<[f32]>::from(w_ih),
+                w_hh: Arc::<[f32]>::from(w_hh),
+                b_ih: Arc::<[f32]>::from(b_ih),
+                b_hh: Arc::<[f32]>::from(b_hh),
+                input_dim: in_dim,
+                hidden_dim: h,
+            });
+        }
+        let lstm = LstmStack { layers };
+
+        // Linear projection `(hidden, embedding)`. HF stores
+        // `[out=embedding, in=hidden]`; we want the `[in, out]`
+        // contiguous layout that `apply_linear(_, hidden, embedding)`
+        // consumes.
+        let linear = load_transposed_matrix_preserve_dtype(
+            st, "linear.weight", e, h,
+        )?;
+        let linear_bias: Arc<[f32]> = load_tensor_as_f32(st, "linear.bias")
+            .ok()
+            .map(Arc::<[f32]>::from)
+            .unwrap_or_else(|| Arc::<[f32]>::from(vec![0.0_f32; e]));
+
+        Ok(Self { lstm, linear, linear_bias })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]

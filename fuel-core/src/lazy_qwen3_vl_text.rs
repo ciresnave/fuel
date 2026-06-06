@@ -466,6 +466,165 @@ fn build_mrope_tables(
     (cos, sin)
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl Qwen3VlTextWeights {
+    /// Load Qwen3-VL text-side weights from HF safetensors.
+    /// HF layout follows the Qwen3 decoder, but the text submodule sits
+    /// under the `model.language_model.*` prefix (with the composition's
+    /// `lm_head` typically at the top level). Optional fallbacks accept
+    /// either the `model.language_model.*` or the bare `language_model.*`
+    /// prefix to cover variants.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Qwen3VlTextConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let h = cfg.hidden_size;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+        let inter = cfg.intermediate_size;
+
+        // Try the standard composition prefix first; fall back to the
+        // bare `language_model.*` form if the safetensors shard uses it.
+        let prefix = if st
+            .get("model.language_model.embed_tokens.weight")
+            .is_ok()
+        {
+            "model.language_model"
+        } else if st.get("language_model.embed_tokens.weight").is_ok() {
+            "language_model"
+        } else {
+            // Fall back to vanilla LLaMA-style prefix used by Qwen3.
+            "model"
+        };
+
+        let token_embedding: Arc<[f32]> = Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.embed_tokens.weight"),
+        )?);
+
+        let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        let mut layer_extras: Vec<Qwen3VlTextLayerExtras> =
+            Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("{prefix}.layers.{i}");
+            let attn_q = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                q_dim,
+                h,
+            )?;
+            let attn_k = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                kv_dim,
+                h,
+            )?;
+            let attn_v = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                kv_dim,
+                h,
+            )?;
+            let attn_o = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.o_proj.weight"),
+                h,
+                q_dim,
+            )?;
+            let (attn_q_bias, attn_k_bias, attn_v_bias) = if cfg.attention_bias {
+                (
+                    Some(Arc::<[f32]>::from(load_tensor_as_f32(
+                        st,
+                        &format!("{p}.self_attn.q_proj.bias"),
+                    )?)),
+                    Some(Arc::<[f32]>::from(load_tensor_as_f32(
+                        st,
+                        &format!("{p}.self_attn.k_proj.bias"),
+                    )?)),
+                    Some(Arc::<[f32]>::from(load_tensor_as_f32(
+                        st,
+                        &format!("{p}.self_attn.v_proj.bias"),
+                    )?)),
+                )
+            } else {
+                (None, None, None)
+            };
+            let ffn_gate = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.mlp.gate_proj.weight"),
+                inter,
+                h,
+            )?;
+            let ffn_up = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.mlp.up_proj.weight"),
+                inter,
+                h,
+            )?;
+            let ffn_down = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.mlp.down_proj.weight"),
+                h,
+                inter,
+            )?;
+            let attn_norm_gain: Arc<[f32]> = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.input_layernorm.weight"),
+            )?);
+            let ffn_norm_gain: Arc<[f32]> = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+            layers.push(LayerWeights {
+                attn_q,
+                attn_q_bias,
+                attn_k,
+                attn_k_bias,
+                attn_v,
+                attn_v_bias,
+                attn_o,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
+                attn_norm_gain,
+                ffn_norm_gain,
+            });
+            let q_norm_gain: Arc<[f32]> = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.self_attn.q_norm.weight"),
+            )?);
+            let k_norm_gain: Arc<[f32]> = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.self_attn.k_norm.weight"),
+            )?);
+            layer_extras.push(Qwen3VlTextLayerExtras {
+                q_norm_gain,
+                k_norm_gain,
+            });
+        }
+        let final_norm_gain: Arc<[f32]> =
+            Arc::from(load_tensor_as_f32(st, &format!("{prefix}.norm.weight"))?);
+        let output = if cfg.tie_word_embeddings {
+            crate::lazy_llama_full::tied_lm_head_from_embeddings(
+                &token_embedding,
+                cfg.vocab_size,
+                h,
+            )
+        } else {
+            load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h)?
+        };
+        Ok(Self {
+            token_embedding,
+            layers,
+            layer_extras,
+            final_norm_gain,
+            output,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

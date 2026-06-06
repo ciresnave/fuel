@@ -652,6 +652,238 @@ fn substitute_audio_embeds(
     text_part.add(&audio_part)
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl VoxtralWeights {
+    /// Load Voxtral (`mistralai/Voxtral-Mini-3B-2507` and friends) from
+    /// a HuggingFace safetensors checkpoint.
+    ///
+    /// Tensor name layout (matches the eager reference in
+    /// `fuel-transformers/.../voxtral/model.rs`):
+    ///
+    /// - `audio_tower.conv1.{weight,bias}`,
+    ///   `audio_tower.conv2.{weight,bias}` — Whisper-shape conv stem.
+    /// - `audio_tower.embed_positions.weight` — `[max_src, hidden]`.
+    /// - `audio_tower.layers.{i}.self_attn_layer_norm.{weight,bias}` +
+    ///   `audio_tower.layers.{i}.self_attn.{q,k,v,out}_proj.{weight,bias?}` +
+    ///   `audio_tower.layers.{i}.final_layer_norm.{weight,bias}` +
+    ///   `audio_tower.layers.{i}.fc{1,2}.{weight,bias}`.
+    ///   `k_proj` is bias-free (Whisper convention).
+    /// - `audio_tower.layer_norm.{weight,bias}` — encoder final LN.
+    /// - `multi_modal_projector.linear_{1,2}.weight` — bias-free.
+    /// - `language_model.model.embed_tokens.weight` — `[V, hidden]`.
+    /// - `language_model.model.layers.{i}.{input,post_attention}_layernorm.weight`
+    ///   + `language_model.model.layers.{i}.self_attn.{q,k,v,o}_proj.weight`
+    ///   + `language_model.model.layers.{i}.mlp.{gate,up,down}_proj.weight`.
+    ///   Q/K/V are non-square because `head_dim` is explicit.
+    /// - `language_model.model.norm.weight` — final RmsNorm gain.
+    /// - `language_model.lm_head.weight` — `[V, hidden]` output.
+    ///   Falls back to tied embeddings if absent.
+    ///
+    /// Weight matrices go through [`load_transposed_matrix_preserve_dtype`]
+    /// (so bf16 stays bf16); LayerNorm gains/biases, conv kernels, and
+    /// position-embedding tables go through [`load_tensor_as_f32`].
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &VoxtralConfig,
+    ) -> crate::Result<Self> {
+        use crate::lazy::{
+            load_tensor_as_f32, load_transposed_matrix,
+            load_transposed_matrix_preserve_dtype,
+        };
+
+        // ---- audio encoder (Whisper-shape) -------------------------
+        let acfg = &cfg.audio;
+        let d_aud = acfg.hidden_size;
+        let conv1_w = load_tensor_as_f32(st, "audio_tower.conv1.weight")?;
+        let conv1_b = load_tensor_as_f32(st, "audio_tower.conv1.bias")?;
+        let conv2_w = load_tensor_as_f32(st, "audio_tower.conv2.weight")?;
+        let conv2_b = load_tensor_as_f32(st, "audio_tower.conv2.bias")?;
+        let embed_positions = load_tensor_as_f32(
+            st, "audio_tower.embed_positions.weight",
+        )?;
+
+        let mut enc_layers: Vec<VoxtralEncoderLayerWeights> =
+            Vec::with_capacity(acfg.num_hidden_layers);
+        for i in 0..acfg.num_hidden_layers {
+            let p = format!("audio_tower.layers.{i}");
+            let self_attn_ln_gain = load_tensor_as_f32(
+                st, &format!("{p}.self_attn_layer_norm.weight"),
+            )?;
+            let self_attn_ln_bias = load_tensor_as_f32(
+                st, &format!("{p}.self_attn_layer_norm.bias"),
+            )?;
+
+            let q_w = load_transposed_matrix(
+                st, &format!("{p}.self_attn.q_proj.weight"), d_aud, d_aud,
+            )?;
+            let q_b = load_tensor_as_f32(
+                st, &format!("{p}.self_attn.q_proj.bias"),
+            )?;
+            // Whisper convention: k_proj is bias-free.
+            let k_w = load_transposed_matrix(
+                st, &format!("{p}.self_attn.k_proj.weight"), d_aud, d_aud,
+            )?;
+            let v_w = load_transposed_matrix(
+                st, &format!("{p}.self_attn.v_proj.weight"), d_aud, d_aud,
+            )?;
+            let v_b = load_tensor_as_f32(
+                st, &format!("{p}.self_attn.v_proj.bias"),
+            )?;
+            let out_w = load_transposed_matrix(
+                st, &format!("{p}.self_attn.out_proj.weight"), d_aud, d_aud,
+            )?;
+            let out_b = load_tensor_as_f32(
+                st, &format!("{p}.self_attn.out_proj.bias"),
+            )?;
+
+            let final_ln_gain = load_tensor_as_f32(
+                st, &format!("{p}.final_layer_norm.weight"),
+            )?;
+            let final_ln_bias = load_tensor_as_f32(
+                st, &format!("{p}.final_layer_norm.bias"),
+            )?;
+
+            let fc1_w = load_transposed_matrix(
+                st, &format!("{p}.fc1.weight"), acfg.intermediate_size, d_aud,
+            )?;
+            let fc1_b = load_tensor_as_f32(
+                st, &format!("{p}.fc1.bias"),
+            )?;
+            let fc2_w = load_transposed_matrix(
+                st, &format!("{p}.fc2.weight"), d_aud, acfg.intermediate_size,
+            )?;
+            let fc2_b = load_tensor_as_f32(
+                st, &format!("{p}.fc2.bias"),
+            )?;
+
+            enc_layers.push(VoxtralEncoderLayerWeights {
+                self_attn_q: WeightStorage::F32(Arc::<[f32]>::from(q_w)),
+                self_attn_q_bias: Arc::<[f32]>::from(q_b),
+                self_attn_k: WeightStorage::F32(Arc::<[f32]>::from(k_w)),
+                self_attn_v: WeightStorage::F32(Arc::<[f32]>::from(v_w)),
+                self_attn_v_bias: Arc::<[f32]>::from(v_b),
+                self_attn_o: WeightStorage::F32(Arc::<[f32]>::from(out_w)),
+                self_attn_o_bias: Arc::<[f32]>::from(out_b),
+                self_attn_ln_gain: Arc::<[f32]>::from(self_attn_ln_gain),
+                self_attn_ln_bias: Arc::<[f32]>::from(self_attn_ln_bias),
+                fc1: WeightStorage::F32(Arc::<[f32]>::from(fc1_w)),
+                fc1_bias: Arc::<[f32]>::from(fc1_b),
+                fc2: WeightStorage::F32(Arc::<[f32]>::from(fc2_w)),
+                fc2_bias: Arc::<[f32]>::from(fc2_b),
+                final_ln_gain: Arc::<[f32]>::from(final_ln_gain),
+                final_ln_bias: Arc::<[f32]>::from(final_ln_bias),
+            });
+        }
+        let enc_final_ln_gain = load_tensor_as_f32(
+            st, "audio_tower.layer_norm.weight",
+        )?;
+        let enc_final_ln_bias = load_tensor_as_f32(
+            st, "audio_tower.layer_norm.bias",
+        )?;
+
+        let audio = VoxtralEncoderWeights {
+            conv1_w: Arc::<[f32]>::from(conv1_w),
+            conv1_b: Arc::<[f32]>::from(conv1_b),
+            conv2_w: Arc::<[f32]>::from(conv2_w),
+            conv2_b: Arc::<[f32]>::from(conv2_b),
+            embed_positions: Arc::<[f32]>::from(embed_positions),
+            layers: enc_layers,
+            final_ln_gain: Arc::<[f32]>::from(enc_final_ln_gain),
+            final_ln_bias: Arc::<[f32]>::from(enc_final_ln_bias),
+        };
+
+        // ---- multi-modal projector (bias-free) ---------------------
+        let projector_1 = load_transposed_matrix_preserve_dtype(
+            st,
+            "multi_modal_projector.linear_1.weight",
+            cfg.text.hidden_size,
+            acfg.intermediate_size,
+        )?;
+        let projector_2 = load_transposed_matrix_preserve_dtype(
+            st,
+            "multi_modal_projector.linear_2.weight",
+            cfg.text.hidden_size,
+            cfg.text.hidden_size,
+        )?;
+
+        // ---- text model (Llama-shape, explicit head_dim) ----------
+        let tcfg = &cfg.text;
+        let h = tcfg.hidden_size;
+        let q_dim = tcfg.num_attention_heads * tcfg.head_dim;
+        let kv_dim = tcfg.num_key_value_heads * tcfg.head_dim;
+
+        let token_embedding = Arc::<[f32]>::from(load_tensor_as_f32(
+            st, "language_model.model.embed_tokens.weight",
+        )?);
+
+        let mut text_layers: Vec<VoxtralTextLayerWeights> =
+            Vec::with_capacity(tcfg.num_hidden_layers);
+        for i in 0..tcfg.num_hidden_layers {
+            let p = format!("language_model.model.layers.{i}");
+            let attn_norm_gain = Arc::<[f32]>::from(load_tensor_as_f32(
+                st, &format!("{p}.input_layernorm.weight"),
+            )?);
+            let ffn_norm_gain = Arc::<[f32]>::from(load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+
+            let attn_q = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h,
+            )?;
+            let attn_k = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+            )?;
+            let attn_v = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+            )?;
+            let attn_o = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim,
+            )?;
+            let ffn_gate = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.gate_proj.weight"), tcfg.intermediate_size, h,
+            )?;
+            let ffn_up = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.up_proj.weight"), tcfg.intermediate_size, h,
+            )?;
+            let ffn_down = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.down_proj.weight"), h, tcfg.intermediate_size,
+            )?;
+
+            text_layers.push(VoxtralTextLayerWeights {
+                attn_norm_gain,
+                ffn_norm_gain,
+                attn_q, attn_k, attn_v, attn_o,
+                ffn_gate, ffn_up, ffn_down,
+            });
+        }
+
+        let final_norm_gain = Arc::<[f32]>::from(load_tensor_as_f32(
+            st, "language_model.model.norm.weight",
+        )?);
+
+        // lm_head: prefer the explicit `language_model.lm_head.weight`;
+        // fall back to tied embeddings if absent (`tie_word_embeddings`).
+        let lm_head = match load_transposed_matrix_preserve_dtype(
+            st, "language_model.lm_head.weight", tcfg.vocab_size, h,
+        ) {
+            Ok(w) => w,
+            Err(_) => crate::lazy_llama_full::tied_lm_head_from_embeddings(
+                &token_embedding, tcfg.vocab_size, h,
+            ),
+        };
+
+        let text = VoxtralTextWeights {
+            token_embedding,
+            layers: text_layers,
+            final_norm_gain,
+            lm_head,
+        };
+
+        Ok(Self { audio, projector_1, projector_2, text })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

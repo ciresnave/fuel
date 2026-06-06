@@ -1,21 +1,21 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-use anyhow::Result;
-use fuel::{DType, IndexOp, Tensor};
-use fuel_nn::VarBuilder;
-use fuel_transformers::models::snac::{Config, Model};
+use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
+use fuel::lazy::LazyTensor;
+use fuel::lazy_snac::{SnacConfig, SnacModel, SnacWeights};
+use fuel_core_types::Shape;
 use hf_hub::api::sync::Api;
+use serde::Deserialize;
 
 mod audio_io;
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq, ValueEnum)]
 enum Action {
-    AudioToAudio,
     AudioToCode,
     CodeToAudio,
 }
@@ -59,13 +59,13 @@ impl Which {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// The action to be performed, specifies the format for the input and output data.
+    /// The action to be performed (audio-to-code or code-to-audio).
     action: Action,
 
-    /// The input file, either an audio file or some snac tokens stored as safetensors.
+    /// The input file (audio file for audio-to-code, or codes safetensors for code-to-audio).
     in_file: String,
 
-    /// The output file, either a wave audio file or some snac tokens stored as safetensors.
+    /// The output file (codes safetensors for audio-to-code, or wave audio file for code-to-audio).
     out_file: String,
 
     /// The model size to use.
@@ -80,118 +80,180 @@ struct Args {
     #[arg(long)]
     model: Option<String>,
 
-    /// The config file, in safetensor format.
+    /// The config file, JSON.
     #[arg(long)]
     config: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct HfSnacConfig {
+    #[serde(default = "default_audio_channels")]
+    audio_channels: usize,
+    encoder_dim: usize,
+    decoder_dim: usize,
+    decoder_rates: Vec<usize>,
+    #[serde(default)]
+    attn_window_size: Option<usize>,
+    codebook_size: usize,
+    codebook_dim: usize,
+    vq_strides: Vec<usize>,
+    #[serde(default)]
+    noise: bool,
+    #[serde(default)]
+    depthwise: bool,
+}
+
+fn default_audio_channels() -> usize {
+    1
+}
+
+impl From<HfSnacConfig> for SnacConfig {
+    fn from(c: HfSnacConfig) -> Self {
+        SnacConfig {
+            audio_channels: c.audio_channels,
+            encoder_dim: c.encoder_dim,
+            decoder_dim: c.decoder_dim,
+            decoder_rates: c.decoder_rates,
+            attn_window_size: c.attn_window_size,
+            codebook_size: c.codebook_size,
+            codebook_dim: c.codebook_dim,
+            vq_strides: c.vq_strides,
+            noise: c.noise,
+            depthwise: c.depthwise,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
-    let device = fuel_examples::device(args.cpu)?;
+    let _ = fuel_examples::device(args.cpu)?;
     let model_sample_rate = args.which.sample_rate();
-    let config = match args.config {
+
+    let config_path = match args.config {
         Some(c) => std::path::PathBuf::from(c),
         None => Api::new()?
             .model(args.which.config_repo().to_string())
             .get("config.json")?,
     };
-    let config: Config = serde_json::from_slice(&std::fs::read(config)?)?;
-    let model = match args.model {
+    let cfg_json: HfSnacConfig = serde_json::from_slice(&std::fs::read(&config_path)?)?;
+    let cfg: SnacConfig = cfg_json.into();
+
+    let model_path = match args.model {
         Some(model) => std::path::PathBuf::from(model),
         None => Api::new()?
             .model("lmz/fuel-snac".to_string())
             .get(args.which.model_file())?,
     };
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model], DType::F32, &device)? };
-    let model = Model::new(&config, vb)?;
 
-    let codes = match args.action {
-        Action::CodeToAudio => {
-            let codes = fuel::safetensors::load(args.in_file, &device)?;
-            let num_codebooks = model.num_codebooks();
-            (0..num_codebooks)
-                .map(|i| {
-                    codes
-                        .get(&format!("codes-{i}"))
-                        .expect("no codes in input file")
-                        .clone()
-                })
-                .collect::<Vec<_>>()
-        }
-        Action::AudioToCode | Action::AudioToAudio => {
-            let pcm = if args.in_file == "-" {
-                println!(">>>> RECORDING AUDIO, PRESS ENTER ONCE DONE <<<<");
-                let (stream, input_audio) = audio_io::setup_input_stream()?;
-                let mut pcms = vec![];
-                let stdin = std::thread::spawn(|| {
-                    let mut s = String::new();
-                    std::io::stdin().read_line(&mut s)
-                });
-                while !stdin.is_finished() {
-                    let input = input_audio.lock().unwrap().take_all();
-                    if input.is_empty() {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                        continue;
-                    }
-                    pcms.push(input)
-                }
-                drop(stream);
-                pcms.concat()
-            } else {
-                let (pcm, sample_rate) = audio_io::pcm_decode(args.in_file)?;
-                if sample_rate != model_sample_rate {
-                    println!("WARNING: snac uses a {model_sample_rate} sample rate, input uses {sample_rate}, resampling...");
-                    fuel_examples::audio::resample(&pcm, sample_rate, model_sample_rate)?
-                } else {
-                    pcm
-                }
-            };
-            let pcm_len = pcm.len();
-            let pcm = Tensor::from_vec(pcm, (1, 1, pcm_len), &device)?;
-            println!("input pcm shape: {:?}", pcm.shape());
-            model.encode(&pcm)?
-        }
+    let st = unsafe { fuel::safetensors::MmapedSafetensors::new(&model_path) }
+        .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+    let weights = SnacWeights::load_from_mmapped(&st, &cfg)
+        .map_err(|e| E::msg(format!("load weights: {e}")))?;
+    let num_codebooks = weights.quantizers.len();
+    let model = SnacModel {
+        config: cfg.clone(),
+        weights,
     };
-    for codes in codes.iter() {
-        println!("codes shape: {:?}", codes.shape());
-    }
 
     match args.action {
-        Action::AudioToCode => {
-            let mut tensors = std::collections::HashMap::new();
-            for (i, codes) in codes.iter().enumerate() {
-                tensors.insert(format!("codes-{i}"), codes.clone());
+        Action::CodeToAudio => {
+            // Load the codes from the safetensors file.
+            let codes_st = unsafe {
+                fuel::safetensors::MmapedSafetensors::new(&args.in_file)
             }
-            fuel::safetensors::save(&tensors, "codes.safetensors")?;
+            .map_err(|e| E::msg(format!("mmap codes safetensors: {e}")))?;
+            let mut codes: Vec<LazyTensor> = Vec::with_capacity(num_codebooks);
+            for i in 0..num_codebooks {
+                let name = format!("codes-{i}");
+                let view = codes_st
+                    .get(&name)
+                    .map_err(|e| E::msg(format!("missing tensor {name}: {e}")))?;
+                let shape: Vec<usize> = view.shape().to_vec();
+                if shape.len() != 2 {
+                    anyhow::bail!("codes-{i}: expected rank 2, got {:?}", shape);
+                }
+                // Decode as u32 codes. Safetensors stores as bytes — interpret accordingly.
+                let raw = view.data();
+                let dt = view.dtype();
+                let u32_data: Vec<u32> = match dt {
+                    safetensors::Dtype::U32 => raw
+                        .chunks_exact(4)
+                        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                        .collect(),
+                    safetensors::Dtype::I64 => raw
+                        .chunks_exact(8)
+                        .map(|b| {
+                            i64::from_le_bytes([
+                                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                            ]) as u32
+                        })
+                        .collect(),
+                    other => anyhow::bail!("codes-{i}: unexpected dtype {other:?}"),
+                };
+                // Anchor onto the model graph via a temporary LazyTensor.
+                let anchor = LazyTensor::from_f32(
+                    vec![0.0_f32],
+                    Shape::from_dims(&[1]),
+                    &fuel::Device::Cpu,
+                );
+                let lt = anchor.const_u32_like(u32_data, Shape::from_dims(&shape));
+                codes.push(lt);
+                println!("codes-{i} shape: {:?}", shape);
+            }
+            let pcm = model
+                .decode_codes(&codes)
+                .map_err(|e| E::msg(format!("decode: {e}")))?;
+            println!("output pcm shape: {:?}", pcm.shape().dims());
+            let pcm_data = pcm.realize_f32();
+            // Output shape is (1, audio_channels, T). Extract first batch, first channel.
+            let total = pcm_data.len();
+            let t = total / (cfg.audio_channels.max(1));
+            let pcm_ch0: Vec<f32> = pcm_data[..t].to_vec();
+            let pcm_norm = normalize_loudness_f32(&pcm_ch0, model_sample_rate, true);
+
+            let mut output = std::fs::File::create(&args.out_file)?;
+            fuel_examples::wav::write_pcm_as_wav(&mut output, &pcm_norm, model_sample_rate)?;
+            println!("wrote {} samples to {}", pcm_norm.len(), args.out_file);
         }
-        Action::AudioToAudio | Action::CodeToAudio => {
-            let codes = codes.iter().collect::<Vec<_>>();
-            let pcm = model.decode(&codes)?;
-            println!("output pcm shape: {:?}", pcm.shape());
-            let pcm = pcm.i(0)?.i(0)?;
-            let pcm = fuel_examples::audio::normalize_loudness(&pcm, model_sample_rate, true)?;
-            let pcm = pcm.to_vec1::<f32>()?;
-            if args.out_file == "-" {
-                let (stream, ad) = audio_io::setup_output_stream()?;
-                {
-                    let mut ad = ad.lock().unwrap();
-                    ad.push_samples(&pcm)?;
-                }
-                loop {
-                    let ad = ad.lock().unwrap();
-                    if ad.is_empty() {
-                        break;
-                    }
-                    // That's very weird, calling thread::sleep here triggers the stream to stop
-                    // playing (the callback doesn't seem to be called anymore).
-                    // std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-                drop(stream)
-            } else {
-                let mut output = std::fs::File::create(&args.out_file)?;
-                fuel_examples::wav::write_pcm_as_wav(&mut output, &pcm, model_sample_rate)?;
-            }
+        Action::AudioToCode => {
+            // Encode path is not yet supported on lazy_snac (decode-only v1).
+            // We still allow file loading to keep the binary usable end-to-end
+            // for the decode workflow.
+            anyhow::bail!(
+                "AudioToCode is not yet implemented on the lazy SNAC port \
+                 (lazy_snac v1 is decode-only). \
+                 Use CodeToAudio with an existing codes safetensors file."
+            );
         }
     }
+
     Ok(())
+}
+
+/// Simplified normalize_loudness on a Vec<f32>, mirroring
+/// fuel_examples::audio::normalize_loudness without the Tensor dependency.
+fn normalize_loudness_f32(wav: &[f32], sample_rate: u32, loudness_compressor: bool) -> Vec<f32> {
+    if wav.is_empty() {
+        return Vec::new();
+    }
+    let n = wav.len();
+    let energy = (wav.iter().map(|x| x * x).sum::<f32>() / n as f32).sqrt();
+    if energy < 2e-3 {
+        return wav.to_vec();
+    }
+    let mut meter = fuel_examples::bs1770::ChannelLoudnessMeter::new(sample_rate);
+    meter.push(wav.iter().copied());
+    let power = meter.as_100ms_windows();
+    let loudness = match fuel_examples::bs1770::gated_mean(power) {
+        None => return wav.to_vec(),
+        Some(gp) => gp.loudness_lkfs() as f64,
+    };
+    let delta_loudness = -14.0 - loudness;
+    let gain = 10f64.powf(delta_loudness / 20.0) as f32;
+    let out: Vec<f32> = wav.iter().map(|x| x * gain).collect();
+    if loudness_compressor {
+        out.into_iter().map(|x| x.tanh()).collect()
+    } else {
+        out
+    }
 }

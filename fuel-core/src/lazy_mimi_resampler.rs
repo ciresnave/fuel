@@ -94,6 +94,81 @@ impl ConvTrUpsample1dModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl ConvDownsample1dWeights {
+    /// Load `ConvDownsample1dWeights` from a HuggingFace
+    /// `MmapedSafetensors` checkpoint at `{prefix}` (typically
+    /// `"downsample"`). The eager `ConvDownsample1d` wraps a
+    /// `StreamableConv1d` with `groups = 1`, `bias = false`, `norm =
+    /// None` and `kernel = 2 · stride`. The on-disk path collapses
+    /// to `{prefix}.conv.weight` — the single `pp("conv")` step from
+    /// `NormConv1d` is the only prefix the `fuel_nn::conv1d_no_bias`
+    /// `vb` sees. Matches the path already used by
+    /// `MimiWeights::load_from_mmapped` (`"downsample.conv.weight"`).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        prefix: &str,
+        dim: usize,
+        stride: usize,
+    ) -> Result<Self> {
+        use crate::lazy::load_tensor_as_f32;
+        let kernel = 2 * stride;
+        let expected = dim * dim * kernel;
+        let w = load_tensor_as_f32(st, &format!("{prefix}.conv.weight"))?;
+        if w.len() != expected {
+            crate::bail!(
+                "{prefix}.conv.weight: {} elements, expected {expected} ({dim}×{dim}×{kernel})",
+                w.len(),
+            );
+        }
+        let weight: Arc<[f32]> = Arc::from(w);
+        Ok(ConvDownsample1dWeights {
+            weight,
+            dim,
+            stride,
+        })
+    }
+}
+
+impl ConvTrUpsample1dWeights {
+    /// Load `ConvTrUpsample1dWeights` from a HuggingFace
+    /// `MmapedSafetensors` checkpoint at `{prefix}` (typically
+    /// `"upsample"`). The eager `ConvTrUpsample1d` wraps a
+    /// `StreamableConvTranspose1d` with `groups = dim` (depthwise),
+    /// `bias = false`, `norm = None`, so PyTorch lays the weight out
+    /// as `[in_c, out_c / groups, k] = [dim, 1, 2·stride]`. The
+    /// `NormConvTranspose1d::new` `let vb = vb.pp("conv")` step is
+    /// the only conv-prefix the `vb.get(..., "weight")` call sees, so
+    /// the on-disk path is `{prefix}.convtr.weight` — matching the
+    /// path already used by `MimiWeights::load_from_mmapped`
+    /// (`"upsample.convtr.weight"`) and the HuggingFace
+    /// `kyutai/mimi` checkpoint.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        prefix: &str,
+        dim: usize,
+        stride: usize,
+    ) -> Result<Self> {
+        use crate::lazy::load_tensor_as_f32;
+        let kernel = 2 * stride;
+        let expected = dim * 1 * kernel;
+        let w = load_tensor_as_f32(st, &format!("{prefix}.convtr.weight"))?;
+        if w.len() != expected {
+            crate::bail!(
+                "{prefix}.convtr.weight: {} elements, expected {expected} ({dim}×1×{kernel})",
+                w.len(),
+            );
+        }
+        let weight: Arc<[f32]> = Arc::from(w);
+        Ok(ConvTrUpsample1dWeights {
+            weight,
+            dim,
+            stride,
+        })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
