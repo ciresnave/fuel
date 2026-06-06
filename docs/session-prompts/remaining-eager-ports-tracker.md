@@ -53,18 +53,19 @@ These unblock multiple downstream model ports. Ship these first.
 
 ## Multimodal vision-language
 
-- [~] [Qwen3-VL (text + vision + composition)](shipped/port-qwen3-vl.md)
-      — `multimodal/qwen3_vl/*` (1418 LOC total). **Sub-ports 1 + 2
-      shipped** (lazy_qwen3_vl_text with MROPE; lazy_qwen3_vl_vision
-      with Conv3D patch embed + cu_seqlens block-diagonal mask +
-      DeepStack hooks; 10 tests). Sub-port 3 (composition) ships in
-      the next workflow round.
-- [~] [PaddleOCR-VL (text + vision + composition)](shipped/port-paddleocr-vl.md)
-      — `multimodal/paddleocr_vl/*` (3983 LOC total). **Sub-ports 1 + 2
-      shipped** (lazy_paddleocr_vl_text Ernie-style decoder with MROPE
-      deviations; lazy_paddleocr_vl_vision with tile-grid ViT + aspect-
-      ratio chooser + Siglip-style block; 10 tests). Sub-port 3
-      (composition) ships in the next workflow round.
+- [x] [Qwen3-VL (text + vision + composition)](shipped/port-qwen3-vl.md)
+      — `multimodal/qwen3_vl/*` (1418 LOC total). **All 3 sub-ports
+      shipped** (lazy_qwen3_vl_text + MROPE + forward_embeds_with_deepstack
+      hook; lazy_qwen3_vl_vision with Conv3D patch embed + cu_seqlens
+      block-diagonal mask + DeepStack residuals; lazy_qwen3_vl composition
+      with image-token slot scatter + visual residual injection;
+      15 tests including end_to_end_tiny_video_plus_text).
+- [x] [PaddleOCR-VL (text + vision + composition)](shipped/port-paddleocr-vl.md)
+      — `multimodal/paddleocr_vl/*` (3983 LOC total). **All 3 sub-ports
+      shipped** (lazy_paddleocr_vl_text Ernie-style decoder; lazy_paddleocr_vl_vision
+      tile-grid ViT; lazy_paddleocr_vl composition with aspect-ratio-driven
+      tile partitioning + multimodal_projector + slot scatter;
+      15 tests including end_to_end_tiny_image_plus_text).
 - [x] [Gemma4 audio (Conformer)](shipped/port-gemma4-audio.md)
       — `llm/gemma4/audio.rs` (874 LOC). **Shipped** as
       lazy_gemma4_audio (SSCP conv front-end + Conformer with
@@ -78,10 +79,14 @@ These unblock multiple downstream model ports. Ship these first.
       lazy_mmdit (DoubleStreamBlock + SingleStreamBlock + AdaLN
       modulation + 2D RoPE patch positions; 3 tests including
       zero-scale/zero-gate modulation regressions).
-- [ ] [Flux (model + autoencoder + sampling + quantized)](port-flux.md)
-      — `diffusion/flux/*` (1689 LOC across 4 files). DiT with
-      double + single stream blocks; flow-matching scheduler;
-      GGUF-quantized variant.
+- [x] [Flux (model + autoencoder + sampling + quantized)](shipped/port-flux.md)
+      — `diffusion/flux/*` (1689 LOC across 4 files). **Shipped** as
+      lazy_flux (FluxModel DiT with QK-Norm + parallel attention +
+      9-param modulation + N-dim per-axis RoPE; FluxVae 16-channel
+      8x-downsample; FlowMatchScheduler + generate driver;
+      QuantizedFluxModel Q4_0 variant; FluxConfig::dev()/schnell()
+      presets; 6 tests including flux_vae_round_trip_tiny and
+      quantized_flux_model_q4_0_close_to_source).
 - [x] [Wuerstchen (cascaded diffusion)](shipped/port-wuerstchen.md)
       — `diffusion/wuerstchen/*` (1176 LOC across 7 files). **Shipped**
       as lazy_wuerstchen (PaellaVQ decoder + Prior + DiffNext UNet

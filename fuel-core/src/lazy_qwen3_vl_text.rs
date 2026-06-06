@@ -115,7 +115,27 @@ impl Qwen3VlTextModel {
         embeds: &LazyTensor,
         mrope_positions: &[MropePos],
     ) -> Result<LazyTensor> {
-        self.run_backbone_embeds(embeds, mrope_positions)
+        self.run_backbone_embeds_with_deepstack(embeds, mrope_positions, &[])
+    }
+
+    /// Deepstack-aware forward. `deepstack_per_layer[i]` (if `Some`) is
+    /// added into the post-layer hidden states after decoder layer `i`,
+    /// matching the eager Qwen3-VL injection convention where vision
+    /// residuals captured at vision layers `deepstack_visual_indexes[i]`
+    /// flow into the text-side hidden stream at text layer `i`. The
+    /// residual must be shaped `(1, seq, hidden_size)` and already
+    /// positioned so non-visual rows are zero. The slice length may be
+    /// shorter than the number of layers; remaining layers receive no
+    /// injection (mirrors `if i < deepstack.len()` in eager).
+    pub fn forward_embeds_with_deepstack(
+        &self,
+        embeds: &LazyTensor,
+        mrope_positions: &[MropePos],
+        deepstack_per_layer: &[Option<LazyTensor>],
+    ) -> Result<LazyTensor> {
+        let h_norm =
+            self.run_backbone_embeds_with_deepstack(embeds, mrope_positions, deepstack_per_layer)?;
+        self.apply_lm_head(&h_norm)
     }
 
     /// Token-embedding lookup anchored on `anchor`'s graph. Lets the
@@ -172,6 +192,15 @@ impl Qwen3VlTextModel {
         &self,
         embeds: &LazyTensor,
         mrope_positions: &[MropePos],
+    ) -> Result<LazyTensor> {
+        self.run_backbone_embeds_with_deepstack(embeds, mrope_positions, &[])
+    }
+
+    fn run_backbone_embeds_with_deepstack(
+        &self,
+        embeds: &LazyTensor,
+        mrope_positions: &[MropePos],
+        deepstack_per_layer: &[Option<LazyTensor>],
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -236,6 +265,9 @@ impl Qwen3VlTextModel {
         {
             let uses_window = cfg.use_sliding_window && layer_idx < cfg.max_window_layers;
             h = self.apply_layer(&h, layer, extras, &rope_cos, &rope_sin, uses_window)?;
+            if let Some(Some(residual)) = deepstack_per_layer.get(layer_idx) {
+                h = h.add(residual)?;
+            }
         }
         h.rms_norm_affine(
             std::sync::Arc::clone(&weights.final_norm_gain),
