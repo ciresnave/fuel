@@ -693,36 +693,54 @@ fn decoder_layer(
 // ---- Safetensors loader ----------------------------------------------------
 
 impl WhisperWeights {
+    /// Load all Whisper weights from a `MmapedSafetensors` file using
+    /// the standard HuggingFace tensor naming. Whisper's HF layout is
+    /// `model.encoder.{conv1,conv2,embed_positions,layers.{i},layer_norm}`
+    /// for the encoder and
+    /// `model.decoder.{embed_tokens,embed_positions,layers.{i},layer_norm}`
+    /// for the decoder. Each encoder layer carries `self_attn_layer_norm`
+    /// + `self_attn.{q,k,v,out}_proj` + `final_layer_norm` + `fc{1,2}`;
+    /// each decoder layer adds `encoder_attn_layer_norm` +
+    /// `encoder_attn.{q,k,v,out}_proj` for cross-attention. `k_proj`
+    /// never has a bias.
+    ///
+    /// Weight matrices are physically transposed at load time from HF's
+    /// `[out_features, in_features]` to fuel's `[in_features, out_features]`
+    /// matmul order via [`load_transposed_matrix`]; LayerNorm / bias /
+    /// conv / embedding tensors stay 1:1 with HF and go through
+    /// [`load_tensor_as_f32`].
     pub fn load_from_mmapped(
         st: &crate::safetensors::MmapedSafetensors,
         cfg: &WhisperConfig,
     ) -> crate::Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix};
+
         let d = cfg.d_model;
         // --- encoder ------------------------------------------------
-        let conv1_w = load_f32(st, "model.encoder.conv1.weight")?;  // [d, n_mel, 3]
-        let conv1_b = load_f32(st, "model.encoder.conv1.bias")?;
-        let conv2_w = load_f32(st, "model.encoder.conv2.weight")?;  // [d, d, 3]
-        let conv2_b = load_f32(st, "model.encoder.conv2.bias")?;
-        let positional = load_f32(st, "model.encoder.embed_positions.weight")?;  // [max_src, d]
+        let conv1_w = load_tensor_as_f32(st, "model.encoder.conv1.weight")?;  // [d, n_mel, 3]
+        let conv1_b = load_tensor_as_f32(st, "model.encoder.conv1.bias")?;
+        let conv2_w = load_tensor_as_f32(st, "model.encoder.conv2.weight")?;  // [d, d, 3]
+        let conv2_b = load_tensor_as_f32(st, "model.encoder.conv2.bias")?;
+        let positional = load_tensor_as_f32(st, "model.encoder.embed_positions.weight")?;  // [max_src, d]
 
         let mut enc_layers = Vec::with_capacity(cfg.encoder_layers);
         for i in 0..cfg.encoder_layers {
             let p = format!("model.encoder.layers.{i}");
-            let self_attn_ln_g = load_f32(st, &format!("{p}.self_attn_layer_norm.weight"))?;
-            let self_attn_ln_b = load_f32(st, &format!("{p}.self_attn_layer_norm.bias"))?;
-            let q_w = load_transposed(st, &format!("{p}.self_attn.q_proj.weight"), d, d)?;
-            let q_b = load_f32(st, &format!("{p}.self_attn.q_proj.bias"))?;
-            let k_w = load_transposed(st, &format!("{p}.self_attn.k_proj.weight"), d, d)?;
-            let v_w = load_transposed(st, &format!("{p}.self_attn.v_proj.weight"), d, d)?;
-            let v_b = load_f32(st, &format!("{p}.self_attn.v_proj.bias"))?;
-            let out_w = load_transposed(st, &format!("{p}.self_attn.out_proj.weight"), d, d)?;
-            let out_b = load_f32(st, &format!("{p}.self_attn.out_proj.bias"))?;
-            let final_ln_g = load_f32(st, &format!("{p}.final_layer_norm.weight"))?;
-            let final_ln_b = load_f32(st, &format!("{p}.final_layer_norm.bias"))?;
-            let fc1_w = load_transposed(st, &format!("{p}.fc1.weight"), cfg.encoder_ffn_dim, d)?;
-            let fc1_b = load_f32(st, &format!("{p}.fc1.bias"))?;
-            let fc2_w = load_transposed(st, &format!("{p}.fc2.weight"), d, cfg.encoder_ffn_dim)?;
-            let fc2_b = load_f32(st, &format!("{p}.fc2.bias"))?;
+            let self_attn_ln_g = load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.weight"))?;
+            let self_attn_ln_b = load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.bias"))?;
+            let q_w = load_transposed_matrix(st, &format!("{p}.self_attn.q_proj.weight"), d, d)?;
+            let q_b = load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?;
+            let k_w = load_transposed_matrix(st, &format!("{p}.self_attn.k_proj.weight"), d, d)?;
+            let v_w = load_transposed_matrix(st, &format!("{p}.self_attn.v_proj.weight"), d, d)?;
+            let v_b = load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?;
+            let out_w = load_transposed_matrix(st, &format!("{p}.self_attn.out_proj.weight"), d, d)?;
+            let out_b = load_tensor_as_f32(st, &format!("{p}.self_attn.out_proj.bias"))?;
+            let final_ln_g = load_tensor_as_f32(st, &format!("{p}.final_layer_norm.weight"))?;
+            let final_ln_b = load_tensor_as_f32(st, &format!("{p}.final_layer_norm.bias"))?;
+            let fc1_w = load_transposed_matrix(st, &format!("{p}.fc1.weight"), cfg.encoder_ffn_dim, d)?;
+            let fc1_b = load_tensor_as_f32(st, &format!("{p}.fc1.bias"))?;
+            let fc2_w = load_transposed_matrix(st, &format!("{p}.fc2.weight"), d, cfg.encoder_ffn_dim)?;
+            let fc2_b = load_tensor_as_f32(st, &format!("{p}.fc2.bias"))?;
             enc_layers.push(WhisperEncoderLayerWeights {
                 self_attn_ln_g: Arc::from(self_attn_ln_g),
                 self_attn_ln_b: Arc::from(self_attn_ln_b),
@@ -736,42 +754,42 @@ impl WhisperWeights {
                 fc2_w: Arc::from(fc2_w), fc2_b: Arc::from(fc2_b),
             });
         }
-        let enc_final_ln_g = load_f32(st, "model.encoder.layer_norm.weight")?;
-        let enc_final_ln_b = load_f32(st, "model.encoder.layer_norm.bias")?;
+        let enc_final_ln_g = load_tensor_as_f32(st, "model.encoder.layer_norm.weight")?;
+        let enc_final_ln_b = load_tensor_as_f32(st, "model.encoder.layer_norm.bias")?;
 
         // --- decoder ------------------------------------------------
-        let dec_embed_tokens = load_f32(st, "model.decoder.embed_tokens.weight")?;  // [V, d]
-        let dec_embed_positions = load_f32(st, "model.decoder.embed_positions.weight")?;
+        let dec_embed_tokens = load_tensor_as_f32(st, "model.decoder.embed_tokens.weight")?;  // [V, d]
+        let dec_embed_positions = load_tensor_as_f32(st, "model.decoder.embed_positions.weight")?;
 
         let mut dec_layers = Vec::with_capacity(cfg.decoder_layers);
         for i in 0..cfg.decoder_layers {
             let p = format!("model.decoder.layers.{i}");
-            let self_ln_g = load_f32(st, &format!("{p}.self_attn_layer_norm.weight"))?;
-            let self_ln_b = load_f32(st, &format!("{p}.self_attn_layer_norm.bias"))?;
-            let self_q_w = load_transposed(st, &format!("{p}.self_attn.q_proj.weight"), d, d)?;
-            let self_q_b = load_f32(st, &format!("{p}.self_attn.q_proj.bias"))?;
-            let self_k_w = load_transposed(st, &format!("{p}.self_attn.k_proj.weight"), d, d)?;
-            let self_v_w = load_transposed(st, &format!("{p}.self_attn.v_proj.weight"), d, d)?;
-            let self_v_b = load_f32(st, &format!("{p}.self_attn.v_proj.bias"))?;
-            let self_out_w = load_transposed(st, &format!("{p}.self_attn.out_proj.weight"), d, d)?;
-            let self_out_b = load_f32(st, &format!("{p}.self_attn.out_proj.bias"))?;
+            let self_ln_g = load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.weight"))?;
+            let self_ln_b = load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.bias"))?;
+            let self_q_w = load_transposed_matrix(st, &format!("{p}.self_attn.q_proj.weight"), d, d)?;
+            let self_q_b = load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?;
+            let self_k_w = load_transposed_matrix(st, &format!("{p}.self_attn.k_proj.weight"), d, d)?;
+            let self_v_w = load_transposed_matrix(st, &format!("{p}.self_attn.v_proj.weight"), d, d)?;
+            let self_v_b = load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?;
+            let self_out_w = load_transposed_matrix(st, &format!("{p}.self_attn.out_proj.weight"), d, d)?;
+            let self_out_b = load_tensor_as_f32(st, &format!("{p}.self_attn.out_proj.bias"))?;
 
-            let cross_ln_g = load_f32(st, &format!("{p}.encoder_attn_layer_norm.weight"))?;
-            let cross_ln_b = load_f32(st, &format!("{p}.encoder_attn_layer_norm.bias"))?;
-            let cross_q_w = load_transposed(st, &format!("{p}.encoder_attn.q_proj.weight"), d, d)?;
-            let cross_q_b = load_f32(st, &format!("{p}.encoder_attn.q_proj.bias"))?;
-            let cross_k_w = load_transposed(st, &format!("{p}.encoder_attn.k_proj.weight"), d, d)?;
-            let cross_v_w = load_transposed(st, &format!("{p}.encoder_attn.v_proj.weight"), d, d)?;
-            let cross_v_b = load_f32(st, &format!("{p}.encoder_attn.v_proj.bias"))?;
-            let cross_out_w = load_transposed(st, &format!("{p}.encoder_attn.out_proj.weight"), d, d)?;
-            let cross_out_b = load_f32(st, &format!("{p}.encoder_attn.out_proj.bias"))?;
+            let cross_ln_g = load_tensor_as_f32(st, &format!("{p}.encoder_attn_layer_norm.weight"))?;
+            let cross_ln_b = load_tensor_as_f32(st, &format!("{p}.encoder_attn_layer_norm.bias"))?;
+            let cross_q_w = load_transposed_matrix(st, &format!("{p}.encoder_attn.q_proj.weight"), d, d)?;
+            let cross_q_b = load_tensor_as_f32(st, &format!("{p}.encoder_attn.q_proj.bias"))?;
+            let cross_k_w = load_transposed_matrix(st, &format!("{p}.encoder_attn.k_proj.weight"), d, d)?;
+            let cross_v_w = load_transposed_matrix(st, &format!("{p}.encoder_attn.v_proj.weight"), d, d)?;
+            let cross_v_b = load_tensor_as_f32(st, &format!("{p}.encoder_attn.v_proj.bias"))?;
+            let cross_out_w = load_transposed_matrix(st, &format!("{p}.encoder_attn.out_proj.weight"), d, d)?;
+            let cross_out_b = load_tensor_as_f32(st, &format!("{p}.encoder_attn.out_proj.bias"))?;
 
-            let final_ln_g = load_f32(st, &format!("{p}.final_layer_norm.weight"))?;
-            let final_ln_b = load_f32(st, &format!("{p}.final_layer_norm.bias"))?;
-            let fc1_w = load_transposed(st, &format!("{p}.fc1.weight"), cfg.decoder_ffn_dim, d)?;
-            let fc1_b = load_f32(st, &format!("{p}.fc1.bias"))?;
-            let fc2_w = load_transposed(st, &format!("{p}.fc2.weight"), d, cfg.decoder_ffn_dim)?;
-            let fc2_b = load_f32(st, &format!("{p}.fc2.bias"))?;
+            let final_ln_g = load_tensor_as_f32(st, &format!("{p}.final_layer_norm.weight"))?;
+            let final_ln_b = load_tensor_as_f32(st, &format!("{p}.final_layer_norm.bias"))?;
+            let fc1_w = load_transposed_matrix(st, &format!("{p}.fc1.weight"), cfg.decoder_ffn_dim, d)?;
+            let fc1_b = load_tensor_as_f32(st, &format!("{p}.fc1.bias"))?;
+            let fc2_w = load_transposed_matrix(st, &format!("{p}.fc2.weight"), d, cfg.decoder_ffn_dim)?;
+            let fc2_b = load_tensor_as_f32(st, &format!("{p}.fc2.bias"))?;
 
             dec_layers.push(WhisperDecoderLayerWeights {
                 self_ln_g: Arc::from(self_ln_g),
@@ -792,8 +810,8 @@ impl WhisperWeights {
                 fc2_w: Arc::from(fc2_w), fc2_b: Arc::from(fc2_b),
             });
         }
-        let dec_final_ln_g = load_f32(st, "model.decoder.layer_norm.weight")?;
-        let dec_final_ln_b = load_f32(st, "model.decoder.layer_norm.bias")?;
+        let dec_final_ln_g = load_tensor_as_f32(st, "model.decoder.layer_norm.weight")?;
+        let dec_final_ln_b = load_tensor_as_f32(st, "model.decoder.layer_norm.bias")?;
 
         Ok(Self {
             encoder: WhisperEncoderWeights {
@@ -815,65 +833,6 @@ impl WhisperWeights {
             },
         })
     }
-}
-
-fn load_f32(
-    st: &crate::safetensors::MmapedSafetensors,
-    name: &str,
-) -> crate::Result<Vec<f32>> {
-    use safetensors::Dtype;
-    let view = st
-        .get(name)
-        .map_err(|e| crate::Error::Msg(format!("whisper load_f32 {name:?}: {e}")).bt())?;
-    let bytes = view.data();
-    match view.dtype() {
-        Dtype::F32 => {
-            let mut out = Vec::with_capacity(bytes.len() / 4);
-            for chunk in bytes.chunks_exact(4) {
-                out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-            }
-            Ok(out)
-        }
-        Dtype::F16 => {
-            let mut out = Vec::with_capacity(bytes.len() / 2);
-            for chunk in bytes.chunks_exact(2) {
-                let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
-                out.push(half::f16::from_bits(raw).to_f32());
-            }
-            Ok(out)
-        }
-        Dtype::BF16 => {
-            let mut out = Vec::with_capacity(bytes.len() / 2);
-            for chunk in bytes.chunks_exact(2) {
-                let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
-                out.push(half::bf16::from_bits(raw).to_f32());
-            }
-            Ok(out)
-        }
-        other => crate::bail!("whisper load_f32: unsupported dtype {other:?} for {name:?}"),
-    }
-}
-
-fn load_transposed(
-    st: &crate::safetensors::MmapedSafetensors,
-    name: &str,
-    out_features: usize,
-    in_features: usize,
-) -> crate::Result<Vec<f32>> {
-    let flat = load_f32(st, name)?;
-    if flat.len() != out_features * in_features {
-        crate::bail!(
-            "whisper load_transposed: {name:?} has {} elements, expected {} ({}×{})",
-            flat.len(), out_features * in_features, out_features, in_features,
-        );
-    }
-    let mut out = vec![0.0_f32; out_features * in_features];
-    for i in 0..out_features {
-        for j in 0..in_features {
-            out[j * out_features + i] = flat[i * in_features + j];
-        }
-    }
-    Ok(out)
 }
 
 // ---- HuggingFace Hub integration -------------------------------------------
