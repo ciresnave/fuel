@@ -297,6 +297,86 @@ impl MptModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl MptWeights {
+    /// Load MPT (Replit-Code-v1.5-3B etc.) weights. MPT uses fused
+    /// `Wqkv` of shape `[d_model + 2*kv_dim, d_model]` (multi-group
+    /// QKV) — split at load.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &MptConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix};
+        let d = cfg.d_model;
+        let head_dim = cfg.head_dim();
+        let q_dim = cfg.n_heads * head_dim;  // == d_model
+        let kv_dim = cfg.kv_n_heads * head_dim;
+        let ffn = cfg.ffn_dim();
+
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "transformer.wte.weight")?);
+        let mut layers: Vec<MptLayerWeights> = Vec::with_capacity(cfg.n_layers);
+        for i in 0..cfg.n_layers {
+            let p = format!("transformer.blocks.{i}");
+            let norm1_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm_1.weight"))?);
+            let norm1_bias = load_tensor_as_f32(st, &format!("{p}.norm_1.bias")).ok()
+                .map(Arc::from).unwrap_or_else(|| Arc::from(vec![0.0; d]));
+            let norm2_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm_2.weight"))?);
+            let norm2_bias = load_tensor_as_f32(st, &format!("{p}.norm_2.bias")).ok()
+                .map(Arc::from).unwrap_or_else(|| Arc::from(vec![0.0; d]));
+
+            // Fused QKV shape: [q_dim + 2*kv_dim, d_model]
+            let qkv = load_transposed_matrix(
+                st, &format!("{p}.attn.Wqkv.weight"), q_dim + 2 * kv_dim, d,
+            )?;
+            // Split into Q, K, V
+            let mut q = vec![0.0_f32; d * q_dim];
+            let mut k = vec![0.0_f32; d * kv_dim];
+            let mut v = vec![0.0_f32; d * kv_dim];
+            let out_dim = q_dim + 2 * kv_dim;
+            for row in 0..d {
+                let src = &qkv[row * out_dim..(row + 1) * out_dim];
+                q[row * q_dim..(row + 1) * q_dim].copy_from_slice(&src[..q_dim]);
+                k[row * kv_dim..(row + 1) * kv_dim].copy_from_slice(&src[q_dim..q_dim + kv_dim]);
+                v[row * kv_dim..(row + 1) * kv_dim].copy_from_slice(&src[q_dim + kv_dim..]);
+            }
+
+            let attn_o = crate::lazy::load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.attn.out_proj.weight"), d, d,
+            )?;
+            let mlp_up = crate::lazy::load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.ffn.up_proj.weight"), ffn, d,
+            )?;
+            let mlp_down = crate::lazy::load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.ffn.down_proj.weight"), d, ffn,
+            )?;
+
+            layers.push(MptLayerWeights {
+                norm1_gain, norm1_bias, norm2_gain, norm2_bias,
+                attn_q: WeightStorage::F32(Arc::from(q)),
+                attn_k: WeightStorage::F32(Arc::from(k)),
+                attn_v: WeightStorage::F32(Arc::from(v)),
+                attn_o, mlp_up, mlp_down,
+            });
+        }
+
+        let final_ln_gain = Arc::from(load_tensor_as_f32(st, "transformer.norm_f.weight")?);
+        let final_ln_bias = load_tensor_as_f32(st, "transformer.norm_f.bias").ok()
+            .map(Arc::from).unwrap_or_else(|| Arc::from(vec![0.0; d]));
+        // MPT typically ties lm_head to wte; load if separate present.
+        let output = match crate::lazy::load_transposed_matrix_preserve_dtype(
+            st, "lm_head.weight", cfg.vocab_size, d,
+        ) {
+            Ok(w) => w,
+            Err(_) => crate::lazy_llama_full::tied_lm_head_from_embeddings(
+                &token_embedding, cfg.vocab_size, d,
+            ),
+        };
+
+        Ok(Self { token_embedding, layers, final_ln_gain, final_ln_bias, output })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
