@@ -261,6 +261,59 @@ impl StarCoder2Model {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl StarCoder2Weights {
+    /// Load StarCoder2 weights from HF safetensors (e.g. `bigcode/starcoder2-3b`).
+    /// StarCoder2 has biases throughout when `use_bias=true`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &StarCoder2Config,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let h = cfg.hidden_size;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+        let inter = cfg.intermediate_size;
+        let opt_bias = |st: &crate::safetensors::MmapedSafetensors, n: &str| -> Option<Arc<[f32]>> {
+            if cfg.use_bias {
+                load_tensor_as_f32(st, n).ok().map(Arc::from)
+            } else { None }
+        };
+
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "model.embed_tokens.weight")?);
+        let mut layers: Vec<StarCoder2LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{i}");
+            let input_ln_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?);
+            let input_ln_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.bias"))?);
+            let post_attn_ln_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?);
+            let post_attn_ln_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.bias"))?);
+            let attn_q = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h)?;
+            let attn_q_bias = opt_bias(st, &format!("{p}.self_attn.q_proj.bias"));
+            let attn_k = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h)?;
+            let attn_k_bias = opt_bias(st, &format!("{p}.self_attn.k_proj.bias"));
+            let attn_v = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h)?;
+            let attn_v_bias = opt_bias(st, &format!("{p}.self_attn.v_proj.bias"));
+            let attn_o = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim)?;
+            let attn_o_bias = opt_bias(st, &format!("{p}.self_attn.o_proj.bias"));
+            let mlp_fc = load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.c_fc.weight"), inter, h)?;
+            let mlp_fc_bias = opt_bias(st, &format!("{p}.mlp.c_fc.bias"));
+            let mlp_proj = load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.c_proj.weight"), h, inter)?;
+            let mlp_proj_bias = opt_bias(st, &format!("{p}.mlp.c_proj.bias"));
+            layers.push(StarCoder2LayerWeights {
+                input_ln_gain, input_ln_bias, post_attn_ln_gain, post_attn_ln_bias,
+                attn_q, attn_q_bias, attn_k, attn_k_bias, attn_v, attn_v_bias, attn_o, attn_o_bias,
+                mlp_fc, mlp_fc_bias, mlp_proj, mlp_proj_bias,
+            });
+        }
+        let final_ln_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
+        let final_ln_bias = Arc::from(load_tensor_as_f32(st, "model.norm.bias")?);
+        let output = load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h)?;
+        Ok(Self { token_embedding, layers, final_ln_gain, final_ln_bias, output })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
