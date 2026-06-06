@@ -593,7 +593,138 @@ impl RecurrentGemmaModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
 
+impl RecurrentGemmaWeights {
+    /// Load RecurrentGemma (google/recurrentgemma-*) weights from HF safetensors.
+    /// Layer kind alternates between recurrent and attention per
+    /// `cfg.block_types`. lm_head is tied to token embedding.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &RecurrentGemmaConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let inter = cfg.mlp_intermediate();
+        let lru = cfg.lru_width_or_default();
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+
+        let token_embedding = Arc::from(load_tensor_as_f32(
+            st, "model.embed_tokens.weight",
+        )?);
+
+        let opt_bias = |name: String| -> Option<Arc<[f32]>> {
+            load_tensor_as_f32(st, &name).ok().map(Arc::from)
+        };
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{i}");
+            let temporal_pre_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.temporal_pre_norm.weight"),
+            )?);
+            let channel_pre_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.channel_pre_norm.weight"),
+            )?);
+
+            let temporal = match cfg.block_type(i) {
+                TemporalBlockType::Attention => {
+                    let tp = format!("{p}.temporal_block");
+                    let q_w = ltm(st, &format!("{tp}.q_proj.weight"), q_dim, h)?;
+                    let q_b = if cfg.attention_bias {
+                        opt_bias(format!("{tp}.q_proj.bias"))
+                    } else { None };
+                    let k_w = ltm(st, &format!("{tp}.k_proj.weight"), kv_dim, h)?;
+                    let k_b = if cfg.attention_bias {
+                        opt_bias(format!("{tp}.k_proj.bias"))
+                    } else { None };
+                    let v_w = ltm(st, &format!("{tp}.v_proj.weight"), kv_dim, h)?;
+                    let v_b = if cfg.attention_bias {
+                        opt_bias(format!("{tp}.v_proj.bias"))
+                    } else { None };
+                    let o_w = ltm(st, &format!("{tp}.o_proj.weight"), h, q_dim)?;
+                    let o_b = Arc::from(load_tensor_as_f32(
+                        st, &format!("{tp}.o_proj.bias"),
+                    )?);
+                    TemporalBlockWeights::Attention(AttentionBlockWeights {
+                        q_w, q_b, k_w, k_b, v_w, v_b, o_w, o_b,
+                    })
+                }
+                TemporalBlockType::Recurrent => {
+                    let tp = format!("{p}.temporal_block");
+                    let linear_y_w = ltm(st, &format!("{tp}.linear_y.weight"), lru, h)?;
+                    let linear_y_b = Arc::from(load_tensor_as_f32(
+                        st, &format!("{tp}.linear_y.bias"),
+                    )?);
+                    let linear_x_w = ltm(st, &format!("{tp}.linear_x.weight"), lru, h)?;
+                    let linear_x_b = Arc::from(load_tensor_as_f32(
+                        st, &format!("{tp}.linear_x.bias"),
+                    )?);
+                    let linear_out_w = ltm(st, &format!("{tp}.linear_out.weight"), h, lru)?;
+                    let linear_out_b = Arc::from(load_tensor_as_f32(
+                        st, &format!("{tp}.linear_out.bias"),
+                    )?);
+                    let conv1d_w = Arc::from(load_tensor_as_f32(
+                        st, &format!("{tp}.conv_1d.weight"),
+                    )?);
+                    let conv1d_b = Arc::from(load_tensor_as_f32(
+                        st, &format!("{tp}.conv_1d.bias"),
+                    )?);
+                    let recurrent_param = Arc::from(load_tensor_as_f32(
+                        st, &format!("{tp}.rg_lru.recurrent_param"),
+                    )?);
+                    let input_gate_weight = Arc::from(load_tensor_as_f32(
+                        st, &format!("{tp}.rg_lru.input_gate_weight"),
+                    )?);
+                    let input_gate_bias = Arc::from(load_tensor_as_f32(
+                        st, &format!("{tp}.rg_lru.input_gate_bias"),
+                    )?);
+                    let recurrent_gate_weight = Arc::from(load_tensor_as_f32(
+                        st, &format!("{tp}.rg_lru.recurrent_gate_weight"),
+                    )?);
+                    let recurrent_gate_bias = Arc::from(load_tensor_as_f32(
+                        st, &format!("{tp}.rg_lru.recurrent_gate_bias"),
+                    )?);
+                    TemporalBlockWeights::Recurrent(RecurrentBlockWeights {
+                        linear_y_w, linear_y_b, linear_x_w, linear_x_b,
+                        linear_out_w, linear_out_b, conv1d_w, conv1d_b,
+                        rg_lru: RgluWeights {
+                            recurrent_param, input_gate_weight, input_gate_bias,
+                            recurrent_gate_weight, recurrent_gate_bias,
+                        },
+                    })
+                }
+            };
+
+            let mp = format!("{p}.mlp_block");
+            let mlp_gate_w = ltm(st, &format!("{mp}.gate_proj.weight"), inter, h)?;
+            let mlp_gate_b = Arc::from(load_tensor_as_f32(
+                st, &format!("{mp}.gate_proj.bias"),
+            )?);
+            let mlp_up_w = ltm(st, &format!("{mp}.up_proj.weight"), inter, h)?;
+            let mlp_up_b = Arc::from(load_tensor_as_f32(
+                st, &format!("{mp}.up_proj.bias"),
+            )?);
+            let mlp_down_w = ltm(st, &format!("{mp}.down_proj.weight"), h, inter)?;
+            let mlp_down_b = Arc::from(load_tensor_as_f32(
+                st, &format!("{mp}.down_proj.bias"),
+            )?);
+
+            layers.push(RecurrentGemmaLayerWeights {
+                temporal_pre_norm_gain, channel_pre_norm_gain,
+                temporal,
+                mlp_gate_w, mlp_gate_b, mlp_up_w, mlp_up_b, mlp_down_w, mlp_down_b,
+            });
+        }
+
+        let final_norm_gain = Arc::from(load_tensor_as_f32(
+            st, "model.final_norm.weight",
+        )?);
+
+        Ok(Self { token_embedding, layers, final_norm_gain })
+    }
+}
 
 
 #[cfg(test)]

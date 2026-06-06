@@ -551,6 +551,102 @@ fn group_norm_per_head(
     scaled.reshape(Shape::from_dims(&[batch, seq, hidden]))
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl Rwkv7Weights {
+    /// Load RWKV-v7 ("Goose") weights from HF safetensors. Tensor naming
+    /// follows the upstream BlinkDL/rwkv-7-* layout.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Rwkv7Config,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let ffn_inter = cfg.dim_ffn();
+
+        let token_embedding = Arc::from(load_tensor_as_f32(
+            st, "rwkv.embeddings.weight",
+        )?);
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("rwkv.blocks.{i}");
+            let ln1_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.ln1.weight"))?);
+            let ln1_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.ln1.bias"))?);
+            let ln2_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.ln2.weight"))?);
+            let ln2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.ln2.bias"))?);
+            let pre_ln = if i == 0 {
+                let g = load_tensor_as_f32(st, &format!("{p}.pre_ln.weight"))
+                    .ok().map(Arc::from);
+                let b = load_tensor_as_f32(st, &format!("{p}.pre_ln.bias"))
+                    .ok().map(Arc::from);
+                match (g, b) { (Some(g), Some(b)) => Some((g, b)), _ => None }
+            } else { None };
+
+            let a = |n: &str| -> Result<Arc<[f32]>> {
+                Ok(Arc::from(load_tensor_as_f32(st, &format!("{p}.attention.{n}"))?))
+            };
+            let x_r = a("x_r")?;
+            let x_w = a("x_w")?;
+            let x_k = a("x_k")?;
+            let x_v = a("x_v")?;
+            let x_a = a("x_a")?;
+            let x_g = a("x_g")?;
+            let w0 = a("w0")?;
+            let w1 = a("w1")?;
+            let w2 = a("w2")?;
+            let a0 = a("a0")?;
+            let a1 = a("a1")?;
+            let a2 = a("a2")?;
+            let (v0, v1, v2) = if i == 0 {
+                (None, None, None)
+            } else {
+                (Some(a("v0")?), Some(a("v1")?), Some(a("v2")?))
+            };
+            let g1 = a("g1")?;
+            let g2 = a("g2")?;
+            let k_k = a("k_k")?;
+            let k_a = a("k_a")?;
+            let r_k = a("r_k")?;
+            let receptance = ltm(st, &format!("{p}.attention.receptance.weight"), h, h)?;
+            let key = ltm(st, &format!("{p}.attention.key.weight"), h, h)?;
+            let value = ltm(st, &format!("{p}.attention.value.weight"), h, h)?;
+            let output = ltm(st, &format!("{p}.attention.output.weight"), h, h)?;
+            let ln_x_gain = a("ln_x.weight")?;
+            let ln_x_bias = a("ln_x.bias")?;
+            let time_mix = Rwkv7TimeMixWeights {
+                x_r, x_w, x_k, x_v, x_a, x_g,
+                w0, w1, w2, a0, a1, a2, v0, v1, v2, g1, g2,
+                k_k, k_a, r_k,
+                receptance, key, value, output, ln_x_gain, ln_x_bias,
+            };
+
+            let c = |n: &str| -> Result<Arc<[f32]>> {
+                Ok(Arc::from(load_tensor_as_f32(st, &format!("{p}.feed_forward.{n}"))?))
+            };
+            let cm_x_k = c("x_k")?;
+            let cm_key = ltm(st, &format!("{p}.feed_forward.key.weight"), ffn_inter, h)?;
+            let cm_value = ltm(st, &format!("{p}.feed_forward.value.weight"), h, ffn_inter)?;
+            let channel_mix = Rwkv7ChannelMixWeights {
+                x_k: cm_x_k, key: cm_key, value: cm_value,
+            };
+
+            layers.push(Rwkv7LayerWeights {
+                ln1_gain, ln1_bias, ln2_gain, ln2_bias, pre_ln,
+                time_mix, channel_mix,
+            });
+        }
+
+        let final_ln_gain = Arc::from(load_tensor_as_f32(st, "rwkv.ln_out.weight")?);
+        let final_ln_bias = Arc::from(load_tensor_as_f32(st, "rwkv.ln_out.bias")?);
+        let head = ltm(st, "head.weight", cfg.vocab_size, h)?;
+
+        Ok(Self {
+            token_embedding, layers, final_ln_gain, final_ln_bias, head,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
