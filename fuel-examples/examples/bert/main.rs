@@ -1,16 +1,12 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
-use fuel_transformers::models::bert::{BertModel, Config, HiddenAct, DTYPE};
 
 use anyhow::{Error as E, Result};
-use fuel::Tensor;
-use fuel_nn::VarBuilder;
 use clap::Parser;
-use hf_hub::{api::sync::Api, Repo, RepoType};
-use tokenizers::{PaddingParams, Tokenizer};
+use fuel::lazy_bert::{BertModel, BertTokenizer};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -34,7 +30,7 @@ struct Args {
     #[arg(long)]
     prompt: Option<String>,
 
-    /// Use the pytorch weights rather than the safetensors ones
+    /// Use the pytorch weights rather than the safetensors ones (ignored in lazy port).
     #[arg(long)]
     use_pth: bool,
 
@@ -46,55 +42,13 @@ struct Args {
     #[arg(long, default_value = "true")]
     normalize_embeddings: bool,
 
-    /// Use tanh based approximation for Gelu instead of erf implementation.
+    /// Use tanh based approximation for Gelu instead of erf implementation (ignored in lazy port).
     #[arg(long, default_value = "false")]
     approximate_gelu: bool,
 
     /// Include padding token embeddings when performing mean pooling. By default, these are masked away.
     #[arg(long, default_value = "false")]
     include_padding_embeddings: bool,
-}
-
-impl Args {
-    fn build_model_and_tokenizer(&self) -> Result<(BertModel, Tokenizer)> {
-        let device = fuel_examples::device(self.cpu)?;
-        let default_model = "sentence-transformers/all-MiniLM-L6-v2".to_string();
-        let default_revision = "refs/pr/21".to_string();
-        let (model_id, revision) = match (self.model_id.to_owned(), self.revision.to_owned()) {
-            (Some(model_id), Some(revision)) => (model_id, revision),
-            (Some(model_id), None) => (model_id, "main".to_string()),
-            (None, Some(revision)) => (default_model, revision),
-            (None, None) => (default_model, default_revision),
-        };
-
-        let repo = Repo::with_revision(model_id, RepoType::Model, revision);
-        let (config_filename, tokenizer_filename, weights_filename) = {
-            let api = Api::new()?;
-            let api = api.repo(repo);
-            let config = api.get("config.json")?;
-            let tokenizer = api.get("tokenizer.json")?;
-            let weights = if self.use_pth {
-                api.get("pytorch_model.bin")?
-            } else {
-                api.get("model.safetensors")?
-            };
-            (config, tokenizer, weights)
-        };
-        let config = std::fs::read_to_string(config_filename)?;
-        let mut config: Config = serde_json::from_str(&config)?;
-        let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
-
-        let vb = if self.use_pth {
-            VarBuilder::from_pth(&weights_filename, DTYPE, &device)?
-        } else {
-            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], DTYPE, &device)? }
-        };
-        if self.approximate_gelu {
-            config.hidden_act = HiddenAct::GeluApproximate;
-        }
-        let model = BertModel::load(vb, &config)?;
-        Ok((model, tokenizer))
-    }
 }
 
 fn main() -> Result<()> {
@@ -112,29 +66,38 @@ fn main() -> Result<()> {
     };
     let start = std::time::Instant::now();
 
-    let (model, mut tokenizer) = args.build_model_and_tokenizer()?;
-    let device = &model.device;
+    let _device = fuel_examples::device(args.cpu)?;
+    let _ = args.use_pth;
+    let _ = args.approximate_gelu;
+    let _ = args.include_padding_embeddings;
+
+    let default_model = "sentence-transformers/all-MiniLM-L6-v2".to_string();
+    let model_id = args.model_id.unwrap_or(default_model);
+
+    let model = BertModel::from_hub(&model_id)
+        .map_err(|e| E::msg(format!("loading bert model: {e}")))?;
+    let tokenizer = BertTokenizer::from_hub(&model_id)
+        .map_err(|e| E::msg(format!("loading bert tokenizer: {e}")))?;
+
+    let hidden_size = model.config.hidden_size;
 
     if let Some(prompt) = args.prompt {
-        let tokenizer = tokenizer
-            .with_padding(None)
-            .with_truncation(None)
-            .map_err(E::msg)?;
         let tokens = tokenizer
-            .encode(prompt, true)
-            .map_err(E::msg)?
-            .get_ids()
-            .to_vec();
-        let token_ids = Tensor::new(&tokens[..], device)?.unsqueeze(0)?;
-        let token_type_ids = token_ids.zeros_like()?;
+            .encode(&prompt, true)
+            .map_err(|e| E::msg(format!("tokenize: {e}")))?;
         println!("Loaded and encoded {:?}", start.elapsed());
         for idx in 0..args.n {
-            let start = std::time::Instant::now();
-            let ys = model.forward(&token_ids, &token_type_ids, None)?;
+            let t0 = std::time::Instant::now();
+            let hidden = model
+                .forward(&tokens)
+                .map_err(|e| E::msg(format!("forward: {e}")))?;
+            let data = hidden.realize_f32();
             if idx == 0 {
-                println!("{ys}");
+                println!("hidden state: shape=[1, {}, {}]", tokens.len(), hidden_size);
+                let n_print = data.len().min(8);
+                println!("first {n_print} values: {:?}", &data[..n_print]);
             }
-            println!("Took {:?}", start.elapsed());
+            println!("Took {:?}", t0.elapsed());
         }
     } else {
         let sentences = [
@@ -148,72 +111,58 @@ fn main() -> Result<()> {
             "Do you like pizza?",
         ];
         let n_sentences = sentences.len();
-        if let Some(pp) = tokenizer.get_padding_mut() {
-            pp.strategy = tokenizers::PaddingStrategy::BatchLongest
-        } else {
-            let pp = PaddingParams {
-                strategy: tokenizers::PaddingStrategy::BatchLongest,
-                ..Default::default()
-            };
-            tokenizer.with_padding(Some(pp));
-        }
-        let tokens = tokenizer
-            .encode_batch(sentences.to_vec(), true)
-            .map_err(E::msg)?;
-        let token_ids = tokens
-            .iter()
-            .map(|tokens| {
-                let tokens = tokens.get_ids().to_vec();
-                Ok(Tensor::new(tokens.as_slice(), device)?)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let attention_mask = tokens
-            .iter()
-            .map(|tokens| {
-                let tokens = tokens.get_attention_mask().to_vec();
-                Ok(Tensor::new(tokens.as_slice(), device)?)
-            })
-            .collect::<Result<Vec<_>>>()?;
 
-        let token_ids = Tensor::stack(&token_ids, 0)?;
-        let attention_mask = Tensor::stack(&attention_mask, 0)?;
-        let token_type_ids = token_ids.zeros_like()?;
-        println!("running inference on batch {:?}", token_ids.shape());
-        let embeddings = model.forward(&token_ids, &token_type_ids, Some(&attention_mask))?;
-        println!("generated embeddings {:?}", embeddings.shape());
-        let embeddings = if args.include_padding_embeddings {
-            // Apply avg-pooling by taking the mean embedding value for all
-            // tokens, including padding. This was the original behavior of this
-            // example, and we'd like to preserve it for posterity.
-            let (_n_sentence, n_tokens, _hidden_size) = embeddings.dims3()?;
-            (embeddings.sum(1)? / (n_tokens as f64))?
-        } else {
-            // Apply avg-pooling by taking the mean embedding value for all
-            // tokens (after applying the attention mask from tokenization).
-            // This should produce the same numeric result as the
-            // `sentence_transformers` Python library.
-            let attention_mask_for_pooling = attention_mask.to_dtype(DTYPE)?.unsqueeze(2)?;
-            let sum_mask = attention_mask_for_pooling.sum(1)?;
-            let embeddings = (embeddings.broadcast_mul(&attention_mask_for_pooling)?).sum(1)?;
-            embeddings.broadcast_div(&sum_mask)?
-        };
-        let embeddings = if args.normalize_embeddings {
-            normalize_l2(&embeddings)?
-        } else {
-            embeddings
-        };
-        println!("pooled embeddings {:?}", embeddings.shape());
+        // Encode each sentence + run forward independently, pool to a
+        // single embedding per sentence. The lazy port currently fixes
+        // batch=1 in `forward`, so we batch over the host loop instead
+        // of building a padded batch tensor.
+        let mut pooled: Vec<Vec<f32>> = Vec::with_capacity(n_sentences);
+        for s in sentences.iter() {
+            let tokens = tokenizer
+                .encode(s, true)
+                .map_err(|e| E::msg(format!("tokenize: {e}")))?;
+            let hidden = model
+                .forward(&tokens)
+                .map_err(|e| E::msg(format!("forward: {e}")))?;
+            let data = hidden.realize_f32();
+            // hidden is [1, seq, h]; mean over seq.
+            let seq = tokens.len();
+            let mut sum = vec![0.0_f32; hidden_size];
+            for t in 0..seq {
+                let row = &data[t * hidden_size..(t + 1) * hidden_size];
+                for (acc, &x) in sum.iter_mut().zip(row) {
+                    *acc += x;
+                }
+            }
+            for v in &mut sum {
+                *v /= seq as f32;
+            }
+            if args.normalize_embeddings {
+                let norm: f32 = sum.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+                for v in &mut sum {
+                    *v /= norm;
+                }
+            }
+            pooled.push(sum);
+        }
+
+        println!("pooled embeddings: {} x {}", n_sentences, hidden_size);
 
         let mut similarities = vec![];
         for i in 0..n_sentences {
-            let e_i = embeddings.get(i)?;
             for j in (i + 1)..n_sentences {
-                let e_j = embeddings.get(j)?;
-                let sum_ij = (&e_i * &e_j)?.sum_all()?.to_scalar::<f32>()?;
-                let sum_i2 = (&e_i * &e_i)?.sum_all()?.to_scalar::<f32>()?;
-                let sum_j2 = (&e_j * &e_j)?.sum_all()?.to_scalar::<f32>()?;
-                let cosine_similarity = sum_ij / (sum_i2 * sum_j2).sqrt();
-                similarities.push((cosine_similarity, i, j))
+                let e_i = &pooled[i];
+                let e_j = &pooled[j];
+                let mut dot = 0.0_f32;
+                let mut a = 0.0_f32;
+                let mut b = 0.0_f32;
+                for k in 0..hidden_size {
+                    dot += e_i[k] * e_j[k];
+                    a += e_i[k] * e_i[k];
+                    b += e_j[k] * e_j[k];
+                }
+                let cosine_similarity = dot / (a * b).sqrt();
+                similarities.push((cosine_similarity, i, j));
             }
         }
         similarities.sort_by(|u, v| v.0.total_cmp(&u.0));
@@ -222,8 +171,4 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
-}
-
-pub fn normalize_l2(v: &Tensor) -> Result<Tensor> {
-    Ok(v.broadcast_div(&v.sqr()?.sum_keepdim(1)?.sqrt()?)?)
 }

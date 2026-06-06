@@ -1,4 +1,4 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
@@ -6,121 +6,17 @@ extern crate accelerate_src;
 
 use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
+use std::io::Write;
+use std::sync::Arc;
 
-use fuel_transformers::models::quantized_stable_lm::Model as QStableLM;
-use fuel_transformers::models::stable_lm::{Config, Model as StableLM};
-
-use fuel::{DType, Device, Tensor};
-use fuel_examples::token_output_stream::TokenOutputStream;
-use fuel_nn::VarBuilder;
-use fuel_transformers::generation::LogitsProcessor;
+use fuel::lazy::{
+    load_tensor_as_f32, load_transposed_matrix_preserve_dtype, WeightStorage,
+};
+use fuel::lazy_stablelm::{
+    StableLmConfig, StableLmLayerWeights, StableLmModel, StableLmWeights,
+};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
-
-enum Model {
-    StableLM(StableLM),
-    Quantized(QStableLM),
-}
-
-struct TextGeneration {
-    model: Model,
-    device: Device,
-    tokenizer: TokenOutputStream,
-    logits_processor: LogitsProcessor,
-    repeat_penalty: f32,
-    repeat_last_n: usize,
-}
-
-impl TextGeneration {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        model: Model,
-        tokenizer: Tokenizer,
-        seed: u64,
-        temp: Option<f64>,
-        top_p: Option<f64>,
-        repeat_penalty: f32,
-        repeat_last_n: usize,
-        device: &Device,
-    ) -> Self {
-        let logits_processor = LogitsProcessor::new(seed, temp, top_p);
-        Self {
-            model,
-            tokenizer: TokenOutputStream::new(tokenizer),
-            logits_processor,
-            repeat_penalty,
-            repeat_last_n,
-            device: device.clone(),
-        }
-    }
-
-    fn run(&mut self, prompt: &str, sample_len: usize) -> Result<()> {
-        use std::io::Write;
-        self.tokenizer.clear();
-        let mut tokens = self
-            .tokenizer
-            .tokenizer()
-            .encode(prompt, true)
-            .map_err(E::msg)?
-            .get_ids()
-            .to_vec();
-        for &t in tokens.iter() {
-            if let Some(t) = self.tokenizer.next_token(t)? {
-                print!("{t}")
-            }
-        }
-        std::io::stdout().flush()?;
-
-        let mut generated_tokens = 0usize;
-        let eos_token = match self.tokenizer.get_token("<|endoftext|>") {
-            Some(token) => token,
-            None => anyhow::bail!("cannot find the <|endoftext|> token"),
-        };
-        let start_gen = std::time::Instant::now();
-        for index in 0..sample_len {
-            let context_size = if index > 0 { 1 } else { tokens.len() };
-            let start_pos = tokens.len().saturating_sub(context_size);
-            let ctxt = &tokens[start_pos..];
-            let input = Tensor::new(ctxt, &self.device)?.unsqueeze(0)?;
-            let logits = match &mut self.model {
-                Model::StableLM(m) => m.forward(&input, start_pos)?,
-                Model::Quantized(m) => m.forward(&input, start_pos)?,
-            };
-            let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
-            let logits = if self.repeat_penalty == 1. {
-                logits
-            } else {
-                let start_at = tokens.len().saturating_sub(self.repeat_last_n);
-                fuel_transformers::utils::apply_repeat_penalty(
-                    &logits,
-                    self.repeat_penalty,
-                    &tokens[start_at..],
-                )?
-            };
-
-            let next_token = self.logits_processor.sample(&logits)?;
-            tokens.push(next_token);
-            generated_tokens += 1;
-            if next_token == eos_token {
-                break;
-            }
-            if let Some(t) = self.tokenizer.next_token(next_token)? {
-                print!("{t}");
-                std::io::stdout().flush()?;
-            }
-        }
-        let dt = start_gen.elapsed();
-        if let Some(rest) = self.tokenizer.decode_rest().map_err(E::msg)? {
-            print!("{rest}");
-        }
-        std::io::stdout().flush()?;
-        println!(
-            "\n{generated_tokens} tokens generated ({:.2} token/s)",
-            generated_tokens as f64 / dt.as_secs_f64(),
-        );
-        Ok(())
-    }
-}
 
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
 enum Which {
@@ -157,6 +53,10 @@ struct Args {
     #[arg(long)]
     top_p: Option<f64>,
 
+    /// Only sample among the top K samples.
+    #[arg(long)]
+    top_k: Option<usize>,
+
     /// The seed to use when generating random samples.
     #[arg(long, default_value_t = 299792458)]
     seed: u64,
@@ -180,9 +80,6 @@ struct Args {
     #[arg(long)]
     weight_files: Option<String>,
 
-    #[arg(long)]
-    quantized: bool,
-
     /// Penalty to be applied for repeating tokens, 1. means no penalty.
     #[arg(long, default_value_t = 1.1)]
     repeat_penalty: f32,
@@ -197,6 +94,7 @@ fn main() -> Result<()> {
     use tracing_subscriber::prelude::*;
 
     let args = Args::parse();
+    let _ = args.use_flash_attn;
     let _guard = if args.tracing {
         let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
         tracing_subscriber::registry().with(chrome_layer).init();
@@ -218,105 +116,331 @@ fn main() -> Result<()> {
         args.repeat_last_n
     );
 
-    let start = std::time::Instant::now();
+    let _device = fuel_examples::device(args.cpu)?;
     let api = Api::new()?;
-    let model_id = match args.model_id {
-        Some(model_id) => model_id,
-        None => match args.which {
-            Which::V1Orig => "lmz/fuel-stablelm-3b-4e1t".to_string(),
-            Which::V1 => "stabilityai/stablelm-3b-4e1t".to_string(),
-            Which::V1Zephyr => "stabilityai/stablelm-zephyr-3b".to_string(),
-            Which::Code => "stabilityai/stable-code-3b".to_string(),
-            Which::V2 => "stabilityai/stablelm-2-1_6b".to_string(),
-            Which::V2Zephyr => "stabilityai/stablelm-2-zephyr-1_6b".to_string(),
-        },
-    };
+    let model_id = args.model_id.clone().unwrap_or_else(|| match args.which {
+        Which::V1Orig => "lmz/fuel-stablelm-3b-4e1t".to_string(),
+        Which::V1 => "stabilityai/stablelm-3b-4e1t".to_string(),
+        Which::V1Zephyr => "stabilityai/stablelm-zephyr-3b".to_string(),
+        Which::Code => "stabilityai/stable-code-3b".to_string(),
+        Which::V2 => "stabilityai/stablelm-2-1_6b".to_string(),
+        Which::V2Zephyr => "stabilityai/stablelm-2-zephyr-1_6b".to_string(),
+    });
 
     let repo = api.repo(Repo::with_revision(
         model_id,
         RepoType::Model,
-        args.revision,
+        args.revision.clone(),
     ));
-    let tokenizer_filename = match args.tokenizer_file {
+    let tokenizer_filename = match args.tokenizer_file.as_ref() {
         Some(file) => std::path::PathBuf::from(file),
         None => repo.get("tokenizer.json")?,
     };
-    let filenames = match args.weight_files {
+    let filenames: Vec<std::path::PathBuf> = match args.weight_files.as_ref() {
         Some(files) => files
             .split(',')
             .map(std::path::PathBuf::from)
             .collect::<Vec<_>>(),
-        None => match (args.which, args.quantized) {
-            (Which::V1Orig | Which::V1, true) => vec![repo.get("model-q4k.gguf")?],
-            (Which::V2, true) => {
-                let gguf = api
-                    .model("lmz/fuel-stablelm".to_string())
-                    .get("stablelm-2-1_6b-q4k.gguf")?;
-                vec![gguf]
-            }
-            (Which::V2Zephyr, true) => {
-                let gguf = api
-                    .model("lmz/fuel-stablelm".to_string())
-                    .get("stablelm-2-zephyr-1_6b-q4k.gguf")?;
-                vec![gguf]
-            }
-            (Which::V1Zephyr | Which::Code, true) => {
-                anyhow::bail!("Quantized {:?} variant not supported.", args.which)
-            }
-            (Which::V1Orig | Which::V1 | Which::V1Zephyr | Which::V2 | Which::V2Zephyr, false) => {
-                vec![repo.get("model.safetensors")?]
-            }
-            (Which::Code, false) => {
-                fuel_examples::hub_load_safetensors(&repo, "model.safetensors.index.json")?
-            }
+        None => match args.which {
+            Which::V1Orig | Which::V2 | Which::V2Zephyr =>
+                vec![repo.get("model.safetensors")?],
+            _ => fuel_examples::hub_load_safetensors(&repo, "model.safetensors.index.json")?,
         },
     };
-
-    println!("retrieved the files in {:?}", start.elapsed());
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
 
-    let start = std::time::Instant::now();
-    let config = match args.which {
-        Which::V1Orig => Config::stablelm_3b_4e1t(args.use_flash_attn),
-        Which::V1 | Which::V1Zephyr | Which::V2 | Which::V2Zephyr | Which::Code => {
-            let config_filename = repo.get("config.json")?;
-            let config = std::fs::read_to_string(config_filename)?;
-            let mut config: Config = serde_json::from_str(&config)?;
-            config.set_use_flash_attn(args.use_flash_attn);
-            config
+    let config_file = repo.get("config.json")?;
+    let config_json = std::fs::read_to_string(&config_file)?;
+    let cfg = stablelm_config_from_hf_json_str(&config_json, args.which)?;
+    let eos_token_id = parse_eos_token_id(&config_json)
+        .or_else(|| tokenizer.token_to_id("<|endoftext|>"));
+
+    let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
+        .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+    let weights = load_stablelm_weights(&st, &cfg)?;
+    let model = StableLmModel { config: cfg.clone(), weights };
+
+    let mut tok_stream = fuel_examples::token_output_stream::TokenOutputStream::new(tokenizer);
+    print!("{}", args.prompt);
+    std::io::stdout().flush()?;
+    let mut tokens = tok_stream
+        .tokenizer()
+        .encode(args.prompt.clone(), true)
+        .map_err(E::msg)?
+        .get_ids()
+        .to_vec();
+
+    let mut generated_tokens: usize = 0;
+    let start_gen = std::time::Instant::now();
+    for index in 0..args.sample_len {
+        let logits = model
+            .forward(&tokens, 0)
+            .map_err(|e| E::msg(format!("forward: {e}")))?;
+        let logits_data = logits.realize_f32();
+        let vocab_size = cfg.vocab_size;
+        let seq = tokens.len();
+        let last_off = (seq - 1) * vocab_size;
+        let mut last_logits: Vec<f32> = logits_data[last_off..last_off + vocab_size].to_vec();
+        if args.repeat_penalty != 1.0 {
+            let start_at = tokens.len().saturating_sub(args.repeat_last_n);
+            apply_repeat_penalty(&mut last_logits, args.repeat_penalty, &tokens[start_at..]);
         }
-    };
-
-    let device = fuel_examples::device(args.cpu)?;
-    let model = if args.quantized {
-        let filename = &filenames[0];
-        let vb =
-            fuel_transformers::quantized_var_builder::VarBuilder::from_gguf(filename, &device)?;
-        let model = QStableLM::new(&config, vb)?;
-        Model::Quantized(model)
-    } else {
-        let dtype = if device.is_cuda() {
-            DType::BF16
-        } else {
-            DType::F32
-        };
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, dtype, &device)? };
-        let model = StableLM::new(&config, vb)?;
-        Model::StableLM(model)
-    };
-
-    println!("loaded the model in {:?}", start.elapsed());
-
-    let mut pipeline = TextGeneration::new(
-        model,
-        tokenizer,
-        args.seed,
-        args.temperature,
-        args.top_p,
-        args.repeat_penalty,
-        args.repeat_last_n,
-        &device,
+        let next_token = sample(
+            &last_logits,
+            args.temperature.map(|t| t as f32).unwrap_or(0.0),
+            args.top_k,
+            args.top_p.map(|p| p as f32),
+            args.seed.wrapping_add(index as u64),
+        );
+        tokens.push(next_token);
+        generated_tokens += 1;
+        if Some(next_token) == eos_token_id {
+            break;
+        }
+        if let Some(t) = tok_stream.next_token(next_token)? {
+            print!("{t}");
+            std::io::stdout().flush()?;
+        }
+    }
+    let dt = start_gen.elapsed();
+    if let Some(rest) = tok_stream.decode_rest().map_err(E::msg)? {
+        print!("{rest}");
+    }
+    std::io::stdout().flush()?;
+    println!(
+        "\n{generated_tokens} tokens generated ({:.2} token/s)",
+        generated_tokens as f64 / dt.as_secs_f64(),
     );
-    pipeline.run(&args.prompt, args.sample_len)?;
+
     Ok(())
+}
+
+fn load_stablelm_weights(
+    st: &fuel::safetensors::MmapedSafetensors,
+    cfg: &StableLmConfig,
+) -> Result<StableLmWeights> {
+    let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+    let token_embedding: Arc<[f32]> = Arc::from(
+        load_tensor_as_f32(st, "model.embed_tokens.weight")
+            .map_err(|e| E::msg(format!("embed_tokens: {e}")))?,
+    );
+    let mut layers: Vec<StableLmLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+    for i in 0..cfg.num_hidden_layers {
+        let input_ln_gain: Arc<[f32]> = Arc::from(
+            load_tensor_as_f32(st, &format!("model.layers.{i}.input_layernorm.weight"))
+                .map_err(|e| E::msg(format!("input_ln_gain L{i}: {e}")))?,
+        );
+        let input_ln_bias: Arc<[f32]> = Arc::from(
+            load_tensor_as_f32(st, &format!("model.layers.{i}.input_layernorm.bias"))
+                .unwrap_or_else(|_| vec![0.0; cfg.hidden_size]),
+        );
+        let post_attn_ln_gain: Arc<[f32]> = Arc::from(
+            load_tensor_as_f32(st, &format!("model.layers.{i}.post_attention_layernorm.weight"))
+                .map_err(|e| E::msg(format!("post_attn_ln_gain L{i}: {e}")))?,
+        );
+        let post_attn_ln_bias: Arc<[f32]> = Arc::from(
+            load_tensor_as_f32(st, &format!("model.layers.{i}.post_attention_layernorm.bias"))
+                .unwrap_or_else(|_| vec![0.0; cfg.hidden_size]),
+        );
+        let attn_q = load_transposed_matrix_preserve_dtype(
+            st, &format!("model.layers.{i}.self_attn.q_proj.weight"),
+            cfg.hidden_size, cfg.hidden_size,
+        ).map_err(|e| E::msg(format!("q_proj L{i}: {e}")))?;
+        let attn_q_bias = load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.q_proj.bias"))
+            .ok().map(Arc::from);
+        let attn_k = load_transposed_matrix_preserve_dtype(
+            st, &format!("model.layers.{i}.self_attn.k_proj.weight"),
+            kv_dim, cfg.hidden_size,
+        ).map_err(|e| E::msg(format!("k_proj L{i}: {e}")))?;
+        let attn_k_bias = load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.k_proj.bias"))
+            .ok().map(Arc::from);
+        let attn_v = load_transposed_matrix_preserve_dtype(
+            st, &format!("model.layers.{i}.self_attn.v_proj.weight"),
+            kv_dim, cfg.hidden_size,
+        ).map_err(|e| E::msg(format!("v_proj L{i}: {e}")))?;
+        let attn_v_bias = load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.v_proj.bias"))
+            .ok().map(Arc::from);
+        let attn_o = load_transposed_matrix_preserve_dtype(
+            st, &format!("model.layers.{i}.self_attn.o_proj.weight"),
+            cfg.hidden_size, cfg.hidden_size,
+        ).map_err(|e| E::msg(format!("o_proj L{i}: {e}")))?;
+        let ffn_gate = load_transposed_matrix_preserve_dtype(
+            st, &format!("model.layers.{i}.mlp.gate_proj.weight"),
+            cfg.intermediate_size, cfg.hidden_size,
+        ).map_err(|e| E::msg(format!("gate L{i}: {e}")))?;
+        let ffn_up = load_transposed_matrix_preserve_dtype(
+            st, &format!("model.layers.{i}.mlp.up_proj.weight"),
+            cfg.intermediate_size, cfg.hidden_size,
+        ).map_err(|e| E::msg(format!("up L{i}: {e}")))?;
+        let ffn_down = load_transposed_matrix_preserve_dtype(
+            st, &format!("model.layers.{i}.mlp.down_proj.weight"),
+            cfg.hidden_size, cfg.intermediate_size,
+        ).map_err(|e| E::msg(format!("down L{i}: {e}")))?;
+        layers.push(StableLmLayerWeights {
+            input_ln_gain, input_ln_bias,
+            post_attn_ln_gain, post_attn_ln_bias,
+            attn_q, attn_q_bias,
+            attn_k, attn_k_bias,
+            attn_v, attn_v_bias,
+            attn_o,
+            ffn_gate, ffn_up, ffn_down,
+        });
+    }
+    let final_ln_gain: Arc<[f32]> = Arc::from(
+        load_tensor_as_f32(st, "model.norm.weight")
+            .map_err(|e| E::msg(format!("final_ln_gain: {e}")))?,
+    );
+    let final_ln_bias: Arc<[f32]> = Arc::from(
+        load_tensor_as_f32(st, "model.norm.bias")
+            .unwrap_or_else(|_| vec![0.0; cfg.hidden_size]),
+    );
+    let output = match load_transposed_matrix_preserve_dtype(
+        st, "lm_head.weight", cfg.vocab_size, cfg.hidden_size,
+    ) {
+        Ok(w) => w,
+        Err(_) => WeightStorage::F32(token_embedding.clone()),
+    };
+    Ok(StableLmWeights {
+        token_embedding, layers, final_ln_gain, final_ln_bias, output,
+    })
+}
+
+fn stablelm_config_from_hf_json_str(json: &str, which: Which) -> Result<StableLmConfig> {
+    let v: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let get_usize = |key: &str| -> Option<usize> {
+        v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
+    };
+    let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+    let get_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|x| x.as_bool()) };
+    let vocab_size = get_usize("vocab_size").unwrap_or(50_304);
+    let hidden_size = get_usize("hidden_size").unwrap_or(2560);
+    let intermediate_size = get_usize("intermediate_size").unwrap_or(6912);
+    let num_hidden_layers = get_usize("num_hidden_layers").unwrap_or(32);
+    let num_attention_heads = get_usize("num_attention_heads").unwrap_or(32);
+    let num_key_value_heads = get_usize("num_key_value_heads").unwrap_or(num_attention_heads);
+    let head_dim = get_usize("head_dim").unwrap_or(hidden_size / num_attention_heads);
+    let layer_norm_eps = get_f64("layer_norm_eps").or_else(|| get_f64("norm_eps")).unwrap_or(1e-5);
+    let rope_theta = get_f64("rope_theta").unwrap_or(10_000.0);
+    let max_position_embeddings = get_usize("max_position_embeddings").unwrap_or(4096);
+    // V1 uses 0.25 partial-rotary, V2 uses 1.0.
+    let default_partial = match which {
+        Which::V1 | Which::V1Orig | Which::V1Zephyr | Which::Code => 0.25,
+        Which::V2 | Which::V2Zephyr => 1.0,
+    };
+    let partial_rotary_factor = get_f64("partial_rotary_factor")
+        .or_else(|| get_f64("rotary_factor"))
+        .unwrap_or(default_partial);
+    let use_qkv_bias = get_bool("use_qkv_bias").unwrap_or(matches!(which, Which::V2 | Which::V2Zephyr));
+    Ok(StableLmConfig {
+        vocab_size,
+        hidden_size,
+        intermediate_size,
+        num_hidden_layers,
+        num_attention_heads,
+        num_key_value_heads,
+        head_dim,
+        layer_norm_eps,
+        rope_theta,
+        max_position_embeddings,
+        partial_rotary_factor,
+        use_qkv_bias,
+    })
+}
+
+fn parse_eos_token_id(json: &str) -> Option<u32> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    v.get("eos_token_id").and_then(|x| x.as_u64()).map(|x| x as u32)
+}
+
+fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
+    let mut seen = std::collections::HashSet::new();
+    for &t in context {
+        if !seen.insert(t) {
+            continue;
+        }
+        let idx = t as usize;
+        if idx < logits.len() {
+            let v = logits[idx];
+            logits[idx] = if v >= 0.0 { v / penalty } else { v * penalty };
+        }
+    }
+}
+
+fn sample(
+    logits: &[f32],
+    temperature: f32,
+    top_k: Option<usize>,
+    top_p: Option<f32>,
+    seed: u64,
+) -> u32 {
+    if temperature <= 0.0 {
+        let mut best_i = 0usize;
+        let mut best = logits[0];
+        for (i, &v) in logits.iter().enumerate().skip(1) {
+            if v > best {
+                best = v;
+                best_i = i;
+            }
+        }
+        return best_i as u32;
+    }
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let inv_t = 1.0 / temperature.max(1e-6);
+    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    for p in &mut probs {
+        *p /= sum.max(1e-30);
+    }
+    let mut idx: Vec<usize> = (0..probs.len()).collect();
+    idx.sort_unstable_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap());
+    let mut keep_mask: Vec<bool> = vec![true; probs.len()];
+    if let Some(k) = top_k {
+        for &i in idx.iter().skip(k) {
+            keep_mask[i] = false;
+        }
+    }
+    if let Some(p_cut) = top_p {
+        let mut cum2 = 0.0;
+        let mut allow = true;
+        for &i in &idx {
+            if !keep_mask[i] {
+                continue;
+            }
+            if !allow {
+                keep_mask[i] = false;
+                continue;
+            }
+            cum2 += probs[i];
+            if cum2 >= p_cut {
+                allow = false;
+            }
+        }
+    }
+    let mut filtered: Vec<f32> = probs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| if keep_mask[i] { *p } else { 0.0 })
+        .collect();
+    let s: f32 = filtered.iter().sum();
+    if s > 0.0 {
+        for v in &mut filtered {
+            *v /= s;
+        }
+    } else {
+        return 0;
+    }
+    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    state ^= state >> 33;
+    state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    state ^= state >> 33;
+    let r = (state as f32) / (u64::MAX as f32);
+    let mut cum = 0.0;
+    for (i, p) in filtered.iter().enumerate() {
+        cum += *p;
+        if r <= cum {
+            return i as u32;
+        }
+    }
+    (filtered.len() - 1) as u32
 }

@@ -1,4 +1,4 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
@@ -6,110 +6,13 @@ extern crate accelerate_src;
 
 use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
+use std::io::Write;
+use std::sync::Arc;
 
-mod model;
-use model::{Config, Model};
-
-use fuel::{DType, Device, Module, Tensor};
-use fuel_examples::token_output_stream::TokenOutputStream;
-use fuel_nn::VarBuilder;
-use fuel_transformers::generation::LogitsProcessor;
+use fuel::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype, WeightStorage};
+use fuel::lazy_mamba::{MambaConfig, MambaLayerWeights, MambaModel, MambaWeights, D_CONV, D_STATE};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
-
-struct TextGeneration {
-    model: Model,
-    device: Device,
-    tokenizer: TokenOutputStream,
-    logits_processor: LogitsProcessor,
-    repeat_penalty: f32,
-    repeat_last_n: usize,
-}
-
-impl TextGeneration {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        model: Model,
-        tokenizer: Tokenizer,
-        seed: u64,
-        temp: Option<f64>,
-        top_p: Option<f64>,
-        repeat_penalty: f32,
-        repeat_last_n: usize,
-        device: &Device,
-    ) -> Self {
-        let logits_processor = LogitsProcessor::new(seed, temp, top_p);
-        Self {
-            model,
-            tokenizer: TokenOutputStream::new(tokenizer),
-            logits_processor,
-            repeat_penalty,
-            repeat_last_n,
-            device: device.clone(),
-        }
-    }
-
-    fn run(&mut self, prompt: &str, sample_len: usize) -> Result<()> {
-        use std::io::Write;
-        self.tokenizer.clear();
-        let mut tokens = self
-            .tokenizer
-            .tokenizer()
-            .encode(prompt, true)
-            .map_err(E::msg)?
-            .get_ids()
-            .to_vec();
-        for &t in tokens.iter() {
-            if let Some(t) = self.tokenizer.next_token(t)? {
-                print!("{t}")
-            }
-        }
-        std::io::stdout().flush()?;
-
-        let mut generated_tokens = 0usize;
-        let eos_token = match self.tokenizer.get_token("<|endoftext|>") {
-            Some(token) => token,
-            None => anyhow::bail!("cannot find the </s> token"),
-        };
-        let start_gen = std::time::Instant::now();
-        for _ in 0..sample_len {
-            let input = Tensor::new(tokens.as_slice(), &self.device)?.unsqueeze(0)?;
-            let logits = self.model.forward(&input)?;
-            let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
-            let logits = if self.repeat_penalty == 1. {
-                logits
-            } else {
-                let start_at = tokens.len().saturating_sub(self.repeat_last_n);
-                fuel_transformers::utils::apply_repeat_penalty(
-                    &logits,
-                    self.repeat_penalty,
-                    &tokens[start_at..],
-                )?
-            };
-
-            let next_token = self.logits_processor.sample(&logits)?;
-            tokens.push(next_token);
-            generated_tokens += 1;
-            if next_token == eos_token {
-                break;
-            }
-            if let Some(t) = self.tokenizer.next_token(next_token)? {
-                print!("{t}");
-                std::io::stdout().flush()?;
-            }
-        }
-        let dt = start_gen.elapsed();
-        if let Some(rest) = self.tokenizer.decode_rest().map_err(E::msg)? {
-            print!("{rest}");
-        }
-        std::io::stdout().flush()?;
-        println!(
-            "\n{generated_tokens} tokens generated ({:.2} token/s)",
-            generated_tokens as f64 / dt.as_secs_f64(),
-        );
-        Ok(())
-    }
-}
 
 #[derive(Parser, ValueEnum, Clone, Copy, PartialEq, Eq, Debug)]
 enum Which {
@@ -208,6 +111,136 @@ struct Args {
     repeat_last_n: usize,
 }
 
+fn mamba_config_from_hf_json_str(json: &str) -> Result<MambaConfig> {
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let get_usize = |key: &str| -> Result<usize> {
+        v.get(key)
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .ok_or_else(|| E::msg(format!("config.json: missing/invalid field {key:?}")))
+    };
+    let d_model = get_usize("d_model")?;
+    let n_layer = get_usize("n_layer")?;
+    let vocab_size = get_usize("vocab_size")?;
+    let pad_vocab_size_multiple = v
+        .get("pad_vocab_size_multiple")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as usize)
+        .unwrap_or(8);
+    let rms_norm_eps = v
+        .get("rms_norm_eps")
+        .and_then(|x| x.as_f64())
+        .unwrap_or(1e-5);
+    Ok(MambaConfig {
+        d_model,
+        n_layer,
+        vocab_size,
+        pad_vocab_size_multiple,
+        rms_norm_eps,
+    })
+}
+
+fn load_mamba_weights(
+    st: &fuel::safetensors::MmapedSafetensors,
+    cfg: &MambaConfig,
+) -> Result<MambaWeights> {
+    let vocab_padded = cfg.vocab_size();
+    let d_model = cfg.d_model;
+    let d_inner = cfg.d_inner();
+    let dt_rank = cfg.dt_rank();
+
+    let token_embedding = load_tensor_as_f32(st, "backbone.embedding.weight")?;
+    if token_embedding.len() != vocab_padded * d_model {
+        return Err(E::msg(format!(
+            "backbone.embedding.weight: {} elements, expected {} ({}×{})",
+            token_embedding.len(),
+            vocab_padded * d_model,
+            vocab_padded,
+            d_model
+        )));
+    }
+
+    let mut layers: Vec<MambaLayerWeights> = Vec::with_capacity(cfg.n_layer);
+    for i in 0..cfg.n_layer {
+        let base = format!("backbone.layers.{i}");
+        let norm_gain = load_tensor_as_f32(st, &format!("{base}.norm.weight"))?;
+        let in_proj = load_transposed_matrix_preserve_dtype(
+            st,
+            &format!("{base}.mixer.in_proj.weight"),
+            2 * d_inner,
+            d_model,
+        )?;
+        let conv1d_weight = load_tensor_as_f32(st, &format!("{base}.mixer.conv1d.weight"))?;
+        let conv1d_bias = load_tensor_as_f32(st, &format!("{base}.mixer.conv1d.bias"))?;
+        let x_proj = load_transposed_matrix_preserve_dtype(
+            st,
+            &format!("{base}.mixer.x_proj.weight"),
+            dt_rank + 2 * D_STATE,
+            d_inner,
+        )?;
+        let dt_proj = load_transposed_matrix_preserve_dtype(
+            st,
+            &format!("{base}.mixer.dt_proj.weight"),
+            d_inner,
+            dt_rank,
+        )?;
+        let dt_proj_bias = load_tensor_as_f32(st, &format!("{base}.mixer.dt_proj.bias"))?;
+        let a_log = load_tensor_as_f32(st, &format!("{base}.mixer.A_log"))?;
+        let d = load_tensor_as_f32(st, &format!("{base}.mixer.D"))?;
+        let out_proj = load_transposed_matrix_preserve_dtype(
+            st,
+            &format!("{base}.mixer.out_proj.weight"),
+            d_model,
+            d_inner,
+        )?;
+        if conv1d_weight.len() != d_inner * D_CONV {
+            return Err(E::msg(format!(
+                "{base}.mixer.conv1d.weight: {} elements, expected {} (d_inner={d_inner} × D_CONV={D_CONV})",
+                conv1d_weight.len(),
+                d_inner * D_CONV
+            )));
+        }
+        layers.push(MambaLayerWeights {
+            norm_gain: Arc::from(norm_gain),
+            in_proj,
+            conv1d_weight: Arc::from(conv1d_weight),
+            conv1d_bias: Arc::from(conv1d_bias),
+            x_proj,
+            dt_proj,
+            dt_proj_bias: Arc::from(dt_proj_bias),
+            a_log: Arc::from(a_log),
+            d: Arc::from(d),
+            out_proj,
+        });
+    }
+    let final_norm_gain = load_tensor_as_f32(st, "backbone.norm_f.weight")?;
+    let output: WeightStorage = match load_transposed_matrix_preserve_dtype(
+        st,
+        "lm_head.weight",
+        vocab_padded,
+        d_model,
+    ) {
+        Ok(w) => w,
+        Err(_) => {
+            let mut transposed = vec![0.0_f32; d_model * vocab_padded];
+            for i in 0..vocab_padded {
+                for j in 0..d_model {
+                    transposed[j * vocab_padded + i] = token_embedding[i * d_model + j];
+                }
+            }
+            WeightStorage::F32(Arc::from(transposed))
+        }
+    };
+
+    Ok(MambaWeights {
+        token_embedding: Arc::from(token_embedding),
+        layers,
+        final_norm_gain: Arc::from(final_norm_gain),
+        output,
+    })
+}
+
 fn main() -> Result<()> {
     use tracing_chrome::ChromeLayerBuilder;
     use tracing_subscriber::prelude::*;
@@ -220,6 +253,7 @@ fn main() -> Result<()> {
     } else {
         None
     };
+    let _ = args.cpu;
     println!(
         "avx: {}, neon: {}, simd128: {}, f16c: {}",
         fuel::utils::with_avx(),
@@ -258,30 +292,164 @@ fn main() -> Result<()> {
             .split(',')
             .map(std::path::PathBuf::from)
             .collect::<Vec<_>>(),
-        None => {
-            vec![repo.get("model.safetensors")?]
-        }
+        None => vec![repo.get("model.safetensors")?],
     };
     println!("retrieved the files in {:?}", start.elapsed());
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
 
     let start = std::time::Instant::now();
-    let config: Config = serde_json::from_slice(&std::fs::read(config_filename)?)?;
-    let device = fuel_examples::device(args.cpu)?;
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, DType::F32, &device)? };
-    let model = Model::new(&config, vb.pp("backbone"))?;
+    let config_json = std::fs::read_to_string(&config_filename)?;
+    let config = mamba_config_from_hf_json_str(&config_json)?;
+    let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
+        .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+    let weights =
+        load_mamba_weights(&st, &config).map_err(|e| E::msg(format!("load weights: {e}")))?;
+    let model = MambaModel {
+        config: config.clone(),
+        weights,
+    };
     println!("loaded the model in {:?}", start.elapsed());
 
-    let mut pipeline = TextGeneration::new(
-        model,
-        tokenizer,
-        args.seed,
-        args.temperature,
-        args.top_p,
-        args.repeat_penalty,
-        args.repeat_last_n,
-        &device,
+    let mut tok_stream = fuel_examples::token_output_stream::TokenOutputStream::new(tokenizer);
+    let eos_token = tok_stream
+        .get_token("<|endoftext|>")
+        .ok_or_else(|| anyhow::anyhow!("cannot find the <|endoftext|> token"))?;
+
+    let mut tokens = tok_stream
+        .tokenizer()
+        .encode(args.prompt.clone(), true)
+        .map_err(E::msg)?
+        .get_ids()
+        .to_vec();
+    for &t in tokens.iter() {
+        if let Some(s) = tok_stream.next_token(t)? {
+            print!("{s}");
+        }
+    }
+    std::io::stdout().flush()?;
+
+    let vocab_padded = config.vocab_size();
+    let mut generated_tokens: usize = 0;
+    let start_gen = std::time::Instant::now();
+    for index in 0..args.sample_len {
+        let logits = model
+            .forward(&tokens)
+            .map_err(|e| E::msg(format!("forward: {e}")))?;
+        let logits_data = logits.realize_f32();
+        let seq = tokens.len();
+        let last_off = (seq - 1) * vocab_padded;
+        let mut last_logits: Vec<f32> = logits_data[last_off..last_off + vocab_padded].to_vec();
+        if args.repeat_penalty != 1.0 {
+            let start_at = tokens.len().saturating_sub(args.repeat_last_n);
+            apply_repeat_penalty(&mut last_logits, args.repeat_penalty, &tokens[start_at..]);
+        }
+        let next_token = sample(
+            &last_logits,
+            args.temperature.unwrap_or(0.) as f32,
+            args.top_p.map(|p| p as f32),
+            args.seed.wrapping_add(index as u64),
+        );
+        tokens.push(next_token);
+        generated_tokens += 1;
+        if next_token == eos_token {
+            break;
+        }
+        if let Some(t) = tok_stream.next_token(next_token)? {
+            print!("{t}");
+            std::io::stdout().flush()?;
+        }
+    }
+    let dt = start_gen.elapsed();
+    if let Some(rest) = tok_stream.decode_rest().map_err(E::msg)? {
+        print!("{rest}");
+    }
+    std::io::stdout().flush()?;
+    println!(
+        "\n{generated_tokens} tokens generated ({:.2} token/s)",
+        generated_tokens as f64 / dt.as_secs_f64(),
     );
-    pipeline.run(&args.prompt, args.sample_len)?;
     Ok(())
+}
+
+fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
+    let mut seen = std::collections::HashSet::new();
+    for &t in context {
+        if !seen.insert(t) {
+            continue;
+        }
+        let idx = t as usize;
+        if idx < logits.len() {
+            let v = logits[idx];
+            logits[idx] = if v >= 0.0 { v / penalty } else { v * penalty };
+        }
+    }
+}
+
+fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u32 {
+    if temperature <= 0.0 {
+        let mut best_i = 0usize;
+        let mut best = logits[0];
+        for (i, &v) in logits.iter().enumerate().skip(1) {
+            if v > best {
+                best = v;
+                best_i = i;
+            }
+        }
+        return best_i as u32;
+    }
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let inv_t = 1.0 / temperature.max(1e-6);
+    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    for p in &mut probs {
+        *p /= sum.max(1e-30);
+    }
+    let mut idx: Vec<usize> = (0..probs.len()).collect();
+    idx.sort_unstable_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap());
+    let mut keep_mask: Vec<bool> = vec![true; probs.len()];
+    if let Some(p_cut) = top_p {
+        let mut cum2 = 0.0;
+        let mut allow = true;
+        for &i in &idx {
+            if !keep_mask[i] {
+                continue;
+            }
+            if !allow {
+                keep_mask[i] = false;
+                continue;
+            }
+            cum2 += probs[i];
+            if cum2 >= p_cut {
+                allow = false;
+            }
+        }
+    }
+    let mut filtered: Vec<f32> = probs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| if keep_mask[i] { *p } else { 0.0 })
+        .collect();
+    let s: f32 = filtered.iter().sum();
+    if s > 0.0 {
+        for v in &mut filtered {
+            *v /= s;
+        }
+    } else {
+        return 0;
+    }
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    state ^= state >> 33;
+    state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    state ^= state >> 33;
+    let r = (state as f32) / (u64::MAX as f32);
+    let mut cum = 0.0;
+    for (i, p) in filtered.iter().enumerate() {
+        cum += *p;
+        if r <= cum {
+            return i as u32;
+        }
+    }
+    (filtered.len() - 1) as u32
 }
