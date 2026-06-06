@@ -14,7 +14,10 @@
 //! `index_select(wpe, [start_pos..start_pos+seq])` + `broadcast_add`
 //! to the token embedding.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{
+    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+    LazyTensor, WeightStorage,
+};
 use crate::{Device, Result};
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -273,6 +276,245 @@ impl BigCodeModel {
     }
 }
 
+
+// ---- Safetensors loader ----------------------------------------------------
+
+impl BigCodeWeights {
+    /// Load BigCode (GPT-BigCode / StarCoder1) weights from a
+    /// `MmapedSafetensors` file using the standard HuggingFace
+    /// naming convention.
+    ///
+    /// BigCode's defining quirk is the fused QKV projection — every
+    /// layer's `transformer.h.{i}.attn.c_attn.weight` is a single
+    /// `[hidden + 2*kv_dim, hidden]` matrix (Q + K + V concatenated
+    /// along the output axis, HF `[out, in]` layout), with a matching
+    /// `[hidden + 2*kv_dim]` bias. This loader splits the fused tensor
+    /// into separate Q/K/V `WeightStorage` entries (and biases) so the
+    /// lazy decoder can reuse the same per-projection apply path it
+    /// uses elsewhere.
+    ///
+    /// Expected names:
+    /// - `transformer.wte.weight` → token embedding `[vocab, hidden]`
+    /// - `transformer.wpe.weight` → learned position embedding
+    ///   `[max_position_embeddings, hidden]`
+    /// - `transformer.h.{i}.ln_1.{weight,bias}` → input LayerNorm
+    /// - `transformer.h.{i}.attn.c_attn.{weight,bias}` → fused QKV
+    ///   (split here)
+    /// - `transformer.h.{i}.attn.c_proj.{weight,bias}` → attention output
+    /// - `transformer.h.{i}.ln_2.{weight,bias}` → post-attention LN
+    /// - `transformer.h.{i}.mlp.c_fc.{weight,bias}` → MLP fc1
+    ///   (`[intermediate, hidden]` HF)
+    /// - `transformer.h.{i}.mlp.c_proj.{weight,bias}` → MLP fc2
+    ///   (`[hidden, intermediate]` HF)
+    /// - `transformer.ln_f.{weight,bias}` → final LayerNorm
+    /// - `lm_head.weight` (optional) — falls back to tied embedding
+    ///   when absent (the GPT-BigCode reference ties `lm_head` to
+    ///   `transformer.wte`).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &BigCodeConfig,
+    ) -> Result<Self> {
+        let h = cfg.hidden_size;
+        let kv = cfg.kv_dim();
+        let i_dim = cfg.intermediate_size;
+        let qkv_out = h + 2 * kv;
+
+        let token_embedding = load_tensor_as_f32(st, "transformer.wte.weight")?;
+        if token_embedding.len() != cfg.vocab_size * h {
+            crate::bail!(
+                "transformer.wte.weight: {} elts, expected {} ({}×{})",
+                token_embedding.len(), cfg.vocab_size * h, cfg.vocab_size, h,
+            );
+        }
+
+        let position_embedding = load_tensor_as_f32(st, "transformer.wpe.weight")?;
+        if position_embedding.len() != cfg.max_position_embeddings * h {
+            crate::bail!(
+                "transformer.wpe.weight: {} elts, expected {} ({}×{})",
+                position_embedding.len(),
+                cfg.max_position_embeddings * h,
+                cfg.max_position_embeddings, h,
+            );
+        }
+
+        let mut layers: Vec<BigCodeLayerWeights> =
+            Vec::with_capacity(cfg.num_hidden_layers);
+        for li in 0..cfg.num_hidden_layers {
+            let p = format!("transformer.h.{li}");
+
+            // Input + post-attention LayerNorm gain + bias.
+            let input_ln_gain = load_tensor_as_f32(
+                st, &format!("{p}.ln_1.weight"),
+            )?;
+            let input_ln_bias = load_tensor_as_f32(
+                st, &format!("{p}.ln_1.bias"),
+            )?;
+            let post_attn_ln_gain = load_tensor_as_f32(
+                st, &format!("{p}.ln_2.weight"),
+            )?;
+            let post_attn_ln_bias = load_tensor_as_f32(
+                st, &format!("{p}.ln_2.bias"),
+            )?;
+
+            // Fused QKV weight: HF stores `[hidden + 2*kv_dim, hidden]`
+            // (out, in). Read as f32, split into three sub-matrices
+            // along the output axis, and physically transpose each to
+            // fuel's `[in, out]` layout before storing.
+            let fused = load_tensor_as_f32(
+                st, &format!("{p}.attn.c_attn.weight"),
+            )?;
+            if fused.len() != qkv_out * h {
+                crate::bail!(
+                    "{p}.attn.c_attn.weight: {} elts, expected {} ({}×{})",
+                    fused.len(), qkv_out * h, qkv_out, h,
+                );
+            }
+            let (q_buf, k_buf, v_buf) =
+                split_fused_qkv_weight(&fused, h, kv, h);
+            let attn_q = WeightStorage::F32(Arc::from(q_buf));
+            let attn_k = WeightStorage::F32(Arc::from(k_buf));
+            let attn_v = WeightStorage::F32(Arc::from(v_buf));
+
+            // Fused QKV bias: `[hidden + 2*kv_dim]`. Split into Q / K / V.
+            let fused_bias = load_tensor_as_f32(
+                st, &format!("{p}.attn.c_attn.bias"),
+            )?;
+            if fused_bias.len() != qkv_out {
+                crate::bail!(
+                    "{p}.attn.c_attn.bias: {} elts, expected {}",
+                    fused_bias.len(), qkv_out,
+                );
+            }
+            let attn_q_bias: Arc<[f32]> = Arc::from(&fused_bias[..h]);
+            let attn_k_bias: Arc<[f32]> = Arc::from(&fused_bias[h..h + kv]);
+            let attn_v_bias: Arc<[f32]> = Arc::from(&fused_bias[h + kv..h + 2 * kv]);
+
+            // Attention output projection — standard `[out, in]` HF
+            // layout, dtype preserved.
+            let attn_o = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.attn.c_proj.weight"), h, h,
+            )?;
+            let attn_o_bias_v = load_tensor_as_f32(
+                st, &format!("{p}.attn.c_proj.bias"),
+            )?;
+            if attn_o_bias_v.len() != h {
+                crate::bail!(
+                    "{p}.attn.c_proj.bias: {} elts, expected {}",
+                    attn_o_bias_v.len(), h,
+                );
+            }
+            let attn_o_bias: Arc<[f32]> = Arc::from(attn_o_bias_v);
+
+            // MLP fc + projection.
+            let mlp_fc = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.c_fc.weight"), i_dim, h,
+            )?;
+            let mlp_fc_bias_v = load_tensor_as_f32(
+                st, &format!("{p}.mlp.c_fc.bias"),
+            )?;
+            if mlp_fc_bias_v.len() != i_dim {
+                crate::bail!(
+                    "{p}.mlp.c_fc.bias: {} elts, expected {}",
+                    mlp_fc_bias_v.len(), i_dim,
+                );
+            }
+            let mlp_fc_bias: Arc<[f32]> = Arc::from(mlp_fc_bias_v);
+
+            let mlp_proj = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.c_proj.weight"), h, i_dim,
+            )?;
+            let mlp_proj_bias_v = load_tensor_as_f32(
+                st, &format!("{p}.mlp.c_proj.bias"),
+            )?;
+            if mlp_proj_bias_v.len() != h {
+                crate::bail!(
+                    "{p}.mlp.c_proj.bias: {} elts, expected {}",
+                    mlp_proj_bias_v.len(), h,
+                );
+            }
+            let mlp_proj_bias: Arc<[f32]> = Arc::from(mlp_proj_bias_v);
+
+            layers.push(BigCodeLayerWeights {
+                input_ln_gain: Arc::from(input_ln_gain),
+                input_ln_bias: Arc::from(input_ln_bias),
+                post_attn_ln_gain: Arc::from(post_attn_ln_gain),
+                post_attn_ln_bias: Arc::from(post_attn_ln_bias),
+                attn_q, attn_q_bias,
+                attn_k, attn_k_bias,
+                attn_v, attn_v_bias,
+                attn_o, attn_o_bias,
+                mlp_fc, mlp_fc_bias,
+                mlp_proj, mlp_proj_bias,
+            });
+        }
+
+        let final_ln_gain = load_tensor_as_f32(st, "transformer.ln_f.weight")?;
+        let final_ln_bias = load_tensor_as_f32(st, "transformer.ln_f.bias")?;
+
+        // GPT-BigCode reference ties `lm_head` to `transformer.wte`
+        // (see `fuel_transformers::models::llm::bigcode`). Try to
+        // load an explicit `lm_head.weight` first; if absent, fall
+        // back to a transposed copy of the token embedding.
+        let output: WeightStorage = match load_transposed_matrix_preserve_dtype(
+            st, "lm_head.weight", cfg.vocab_size, h,
+        ) {
+            Ok(w) => w,
+            Err(_) => {
+                let mut transposed = vec![0.0_f32; h * cfg.vocab_size];
+                for i in 0..cfg.vocab_size {
+                    for j in 0..h {
+                        transposed[j * cfg.vocab_size + i] =
+                            token_embedding[i * h + j];
+                    }
+                }
+                WeightStorage::F32(Arc::from(transposed))
+            }
+        };
+
+        Ok(BigCodeWeights {
+            token_embedding: Arc::from(token_embedding),
+            position_embedding: Arc::from(position_embedding),
+            layers,
+            final_ln_gain: Arc::from(final_ln_gain),
+            final_ln_bias: Arc::from(final_ln_bias),
+            output,
+        })
+    }
+}
+
+/// Split a fused QKV weight `[q_out + k_out + v_out, in]` (HF row-major
+/// `[out, in]`) into three fuel-layout `[in, out_i]` buffers — one each
+/// for Q, K, V. Each output buffer is the physical transpose of the
+/// corresponding row slice of `fused`.
+fn split_fused_qkv_weight(
+    fused: &[f32],
+    q_out: usize,
+    kv_out: usize,
+    in_dim: usize,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let mut q = vec![0.0_f32; in_dim * q_out];
+    let mut k = vec![0.0_f32; in_dim * kv_out];
+    let mut v = vec![0.0_f32; in_dim * kv_out];
+    // Q rows: 0 .. q_out
+    for i in 0..q_out {
+        for j in 0..in_dim {
+            q[j * q_out + i] = fused[i * in_dim + j];
+        }
+    }
+    // K rows: q_out .. q_out + kv_out
+    for i in 0..kv_out {
+        for j in 0..in_dim {
+            k[j * kv_out + i] = fused[(q_out + i) * in_dim + j];
+        }
+    }
+    // V rows: q_out + kv_out .. q_out + 2*kv_out
+    for i in 0..kv_out {
+        for j in 0..in_dim {
+            v[j * kv_out + i] = fused[(q_out + kv_out + i) * in_dim + j];
+        }
+    }
+    (q, k, v)
+}
 
 #[cfg(test)]
 mod tests {
