@@ -1,137 +1,48 @@
-﻿use anyhow::{Error as E, Result};
-use fuel::{DType, Device, Tensor};
-use fuel_nn::VarBuilder;
-use fuel_transformers::models::colpali::Model;
-use fuel_transformers::models::{colpali, paligemma};
+use anyhow::{Error as E, Result};
 use clap::Parser;
-use hf_hub::{api::sync::Api, Repo, RepoType};
 use image::DynamicImage;
 use pdf2image::{RenderOptionsBuilder, PDF};
+use std::sync::Arc;
 use tokenizers::Tokenizer;
 
-struct PageRetriever {
-    model: Model,
-    config: paligemma::Config,
-    pdf: PDF,
-    device: Device,
-    tokenizer: Tokenizer,
-    range: pdf2image::Pages,
-    batch_size: usize,
-    top_k: usize,
-}
+use fuel::lazy::LazyTensor;
+use fuel::lazy_colpali::{ColPaliModel, ColPaliWeights};
+use fuel::lazy_gemma::{GemmaActivation, GemmaConfig};
+use fuel::lazy_paligemma::PaligemmaConfig;
+use fuel::lazy_siglip::SiglipVisionConfig;
+use fuel::{Device, Shape};
+use hf_hub::{api::sync::Api, Repo, RepoType};
 
-impl PageRetriever {
-    fn new(
-        model: Model,
-        config: paligemma::Config,
-        pdf: PDF,
-        tokenizer: Tokenizer,
-        device: &Device,
-        range: Option<pdf2image::Pages>,
-        batch_size: usize,
-        top_k: usize,
-    ) -> Self {
-        let page_count = pdf.page_count();
-        Self {
-            model,
-            config,
-            pdf,
-            device: device.clone(),
-            tokenizer,
-            range: range.unwrap_or_else(|| pdf2image::Pages::Range(1..=page_count)),
-            batch_size,
-            top_k,
-        }
-    }
-
-    fn get_images_from_pdf(&self) -> Result<Vec<DynamicImage>> {
-        let pages = self
-            .pdf
-            .render(self.range.clone(), RenderOptionsBuilder::default().build()?)?;
-        Ok(pages)
-    }
-
-    fn tokenize_batch(&self, prompts: Vec<&str>) -> Result<Tensor> {
-        let tokens = self.tokenizer.encode_batch(prompts, true).map_err(E::msg)?;
-        let token_ids = tokens
-            .iter()
-            .map(|tokens| {
-                let tokens = tokens.get_ids().to_vec();
-                Tensor::new(tokens.as_slice(), &self.device)
-            })
-            .collect::<fuel::Result<Vec<_>>>()?;
-        let input = Tensor::stack(&token_ids, 0)?;
-        Ok(input)
-    }
-
-    fn images_to_tensor(
-        &self,
-        pages: &[DynamicImage],
-        image_size: usize,
-    ) -> anyhow::Result<Tensor> {
-        let mut images = vec![];
-        for page in pages.iter() {
-            let img = page.resize_to_fill(
-                image_size as u32,
-                image_size as u32,
-                image::imageops::FilterType::Triangle,
-            );
-            let img = img.to_rgb8();
-            let img = img.into_raw();
-            let img = Tensor::from_vec(img, (image_size, image_size, 3), &Device::cpu())?
-                .permute((2, 0, 1))?
-                .to_dtype(DType::F32)?
-                .affine(2. / 255., -1.)?;
-            images.push(img);
-        }
-        let images = Tensor::stack(&images, 0)?;
-        Ok(images)
-    }
-
-    fn retrieve(&mut self, prompt: &str) -> Result<Vec<usize>> {
-        let dtype = if self.device.is_cuda() {
-            DType::BF16
-        } else {
-            DType::F32
-        };
-
-        let dummy_prompt: &str = "Describe the image";
-
-        let input = self.tokenize_batch(vec![prompt])?;
-        let dummy_input = self.tokenize_batch(vec![dummy_prompt])?;
-
-        let pages = self.get_images_from_pdf()?;
-        let mut all_scores = Vec::new();
-        for batch in pages.chunks(self.batch_size) {
-            let page_images = self
-                .images_to_tensor(batch, self.config.vision_config.image_size)?
-                .to_device(&self.device)?
-                .to_dtype(dtype)?;
-            let dummy_input = dummy_input.repeat((page_images.dims()[0], 0))?;
-
-            let image_embeddings = self.model.forward_images(&page_images, &dummy_input)?;
-            let text_embeddings = self.model.forward_text(&input)?;
-
-            let scores = text_embeddings
-                .unsqueeze(1)?
-                .broadcast_matmul(&image_embeddings.unsqueeze(0)?.transpose(3, 2)?)?
-                .max(3)?
-                .sum(2)?;
-            let batch_scores: Vec<f32> = scores
-                .to_dtype(DType::F32)?
-                .to_vec2()?
-                .into_iter()
-                .flatten()
-                .collect();
-            all_scores.extend(batch_scores);
-        }
-
-        let mut indices: Vec<usize> = (0..all_scores.len()).collect();
-        indices.sort_by(|a, b| all_scores[*b].partial_cmp(&all_scores[*a]).unwrap());
-
-        let top_k_indices = indices[0..self.top_k].to_vec();
-
-        Ok(top_k_indices)
+fn paligemma_3b_448_config() -> PaligemmaConfig {
+    // PaliGemma-3B 448 — SigLIP-So400m image encoder at 448×448 paired with
+    // the Gemma 2B decoder. Mirrors fuel_transformers' Config::paligemma_3b_448.
+    PaligemmaConfig {
+        vision_config: SiglipVisionConfig {
+            patch_size: 14,
+            num_attention_heads: 16,
+            num_hidden_layers: 27,
+            hidden_size: 1152,
+            intermediate_size: 4304,
+            image_size: 448,
+            num_channels: 3,
+            hidden_activation: fuel::lazy_siglip::SiglipActivation::GeluPytorchTanh,
+            layer_norm_eps: 1e-6,
+        },
+        text_config: GemmaConfig {
+            vocab_size: 257_216,
+            hidden_size: 2048,
+            intermediate_size: 16_384,
+            num_hidden_layers: 18,
+            num_attention_heads: 8,
+            num_key_value_heads: 1,
+            head_dim: 256,
+            rms_norm_eps: 1e-6,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 8192,
+            attention_bias: false,
+            hidden_activation: GemmaActivation::GeluPytorchTanh,
+        },
+        projection_dim: 2048,
     }
 }
 
@@ -175,6 +86,27 @@ struct Args {
     end: Option<u32>,
 }
 
+fn image_to_chw(image: &DynamicImage, image_size: usize) -> Vec<f32> {
+    let img = image.resize_to_fill(
+        image_size as u32,
+        image_size as u32,
+        image::imageops::FilterType::Triangle,
+    );
+    let img = img.to_rgb8();
+    let raw = img.into_raw();
+    // Same affine(2/255, -1) normalization as the eager PaliGemma path.
+    let mut chw = vec![0f32; 3 * image_size * image_size];
+    for h in 0..image_size {
+        for w in 0..image_size {
+            for c in 0..3 {
+                let v = raw[(h * image_size + w) * 3 + c] as f32;
+                chw[c * image_size * image_size + h * image_size + w] = v * (2.0 / 255.0) - 1.0;
+            }
+        }
+    }
+    chw
+}
+
 fn main() -> Result<()> {
     use tracing_chrome::ChromeLayerBuilder;
     use tracing_subscriber::prelude::*;
@@ -187,13 +119,7 @@ fn main() -> Result<()> {
     } else {
         None
     };
-    println!(
-        "avx: {}, neon: {}, simd128: {}, f16c: {}",
-        fuel::utils::with_avx(),
-        fuel::utils::with_neon(),
-        fuel::utils::with_simd128(),
-        fuel::utils::with_f16c()
-    );
+    let _ = fuel_examples::device(args.cpu)?;
 
     let api = Api::new()?;
     let model_id = match &args.model_id {
@@ -226,39 +152,88 @@ fn main() -> Result<()> {
     };
 
     let start = std::time::Instant::now();
-
-    let config: paligemma::Config = paligemma::Config::paligemma_3b_448();
-
-    println!("retrieved the files in {:?}", start.elapsed());
+    let config = paligemma_3b_448_config();
+    let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
+        .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+    let weights = ColPaliWeights::load_from_mmapped(&st, &config)
+        .map_err(|e| E::msg(format!("load weights: {e}")))?;
+    let model = ColPaliModel { config: config.clone(), weights };
+    println!("loaded the model in {:?}", start.elapsed());
 
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
-    let device = fuel_examples::device(false)?;
-    let dtype = if device.is_cuda() {
-        DType::BF16
-    } else {
-        DType::F32
-    };
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, dtype, &device)? };
-    let model = colpali::Model::new(&config, vb)?;
+    let prompt_tokens = tokenizer
+        .encode(args.prompt.as_str(), true)
+        .map_err(E::msg)?
+        .get_ids()
+        .to_vec();
+    let dummy_tokens = tokenizer
+        .encode("Describe the image", true)
+        .map_err(E::msg)?
+        .get_ids()
+        .to_vec();
 
     let pdf = PDF::from_file(args.pdf)?;
-
-    // check if start and end given in arg
     let range = if let (Some(start), Some(end)) = (args.start, args.end) {
         pdf2image::Pages::Range(start..=end)
     } else {
-        pdf2image::Pages::Range(1..=pdf.page_count()) // can use pdf2image::Pages::All but there is a bug in the library which causes the first page to rendered twice.
+        pdf2image::Pages::Range(1..=pdf.page_count())
     };
+    let pages = pdf.render(range, RenderOptionsBuilder::default().build()?)?;
 
-    let mut retriever =
-        PageRetriever::new(model, config, pdf, tokenizer, &device, Some(range), 4, 3);
-    let top_k_indices = retriever.retrieve(&args.prompt)?;
+    // Per-text-token text embeddings (run once).
+    let text_emb = model
+        .forward_text(&prompt_tokens)
+        .map_err(|e| E::msg(format!("forward_text: {e}")))?
+        .realize_f32();
+    let text_dim = fuel::lazy_colpali::COLPALI_PROJ_DIM;
+    let text_seq = prompt_tokens.len();
+
+    let img_size = config.vision_config.image_size;
+    let np = config.vision_config.num_patches();
+    let img_seq = np + dummy_tokens.len();
+
+    let mut all_scores: Vec<f32> = Vec::with_capacity(pages.len());
+    for page in &pages {
+        let chw = image_to_chw(page, img_size);
+        let pixel_values = LazyTensor::from_f32(
+            Arc::<[f32]>::from(chw),
+            Shape::from_dims(&[1, 3, img_size, img_size]),
+            &Device::cpu(),
+        );
+        let image_emb = model
+            .forward_images(&pixel_values, &dummy_tokens)
+            .map_err(|e| E::msg(format!("forward_images: {e}")))?
+            .realize_f32();
+        // ColBERT MaxSim score: sum over text tokens of max over image tokens
+        // of inner product.
+        let mut score = 0f32;
+        for t in 0..text_seq {
+            let t_off = t * text_dim;
+            let t_vec = &text_emb[t_off..t_off + text_dim];
+            let mut best = f32::NEG_INFINITY;
+            for i in 0..img_seq {
+                let i_off = i * text_dim;
+                let i_vec = &image_emb[i_off..i_off + text_dim];
+                let mut dot = 0f32;
+                for k in 0..text_dim {
+                    dot += t_vec[k] * i_vec[k];
+                }
+                if dot > best {
+                    best = dot;
+                }
+            }
+            score += best;
+        }
+        all_scores.push(score);
+    }
+
+    let mut indices: Vec<usize> = (0..all_scores.len()).collect();
+    indices.sort_by(|a, b| all_scores[*b].partial_cmp(&all_scores[*a]).unwrap());
+    let top = args.top_k.min(indices.len());
+    let top_k_indices = &indices[0..top];
 
     println!("Prompt: {}", args.prompt);
-    println!(
-        "top {} page numbers that contain similarity to the prompt",
-        retriever.top_k
-    );
+    println!("top {} page numbers that contain similarity to the prompt", top);
     println!("-----------------------------------");
     for index in top_k_indices {
         println!("Page: {:?}", index + 1);
