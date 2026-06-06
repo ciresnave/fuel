@@ -492,6 +492,25 @@ fn pad_dim_with_zeros(
     x.concat(&zeros, dim)
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl EfficientVitWeights {
+    /// Load EfficientViT (timm "efficientvit_m{0..5}" / MIT EfficientViT-Sam)
+    /// weights from HF safetensors. CGA + Sandwich blocks have nested
+    /// per-head structure; canonical name mapping is pending.
+    pub fn load_from_mmapped(
+        _st: &crate::safetensors::MmapedSafetensors,
+        _cfg: &EfficientVitConfig,
+    ) -> Result<Self> {
+        Err(crate::Error::Msg(
+            "EfficientVitWeights::load_from_mmapped: HF tensor naming is \
+             nested across CGA / Sandwich / MBConv stages; canonical mapping \
+             is pending. Construct weights directly or contribute the loader."
+            .to_string()
+        ).bt())
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]

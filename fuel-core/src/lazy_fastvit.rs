@@ -486,6 +486,28 @@ fn apply_patch_embed(
     apply_reparam_mobileone(&x, &p.mobileone_1x1, anchor)
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl FastVitWeights {
+    /// Load FastViT (apple/MobileCLIP-* and timm "fastvit_{t,s,m}1{2,4,6,18}")
+    /// weights from HF safetensors. The FastViT lazy port assumes weights
+    /// have ALREADY been reparameterized (BN folded into bias-augmented
+    /// convs) — feed the post-reparam checkpoint. For raw training-mode
+    /// checkpoints, run the upstream `model.reparameterize()` and re-save.
+    pub fn load_from_mmapped(
+        _st: &crate::safetensors::MmapedSafetensors,
+        _cfg: &FastVitConfig,
+    ) -> Result<Self> {
+        Err(crate::Error::Msg(
+            "FastVitWeights::load_from_mmapped: HF reparameterized-checkpoint \
+             support is not yet wired (RepMixer/Attention stage mapping pending). \
+             Construct FastVitWeights directly or contribute the loader via \
+             `docs/session-prompts/fastvit-load-from-mmapped.md`."
+            .to_string()
+        ).bt())
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
