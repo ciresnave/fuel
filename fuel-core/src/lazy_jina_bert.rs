@@ -382,6 +382,85 @@ impl JinaBertModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl JinaBertWeights {
+    /// Load Jina-BERT (jinaai/jina-embeddings-v2-base-*) weights from HuggingFace
+    /// safetensors. Tensor names: `embeddings.*` + `encoder.layer.{i}.*`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &JinaBertConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+
+        let word_embedding = Arc::from(load_tensor_as_f32(
+            st, "embeddings.word_embeddings.weight",
+        )?);
+        let token_type_embedding = Arc::from(load_tensor_as_f32(
+            st, "embeddings.token_type_embeddings.weight",
+        )?);
+        let embed_ln_gain = Arc::from(load_tensor_as_f32(
+            st, "embeddings.LayerNorm.weight",
+        )?);
+        let embed_ln_bias = Arc::from(load_tensor_as_f32(
+            st, "embeddings.LayerNorm.bias",
+        )?);
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("encoder.layer.{i}");
+            let q = ltm(st, &format!("{p}.attention.self.query.weight"), h, h)?;
+            let q_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.self.query.bias"),
+            )?);
+            let k = ltm(st, &format!("{p}.attention.self.key.weight"), h, h)?;
+            let k_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.self.key.bias"),
+            )?);
+            let v = ltm(st, &format!("{p}.attention.self.value.weight"), h, h)?;
+            let v_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.self.value.bias"),
+            )?);
+            let attn_out = ltm(st, &format!("{p}.attention.output.dense.weight"), h, h)?;
+            let attn_out_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.output.dense.bias"),
+            )?);
+            let attn_ln_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.output.LayerNorm.weight"),
+            )?);
+            let attn_ln_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.output.LayerNorm.bias"),
+            )?);
+            // Jina-BERT GeGLU is stored as one fused [2*inter, hidden] matrix.
+            let gated_layers = ltm(
+                st, &format!("{p}.mlp.gated_layers.weight"), 2 * inter, h,
+            )?;
+            let mlp_wo = ltm(st, &format!("{p}.mlp.wo.weight"), h, inter)?;
+            let mlp_wo_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mlp.wo.bias"),
+            )?);
+            let mlp_ln_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mlp.layernorm.weight"),
+            )?);
+            let mlp_ln_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mlp.layernorm.bias"),
+            )?);
+            layers.push(JinaLayerWeights {
+                q, q_bias, k, k_bias, v, v_bias,
+                attn_out, attn_out_bias, attn_ln_gain, attn_ln_bias,
+                gated_layers, mlp_wo, mlp_wo_bias, mlp_ln_gain, mlp_ln_bias,
+            });
+        }
+
+        Ok(Self {
+            word_embedding, token_type_embedding,
+            embed_ln_gain, embed_ln_bias, layers,
+        })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

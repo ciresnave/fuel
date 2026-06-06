@@ -396,6 +396,57 @@ impl ModernBertModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl ModernBertWeights {
+    /// Load ModernBERT (answerdotai/ModernBERT-{base,large}) weights from a
+    /// HuggingFace safetensors file. Tensor names follow the upstream layout
+    /// at `model.embeddings.*`, `model.layers.{i}.*`, `model.final_norm.weight`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &ModernBertConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+
+        let word_embedding = Arc::from(load_tensor_as_f32(
+            st, "model.embeddings.tok_embeddings.weight",
+        )?);
+        let embed_ln_gain = Arc::from(load_tensor_as_f32(
+            st, "model.embeddings.norm.weight",
+        )?);
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{i}");
+            let attn_norm_gain = if i == 0 {
+                None
+            } else {
+                Some(Arc::from(load_tensor_as_f32(
+                    st, &format!("{p}.attn_norm.weight"),
+                )?))
+            };
+            let wqkv = ltm(st, &format!("{p}.attn.Wqkv.weight"), 3 * h, h)?;
+            let wo = ltm(st, &format!("{p}.attn.Wo.weight"), h, h)?;
+            let mlp_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.mlp_norm.weight"),
+            )?);
+            let mlp_wi = ltm(st, &format!("{p}.mlp.Wi.weight"), 2 * inter, h)?;
+            let mlp_wo = ltm(st, &format!("{p}.mlp.Wo.weight"), h, inter)?;
+            layers.push(ModernBertLayerWeights {
+                attn_norm_gain, wqkv, wo, mlp_norm_gain, mlp_wi, mlp_wo,
+            });
+        }
+
+        let final_norm_gain = Arc::from(load_tensor_as_f32(
+            st, "model.final_norm.weight",
+        )?);
+
+        Ok(Self { word_embedding, embed_ln_gain, layers, final_norm_gain })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
