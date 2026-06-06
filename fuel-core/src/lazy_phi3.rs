@@ -252,6 +252,111 @@ impl Phi3Model {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+/// Split a fused QKV transposed matrix (shape [hidden_size, qkv_out]) into Q/K/V.
+/// Phi3 uses MQA-like qkv_out = q_dim + 2*kv_dim with Q occupying the first
+/// q_dim columns then K then V.
+fn split_phi3_qkv(
+    transposed: &[f32],
+    hidden_size: usize,
+    q_dim: usize,
+    kv_dim: usize,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let qkv_out = q_dim + 2 * kv_dim;
+    let mut q = vec![0.0_f32; hidden_size * q_dim];
+    let mut k = vec![0.0_f32; hidden_size * kv_dim];
+    let mut v = vec![0.0_f32; hidden_size * kv_dim];
+    for row in 0..hidden_size {
+        let src = &transposed[row * qkv_out..(row + 1) * qkv_out];
+        q[row * q_dim..(row + 1) * q_dim].copy_from_slice(&src[0..q_dim]);
+        k[row * kv_dim..(row + 1) * kv_dim].copy_from_slice(&src[q_dim..q_dim + kv_dim]);
+        v[row * kv_dim..(row + 1) * kv_dim].copy_from_slice(&src[q_dim + kv_dim..]);
+    }
+    (q, k, v)
+}
+
+/// Split fused gate_up_proj [hidden_size, 2*intermediate] into gate and up.
+fn split_phi3_gate_up(transposed: &[f32], hidden_size: usize, inter: usize) -> (Vec<f32>, Vec<f32>) {
+    let out_dim = 2 * inter;
+    let mut gate = vec![0.0_f32; hidden_size * inter];
+    let mut up = vec![0.0_f32; hidden_size * inter];
+    for row in 0..hidden_size {
+        let src = &transposed[row * out_dim..(row + 1) * out_dim];
+        gate[row * inter..(row + 1) * inter].copy_from_slice(&src[0..inter]);
+        up[row * inter..(row + 1) * inter].copy_from_slice(&src[inter..]);
+    }
+    (gate, up)
+}
+
+impl Phi3Weights {
+    /// Load Phi-3 weights from HF safetensors (e.g. `microsoft/Phi-3-mini-4k-instruct`).
+    /// Phi-3 uses fused qkv_proj + fused gate_up_proj — split at load time.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Phi3Config,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix};
+        let h = cfg.hidden_size;
+        let head_dim = cfg.head_dim();
+        let q_dim = cfg.num_attention_heads * head_dim;
+        let kv_dim = cfg.num_key_value_heads * head_dim;
+        let inter = cfg.intermediate_size;
+
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "model.embed_tokens.weight")?);
+
+        let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{i}");
+            let qkv = load_transposed_matrix(
+                st, &format!("{p}.self_attn.qkv_proj.weight"), q_dim + 2 * kv_dim, h,
+            )?;
+            let (q, k, v) = split_phi3_qkv(&qkv, h, q_dim, kv_dim);
+            let attn_o = crate::lazy::load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim,
+            )?;
+
+            let gate_up = load_transposed_matrix(
+                st, &format!("{p}.mlp.gate_up_proj.weight"), 2 * inter, h,
+            )?;
+            let (gate, up) = split_phi3_gate_up(&gate_up, h, inter);
+            let ffn_down = crate::lazy::load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.down_proj.weight"), h, inter,
+            )?;
+
+            let attn_norm_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?);
+            let ffn_norm_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?);
+
+            layers.push(LayerWeights {
+                attn_q: WeightStorage::F32(Arc::from(q)),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(Arc::from(k)),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(Arc::from(v)),
+                attn_v_bias: None,
+                attn_o,
+                ffn_gate: WeightStorage::F32(Arc::from(gate)),
+                ffn_up: WeightStorage::F32(Arc::from(up)),
+                ffn_down,
+                attn_norm_gain,
+                ffn_norm_gain,
+            });
+        }
+
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
+        let output = if cfg.tie_word_embeddings {
+            crate::lazy_llama_full::tied_lm_head_from_embeddings(&token_embedding, cfg.vocab_size, h)
+        } else {
+            crate::lazy::load_transposed_matrix_preserve_dtype(
+                st, "lm_head.weight", cfg.vocab_size, h,
+            )?
+        };
+
+        Ok(Self { token_embedding, layers, final_norm_gain, output })
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
