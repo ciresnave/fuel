@@ -385,6 +385,103 @@ impl VitModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl VitWeights {
+    /// Load HuggingFace ViT weights (e.g. `google/vit-base-patch16-224`).
+    ///
+    /// HF naming:
+    ///   - vit.embeddings.{patch_embeddings.projection.{weight,bias},cls_token,position_embeddings}
+    ///   - vit.encoder.layer.{i}.{attention.attention.{query,key,value},attention.output.dense}
+    ///   - vit.encoder.layer.{i}.{layernorm_before,layernorm_after}.{weight,bias}
+    ///   - vit.encoder.layer.{i}.intermediate.dense
+    ///   - vit.encoder.layer.{i}.output.dense
+    ///   - vit.layernorm.{weight,bias}
+    ///   - classifier.{weight,bias} (when present)
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &VitConfig,
+        num_classes: Option<usize>,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+
+        let patch_proj = Arc::from(load_tensor_as_f32(
+            st, "vit.embeddings.patch_embeddings.projection.weight",
+        )?);
+        let patch_proj_bias = Arc::from(load_tensor_as_f32(
+            st, "vit.embeddings.patch_embeddings.projection.bias",
+        )?);
+        let cls_token = Arc::from(load_tensor_as_f32(st, "vit.embeddings.cls_token")?);
+        let position_embeddings = Arc::from(load_tensor_as_f32(
+            st, "vit.embeddings.position_embeddings",
+        )?);
+
+        let mut layers: Vec<VitLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("vit.encoder.layer.{i}");
+            let ln_before_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.layernorm_before.weight"))?);
+            let ln_before_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.layernorm_before.bias"))?);
+            let q_proj = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.attention.attention.query.weight"), h, h,
+            )?;
+            let q_proj_bias = Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.attention.attention.query.bias"))?));
+            let k_proj = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.attention.attention.key.weight"), h, h,
+            )?;
+            let k_proj_bias = Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.attention.attention.key.bias"))?));
+            let v_proj = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.attention.attention.value.weight"), h, h,
+            )?;
+            let v_proj_bias = Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.attention.attention.value.bias"))?));
+            let attn_output_proj = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.attention.output.dense.weight"), h, h,
+            )?;
+            let attn_output_proj_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.attention.output.dense.bias"))?);
+            let ln_after_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.layernorm_after.weight"))?);
+            let ln_after_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.layernorm_after.bias"))?);
+            let intermediate_proj = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.intermediate.dense.weight"), inter, h,
+            )?;
+            let intermediate_proj_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.intermediate.dense.bias"))?);
+            let mlp_output_proj = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.output.dense.weight"), h, inter,
+            )?;
+            let mlp_output_proj_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.output.dense.bias"))?);
+            layers.push(VitLayerWeights {
+                ln_before_gain, ln_before_bias,
+                q_proj, q_proj_bias,
+                k_proj, k_proj_bias,
+                v_proj, v_proj_bias,
+                attn_output_proj, attn_output_proj_bias,
+                ln_after_gain, ln_after_bias,
+                intermediate_proj, intermediate_proj_bias,
+                mlp_output_proj, mlp_output_proj_bias,
+            });
+        }
+
+        let final_ln_gain = Arc::from(load_tensor_as_f32(st, "vit.layernorm.weight")?);
+        let final_ln_bias = Arc::from(load_tensor_as_f32(st, "vit.layernorm.bias")?);
+
+        let classifier = if let Some(num_labels) = num_classes {
+            let w = load_transposed_matrix_preserve_dtype(
+                st, "classifier.weight", num_labels, h,
+            )?;
+            let b = Arc::from(load_tensor_as_f32(st, "classifier.bias")?);
+            Some((w, b))
+        } else {
+            None
+        };
+
+        Ok(Self {
+            patch_proj, patch_proj_bias, cls_token, position_embeddings,
+            layers, final_ln_gain, final_ln_bias, classifier,
+        })
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
