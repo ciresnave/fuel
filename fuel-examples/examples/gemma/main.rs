@@ -1,4 +1,4 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
@@ -6,15 +6,11 @@ extern crate accelerate_src;
 
 use anyhow::{Error as E, Result};
 use clap::Parser;
+use std::io::Write;
 
-use fuel_transformers::models::gemma::{Config as Config1, Model as Model1};
-use fuel_transformers::models::gemma2::{Config as Config2, Model as Model2};
-use fuel_transformers::models::gemma3::{Config as Config3, Model as Model3};
-
-use fuel::{DType, Device, Tensor};
-use fuel_examples::token_output_stream::TokenOutputStream;
-use fuel_nn::VarBuilder;
-use fuel_transformers::generation::LogitsProcessor;
+use fuel::lazy_gemma::{GemmaActivation, GemmaConfig, GemmaModel, GemmaWeights};
+use fuel::lazy_gemma2::{Gemma2Config, Gemma2Model, Gemma2Weights};
+use fuel::lazy_gemma3::{Gemma3Config, Gemma3Model, Gemma3Weights};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
 
@@ -54,127 +50,34 @@ enum Which {
     InstructV3_1B,
 }
 
-enum Model {
-    V1(Model1),
-    V2(Model2),
-    V3(Model3),
+enum LazyModel {
+    V1(GemmaModel, usize),
+    V2(Gemma2Model, usize),
+    V3(Gemma3Model, usize),
 }
 
-impl Model {
-    fn forward(&mut self, input_ids: &Tensor, pos: usize) -> fuel::Result<Tensor> {
+impl LazyModel {
+    fn forward(&self, tokens: &[u32]) -> Result<Vec<f32>> {
         match self {
-            Self::V1(m) => m.forward(input_ids, pos),
-            Self::V2(m) => m.forward(input_ids, pos),
-            Self::V3(m) => m.forward(input_ids, pos),
-        }
-    }
-}
-
-struct TextGeneration {
-    model: Model,
-    device: Device,
-    tokenizer: TokenOutputStream,
-    logits_processor: LogitsProcessor,
-    repeat_penalty: f32,
-    repeat_last_n: usize,
-}
-
-impl TextGeneration {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        model: Model,
-        tokenizer: Tokenizer,
-        seed: u64,
-        temp: Option<f64>,
-        top_p: Option<f64>,
-        repeat_penalty: f32,
-        repeat_last_n: usize,
-        device: &Device,
-    ) -> Self {
-        let logits_processor = LogitsProcessor::new(seed, temp, top_p);
-        Self {
-            model,
-            tokenizer: TokenOutputStream::new(tokenizer),
-            logits_processor,
-            repeat_penalty,
-            repeat_last_n,
-            device: device.clone(),
+            Self::V1(m, _) => m
+                .forward(tokens, 0)
+                .map(|l| l.realize_f32())
+                .map_err(|e| E::msg(format!("forward: {e}"))),
+            Self::V2(m, _) => m
+                .forward(tokens, 0)
+                .map(|l| l.realize_f32())
+                .map_err(|e| E::msg(format!("forward: {e}"))),
+            Self::V3(m, _) => m
+                .forward(tokens, 0)
+                .map(|l| l.realize_f32())
+                .map_err(|e| E::msg(format!("forward: {e}"))),
         }
     }
 
-    fn run(&mut self, prompt: &str, sample_len: usize) -> Result<()> {
-        use std::io::Write;
-        self.tokenizer.clear();
-        let mut tokens = self
-            .tokenizer
-            .tokenizer()
-            .encode(prompt, true)
-            .map_err(E::msg)?
-            .get_ids()
-            .to_vec();
-        for &t in tokens.iter() {
-            if let Some(t) = self.tokenizer.next_token(t)? {
-                print!("{t}")
-            }
+    fn vocab_size(&self) -> usize {
+        match self {
+            Self::V1(_, v) | Self::V2(_, v) | Self::V3(_, v) => *v,
         }
-        std::io::stdout().flush()?;
-
-        let mut generated_tokens = 0usize;
-        let eos_token = match self.tokenizer.get_token("<eos>") {
-            Some(token) => token,
-            None => anyhow::bail!("cannot find the <eos> token"),
-        };
-
-        let eot_token = match self.tokenizer.get_token("<end_of_turn>") {
-            Some(token) => token,
-            None => {
-                println!(
-                    "Warning: <end_of_turn> token not found in tokenizer, using <eos> as a backup"
-                );
-                eos_token
-            }
-        };
-
-        let start_gen = std::time::Instant::now();
-        for index in 0..sample_len {
-            let context_size = if index > 0 { 1 } else { tokens.len() };
-            let start_pos = tokens.len().saturating_sub(context_size);
-            let ctxt = &tokens[start_pos..];
-            let input = Tensor::new(ctxt, &self.device)?.unsqueeze(0)?;
-            let logits = self.model.forward(&input, start_pos)?;
-            let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
-            let logits = if self.repeat_penalty == 1. {
-                logits
-            } else {
-                let start_at = tokens.len().saturating_sub(self.repeat_last_n);
-                fuel_transformers::utils::apply_repeat_penalty(
-                    &logits,
-                    self.repeat_penalty,
-                    &tokens[start_at..],
-                )?
-            };
-
-            let next_token = self.logits_processor.sample(&logits)?;
-            tokens.push(next_token);
-            generated_tokens += 1;
-            if next_token == eos_token || next_token == eot_token {
-                break;
-            }
-            if let Some(t) = self.tokenizer.next_token(next_token)? {
-                print!("{t}");
-                std::io::stdout().flush()?;
-            }
-        }
-        let dt = start_gen.elapsed();
-        if let Some(rest) = self.tokenizer.decode_rest().map_err(E::msg)? {
-            print!("{rest}");
-        }
-        std::io::stdout().flush()?;
-        println!(
-            "\n{generated_tokens} tokens generated ({:.2} token/s)",
-            generated_tokens as f64 / dt.as_secs_f64(),
-        );
-        Ok(())
     }
 }
 
@@ -244,6 +147,7 @@ fn main() -> Result<()> {
     use tracing_subscriber::prelude::*;
 
     let args = Args::parse();
+    let _ = args.use_flash_attn;
     let _guard = if args.tracing {
         let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
         tracing_subscriber::registry().with(chrome_layer).init();
@@ -251,19 +155,7 @@ fn main() -> Result<()> {
     } else {
         None
     };
-    println!(
-        "avx: {}, neon: {}, simd128: {}, f16c: {}",
-        fuel::utils::with_avx(),
-        fuel::utils::with_neon(),
-        fuel::utils::with_simd128(),
-        fuel::utils::with_f16c()
-    );
-    println!(
-        "temp: {:.2} repeat-penalty: {:.2} repeat-last-n: {}",
-        args.temperature.unwrap_or(0.),
-        args.repeat_penalty,
-        args.repeat_last_n
-    );
+    let _ = fuel_examples::device(args.cpu)?;
 
     let start = std::time::Instant::now();
     let api = Api::new()?;
@@ -315,13 +207,11 @@ fn main() -> Result<()> {
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
 
     let start = std::time::Instant::now();
-    let device = fuel_examples::device(args.cpu)?;
-    let dtype = if device.is_cuda() {
-        DType::BF16
-    } else {
-        DType::F32
-    };
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, dtype, &device)? };
+    let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
+        .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+    let config_json = std::fs::read_to_string(&config_filename)?;
+    let eos_token_id = parse_eos_token_id(&config_json);
+
     let model = match args.which {
         Which::Base2B
         | Which::Base7B
@@ -333,59 +223,275 @@ fn main() -> Result<()> {
         | Which::CodeBase7B
         | Which::CodeInstruct2B
         | Which::CodeInstruct7B => {
-            let config: Config1 = serde_json::from_reader(std::fs::File::open(config_filename)?)?;
-            let model = Model1::new(args.use_flash_attn, &config, vb)?;
-            Model::V1(model)
+            let config = gemma_config_from_hf_json_str(&config_json)?;
+            let weights = GemmaWeights::load_from_mmapped(&st, &config)
+                .map_err(|e| E::msg(format!("load gemma weights: {e}")))?;
+            let vocab = config.vocab_size;
+            LazyModel::V1(GemmaModel { config, weights }, vocab)
         }
         Which::BaseV2_2B | Which::InstructV2_2B | Which::BaseV2_9B | Which::InstructV2_9B => {
-            let config: Config2 = serde_json::from_reader(std::fs::File::open(config_filename)?)?;
-            let model = Model2::new(args.use_flash_attn, &config, vb)?;
-            Model::V2(model)
+            let config = gemma2_config_from_hf_json_str(&config_json)?;
+            let weights = Gemma2Weights::load_from_mmapped(&st, &config)
+                .map_err(|e| E::msg(format!("load gemma2 weights: {e}")))?;
+            let vocab = config.vocab_size;
+            LazyModel::V2(Gemma2Model { config, weights }, vocab)
         }
         Which::BaseV3_1B | Which::InstructV3_1B => {
-            let config: Config3 = serde_json::from_reader(std::fs::File::open(config_filename)?)?;
-            let model = Model3::new(args.use_flash_attn, &config, vb)?;
-            Model::V3(model)
+            let config = gemma3_config_from_hf_json_str(&config_json)?;
+            let weights = Gemma3Weights::load_from_mmapped(&st, &config)
+                .map_err(|e| E::msg(format!("load gemma3 weights: {e}")))?;
+            let vocab = config.vocab_size;
+            LazyModel::V3(Gemma3Model { config, weights }, vocab)
         }
     };
-
     println!("loaded the model in {:?}", start.elapsed());
 
-    let mut pipeline = TextGeneration::new(
-        model,
-        tokenizer,
-        args.seed,
-        args.temperature,
-        args.top_p,
-        args.repeat_penalty,
-        args.repeat_last_n,
-        &device,
-    );
-
     let prompt = match args.which {
-        Which::Base2B
-        | Which::Base7B
-        | Which::Instruct2B
-        | Which::Instruct7B
-        | Which::InstructV1_1_2B
-        | Which::InstructV1_1_7B
-        | Which::CodeBase2B
-        | Which::CodeBase7B
-        | Which::CodeInstruct2B
-        | Which::CodeInstruct7B
-        | Which::BaseV2_2B
-        | Which::InstructV2_2B
-        | Which::BaseV2_9B
-        | Which::InstructV2_9B
-        | Which::BaseV3_1B => args.prompt,
         Which::InstructV3_1B => {
             format!(
                 "<start_of_turn> user\n{}<end_of_turn>\n<start_of_turn> model\n",
                 args.prompt
             )
         }
+        _ => args.prompt.clone(),
     };
 
-    pipeline.run(&prompt, args.sample_len)?;
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut tokens = tokenizer
+        .encode(prompt, true)
+        .map_err(E::msg)?
+        .get_ids()
+        .to_vec();
+
+    let eos_token_id = eos_token_id.or_else(|| tokenizer.token_to_id("<eos>"));
+    let eot_token_id = tokenizer.token_to_id("<end_of_turn>").or(eos_token_id);
+
+    let mut generated_tokens = 0usize;
+    let start_gen = std::time::Instant::now();
+    for index in 0..args.sample_len {
+        let logits_data = model.forward(&tokens)?;
+        let vocab_size = model.vocab_size();
+        let seq = tokens.len();
+        let last_off = (seq - 1) * vocab_size;
+        let mut last_logits: Vec<f32> = logits_data[last_off..last_off + vocab_size].to_vec();
+        if args.repeat_penalty != 1.0 {
+            let start_at = tokens.len().saturating_sub(args.repeat_last_n);
+            apply_repeat_penalty(&mut last_logits, args.repeat_penalty, &tokens[start_at..]);
+        }
+        let next_token = sample(
+            &last_logits,
+            args.temperature.map(|t| t as f32).unwrap_or(0.0),
+            args.top_p.map(|p| p as f32),
+            args.seed.wrapping_add(index as u64),
+        );
+        tokens.push(next_token);
+        generated_tokens += 1;
+        if Some(next_token) == eos_token_id || Some(next_token) == eot_token_id {
+            break;
+        }
+        let tok = tokenizer.decode(&[next_token], true).map_err(E::msg)?;
+        print!("{tok}");
+        std::io::stdout().flush()?;
+    }
+    let dt = start_gen.elapsed();
+    println!(
+        "\n{generated_tokens} tokens generated ({:.2} token/s)",
+        generated_tokens as f64 / dt.as_secs_f64(),
+    );
     Ok(())
+}
+
+fn gemma_config_from_hf_json_str(json: &str) -> Result<GemmaConfig> {
+    let v: serde_json::Value = serde_json::from_str(json)?;
+    let get_usize = |key: &str, default: usize| -> usize {
+        v.get(key)
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(default)
+    };
+    let get_f64 = |key: &str, default: f64| -> f64 {
+        v.get(key).and_then(|x| x.as_f64()).unwrap_or(default)
+    };
+    let get_bool = |key: &str, default: bool| -> bool {
+        v.get(key).and_then(|x| x.as_bool()).unwrap_or(default)
+    };
+    Ok(GemmaConfig {
+        vocab_size: get_usize("vocab_size", 256_000),
+        hidden_size: get_usize("hidden_size", 2048),
+        intermediate_size: get_usize("intermediate_size", 16_384),
+        num_hidden_layers: get_usize("num_hidden_layers", 18),
+        num_attention_heads: get_usize("num_attention_heads", 8),
+        num_key_value_heads: get_usize("num_key_value_heads", 1),
+        head_dim: get_usize("head_dim", 256),
+        rms_norm_eps: get_f64("rms_norm_eps", 1e-6),
+        rope_theta: get_f64("rope_theta", 10_000.0),
+        max_position_embeddings: get_usize("max_position_embeddings", 8192),
+        attention_bias: get_bool("attention_bias", false),
+        hidden_activation: GemmaActivation::GeluPytorchTanh,
+    })
+}
+
+fn gemma2_config_from_hf_json_str(json: &str) -> Result<Gemma2Config> {
+    let v: serde_json::Value = serde_json::from_str(json)?;
+    let get_usize = |key: &str, default: usize| -> usize {
+        v.get(key)
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(default)
+    };
+    let get_usize_opt = |key: &str| -> Option<usize> {
+        v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
+    };
+    let get_f64 = |key: &str, default: f64| -> f64 {
+        v.get(key).and_then(|x| x.as_f64()).unwrap_or(default)
+    };
+    let get_f64_opt = |key: &str| -> Option<f64> {
+        v.get(key).and_then(|x| x.as_f64())
+    };
+    let get_bool = |key: &str, default: bool| -> bool {
+        v.get(key).and_then(|x| x.as_bool()).unwrap_or(default)
+    };
+    Ok(Gemma2Config {
+        vocab_size: get_usize("vocab_size", 256_000),
+        hidden_size: get_usize("hidden_size", 2304),
+        intermediate_size: get_usize("intermediate_size", 9216),
+        num_hidden_layers: get_usize("num_hidden_layers", 26),
+        num_attention_heads: get_usize("num_attention_heads", 8),
+        num_key_value_heads: get_usize("num_key_value_heads", 4),
+        head_dim: get_usize("head_dim", 256),
+        rms_norm_eps: get_f64("rms_norm_eps", 1e-6),
+        rope_theta: get_f64("rope_theta", 10_000.0),
+        attention_bias: get_bool("attention_bias", false),
+        max_position_embeddings: get_usize("max_position_embeddings", 8192),
+        attn_logit_softcapping: get_f64_opt("attn_logit_softcapping"),
+        final_logit_softcapping: get_f64_opt("final_logit_softcapping"),
+        sliding_window: get_usize_opt("sliding_window"),
+    })
+}
+
+fn gemma3_config_from_hf_json_str(json: &str) -> Result<Gemma3Config> {
+    let v: serde_json::Value = serde_json::from_str(json)?;
+    // gemma3 sometimes embeds text_config; promote it if present.
+    let v = v.get("text_config").cloned().unwrap_or(v);
+    let get_usize = |key: &str, default: usize| -> usize {
+        v.get(key)
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(default)
+    };
+    let get_f64 = |key: &str, default: f64| -> f64 {
+        v.get(key).and_then(|x| x.as_f64()).unwrap_or(default)
+    };
+    let get_f64_opt = |key: &str| -> Option<f64> {
+        v.get(key).and_then(|x| x.as_f64())
+    };
+    let get_bool = |key: &str, default: bool| -> bool {
+        v.get(key).and_then(|x| x.as_bool()).unwrap_or(default)
+    };
+    Ok(Gemma3Config {
+        vocab_size: get_usize("vocab_size", 262_144),
+        hidden_size: get_usize("hidden_size", 1152),
+        intermediate_size: get_usize("intermediate_size", 6912),
+        num_hidden_layers: get_usize("num_hidden_layers", 26),
+        num_attention_heads: get_usize("num_attention_heads", 4),
+        num_key_value_heads: get_usize("num_key_value_heads", 1),
+        head_dim: get_usize("head_dim", 256),
+        rms_norm_eps: get_f64("rms_norm_eps", 1e-6),
+        rope_theta: get_f64("rope_theta", 1_000_000.0),
+        rope_local_base_freq: get_f64("rope_local_base_freq", 10_000.0),
+        max_position_embeddings: get_usize("max_position_embeddings", 32_768),
+        sliding_window: get_usize("sliding_window", 512),
+        sliding_window_pattern: get_usize("sliding_window_pattern", 6),
+        attention_bias: get_bool("attention_bias", false),
+        hidden_activation: GemmaActivation::GeluPytorchTanh,
+        attn_logit_softcapping: get_f64_opt("attn_logit_softcapping"),
+        final_logit_softcapping: get_f64_opt("final_logit_softcapping"),
+    })
+}
+
+fn parse_eos_token_id(json: &str) -> Option<u32> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    v.get("eos_token_id").and_then(|x| x.as_u64()).map(|x| x as u32)
+}
+
+fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
+    let mut seen = std::collections::HashSet::new();
+    for &t in context {
+        if !seen.insert(t) {
+            continue;
+        }
+        let idx = t as usize;
+        if idx < logits.len() {
+            let v = logits[idx];
+            logits[idx] = if v >= 0.0 { v / penalty } else { v * penalty };
+        }
+    }
+}
+
+fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u32 {
+    if temperature <= 0.0 {
+        let mut best_i = 0usize;
+        let mut best = logits[0];
+        for (i, &v) in logits.iter().enumerate().skip(1) {
+            if v > best {
+                best = v;
+                best_i = i;
+            }
+        }
+        return best_i as u32;
+    }
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let inv_t = 1.0 / temperature.max(1e-6);
+    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    for p in &mut probs {
+        *p /= sum.max(1e-30);
+    }
+    let mut idx: Vec<usize> = (0..probs.len()).collect();
+    idx.sort_unstable_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap());
+    let mut keep_mask: Vec<bool> = vec![true; probs.len()];
+    if let Some(p_cut) = top_p {
+        let mut cum2 = 0.0;
+        let mut allow = true;
+        for &i in &idx {
+            if !keep_mask[i] {
+                continue;
+            }
+            if !allow {
+                keep_mask[i] = false;
+                continue;
+            }
+            cum2 += probs[i];
+            if cum2 >= p_cut {
+                allow = false;
+            }
+        }
+    }
+    let mut filtered: Vec<f32> = probs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| if keep_mask[i] { *p } else { 0.0 })
+        .collect();
+    let s: f32 = filtered.iter().sum();
+    if s > 0.0 {
+        for v in &mut filtered {
+            *v /= s;
+        }
+    } else {
+        return 0;
+    }
+    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    state ^= state >> 33;
+    state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    state ^= state >> 33;
+    let r = (state as f32) / (u64::MAX as f32);
+    let mut cum = 0.0;
+    for (i, p) in filtered.iter().enumerate() {
+        cum += *p;
+        if r <= cum {
+            return i as u32;
+        }
+    }
+    (filtered.len() - 1) as u32
 }
