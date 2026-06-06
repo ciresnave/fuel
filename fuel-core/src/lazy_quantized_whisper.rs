@@ -212,6 +212,19 @@ impl QuantizedWhisperModel {
     /// multiple of 32 (the Q4_0 block size); for HF Whisper this holds
     /// — `d_model` is always 384 / 512 / 768 / 1024 / 1280 across the
     /// release line.
+    /// Convenience: load f32 Whisper weights from HF safetensors and
+    /// quantize the projection matrices to Q4_0. Equivalent to
+    /// `Self::from_f32_bake(&WhisperModel { config, weights: WhisperWeights::load_from_mmapped(st, &config)? })`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: WhisperConfig,
+    ) -> crate::Result<Self> {
+        use crate::lazy_whisper::{WhisperModel, WhisperWeights};
+        let weights = WhisperWeights::load_from_mmapped(st, &cfg)?;
+        let plain = WhisperModel { config: cfg, weights };
+        Self::from_f32_bake(&plain)
+    }
+
     pub fn from_f32_bake(plain: &WhisperModel) -> crate::Result<Self> {
         let cfg = plain.config.clone();
         let d = cfg.d_model;

@@ -229,6 +229,92 @@ impl SmolLm3Model {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl SmolLm3Weights {
+    /// Load SmolLM3 weights from HF safetensors.
+    /// HF naming follows LLaMA conventions: model.embed_tokens.weight,
+    /// model.layers.{i}.self_attn.{q,k,v,o}_proj.{weight,optional bias},
+    /// model.layers.{i}.{input_layernorm,post_attention_layernorm}.weight,
+    /// model.layers.{i}.mlp.{gate,up,down}_proj.weight, model.norm.weight,
+    /// lm_head.weight (always present in HF SmolLM3 checkpoints).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &SmolLm3Config,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let h = cfg.hidden_size;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let inter = cfg.intermediate_size;
+
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "model.embed_tokens.weight")?);
+
+        let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{i}");
+            let attn_q = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h,
+            )?;
+            let attn_k = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+            )?;
+            let attn_v = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+            )?;
+            let attn_o = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim,
+            )?;
+            let ffn_gate = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.gate_proj.weight"), inter, h,
+            )?;
+            let ffn_up = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.up_proj.weight"), inter, h,
+            )?;
+            let ffn_down = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.down_proj.weight"), h, inter,
+            )?;
+            let attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.input_layernorm.weight"),
+            )?);
+            let ffn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+
+            let attn_q_bias = if cfg.attention_bias {
+                Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?))
+            } else { None };
+            let attn_k_bias = if cfg.attention_bias {
+                Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))?))
+            } else { None };
+            let attn_v_bias = if cfg.attention_bias {
+                Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?))
+            } else { None };
+
+            layers.push(LayerWeights {
+                attn_q, attn_q_bias,
+                attn_k, attn_k_bias,
+                attn_v, attn_v_bias,
+                attn_o,
+                ffn_gate, ffn_up, ffn_down,
+                attn_norm_gain, ffn_norm_gain,
+            });
+        }
+
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
+        let output = load_transposed_matrix_preserve_dtype(
+            st, "lm_head.weight", cfg.vocab_size, h,
+        )?;
+
+        Ok(Self {
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

@@ -104,6 +104,109 @@ pub struct CsmModel {
     pub weights: CsmWeights,
 }
 
+// ---- Safetensors loading ---------------------------------------------------
+
+impl CsmWeights {
+    /// Load CSM head + embedding weights from a memory-mapped
+    /// safetensors file using the HuggingFace naming convention used
+    /// by Sesame's CSM-1B checkpoint (and the eager
+    /// `fuel-transformers/src/models/audio/csm.rs` port). Only the
+    /// embeddings, `codebook0_head`, `projection`, and `audio_head`
+    /// are read here — the two Llama sub-models are loaded by the
+    /// consumer via `LlamaWeights::load_from_mmapped` against the
+    /// `backbone.*` / `decoder.*` prefixes.
+    ///
+    /// Expected tensor names:
+    /// - `audio_embeddings.weight` — `[audio_num_codebooks *
+    ///   audio_vocab_size, backbone_dim]` (no transpose)
+    /// - `text_embeddings.weight` — `[text_vocab_size, backbone_dim]`
+    ///   (no transpose)
+    /// - `codebook0_head.weight` — HF `[audio_vocab_size,
+    ///   backbone_dim]`; we store the transposed form
+    ///   `[backbone_dim, audio_vocab_size]` so `apply_linear` can
+    ///   matmul directly.
+    /// - `projection.weight` — HF `[decoder_dim, backbone_dim]`;
+    ///   we store transposed `[backbone_dim, decoder_dim]`.
+    /// - `audio_head` — `[audio_num_codebooks - 1, decoder_dim,
+    ///   audio_vocab_size]` (no transpose; sliced per codebook at
+    ///   call-time).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &CsmConfig,
+    ) -> crate::Result<Self> {
+        use crate::lazy::{
+            load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+        };
+
+        // ---- audio_embeddings ------------------------------------
+        let audio_embedding = load_tensor_as_f32(st, "audio_embeddings.weight")?;
+        let expected_ae = cfg.audio_num_codebooks * cfg.audio_vocab_size * cfg.backbone_dim;
+        if audio_embedding.len() != expected_ae {
+            crate::bail!(
+                "audio_embeddings.weight: {} elements, expected {expected_ae} \
+                 ({} × {} × {})",
+                audio_embedding.len(),
+                cfg.audio_num_codebooks,
+                cfg.audio_vocab_size,
+                cfg.backbone_dim,
+            );
+        }
+
+        // ---- text_embeddings -------------------------------------
+        let text_embedding = load_tensor_as_f32(st, "text_embeddings.weight")?;
+        let expected_te = cfg.text_vocab_size * cfg.backbone_dim;
+        if text_embedding.len() != expected_te {
+            crate::bail!(
+                "text_embeddings.weight: {} elements, expected {expected_te} \
+                 ({} × {})",
+                text_embedding.len(),
+                cfg.text_vocab_size,
+                cfg.backbone_dim,
+            );
+        }
+
+        // ---- codebook0_head (linear, HF [audio_vocab, backbone]) -
+        let codebook0_head = load_transposed_matrix_preserve_dtype(
+            st,
+            "codebook0_head.weight",
+            cfg.audio_vocab_size,
+            cfg.backbone_dim,
+        )?;
+
+        // ---- projection (linear, HF [decoder, backbone]) ---------
+        let projection = load_transposed_matrix_preserve_dtype(
+            st,
+            "projection.weight",
+            cfg.decoder_dim,
+            cfg.backbone_dim,
+        )?;
+
+        // ---- audio_head (raw 3D tensor, no transpose) ------------
+        let audio_head = load_tensor_as_f32(st, "audio_head")?;
+        let expected_ah = (cfg.audio_num_codebooks - 1)
+            * cfg.decoder_dim
+            * cfg.audio_vocab_size;
+        if audio_head.len() != expected_ah {
+            crate::bail!(
+                "audio_head: {} elements, expected {expected_ah} \
+                 ({} × {} × {})",
+                audio_head.len(),
+                cfg.audio_num_codebooks - 1,
+                cfg.decoder_dim,
+                cfg.audio_vocab_size,
+            );
+        }
+
+        Ok(Self {
+            audio_embedding: Arc::from(audio_embedding),
+            text_embedding: Arc::from(text_embedding),
+            codebook0_head,
+            projection,
+            audio_head: Arc::from(audio_head),
+        })
+    }
+}
+
 // ---- Helpers ---------------------------------------------------------------
 
 impl CsmModel {
@@ -408,5 +511,243 @@ mod tests {
         assert_eq!(p.audio_vocab_size, 2051);
         assert_eq!(p.backbone_dim, 2048);
         assert_eq!(p.decoder_dim, 1024);
+    }
+
+    // ---- Safetensors loader round-trip --------------------------------
+
+    fn write_tmp_safetensors(
+        tensors: &[(String, Vec<usize>, Vec<f32>)],
+    ) -> std::path::PathBuf {
+        use safetensors::tensor::TensorView;
+        use std::collections::HashMap;
+        let bytes_store: Vec<Vec<u8>> = tensors.iter()
+            .map(|(_, _, data)| data.iter().flat_map(|f| f.to_le_bytes()).collect())
+            .collect();
+        let views: HashMap<String, TensorView<'_>> = tensors.iter()
+            .zip(bytes_store.iter())
+            .map(|((name, shape, _), bytes)| {
+                let v = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
+                    .expect("TensorView::new");
+                (name.clone(), v)
+            })
+            .collect();
+        let metadata: Option<HashMap<String, String>> = None;
+        let bytes_out = safetensors::serialize(&views, metadata).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "fuel_lazy_csm_test_{}.safetensors",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::write(&path, bytes_out).unwrap();
+        path
+    }
+
+    fn ramp_f32(n: usize, seed: u32) -> Vec<f32> {
+        let mut s = seed;
+        (0..n).map(|_| {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+        }).collect()
+    }
+
+    /// Round-trip a tiny CSM config through a synthesized safetensors
+    /// file and confirm the loader picks up all named tensors with
+    /// correct shapes and contents.
+    #[test]
+    fn load_from_mmapped_round_trip_tiny() {
+        let cfg = tiny_cfg();
+
+        // Source-of-truth tensors, HF layout.
+        let ae = ramp_f32(
+            cfg.audio_num_codebooks * cfg.audio_vocab_size * cfg.backbone_dim,
+            11,
+        );
+        let te = ramp_f32(cfg.text_vocab_size * cfg.backbone_dim, 22);
+        // codebook0_head HF: [audio_vocab_size, backbone_dim]
+        let c0 = ramp_f32(cfg.audio_vocab_size * cfg.backbone_dim, 33);
+        // projection HF: [decoder_dim, backbone_dim]
+        let proj = ramp_f32(cfg.decoder_dim * cfg.backbone_dim, 44);
+        // audio_head: [num_cb-1, decoder_dim, audio_vocab_size]
+        let ah = ramp_f32(
+            (cfg.audio_num_codebooks - 1) * cfg.decoder_dim * cfg.audio_vocab_size,
+            55,
+        );
+
+        let tensors = vec![
+            (
+                "audio_embeddings.weight".to_string(),
+                vec![cfg.audio_num_codebooks * cfg.audio_vocab_size, cfg.backbone_dim],
+                ae.clone(),
+            ),
+            (
+                "text_embeddings.weight".to_string(),
+                vec![cfg.text_vocab_size, cfg.backbone_dim],
+                te.clone(),
+            ),
+            (
+                "codebook0_head.weight".to_string(),
+                vec![cfg.audio_vocab_size, cfg.backbone_dim],
+                c0.clone(),
+            ),
+            (
+                "projection.weight".to_string(),
+                vec![cfg.decoder_dim, cfg.backbone_dim],
+                proj.clone(),
+            ),
+            (
+                "audio_head".to_string(),
+                vec![
+                    cfg.audio_num_codebooks - 1,
+                    cfg.decoder_dim,
+                    cfg.audio_vocab_size,
+                ],
+                ah.clone(),
+            ),
+        ];
+
+        let path = write_tmp_safetensors(&tensors);
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path).unwrap() };
+        let weights = CsmWeights::load_from_mmapped(&st, &cfg).unwrap();
+
+        // Embeddings preserved as-is.
+        assert_eq!(
+            weights.audio_embedding.len(),
+            cfg.audio_num_codebooks * cfg.audio_vocab_size * cfg.backbone_dim,
+        );
+        for (a, b) in weights.audio_embedding.iter().zip(ae.iter()) {
+            assert!((a - b).abs() < 1e-7, "audio_embedding round-trip");
+        }
+        assert_eq!(
+            weights.text_embedding.len(),
+            cfg.text_vocab_size * cfg.backbone_dim,
+        );
+        for (a, b) in weights.text_embedding.iter().zip(te.iter()) {
+            assert!((a - b).abs() < 1e-7, "text_embedding round-trip");
+        }
+
+        // codebook0_head: must be transposed. HF[i, j] = stored[j, i]
+        // where stored shape is [backbone_dim, audio_vocab_size].
+        assert_eq!(
+            weights.codebook0_head.elem_count(),
+            cfg.audio_vocab_size * cfg.backbone_dim,
+        );
+        if let WeightStorage::F32(arr) = &weights.codebook0_head {
+            for i in 0..cfg.audio_vocab_size {
+                for j in 0..cfg.backbone_dim {
+                    let hf = c0[i * cfg.backbone_dim + j];
+                    let st_val = arr[j * cfg.audio_vocab_size + i];
+                    assert!((hf - st_val).abs() < 1e-7,
+                        "codebook0_head transpose mismatch at [{i},{j}]");
+                }
+            }
+        } else {
+            panic!("expected WeightStorage::F32 for codebook0_head");
+        }
+
+        // projection: must be transposed.
+        assert_eq!(
+            weights.projection.elem_count(),
+            cfg.decoder_dim * cfg.backbone_dim,
+        );
+        if let WeightStorage::F32(arr) = &weights.projection {
+            for i in 0..cfg.decoder_dim {
+                for j in 0..cfg.backbone_dim {
+                    let hf = proj[i * cfg.backbone_dim + j];
+                    let st_val = arr[j * cfg.decoder_dim + i];
+                    assert!((hf - st_val).abs() < 1e-7,
+                        "projection transpose mismatch at [{i},{j}]");
+                }
+            }
+        } else {
+            panic!("expected WeightStorage::F32 for projection");
+        }
+
+        // audio_head: kept raw.
+        assert_eq!(
+            weights.audio_head.len(),
+            (cfg.audio_num_codebooks - 1) * cfg.decoder_dim * cfg.audio_vocab_size,
+        );
+        for (a, b) in weights.audio_head.iter().zip(ah.iter()) {
+            assert!((a - b).abs() < 1e-7, "audio_head round-trip");
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Smoke-test: a model built from a loaded checkpoint can run all
+    /// four forward paths and produce finite outputs.
+    #[test]
+    fn load_from_mmapped_forward_smoke() {
+        let cfg = tiny_cfg();
+        let ae = ramp_f32(
+            cfg.audio_num_codebooks * cfg.audio_vocab_size * cfg.backbone_dim,
+            111,
+        );
+        let te = ramp_f32(cfg.text_vocab_size * cfg.backbone_dim, 222);
+        let c0 = ramp_f32(cfg.audio_vocab_size * cfg.backbone_dim, 333);
+        let proj = ramp_f32(cfg.decoder_dim * cfg.backbone_dim, 444);
+        let ah = ramp_f32(
+            (cfg.audio_num_codebooks - 1) * cfg.decoder_dim * cfg.audio_vocab_size,
+            555,
+        );
+        let tensors = vec![
+            (
+                "audio_embeddings.weight".to_string(),
+                vec![cfg.audio_num_codebooks * cfg.audio_vocab_size, cfg.backbone_dim],
+                ae,
+            ),
+            (
+                "text_embeddings.weight".to_string(),
+                vec![cfg.text_vocab_size, cfg.backbone_dim],
+                te,
+            ),
+            (
+                "codebook0_head.weight".to_string(),
+                vec![cfg.audio_vocab_size, cfg.backbone_dim],
+                c0,
+            ),
+            (
+                "projection.weight".to_string(),
+                vec![cfg.decoder_dim, cfg.backbone_dim],
+                proj,
+            ),
+            (
+                "audio_head".to_string(),
+                vec![
+                    cfg.audio_num_codebooks - 1,
+                    cfg.decoder_dim,
+                    cfg.audio_vocab_size,
+                ],
+                ah,
+            ),
+        ];
+        let path = write_tmp_safetensors(&tensors);
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path).unwrap() };
+        let weights = CsmWeights::load_from_mmapped(&st, &cfg).unwrap();
+        let model = CsmModel { config: cfg.clone(), weights };
+
+        let a = anchor();
+        let cb = cfg.audio_num_codebooks;
+        let seq = 2;
+        let audio_codes = vec![0_u32; seq * cb];
+        let text_tokens = vec![0_u32; seq];
+        let mask = vec![1_u8; seq * (cb + 1)];
+        let emb = model.embed_frame(&audio_codes, &text_tokens, &mask, &a).unwrap();
+        assert_eq!(emb.shape().dims(), &[1, seq, cfg.backbone_dim]);
+        for &v in &emb.realize_f32() { assert!(v.is_finite()); }
+
+        let logits = model.codebook0_logits(&emb);
+        assert_eq!(logits.shape().dims(), &[1, seq, cfg.audio_vocab_size]);
+        for &v in &logits.realize_f32() { assert!(v.is_finite()); }
+
+        let proj_h = model.project_to_decoder(&emb);
+        assert_eq!(proj_h.shape().dims(), &[1, seq, cfg.decoder_dim]);
+        let ci = model.audio_head_logits(&proj_h, 1).unwrap();
+        assert_eq!(ci.shape().dims(), &[1, seq, cfg.audio_vocab_size]);
+        for &v in &ci.realize_f32() { assert!(v.is_finite()); }
+
+        let ce = model.audio_embed_for_code(2, 1, &a).unwrap();
+        assert_eq!(ce.shape().dims(), &[1, 1, cfg.backbone_dim]);
+
+        let _ = std::fs::remove_file(&path);
     }
 }
