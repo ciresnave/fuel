@@ -589,6 +589,157 @@ fn quick_gelu(x: &LazyTensor) -> LazyTensor {
     x.mul(&sig).unwrap()
 }
 
+// ---- HuggingFace safetensors loaders ---------------------------------------
+
+fn load_clip_encoder_layer(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    embed_dim: usize,
+    intermediate_size: usize,
+) -> Result<ClipEncoderLayerWeights> {
+    use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    Ok(ClipEncoderLayerWeights {
+        ln1_gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm1.weight"))?),
+        ln1_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm1.bias"))?),
+        q_proj: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.self_attn.q_proj.weight"), embed_dim, embed_dim,
+        )?,
+        q_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.q_proj.bias"))?),
+        k_proj: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.self_attn.k_proj.weight"), embed_dim, embed_dim,
+        )?,
+        k_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.k_proj.bias"))?),
+        v_proj: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.self_attn.v_proj.weight"), embed_dim, embed_dim,
+        )?,
+        v_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.v_proj.bias"))?),
+        out_proj: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.self_attn.out_proj.weight"), embed_dim, embed_dim,
+        )?,
+        out_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.out_proj.bias"))?),
+        ln2_gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm2.weight"))?),
+        ln2_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm2.bias"))?),
+        fc1: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.mlp.fc1.weight"), intermediate_size, embed_dim,
+        )?,
+        fc1_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.mlp.fc1.bias"))?),
+        fc2: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.mlp.fc2.weight"), embed_dim, intermediate_size,
+        )?,
+        fc2_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.mlp.fc2.bias"))?),
+    })
+}
+
+impl ClipTextWeights {
+    /// Load CLIP text-tower weights from HF safetensors.
+    ///
+    /// HF naming (matches `openai/clip-vit-base-patch32`):
+    ///   - `text_model.embeddings.token_embedding.weight`
+    ///   - `text_model.embeddings.position_embedding.weight`
+    ///   - `text_model.encoder.layers.{i}.{layer_norm1,layer_norm2,self_attn.{q,k,v,out}_proj,mlp.{fc1,fc2}}`
+    ///   - `text_model.final_layer_norm.{weight,bias}`
+    ///
+    /// `prefix` allows callers loading bare text-only checkpoints
+    /// (`embeddings.token_embedding.weight` etc.) to pass `""`. Standard
+    /// `CLIPModel` checkpoints use `"text_model."`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &ClipTextConfig,
+        prefix: &str,
+    ) -> Result<Self> {
+        use crate::lazy::load_tensor_as_f32;
+        let token_embedding = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.token_embedding.weight"),
+        )?);
+        let position_embedding = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.position_embedding.weight"),
+        )?);
+        let layers: Result<Vec<_>> = (0..cfg.num_hidden_layers)
+            .map(|i| load_clip_encoder_layer(
+                st, &format!("{prefix}encoder.layers.{i}"), cfg.embed_dim, cfg.intermediate_size,
+            ))
+            .collect();
+        Ok(Self {
+            token_embedding,
+            position_embedding,
+            layers: layers?,
+            final_ln_gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}final_layer_norm.weight"))?),
+            final_ln_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}final_layer_norm.bias"))?),
+        })
+    }
+}
+
+impl ClipVisionWeights {
+    /// Load CLIP vision-tower weights from HF safetensors.
+    ///
+    /// HF naming:
+    ///   - `vision_model.embeddings.patch_embedding.weight` (Conv2d kernel)
+    ///   - `vision_model.embeddings.class_embedding`
+    ///   - `vision_model.embeddings.position_embedding.weight`
+    ///   - `vision_model.pre_layrnorm.{weight,bias}` (HF typo preserved)
+    ///   - `vision_model.encoder.layers.{i}.*` (same shape as text tower)
+    ///   - `vision_model.post_layernorm.{weight,bias}`
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &ClipVisionConfig,
+        prefix: &str,
+    ) -> Result<Self> {
+        use crate::lazy::load_tensor_as_f32;
+        let patch_proj = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.patch_embedding.weight"),
+        )?);
+        let class_embedding = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.class_embedding"),
+        )?);
+        let position_embedding = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.position_embedding.weight"),
+        )?);
+        let layers: Result<Vec<_>> = (0..cfg.num_hidden_layers)
+            .map(|i| load_clip_encoder_layer(
+                st, &format!("{prefix}encoder.layers.{i}"), cfg.embed_dim, cfg.intermediate_size,
+            ))
+            .collect();
+        Ok(Self {
+            patch_proj,
+            class_embedding,
+            position_embedding,
+            pre_ln_gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}pre_layrnorm.weight"))?),
+            pre_ln_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}pre_layrnorm.bias"))?),
+            layers: layers?,
+            post_ln_gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}post_layernorm.weight"))?),
+            post_ln_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}post_layernorm.bias"))?),
+        })
+    }
+}
+
+impl ClipModelWeights {
+    /// Load a full HuggingFace CLIP checkpoint (text + vision +
+    /// projection heads + logit_scale). Standard `CLIPModel`
+    /// checkpoints use `text_model.` / `vision_model.` prefixes
+    /// and `text_projection.weight` / `visual_projection.weight` at
+    /// the top level.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        text_cfg: &ClipTextConfig,
+        vision_cfg: &ClipVisionConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let text = ClipTextWeights::load_from_mmapped(st, text_cfg, "text_model.")?;
+        let vision = ClipVisionWeights::load_from_mmapped(st, vision_cfg, "vision_model.")?;
+        let text_projection = load_transposed_matrix_preserve_dtype(
+            st, "text_projection.weight", text_cfg.projection_dim, text_cfg.embed_dim,
+        )?;
+        let visual_projection = load_transposed_matrix_preserve_dtype(
+            st, "visual_projection.weight", vision_cfg.projection_dim, vision_cfg.embed_dim,
+        )?;
+        let logit_scale = load_tensor_as_f32(st, "logit_scale")?
+            .first().copied().unwrap_or(0.0);
+        Ok(Self {
+            text, vision, text_projection, visual_projection, logit_scale,
+        })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

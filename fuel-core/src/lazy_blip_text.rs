@@ -316,6 +316,125 @@ fn apply_attention(
 
 
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+fn load_ln(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+) -> Result<LayerNormWeights> {
+    use crate::lazy::load_tensor_as_f32;
+    Ok(LayerNormWeights {
+        gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.weight"))?),
+        bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.bias"))?),
+    })
+}
+
+fn load_blip_text_attn(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    hidden_size: usize,
+    kv_in_dim: usize,
+) -> Result<BlipTextAttentionWeights> {
+    use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    Ok(BlipTextAttentionWeights {
+        query: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.self.query.weight"), hidden_size, hidden_size,
+        )?,
+        query_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self.query.bias"))?),
+        key: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.self.key.weight"), hidden_size, kv_in_dim,
+        )?,
+        key_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self.key.bias"))?),
+        value: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.self.value.weight"), hidden_size, kv_in_dim,
+        )?,
+        value_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self.value.bias"))?),
+        out_dense: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.output.dense.weight"), hidden_size, hidden_size,
+        )?,
+        out_dense_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.output.dense.bias"))?),
+        out_ln: load_ln(st, &format!("{prefix}.output.LayerNorm"))?,
+    })
+}
+
+impl BlipTextWeights {
+    /// Load BLIP text-decoder weights from HF safetensors.
+    ///
+    /// HF naming (matches `Salesforce/blip-image-captioning-base`):
+    ///   - `text_decoder.bert.embeddings.{word_embeddings,position_embeddings,LayerNorm}`
+    ///   - `text_decoder.bert.encoder.layer.{i}.{attention,crossattention,intermediate,output}`
+    ///   - `text_decoder.cls.predictions.{transform.{dense,LayerNorm}, decoder.{weight,bias}}`
+    ///
+    /// `prefix` typically `"text_decoder."` for full BLIP, or `""` for
+    /// bare-text checkpoints.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &BlipTextConfig,
+        encoder_hidden_size: usize,
+        prefix: &str,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+
+        let word_embedding = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}bert.embeddings.word_embeddings.weight"),
+        )?);
+        let position_embedding = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}bert.embeddings.position_embeddings.weight"),
+        )?);
+        let embed_ln = load_ln(st, &format!("{prefix}bert.embeddings.LayerNorm"))?;
+
+        let mut layers: Vec<BlipTextLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let lp = format!("{prefix}bert.encoder.layer.{i}");
+            let self_attn = load_blip_text_attn(st, &format!("{lp}.attention"), h, h)?;
+            let cross_attn = load_blip_text_attn(
+                st, &format!("{lp}.crossattention"), h, encoder_hidden_size,
+            )?;
+            let ffn = BlipTextFfnWeights {
+                intermediate: load_transposed_matrix_preserve_dtype(
+                    st, &format!("{lp}.intermediate.dense.weight"), inter, h,
+                )?,
+                intermediate_bias: Arc::from(load_tensor_as_f32(
+                    st, &format!("{lp}.intermediate.dense.bias"),
+                )?),
+                output: load_transposed_matrix_preserve_dtype(
+                    st, &format!("{lp}.output.dense.weight"), h, inter,
+                )?,
+                output_bias: Arc::from(load_tensor_as_f32(
+                    st, &format!("{lp}.output.dense.bias"),
+                )?),
+                output_ln: load_ln(st, &format!("{lp}.output.LayerNorm"))?,
+            };
+            layers.push(BlipTextLayerWeights { self_attn, cross_attn, ffn });
+        }
+
+        let pred_dense = load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}cls.predictions.transform.dense.weight"), h, h,
+        )?;
+        let pred_dense_bias = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}cls.predictions.transform.dense.bias"),
+        )?);
+        let pred_ln = load_ln(st, &format!("{prefix}cls.predictions.transform.LayerNorm"))?;
+
+        let lm_head = load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}cls.predictions.decoder.weight"), cfg.vocab_size, h,
+        )?;
+        let lm_head_bias = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}cls.predictions.bias"),
+        )?);
+
+        Ok(Self {
+            word_embedding, position_embedding, embed_ln,
+            layers,
+            pred_dense, pred_dense_bias, pred_ln,
+            lm_head, lm_head_bias,
+        })
+    }
+}
+
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]

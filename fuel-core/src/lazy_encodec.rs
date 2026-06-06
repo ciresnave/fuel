@@ -33,7 +33,7 @@
 //!     through the same Conv1dWeights since norm is fused into
 //!     the conv weight pre-realize.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{load_tensor_as_f32, LazyTensor, WeightStorage};
 use crate::lazy_dac::expand_conv1d_weight_for_dilation_if_needed;
 use crate::lazy_lstm::{LstmCellWeights, LstmStack};
 use crate::Result;
@@ -407,6 +407,326 @@ pub fn pad1d(
         acc = acc.concat(&rp, 2_usize)?;
     }
     Ok(acc)
+}
+
+// ---- Safetensors loader ----------------------------------------------------
+
+/// Recompose a weight-normalised conv1d kernel from the legacy
+/// PyTorch `weight_g` / `weight_v` decomposition.
+///
+/// HuggingFace EnCodec checkpoints store every Conv1d / ConvTranspose1d
+/// weight as `weight_g` (`[out_c, 1, 1]`) plus `weight_v`
+/// (`[out_c, in_c, k]`). PyTorch's `nn.utils.weight_norm` reconstructs
+/// the effective weight as
+///
+/// ```text
+///   weight = weight_v * (weight_g / ||weight_v||_{dim=(1,2)})
+/// ```
+///
+/// where the norm is taken over the input-channel and kernel axes
+/// (i.e. one scalar per output channel). We fuse the norm back into
+/// the dense weight at load time so the rest of the lazy pipeline can
+/// treat the conv as a plain constant kernel.
+fn fuse_weight_norm_conv1d(
+    st: &crate::safetensors::MmapedSafetensors,
+    name_prefix: &str,
+    out_c: usize,
+    in_c: usize,
+    k: usize,
+) -> Result<Vec<f32>> {
+    let weight_g = load_tensor_as_f32(st, &format!("{name_prefix}.weight_g"))?;
+    let weight_v = load_tensor_as_f32(st, &format!("{name_prefix}.weight_v"))?;
+    if weight_g.len() != out_c {
+        crate::bail!(
+            "{name_prefix}.weight_g: {} elts, expected {} (= out_c)",
+            weight_g.len(), out_c,
+        );
+    }
+    let expected_v = out_c * in_c * k;
+    if weight_v.len() != expected_v {
+        crate::bail!(
+            "{name_prefix}.weight_v: {} elts, expected {} (= {out_c} * {in_c} * {k})",
+            weight_v.len(), expected_v,
+        );
+    }
+    let mut out = vec![0.0_f32; expected_v];
+    for o in 0..out_c {
+        let row_start = o * in_c * k;
+        let row_end = row_start + in_c * k;
+        let v_row = &weight_v[row_start..row_end];
+        let norm_sq: f32 = v_row.iter().map(|&x| x * x).sum();
+        let norm = norm_sq.sqrt().max(1e-30);
+        let scale = weight_g[o] / norm;
+        for (dst, &src) in out[row_start..row_end].iter_mut().zip(v_row.iter()) {
+            *dst = src * scale;
+        }
+    }
+    Ok(out)
+}
+
+fn load_encodec_conv1d(
+    st: &crate::safetensors::MmapedSafetensors,
+    name_prefix: &str,
+    c_in: usize,
+    c_out: usize,
+    k: usize,
+    stride: usize,
+    dilation: usize,
+) -> Result<Conv1dWeights> {
+    let w = fuse_weight_norm_conv1d(st, name_prefix, c_out, c_in, k)?;
+    let b = load_tensor_as_f32(st, &format!("{name_prefix}.bias"))?;
+    if b.len() != c_out {
+        crate::bail!(
+            "{name_prefix}.bias: {} elts, expected {}", b.len(), c_out,
+        );
+    }
+    Ok(Conv1dWeights {
+        w: Arc::from(w),
+        b: Some(Arc::from(b)),
+        c_in, c_out, k, stride, dilation,
+    })
+}
+
+fn load_encodec_conv_transpose1d(
+    st: &crate::safetensors::MmapedSafetensors,
+    name_prefix: &str,
+    c_in: usize,
+    c_out: usize,
+    k: usize,
+    stride: usize,
+) -> Result<ConvTranspose1dWeights> {
+    // PyTorch ConvTranspose1d weight layout is `[c_in, c_out, k]` —
+    // exactly what `weight_v` stores. Re-use the same fusion helper
+    // by treating the leading axis as out_c for normalisation
+    // purposes: PyTorch's weight_norm on ConvTranspose1d normalises
+    // along dims (1, 2), which here means (c_out, k). Each "row" of
+    // size `c_out * k` is associated with one weight_g scalar.
+    let w = fuse_weight_norm_conv1d(st, name_prefix, c_in, c_out, k)?;
+    let b = load_tensor_as_f32(st, &format!("{name_prefix}.bias"))?;
+    if b.len() != c_out {
+        crate::bail!(
+            "{name_prefix}.bias: {} elts, expected {}", b.len(), c_out,
+        );
+    }
+    Ok(ConvTranspose1dWeights {
+        w: Arc::from(w),
+        b: Some(Arc::from(b)),
+        c_in, c_out, k, stride,
+    })
+}
+
+/// Load a PyTorch `nn.LSTM` block as `num_layers` flat
+/// [`LstmCellWeights`]. PyTorch stores its gates in the order
+/// `[i, f, g, o]` along the leading axis — which matches the layout
+/// `LstmCellWeights` documents, so we copy without re-shuffling.
+fn load_encodec_lstm(
+    st: &crate::safetensors::MmapedSafetensors,
+    name_prefix: &str,
+    dim: usize,
+    num_layers: usize,
+) -> Result<Vec<LstmCellWeights>> {
+    let four_h = 4 * dim;
+    let mut out = Vec::with_capacity(num_layers);
+    for li in 0..num_layers {
+        let w_ih = load_tensor_as_f32(
+            st, &format!("{name_prefix}.weight_ih_l{li}"),
+        )?;
+        let w_hh = load_tensor_as_f32(
+            st, &format!("{name_prefix}.weight_hh_l{li}"),
+        )?;
+        let b_ih = load_tensor_as_f32(
+            st, &format!("{name_prefix}.bias_ih_l{li}"),
+        )?;
+        let b_hh = load_tensor_as_f32(
+            st, &format!("{name_prefix}.bias_hh_l{li}"),
+        )?;
+        if w_ih.len() != four_h * dim {
+            crate::bail!(
+                "{name_prefix}.weight_ih_l{li}: {} elts, expected {}",
+                w_ih.len(), four_h * dim,
+            );
+        }
+        if w_hh.len() != four_h * dim {
+            crate::bail!(
+                "{name_prefix}.weight_hh_l{li}: {} elts, expected {}",
+                w_hh.len(), four_h * dim,
+            );
+        }
+        if b_ih.len() != four_h {
+            crate::bail!(
+                "{name_prefix}.bias_ih_l{li}: {} elts, expected {}",
+                b_ih.len(), four_h,
+            );
+        }
+        if b_hh.len() != four_h {
+            crate::bail!(
+                "{name_prefix}.bias_hh_l{li}: {} elts, expected {}",
+                b_hh.len(), four_h,
+            );
+        }
+        out.push(LstmCellWeights {
+            w_ih: Arc::from(w_ih),
+            w_hh: Arc::from(w_hh),
+            b_ih: Arc::from(b_ih),
+            b_hh: Arc::from(b_hh),
+            input_dim: dim,
+            hidden_dim: dim,
+        });
+    }
+    Ok(out)
+}
+
+/// Number of residual quantizers EnCodec expects at a given target
+/// bandwidth. Mirrors the eager `Config::num_quantizers` helper.
+///
+/// `num_quantizers = (1000 * max_bandwidth) / (frame_rate * 10)`
+/// where `frame_rate = ceil(sampling_rate / prod(upsampling_ratios))`.
+pub fn encodec_num_quantizers(
+    sampling_rate: usize,
+    upsampling_ratios: &[usize],
+    target_bandwidths: &[f64],
+) -> usize {
+    let hop_length: usize = upsampling_ratios.iter().product();
+    let frame_rate = sampling_rate.div_ceil(hop_length);
+    let max_bw = target_bandwidths.last().copied().unwrap_or(0.0);
+    let num = 1000.0_f64 * max_bw;
+    (num as usize) / (frame_rate * 10)
+}
+
+impl EncodecWeights {
+    /// Load EnCodec weights from a HuggingFace `MmapedSafetensors`
+    /// checkpoint (e.g. `facebook/encodec_24khz/model.safetensors`).
+    ///
+    /// The HF EnCodec checkpoint stores each `EncodecConv1d` /
+    /// `EncodecConvTranspose1d` with a PyTorch `weight_norm`
+    /// parametrisation (`weight_g` + `weight_v`), which we fuse into
+    /// a single dense kernel at load time. The naming follows the
+    /// `EncodecDecoder.layers` `nn.ModuleList` indexing:
+    ///
+    /// - `decoder.layers.0` = init Conv1d
+    /// - `decoder.layers.1` = init LSTM
+    /// - For each upsampling ratio (in `cfg.upsampling_ratios` order):
+    ///     - `+1` ELU (no params)
+    ///     - `+1` ConvTranspose1d
+    ///     - `+1` ResnetBlock for each of `cfg.num_residual_layers`
+    /// - Final ELU (no params)
+    /// - Final Conv1d
+    ///
+    /// Residual blocks expose two convs at `block.1.conv.*` and
+    /// `block.3.conv.*` (their `block` is `[ELU, Conv, ELU, Conv]`),
+    /// plus an optional `shortcut.conv.*` 1×1 conv when
+    /// `cfg.use_conv_shortcut` is true.
+    ///
+    /// Quantizer layers are named `quantizer.layers.{i}.codebook.embed`
+    /// and the count is derived from the maximum target bandwidth via
+    /// [`encodec_num_quantizers`].
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &EncodecConfig,
+        sampling_rate: usize,
+        target_bandwidths: &[f64],
+    ) -> Result<Self> {
+        let num_codebooks = encodec_num_quantizers(
+            sampling_rate, &cfg.upsampling_ratios, target_bandwidths,
+        );
+        if num_codebooks == 0 {
+            crate::bail!(
+                "EncodecWeights::load_from_mmapped: zero quantizers \
+                 — check target_bandwidths and upsampling_ratios",
+            );
+        }
+
+        let mut scaling = 1_usize << cfg.upsampling_ratios.len();
+
+        // decoder.layers.0 — init conv (hidden_size → num_filters * scaling).
+        let init_conv = load_encodec_conv1d(
+            st, "decoder.layers.0.conv",
+            cfg.hidden_size, cfg.num_filters * scaling,
+            cfg.last_kernel_size, 1, 1,
+        )?;
+
+        // decoder.layers.1 — init LSTM at width `num_filters * scaling`.
+        let init_lstm = load_encodec_lstm(
+            st, "decoder.layers.1.lstm",
+            cfg.num_filters * scaling, cfg.num_lstm_layers,
+        )?;
+
+        let mut idx = 2_usize;
+        let mut stages: Vec<UpsampleStageWeights> =
+            Vec::with_capacity(cfg.upsampling_ratios.len());
+
+        for &ratio in &cfg.upsampling_ratios {
+            let current = scaling * cfg.num_filters;
+            // ELU has no params, but reserves an index in nn.ModuleList.
+            idx += 1;
+            let up_conv = load_encodec_conv_transpose1d(
+                st, &format!("decoder.layers.{idx}.conv"),
+                current, current / 2,
+                ratio * 2, ratio,
+            )?;
+            idx += 1;
+            let mut resnets: Vec<ResnetBlockWeights> =
+                Vec::with_capacity(cfg.num_residual_layers);
+            for j in 0..cfg.num_residual_layers {
+                let dim = current / 2;
+                let h = dim / cfg.compress;
+                let dilation = cfg.dilation_growth_rate.pow(j as u32);
+                let conv1 = load_encodec_conv1d(
+                    st, &format!("decoder.layers.{idx}.block.1.conv"),
+                    dim, h, cfg.residual_kernel_size, 1, dilation,
+                )?;
+                let conv2 = load_encodec_conv1d(
+                    st, &format!("decoder.layers.{idx}.block.3.conv"),
+                    h, dim, 1, 1, 1,
+                )?;
+                let shortcut = if cfg.use_conv_shortcut {
+                    Some(load_encodec_conv1d(
+                        st, &format!("decoder.layers.{idx}.shortcut.conv"),
+                        dim, dim, 1, 1, 1,
+                    )?)
+                } else {
+                    None
+                };
+                resnets.push(ResnetBlockWeights { conv1, conv2, shortcut });
+                idx += 1;
+            }
+            stages.push(UpsampleStageWeights { up_conv, resnets });
+            scaling /= 2;
+        }
+        // Final ELU.
+        idx += 1;
+        let final_conv = load_encodec_conv1d(
+            st, &format!("decoder.layers.{idx}.conv"),
+            cfg.num_filters, cfg.audio_channels,
+            cfg.last_kernel_size, 1, 1,
+        )?;
+
+        // RVQ codebooks.
+        let mut quantizers: Vec<VectorQuantizerWeights> =
+            Vec::with_capacity(num_codebooks);
+        for i in 0..num_codebooks {
+            let embed = load_tensor_as_f32(
+                st, &format!("quantizer.layers.{i}.codebook.embed"),
+            )?;
+            let expected = cfg.codebook_size * cfg.codebook_dim;
+            if embed.len() != expected {
+                crate::bail!(
+                    "quantizer.layers.{i}.codebook.embed: {} elts, expected {}",
+                    embed.len(), expected,
+                );
+            }
+            quantizers.push(VectorQuantizerWeights {
+                codebook: Arc::from(embed),
+            });
+        }
+
+        Ok(EncodecWeights {
+            quantizers,
+            decoder: DecoderWeights {
+                init_conv, init_lstm, stages, final_conv,
+            },
+        })
+    }
 }
 
 // ---- Tests -----------------------------------------------------------------
