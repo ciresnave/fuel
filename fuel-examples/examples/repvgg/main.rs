@@ -1,4 +1,4 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
@@ -6,9 +6,11 @@ extern crate accelerate_src;
 
 use clap::{Parser, ValueEnum};
 
-use fuel::{DType, IndexOp, D};
-use fuel_nn::{Module, VarBuilder};
-use fuel_transformers::models::repvgg;
+use fuel::lazy::LazyTensor;
+use fuel::lazy_repvgg::{RepVggConfig, RepVggModel, RepVggWeights};
+use fuel::safetensors::MmapedSafetensors;
+use fuel::{Device, Shape};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Which {
@@ -41,18 +43,18 @@ impl Which {
         format!("timm/repvgg_{name}.rvgg_in1k")
     }
 
-    fn config(&self) -> repvgg::Config {
+    fn config(&self, nclasses: Option<usize>) -> RepVggConfig {
         match self {
-            Self::A0 => repvgg::Config::a0(),
-            Self::A1 => repvgg::Config::a1(),
-            Self::A2 => repvgg::Config::a2(),
-            Self::B0 => repvgg::Config::b0(),
-            Self::B1 => repvgg::Config::b1(),
-            Self::B2 => repvgg::Config::b2(),
-            Self::B3 => repvgg::Config::b3(),
-            Self::B1G4 => repvgg::Config::b1g4(),
-            Self::B2G4 => repvgg::Config::b2g4(),
-            Self::B3G4 => repvgg::Config::b3g4(),
+            Self::A0 => RepVggConfig::a0(nclasses),
+            Self::A1 => RepVggConfig::a1(nclasses),
+            Self::A2 => RepVggConfig::a2(nclasses),
+            Self::B0 => RepVggConfig::b0(nclasses),
+            Self::B1 => RepVggConfig::b1(nclasses),
+            Self::B2 => RepVggConfig::b2(nclasses),
+            Self::B3 => RepVggConfig::b3(nclasses),
+            Self::B1G4 => RepVggConfig::b1g4(nclasses),
+            Self::B2G4 => RepVggConfig::b2g4(nclasses),
+            Self::B3G4 => RepVggConfig::b3g4(nclasses),
         }
     }
 }
@@ -76,28 +78,38 @@ struct Args {
 pub fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let device = fuel_examples::device(args.cpu)?;
+    // Lazy realizes through CPU/router; `cpu` flag preserved for CLI parity.
+    let _ = args.cpu;
+    let device = Device::cpu();
 
-    let image = fuel_examples::imagenet::load_image224(args.image)?.to_device(&device)?;
-    println!("loaded image {image:?}");
+    let eager_image = fuel_examples::imagenet::load_image224(&args.image)?;
+    println!("loaded image {eager_image:?}");
+    let image_vec: Vec<f32> = eager_image.flatten_all()?.to_vec1::<f32>()?;
+    let image = LazyTensor::from_f32(
+        Arc::<[f32]>::from(image_vec),
+        Shape::from_dims(&[1, 3, 224, 224]),
+        &device,
+    );
 
     let model_file = match args.model {
         None => {
-            let model_name = args.which.model_filename();
             let api = hf_hub::api::sync::Api::new()?;
-            let api = api.model(model_name);
+            let api = api.model(args.which.model_filename());
             api.get("model.safetensors")?
         }
         Some(model) => model.into(),
     };
 
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model_file], DType::F32, &device)? };
-    let model = repvgg::repvgg(&args.which.config(), 1000, vb)?;
+    let st = unsafe { MmapedSafetensors::multi(&[&model_file]) }?;
+    let nclasses = 1000_usize;
+    let config = args.which.config(Some(nclasses));
+    let weights = RepVggWeights::load_from_mmapped(&st, &config)?;
+    let model = RepVggModel { config, weights };
     println!("model built");
-    let logits = model.forward(&image.unsqueeze(0)?)?;
-    let prs = fuel_nn::ops::softmax(&logits, D::Minus1)?
-        .i(0)?
-        .to_vec1::<f32>()?;
+
+    let logits = model.forward(&image)?;
+    let probs = logits.softmax_last_dim()?;
+    let prs = probs.realize_f32();
     let mut prs = prs.iter().enumerate().collect::<Vec<_>>();
     prs.sort_by(|(_, p1), (_, p2)| p2.total_cmp(p1));
     for &(category_idx, pr) in prs.iter().take(5) {

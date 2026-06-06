@@ -1,33 +1,20 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-use anyhow::Error as E;
+use anyhow::{Error as E, Result};
 use clap::Parser;
+use std::sync::Arc;
 
-use fuel::{DType, Device, Result, Tensor};
+use fuel::lazy::LazyTensor;
+use fuel::lazy_blip::{BlipConfig, BlipForConditionalGeneration, BlipWeights};
+use fuel::safetensors::MmapedSafetensors;
+use fuel::{Device, Shape};
 use fuel_examples::token_output_stream::TokenOutputStream;
-use fuel_nn::VarBuilder;
-use fuel_transformers::models::blip;
-use fuel_transformers::models::quantized_blip;
 
 use tokenizers::Tokenizer;
-
-enum Model {
-    M(blip::BlipForConditionalGeneration),
-    Q(quantized_blip::BlipForConditionalGeneration),
-}
-
-impl Model {
-    fn text_decoder_forward(&mut self, xs: &Tensor, img_xs: &Tensor) -> Result<Tensor> {
-        match self {
-            Self::M(m) => m.text_decoder().forward(xs, img_xs),
-            Self::Q(m) => m.text_decoder().forward(xs, img_xs),
-        }
-    }
-}
 
 // TODO: Maybe add support for the conditional prompt.
 #[derive(Parser)]
@@ -46,48 +33,66 @@ struct Args {
     cpu: bool,
 
     /// Use the quantized version of the model.
+    ///
+    /// The lazy port ships F32 safetensors only; the eager-only
+    /// GGUF quantized path is not yet wired through lazy_blip.
+    /// Passing this flag returns an error so users know to fall
+    /// back to the eager binary (or wait for the lazy GGUF port).
     #[arg(long)]
     quantized: bool,
 }
 
 const SEP_TOKEN_ID: u32 = 102;
 
-/// Loads an image from disk using the image crate, this returns a tensor with shape
-/// (3, 384, 384). OpenAI normalization is applied.
-pub fn load_image<P: AsRef<std::path::Path>>(p: P) -> Result<Tensor> {
+/// Loads an image from disk, resizes to 384x384, applies OpenAI
+/// normalization, and returns a flat row-major Vec<f32> of length
+/// `3 * 384 * 384` laid out as (C, H, W).
+fn load_image_as_vec<P: AsRef<std::path::Path>>(p: P) -> Result<Vec<f32>> {
     let img = image::ImageReader::open(p)?
-        .decode()
-        .map_err(fuel::Error::wrap)?
+        .decode()?
         .resize_to_fill(384, 384, image::imageops::FilterType::Triangle);
     let img = img.to_rgb8();
-    let data = img.into_raw();
-    let data = Tensor::from_vec(data, (384, 384, 3), &Device::cpu())?.permute((2, 0, 1))?;
-    let mean =
-        Tensor::new(&[0.48145466f32, 0.4578275, 0.40821073], &Device::cpu())?.reshape((3, 1, 1))?;
-    let std = Tensor::new(&[0.26862954f32, 0.261_302_6, 0.275_777_1], &Device::cpu())?
-        .reshape((3, 1, 1))?;
-    (data.to_dtype(fuel::DType::F32)? / 255.)?
-        .broadcast_sub(&mean)?
-        .broadcast_div(&std)
+    let raw = img.into_raw(); // (H, W, C) row-major, u8
+
+    let mean = [0.48145466f32, 0.4578275, 0.40821073];
+    let std = [0.26862954f32, 0.261_302_6, 0.275_777_1];
+
+    // Convert HWC u8 → CHW f32 with normalization.
+    let h = 384usize;
+    let w = 384usize;
+    let mut out = vec![0.0f32; 3 * h * w];
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3 {
+                let v = raw[(y * w + x) * 3 + c] as f32 / 255.0;
+                let v = (v - mean[c]) / std[c];
+                out[(c * h + y) * w + x] = v;
+            }
+        }
+    }
+    Ok(out)
 }
 
-pub fn main() -> anyhow::Result<()> {
+pub fn main() -> Result<()> {
     let args = Args::parse();
+
+    if args.quantized {
+        return Err(E::msg(
+            "The lazy blip port does not yet support the quantized GGUF \
+             checkpoint; only the F32 safetensors path is wired. Drop \
+             --quantized or use the eager binary for the GGUF path.",
+        ));
+    }
 
     let model_file = match args.model {
         None => {
             let api = hf_hub::api::sync::Api::new()?;
-            if args.quantized {
-                let api = api.model("lmz/fuel-blip".to_string());
-                api.get("blip-image-captioning-large-q4k.gguf")?
-            } else {
-                let api = api.repo(hf_hub::Repo::with_revision(
-                    "Salesforce/blip-image-captioning-large".to_string(),
-                    hf_hub::RepoType::Model,
-                    "refs/pr/18".to_string(),
-                ));
-                api.get("model.safetensors")?
-            }
+            let api = api.repo(hf_hub::Repo::with_revision(
+                "Salesforce/blip-image-captioning-large".to_string(),
+                hf_hub::RepoType::Model,
+                "refs/pr/18".to_string(),
+            ));
+            api.get("model.safetensors")?
         }
         Some(model) => model.into(),
     };
@@ -101,41 +106,59 @@ pub fn main() -> anyhow::Result<()> {
     };
     let tokenizer = Tokenizer::from_file(tokenizer).map_err(E::msg)?;
     let mut tokenizer = TokenOutputStream::new(tokenizer);
-    let mut logits_processor =
-        fuel_transformers::generation::LogitsProcessor::new(1337, None, None);
 
-    let config = blip::Config::image_captioning_large();
+    // Lazy path currently realizes via the default executor (CPU /
+    // router). The `--cpu` flag is preserved for CLI parity with the
+    // eager binary but has no effect here.
+    let _ = args.cpu;
+    let device = Device::cpu();
 
-    let device = fuel_examples::device(args.cpu)?;
-    let (image_embeds, device, mut model) = if args.quantized {
-        let device = Device::cpu();
-        let image = load_image(args.image)?.to_device(&device)?;
-        println!("loaded image {image:?}");
+    let config = BlipConfig::image_captioning_large();
 
-        let vb = quantized_blip::VarBuilder::from_gguf(model_file, &device)?;
-        let model = quantized_blip::BlipForConditionalGeneration::new(&config, vb)?;
-        let image_embeds = image.unsqueeze(0)?.apply(model.vision_model())?;
-        (image_embeds, device, Model::Q(model))
-    } else {
-        let image = load_image(args.image)?.to_device(&device)?;
-        println!("loaded image {image:?}");
+    let image_vec = load_image_as_vec(&args.image)?;
+    println!("loaded image ({} f32 values)", image_vec.len());
+    let pixel_values = LazyTensor::from_f32(
+        Arc::<[f32]>::from(image_vec),
+        Shape::from_dims(&[1, 3, 384, 384]),
+        &device,
+    );
 
-        let vb =
-            unsafe { VarBuilder::from_mmaped_safetensors(&[model_file], DType::F32, &device)? };
-        let model = blip::BlipForConditionalGeneration::new(&config, vb)?;
-        let image_embeds = image.unsqueeze(0)?.apply(model.vision_model())?;
-        (image_embeds, device, Model::M(model))
+    let st = unsafe { MmapedSafetensors::multi(&[model_file]) }
+        .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+    let weights = BlipWeights::load_from_mmapped(&st, &config)
+        .map_err(|e| E::msg(format!("load blip weights: {e}")))?;
+    let model = BlipForConditionalGeneration {
+        config: config.clone(),
+        weights,
     };
+    println!("model built");
 
-    let mut token_ids = vec![30522u32];
-    for index in 0..1000 {
-        let context_size = if index > 0 { 1 } else { token_ids.len() };
-        let start_pos = token_ids.len().saturating_sub(context_size);
-        let input_ids = Tensor::new(&token_ids[start_pos..], &device)?.unsqueeze(0)?;
-        let logits = model.text_decoder_forward(&input_ids, &image_embeds)?;
-        let logits = logits.squeeze(0)?;
-        let logits = logits.get(logits.dim(0)? - 1)?;
-        let token = logits_processor.sample(&logits)?;
+    let vocab_size = config.text_config.vocab_size;
+    let mut token_ids: Vec<u32> = vec![30522u32];
+    for _ in 0..1000 {
+        // Lazy text decoder has no KV cache: re-run the full sequence
+        // each step. forward() also re-runs vision; on CPU this is
+        // O(N) image-encoder evaluations which is slow but correct.
+        let logits = model.forward(&pixel_values, &token_ids, 0)?;
+        let data = logits.realize_f32();
+        let seq = token_ids.len();
+        // logits has shape (1, T, vocab); pick the LAST token's row.
+        let off = (seq - 1) * vocab_size;
+        let last_logits = &data[off..off + vocab_size];
+
+        // Greedy argmax sampler (matches the lazy port's lack of a
+        // LogitsProcessor + lack of KV cache — we surface a simple
+        // deterministic decode for v1).
+        let mut best_i = 0usize;
+        let mut best = last_logits[0];
+        for (i, &v) in last_logits.iter().enumerate().skip(1) {
+            if v > best {
+                best = v;
+                best_i = i;
+            }
+        }
+        let token = best_i as u32;
+
         if token == SEP_TOKEN_ID {
             break;
         }

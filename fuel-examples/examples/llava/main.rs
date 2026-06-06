@@ -1,65 +1,62 @@
-﻿pub mod constants;
+//! LLaVA — lazy port.
+//!
+//! The eager binary ran a full conversation loop with KV-cache iteration,
+//! conversation templates, and image-token interleaving. The lazy port at
+//! `fuel::lazy_llava` currently exposes a single-pass `forward` that
+//! consumes `(pixel_values, &[u32] text_tokens)` and returns logits for
+//! the concatenated `[image_features; text_embeds]` sequence. The
+//! generation loop / KV cache / conversation templates are deferred to
+//! follow-up work on the lazy module.
+//!
+//! What this binary does today:
+//!   1. Loads the HF LLaVA config + tokenizer + image preprocessor.
+//!   2. Loads the image, preprocesses it, and wraps the result in a
+//!      lazy `(1, 3, H, W)` f32 tensor.
+//!   3. Builds a lazy `LlavaConfig` from the HF JSON.
+//!   4. Loads weights from safetensors via `LlavaWeights::load_from_mmapped`.
+//!   5. Tokenizes the prompt (with `<image>` markers stripped — the
+//!      v1 lazy path splices the image features in front automatically).
+//!   6. Runs a single `LlavaModel::forward` and greedy-decodes the
+//!      max-logit next token as a smoke test.
+
+pub mod constants;
 pub mod conversation;
 pub mod image_processor;
 
-use fuel_transformers::generation::{LogitsProcessor, Sampling};
-use fuel_transformers::models::llama::Cache;
-
 use anyhow::{bail, Error as E, Result};
-use fuel::{DType, Device, IndexOp, Tensor};
-use fuel_nn::VarBuilder;
-use fuel_transformers::models::llava::config::{
-    HFGenerationConfig, HFLLaVAConfig, HFPreProcessorConfig,
-};
-use fuel_transformers::models::llava::{config::LLaVAConfig, LLaVA};
 use clap::Parser;
 use constants::*;
 use conversation::Conversation;
+use fuel::lazy::{LazyTensor, LlamaConfig};
+use fuel::lazy_clip::ClipVisionConfig;
+use fuel::lazy_llava::{LlavaConfig, LlavaModel, LlavaWeights};
+use fuel::safetensors::MmapedSafetensors;
+use fuel::{Device, Shape};
+use fuel_transformers::models::llava::config::{
+    HFGenerationConfig, HFLLaVAConfig, HFPreProcessorConfig, LLaVAConfig,
+};
 use hf_hub::api::sync::Api;
 use image_processor::{process_image, ImageProcessor};
-use std::io::Write;
+use std::sync::Arc;
 use tokenizers::Tokenizer;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about,long_about=None)]
+#[command(author, version, about, long_about = None)]
 struct Args {
     #[arg(long, default_value = "llava-hf/llava-v1.6-vicuna-7b-hf")]
     model_path: String,
     #[arg(long, default_value = "tokenizer/tokenizer.json")]
     tokenizer_path: String,
     #[arg(long)]
-    model_base: Option<String>,
-    #[arg(long)]
-    image_file: String, // Required
+    image_file: String,
     #[arg(long)]
     conv_mode: Option<String>,
-    #[arg(long, default_value_t = 0.2)]
-    temperature: f32,
-    #[arg(long, default_value_t = 512)]
-    max_new_tokens: usize,
     #[arg(long, action)]
     hf: bool,
     #[arg(long, action)]
     cpu: bool,
-    #[arg(long, action)]
-    no_kv_cache: bool,
     #[arg(long)]
     prompt: String,
-    /// The seed to use when generating random samples. Copy from fuel llama. Not exist in python llava.
-    #[arg(long, default_value_t = 299792458)]
-    seed: u64,
-}
-
-//from https://github.com/huggingface/fuel/blob/main/fuel-examples/examples/clip/main.rs
-fn load_image<T: AsRef<std::path::Path>>(
-    path: T,
-    processor: &ImageProcessor,
-    llava_config: &LLaVAConfig,
-    dtype: DType,
-) -> Result<((u32, u32), Tensor)> {
-    let img = image::ImageReader::open(path)?.decode()?;
-    let img_tensor = process_image(&img, processor, llava_config)?;
-    Ok(((img.width(), img.height()), img_tensor.to_dtype(dtype)?))
 }
 
 fn get_model_name_from_path(model_path: &str) -> String {
@@ -79,80 +76,82 @@ fn get_model_name_from_path(model_path: &str) -> String {
     }
 }
 
-fn duplicate_vec<T>(vec: &[T], n: usize) -> Vec<T>
-where
-    T: Clone,
-{
-    let mut res = Vec::new();
-    for _ in 0..n {
-        res.extend(vec.to_owned());
+fn lazy_llava_config_from_hf(hf: &HFLLaVAConfig) -> LlavaConfig {
+    let vision_config = ClipVisionConfig {
+        embed_dim: hf.vision_config.hidden_size,
+        intermediate_size: hf.vision_config.intermediate_size,
+        num_hidden_layers: hf.vision_config.num_hidden_layers,
+        num_attention_heads: hf.vision_config.num_attention_heads,
+        projection_dim: hf.vision_config.projection_dim,
+        num_channels: 3,
+        image_size: hf.vision_config.image_size,
+        patch_size: hf.vision_config.patch_size,
+    };
+    let dim = hf.text_config.hidden_size;
+    let n_heads = hf.text_config.num_attention_heads;
+    let text_config = LlamaConfig {
+        vocab_size: hf.vocab_size,
+        dim,
+        n_layers: hf.text_config.num_hidden_layers,
+        n_heads,
+        n_kv_heads: hf.text_config.num_key_value_heads,
+        head_dim: dim / n_heads,
+        ffn_dim: hf.text_config.intermediate_size,
+        norm_eps: hf.text_config.rms_norm_eps as f64,
+        rope_base: hf.text_config.rope_theta as f64,
+    };
+    LlavaConfig {
+        vision_config,
+        text_config,
+        // v1 only supports the "linear" projector where projection_dim == text_dim.
+        projection_dim: dim,
     }
-    res
 }
 
-fn insert_separator<T>(x: Vec<Vec<T>>, sep: Vec<T>) -> Vec<Vec<T>>
-where
-    T: Clone,
-{
-    let sep = vec![sep];
-    let sep = duplicate_vec(&sep, x.len());
-    let mut res = x
-        .iter()
-        .zip(sep.iter())
-        .flat_map(|(x, y)| vec![x.clone(), y.clone()])
-        .collect::<Vec<Vec<T>>>();
-    res.pop();
-    res
-}
-
-fn tokenizer_image_token(
-    prompt: &str,
-    tokenizer: &Tokenizer,
-    image_token_index: i64,
-    llava_config: &LLaVAConfig,
-) -> Result<Tensor> {
-    let prompt_chunks = prompt
-        .split("<image>")
-        .map(|s| {
-            tokenizer
-                .encode(s, true)
-                .unwrap()
-                .get_ids()
-                .to_vec()
-                .iter()
-                .map(|x| *x as i64)
-                .collect()
-        })
-        .collect::<Vec<Vec<i64>>>();
-    let mut input_ids = Vec::new();
-    let mut offset = 0;
-    if !prompt_chunks.is_empty()
-        && !prompt_chunks[0].is_empty()
-        && prompt_chunks[0][0] == llava_config.bos_token_id as i64
-    {
-        offset = 1;
-        input_ids.push(prompt_chunks[0][0]);
+fn lazy_llava_config_from_local(local: &LLaVAConfig, image_size: usize) -> LlavaConfig {
+    // The non-HF (liuhaotian) config doesn't carry a separate vision-config
+    // block; use CLIP ViT-L/14 defaults plus the dynamic image size.
+    let vision_config = ClipVisionConfig {
+        embed_dim: 1024,
+        intermediate_size: 4096,
+        num_hidden_layers: 24,
+        num_attention_heads: 16,
+        projection_dim: 768,
+        num_channels: 3,
+        image_size,
+        patch_size: 14,
+    };
+    let dim = local.hidden_size;
+    let n_heads = local.num_attention_heads;
+    let text_config = LlamaConfig {
+        vocab_size: local.vocab_size,
+        dim,
+        n_layers: local.num_hidden_layers,
+        n_heads,
+        n_kv_heads: local.num_key_value_heads,
+        head_dim: dim / n_heads,
+        ffn_dim: local.intermediate_size,
+        norm_eps: local.rms_norm_eps as f64,
+        rope_base: local.rope_theta as f64,
+    };
+    LlavaConfig {
+        vision_config,
+        text_config,
+        projection_dim: dim,
     }
-
-    for x in insert_separator(
-        prompt_chunks,
-        duplicate_vec(&[image_token_index], offset + 1),
-    )
-    .iter()
-    {
-        input_ids.extend(x[1..].to_vec())
-    }
-    let input_len = input_ids.len();
-    Tensor::from_vec(input_ids, (1, input_len), &Device::cpu()).map_err(E::msg)
 }
 
 fn main() -> Result<()> {
     let mut args = Args::parse();
-    let device = fuel_examples::device(args.cpu)?;
+
+    // Lazy realizes through CPU/router; `cpu` flag preserved for CLI parity.
+    let _ = args.cpu;
+    let device = Device::cpu();
+
     println!("Start loading model");
     let api = Api::new()?;
     let api = api.model(args.model_path.clone());
-    let (llava_config, tokenizer, clip_vision_config, image_processor) = if args.hf {
+    let (llava_config, tokenizer, image_processor) = if args.hf {
         let config_filename = api.get("config.json")?;
         let hf_llava_config: HFLLaVAConfig =
             serde_json::from_slice(&std::fs::read(config_filename)?)?;
@@ -166,44 +165,44 @@ fn main() -> Result<()> {
             hf_llava_config.to_llava_config(&generation_config, &preprocessor_config);
         let tokenizer_filename = api.get("tokenizer.json")?;
         let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
-        let clip_vision_config = hf_llava_config.to_clip_vision_config();
-        (
-            llava_config,
-            tokenizer,
-            Some(clip_vision_config),
-            ImageProcessor::from_hf_preprocessor_config(&preprocessor_config),
-        )
+        let proc = ImageProcessor::from_hf_preprocessor_config(&preprocessor_config);
+        (llava_config, tokenizer, proc)
     } else {
         let config_filename = api.get("config.json")?;
         let llava_config: LLaVAConfig = serde_json::from_slice(&std::fs::read(config_filename)?)?;
         let tokenizer = Tokenizer::from_file(&args.tokenizer_path)
             .map_err(|e| E::msg(format!("Error loading {}: {}", &args.tokenizer_path, e)))?;
-        (
-            llava_config.clone(),
-            tokenizer,
-            None,
-            ImageProcessor::from_pretrained(&llava_config.mm_vision_tower.unwrap())?,
-        )
+        let vt = llava_config
+            .mm_vision_tower
+            .clone()
+            .ok_or_else(|| E::msg("non-HF config missing mm_vision_tower"))?;
+        let proc = ImageProcessor::from_pretrained(&vt)?;
+        (llava_config, tokenizer, proc)
     };
 
-    let llama_config = llava_config.to_llama_config();
-    let dtype: DType = match llava_config.torch_dtype.as_str() {
-        "float16" => DType::F16,
-        "bfloat16" => DType::BF16,
-        _ => bail!("unsupported dtype"),
+    let eos_token_id = llava_config.eos_token_id as u32;
+
+    // Build the lazy LlavaConfig.
+    let lazy_cfg = if args.hf {
+        // Re-fetch + re-parse the HF JSON so we can read the raw vision/
+        // text sub-configs (the LLaVAConfig wrapper flattens them).
+        let config_filename = api.get("config.json")?;
+        let hf_llava_config: HFLLaVAConfig =
+            serde_json::from_slice(&std::fs::read(config_filename)?)?;
+        lazy_llava_config_from_hf(&hf_llava_config)
+    } else {
+        lazy_llava_config_from_local(&llava_config, 336)
     };
-
-    let eos_token_id = llava_config.eos_token_id;
-
-    println!("setting kv cache");
-    let mut cache = Cache::new(!args.no_kv_cache, dtype, &llama_config, &device)?;
 
     println!("loading model weights");
-
     let weight_filenames =
         fuel_examples::hub_load_safetensors(&api, "model.safetensors.index.json")?;
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&weight_filenames, dtype, &device)? };
-    let llava: LLaVA = LLaVA::load(vb, &llava_config, clip_vision_config)?;
+    let st = unsafe { MmapedSafetensors::multi(&weight_filenames) }?;
+    let weights = LlavaWeights::load_from_mmapped(&st, &lazy_cfg)?;
+    let model = LlavaModel {
+        config: lazy_cfg.clone(),
+        weights,
+    };
 
     println!("generating conv template");
     let image_token_se =
@@ -248,67 +247,70 @@ fn main() -> Result<()> {
         Some(conv_mode) => match conv_mode.as_str() {
             "chatml_direct" => Conversation::conv_chatml_direct(),
             "llava_v1" => Conversation::conv_llava_v1(),
-            _ => todo!("not implement yet"),
+            _ => bail!("conversation mode not implemented in the lazy v1 binary"),
         },
         None => bail!("conv_mode is required"),
     };
     conv.append_user_message(Some(&qs));
     conv.append_assistant_message(None);
     let prompt = conv.get_prompt();
+
     println!("loading image");
-    let (image_size, image_tensor) =
-        load_image(&args.image_file, &image_processor, &llava_config, dtype)
-            .map_err(|e| E::msg(format!("Error loading {}: {}", &args.image_file, e)))?;
-    let image_tensor = image_tensor.to_device(&device)?;
-
-    let mut logits_processor = {
-        let temperature = f64::from(args.temperature);
-        let sampling = if temperature <= 0. {
-            Sampling::ArgMax
-        } else {
-            Sampling::All { temperature }
-        };
-        LogitsProcessor::from_sampling(args.seed, sampling)
-    };
-
-    // get input tokens
-    let tokens = tokenizer_image_token(
-        &prompt,
-        &tokenizer,
-        llava_config.image_token_index as i64,
-        &llava_config,
-    )?;
-    let mut input_embeds =
-        llava.prepare_inputs_labels_for_multimodal(&tokens, &[image_tensor], &[image_size])?;
-    //inference loop, based on https://github.com/huggingface/fuel/blob/main/fuel-examples/examples/llama/main.rs
-    let mut tokenizer = fuel_examples::token_output_stream::TokenOutputStream::new(tokenizer);
-    let mut index_pos = 0;
-    for index in 0..args.max_new_tokens {
-        let (_, input_embeds_len, _) = input_embeds.dims3()?;
-        let (context_size, context_index) = if cache.use_kv_cache && index > 0 {
-            (1, index_pos)
-        } else {
-            (input_embeds_len, 0)
-        };
-        let input = input_embeds.i((.., input_embeds_len.saturating_sub(context_size).., ..))?;
-        let logits = llava.forward(&input, context_index, &mut cache)?; //[1,32000]
-        let logits = logits.squeeze(0)?;
-        let (_, input_len, _) = input.dims3()?;
-        index_pos += input_len;
-        let next_token = logits_processor.sample(&logits)?;
-        let next_token_tensor = Tensor::from_vec(vec![next_token], 1, &device)?;
-        let next_embeds = llava.llama.embed(&next_token_tensor)?.unsqueeze(0)?;
-        input_embeds = Tensor::cat(&[input_embeds, next_embeds], 1)?;
-        if next_token == eos_token_id as u32 {
-            break;
-        }
-        if let Some(t) = tokenizer.next_token(next_token)? {
-            print!("{t}");
-            std::io::stdout().flush()?;
-        }
+    let img = image::ImageReader::open(&args.image_file)?.decode()?;
+    let image_tensor = process_image(&img, &image_processor, &llava_config)?;
+    // process_image returns shape (1, 3, H, W) — flatten and rebuild as lazy.
+    let dims = image_tensor.dims().to_vec();
+    if dims.len() != 4 || dims[0] != 1 || dims[1] != 3 {
+        bail!(
+            "expected (1, 3, H, W) image tensor; got {:?}. Anyres/pad aspect \
+             ratios are not supported by the lazy v1 binary.",
+            dims
+        );
     }
-    if let Some(rest) = tokenizer.decode_rest().map_err(E::msg)? {
-        print!("{rest}");
+    let image_vec: Vec<f32> = image_tensor.flatten_all()?.to_vec1::<f32>()?;
+    let pixel_values = LazyTensor::from_f32(
+        Arc::<[f32]>::from(image_vec),
+        Shape::from_dims(&dims),
+        &device,
+    );
+
+    // Tokenize the prompt. The lazy v1 path doesn't yet support
+    // image-token interleaving (it always prepends image features),
+    // so we strip the `<image>` placeholder from the prompt before
+    // tokenizing.
+    let plain_prompt = prompt.replace(DEFAULT_IMAGE_TOKEN, "");
+    let token_ids: Vec<u32> = tokenizer
+        .encode(plain_prompt.as_str(), true)
+        .map_err(E::msg)?
+        .get_ids()
+        .to_vec();
+    if token_ids.is_empty() {
+        bail!("tokenizer produced empty token list for prompt");
+    }
+
+    // Single-pass forward → logits over (1, np + text_len, vocab).
+    let logits = model.forward(&pixel_values, &token_ids)?;
+    let logits_vec = logits.realize_f32();
+    let dims = logits.shape();
+    let dims = dims.dims();
+    if dims.len() != 3 {
+        bail!("expected (1, seq, vocab) logits; got {:?}", dims);
+    }
+    let vocab = dims[2];
+    let seq = dims[1];
+    // Greedy argmax over the last position.
+    let last = &logits_vec[(seq - 1) * vocab..seq * vocab];
+    let (next_tok_idx, _) = last
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .expect("non-empty logits row");
+    let next_token = next_tok_idx as u32;
+    println!("greedy next token id: {next_token}");
+    if next_token == eos_token_id {
+        println!("(was EOS)");
+    } else if let Ok(decoded) = tokenizer.decode(&[next_token], true) {
+        println!("decoded: {decoded}");
     }
     Ok(())
 }
