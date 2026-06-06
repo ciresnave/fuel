@@ -193,6 +193,29 @@ fn l2_normalize(x: &LazyTensor) -> Result<LazyTensor> {
     x.l2_normalize(1_usize, 0.0)
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl StellaV5Weights {
+    /// Load Stella-v5 (dunzhang/stella_en_*-v5) weights. Composes a Qwen2
+    /// backbone with a Matryoshka dense projection head sized at
+    /// `cfg.embed_dim.out_features()`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &StellaV5Config,
+    ) -> Result<Self> {
+        use crate::lazy::load_transposed_matrix_preserve_dtype as ltm;
+        let backbone = crate::lazy_qwen2::Qwen2Weights::load_from_mmapped(st, &cfg.backbone)?;
+        let out_dim = cfg.embed_dim.out_features();
+        let in_dim = cfg.backbone.hidden_size;
+        // Sentence-Transformers convention: 2_Dense_{out_dim}/linear.weight.
+        let head_name = format!("2_Dense_{out_dim}/linear.weight");
+        let embed_head = ltm(st, &head_name, out_dim, in_dim)
+            .or_else(|_| ltm(st, &format!("2_Dense_{out_dim}.linear.weight"), out_dim, in_dim))
+            .or_else(|_| ltm(st, &format!("dense_{out_dim}.weight"), out_dim, in_dim))?;
+        Ok(Self { backbone, embed_head })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

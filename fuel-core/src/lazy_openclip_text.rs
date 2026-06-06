@@ -241,6 +241,87 @@ fn apply_mlp(
 
 
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl OpenClipTextWeights {
+    /// Load OpenCLIP text encoder weights from HF safetensors. The PyTorch
+    /// MultiheadAttention stores Q/K/V as a fused `in_proj_weight`
+    /// `[3*embed_dim, embed_dim]` plus `in_proj_bias`; this loader chunks
+    /// the fused weight at load time.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &OpenClipTextConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.embed_dim;
+        let inter = cfg.intermediate_size;
+
+        let token_embedding = Arc::from(load_tensor_as_f32(
+            st, "token_embedding.weight",
+        )?);
+        let position_embedding = Arc::from(load_tensor_as_f32(
+            st, "positional_embedding",
+        )?);
+
+        let load_ln = |prefix: &str| -> Result<LayerNormWeights> {
+            Ok(LayerNormWeights {
+                gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.weight"))?),
+                bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.bias"))?),
+            })
+        };
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("transformer.resblocks.{i}");
+            let ln1 = load_ln(&format!("{p}.ln_1"))?;
+            // Fused in_proj: [3*h, h]; split into Q, K, V.
+            let in_proj_w = load_transposed_matrix(
+                st, &format!("{p}.attn.in_proj_weight"), 3 * h, h,
+            )?;
+            let in_proj_b = load_tensor_as_f32(st, &format!("{p}.attn.in_proj_bias"))?;
+            let mut q = vec![0.0_f32; h * h];
+            let mut k = vec![0.0_f32; h * h];
+            let mut v = vec![0.0_f32; h * h];
+            for row in 0..h {
+                q[row * h..(row + 1) * h].copy_from_slice(
+                    &in_proj_w[row * 3 * h..row * 3 * h + h]);
+                k[row * h..(row + 1) * h].copy_from_slice(
+                    &in_proj_w[row * 3 * h + h..row * 3 * h + 2 * h]);
+                v[row * h..(row + 1) * h].copy_from_slice(
+                    &in_proj_w[row * 3 * h + 2 * h..row * 3 * h + 3 * h]);
+            }
+            let attn = OpenClipAttentionWeights {
+                q_proj: WeightStorage::F32(Arc::from(q)),
+                q_proj_bias: Arc::from(&in_proj_b[..h]),
+                k_proj: WeightStorage::F32(Arc::from(k)),
+                k_proj_bias: Arc::from(&in_proj_b[h..2 * h]),
+                v_proj: WeightStorage::F32(Arc::from(v)),
+                v_proj_bias: Arc::from(&in_proj_b[2 * h..3 * h]),
+                out_proj: ltm(st, &format!("{p}.attn.out_proj.weight"), h, h)?,
+                out_proj_bias: Arc::from(load_tensor_as_f32(
+                    st, &format!("{p}.attn.out_proj.bias"),
+                )?),
+            };
+            let ln2 = load_ln(&format!("{p}.ln_2"))?;
+            let mlp = MlpWeights {
+                fc1: ltm(st, &format!("{p}.mlp.c_fc.weight"), inter, h)?,
+                fc1_bias: Arc::from(load_tensor_as_f32(
+                    st, &format!("{p}.mlp.c_fc.bias"),
+                )?),
+                fc2: ltm(st, &format!("{p}.mlp.c_proj.weight"), h, inter)?,
+                fc2_bias: Arc::from(load_tensor_as_f32(
+                    st, &format!("{p}.mlp.c_proj.bias"),
+                )?),
+            };
+            layers.push(OpenClipEncoderLayerWeights { ln1, attn, ln2, mlp });
+        }
+
+        let final_ln = load_ln("ln_final")?;
+
+        Ok(Self { token_embedding, position_embedding, layers, final_ln })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]

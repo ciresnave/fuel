@@ -351,6 +351,86 @@ pub fn apply_interleaved_partial_rope(
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl Glm4Weights {
+    /// Load GLM-4 (THUDM/glm-4-9b-chat etc.) weights from HF safetensors.
+    /// GLM-4 has split sandwich-norm structure: input_norm + post-self-attn
+    /// + post-attn + post-mlp; fused gate_up_proj in MLP.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Glm4Config,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+
+        let opt_bias = |name: String| -> Option<Arc<[f32]>> {
+            load_tensor_as_f32(st, &name).ok().map(Arc::from)
+        };
+
+        let token_embedding = Arc::from(load_tensor_as_f32(
+            st, "model.embed_tokens.weight",
+        )?);
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{i}");
+            let input_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.input_layernorm.weight"),
+            )?);
+            let post_self_attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_self_attn_layernorm.weight"),
+            )?);
+            let post_attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+            let post_mlp_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_mlp_layernorm.weight"),
+            )?);
+            let attn_q = ltm(st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h)?;
+            let attn_q_bias = if cfg.attention_bias {
+                opt_bias(format!("{p}.self_attn.q_proj.bias"))
+            } else { None };
+            let attn_k = ltm(st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h)?;
+            let attn_k_bias = if cfg.attention_bias {
+                opt_bias(format!("{p}.self_attn.k_proj.bias"))
+            } else { None };
+            let attn_v = ltm(st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h)?;
+            let attn_v_bias = if cfg.attention_bias {
+                opt_bias(format!("{p}.self_attn.v_proj.bias"))
+            } else { None };
+            let attn_o = ltm(st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim)?;
+            let ffn_gate_up = ltm(
+                st, &format!("{p}.mlp.gate_up_proj.weight"), 2 * inter, h,
+            )?;
+            let ffn_down = ltm(
+                st, &format!("{p}.mlp.down_proj.weight"), h, inter,
+            )?;
+            layers.push(Glm4LayerWeights {
+                input_norm_gain, post_self_attn_norm_gain,
+                post_attn_norm_gain, post_mlp_norm_gain,
+                attn_q, attn_q_bias, attn_k, attn_k_bias,
+                attn_v, attn_v_bias, attn_o,
+                ffn_gate_up, ffn_down,
+            });
+        }
+
+        let final_norm_gain = Arc::from(load_tensor_as_f32(
+            st, "model.norm.weight",
+        )?);
+        let lm_head = if cfg.tie_word_embeddings {
+            None
+        } else {
+            Some(ltm(st, "lm_head.weight", cfg.vocab_size, h)?)
+        };
+
+        Ok(Self { token_embedding, layers, final_norm_gain, lm_head })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
