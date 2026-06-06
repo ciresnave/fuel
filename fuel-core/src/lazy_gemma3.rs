@@ -346,6 +346,138 @@ impl Gemma3Model {
 
 /// Gemma's offset RmsNorm: `y = (x / rms) * (gain + 1)`.
 
+// ---- Safetensors loader ----------------------------------------------------
+
+impl Gemma3Weights {
+    /// Load Gemma 3 weights from a `MmapedSafetensors` file using the
+    /// standard HuggingFace naming. Gemma 3 ties `lm_head.weight` to
+    /// `model.embed_tokens.weight` — there is no separate output
+    /// projection field on `Gemma3Weights` (the `apply_lm_head` path
+    /// reuses the embedding table directly).
+    ///
+    /// Tensor names mirrored from `fuel_transformers::models::llm::gemma3`:
+    ///   - `model.embed_tokens.weight` → [`Gemma3Weights::token_embedding`]
+    ///   - `model.layers.{i}.self_attn.{q,k,v,o}_proj.weight`
+    ///   - `model.layers.{i}.self_attn.{q,k,v,o}_proj.bias`
+    ///     (loaded only when `attention_bias == true`)
+    ///   - `model.layers.{i}.self_attn.q_norm.weight` → `q_norm_gain`
+    ///   - `model.layers.{i}.self_attn.k_norm.weight` → `k_norm_gain`
+    ///   - `model.layers.{i}.input_layernorm.weight` → `input_norm_gain`
+    ///   - `model.layers.{i}.post_attention_layernorm.weight` → `post_attn_norm_gain`
+    ///   - `model.layers.{i}.pre_feedforward_layernorm.weight` → `pre_ffn_norm_gain`
+    ///   - `model.layers.{i}.post_feedforward_layernorm.weight` → `post_ffn_norm_gain`
+    ///   - `model.layers.{i}.mlp.{gate,up,down}_proj.weight` → `ffn_{gate,up,down}`
+    ///   - `model.norm.weight` → `final_norm_gain`
+    ///
+    /// Gemma 3 uses independent attention/embedding dims —
+    /// `num_attention_heads * head_dim` is NOT required to equal
+    /// `hidden_size`. The Q projection is `[q_dim, hidden_size]` where
+    /// `q_dim = num_attention_heads * head_dim`, and o_proj inverts
+    /// that to `[hidden_size, q_dim]`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Gemma3Config,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+
+        let h = cfg.hidden_size;
+        let i_dim = cfg.intermediate_size;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+
+        let token_embedding = load_tensor_as_f32(st, "model.embed_tokens.weight")?;
+        if token_embedding.len() != cfg.vocab_size * h {
+            crate::bail!(
+                "model.embed_tokens.weight: {} elts, expected {} ({}×{})",
+                token_embedding.len(), cfg.vocab_size * h, cfg.vocab_size, h,
+            );
+        }
+
+        let mut layers: Vec<Gemma3LayerWeights> =
+            Vec::with_capacity(cfg.num_hidden_layers);
+        for li in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{li}");
+            let attn_q = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h,
+            )?;
+            let attn_k = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+            )?;
+            let attn_v = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+            )?;
+            let attn_o = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim,
+            )?;
+            let attn_q_bias = if cfg.attention_bias {
+                load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))
+                    .ok().map(Arc::from)
+            } else { None };
+            let attn_k_bias = if cfg.attention_bias {
+                load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))
+                    .ok().map(Arc::from)
+            } else { None };
+            let attn_v_bias = if cfg.attention_bias {
+                load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))
+                    .ok().map(Arc::from)
+            } else { None };
+            let attn_o_bias = if cfg.attention_bias {
+                load_tensor_as_f32(st, &format!("{p}.self_attn.o_proj.bias"))
+                    .ok().map(Arc::from)
+            } else { None };
+            let q_norm_gain = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.self_attn.q_norm.weight"))?,
+            );
+            let k_norm_gain = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.self_attn.k_norm.weight"))?,
+            );
+            let input_norm_gain = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?,
+            );
+            let post_attn_norm_gain = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?,
+            );
+            let pre_ffn_norm_gain = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.pre_feedforward_layernorm.weight"))?,
+            );
+            let post_ffn_norm_gain = Arc::from(
+                load_tensor_as_f32(st, &format!("{p}.post_feedforward_layernorm.weight"))?,
+            );
+            let ffn_gate = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.gate_proj.weight"), i_dim, h,
+            )?;
+            let ffn_up = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.up_proj.weight"), i_dim, h,
+            )?;
+            let ffn_down = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.down_proj.weight"), h, i_dim,
+            )?;
+            layers.push(Gemma3LayerWeights {
+                attn_q, attn_q_bias,
+                attn_k, attn_k_bias,
+                attn_v, attn_v_bias,
+                attn_o, attn_o_bias,
+                q_norm_gain, k_norm_gain,
+                input_norm_gain,
+                post_attn_norm_gain,
+                pre_ffn_norm_gain,
+                post_ffn_norm_gain,
+                ffn_gate, ffn_up, ffn_down,
+            });
+        }
+
+        let final_norm_gain = Arc::from(
+            load_tensor_as_f32(st, "model.norm.weight")?,
+        );
+
+        Ok(Gemma3Weights {
+            token_embedding: Arc::from(token_embedding),
+            layers,
+            final_norm_gain,
+        })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

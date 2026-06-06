@@ -274,6 +274,134 @@ impl GemmaModel {
 /// Gemma's offset RmsNorm: `y = (x / rms) * (gamma + 1)`. The `+ 1`
 /// matches the reference Gemma forward pass.
 
+// ---- Safetensors loader ----------------------------------------------------
+
+impl GemmaWeights {
+    /// Load Gemma v1 weights from a `MmapedSafetensors` file using
+    /// the standard HuggingFace naming. Tied lm_head: Gemma 1 ties
+    /// `lm_head.weight` to `model.embed_tokens.weight` (the eager
+    /// model constructs `Linear::new(embed_tokens.embeddings().clone(), None)`),
+    /// so the output projection is derived from the token embedding
+    /// when `lm_head.weight` is absent.
+    ///
+    /// Tensor names mirrored from `fuel_transformers::models::llm::gemma`:
+    ///   - `model.embed_tokens.weight` → [`GemmaWeights::token_embedding`]
+    ///   - `model.layers.{i}.self_attn.{q,k,v,o}_proj.weight` → `attn_{q,k,v,o}`
+    ///   - `model.layers.{i}.self_attn.{q,k,v}_proj.bias` → `attn_{q,k,v}_bias`
+    ///     (loaded only when `attention_bias == true`)
+    ///   - `model.layers.{i}.mlp.{gate,up,down}_proj.weight` → `ffn_{gate,up,down}`
+    ///   - `model.layers.{i}.input_layernorm.weight` → `attn_norm_gain`
+    ///   - `model.layers.{i}.post_attention_layernorm.weight` → `ffn_norm_gain`
+    ///   - `model.norm.weight` → `final_norm_gain`
+    ///   - `lm_head.weight` (optional, fallback to tied embeddings) → `output`
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &GemmaConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+
+        let h = cfg.hidden_size;
+        let i_dim = cfg.intermediate_size;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+
+        let token_embedding = load_tensor_as_f32(st, "model.embed_tokens.weight")?;
+        if token_embedding.len() != cfg.vocab_size * h {
+            crate::bail!(
+                "model.embed_tokens.weight: {} elts, expected {} ({}×{})",
+                token_embedding.len(), cfg.vocab_size * h, cfg.vocab_size, h,
+            );
+        }
+
+        let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        for li in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{li}");
+            let attn_q = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+            )?;
+            let attn_k = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+            )?;
+            let attn_v = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+            )?;
+            let attn_o = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.o_proj.weight"), h, h,
+            )?;
+            let ffn_gate = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.gate_proj.weight"), i_dim, h,
+            )?;
+            let ffn_up = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.up_proj.weight"), i_dim, h,
+            )?;
+            let ffn_down = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.down_proj.weight"), h, i_dim,
+            )?;
+            let attn_norm_gain = load_tensor_as_f32(
+                st, &format!("{p}.input_layernorm.weight"),
+            )?;
+            let ffn_norm_gain = load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.weight"),
+            )?;
+            // Optional biases — present only when `attention_bias == true`
+            // in HF config; absent biases are not an error.
+            let attn_q_bias = if cfg.attention_bias {
+                load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))
+                    .ok().map(Arc::from)
+            } else {
+                None
+            };
+            let attn_k_bias = if cfg.attention_bias {
+                load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))
+                    .ok().map(Arc::from)
+            } else {
+                None
+            };
+            let attn_v_bias = if cfg.attention_bias {
+                load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))
+                    .ok().map(Arc::from)
+            } else {
+                None
+            };
+            layers.push(LayerWeights {
+                attn_q, attn_q_bias,
+                attn_k, attn_k_bias,
+                attn_v, attn_v_bias,
+                attn_o,
+                ffn_gate, ffn_up, ffn_down,
+                attn_norm_gain: Arc::from(attn_norm_gain),
+                ffn_norm_gain: Arc::from(ffn_norm_gain),
+            });
+        }
+
+        let final_norm_gain = load_tensor_as_f32(st, "model.norm.weight")?;
+
+        // Gemma v1 ties lm_head to token embeddings. Try the explicit
+        // `lm_head.weight` first (some forks publish it), fall back to
+        // a transposed copy of the token embedding.
+        let output: WeightStorage = match load_transposed_matrix_preserve_dtype(
+            st, "lm_head.weight", cfg.vocab_size, h,
+        ) {
+            Ok(w) => w,
+            Err(_) => {
+                let mut transposed = vec![0.0_f32; h * cfg.vocab_size];
+                for i in 0..cfg.vocab_size {
+                    for j in 0..h {
+                        transposed[j * cfg.vocab_size + i] = token_embedding[i * h + j];
+                    }
+                }
+                WeightStorage::F32(Arc::from(transposed))
+            }
+        };
+
+        Ok(GemmaWeights {
+            token_embedding: Arc::from(token_embedding),
+            layers,
+            final_norm_gain: Arc::from(final_norm_gain),
+            output,
+        })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
