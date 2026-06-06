@@ -124,6 +124,46 @@ fn l2_normalize_last(x: &LazyTensor) -> Result<LazyTensor> {
     x.l2_normalize(1_usize, 0.0)
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl MobileClipWeights {
+    /// Load MobileCLIP (apple/MobileCLIP-S1, apple/MobileCLIP-S2) weights
+    /// from HF safetensors. Composition loader: delegates to
+    /// [`FastVitWeights::load_from_mmapped`] for the vision tower (under
+    /// `visual.trunk.*`) and [`OpenClipTextWeights::load_from_mmapped`]
+    /// for the text tower (under `text.*`), then loads the top-level
+    /// `text.text_projection` matrix and scalar `logit_scale`.
+    ///
+    /// NOTE: `FastVitWeights::load_from_mmapped` is currently a stub and
+    /// returns an error — callers building a MobileCLIP model from HF
+    /// today should construct `MobileClipWeights` manually with a working
+    /// `FastVitWeights` and swap it in until that loader lands.
+    /// `OpenClipTextWeights::load_from_mmapped` reads flat (un-prefixed)
+    /// tensor names; checkpoints whose text-tower weights live under a
+    /// `text.` prefix will need a prefix-stripping wrapper at the call
+    /// site.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &MobileClipConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+
+        let vision = FastVitWeights::load_from_mmapped(st, &cfg.vision)?;
+        let text = OpenClipTextWeights::load_from_mmapped(st, &cfg.text)?;
+
+        let text_projection = load_transposed_matrix_preserve_dtype(
+            st, "text.text_projection", cfg.projection_dim, cfg.text.embed_dim,
+        )?;
+
+        let logit_scale = load_tensor_as_f32(st, "logit_scale")
+            .ok()
+            .and_then(|v| v.first().copied())
+            .unwrap_or_else(|| (1.0_f32 / 0.07).ln());
+
+        Ok(Self { vision, text, text_projection, logit_scale })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]

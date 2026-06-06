@@ -355,6 +355,203 @@ impl Qwen3VlVisionModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl Qwen3VlVisionWeights {
+    /// Load Qwen3-VL vision tower weights from a HuggingFace safetensors
+    /// file. Tensor names follow the `visual.*` prefix used by
+    /// `Qwen/Qwen3-VL-*` checkpoints (with `vision_tower.*` as a
+    /// fallback). The lazy model is a simplified ViT-shape encoder
+    /// without the eager `PatchMerger` (no spatial-shuffle), so the
+    /// DeepStack projection is mapped from the merger's final
+    /// `linear_fc2` and the final LN comes from `merger.norm`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Qwen3VlVisionConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        use crate::lazy_conv3d::{Conv3dTemporal2Config, Conv3dTemporal2Weights};
+
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+        let oh = cfg.out_hidden_size;
+
+        // Pick whichever HF prefix is present in the file. Qwen3-VL
+        // upstream uses `visual.*`; some derived forks rename to
+        // `vision_tower.*`.
+        let prefix = if st.get("visual.patch_embed.proj.weight").is_ok() {
+            "visual"
+        } else {
+            "vision_tower"
+        };
+
+        // ---- Conv3D patch embedding -------------------------------------
+        // HF layout: (out=hidden, in=in_channels, T=temporal_patch_size, kH, kW)
+        let conv_raw = load_tensor_as_f32(
+            st,
+            &format!("{prefix}.patch_embed.proj.weight"),
+        )?;
+        let patch_embed = Conv3dTemporal2Weights::from_raw_weight(
+            &conv_raw,
+            cfg.hidden_size,
+            cfg.in_channels,
+            cfg.patch_size,
+            cfg.patch_size,
+            Conv3dTemporal2Config {
+                stride: cfg.patch_size,
+                ..Default::default()
+            },
+        )?;
+        let patch_embed_bias: Arc<[f32]> = load_tensor_as_f32(
+            st,
+            &format!("{prefix}.patch_embed.proj.bias"),
+        )
+        .ok()
+        .map(Arc::from)
+        .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+
+        // ---- Transformer blocks -----------------------------------------
+        let mut layers: Vec<Qwen3VlVisionLayerWeights> = Vec::with_capacity(cfg.depth);
+        for i in 0..cfg.depth {
+            let p = format!("{prefix}.blocks.{i}");
+
+            let norm1_gain: Arc<[f32]> =
+                Arc::from(load_tensor_as_f32(st, &format!("{p}.norm1.weight"))?);
+            let norm1_bias: Arc<[f32]> = load_tensor_as_f32(st, &format!("{p}.norm1.bias"))
+                .ok()
+                .map(Arc::from)
+                .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+            let norm2_gain: Arc<[f32]> =
+                Arc::from(load_tensor_as_f32(st, &format!("{p}.norm2.weight"))?);
+            let norm2_bias: Arc<[f32]> = load_tensor_as_f32(st, &format!("{p}.norm2.bias"))
+                .ok()
+                .map(Arc::from)
+                .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+
+            // qkv: [3*hidden, hidden] in HF → [hidden, 3*hidden] for matmul.
+            let qkv = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.attn.qkv.weight"),
+                3 * h,
+                h,
+            )?;
+            let qkv_bias: Arc<[f32]> = load_tensor_as_f32(st, &format!("{p}.attn.qkv.bias"))
+                .ok()
+                .map(Arc::from)
+                .unwrap_or_else(|| Arc::from(vec![0.0_f32; 3 * h]));
+
+            // proj: [hidden, hidden] in HF → [hidden, hidden] for matmul.
+            let proj = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.attn.proj.weight"),
+                h,
+                h,
+            )?;
+            let proj_bias: Arc<[f32]> = load_tensor_as_f32(st, &format!("{p}.attn.proj.bias"))
+                .ok()
+                .map(Arc::from)
+                .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+
+            // MLP fc1: [intermediate, hidden] in HF → [hidden, intermediate].
+            let fc1 = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.mlp.linear_fc1.weight"),
+                inter,
+                h,
+            )?;
+            let fc1_bias: Arc<[f32]> =
+                load_tensor_as_f32(st, &format!("{p}.mlp.linear_fc1.bias"))
+                    .ok()
+                    .map(Arc::from)
+                    .unwrap_or_else(|| Arc::from(vec![0.0_f32; inter]));
+
+            // MLP fc2: [hidden, intermediate] in HF → [intermediate, hidden].
+            let fc2 = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.mlp.linear_fc2.weight"),
+                h,
+                inter,
+            )?;
+            let fc2_bias: Arc<[f32]> =
+                load_tensor_as_f32(st, &format!("{p}.mlp.linear_fc2.bias"))
+                    .ok()
+                    .map(Arc::from)
+                    .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+
+            layers.push(Qwen3VlVisionLayerWeights {
+                norm1_gain,
+                norm1_bias,
+                norm2_gain,
+                norm2_bias,
+                qkv,
+                qkv_bias,
+                proj,
+                proj_bias,
+                fc1,
+                fc1_bias,
+                fc2,
+                fc2_bias,
+            });
+        }
+
+        // ---- Final LayerNorm (sourced from merger.norm) -----------------
+        // The eager port's PatchMerger applies an LN on `hidden_size`
+        // immediately before its two linears. The lazy port skips the
+        // merger but keeps the final LN, so we reuse that LN's affine.
+        let final_norm_gain: Arc<[f32]> = load_tensor_as_f32(
+            st,
+            &format!("{prefix}.merger.norm.weight"),
+        )
+        .ok()
+        .map(Arc::from)
+        .unwrap_or_else(|| Arc::from(vec![1.0_f32; h]));
+        let final_norm_bias: Arc<[f32]> = load_tensor_as_f32(
+            st,
+            &format!("{prefix}.merger.norm.bias"),
+        )
+        .ok()
+        .map(Arc::from)
+        .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+
+        // ---- DeepStack projections --------------------------------------
+        // Eager checkpoint has `deepstack_merger_list.{i}.{norm,linear_fc1,linear_fc2}`
+        // where fc2 maps merged_hidden → out_hidden_size. The lazy port's
+        // DeepStack is a single `[hidden, out_hidden]` linear, so we wire
+        // it to `linear_fc2` (whose output dim is `out_hidden_size`). When
+        // its input dim differs from `hidden_size` (because the eager
+        // model fuses spatial-merge before it), the caller is expected to
+        // swap in a correctly shaped projection — see prompt caveat.
+        let mut deepstack: Vec<Qwen3VlVisionDeepStackProjection> =
+            Vec::with_capacity(cfg.deepstack_visual_indexes.len());
+        for i in 0..cfg.deepstack_visual_indexes.len() {
+            let p = format!("{prefix}.deepstack_merger_list.{i}");
+            let weight = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.linear_fc2.weight"),
+                oh,
+                h,
+            )
+            .unwrap_or_else(|_| {
+                WeightStorage::F32(Arc::from(vec![0.0_f32; h * oh]))
+            });
+            let bias: Arc<[f32]> = load_tensor_as_f32(st, &format!("{p}.linear_fc2.bias"))
+                .ok()
+                .map(Arc::from)
+                .unwrap_or_else(|| Arc::from(vec![0.0_f32; oh]));
+            deepstack.push(Qwen3VlVisionDeepStackProjection { weight, bias });
+        }
+
+        Ok(Self {
+            patch_embed,
+            patch_embed_bias,
+            layers,
+            final_norm_gain,
+            final_norm_bias,
+            deepstack,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

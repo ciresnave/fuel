@@ -553,6 +553,80 @@ fn scatter_visual_residual(
     gathered.mul(&mask)
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl Qwen3VlWeights {
+    /// Load Qwen3-VL multimodal weights: delegate to the vision + text
+    /// sub-loaders and load the top-level multimodal projector tensors
+    /// here.
+    ///
+    /// HuggingFace tensor naming for Qwen3-VL parks the merger /
+    /// multimodal projector under `model.visual.merger.*`. The lazy
+    /// port models a single linear (`vision.out_hidden_size →
+    /// text.hidden_size`); the corresponding HF tensor is the second
+    /// linear of the merger MLP (`linear_fc2`). We fall back to
+    /// `mlp.2.{weight,bias}` for HF dumps that flatten the merger
+    /// into a sequential MLP, and zero-fill the bias as a last
+    /// resort.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Qwen3VlConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{
+            load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+        };
+
+        let vision = Qwen3VlVisionWeights::load_from_mmapped(st, &cfg.vision_config)?;
+        let text = Qwen3VlTextWeights::load_from_mmapped(st, &cfg.text_config)?;
+
+        let v_out = cfg.vision_config.out_hidden_size;
+        let t_hidden = cfg.text_config.hidden_size;
+
+        // Multimodal projector weight: `[v_out, t_hidden]` in HF layout,
+        // returned by the helper as `[v_in=v_out, t_hidden=t_hidden]`.
+        // Try the canonical merger name first, then a few common
+        // sequential-MLP variants.
+        let weight = load_transposed_matrix_preserve_dtype(
+            st,
+            "model.visual.merger.linear_fc2.weight",
+            t_hidden,
+            v_out,
+        )
+        .or_else(|_| {
+            load_transposed_matrix_preserve_dtype(
+                st,
+                "model.visual.merger.mlp.2.weight",
+                t_hidden,
+                v_out,
+            )
+        })
+        .or_else(|_| {
+            load_transposed_matrix_preserve_dtype(
+                st,
+                "visual.merger.linear_fc2.weight",
+                t_hidden,
+                v_out,
+            )
+        })?;
+
+        // Projector bias is `[t_hidden]`. Zero-fill if missing.
+        let bias: Arc<[f32]> = load_tensor_as_f32(st, "model.visual.merger.linear_fc2.bias")
+            .or_else(|_| load_tensor_as_f32(st, "model.visual.merger.mlp.2.bias"))
+            .or_else(|_| load_tensor_as_f32(st, "visual.merger.linear_fc2.bias"))
+            .ok()
+            .map(Arc::from)
+            .unwrap_or_else(|| Arc::from(vec![0.0_f32; t_hidden]));
+
+        let multimodal_projector = Qwen3VlMultimodalProjector { weight, bias };
+
+        Ok(Self {
+            vision,
+            text,
+            multimodal_projector,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

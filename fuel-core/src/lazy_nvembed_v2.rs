@@ -268,6 +268,200 @@ fn l2_normalize(x: &LazyTensor) -> Result<LazyTensor> {
     x.l2_normalize(1_usize, 0.0)
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl NvEmbedV2Weights {
+    /// Load NV-Embed-v2 weights from a `MmapedSafetensors` file.
+    ///
+    /// HuggingFace `nvidia/NV-Embed-v2` uses two top-level namespaces:
+    ///
+    ///   * `embedding_model.*` — Mistral backbone. Note that, unlike the
+    ///     standard Mistral checkpoint layout, NV-Embed-v2 does NOT wrap
+    ///     the backbone in an additional `model.` segment. Tensors live
+    ///     directly under `embedding_model.embed_tokens.weight`,
+    ///     `embedding_model.layers.{i}.self_attn.q_proj.weight`, etc.
+    ///     There is no `lm_head` — the backbone is an encoder for
+    ///     pooling and we synthesize a tied placeholder.
+    ///
+    ///   * `latent_attention_model.*` — Perceiver pooler. Latent KV bank
+    ///     at `latent_attention_model.latents`, cross-attend block 0
+    ///     (norm + cross attention) and block 1 (norm + GeGLU FFN) at
+    ///     `latent_attention_model.cross_attend_blocks.{0,1}.*`. The
+    ///     GeGLU's fused up-projection sits at `.fn.net.0.proj.weight`
+    ///     and the down-projection at `.fn.net.2.weight`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &NvEmbedV2Config,
+    ) -> Result<Self> {
+        use crate::lazy::{
+            load_tensor_as_f32, load_transposed_matrix_preserve_dtype, LayerWeights,
+        };
+
+        let bcfg = &cfg.backbone;
+        let h = bcfg.hidden_size;
+        let kv = bcfg.num_key_value_heads * bcfg.head_dim;
+        let inner = cfg.latent_heads * cfg.latent_head_dim;
+        let ff_hidden = h * cfg.ff_mult;
+
+        // ---- Mistral backbone (NV-Embed naming: no `model.` middle segment) --
+        let token_embedding_vec =
+            load_tensor_as_f32(st, "embedding_model.embed_tokens.weight")?;
+        if token_embedding_vec.len() != bcfg.vocab_size * h {
+            crate::bail!(
+                "embedding_model.embed_tokens.weight: {} elts, expected {}",
+                token_embedding_vec.len(),
+                bcfg.vocab_size * h,
+            );
+        }
+        let token_embedding: Arc<[f32]> = Arc::from(token_embedding_vec);
+
+        let mut layers: Vec<LayerWeights> = Vec::with_capacity(bcfg.num_hidden_layers);
+        for i in 0..bcfg.num_hidden_layers {
+            let p = format!("embedding_model.layers.{i}");
+            let attn_q = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+            )?;
+            let attn_k = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.k_proj.weight"), kv, h,
+            )?;
+            let attn_v = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.v_proj.weight"), kv, h,
+            )?;
+            let attn_o = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.o_proj.weight"), h, h,
+            )?;
+            let ffn_gate = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.gate_proj.weight"), bcfg.intermediate_size, h,
+            )?;
+            let ffn_up = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.up_proj.weight"), bcfg.intermediate_size, h,
+            )?;
+            let ffn_down = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.down_proj.weight"), h, bcfg.intermediate_size,
+            )?;
+            let attn_norm_gain: Arc<[f32]> = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.input_layernorm.weight"),
+            )?);
+            let ffn_norm_gain: Arc<[f32]> = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+            layers.push(LayerWeights {
+                attn_q,
+                attn_q_bias: None,
+                attn_k,
+                attn_k_bias: None,
+                attn_v,
+                attn_v_bias: None,
+                attn_o,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
+                attn_norm_gain,
+                ffn_norm_gain,
+            });
+        }
+        let final_norm_gain: Arc<[f32]> =
+            Arc::from(load_tensor_as_f32(st, "embedding_model.norm.weight")?);
+        // NV-Embed-v2 ships no lm_head — the forward path never touches
+        // `MistralWeights.output`, but the struct still requires the field.
+        // Synthesize a tied placeholder so this loader is structurally
+        // valid; nothing reads it.
+        let output = crate::lazy_llama_full::tied_lm_head_from_embeddings(
+            &token_embedding,
+            bcfg.vocab_size,
+            h,
+        );
+        let backbone = MistralWeights {
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        };
+
+        // ---- Latent attention pooler ----------------------------------------
+        // `[num_latents, hidden_size]` — kept as f32 (small).
+        let latents_vec = load_tensor_as_f32(st, "latent_attention_model.latents")?;
+        if latents_vec.len() != cfg.num_latents * h {
+            crate::bail!(
+                "latent_attention_model.latents: {} elts, expected {}",
+                latents_vec.len(),
+                cfg.num_latents * h,
+            );
+        }
+        let latents: Arc<[f32]> = Arc::from(latents_vec);
+
+        // Cross-attend block 0 = norm + cross attention.
+        let cab0 = "latent_attention_model.cross_attend_blocks.0";
+        let cross_attn_norm_gain: Arc<[f32]> =
+            Arc::from(load_tensor_as_f32(st, &format!("{cab0}.norm.weight"))?);
+        let cross_attn_norm_bias: Arc<[f32]> =
+            load_tensor_as_f32(st, &format!("{cab0}.norm.bias"))
+                .ok()
+                .map(Arc::from)
+                .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+        let cross_attn_context_norm_gain: Arc<[f32]> =
+            Arc::from(load_tensor_as_f32(st, &format!("{cab0}.norm_context.weight"))?);
+        let cross_attn_context_norm_bias: Arc<[f32]> =
+            load_tensor_as_f32(st, &format!("{cab0}.norm_context.bias"))
+                .ok()
+                .map(Arc::from)
+                .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+        // Cross-attention projections — all `no_bias` linears.
+        // `to_q`: [hidden, inner]; HF stores as [inner, hidden].
+        let to_q = load_transposed_matrix_preserve_dtype(
+            st, &format!("{cab0}.fn.to_q.weight"), inner, h,
+        )?;
+        // `to_kv`: [hidden, 2 * inner]; HF stores as [2 * inner, hidden].
+        let to_kv = load_transposed_matrix_preserve_dtype(
+            st, &format!("{cab0}.fn.to_kv.weight"), 2 * inner, h,
+        )?;
+        // `to_out`: [inner, hidden]; HF stores as [hidden, inner].
+        let to_out = load_transposed_matrix_preserve_dtype(
+            st, &format!("{cab0}.fn.to_out.weight"), h, inner,
+        )?;
+
+        // Cross-attend block 1 = norm + GeGLU FFN.
+        // Eager: `vs.pp("net")` → `pp("0")` (GeGLU), `pp("2")` (linear).
+        let cab1 = "latent_attention_model.cross_attend_blocks.1";
+        let ff_norm_gain: Arc<[f32]> =
+            Arc::from(load_tensor_as_f32(st, &format!("{cab1}.norm.weight"))?);
+        let ff_norm_bias: Arc<[f32]> =
+            load_tensor_as_f32(st, &format!("{cab1}.norm.bias"))
+                .ok()
+                .map(Arc::from)
+                .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+        // GeGLU up-projection: [hidden, 2 * ff_hidden]; HF stores as
+        // [2 * ff_hidden, hidden]. The eager `GeGlu` builds a single
+        // `Linear(dim, dim_out * 2)` whose output is split into
+        // (value, gate) on the last dim — matches our `ff_proj` slice
+        // convention.
+        let ff_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{cab1}.fn.net.0.proj.weight"), 2 * ff_hidden, h,
+        )?;
+        // GeGLU down-projection: [ff_hidden, hidden]; HF stores as
+        // [hidden, ff_hidden]. This is `vs.pp("net").pp("2")` in eager.
+        let ff_down = load_transposed_matrix_preserve_dtype(
+            st, &format!("{cab1}.fn.net.2.weight"), h, ff_hidden,
+        )?;
+
+        Ok(Self {
+            backbone,
+            latents,
+            cross_attn_norm_gain,
+            cross_attn_norm_bias,
+            cross_attn_context_norm_gain,
+            cross_attn_context_norm_bias,
+            to_q,
+            to_kv,
+            to_out,
+            ff_norm_gain,
+            ff_norm_bias,
+            ff_proj,
+            ff_down,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
