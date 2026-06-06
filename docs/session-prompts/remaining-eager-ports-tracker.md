@@ -39,13 +39,16 @@ These unblock multiple downstream model ports. Ship these first.
       + Conv3dTemporal2Config; weight pre-split in from_raw_weight,
       apply uses narrow + squeeze + 2× conv2d + add + unsqueeze;
       6 tests including hand-computed kernel-1×1 verification).
-- [ ] [Causal/streaming Conv1d (Mimi conv)](port-mimi-conv.md)
-      — `audio/mimi/conv.rs` (688 LOC). Streaming Conv1d primitive +
-      ConvDownsample / ConvTrUpsample variants. Blocks Mimi encodec
-      top-level, MetaVoice main LM.
-- [ ] [STFT + log-mel preprocessing](port-whisper-audio.md)
-      — `audio/whisper/audio.rs` (338 LOC). Host-side preprocessing
-      (no lazy STFT op). Useful for any audio-input model.
+- [~] [Causal/streaming Conv1d (Mimi conv)](shipped/port-mimi-conv.md)
+      — `audio/mimi/conv.rs` (688 LOC). **Sub-ports 1 + 2 shipped**
+      (lazy_mimi_conv::StreamableConv1d + lazy_mimi_conv_transpose::StreamableConvTranspose1d,
+      both with state-as-value streaming + WeightNorm baking; 18 tests).
+      Sub-port 3 (ConvDownsample/ConvTrUpsample wrappers) + sub-port 4
+      (TimeGroupNorm if encodec needs it) ship in the Mimi-closure batch.
+- [x] [STFT + log-mel preprocessing](shipped/port-whisper-audio.md)
+      — `audio/whisper/audio.rs` (338 LOC). **Shipped** as
+      lazy_whisper_audio (pure host-side; Hann window + direct-DFT STFT
+      + log-mel; 4 tests).
 
 ## Multimodal vision-language
 
@@ -78,28 +81,33 @@ These unblock multiple downstream model ports. Ship these first.
       — `diffusion/z_image/*` (2829 LOC across 7 files). Largest
       single diffusion port. Transformer + VAE + text encoder +
       scheduler + sampling + preprocess.
-- [ ] [Stable Diffusion samplers + attention](port-sd-samplers.md)
+- [~] [Stable Diffusion samplers + attention](shipped/port-sd-samplers.md)
       — `diffusion/stable_diffusion/{ddim,ddpm,uni_pc,euler_ancestral_discrete,schedulers,attention}.rs`
-      (2294 LOC). Diffusion schedulers (mostly host-side CPU
-      control) + cross-attention building blocks. (Existing
-      lazy_sd_unet/vae/text_encoder cover the model parts.)
+      (2294 LOC). **Sub-port 2 shipped** as lazy_sd_samplers (SdScheduler
+      trait + DDIM + DDPM; 4 tests). Sub-port 3 (Euler-ancestral) +
+      sub-port 4 (UniPC) + sub-port 1 (standalone attention block, if
+      lazy_sd_unet doesn't already inline it) remain.
 
 ## Audio (top-level wrappers)
 
 - [ ] [Mimi encodec top wrapper](port-mimi-encodec.md)
       — `audio/mimi/encodec.rs` (272 LOC). Top-level Mimi codec
       composition. Depends on Mimi conv being shipped.
-- [ ] [MetaVoice main LM](port-metavoice-main.md)
-      — `audio/metavoice.rs` (1072 LOC). TTS LM (the speaker
-      encoder is already shipped as lazy_metavoice_speaker_encoder).
+- [x] [MetaVoice main LM](shipped/port-metavoice-main.md)
+      — `audio/metavoice.rs` (1072 LOC). **Shipped** as lazy_metavoice
+      (decoder LM + speaker conditioning + multi-codebook head;
+      4 tests including speaker_conditioning_changes_output).
 
 ## Quantized variants
 
-- [ ] [Quantized Whisper (GGUF)](port-quantized-whisper.md)
-      — `audio/whisper/quantized_model.rs` (411 LOC). GGUF Q-matmul
-      substitution over lazy_whisper.
-- [ ] [Quantized SmolLM3 (GGUF)](port-quantized-smollm3.md)
-      — `llm/smol/quantized_smollm3.rs` (578 LOC). GGUF SmolLM3.
+- [x] [Quantized Whisper (GGUF)](shipped/port-quantized-whisper.md)
+      — `audio/whisper/quantized_model.rs` (411 LOC). **Shipped** as
+      lazy_quantized_whisper (Q4_0 substitution over lazy_whisper
+      attention + FFN; conv front-end stays F32; 3 tests).
+- [x] [Quantized SmolLM3 (GGUF)](shipped/port-quantized-smollm3.md)
+      — `llm/smol/quantized_smollm3.rs` (578 LOC). **Shipped** as
+      lazy_quantized_smollm3 (Q4_0 substitution over lazy_smollm3;
+      3 tests including q4_0_round_trip_via_dequantize).
 
 ---
 
