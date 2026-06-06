@@ -5433,7 +5433,7 @@ fn apply_affine_rms_norm(
 /// `Vec<f32>`, converting from whatever dtype the file stores it in.
 /// Handles `F32`, `F64`, `BF16`, and `F16` — the dtypes real LLaMA
 /// weights use on disk. Returns an error for unsupported dtypes.
-pub(crate) fn load_tensor_as_f32(
+pub fn load_tensor_as_f32(
     st: &crate::safetensors::MmapedSafetensors,
     name: &str,
 ) -> crate::Result<Vec<f32>> {
@@ -5484,7 +5484,7 @@ pub(crate) fn load_tensor_as_f32(
 /// transformers are stored as `[out_features, in_features]`, so every
 /// call to this function is effectively "give me that matrix as I'd
 /// use it in `matmul`."
-pub(crate) fn load_transposed_matrix(
+pub fn load_transposed_matrix(
     st: &crate::safetensors::MmapedSafetensors,
     name: &str,
     out_features: usize,
@@ -5521,7 +5521,7 @@ pub(crate) fn load_transposed_matrix(
 /// The transpose itself is done in whatever dtype we're keeping:
 /// read bf16 elements from the file, place them in the transposed
 /// target buffer, no conversion.
-fn load_transposed_matrix_preserve_dtype(
+pub fn load_transposed_matrix_preserve_dtype(
     st: &crate::safetensors::MmapedSafetensors,
     name: &str,
     out_features: usize,
