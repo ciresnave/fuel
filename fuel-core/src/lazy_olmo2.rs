@@ -236,6 +236,80 @@ impl Olmo2Model {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl Olmo2Weights {
+    /// Load OLMo2 (allenai/OLMo2-*) weights from HuggingFace safetensors.
+    /// Standard LLaMA-shape attention with QK-norm gains.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Olmo2Config,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+        let inter = cfg.intermediate_size;
+
+        let opt_bias = |name: String| -> Option<Arc<[f32]>> {
+            load_tensor_as_f32(st, &name).ok().map(Arc::from)
+        };
+
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "model.embed_tokens.weight")?);
+        let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        let mut layer_extras: Vec<Olmo2LayerExtras> = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{i}");
+            let attn_q = ltm(st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h)?;
+            let attn_q_bias = if cfg.attention_bias {
+                opt_bias(format!("{p}.self_attn.q_proj.bias"))
+            } else { None };
+            let attn_k = ltm(st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h)?;
+            let attn_k_bias = if cfg.attention_bias {
+                opt_bias(format!("{p}.self_attn.k_proj.bias"))
+            } else { None };
+            let attn_v = ltm(st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h)?;
+            let attn_v_bias = if cfg.attention_bias {
+                opt_bias(format!("{p}.self_attn.v_proj.bias"))
+            } else { None };
+            let attn_o = ltm(st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim)?;
+            let ffn_gate = ltm(st, &format!("{p}.mlp.gate_proj.weight"), inter, h)?;
+            let ffn_up = ltm(st, &format!("{p}.mlp.up_proj.weight"), inter, h)?;
+            let ffn_down = ltm(st, &format!("{p}.mlp.down_proj.weight"), h, inter)?;
+            // OLMo2 swaps the LN placement: input is `post_feedforward_layernorm`
+            // (post-norm-ish), but the LayerWeights field is called attn_norm_gain
+            // and is applied per the model's forward implementation.
+            let attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+            let ffn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_feedforward_layernorm.weight"),
+            )?);
+            layers.push(LayerWeights {
+                attn_q, attn_q_bias, attn_k, attn_k_bias,
+                attn_v, attn_v_bias, attn_o,
+                ffn_gate, ffn_up, ffn_down, attn_norm_gain, ffn_norm_gain,
+            });
+
+            let q_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.self_attn.q_norm.weight"),
+            )?);
+            let k_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.self_attn.k_norm.weight"),
+            )?);
+            layer_extras.push(Olmo2LayerExtras { q_norm_gain, k_norm_gain });
+        }
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
+        let output = match ltm(st, "lm_head.weight", cfg.vocab_size, h) {
+            Ok(w) => w,
+            Err(_) => crate::lazy_llama_full::tied_lm_head_from_embeddings(
+                &token_embedding, cfg.vocab_size, h,
+            ),
+        };
+        Ok(Self { token_embedding, layers, layer_extras, final_norm_gain, output })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

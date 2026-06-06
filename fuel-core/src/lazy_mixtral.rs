@@ -332,6 +332,69 @@ impl MixtralModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl MixtralWeights {
+    /// Load Mixtral (mistralai/Mixtral-8x*) weights from HuggingFace safetensors.
+    /// Standard Mistral-style attn (no biases) + per-expert SwiGLU under
+    /// `model.layers.{i}.block_sparse_moe.experts.{e}.{w1,w2,w3}.weight`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &MixtralConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+        let q_dim = cfg.num_attention_heads * cfg.head_dim;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+
+        let token_embedding = Arc::from(load_tensor_as_f32(
+            st, "model.embed_tokens.weight",
+        )?);
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{i}");
+            let attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.input_layernorm.weight"),
+            )?);
+            let ffn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+            let attn_q = ltm(st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h)?;
+            let attn_k = ltm(st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h)?;
+            let attn_v = ltm(st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h)?;
+            let attn_o = ltm(st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim)?;
+            // Router gate.
+            let gate_w = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.block_sparse_moe.gate.weight"),
+            )?);
+            let mut experts = Vec::with_capacity(cfg.num_local_experts);
+            for e in 0..cfg.num_local_experts {
+                let ep = format!("{p}.block_sparse_moe.experts.{e}");
+                let gate_w_e = ltm(st, &format!("{ep}.w1.weight"), inter, h)?;
+                let down_w = ltm(st, &format!("{ep}.w2.weight"), h, inter)?;
+                let up_w = ltm(st, &format!("{ep}.w3.weight"), inter, h)?;
+                experts.push(MixtralExpertWeights {
+                    gate_w: gate_w_e, up_w, down_w,
+                });
+            }
+            layers.push(MixtralLayerWeights {
+                attn_norm_gain, ffn_norm_gain,
+                attn_q, attn_k, attn_v, attn_o,
+                gate_w, experts,
+            });
+        }
+
+        let final_norm_gain = Arc::from(load_tensor_as_f32(
+            st, "model.norm.weight",
+        )?);
+        let output = ltm(st, "lm_head.weight", cfg.vocab_size, h)?;
+
+        Ok(Self { token_embedding, layers, final_norm_gain, output })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

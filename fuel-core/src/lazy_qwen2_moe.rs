@@ -422,6 +422,116 @@ fn linear(
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl Qwen2MoeWeights {
+    /// Load Qwen2-MoE (Qwen/Qwen1.5-MoE-A2.7B-*) weights from HF safetensors.
+    /// Tensor names follow the LLaMA layout under `model.*` with MoE FFNs at
+    /// `model.layers.{i}.mlp.{gate,experts.{e}.{gate,up,down}_proj,shared_expert.*}.weight`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Qwen2MoeConfig,
+    ) -> crate::Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix};
+        let h = cfg.hidden_size;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim();
+        let moe_int = cfg.moe_intermediate_size;
+        let shared_int = cfg.shared_expert_intermediate_size;
+
+        let token_embedding = Arc::from(load_tensor_as_f32(
+            st, "model.embed_tokens.weight",
+        )?);
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{i}");
+            let input_ln = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.input_layernorm.weight"),
+            )?);
+            let post_attn_ln = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+            let q_w = Arc::from(load_transposed_matrix(
+                st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+            )?);
+            let q_b = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.self_attn.q_proj.bias"),
+            )?);
+            let k_w = Arc::from(load_transposed_matrix(
+                st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+            )?);
+            let k_b = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.self_attn.k_proj.bias"),
+            )?);
+            let v_w = Arc::from(load_transposed_matrix(
+                st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+            )?);
+            let v_b = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.self_attn.v_proj.bias"),
+            )?);
+            let o_w = Arc::from(load_transposed_matrix(
+                st, &format!("{p}.self_attn.o_proj.weight"), h, h,
+            )?);
+
+            // Router gate: HF stores `[num_experts, hidden]`; transposed
+            // to `[hidden, num_experts]` for the matmul layout used by forward.
+            let gate_w = Arc::from(load_transposed_matrix(
+                st, &format!("{p}.mlp.gate.weight"), cfg.num_experts, h,
+            )?);
+
+            let mut experts = Vec::with_capacity(cfg.num_experts);
+            for e in 0..cfg.num_experts {
+                let ep = format!("{p}.mlp.experts.{e}");
+                let gate_w_e = Arc::from(load_transposed_matrix(
+                    st, &format!("{ep}.gate_proj.weight"), moe_int, h,
+                )?);
+                let up_w = Arc::from(load_transposed_matrix(
+                    st, &format!("{ep}.up_proj.weight"), moe_int, h,
+                )?);
+                let down_w = Arc::from(load_transposed_matrix(
+                    st, &format!("{ep}.down_proj.weight"), h, moe_int,
+                )?);
+                experts.push(ExpertWeights { gate_w: gate_w_e, up_w, down_w });
+            }
+
+            let shared_gate_w = Arc::from(load_transposed_matrix(
+                st, &format!("{p}.mlp.shared_expert.gate_proj.weight"), shared_int, h,
+            )?);
+            let shared_up_w = Arc::from(load_transposed_matrix(
+                st, &format!("{p}.mlp.shared_expert.up_proj.weight"), shared_int, h,
+            )?);
+            let shared_down_w = Arc::from(load_transposed_matrix(
+                st, &format!("{p}.mlp.shared_expert.down_proj.weight"), h, shared_int,
+            )?);
+            let shared_expert_gate_w = Arc::from(load_transposed_matrix(
+                st, &format!("{p}.mlp.shared_expert_gate.weight"), 1, h,
+            )?);
+
+            layers.push(Qwen2MoeLayerWeights {
+                input_ln,
+                q_w, q_b, k_w, k_b, v_w, v_b, o_w,
+                post_attn_ln,
+                gate_w, experts,
+                shared_gate_w, shared_up_w, shared_down_w,
+                shared_expert_gate_w,
+            });
+        }
+
+        let final_ln = Arc::from(load_tensor_as_f32(
+            st, "model.norm.weight",
+        )?);
+        // Qwen2-MoE: tied lm_head when `tie_word_embeddings=true`; else load.
+        let lm_head = match load_transposed_matrix(
+            st, "lm_head.weight", cfg.vocab_size, h,
+        ) {
+            Ok(v) => Arc::from(v),
+            Err(_) => Arc::clone(&token_embedding),
+        };
+
+        Ok(Self { token_embedding, layers, final_ln, lm_head })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
