@@ -343,6 +343,54 @@ impl Qwen2Model {
 /// per-port wrapper is preserved so call sites inside this module
 /// keep their existing signature.
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl Qwen2Weights {
+    /// Load Qwen2 weights from HF safetensors (e.g. `Qwen/Qwen2-7B`).
+    /// Qwen2 has biases on Q/K/V but NOT on the output projection.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Qwen2Config,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let h = cfg.hidden_size;
+        let head_dim = cfg.head_dim();
+        let q_dim = cfg.num_attention_heads * head_dim;
+        let kv_dim = cfg.num_key_value_heads * head_dim;
+        let inter = cfg.intermediate_size;
+
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "model.embed_tokens.weight")?);
+        let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{i}");
+            let attn_q = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h)?;
+            let attn_q_bias = Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?));
+            let attn_k = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h)?;
+            let attn_k_bias = Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))?));
+            let attn_v = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h)?;
+            let attn_v_bias = Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?));
+            let attn_o = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim)?;
+            let ffn_gate = load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.gate_proj.weight"), inter, h)?;
+            let ffn_up = load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.up_proj.weight"), inter, h)?;
+            let ffn_down = load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.down_proj.weight"), h, inter)?;
+            let attn_norm_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?);
+            let ffn_norm_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?);
+            layers.push(LayerWeights {
+                attn_q, attn_q_bias, attn_k, attn_k_bias, attn_v, attn_v_bias, attn_o,
+                ffn_gate, ffn_up, ffn_down, attn_norm_gain, ffn_norm_gain,
+            });
+        }
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
+        let output = if cfg.tie_word_embeddings {
+            crate::lazy_llama_full::tied_lm_head_from_embeddings(&token_embedding, cfg.vocab_size, h)
+        } else {
+            load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h)?
+        };
+        Ok(Self { token_embedding, layers, final_norm_gain, output })
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
