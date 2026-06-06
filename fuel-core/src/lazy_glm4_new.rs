@@ -338,6 +338,105 @@ impl Glm4NewModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl Glm4NewWeights {
+    /// Load GLM-4-new weights from HF safetensors (e.g.
+    /// `THUDM/glm-4-9b-chat`). HF naming uses the standard
+    /// `model.embed_tokens.weight`, `model.layers.{i}.*`, `model.norm.weight`,
+    /// and `lm_head.weight` (when not tied). Per-layer:
+    ///   - `model.layers.{i}.input_layernorm.weight`
+    ///   - `model.layers.{i}.self_attn.{q,k,v,o}_proj.{weight,bias}`
+    ///   - `model.layers.{i}.post_self_attn_layernorm.weight`
+    ///   - `model.layers.{i}.post_attention_layernorm.weight`
+    ///   - `model.layers.{i}.mlp.gate_up_proj.weight` (fused gate+up,
+    ///     out_dim = 2 * intermediate_size)
+    ///   - `model.layers.{i}.mlp.down_proj.weight`
+    ///   - `model.layers.{i}.post_mlp_layernorm.weight`
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Glm4NewConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+        let head_dim = cfg.head_dim();
+        let q_dim = cfg.num_attention_heads * head_dim;
+        let kv_dim = cfg.num_key_value_heads * head_dim;
+
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "model.embed_tokens.weight")?);
+
+        let mut layers: Vec<Glm4NewLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("model.layers.{i}");
+            let input_norm_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?);
+            let post_self_attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_self_attn_layernorm.weight"),
+            )?);
+            let post_attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+            let post_mlp_norm_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.post_mlp_layernorm.weight"),
+            )?);
+
+            let q = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h,
+            )?;
+            let k = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+            )?;
+            let v = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+            )?;
+            let o = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim,
+            )?;
+
+            let (q_bias, k_bias, v_bias) = if cfg.attention_bias {
+                (
+                    Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?)),
+                    Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))?)),
+                    Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?)),
+                )
+            } else {
+                (None, None, None)
+            };
+
+            let gate_up = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.gate_up_proj.weight"), 2 * inter, h,
+            )?;
+            let down = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.down_proj.weight"), h, inter,
+            )?;
+
+            layers.push(Glm4NewLayerWeights {
+                input_norm_gain, post_self_attn_norm_gain,
+                post_attn_norm_gain, post_mlp_norm_gain,
+                q, q_bias, k, k_bias, v, v_bias, o,
+                gate_up, down,
+            });
+        }
+
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
+        let lm_head = if cfg.tie_word_embeddings {
+            None
+        } else {
+            Some(load_transposed_matrix_preserve_dtype(
+                st, "lm_head.weight", cfg.vocab_size, h,
+            )?)
+        };
+
+        Ok(Self {
+            token_embedding,
+            layers,
+            final_norm_gain,
+            lm_head,
+        })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

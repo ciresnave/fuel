@@ -549,6 +549,181 @@ fn activate(x: &LazyTensor, kind: SiglipActivation) -> LazyTensor {
     }
 }
 
+// ---- HuggingFace safetensors loaders ---------------------------------------
+
+fn load_siglip_encoder_layer(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    hidden: usize,
+    intermediate: usize,
+) -> Result<SiglipEncoderLayerWeights> {
+    use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    Ok(SiglipEncoderLayerWeights {
+        ln1_gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm1.weight"))?),
+        ln1_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm1.bias"))?),
+        q_proj: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.self_attn.q_proj.weight"), hidden, hidden,
+        )?,
+        q_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.q_proj.bias"))?),
+        k_proj: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.self_attn.k_proj.weight"), hidden, hidden,
+        )?,
+        k_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.k_proj.bias"))?),
+        v_proj: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.self_attn.v_proj.weight"), hidden, hidden,
+        )?,
+        v_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.v_proj.bias"))?),
+        out_proj: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.self_attn.out_proj.weight"), hidden, hidden,
+        )?,
+        out_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self_attn.out_proj.bias"))?),
+        ln2_gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm2.weight"))?),
+        ln2_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.layer_norm2.bias"))?),
+        fc1: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.mlp.fc1.weight"), intermediate, hidden,
+        )?,
+        fc1_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.mlp.fc1.bias"))?),
+        fc2: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.mlp.fc2.weight"), hidden, intermediate,
+        )?,
+        fc2_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.mlp.fc2.bias"))?),
+    })
+}
+
+impl SiglipVisionWeights {
+    /// Load SigLIP vision-tower weights from HF safetensors.
+    /// `prefix` is typically `""` for vision-only checkpoints or
+    /// `"vision_model."` for full SigLIP / PaliGemma checkpoints.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &SiglipVisionConfig,
+        prefix: &str,
+        include_head: bool,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+
+        let patch_proj = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.patch_embedding.weight"),
+        )?);
+        let patch_proj_bias = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.patch_embedding.bias"),
+        )?);
+        let position_embedding = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.position_embedding.weight"),
+        )?);
+        let layers: Result<Vec<_>> = (0..cfg.num_hidden_layers)
+            .map(|i| load_siglip_encoder_layer(
+                st, &format!("{prefix}encoder.layers.{i}"), h, inter,
+            ))
+            .collect();
+        let post_ln_gain = Arc::from(load_tensor_as_f32(st, &format!("{prefix}post_layernorm.weight"))?);
+        let post_ln_bias = Arc::from(load_tensor_as_f32(st, &format!("{prefix}post_layernorm.bias"))?);
+
+        let head = if include_head {
+            let hp = format!("{prefix}head");
+            Some(SiglipPoolingHead {
+                probe: Arc::from(load_tensor_as_f32(st, &format!("{hp}.probe"))?),
+                q_proj: load_transposed_matrix_preserve_dtype(
+                    st, &format!("{hp}.attention.in_proj_q.weight"), h, h,
+                )?,
+                q_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{hp}.attention.in_proj_q.bias"))?),
+                k_proj: load_transposed_matrix_preserve_dtype(
+                    st, &format!("{hp}.attention.in_proj_k.weight"), h, h,
+                )?,
+                k_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{hp}.attention.in_proj_k.bias"))?),
+                v_proj: load_transposed_matrix_preserve_dtype(
+                    st, &format!("{hp}.attention.in_proj_v.weight"), h, h,
+                )?,
+                v_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{hp}.attention.in_proj_v.bias"))?),
+                out_proj: load_transposed_matrix_preserve_dtype(
+                    st, &format!("{hp}.attention.out_proj.weight"), h, h,
+                )?,
+                out_proj_bias: Arc::from(load_tensor_as_f32(st, &format!("{hp}.attention.out_proj.bias"))?),
+                ln_gain: Arc::from(load_tensor_as_f32(st, &format!("{hp}.layernorm.weight"))?),
+                ln_bias: Arc::from(load_tensor_as_f32(st, &format!("{hp}.layernorm.bias"))?),
+                mlp_fc1: load_transposed_matrix_preserve_dtype(
+                    st, &format!("{hp}.mlp.fc1.weight"), inter, h,
+                )?,
+                mlp_fc1_bias: Arc::from(load_tensor_as_f32(st, &format!("{hp}.mlp.fc1.bias"))?),
+                mlp_fc2: load_transposed_matrix_preserve_dtype(
+                    st, &format!("{hp}.mlp.fc2.weight"), h, inter,
+                )?,
+                mlp_fc2_bias: Arc::from(load_tensor_as_f32(st, &format!("{hp}.mlp.fc2.bias"))?),
+            })
+        } else {
+            None
+        };
+
+        Ok(Self {
+            patch_proj, patch_proj_bias, position_embedding,
+            layers: layers?,
+            post_ln_gain, post_ln_bias,
+            head,
+        })
+    }
+}
+
+impl SiglipTextWeights {
+    /// Load SigLIP text-tower weights from HF safetensors.
+    /// `prefix` typically `""` or `"text_model."`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &SiglipTextConfig,
+        prefix: &str,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+
+        let token_embedding = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.token_embedding.weight"),
+        )?);
+        let position_embedding = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.position_embedding.weight"),
+        )?);
+        let layers: Result<Vec<_>> = (0..cfg.num_hidden_layers)
+            .map(|i| load_siglip_encoder_layer(
+                st, &format!("{prefix}encoder.layers.{i}"), h, inter,
+            ))
+            .collect();
+        let final_ln_gain = Arc::from(load_tensor_as_f32(st, &format!("{prefix}final_layer_norm.weight"))?);
+        let final_ln_bias = Arc::from(load_tensor_as_f32(st, &format!("{prefix}final_layer_norm.bias"))?);
+        let head_w = load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}head.weight"), h, h,
+        )?;
+        let head_bias = Arc::from(load_tensor_as_f32(st, &format!("{prefix}head.bias"))?);
+        Ok(Self {
+            token_embedding, position_embedding,
+            layers: layers?,
+            final_ln_gain, final_ln_bias,
+            head_w, head_bias,
+        })
+    }
+}
+
+impl SiglipModelWeights {
+    /// Load a full SigLIP checkpoint (text + vision + logit
+    /// scale/bias) from `google/siglip-*` HF safetensors.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        text_cfg: &SiglipTextConfig,
+        vision_cfg: &SiglipVisionConfig,
+    ) -> Result<Self> {
+        use crate::lazy::load_tensor_as_f32;
+        let text = SiglipTextWeights::load_from_mmapped(st, text_cfg, "text_model.")?;
+        let vision = SiglipVisionWeights::load_from_mmapped(
+            st, vision_cfg, "vision_model.", false,
+        )?;
+        let logit_scale = load_tensor_as_f32(st, "logit_scale")?
+            .first().copied().unwrap_or(0.0);
+        let logit_bias = load_tensor_as_f32(st, "logit_bias")?
+            .first().copied().unwrap_or(0.0);
+        Ok(Self { text, vision, logit_scale, logit_bias })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

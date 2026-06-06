@@ -137,6 +137,37 @@ fn l2_normalize_last(x: &LazyTensor) -> Result<LazyTensor> {
     x.l2_normalize(1_usize, 0.0)
 }
 
+// ---- HuggingFace safetensors composer --------------------------------------
+
+impl ChineseClipWeights {
+    /// Load a full Chinese-CLIP checkpoint
+    /// (e.g. `OFA-Sys/chinese-clip-vit-base-patch16`). Composes the
+    /// shipped BertWeights + ClipVisionWeights loaders and reads the
+    /// two projection heads + logit_scale at the top level.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &ChineseClipConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let text = BertWeights::load_from_mmapped(st, &cfg.text)?;
+        let vision = ClipVisionWeights::load_from_mmapped(
+            st, &cfg.vision, "vision_model.",
+        )?;
+        let text_projection = load_transposed_matrix_preserve_dtype(
+            st, "text_projection.weight",
+            cfg.projection_dim, cfg.text.hidden_size,
+        )?;
+        let visual_projection = load_transposed_matrix_preserve_dtype(
+            st, "visual_projection.weight",
+            cfg.projection_dim, cfg.vision.embed_dim,
+        )?;
+        let logit_scale = load_tensor_as_f32(st, "logit_scale")?
+            .first().copied().unwrap_or(0.0);
+        Ok(Self { text, vision, visual_projection, text_projection, logit_scale })
+    }
+}
+
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
