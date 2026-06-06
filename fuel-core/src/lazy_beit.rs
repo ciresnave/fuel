@@ -455,6 +455,123 @@ fn build_relative_position_index(num_patches_per_side: usize) -> Vec<u32> {
     idx
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl BeitWeights {
+    /// Load BEiT (microsoft/beit-{base,large}-*) weights from HF safetensors.
+    /// The HF wrapper prefixes with `beit.` for the backbone; classification
+    /// head sits at `classifier.weight`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &BeitConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.embed_dim;
+        let mlp = cfg.mlp_ratio * h;
+
+        let opt_bias = |name: String| -> Option<Arc<[f32]>> {
+            load_tensor_as_f32(st, &name).ok().map(Arc::from)
+        };
+
+        // BEiT conv kernel is [embed_dim, num_channels, patch, patch] —
+        // stored as f32 row-major; load_tensor_as_f32 returns flat.
+        let patch_proj = Arc::from(load_tensor_as_f32(
+            st, "beit.embeddings.patch_embeddings.projection.weight",
+        )?);
+        let patch_proj_bias = Arc::from(load_tensor_as_f32(
+            st, "beit.embeddings.patch_embeddings.projection.bias",
+        )?);
+        let cls_token = Arc::from(load_tensor_as_f32(
+            st, "beit.embeddings.cls_token",
+        )?);
+
+        let mut blocks = Vec::with_capacity(cfg.depth);
+        for i in 0..cfg.depth {
+            let p = format!("beit.encoder.layer.{i}");
+            let norm1_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.layernorm_before.weight"),
+            )?);
+            let norm1_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.layernorm_before.bias"),
+            )?);
+            // BEiT stores Q/K/V as separate weights (no fused QKV in HF
+            // weights); concat at load to match the fused storage layout.
+            let q = load_transposed_matrix(st, &format!("{p}.attention.attention.query.weight"), h, h)?;
+            let k = load_transposed_matrix(st, &format!("{p}.attention.attention.key.weight"), h, h)?;
+            let v = load_transposed_matrix(st, &format!("{p}.attention.attention.value.weight"), h, h)?;
+            // Concatenate into fused `[h, 3*h]`.
+            let mut fused = vec![0.0_f32; h * 3 * h];
+            for row in 0..h {
+                fused[row * 3 * h..row * 3 * h + h].copy_from_slice(
+                    &q[row * h..(row + 1) * h]);
+                fused[row * 3 * h + h..row * 3 * h + 2 * h].copy_from_slice(
+                    &k[row * h..(row + 1) * h]);
+                fused[row * 3 * h + 2 * h..row * 3 * h + 3 * h].copy_from_slice(
+                    &v[row * h..(row + 1) * h]);
+            }
+            let qkv = WeightStorage::F32(Arc::from(fused));
+            let qkv_bias = if cfg.qkv_bias {
+                // Q has bias, K typically has no bias, V has bias in BEiT.
+                // Concat [q, 0, v] as expected by the fused QKV.
+                let q_b = opt_bias(format!("{p}.attention.attention.query.bias"));
+                let v_b = opt_bias(format!("{p}.attention.attention.value.bias"));
+                let q_b = q_b.unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+                let v_b = v_b.unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+                let mut fused = vec![0.0_f32; 3 * h];
+                fused[..h].copy_from_slice(&q_b);
+                // middle h zero (K)
+                fused[2 * h..].copy_from_slice(&v_b);
+                Some(Arc::from(fused))
+            } else { None };
+
+            let proj = ltm(st, &format!("{p}.attention.output.dense.weight"), h, h)?;
+            let proj_bias = if cfg.proj_bias {
+                opt_bias(format!("{p}.attention.output.dense.bias"))
+            } else { None };
+            let ls1_gamma = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.lambda_1"),
+            )?);
+            let relative_position_bias_table = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.attention.attention.relative_position_bias.relative_position_bias_table"),
+            )?);
+            let norm2_gain = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.layernorm_after.weight"),
+            )?);
+            let norm2_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.layernorm_after.bias"),
+            )?);
+            let fc1 = ltm(st, &format!("{p}.intermediate.dense.weight"), mlp, h)?;
+            let fc1_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.intermediate.dense.bias"),
+            )?);
+            let fc2 = ltm(st, &format!("{p}.output.dense.weight"), h, mlp)?;
+            let fc2_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.output.dense.bias"),
+            )?);
+            let ls2_gamma = Arc::from(load_tensor_as_f32(
+                st, &format!("{p}.lambda_2"),
+            )?);
+
+            blocks.push(BeitBlockWeights {
+                norm1_gain, norm1_bias, qkv, qkv_bias, proj, proj_bias,
+                ls1_gamma, relative_position_bias_table,
+                norm2_gain, norm2_bias, fc1, fc1_bias, fc2, fc2_bias, ls2_gamma,
+            });
+        }
+
+        let final_ln_gain = Arc::from(load_tensor_as_f32(st, "beit.layernorm.weight")?);
+        let final_ln_bias = Arc::from(load_tensor_as_f32(st, "beit.layernorm.bias")?);
+        let head = ltm(st, "classifier.weight", cfg.num_classes, h)?;
+        let head_bias = Arc::from(load_tensor_as_f32(st, "classifier.bias")
+            .unwrap_or_else(|_| vec![0.0_f32; cfg.num_classes]));
+
+        Ok(Self {
+            patch_proj, patch_proj_bias, cls_token, blocks,
+            final_ln_gain, final_ln_bias, head, head_bias,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

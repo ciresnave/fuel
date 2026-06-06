@@ -64,6 +64,26 @@ impl Gemma4MmEmbedder {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl Gemma4MmEmbedWeights {
+    /// Load Gemma4's multimodal embedder projection from HF safetensors.
+    /// Convention: `model.embed_vision.embedding_projection.weight`
+    /// `[text_hidden, multimodal_hidden]` (HF stores `[out, in]`).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Gemma4MmEmbedConfig,
+    ) -> crate::Result<Self> {
+        use crate::lazy::load_transposed_matrix_preserve_dtype as ltm;
+        let projection = ltm(
+            st,
+            "model.embed_vision.embedding_projection.weight",
+            cfg.text_hidden_size, cfg.multimodal_hidden_size,
+        )?;
+        Ok(Self { projection })
+    }
+}
+
 // ---- Tests ---------------------------------------------------------------
 
 #[cfg(test)]
