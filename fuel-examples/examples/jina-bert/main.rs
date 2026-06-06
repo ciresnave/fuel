@@ -1,15 +1,19 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-use fuel_transformers::models::jina_bert::{BertModel, Config, PositionEmbeddingType};
-
-use anyhow::Error as E;
-use fuel::{DType, Module, Tensor};
-use fuel_nn::VarBuilder;
+use anyhow::{Error as E, Result};
 use clap::Parser;
+use std::sync::Arc;
+
+use fuel::lazy::{
+    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+};
+use fuel::lazy_jina_bert::{
+    JinaBertConfig, JinaBertModel, JinaBertWeights, JinaLayerWeights,
+};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -44,49 +48,7 @@ struct Args {
     model_file: Option<String>,
 }
 
-impl Args {
-    fn build_model_and_tokenizer(&self) -> anyhow::Result<(BertModel, tokenizers::Tokenizer)> {
-        use hf_hub::{api::sync::Api, Repo, RepoType};
-        let model_name = match self.model.as_ref() {
-            Some(model) => model.to_string(),
-            None => "jinaai/jina-embeddings-v2-base-en".to_string(),
-        };
-
-        let model = match &self.model_file {
-            Some(model_file) => std::path::PathBuf::from(model_file),
-            None => Api::new()?
-                .repo(Repo::new(model_name.to_string(), RepoType::Model))
-                .get("model.safetensors")?,
-        };
-        let tokenizer = match &self.tokenizer {
-            Some(file) => std::path::PathBuf::from(file),
-            None => Api::new()?
-                .repo(Repo::new(model_name.to_string(), RepoType::Model))
-                .get("tokenizer.json")?,
-        };
-        let device = fuel_examples::device(self.cpu)?;
-        let tokenizer = tokenizers::Tokenizer::from_file(tokenizer).map_err(E::msg)?;
-        let config = Config::new(
-            tokenizer.get_vocab_size(true),
-            768,
-            12,
-            12,
-            3072,
-            fuel_nn::Activation::Gelu,
-            8192,
-            2,
-            0.02,
-            1e-12,
-            0,
-            PositionEmbeddingType::Alibi,
-        );
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model], DType::F32, &device)? };
-        let model = BertModel::new(vb, &config)?;
-        Ok((model, tokenizer))
-    }
-}
-
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<()> {
     use tracing_chrome::ChromeLayerBuilder;
     use tracing_subscriber::prelude::*;
 
@@ -99,12 +61,32 @@ fn main() -> anyhow::Result<()> {
     } else {
         None
     };
+    let _device = fuel_examples::device(args.cpu)?;
+
+    let model_name = args.model.clone().unwrap_or_else(|| "jinaai/jina-embeddings-v2-base-en".to_string());
+    let model_path = match args.model_file.as_ref() {
+        Some(model_file) => std::path::PathBuf::from(model_file),
+        None => hf_hub::api::sync::Api::new()?
+            .repo(hf_hub::Repo::new(model_name.clone(), hf_hub::RepoType::Model))
+            .get("model.safetensors")?,
+    };
+    let tokenizer_path = match args.tokenizer.as_ref() {
+        Some(file) => std::path::PathBuf::from(file),
+        None => hf_hub::api::sync::Api::new()?
+            .repo(hf_hub::Repo::new(model_name.clone(), hf_hub::RepoType::Model))
+            .get("tokenizer.json")?,
+    };
+    let mut tokenizer = tokenizers::Tokenizer::from_file(tokenizer_path).map_err(E::msg)?;
+
+    let cfg = JinaBertConfig::jina_v2_base();
+    let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&[model_path]) }
+        .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+    let weights = load_jina_bert_weights(&st, &cfg)?;
+    let model = JinaBertModel { config: cfg.clone(), weights };
+
     let start = std::time::Instant::now();
 
-    let (model, mut tokenizer) = args.build_model_and_tokenizer()?;
-    let device = &model.device;
-
-    if let Some(prompt) = args.prompt {
+    if let Some(prompt) = args.prompt.clone() {
         let tokenizer = tokenizer
             .with_padding(None)
             .with_truncation(None)
@@ -114,21 +96,32 @@ fn main() -> anyhow::Result<()> {
             .map_err(E::msg)?
             .get_ids()
             .to_vec();
-        let token_ids = Tensor::new(&tokens[..], device)?.unsqueeze(0)?;
         println!("Loaded and encoded {:?}", start.elapsed());
         let start = std::time::Instant::now();
-        let embeddings = model.forward(&token_ids)?;
-        let (_n_sentence, n_tokens, _hidden_size) = embeddings.dims3()?;
-        let embeddings = (embeddings.sum(1)? / (n_tokens as f64))?;
-        println!("pooled_embeddigns: {embeddings}");
-        let embeddings = if args.normalize_embeddings {
-            normalize_l2(&embeddings)?
-        } else {
-            embeddings
-        };
-        if args.normalize_embeddings {
-            println!("normalized_embeddings: {embeddings}");
+        let mut last: Vec<f32> = Vec::new();
+        for _ in 0..args.n {
+            let embeddings = model.forward(&tokens, None)?;
+            let realized = embeddings.realize_f32();
+            last = realized;
         }
+        let n_tokens = tokens.len();
+        let hidden = cfg.hidden_size;
+        // Mean pool over tokens.
+        let mut pooled = vec![0.0_f32; hidden];
+        for i in 0..n_tokens {
+            for j in 0..hidden {
+                pooled[j] += last[i * hidden + j];
+            }
+        }
+        for v in pooled.iter_mut() {
+            *v /= n_tokens as f32;
+        }
+        let pooled = if args.normalize_embeddings {
+            l2_normalize(&pooled)
+        } else {
+            pooled
+        };
+        println!("pooled embedding (len {}): {:?}", pooled.len(), &pooled[..pooled.len().min(8)]);
         println!("Took {:?}", start.elapsed());
     } else {
         let sentences = [
@@ -142,60 +135,158 @@ fn main() -> anyhow::Result<()> {
             "Do you like pizza?",
         ];
         let n_sentences = sentences.len();
-        if let Some(pp) = tokenizer.get_padding_mut() {
-            pp.strategy = tokenizers::PaddingStrategy::BatchLongest
-        } else {
-            let pp = tokenizers::PaddingParams {
-                strategy: tokenizers::PaddingStrategy::BatchLongest,
-                ..Default::default()
+        let mut all_embeds: Vec<Vec<f32>> = Vec::with_capacity(n_sentences);
+        for sentence in &sentences {
+            let toks = tokenizer
+                .encode(*sentence, true)
+                .map_err(E::msg)?
+                .get_ids()
+                .to_vec();
+            let emb = model.forward(&toks, None)?;
+            let realized = emb.realize_f32();
+            let hidden = cfg.hidden_size;
+            let n_tokens = toks.len();
+            let mut pooled = vec![0.0_f32; hidden];
+            for i in 0..n_tokens {
+                for j in 0..hidden {
+                    pooled[j] += realized[i * hidden + j];
+                }
+            }
+            for v in pooled.iter_mut() {
+                *v /= n_tokens as f32;
+            }
+            let pooled = if args.normalize_embeddings {
+                l2_normalize(&pooled)
+            } else {
+                pooled
             };
-            tokenizer.with_padding(Some(pp));
+            all_embeds.push(pooled);
         }
-        let tokens = tokenizer
-            .encode_batch(sentences.to_vec(), true)
-            .map_err(E::msg)?;
-        let token_ids = tokens
-            .iter()
-            .map(|tokens| {
-                let tokens = tokens.get_ids().to_vec();
-                Tensor::new(tokens.as_slice(), device)
-            })
-            .collect::<fuel::Result<Vec<_>>>()?;
-
-        let token_ids = Tensor::stack(&token_ids, 0)?;
-        println!("running inference on batch {:?}", token_ids.shape());
-        let embeddings = model.forward(&token_ids)?;
-        println!("generated embeddings {:?}", embeddings.shape());
-        // Apply some avg-pooling by taking the mean embedding value for all tokens (including padding)
-        let (_n_sentence, n_tokens, _hidden_size) = embeddings.dims3()?;
-        let embeddings = (embeddings.sum(1)? / (n_tokens as f64))?;
-        let embeddings = if args.normalize_embeddings {
-            normalize_l2(&embeddings)?
-        } else {
-            embeddings
-        };
-        println!("pooled embeddings {:?}", embeddings.shape());
 
         let mut similarities = vec![];
         for i in 0..n_sentences {
-            let e_i = embeddings.get(i)?;
+            let e_i = &all_embeds[i];
             for j in (i + 1)..n_sentences {
-                let e_j = embeddings.get(j)?;
-                let sum_ij = (&e_i * &e_j)?.sum_all()?.to_scalar::<f32>()?;
-                let sum_i2 = (&e_i * &e_i)?.sum_all()?.to_scalar::<f32>()?;
-                let sum_j2 = (&e_j * &e_j)?.sum_all()?.to_scalar::<f32>()?;
+                let e_j = &all_embeds[j];
+                let sum_ij: f32 = e_i.iter().zip(e_j.iter()).map(|(a, b)| a * b).sum();
+                let sum_i2: f32 = e_i.iter().map(|a| a * a).sum();
+                let sum_j2: f32 = e_j.iter().map(|a| a * a).sum();
                 let cosine_similarity = sum_ij / (sum_i2 * sum_j2).sqrt();
-                similarities.push((cosine_similarity, i, j))
+                similarities.push((cosine_similarity, i, j));
             }
         }
         similarities.sort_by(|u, v| v.0.total_cmp(&u.0));
         for &(score, i, j) in similarities[..5].iter() {
-            println!("score: {score:.2} '{}' '{}'", sentences[i], sentences[j])
+            println!("score: {score:.2} '{}' '{}'", sentences[i], sentences[j]);
         }
     }
+
     Ok(())
 }
 
-pub fn normalize_l2(v: &Tensor) -> fuel::Result<Tensor> {
-    v.broadcast_div(&v.sqr()?.sum_keepdim(1)?.sqrt()?)
+fn load_jina_bert_weights(
+    st: &fuel::safetensors::MmapedSafetensors,
+    cfg: &JinaBertConfig,
+) -> Result<JinaBertWeights> {
+    let h = cfg.hidden_size;
+    let word_embedding: Arc<[f32]> = Arc::from(
+        load_tensor_as_f32(st, "embeddings.word_embeddings.weight")
+            .map_err(|e| E::msg(format!("word_embeddings: {e}")))?,
+    );
+    let token_type_embedding: Arc<[f32]> = Arc::from(
+        load_tensor_as_f32(st, "embeddings.token_type_embeddings.weight")
+            .map_err(|e| E::msg(format!("token_type_embeddings: {e}")))?,
+    );
+    let embed_ln_gain: Arc<[f32]> = Arc::from(
+        load_tensor_as_f32(st, "embeddings.LayerNorm.weight")
+            .map_err(|e| E::msg(format!("embed_ln_gain: {e}")))?,
+    );
+    let embed_ln_bias: Arc<[f32]> = Arc::from(
+        load_tensor_as_f32(st, "embeddings.LayerNorm.bias")
+            .unwrap_or_else(|_| vec![0.0; h]),
+    );
+
+    let mut layers: Vec<JinaLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+    for i in 0..cfg.num_hidden_layers {
+        let base = format!("encoder.layer.{i}");
+        let q = load_transposed_matrix_preserve_dtype(
+            st, &format!("{base}.attention.self.query.weight"), h, h,
+        ).map_err(|e| E::msg(format!("q L{i}: {e}")))?;
+        let q_bias: Arc<[f32]> = Arc::from(
+            load_tensor_as_f32(st, &format!("{base}.attention.self.query.bias"))
+                .unwrap_or_else(|_| vec![0.0; h]),
+        );
+        let k = load_transposed_matrix_preserve_dtype(
+            st, &format!("{base}.attention.self.key.weight"), h, h,
+        ).map_err(|e| E::msg(format!("k L{i}: {e}")))?;
+        let k_bias: Arc<[f32]> = Arc::from(
+            load_tensor_as_f32(st, &format!("{base}.attention.self.key.bias"))
+                .unwrap_or_else(|_| vec![0.0; h]),
+        );
+        let v = load_transposed_matrix_preserve_dtype(
+            st, &format!("{base}.attention.self.value.weight"), h, h,
+        ).map_err(|e| E::msg(format!("v L{i}: {e}")))?;
+        let v_bias: Arc<[f32]> = Arc::from(
+            load_tensor_as_f32(st, &format!("{base}.attention.self.value.bias"))
+                .unwrap_or_else(|_| vec![0.0; h]),
+        );
+        let attn_out = load_transposed_matrix_preserve_dtype(
+            st, &format!("{base}.attention.output.dense.weight"), h, h,
+        ).map_err(|e| E::msg(format!("attn_out L{i}: {e}")))?;
+        let attn_out_bias: Arc<[f32]> = Arc::from(
+            load_tensor_as_f32(st, &format!("{base}.attention.output.dense.bias"))
+                .unwrap_or_else(|_| vec![0.0; h]),
+        );
+        let attn_ln_gain: Arc<[f32]> = Arc::from(
+            load_tensor_as_f32(st, &format!("{base}.attention.output.LayerNorm.weight"))
+                .map_err(|e| E::msg(format!("attn_ln_gain L{i}: {e}")))?,
+        );
+        let attn_ln_bias: Arc<[f32]> = Arc::from(
+            load_tensor_as_f32(st, &format!("{base}.attention.output.LayerNorm.bias"))
+                .unwrap_or_else(|_| vec![0.0; h]),
+        );
+        let gated_layers = load_transposed_matrix_preserve_dtype(
+            st, &format!("{base}.mlp.gated_layers.weight"),
+            2 * cfg.intermediate_size, h,
+        ).map_err(|e| E::msg(format!("gated_layers L{i}: {e}")))?;
+        let mlp_wo = load_transposed_matrix_preserve_dtype(
+            st, &format!("{base}.mlp.wo.weight"), h, cfg.intermediate_size,
+        ).map_err(|e| E::msg(format!("mlp_wo L{i}: {e}")))?;
+        let mlp_wo_bias: Arc<[f32]> = Arc::from(
+            load_tensor_as_f32(st, &format!("{base}.mlp.wo.bias"))
+                .unwrap_or_else(|_| vec![0.0; h]),
+        );
+        let mlp_ln_gain: Arc<[f32]> = Arc::from(
+            load_tensor_as_f32(st, &format!("{base}.mlp.layernorm.weight"))
+                .map_err(|e| E::msg(format!("mlp_ln_gain L{i}: {e}")))?,
+        );
+        let mlp_ln_bias: Arc<[f32]> = Arc::from(
+            load_tensor_as_f32(st, &format!("{base}.mlp.layernorm.bias"))
+                .unwrap_or_else(|_| vec![0.0; h]),
+        );
+        layers.push(JinaLayerWeights {
+            q, q_bias,
+            k, k_bias,
+            v, v_bias,
+            attn_out, attn_out_bias,
+            attn_ln_gain, attn_ln_bias,
+            gated_layers,
+            mlp_wo, mlp_wo_bias,
+            mlp_ln_gain, mlp_ln_bias,
+        });
+    }
+    Ok(JinaBertWeights {
+        word_embedding,
+        token_type_embedding,
+        embed_ln_gain,
+        embed_ln_bias,
+        layers,
+    })
 }
+
+fn l2_normalize(v: &[f32]) -> Vec<f32> {
+    let sumsq: f32 = v.iter().map(|x| x * x).sum();
+    let inv = (sumsq.sqrt() + 1e-12).recip();
+    v.iter().map(|x| x * inv).collect()
+}
+

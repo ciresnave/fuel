@@ -1,139 +1,21 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
 use anyhow::{Error as E, Result};
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use std::io::Write;
 
-use fuel::{DType, Device, Tensor};
-use fuel_examples::chat_template::{ChatTemplate, ChatTemplateOptions, Message};
-use fuel_examples::token_output_stream::TokenOutputStream;
-
-use fuel_nn::VarBuilder;
-use fuel_transformers::generation::{LogitsProcessor, Sampling};
+use fuel::lazy::{LlamaConfig, LlamaWeights};
+use fuel::lazy_smollm3::{SmolLm3Config, SmolLm3Model, SmolLm3Weights};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
 
-// Import both model implementations
-use fuel_transformers::models::smol::quantized_smollm3::QuantizedModelForCausalLM;
-use fuel_transformers::models::smol::smollm3::{Config, ModelForCausalLM};
-
 const DEFAULT_PROMPT: &str = "Write a Rust function to calculate the factorial of a given number.";
 
-// ==================== Model Type Enum ====================
-
-enum SmolLM3Model {
-    Quantized(QuantizedModelForCausalLM),
-    Full(ModelForCausalLM, Config), // Store config alongside model
-}
-
-impl SmolLM3Model {
-    fn forward(&mut self, input: &Tensor, pos: usize) -> Result<Tensor> {
-        match self {
-            Self::Quantized(model) => Ok(model.forward(input, pos)?),
-            Self::Full(model, _) => Ok(model.forward(input, pos)?),
-        }
-    }
-
-    fn config(&self) -> ModelConfig {
-        match self {
-            Self::Quantized(model) => {
-                let cfg = model.config();
-                ModelConfig {
-                    vocab_size: cfg.vocab_size,
-                    hidden_size: cfg.hidden_size,
-                    num_hidden_layers: cfg.num_hidden_layers,
-                    num_attention_heads: cfg.num_attention_heads,
-                    num_key_value_heads: cfg.num_key_value_heads,
-                    rope_theta: cfg.rope_theta as f32, // Convert f64 to f32
-                    eos_token_id: Some(128012),        // Default SmolLM3 EOS
-                    no_rope_layers: None,
-                    no_rope_layer_interval: None,
-                }
-            }
-            Self::Full(_, cfg) => {
-                ModelConfig {
-                    vocab_size: cfg.vocab_size,
-                    hidden_size: cfg.hidden_size,
-                    num_hidden_layers: cfg.num_hidden_layers,
-                    num_attention_heads: cfg.num_attention_heads,
-                    num_key_value_heads: cfg.num_key_value_heads,
-                    rope_theta: cfg.rope_theta as f32, // Convert f64 to f32
-                    eos_token_id: cfg.eos_token_id,
-                    no_rope_layers: cfg
-                        .no_rope_layers
-                        .as_ref()
-                        .map(|v| v.iter().map(|&x| x as u32).collect()), // Convert Vec<usize> to Vec<u32>
-                    no_rope_layer_interval: cfg.no_rope_layer_interval,
-                }
-            }
-        }
-    }
-}
-
-// Unified config representation
-struct ModelConfig {
-    vocab_size: usize,
-    hidden_size: usize,
-    num_hidden_layers: usize,
-    num_attention_heads: usize,
-    num_key_value_heads: usize,
-    rope_theta: f32,
-    eos_token_id: Option<u32>,
-    no_rope_layers: Option<Vec<u32>>,
-    no_rope_layer_interval: Option<usize>,
-}
-
-impl ModelConfig {
-    fn head_dim(&self) -> usize {
-        self.hidden_size / self.num_attention_heads
-    }
-}
-
-// ==================== CLI Arguments ====================
-
-#[derive(Clone, Debug, Copy, PartialEq, Eq, ValueEnum)]
-enum ModelType {
-    /// Use quantized GGUF model (smaller, faster)
-    #[value(name = "quantized")]
-    Quantized,
-    /// Use full precision safetensors model (larger, more accurate)
-    #[value(name = "full")]
-    Full,
-}
-
-#[derive(Clone, Debug, Copy, PartialEq, Eq, ValueEnum)]
-enum Quantization {
-    #[value(name = "q4_k_m")]
-    Q4KM,
-    #[value(name = "q8_0")]
-    Q8_0,
-    #[value(name = "f16")]
-    F16,
-}
-
-impl Quantization {
-    fn filename_unsloth(&self) -> &'static str {
-        match self {
-            Self::Q4KM => "SmolLM3-3B-Q4_K_M.gguf",
-            Self::Q8_0 => "SmolLM3-3B-Q8_0.gguf",
-            Self::F16 => "SmolLM3-3B-F16.gguf",
-        }
-    }
-
-    fn size_gb(&self) -> f32 {
-        match self {
-            Self::Q4KM => 1.92,
-            Self::Q8_0 => 3.28,
-            Self::F16 => 6.16,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum WhichModel {
     #[value(name = "3b")]
     W3b,
@@ -144,423 +26,57 @@ enum WhichModel {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Model type: 'quantized' for GGUF or 'full' for safetensors
-    #[arg(long, default_value = "quantized")]
-    model_type: ModelType,
+    /// Run on CPU rather than on GPU.
+    #[arg(long)]
+    cpu: bool,
 
-    /// Which model variant to use
+    /// Enable tracing (generates a trace-timestamp.json file).
+    #[arg(long)]
+    tracing: bool,
+
+    /// Which model variant to use.
     #[arg(long, default_value = "3b")]
     model: WhichModel,
 
-    /// Quantization level (only for quantized models)
-    /// Q8_0: 3.3GB, best quality | Q4_K_M: 1.9GB, good balance | F16: 6.2GB, full precision
-    #[arg(long, default_value = "q8_0")]
-    quantization: Quantization,
-
-    /// Data type (only for full models: f32, f16, bf16, or auto)
-    #[arg(long, default_value = "auto")]
-    dtype: String,
-
-    /// Path to model file (optional, will auto-download if not provided)
+    /// Path to model file (optional, will auto-download if not provided).
     #[arg(long)]
     model_path: Option<String>,
 
-    /// Path to tokenizer file (optional, will auto-download if not provided)
+    /// Path to tokenizer file (optional, will auto-download if not provided).
     #[arg(long)]
     tokenizer: Option<String>,
 
-    /// The initial prompt
+    /// The initial prompt.
     #[arg(long)]
     prompt: Option<String>,
 
-    /// The length of the sample to generate (in tokens)
+    /// The length of the sample to generate (in tokens).
     #[arg(short = 'n', long, default_value_t = 1000)]
     sample_len: usize,
 
-    /// The temperature used to generate samples, use 0 for greedy sampling
+    /// The temperature used to generate samples, use 0 for greedy sampling.
     #[arg(long, default_value_t = 0.8)]
     temperature: f64,
 
-    /// Nucleus sampling probability cutoff
+    /// Nucleus sampling probability cutoff.
     #[arg(long)]
     top_p: Option<f64>,
 
-    /// Only sample among the top K samples
+    /// Only sample among the top K samples.
     #[arg(long)]
     top_k: Option<usize>,
 
-    /// The seed to use when generating random samples
+    /// The seed to use when generating random samples.
     #[arg(long, default_value_t = 299792458)]
     seed: u64,
 
-    /// Penalty to be applied for repeating tokens, 1. means no penalty
+    /// Penalty to be applied for repeating tokens, 1. means no penalty.
     #[arg(long, default_value_t = 1.1)]
     repeat_penalty: f32,
 
-    /// The context size to consider for the repeat penalty
+    /// The context size to consider for the repeat penalty.
     #[arg(long, default_value_t = 64)]
     repeat_last_n: usize,
-
-    /// Skip chat template formatting (use raw prompt, like base model)
-    #[arg(long)]
-    no_chat_template: bool,
-
-    /// Enable thinking/reasoning mode (allows model to show its reasoning process)
-    #[arg(long)]
-    thinking: bool,
-
-    /// Process prompt elements separately (slower, for debugging)
-    #[arg(long)]
-    split_prompt: bool,
-
-    /// Enable tracing (generates a trace-timestamp.json file)
-    #[arg(long)]
-    tracing: bool,
-}
-
-impl Args {
-    fn get_tokenizer(&self) -> Result<Tokenizer> {
-        let tokenizer_path = match &self.tokenizer {
-            Some(path) => std::path::PathBuf::from(path),
-            None => {
-                let api = Api::new()?;
-                let api = api.model("HuggingFaceTB/SmolLM3-3B".to_string());
-                api.get("tokenizer.json")?
-            }
-        };
-        Tokenizer::from_file(tokenizer_path).map_err(E::msg)
-    }
-
-    fn should_use_chat_template(&self) -> bool {
-        matches!(self.model, WhichModel::W3b) && !self.no_chat_template
-    }
-}
-
-// ==================== Model Loading ====================
-
-fn load_quantized_model(args: &Args, device: &Device) -> Result<SmolLM3Model> {
-    let model_path = match &args.model_path {
-        Some(path) => std::path::PathBuf::from(path),
-        None => {
-            let filename = args.quantization.filename_unsloth();
-            let repo_id = "unsloth/SmolLM3-3B-GGUF";
-            let api = Api::new()?;
-            println!(
-                "Downloading {} from {} (~{:.2}GB)...",
-                filename,
-                repo_id,
-                args.quantization.size_gb()
-            );
-            api.repo(Repo::with_revision(
-                repo_id.to_string(),
-                RepoType::Model,
-                "main".to_string(),
-            ))
-            .get(filename)?
-        }
-    };
-
-    println!("Loading quantized model from {:?}...", model_path);
-    let model = QuantizedModelForCausalLM::from_gguf(&model_path, device)?;
-    Ok(SmolLM3Model::Quantized(model))
-}
-
-fn load_full_model(args: &Args, device: &Device) -> Result<SmolLM3Model> {
-    let api = Api::new()?;
-    let model_id = match args.model {
-        WhichModel::W3b => "HuggingFaceTB/SmolLM3-3B",
-        WhichModel::W3bBase => "HuggingFaceTB/SmolLM3-3B-Base",
-    };
-
-    println!("Loading full model from: {}", model_id);
-    let repo = api.repo(Repo::with_revision(
-        model_id.to_string(),
-        RepoType::Model,
-        "main".to_string(),
-    ));
-
-    let filenames = match &args.model_path {
-        Some(path) => vec![std::path::PathBuf::from(path)],
-        None => fuel_examples::hub_load_safetensors(&repo, "model.safetensors.index.json")?,
-    };
-
-    let config_file = repo.get("config.json")?;
-    let config: Config = serde_json::from_slice(&std::fs::read(config_file)?)?;
-
-    let dtype = match args.dtype.as_str() {
-        "f16" => DType::F16,
-        "bf16" => DType::BF16,
-        "f32" => DType::F32,
-        "auto" => {
-            if device.is_cuda() || device.is_metal() {
-                DType::BF16
-            } else {
-                DType::F32
-            }
-        }
-        other => anyhow::bail!("Unsupported dtype: {}, use f16, bf16, f32, or auto", other),
-    };
-
-    println!("Using dtype: {:?}", dtype);
-
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, dtype, device)? };
-    let model = ModelForCausalLM::new(&config, vb)?;
-
-    Ok(SmolLM3Model::Full(model, config))
-}
-
-// ==================== Text Generation ====================
-
-fn format_prompt(prompt: &str, use_chat_template: bool, enable_thinking: bool) -> String {
-    if !use_chat_template {
-        return prompt.to_string();
-    }
-
-    let template = ChatTemplate::chatml_with_thinking();
-
-    // Build system message with SmolLM3's metadata format
-    let now = chrono::Local::now();
-    let today_date = now.format("%d %B %Y").to_string();
-    let reasoning_mode = if enable_thinking {
-        "/think"
-    } else {
-        "/no_think"
-    };
-
-    let system_content = format!(
-        "## Metadata\n\n\
-         Knowledge Cutoff Date: June 2025\n\
-         Today Date: {}\n\
-         Reasoning Mode: {}\n\n\
-         ## Custom Instructions\n\n\
-         You are a helpful AI assistant named SmolLM, trained by Hugging Face.",
-        today_date, reasoning_mode
-    );
-
-    let messages = vec![Message::system(system_content), Message::user(prompt)];
-
-    let options = if enable_thinking {
-        ChatTemplateOptions::for_generation().with_thinking()
-    } else {
-        ChatTemplateOptions::for_generation()
-    };
-
-    template.apply(&messages, &options).unwrap()
-}
-
-fn get_eos_token(tokenizer: &Tokenizer, config: &ModelConfig) -> u32 {
-    if let Some(eos_id) = config.eos_token_id {
-        return eos_id;
-    }
-
-    let vocab = tokenizer.get_vocab(true);
-    if let Some(&eos_id) = vocab.get("<|im_end|>") {
-        return eos_id;
-    }
-    if let Some(&eos_id) = vocab.get("<|endoftext|>") {
-        return eos_id;
-    }
-
-    128012 // Default SmolLM3 EOS token
-}
-
-fn run_generation(
-    model: &mut SmolLM3Model,
-    tokenizer: Tokenizer,
-    args: &Args,
-    device: &Device,
-) -> Result<()> {
-    let mut tos = TokenOutputStream::new(tokenizer);
-
-    // Prepare prompt
-    let prompt_str = args
-        .prompt
-        .clone()
-        .unwrap_or_else(|| DEFAULT_PROMPT.to_string());
-    let use_chat_template = args.should_use_chat_template();
-    let formatted_prompt = format_prompt(&prompt_str, use_chat_template, args.thinking);
-
-    println!("\n=== Generation Settings ===");
-    println!("Model type: {:?}", args.model_type);
-    println!(
-        "Chat template: {}",
-        if use_chat_template {
-            "enabled"
-        } else {
-            "disabled"
-        }
-    );
-    println!(
-        "Thinking mode: {}",
-        if args.thinking {
-            "enabled (/think)"
-        } else {
-            "disabled (/no_think)"
-        }
-    );
-    println!("Raw prompt: {}", prompt_str);
-
-    // Encode prompt
-    let tokens = tos
-        .tokenizer()
-        .encode(formatted_prompt.as_str(), false)
-        .map_err(E::msg)?;
-    let tokens = tokens.get_ids();
-    println!("Encoded {} tokens", tokens.len());
-
-    // Setup logits processor
-    let sampling = if args.temperature <= 0.0 {
-        Sampling::ArgMax
-    } else {
-        match (args.top_k, args.top_p) {
-            (None, None) => Sampling::All {
-                temperature: args.temperature,
-            },
-            (Some(k), None) => Sampling::TopK {
-                k,
-                temperature: args.temperature,
-            },
-            (None, Some(p)) => Sampling::TopP {
-                p,
-                temperature: args.temperature,
-            },
-            (Some(k), Some(p)) => Sampling::TopKThenTopP {
-                k,
-                p,
-                temperature: args.temperature,
-            },
-        }
-    };
-    let mut logits_processor = LogitsProcessor::from_sampling(args.seed, sampling);
-
-    // Process prompt
-    let start_prompt = std::time::Instant::now();
-    let mut next_token = if !args.split_prompt {
-        let input = Tensor::new(tokens, device)?.unsqueeze(0)?;
-        let logits = model.forward(&input, 0)?;
-        let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
-        logits_processor.sample(&logits)?
-    } else {
-        let mut next_token = 0;
-        for (pos, &token) in tokens.iter().enumerate() {
-            let input = Tensor::new(&[token], device)?.unsqueeze(0)?;
-            let logits = model.forward(&input, pos)?;
-            let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
-            next_token = logits_processor.sample(&logits)?;
-        }
-        next_token
-    };
-    let prompt_dt = start_prompt.elapsed();
-
-    // Get EOS token
-    let config = model.config();
-    let eos_token = get_eos_token(tos.tokenizer(), &config);
-
-    // Generate tokens
-    let mut all_tokens = vec![next_token];
-    print!("\n=== Output ===\n");
-    if let Some(t) = tos.next_token(next_token)? {
-        print!("{t}");
-        std::io::stdout().flush()?;
-    }
-
-    let start_generation = std::time::Instant::now();
-    let to_sample = args.sample_len.saturating_sub(1);
-    let mut sampled = 0;
-
-    for index in 0..to_sample {
-        let input = Tensor::new(&[next_token], device)?.unsqueeze(0)?;
-        let logits = model.forward(&input, tokens.len() + index)?;
-        let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
-
-        let logits = if args.repeat_penalty == 1.0 {
-            logits
-        } else {
-            let start_at = all_tokens.len().saturating_sub(args.repeat_last_n);
-            fuel_transformers::utils::apply_repeat_penalty(
-                &logits,
-                args.repeat_penalty,
-                &all_tokens[start_at..],
-            )?
-        };
-
-        next_token = logits_processor.sample(&logits)?;
-        all_tokens.push(next_token);
-
-        if let Some(t) = tos.next_token(next_token)? {
-            print!("{t}");
-            std::io::stdout().flush()?;
-        }
-
-        sampled += 1;
-        if next_token == eos_token {
-            break;
-        }
-    }
-
-    if let Some(rest) = tos.decode_rest().map_err(E::msg)? {
-        print!("{rest}");
-    }
-
-    let generation_dt = start_generation.elapsed();
-
-    // Print statistics
-    println!(
-        "\n\n=== Statistics ===\n\
-         {:4} prompt tokens processed: {:.2} token/s\n\
-         {:4} tokens generated: {:.2} token/s",
-        tokens.len(),
-        tokens.len() as f64 / prompt_dt.as_secs_f64(),
-        sampled,
-        sampled as f64 / generation_dt.as_secs_f64(),
-    );
-
-    Ok(())
-}
-
-// ==================== Main ====================
-
-fn print_model_info(config: &ModelConfig) {
-    println!("\n=== Model Configuration ===");
-    println!("Vocab size: {}", config.vocab_size);
-    println!("Hidden size: {}", config.hidden_size);
-    println!("Num layers: {}", config.num_hidden_layers);
-    println!("Num attention heads: {}", config.num_attention_heads);
-    println!("Num KV heads: {}", config.num_key_value_heads);
-    println!("Head dim: {}", config.head_dim());
-    println!("RoPE theta: {:.0}", config.rope_theta);
-
-    // Print RoPE/NoPE layer info for full models
-    if let Some(ref no_rope_layers) = config.no_rope_layers {
-        let num_rope_layers = no_rope_layers.iter().filter(|&&x| x == 1).count();
-        let num_nope_layers = no_rope_layers.iter().filter(|&&x| x == 0).count();
-        println!("\nLayer Configuration:");
-        println!(
-            "  RoPE layers: {} ({}%)",
-            num_rope_layers,
-            num_rope_layers * 100 / config.num_hidden_layers
-        );
-        println!(
-            "  NoPE layers: {} ({}%)",
-            num_nope_layers,
-            num_nope_layers * 100 / config.num_hidden_layers
-        );
-    } else if let Some(interval) = config.no_rope_layer_interval {
-        let num_nope_layers = config.num_hidden_layers / interval;
-        let num_rope_layers = config.num_hidden_layers - num_nope_layers;
-        println!("\nLayer Configuration:");
-        println!(
-            "  RoPE layers: {} ({}%)",
-            num_rope_layers,
-            num_rope_layers * 100 / config.num_hidden_layers
-        );
-        println!(
-            "  NoPE layers: {} ({}%) - every {}th layer",
-            num_nope_layers,
-            num_nope_layers * 100 / config.num_hidden_layers,
-            interval
-        );
-    }
 }
 
 fn main() -> Result<()> {
@@ -568,7 +84,6 @@ fn main() -> Result<()> {
     use tracing_subscriber::prelude::*;
 
     let args = Args::parse();
-
     let _guard = if args.tracing {
         let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
         tracing_subscriber::registry().with(chrome_layer).init();
@@ -577,39 +92,250 @@ fn main() -> Result<()> {
         None
     };
 
-    println!("=== SmolLM3 Unified Inference ===");
-    println!(
-        "avx: {}, neon: {}, simd128: {}, f16c: {}",
-        fuel::utils::with_avx(),
-        fuel::utils::with_neon(),
-        fuel::utils::with_simd128(),
-        fuel::utils::with_f16c()
-    );
-    println!(
-        "temp: {:.2}, repeat-penalty: {:.2}, repeat-last-n: {}",
-        args.temperature, args.repeat_penalty, args.repeat_last_n
-    );
+    let _device = fuel_examples::device(args.cpu)?;
+    let api = Api::new()?;
+    let model_id = match args.model {
+        WhichModel::W3b => "HuggingFaceTB/SmolLM3-3B",
+        WhichModel::W3bBase => "HuggingFaceTB/SmolLM3-3B-Base",
+    };
+    let repo = api.repo(Repo::with_revision(
+        model_id.to_string(),
+        RepoType::Model,
+        "main".to_string(),
+    ));
 
-    let start = std::time::Instant::now();
-    let device = fuel_examples::device(false)?;
-
-    // Load model
-    let mut model = match args.model_type {
-        ModelType::Quantized => load_quantized_model(&args, &device)?,
-        ModelType::Full => load_full_model(&args, &device)?,
+    let tokenizer_filename = match args.tokenizer.as_ref() {
+        Some(file) => std::path::PathBuf::from(file),
+        None => repo.get("tokenizer.json")?,
+    };
+    let filenames: Vec<std::path::PathBuf> = match args.model_path.as_ref() {
+        Some(path) => vec![std::path::PathBuf::from(path)],
+        None => fuel_examples::hub_load_safetensors(&repo, "model.safetensors.index.json")?,
     };
 
-    println!("Model loaded in {:.2}s", start.elapsed().as_secs_f32());
+    let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
 
-    // Print model info
-    let config = model.config();
-    print_model_info(&config);
+    let config_file = repo.get("config.json")?;
+    let config_json = std::fs::read_to_string(&config_file)?;
+    let cfg: SmolLm3Config = smollm3_config_from_hf_json_str(&config_json)?;
+    let eos_token_id = parse_eos_token_id(&config_json);
 
-    // Load tokenizer
-    let tokenizer = args.get_tokenizer()?;
+    let llama_cfg = LlamaConfig {
+        vocab_size: cfg.vocab_size,
+        dim:        cfg.hidden_size,
+        n_layers:   cfg.num_hidden_layers,
+        n_heads:    cfg.num_attention_heads,
+        n_kv_heads: cfg.num_key_value_heads,
+        head_dim:   cfg.head_dim,
+        ffn_dim:    cfg.intermediate_size,
+        norm_eps:   cfg.rms_norm_eps,
+        rope_base:  cfg.rope_theta,
+    };
+    let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
+        .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+    let llama_weights: LlamaWeights = LlamaWeights::load_from_mmapped(&st, &llama_cfg)
+        .map_err(|e| E::msg(format!("load weights: {e}")))?;
+    let weights = SmolLm3Weights {
+        token_embedding: llama_weights.token_embedding,
+        layers: llama_weights.layers,
+        final_norm_gain: llama_weights.final_norm_gain,
+        output: llama_weights.output,
+    };
+    let model = SmolLm3Model { config: cfg.clone(), weights };
 
-    // Run generation
-    run_generation(&mut model, tokenizer, &args, &device)?;
+    let prompt = args.prompt.clone().unwrap_or_else(|| DEFAULT_PROMPT.to_string());
+
+    let mut tok_stream = fuel_examples::token_output_stream::TokenOutputStream::new(tokenizer);
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut tokens = tok_stream
+        .tokenizer()
+        .encode(prompt.clone(), true)
+        .map_err(E::msg)?
+        .get_ids()
+        .to_vec();
+
+    let mut generated_tokens: usize = 0;
+    let start_gen = std::time::Instant::now();
+    for index in 0..args.sample_len {
+        let logits = model
+            .forward(&tokens, 0)
+            .map_err(|e| E::msg(format!("forward: {e}")))?;
+        let logits_data = logits.realize_f32();
+        let vocab_size = cfg.vocab_size;
+        let seq = tokens.len();
+        let last_off = (seq - 1) * vocab_size;
+        let mut last_logits: Vec<f32> = logits_data[last_off..last_off + vocab_size].to_vec();
+        if args.repeat_penalty != 1.0 {
+            let start_at = tokens.len().saturating_sub(args.repeat_last_n);
+            apply_repeat_penalty(&mut last_logits, args.repeat_penalty, &tokens[start_at..]);
+        }
+        let next_token = sample(
+            &last_logits,
+            args.temperature as f32,
+            args.top_k,
+            args.top_p.map(|p| p as f32),
+            args.seed.wrapping_add(index as u64),
+        );
+        tokens.push(next_token);
+        generated_tokens += 1;
+        if Some(next_token) == eos_token_id {
+            break;
+        }
+        if let Some(t) = tok_stream.next_token(next_token)? {
+            print!("{t}");
+            std::io::stdout().flush()?;
+        }
+    }
+    let dt = start_gen.elapsed();
+    if let Some(rest) = tok_stream.decode_rest().map_err(E::msg)? {
+        print!("{rest}");
+    }
+    std::io::stdout().flush()?;
+    println!(
+        "\n{generated_tokens} tokens generated ({:.2} token/s)",
+        generated_tokens as f64 / dt.as_secs_f64(),
+    );
 
     Ok(())
+}
+
+fn smollm3_config_from_hf_json_str(json: &str) -> Result<SmolLm3Config> {
+    let v: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let get_usize = |key: &str| -> Option<usize> {
+        v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
+    };
+    let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+    let get_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|x| x.as_bool()) };
+    let vocab_size = get_usize("vocab_size").unwrap_or(128_256);
+    let hidden_size = get_usize("hidden_size").unwrap_or(2048);
+    let intermediate_size = get_usize("intermediate_size").unwrap_or(11_008);
+    let num_hidden_layers = get_usize("num_hidden_layers").unwrap_or(36);
+    let num_attention_heads = get_usize("num_attention_heads").unwrap_or(16);
+    let num_key_value_heads = get_usize("num_key_value_heads").unwrap_or(4);
+    let head_dim = get_usize("head_dim").unwrap_or(hidden_size / num_attention_heads);
+    let rms_norm_eps = get_f64("rms_norm_eps").unwrap_or(1e-6);
+    let rope_theta = get_f64("rope_theta").unwrap_or(5_000_000.0);
+    let max_position_embeddings = get_usize("max_position_embeddings").unwrap_or(65_536);
+    let attention_bias = get_bool("attention_bias").unwrap_or(false);
+    let sliding_window = get_usize("sliding_window");
+    let no_rope_layers = v
+        .get("no_rope_layers")
+        .and_then(|arr| arr.as_array())
+        .map(|arr| arr.iter()
+            .filter_map(|x| x.as_u64().map(|v| v as usize))
+            .collect::<Vec<_>>());
+    Ok(SmolLm3Config {
+        vocab_size,
+        hidden_size,
+        intermediate_size,
+        num_hidden_layers,
+        num_attention_heads,
+        num_key_value_heads,
+        head_dim,
+        rms_norm_eps,
+        rope_theta,
+        max_position_embeddings,
+        attention_bias,
+        sliding_window,
+        no_rope_layers,
+    })
+}
+
+fn parse_eos_token_id(json: &str) -> Option<u32> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    v.get("eos_token_id").and_then(|x| x.as_u64()).map(|x| x as u32)
+}
+
+fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
+    let mut seen = std::collections::HashSet::new();
+    for &t in context {
+        if !seen.insert(t) {
+            continue;
+        }
+        let idx = t as usize;
+        if idx < logits.len() {
+            let v = logits[idx];
+            logits[idx] = if v >= 0.0 { v / penalty } else { v * penalty };
+        }
+    }
+}
+
+fn sample(
+    logits: &[f32],
+    temperature: f32,
+    top_k: Option<usize>,
+    top_p: Option<f32>,
+    seed: u64,
+) -> u32 {
+    if temperature <= 0.0 {
+        let mut best_i = 0usize;
+        let mut best = logits[0];
+        for (i, &v) in logits.iter().enumerate().skip(1) {
+            if v > best {
+                best = v;
+                best_i = i;
+            }
+        }
+        return best_i as u32;
+    }
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let inv_t = 1.0 / temperature.max(1e-6);
+    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    for p in &mut probs {
+        *p /= sum.max(1e-30);
+    }
+    let mut idx: Vec<usize> = (0..probs.len()).collect();
+    idx.sort_unstable_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap());
+    let mut keep_mask: Vec<bool> = vec![true; probs.len()];
+    if let Some(k) = top_k {
+        for &i in idx.iter().skip(k) {
+            keep_mask[i] = false;
+        }
+    }
+    if let Some(p_cut) = top_p {
+        let mut cum2 = 0.0;
+        let mut allow = true;
+        for &i in &idx {
+            if !keep_mask[i] {
+                continue;
+            }
+            if !allow {
+                keep_mask[i] = false;
+                continue;
+            }
+            cum2 += probs[i];
+            if cum2 >= p_cut {
+                allow = false;
+            }
+        }
+    }
+    let mut filtered: Vec<f32> = probs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| if keep_mask[i] { *p } else { 0.0 })
+        .collect();
+    let s: f32 = filtered.iter().sum();
+    if s > 0.0 {
+        for v in &mut filtered {
+            *v /= s;
+        }
+    } else {
+        return 0;
+    }
+    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    state ^= state >> 33;
+    state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    state ^= state >> 33;
+    let r = (state as f32) / (u64::MAX as f32);
+    let mut cum = 0.0;
+    for (i, p) in filtered.iter().enumerate() {
+        cum += *p;
+        if r <= cum {
+            return i as u32;
+        }
+    }
+    (filtered.len() - 1) as u32
 }
