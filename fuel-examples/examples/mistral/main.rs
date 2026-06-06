@@ -1,4 +1,4 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
@@ -7,135 +7,11 @@ extern crate accelerate_src;
 use anyhow::{Error as E, Result};
 use clap::Parser;
 
-use fuel_transformers::models::mistral::{Config, Model as Mistral};
-use fuel_transformers::models::quantized_mistral::Model as QMistral;
-
-use fuel::{DType, Device, Tensor};
-use fuel_examples::token_output_stream::TokenOutputStream;
-use fuel_nn::VarBuilder;
-use fuel_transformers::generation::{LogitsProcessor, Sampling};
+use fuel::lazy::{LlamaConfig, LlamaWeights};
+use fuel::lazy_mistral::{MistralConfig, MistralModel, MistralWeights};
 use hf_hub::{api::sync::Api, Repo, RepoType};
+use std::io::Write;
 use tokenizers::Tokenizer;
-
-enum Model {
-    Mistral(Mistral),
-    Quantized(QMistral),
-}
-
-struct TextGeneration {
-    model: Model,
-    device: Device,
-    tokenizer: TokenOutputStream,
-    logits_processor: LogitsProcessor,
-    repeat_penalty: f32,
-    repeat_last_n: usize,
-}
-
-impl TextGeneration {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        model: Model,
-        tokenizer: Tokenizer,
-        seed: u64,
-        temp: Option<f64>,
-        top_p: Option<f64>,
-        top_k: Option<usize>,
-        repeat_penalty: f32,
-        repeat_last_n: usize,
-        device: &Device,
-    ) -> Self {
-        let logits_processor = {
-            let temperature = temp.unwrap_or(0.);
-            let sampling = if temperature <= 0. {
-                Sampling::ArgMax
-            } else {
-                match (top_k, top_p) {
-                    (None, None) => Sampling::All { temperature },
-                    (Some(k), None) => Sampling::TopK { k, temperature },
-                    (None, Some(p)) => Sampling::TopP { p, temperature },
-                    (Some(k), Some(p)) => Sampling::TopKThenTopP { k, p, temperature },
-                }
-            };
-            LogitsProcessor::from_sampling(seed, sampling)
-        };
-
-        Self {
-            model,
-            tokenizer: TokenOutputStream::new(tokenizer),
-            logits_processor,
-            repeat_penalty,
-            repeat_last_n,
-            device: device.clone(),
-        }
-    }
-
-    fn run(&mut self, prompt: &str, sample_len: usize) -> Result<()> {
-        use std::io::Write;
-        self.tokenizer.clear();
-        let mut tokens = self
-            .tokenizer
-            .tokenizer()
-            .encode(prompt, true)
-            .map_err(E::msg)?
-            .get_ids()
-            .to_vec();
-        for &t in tokens.iter() {
-            if let Some(t) = self.tokenizer.next_token(t)? {
-                print!("{t}")
-            }
-        }
-        std::io::stdout().flush()?;
-
-        let mut generated_tokens = 0usize;
-        let eos_token = match self.tokenizer.get_token("</s>") {
-            Some(token) => token,
-            None => anyhow::bail!("cannot find the </s> token"),
-        };
-        let start_gen = std::time::Instant::now();
-        for index in 0..sample_len {
-            let context_size = if index > 0 { 1 } else { tokens.len() };
-            let start_pos = tokens.len().saturating_sub(context_size);
-            let ctxt = &tokens[start_pos..];
-            let input = Tensor::new(ctxt, &self.device)?.unsqueeze(0)?;
-            let logits = match &mut self.model {
-                Model::Mistral(m) => m.forward(&input, start_pos)?,
-                Model::Quantized(m) => m.forward(&input, start_pos)?,
-            };
-            let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
-            let logits = if self.repeat_penalty == 1. {
-                logits
-            } else {
-                let start_at = tokens.len().saturating_sub(self.repeat_last_n);
-                fuel_transformers::utils::apply_repeat_penalty(
-                    &logits,
-                    self.repeat_penalty,
-                    &tokens[start_at..],
-                )?
-            };
-
-            let next_token = self.logits_processor.sample(&logits)?;
-            tokens.push(next_token);
-            generated_tokens += 1;
-            if next_token == eos_token {
-                break;
-            }
-            if let Some(t) = self.tokenizer.next_token(next_token)? {
-                print!("{t}");
-                std::io::stdout().flush()?;
-            }
-        }
-        let dt = start_gen.elapsed();
-        if let Some(rest) = self.tokenizer.decode_rest().map_err(E::msg)? {
-            print!("{rest}");
-        }
-        std::io::stdout().flush()?;
-        println!(
-            "\n{generated_tokens} tokens generated ({:.2} token/s)",
-            generated_tokens as f64 / dt.as_secs_f64(),
-        );
-        Ok(())
-    }
-}
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum Which {
@@ -232,8 +108,6 @@ fn main() -> Result<()> {
     use tracing_subscriber::prelude::*;
 
     let args = Args::parse();
-    #[cfg(feature = "cuda")]
-    fuel::quantized::cuda::set_force_dmmv(args.force_dmmv);
 
     let _guard = if args.tracing {
         let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
@@ -243,41 +117,36 @@ fn main() -> Result<()> {
         None
     };
     println!(
-        "avx: {}, neon: {}, simd128: {}, f16c: {}",
-        fuel::utils::with_avx(),
-        fuel::utils::with_neon(),
-        fuel::utils::with_simd128(),
-        fuel::utils::with_f16c()
-    );
-    println!(
         "temp: {:.2} repeat-penalty: {:.2} repeat-last-n: {}",
         args.temperature.unwrap_or(0.),
         args.repeat_penalty,
         args.repeat_last_n
     );
 
+    if args.quantized {
+        anyhow::bail!(
+            "quantized Mistral isn't supported by the lazy port yet; \
+             please pass --no-quantized or omit --quantized"
+        );
+    }
+    let _ = args.use_flash_attn;
+    let _ = args.force_dmmv;
+
     let start = std::time::Instant::now();
     let api = Api::new()?;
     let model_id = match args.model_id {
         Some(model_id) => model_id,
         None => {
-            if args.quantized {
-                if args.which != Which::Mistral7bV01 {
-                    anyhow::bail!("only 7b-v0.1 is available as a quantized model for now")
-                }
-                "lmz/fuel-mistral".to_string()
-            } else {
-                let name = match args.which {
-                    Which::Mistral7bV01 => "mistralai/Mistral-7B-v0.1",
-                    Which::Mistral7bV02 => "mistralai/Mistral-7B-v0.2",
-                    Which::Mistral7bInstructV01 => "mistralai/Mistral-7B-Instruct-v0.1",
-                    Which::Mistral7bInstructV02 => "mistralai/Mistral-7B-Instruct-v0.2",
-                    Which::Mathstral7bV01 => "mistralai/mathstral-7B-v0.1",
-                    Which::MistralNemo2407 => "mistralai/Mistral-Nemo-Base-2407",
-                    Which::MistralNemoInstruct2407 => "mistralai/Mistral-Nemo-Instruct-2407",
-                };
-                name.to_string()
-            }
+            let name = match args.which {
+                Which::Mistral7bV01 => "mistralai/Mistral-7B-v0.1",
+                Which::Mistral7bV02 => "mistralai/Mistral-7B-v0.2",
+                Which::Mistral7bInstructV01 => "mistralai/Mistral-7B-Instruct-v0.1",
+                Which::Mistral7bInstructV02 => "mistralai/Mistral-7B-Instruct-v0.2",
+                Which::Mathstral7bV01 => "mistralai/mathstral-7B-v0.1",
+                Which::MistralNemo2407 => "mistralai/Mistral-Nemo-Base-2407",
+                Which::MistralNemoInstruct2407 => "mistralai/Mistral-Nemo-Instruct-2407",
+            };
+            name.to_string()
         }
     };
     let repo = api.repo(Repo::with_revision(
@@ -289,65 +158,257 @@ fn main() -> Result<()> {
         Some(file) => std::path::PathBuf::from(file),
         None => repo.get("tokenizer.json")?,
     };
-    let filenames = match args.weight_files {
+    let filenames: Vec<std::path::PathBuf> = match args.weight_files {
         Some(files) => files
             .split(',')
             .map(std::path::PathBuf::from)
             .collect::<Vec<_>>(),
-        None => {
-            if args.quantized {
-                vec![repo.get("model-q4k.gguf")?]
-            } else {
-                fuel_examples::hub_load_safetensors(&repo, "model.safetensors.index.json")?
-            }
-        }
+        None => fuel_examples::hub_load_safetensors(&repo, "model.safetensors.index.json")?,
     };
     println!("retrieved the files in {:?}", start.elapsed());
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
 
     let start = std::time::Instant::now();
-    let config = match args.config_file {
-        Some(config_file) => serde_json::from_slice(&std::fs::read(config_file)?)?,
+    let mistral_cfg: MistralConfig = match args.config_file {
+        Some(config_file) => {
+            let json = std::fs::read_to_string(config_file)?;
+            mistral_config_from_hf_json_str(&json)?
+        }
         None => {
-            if args.quantized {
-                Config::config_7b_v0_1(args.use_flash_attn)
-            } else {
-                let config_file = repo.get("config.json")?;
-                serde_json::from_slice(&std::fs::read(config_file)?)?
-            }
+            let config_file = repo.get("config.json")?;
+            let json = std::fs::read_to_string(config_file)?;
+            mistral_config_from_hf_json_str(&json)?
         }
     };
-    let device = fuel_examples::device(args.cpu)?;
-    let (model, device) = if args.quantized {
-        let filename = &filenames[0];
-        let vb =
-            fuel_transformers::quantized_var_builder::VarBuilder::from_gguf(filename, &device)?;
-        let model = QMistral::new(&config, vb)?;
-        (Model::Quantized(model), device)
-    } else {
-        let dtype = if device.is_cuda() {
-            DType::BF16
-        } else {
-            DType::F32
-        };
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, dtype, &device)? };
-        let model = Mistral::new(&config, vb)?;
-        (Model::Mistral(model), device)
+
+    // Mistral's per-layer parameter shape is identical to bias-free LLaMA,
+    // so we can reuse `LlamaWeights::load_from_mmapped` and lift the result
+    // into `MistralWeights`.
+    let llama_cfg = LlamaConfig {
+        vocab_size: mistral_cfg.vocab_size,
+        dim:        mistral_cfg.hidden_size,
+        n_layers:   mistral_cfg.num_hidden_layers,
+        n_heads:    mistral_cfg.num_attention_heads,
+        n_kv_heads: mistral_cfg.num_key_value_heads,
+        head_dim:   mistral_cfg.head_dim,
+        ffn_dim:    mistral_cfg.intermediate_size,
+        norm_eps:   mistral_cfg.rms_norm_eps,
+        rope_base:  mistral_cfg.rope_theta,
     };
 
+    let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
+        .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+    let llama_weights: LlamaWeights = LlamaWeights::load_from_mmapped(&st, &llama_cfg)
+        .map_err(|e| E::msg(format!("load weights: {e}")))?;
+
+    let weights = MistralWeights {
+        token_embedding: llama_weights.token_embedding,
+        layers: llama_weights.layers,
+        final_norm_gain: llama_weights.final_norm_gain,
+        output: llama_weights.output,
+    };
+    let model = MistralModel { config: mistral_cfg.clone(), weights };
     println!("loaded the model in {:?}", start.elapsed());
 
-    let mut pipeline = TextGeneration::new(
-        model,
-        tokenizer,
-        args.seed,
-        args.temperature,
-        args.top_p,
-        args.top_k,
-        args.repeat_penalty,
-        args.repeat_last_n,
-        &device,
+    let mut tok_stream = fuel_examples::token_output_stream::TokenOutputStream::new(tokenizer);
+    let eos_token = match tok_stream.get_token("</s>") {
+        Some(token) => token,
+        None => anyhow::bail!("cannot find the </s> token"),
+    };
+
+    print!("{}", args.prompt);
+    std::io::stdout().flush()?;
+    let mut tokens = tok_stream
+        .tokenizer()
+        .encode(args.prompt.clone(), true)
+        .map_err(E::msg)?
+        .get_ids()
+        .to_vec();
+
+    let mut generated_tokens: usize = 0;
+    let start_gen = std::time::Instant::now();
+    for index in 0..args.sample_len {
+        let logits = model
+            .forward(&tokens, 0)
+            .map_err(|e| E::msg(format!("forward: {e}")))?;
+        let logits_data = logits.realize_f32();
+        let vocab_size = mistral_cfg.vocab_size;
+        let seq = tokens.len();
+        let last_off = (seq - 1) * vocab_size;
+        let mut last_logits: Vec<f32> = logits_data[last_off..last_off + vocab_size].to_vec();
+        if args.repeat_penalty != 1.0 {
+            let start_at = tokens.len().saturating_sub(args.repeat_last_n);
+            apply_repeat_penalty(&mut last_logits, args.repeat_penalty, &tokens[start_at..]);
+        }
+        let next_token = sample(
+            &last_logits,
+            args.temperature.unwrap_or(0.) as f32,
+            args.top_k,
+            args.top_p.map(|p| p as f32),
+            args.seed.wrapping_add(index as u64),
+        );
+        tokens.push(next_token);
+        generated_tokens += 1;
+        if next_token == eos_token {
+            break;
+        }
+        if let Some(t) = tok_stream.next_token(next_token)? {
+            print!("{t}");
+            std::io::stdout().flush()?;
+        }
+    }
+    let dt = start_gen.elapsed();
+    if let Some(rest) = tok_stream.decode_rest().map_err(E::msg)? {
+        print!("{rest}");
+    }
+    std::io::stdout().flush()?;
+    println!(
+        "\n{generated_tokens} tokens generated ({:.2} token/s)",
+        generated_tokens as f64 / dt.as_secs_f64(),
     );
-    pipeline.run(&args.prompt, args.sample_len)?;
+
     Ok(())
+}
+
+fn mistral_config_from_hf_json_str(json: &str) -> Result<MistralConfig> {
+    let v: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let get_usize = |key: &str| -> Result<usize> {
+        v.get(key)
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .ok_or_else(|| E::msg(format!("config.json: missing/invalid field {key:?}")))
+    };
+    let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+    let vocab_size = get_usize("vocab_size")?;
+    let hidden_size = get_usize("hidden_size")?;
+    let intermediate_size = get_usize("intermediate_size")?;
+    let num_hidden_layers = get_usize("num_hidden_layers")?;
+    let num_attention_heads = get_usize("num_attention_heads")?;
+    let num_key_value_heads = v
+        .get("num_key_value_heads")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as usize)
+        .unwrap_or(num_attention_heads);
+    let head_dim = v
+        .get("head_dim")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as usize)
+        .unwrap_or(hidden_size / num_attention_heads);
+    let rms_norm_eps = get_f64("rms_norm_eps").unwrap_or(1e-5);
+    let rope_theta = get_f64("rope_theta").unwrap_or(10_000.0);
+    let max_position_embeddings = v
+        .get("max_position_embeddings")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as usize)
+        .unwrap_or(32_768);
+    let sliding_window = v
+        .get("sliding_window")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as usize);
+    Ok(MistralConfig {
+        vocab_size,
+        hidden_size,
+        intermediate_size,
+        num_hidden_layers,
+        num_attention_heads,
+        num_key_value_heads,
+        head_dim,
+        rms_norm_eps,
+        rope_theta,
+        max_position_embeddings,
+        sliding_window,
+    })
+}
+
+fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
+    let mut seen = std::collections::HashSet::new();
+    for &t in context {
+        if !seen.insert(t) {
+            continue;
+        }
+        let idx = t as usize;
+        if idx < logits.len() {
+            let v = logits[idx];
+            logits[idx] = if v >= 0.0 { v / penalty } else { v * penalty };
+        }
+    }
+}
+
+fn sample(
+    logits: &[f32],
+    temperature: f32,
+    top_k: Option<usize>,
+    top_p: Option<f32>,
+    seed: u64,
+) -> u32 {
+    if temperature <= 0.0 {
+        let mut best_i = 0usize;
+        let mut best = logits[0];
+        for (i, &v) in logits.iter().enumerate().skip(1) {
+            if v > best {
+                best = v;
+                best_i = i;
+            }
+        }
+        return best_i as u32;
+    }
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let inv_t = 1.0 / temperature.max(1e-6);
+    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    for p in &mut probs {
+        *p /= sum.max(1e-30);
+    }
+    let mut idx: Vec<usize> = (0..probs.len()).collect();
+    idx.sort_unstable_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap());
+    let mut keep_mask: Vec<bool> = vec![true; probs.len()];
+    if let Some(k) = top_k {
+        for &i in idx.iter().skip(k) {
+            keep_mask[i] = false;
+        }
+    }
+    if let Some(p_cut) = top_p {
+        let mut cum2 = 0.0;
+        let mut allow = true;
+        for &i in &idx {
+            if !keep_mask[i] {
+                continue;
+            }
+            if !allow {
+                keep_mask[i] = false;
+                continue;
+            }
+            cum2 += probs[i];
+            if cum2 >= p_cut {
+                allow = false;
+            }
+        }
+    }
+    let mut filtered: Vec<f32> = probs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| if keep_mask[i] { *p } else { 0.0 })
+        .collect();
+    let s: f32 = filtered.iter().sum();
+    if s > 0.0 {
+        for v in &mut filtered {
+            *v /= s;
+        }
+    } else {
+        return 0;
+    }
+    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    state ^= state >> 33;
+    state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    state ^= state >> 33;
+    let r = (state as f32) / (u64::MAX as f32);
+    let mut cum = 0.0;
+    for (i, p) in filtered.iter().enumerate() {
+        cum += *p;
+        if r <= cum {
+            return i as u32;
+        }
+    }
+    (filtered.len() - 1) as u32
 }

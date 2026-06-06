@@ -1,4 +1,4 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
@@ -8,27 +8,15 @@ use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
 
 use fuel_examples::token_output_stream::TokenOutputStream;
-use fuel_transformers::models::mixformer::{Config, MixFormerSequentialForCausalLM as MixFormer};
-use fuel_transformers::models::phi::{Config as PhiConfig, Model as Phi};
-use fuel_transformers::models::phi3::{Config as Phi3Config, Model as Phi3};
-use fuel_transformers::models::quantized_mixformer::MixFormerSequentialForCausalLM as QMixFormer;
 
-use fuel::{DType, Device, IndexOp, Tensor};
-use fuel_nn::VarBuilder;
+use fuel::lazy_phi::PhiModel;
+use fuel::{DType, Device};
 use fuel_transformers::generation::LogitsProcessor;
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
 
-enum Model {
-    MixFormer(MixFormer),
-    Phi(Phi),
-    Phi3(Phi3),
-    Quantized(QMixFormer),
-}
-
 struct TextGeneration {
-    model: Model,
-    device: Device,
+    model: PhiModel,
     tokenizer: TokenOutputStream,
     logits_processor: LogitsProcessor,
     repeat_penalty: f32,
@@ -39,7 +27,7 @@ struct TextGeneration {
 impl TextGeneration {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        model: Model,
+        model: PhiModel,
         tokenizer: Tokenizer,
         seed: u64,
         temp: Option<f64>,
@@ -47,7 +35,6 @@ impl TextGeneration {
         repeat_penalty: f32,
         repeat_last_n: usize,
         verbose_prompt: bool,
-        device: &Device,
     ) -> Self {
         let logits_processor = LogitsProcessor::new(seed, temp, top_p);
         Self {
@@ -57,7 +44,6 @@ impl TextGeneration {
             repeat_penalty,
             repeat_last_n,
             verbose_prompt,
-            device: device.clone(),
         }
     }
 
@@ -91,14 +77,15 @@ impl TextGeneration {
         for index in 0..sample_len {
             let context_size = if index > 0 { 1 } else { tokens.len() };
             let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
-            let input = Tensor::new(ctxt, &self.device)?.unsqueeze(0)?;
-            let logits = match &mut self.model {
-                Model::MixFormer(m) => m.forward(&input)?,
-                Model::Phi(m) => m.forward(&input)?,
-                Model::Quantized(m) => m.forward(&input)?,
-                Model::Phi3(m) => m.forward(&input, pos)?.i((.., 0, ..))?,
-            };
-            let logits = logits.squeeze(0)?.to_dtype(DType::F32)?;
+            // Lazy forward: returns LazyTensor of shape (1, seq, vocab).
+            let logits_lazy = self.model.forward(ctxt, pos)?;
+            // Realize as f32 and select the LAST position's logits.
+            let logits_flat = logits_lazy.realize_f32();
+            let vocab = self.model.config.vocab_size;
+            let seq = ctxt.len();
+            let last_offset = (seq - 1) * vocab;
+            let logits_v: Vec<f32> = logits_flat[last_offset..last_offset + vocab].to_vec();
+            let logits = fuel::Tensor::new(logits_v, &Device::cpu())?;
             let logits = if self.repeat_penalty == 1. {
                 logits
             } else {
@@ -249,161 +236,50 @@ fn main() -> Result<()> {
         args.repeat_last_n
     );
 
+    if args.quantized {
+        anyhow::bail!(
+            "lazy phi binary: quantized Phi (GGUF) path is not yet shipped via the lazy module — \
+             use the eager `quantized-phi` binary or wait for a `lazy_quantized_phi` port."
+        );
+    }
+    match args.model {
+        WhichModel::V2 => {}
+        other => {
+            anyhow::bail!(
+                "lazy phi binary: only `--model 2` (Phi-2) is supported. Got {other:?}. \
+                 Other Phi variants (Phi-1, Phi-1.5, Phi-3, Phi-4, MixFormer, PuffinPhi, PhiHermes) \
+                 are not yet shipped via the lazy module."
+            )
+        }
+    }
+
     let start = std::time::Instant::now();
     let api = Api::new()?;
     let model_id = match args.model_id {
         Some(model_id) => model_id.to_string(),
-        None => {
-            if args.quantized {
-                "lmz/fuel-quantized-phi".to_string()
-            } else {
-                match args.model {
-                    WhichModel::V1 => "microsoft/phi-1".to_string(),
-                    WhichModel::V1_5 => "microsoft/phi-1_5".to_string(),
-                    WhichModel::V2 | WhichModel::V2Old => "microsoft/phi-2".to_string(),
-                    WhichModel::V3 => "microsoft/Phi-3-mini-4k-instruct".to_string(),
-                    WhichModel::V3Medium => "microsoft/Phi-3-medium-4k-instruct".to_string(),
-                    WhichModel::V4Mini => "microsoft/Phi-4-mini-instruct".to_string(),
-                    WhichModel::PuffinPhiV2 | WhichModel::PhiHermes => {
-                        "lmz/fuel-quantized-phi".to_string()
-                    }
-                }
-            }
-        }
+        None => "microsoft/phi-2".to_string(),
     };
-    let revision = match args.revision {
-        Some(rev) => rev.to_string(),
-        None => {
-            if args.quantized {
-                "main".to_string()
-            } else {
-                match args.model {
-                    WhichModel::V1 => "refs/pr/8".to_string(),
-                    WhichModel::V1_5 => "refs/pr/73".to_string(),
-                    WhichModel::V2Old => "834565c23f9b28b96ccbeabe614dd906b6db551a".to_string(),
-                    WhichModel::V2
-                    | WhichModel::V3
-                    | WhichModel::V3Medium
-                    | WhichModel::V4Mini
-                    | WhichModel::PuffinPhiV2
-                    | WhichModel::PhiHermes => "main".to_string(),
-                }
-            }
-        }
-    };
-    let repo = api.repo(Repo::with_revision(model_id, RepoType::Model, revision));
+    let revision = args.revision.unwrap_or_else(|| "main".to_string());
+    let repo = api.repo(Repo::with_revision(model_id.clone(), RepoType::Model, revision));
     let tokenizer_filename = match args.tokenizer {
         Some(file) => std::path::PathBuf::from(file),
-        None => match args.model {
-            WhichModel::V1
-            | WhichModel::V1_5
-            | WhichModel::V2
-            | WhichModel::V2Old
-            | WhichModel::V3
-            | WhichModel::V3Medium
-            | WhichModel::V4Mini => repo.get("tokenizer.json")?,
-            WhichModel::PuffinPhiV2 | WhichModel::PhiHermes => {
-                repo.get("tokenizer-puffin-phi-v2.json")?
-            }
-        },
-    };
-    let filenames = match args.weight_file {
-        Some(weight_file) => vec![std::path::PathBuf::from(weight_file)],
-        None => {
-            if args.quantized {
-                match args.model {
-                    WhichModel::V1 => vec![repo.get("model-v1-q4k.gguf")?],
-                    WhichModel::V1_5 => vec![repo.get("model-q4k.gguf")?],
-                    WhichModel::V2 | WhichModel::V2Old => vec![repo.get("model-v2-q4k.gguf")?],
-                    WhichModel::PuffinPhiV2 => vec![repo.get("model-puffin-phi-v2-q4k.gguf")?],
-                    WhichModel::PhiHermes => vec![repo.get("model-phi-hermes-1_3B-q4k.gguf")?],
-                    WhichModel::V3 | WhichModel::V3Medium | WhichModel::V4Mini => anyhow::bail!(
-                        "use the quantized or quantized-phi examples for quantized phi-v3"
-                    ),
-                }
-            } else {
-                match args.model {
-                    WhichModel::V1 | WhichModel::V1_5 => vec![repo.get("model.safetensors")?],
-                    WhichModel::V2
-                    | WhichModel::V2Old
-                    | WhichModel::V3
-                    | WhichModel::V3Medium
-                    | WhichModel::V4Mini => fuel_examples::hub_load_safetensors(
-                        &repo,
-                        "model.safetensors.index.json",
-                    )?,
-                    WhichModel::PuffinPhiV2 => vec![repo.get("model-puffin-phi-v2.safetensors")?],
-                    WhichModel::PhiHermes => vec![repo.get("model-phi-hermes-1_3B.safetensors")?],
-                }
-            }
-        }
+        None => repo.get("tokenizer.json")?,
     };
     println!("retrieved the files in {:?}", start.elapsed());
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
 
     let start = std::time::Instant::now();
-    let config = || match args.model {
-        WhichModel::V1 => Config::v1(),
-        WhichModel::V1_5 => Config::v1_5(),
-        WhichModel::V2 | WhichModel::V2Old => Config::v2(),
-        WhichModel::PuffinPhiV2 => Config::puffin_phi_v2(),
-        WhichModel::PhiHermes => Config::phi_hermes_1_3b(),
-        WhichModel::V3 | WhichModel::V3Medium | WhichModel::V4Mini => {
-            panic!("use the quantized or quantized-phi examples for quantized phi-v3")
+    let _device = fuel_examples::device(args.cpu)?;
+    let _ = args.weight_file; // weight_file override path not yet supported — only --model-id is.
+    if let Some(dtype) = args.dtype.as_deref() {
+        // The lazy port runs f32 only for now; honor an explicit f32 selection, error on others.
+        match dtype {
+            "f32" => {}
+            other => anyhow::bail!("lazy phi binary: only --dtype f32 is supported (got {other:?})"),
         }
-    };
-    let device = fuel_examples::device(args.cpu)?;
-    let model = if args.quantized {
-        let config = config();
-        let vb = fuel_transformers::quantized_var_builder::VarBuilder::from_gguf(
-            &filenames[0],
-            &device,
-        )?;
-        let model = match args.model {
-            WhichModel::V2 | WhichModel::V2Old => QMixFormer::new_v2(&config, vb)?,
-            _ => QMixFormer::new(&config, vb)?,
-        };
-        Model::Quantized(model)
-    } else {
-        let dtype = match args.dtype {
-            Some(dtype) => std::str::FromStr::from_str(&dtype)?,
-            None => {
-                if args.model == WhichModel::V3
-                    || args.model == WhichModel::V3Medium
-                    || args.model == WhichModel::V4Mini
-                {
-                    device.bf16_default_to_f32()
-                } else {
-                    DType::F32
-                }
-            }
-        };
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, dtype, &device)? };
-        match args.model {
-            WhichModel::V1 | WhichModel::V1_5 | WhichModel::V2 => {
-                let config_filename = repo.get("config.json")?;
-                let config = std::fs::read_to_string(config_filename)?;
-                let config: PhiConfig = serde_json::from_str(&config)?;
-                let phi = Phi::new(&config, vb)?;
-                Model::Phi(phi)
-            }
-            WhichModel::V3 | WhichModel::V3Medium | WhichModel::V4Mini => {
-                let config_filename = repo.get("config.json")?;
-                let config = std::fs::read_to_string(config_filename)?;
-                let config: Phi3Config = serde_json::from_str(&config)?;
-                let phi3 = Phi3::new(&config, vb)?;
-                Model::Phi3(phi3)
-            }
-            WhichModel::V2Old => {
-                let config = config();
-                Model::MixFormer(MixFormer::new_v2(&config, vb)?)
-            }
-            WhichModel::PhiHermes | WhichModel::PuffinPhiV2 => {
-                let config = config();
-                Model::MixFormer(MixFormer::new(&config, vb)?)
-            }
-        }
-    };
+    }
+    let _ = DType::F32;
+    let model = PhiModel::from_hub(&model_id)?;
     println!("loaded the model in {:?}", start.elapsed());
 
     match (args.prompt, args.mmlu_dir) {
@@ -420,19 +296,17 @@ fn main() -> Result<()> {
                 args.repeat_penalty,
                 args.repeat_last_n,
                 args.verbose_prompt,
-                &device,
             );
             pipeline.run(&prompt, args.sample_len)?;
         }
-        (None, Some(mmlu_dir)) => mmlu(model, tokenizer, &device, mmlu_dir)?,
+        (None, Some(mmlu_dir)) => mmlu(model, tokenizer, mmlu_dir)?,
     }
     Ok(())
 }
 
 fn mmlu<P: AsRef<std::path::Path>>(
-    mut model: Model,
+    model: PhiModel,
     tokenizer: Tokenizer,
-    device: &Device,
     mmlu_dir: P,
 ) -> anyhow::Result<()> {
     for dir_entry in mmlu_dir.as_ref().read_dir()?.flatten() {
@@ -475,32 +349,17 @@ fn mmlu<P: AsRef<std::path::Path>>(
                     "The following are multiple choice questions (with answers) about"
                 );
             let tokens = tokenizer.encode(prompt.as_str(), true).map_err(E::msg)?;
-            let tokens = tokens.get_ids().to_vec();
-            let input = Tensor::new(tokens, device)?.unsqueeze(0)?;
-            let logits = match &mut model {
-                Model::MixFormer(m) => {
-                    m.clear_kv_cache();
-                    m.forward(&input)?
-                }
-                Model::Phi(m) => {
-                    m.clear_kv_cache();
-                    m.forward(&input)?
-                }
-                Model::Phi3(m) => {
-                    m.clear_kv_cache();
-                    m.forward(&input, 0)?
-                }
-                Model::Quantized(m) => {
-                    m.clear_kv_cache();
-                    m.forward(&input)?
-                }
-            };
-            let logits = logits.squeeze(0)?.to_dtype(DType::F32)?;
-            let logits_v: Vec<f32> = logits.to_vec1()?;
-            let pr_a = logits_v[token_a as usize];
-            let pr_b = logits_v[token_b as usize];
-            let pr_c = logits_v[token_c as usize];
-            let pr_d = logits_v[token_d as usize];
+            let token_ids = tokens.get_ids().to_vec();
+            // Lazy forward: returns LazyTensor of shape (1, seq, vocab).
+            let logits_lazy = model.forward(&token_ids, 0)?;
+            let logits_flat = logits_lazy.realize_f32();
+            let vocab = model.config.vocab_size;
+            let seq = token_ids.len();
+            let last_offset = (seq - 1) * vocab;
+            let pr_a = logits_flat[last_offset + token_a as usize];
+            let pr_b = logits_flat[last_offset + token_b as usize];
+            let pr_c = logits_flat[last_offset + token_c as usize];
+            let pr_d = logits_flat[last_offset + token_d as usize];
             let model_answer = if pr_a > pr_b && pr_a > pr_c && pr_a > pr_d {
                 "A"
             } else if pr_b > pr_c && pr_b > pr_d {
