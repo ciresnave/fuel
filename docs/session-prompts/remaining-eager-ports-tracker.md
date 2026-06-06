@@ -188,11 +188,30 @@ ports before the eager `fuel_core::Tensor` type-alias flip
       breakage on the eager eval.rs was fixed to `Device::cpu()` so the
       crate compiles on this branch.)
 
+## Binary migrations
+
+108 binaries in `fuel-examples/examples/` use eager `fuel::Tensor`
+and need their `main.rs` rewritten against the shipped lazy model
+modules. Per the "defer nothing" rule, every one ships before this
+tracker is considered complete.
+
+- [ ] [Binary migrations](port-binary-migrations.md) — 108 example
+      bins. Mostly mechanical rewrite (load weights → construct lazy
+      model → forward → output) — the lazy model modules all exist
+      from rounds 1-4. Three special categories:
+      - **Training bins** (mnist-training, reinforcement-learning):
+        migrate to the shipped LazyOptimizer / LazyVar /
+        lazy_nn_loss surface from round 5.
+      - **custom-ops** (eager CustomOp1 demo): needs a lazy custom-op
+        surface — split out as foundational sub-port if one doesn't
+        already exist.
+      - **llama_multiprocess** (NCCL multi-GPU): defer ONLY if the
+        underlying multi-GPU plumbing isn't shipped yet — and if so,
+        split that infra out as its own foundational entry above.
+
 ## Out of scope for this tracker
 
 - **Phase H (eager Tensor type-alias flip + bin deletion)** — gated
-  on every port + binary migration being shipped first.
-- **Binary migrations** (lazy bins for VGG, ViT, DinoV2,
-  EfficientNet, etc.) — separate strand; the lazy modules already
-  exist, the work is just writing the runner binary. Worth its own
-  tracker if/when the load picks up.
+  on every port + binary migration being shipped first. Phase H is
+  the *deletion* commit, not an additional port; nothing left to do
+  in Phase H once everything above is checked off.
