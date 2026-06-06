@@ -407,6 +407,81 @@ fn apply_linear(
     lw.w.apply_linear_with_bias(x, in_features, out_features, Arc::clone(&lw.b))
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl DebertaV2Weights {
+    /// Load DeBERTa-v2/v3 (microsoft/deberta-v3-*) weights from HF safetensors.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &DebertaV2Config,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+
+        let prefix = if load_tensor_as_f32(st, "deberta.embeddings.word_embeddings.weight").is_ok() {
+            "deberta."
+        } else { "" };
+
+        let word_embedding = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.word_embeddings.weight"),
+        )?);
+        let embed_ln = LayerNormWeights {
+            gain: Arc::from(load_tensor_as_f32(
+                st, &format!("{prefix}embeddings.LayerNorm.weight"),
+            )?),
+            bias: Arc::from(load_tensor_as_f32(
+                st, &format!("{prefix}embeddings.LayerNorm.bias"),
+            )?),
+        };
+        let rel_embeddings = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}encoder.rel_embeddings.weight"),
+        )?);
+        let rel_emb_ln = load_tensor_as_f32(
+            st, &format!("{prefix}encoder.LayerNorm.weight"),
+        ).ok().map(|gain| LayerNormWeights {
+            gain: Arc::from(gain),
+            bias: Arc::from(load_tensor_as_f32(
+                st, &format!("{prefix}encoder.LayerNorm.bias"),
+            ).unwrap_or_else(|_| vec![0.0_f32; h])),
+        });
+
+        let load_lin = |p: &str, in_f: usize, out_f: usize| -> Result<LinearWeights> {
+            let w = ltm(st, &format!("{p}.weight"), out_f, in_f)?;
+            let b = Arc::from(load_tensor_as_f32(st, &format!("{p}.bias"))?);
+            Ok(LinearWeights { w, b })
+        };
+        let load_ln = |p: &str| -> Result<LayerNormWeights> {
+            Ok(LayerNormWeights {
+                gain: Arc::from(load_tensor_as_f32(st, &format!("{p}.weight"))?),
+                bias: Arc::from(load_tensor_as_f32(st, &format!("{p}.bias"))?),
+            })
+        };
+
+        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("{prefix}encoder.layer.{i}");
+            let attn = DebertaV2AttentionWeights {
+                query_proj: load_lin(&format!("{p}.attention.self.query_proj"), h, h)?,
+                key_proj: load_lin(&format!("{p}.attention.self.key_proj"), h, h)?,
+                value_proj: load_lin(&format!("{p}.attention.self.value_proj"), h, h)?,
+                out_dense: load_lin(&format!("{p}.attention.output.dense"), h, h)?,
+                out_ln: load_ln(&format!("{p}.attention.output.LayerNorm"))?,
+            };
+            let ffn = DebertaV2FfnWeights {
+                intermediate: load_lin(&format!("{p}.intermediate.dense"), h, inter)?,
+                output: load_lin(&format!("{p}.output.dense"), inter, h)?,
+                output_ln: load_ln(&format!("{p}.output.LayerNorm"))?,
+            };
+            layers.push(DebertaV2LayerWeights { attn, ffn });
+        }
+
+        Ok(Self {
+            word_embedding, embed_ln, rel_embeddings, rel_emb_ln, layers,
+        })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
