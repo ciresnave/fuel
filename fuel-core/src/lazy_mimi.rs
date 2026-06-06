@@ -160,6 +160,99 @@ impl MimiModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl MimiWeights {
+    /// Load Mimi weights from a HuggingFace `MmapedSafetensors`
+    /// checkpoint (e.g. `kyutai/mimi/model.safetensors`). Composes
+    /// the four sub-module loaders:
+    ///
+    /// - `encoder.layers.*` — [`SeaNetEncoderWeights::load_from_mmapped`]
+    /// - `decoder.layers.*` — [`SeaNetDecoderWeights::load_from_mmapped`]
+    /// - `encoder_transformer.*` — [`ProjectedTransformerWeights::load_from_mmapped`]
+    /// - `decoder_transformer.*` — [`ProjectedTransformerWeights::load_from_mmapped`]
+    /// - `downsample.conv.{weight, bias?}` — top-level Mimi
+    ///   `ConvDownsample1d` (bias-less, kernel = `2·resampler_stride`)
+    /// - `upsample.convtr.{weight, bias?}` — top-level Mimi
+    ///   `ConvTrUpsample1d` (depthwise, bias-less)
+    /// - `quantizer.{semantic, acoustic}_residual_vector_quantizer.*`
+    ///   — [`SplitResidualVectorQuantizerWeights::load_from_mmapped`]
+    ///
+    /// `resampler_stride` is the integer `encoder_frame_rate /
+    /// frame_rate` ratio used at build time by
+    /// [`MimiEncodecConfig::resampler_stride`]; the loader uses it
+    /// to size the down/upsample kernels (`2 · stride`) but does
+    /// not re-derive it.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &MimiConfig,
+        resampler_stride: usize,
+    ) -> Result<Self> {
+        use crate::lazy::load_tensor_as_f32;
+
+        let encoder = SeaNetEncoderWeights::load_from_mmapped(
+            st, "encoder", &cfg.seanet,
+        )?;
+        let decoder = SeaNetDecoderWeights::load_from_mmapped(
+            st, "decoder", &cfg.seanet,
+        )?;
+
+        let dim = cfg.seanet.dimension;
+        // Both ProjectedTransformers take `input_dim = dim` and a
+        // single `output_dim = dim` slot in Mimi v0.1 (the eager
+        // `Encodec::new` passes `&[dim]` for output_dims).
+        let encoder_transformer = ProjectedTransformerWeights::load_from_mmapped(
+            st, "encoder_transformer", &cfg.transformer, dim, &[dim],
+        )?;
+        let decoder_transformer = ProjectedTransformerWeights::load_from_mmapped(
+            st, "decoder_transformer", &cfg.transformer, dim, &[dim],
+        )?;
+
+        // Top-level downsample / upsample. Both are bias-less in the
+        // eager port (`bias = false` on the underlying
+        // StreamableConv1d / StreamableConvTranspose1d).
+        let kernel = 2 * resampler_stride;
+        // downsample: `(dim, dim, kernel)` — full-channel mix.
+        let dn = load_tensor_as_f32(st, "downsample.conv.weight")?;
+        let expected_dn = dim * dim * kernel;
+        if dn.len() != expected_dn {
+            crate::bail!(
+                "downsample.conv.weight: {} elements, expected {expected_dn} ({dim}×{dim}×{kernel})",
+                dn.len(),
+            );
+        }
+        // upsample: `(dim, 1, kernel)` — depthwise (`groups = dim`).
+        let up = load_tensor_as_f32(st, "upsample.convtr.weight")?;
+        let expected_up = dim * 1 * kernel;
+        if up.len() != expected_up {
+            crate::bail!(
+                "upsample.convtr.weight: {} elements, expected {expected_up} ({dim}×1×{kernel})",
+                up.len(),
+            );
+        }
+
+        let quantizer = SplitResidualVectorQuantizerWeights::load_from_mmapped(
+            st, "quantizer",
+            cfg.quantizer_dim,
+            dim,
+            dim,
+            cfg.n_q,
+            cfg.quantizer_bins,
+        )?;
+
+        Ok(MimiWeights {
+            encoder,
+            decoder,
+            encoder_transformer,
+            decoder_transformer,
+            downsample_weight: std::sync::Arc::from(dn),
+            upsample_weight: std::sync::Arc::from(up),
+            quantizer,
+            resampler_stride,
+        })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]

@@ -309,6 +309,290 @@ impl SeaNetDecoderModel {
     }
 }
 
+// ---- HuggingFace safetensors loaders ----------------------------------------
+
+/// Fuse a PyTorch 1.x `weight_norm` `(weight_g, weight_v)` pair into
+/// a single dense kernel of shape `[leading, inner_per_leading]`.
+/// `leading` is the dim along which `weight_g` is stored — for
+/// `Conv1d` that's `out_channels`; for `ConvTranspose1d` it's
+/// `in_channels`. Mirrors the eager port's
+/// `weight_v · weight_g / ||weight_v||` reparameterization.
+fn fuse_weight_norm(
+    weight_g: &[f32], weight_v: &[f32],
+    leading: usize, inner_per_leading: usize,
+) -> Vec<f32> {
+    assert_eq!(weight_g.len(), leading,
+        "fuse_weight_norm: weight_g len {} != leading {}",
+        weight_g.len(), leading);
+    assert_eq!(weight_v.len(), leading * inner_per_leading,
+        "fuse_weight_norm: weight_v len {} != {} ({} × {})",
+        weight_v.len(), leading * inner_per_leading, leading, inner_per_leading);
+    let mut out = vec![0.0_f32; weight_v.len()];
+    for o in 0..leading {
+        let base = o * inner_per_leading;
+        let mut sum_sq = 0.0_f64;
+        for j in 0..inner_per_leading {
+            let v = weight_v[base + j] as f64;
+            sum_sq += v * v;
+        }
+        let norm = sum_sq.sqrt() as f32;
+        let inv = if norm > 0.0 { weight_g[o] / norm } else { 0.0_f32 };
+        for j in 0..inner_per_leading {
+            out[base + j] = weight_v[base + j] * inv;
+        }
+    }
+    out
+}
+
+/// Load a Mimi conv1d's weight (possibly weight-norm-parameterized).
+/// Returns the fused dense kernel as `Vec<f32>` shaped `[out_c,
+/// in_c / groups, kernel_size]`. Accepts both PyTorch 1.x
+/// (`weight_g`, `weight_v`) and pre-fused (`weight`) checkpoints —
+/// matches the eager port's `vb.contains_tensor("weight")` branching.
+fn load_mimi_norm_conv_weight(
+    st: &crate::safetensors::MmapedSafetensors,
+    conv_prefix: &str,
+    leading: usize,
+    inner_per_leading: usize,
+) -> Result<Vec<f32>> {
+    use crate::lazy::load_tensor_as_f32;
+    let direct = format!("{conv_prefix}.weight");
+    if st.get(&direct).is_ok() {
+        return load_tensor_as_f32(st, &direct);
+    }
+    let g = load_tensor_as_f32(st, &format!("{conv_prefix}.weight_g"))?;
+    let v = load_tensor_as_f32(st, &format!("{conv_prefix}.weight_v"))?;
+    Ok(fuse_weight_norm(&g, &v, leading, inner_per_leading))
+}
+
+/// Load a `LazyConv1dWeights` from a Mimi safetensors at
+/// `{conv_prefix}.{weight,bias}` (or `weight_g`/`weight_v` for
+/// PyTorch 1.x weight-norm). `conv_prefix` already includes the
+/// `.conv` suffix when called from a `NormConv1d`.
+fn load_mimi_conv1d(
+    st: &crate::safetensors::MmapedSafetensors,
+    conv_prefix: &str,
+    in_channels: usize, out_channels: usize, kernel_size: usize,
+    stride: usize, dilation: usize, groups: usize, bias: bool,
+) -> Result<LazyConv1dWeights> {
+    use crate::lazy::load_tensor_as_f32;
+    let inner = (in_channels / groups) * kernel_size;
+    let w = load_mimi_norm_conv_weight(st, conv_prefix, out_channels, inner)?;
+    if w.len() != out_channels * inner {
+        crate::bail!(
+            "{conv_prefix}.weight: {} elements, expected {} ({} × {} × {})",
+            w.len(), out_channels * inner,
+            out_channels, in_channels / groups, kernel_size,
+        );
+    }
+    let b = if bias {
+        let v = load_tensor_as_f32(st, &format!("{conv_prefix}.bias"))?;
+        if v.len() != out_channels {
+            crate::bail!(
+                "{conv_prefix}.bias: {} elements, expected {out_channels}",
+                v.len(),
+            );
+        }
+        Some(Arc::from(v))
+    } else {
+        None
+    };
+    Ok(LazyConv1dWeights {
+        weight: Arc::from(w),
+        bias: b,
+        in_channels, out_channels,
+        kernel_size, stride, dilation, groups,
+    })
+}
+
+/// Load a `LazyConvTranspose1dWeights` from a Mimi safetensors.
+/// PyTorch ConvTranspose1d weight has shape `[in_c, out_c / groups,
+/// k]`, with weight-norm normalizing along `in_c`.
+fn load_mimi_conv_transpose1d(
+    st: &crate::safetensors::MmapedSafetensors,
+    conv_prefix: &str,
+    in_channels: usize, out_channels: usize, kernel_size: usize,
+    stride: usize, groups: usize, bias: bool,
+) -> Result<LazyConvTranspose1dWeights> {
+    use crate::lazy::load_tensor_as_f32;
+    let inner = (out_channels / groups) * kernel_size;
+    let w = load_mimi_norm_conv_weight(st, conv_prefix, in_channels, inner)?;
+    if w.len() != in_channels * inner {
+        crate::bail!(
+            "{conv_prefix}.weight: {} elements, expected {} ({} × {} × {})",
+            w.len(), in_channels * inner,
+            in_channels, out_channels / groups, kernel_size,
+        );
+    }
+    let b = if bias {
+        let v = load_tensor_as_f32(st, &format!("{conv_prefix}.bias"))?;
+        if v.len() != out_channels {
+            crate::bail!(
+                "{conv_prefix}.bias: {} elements, expected {out_channels}",
+                v.len(),
+            );
+        }
+        Some(Arc::from(v))
+    } else {
+        None
+    };
+    Ok(LazyConvTranspose1dWeights {
+        weight: Arc::from(w),
+        bias: b,
+        in_channels, out_channels,
+        kernel_size, stride, groups,
+    })
+}
+
+/// Load a SeaNet residual block at `{prefix}` matching the eager
+/// `SeaNetResnetBlock` layout: `block.{1, 3}.conv` for the two
+/// dilated convs (skipping `block.{0, 2}` activations), plus
+/// optional `shortcut.conv` when `true_skip = false`.
+fn load_seanet_resnet_block(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    dim: usize, residual_kernel_size: usize, dilation: usize,
+    compress: usize, true_skip: bool,
+) -> Result<SeaNetResnetBlockWeights> {
+    let hidden = dim / compress;
+    // block.1 = first dilated conv: dim → hidden, kernel = residual_k,
+    // dilation = dilation_base^j.
+    let conv0 = load_mimi_conv1d(
+        st, &format!("{prefix}.block.1.conv"),
+        dim, hidden, residual_kernel_size, 1, dilation, 1, true,
+    )?;
+    // block.3 = second conv: hidden → dim, kernel = 1, dilation = 1.
+    let conv1 = load_mimi_conv1d(
+        st, &format!("{prefix}.block.3.conv"),
+        hidden, dim, 1, 1, 1, 1, true,
+    )?;
+    let shortcut = if true_skip {
+        None
+    } else {
+        Some(load_mimi_conv1d(
+            st, &format!("{prefix}.shortcut.conv"),
+            dim, dim, 1, 1, 1, 1, true,
+        )?)
+    };
+    Ok(SeaNetResnetBlockWeights {
+        convs: vec![conv0, conv1],
+        shortcut,
+    })
+}
+
+impl SeaNetEncoderWeights {
+    /// Load SeaNet encoder weights from a HuggingFace
+    /// `MmapedSafetensors` checkpoint at `{prefix}` (e.g.
+    /// `"encoder"`). Mirrors the eager `SeaNetEncoder::new`
+    /// `vb.pp("layers")` indexing — activation modules reserve a
+    /// `layers.{idx}` slot but carry no params; each conv lives at
+    /// `layers.{idx}.conv.{weight, bias}`.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        prefix: &str,
+        cfg: &SeaNetConfig,
+    ) -> Result<Self> {
+        let mut layer_idx = 0_usize;
+        let layers_pp = format!("{prefix}.layers");
+        let init_conv = load_mimi_conv1d(
+            st, &format!("{layers_pp}.{layer_idx}.conv"),
+            cfg.channels, cfg.n_filters,
+            cfg.kernel_size, 1, 1, 1, true,
+        )?;
+        layer_idx += 1;
+        let mut mult = 1_usize;
+        let mut layers = Vec::with_capacity(cfg.ratios.len());
+        for ratio in cfg.ratios.iter().rev() {
+            let dim = mult * cfg.n_filters;
+            let mut residuals = Vec::with_capacity(cfg.n_residual_layers);
+            for j in 0..cfg.n_residual_layers {
+                let dilation = cfg.dilation_base.pow(j as u32);
+                let block = load_seanet_resnet_block(
+                    st, &format!("{layers_pp}.{layer_idx}"),
+                    dim, cfg.residual_kernel_size, dilation,
+                    cfg.compress, cfg.true_skip,
+                )?;
+                residuals.push(block);
+                layer_idx += 1;
+            }
+            // Activation (no params) reserves `layer_idx`.
+            // Downsample lives at `layer_idx + 1`.
+            let downsample = load_mimi_conv1d(
+                st, &format!("{layers_pp}.{}.conv", layer_idx + 1),
+                dim, dim * 2,
+                ratio * 2, *ratio, 1, 1, true,
+            )?;
+            layer_idx += 2;
+            layers.push(SeaNetEncoderLayerWeights { residuals, downsample });
+            mult *= 2;
+        }
+        // Final activation reserves `layer_idx`; final conv at `layer_idx + 1`.
+        let final_conv = load_mimi_conv1d(
+            st, &format!("{layers_pp}.{}.conv", layer_idx + 1),
+            mult * cfg.n_filters, cfg.dimension,
+            cfg.last_kernel_size, 1, 1, 1, true,
+        )?;
+        Ok(SeaNetEncoderWeights { init_conv, layers, final_conv })
+    }
+}
+
+impl SeaNetDecoderWeights {
+    /// Load SeaNet decoder weights from a HuggingFace
+    /// `MmapedSafetensors` checkpoint at `{prefix}` (e.g.
+    /// `"decoder"`). Mirrors the eager `SeaNetDecoder::new`
+    /// `vb.pp("layers")` indexing: activation at `layer_idx`,
+    /// upsample at `layer_idx + 1`, then `n_residual_layers`
+    /// residuals.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        prefix: &str,
+        cfg: &SeaNetConfig,
+    ) -> Result<Self> {
+        let mut layer_idx = 0_usize;
+        let layers_pp = format!("{prefix}.layers");
+        let mut mult = 1_usize << cfg.ratios.len();
+        let init_conv = load_mimi_conv1d(
+            st, &format!("{layers_pp}.{layer_idx}.conv"),
+            cfg.dimension, mult * cfg.n_filters,
+            cfg.kernel_size, 1, 1, 1, true,
+        )?;
+        layer_idx += 1;
+        let mut layers = Vec::with_capacity(cfg.ratios.len());
+        for ratio in cfg.ratios.iter() {
+            let dim = mult * cfg.n_filters;
+            let out_dim = dim / 2;
+            // Activation (no params) reserves `layer_idx`. Upsample
+            // lives at `layer_idx + 1`. The transpose-conv uses
+            // `groups = 1` (mirrors eager `SeaNetDecoder::new`).
+            let upsample = load_mimi_conv_transpose1d(
+                st, &format!("{layers_pp}.{}.conv", layer_idx + 1),
+                dim, out_dim, ratio * 2, *ratio, 1, true,
+            )?;
+            layer_idx += 2;
+            let mut residuals = Vec::with_capacity(cfg.n_residual_layers);
+            for j in 0..cfg.n_residual_layers {
+                let dilation = cfg.dilation_base.pow(j as u32);
+                let block = load_seanet_resnet_block(
+                    st, &format!("{layers_pp}.{layer_idx}"),
+                    out_dim, cfg.residual_kernel_size, dilation,
+                    cfg.compress, cfg.true_skip,
+                )?;
+                residuals.push(block);
+                layer_idx += 1;
+            }
+            layers.push(SeaNetDecoderLayerWeights { upsample, residuals });
+            mult /= 2;
+        }
+        // Final activation reserves `layer_idx`; final conv at `layer_idx + 1`.
+        let final_conv = load_mimi_conv1d(
+            st, &format!("{layers_pp}.{}.conv", layer_idx + 1),
+            cfg.n_filters, cfg.channels,
+            cfg.last_kernel_size, 1, 1, 1, true,
+        )?;
+        Ok(SeaNetDecoderWeights { init_conv, layers, final_conv })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]

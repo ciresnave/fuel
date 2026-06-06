@@ -310,6 +310,155 @@ fn apply_rope_interleaved(
     stacked.reshape(Shape::from_dims(&[b, heads, t, head_dim]))
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl ProjectedTransformerWeights {
+    /// Load `ProjectedTransformer` weights from a HuggingFace
+    /// `MmapedSafetensors` checkpoint at `{prefix}` (e.g.
+    /// `"encoder_transformer"`). Matches the eager
+    /// `ProjectedTransformer::new` VarBuilder tree:
+    ///
+    /// - `{prefix}.input_proj.weight` (optional, only when
+    ///   `input_dim != d_model`)
+    /// - `{prefix}.output_projs.{i}.weight` (optional per output;
+    ///   absent when `output_dim == d_model`)
+    /// - `{prefix}.layers.{i}.input_layernorm.{weight, bias}`
+    /// - `{prefix}.layers.{i}.post_attention_layernorm.{weight, bias}`
+    /// - `{prefix}.layers.{i}.self_attn.{q,k,v,o}_proj.weight`
+    ///   (no bias in Mimi v0.1: `bias_attn = false`)
+    /// - `{prefix}.layers.{i}.mlp.fc1.weight`,
+    ///   `{prefix}.layers.{i}.mlp.fc2.weight` (no bias in v0.1)
+    /// - `{prefix}.layers.{i}.self_attn_layer_scale.scale`
+    /// - `{prefix}.layers.{i}.mlp_layer_scale.scale`
+    ///
+    /// Caller supplies the `input_dim` + `output_dims` slice from the
+    /// surrounding `MimiModel` build; the optional projections are
+    /// emitted iff the corresponding safetensor key exists.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        prefix: &str,
+        cfg: &MimiTransformerConfig,
+        input_dim: usize,
+        output_dims: &[usize],
+    ) -> Result<Self> {
+        use crate::lazy::{
+            load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+        };
+        let d = cfg.d_model;
+
+        // ---- transformer layers --------------------------------------------
+        let mut layers: Vec<MimiTransformerLayerWeights> =
+            Vec::with_capacity(cfg.num_layers);
+        for i in 0..cfg.num_layers {
+            let p = format!("{prefix}.layers.{i}");
+
+            // LayerNorm (input + post-attn).
+            let n1_g = load_tensor_as_f32(
+                st, &format!("{p}.input_layernorm.weight"),
+            )?;
+            let n1_b = load_tensor_as_f32(
+                st, &format!("{p}.input_layernorm.bias"),
+            )?;
+            let n2_g = load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.weight"),
+            )?;
+            let n2_b = load_tensor_as_f32(
+                st, &format!("{p}.post_attention_layernorm.bias"),
+            )?;
+            if n1_g.len() != d || n1_b.len() != d
+                || n2_g.len() != d || n2_b.len() != d
+            {
+                crate::bail!(
+                    "{p} LN sizes: input_g {} input_b {} post_g {} post_b {} expected {d}",
+                    n1_g.len(), n1_b.len(), n2_g.len(), n2_b.len(),
+                );
+            }
+
+            // Self-attention projections (no bias in Mimi v0.1).
+            let q_proj = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.q_proj.weight"), d, d,
+            )?;
+            let k_proj = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.k_proj.weight"), d, d,
+            )?;
+            let v_proj = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.v_proj.weight"), d, d,
+            )?;
+            let o_proj = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attn.o_proj.weight"), d, d,
+            )?;
+
+            // MLP.
+            let fc1 = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.fc1.weight"), cfg.dim_feedforward, d,
+            )?;
+            let fc2 = load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.fc2.weight"), d, cfg.dim_feedforward,
+            )?;
+
+            // Per-channel layer-scale.
+            let ls1 = load_tensor_as_f32(
+                st, &format!("{p}.self_attn_layer_scale.scale"),
+            )?;
+            let ls2 = load_tensor_as_f32(
+                st, &format!("{p}.mlp_layer_scale.scale"),
+            )?;
+            if ls1.len() != d || ls2.len() != d {
+                crate::bail!(
+                    "{p} layer_scale sizes: ls1 {} ls2 {} expected {d}",
+                    ls1.len(), ls2.len(),
+                );
+            }
+
+            layers.push(MimiTransformerLayerWeights {
+                norm1: LayerNormWeights {
+                    gain: Arc::from(n1_g),
+                    bias: Arc::from(n1_b),
+                },
+                norm2: LayerNormWeights {
+                    gain: Arc::from(n2_g),
+                    bias: Arc::from(n2_b),
+                },
+                attn: MimiAttentionWeights { q_proj, k_proj, v_proj, o_proj },
+                mlp: MimiMlpWeights { fc1, fc2 },
+                layer_scale_1: Arc::from(ls1),
+                layer_scale_2: Arc::from(ls2),
+            });
+        }
+
+        // ---- optional input projection (input_dim → d_model) ---------------
+        let input_proj = if input_dim == d {
+            None
+        } else {
+            let w = load_transposed_matrix_preserve_dtype(
+                st, &format!("{prefix}.input_proj.weight"), d, input_dim,
+            )?;
+            Some(w)
+        };
+
+        // ---- optional per-output projection (d_model → output_dim) ---------
+        let mut output_projs: Vec<(Option<WeightStorage>, usize)> =
+            Vec::with_capacity(output_dims.len());
+        for (i, &od) in output_dims.iter().enumerate() {
+            let proj = if od == d {
+                None
+            } else {
+                let w = load_transposed_matrix_preserve_dtype(
+                    st, &format!("{prefix}.output_projs.{i}.weight"), od, d,
+                )?;
+                Some(w)
+            };
+            output_projs.push((proj, od));
+        }
+
+        Ok(ProjectedTransformerWeights {
+            transformer: MimiTransformerWeights { layers },
+            input_proj,
+            output_projs,
+        })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]

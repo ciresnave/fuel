@@ -325,6 +325,170 @@ pub fn split_rvq_decode(
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+/// Load an `EuclideanCodebook`-equivalent set of derived tables from
+/// `embed_sum` and `cluster_usage`. Eager:
+///
+/// ```text
+/// embedding = embed_sum / max(cluster_usage, eps).unsqueeze(1)
+/// c2        = sum(embedding · embedding, dim=-1) / 2
+/// ```
+fn load_euclidean_codebook(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    codebook_size: usize, codebook_dim: usize,
+) -> Result<EuclideanCodebookWeights> {
+    use crate::lazy::load_tensor_as_f32;
+    let cluster_usage = load_tensor_as_f32(
+        st, &format!("{prefix}.cluster_usage"),
+    )?;
+    if cluster_usage.len() != codebook_size {
+        crate::bail!(
+            "{prefix}.cluster_usage: {} elements, expected {codebook_size}",
+            cluster_usage.len(),
+        );
+    }
+    let embed_sum = load_tensor_as_f32(
+        st, &format!("{prefix}.embed_sum"),
+    )?;
+    let expected = codebook_size * codebook_dim;
+    if embed_sum.len() != expected {
+        crate::bail!(
+            "{prefix}.embed_sum: {} elements, expected {expected} ({codebook_size}×{codebook_dim})",
+            embed_sum.len(),
+        );
+    }
+    // embedding[i, j] = embed_sum[i, j] / max(cluster_usage[i], eps).
+    let eps = 1e-5_f32;
+    let mut embedding = vec![0.0_f32; expected];
+    let mut c2 = vec![0.0_f32; codebook_size];
+    for i in 0..codebook_size {
+        let denom = cluster_usage[i].max(eps);
+        let mut s = 0.0_f64;
+        for j in 0..codebook_dim {
+            let e = embed_sum[i * codebook_dim + j] / denom;
+            embedding[i * codebook_dim + j] = e;
+            s += (e as f64) * (e as f64);
+        }
+        c2[i] = (s / 2.0) as f32;
+    }
+    Ok(EuclideanCodebookWeights {
+        embedding: Arc::from(embedding),
+        c2: Arc::from(c2),
+        codebook_size,
+        codebook_dim,
+    })
+}
+
+/// Load one `VectorQuantization` layer. In Mimi the residual stack
+/// passes `codebook_dim = None` (defaults to `dim`), so the
+/// `project_in / project_out` linear layers are skipped at this level.
+fn load_vector_quantization(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    dim: usize, codebook_size: usize,
+) -> Result<VectorQuantizationWeights> {
+    let codebook = load_euclidean_codebook(
+        st, &format!("{prefix}.codebook"),
+        codebook_size, dim,
+    )?;
+    Ok(VectorQuantizationWeights {
+        codebook,
+        project_in_w: None, project_in_b: None,
+        project_out_w: None, project_out_b: None,
+        dim,
+    })
+}
+
+/// Load a `ResidualVectorQuantizer` at `{prefix}`. The eager builder
+/// uses `force_projection = true` for both semantic and acoustic, so
+/// `input_proj` / `output_proj` 1×1 convs are always present even
+/// when `dim == input_dim == output_dim`.
+fn load_residual_vector_quantizer(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    dim: usize, input_dim: usize, output_dim: usize,
+    n_q: usize, codebook_size: usize,
+) -> Result<ResidualVectorQuantizerWeights> {
+    use crate::lazy::load_tensor_as_f32;
+    // 1×1 conv1d_no_bias on input: `(out=dim, in=input_dim, k=1)`.
+    let in_w = load_tensor_as_f32(
+        st, &format!("{prefix}.input_proj.weight"),
+    )?;
+    let expected_in = dim * input_dim;
+    if in_w.len() != expected_in {
+        crate::bail!(
+            "{prefix}.input_proj.weight: {} elements, expected {expected_in} ({dim}×{input_dim}×1)",
+            in_w.len(),
+        );
+    }
+    let out_w = load_tensor_as_f32(
+        st, &format!("{prefix}.output_proj.weight"),
+    )?;
+    let expected_out = output_dim * dim;
+    if out_w.len() != expected_out {
+        crate::bail!(
+            "{prefix}.output_proj.weight: {} elements, expected {expected_out} ({output_dim}×{dim}×1)",
+            out_w.len(),
+        );
+    }
+    // RVQ stack at `{prefix}.layers.{i}`.
+    let mut layers = Vec::with_capacity(n_q);
+    for i in 0..n_q {
+        let vq = load_vector_quantization(
+            st, &format!("{prefix}.layers.{i}"),
+            dim, codebook_size,
+        )?;
+        layers.push(vq);
+    }
+    Ok(ResidualVectorQuantizerWeights {
+        vq: ResidualVectorQuantizationWeights { layers },
+        input_proj_w: Some(Arc::from(in_w)),
+        output_proj_w: Some(Arc::from(out_w)),
+        dim, input_dim, output_dim,
+    })
+}
+
+impl SplitResidualVectorQuantizerWeights {
+    /// Load split RVQ weights from a HuggingFace `MmapedSafetensors`
+    /// checkpoint at `{prefix}` (e.g. `"quantizer"`). Matches the
+    /// eager `SplitResidualVectorQuantizer::new` VarBuilder tree:
+    ///
+    /// - `{prefix}.semantic_residual_vector_quantizer.input_proj.weight`
+    /// - `{prefix}.semantic_residual_vector_quantizer.output_proj.weight`
+    /// - `{prefix}.semantic_residual_vector_quantizer.layers.{0}.codebook.{embed_sum, cluster_usage}`
+    /// - `{prefix}.acoustic_residual_vector_quantizer.input_proj.weight`
+    /// - `{prefix}.acoustic_residual_vector_quantizer.output_proj.weight`
+    /// - `{prefix}.acoustic_residual_vector_quantizer.layers.{i}.codebook.{embed_sum, cluster_usage}`
+    ///   for `i` in `0..n_q - 1`.
+    ///
+    /// `dim` is the SRVQ internal dimension (e.g. `cfg.quantizer_dim
+    /// = 256` for Mimi v0.1); `input_dim` / `output_dim` are the
+    /// outside-facing dims (typically `cfg.seanet.dimension = 512`).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        prefix: &str,
+        dim: usize, input_dim: usize, output_dim: usize,
+        n_q: usize, quantizer_bins: usize,
+    ) -> Result<Self> {
+        let rvq_first = load_residual_vector_quantizer(
+            st, &format!("{prefix}.semantic_residual_vector_quantizer"),
+            dim, input_dim, output_dim, 1, quantizer_bins,
+        )?;
+        let n_rest = n_q.saturating_sub(1).max(1);
+        let rvq_rest = load_residual_vector_quantizer(
+            st, &format!("{prefix}.acoustic_residual_vector_quantizer"),
+            dim, input_dim, output_dim, n_rest, quantizer_bins,
+        )?;
+        Ok(SplitResidualVectorQuantizerWeights {
+            rvq_first,
+            rvq_rest,
+            n_q,
+        })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
