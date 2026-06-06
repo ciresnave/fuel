@@ -260,6 +260,92 @@ fn apply_mlp(
 
 
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+fn load_ln(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+) -> Result<LayerNormWeights> {
+    use crate::lazy::load_tensor_as_f32;
+    Ok(LayerNormWeights {
+        gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.weight"))?),
+        bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.bias"))?),
+    })
+}
+
+impl BlipVisionWeights {
+    /// Load BLIP vision-encoder weights from HF safetensors.
+    ///
+    /// HF naming (matches `Salesforce/blip-image-captioning-base`):
+    ///   - `vision_model.embeddings.{patch_embedding.weight,patch_embedding.bias,class_embedding,position_embedding}`
+    ///   - `vision_model.encoder.layers.{i}.{layer_norm1,self_attn.{qkv,projection},layer_norm2,mlp.{fc1,fc2}}`
+    ///   - `vision_model.post_layernorm`
+    ///
+    /// `prefix` typically `"vision_model."` for full BLIP, or `""` for
+    /// bare-vision checkpoints.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &BlipVisionConfig,
+        prefix: &str,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+
+        let patch_proj = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.patch_embedding.weight"),
+        )?);
+        let patch_proj_bias = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.patch_embedding.bias"),
+        )?);
+        let class_token = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.class_embedding"),
+        )?);
+        let position_embedding = Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}embeddings.position_embedding"),
+        )?);
+
+        let mut layers: Vec<BlipVisionLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let lp = format!("{prefix}encoder.layers.{i}");
+            let ln1 = load_ln(st, &format!("{lp}.layer_norm1"))?;
+            let qkv = load_transposed_matrix_preserve_dtype(
+                st, &format!("{lp}.self_attn.qkv.weight"), 3 * h, h,
+            )?;
+            let qkv_bias = Arc::from(load_tensor_as_f32(st, &format!("{lp}.self_attn.qkv.bias"))?);
+            let projection = load_transposed_matrix_preserve_dtype(
+                st, &format!("{lp}.self_attn.projection.weight"), h, h,
+            )?;
+            let projection_bias = Arc::from(load_tensor_as_f32(
+                st, &format!("{lp}.self_attn.projection.bias"),
+            )?);
+            let attn = BlipVisionAttentionWeights {
+                qkv, qkv_bias, projection, projection_bias,
+            };
+            let ln2 = load_ln(st, &format!("{lp}.layer_norm2"))?;
+            let mlp = BlipMlpWeights {
+                fc1: load_transposed_matrix_preserve_dtype(
+                    st, &format!("{lp}.mlp.fc1.weight"), inter, h,
+                )?,
+                fc1_bias: Arc::from(load_tensor_as_f32(st, &format!("{lp}.mlp.fc1.bias"))?),
+                fc2: load_transposed_matrix_preserve_dtype(
+                    st, &format!("{lp}.mlp.fc2.weight"), h, inter,
+                )?,
+                fc2_bias: Arc::from(load_tensor_as_f32(st, &format!("{lp}.mlp.fc2.bias"))?),
+            };
+            layers.push(BlipVisionLayerWeights { ln1, attn, ln2, mlp });
+        }
+
+        let post_layernorm = load_ln(st, &format!("{prefix}post_layernorm"))?;
+
+        Ok(Self {
+            patch_proj, patch_proj_bias, class_token, position_embedding,
+            layers, post_layernorm,
+        })
+    }
+}
+
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]

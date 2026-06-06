@@ -111,6 +111,29 @@ impl BlipForConditionalGeneration {
     }
 }
 
+// ---- HuggingFace safetensors composer --------------------------------------
+
+impl BlipWeights {
+    /// Load the full BLIP checkpoint by composing the shipped
+    /// `BlipVisionWeights::load_from_mmapped` and
+    /// `BlipTextWeights::load_from_mmapped` against the standard
+    /// `Salesforce/blip-*` checkpoint layout (vision tower under
+    /// `vision_model.`, text decoder under `text_decoder.`).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &BlipConfig,
+    ) -> Result<Self> {
+        let vision = BlipVisionWeights::load_from_mmapped(
+            st, &cfg.vision_config, "vision_model.",
+        )?;
+        let text = BlipTextWeights::load_from_mmapped(
+            st, &cfg.text_config, cfg.vision_config.hidden_size, "text_decoder.",
+        )?;
+        Ok(Self { vision, text })
+    }
+}
+
+
 // ---- Tests ---------------------------------------------------------------
 
 #[cfg(test)]

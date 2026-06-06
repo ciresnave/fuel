@@ -325,6 +325,239 @@ impl FalconModel {
     }
 }
 
+// ---- HuggingFace safetensors loader ----------------------------------------
+
+impl FalconWeights {
+    /// Load Falcon weights from HF safetensors.
+    ///
+    /// HF naming (matches `tiiuae/falcon-7b`):
+    ///   - `transformer.word_embeddings.weight`
+    ///   - `transformer.h.{i}.input_layernorm.{weight,bias}`
+    ///   - `transformer.h.{i}.self_attention.query_key_value.{weight,bias}`
+    ///     — fused QKV, deinterleaved at load time.
+    ///   - `transformer.h.{i}.self_attention.dense.{weight,bias}`
+    ///   - `transformer.h.{i}.mlp.dense_h_to_4h.{weight,bias}`
+    ///   - `transformer.h.{i}.mlp.dense_4h_to_h.{weight,bias}`
+    ///   - `transformer.ln_f.{weight,bias}`
+    ///   - `lm_head.weight` (or tied to word_embeddings)
+    ///
+    /// # Fused-QKV layout
+    ///
+    /// For `n_head_kv = 1` (Falcon-7B multi-query): the fused tensor
+    /// is `((num_heads + 2) * head_dim) × hidden_size`. After
+    /// transpose to `hidden_size × ((num_heads + 2) * head_dim)`, the
+    /// last-dim columns are laid out `[Q_h0_d0..Q_hn_d0, K_d0, V_d0]`
+    /// per `head_dim`-block. Q is the first `num_heads * head_dim`
+    /// columns; K is the next `head_dim` columns; V is the last
+    /// `head_dim` columns.
+    ///
+    /// For non-multi-query (`n_head_kv = num_heads`): the fused
+    /// tensor is `(3 * hidden_size) × hidden_size` reshaped as
+    /// `(num_heads, 3, head_dim) × hidden_size`. After transpose,
+    /// pull out Q/K/V by stride-3 indexing.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &FalconConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix};
+
+        let h = cfg.hidden_size;
+        let head_dim = cfg.head_dim();
+        let kv_dim = cfg.n_head_kv * head_dim;
+        let q_dim = cfg.num_attention_heads * head_dim;
+
+        let token_embedding = Arc::from(load_tensor_as_f32(
+            st, "transformer.word_embeddings.weight",
+        )?);
+
+        let multi_query = cfg.n_head_kv == 1;
+        let qkv_out_dim = if multi_query {
+            h + 2 * head_dim
+        } else {
+            3 * h
+        };
+
+        let mut layers: Vec<FalconLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("transformer.h.{i}");
+
+            let input_ln_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?);
+            let input_ln_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.bias"))?);
+            // post_attn_ln only exists in the non-parallel variant.
+            let post_attn_ln = if !cfg.parallel_attn {
+                Some((
+                    Arc::from(load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?),
+                    Arc::from(load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.bias"))?),
+                ))
+            } else {
+                None
+            };
+
+            // Fused QKV: shape (qkv_out_dim, hidden_size) on disk.
+            let qkv = load_transposed_matrix(
+                st, &format!("{p}.self_attention.query_key_value.weight"),
+                qkv_out_dim, h,
+            )?;
+            let (attn_q_flat, attn_k_flat, attn_v_flat) = split_fused_qkv(
+                &qkv, h, cfg.num_attention_heads, head_dim, multi_query,
+            );
+
+            // Optional QKV bias.
+            let (attn_q_bias, attn_k_bias, attn_v_bias) = if cfg.bias {
+                let qkv_bias = load_tensor_as_f32(
+                    st, &format!("{p}.self_attention.query_key_value.bias"),
+                )?;
+                let (qb, kb, vb) = split_fused_qkv_bias(
+                    &qkv_bias, cfg.num_attention_heads, head_dim, multi_query,
+                );
+                (Some(Arc::from(qb)), Some(Arc::from(kb)), Some(Arc::from(vb)))
+            } else {
+                (None, None, None)
+            };
+
+            let attn_dense = crate::lazy::load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.self_attention.dense.weight"), h, q_dim,
+            )?;
+            let attn_dense_bias = if cfg.bias {
+                Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.self_attention.dense.bias"))?))
+            } else {
+                None
+            };
+
+            let inter = 4 * h;
+            let mlp_up = crate::lazy::load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.dense_h_to_4h.weight"), inter, h,
+            )?;
+            let mlp_up_bias = if cfg.bias {
+                Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.dense_h_to_4h.bias"))?))
+            } else {
+                None
+            };
+            let mlp_down = crate::lazy::load_transposed_matrix_preserve_dtype(
+                st, &format!("{p}.mlp.dense_4h_to_h.weight"), h, inter,
+            )?;
+            let mlp_down_bias = if cfg.bias {
+                Some(Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.dense_4h_to_h.bias"))?))
+            } else {
+                None
+            };
+
+            layers.push(FalconLayerWeights {
+                input_ln_gain, input_ln_bias, post_attn_ln,
+                attn_q: WeightStorage::F32(Arc::from(attn_q_flat)),
+                attn_q_bias,
+                attn_k: WeightStorage::F32(Arc::from(attn_k_flat)),
+                attn_k_bias,
+                attn_v: WeightStorage::F32(Arc::from(attn_v_flat)),
+                attn_v_bias,
+                attn_dense, attn_dense_bias,
+                mlp_up, mlp_up_bias,
+                mlp_down, mlp_down_bias,
+            });
+        }
+
+        let final_ln_gain = Arc::from(load_tensor_as_f32(st, "transformer.ln_f.weight")?);
+        let final_ln_bias = Arc::from(load_tensor_as_f32(st, "transformer.ln_f.bias")?);
+        // lm_head: tied if no lm_head.weight present, else load.
+        let output = match crate::lazy::load_transposed_matrix_preserve_dtype(
+            st, "lm_head.weight", cfg.vocab_size, h,
+        ) {
+            Ok(w) => w,
+            Err(_) => {
+                // Tied: transpose token_embedding (vocab, h) -> (h, vocab).
+                crate::lazy_llama_full::tied_lm_head_from_embeddings(
+                    &token_embedding, cfg.vocab_size, h,
+                )
+            }
+        };
+
+        Ok(Self {
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            output,
+        })
+    }
+}
+
+/// Split a transposed fused-QKV matrix (shape [hidden_size, qkv_out_dim],
+/// row-major) into separate Q, K, V matrices.
+///
+/// Multi-query (n_head_kv=1): qkv_out_dim = (num_heads + 2) * head_dim.
+/// Columns 0..num_heads*head_dim are Q, next head_dim cols are K, last
+/// head_dim cols are V.
+///
+/// Non-multi-query: qkv_out_dim = 3 * num_heads * head_dim, with the
+/// stride-3 head interleaved layout [Q_h0, K_h0, V_h0, Q_h1, K_h1, ...].
+fn split_fused_qkv(
+    transposed: &[f32],
+    hidden_size: usize,
+    num_heads: usize,
+    head_dim: usize,
+    multi_query: bool,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let q_dim = num_heads * head_dim;
+    let kv_dim = if multi_query { head_dim } else { q_dim };
+    let qkv_out = if multi_query { q_dim + 2 * head_dim } else { 3 * q_dim };
+
+    let mut q = vec![0.0_f32; hidden_size * q_dim];
+    let mut k = vec![0.0_f32; hidden_size * kv_dim];
+    let mut v = vec![0.0_f32; hidden_size * kv_dim];
+
+    if multi_query {
+        for row in 0..hidden_size {
+            let src = &transposed[row * qkv_out..(row + 1) * qkv_out];
+            q[row * q_dim..(row + 1) * q_dim].copy_from_slice(&src[0..q_dim]);
+            k[row * head_dim..(row + 1) * head_dim].copy_from_slice(&src[q_dim..q_dim + head_dim]);
+            v[row * head_dim..(row + 1) * head_dim].copy_from_slice(&src[q_dim + head_dim..]);
+        }
+    } else {
+        // (num_heads, 3, head_dim) interleaved per head.
+        for row in 0..hidden_size {
+            let src = &transposed[row * qkv_out..(row + 1) * qkv_out];
+            for h_i in 0..num_heads {
+                let base = h_i * 3 * head_dim;
+                q[row * q_dim + h_i * head_dim..row * q_dim + (h_i + 1) * head_dim]
+                    .copy_from_slice(&src[base..base + head_dim]);
+                k[row * kv_dim + h_i * head_dim..row * kv_dim + (h_i + 1) * head_dim]
+                    .copy_from_slice(&src[base + head_dim..base + 2 * head_dim]);
+                v[row * kv_dim + h_i * head_dim..row * kv_dim + (h_i + 1) * head_dim]
+                    .copy_from_slice(&src[base + 2 * head_dim..base + 3 * head_dim]);
+            }
+        }
+    }
+
+    (q, k, v)
+}
+
+/// Split a fused-QKV bias vector. Bias has shape (qkv_out_dim,).
+fn split_fused_qkv_bias(
+    bias: &[f32],
+    num_heads: usize,
+    head_dim: usize,
+    multi_query: bool,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let q_dim = num_heads * head_dim;
+    if multi_query {
+        let q = bias[0..q_dim].to_vec();
+        let k = bias[q_dim..q_dim + head_dim].to_vec();
+        let v = bias[q_dim + head_dim..q_dim + 2 * head_dim].to_vec();
+        (q, k, v)
+    } else {
+        let mut q = vec![0.0_f32; q_dim];
+        let mut k = vec![0.0_f32; q_dim];
+        let mut v = vec![0.0_f32; q_dim];
+        for h_i in 0..num_heads {
+            let base = h_i * 3 * head_dim;
+            q[h_i * head_dim..(h_i + 1) * head_dim].copy_from_slice(&bias[base..base + head_dim]);
+            k[h_i * head_dim..(h_i + 1) * head_dim].copy_from_slice(&bias[base + head_dim..base + 2 * head_dim]);
+            v[h_i * head_dim..(h_i + 1) * head_dim].copy_from_slice(&bias[base + 2 * head_dim..base + 3 * head_dim]);
+        }
+        (q, k, v)
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
