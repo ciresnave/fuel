@@ -39,12 +39,13 @@ These unblock multiple downstream model ports. Ship these first.
       + Conv3dTemporal2Config; weight pre-split in from_raw_weight,
       apply uses narrow + squeeze + 2× conv2d + add + unsqueeze;
       6 tests including hand-computed kernel-1×1 verification).
-- [~] [Causal/streaming Conv1d (Mimi conv)](shipped/port-mimi-conv.md)
-      — `audio/mimi/conv.rs` (688 LOC). **Sub-ports 1 + 2 shipped**
-      (lazy_mimi_conv::StreamableConv1d + lazy_mimi_conv_transpose::StreamableConvTranspose1d,
-      both with state-as-value streaming + WeightNorm baking; 18 tests).
-      Sub-port 3 (ConvDownsample/ConvTrUpsample wrappers) + sub-port 4
-      (TimeGroupNorm if encodec needs it) ship in the Mimi-closure batch.
+- [x] [Causal/streaming Conv1d (Mimi conv)](shipped/port-mimi-conv.md)
+      — `audio/mimi/conv.rs` (688 LOC). **Sub-ports 1 + 2 + 3 shipped**
+      (lazy_mimi_conv::StreamableConv1d + lazy_mimi_conv_transpose::StreamableConvTranspose1d
+      + lazy_mimi_conv_wrappers::ConvDownsample1d + ConvTrUpsample1d;
+      all state-as-value streaming + WeightNorm baking; 24 tests).
+      Sub-port 4 (TimeGroupNorm) intentionally skipped — the Mimi
+      encodec composition that shipped does not use it.
 - [x] [STFT + log-mel preprocessing](shipped/port-whisper-audio.md)
       — `audio/whisper/audio.rs` (338 LOC). **Shipped** as
       lazy_whisper_audio (pure host-side; Hann window + direct-DFT STFT
@@ -92,18 +93,23 @@ These unblock multiple downstream model ports. Ship these first.
       Qwen3-based text encoder; AutoencoderKL with 16-channel latent;
       FlowMatchEulerDiscrete scheduler; 5 tests including
       generate_end_to_end_tiny).
-- [~] [Stable Diffusion samplers + attention](shipped/port-sd-samplers.md)
+- [x] [Stable Diffusion samplers + attention](shipped/port-sd-samplers.md)
       — `diffusion/stable_diffusion/{ddim,ddpm,uni_pc,euler_ancestral_discrete,schedulers,attention}.rs`
-      (2294 LOC). **Sub-port 2 shipped** as lazy_sd_samplers (SdScheduler
-      trait + DDIM + DDPM; 4 tests). Sub-port 3 (Euler-ancestral) +
-      sub-port 4 (UniPC) + sub-port 1 (standalone attention block, if
-      lazy_sd_unet doesn't already inline it) remain.
+      (2294 LOC). **Sub-ports 2 + 3 + 4 shipped** (lazy_sd_samplers
+      DDIM + DDPM, lazy_sd_samplers_euler EulerAncestralDiscrete,
+      lazy_sd_samplers_unipc UniPC order 1/2/3 predictor-corrector;
+      20 tests). Sub-port 1 (standalone attention block) skipped —
+      lazy_sd_unet already inlines the cross-attention; no consumer
+      currently needs a standalone surface.
 
 ## Audio (top-level wrappers)
 
-- [ ] [Mimi encodec top wrapper](port-mimi-encodec.md)
-      — `audio/mimi/encodec.rs` (272 LOC). Top-level Mimi codec
-      composition. Depends on Mimi conv being shipped.
+- [x] [Mimi encodec top wrapper](shipped/port-mimi-encodec.md)
+      — `audio/mimi/encodec.rs` (272 LOC). **Shipped** as
+      lazy_mimi_encodec (top-level Mimi codec composition over the
+      shipped SeaNet + transformer + quantizer + resampler sub-modules;
+      6 tests including encode/decode round-trip and streaming
+      equivalence).
 - [x] [MetaVoice main LM](shipped/port-metavoice-main.md)
       — `audio/metavoice.rs` (1072 LOC). **Shipped** as lazy_metavoice
       (decoder LM + speaker conditioning + multi-codebook head;
