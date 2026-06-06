@@ -143,10 +143,42 @@ These unblock multiple downstream model ports. Ship these first.
 6. Tracker grows when you discover a new foundational primitive
    that needs its own spec — add it to the foundational section.
 
+## Phase G / NN-foundation strands
+
+Eager-only surfaces outside `fuel-transformers/*` that need lazy
+ports before the eager `fuel_core::Tensor` type-alias flip
+(Phase H) can land.
+
+- [ ] [Eager fuel-nn loss functions](port-nn-loss.md)
+      — `fuel-nn/src/loss.rs` (~250 LOC). `cross_entropy`, `nll`,
+      `mse`, `huber`, `binary_cross_entropy`. Reuse already-shipped
+      `FusedSoftmaxCrossEntropy` fused op for CE; the rest are
+      thin LazyTensor compositions.
+- [ ] [Eager fuel-nn optimizers](port-nn-optim.md)
+      — `fuel-nn/src/optim.rs` (~600 LOC). `Optimizer` trait +
+      `SGD` + `AdamW`. Lazy `fuel-core::train` already has its own
+      Parameter/TrainState surface; this port is the public
+      `Optimizer` trait + concrete impls for nn consumers, on a
+      `LazyVar` (lazy-resident parameter) substrate.
+- [ ] [Eager fuel-nn Module wrappers](port-nn-layers.md)
+      — `fuel-nn/src/{linear,conv,layer_norm,batch_norm,group_norm,embedding,sequential,rnn,lora,quantizable_linear,activation,encoding,init,kv_cache,rotary_emb,fused_ops,cpu_flash_attention,moe,sampling,func,training_context,var_builder,var_map}.rs`
+      (~15k LOC eager across the crate). Each module is a thin
+      `Module` trait wrapper around lazy primitives the graph
+      already has. Largest strand — split into sub-ports by file
+      family.
+- [ ] [Training augmentations](port-training-augmentations.md)
+      — Items explicitly TODO'd in `fuel-core/src/train.rs`:
+      gradient accumulation across micro-batches, gradient
+      clipping, LR schedulers (cosine, linear-warmup, polynomial,
+      step), mixed-precision (bf16 forward + fp32 master weights),
+      in-place parameter update primitive.
+- [ ] [Eager fuel-onnx eval](port-onnx-eval.md)
+      — `fuel-onnx/src/eval.rs`. ONNX-model evaluator over lazy
+      graph; covers the IR op set the existing eager evaluator
+      supports.
+
 ## Out of scope for this tracker
 
-- **Phase G (training)** — separate program; tracker covers
-  inference/forward-only ports.
 - **Phase H (eager Tensor type-alias flip + bin deletion)** — gated
   on every port + binary migration being shipped first.
 - **Binary migrations** (lazy bins for VGG, ViT, DinoV2,
