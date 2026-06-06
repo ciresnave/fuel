@@ -21,7 +21,7 @@
 //!     additionally use Mobile-MQA Attention blocks; that block
 //!     type is a follow-up.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{load_tensor_as_f32, LazyTensor, WeightStorage};
 use crate::lazy_convmixer::BatchNormParams;
 use crate::Result;
 use fuel_core_types::Shape;
@@ -424,6 +424,367 @@ fn apply_mqa(
     Ok(y)
 }
 
+// ---- HuggingFace safetensors loading ---------------------------------------
+
+/// timm BatchNorm eps used throughout the MobileNetV4 byobnet config.
+const MV4_BN_EPS: f64 = 1e-5;
+
+impl Mv4Weights {
+    /// Load MobileNetV4 weights from a timm-format safetensors checkpoint.
+    /// Layout (top-level):
+    ///
+    /// - Stem: `conv_stem.weight` (`[stem_dim, 3, 3, 3]`),
+    ///   `bn1.{weight,bias,running_mean,running_var}` (`[stem_dim]`).
+    /// - Blocks at `blocks.{stage}.{block}` per the `Mv4Config::stages`:
+    ///   - `Convolutional`: `conv.weight` + `bn1.*`.
+    ///   - `UniversalBottleneck`: optional `dw_start.{conv.weight,bn.*}`,
+    ///     `pw_exp.{conv.weight,bn.*}`, optional `dw_mid.{conv.weight,bn.*}`,
+    ///     `pw_proj.{conv.weight,bn.*}`, optional `layer_scale.gamma`.
+    ///   - `EdgeResidual`: `conv_exp.weight` + `bn1.*`,
+    ///     `conv_pwl.weight` + `bn2.*`.
+    ///   - `Attention`: `norm.*`, then under `attn.`: `query.proj.weight`,
+    ///     optional `key.{down_conv.weight,norm.*}`, `key.proj.weight`,
+    ///     optional `value.{down_conv.weight,norm.*}`, `value.proj.weight`,
+    ///     `output.proj.weight`. Optional `layer_scale.gamma`.
+    /// - Head (when `with_head == true`): `conv_head.weight` + `norm_head.*`,
+    ///   `classifier.{weight,bias}` (`[nclasses, head_out_channels]` →
+    ///   transposed to `[in, out]`).
+    ///
+    /// BN parameters fold into the layer's per-channel affine at load
+    /// time via [`BatchNormParams::from_raw`].
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &Mv4Config,
+        with_head: Option<usize>,
+    ) -> crate::Result<Self> {
+        // Stem.
+        let stem_w = mv4_load_check(st, "conv_stem.weight",
+            cfg.stem_dim * 3 * 3 * 3)?;
+        let stem_bn = mv4_load_bn(st, "bn1", cfg.stem_dim)?;
+        let stem = Conv2dBnWeights {
+            w: Arc::from(stem_w),
+            bn: stem_bn,
+            c_in: 3, c_out: cfg.stem_dim,
+            k: 3, stride: 2, pad: 1, groups: 1,
+        };
+
+        // Blocks.
+        let mut blocks: Vec<BlockWeights> = Vec::new();
+        let mut in_ch = cfg.stem_dim;
+        for (stage_idx, stage) in cfg.stages.iter().enumerate() {
+            for (block_idx, spec) in stage.iter().enumerate() {
+                let prefix = format!("blocks.{stage_idx}.{block_idx}");
+                let (bw, next_in) = mv4_load_block(st, &prefix, spec, in_ch)?;
+                blocks.push(bw);
+                in_ch = next_in;
+            }
+        }
+
+        // Head.
+        let head = if let Some(nclasses) = with_head {
+            let conv_w = mv4_load_check(
+                st, "conv_head.weight",
+                cfg.head_out_channels * cfg.head_in_channels,
+            )?;
+            let bn = mv4_load_bn(st, "norm_head", cfg.head_out_channels)?;
+            let conv = Conv2dBnWeights {
+                w: Arc::from(conv_w),
+                bn,
+                c_in: cfg.head_in_channels,
+                c_out: cfg.head_out_channels,
+                k: 1, stride: 1, pad: 0, groups: 1,
+            };
+            let linear_w_t = mv4_load_transposed(
+                st, "classifier.weight", nclasses, cfg.head_out_channels,
+            )?;
+            let linear_b = mv4_load_check(st, "classifier.bias", nclasses)?;
+            Some(Mv4HeadWeights {
+                conv,
+                linear_w: WeightStorage::F32(Arc::from(linear_w_t)),
+                linear_b: Arc::from(linear_b),
+            })
+        } else {
+            None
+        };
+
+        Ok(Self { stem, blocks, head })
+    }
+}
+
+fn mv4_load_block(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    spec: &BlockSpec,
+    in_ch: usize,
+) -> crate::Result<(BlockWeights, usize)> {
+    match *spec {
+        BlockSpec::Convolutional { out_channels, kernel, stride } => {
+            let pad = kernel / 2;
+            let conv = mv4_load_conv_bn(
+                st, &format!("{prefix}.conv"), &format!("{prefix}.bn1"),
+                in_ch, out_channels, kernel, stride, pad, 1,
+            )?;
+            Ok((BlockWeights::Convolutional(conv), out_channels))
+        }
+        BlockSpec::EdgeResidual { out_channels, kernel, stride, expand } => {
+            let mid = in_ch * expand;
+            let pad = kernel / 2;
+            let conv_exp = mv4_load_conv_bn(
+                st, &format!("{prefix}.conv_exp"), &format!("{prefix}.bn1"),
+                in_ch, mid, kernel, stride, pad, 1,
+            )?;
+            let conv_pwl = mv4_load_conv_bn(
+                st, &format!("{prefix}.conv_pwl"), &format!("{prefix}.bn2"),
+                mid, out_channels, 1, 1, 0, 1,
+            )?;
+            Ok((BlockWeights::EdgeResidual(EdgeResidualWeights { conv_exp, conv_pwl }), out_channels))
+        }
+        BlockSpec::UniversalBottleneck {
+            out_channels, start_kernel, mid_kernel, stride, expand,
+        } => {
+            let mid = in_ch * expand;
+            let dw_start_stride = if mid_kernel > 0 { 1 } else { stride };
+            let dw_start = if start_kernel > 0 {
+                Some(mv4_load_conv_bn(
+                    st,
+                    &format!("{prefix}.dw_start.conv"),
+                    &format!("{prefix}.dw_start.bn"),
+                    in_ch, in_ch, start_kernel, dw_start_stride, start_kernel / 2, in_ch,
+                )?)
+            } else { None };
+            let pw_exp = mv4_load_conv_bn(
+                st, &format!("{prefix}.pw_exp.conv"), &format!("{prefix}.pw_exp.bn"),
+                in_ch, mid, 1, 1, 0, 1,
+            )?;
+            let dw_mid = if mid_kernel > 0 {
+                Some(mv4_load_conv_bn(
+                    st,
+                    &format!("{prefix}.dw_mid.conv"),
+                    &format!("{prefix}.dw_mid.bn"),
+                    mid, mid, mid_kernel, stride, mid_kernel / 2, mid,
+                )?)
+            } else { None };
+            let pw_proj = mv4_load_conv_bn(
+                st, &format!("{prefix}.pw_proj.conv"), &format!("{prefix}.pw_proj.bn"),
+                mid, out_channels, 1, 1, 0, 1,
+            )?;
+            let layer_scale_gamma = if st.get(&format!("{prefix}.layer_scale.gamma")).is_ok() {
+                let g = mv4_load_check(st, &format!("{prefix}.layer_scale.gamma"), out_channels)?;
+                Some(Arc::<[f32]>::from(g))
+            } else {
+                None
+            };
+            let skip = in_ch == out_channels && stride == 1;
+            Ok((BlockWeights::UniversalBottleneck(UibWeights {
+                dw_start, pw_exp, dw_mid, pw_proj, layer_scale_gamma, skip,
+            }), out_channels))
+        }
+        BlockSpec::Attention {
+            out_channels, heads, kernel, stride, kv_dim, kv_stride,
+        } => {
+            if stride != 1 {
+                return Err(crate::Error::Msg(
+                    "Mobile-MQA v1: stride must be 1".into(),
+                ).bt());
+            }
+            // Input residual BN: in eager Fuel the BN dim is `out_channels`
+            // (relies on in_channels == out_channels for Attention blocks).
+            let input_norm = mv4_load_bn(
+                st, &format!("{prefix}.norm"), out_channels,
+            )?;
+            let query_proj = mv4_load_proj(
+                st, &format!("{prefix}.attn.query.proj"),
+                in_ch, kv_dim * heads,
+            )?;
+            let (key_down, value_down) = if kv_stride > 1 {
+                let kd = mv4_load_dw(
+                    st,
+                    &format!("{prefix}.attn.key.down_conv"),
+                    &format!("{prefix}.attn.key.norm"),
+                    in_ch, kernel, kv_stride,
+                )?;
+                let vd = mv4_load_dw(
+                    st,
+                    &format!("{prefix}.attn.value.down_conv"),
+                    &format!("{prefix}.attn.value.norm"),
+                    in_ch, kernel, kv_stride,
+                )?;
+                (Some(kd), Some(vd))
+            } else {
+                (None, None)
+            };
+            let key_proj = mv4_load_proj(
+                st, &format!("{prefix}.attn.key.proj"), in_ch, kv_dim,
+            )?;
+            let value_proj = mv4_load_proj(
+                st, &format!("{prefix}.attn.value.proj"), in_ch, kv_dim,
+            )?;
+            let output_proj = mv4_load_proj(
+                st, &format!("{prefix}.attn.output.proj"),
+                kv_dim * heads, out_channels,
+            )?;
+            let layer_scale_gamma = if st.get(&format!("{prefix}.layer_scale.gamma")).is_ok() {
+                let g = mv4_load_check(st, &format!("{prefix}.layer_scale.gamma"), out_channels)?;
+                Some(Arc::<[f32]>::from(g))
+            } else {
+                None
+            };
+            let skip = in_ch == out_channels;
+            Ok((BlockWeights::Attention(MqaWeights {
+                input_norm, query_proj, key_down, key_proj,
+                value_down, value_proj, output_proj,
+                heads, kv_dim, layer_scale_gamma, skip,
+            }), out_channels))
+        }
+    }
+}
+
+/// Load a `conv2d_no_bias` + `batch_norm` pair into a `Conv2dBnWeights`,
+/// baking BN at load time.
+#[allow(clippy::too_many_arguments)]
+fn mv4_load_conv_bn(
+    st: &crate::safetensors::MmapedSafetensors,
+    conv_prefix: &str,
+    bn_prefix: &str,
+    c_in: usize,
+    c_out: usize,
+    k: usize,
+    stride: usize,
+    pad: usize,
+    groups: usize,
+) -> crate::Result<Conv2dBnWeights> {
+    let w = mv4_load_check(
+        st, &format!("{conv_prefix}.weight"),
+        c_out * (c_in / groups) * k * k,
+    )?;
+    let bn = mv4_load_bn(st, bn_prefix, c_out)?;
+    Ok(Conv2dBnWeights {
+        w: Arc::from(w),
+        bn,
+        c_in, c_out, k, stride, pad, groups,
+    })
+}
+
+/// MQA 1×1 projection (no stride/pad). Uses BN that fuses into the
+/// per-channel affine.
+fn mv4_load_proj(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    c_in: usize,
+    c_out: usize,
+) -> crate::Result<Conv2dBnWeights> {
+    // Eager Fuel uses `conv2d_no_bias` for the MQA projections WITHOUT
+    // a BN; the lazy Conv2dBnWeights still carries a BN, so we bake an
+    // identity BN (gain=1, bias=0, mean=0, var=1) here. The lazy
+    // `apply_conv_bn` helper assumes BN always exists.
+    let w = mv4_load_check(st, &format!("{prefix}.weight"), c_out * c_in)?;
+    let identity_bn = BatchNormParams {
+        w: Arc::from(vec![1.0_f32; c_out]),
+        b: Arc::from(vec![0.0_f32; c_out]),
+    };
+    Ok(Conv2dBnWeights {
+        w: Arc::from(w),
+        bn: identity_bn,
+        c_in, c_out,
+        k: 1, stride: 1, pad: 0, groups: 1,
+    })
+}
+
+/// MQA depthwise downsample (`groups = in_channels`) with BN.
+fn mv4_load_dw(
+    st: &crate::safetensors::MmapedSafetensors,
+    conv_prefix: &str,
+    bn_prefix: &str,
+    channels: usize,
+    kernel: usize,
+    stride: usize,
+) -> crate::Result<Conv2dBnWeights> {
+    let w = mv4_load_check(
+        st, &format!("{conv_prefix}.weight"),
+        channels * kernel * kernel,
+    )?;
+    let bn = mv4_load_bn(st, bn_prefix, channels)?;
+    Ok(Conv2dBnWeights {
+        w: Arc::from(w),
+        bn,
+        c_in: channels, c_out: channels,
+        k: kernel, stride, pad: kernel / 2, groups: channels,
+    })
+}
+
+fn mv4_load_bn(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    channels: usize,
+) -> crate::Result<BatchNormParams> {
+    let gain = mv4_load_check(st, &format!("{prefix}.weight"), channels)?;
+    let bias = mv4_load_check(st, &format!("{prefix}.bias"),   channels)?;
+    let mean = mv4_load_check(st, &format!("{prefix}.running_mean"), channels)?;
+    let var  = mv4_load_check(st, &format!("{prefix}.running_var"),  channels)?;
+    Ok(BatchNormParams::from_raw(&gain, &bias, &mean, &var, MV4_BN_EPS))
+}
+
+fn mv4_load_check(
+    st: &crate::safetensors::MmapedSafetensors,
+    name: &str,
+    expected_len: usize,
+) -> crate::Result<Vec<f32>> {
+    let v = load_tensor_as_f32(st, name)?;
+    if v.len() != expected_len {
+        return Err(crate::Error::Msg(format!(
+            "MobileNetV4 load {name:?}: got {} elements, expected {}",
+            v.len(), expected_len,
+        ))
+        .bt());
+    }
+    Ok(v)
+}
+
+fn mv4_load_transposed(
+    st: &crate::safetensors::MmapedSafetensors,
+    name: &str,
+    out_features: usize,
+    in_features: usize,
+) -> crate::Result<Vec<f32>> {
+    let flat = mv4_load_check(st, name, out_features * in_features)?;
+    let mut out = vec![0.0_f32; out_features * in_features];
+    for i in 0..out_features {
+        for j in 0..in_features {
+            out[j * out_features + i] = flat[i * in_features + j];
+        }
+    }
+    Ok(out)
+}
+
+impl Mv4Model {
+    /// Download a timm-format MobileNetV4 safetensors checkpoint and load
+    /// it into a model. `nclasses` selects whether the classifier head is
+    /// loaded.
+    pub fn from_hub_with_config(
+        repo_id: &str, config: Mv4Config, nclasses: Option<usize>,
+    ) -> Result<Self> {
+        Self::from_hub_with_filename(repo_id, "model.safetensors", config, nclasses)
+    }
+
+    /// Explicit-filename variant.
+    pub fn from_hub_with_filename(
+        repo_id: &str,
+        filename: &str,
+        config: Mv4Config,
+        nclasses: Option<usize>,
+    ) -> Result<Self> {
+        let api = hf_hub::api::sync::Api::new()
+            .map_err(|e| crate::Error::Msg(format!("hf-hub api init: {e}")))?;
+        let repo = api.model(repo_id.to_string());
+        let weights_path = repo
+            .get(filename)
+            .map_err(|e| crate::Error::Msg(format!("hf-hub mv4 safetensors: {e}")))?;
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&weights_path) }?;
+        let weights = Mv4Weights::load_from_mmapped(&st, &config, nclasses)?;
+        Ok(Self { config, weights })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
@@ -761,5 +1122,223 @@ mod tests {
         }
         assert!(max_diff > 1e-9,
             "Mobile-MQA path must respond to input changes, max_diff = {max_diff}");
+    }
+
+    // ---- load_from_mmapped round-trip ---------------------------------------
+
+    fn raw_f32(len: usize, seed: u32) -> Vec<u8> {
+        let mut s = seed;
+        let mut out = Vec::with_capacity(len * 4);
+        for _ in 0..len {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            let v = ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05;
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out
+    }
+
+    fn raw_f32_const(len: usize, value: f32) -> Vec<u8> {
+        let mut out = Vec::with_capacity(len * 4);
+        for _ in 0..len {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out
+    }
+
+    fn push_identity_bn(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        prefix: &str,
+        channels: usize,
+    ) {
+        for (suffix, raw) in [
+            ("weight",       raw_f32_const(channels, 1.0)),
+            ("bias",         raw_f32_const(channels, 0.0)),
+            ("running_mean", raw_f32_const(channels, 0.0)),
+            ("running_var",  raw_f32_const(channels, 1.0)),
+        ] {
+            owned.push((format!("{prefix}.{suffix}"), vec![channels], raw));
+        }
+    }
+
+    /// Build a tiny synthetic MV4 safetensors blob for `tiny_config()`
+    /// (no Attention, only Conv / EdgeResidual / UniversalBottleneck),
+    /// load it via the loader, and verify the stem fused conv weight
+    /// equals the raw conv weight (since identity BN ⇒ scale = 1/√(1+eps)).
+    #[test]
+    fn load_from_mmapped_round_trip_mv4_tiny_no_head() {
+        use safetensors::tensor::TensorView;
+        use std::collections::HashMap;
+
+        let cfg = tiny_config();
+        let mut owned: Vec<(String, Vec<usize>, Vec<u8>)> = Vec::new();
+
+        // Stem.
+        owned.push((
+            "conv_stem.weight".into(),
+            vec![cfg.stem_dim, 3, 3, 3],
+            raw_f32(cfg.stem_dim * 3 * 9, 0xC0FFEE),
+        ));
+        push_identity_bn(&mut owned, "bn1", cfg.stem_dim);
+
+        let mut in_ch = cfg.stem_dim;
+        for (stage_idx, stage) in cfg.stages.iter().enumerate() {
+            for (block_idx, spec) in stage.iter().enumerate() {
+                let prefix = format!("blocks.{stage_idx}.{block_idx}");
+                in_ch = build_block_tensors(&mut owned, &prefix, *spec, in_ch);
+            }
+        }
+
+        // Serialize.
+        let mut tensors: HashMap<String, TensorView<'_>> = HashMap::new();
+        for (name, shape, bytes) in &owned {
+            let view = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
+                .expect("TensorView::new");
+            tensors.insert(name.clone(), view);
+        }
+        let metadata: Option<HashMap<String, String>> = None;
+        let serialized = safetensors::serialize(&tensors, metadata)
+            .expect("safetensors::serialize");
+
+        let tmp = std::env::temp_dir().join(format!(
+            "fuel_mv4_load_test_{}.safetensors", std::process::id(),
+        ));
+        std::fs::write(&tmp, &serialized).expect("write tmp");
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&tmp) }
+            .expect("MmapedSafetensors::new");
+
+        let loaded = Mv4Weights::load_from_mmapped(&st, &cfg, /* with_head = */ None)
+            .expect("Mv4Weights::load_from_mmapped");
+
+        // Stem conv weight matches the raw bytes (BN is identity ⇒ no scaling)
+        // exactly; verify each element matches.
+        let raw_stem = &owned.iter()
+            .find(|(n, _, _)| n == "conv_stem.weight").unwrap().2;
+        let raw_stem_f: Vec<f32> = raw_stem.chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        for (i, expected) in raw_stem_f.iter().enumerate() {
+            let got = loaded.stem.w[i];
+            assert!((got - expected).abs() < 1e-6,
+                "stem conv weight[{i}]: expected {expected}, got {got}");
+        }
+        // BN gain/bias fused from (gain=1, bias=0, mean=0, var=1, eps=1e-5)
+        // is `w = 1/√(1+eps)`, `b = 0`. The model APPLIES BN as a per-channel
+        // affine, so verifying `bn.w` is the right scalar covers it.
+        let bn_scale = 1.0_f32 / (1.0_f32 + MV4_BN_EPS as f32).sqrt();
+        for c in 0..cfg.stem_dim {
+            assert!((loaded.stem.bn.w[c] - bn_scale).abs() < 1e-6,
+                "stem.bn.w[{c}] expected ~{bn_scale}, got {}", loaded.stem.bn.w[c]);
+            assert!(loaded.stem.bn.b[c].abs() < 1e-6);
+        }
+
+        // Block count + structure.
+        let total_blocks: usize = cfg.stages.iter().map(|s| s.len()).sum();
+        assert_eq!(loaded.blocks.len(), total_blocks);
+        assert!(loaded.head.is_none());
+
+        // Forward chain runs end-to-end.
+        let model = Mv4Model { config: cfg.clone(), weights: loaded };
+        let img = LazyTensor::from_f32(
+            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+        );
+        let pooled = model.forward(&img).unwrap();
+        assert_eq!(pooled.shape().dims(), &[1, cfg.head_in_channels]);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Walk one block spec and push the synthetic tensors it requires
+    /// into `owned`. Returns the layer's output channel count for the
+    /// next iteration's `in_ch` chaining.
+    fn build_block_tensors(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        prefix: &str,
+        spec: BlockSpec,
+        in_ch: usize,
+    ) -> usize {
+        match spec {
+            BlockSpec::Convolutional { out_channels, kernel, stride: _ } => {
+                let _pad = kernel / 2;
+                owned.push((
+                    format!("{prefix}.conv.weight"),
+                    vec![out_channels, in_ch, kernel, kernel],
+                    raw_f32(out_channels * in_ch * kernel * kernel, 1),
+                ));
+                push_identity_bn(owned, &format!("{prefix}.bn1"), out_channels);
+                out_channels
+            }
+            BlockSpec::EdgeResidual { out_channels, kernel, stride: _, expand } => {
+                let mid = in_ch * expand;
+                owned.push((
+                    format!("{prefix}.conv_exp.weight"),
+                    vec![mid, in_ch, kernel, kernel],
+                    raw_f32(mid * in_ch * kernel * kernel, 2),
+                ));
+                push_identity_bn(owned, &format!("{prefix}.bn1"), mid);
+                owned.push((
+                    format!("{prefix}.conv_pwl.weight"),
+                    vec![out_channels, mid, 1, 1],
+                    raw_f32(out_channels * mid, 3),
+                ));
+                push_identity_bn(owned, &format!("{prefix}.bn2"), out_channels);
+                out_channels
+            }
+            BlockSpec::UniversalBottleneck {
+                out_channels, start_kernel, mid_kernel, stride: _, expand,
+            } => {
+                let mid = in_ch * expand;
+                if start_kernel > 0 {
+                    owned.push((
+                        format!("{prefix}.dw_start.conv.weight"),
+                        vec![in_ch, 1, start_kernel, start_kernel],
+                        raw_f32(in_ch * start_kernel * start_kernel, 4),
+                    ));
+                    push_identity_bn(owned, &format!("{prefix}.dw_start.bn"), in_ch);
+                }
+                owned.push((
+                    format!("{prefix}.pw_exp.conv.weight"),
+                    vec![mid, in_ch, 1, 1],
+                    raw_f32(mid * in_ch, 5),
+                ));
+                push_identity_bn(owned, &format!("{prefix}.pw_exp.bn"), mid);
+                if mid_kernel > 0 {
+                    owned.push((
+                        format!("{prefix}.dw_mid.conv.weight"),
+                        vec![mid, 1, mid_kernel, mid_kernel],
+                        raw_f32(mid * mid_kernel * mid_kernel, 6),
+                    ));
+                    push_identity_bn(owned, &format!("{prefix}.dw_mid.bn"), mid);
+                }
+                owned.push((
+                    format!("{prefix}.pw_proj.conv.weight"),
+                    vec![out_channels, mid, 1, 1],
+                    raw_f32(out_channels * mid, 7),
+                ));
+                push_identity_bn(owned, &format!("{prefix}.pw_proj.bn"), out_channels);
+                out_channels
+            }
+            BlockSpec::Attention { .. } => {
+                // Not exercised in this round-trip test; the tiny_config()
+                // used above intentionally avoids Attention blocks. The
+                // loader's Attention path is structurally identical to the
+                // others, just with more name probing.
+                panic!("Attention block not exercised in load_from_mmapped tiny round-trip");
+            }
+        }
+    }
+
+    /// Smoke test that documents the canonical `from_hub_with_config`
+    /// usage. Ignored because it hits the HF Hub.
+    #[test]
+    #[ignore]
+    fn from_hub_smoke_mv4_conv_small() {
+        let cfg = Mv4Config::conv_small();
+        let model = Mv4Model::from_hub_with_config(
+            "timm/mobilenetv4_conv_small.e2400_r224_in1k",
+            cfg,
+            Some(1000),
+        ).expect("from_hub_with_config");
+        assert!(model.weights.head.is_some());
     }
 }

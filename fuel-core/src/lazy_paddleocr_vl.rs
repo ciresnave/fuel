@@ -41,6 +41,7 @@
 
 use crate::lazy::LazyTensor;
 use crate::lazy_paddleocr_vl_text::{
+    load_paddleocr_vl_text_weights_with_prefix,
     PaddleOcrVlTextConfig, PaddleOcrVlTextModel, PaddleOcrVlTextWeights,
 };
 use crate::lazy_paddleocr_vl_vision::{
@@ -315,6 +316,33 @@ fn resize_nearest_chw(
                 out.push(tile[plane + sy * src_w + sx]);
             }
         }
+    }
+}
+
+// ---- Safetensors loader ----------------------------------------------------
+
+impl PaddleOcrVlModel {
+    /// Load a complete PaddleOCR-VL model (vision + text) from a
+    /// HuggingFace safetensors file. HF naming for the published
+    /// checkpoint:
+    ///   - Vision: `visual.vision_model.*` (NaViT encoder +
+    ///     `post_layernorm`).
+    ///   - Projector: `mlp_AR.*` (pre-norm + 2-layer MLP into
+    ///     `text.hidden_size`).
+    ///   - Text: top-level `model.*` + `lm_head.weight` (ERNIE-style
+    ///     decoder with LLaMA-shape weight layout).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &PaddleOcrVlConfig,
+    ) -> Result<Self> {
+        let vision = PaddleOcrVlVisionWeights::load_from_mmapped(
+            st, &cfg.vision, cfg.text.hidden_size,
+        )?;
+        let text = load_paddleocr_vl_text_weights_with_prefix(st, &cfg.text, "")?;
+        Ok(PaddleOcrVlModel {
+            config: cfg.clone(),
+            weights: PaddleOcrVlWeights { vision, text },
+        })
     }
 }
 
@@ -663,5 +691,168 @@ mod tests {
         let bad_tokens: Vec<u32> = vec![2, image_token_id, 3];
         let err = model.forward(Some(&img), &bad_tokens, image_token_id, 0);
         assert!(err.is_err(), "mismatched placeholder count must error");
+    }
+
+    mod load {
+        use super::*;
+        use safetensors::tensor::TensorView;
+        use safetensors::Dtype;
+        use std::collections::HashMap;
+
+        fn put(
+            map: &mut HashMap<String, (Dtype, Vec<usize>, Vec<u8>)>,
+            name: &str,
+            shape: &[usize],
+            data: &[f32],
+        ) {
+            let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
+            map.insert(name.to_string(), (Dtype::F32, shape.to_vec(), bytes));
+        }
+
+        fn serialize_to_tempfile(
+            map: &HashMap<String, (Dtype, Vec<usize>, Vec<u8>)>,
+        ) -> std::path::PathBuf {
+            let mut views: HashMap<String, TensorView<'_>> = HashMap::new();
+            for (k, (dt, shape, data)) in map {
+                let v = TensorView::new(*dt, shape.clone(), data).expect("TensorView");
+                views.insert(k.clone(), v);
+            }
+            let bytes = safetensors::serialize(&views, None).expect("serialize");
+            let path = std::env::temp_dir().join(format!(
+                "lazy_paddleocr_vl_load_{}_{}.safetensors",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            ));
+            std::fs::write(&path, bytes).expect("write tempfile");
+            path
+        }
+
+        fn build_tiny_safetensors(cfg: &PaddleOcrVlConfig) -> std::path::PathBuf {
+            let mut map: HashMap<String, (Dtype, Vec<usize>, Vec<u8>)> = HashMap::new();
+            let mut s: u32 = 6464;
+            let mut nxt = || -> f32 {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.01
+            };
+            let mut vec_n = |n: usize| -> Vec<f32> { (0..n).map(|_| nxt()).collect() };
+
+            // Vision tower under `visual.vision_model.*` + projector under `mlp_AR.*`.
+            let v_cfg = &cfg.vision;
+            let text_hidden = cfg.text.hidden_size;
+            let h = v_cfg.hidden_size;
+            let inter = v_cfg.intermediate_size;
+            let np = v_cfg.num_patches_per_tile();
+            let m = v_cfg.spatial_merge_size;
+            let merged_hidden = h * m * m;
+            let vp = "visual.vision_model.";
+            put(&mut map, &format!("{vp}embeddings.patch_embedding.weight"),
+                &[h, v_cfg.num_channels, v_cfg.patch_size, v_cfg.patch_size],
+                &vec_n(h * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size));
+            put(&mut map, &format!("{vp}embeddings.patch_embedding.bias"),
+                &[h], &vec_n(h));
+            put(&mut map, &format!("{vp}embeddings.position_embedding.weight"),
+                &[np, h], &vec_n(np * h));
+            put(&mut map, &format!("{vp}post_layernorm.weight"), &[h], &vec_n(h));
+            put(&mut map, &format!("{vp}post_layernorm.bias"), &[h], &vec_n(h));
+            for i in 0..v_cfg.num_hidden_layers {
+                let p = format!("{vp}encoder.layers.{i}");
+                put(&mut map, &format!("{p}.layer_norm1.weight"), &[h], &vec_n(h));
+                put(&mut map, &format!("{p}.layer_norm1.bias"), &[h], &vec_n(h));
+                put(&mut map, &format!("{p}.layer_norm2.weight"), &[h], &vec_n(h));
+                put(&mut map, &format!("{p}.layer_norm2.bias"), &[h], &vec_n(h));
+                for proj in &["q_proj", "k_proj", "v_proj", "out_proj"] {
+                    put(&mut map, &format!("{p}.self_attn.{proj}.weight"),
+                        &[h, h], &vec_n(h * h));
+                    put(&mut map, &format!("{p}.self_attn.{proj}.bias"),
+                        &[h], &vec_n(h));
+                }
+                put(&mut map, &format!("{p}.mlp.fc1.weight"),
+                    &[inter, h], &vec_n(inter * h));
+                put(&mut map, &format!("{p}.mlp.fc1.bias"), &[inter], &vec_n(inter));
+                put(&mut map, &format!("{p}.mlp.fc2.weight"),
+                    &[h, inter], &vec_n(h * inter));
+                put(&mut map, &format!("{p}.mlp.fc2.bias"), &[h], &vec_n(h));
+            }
+            let pp = "mlp_AR.";
+            put(&mut map, &format!("{pp}pre_norm.weight"), &[h], &vec_n(h));
+            put(&mut map, &format!("{pp}pre_norm.bias"), &[h], &vec_n(h));
+            put(&mut map, &format!("{pp}linear_1.weight"),
+                &[merged_hidden, merged_hidden],
+                &vec_n(merged_hidden * merged_hidden));
+            put(&mut map, &format!("{pp}linear_1.bias"),
+                &[merged_hidden], &vec_n(merged_hidden));
+            put(&mut map, &format!("{pp}linear_2.weight"),
+                &[text_hidden, merged_hidden],
+                &vec_n(text_hidden * merged_hidden));
+            put(&mut map, &format!("{pp}linear_2.bias"),
+                &[text_hidden], &vec_n(text_hidden));
+
+            // Text model at top level (`model.*` + `lm_head.weight`).
+            let t_cfg = &cfg.text;
+            let d = t_cfg.hidden_size;
+            let kv = t_cfg.num_key_value_heads * t_cfg.head_dim;
+            put(&mut map, "model.embed_tokens.weight",
+                &[t_cfg.vocab_size, d], &vec_n(t_cfg.vocab_size * d));
+            for i in 0..t_cfg.num_hidden_layers {
+                let p = format!("model.layers.{i}");
+                put(&mut map, &format!("{p}.self_attn.q_proj.weight"),
+                    &[d, d], &vec_n(d * d));
+                put(&mut map, &format!("{p}.self_attn.k_proj.weight"),
+                    &[kv, d], &vec_n(kv * d));
+                put(&mut map, &format!("{p}.self_attn.v_proj.weight"),
+                    &[kv, d], &vec_n(kv * d));
+                put(&mut map, &format!("{p}.self_attn.o_proj.weight"),
+                    &[d, d], &vec_n(d * d));
+                put(&mut map, &format!("{p}.mlp.gate_proj.weight"),
+                    &[t_cfg.intermediate_size, d], &vec_n(t_cfg.intermediate_size * d));
+                put(&mut map, &format!("{p}.mlp.up_proj.weight"),
+                    &[t_cfg.intermediate_size, d], &vec_n(t_cfg.intermediate_size * d));
+                put(&mut map, &format!("{p}.mlp.down_proj.weight"),
+                    &[d, t_cfg.intermediate_size], &vec_n(d * t_cfg.intermediate_size));
+                put(&mut map, &format!("{p}.input_layernorm.weight"),
+                    &[d], &vec_n(d));
+                put(&mut map, &format!("{p}.post_attention_layernorm.weight"),
+                    &[d], &vec_n(d));
+            }
+            put(&mut map, "model.norm.weight", &[d], &vec_n(d));
+            if !t_cfg.tie_word_embeddings {
+                put(&mut map, "lm_head.weight",
+                    &[t_cfg.vocab_size, d], &vec_n(t_cfg.vocab_size * d));
+            }
+
+            serialize_to_tempfile(&map)
+        }
+
+        #[test]
+        fn round_trip_synthetic_safetensors() {
+            let text_cfg = tiny_text_cfg();
+            let vision_cfg = tiny_vision_cfg();
+            let cfg = PaddleOcrVlConfig {
+                text: text_cfg.clone(),
+                vision: vision_cfg.clone(),
+                max_tiles_per_side: 2,
+            };
+            let path = build_tiny_safetensors(&cfg);
+            let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path) }
+                .expect("mmap safetensors");
+            let model = PaddleOcrVlModel::load_from_mmapped(&st, &cfg)
+                .expect("PaddleOcrVlModel::load_from_mmapped");
+            assert_eq!(model.weights.text.layers.len(), text_cfg.num_hidden_layers);
+            assert_eq!(model.weights.vision.blocks.len(), vision_cfg.num_hidden_layers);
+
+            let tokens: Vec<u32> = vec![1, 2, 3, 4];
+            let logits = model.forward(None, &tokens, 31, 0).unwrap().realize_f32();
+            for &v in &logits {
+                assert!(v.is_finite(), "non-finite logit");
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+
+        #[test]
+        #[ignore]
+        fn from_hub_smoke_paddleocr_vl() {
+            // Canonical: PaddlePaddle/PaddleOCR-VL.
+        }
     }
 }

@@ -1226,6 +1226,350 @@ pub fn make_paella_weights(cfg: &WuerstchenConfig) -> PaellaVqWeights {
     }
 }
 
+// ---- Safetensors loaders ---------------------------------------------------
+
+/// Load a tensor as Arc<[f32]>, asserting the element count.
+fn load_arc_f32(
+    st: &crate::safetensors::MmapedSafetensors,
+    name: &str,
+    expected: usize,
+) -> crate::Result<Arc<[f32]>> {
+    use crate::lazy::load_tensor_as_f32;
+    let v = load_tensor_as_f32(st, name)?;
+    if v.len() != expected {
+        return Err(crate::Error::Msg(format!(
+            "wuerstchen load: tensor {name:?} has {} elements, expected {expected}",
+            v.len(),
+        )).bt());
+    }
+    Ok(Arc::from(v))
+}
+
+/// Load a linear weight as `[in_f, out_f]` (transposed from HF
+/// `[out_f, in_f]`).
+fn load_linear_f32(
+    st: &crate::safetensors::MmapedSafetensors,
+    name: &str,
+    out_f: usize,
+    in_f: usize,
+) -> crate::Result<Arc<[f32]>> {
+    use crate::lazy::load_transposed_matrix;
+    Ok(Arc::from(load_transposed_matrix(st, name, out_f, in_f)?))
+}
+
+fn load_grn(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    c: usize,
+) -> crate::Result<GrnWeights> {
+    Ok(GrnWeights {
+        gamma: load_arc_f32(st, &format!("{prefix}.gamma"), c)?,
+        beta:  load_arc_f32(st, &format!("{prefix}.beta"),  c)?,
+    })
+}
+
+fn load_res_block(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    c: usize,
+    c_skip: usize,
+    ksize: usize,
+) -> crate::Result<ResBlockWeights> {
+    // depthwise conv: [C, 1, K, K]
+    let dw_w = load_arc_f32(st, &format!("{prefix}.depthwise.weight"), c * ksize * ksize)?;
+    let dw_b = load_arc_f32(st, &format!("{prefix}.depthwise.bias"),   c)?;
+    // channelwise.0 (fc1): linear (c + c_skip) → 4c
+    let fc1_w = load_linear_f32(st, &format!("{prefix}.channelwise.0.weight"), 4 * c, c + c_skip)?;
+    let fc1_b = load_arc_f32(st, &format!("{prefix}.channelwise.0.bias"), 4 * c)?;
+    // channelwise.2 (grn) gamma/beta shape [4*C].
+    let grn = load_grn(st, &format!("{prefix}.channelwise.2"), 4 * c)?;
+    // channelwise.4 (fc2): linear 4c → c
+    let fc2_w = load_linear_f32(st, &format!("{prefix}.channelwise.4.weight"), c, 4 * c)?;
+    let fc2_b = load_arc_f32(st, &format!("{prefix}.channelwise.4.bias"), c)?;
+    Ok(ResBlockWeights {
+        dw_w, dw_b, fc1_w, fc1_b, grn, fc2_w, fc2_b,
+        c, c_skip, ksize,
+    })
+}
+
+fn load_ts_block(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    c: usize,
+    c_timestep: usize,
+) -> crate::Result<TimestepBlockWeights> {
+    let w = load_linear_f32(st, &format!("{prefix}.mapper.weight"), 2 * c, c_timestep)?;
+    let b = load_arc_f32(st, &format!("{prefix}.mapper.bias"), 2 * c)?;
+    Ok(TimestepBlockWeights { w, b, c, c_timestep })
+}
+
+fn load_attn_block(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    c: usize,
+    c_cond: usize,
+    heads: usize,
+) -> crate::Result<AttnBlockWeights> {
+    let kv_mapper_w = load_linear_f32(st, &format!("{prefix}.kv_mapper.1.weight"), c, c_cond)?;
+    let kv_mapper_b = load_arc_f32(st, &format!("{prefix}.kv_mapper.1.bias"), c)?;
+    let to_q_w = load_linear_f32(st, &format!("{prefix}.attention.to_q.weight"), c, c)?;
+    let to_q_b = load_arc_f32(st, &format!("{prefix}.attention.to_q.bias"), c)?;
+    let to_k_w = load_linear_f32(st, &format!("{prefix}.attention.to_k.weight"), c, c)?;
+    let to_k_b = load_arc_f32(st, &format!("{prefix}.attention.to_k.bias"), c)?;
+    let to_v_w = load_linear_f32(st, &format!("{prefix}.attention.to_v.weight"), c, c)?;
+    let to_v_b = load_arc_f32(st, &format!("{prefix}.attention.to_v.bias"), c)?;
+    let to_out_w = load_linear_f32(st, &format!("{prefix}.attention.to_out.0.weight"), c, c)?;
+    let to_out_b = load_arc_f32(st, &format!("{prefix}.attention.to_out.0.bias"), c)?;
+    Ok(AttnBlockWeights {
+        kv_mapper_w, kv_mapper_b,
+        to_q_w, to_q_b, to_k_w, to_k_b, to_v_w, to_v_b,
+        to_out_w, to_out_b,
+        c, c_cond, heads,
+    })
+}
+
+impl PriorWeights {
+    /// Walk a HuggingFace Wuerstchen Stage C (Prior) safetensors and
+    /// build the `PriorWeights` bag.
+    ///
+    /// The HF Prior checkpoint follows the eager
+    /// `fuel-transformers::models::diffusion::wuerstchen::prior::WPrior`
+    /// field layout. Expected tensors:
+    /// - `projection.weight` / `.bias` (1×1 conv `c_in → c`)
+    /// - `cond_mapper.0.weight` / `.bias` (linear `c_cond → c`)
+    /// - `cond_mapper.2.weight` / `.bias` (linear `c → c`)
+    /// - `blocks.{i}.0.{depthwise,channelwise.*}` (`ResBlock`)
+    /// - `blocks.{i}.1.mapper.{weight,bias}` (`TimestepBlock` FiLM)
+    /// - `blocks.{i}.2.{kv_mapper.1,attention.*}` (`AttnBlock`)
+    /// - `out.0.weight` / `.bias` for the LN-free 1×1 conv
+    ///   (`c → 2*c_in`) at the final output projection.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &WuerstchenConfig,
+    ) -> crate::Result<Self> {
+        let c = cfg.prior_c;
+        let c_in = cfg.prior_c_in;
+        let c_cond = cfg.prior_c_cond;
+        // 1×1 conv => [c, c_in, 1, 1].
+        let projection_w = load_arc_f32(st, "projection.weight", c * c_in)?;
+        let projection_b = load_arc_f32(st, "projection.bias",   c)?;
+        let cond1_w = load_linear_f32(st, "cond_mapper.0.weight", c, c_cond)?;
+        let cond1_b = load_arc_f32(st, "cond_mapper.0.bias", c)?;
+        let cond2_w = load_linear_f32(st, "cond_mapper.2.weight", c, c)?;
+        let cond2_b = load_arc_f32(st, "cond_mapper.2.bias", c)?;
+        let mut blocks = Vec::with_capacity(cfg.prior_depth);
+        for i in 0..cfg.prior_depth {
+            blocks.push(PriorBlockWeights {
+                res:  load_res_block(st, &format!("blocks.{i}.0"), c, 0, 3)?,
+                ts:   load_ts_block(st, &format!("blocks.{i}.1"), c, cfg.c_r)?,
+                attn: load_attn_block(st, &format!("blocks.{i}.2"), c, c, cfg.prior_nhead)?,
+            });
+        }
+        // out.0 is the 1×1 conv `c → 2*c_in`.
+        let out_conv_w = load_arc_f32(st, "out.0.weight", c_in * 2 * c)?;
+        let out_conv_b = load_arc_f32(st, "out.0.bias",   c_in * 2)?;
+        Ok(PriorWeights {
+            projection_w, projection_b,
+            cond1_w, cond1_b, cond2_w, cond2_b,
+            blocks, out_conv_w, out_conv_b,
+        })
+    }
+}
+
+impl DiffNextWeights {
+    /// Walk a HuggingFace Wuerstchen Stage B (DiffNeXt) safetensors and
+    /// build the `DiffNextWeights` bag.
+    ///
+    /// Expected tensors (mirrors eager `WDiffNeXt`):
+    /// - `clip_mapper.weight` / `.bias`
+    /// - `embedding.1.weight` / `.bias` (the unshuffle stack stores
+    ///    the 1×1 conv at sequential index `.1`; index `.0` is
+    ///    PixelUnshuffle and has no params)
+    /// - `down_blocks.{i}.{0,1,...}.{0,1,2}.*` per sub-block triple
+    /// - `up_blocks.{i}.{0,1,...}.{0,1,2}.*` per sub-block triple
+    /// - `clf.1.weight` / `.bias` (1×1 conv to `2*c_out*p²`)
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &WuerstchenConfig,
+    ) -> crate::Result<Self> {
+        let levels = &cfg.diffnext_c_hidden;
+        let c_in = cfg.diffnext_c_in;
+        let c_out = cfg.diffnext_c_out;
+        let c_cond = cfg.diffnext_c_cond;
+        let p = cfg.patch_size;
+        if levels.is_empty() {
+            return Err(crate::Error::Msg(
+                "DiffNextWeights.load_from_mmapped: diffnext_c_hidden empty".into(),
+            ).bt());
+        }
+        let clip_mapper_w = load_linear_f32(st, "clip_mapper.weight", c_cond, cfg.clip_embed)?;
+        let clip_mapper_b = load_arc_f32(st, "clip_mapper.bias", c_cond)?;
+        // 1×1 conv: [C_HIDDEN[0], c_in * p*p, 1, 1]
+        let embed_w = load_arc_f32(st, "embedding.1.weight", levels[0] * c_in * p * p)?;
+        let embed_b = load_arc_f32(st, "embedding.1.bias",   levels[0])?;
+
+        // Down levels.
+        let mut down_levels = Vec::with_capacity(levels.len());
+        for (i, &c_lvl) in levels.iter().enumerate() {
+            let (down_w, down_b) = if i > 0 {
+                let prev = levels[i - 1];
+                // stride-2 2×2 conv: [Cout, Cin, 2, 2].
+                let w = load_arc_f32(st, &format!("down_blocks.{i}.0.1.weight"), c_lvl * prev * 4)?;
+                let b = load_arc_f32(st, &format!("down_blocks.{i}.0.1.bias"),   c_lvl)?;
+                (Some(w), Some(b))
+            } else {
+                (None, None)
+            };
+            // Sub-block offset (skip the down conv index 0 if it exists).
+            let sub_offset = if i > 0 { 1 } else { 0 };
+            let mut subs = Vec::with_capacity(cfg.diffnext_blocks[i]);
+            for j in 0..cfg.diffnext_blocks[i] {
+                let sub_idx = sub_offset + j;
+                let sub_pfx = format!("down_blocks.{i}.{sub_idx}");
+                subs.push(DiffNextSubBlockWeights {
+                    res: load_res_block(st, &format!("{sub_pfx}.0"), c_lvl, 0, 3)?,
+                    ts:  load_ts_block(st, &format!("{sub_pfx}.1"), c_lvl, cfg.c_r)?,
+                    attn: if cfg.diffnext_nhead[i] > 0 {
+                        Some(load_attn_block(st, &format!("{sub_pfx}.2"), c_lvl, c_cond, cfg.diffnext_nhead[i])?)
+                    } else { None },
+                });
+            }
+            down_levels.push(DiffNextLevelWeights { down_w, down_b, up_w: None, up_b: None, subs });
+        }
+
+        // Up levels.
+        let mut up_levels = Vec::with_capacity(levels.len());
+        for i in 0..levels.len() {
+            let lvl_idx = levels.len() - 1 - i;
+            let c_lvl = levels[lvl_idx];
+            let mut subs = Vec::with_capacity(cfg.diffnext_blocks[lvl_idx]);
+            for j in 0..cfg.diffnext_blocks[lvl_idx] {
+                let sub_pfx = format!("up_blocks.{i}.{j}");
+                let c_skip = if j == 0 && i > 0 { c_lvl } else { 0 };
+                subs.push(DiffNextSubBlockWeights {
+                    res: load_res_block(st, &format!("{sub_pfx}.0"), c_lvl, c_skip, 3)?,
+                    ts:  load_ts_block(st, &format!("{sub_pfx}.1"), c_lvl, cfg.c_r)?,
+                    attn: if cfg.diffnext_nhead[lvl_idx] > 0 {
+                        Some(load_attn_block(st, &format!("{sub_pfx}.2"), c_lvl, c_cond, cfg.diffnext_nhead[lvl_idx])?)
+                    } else { None },
+                });
+            }
+            let (up_w, up_b) = if lvl_idx > 0 {
+                let next = levels[lvl_idx - 1];
+                // Trailing conv-transpose 2×2: stored at the end of the level.
+                let after_subs = cfg.diffnext_blocks[lvl_idx];
+                let w = load_arc_f32(
+                    st, &format!("up_blocks.{i}.{after_subs}.1.weight"),
+                    c_lvl * next * 4,
+                )?;
+                let b = load_arc_f32(
+                    st, &format!("up_blocks.{i}.{after_subs}.1.bias"),
+                    next,
+                )?;
+                (Some(w), Some(b))
+            } else {
+                (None, None)
+            };
+            up_levels.push(DiffNextLevelWeights { down_w: None, down_b: None, up_w, up_b, subs });
+        }
+
+        // clf.1 is a 1×1 conv (clf.0 is the LN).
+        let clf_w = load_arc_f32(st, "clf.1.weight", 2 * c_out * p * p * levels[0])?;
+        let clf_b = load_arc_f32(st, "clf.1.bias",   2 * c_out * p * p)?;
+
+        Ok(DiffNextWeights {
+            clip_mapper_w, clip_mapper_b,
+            embed_w, embed_b,
+            down_levels, up_levels,
+            clf_w, clf_b,
+        })
+    }
+}
+
+fn load_paella_mixing_res(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    c: usize,
+) -> crate::Result<PaellaMixingResWeights> {
+    let embed_dim = 4 * c;
+    let gammas_vec = load_arc_f32(st, &format!("{prefix}.gammas"), 6)?;
+    let gammas = [
+        gammas_vec[0], gammas_vec[1], gammas_vec[2],
+        gammas_vec[3], gammas_vec[4], gammas_vec[5],
+    ];
+    Ok(PaellaMixingResWeights {
+        gammas,
+        // Depthwise conv: [C, 1, 3, 3]. eager calls it `.depthwise.1` (with replication pad at .0).
+        dw_w: load_arc_f32(st, &format!("{prefix}.depthwise.1.weight"), c * 9)?,
+        dw_b: load_arc_f32(st, &format!("{prefix}.depthwise.1.bias"),   c)?,
+        fc1_w: load_linear_f32(st, &format!("{prefix}.channelwise.0.weight"), embed_dim, c)?,
+        fc1_b: load_arc_f32(st, &format!("{prefix}.channelwise.0.bias"), embed_dim)?,
+        fc2_w: load_linear_f32(st, &format!("{prefix}.channelwise.2.weight"), c, embed_dim)?,
+        fc2_b: load_arc_f32(st, &format!("{prefix}.channelwise.2.bias"), c)?,
+        c,
+    })
+}
+
+impl PaellaVqWeights {
+    /// Walk a HuggingFace Paella VQ-VAE safetensors and build the
+    /// `PaellaVqWeights` bag (decoder side only).
+    ///
+    /// Expected tensors (mirrors eager `PaellaVQ` decoder):
+    /// - `up_blocks.0.0.0.weight` / `.bias` — 1×1 `up_in` conv
+    ///   (`latent_channels → paella_levels[0]`).
+    /// - For each level group: a sequence of `MixingResidualBlock`
+    ///   entries followed by an optional conv-transpose stride-2.
+    /// - `out_block.1.weight` / `.bias` — 1×1 `out` conv
+    ///   (`paella_levels.last() → out_channels * 4`).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &WuerstchenConfig,
+    ) -> crate::Result<Self> {
+        let levels = &cfg.paella_levels;
+        let lc = cfg.paella_latent_channels;
+        let oc = cfg.paella_out_channels;
+        if levels.is_empty() {
+            return Err(crate::Error::Msg(
+                "PaellaVqWeights.load_from_mmapped: paella_levels empty".into(),
+            ).bt());
+        }
+        let up_in_w = load_arc_f32(st, "up_blocks.0.0.0.weight", levels[0] * lc)?;
+        let up_in_b = load_arc_f32(st, "up_blocks.0.0.0.bias",   levels[0])?;
+        let mut up_levels = Vec::with_capacity(levels.len());
+        for (i, &c_lvl) in levels.iter().enumerate() {
+            let mut res_blocks = Vec::new();
+            let n_res = if i == 0 { cfg.paella_bottleneck_blocks } else { 1 };
+            for j in 0..n_res {
+                let pfx = format!("up_blocks.{i}.{j}.1");
+                res_blocks.push(load_paella_mixing_res(st, &pfx, c_lvl)?);
+            }
+            let (upsample_w, upsample_b) = if i < levels.len() - 1 {
+                let next = levels[i + 1];
+                // Conv-transpose 4×4 stride 2: [Cin, Cout, 4, 4].
+                let w_off = n_res; // upsample slot index in this level group.
+                let w = load_arc_f32(
+                    st, &format!("up_blocks.{i}.{w_off}.0.weight"),
+                    c_lvl * next * 16,
+                )?;
+                let b = load_arc_f32(
+                    st, &format!("up_blocks.{i}.{w_off}.0.bias"),
+                    next,
+                )?;
+                (Some(w), Some(b))
+            } else {
+                (None, None)
+            };
+            up_levels.push(PaellaUpLevelWeights { res_blocks, upsample_w, upsample_b });
+        }
+        let last_c = *levels.last().unwrap();
+        let out_w = load_arc_f32(st, "out_block.1.weight", oc * 4 * last_c)?;
+        let out_b = load_arc_f32(st, "out_block.1.bias",   oc * 4)?;
+        Ok(PaellaVqWeights {
+            up_in_w, up_in_b, up_levels, out_w, out_b,
+        })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
@@ -1308,6 +1652,88 @@ mod tests {
     }
 
     /// End-to-end generate: tiny config; text → 32×32 RGB image; finite
+    // ---- Safetensors loader smoke tests -------------------------------
+
+    fn write_tmp_safetensors_w(
+        tensors: &[(String, Vec<usize>, Vec<f32>)],
+    ) -> std::path::PathBuf {
+        use safetensors::tensor::TensorView;
+        use std::collections::HashMap;
+        let bytes_store: Vec<Vec<u8>> = tensors.iter()
+            .map(|(_, _, data)| data.iter().flat_map(|f| f.to_le_bytes()).collect())
+            .collect();
+        let views: HashMap<String, TensorView<'_>> = tensors.iter()
+            .zip(bytes_store.iter())
+            .map(|((name, shape, _), bytes)| {
+                let v = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
+                    .expect("TensorView::new");
+                (name.clone(), v)
+            })
+            .collect();
+        let metadata: Option<HashMap<String, String>> = None;
+        let bytes_out = safetensors::serialize(&views, metadata).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "fuel_lazy_wuerst_test_{}_{}.safetensors",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            std::process::id(),
+        ));
+        std::fs::write(&path, bytes_out).unwrap();
+        path
+    }
+
+    /// Load round-trip for `PriorWeights`. Synthesizes a safetensors file
+    /// matching the eager Wuerstchen WPrior naming and verifies the loader
+    /// reconstructs the bag with the expected per-tensor shapes.
+    #[test]
+    fn load_prior_weights_from_mmapped_tiny() {
+        let cfg = WuerstchenConfig::tiny();
+        let c = cfg.prior_c;
+        let c_in = cfg.prior_c_in;
+        let c_cond = cfg.prior_c_cond;
+        let mut t: Vec<(String, Vec<usize>, Vec<f32>)> = Vec::new();
+        // projection: [c, c_in, 1, 1]
+        t.push(("projection.weight".into(), vec![c, c_in, 1, 1], vec![0.0; c * c_in]));
+        t.push(("projection.bias".into(),   vec![c], vec![0.0; c]));
+        // cond_mapper.0 + .2 (linears) — HF stores as [out_f, in_f].
+        t.push(("cond_mapper.0.weight".into(), vec![c, c_cond], vec![0.0; c * c_cond]));
+        t.push(("cond_mapper.0.bias".into(),   vec![c], vec![0.0; c]));
+        t.push(("cond_mapper.2.weight".into(), vec![c, c], vec![0.0; c * c]));
+        t.push(("cond_mapper.2.bias".into(),   vec![c], vec![0.0; c]));
+        // One block (matches tiny.prior_depth = 1).
+        let pfx = "blocks.0";
+        // ResBlock at .0: depthwise [c, 1, 3, 3].
+        t.push((format!("{pfx}.0.depthwise.weight"), vec![c, 1, 3, 3], vec![0.0; c * 9]));
+        t.push((format!("{pfx}.0.depthwise.bias"),   vec![c], vec![0.0; c]));
+        t.push((format!("{pfx}.0.channelwise.0.weight"), vec![4 * c, c], vec![0.0; 4 * c * c]));
+        t.push((format!("{pfx}.0.channelwise.0.bias"),   vec![4 * c], vec![0.0; 4 * c]));
+        t.push((format!("{pfx}.0.channelwise.2.gamma"), vec![4 * c], vec![1.0; 4 * c]));
+        t.push((format!("{pfx}.0.channelwise.2.beta"),  vec![4 * c], vec![0.0; 4 * c]));
+        t.push((format!("{pfx}.0.channelwise.4.weight"), vec![c, 4 * c], vec![0.0; 4 * c * c]));
+        t.push((format!("{pfx}.0.channelwise.4.bias"),   vec![c], vec![0.0; c]));
+        // TimestepBlock at .1: mapper [2c, c_r].
+        t.push((format!("{pfx}.1.mapper.weight"), vec![2 * c, cfg.c_r], vec![0.0; 2 * c * cfg.c_r]));
+        t.push((format!("{pfx}.1.mapper.bias"),   vec![2 * c], vec![0.0; 2 * c]));
+        // AttnBlock at .2.
+        t.push((format!("{pfx}.2.kv_mapper.1.weight"), vec![c, c], vec![0.0; c * c]));
+        t.push((format!("{pfx}.2.kv_mapper.1.bias"),   vec![c], vec![0.0; c]));
+        for kind in ["q", "k", "v"] {
+            t.push((format!("{pfx}.2.attention.to_{kind}.weight"), vec![c, c], vec![0.0; c * c]));
+            t.push((format!("{pfx}.2.attention.to_{kind}.bias"),   vec![c], vec![0.0; c]));
+        }
+        t.push((format!("{pfx}.2.attention.to_out.0.weight"), vec![c, c], vec![0.0; c * c]));
+        t.push((format!("{pfx}.2.attention.to_out.0.bias"),   vec![c], vec![0.0; c]));
+        // out.0 conv [c_in*2, c, 1, 1].
+        t.push(("out.0.weight".into(), vec![c_in * 2, c, 1, 1], vec![0.0; c_in * 2 * c]));
+        t.push(("out.0.bias".into(),   vec![c_in * 2], vec![0.0; c_in * 2]));
+
+        let path = write_tmp_safetensors_w(&t);
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path).unwrap() };
+        let w = PriorWeights::load_from_mmapped(&st, &cfg).unwrap();
+        assert_eq!(w.blocks.len(), cfg.prior_depth);
+        assert_eq!(w.projection_w.len(), c * c_in);
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// and within `[-1, 1]` (tanh activation at decoder output).
     #[test]
     fn end_to_end_generate_tiny() {

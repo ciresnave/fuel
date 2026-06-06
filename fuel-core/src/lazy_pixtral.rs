@@ -43,8 +43,13 @@
 //! sequence, F32. Subsampled positions / variable image sizes
 //! and the attention mask path deferred.
 
-use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_mistral::{MistralConfig, MistralModel, MistralWeights};
+use crate::lazy::{
+    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+    LazyTensor, WeightStorage,
+};
+use crate::lazy_mistral::{
+    load_mistral_weights_with_prefix, MistralConfig, MistralModel, MistralWeights,
+};
 use crate::{Device, Result};
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -388,6 +393,153 @@ fn build_pixtral_2d_rope_tables(
     (cos, sin)
 }
 
+// ---- Safetensors loader ----------------------------------------------------
+
+/// Load the Pixtral vision tower's weights under the given HF
+/// prefix (typically `"vision_tower."` for a full Pixtral
+/// checkpoint). Pixtral's vision encoder uses Mistral-shape
+/// RmsNorm + SwiGLU + bias-free Q/K/V/O projections. HF tensor
+/// names (under `<prefix>`):
+///   - `patch_conv.weight` (Conv2d, no bias)
+///   - `ln_pre.weight` (RmsNorm gain)
+///   - `transformer.layers.{i}.attention_norm.weight`
+///   - `transformer.layers.{i}.attention.{q,k,v,o}_proj.weight`
+///   - `transformer.layers.{i}.ffn_norm.weight`
+///   - `transformer.layers.{i}.feed_forward.{gate,up,down}_proj.weight`
+pub fn load_pixtral_vision_weights(
+    st: &crate::safetensors::MmapedSafetensors,
+    cfg: &PixtralVisionConfig,
+    prefix: &str,
+) -> Result<PixtralVisionWeights> {
+    let h = cfg.hidden_size;
+    let inter = cfg.intermediate_size;
+
+    let patch_conv = load_tensor_as_f32(st, &format!("{prefix}patch_conv.weight"))?;
+    let expected_patch = h * cfg.num_channels * cfg.patch_size * cfg.patch_size;
+    if patch_conv.len() != expected_patch {
+        crate::bail!(
+            "{prefix}patch_conv.weight: {} elts, expected {}",
+            patch_conv.len(), expected_patch,
+        );
+    }
+    let ln_pre_gain = load_tensor_as_f32(st, &format!("{prefix}ln_pre.weight"))?;
+    if ln_pre_gain.len() != h {
+        crate::bail!(
+            "{prefix}ln_pre.weight: {} elts, expected {}",
+            ln_pre_gain.len(), h,
+        );
+    }
+
+    let mut blocks: Vec<PixtralVisionBlockWeights> =
+        Vec::with_capacity(cfg.num_hidden_layers);
+    for i in 0..cfg.num_hidden_layers {
+        let p = format!("{prefix}transformer.layers.{i}");
+        let attn_norm_gain = load_tensor_as_f32(
+            st, &format!("{p}.attention_norm.weight"),
+        )?;
+        let q_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.attention.q_proj.weight"), h, h,
+        )?;
+        let k_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.attention.k_proj.weight"), h, h,
+        )?;
+        let v_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.attention.v_proj.weight"), h, h,
+        )?;
+        let o_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.attention.o_proj.weight"), h, h,
+        )?;
+        let ffn_norm_gain = load_tensor_as_f32(
+            st, &format!("{p}.ffn_norm.weight"),
+        )?;
+        let gate_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.feed_forward.gate_proj.weight"), inter, h,
+        )?;
+        let up_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.feed_forward.up_proj.weight"), inter, h,
+        )?;
+        let down_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.feed_forward.down_proj.weight"), h, inter,
+        )?;
+        blocks.push(PixtralVisionBlockWeights {
+            attn_norm_gain: Arc::from(attn_norm_gain),
+            q_proj,
+            k_proj,
+            v_proj,
+            o_proj,
+            ffn_norm_gain: Arc::from(ffn_norm_gain),
+            gate_proj,
+            up_proj,
+            down_proj,
+        });
+    }
+
+    Ok(PixtralVisionWeights {
+        patch_conv: Arc::from(patch_conv),
+        ln_pre_gain: Arc::from(ln_pre_gain),
+        blocks,
+    })
+}
+
+/// Load the Pixtral multi-modal projector (2-layer MLP with
+/// biases) under the given HF prefix (typically
+/// `"multi_modal_projector."`).
+pub fn load_pixtral_projector_weights(
+    st: &crate::safetensors::MmapedSafetensors,
+    cfg: &PixtralProjectorConfig,
+    prefix: &str,
+) -> Result<PixtralProjectorWeights> {
+    let linear_1 = load_transposed_matrix_preserve_dtype(
+        st, &format!("{prefix}linear_1.weight"), cfg.out_dim, cfg.in_dim,
+    )?;
+    let linear_1_bias = load_tensor_as_f32(
+        st, &format!("{prefix}linear_1.bias"),
+    )?;
+    if linear_1_bias.len() != cfg.out_dim {
+        crate::bail!(
+            "{prefix}linear_1.bias: {} elts, expected {}",
+            linear_1_bias.len(), cfg.out_dim,
+        );
+    }
+    let linear_2 = load_transposed_matrix_preserve_dtype(
+        st, &format!("{prefix}linear_2.weight"), cfg.out_dim, cfg.out_dim,
+    )?;
+    let linear_2_bias = load_tensor_as_f32(
+        st, &format!("{prefix}linear_2.bias"),
+    )?;
+    if linear_2_bias.len() != cfg.out_dim {
+        crate::bail!(
+            "{prefix}linear_2.bias: {} elts, expected {}",
+            linear_2_bias.len(), cfg.out_dim,
+        );
+    }
+    Ok(PixtralProjectorWeights {
+        linear_1,
+        linear_1_bias: Arc::from(linear_1_bias),
+        linear_2,
+        linear_2_bias: Arc::from(linear_2_bias),
+    })
+}
+
+impl PixtralWeights {
+    /// Load full Pixtral weights from a HuggingFace safetensors
+    /// file. HF Pixtral naming:
+    ///   - `vision_tower.*` — Mistral-shape vision encoder
+    ///   - `multi_modal_projector.linear_{1,2}.*` — 2-layer MLP
+    ///   - `language_model.*` — Mistral decoder
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &PixtralConfig,
+    ) -> Result<Self> {
+        let vision = load_pixtral_vision_weights(st, &cfg.vision, "vision_tower.")?;
+        let projector = load_pixtral_projector_weights(
+            st, &cfg.projector, "multi_modal_projector.",
+        )?;
+        let text = load_mistral_weights_with_prefix(st, &cfg.text, "language_model.")?;
+        Ok(PixtralWeights { vision, projector, text })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,6 +709,172 @@ mod tests {
         for i in 0..8 {
             assert!((cos[i] - 1.0).abs() < 1e-6, "cos[0, {i}] = {} != 1", cos[i]);
             assert!((sin[i]).abs() < 1e-6, "sin[0, {i}] = {} != 0", sin[i]);
+        }
+    }
+
+    mod load {
+        use super::*;
+        use safetensors::tensor::TensorView;
+        use safetensors::Dtype;
+        use std::collections::HashMap;
+
+        fn put(
+            map: &mut HashMap<String, (Dtype, Vec<usize>, Vec<u8>)>,
+            name: &str,
+            shape: &[usize],
+            data: &[f32],
+        ) {
+            let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
+            map.insert(name.to_string(), (Dtype::F32, shape.to_vec(), bytes));
+        }
+
+        fn serialize_to_tempfile(
+            map: &HashMap<String, (Dtype, Vec<usize>, Vec<u8>)>,
+        ) -> std::path::PathBuf {
+            let mut views: HashMap<String, TensorView<'_>> = HashMap::new();
+            for (k, (dt, shape, data)) in map {
+                let v = TensorView::new(*dt, shape.clone(), data).expect("TensorView");
+                views.insert(k.clone(), v);
+            }
+            let bytes = safetensors::serialize(&views, None).expect("serialize");
+            let path = std::env::temp_dir().join(format!(
+                "lazy_pixtral_load_{}_{}.safetensors",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            ));
+            std::fs::write(&path, bytes).expect("write tempfile");
+            path
+        }
+
+        fn build_tiny_safetensors(
+            v_cfg: &PixtralVisionConfig,
+            t_cfg: &MistralConfig,
+            p_cfg: &PixtralProjectorConfig,
+        ) -> std::path::PathBuf {
+            let mut map: HashMap<String, (Dtype, Vec<usize>, Vec<u8>)> = HashMap::new();
+            let mut s: u32 = 9090;
+            let mut nxt = || -> f32 {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.01
+            };
+            let mut vec_n = |n: usize| -> Vec<f32> { (0..n).map(|_| nxt()).collect() };
+
+            // Vision tower under `vision_tower.*`
+            let vp = "vision_tower.";
+            let h = v_cfg.hidden_size;
+            let inter = v_cfg.intermediate_size;
+            put(&mut map, &format!("{vp}patch_conv.weight"),
+                &[h, v_cfg.num_channels, v_cfg.patch_size, v_cfg.patch_size],
+                &vec_n(h * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size));
+            put(&mut map, &format!("{vp}ln_pre.weight"), &[h], &vec_n(h));
+            for i in 0..v_cfg.num_hidden_layers {
+                let p = format!("{vp}transformer.layers.{i}");
+                put(&mut map, &format!("{p}.attention_norm.weight"), &[h], &vec_n(h));
+                for proj in &["q_proj", "k_proj", "v_proj", "o_proj"] {
+                    put(&mut map, &format!("{p}.attention.{proj}.weight"),
+                        &[h, h], &vec_n(h * h));
+                }
+                put(&mut map, &format!("{p}.ffn_norm.weight"), &[h], &vec_n(h));
+                put(&mut map, &format!("{p}.feed_forward.gate_proj.weight"),
+                    &[inter, h], &vec_n(inter * h));
+                put(&mut map, &format!("{p}.feed_forward.up_proj.weight"),
+                    &[inter, h], &vec_n(inter * h));
+                put(&mut map, &format!("{p}.feed_forward.down_proj.weight"),
+                    &[h, inter], &vec_n(h * inter));
+            }
+
+            // Projector under `multi_modal_projector.*`
+            let pp = "multi_modal_projector.";
+            put(&mut map, &format!("{pp}linear_1.weight"),
+                &[p_cfg.out_dim, p_cfg.in_dim], &vec_n(p_cfg.out_dim * p_cfg.in_dim));
+            put(&mut map, &format!("{pp}linear_1.bias"),
+                &[p_cfg.out_dim], &vec_n(p_cfg.out_dim));
+            put(&mut map, &format!("{pp}linear_2.weight"),
+                &[p_cfg.out_dim, p_cfg.out_dim], &vec_n(p_cfg.out_dim * p_cfg.out_dim));
+            put(&mut map, &format!("{pp}linear_2.bias"),
+                &[p_cfg.out_dim], &vec_n(p_cfg.out_dim));
+
+            // Mistral text decoder under `language_model.*`
+            let lp = "language_model.";
+            let d = t_cfg.hidden_size;
+            let kv = t_cfg.num_key_value_heads * t_cfg.head_dim;
+            put(&mut map, &format!("{lp}model.embed_tokens.weight"),
+                &[t_cfg.vocab_size, d], &vec_n(t_cfg.vocab_size * d));
+            for i in 0..t_cfg.num_hidden_layers {
+                let p = format!("{lp}model.layers.{i}");
+                put(&mut map, &format!("{p}.self_attn.q_proj.weight"),
+                    &[d, d], &vec_n(d * d));
+                put(&mut map, &format!("{p}.self_attn.k_proj.weight"),
+                    &[kv, d], &vec_n(kv * d));
+                put(&mut map, &format!("{p}.self_attn.v_proj.weight"),
+                    &[kv, d], &vec_n(kv * d));
+                put(&mut map, &format!("{p}.self_attn.o_proj.weight"),
+                    &[d, d], &vec_n(d * d));
+                put(&mut map, &format!("{p}.mlp.gate_proj.weight"),
+                    &[t_cfg.intermediate_size, d], &vec_n(t_cfg.intermediate_size * d));
+                put(&mut map, &format!("{p}.mlp.up_proj.weight"),
+                    &[t_cfg.intermediate_size, d], &vec_n(t_cfg.intermediate_size * d));
+                put(&mut map, &format!("{p}.mlp.down_proj.weight"),
+                    &[d, t_cfg.intermediate_size], &vec_n(d * t_cfg.intermediate_size));
+                put(&mut map, &format!("{p}.input_layernorm.weight"),
+                    &[d], &vec_n(d));
+                put(&mut map, &format!("{p}.post_attention_layernorm.weight"),
+                    &[d], &vec_n(d));
+            }
+            put(&mut map, &format!("{lp}model.norm.weight"), &[d], &vec_n(d));
+            put(&mut map, &format!("{lp}lm_head.weight"),
+                &[t_cfg.vocab_size, d], &vec_n(t_cfg.vocab_size * d));
+
+            serialize_to_tempfile(&map)
+        }
+
+        #[test]
+        fn round_trip_synthetic_safetensors() {
+            let v_cfg = tiny_vision_cfg();
+            let t_cfg = tiny_text_cfg();
+            let p_cfg = tiny_projector_cfg(t_cfg.hidden_size);
+            let path = build_tiny_safetensors(&v_cfg, &t_cfg, &p_cfg);
+            let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path) }
+                .expect("mmap safetensors");
+            let cfg = PixtralConfig {
+                vision: v_cfg.clone(),
+                projector: p_cfg.clone(),
+                text: t_cfg.clone(),
+            };
+            let w = PixtralWeights::load_from_mmapped(&st, &cfg)
+                .expect("PixtralWeights::load_from_mmapped");
+
+            // Shape spot-checks.
+            assert_eq!(w.vision.blocks.len(), v_cfg.num_hidden_layers);
+            assert_eq!(w.text.layers.len(), t_cfg.num_hidden_layers);
+            assert_eq!(w.projector.linear_1_bias.len(), p_cfg.out_dim);
+            assert_eq!(w.projector.linear_2_bias.len(), p_cfg.out_dim);
+            assert_eq!(w.text.token_embedding.len(),
+                t_cfg.vocab_size * t_cfg.hidden_size);
+
+            // Forward must produce finite logits with the loaded weights.
+            let model = PixtralModel { config: cfg, weights: w };
+            let img = tiny_image(&v_cfg);
+            let toks = [1_u32, 2, 3];
+            let logits = model.forward(&img, &toks).unwrap().realize_f32();
+            for v in &logits {
+                assert!(v.is_finite(), "non-finite logit");
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+
+        /// Documents the canonical from-hub usage. Ignored in CI.
+        #[test]
+        #[ignore]
+        fn from_hub_smoke_pixtral_12b() {
+            // Canonical HF repo: mistralai/Pixtral-12B-2409 (or
+            // mistral-community/pixtral-12b for the easier-to-load
+            // HF-format mirror). The loader expects the standard HF
+            // Pixtral naming:
+            //   vision_tower.*  (patch_conv + ln_pre + transformer.layers.{i}.*)
+            //   multi_modal_projector.linear_{1,2}.*
+            //   language_model.*  (Mistral decoder under model.*)
         }
     }
 }

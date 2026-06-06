@@ -37,8 +37,11 @@
 //! Forward-only, single image + single token sequence, F32.
 //! Multi-image / anyres / `image_newline` injection deferred.
 
-use crate::lazy::{LayerWeights, LazyTensor, LlamaConfig, LlamaModel, LlamaWeights, WeightStorage};
-use crate::lazy_clip::{ClipVisionConfig, ClipVisionWeights};
+use crate::lazy::{
+    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+    LayerWeights, LazyTensor, LlamaConfig, LlamaModel, LlamaWeights, WeightStorage,
+};
+use crate::lazy_clip::{ClipEncoderLayerWeights, ClipVisionConfig, ClipVisionWeights};
 use crate::{Device, Result};
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -262,6 +265,258 @@ fn clip_encoder_layer(
     h1.add(&mlp_out)
 }
 
+// ---- Safetensors loader ----------------------------------------------------
+
+/// Load a CLIP vision-tower's weights from a mmapped safetensors file
+/// using the standard HuggingFace LLaVA `vision_tower.vision_model.*`
+/// prefix. Used by [`LlavaWeights::load_from_mmapped`].
+///
+/// Expected tensor names (everything is `<prefix>.<suffix>`):
+///   - `embeddings.patch_embedding.weight`
+///   - `embeddings.class_embedding`
+///   - `embeddings.position_embedding.weight`
+///   - `pre_layrnorm.{weight,bias}` (HF typo on `pre_layernorm`)
+///   - `encoder.layers.{i}.{layer_norm1,layer_norm2}.{weight,bias}`
+///   - `encoder.layers.{i}.self_attn.{q,k,v,out}_proj.{weight,bias}`
+///   - `encoder.layers.{i}.mlp.{fc1,fc2}.{weight,bias}`
+///   - `post_layernorm.{weight,bias}`
+pub fn load_clip_vision_weights(
+    st: &crate::safetensors::MmapedSafetensors,
+    cfg: &ClipVisionConfig,
+    prefix: &str,
+) -> Result<ClipVisionWeights> {
+    let h = cfg.embed_dim;
+    let np = cfg.num_patches();
+
+    let patch_proj = load_tensor_as_f32(
+        st,
+        &format!("{prefix}embeddings.patch_embedding.weight"),
+    )?;
+    let class_embedding = load_tensor_as_f32(
+        st, &format!("{prefix}embeddings.class_embedding"),
+    )?;
+    let position_embedding = load_tensor_as_f32(
+        st, &format!("{prefix}embeddings.position_embedding.weight"),
+    )?;
+    if position_embedding.len() != (np + 1) * h {
+        crate::bail!(
+            "{prefix}embeddings.position_embedding.weight: {} elts, expected {}",
+            position_embedding.len(), (np + 1) * h,
+        );
+    }
+    let pre_ln_gain = load_tensor_as_f32(st, &format!("{prefix}pre_layrnorm.weight"))?;
+    let pre_ln_bias = load_tensor_as_f32(st, &format!("{prefix}pre_layrnorm.bias"))?;
+    let post_ln_gain = load_tensor_as_f32(st, &format!("{prefix}post_layernorm.weight"))?;
+    let post_ln_bias = load_tensor_as_f32(st, &format!("{prefix}post_layernorm.bias"))?;
+
+    let mut layers: Vec<ClipEncoderLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+    for i in 0..cfg.num_hidden_layers {
+        let p = format!("{prefix}encoder.layers.{i}");
+        let ln1_gain = load_tensor_as_f32(st, &format!("{p}.layer_norm1.weight"))?;
+        let ln1_bias = load_tensor_as_f32(st, &format!("{p}.layer_norm1.bias"))?;
+        let q_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+        )?;
+        let q_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?;
+        let k_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.k_proj.weight"), h, h,
+        )?;
+        let k_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))?;
+        let v_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.v_proj.weight"), h, h,
+        )?;
+        let v_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?;
+        let out_proj = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.out_proj.weight"), h, h,
+        )?;
+        let out_proj_bias = load_tensor_as_f32(st, &format!("{p}.self_attn.out_proj.bias"))?;
+        let ln2_gain = load_tensor_as_f32(st, &format!("{p}.layer_norm2.weight"))?;
+        let ln2_bias = load_tensor_as_f32(st, &format!("{p}.layer_norm2.bias"))?;
+        let fc1 = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.mlp.fc1.weight"), cfg.intermediate_size, h,
+        )?;
+        let fc1_bias = load_tensor_as_f32(st, &format!("{p}.mlp.fc1.bias"))?;
+        let fc2 = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.mlp.fc2.weight"), h, cfg.intermediate_size,
+        )?;
+        let fc2_bias = load_tensor_as_f32(st, &format!("{p}.mlp.fc2.bias"))?;
+        layers.push(ClipEncoderLayerWeights {
+            ln1_gain: Arc::from(ln1_gain),
+            ln1_bias: Arc::from(ln1_bias),
+            q_proj, q_proj_bias: Arc::from(q_proj_bias),
+            k_proj, k_proj_bias: Arc::from(k_proj_bias),
+            v_proj, v_proj_bias: Arc::from(v_proj_bias),
+            out_proj, out_proj_bias: Arc::from(out_proj_bias),
+            ln2_gain: Arc::from(ln2_gain),
+            ln2_bias: Arc::from(ln2_bias),
+            fc1, fc1_bias: Arc::from(fc1_bias),
+            fc2, fc2_bias: Arc::from(fc2_bias),
+        });
+    }
+
+    Ok(ClipVisionWeights {
+        patch_proj: Arc::from(patch_proj),
+        class_embedding: Arc::from(class_embedding),
+        position_embedding: Arc::from(position_embedding),
+        pre_ln_gain: Arc::from(pre_ln_gain),
+        pre_ln_bias: Arc::from(pre_ln_bias),
+        layers,
+        post_ln_gain: Arc::from(post_ln_gain),
+        post_ln_bias: Arc::from(post_ln_bias),
+    })
+}
+
+/// Load a LLaMA-shape decoder's weights using the
+/// `<prefix>model.embed_tokens.weight` HF naming. The standard
+/// non-multimodal LLaMA loader bakes in `model.` and `lm_head.`; this
+/// variant simply prepends an outer prefix so LLaVA's
+/// `language_model.model.embed_tokens.weight` (etc.) resolve cleanly.
+pub fn load_llama_weights_with_prefix(
+    st: &crate::safetensors::MmapedSafetensors,
+    cfg: &LlamaConfig,
+    prefix: &str,
+) -> Result<LlamaWeights> {
+    let kv_dim = cfg.n_kv_heads * cfg.head_dim;
+    let token_embedding = load_tensor_as_f32(
+        st, &format!("{prefix}model.embed_tokens.weight"),
+    )?;
+    if token_embedding.len() != cfg.vocab_size * cfg.dim {
+        crate::bail!(
+            "{prefix}model.embed_tokens.weight: {} elts, expected {} ({}*{})",
+            token_embedding.len(), cfg.vocab_size * cfg.dim, cfg.vocab_size, cfg.dim,
+        );
+    }
+
+    let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.n_layers);
+    for i in 0..cfg.n_layers {
+        let attn_q = load_transposed_matrix_preserve_dtype(
+            st,
+            &format!("{prefix}model.layers.{i}.self_attn.q_proj.weight"),
+            cfg.dim, cfg.dim,
+        )?;
+        let attn_k = load_transposed_matrix_preserve_dtype(
+            st,
+            &format!("{prefix}model.layers.{i}.self_attn.k_proj.weight"),
+            kv_dim, cfg.dim,
+        )?;
+        let attn_v = load_transposed_matrix_preserve_dtype(
+            st,
+            &format!("{prefix}model.layers.{i}.self_attn.v_proj.weight"),
+            kv_dim, cfg.dim,
+        )?;
+        let attn_o = load_transposed_matrix_preserve_dtype(
+            st,
+            &format!("{prefix}model.layers.{i}.self_attn.o_proj.weight"),
+            cfg.dim, cfg.dim,
+        )?;
+        let ffn_gate = load_transposed_matrix_preserve_dtype(
+            st,
+            &format!("{prefix}model.layers.{i}.mlp.gate_proj.weight"),
+            cfg.ffn_dim, cfg.dim,
+        )?;
+        let ffn_up = load_transposed_matrix_preserve_dtype(
+            st,
+            &format!("{prefix}model.layers.{i}.mlp.up_proj.weight"),
+            cfg.ffn_dim, cfg.dim,
+        )?;
+        let ffn_down = load_transposed_matrix_preserve_dtype(
+            st,
+            &format!("{prefix}model.layers.{i}.mlp.down_proj.weight"),
+            cfg.dim, cfg.ffn_dim,
+        )?;
+        let attn_norm_gain = load_tensor_as_f32(
+            st,
+            &format!("{prefix}model.layers.{i}.input_layernorm.weight"),
+        )?;
+        let ffn_norm_gain = load_tensor_as_f32(
+            st,
+            &format!("{prefix}model.layers.{i}.post_attention_layernorm.weight"),
+        )?;
+        let attn_q_bias = load_tensor_as_f32(
+            st, &format!("{prefix}model.layers.{i}.self_attn.q_proj.bias"),
+        ).ok().map(Arc::from);
+        let attn_k_bias = load_tensor_as_f32(
+            st, &format!("{prefix}model.layers.{i}.self_attn.k_proj.bias"),
+        ).ok().map(Arc::from);
+        let attn_v_bias = load_tensor_as_f32(
+            st, &format!("{prefix}model.layers.{i}.self_attn.v_proj.bias"),
+        ).ok().map(Arc::from);
+        layers.push(LayerWeights {
+            attn_q, attn_q_bias,
+            attn_k, attn_k_bias,
+            attn_v, attn_v_bias,
+            attn_o,
+            ffn_gate, ffn_up, ffn_down,
+            attn_norm_gain: Arc::from(attn_norm_gain),
+            ffn_norm_gain: Arc::from(ffn_norm_gain),
+        });
+    }
+
+    let final_norm_gain = load_tensor_as_f32(st, &format!("{prefix}model.norm.weight"))?;
+    // lm_head: try untied, then fall back to tied embedding.
+    let output: WeightStorage = match load_transposed_matrix_preserve_dtype(
+        st, &format!("{prefix}lm_head.weight"), cfg.vocab_size, cfg.dim,
+    ) {
+        Ok(w) => w,
+        Err(_) => {
+            let mut transposed = vec![0.0_f32; cfg.dim * cfg.vocab_size];
+            for i in 0..cfg.vocab_size {
+                for j in 0..cfg.dim {
+                    transposed[j * cfg.vocab_size + i] = token_embedding[i * cfg.dim + j];
+                }
+            }
+            WeightStorage::F32(Arc::from(transposed))
+        }
+    };
+
+    Ok(LlamaWeights {
+        token_embedding: Arc::from(token_embedding),
+        layers,
+        final_norm_gain: Arc::from(final_norm_gain),
+        output,
+    })
+}
+
+impl LlavaWeights {
+    /// Load LLaVA weights from a HuggingFace safetensors file.
+    /// Expects the HF LLaVA layout:
+    ///   - `vision_tower.vision_model.*` for the CLIP vision encoder
+    ///   - `multi_modal_projector.linear_1.{weight,bias}` for the
+    ///     "linear" mm projector variant
+    ///   - `language_model.model.*` and `language_model.lm_head.weight`
+    ///     for the LLaMA decoder
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &LlavaConfig,
+    ) -> Result<Self> {
+        let v_cfg = &cfg.vision_config;
+        let t_cfg = &cfg.text_config;
+        let vision = load_clip_vision_weights(st, v_cfg, "vision_tower.vision_model.")?;
+        let mm_proj = load_transposed_matrix_preserve_dtype(
+            st,
+            "multi_modal_projector.linear_1.weight",
+            cfg.projection_dim,
+            v_cfg.embed_dim,
+        )?;
+        let mm_proj_bias = load_tensor_as_f32(
+            st, "multi_modal_projector.linear_1.bias",
+        )?;
+        if mm_proj_bias.len() != cfg.projection_dim {
+            crate::bail!(
+                "multi_modal_projector.linear_1.bias: {} elts, expected {}",
+                mm_proj_bias.len(), cfg.projection_dim,
+            );
+        }
+        let text = load_llama_weights_with_prefix(st, t_cfg, "language_model.")?;
+        Ok(Self {
+            vision,
+            mm_proj,
+            mm_proj_bias: Arc::from(mm_proj_bias),
+            text,
+        })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -417,6 +672,190 @@ mod tests {
         assert_eq!(logits.shape().dims(), &[1, expected_seq, t_cfg.vocab_size]);
         for &v in &logits.realize_f32() {
             assert!(v.is_finite(), "got non-finite logit {v}");
+        }
+    }
+
+    mod load {
+        use super::*;
+        use safetensors::tensor::TensorView;
+        use safetensors::Dtype;
+        use std::collections::HashMap;
+
+        // Helpers ----------------------------------------------------------
+        fn put(
+            map: &mut HashMap<String, (Dtype, Vec<usize>, Vec<u8>)>,
+            name: &str,
+            shape: &[usize],
+            data: &[f32],
+        ) {
+            let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
+            map.insert(name.to_string(), (Dtype::F32, shape.to_vec(), bytes));
+        }
+
+        fn serialize_to_tempfile(
+            map: &HashMap<String, (Dtype, Vec<usize>, Vec<u8>)>,
+        ) -> std::path::PathBuf {
+            let mut views: HashMap<String, TensorView<'_>> = HashMap::new();
+            for (k, (dt, shape, data)) in map {
+                let v = TensorView::new(*dt, shape.clone(), data)
+                    .expect("TensorView::new");
+                views.insert(k.clone(), v);
+            }
+            let bytes = safetensors::serialize(&views, None)
+                .expect("safetensors::serialize");
+            let dir = std::env::temp_dir();
+            let unique = format!(
+                "lazy_llava_load_{}_{}.safetensors",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+            );
+            let path = dir.join(unique);
+            std::fs::write(&path, bytes).expect("write tempfile");
+            path
+        }
+
+        fn build_tiny_safetensors(
+            v_cfg: &ClipVisionConfig,
+            t_cfg: &LlamaConfig,
+            proj_dim: usize,
+        ) -> std::path::PathBuf {
+            let mut map: HashMap<String, (Dtype, Vec<usize>, Vec<u8>)> = HashMap::new();
+            let mut s: u32 = 11;
+            let mut nxt = || -> f32 {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.01
+            };
+            let mut vec_n = |n: usize| -> Vec<f32> {
+                (0..n).map(|_| nxt()).collect()
+            };
+
+            // --- Vision tower (vision_tower.vision_model.*) ---
+            let vp = "vision_tower.vision_model.";
+            let h = v_cfg.embed_dim;
+            let np = v_cfg.num_patches();
+            put(&mut map, &format!("{vp}embeddings.patch_embedding.weight"),
+                &[h, v_cfg.num_channels, v_cfg.patch_size, v_cfg.patch_size],
+                &vec_n(h * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size));
+            put(&mut map, &format!("{vp}embeddings.class_embedding"),
+                &[h], &vec_n(h));
+            put(&mut map, &format!("{vp}embeddings.position_embedding.weight"),
+                &[np + 1, h], &vec_n((np + 1) * h));
+            put(&mut map, &format!("{vp}pre_layrnorm.weight"), &[h], &vec_n(h));
+            put(&mut map, &format!("{vp}pre_layrnorm.bias"),   &[h], &vec_n(h));
+            put(&mut map, &format!("{vp}post_layernorm.weight"), &[h], &vec_n(h));
+            put(&mut map, &format!("{vp}post_layernorm.bias"),   &[h], &vec_n(h));
+            for i in 0..v_cfg.num_hidden_layers {
+                let p = format!("{vp}encoder.layers.{i}");
+                put(&mut map, &format!("{p}.layer_norm1.weight"), &[h], &vec_n(h));
+                put(&mut map, &format!("{p}.layer_norm1.bias"),   &[h], &vec_n(h));
+                put(&mut map, &format!("{p}.layer_norm2.weight"), &[h], &vec_n(h));
+                put(&mut map, &format!("{p}.layer_norm2.bias"),   &[h], &vec_n(h));
+                for proj in &["q_proj", "k_proj", "v_proj", "out_proj"] {
+                    put(&mut map, &format!("{p}.self_attn.{proj}.weight"),
+                        &[h, h], &vec_n(h * h));
+                    put(&mut map, &format!("{p}.self_attn.{proj}.bias"),
+                        &[h], &vec_n(h));
+                }
+                put(&mut map, &format!("{p}.mlp.fc1.weight"),
+                    &[v_cfg.intermediate_size, h], &vec_n(v_cfg.intermediate_size * h));
+                put(&mut map, &format!("{p}.mlp.fc1.bias"),
+                    &[v_cfg.intermediate_size], &vec_n(v_cfg.intermediate_size));
+                put(&mut map, &format!("{p}.mlp.fc2.weight"),
+                    &[h, v_cfg.intermediate_size], &vec_n(h * v_cfg.intermediate_size));
+                put(&mut map, &format!("{p}.mlp.fc2.bias"),
+                    &[h], &vec_n(h));
+            }
+
+            // --- MM projector (linear variant) ---
+            put(&mut map, "multi_modal_projector.linear_1.weight",
+                &[proj_dim, v_cfg.embed_dim], &vec_n(proj_dim * v_cfg.embed_dim));
+            put(&mut map, "multi_modal_projector.linear_1.bias",
+                &[proj_dim], &vec_n(proj_dim));
+
+            // --- Language model (language_model.model.*) ---
+            let lp = "language_model.";
+            let d = t_cfg.dim;
+            let kv = t_cfg.n_kv_heads * t_cfg.head_dim;
+            put(&mut map, &format!("{lp}model.embed_tokens.weight"),
+                &[t_cfg.vocab_size, d], &vec_n(t_cfg.vocab_size * d));
+            for i in 0..t_cfg.n_layers {
+                let p = format!("{lp}model.layers.{i}");
+                put(&mut map, &format!("{p}.self_attn.q_proj.weight"),
+                    &[d, d], &vec_n(d * d));
+                put(&mut map, &format!("{p}.self_attn.k_proj.weight"),
+                    &[kv, d], &vec_n(kv * d));
+                put(&mut map, &format!("{p}.self_attn.v_proj.weight"),
+                    &[kv, d], &vec_n(kv * d));
+                put(&mut map, &format!("{p}.self_attn.o_proj.weight"),
+                    &[d, d], &vec_n(d * d));
+                put(&mut map, &format!("{p}.mlp.gate_proj.weight"),
+                    &[t_cfg.ffn_dim, d], &vec_n(t_cfg.ffn_dim * d));
+                put(&mut map, &format!("{p}.mlp.up_proj.weight"),
+                    &[t_cfg.ffn_dim, d], &vec_n(t_cfg.ffn_dim * d));
+                put(&mut map, &format!("{p}.mlp.down_proj.weight"),
+                    &[d, t_cfg.ffn_dim], &vec_n(d * t_cfg.ffn_dim));
+                put(&mut map, &format!("{p}.input_layernorm.weight"),
+                    &[d], &vec_n(d));
+                put(&mut map, &format!("{p}.post_attention_layernorm.weight"),
+                    &[d], &vec_n(d));
+            }
+            put(&mut map, &format!("{lp}model.norm.weight"), &[d], &vec_n(d));
+            put(&mut map, &format!("{lp}lm_head.weight"),
+                &[t_cfg.vocab_size, d], &vec_n(t_cfg.vocab_size * d));
+
+            serialize_to_tempfile(&map)
+        }
+
+        #[test]
+        fn round_trip_synthetic_safetensors() {
+            let v_cfg = tiny_vision_cfg();
+            let t_cfg = tiny_text_cfg();
+            let proj_dim = t_cfg.dim;
+            let path = build_tiny_safetensors(&v_cfg, &t_cfg, proj_dim);
+
+            let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path) }
+                .expect("mmap safetensors");
+            let cfg = LlavaConfig {
+                vision_config: v_cfg.clone(),
+                text_config: t_cfg.clone(),
+                projection_dim: proj_dim,
+            };
+            let w = LlavaWeights::load_from_mmapped(&st, &cfg)
+                .expect("LlavaWeights::load_from_mmapped");
+
+            // Shape spot-checks.
+            assert_eq!(w.vision.layers.len(), v_cfg.num_hidden_layers);
+            assert_eq!(w.vision.patch_proj.len(),
+                v_cfg.embed_dim * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size);
+            assert_eq!(w.vision.position_embedding.len(),
+                (v_cfg.num_patches() + 1) * v_cfg.embed_dim);
+            assert_eq!(w.mm_proj_bias.len(), proj_dim);
+            assert_eq!(w.text.layers.len(), t_cfg.n_layers);
+            assert_eq!(w.text.token_embedding.len(), t_cfg.vocab_size * t_cfg.dim);
+
+            // Forward must produce finite logits with the loaded weights.
+            let model = LlavaModel { config: cfg.clone(), weights: w };
+            let img = tiny_image(&v_cfg);
+            let tokens = [1_u32, 2, 3];
+            let logits = model.forward(&img, &tokens).unwrap().realize_f32();
+            for v in &logits {
+                assert!(v.is_finite(), "non-finite logit");
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+
+        /// Documents the canonical from-hub usage. Ignored in CI.
+        #[test]
+        #[ignore]
+        fn from_hub_smoke_llava_1_5_7b() {
+            // Canonical HF repo: llava-hf/llava-1.5-7b-hf
+            // The loader expects the standard HF LLaVA naming:
+            //   vision_tower.vision_model.*
+            //   multi_modal_projector.linear_1.*
+            //   language_model.model.* + language_model.lm_head.weight
         }
     }
 }

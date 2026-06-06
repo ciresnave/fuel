@@ -51,7 +51,10 @@
 //!
 //! All Q/K/V/O biases are `None` (Mistral uses `linear_no_bias`).
 
-use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
+use crate::lazy::{
+    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+    LayerWeights, LazyTensor, WeightStorage,
+};
 use crate::{Device, Result};
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -355,6 +358,112 @@ impl MistralModel {
 
         // Second residual.
         h1.add(&ffn_out)
+    }
+}
+
+// ---- Safetensors loader ----------------------------------------------------
+
+/// Load Mistral weights from a `MmapedSafetensors` file using a
+/// configurable prefix (e.g. `""` for a plain Mistral checkpoint
+/// or `"language_model."` for a multimodal checkpoint that embeds
+/// the LM under a sub-prefix like Pixtral does). Mistral has no
+/// Q/K/V biases (`linear_no_bias`) so the loader returns `None`
+/// for all three. Output projection falls back to tied embeddings
+/// when `lm_head.weight` is absent.
+pub fn load_mistral_weights_with_prefix(
+    st: &crate::safetensors::MmapedSafetensors,
+    cfg: &MistralConfig,
+    prefix: &str,
+) -> Result<MistralWeights> {
+    let h = cfg.hidden_size;
+    let kv = cfg.num_key_value_heads * cfg.head_dim;
+    let token_embedding = load_tensor_as_f32(
+        st, &format!("{prefix}model.embed_tokens.weight"),
+    )?;
+    if token_embedding.len() != cfg.vocab_size * h {
+        crate::bail!(
+            "{prefix}model.embed_tokens.weight: {} elts, expected {}",
+            token_embedding.len(), cfg.vocab_size * h,
+        );
+    }
+
+    let mut layers: Vec<LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
+    for i in 0..cfg.num_hidden_layers {
+        let p = format!("{prefix}model.layers.{i}");
+        let attn_q = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+        )?;
+        let attn_k = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.k_proj.weight"), kv, h,
+        )?;
+        let attn_v = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.v_proj.weight"), kv, h,
+        )?;
+        let attn_o = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.self_attn.o_proj.weight"), h, h,
+        )?;
+        let ffn_gate = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.mlp.gate_proj.weight"), cfg.intermediate_size, h,
+        )?;
+        let ffn_up = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.mlp.up_proj.weight"), cfg.intermediate_size, h,
+        )?;
+        let ffn_down = load_transposed_matrix_preserve_dtype(
+            st, &format!("{p}.mlp.down_proj.weight"), h, cfg.intermediate_size,
+        )?;
+        let attn_norm_gain = load_tensor_as_f32(
+            st, &format!("{p}.input_layernorm.weight"),
+        )?;
+        let ffn_norm_gain = load_tensor_as_f32(
+            st, &format!("{p}.post_attention_layernorm.weight"),
+        )?;
+        layers.push(LayerWeights {
+            attn_q, attn_q_bias: None,
+            attn_k, attn_k_bias: None,
+            attn_v, attn_v_bias: None,
+            attn_o,
+            ffn_gate, ffn_up, ffn_down,
+            attn_norm_gain: Arc::from(attn_norm_gain),
+            ffn_norm_gain: Arc::from(ffn_norm_gain),
+        });
+    }
+
+    let final_norm_gain = load_tensor_as_f32(st, &format!("{prefix}model.norm.weight"))?;
+    // Mistral typically does NOT tie embeddings (Mistral-7B has a
+    // distinct lm_head); fall back to tied for safety only.
+    let output: WeightStorage = match load_transposed_matrix_preserve_dtype(
+        st, &format!("{prefix}lm_head.weight"), cfg.vocab_size, h,
+    ) {
+        Ok(w) => w,
+        Err(_) => {
+            let mut transposed = vec![0.0_f32; h * cfg.vocab_size];
+            for i in 0..cfg.vocab_size {
+                for j in 0..h {
+                    transposed[j * cfg.vocab_size + i] = token_embedding[i * h + j];
+                }
+            }
+            WeightStorage::F32(Arc::from(transposed))
+        }
+    };
+
+    Ok(MistralWeights {
+        token_embedding: Arc::from(token_embedding),
+        layers,
+        final_norm_gain: Arc::from(final_norm_gain),
+        output,
+    })
+}
+
+impl MistralWeights {
+    /// Load Mistral weights from a `MmapedSafetensors` file using
+    /// the standard HuggingFace top-level naming (`model.*` +
+    /// `lm_head.*`). See [`load_mistral_weights_with_prefix`] for
+    /// the multimodal-embedded form.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &MistralConfig,
+    ) -> Result<Self> {
+        load_mistral_weights_with_prefix(st, cfg, "")
     }
 }
 

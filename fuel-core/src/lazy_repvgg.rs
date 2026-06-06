@@ -56,7 +56,7 @@
 //! checkpoint distributed by the RepVGG authors) can plug in
 //! the same way without going through `fuse_repvgg_block`.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{load_tensor_as_f32, LazyTensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_core_types::Shape;
 use std::sync::Arc;
@@ -333,6 +333,199 @@ fn fuse_conv_bn_kernel(
     (w_out, b_out)
 }
 
+// ---- HuggingFace safetensors loading ---------------------------------------
+
+/// timm BatchNorm epsilon used everywhere in the RepVGG byobnet config.
+const REPVGG_BN_EPS: f64 = 1e-5;
+
+impl RepVggWeights {
+    /// Load RepVGG weights from a timm-format `byobnet` safetensors checkpoint.
+    /// Layout (top-level):
+    ///
+    /// - Stem: `stem.conv_kxk.conv.weight`, `stem.conv_kxk.bn.{weight,bias,running_mean,running_var}`,
+    ///   `stem.conv_1x1.conv.weight`, `stem.conv_1x1.bn.*` (stem has no identity).
+    /// - Per stage `s` in 0..=3, per layer `l`:
+    ///   `stages.{s}.{l}.conv_kxk.conv.weight`, `stages.{s}.{l}.conv_kxk.bn.*`,
+    ///   `stages.{s}.{l}.conv_1x1.conv.weight`, `stages.{s}.{l}.conv_1x1.bn.*`,
+    ///   and optionally `stages.{s}.{l}.identity.*` (present iff
+    ///   stride == 1 AND `c_in == c_out`).
+    /// - Head: `head.fc.weight` (`[nclasses, last_channels]` row-major; we
+    ///   transpose to `[in, out]` for `WeightStorage::apply_linear`),
+    ///   `head.fc.bias`.
+    ///
+    /// Each RepVGG block fuses its three branches into a single 3×3 conv
+    /// + bias at load time via [`fuse_repvgg_block`], following the
+    /// "deploy-time" reparameterization from the paper.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &RepVggConfig,
+    ) -> crate::Result<Self> {
+        let stem_dim = cfg.channels_at(0);
+        let stem = repvgg_load_layer(
+            st,
+            "stem",
+            /* has_identity = */ false,
+            3,
+            stem_dim,
+            /* stride = */ 2,
+            /* groups = */ 1,
+        )?;
+
+        let mut stages: [Vec<RepVggLayerWeights>; 4] = Default::default();
+        for stage_idx in 1..=4 {
+            let nlayers = cfg.stages[stage_idx - 1];
+            let prev_layers: usize = cfg.stages[..stage_idx - 1].iter().sum();
+            let c_prev = cfg.channels_at(stage_idx - 1);
+            let c_cur = cfg.channels_at(stage_idx);
+            let mut layers = Vec::with_capacity(nlayers);
+            for li in 0..nlayers {
+                let (has_identity, stride, in_c) = if li == 0 {
+                    (false, 2, c_prev)
+                } else {
+                    (true, 1, c_cur)
+                };
+                let groups = if (prev_layers + li) % 2 == 1 { cfg.groups } else { 1 };
+                let prefix = format!("stages.{}.{}", stage_idx - 1, li);
+                layers.push(repvgg_load_layer(
+                    st, &prefix, has_identity, in_c, c_cur, stride, groups,
+                )?);
+            }
+            stages[stage_idx - 1] = layers;
+        }
+
+        let head = if let Some(n) = cfg.nclasses {
+            let last_c = cfg.channels_at(4);
+            let fc_w_t = repvgg_load_transposed(st, "head.fc.weight", n, last_c)?;
+            let fc_b = load_tensor_as_f32(st, "head.fc.bias")?;
+            if fc_b.len() != n {
+                return Err(crate::Error::Msg(format!(
+                    "RepVGG head.fc.bias expected {n} entries, got {}",
+                    fc_b.len(),
+                ))
+                .bt());
+            }
+            Some((WeightStorage::F32(Arc::from(fc_w_t)), Arc::from(fc_b)))
+        } else {
+            None
+        };
+
+        Ok(Self { stem, stages, head })
+    }
+}
+
+/// Load one RepVGG inference-time layer from a raw, three-branch
+/// checkpoint. Reads the kxk + 1×1 + (optional) identity BN tuples,
+/// runs `fuse_repvgg_block`, and emits the fused 3×3 conv + bias.
+fn repvgg_load_layer(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    has_identity: bool,
+    c_in: usize,
+    c_out: usize,
+    stride: usize,
+    groups: usize,
+) -> crate::Result<RepVggLayerWeights> {
+    let c_in_per_group = c_in / groups;
+    let expected_3x3 = c_out * c_in_per_group * 3 * 3;
+    let expected_1x1 = c_out * c_in_per_group;
+
+    let conv_3x3_w = repvgg_load_check(st, &format!("{prefix}.conv_kxk.conv.weight"), expected_3x3)?;
+    let bn_3x3_gain = repvgg_load_check(st, &format!("{prefix}.conv_kxk.bn.weight"), c_out)?;
+    let bn_3x3_bias = repvgg_load_check(st, &format!("{prefix}.conv_kxk.bn.bias"), c_out)?;
+    let bn_3x3_mean = repvgg_load_check(st, &format!("{prefix}.conv_kxk.bn.running_mean"), c_out)?;
+    let bn_3x3_var  = repvgg_load_check(st, &format!("{prefix}.conv_kxk.bn.running_var"),  c_out)?;
+
+    let conv_1x1_w = repvgg_load_check(st, &format!("{prefix}.conv_1x1.conv.weight"), expected_1x1)?;
+    let bn_1x1_gain = repvgg_load_check(st, &format!("{prefix}.conv_1x1.bn.weight"), c_out)?;
+    let bn_1x1_bias = repvgg_load_check(st, &format!("{prefix}.conv_1x1.bn.bias"), c_out)?;
+    let bn_1x1_mean = repvgg_load_check(st, &format!("{prefix}.conv_1x1.bn.running_mean"), c_out)?;
+    let bn_1x1_var  = repvgg_load_check(st, &format!("{prefix}.conv_1x1.bn.running_var"),  c_out)?;
+
+    let identity_bn = if has_identity {
+        Some(RepVggBn {
+            gain: repvgg_load_check(st, &format!("{prefix}.identity.weight"), c_out)?,
+            bias: repvgg_load_check(st, &format!("{prefix}.identity.bias"), c_out)?,
+            mean: repvgg_load_check(st, &format!("{prefix}.identity.running_mean"), c_out)?,
+            var:  repvgg_load_check(st, &format!("{prefix}.identity.running_var"),  c_out)?,
+        })
+    } else {
+        None
+    };
+
+    let raw = RepVggRawBlock {
+        conv_3x3_w, bn_3x3_gain, bn_3x3_bias, bn_3x3_mean, bn_3x3_var,
+        conv_1x1_w, bn_1x1_gain, bn_1x1_bias, bn_1x1_mean, bn_1x1_var,
+        identity_bn,
+        eps: REPVGG_BN_EPS,
+        c_in, c_out, stride, groups,
+    };
+    let (fused_w, fused_b) = fuse_repvgg_block(&raw);
+    Ok(RepVggLayerWeights {
+        conv_w: WeightStorage::F32(Arc::from(fused_w)),
+        conv_b: Arc::from(fused_b),
+        c_in, c_out, stride, groups,
+    })
+}
+
+fn repvgg_load_check(
+    st: &crate::safetensors::MmapedSafetensors,
+    name: &str,
+    expected_len: usize,
+) -> crate::Result<Vec<f32>> {
+    let v = load_tensor_as_f32(st, name)?;
+    if v.len() != expected_len {
+        return Err(crate::Error::Msg(format!(
+            "RepVGG load {name:?}: got {} elements, expected {}",
+            v.len(), expected_len,
+        ))
+        .bt());
+    }
+    Ok(v)
+}
+
+fn repvgg_load_transposed(
+    st: &crate::safetensors::MmapedSafetensors,
+    name: &str,
+    out_features: usize,
+    in_features: usize,
+) -> crate::Result<Vec<f32>> {
+    let flat = repvgg_load_check(st, name, out_features * in_features)?;
+    let mut out = vec![0.0_f32; out_features * in_features];
+    for i in 0..out_features {
+        for j in 0..in_features {
+            out[j * out_features + i] = flat[i * in_features + j];
+        }
+    }
+    Ok(out)
+}
+
+impl RepVggModel {
+    /// Download a timm-format RepVGG safetensors checkpoint from the Hub
+    /// and load it into a model. Caller picks the config (variant). The
+    /// canonical repo for timm checkpoints is `timm/repvgg_<variant>.<train>`,
+    /// e.g. `timm/repvgg_a0.rvgg_in1k`.
+    pub fn from_hub_with_config(repo_id: &str, config: RepVggConfig) -> Result<Self> {
+        Self::from_hub_with_filename(repo_id, "model.safetensors", config)
+    }
+
+    /// Explicit-filename variant of [`Self::from_hub_with_config`].
+    pub fn from_hub_with_filename(
+        repo_id: &str,
+        filename: &str,
+        config: RepVggConfig,
+    ) -> Result<Self> {
+        let api = hf_hub::api::sync::Api::new()
+            .map_err(|e| crate::Error::Msg(format!("hf-hub api init: {e}")))?;
+        let repo = api.model(repo_id.to_string());
+        let weights_path = repo
+            .get(filename)
+            .map_err(|e| crate::Error::Msg(format!("hf-hub repvgg safetensors: {e}")))?;
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&weights_path) }?;
+        let weights = RepVggWeights::load_from_mmapped(&st, &config)?;
+        Ok(Self { config, weights })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,5 +734,234 @@ mod tests {
         for &v in &feats.realize_f32() {
             assert!(v.is_finite(), "non-finite feature: {v}");
         }
+    }
+
+    // ---- load_from_mmapped round-trip ---------------------------------------
+
+    /// Build raw f32 bytes for a tensor of `len` elements seeded by `seed`.
+    fn raw_f32(len: usize, seed: u32) -> Vec<u8> {
+        let mut s = seed;
+        let mut out = Vec::with_capacity(len * 4);
+        for _ in 0..len {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            // Range ~[-0.05, 0.05].
+            let v = ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05;
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out
+    }
+
+    /// All-ones BatchNorm gain/var bytes (so the BN affine is identity).
+    fn raw_f32_const(len: usize, value: f32) -> Vec<u8> {
+        let mut out = Vec::with_capacity(len * 4);
+        for _ in 0..len {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out
+    }
+
+    /// Write a fully synthetic RepVGG-a0 (no classifier) safetensors blob,
+    /// load it via `RepVggWeights::load_from_mmapped`, and verify the
+    /// fused stem layer matches the analytic BN-fold of the raw branches.
+    #[test]
+    fn load_from_mmapped_round_trip_repvgg_a0_no_head() {
+        use safetensors::tensor::TensorView;
+        use std::collections::HashMap;
+
+        let cfg = RepVggConfig::a0(None);
+        let stem_dim = cfg.channels_at(0);
+        let c_in = 3;
+        let c_out = stem_dim;
+
+        // Stem raw branch tensors. Conv 3x3: [c_out, c_in, 3, 3];
+        // conv 1x1: [c_out, c_in, 1, 1]; BNs: [c_out] each.
+        let conv_3x3_bytes = raw_f32(c_out * c_in * 3 * 3, 0xC0FFEE);
+        let conv_1x1_bytes = raw_f32(c_out * c_in,         0xBEEF00);
+        // gain=1, bias=0, mean=0, var=1 → BN reduces to ~identity (1/√(1+eps)).
+        let bn_gain_bytes  = raw_f32_const(c_out, 1.0);
+        let bn_bias_bytes  = raw_f32_const(c_out, 0.0);
+        let bn_mean_bytes  = raw_f32_const(c_out, 0.0);
+        let bn_var_bytes   = raw_f32_const(c_out, 1.0);
+
+        // Helper: build identical BN-stat byte buffers per (slot) so we
+        // don't borrow conflicts in the HashMap<&[u8]>.
+        let mut owned_bytes: Vec<(String, Vec<usize>, Vec<u8>)> = Vec::new();
+        owned_bytes.push((
+            "stem.conv_kxk.conv.weight".into(),
+            vec![c_out, c_in, 3, 3],
+            conv_3x3_bytes,
+        ));
+        owned_bytes.push((
+            "stem.conv_1x1.conv.weight".into(),
+            vec![c_out, c_in, 1, 1],
+            conv_1x1_bytes,
+        ));
+        for (suffix, raw) in [
+            ("conv_kxk.bn.weight",       bn_gain_bytes.clone()),
+            ("conv_kxk.bn.bias",         bn_bias_bytes.clone()),
+            ("conv_kxk.bn.running_mean", bn_mean_bytes.clone()),
+            ("conv_kxk.bn.running_var",  bn_var_bytes.clone()),
+            ("conv_1x1.bn.weight",       bn_gain_bytes.clone()),
+            ("conv_1x1.bn.bias",         bn_bias_bytes.clone()),
+            ("conv_1x1.bn.running_mean", bn_mean_bytes.clone()),
+            ("conv_1x1.bn.running_var",  bn_var_bytes.clone()),
+        ] {
+            owned_bytes.push((format!("stem.{suffix}"), vec![c_out], raw));
+        }
+
+        // Fill in every stage layer with the same zero-conv + identity BN
+        // recipe so the test's structural walk hits every block path.
+        for stage_idx in 1..=4_usize {
+            let nlayers = cfg.stages[stage_idx - 1];
+            let prev_layers: usize = cfg.stages[..stage_idx - 1].iter().sum();
+            let c_prev = cfg.channels_at(stage_idx - 1);
+            let c_cur  = cfg.channels_at(stage_idx);
+            for li in 0..nlayers {
+                let (has_identity, in_c) = if li == 0 {
+                    (false, c_prev)
+                } else {
+                    (true, c_cur)
+                };
+                let groups = if (prev_layers + li) % 2 == 1 { cfg.groups } else { 1 };
+                let c_in_per_group = in_c / groups;
+                let prefix = format!("stages.{}.{}", stage_idx - 1, li);
+                owned_bytes.push((
+                    format!("{prefix}.conv_kxk.conv.weight"),
+                    vec![c_cur, c_in_per_group, 3, 3],
+                    raw_f32(c_cur * c_in_per_group * 9, (stage_idx * 100 + li) as u32),
+                ));
+                owned_bytes.push((
+                    format!("{prefix}.conv_1x1.conv.weight"),
+                    vec![c_cur, c_in_per_group, 1, 1],
+                    raw_f32(c_cur * c_in_per_group, (stage_idx * 100 + li + 5000) as u32),
+                ));
+                for (suffix, raw) in [
+                    ("conv_kxk.bn.weight",       raw_f32_const(c_cur, 1.0)),
+                    ("conv_kxk.bn.bias",         raw_f32_const(c_cur, 0.0)),
+                    ("conv_kxk.bn.running_mean", raw_f32_const(c_cur, 0.0)),
+                    ("conv_kxk.bn.running_var",  raw_f32_const(c_cur, 1.0)),
+                    ("conv_1x1.bn.weight",       raw_f32_const(c_cur, 1.0)),
+                    ("conv_1x1.bn.bias",         raw_f32_const(c_cur, 0.0)),
+                    ("conv_1x1.bn.running_mean", raw_f32_const(c_cur, 0.0)),
+                    ("conv_1x1.bn.running_var",  raw_f32_const(c_cur, 1.0)),
+                ] {
+                    owned_bytes.push((
+                        format!("{prefix}.{suffix}"),
+                        vec![c_cur],
+                        raw,
+                    ));
+                }
+                if has_identity {
+                    for (suffix, raw) in [
+                        ("identity.weight",       raw_f32_const(c_cur, 1.0)),
+                        ("identity.bias",         raw_f32_const(c_cur, 0.0)),
+                        ("identity.running_mean", raw_f32_const(c_cur, 0.0)),
+                        ("identity.running_var",  raw_f32_const(c_cur, 1.0)),
+                    ] {
+                        owned_bytes.push((
+                            format!("{prefix}.{suffix}"),
+                            vec![c_cur],
+                            raw,
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Build the TensorView map (borrowing the byte buffers).
+        let mut tensors: HashMap<String, TensorView<'_>> = HashMap::new();
+        for (name, shape, bytes) in &owned_bytes {
+            let view = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
+                .expect("TensorView::new");
+            tensors.insert(name.clone(), view);
+        }
+        let metadata: Option<HashMap<String, String>> = None;
+        let serialized = safetensors::serialize(&tensors, metadata)
+            .expect("safetensors::serialize");
+
+        // Write to a temp file (MmapedSafetensors requires a real file).
+        let tmp = std::env::temp_dir().join(format!(
+            "fuel_repvgg_load_test_{}.safetensors",
+            std::process::id(),
+        ));
+        std::fs::write(&tmp, &serialized).expect("write tmp");
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&tmp) }
+            .expect("MmapedSafetensors::new");
+        let loaded = RepVggWeights::load_from_mmapped(&st, &cfg)
+            .expect("RepVggWeights::load_from_mmapped");
+
+        // Stem: with BN(gain=1, bias=0, mean=0, var=1), each branch's
+        // fused conv is `W * (1/√(1+eps))` and fused bias is 0. The 1×1
+        // branch is zero-padded into the 3×3 center. Sum across branches.
+        let bn_scale = 1.0_f32 / (1.0_f32 + REPVGG_BN_EPS as f32).sqrt();
+        let conv_3x3 = match &loaded.stem.conv_w {
+            WeightStorage::F32(arc) => arc.clone(),
+            other => panic!("expected F32 stem conv weights, got {other:?}"),
+        };
+        // Pull the same raw bytes we wrote and verify the per-element fusion.
+        let raw_3x3 = &owned_bytes
+            .iter()
+            .find(|(name, _, _)| name == "stem.conv_kxk.conv.weight")
+            .unwrap().2;
+        let raw_1x1 = &owned_bytes
+            .iter()
+            .find(|(name, _, _)| name == "stem.conv_1x1.conv.weight")
+            .unwrap().2;
+        // Decode f32 elements from raw bytes.
+        let mut raw_3x3_f: Vec<f32> = Vec::with_capacity(c_out * c_in * 9);
+        for chunk in raw_3x3.chunks_exact(4) {
+            raw_3x3_f.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+        }
+        let mut raw_1x1_f: Vec<f32> = Vec::with_capacity(c_out * c_in);
+        for chunk in raw_1x1.chunks_exact(4) {
+            raw_1x1_f.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+        }
+        // For each (o, i, kx, ky), expected = bn_scale * (W3 + delta_center * W1).
+        // Stem has no identity branch, so no delta contribution.
+        for o in 0..c_out {
+            for i in 0..c_in {
+                for k in 0..9 {
+                    let w3 = raw_3x3_f[o * c_in * 9 + i * 9 + k];
+                    let w1 = raw_1x1_f[o * c_in + i];
+                    let expected = bn_scale * (w3 + if k == 4 { w1 } else { 0.0 });
+                    let got = conv_3x3[o * c_in * 9 + i * 9 + k];
+                    assert!((got - expected).abs() < 1e-6,
+                        "stem fused (o={o},i={i},k={k}) expected {expected}, got {got}");
+                }
+            }
+        }
+        // Bias is exactly 0 because beta=0, mean=0 on every branch.
+        for c in 0..c_out {
+            assert!(loaded.stem.conv_b[c].abs() < 1e-6, "stem bias[{c}]");
+        }
+
+        // Sanity: structural shape of the loaded weights matches the spec.
+        assert!(loaded.head.is_none());
+        for stage_idx in 0..4 {
+            assert_eq!(loaded.stages[stage_idx].len(), cfg.stages[stage_idx]);
+        }
+
+        // Forward through the loaded model — confirms shapes hooked up
+        // through the fused conv path.
+        let model = RepVggModel { config: cfg.clone(), weights: loaded };
+        let img = tiny_image(32);
+        let feats = model.forward(&img).unwrap();
+        assert_eq!(feats.shape().dims(), &[1, cfg.channels_at(4)]);
+
+        // Best-effort cleanup; ignore errors so a leftover file doesn't
+        // fail the test.
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Smoke test that documents the canonical `from_hub_with_config`
+    /// usage. Ignored by default because it hits the HF Hub.
+    #[test]
+    #[ignore]
+    fn from_hub_smoke_repvgg_a0() {
+        let cfg = RepVggConfig::a0(Some(1000));
+        let model = RepVggModel::from_hub_with_config(
+            "timm/repvgg_a0.rvgg_in1k", cfg,
+        ).expect("from_hub_with_config");
+        assert!(model.weights.head.is_some());
     }
 }

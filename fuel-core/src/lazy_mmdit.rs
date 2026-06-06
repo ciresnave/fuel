@@ -571,6 +571,154 @@ impl SingleStreamBlock {
     }
 }
 
+// ---- Safetensors loader ----------------------------------------------------
+
+fn load_stream_weights(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    dim: usize,
+    mlp_hidden: usize,
+) -> Result<StreamWeights> {
+    use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    Ok(StreamWeights {
+        adaln_proj: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.adaLN_modulation.1.weight"), 6 * dim, dim,
+        )?,
+        adaln_bias: Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}.adaLN_modulation.1.bias"),
+        )?),
+        qkv_proj: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.attn.qkv.weight"), 3 * dim, dim,
+        )?,
+        qkv_bias: Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}.attn.qkv.bias"),
+        )?),
+        out_proj: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.attn.proj.weight"), dim, dim,
+        )?,
+        out_bias: Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}.attn.proj.bias"),
+        )?),
+        fc1: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.mlp.fc1.weight"), mlp_hidden, dim,
+        )?,
+        fc1_bias: Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}.mlp.fc1.bias"),
+        )?),
+        fc2: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.mlp.fc2.weight"), dim, mlp_hidden,
+        )?,
+        fc2_bias: Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}.mlp.fc2.bias"),
+        )?),
+    })
+}
+
+fn load_single_stream_weights(
+    st: &crate::safetensors::MmapedSafetensors,
+    prefix: &str,
+    dim: usize,
+    mlp_hidden: usize,
+) -> Result<SingleStreamBlockWeights> {
+    use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+    Ok(SingleStreamBlockWeights {
+        adaln_proj: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.adaLN_modulation.1.weight"), 6 * dim, dim,
+        )?,
+        adaln_bias: Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}.adaLN_modulation.1.bias"),
+        )?),
+        qkv_proj: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.attn.qkv.weight"), 3 * dim, dim,
+        )?,
+        qkv_bias: Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}.attn.qkv.bias"),
+        )?),
+        out_proj: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.attn.proj.weight"), dim, dim,
+        )?,
+        out_bias: Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}.attn.proj.bias"),
+        )?),
+        fc1: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.mlp.fc1.weight"), mlp_hidden, dim,
+        )?,
+        fc1_bias: Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}.mlp.fc1.bias"),
+        )?),
+        fc2: load_transposed_matrix_preserve_dtype(
+            st, &format!("{prefix}.mlp.fc2.weight"), dim, mlp_hidden,
+        )?,
+        fc2_bias: Arc::from(load_tensor_as_f32(
+            st, &format!("{prefix}.mlp.fc2.bias"),
+        )?),
+    })
+}
+
+impl MmDitWeights {
+    /// Walk a HuggingFace MMDiT safetensors namespace and build a
+    /// `MmDitWeights` bag.
+    ///
+    /// `adm_in_channels` is the label-embedding input dim (caller supplies
+    /// it from the upstream config — eager SD3 uses 2048).
+    /// `frequency_embedding_size` is the timestep sinusoidal feature
+    /// length (eager default 256).
+    ///
+    /// Expected names (mirrors the eager `mmdit::DiffusionTransformer`
+    /// `var_builder` calls):
+    /// - `t_embedder.mlp.0.{weight,bias}` → conditioning `t_fc1`
+    /// - `t_embedder.mlp.2.{weight,bias}` → conditioning `t_fc2`
+    /// - `y_embedder.mlp.0.{weight,bias}` → conditioning `y_fc1`
+    /// - `y_embedder.mlp.2.{weight,bias}` → conditioning `y_fc2`
+    /// - `joint_blocks.{i}.context_block.*` → `double_blocks[i].text.*`
+    /// - `joint_blocks.{i}.x_block.*` → `double_blocks[i].image.*`
+    /// - `single_blocks.{i}.*` → `single_blocks[i].*`
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &MmDitConfig,
+        adm_in_channels: usize,
+        frequency_embedding_size: usize,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+        let dim = cfg.dim;
+        let mlp_hidden = dim * cfg.mlp_ratio;
+        let conditioning = ConditioningWeights {
+            t_fc1: load_transposed_matrix_preserve_dtype(
+                st, "t_embedder.mlp.0.weight", dim, frequency_embedding_size,
+            )?,
+            t_fc1_bias: Arc::from(load_tensor_as_f32(st, "t_embedder.mlp.0.bias")?),
+            t_fc2: load_transposed_matrix_preserve_dtype(
+                st, "t_embedder.mlp.2.weight", dim, dim,
+            )?,
+            t_fc2_bias: Arc::from(load_tensor_as_f32(st, "t_embedder.mlp.2.bias")?),
+            y_fc1: load_transposed_matrix_preserve_dtype(
+                st, "y_embedder.mlp.0.weight", dim, adm_in_channels,
+            )?,
+            y_fc1_bias: Arc::from(load_tensor_as_f32(st, "y_embedder.mlp.0.bias")?),
+            y_fc2: load_transposed_matrix_preserve_dtype(
+                st, "y_embedder.mlp.2.weight", dim, dim,
+            )?,
+            y_fc2_bias: Arc::from(load_tensor_as_f32(st, "y_embedder.mlp.2.bias")?),
+            frequency_embedding_size,
+            adm_in_channels,
+        };
+        let mut double_blocks = Vec::with_capacity(cfg.depth_double);
+        for i in 0..cfg.depth_double {
+            double_blocks.push(DoubleStreamBlockWeights {
+                text:  load_stream_weights(st, &format!("joint_blocks.{i}.context_block"), dim, mlp_hidden)?,
+                image: load_stream_weights(st, &format!("joint_blocks.{i}.x_block"),       dim, mlp_hidden)?,
+            });
+        }
+        let mut single_blocks = Vec::with_capacity(cfg.depth_single);
+        for i in 0..cfg.depth_single {
+            single_blocks.push(load_single_stream_weights(
+                st, &format!("single_blocks.{i}"), dim, mlp_hidden,
+            )?);
+        }
+        Ok(MmDitWeights { conditioning, double_blocks, single_blocks })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -744,5 +892,89 @@ mod tests {
             max_diff = max_diff.max((x - y).abs());
         }
         assert!(max_diff < 1e-6, "zero-gate residual should equal x, max_diff = {max_diff}");
+    }
+
+    // ---- Safetensors loader round-trip --------------------------------
+
+    fn write_tmp_safetensors(
+        tensors: &[(String, Vec<usize>, Vec<f32>)],
+    ) -> std::path::PathBuf {
+        use safetensors::tensor::TensorView;
+        use std::collections::HashMap;
+        let bytes_store: Vec<Vec<u8>> = tensors.iter()
+            .map(|(_, _, data)| data.iter().flat_map(|f| f.to_le_bytes()).collect())
+            .collect();
+        let views: HashMap<String, TensorView<'_>> = tensors.iter()
+            .zip(bytes_store.iter())
+            .map(|((name, shape, _), bytes)| {
+                let v = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
+                    .expect("TensorView::new");
+                (name.clone(), v)
+            })
+            .collect();
+        let metadata: Option<HashMap<String, String>> = None;
+        let bytes_out = safetensors::serialize(&views, metadata).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "fuel_lazy_mmdit_test_{}.safetensors",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::write(&path, bytes_out).unwrap();
+        path
+    }
+
+    fn linear_tensors(prefix: &str, in_f: usize, out_f: usize, seed: u32)
+        -> Vec<(String, Vec<usize>, Vec<f32>)>
+    {
+        let mut s = seed;
+        let mut next = || -> f32 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+        };
+        let w_data: Vec<f32> = (0..in_f * out_f).map(|_| next()).collect();
+        let b_data: Vec<f32> = (0..out_f).map(|_| next()).collect();
+        vec![
+            (format!("{prefix}.weight"), vec![out_f, in_f], w_data),
+            (format!("{prefix}.bias"),   vec![out_f], b_data),
+        ]
+    }
+
+    /// load_from_mmapped: round-trip a minimal MMDiT config through a
+    /// synthesized safetensors file and confirm the loaded weights have
+    /// the right shapes.
+    #[test]
+    fn load_from_mmapped_round_trip_tiny() {
+        let cfg = MmDitConfig {
+            dim: 8, num_heads: 2, depth_double: 1, depth_single: 0,
+            mlp_ratio: 2, eps: 1e-6,
+        };
+        let dim = cfg.dim;
+        let mlp_h = dim * cfg.mlp_ratio;
+        let freq_embed = 16;
+        let adm_in = 32;
+
+        let mut tensors: Vec<(String, Vec<usize>, Vec<f32>)> = Vec::new();
+        // Conditioning.
+        tensors.extend(linear_tensors("t_embedder.mlp.0", freq_embed, dim, 1));
+        tensors.extend(linear_tensors("t_embedder.mlp.2", dim, dim, 2));
+        tensors.extend(linear_tensors("y_embedder.mlp.0", adm_in, dim, 3));
+        tensors.extend(linear_tensors("y_embedder.mlp.2", dim, dim, 4));
+        // joint_blocks.0 (DoubleStreamBlock) — text=context_block, image=x_block.
+        for (which, seed_base) in [("context_block", 10), ("x_block", 50)] {
+            tensors.extend(linear_tensors(&format!("joint_blocks.0.{which}.adaLN_modulation.1"), dim, 6 * dim, seed_base));
+            tensors.extend(linear_tensors(&format!("joint_blocks.0.{which}.attn.qkv"), dim, 3 * dim, seed_base + 1));
+            tensors.extend(linear_tensors(&format!("joint_blocks.0.{which}.attn.proj"), dim, dim, seed_base + 2));
+            tensors.extend(linear_tensors(&format!("joint_blocks.0.{which}.mlp.fc1"), dim, mlp_h, seed_base + 3));
+            tensors.extend(linear_tensors(&format!("joint_blocks.0.{which}.mlp.fc2"), mlp_h, dim, seed_base + 4));
+        }
+
+        let path = write_tmp_safetensors(&tensors);
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path).unwrap() };
+        let weights = MmDitWeights::load_from_mmapped(&st, &cfg, adm_in, freq_embed).unwrap();
+        assert_eq!(weights.double_blocks.len(), 1);
+        assert_eq!(weights.single_blocks.len(), 0);
+        assert_eq!(weights.conditioning.frequency_embedding_size, freq_embed);
+        assert_eq!(weights.conditioning.adm_in_channels, adm_in);
+
+        let _ = std::fs::remove_file(&path);
     }
 }
