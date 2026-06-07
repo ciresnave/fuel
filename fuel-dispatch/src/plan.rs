@@ -55,6 +55,17 @@ pub struct ExecutionPlan {
     pub order: Vec<NodeId>,
     /// One `AlternativeSet` per kernel-bearing node. Sparse.
     pub alternatives: HashMap<NodeId, AlternativeSet>,
+    /// `SystemTopology` generation counter snapshotted at
+    /// [`compile_plan`] time. The executor (Phase 4.3) checks this
+    /// against `crate::dispatch::topology_generation()` at every
+    /// dispatch-chunk boundary; mismatch surfaces
+    /// [`Error::TopologyChanged`] so the realize layer can rebuild
+    /// the plan against the fresh topology.
+    ///
+    /// `0` for [`ExecutionPlan::empty()`] — empty plans by definition
+    /// have no alternatives to invalidate, so the executor's chunk-
+    /// boundary check skips them.
+    pub generation: u64,
 }
 
 impl ExecutionPlan {
@@ -63,6 +74,7 @@ impl ExecutionPlan {
         Self {
             order: Vec::new(),
             alternatives: HashMap::new(),
+            generation: 0,
         }
     }
 
@@ -248,6 +260,12 @@ pub fn compile_plan(
     bindings_table: &KernelBindingTable,
     options: &PlanOptions<'_>,
 ) -> Result<ExecutionPlan> {
+    // Snapshot the topology generation at plan-build time. The
+    // executor (Phase 4.3) checks this against the live counter at
+    // every dispatch-chunk boundary; mismatch surfaces
+    // `Error::TopologyChanged` so the realize layer can rebuild
+    // against the fresh topology.
+    let generation = crate::dispatch::topology_generation();
     let mut alternatives_map = HashMap::with_capacity(order.len());
 
     for &id in order {
@@ -357,6 +375,7 @@ pub fn compile_plan(
     Ok(ExecutionPlan {
         order: order.to_vec(),
         alternatives: alternatives_map,
+        generation,
     })
 }
 
