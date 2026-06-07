@@ -1,4 +1,5 @@
-﻿use crate::{Result, Tensor};
+﻿use crate::tensor::Tensor;
+use crate::Result;
 use rayon::prelude::*;
 
 #[derive(Debug, Clone, Copy)]

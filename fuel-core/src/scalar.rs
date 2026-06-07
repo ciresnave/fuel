@@ -7,7 +7,8 @@
 // provided by fuel-core-types.
 pub use fuel_core_types::scalar::*;
 
-use crate::{Result, Tensor, WithDType};
+use crate::tensor::Tensor;
+use crate::{Result, WithDType};
 
 /// The result of converting a [`TensorOrScalar`] input: either a full tensor or a
 /// scalar promoted to a single-element tensor.

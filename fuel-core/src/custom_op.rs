@@ -1,8 +1,8 @@
 ﻿use crate::dyn_backend::DynBackendStorage;
 use crate::op::{BackpropOp, Op};
 use crate::storage::StorageApplyOps;
-use crate::tensor::from_storage;
-use crate::{Layout, Result, Shape, Tensor};
+use crate::tensor::{from_storage, Tensor};
+use crate::{Layout, Result, Shape};
 use std::sync::Arc;
 
 /// A custom unary operation (one input tensor, one output tensor).

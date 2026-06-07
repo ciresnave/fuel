@@ -1,4 +1,5 @@
-﻿use crate::{DType, Result, Tensor};
+﻿use crate::tensor::Tensor;
+use crate::{DType, Result};
 
 /// Sample according to the Gumbel-Softmax distribution.
 ///

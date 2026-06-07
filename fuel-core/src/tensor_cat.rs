@@ -1,4 +1,5 @@
-﻿use crate::{shape::Dim, Context, Error, Result, Shape, Tensor};
+﻿use crate::tensor::Tensor;
+use crate::{shape::Dim, Context, Error, Result, Shape};
 
 impl Tensor {
     /// Concatenates two or more tensors along a particular dimension.

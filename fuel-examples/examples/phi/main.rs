@@ -10,7 +10,7 @@ use clap::{Parser, ValueEnum};
 use fuel_examples::token_output_stream::TokenOutputStream;
 
 use fuel::lazy_phi::PhiModel;
-use fuel::{DType, Device};
+use fuel::DType;
 use fuel_transformers::generation::LogitsProcessor;
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
@@ -84,18 +84,15 @@ impl TextGeneration {
             let vocab = self.model.config.vocab_size;
             let seq = ctxt.len();
             let last_offset = (seq - 1) * vocab;
-            let logits_v: Vec<f32> = logits_flat[last_offset..last_offset + vocab].to_vec();
-            let logits = fuel::Tensor::new(logits_v, &Device::cpu())?;
-            let logits = if self.repeat_penalty == 1. {
-                logits
-            } else {
+            let mut logits: Vec<f32> = logits_flat[last_offset..last_offset + vocab].to_vec();
+            if self.repeat_penalty != 1. {
                 let start_at = tokens.len().saturating_sub(self.repeat_last_n);
                 fuel_transformers::utils::apply_repeat_penalty(
-                    &logits,
+                    &mut logits,
                     self.repeat_penalty,
                     &tokens[start_at..],
-                )?
-            };
+                );
+            }
 
             let next_token = self.logits_processor.sample(&logits)?;
             tokens.push(next_token);

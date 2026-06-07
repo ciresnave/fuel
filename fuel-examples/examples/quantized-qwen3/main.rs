@@ -12,7 +12,6 @@ use tokenizers::Tokenizer;
 use fuel::lazy_qwen3::Qwen3Config;
 use fuel::lazy_quantized_qwen3::QuantizedQwen3Model;
 use fuel::quantized::gguf_mmap::MmapedContent;
-use fuel::Tensor;
 use fuel_transformers::generation::{LogitsProcessor, Sampling};
 
 use fuel_examples::token_output_stream::TokenOutputStream;
@@ -314,16 +313,13 @@ fn main() -> anyhow::Result<()> {
 
     let start_prompt_processing = std::time::Instant::now();
     let vocab_size = cfg.vocab_size;
-    let cpu = fuel::Device::cpu();
 
     // Slice the last-position row out of a `(1, seq, vocab)` lazy logits
-    // tensor and rewrap as an eager 1-D `Tensor` so the existing
-    // `LogitsProcessor::sample` + `apply_repeat_penalty` glue keeps
-    // working unchanged.
-    let last_logits_to_tensor = |logits_flat: Vec<f32>, seq: usize| -> Result<Tensor> {
+    // tensor as a plain `Vec<f32>` for `LogitsProcessor::sample` +
+    // `apply_repeat_penalty`.
+    let last_logits_to_tensor = |logits_flat: Vec<f32>, seq: usize| -> Result<Vec<f32>> {
         let last_off = (seq - 1) * vocab_size;
-        let row = logits_flat[last_off..last_off + vocab_size].to_vec();
-        Tensor::new(row, &cpu).map_err(|e| E::msg(format!("rewrap logits: {e}")))
+        Ok(logits_flat[last_off..last_off + vocab_size].to_vec())
     };
 
     let mut next_token = if !args.split_prompt {
@@ -365,17 +361,15 @@ fn main() -> anyhow::Result<()> {
             .forward(&[next_token], tokens.len() + index)
             .map_err(|e| E::msg(format!("forward: {e}")))?;
         let logits_flat = logits_lazy.realize_f32();
-        let logits = last_logits_to_tensor(logits_flat, 1)?;
-        let logits = if args.repeat_penalty == 1. {
-            logits
-        } else {
+        let mut logits = last_logits_to_tensor(logits_flat, 1)?;
+        if args.repeat_penalty != 1. {
             let start_at = all_tokens.len().saturating_sub(args.repeat_last_n);
             fuel_transformers::utils::apply_repeat_penalty(
-                &logits,
+                &mut logits,
                 args.repeat_penalty,
                 &all_tokens[start_at..],
-            )?
-        };
+            );
+        }
         next_token = logits_processor.sample(&logits)?;
         all_tokens.push(next_token);
         if let Some(t) = tos.next_token(next_token)? {

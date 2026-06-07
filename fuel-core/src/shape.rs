@@ -22,7 +22,7 @@ pub use fuel_core_types::shape::*;
 // conversion via the From impl in error.rs.
 // ---------------------------------------------------------------------------
 
-impl crate::Tensor {
+impl crate::tensor::Tensor {
     /// Extracts dimensions from a scalar (rank-0) tensor.
     ///
     /// Returns an error if the tensor does not have exactly 0 dimensions.

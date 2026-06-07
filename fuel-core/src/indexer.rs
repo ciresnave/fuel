@@ -30,7 +30,8 @@
 //! # Ok::<(), fuel_core::Error>(())
 //! ```
 
-use crate::{Error, Tensor};
+use crate::tensor::Tensor;
+use crate::Error;
 use std::ops::{
     Bound, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive,
 };

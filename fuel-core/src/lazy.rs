@@ -1,11 +1,11 @@
 //! Phase 6a bridge: a lazy-computation-graph tensor that wraps
 //! [`fuel_graph::Tensor`] and presents it through an API compatible
-//! with fuel-core's eager [`Tensor`](crate::Tensor).
+//! with fuel-core's eager [`Tensor`](crate::tensor::Tensor).
 //!
 //! # Purpose
 //!
 //! The Phase 6 architectural pivot moves fuel from eager execution to a
-//! lazy computation graph. End state: `fuel_core::Tensor` *is* a
+//! lazy computation graph. End state: `fuel_core::tensor::Tensor` *is* a
 //! `fuel_graph::Tensor` and every model in `fuel-transformers` runs
 //! through the lazy backend without per-model porting.
 //!
@@ -21,7 +21,7 @@
 //! scaffolding that makes the final merge incremental: each
 //! `fuel-transformers` model can be converted to `LazyTensor` in a
 //! separate PR, and once they all compile against the wrapper, the
-//! type alias flips and `fuel_core::Tensor` becomes the lazy variant.
+//! type alias flips and `fuel_core::tensor::Tensor` becomes the lazy variant.
 //!
 //! # What's here today
 //!
@@ -34,7 +34,7 @@
 //! Missing: autograd integration via `fuel_core::Var`, the
 //! `backward()` / `apply_op*` convenience methods, safetensors
 //! loading directly into `LazyTensor`s, and many of the niche
-//! methods on `fuel_core::Tensor`. All of these are additive
+//! methods on `fuel_core::tensor::Tensor`. All of these are additive
 //! extensions — they do not require changes to the bridge's
 //! structural design.
 

@@ -1,7 +1,8 @@
 ﻿//! ML framework for Rust
 //!
 //! ```rust
-//! use fuel_core::{Tensor, DType, Device};
+//! use fuel_core::tensor::Tensor;
+//! use fuel_core::{DType, Device};
 //! # use fuel_core::Error;
 //! # fn main() -> Result<(), Error>{
 //!
@@ -256,7 +257,7 @@ mod sort;
 mod storage;
 pub mod streaming;
 mod strided_index;
-mod tensor;
+pub mod tensor;
 mod tensor_cat;
 pub mod test_utils;
 pub mod utils;
@@ -277,8 +278,18 @@ pub use shape::{Shape, D};
 pub use storage::Storage;
 pub use streaming::{StreamMask, StreamTensor, StreamingBinOp, StreamingModule, apply_state_mask};
 pub use strided_index::{StridedBlocks, StridedIndex};
-pub use tensor::{Tensor, TensorId};
 pub use variable::Var;
+
+// Eager `Tensor` is the runtime data type the executor materializes into.
+// New user code should use [`lazy::LazyTensor`] — the graph builder — and
+// realize it via `realize_f32` etc. The eager `Tensor` re-export below is
+// kept for backend-adjacent crates (fuel-onnx, fuel-pyo3, fuel-parallel,
+// fuel-flash-attn-cuda, fuel-datasets, fuel-examples helpers) that still
+// shuttle device-resident buffers around. Marked `#[doc(hidden)]` so it
+// does not appear in generated rustdoc; the canonical path
+// `fuel_core::tensor::Tensor` remains accessible for the same callers.
+#[doc(hidden)]
+pub use tensor::{Tensor, TensorId};
 
 #[cfg(feature = "cuda")]
 pub use cuda_backend as cuda;
@@ -316,17 +327,17 @@ impl ToUsize2 for (usize, usize) {
 
 /// Defining a module with forward method using a single argument.
 pub trait Module {
-    fn forward(&self, xs: &Tensor) -> Result<Tensor>;
+    fn forward(&self, xs: &crate::tensor::Tensor) -> Result<crate::tensor::Tensor>;
 }
 
-impl<T: Fn(&Tensor) -> Result<Tensor>> Module for T {
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+impl<T: Fn(&crate::tensor::Tensor) -> Result<crate::tensor::Tensor>> Module for T {
+    fn forward(&self, xs: &crate::tensor::Tensor) -> Result<crate::tensor::Tensor> {
         self(xs)
     }
 }
 
 impl<M: Module> Module for Option<&M> {
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+    fn forward(&self, xs: &crate::tensor::Tensor) -> Result<crate::tensor::Tensor> {
         match self {
             None => Ok(xs.clone()),
             Some(m) => m.forward(xs),
@@ -337,11 +348,11 @@ impl<M: Module> Module for Option<&M> {
 /// A single forward method using a single single tensor argument and a flag to
 /// separate the training and evaluation behaviors.
 pub trait ModuleT {
-    fn forward_t(&self, xs: &Tensor, train: bool) -> Result<Tensor>;
+    fn forward_t(&self, xs: &crate::tensor::Tensor, train: bool) -> Result<crate::tensor::Tensor>;
 }
 
 impl<M: Module> ModuleT for M {
-    fn forward_t(&self, xs: &Tensor, _train: bool) -> Result<Tensor> {
+    fn forward_t(&self, xs: &crate::tensor::Tensor, _train: bool) -> Result<crate::tensor::Tensor> {
         self.forward(xs)
     }
 }

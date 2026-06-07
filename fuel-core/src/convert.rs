@@ -1,5 +1,6 @@
 //! Implement conversion traits for tensors
-use crate::{DType, Device, Error, Tensor, WithDType};
+use crate::tensor::Tensor;
+use crate::{DType, Device, Error, WithDType};
 use half::{bf16, f16, slice::HalfFloatSliceExt};
 use std::convert::TryFrom;
 

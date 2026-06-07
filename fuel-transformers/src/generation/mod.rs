@@ -1,9 +1,23 @@
-﻿//! Logit Processing and Sampling
+//! Logit Processing and Sampling
 //!
 //! Functionality for modeling sampling strategies and logits processing in text generation
 //! with support for temperature-based sampling, top-k filtering, nucleus sampling (top-p),
 //! and combinations thereof.
-use fuel::{DType, Error, Result, Tensor};
+//!
+//! As of the eager-retirement Phase H follow-up, `LogitsProcessor` operates entirely on
+//! host-side `&[f32]` slices — there is no `Tensor` in this module any more. Callers
+//! are expected to realize their lazy logits to a `Vec<f32>` (or borrow an existing
+//! slice) and pass them in directly.
+//!
+//! ```rust,no_run
+//! use fuel_transformers::generation::{LogitsProcessor, Sampling};
+//!
+//! let mut lp = LogitsProcessor::from_sampling(42, Sampling::All { temperature: 0.7 });
+//! let logits: Vec<f32> = vec![0.1, 0.2, 0.3, 0.4];
+//! let next = lp.sample(&logits).unwrap();
+//! # let _ = next;
+//! ```
+use fuel::{Error, Result};
 use rand::{distr::Distribution, SeedableRng};
 
 /// Token-sampling strategy used during autoregressive text generation.
@@ -68,16 +82,50 @@ impl LogitsProcessor {
         Self::from_sampling(seed, sampling)
     }
 
-    fn sample_argmax(&mut self, logits: Tensor) -> Result<u32> {
-        logits.argmax(fuel::D::Minus1)?.to_scalar::<u32>()
+    fn sample_argmax(&mut self, logits: &[f32]) -> Result<u32> {
+        // Argmax with `total_cmp` to handle NaN deterministically and match the
+        // previous fuel-core `argmax` behaviour on float dtypes.
+        let (idx, _) = logits
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.total_cmp(b))
+            .ok_or_else(|| Error::Msg("empty logits slice passed to sample_argmax".into()))?;
+        Ok(idx as u32)
     }
 
-    fn sample_gumbel_softmax(&mut self, logits: &Tensor, temperature: f64) -> Result<u32> {
-        let sampled = fuel::sampling::gumbel_softmax(logits, temperature, fuel::D::Minus1)?;
-        sampled.to_scalar::<u32>()
+    /// Host-side Gumbel-Softmax sampling.
+    ///
+    /// Implements `argmax_i ( (logits_i / temperature) + g_i )` where `g_i` is
+    /// drawn from a standard Gumbel(0, 1) distribution. For temperature → 0 this
+    /// degenerates to greedy argmax; for temperature == 1 it is equivalent in
+    /// distribution to drawing a sample from `softmax(logits)`.
+    ///
+    /// The RNG is intentionally the same `StdRng` used by the multinomial samplers
+    /// so that callers get reproducible sequences from a single seed.
+    fn sample_gumbel_softmax(&mut self, logits: &[f32], temperature: f64) -> Result<u32> {
+        if logits.is_empty() {
+            return Err(Error::Msg(
+                "empty logits slice passed to sample_gumbel_softmax".into(),
+            ));
+        }
+        use rand::Rng;
+        let t = temperature.max(1e-7) as f32;
+        let mut best_idx: usize = 0;
+        let mut best_val: f32 = f32::NEG_INFINITY;
+        for (i, &l) in logits.iter().enumerate() {
+            // u in (0, 1) to keep -ln(-ln(u)) finite.
+            let u: f32 = self.rng.random_range(f32::EPSILON..1.0);
+            let g = -(-u.ln()).ln();
+            let score = (l / t) + g;
+            if score > best_val {
+                best_val = score;
+                best_idx = i;
+            }
+        }
+        Ok(best_idx as u32)
     }
 
-    fn sample_multinomial(&mut self, prs: &Vec<f32>) -> Result<u32> {
+    fn sample_multinomial(&mut self, prs: &[f32]) -> Result<u32> {
         let distr = rand::distr::weighted::WeightedIndex::new(prs).map_err(Error::wrap)?;
         let next_token = distr.sample(&mut self.rng) as u32;
         Ok(next_token)
@@ -86,7 +134,7 @@ impl LogitsProcessor {
     /// top-p sampling (or "nucleus sampling") samples from the smallest set of tokens that exceed
     /// probability top_p. This way we never sample tokens that have very low probabilities and are
     /// less likely to go "off the rails".
-    fn sample_topp(&mut self, prs: &mut Vec<f32>, top_p: f32) -> Result<u32> {
+    fn sample_topp(&mut self, prs: &mut [f32], top_p: f32) -> Result<u32> {
         let mut argsort_indices = (0..prs.len()).collect::<Vec<_>>();
 
         // Sort by descending probability.
@@ -106,7 +154,7 @@ impl LogitsProcessor {
     }
 
     // top-k sampling samples from the k tokens with the largest probabilities.
-    fn sample_topk(&mut self, prs: &mut Vec<f32>, top_k: usize) -> Result<u32> {
+    fn sample_topk(&mut self, prs: &mut [f32], top_k: usize) -> Result<u32> {
         if top_k >= prs.len() {
             self.sample_multinomial(prs)
         } else {
@@ -121,7 +169,7 @@ impl LogitsProcessor {
 
     // top-k sampling samples from the k tokens with the largest probabilities.
     // then top-p sampling.
-    fn sample_topk_topp(&mut self, prs: &mut Vec<f32>, top_k: usize, top_p: f32) -> Result<u32> {
+    fn sample_topk_topp(&mut self, prs: &mut [f32], top_k: usize, top_p: f32) -> Result<u32> {
         if top_k >= prs.len() {
             self.sample_topp(prs, top_p)
         } else {
@@ -141,8 +189,10 @@ impl LogitsProcessor {
 
     /// Samples the next token id from `logits` using the configured strategy.
     ///
-    /// `logits` should be a 1-D tensor of length equal to the vocabulary size.
-    pub fn sample(&mut self, logits: &Tensor) -> Result<u32> {
+    /// `logits` is the raw vocab-sized logit vector — typically the last row of
+    /// the model's `(batch, seq, vocab)` output, already realized to `f32` on the
+    /// host. No dtype conversion or device transfer is performed here.
+    pub fn sample(&mut self, logits: &[f32]) -> Result<u32> {
         self.sample_f(logits, |_| {})
     }
 
@@ -152,25 +202,36 @@ impl LogitsProcessor {
     /// The closure receives a mutable slice of `f32` probabilities (after
     /// temperature scaling and softmax) and can be used to implement custom
     /// logit processors such as repetition penalties.
-    pub fn sample_f(&mut self, logits: &Tensor, f: impl FnOnce(&mut [f32])) -> Result<u32> {
-        let logits = logits.to_dtype(DType::F32)?;
+    pub fn sample_f(&mut self, logits: &[f32], f: impl FnOnce(&mut [f32])) -> Result<u32> {
+        // Numerically-stable softmax computed directly on the host-side logits.
+        // `temperature` is applied as `logits / temperature` before the max-shift,
+        // which is the standard formulation used by HuggingFace / fuel-core's
+        // tensor-based path that this replaces.
         let prs = |temperature: f64| -> Result<Vec<f32>> {
-            let logits = (&logits / temperature)?;
-            // Numerically stable softmax using basic fuel-core ops
-            let max = logits.max_keepdim(fuel::D::Minus1)?;
-            let shifted = logits.broadcast_sub(&max)?;
-            let exp = shifted.exp()?;
-            let sum = exp.sum_keepdim(fuel::D::Minus1)?;
-            let prs = exp.broadcast_div(&sum)?;
-            let mut prs = prs.to_vec1()?;
-            f(&mut prs);
-            Ok(prs)
+            let t = temperature as f32;
+            // Pre-divide by temperature so the subsequent max/exp/normalize is the
+            // softmax over the scaled logits.
+            let mut scaled: Vec<f32> = logits.iter().map(|&x| x / t).collect();
+            let max = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum = 0.0f32;
+            for v in scaled.iter_mut() {
+                *v = (*v - max).exp();
+                sum += *v;
+            }
+            if sum > 0.0 {
+                let inv = 1.0 / sum;
+                for v in scaled.iter_mut() {
+                    *v *= inv;
+                }
+            }
+            f(&mut scaled);
+            Ok(scaled)
         };
 
         let next_token = match &self.sampling {
             Sampling::ArgMax => self.sample_argmax(logits)?,
             Sampling::GumbelSoftmax { temperature } => {
-                self.sample_gumbel_softmax(&logits, *temperature)?
+                self.sample_gumbel_softmax(logits, *temperature)?
             }
             Sampling::All { temperature } => {
                 let prs = prs(*temperature)?;

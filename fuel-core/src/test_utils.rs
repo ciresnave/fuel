@@ -1,4 +1,5 @@
-﻿use crate::{Result, Tensor};
+﻿use crate::tensor::Tensor;
+use crate::Result;
 
 #[macro_export]
 macro_rules! test_device {
