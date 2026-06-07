@@ -1,10 +1,91 @@
 use crate::onnx::attribute_proto::AttributeType;
 use crate::onnx::tensor_proto::DataType;
 use crate::onnx::{self, GraphProto};
-use fuel::Module;
 use fuel::{bail, DType, Device, IndexOp, Result, Tensor};
-use fuel_nn::activation::PReLU;
 use std::collections::{HashMap, HashSet};
+
+// --- Inlined fuel-nn helpers (mechanical translation of the small ops surface) ---
+// These were `fuel_nn::ops::*` / `fuel_nn::activation::PReLU` / `fuel_nn::rnn::lstm`
+// before the fuel-onnx dependency on fuel-nn was retired. The bodies follow the
+// canonical textbook formulas (mirroring fuel-nn/src/ops.rs) and stay tied to the
+// eager Tensor surface so the rest of `simple_eval_` is untouched.
+//
+// NOTE: The original fuel-nn `sigmoid` / `softmax_last_dim` are CustomOp1
+// implementations with backend-specialized kernels; here we expand them into the
+// standard elementwise / reduce expressions so we depend on nothing beyond Tensor.
+
+fn nn_sigmoid(xs: &Tensor) -> Result<Tensor> {
+    // sigmoid(x) = 1 / (1 + exp(-x))
+    let neg = xs.neg()?;
+    let exp = neg.exp()?;
+    let one_plus = (exp + 1.0)?;
+    one_plus.recip()
+}
+
+fn nn_softmax<D: fuel::shape::Dim>(xs: &Tensor, dim: D) -> Result<Tensor> {
+    let dim = dim.to_index(xs.shape(), "softmax")?;
+    let max = xs.max_keepdim(dim)?;
+    let diff = xs.broadcast_sub(&max)?;
+    let num = diff.exp()?;
+    let den = num.sum_keepdim(dim)?;
+    num.broadcast_div(&den)
+}
+
+fn nn_softmax_last_dim(xs: &Tensor) -> Result<Tensor> {
+    let last = xs.rank().saturating_sub(1);
+    nn_softmax(xs, last)
+}
+
+fn nn_log_softmax<D: fuel::shape::Dim>(xs: &Tensor, d: D) -> Result<Tensor> {
+    let d = d.to_index(xs.shape(), "log-softmax")?;
+    let max = xs.max_keepdim(d)?;
+    let diff = xs.broadcast_sub(&max)?;
+    let sum_exp = diff.exp()?.sum_keepdim(d)?;
+    diff.broadcast_sub(&sum_exp.log()?)
+}
+
+fn nn_hard_sigmoid(xs: &Tensor) -> Result<Tensor> {
+    ((xs + 3.0)? / 6.0)?.clamp(0f32, 1f32)
+}
+
+fn nn_leaky_relu(xs: &Tensor, negative_slope: f64) -> Result<Tensor> {
+    let mask = xs.ge(0.0)?;
+    let scaled = (xs * negative_slope)?;
+    mask.where_cond(xs, &scaled)
+}
+
+fn nn_selu(xs: &Tensor, alpha: f32, gamma: f32) -> Result<Tensor> {
+    let is_pos = xs.gt(0f32)?;
+    let neg = xs.exp()?.affine(alpha as f64, -(alpha as f64))?;
+    let selu = is_pos.where_cond(xs, &neg)?;
+    selu * gamma as f64
+}
+
+/// Inlined PReLU forward (replaces `fuel_nn::activation::PReLU::new(...).forward(input)`).
+/// Mirrors `max(0, x) + weight * min(0, x)` with the channel-broadcasting reshape
+/// rules from fuel-nn.
+fn nn_prelu(xs: &Tensor, weight: &Tensor, is_scalar: bool) -> Result<Tensor> {
+    let weight = if is_scalar {
+        weight.reshape(())?
+    } else if xs.shape() == weight.shape() {
+        weight.clone()
+    } else if xs.rank() >= 2 {
+        let num_channels = xs.dim(1)?;
+        let num_weights = weight.elem_count();
+        if num_weights != num_channels {
+            bail!(
+                "error in prelu: unexpected number of channels for the input, got {num_channels}, weight dim is {num_weights}"
+            )
+        }
+        let mut s = vec![1; xs.rank()];
+        s[1] = num_weights;
+        weight.reshape(s)?
+    } else {
+        weight.clone()
+    };
+    let zeros = xs.zeros_like()?;
+    xs.maximum(&zeros)? + xs.minimum(&zeros)?.broadcast_mul(&weight)?
+}
 
 /// An ONNX runtime value, represented as a [`fuel::Tensor`].
 ///
@@ -481,10 +562,10 @@ fn simple_eval_(
             "LogSoftmax" => {
                 let input = get(&node.input[0])?;
                 let output = match get_attr_opt::<i64>(node, "axis")? {
-                    None => fuel_nn::ops::softmax_last_dim(input)?,
+                    None => nn_softmax_last_dim(input)?,
                     Some(&axis) => {
                         let axis = input.normalize_axis(axis)?;
-                        fuel_nn::ops::log_softmax(input, axis)?
+                        nn_log_softmax(input, axis)?
                     }
                 };
                 values.insert(node.output[0].clone(), output);
@@ -492,10 +573,10 @@ fn simple_eval_(
             "Softmax" => {
                 let input = get(&node.input[0])?;
                 let output = match get_attr_opt::<i64>(node, "axis")? {
-                    None => fuel_nn::ops::softmax_last_dim(input)?,
+                    None => nn_softmax_last_dim(input)?,
                     Some(&axis) => {
                         let axis = input.normalize_axis(axis)?;
-                        fuel_nn::ops::softmax(input, axis)?
+                        nn_softmax(input, axis)?
                     }
                 };
                 values.insert(node.output[0].clone(), output);
@@ -1105,7 +1186,7 @@ fn simple_eval_(
             }
             "Sigmoid" => {
                 let input = get(&node.input[0])?;
-                let output = fuel_nn::ops::sigmoid(input)?;
+                let output = nn_sigmoid(input)?;
                 values.insert(node.output[0].clone(), output);
             }
             "Gelu" => {
@@ -1123,7 +1204,7 @@ fn simple_eval_(
                 let input = get(&node.input[0])?;
                 let slope = get(&node.input[1])?;
 
-                let output = PReLU::new(slope.clone(), false).forward(input)?;
+                let output = nn_prelu(input, slope, false)?;
                 values.insert(node.output[0].clone(), output);
             }
             "Ceil" => {
@@ -1844,7 +1925,7 @@ fn simple_eval_(
                     dt => bail!("unsupported dtype {dt:?} for LeakyRelu"),
                 }
                 let alpha = get_attr_opt::<f32>(node, "alpha")?.copied().unwrap_or(0.01);
-                let output = fuel_nn::ops::leaky_relu(input, alpha.into())?;
+                let output = nn_leaky_relu(input, alpha.into())?;
                 values.insert(node.output[0].clone(), output);
             }
             // https://github.com/onnx/onnx/blob/main/docs/Operators.md#Gemm
@@ -2029,39 +2110,47 @@ fn simple_eval_(
                 let r = r.index_select(&idx_ifco, 0)?;
                 let wb = wb.index_select(&idx_ifco, 0)?;
                 let rb = rb.index_select(&idx_ifco, 0)?;
-                let vmap = fuel_nn::VarMap::new();
-                vmap.data().lock().unwrap().extend([
-                    ("weight_ih_l0".to_string(), fuel::Var::from_tensor(&w)?),
-                    ("weight_hh_l0".to_string(), fuel::Var::from_tensor(&r)?),
-                    ("bias_ih_l0".to_string(), fuel::Var::from_tensor(&wb)?),
-                    ("bias_hh_l0".to_string(), fuel::Var::from_tensor(&rb)?),
-                ]);
-                use fuel_nn::rnn::RNN as _;
-                let lstm = fuel_nn::rnn::lstm(
-                    input_size,
-                    hidden_size as usize,
-                    fuel_nn::rnn::LSTMConfig::default(),
-                    fuel_nn::VarBuilder::from_varmap(&vmap, w.dtype(), w.device()),
-                )?;
 
-                let mut lstm_state = fuel_nn::rnn::LSTMState::new(h, c);
-                let mut h_acc = if node.output.first().map(String::as_str).unwrap_or("") != "" {
-                    Some(vec![])
-                } else {
-                    None
-                };
+                // Inlined LSTM step (mirrors fuel_nn::rnn::LSTM::new + step).
+                // Pre-compute the fused weight matrix and bias so we only do one matmul
+                // and one broadcast_add per step.
+                //   w_combined: cat([w, r], dim=1) → [4*hidden, in + hidden]
+                //   b_combined: wb + rb           → [4*hidden]
+                let w_combined = Tensor::cat(&[&w, &r], 1)?;
+                let b_combined = (&wb + &rb)?;
+
+                let mut h_t = h;
+                let mut c_t = c;
+                let mut h_acc: Option<Vec<Tensor>> =
+                    if node.output.first().map(String::as_str).unwrap_or("") != "" {
+                        Some(vec![])
+                    } else {
+                        None
+                    };
                 for t in 0..seq_length {
-                    let x = x.get(t)?;
-                    lstm_state = lstm.step(&x, &lstm_state)?;
+                    let x_t = x.get(t)?;
+                    let combined_input = Tensor::cat(&[&x_t, &h_t], 1)?;
+                    let gates = combined_input.matmul(&w_combined.t()?)?;
+                    let gates = gates.broadcast_add(&b_combined)?;
+                    let chunks = gates.chunk(4, 1)?;
+                    let in_gate = nn_sigmoid(&chunks[0])?;
+                    let forget_gate = nn_sigmoid(&chunks[1])?;
+                    let cell_gate = chunks[2].tanh()?;
+                    let out_gate = nn_sigmoid(&chunks[3])?;
+                    let next_c = ((forget_gate * &c_t)? + (in_gate * cell_gate)?)?;
+                    let next_h = (out_gate * next_c.tanh()?)?;
+                    c_t = next_c;
+                    h_t = next_h;
                     if let Some(h_acc) = &mut h_acc {
-                        h_acc.push(lstm_state.clone());
+                        h_acc.push(h_t.clone());
                     }
                 }
 
                 assert_eq!(num_directions, 1, "if support for bidirectional is ever added, outputs will have to be concatenated, not simply reshaped");
                 if let Some(name) = node.output.first() {
                     let h_acc = h_acc.as_ref().unwrap();
-                    let h_acc = lstm.states_to_tensor(h_acc)?;
+                    // states_to_tensor stacks hidden states along dim 1
+                    let h_acc = Tensor::stack(h_acc, 1)?;
                     let h_acc = h_acc.reshape((
                         seq_length,
                         num_directions,
@@ -2073,7 +2162,7 @@ fn simple_eval_(
                 if let Some(name) = node.output.get(1) {
                     values.insert(
                         name.clone(),
-                        lstm_state.h().reshape((
+                        h_t.reshape((
                             num_directions,
                             batch_size,
                             hidden_size as usize,
@@ -2083,7 +2172,7 @@ fn simple_eval_(
                 if let Some(name) = node.output.get(2) {
                     values.insert(
                         name.clone(),
-                        lstm_state.c().reshape((
+                        c_t.reshape((
                             num_directions,
                             batch_size,
                             hidden_size as usize,
@@ -2265,7 +2354,7 @@ fn simple_eval_(
                 let gamma = get_attr_opt::<f32>(node, "gamma")?
                     .copied()
                     .unwrap_or(1.050701);
-                let out = fuel_nn::ops::selu(input, alpha as f32, gamma as f32)?;
+                let out = nn_selu(input, alpha as f32, gamma as f32)?;
                 values.insert(node.output[0].clone(), out);
             }
 
@@ -2339,7 +2428,7 @@ fn simple_eval_(
             }
             "HardSwish" => {
                 let input = get(&node.input[0])?;
-                let hard_sigmoid = fuel_nn::ops::hard_sigmoid(&input)?;
+                let hard_sigmoid = nn_hard_sigmoid(&input)?;
                 let output = input * hard_sigmoid;
                 values.insert(node.output[0].clone(), output?);
             }

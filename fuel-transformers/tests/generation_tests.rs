@@ -4,7 +4,7 @@ use fuel_transformers::generation::LogitsProcessor;
 #[test]
 fn sample_with_zero_temperature() -> Result<()> {
     let mut logits_process = LogitsProcessor::new(1337, None, None);
-    let logits = Tensor::new(&[0.1, 0.2, 0.3, 0.4], &Device::Cpu)?;
+    let logits = Tensor::new(&[0.1, 0.2, 0.3, 0.4], &Device::cpu())?;
     let token = logits_process.sample(&logits)?;
     assert_eq!(token, 3);
     Ok(())
@@ -13,7 +13,7 @@ fn sample_with_zero_temperature() -> Result<()> {
 #[test]
 fn sample_with_temperature() -> Result<()> {
     let mut logits_process = LogitsProcessor::new(42, Some(0.9), None);
-    let logits = Tensor::new(&[0.1, 0.2, 0.3, 0.4], &Device::Cpu)?;
+    let logits = Tensor::new(&[0.1, 0.2, 0.3, 0.4], &Device::cpu())?;
     let token = logits_process.sample(&logits)?;
     assert_eq!(token, 0);
     Ok(())
@@ -22,7 +22,7 @@ fn sample_with_temperature() -> Result<()> {
 #[test]
 fn sample_with_top_p() -> Result<()> {
     let mut logits_process = LogitsProcessor::new(42, Some(1.0), Some(0.5));
-    let logits = Tensor::new(&[0.1, 0.2, 0.3, 0.4], &Device::Cpu)?;
+    let logits = Tensor::new(&[0.1, 0.2, 0.3, 0.4], &Device::cpu())?;
     let token = logits_process.sample(&logits)?;
     assert_eq!(token, 2);
     Ok(())
@@ -37,7 +37,7 @@ fn sample_with_top_k() -> Result<()> {
             temperature: 1.0,
         },
     );
-    let logits = Tensor::new(&[0.1, 0.2, 0.3, 0.4], &Device::Cpu)?;
+    let logits = Tensor::new(&[0.1, 0.2, 0.3, 0.4], &Device::cpu())?;
     let token = logits_process.sample(&logits)?;
     assert_eq!(token, 3);
     let mut logits_process = LogitsProcessor::from_sampling(
@@ -47,7 +47,7 @@ fn sample_with_top_k() -> Result<()> {
             temperature: 1.0,
         },
     );
-    let logits = Tensor::new(&[0.1, 0.2, 0.3, 0.4], &Device::Cpu)?;
+    let logits = Tensor::new(&[0.1, 0.2, 0.3, 0.4], &Device::cpu())?;
     let token = logits_process.sample(&logits)?;
     assert_eq!(token, 3);
     let token = logits_process.sample(&logits)?;
@@ -61,8 +61,16 @@ fn sample_gumbel() -> Result<()> {
         42,
         fuel_transformers::generation::Sampling::GumbelSoftmax { temperature: 1.0 },
     );
-    let logits = Tensor::new(&[-1.0, 0.0, 0.2, 1.0], &Device::Cpu)?;
-    let sm = fuel_nn::ops::softmax(&logits, 0)?.to_vec1::<f64>()?;
+    let logits = Tensor::new(&[-1.0, 0.0, 0.2, 1.0], &Device::cpu())?;
+    // Host-side softmax over the realized f32 vec — avoids depending on fuel_nn here.
+    let logits_vec = logits.to_vec1::<f32>()?;
+    let max = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let exps: Vec<f64> = logits_vec
+        .iter()
+        .map(|&x| ((x - max) as f64).exp())
+        .collect();
+    let sum: f64 = exps.iter().sum();
+    let sm: Vec<f64> = exps.iter().map(|e| e / sum).collect();
     let mut counts = vec![0f64; 4];
     let samples = 100000;
     for _ in 0..samples {
