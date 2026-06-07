@@ -1,146 +1,52 @@
-﻿#[cfg(feature = "mkl")]
+//! Moondream — lazy port.
+//!
+//! The eager binary ran a custom incremental generation loop with the
+//! Moondream text decoder's `forward` / `forward_with_img` split and a
+//! per-step KV cache. The lazy port at `fuel::lazy_moondream` currently
+//! exposes a single-pass `forward` that consumes `(pixel_values, &[u32]
+//! text_tokens)` and returns logits for the concatenated `[image_features;
+//! text_embeds]` sequence. Per-step KV cache reuse is deferred to follow-up
+//! work on the lazy module, so this binary re-runs the full forward pass
+//! per generated token (correct, just not yet optimal).
+//!
+//! What this binary does today:
+//!   1. Parses CLI args + downloads the Moondream-v1 safetensors and tokenizer.
+//!   2. Loads the image, preprocesses it to (1, 3, 378, 378) f32 (NCHW), and
+//!      wraps the result in a lazy tensor.
+//!   3. Builds a `MoondreamConfig` for v2 (1152-dim vision tower, 2048-dim
+//!      Phi-1.5 text decoder).
+//!   4. Loads weights via `MoondreamWeights::load_from_mmapped`. NOTE: the
+//!      lazy loader is presently a stub — see `lazy_moondream.rs`. The binary
+//!      compiles + the error surfaces at runtime when the user invokes it.
+//!   5. Runs `MoondreamModel::forward(&pixel_values, &tokens)` per step and
+//!      greedy / sampled-decodes the next token using a locally-defined
+//!      sampler (mirrors the `helium` lazy binary pattern).
+//!
+//! Deferrals vs the eager binary:
+//!   - Quantized GGUF (q4_0) variant: no `lazy_quantized_moondream` yet;
+//!     `--quantized` flag is now rejected.
+//!   - `--f16`: the lazy module is F32-only.
+//!   - KV-cache: re-runs full forward each step (correctness > perf for v1).
+
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-use anyhow::{Error as E, Result};
+use anyhow::{bail, Error as E, Result};
 use clap::Parser;
 
-use fuel::{DType, Device, Tensor};
-use fuel_nn::VarBuilder;
-use fuel_transformers::{
-    generation::LogitsProcessor,
-    models::{moondream, quantized_moondream},
+use fuel::lazy::LazyTensor;
+use fuel::lazy_mixformer::{MixFormerConfig, MixFormerActivation};
+use fuel::lazy_moondream::{
+    MoondreamConfig, MoondreamModel, MoondreamProjectionConfig, MoondreamVisionConfig,
+    MoondreamWeights,
 };
+use fuel::safetensors::MmapedSafetensors;
+use fuel::{Device, Shape};
+use std::sync::Arc;
 use tokenizers::Tokenizer;
-
-enum Model {
-    Moondream(moondream::Model),
-    Quantized(quantized_moondream::Model),
-}
-
-struct TextGeneration {
-    model: Model,
-    device: Device,
-    tokenizer: Tokenizer,
-    logits_processor: LogitsProcessor,
-    repeat_penalty: f32,
-    repeat_last_n: usize,
-    verbose_prompt: bool,
-}
-
-impl TextGeneration {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        model: Model,
-        tokenizer: Tokenizer,
-        seed: u64,
-        temp: Option<f64>,
-        top_p: Option<f64>,
-        repeat_penalty: f32,
-        repeat_last_n: usize,
-        verbose_prompt: bool,
-        device: &Device,
-    ) -> Self {
-        let logits_processor = LogitsProcessor::new(seed, temp, top_p);
-        Self {
-            model,
-            tokenizer,
-            logits_processor,
-            repeat_penalty,
-            repeat_last_n,
-            verbose_prompt,
-            device: device.clone(),
-        }
-    }
-
-    fn run(&mut self, prompt: &str, image_embeds: &Tensor, sample_len: usize) -> Result<()> {
-        use std::io::Write;
-        println!("starting the inference loop");
-        let tokens = self.tokenizer.encode(prompt, true).map_err(E::msg)?;
-        if tokens.is_empty() {
-            anyhow::bail!("Empty prompts are not supported in the Moondream model.")
-        }
-        if self.verbose_prompt {
-            for (token, id) in tokens.get_tokens().iter().zip(tokens.get_ids().iter()) {
-                let token = token.replace('▁', " ").replace("<0x0A>", "\n");
-                println!("{id:7} -> '{token}'");
-            }
-        }
-
-        let mut tokens = tokens.get_ids().to_vec();
-        let mut generated_tokens = 0usize;
-
-        // Moondream tokenizer bos_token and eos_token is "<|endoftext|>"
-        // https://huggingface.co/vikhyatk/moondream2/blob/main/special_tokens_map.json
-        let special_token = match self.tokenizer.get_vocab(true).get("<|endoftext|>") {
-            Some(token) => *token,
-            None => anyhow::bail!("cannot find the special token"),
-        };
-        let (bos_token, eos_token) = (special_token, special_token);
-
-        let start_gen = std::time::Instant::now();
-        let mut load_t = std::time::Duration::from_secs_f64(0f64);
-        for index in 0..sample_len {
-            let context_size = if index > 0 { 1 } else { tokens.len() };
-            let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
-            let input = Tensor::new(ctxt, &self.device)?.unsqueeze(0)?;
-            let logits = if index > 0 {
-                match self.model {
-                    Model::Moondream(ref mut model) => model.text_model.forward(&input)?,
-                    Model::Quantized(ref mut model) => model.text_model.forward(&input)?,
-                }
-            } else {
-                let bos_token = Tensor::new(&[bos_token], &self.device)?.unsqueeze(0)?;
-                let logits = match self.model {
-                    Model::Moondream(ref mut model) => {
-                        model
-                            .text_model
-                            .forward_with_img(&bos_token, &input, image_embeds)?
-                    }
-                    Model::Quantized(ref mut model) => {
-                        model
-                            .text_model
-                            .forward_with_img(&bos_token, &input, image_embeds)?
-                    }
-                };
-                load_t = start_gen.elapsed();
-                println!("load_t: {load_t:?}");
-                logits
-            };
-            let logits = logits.squeeze(0)?.to_dtype(DType::F32)?;
-            let logits = if self.repeat_penalty == 1. {
-                logits
-            } else {
-                let start_at = tokens.len().saturating_sub(self.repeat_last_n);
-                fuel_transformers::utils::apply_repeat_penalty(
-                    &logits,
-                    self.repeat_penalty,
-                    &tokens[start_at..],
-                )?
-            };
-            let next_token = self.logits_processor.sample(&logits)?;
-            tokens.push(next_token);
-            generated_tokens += 1;
-            if next_token == eos_token || tokens.ends_with(&[27, 10619, 29] /* <END> */) {
-                break;
-            }
-            let token = self.tokenizer.decode(&[next_token], true).map_err(E::msg)?;
-            print!("{token}");
-            std::io::stdout().flush()?;
-        }
-
-        let dt = start_gen.elapsed() - load_t;
-        println!(
-            "\ngenerated in {} seconds\n{generated_tokens} tokens generated ({:.2} token/s)",
-            dt.as_secs_f64(),
-            (generated_tokens - 1) as f64 / dt.as_secs_f64()
-        );
-
-        Ok(())
-    }
-}
 
 #[derive(Parser)]
 struct Args {
@@ -191,10 +97,13 @@ struct Args {
     #[arg(long)]
     revision: Option<String>,
 
+    /// Use the quantized (GGUF q4_0) variant of the model. Currently
+    /// rejected — no `lazy_quantized_moondream` module yet.
     #[arg(long)]
     quantized: bool,
 
-    /// Use f16 precision for all the computations rather than f32.
+    /// Use f16 precision for all the computations rather than f32. Currently
+    /// rejected — the lazy Moondream module is F32-only.
     #[arg(long)]
     f16: bool,
 
@@ -205,21 +114,32 @@ struct Args {
     tokenizer_file: Option<String>,
 }
 
-/// Loads an image from disk using the image crate, this returns a tensor with shape
-/// (3, 378, 378).
-pub fn load_image<P: AsRef<std::path::Path>>(p: P) -> fuel::Result<Tensor> {
+/// Loads an image from disk using the image crate, this returns a NCHW f32
+/// vector with shape `(1, 3, 378, 378)` plus the (channels, height, width)
+/// triple. Mean/std are baked into the float buffer; pixels are
+/// `(x / 255 - 0.5) / 0.5` so the result lives in `[-1, 1]`.
+pub fn load_image_nchw<P: AsRef<std::path::Path>>(p: P) -> Result<Vec<f32>> {
     let img = image::ImageReader::open(p)?
         .decode()
-        .map_err(fuel::Error::wrap)?
-        .resize_to_fill(378, 378, image::imageops::FilterType::Triangle); // Adjusted to 378x378
+        .map_err(|e| E::msg(format!("decode image: {e}")))?
+        .resize_to_fill(378, 378, image::imageops::FilterType::Triangle);
     let img = img.to_rgb8();
-    let data = img.into_raw();
-    let data = Tensor::from_vec(data, (378, 378, 3), &Device::cpu())?.permute((2, 0, 1))?;
-    let mean = Tensor::new(&[0.5f32, 0.5, 0.5], &Device::cpu())?.reshape((3, 1, 1))?;
-    let std = Tensor::new(&[0.5f32, 0.5, 0.5], &Device::cpu())?.reshape((3, 1, 1))?;
-    (data.to_dtype(fuel::DType::F32)? / 255.)?
-        .broadcast_sub(&mean)?
-        .broadcast_div(&std)
+    // image::RgbImage gives interleaved HxWxC; we need CHW.
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let raw = img.into_raw(); // length = h * w * 3, layout HxWxC
+    let mut nchw = vec![0.0_f32; 3 * h * w];
+    // mean/std: 0.5 for all channels.
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3 {
+                let src = (y * w + x) * 3 + c;
+                let dst = c * h * w + y * w + x;
+                let v = raw[src] as f32 / 255.0;
+                nchw[dst] = (v - 0.5) / 0.5;
+            }
+        }
+    }
+    Ok(nchw)
 }
 
 #[tokio::main]
@@ -250,20 +170,33 @@ async fn main() -> anyhow::Result<()> {
         args.repeat_last_n
     );
 
+    if args.quantized {
+        bail!(
+            "the lazy moondream binary does not yet support --quantized \
+             (no lazy_quantized_moondream module). Drop the flag to use the \
+             safetensors weights."
+        );
+    }
+    if args.f16 {
+        bail!(
+            "the lazy moondream binary does not yet support --f16 (lazy_moondream \
+             is F32-only). Drop the flag."
+        );
+    }
+
+    // The lazy realize path runs on CPU/router today; preserve CLI parity but
+    // ignore the flag.
+    let _ = args.cpu;
+    let device = Device::cpu();
+
     let start = std::time::Instant::now();
     let api = hf_hub::api::tokio::Api::new()?;
     let (model_id, revision) = match args.model_id {
         Some(model_id) => (model_id.to_string(), None),
-        None => {
-            if args.quantized {
-                ("santiagomed/fuel-moondream".to_string(), None)
-            } else {
-                (
-                    "vikhyatk/moondream1".to_string(),
-                    Some("f6e9da68e8f1b78b8f3ee10905d56826db7a5802"),
-                )
-            }
-        }
+        None => (
+            "vikhyatk/moondream1".to_string(),
+            Some("f6e9da68e8f1b78b8f3ee10905d56826db7a5802"),
+        ),
     };
     let revision = match (args.revision, revision) {
         (Some(r), _) => r,
@@ -277,13 +210,7 @@ async fn main() -> anyhow::Result<()> {
     ));
     let model_file = match args.model_file {
         Some(m) => m.into(),
-        None => {
-            if args.quantized {
-                repo.get("model-q4_0.gguf").await?
-            } else {
-                repo.get("model.safetensors").await?
-            }
-        }
+        None => repo.get("model.safetensors").await?,
     };
     let tokenizer = match args.tokenizer_file {
         Some(m) => m.into(),
@@ -293,59 +220,212 @@ async fn main() -> anyhow::Result<()> {
     let tokenizer = Tokenizer::from_file(tokenizer).map_err(E::msg)?;
 
     let start = std::time::Instant::now();
-    let device = fuel_examples::device(args.cpu)?;
-    let config = moondream::Config::v2();
-    let dtype = if args.quantized {
-        if args.f16 {
-            anyhow::bail!("Quantized model does not support f16");
-        }
-        DType::F32
-    } else if device.is_cuda() || args.f16 {
-        DType::F16
-    } else {
-        DType::F32
-    };
-    let model = if args.quantized {
-        let vb = fuel_transformers::quantized_var_builder::VarBuilder::from_gguf(
-            &model_file,
-            &device,
-        )?;
-        let model = quantized_moondream::Model::new(&config, vb)?;
-        Model::Quantized(model)
-    } else {
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model_file], dtype, &device)? };
-        let model = moondream::Model::new(&config, vb)?;
-        Model::Moondream(model)
+    let cfg = moondream_v2_lazy_config();
+    let st = unsafe { MmapedSafetensors::multi(&[model_file]) }
+        .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+    let weights = MoondreamWeights::load_from_mmapped(&st, &cfg)
+        .map_err(|e| E::msg(format!("load weights: {e}")))?;
+    let model = MoondreamModel {
+        config: cfg.clone(),
+        weights,
     };
     println!("loaded the model in {:?}", start.elapsed());
 
     let start = std::time::Instant::now();
-    let image = load_image(args.image)?
-        .to_device(&device)?
-        .to_dtype(dtype)?;
-    let image_embeds = image.unsqueeze(0)?;
-    let image_embeds = match model {
-        Model::Moondream(ref m) => image_embeds.apply(m.vision_encoder())?,
-        Model::Quantized(ref m) => image_embeds.apply(m.vision_encoder())?,
-    };
+    let image_data = load_image_nchw(&args.image)?;
+    let pixel_values = LazyTensor::from_f32(
+        Arc::<[f32]>::from(image_data),
+        Shape::from_dims(&[1, cfg.vision.num_channels, cfg.vision.image_size, cfg.vision.image_size]),
+        &device,
+    );
     println!(
-        "loaded and encoded the image {image:?} in {:?}",
+        "loaded image (1, {}, {}, {}) in {:?}",
+        cfg.vision.num_channels,
+        cfg.vision.image_size,
+        cfg.vision.image_size,
         start.elapsed()
     );
 
     let prompt = format!("\n\nQuestion: {0}\n\nAnswer:", args.prompt);
-    let mut pipeline = TextGeneration::new(
-        model,
-        tokenizer,
-        args.seed,
-        args.temperature,
-        args.top_p,
-        args.repeat_penalty,
-        args.repeat_last_n,
-        args.verbose_prompt,
-        &device,
+    let encoded = tokenizer.encode(prompt.as_str(), true).map_err(E::msg)?;
+    if encoded.get_ids().is_empty() {
+        bail!("Empty prompts are not supported in the Moondream model.")
+    }
+    if args.verbose_prompt {
+        for (token, id) in encoded.get_tokens().iter().zip(encoded.get_ids().iter()) {
+            let token = token.replace('▁', " ").replace("<0x0A>", "\n");
+            println!("{id:7} -> '{token}'");
+        }
+    }
+
+    // Moondream tokenizer bos_token and eos_token is "<|endoftext|>".
+    let special_token = match tokenizer.get_vocab(true).get("<|endoftext|>") {
+        Some(token) => *token,
+        None => bail!("cannot find the special token"),
+    };
+    let (bos_token, eos_token) = (special_token, special_token);
+
+    let mut tokens: Vec<u32> = std::iter::once(bos_token)
+        .chain(encoded.get_ids().iter().copied())
+        .collect();
+    let mut generated_tokens = 0_usize;
+
+    println!("starting the inference loop");
+    use std::io::Write;
+    let vocab_size = cfg.text.vocab_size;
+    let start_gen = std::time::Instant::now();
+    for index in 0..args.sample_len {
+        // The lazy v1 forward always re-runs the full prefix; no KV cache.
+        let logits = model
+            .forward(&pixel_values, &tokens)
+            .map_err(|e| E::msg(format!("forward: {e}")))?;
+        let logits_data = logits.realize_f32();
+        // logits shape: (1, num_patches + text_len, vocab) — pick the last text row.
+        let seq = cfg.vision.num_patches + tokens.len();
+        let last_off = (seq - 1) * vocab_size;
+        let mut last_logits: Vec<f32> = logits_data[last_off..last_off + vocab_size].to_vec();
+        if args.repeat_penalty != 1.0 {
+            let start_at = tokens.len().saturating_sub(args.repeat_last_n);
+            apply_repeat_penalty(&mut last_logits, args.repeat_penalty, &tokens[start_at..]);
+        }
+        let next_token = sample(
+            &last_logits,
+            args.temperature.unwrap_or(0.0) as f32,
+            args.top_p.map(|p| p as f32),
+            args.seed.wrapping_add(index as u64),
+        );
+        tokens.push(next_token);
+        generated_tokens += 1;
+        if next_token == eos_token
+            || tokens.ends_with(&[27, 10619, 29] /* <END> */)
+        {
+            break;
+        }
+        let token_str = tokenizer.decode(&[next_token], true).map_err(E::msg)?;
+        print!("{token_str}");
+        std::io::stdout().flush()?;
+    }
+    let dt = start_gen.elapsed();
+    println!(
+        "\ngenerated in {} seconds\n{generated_tokens} tokens generated ({:.2} token/s)",
+        dt.as_secs_f64(),
+        generated_tokens as f64 / dt.as_secs_f64()
     );
-    pipeline.run(&prompt, &image_embeds, args.sample_len)?;
 
     Ok(())
 }
+
+/// Moondream-v2 config in the lazy layout. Values mirror the eager
+/// `moondream::Config::v2()` (vision + Phi-1.5 text decoder + projection).
+fn moondream_v2_lazy_config() -> MoondreamConfig {
+    MoondreamConfig {
+        vision: MoondreamVisionConfig::v2(),
+        projection: MoondreamProjectionConfig::v2(),
+        text: MixFormerConfig {
+            vocab_size: 51200,
+            hidden_size: 2048,
+            n_inner: None, // 4 * 2048
+            num_hidden_layers: 24,
+            num_attention_heads: 32,
+            rotary_dim: 32,
+            layer_norm_eps: 1e-5,
+            max_position_embeddings: 2048,
+            rope_theta: 10_000.0,
+            hidden_activation: MixFormerActivation::GeluPytorchTanh,
+            tie_word_embeddings: false,
+        },
+    }
+}
+
+/// Local repeat penalty (the eager `fuel_transformers::utils` helper expects
+/// an eager `Tensor`).
+fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
+    let mut seen = std::collections::HashSet::new();
+    for &t in context {
+        if !seen.insert(t) {
+            continue;
+        }
+        let idx = t as usize;
+        if idx < logits.len() {
+            let v = logits[idx];
+            logits[idx] = if v >= 0.0 { v / penalty } else { v * penalty };
+        }
+    }
+}
+
+/// Local sampler — mirrors the `helium` lazy binary. `temperature <= 0.0`
+/// is treated as greedy.
+fn sample(
+    logits: &[f32],
+    temperature: f32,
+    top_p: Option<f32>,
+    seed: u64,
+) -> u32 {
+    if temperature <= 0.0 {
+        let mut best_i = 0usize;
+        let mut best = logits[0];
+        for (i, &v) in logits.iter().enumerate().skip(1) {
+            if v > best {
+                best = v;
+                best_i = i;
+            }
+        }
+        return best_i as u32;
+    }
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let inv_t = 1.0 / temperature.max(1e-6);
+    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    for p in &mut probs {
+        *p /= sum.max(1e-30);
+    }
+    let mut idx: Vec<usize> = (0..probs.len()).collect();
+    idx.sort_unstable_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap());
+    let mut keep_mask: Vec<bool> = vec![true; probs.len()];
+    if let Some(p_cut) = top_p {
+        let mut cum2 = 0.0;
+        let mut allow = true;
+        for &i in &idx {
+            if !keep_mask[i] {
+                continue;
+            }
+            if !allow {
+                keep_mask[i] = false;
+                continue;
+            }
+            cum2 += probs[i];
+            if cum2 >= p_cut {
+                allow = false;
+            }
+        }
+    }
+    let mut filtered: Vec<f32> = probs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| if keep_mask[i] { *p } else { 0.0 })
+        .collect();
+    let s: f32 = filtered.iter().sum();
+    if s > 0.0 {
+        for v in &mut filtered {
+            *v /= s;
+        }
+    } else {
+        return 0;
+    }
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    state ^= state >> 33;
+    state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    state ^= state >> 33;
+    let r = (state as f32) / (u64::MAX as f32);
+    let mut cum = 0.0;
+    for (i, p) in filtered.iter().enumerate() {
+        cum += *p;
+        if r <= cum {
+            return i as u32;
+        }
+    }
+    (filtered.len() - 1) as u32
+}
+

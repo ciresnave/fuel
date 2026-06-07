@@ -1,8 +1,19 @@
-﻿#![allow(dead_code)]
+#![allow(dead_code)]
 // https://huggingface.co/facebook/musicgen-small/tree/main
 // https://github.com/huggingface/transformers/blob/cd4584e3c809bb9e1392ccd3fe38b40daba5519a/src/transformers/models/musicgen/modeling_musicgen.py
+//
+// Lazy-graph migration: this binary now uses `fuel::lazy_musicgen`,
+// which bundles the MusicGen decoder + a built-in text adapter. The
+// historic eager binary (parked alongside this file in
+// `musicgen_model.rs`) only loaded the model and ran the T5 text
+// encoder on the prompt as a smoke test; this lazy version mirrors
+// that scope — load weights, run the decoder forward over a tiny
+// placeholder audio-token window — without pulling the full T5 +
+// EnCodec stack.
+//
 // TODO: Add an offline mode.
 // TODO: Add a KV cache.
+// TODO: Wire a real T5 encoder via `forward_with_encoder_states`.
 
 #[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
@@ -10,17 +21,12 @@ extern crate intel_mkl_src;
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-mod musicgen_model;
-
-use musicgen_model::{GenConfig, MusicgenForConditionalGeneration};
-
 use anyhow::{Error as E, Result};
-use fuel::{DType, Tensor};
-use fuel_nn::VarBuilder;
 use clap::Parser;
 use hf_hub::{api::sync::Api, Repo, RepoType};
 
-const DTYPE: DType = DType::F32;
+use fuel::lazy_musicgen::{MusicGenConfig, MusicGenModel, MusicGenWeights};
+use fuel::safetensors::MmapedSafetensors;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -48,7 +54,10 @@ fn main() -> Result<()> {
     use tokenizers::Tokenizer;
 
     let args = Args::parse();
-    let device = fuel_examples::device(args.cpu)?;
+    // `--cpu` is preserved for parity; the lazy realize path lives on
+    // CPU by default in this binary.
+    let _ = args.cpu;
+
     let tokenizer = match args.tokenizer {
         Some(tokenizer) => std::path::PathBuf::from(tokenizer),
         None => Api::new()?
@@ -61,7 +70,7 @@ fn main() -> Result<()> {
         .with_truncation(None)
         .map_err(E::msg)?;
 
-    let model = match args.model {
+    let model_path = match args.model {
         Some(model) => std::path::PathBuf::from(model),
         None => Api::new()?
             .repo(Repo::with_revision(
@@ -71,9 +80,16 @@ fn main() -> Result<()> {
             ))
             .get("model.safetensors")?,
     };
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model], DTYPE, &device)? };
-    let config = GenConfig::small();
-    let mut model = MusicgenForConditionalGeneration::load(vb, config)?;
+
+    let cfg = MusicGenConfig::musicgen_small();
+    let st = unsafe { MmapedSafetensors::multi(&[model_path]) }
+        .map_err(|e| E::msg(format!("mmap: {e}")))?;
+    let weights = MusicGenWeights::load_from_mmapped(&st, &cfg)
+        .map_err(|e| E::msg(format!("weights: {e}")))?;
+    let model = MusicGenModel {
+        config: cfg.clone(),
+        weights,
+    };
 
     let tokens = tokenizer
         .encode(args.prompt.as_str(), true)
@@ -81,10 +97,20 @@ fn main() -> Result<()> {
         .get_ids()
         .to_vec();
     println!("tokens: {tokens:?}");
-    let tokens = Tensor::new(tokens.as_slice(), &device)?.unsqueeze(0)?;
-    println!("{tokens:?}");
-    let embeds = model.text_encoder.forward(&tokens)?;
-    println!("{embeds}");
+
+    // Smoke-test forward: feed the prompt tokens as the (built-in)
+    // text-adapter input and run the decoder over a one-step
+    // placeholder audio-token window (zeros across all codebooks),
+    // matching the eager stub's "just run a forward and print" shape.
+    let seq_len: usize = 1;
+    let audio_tokens: Vec<u32> = vec![0_u32; cfg.num_codebooks * seq_len];
+    let logits = model
+        .forward(&tokens, &audio_tokens, 0)
+        .map_err(|e| E::msg(format!("forward: {e}")))?;
+    let logits_shape = logits.shape();
+    println!("logits shape: {:?}", logits_shape.dims());
+    let realized = logits.realize_f32();
+    println!("logits first 8 = {:?}", &realized[..realized.len().min(8)]);
 
     Ok(())
 }

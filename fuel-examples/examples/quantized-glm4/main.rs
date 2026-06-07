@@ -1,18 +1,20 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
+use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
 use std::io::Write;
 use tokenizers::Tokenizer;
 
-use fuel::{DType, Tensor};
+use fuel::lazy_glm4::{Glm4Activation, Glm4Config};
+use fuel::lazy_quantized_glm4::QuantizedGlm4Model;
+use fuel::{Device, Tensor};
 use fuel_transformers::generation::{LogitsProcessor, Sampling};
 
 use fuel_examples::token_output_stream::TokenOutputStream;
-use fuel_transformers::models::quantized_glm4::ModelWeights as GLM4;
 
 const DEFAULT_PROMPT: &str = "Write a Rust function to calculate the factorial of a given number.";
 
@@ -160,6 +162,104 @@ fn format_size(size_in_bytes: usize) -> String {
     }
 }
 
+/// Build a `Glm4Config` by reading GGUF metadata for the `glm4`
+/// architecture. Mirrors the keys used by the eager `quantized_glm4`
+/// loader and infers `vocab_size` / `intermediate_size` from tensor
+/// shapes when no explicit metadata key is present.
+fn glm4_config_from_gguf(
+    mc: &fuel::quantized::gguf_mmap::MmapedContent,
+) -> Result<Glm4Config> {
+    let meta = mc.metadata();
+    let content = mc.content();
+
+    let get_u32 = |k: &str| -> Result<u32> {
+        meta.get(k)
+            .ok_or_else(|| E::msg(format!("gguf metadata: missing {k:?}")))?
+            .to_u32()
+            .map_err(|e| E::msg(format!("gguf metadata {k:?}: {e:?}")))
+    };
+    let get_u32_opt = |k: &str| -> Option<u32> {
+        meta.get(k).and_then(|v| v.to_u32().ok())
+    };
+    let get_f32 = |k: &str| -> Result<f32> {
+        meta.get(k)
+            .ok_or_else(|| E::msg(format!("gguf metadata: missing {k:?}")))?
+            .to_f32()
+            .map_err(|e| E::msg(format!("gguf metadata {k:?}: {e:?}")))
+    };
+    let get_bool_opt = |k: &str| -> Option<bool> {
+        meta.get(k).and_then(|v| v.to_bool().ok())
+    };
+
+    let hidden_size = get_u32("glm4.embedding_length")? as usize;
+    let num_hidden_layers = get_u32("glm4.block_count")? as usize;
+    let num_attention_heads = get_u32("glm4.attention.head_count")? as usize;
+    let num_key_value_heads = get_u32("glm4.attention.head_count_kv")? as usize;
+    let head_dim = get_u32("glm4.attention.key_length")? as usize;
+    let max_position_embeddings = get_u32("glm4.context_length")? as usize;
+    let rms_norm_eps = get_f32("glm4.attention.layer_norm_rms_epsilon")? as f64;
+    let rope_theta = get_f32("glm4.rope.freq_base")? as f64;
+
+    // `glm4.feed_forward_length` carries `intermediate_size` on modern
+    // converters; fall back to the `ffn_down` tensor's in-features dim
+    // when absent (older converters or single-tensor split forms).
+    let intermediate_size = match get_u32_opt("glm4.feed_forward_length") {
+        Some(n) => n as usize,
+        None => {
+            let info = content
+                .tensor_infos
+                .get("blk.0.ffn_down.weight")
+                .ok_or_else(|| {
+                    E::msg("gguf: missing blk.0.ffn_down.weight; cannot derive intermediate_size")
+                })?;
+            // ffn_down has shape [hidden, inter] in GGUF; inter is dims()[1].
+            let dims = info.shape.dims();
+            if dims.len() != 2 {
+                return Err(E::msg(format!(
+                    "gguf blk.0.ffn_down.weight: expected 2D shape, got {dims:?}"
+                )));
+            }
+            dims[1]
+        }
+    };
+
+    // vocab_size from token_embd.weight shape [vocab, hidden].
+    let vocab_size = content
+        .tensor_infos
+        .get("token_embd.weight")
+        .ok_or_else(|| E::msg("gguf: missing token_embd.weight"))?
+        .shape
+        .dims()[0];
+
+    // Optional metadata: partial rotary factor + attention bias.
+    let partial_rotary_factor = meta
+        .get("glm4.rope.scaling.factor")
+        .and_then(|v| v.to_f32().ok())
+        .map(|x| x as f64)
+        .unwrap_or(0.5);
+    let attention_bias = get_bool_opt("glm4.attention.bias").unwrap_or(true);
+
+    // Tied embeddings: GGUF mirrors HF by omitting `output.weight`.
+    let tie_word_embeddings = !content.tensor_infos.contains_key("output.weight");
+
+    Ok(Glm4Config {
+        vocab_size,
+        hidden_size,
+        intermediate_size,
+        num_hidden_layers,
+        num_attention_heads,
+        num_key_value_heads,
+        head_dim,
+        partial_rotary_factor,
+        attention_bias,
+        max_position_embeddings,
+        rope_theta,
+        rms_norm_eps,
+        hidden_activation: Glm4Activation::Silu,
+        tie_word_embeddings,
+    })
+}
+
 fn main() -> anyhow::Result<()> {
     use tracing_chrome::ChromeLayerBuilder;
     use tracing_subscriber::prelude::*;
@@ -187,34 +287,32 @@ fn main() -> anyhow::Result<()> {
 
     let model_path = args.model()?;
     let start = std::time::Instant::now();
-    let device = fuel_examples::device(args.cpu)?;
+    let _device = fuel_examples::device(args.cpu)?;
 
-    let mmaped = fuel::quantized::gguf_mmap::MmapedContent::from_path(&model_path)
+    // Open the GGUF mmap once to derive the config + report header stats.
+    let mc = fuel::quantized::gguf_mmap::MmapedContent::from_path(&model_path)
         .map_err(|e| e.with_path(&model_path))?;
     let header_done = start.elapsed();
-    let (mmap, model_content) = mmaped.into_parts();
     let mut total_size_in_bytes = 0;
-    for (_, tensor) in model_content.tensor_infos.iter() {
+    for (_, tensor) in mc.content().tensor_infos.iter() {
         let elem_count = tensor.shape.elem_count();
         total_size_in_bytes +=
             elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
     }
     println!(
         "mmapped {:?} tensors ({}); header in {:.2}s",
-        model_content.tensor_infos.len(),
+        mc.content().tensor_infos.len(),
         &format_size(total_size_in_bytes),
         header_done.as_secs_f32(),
     );
-    let dtype = if device.is_cuda() || device.is_metal() {
-        DType::BF16
-    } else {
-        DType::F32
-    };
-    let mut model = {
-        let mut cursor = std::io::Cursor::new(&mmap[..]);
-        GLM4::from_gguf(model_content, &mut cursor, &device, dtype)?
-    };
-    drop(mmap);
+
+    let cfg = glm4_config_from_gguf(&mc)?;
+    // Drop the first mmap before the loader re-opens (matches Phi-2
+    // pattern: cheap double-mmap on modern OSes).
+    drop(mc);
+
+    let model = QuantizedGlm4Model::from_gguf(&model_path, &cfg)
+        .map_err(|e| E::msg(format!("from_gguf: {e}")))?;
     println!("model built in {:.2}s total", start.elapsed().as_secs_f32());
 
     let tokenizer = args.tokenizer()?;
@@ -231,11 +329,11 @@ fn main() -> anyhow::Result<()> {
         .encode(prompt_str, true)
         .map_err(anyhow::Error::msg)?;
 
-    let tokens = tokens.get_ids();
+    let tokens = tokens.get_ids().to_vec();
 
     let to_sample = args.sample_len.saturating_sub(1);
 
-    let mut all_tokens = vec![];
+    let mut all_tokens: Vec<u32> = vec![];
 
     let mut logits_processor = {
         let temperature = args.temperature;
@@ -252,19 +350,33 @@ fn main() -> anyhow::Result<()> {
         LogitsProcessor::from_sampling(args.seed, sampling)
     };
 
+    // Realize the LazyTensor logits, slice off the last token's row, and
+    // hand a tiny eager `Tensor` to the existing LogitsProcessor sampler.
+    let vocab = cfg.vocab_size;
+    let last_logits = |logits_flat: &[f32], seq: usize| -> Result<Tensor> {
+        let last_off = (seq - 1) * vocab;
+        let v: Vec<f32> = logits_flat[last_off..last_off + vocab].to_vec();
+        Tensor::new(v, &Device::cpu()).map_err(anyhow::Error::msg)
+    };
+
     let start_prompt_processing = std::time::Instant::now();
 
     let mut next_token = if !args.split_prompt {
-        let input = Tensor::new(tokens, &device)?.unsqueeze(0)?;
-        let logits = model.forward(&input, 0)?;
-        let logits = logits.squeeze(0)?;
+        let logits_lazy = model
+            .forward(&tokens, 0)
+            .map_err(|e| E::msg(format!("forward: {e}")))?;
+        let logits_flat = logits_lazy.realize_f32();
+        let logits = last_logits(&logits_flat, tokens.len())?;
         logits_processor.sample(&logits)?
     } else {
         let mut next_token = 0;
         for (pos, token) in tokens.iter().enumerate() {
-            let input = Tensor::new(&[*token], &device)?.unsqueeze(0)?;
-            let logits = model.forward(&input, pos)?;
-            let logits = logits.squeeze(0)?;
+            let single = [*token];
+            let logits_lazy = model
+                .forward(&single, pos)
+                .map_err(|e| E::msg(format!("forward: {e}")))?;
+            let logits_flat = logits_lazy.realize_f32();
+            let logits = last_logits(&logits_flat, 1)?;
             next_token = logits_processor.sample(&logits)?
         }
         next_token
@@ -285,9 +397,12 @@ fn main() -> anyhow::Result<()> {
 
     let mut sampled = 0;
     for index in 0..to_sample {
-        let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
-        let logits = model.forward(&input, tokens.len() + index)?;
-        let logits = logits.squeeze(0)?;
+        let single = [next_token];
+        let logits_lazy = model
+            .forward(&single, tokens.len() + index)
+            .map_err(|e| E::msg(format!("forward: {e}")))?;
+        let logits_flat = logits_lazy.realize_f32();
+        let logits = last_logits(&logits_flat, 1)?;
         let logits = if args.repeat_penalty == 1. {
             logits
         } else {

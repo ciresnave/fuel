@@ -1,4 +1,4 @@
-﻿use fuel::{IndexOp, Result, Tensor, D};
+use anyhow::Result;
 use tokenizers::Tokenizer;
 
 const LANGUAGES: [(&str, &str); 99] = [
@@ -103,37 +103,64 @@ const LANGUAGES: [(&str, &str); 99] = [
     ("su", "sundanese"),
 ];
 
-/// Returns the token id for the selected language.
+/// Detect the spoken language using the encoder + a single decoder
+/// step. Operates on a flat `[n_mels, total_frames]` mel buffer; clips
+/// the time axis to `max_source_positions` (the encoder's mel_time
+/// must be even for the stride-2 conv stem).
 pub fn detect_language(
-    model: &mut super::Model,
+    model: &super::Model,
     tokenizer: &Tokenizer,
-    mel: &Tensor,
+    mel: &[f32],
+    n_mels: usize,
+    total_frames: usize,
 ) -> Result<u32> {
-    let (_bsize, _, seq_len) = mel.dims3()?;
-    let mel = mel.narrow(
-        2,
-        0,
-        usize::min(seq_len, model.config().max_source_positions),
-    )?;
-    let device = mel.device();
+    let max_src = model.config().max_source_positions;
+    // mel_time = 2 * encoder_input_seq; the encoder downsamples by 2.
+    // Use min(total_frames, max_src*2) and round down to even.
+    let cap = 2 * max_src;
+    let mut seg_size = usize::min(total_frames, cap);
+    if !seg_size.is_multiple_of(2) {
+        seg_size -= 1;
+    }
+    // Extract the prefix segment from the row-major mel buffer.
+    let mut mel_segment = Vec::with_capacity(n_mels * seg_size);
+    for m in 0..n_mels {
+        let row = &mel[m * total_frames..m * total_frames + seg_size];
+        mel_segment.extend_from_slice(row);
+    }
+
+    let encoder_out = model.encoder_forward(&mel_segment, seg_size)?;
     let language_token_ids = LANGUAGES
         .iter()
         .map(|(t, _)| crate::token_id(tokenizer, &format!("<|{t}|>")))
-        .collect::<Result<Vec<_>>>()?;
-    let sot_token = crate::token_id(tokenizer, crate::m::SOT_TOKEN)?;
-    let audio_features = model.encoder_forward(&mel, true)?;
-    let tokens = Tensor::new(&[[sot_token]], device)?;
-    let language_token_ids = Tensor::new(language_token_ids.as_slice(), device)?;
-    let ys = model.decoder_forward(&tokens, &audio_features, true)?;
-    let logits = model.decoder_final_linear(&ys.i(..1)?)?.i(0)?.i(0)?;
-    let logits = logits.index_select(&language_token_ids, 0)?;
-    let probs = fuel_nn::ops::softmax(&logits, D::Minus1)?;
-    let probs = probs.to_vec1::<f32>()?;
-    let mut probs = LANGUAGES.iter().zip(probs.iter()).collect::<Vec<_>>();
-    probs.sort_by(|(_, p1), (_, p2)| p2.total_cmp(p1));
-    for ((_, language), p) in probs.iter().take(5) {
+        .collect::<fuel::Result<Vec<_>>>()
+        .map_err(|e| anyhow::Error::msg(format!("language token id: {e}")))?;
+    let sot_token = crate::token_id(tokenizer, crate::SOT_TOKEN)
+        .map_err(|e| anyhow::Error::msg(format!("sot token: {e}")))?;
+    let tokens = vec![sot_token];
+    let logits_flat = model.decoder_logits(&tokens, &encoder_out, seg_size)?;
+    let vocab = model.config().vocab_size;
+    // First-row (the only row) last-token logits — `[vocab]`.
+    let last_off = (tokens.len() - 1) * vocab;
+    let logits = &logits_flat[last_off..last_off + vocab];
+    // Softmax over the picked language token ids only.
+    let picked: Vec<f32> = language_token_ids.iter().map(|&i| logits[i as usize]).collect();
+    let probs = softmax_vec(&picked);
+    let mut probs_lang: Vec<((&str, &str), f32)> =
+        LANGUAGES.iter().copied().zip(probs.into_iter()).collect();
+    probs_lang.sort_by(|(_, p1), (_, p2)| p2.total_cmp(p1));
+    for ((_, language), p) in probs_lang.iter().take(5) {
         println!("{language}: {p}")
     }
-    let language = crate::token_id(tokenizer, &format!("<|{}|>", probs[0].0 .0))?;
+    let language = crate::token_id(tokenizer, &format!("<|{}|>", probs_lang[0].0 .0))
+        .map_err(|e| anyhow::Error::msg(format!("language token id: {e}")))?;
     Ok(language)
+}
+
+fn softmax_vec(logits: &[f32]) -> Vec<f32> {
+    let m = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let exps: Vec<f32> = logits.iter().map(|&v| (v - m).exp()).collect();
+    let s: f32 = exps.iter().sum();
+    let s = if s == 0.0 { 1.0 } else { s };
+    exps.into_iter().map(|v| v / s).collect()
 }

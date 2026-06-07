@@ -1,4 +1,4 @@
-﻿//! EVA-02: Explore the limits of Visual representation at scAle
+//! EVA-02: Explore the limits of Visual representation at scAle
 //! https://github.com/baaivision/EVA
 
 #[cfg(feature = "mkl")]
@@ -7,29 +7,39 @@ extern crate intel_mkl_src;
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
+use anyhow::Error as E;
 use clap::Parser;
 
-use fuel::{DType, Device, IndexOp, Result, Tensor, D};
-use fuel_nn::{Module, VarBuilder};
-use fuel_transformers::models::eva2;
+use fuel::lazy::LazyTensor;
+use fuel::lazy_eva2::{EvaConfig, EvaModel, EvaWeights};
+use fuel::safetensors::MmapedSafetensors;
+use fuel::{Device, Shape};
+use std::sync::Arc;
 
-/// Loads an image from disk using the image crate, this returns a tensor with shape
-/// (3, 448, 448). OpenAI normalization is applied.
-pub fn load_image448_openai_norm<P: AsRef<std::path::Path>>(p: P) -> Result<Tensor> {
+/// Loads an image from disk and applies OpenAI/CLIP normalization, returning
+/// a flat row-major Vec<f32> laid out as CHW for a single 448x448 RGB image.
+pub fn load_image448_openai_norm<P: AsRef<std::path::Path>>(p: P) -> anyhow::Result<Vec<f32>> {
     let img = image::ImageReader::open(p)?
-        .decode()
-        .map_err(fuel::Error::wrap)?
+        .decode()?
         .resize_to_fill(448, 448, image::imageops::FilterType::Triangle);
     let img = img.to_rgb8();
-    let data = img.into_raw();
-    let data = Tensor::from_vec(data, (448, 448, 3), &Device::cpu())?.permute((2, 0, 1))?;
-    let mean =
-        Tensor::new(&[0.48145466f32, 0.4578275, 0.40821073], &Device::cpu())?.reshape((3, 1, 1))?;
-    let std = Tensor::new(&[0.26862954f32, 0.261_302_6, 0.275_777_1], &Device::cpu())?
-        .reshape((3, 1, 1))?;
-    (data.to_dtype(fuel::DType::F32)? / 255.)?
-        .broadcast_sub(&mean)?
-        .broadcast_div(&std)
+    let raw = img.into_raw();
+    // raw is HWC u8 — convert to CHW f32 normalized with OpenAI mean/std.
+    let h = 448usize;
+    let w = 448usize;
+    let mean = [0.48145466f32, 0.4578275, 0.40821073];
+    let std = [0.26862954f32, 0.261_302_6, 0.275_777_1];
+    let mut out = vec![0.0_f32; 3 * h * w];
+    for y in 0..h {
+        for x in 0..w {
+            let base = (y * w + x) * 3;
+            for c in 0..3 {
+                let v = raw[base + c] as f32 / 255.0;
+                out[c * h * w + y * w + x] = (v - mean[c]) / std[c];
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Parser)]
@@ -48,10 +58,17 @@ struct Args {
 pub fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let device = fuel_examples::device(args.cpu)?;
+    // Lazy realizes through CPU/router; `cpu` flag preserved for CLI parity.
+    let _ = args.cpu;
+    let device = Device::cpu();
 
-    let image = load_image448_openai_norm(args.image)?.to_device(&device)?;
-    println!("loaded image {image:?}");
+    let pixels = load_image448_openai_norm(args.image)?;
+    let image = LazyTensor::from_f32(
+        Arc::<[f32]>::from(pixels),
+        Shape::from_dims(&[1, 3, 448, 448]),
+        &device,
+    );
+    println!("loaded image");
 
     let model_file = match args.model {
         None => {
@@ -61,14 +78,24 @@ pub fn main() -> anyhow::Result<()> {
         }
         Some(model) => model.into(),
     };
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model_file], DType::F32, &device)? };
 
-    let model = eva2::vit_base(vb)?;
+    let cfg = EvaConfig::vit_base();
+    let st = unsafe { MmapedSafetensors::multi(&[&model_file]) }
+        .map_err(|e| E::msg(format!("mmap: {e}")))?;
+    let weights = EvaWeights::load_from_mmapped(&st, &cfg)
+        .map_err(|e| E::msg(format!("weights: {e}")))?;
+    let model = EvaModel { config: cfg, weights };
     println!("model built");
-    let logits = model.forward(&image.unsqueeze(0)?)?;
-    let prs = fuel_nn::ops::softmax(&logits, D::Minus1)?
-        .i(0)?
-        .to_vec1::<f32>()?;
+
+    let logits_t = model.forward(&image)?;
+    let logits = logits_t.realize_f32();
+
+    // Softmax over the class dim (logits shape: [1, num_classes]).
+    let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let exp: Vec<f32> = logits.iter().map(|v| (v - max).exp()).collect();
+    let sum: f32 = exp.iter().sum();
+    let prs: Vec<f32> = exp.iter().map(|v| v / sum).collect();
+
     let mut prs = prs.iter().enumerate().collect::<Vec<_>>();
     prs.sort_by(|(_, p1), (_, p2)| p2.total_cmp(p1));
     for &(category_idx, pr) in prs.iter().take(5) {

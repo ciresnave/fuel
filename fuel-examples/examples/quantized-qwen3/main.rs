@@ -1,19 +1,21 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
+use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
 use std::io::Write;
 use tokenizers::Tokenizer;
 
+use fuel::lazy_qwen3::Qwen3Config;
+use fuel::lazy_quantized_qwen3::QuantizedQwen3Model;
 use fuel::quantized::gguf_mmap::MmapedContent;
 use fuel::Tensor;
 use fuel_transformers::generation::{LogitsProcessor, Sampling};
 
 use fuel_examples::token_output_stream::TokenOutputStream;
-use fuel_transformers::models::quantized_qwen3::ModelWeights as Qwen3;
 
 const DEFAULT_PROMPT: &str = "Write a Rust function to calculate the factorial of a given number.";
 
@@ -159,6 +161,62 @@ fn format_size(size_in_bytes: usize) -> String {
     }
 }
 
+/// Build a `Qwen3Config` by reading the GGUF metadata. The eager
+/// `quantized_qwen3` model used the same `qwen3.*` keys; we mirror that
+/// here so the binary keeps its zero-config-file flow.
+fn qwen3_cfg_from_gguf(mc: &MmapedContent) -> Result<Qwen3Config> {
+    let md = mc.metadata();
+    let get = |k: &str| -> Result<&fuel::quantized::gguf_file::Value> {
+        md.get(k).ok_or_else(|| E::msg(format!("gguf metadata: missing key {k:?}")))
+    };
+    let num_attention_heads = get("qwen3.attention.head_count")?.to_u32()? as usize;
+    let num_key_value_heads = get("qwen3.attention.head_count_kv")?.to_u32()? as usize;
+    let head_dim = get("qwen3.attention.key_length")?.to_u32()? as usize;
+    let num_hidden_layers = get("qwen3.block_count")?.to_u32()? as usize;
+    let hidden_size = get("qwen3.embedding_length")?.to_u32()? as usize;
+    let intermediate_size = get("qwen3.feed_forward_length")?.to_u32()? as usize;
+    let max_position_embeddings = get("qwen3.context_length")?.to_u32()? as usize;
+    let rms_norm_eps = get("qwen3.attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
+    let rope_theta = get("qwen3.rope.freq_base")?.to_f32()? as f64;
+    // Vocab size — derive from token-embedding tensor when not in metadata.
+    // GGUF reverses dimensions on read, so `token_embd.weight` ends up as
+    // `[vocab, hidden]` in PyTorch order — i.e. `dims[0] == vocab_size`.
+    let vocab_size = match md.get("qwen3.vocab_size") {
+        Some(v) => v.to_u32()? as usize,
+        None => {
+            let info = mc
+                .content()
+                .tensor_infos
+                .get("token_embd.weight")
+                .ok_or_else(|| E::msg("gguf: missing token_embd.weight"))?;
+            let dims = info.shape.dims();
+            if dims.is_empty() {
+                return Err(E::msg("gguf: token_embd.weight has empty shape"));
+            }
+            dims[0]
+        }
+    };
+    // Tied embeddings: presence of `output.weight` ⇒ untied; absence ⇒ tied.
+    let tie_word_embeddings = !mc.content().tensor_infos.contains_key("output.weight");
+    Ok(Qwen3Config {
+        vocab_size,
+        hidden_size,
+        intermediate_size,
+        num_hidden_layers,
+        num_attention_heads,
+        num_key_value_heads,
+        head_dim,
+        max_position_embeddings,
+        sliding_window: None,
+        max_window_layers: 0,
+        use_sliding_window: false,
+        rope_theta,
+        rms_norm_eps,
+        attention_bias: false,
+        tie_word_embeddings,
+    })
+}
+
 fn main() -> anyhow::Result<()> {
     use tracing_chrome::ChromeLayerBuilder;
     use tracing_subscriber::prelude::*;
@@ -186,36 +244,33 @@ fn main() -> anyhow::Result<()> {
 
     let model_path = args.model()?;
     let start = std::time::Instant::now();
-    let device = fuel_examples::device(args.cpu)?;
+    // CLI `--cpu` is preserved for compatibility; the lazy module picks
+    // its own device internally.
+    let _device = fuel_examples::device(args.cpu)?;
 
-    // Zero-syscall load: mmap the file once, parse the header off the
-    // mapping, then wrap the mmap slice in a Cursor so the existing
-    // Read+Seek-based loader reads tensors by pointer arithmetic
-    // instead of per-tensor seek + read_exact.
+    // Parse the GGUF header once via the mmapped helper. The lazy
+    // `from_gguf` then re-opens the same path internally; that re-mmap
+    // is the trade-off for not having to thread `Content` + reader
+    // through the lazy API.
     let mmaped = MmapedContent::from_path(&model_path).map_err(|e| e.with_path(&model_path))?;
     let metadata_done = start.elapsed();
-    let (mmap, content) = mmaped.into_parts();
     let mut total_size_in_bytes = 0;
-    for (_, tensor) in content.tensor_infos.iter() {
+    for (_, tensor) in mmaped.content().tensor_infos.iter() {
         let elem_count = tensor.shape.elem_count();
         total_size_in_bytes +=
             elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
     }
     println!(
         "mmapped {:?} tensors ({}); header in {:.2}s",
-        content.tensor_infos.len(),
+        mmaped.content().tensor_infos.len(),
         &format_size(total_size_in_bytes),
         metadata_done.as_secs_f32(),
     );
-    let mut model = {
-        let mut cursor = std::io::Cursor::new(&mmap[..]);
-        Qwen3::from_gguf(content, &mut cursor, &device)?
-    };
-    // `mmap` stays in scope until the end of main, so any tensor data
-    // that was memcpy'd out during from_gguf is independent of it and
-    // any lazily-held slice references (none today) would still be
-    // valid.
-    drop(mmap);
+
+    let cfg = qwen3_cfg_from_gguf(&mmaped)?;
+    drop(mmaped);
+    let model = QuantizedQwen3Model::from_gguf(&model_path, &cfg)
+        .map_err(|e| E::msg(format!("from_gguf: {e}")))?;
     println!(
         "model built in {:.2}s total",
         start.elapsed().as_secs_f32()
@@ -258,19 +313,35 @@ fn main() -> anyhow::Result<()> {
     };
 
     let start_prompt_processing = std::time::Instant::now();
+    let vocab_size = cfg.vocab_size;
+    let cpu = fuel::Device::cpu();
+
+    // Slice the last-position row out of a `(1, seq, vocab)` lazy logits
+    // tensor and rewrap as an eager 1-D `Tensor` so the existing
+    // `LogitsProcessor::sample` + `apply_repeat_penalty` glue keeps
+    // working unchanged.
+    let last_logits_to_tensor = |logits_flat: Vec<f32>, seq: usize| -> Result<Tensor> {
+        let last_off = (seq - 1) * vocab_size;
+        let row = logits_flat[last_off..last_off + vocab_size].to_vec();
+        Tensor::new(row, &cpu).map_err(|e| E::msg(format!("rewrap logits: {e}")))
+    };
 
     let mut next_token = if !args.split_prompt {
-        let input = Tensor::new(tokens, &device)?.unsqueeze(0)?;
-        let logits = model.forward(&input, 0)?;
-        let logits = logits.squeeze(0)?;
+        let logits_lazy = model
+            .forward(tokens, 0)
+            .map_err(|e| E::msg(format!("forward: {e}")))?;
+        let logits_flat = logits_lazy.realize_f32();
+        let logits = last_logits_to_tensor(logits_flat, tokens.len())?;
         logits_processor.sample(&logits)?
     } else {
         let mut next_token = 0;
         for (pos, token) in tokens.iter().enumerate() {
-            let input = Tensor::new(&[*token], &device)?.unsqueeze(0)?;
-            let logits = model.forward(&input, pos)?;
-            let logits = logits.squeeze(0)?;
-            next_token = logits_processor.sample(&logits)?
+            let logits_lazy = model
+                .forward(&[*token], pos)
+                .map_err(|e| E::msg(format!("forward: {e}")))?;
+            let logits_flat = logits_lazy.realize_f32();
+            let logits = last_logits_to_tensor(logits_flat, 1)?;
+            next_token = logits_processor.sample(&logits)?;
         }
         next_token
     };
@@ -290,9 +361,11 @@ fn main() -> anyhow::Result<()> {
 
     let mut sampled = 0;
     for index in 0..to_sample {
-        let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
-        let logits = model.forward(&input, tokens.len() + index)?;
-        let logits = logits.squeeze(0)?;
+        let logits_lazy = model
+            .forward(&[next_token], tokens.len() + index)
+            .map_err(|e| E::msg(format!("forward: {e}")))?;
+        let logits_flat = logits_lazy.realize_f32();
+        let logits = last_logits_to_tensor(logits_flat, 1)?;
         let logits = if args.repeat_penalty == 1. {
             logits
         } else {

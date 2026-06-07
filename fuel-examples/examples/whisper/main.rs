@@ -1,4 +1,5 @@
-﻿// https://github.com/openai/whisper/blob/main/whisper/model.py/rgs
+// https://github.com/openai/whisper/blob/main/whisper/model.py/rgs
+// Migrated to the lazy-graph API.
 // TODO:
 // - Batch size greater than 1.
 // - More token filters (SuppressBlanks, ApplyTimestampRules).
@@ -10,11 +11,6 @@ extern crate accelerate_src;
 extern crate intel_mkl_src;
 
 use anyhow::{Error as E, Result};
-use fuel::{Device, IndexOp, Tensor};
-use fuel_nn::{
-    ops::{log_softmax, softmax},
-    VarBuilder,
-};
 use clap::{Parser, ValueEnum};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use rand::distr::weighted::WeightedIndex;
@@ -24,45 +20,109 @@ use tokenizers::Tokenizer;
 
 mod multilingual;
 
-use fuel_transformers::models::whisper::{self as m, audio, Config};
+use fuel::lazy_whisper::{WhisperConfig, WhisperModel, WhisperWeights};
+use fuel::lazy_quantized_whisper::QuantizedWhisperModel;
 
-pub enum Model {
-    Normal(m::model::Whisper),
-    Quantized(m::quantized_model::Whisper),
+// Audio / decoding constants — formerly re-exported via
+// `fuel_transformers::models::whisper::*`.
+pub const SAMPLE_RATE: usize = 16000;
+pub const HOP_LENGTH: usize = 160;
+pub const CHUNK_LENGTH: usize = 30;
+pub const N_SAMPLES: usize = CHUNK_LENGTH * SAMPLE_RATE;
+pub const N_FRAMES: usize = N_SAMPLES / HOP_LENGTH; // 3000 frames per 30 s chunk
+
+pub const NO_SPEECH_THRESHOLD: f64 = 0.6;
+pub const LOGPROB_THRESHOLD: f64 = -1.0;
+pub const TEMPERATURES: [f64; 6] = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
+pub const COMPRESSION_RATIO_THRESHOLD: f64 = 2.4;
+
+pub const SOT_TOKEN: &str = "<|startoftranscript|>";
+pub const TRANSCRIBE_TOKEN: &str = "<|transcribe|>";
+pub const TRANSLATE_TOKEN: &str = "<|translate|>";
+pub const NO_TIMESTAMPS_TOKEN: &str = "<|notimestamps|>";
+pub const EOT_TOKEN: &str = "<|endoftext|>";
+pub const NO_SPEECH_TOKENS: [&str; 2] = ["<|nocaptions|>", "<|nospeech|>"];
+
+/// HF Whisper `config.json` carries a `suppress_tokens` field that the
+/// lazy `WhisperConfig` doesn't model — pull it out side-band so the
+/// decoder can mask the logits at sample time.
+fn parse_suppress_tokens(json_str: &str) -> Vec<u32> {
+    let v: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    v.get("suppress_tokens")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_i64().map(|n| n as u32))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-// Maybe we should use some traits rather than doing the dispatch for all these.
+pub enum Model {
+    Normal(WhisperModel),
+    Quantized(QuantizedWhisperModel),
+}
+
 impl Model {
-    pub fn config(&self) -> &Config {
+    pub fn config(&self) -> &WhisperConfig {
         match self {
             Self::Normal(m) => &m.config,
             Self::Quantized(m) => &m.config,
         }
     }
 
-    pub fn encoder_forward(&mut self, x: &Tensor, flush: bool) -> fuel::Result<Tensor> {
+    /// Run the encoder on a flat mel `[n_mels, mel_time]` slice and
+    /// return the realized `[1, mel_time/2, d_model]` encoder context as
+    /// a `Vec<f32>`. The decoder re-wraps it as a fresh lazy tensor on
+    /// each step.
+    pub fn encoder_forward(&self, mel_flat: &[f32], mel_time: usize) -> Result<Vec<f32>> {
         match self {
-            Self::Normal(m) => m.encoder.forward(x, flush),
-            Self::Quantized(m) => m.encoder.forward(x, flush),
+            Self::Normal(m) => {
+                let enc = m.forward_encoder(mel_flat, mel_time)
+                    .map_err(|e| E::msg(format!("encoder: {e}")))?;
+                Ok(enc.realize_f32())
+            }
+            Self::Quantized(m) => {
+                let enc = m.forward_encoder(mel_flat, mel_time)
+                    .map_err(|e| E::msg(format!("encoder: {e}")))?;
+                Ok(enc.realize_f32())
+            }
         }
     }
 
-    pub fn decoder_forward(
-        &mut self,
-        x: &Tensor,
-        xa: &Tensor,
-        flush: bool,
-    ) -> fuel::Result<Tensor> {
+    /// Run the decoder against a pre-realized encoder context (re-wrapped
+    /// here as a fresh lazy tensor) and return realized logits of shape
+    /// `[1, seq, vocab]` flattened row-major.
+    pub fn decoder_logits(
+        &self,
+        tokens: &[u32],
+        encoder_flat: &[f32],
+        mel_time: usize,
+    ) -> Result<Vec<f32>> {
+        let cfg = self.config();
+        let t_half = mel_time / 2;
+        let enc_shape = fuel::Shape::from_dims(&[1, t_half, cfg.d_model]);
+        let enc_t = fuel::lazy::LazyTensor::from_f32(
+            encoder_flat.to_vec(),
+            enc_shape,
+            &fuel::Device::cpu(),
+        );
         match self {
-            Self::Normal(m) => m.decoder.forward(x, xa, flush),
-            Self::Quantized(m) => m.decoder.forward(x, xa, flush),
-        }
-    }
-
-    pub fn decoder_final_linear(&self, x: &Tensor) -> fuel::Result<Tensor> {
-        match self {
-            Self::Normal(m) => m.decoder.final_linear(x),
-            Self::Quantized(m) => m.decoder.final_linear(x),
+            Self::Normal(m) => {
+                let logits = m
+                    .forward_decoder(tokens, &enc_t)
+                    .map_err(|e| E::msg(format!("decoder: {e}")))?;
+                Ok(logits.realize_f32())
+            }
+            Self::Quantized(m) => {
+                let logits = m
+                    .forward_decoder(tokens, &enc_t)
+                    .map_err(|e| E::msg(format!("decoder: {e}")))?;
+                Ok(logits.realize_f32())
+            }
         }
     }
 }
@@ -94,7 +154,8 @@ struct Decoder {
     max_initial_timestamp_index: Option<u32>,
     verbose: bool,
     tokenizer: Tokenizer,
-    suppress_tokens: Tensor,
+    /// Additive mask applied to logits to suppress non-speech tokens.
+    suppress_tokens: Vec<f32>,
     sot_token: u32,
     transcribe_token: u32,
     translate_token: u32,
@@ -110,33 +171,33 @@ impl Decoder {
         model: Model,
         tokenizer: Tokenizer,
         seed: u64,
-        device: &Device,
+        suppress_tokens_ids: &[u32],
         language_token: Option<u32>,
         task: Option<Task>,
         timestamps: bool,
         max_initial_timestamp_index: Option<u32>,
         verbose: bool,
     ) -> Result<Self> {
-        let no_timestamps_token = token_id(&tokenizer, m::NO_TIMESTAMPS_TOKEN)?;
+        let no_timestamps_token = token_id(&tokenizer, NO_TIMESTAMPS_TOKEN)?;
         // Suppress the notimestamps token when in timestamps mode.
         // https://github.com/openai/whisper/blob/e8622f9afc4eba139bf796c210f5c01081000472/whisper/decoding.py#L452
-        let suppress_tokens: Vec<f32> = (0..model.config().vocab_size as u32)
+        let vocab = model.config().vocab_size as u32;
+        let suppress_set: std::collections::HashSet<u32> =
+            suppress_tokens_ids.iter().copied().collect();
+        let suppress_tokens: Vec<f32> = (0..vocab)
             .map(|i| {
-                if model.config().suppress_tokens.contains(&i)
-                    || timestamps && i == no_timestamps_token
-                {
+                if suppress_set.contains(&i) || timestamps && i == no_timestamps_token {
                     f32::NEG_INFINITY
                 } else {
                     0f32
                 }
             })
             .collect();
-        let suppress_tokens = Tensor::new(suppress_tokens.as_slice(), device)?;
-        let sot_token = token_id(&tokenizer, m::SOT_TOKEN)?;
-        let transcribe_token = token_id(&tokenizer, m::TRANSCRIBE_TOKEN)?;
-        let translate_token = token_id(&tokenizer, m::TRANSLATE_TOKEN)?;
-        let eot_token = token_id(&tokenizer, m::EOT_TOKEN)?;
-        let no_speech_token = m::NO_SPEECH_TOKENS
+        let sot_token = token_id(&tokenizer, SOT_TOKEN)?;
+        let transcribe_token = token_id(&tokenizer, TRANSCRIBE_TOKEN)?;
+        let translate_token = token_id(&tokenizer, TRANSLATE_TOKEN)?;
+        let eot_token = token_id(&tokenizer, EOT_TOKEN)?;
+        let no_speech_token = NO_SPEECH_TOKENS
             .iter()
             .find_map(|token| token_id(&tokenizer, token).ok());
         let no_speech_token = match no_speech_token {
@@ -162,12 +223,19 @@ impl Decoder {
         })
     }
 
-    fn decode(&mut self, mel: &Tensor, t: f64) -> Result<DecodingResult> {
-        let audio_features = self.model.encoder_forward(mel, true)?;
+    fn decode(&mut self, mel_segment: &[f32], mel_time: usize, t: f64) -> Result<DecodingResult> {
+        // Run the encoder once per segment.
+        let audio_features = self.model.encoder_forward(mel_segment, mel_time)?;
         if self.verbose {
-            println!("audio features: {:?}", audio_features.dims());
+            let t_half = mel_time / 2;
+            println!(
+                "audio features: [1, {}, {}]",
+                t_half,
+                self.model.config().d_model
+            );
         }
         let sample_len = self.model.config().max_target_positions / 2;
+        let vocab = self.model.config().vocab_size;
         let mut sum_logprob = 0f64;
         let mut no_speech_prob = f64::NAN;
         let mut tokens = vec![self.sot_token];
@@ -182,47 +250,43 @@ impl Decoder {
             tokens.push(self.no_timestamps_token);
         }
         for i in 0..sample_len {
-            let tokens_t = Tensor::new(tokens.as_slice(), mel.device())?;
+            // Run the decoder over all current tokens. Returns flat
+            // `[1, seq, vocab]` logits.
+            let logits_flat =
+                self.model.decoder_logits(&tokens, &audio_features, mel_time)?;
+            let seq = tokens.len();
+            assert_eq!(logits_flat.len(), seq * vocab);
 
-            // The model expects a batch dim but this inference loop does not handle
-            // it so we add it at this point.
-            let tokens_t = tokens_t.unsqueeze(0)?;
-            let ys = self
-                .model
-                .decoder_forward(&tokens_t, &audio_features, i == 0)?;
-
-            // Extract the no speech probability on the first iteration by looking at the first
-            // token logits and the probability for the according token.
+            // Extract the no_speech probability on the first iteration
+            // by looking at the first token's logits and the probability
+            // for the according token.
             if i == 0 {
-                let logits = self.model.decoder_final_linear(&ys.i(..1)?)?.i(0)?.i(0)?;
-                no_speech_prob = softmax(&logits, 0)?
-                    .i(self.no_speech_token as usize)?
-                    .to_scalar::<f32>()? as f64;
+                let first_row = &logits_flat[0..vocab];
+                let probs = softmax_vec(first_row);
+                no_speech_prob = probs[self.no_speech_token as usize] as f64;
             }
 
-            let (_, seq_len, _) = ys.dims3()?;
-            let logits = self
-                .model
-                .decoder_final_linear(&ys.i((..1, seq_len - 1..))?)?
-                .i(0)?
-                .i(0)?;
+            // Last-row logits — `[vocab]`.
+            let last_off = (seq - 1) * vocab;
+            let mut logits: Vec<f32> = logits_flat[last_off..last_off + vocab].to_vec();
 
             // Apply timestamp rules when timestamps are enabled
-            let logits = if self.timestamps {
-                self.apply_timestamp_rules(&logits, &tokens)?
-            } else {
-                logits
-            };
+            if self.timestamps {
+                self.apply_timestamp_rules(&mut logits, &tokens);
+            }
 
-            let logits = logits.broadcast_add(&self.suppress_tokens)?;
+            // Apply the cached suppress-token additive mask.
+            for (l, s) in logits.iter_mut().zip(self.suppress_tokens.iter()) {
+                *l += *s;
+            }
+
             let next_token = if t > 0f64 {
-                let prs = softmax(&(&logits / t)?, 0)?;
-                let logits_v: Vec<f32> = prs.to_vec1()?;
-                let distr = WeightedIndex::new(&logits_v)?;
+                let scaled: Vec<f32> = logits.iter().map(|&v| v / (t as f32)).collect();
+                let prs = softmax_vec(&scaled);
+                let distr = WeightedIndex::new(&prs)?;
                 distr.sample(&mut self.rng) as u32
             } else {
-                let logits_v: Vec<f32> = logits.to_vec1()?;
-                logits_v
+                logits
                     .iter()
                     .enumerate()
                     .max_by(|(_, u), (_, v)| u.total_cmp(v))
@@ -230,9 +294,8 @@ impl Decoder {
                     .unwrap()
             };
             tokens.push(next_token);
-            let prob = softmax(&logits, fuel::D::Minus1)?
-                .i(next_token as usize)?
-                .to_scalar::<f32>()? as f64;
+            let probs = softmax_vec(&logits);
+            let prob = probs[next_token as usize] as f64;
             if next_token == self.eot_token
                 || tokens.len() > self.model.config().max_target_positions
             {
@@ -253,18 +316,22 @@ impl Decoder {
         })
     }
 
-    fn decode_with_fallback(&mut self, segment: &Tensor) -> Result<DecodingResult> {
-        for (i, &t) in m::TEMPERATURES.iter().enumerate() {
-            let dr: Result<DecodingResult> = self.decode(segment, t);
-            if i == m::TEMPERATURES.len() - 1 {
+    fn decode_with_fallback(
+        &mut self,
+        mel_segment: &[f32],
+        mel_time: usize,
+    ) -> Result<DecodingResult> {
+        for (i, &t) in TEMPERATURES.iter().enumerate() {
+            let dr: Result<DecodingResult> = self.decode(mel_segment, mel_time, t);
+            if i == TEMPERATURES.len() - 1 {
                 return dr;
             }
             // On errors, we try again with a different temperature.
             match dr {
                 Ok(dr) => {
-                    let needs_fallback = dr.compression_ratio > m::COMPRESSION_RATIO_THRESHOLD
-                        || dr.avg_logprob < m::LOGPROB_THRESHOLD;
-                    if !needs_fallback || dr.no_speech_prob > m::NO_SPEECH_THRESHOLD {
+                    let needs_fallback = dr.compression_ratio > COMPRESSION_RATIO_THRESHOLD
+                        || dr.avg_logprob < LOGPROB_THRESHOLD;
+                    if !needs_fallback || dr.no_speech_prob > NO_SPEECH_THRESHOLD {
                         return Ok(dr);
                     }
                 }
@@ -276,22 +343,19 @@ impl Decoder {
         unreachable!()
     }
 
-    fn apply_timestamp_rules(&self, input_logits: &Tensor, tokens: &[u32]) -> Result<Tensor> {
-        let device = input_logits.device().clone();
+    /// In-place additive masks on `logits` implementing the timestamp
+    /// rules from openai/whisper. Operates on a flat `[vocab]` slice.
+    fn apply_timestamp_rules(&self, logits: &mut [f32], tokens: &[u32]) {
         let timestamp_begin = self.no_timestamps_token + 1;
         let vocab_size = self.model.config().vocab_size as u32;
 
         // ========== SETUP: Extract sampled tokens for analysis ==========
         let sample_begin = if self.language_token.is_some() { 3 } else { 2 };
-        let sampled_tokens = if tokens.len() > sample_begin {
+        let sampled_tokens: &[u32] = if tokens.len() > sample_begin {
             &tokens[sample_begin..]
         } else {
             &[]
         };
-
-        let mut masks = Vec::new();
-        // Pre-allocate reusable mask buffer to avoid repeated allocations
-        let mut mask_buffer = vec![0.0f32; vocab_size as usize];
 
         // ========== RULE 1: Timestamp pairing constraints ==========
         // Timestamps must come in pairs, except directly before EOT
@@ -300,153 +364,106 @@ impl Decoder {
                 .last()
                 .map(|&t| t >= timestamp_begin)
                 .unwrap_or(false);
-
             let penultimate_was_timestamp = if sampled_tokens.len() >= 2 {
                 sampled_tokens[sampled_tokens.len() - 2] >= timestamp_begin
             } else {
                 false
             };
-
             if last_was_timestamp {
                 if penultimate_was_timestamp {
-                    // Has to be non-timestamp - suppress timestamp tokens
+                    // Has to be non-timestamp — suppress timestamp tokens
                     for i in 0..vocab_size {
-                        mask_buffer[i as usize] = if i >= timestamp_begin {
-                            f32::NEG_INFINITY
-                        } else {
-                            0.0
-                        };
+                        if i >= timestamp_begin {
+                            logits[i as usize] = f32::NEG_INFINITY;
+                        }
                     }
-                    masks.push(Tensor::new(mask_buffer.as_slice(), &device)?);
                 } else {
-                    // Cannot be normal text tokens - suppress everything before EOT
+                    // Cannot be normal text tokens — suppress everything before EOT
                     for i in 0..vocab_size {
-                        mask_buffer[i as usize] = if i < self.eot_token {
-                            f32::NEG_INFINITY
-                        } else {
-                            0.0
-                        };
+                        if i < self.eot_token {
+                            logits[i as usize] = f32::NEG_INFINITY;
+                        }
                     }
-                    masks.push(Tensor::new(mask_buffer.as_slice(), &device)?);
                 }
             }
 
             // ========== RULE 2: Non-decreasing timestamp constraint ==========
-            // Timestamps shouldn't decrease; forbid timestamp tokens smaller than the last
             let timestamp_tokens: Vec<u32> = sampled_tokens
                 .iter()
                 .filter(|&&t| t >= timestamp_begin)
-                .cloned()
+                .copied()
                 .collect();
-
             if !timestamp_tokens.is_empty() {
                 let timestamp_last = if last_was_timestamp && !penultimate_was_timestamp {
                     *timestamp_tokens.last().unwrap()
                 } else {
                     timestamp_tokens.last().unwrap() + 1
                 };
-
                 for i in 0..vocab_size {
-                    mask_buffer[i as usize] = if i >= timestamp_begin && i < timestamp_last {
-                        f32::NEG_INFINITY
-                    } else {
-                        0.0
-                    };
+                    if i >= timestamp_begin && i < timestamp_last {
+                        logits[i as usize] = f32::NEG_INFINITY;
+                    }
                 }
-                masks.push(Tensor::new(mask_buffer.as_slice(), &device)?);
             }
         }
 
         // ========== RULE 3: Force initial timestamp ==========
-        // At the beginning, suppress generating non-timestamp tokens
         if tokens.len() == sample_begin {
             for i in 0..vocab_size {
-                mask_buffer[i as usize] = if i < timestamp_begin {
-                    f32::NEG_INFINITY
-                } else {
-                    0.0
-                };
+                if i < timestamp_begin {
+                    logits[i as usize] = f32::NEG_INFINITY;
+                }
             }
-            masks.push(Tensor::new(mask_buffer.as_slice(), &device)?);
-
-            // Apply the max_initial_timestamp constraint
             if let Some(max_initial_timestamp_index) = self.max_initial_timestamp_index {
                 let last_allowed = timestamp_begin + max_initial_timestamp_index;
                 if last_allowed < vocab_size {
                     for i in 0..vocab_size {
-                        mask_buffer[i as usize] = if i > last_allowed {
-                            f32::NEG_INFINITY
-                        } else {
-                            0.0
-                        };
+                        if i > last_allowed {
+                            logits[i as usize] = f32::NEG_INFINITY;
+                        }
                     }
-                    masks.push(Tensor::new(mask_buffer.as_slice(), &device)?);
                 }
             }
         }
 
-        // ========== APPLY MASKS: Apply all constraint masks ==========
-        let mut logits = input_logits.clone();
-        for mask in masks {
-            logits = logits.broadcast_add(&mask)?;
-        }
-
         // ========== RULE 4: Probability-based timestamp preference ==========
-        // If sum of probability over timestamps is above any other token, sample timestamp
-        let log_probs = log_softmax(&logits, 0)?;
-
-        // Extract timestamp and text log probabilities
-        let timestamp_log_probs = log_probs.narrow(
-            0,
-            timestamp_begin as usize,
-            vocab_size as usize - timestamp_begin as usize,
-        )?;
-
-        let text_log_probs = log_probs.narrow(0, 0, timestamp_begin as usize)?;
-
-        // Implement logsumexp for timestamp tokens (numerically stable)
-        let timestamp_logprob = {
-            let max_val = timestamp_log_probs.max(0)?;
-            let shifted = timestamp_log_probs.broadcast_sub(&max_val)?;
-            let exp_shifted = shifted.exp()?;
-            let sum_exp = exp_shifted.sum(0)?;
-            let log_sum = sum_exp.log()?;
-            max_val.broadcast_add(&log_sum)?.to_scalar::<f32>()?
-        };
-
-        // Get max text token log probability
-        let max_text_token_logprob: f32 = text_log_probs.max(0)?.to_scalar::<f32>()?;
-
-        // Compare in log space
+        let log_probs = log_softmax_vec(logits);
+        let timestamp_logprob = logsumexp(&log_probs[timestamp_begin as usize..]);
+        let max_text_token_logprob = log_probs[..timestamp_begin as usize]
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
         if timestamp_logprob > max_text_token_logprob {
-            // Only consider timestamp tokens
+            // Only consider timestamp tokens.
             for i in 0..vocab_size {
-                mask_buffer[i as usize] = if i < timestamp_begin {
-                    f32::NEG_INFINITY
-                } else {
-                    0.0
-                };
+                if i < timestamp_begin {
+                    logits[i as usize] = f32::NEG_INFINITY;
+                }
             }
-            let mask_tensor = Tensor::new(mask_buffer.as_slice(), &device)?;
-            logits = logits.broadcast_add(&mask_tensor)?;
         }
-
-        Ok(logits)
     }
 
-    fn run(&mut self, mel: &Tensor) -> Result<Vec<Segment>> {
-        let (_, _, content_frames) = mel.dims3()?;
+    fn run(&mut self, mel: &[f32], n_mels: usize, total_frames: usize) -> Result<Vec<Segment>> {
         let mut seek = 0;
         let mut segments = vec![];
-        while seek < content_frames {
+        while seek < total_frames {
             let start = std::time::Instant::now();
-            let time_offset = (seek * m::HOP_LENGTH) as f64 / m::SAMPLE_RATE as f64;
-            let segment_size = usize::min(content_frames - seek, m::N_FRAMES);
-            let mel_segment = mel.narrow(2, seek, segment_size)?;
-            let segment_duration = (segment_size * m::HOP_LENGTH) as f64 / m::SAMPLE_RATE as f64;
-            let dr = self.decode_with_fallback(&mel_segment)?;
+            let time_offset = (seek * HOP_LENGTH) as f64 / SAMPLE_RATE as f64;
+            let segment_size = usize::min(total_frames - seek, N_FRAMES);
+            // The encoder requires an even mel_time (stride-2 conv).
+            let segment_size = if segment_size.is_multiple_of(2) {
+                segment_size
+            } else {
+                segment_size - 1
+            };
+            if segment_size == 0 {
+                break;
+            }
+            let mel_segment = extract_mel_segment(mel, n_mels, total_frames, seek, segment_size);
+            let segment_duration = (segment_size * HOP_LENGTH) as f64 / SAMPLE_RATE as f64;
+            let dr = self.decode_with_fallback(&mel_segment, segment_size)?;
             seek += segment_size;
-            if dr.no_speech_prob > m::NO_SPEECH_THRESHOLD && dr.avg_logprob < m::LOGPROB_THRESHOLD {
+            if dr.no_speech_prob > NO_SPEECH_THRESHOLD && dr.avg_logprob < LOGPROB_THRESHOLD {
                 println!("no speech detected, skipping {seek} {dr:?}");
                 continue;
             }
@@ -469,13 +486,17 @@ impl Decoder {
                     }
                     // The no_timestamp_token is the last before the timestamp ones.
                     if token > self.no_timestamps_token {
-                        let timestamp_s = (token - self.no_timestamps_token + 1) as f32 / 50.;
+                        let timestamp_s =
+                            (token - self.no_timestamps_token + 1) as f32 / 50.;
                         if !tokens_to_decode.is_empty() {
                             let text = self
                                 .tokenizer
                                 .decode(&tokens_to_decode, true)
                                 .map_err(E::msg)?;
-                            println!("  {:.1}s-{:.1}s: {}", prev_timestamp_s, timestamp_s, text);
+                            println!(
+                                "  {:.1}s-{:.1}s: {}",
+                                prev_timestamp_s, timestamp_s, text
+                            );
                             tokens_to_decode.clear()
                         }
                         prev_timestamp_s = timestamp_s;
@@ -508,6 +529,51 @@ impl Decoder {
         }
         Ok(segments)
     }
+}
+
+/// Extract a `[n_mels, segment_size]` flat slice from a `[n_mels, total_frames]`
+/// row-major mel buffer.
+fn extract_mel_segment(
+    mel: &[f32],
+    n_mels: usize,
+    total_frames: usize,
+    seek: usize,
+    segment_size: usize,
+) -> Vec<f32> {
+    let mut out = Vec::with_capacity(n_mels * segment_size);
+    for m in 0..n_mels {
+        let row = &mel[m * total_frames + seek..m * total_frames + seek + segment_size];
+        out.extend_from_slice(row);
+    }
+    out
+}
+
+fn softmax_vec(logits: &[f32]) -> Vec<f32> {
+    let m = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let exps: Vec<f32> = logits.iter().map(|&v| (v - m).exp()).collect();
+    let s: f32 = exps.iter().sum();
+    let s = if s == 0.0 { 1.0 } else { s };
+    exps.into_iter().map(|v| v / s).collect()
+}
+
+fn log_softmax_vec(logits: &[f32]) -> Vec<f32> {
+    let m = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let exps: Vec<f32> = logits.iter().map(|&v| (v - m).exp()).collect();
+    let s: f32 = exps.iter().sum();
+    let log_s = s.ln();
+    logits.iter().map(|&v| (v - m) - log_s).collect()
+}
+
+fn logsumexp(vals: &[f32]) -> f32 {
+    if vals.is_empty() {
+        return f32::NEG_INFINITY;
+    }
+    let m = vals.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if !m.is_finite() {
+        return m;
+    }
+    let s: f32 = vals.iter().map(|&v| (v - m).exp()).sum();
+    m + s.ln()
 }
 
 pub fn token_id(tokenizer: &Tokenizer, token: &str) -> fuel::Result<u32> {
@@ -659,7 +725,7 @@ fn main() -> Result<()> {
     } else {
         None
     };
-    let device = fuel_examples::device(args.cpu)?;
+    let _device = fuel_examples::device(args.cpu)?;
     let (default_model, default_revision) = if args.quantized {
         ("lmz/fuel-whisper", "main")
     } else {
@@ -707,7 +773,10 @@ fn main() -> Result<()> {
         };
         (config, tokenizer, model, sample)
     };
-    let config: Config = serde_json::from_str(&std::fs::read_to_string(config_filename)?)?;
+    let config_json = std::fs::read_to_string(&config_filename)?;
+    let config: WhisperConfig = WhisperConfig::from_hf_json_str(&config_json)
+        .map_err(|e| E::msg(format!("parse whisper config: {e}")))?;
+    let suppress_tokens_ids = parse_suppress_tokens(&config_json);
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
 
     let mel_bytes = match config.num_mel_bins {
@@ -719,33 +788,39 @@ fn main() -> Result<()> {
     <byteorder::LittleEndian as byteorder::ByteOrder>::read_f32_into(mel_bytes, &mut mel_filters);
 
     let (pcm_data, sample_rate) = fuel_examples::audio::pcm_decode(input)?;
-    if sample_rate != m::SAMPLE_RATE as u32 {
-        anyhow::bail!("input file must have a {} sampling rate", m::SAMPLE_RATE)
+    if sample_rate != SAMPLE_RATE as u32 {
+        anyhow::bail!("input file must have a {} sampling rate", SAMPLE_RATE)
     }
     println!("pcm data loaded {}", pcm_data.len());
-    let mel = audio::pcm_to_mel(&config, &pcm_data, &mel_filters);
-    let mel_len = mel.len();
-    let mel = Tensor::from_vec(
-        mel,
-        (1, config.num_mel_bins, mel_len / config.num_mel_bins),
-        &device,
-    )?;
-    println!("loaded mel: {:?}", mel.dims());
+    // Build the flat `[n_mels, n_frames]` mel via the lazy-graph-free
+    // audio helper. The eager path used `m::audio::pcm_to_mel(config,
+    // pcm_data, mel_filters)`; the lazy helper takes the explicit
+    // `n_mels` instead of the config.
+    let mel = fuel::lazy_whisper_audio::pcm_to_mel(&pcm_data, &mel_filters, config.num_mel_bins)
+        .map_err(|e| E::msg(format!("pcm_to_mel: {e}")))?;
+    let total_frames = mel.len() / config.num_mel_bins;
+    println!("loaded mel: [{}, {}]", config.num_mel_bins, total_frames);
 
-    let mut model = if args.quantized {
-        let vb = fuel_transformers::quantized_var_builder::VarBuilder::from_gguf(
-            &weights_filename,
-            &device,
-        )?;
-        Model::Quantized(m::quantized_model::Whisper::load(&vb, config)?)
+    let model = if args.quantized {
+        let m = QuantizedWhisperModel::from_gguf(&weights_filename)
+            .map_err(|e| E::msg(format!("quantized whisper: {e}")))?;
+        Model::Quantized(m)
     } else {
-        let vb =
-            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], m::DTYPE, &device)? };
-        Model::Normal(m::model::Whisper::load(&vb, config)?)
+        let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&[weights_filename]) }
+            .map_err(|e| E::msg(format!("mmap: {e}")))?;
+        let weights = WhisperWeights::load_from_mmapped(&st, &config)
+            .map_err(|e| E::msg(format!("weights: {e}")))?;
+        Model::Normal(WhisperModel { config: config.clone(), weights })
     };
 
     let language_token = match (args.model.is_multilingual(), args.language) {
-        (true, None) => Some(multilingual::detect_language(&mut model, &tokenizer, &mel)?),
+        (true, None) => Some(multilingual::detect_language(
+            &model,
+            &tokenizer,
+            &mel,
+            config.num_mel_bins,
+            total_frames,
+        )?),
         (false, None) => None,
         (true, Some(language)) => match token_id(&tokenizer, &format!("<|{language}|>")) {
             Ok(token_id) => Some(token_id),
@@ -759,13 +834,13 @@ fn main() -> Result<()> {
         model,
         tokenizer,
         args.seed,
-        &device,
+        &suppress_tokens_ids,
         language_token,
         args.task,
         args.timestamps,
         args.max_initial_timestamp_index,
         args.verbose,
     )?;
-    dc.run(&mel)?;
+    dc.run(&mel, config.num_mel_bins, total_frames)?;
     Ok(())
 }

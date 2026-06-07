@@ -1,51 +1,51 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-use anyhow::Result;
+use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
 
-use fuel_transformers::models::quantized_rwkv_v5::Model as Q5;
-use fuel_transformers::models::quantized_rwkv_v6::Model as Q6;
-use fuel_transformers::models::rwkv_v5::{Config, Model as M5, State, Tokenizer};
-use fuel_transformers::models::rwkv_v6::Model as M6;
-use fuel_transformers::models::rwkv_v7::{
-    Config as ConfigV7, Model as M7, ModelVersion, State as StateV7,
-};
+// The RWKV byte-pair tokenizer is a small custom helper that has no equivalent
+// in the lazy-graph module set, so keep importing it from fuel_transformers
+// (this is purely a tokenization utility — no eager Tensor ops involved).
+use fuel_transformers::models::rwkv_v5::Tokenizer;
 
-use fuel::{DType, Device, Tensor};
-use fuel_nn::VarBuilder;
-use fuel_transformers::generation::LogitsProcessor;
+use fuel::lazy_rwkv5::{Rwkv5Config, Rwkv5Model, Rwkv5Weights};
+use fuel::lazy_rwkv6::{Rwkv6Model, Rwkv6Weights};
+use fuel::lazy_rwkv7::{Rwkv7Config, Rwkv7Model, Rwkv7Weights};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 
 const EOS_TOKEN_ID: u32 = 261;
 
 enum Model {
-    M5(M5),
-    Q5(Q5),
-    M6(M6),
-    Q6(Q6),
+    M5(Rwkv5Model),
+    M6(Rwkv6Model),
 }
 
 impl Model {
-    fn forward(&self, xs: &Tensor, state: &mut State) -> fuel::Result<Tensor> {
+    fn forward(&self, tokens: &[u32]) -> fuel::Result<fuel::lazy::LazyTensor> {
         match self {
-            Self::M5(m) => m.forward(xs, state),
-            Self::Q5(m) => m.forward(xs, state),
-            Self::M6(m) => m.forward(xs, state),
-            Self::Q6(m) => m.forward(xs, state),
+            Self::M5(m) => m.forward(tokens),
+            Self::M6(m) => m.forward(tokens),
+        }
+    }
+
+    fn vocab_size(&self) -> usize {
+        match self {
+            Self::M5(m) => m.config.vocab_size,
+            Self::M6(m) => m.config.vocab_size,
         }
     }
 }
 
 struct TextGeneration {
     model: Model,
-    config: Config,
-    device: Device,
     tokenizer: Tokenizer,
-    logits_processor: LogitsProcessor,
+    seed: u64,
+    temperature: f32,
+    top_p: Option<f32>,
     repeat_penalty: f32,
     repeat_last_n: usize,
 }
@@ -54,59 +54,57 @@ impl TextGeneration {
     #[allow(clippy::too_many_arguments)]
     fn new(
         model: Model,
-        config: Config,
         tokenizer: Tokenizer,
         seed: u64,
         temp: Option<f64>,
         top_p: Option<f64>,
         repeat_penalty: f32,
         repeat_last_n: usize,
-        device: &Device,
     ) -> Self {
-        let logits_processor = LogitsProcessor::new(seed, temp, top_p);
         Self {
             model,
-            config,
             tokenizer,
-            logits_processor,
+            seed,
+            temperature: temp.unwrap_or(0.0) as f32,
+            top_p: top_p.map(|p| p as f32),
             repeat_penalty,
             repeat_last_n,
-            device: device.clone(),
         }
     }
 
     fn run(&mut self, prompt: &str, sample_len: usize) -> Result<()> {
         use std::io::Write;
         let mut tokens = self.tokenizer.encode(prompt)?;
-        let mut generated_tokens = 0usize;
-        let mut state = State::new(1, &self.config, &self.device)?;
-        let mut next_logits = None;
-        for &t in tokens.iter() {
-            let input = Tensor::new(&[[t]], &self.device)?;
-            let logits = self.model.forward(&input, &mut state)?;
-            next_logits = Some(logits);
-            print!("{}", self.tokenizer.decode(&[t])?)
-        }
+        let vocab_size = self.model.vocab_size();
+        print!("{}", self.tokenizer.decode(&tokens)?);
         std::io::stdout().flush()?;
 
+        let mut generated_tokens = 0usize;
         let start_gen = std::time::Instant::now();
-        for _ in 0..sample_len {
-            let logits = match next_logits.as_ref() {
-                Some(logits) => logits,
-                None => anyhow::bail!("cannot work on an empty prompt"),
-            };
-            let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
-            let logits = if self.repeat_penalty == 1. {
-                logits
-            } else {
+        for index in 0..sample_len {
+            // Prefill-only: re-run the whole sequence each step. The lazy
+            // RWKV modules unroll the time loop at graph-build time and do
+            // not yet expose a resume-from-state API; mirror the mamba
+            // binary's per-step rerun.
+            let logits = self
+                .model
+                .forward(&tokens)
+                .map_err(|e| E::msg(format!("forward: {e}")))?;
+            let logits_data = logits.realize_f32();
+            let seq = tokens.len();
+            let last_off = (seq - 1) * vocab_size;
+            let mut last_logits: Vec<f32> = logits_data[last_off..last_off + vocab_size].to_vec();
+            if self.repeat_penalty != 1.0 {
                 let start_at = tokens.len().saturating_sub(self.repeat_last_n);
-                fuel_transformers::utils::apply_repeat_penalty(
-                    &logits,
-                    self.repeat_penalty,
-                    &tokens[start_at..],
-                )?
-            };
-            let next_token = self.logits_processor.sample(&logits)?;
+                apply_repeat_penalty(&mut last_logits, self.repeat_penalty, &tokens[start_at..]);
+            }
+            let next_token = sample(
+                &last_logits,
+                self.temperature,
+                None,
+                self.top_p,
+                self.seed.wrapping_add(index as u64),
+            );
             tokens.push(next_token);
             generated_tokens += 1;
             if next_token == EOS_TOKEN_ID || next_token == 0 {
@@ -114,9 +112,6 @@ impl TextGeneration {
             }
             print!("{}", self.tokenizer.decode(&[next_token])?);
             std::io::stdout().flush()?;
-
-            let input = Tensor::new(&[[next_token]], &self.device)?;
-            next_logits = Some(self.model.forward(&input, &mut state)?)
         }
         let dt = start_gen.elapsed();
         println!(
@@ -128,14 +123,17 @@ impl TextGeneration {
 }
 
 /// Text generation pipeline for RWKV v7 models.
-/// Separate from v5/v6 because v7 has different Config, State, and forward signature.
+/// Separate from v5/v6 because v7's eager binary previously had a
+/// different State, but in the lazy port both share the prefill-only
+/// "re-run the whole sequence" pattern. The v7 flow keeps the
+/// presence/frequency penalty + stop-sequence logic from the eager
+/// binary since it's binary-side bookkeeping (no Tensor ops).
 struct TextGenerationV7 {
-    model: M7,
-    config: ConfigV7,
-    device: Device,
-    dtype: DType,
+    model: Rwkv7Model,
     tokenizer: Tokenizer,
-    logits_processor: LogitsProcessor,
+    seed: u64,
+    temperature: f32,
+    top_p: Option<f32>,
     alpha_presence: f32,
     alpha_frequency: f32,
     alpha_decay: f32,
@@ -145,8 +143,7 @@ struct TextGenerationV7 {
 impl TextGenerationV7 {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        model: M7,
-        config: ConfigV7,
+        model: Rwkv7Model,
         tokenizer: Tokenizer,
         seed: u64,
         temp: Option<f64>,
@@ -154,21 +151,17 @@ impl TextGenerationV7 {
         alpha_presence: f32,
         alpha_frequency: f32,
         alpha_decay: f32,
-        device: &Device,
-        dtype: DType,
         stop: Option<String>,
     ) -> Self {
-        let logits_processor = LogitsProcessor::new(seed, temp, top_p);
         Self {
             model,
-            config,
             tokenizer,
-            logits_processor,
+            seed,
+            temperature: temp.unwrap_or(1.0) as f32,
+            top_p: top_p.map(|p| p as f32),
             alpha_presence,
             alpha_frequency,
             alpha_decay,
-            device: device.clone(),
-            dtype,
             stop,
         }
     }
@@ -178,20 +171,13 @@ impl TextGenerationV7 {
         // Strip trailing whitespace — RWKV tokenizer produces non-English output otherwise
         let prompt = prompt.trim_end();
         let mut tokens = self.tokenizer.encode(prompt)?;
-        let mut generated_tokens = 0usize;
-        let mut state = StateV7::new_with_dtype(&self.config, &self.device, self.dtype)?;
+        let vocab_size = self.model.config.vocab_size;
 
         // RWKV penalty state: per-token occurrence counts with exponential decay
-        let vocab_size = self.config.vocab_size;
         let penalties_enabled = self.alpha_presence != 0.0 || self.alpha_frequency != 0.0;
         let mut occurrence: Vec<f32> = vec![0.0; vocab_size];
 
-        // Process prompt using batched forward_seq for efficiency
-        let start_prompt = std::time::Instant::now();
-        let next_logits = self.model.forward_seq(&tokens, &mut state)?;
-        let prompt_time = start_prompt.elapsed();
-
-        // Update penalty counts for prompt tokens
+        // Update penalty counts for prompt tokens up front (matches eager order).
         if penalties_enabled {
             for &t in tokens.iter() {
                 for count in occurrence.iter_mut() {
@@ -207,40 +193,41 @@ impl TextGenerationV7 {
         print!("{}", self.tokenizer.decode(&tokens)?);
         std::io::stdout().flush()?;
 
-        let mut next_logits = Some(next_logits);
-        println!(
-            "\n[prompt: {} tokens in {:.2}s, {:.1} tok/s]",
-            tokens.len(),
-            prompt_time.as_secs_f64(),
-            tokens.len() as f64 / prompt_time.as_secs_f64()
-        );
-
         // Track generated text for stop sequence detection
         let mut generated_text = String::new();
         let mut printed_len = 0; // How many chars we've already printed
+        let mut generated_tokens = 0usize;
 
         let start_gen = std::time::Instant::now();
-        for _ in 0..sample_len {
-            let logits = match next_logits.as_ref() {
-                Some(logits) => logits,
-                None => anyhow::bail!("cannot work on an empty prompt"),
-            };
-            let logits = logits.to_dtype(DType::F32)?;
+        for index in 0..sample_len {
+            // Prefill-only: re-run the whole sequence each step. The lazy
+            // RWKV-v7 module unrolls the time loop at graph-build time and
+            // does not yet expose a resume-from-state API.
+            let logits = self
+                .model
+                .forward(&tokens)
+                .map_err(|e| E::msg(format!("forward: {e}")))?;
+            let logits_data = logits.realize_f32();
+            let seq = tokens.len();
+            let last_off = (seq - 1) * vocab_size;
+            let mut last_logits: Vec<f32> = logits_data[last_off..last_off + vocab_size].to_vec();
 
             // Apply RWKV presence + frequency penalty
-            let logits = if penalties_enabled {
-                let mut logits_vec = logits.to_vec1::<f32>()?;
-                for (i, logit) in logits_vec.iter_mut().enumerate() {
+            if penalties_enabled {
+                for (i, logit) in last_logits.iter_mut().enumerate() {
                     if occurrence[i] > 0.0 {
                         *logit -= self.alpha_presence + self.alpha_frequency * occurrence[i];
                     }
                 }
-                Tensor::from_vec(logits_vec, vocab_size, logits.device())?
-            } else {
-                logits
-            };
+            }
 
-            let next_token = self.logits_processor.sample(&logits)?;
+            let next_token = sample(
+                &last_logits,
+                self.temperature,
+                None,
+                self.top_p,
+                self.seed.wrapping_add(index as u64),
+            );
             tokens.push(next_token);
             generated_tokens += 1;
 
@@ -291,9 +278,6 @@ impl TextGenerationV7 {
                 print!("{}", token_text);
                 std::io::stdout().flush()?;
             }
-
-            let input = Tensor::new(&[[next_token]], &self.device)?;
-            next_logits = Some(self.model.forward(&input, &mut state, &[next_token])?)
         }
         let dt = start_gen.elapsed();
         println!(
@@ -387,40 +371,18 @@ impl Which {
         }
     }
 
-    fn v7_version(&self) -> Option<ModelVersion> {
+    /// Built-in v7 config skeleton (`hidden_size`, `num_hidden_layers`).
+    /// LoRA dims are filled in from the safetensors at load time.
+    fn v7_skeleton(&self) -> Option<(usize, usize)> {
         match self {
-            Self::Rwkv7G1d0_1b
-            | Self::Rwkv7G1d0_4b
-            | Self::Rwkv7G1d1_5b
-            | Self::Rwkv7G1d2_9b
-            | Self::Rwkv7G1d7_2b
-            | Self::Rwkv7G1d13_3b => Some(ModelVersion::V7),
-            Self::Rwkv7aG1d0_1b => Some(ModelVersion::V7a),
-            Self::Rwkv7bG1b0_1b => Some(ModelVersion::V7b),
+            Self::Rwkv7G1d0_1b | Self::Rwkv7aG1d0_1b | Self::Rwkv7bG1b0_1b => Some((768, 12)),
+            Self::Rwkv7G1d0_4b => Some((1024, 24)),
+            Self::Rwkv7G1d1_5b => Some((2048, 24)),
+            Self::Rwkv7G1d2_9b => Some((2560, 32)),
+            Self::Rwkv7G1d7_2b => Some((4096, 32)),
+            Self::Rwkv7G1d13_3b => Some((4096, 61)),
             _ => None,
         }
-    }
-
-    fn v7_config(&self) -> Option<ConfigV7> {
-        let version = self.v7_version()?;
-        let (hidden_size, num_hidden_layers) = match self {
-            Self::Rwkv7G1d0_1b | Self::Rwkv7aG1d0_1b | Self::Rwkv7bG1b0_1b => (768, 12),
-            Self::Rwkv7G1d0_4b => (1024, 24),
-            Self::Rwkv7G1d1_5b => (2048, 24),
-            Self::Rwkv7G1d2_9b => (2560, 32),
-            Self::Rwkv7G1d7_2b => (4096, 32),
-            Self::Rwkv7G1d13_3b => (4096, 61),
-            _ => return None,
-        };
-        Some(ConfigV7 {
-            version,
-            vocab_size: 65536,
-            hidden_size,
-            num_hidden_layers,
-            head_size: 64,
-            intermediate_size: None, // defaults to hidden_size * 4
-            rescale_every: 0,
-        })
     }
 }
 
@@ -561,10 +523,12 @@ struct Args {
     #[arg(long)]
     config_file: Option<String>,
 
+    /// Quantized GGUF weights are not yet wired into the lazy RWKV port —
+    /// passing this flag will error out cleanly.
     #[arg(long)]
     quantized: bool,
 
-    /// Data type for inference: f32, f16, or bf16. Half precision (f16/bf16) is faster.
+    /// Data type for inference: kept for CLI-compat; lazy RWKV runs in F32.
     #[arg(long, default_value = "f32")]
     dtype: String,
 
@@ -622,15 +586,22 @@ fn main() -> Result<()> {
         }
     }
 
+    // CLI compat: --cpu and --dtype have no effect on the lazy port (executor
+    // chooses device + dtype is fixed at F32 in the lazy v1 modules).
+    let _ = args.cpu;
+    let _ = args.dtype;
+
     let api = Api::new()?;
     let repo = api.repo(Repo::with_revision(
         args.model_id
+            .clone()
             .unwrap_or_else(|| args.which.model_id().to_string()),
         RepoType::Model,
         args.revision
+            .clone()
             .unwrap_or_else(|| args.which.revision().to_string()),
     ));
-    let tokenizer = match args.tokenizer {
+    let tokenizer_path = match &args.tokenizer {
         Some(file) => std::path::PathBuf::from(file),
         None => api
             .model("lmz/fuel-rwkv".to_string())
@@ -641,86 +612,110 @@ fn main() -> Result<()> {
         (None, true) => None, // v7 models use built-in config, no config.json needed
         (None, false) => Some(repo.get("config.json")?),
     };
-    let filenames = match args.weight_files {
+    let filenames = match &args.weight_files {
         Some(files) => files
             .split(',')
             .map(std::path::PathBuf::from)
             .collect::<Vec<_>>(),
         None => {
             if args.quantized {
-                if args.which.is_v7() {
-                    anyhow::bail!("quantized RWKV v7 models are not yet supported");
-                }
-                vec![match args.which {
-                    Which::World1b5 => api
-                        .model("lmz/fuel-rwkv".to_string())
-                        .get("world1b5-q4k.gguf")?,
-                    Which::World3b => api
-                        .model("lmz/fuel-rwkv".to_string())
-                        .get("world3b-q4k.gguf")?,
-                    Which::Eagle7b => api
-                        .model("lmz/fuel-rwkv".to_string())
-                        .get("eagle7b-q4k.gguf")?,
-                    Which::World6_1b6 => repo.get("rwkv-6-world-1b6-q4k.gguf")?,
-                    _ => unreachable!(),
-                }]
-            } else {
-                vec![match args.which {
-                    Which::World1b5 | Which::World3b | Which::Eagle7b => {
-                        repo.get("model.safetensors")?
-                    }
-                    Which::World6_1b6 => repo.get("rwkv-6-world-1b6.safetensors")?,
-                    Which::Rwkv7G1d0_1b => {
-                        repo.get("rwkv7-g1d-0.1b-20260129-ctx8192.safetensors")?
-                    }
-                    Which::Rwkv7G1d0_4b => {
-                        repo.get("rwkv7-g1d-0.4b-20260210-ctx8192.safetensors")?
-                    }
-                    Which::Rwkv7G1d1_5b => {
-                        repo.get("rwkv7-g1d-1.5b-20260212-ctx8192.safetensors")?
-                    }
-                    Which::Rwkv7G1d2_9b => {
-                        repo.get("rwkv7-g1d-2.9b-20260131-ctx8192.safetensors")?
-                    }
-                    Which::Rwkv7G1d7_2b => {
-                        repo.get("rwkv7-g1d-7.2b-20260131-ctx8192.safetensors")?
-                    }
-                    Which::Rwkv7G1d13_3b => {
-                        repo.get("rwkv7-g1d-13.3b-20260131-ctx8192.safetensors")?
-                    }
-                    Which::Rwkv7aG1d0_1b => {
-                        repo.get("rwkv7a-g1d-0.1b-20260212-ctx8192.safetensors")?
-                    }
-                    Which::Rwkv7bG1b0_1b => {
-                        repo.get("rwkv7b-g1b-0.1b-20250822-ctx4096.safetensors")?
-                    }
-                }]
+                anyhow::bail!(
+                    "quantized RWKV is not yet supported in the lazy port (no \
+                     lazy_quantized_rwkv* module exists); rerun without --quantized."
+                );
             }
+            vec![match args.which {
+                Which::World1b5 | Which::World3b | Which::Eagle7b => repo.get("model.safetensors")?,
+                Which::World6_1b6 => repo.get("rwkv-6-world-1b6.safetensors")?,
+                Which::Rwkv7G1d0_1b => {
+                    repo.get("rwkv7-g1d-0.1b-20260129-ctx8192.safetensors")?
+                }
+                Which::Rwkv7G1d0_4b => {
+                    repo.get("rwkv7-g1d-0.4b-20260210-ctx8192.safetensors")?
+                }
+                Which::Rwkv7G1d1_5b => {
+                    repo.get("rwkv7-g1d-1.5b-20260212-ctx8192.safetensors")?
+                }
+                Which::Rwkv7G1d2_9b => {
+                    repo.get("rwkv7-g1d-2.9b-20260131-ctx8192.safetensors")?
+                }
+                Which::Rwkv7G1d7_2b => {
+                    repo.get("rwkv7-g1d-7.2b-20260131-ctx8192.safetensors")?
+                }
+                Which::Rwkv7G1d13_3b => {
+                    repo.get("rwkv7-g1d-13.3b-20260131-ctx8192.safetensors")?
+                }
+                Which::Rwkv7aG1d0_1b => {
+                    repo.get("rwkv7a-g1d-0.1b-20260212-ctx8192.safetensors")?
+                }
+                Which::Rwkv7bG1b0_1b => {
+                    repo.get("rwkv7b-g1b-0.1b-20250822-ctx4096.safetensors")?
+                }
+            }]
         }
     };
-    let tokenizer = Tokenizer::new(tokenizer)?;
-    let device = fuel_examples::device(args.cpu)?;
+    let tokenizer = Tokenizer::new(tokenizer_path)?;
 
     if args.which.is_v7() {
-        // RWKV v7 path — different Config, State, and forward signature
-        let config: ConfigV7 = if let Some(config_file) = &config_filename {
-            serde_json::from_slice(&std::fs::read(config_file)?)?
-        } else {
-            args.which
-                .v7_config()
-                .expect("v7 variant must have built-in config")
+        // RWKV v7 path
+        let (hidden_size, num_hidden_layers) = match &config_filename {
+            Some(config_file) => {
+                let v: serde_json::Value = serde_json::from_slice(&std::fs::read(config_file)?)?;
+                let h = v
+                    .get("hidden_size")
+                    .and_then(|x| x.as_u64())
+                    .map(|x| x as usize)
+                    .ok_or_else(|| E::msg("config.json: missing hidden_size"))?;
+                let l = v
+                    .get("num_hidden_layers")
+                    .and_then(|x| x.as_u64())
+                    .map(|x| x as usize)
+                    .ok_or_else(|| E::msg("config.json: missing num_hidden_layers"))?;
+                (h, l)
+            }
+            None => args
+                .which
+                .v7_skeleton()
+                .ok_or_else(|| E::msg("v7 variant must have built-in config"))?,
         };
 
-        // Parse dtype from string
-        let dtype = match args.dtype.to_lowercase().as_str() {
-            "f16" => DType::F16,
-            "bf16" => DType::BF16,
-            "f32" => DType::F32,
-            other => anyhow::bail!("Unknown dtype '{}'. Use f32, f16, or bf16.", other),
+        // Mmap safetensors and peek at LoRA dimensions on layer 0 — the upstream
+        // RWKV-v7 family uses different LoRA widths per size, so it's safer to
+        // infer them than to hardcode.
+        let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
+            .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+        let infer_lora = |name: &str| -> Result<usize> {
+            let view = st
+                .get(name)
+                .map_err(|e| E::msg(format!("look up {name}: {e}")))?;
+            let shape = view.shape();
+            shape
+                .get(1)
+                .copied()
+                .ok_or_else(|| E::msg(format!("{name}: expected 2-D shape, got {shape:?}")))
+        };
+        let d_decay = infer_lora("rwkv.blocks.0.attention.w1")?;
+        let d_aaa = infer_lora("rwkv.blocks.0.attention.a1")?;
+        let d_gate = infer_lora("rwkv.blocks.0.attention.g1")?;
+        // v1/v2 only exist from layer 1 onwards; peek at layer 1.
+        let d_mv = infer_lora("rwkv.blocks.1.attention.v1")?;
+
+        let config = Rwkv7Config {
+            vocab_size: 65536,
+            hidden_size,
+            num_hidden_layers,
+            head_size: 64,
+            intermediate_size: None,
+            d_decay,
+            d_aaa,
+            d_mv,
+            d_gate,
+            layer_norm_epsilon: 1e-5,
         };
 
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, dtype, &device)? };
-        let model = M7::new(&config, vb)?;
+        let weights = Rwkv7Weights::load_from_mmapped(&st, &config)
+            .map_err(|e| E::msg(format!("load weights: {e}")))?;
+        let model = Rwkv7Model { config: config.clone(), weights };
 
         // For FIM template, auto-set stop sequence to ✿ (delimiter signals end of middle)
         let stop = match (&args.stop, args.template) {
@@ -731,7 +726,6 @@ fn main() -> Result<()> {
 
         let mut pipeline = TextGenerationV7::new(
             model,
-            config,
             tokenizer,
             args.seed,
             Some(args.temperature),
@@ -739,8 +733,6 @@ fn main() -> Result<()> {
             args.alpha_presence,
             args.alpha_frequency,
             args.alpha_decay,
-            &device,
-            dtype,
             stop,
         );
         let prompt = apply_template(
@@ -751,45 +743,174 @@ fn main() -> Result<()> {
         );
         pipeline.run(&prompt, args.sample_len)?;
     } else {
-        // v5/v6 path (existing behavior)
-        let config: Config = serde_json::from_slice(&std::fs::read(config_filename.unwrap())?)?;
-        let model = if args.quantized {
-            let filename = &filenames[0];
-            let vb = fuel_transformers::quantized_var_builder::VarBuilder::from_gguf(
-                filename, &device,
-            )?;
-            match args.which {
-                Which::World1b5 | Which::World3b | Which::Eagle7b => {
-                    Model::Q5(Q5::new(&config, vb)?)
-                }
-                Which::World6_1b6 => Model::Q6(Q6::new(&config, vb)?),
-                _ => unreachable!(),
+        // v5/v6 path
+        let config_path = config_filename
+            .ok_or_else(|| E::msg("config.json is required for v5/v6 RWKV"))?;
+        let cfg_json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&config_path)?)?;
+        let get_usize = |k: &str| -> Result<usize> {
+            cfg_json
+                .get(k)
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .ok_or_else(|| E::msg(format!("config.json: missing {k}")))
+        };
+        let get_f64 = |k: &str| -> Option<f64> { cfg_json.get(k).and_then(|x| x.as_f64()) };
+        let intermediate_size = cfg_json
+            .get("intermediate_size")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize);
+
+        let rwkv_cfg = Rwkv5Config {
+            vocab_size: get_usize("vocab_size")?,
+            hidden_size: get_usize("hidden_size")?,
+            num_hidden_layers: get_usize("num_hidden_layers")?,
+            attention_hidden_size: get_usize("attention_hidden_size")?,
+            head_size: get_usize("head_size")?,
+            num_attention_heads: cfg_json
+                .get("num_attention_heads")
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .unwrap_or(0),
+            intermediate_size,
+            layer_norm_epsilon: get_f64("layer_norm_epsilon").unwrap_or(1e-5),
+            rescale_every: cfg_json
+                .get("rescale_every")
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .unwrap_or(0),
+        };
+
+        let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
+            .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+
+        let model = match args.which {
+            Which::World1b5 | Which::World3b | Which::Eagle7b => {
+                let weights = Rwkv5Weights::load_from_mmapped(&st, &rwkv_cfg)
+                    .map_err(|e| E::msg(format!("load v5 weights: {e}")))?;
+                Model::M5(Rwkv5Model {
+                    config: rwkv_cfg.clone(),
+                    weights,
+                })
             }
-        } else {
-            let vb =
-                unsafe { VarBuilder::from_mmaped_safetensors(&filenames, DType::F32, &device)? };
-            match args.which {
-                Which::World1b5 | Which::World3b | Which::Eagle7b => {
-                    Model::M5(M5::new(&config, vb)?)
-                }
-                Which::World6_1b6 => Model::M6(M6::new(&config, vb)?),
-                _ => unreachable!(),
+            Which::World6_1b6 => {
+                let weights = Rwkv6Weights::load_from_mmapped(&st, &rwkv_cfg)
+                    .map_err(|e| E::msg(format!("load v6 weights: {e}")))?;
+                Model::M6(Rwkv6Model {
+                    config: rwkv_cfg.clone(),
+                    weights,
+                })
             }
+            _ => unreachable!(),
         };
 
         let mut pipeline = TextGeneration::new(
             model,
-            config,
             tokenizer,
             args.seed,
             Some(args.temperature),
             args.top_p,
             args.repeat_penalty,
             args.repeat_last_n,
-            &device,
         );
         pipeline.run(&args.prompt, args.sample_len)?;
     }
 
     Ok(())
+}
+
+// ───── Local sampling helpers (lifted from yi/helium migration) ─────
+
+fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
+    let mut seen = std::collections::HashSet::new();
+    for &t in context {
+        if !seen.insert(t) {
+            continue;
+        }
+        let idx = t as usize;
+        if idx < logits.len() {
+            let v = logits[idx];
+            logits[idx] = if v >= 0.0 { v / penalty } else { v * penalty };
+        }
+    }
+}
+
+fn sample(
+    logits: &[f32],
+    temperature: f32,
+    top_k: Option<usize>,
+    top_p: Option<f32>,
+    seed: u64,
+) -> u32 {
+    if temperature <= 0.0 {
+        let mut best_i = 0usize;
+        let mut best = logits[0];
+        for (i, &v) in logits.iter().enumerate().skip(1) {
+            if v > best {
+                best = v;
+                best_i = i;
+            }
+        }
+        return best_i as u32;
+    }
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let inv_t = 1.0 / temperature.max(1e-6);
+    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    for p in &mut probs {
+        *p /= sum.max(1e-30);
+    }
+    let mut idx: Vec<usize> = (0..probs.len()).collect();
+    idx.sort_unstable_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap());
+    let mut keep_mask: Vec<bool> = vec![true; probs.len()];
+    if let Some(k) = top_k {
+        for &i in idx.iter().skip(k) {
+            keep_mask[i] = false;
+        }
+    }
+    if let Some(p_cut) = top_p {
+        let mut cum2 = 0.0;
+        let mut allow = true;
+        for &i in &idx {
+            if !keep_mask[i] {
+                continue;
+            }
+            if !allow {
+                keep_mask[i] = false;
+                continue;
+            }
+            cum2 += probs[i];
+            if cum2 >= p_cut {
+                allow = false;
+            }
+        }
+    }
+    let mut filtered: Vec<f32> = probs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| if keep_mask[i] { *p } else { 0.0 })
+        .collect();
+    let s: f32 = filtered.iter().sum();
+    if s > 0.0 {
+        for v in &mut filtered {
+            *v /= s;
+        }
+    } else {
+        return 0;
+    }
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    state ^= state >> 33;
+    state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    state ^= state >> 33;
+    let r = (state as f32) / (u64::MAX as f32);
+    let mut cum = 0.0;
+    for (i, p) in filtered.iter().enumerate() {
+        cum += *p;
+        if r <= cum {
+            return i as u32;
+        }
+    }
+    (filtered.len() - 1) as u32
 }

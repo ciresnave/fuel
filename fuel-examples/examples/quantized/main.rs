@@ -1,22 +1,26 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
+use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
 use std::io::Write;
 use tokenizers::Tokenizer;
 
-use fuel::quantized::ggml_file;
-use fuel::Tensor;
+use fuel::lazy_llama_full::LlamaFullConfig;
+use fuel::lazy_quantized_llama::QuantizedLlama3Model;
+use fuel::{Device, Tensor};
 use fuel_transformers::generation::{LogitsProcessor, Sampling};
 
 use fuel_examples::token_output_stream::TokenOutputStream;
-use fuel_transformers::models::quantized_llama as model;
-use model::ModelWeights;
 
 const DEFAULT_PROMPT: &str = "My favorite theorem is ";
+// MAX_SEQ_LEN historically came from `quantized_llama::MAX_SEQ_LEN`; the lazy
+// LLaMA wrapper has no equivalent constant, so we mirror the eager default
+// (4096) for the prompt-truncation heuristic.
+const MAX_SEQ_LEN: usize = 4096;
 
 #[derive(Debug)]
 enum Prompt {
@@ -421,6 +425,115 @@ impl Args {
     }
 }
 
+/// Read a LLaMA-architecture GGUF file's metadata and produce a
+/// [`LlamaFullConfig`]. Mirrors the metadata extraction in
+/// `fuel_transformers::models::quantized_llama::ModelWeights::from_gguf`.
+fn llama_config_from_gguf<P: AsRef<std::path::Path>>(
+    path: P,
+) -> Result<LlamaFullConfig> {
+    let mc = fuel::quantized::gguf_mmap::MmapedContent::from_path(&path)
+        .map_err(|e| E::msg(format!("gguf header: {e}")))?;
+    let metadata = mc.metadata();
+    let tensor_infos = &mc.content().tensor_infos;
+
+    let md_get = |s: &str| {
+        metadata
+            .get(s)
+            .ok_or_else(|| E::msg(format!("cannot find {s} in gguf metadata")))
+    };
+
+    let head_count = md_get("llama.attention.head_count")?
+        .to_u32()
+        .map_err(E::msg)? as usize;
+    let head_count_kv = md_get("llama.attention.head_count_kv")?
+        .to_u32()
+        .map_err(E::msg)? as usize;
+    let block_count = md_get("llama.block_count")?.to_u32().map_err(E::msg)? as usize;
+    let embedding_length = md_get("llama.embedding_length")?
+        .to_u32()
+        .map_err(E::msg)? as usize;
+    let rope_dim = md_get("llama.rope.dimension_count")?
+        .to_u32()
+        .map_err(E::msg)? as usize;
+    let rms_norm_eps = md_get("llama.attention.layer_norm_rms_epsilon")?
+        .to_f32()
+        .map_err(E::msg)? as f64;
+    let max_seq_len = metadata
+        .get("llama.context_length")
+        .and_then(|v| v.to_u32().ok())
+        .map(|x| x as usize)
+        .unwrap_or(MAX_SEQ_LEN);
+    let rope_freq_base = metadata
+        .get("llama.rope.freq_base")
+        .and_then(|v| v.to_f32().ok())
+        .unwrap_or(10_000.0);
+    let n_expert = metadata
+        .get("llama.expert_count")
+        .and_then(|v| v.to_u32().ok())
+        .unwrap_or(0) as usize;
+    if n_expert > 1 {
+        return Err(E::msg(format!(
+            "lazy quantized binary: MoE GGUF (expert_count = {n_expert}) is not supported by `lazy_quantized_llama`. \
+             Use the eager `fuel_transformers::models::quantized_llama` path until a `lazy_quantized_mixtral` ships."
+        )));
+    }
+    let intermediate_length = metadata
+        .get("llama.feed_forward_length")
+        .and_then(|v| v.to_u32().ok())
+        .map(|x| x as usize)
+        .ok_or_else(|| E::msg("cannot find llama.feed_forward_length in gguf metadata"))?;
+
+    // Derive vocab_size from the embedding tensor shape: token_embd.weight is
+    // stored row-major as [vocab, hidden].
+    let token_embd = tensor_infos
+        .get("token_embd.weight")
+        .ok_or_else(|| E::msg("gguf: missing tensor token_embd.weight"))?;
+    let dims = token_embd.shape.dims();
+    if dims.len() != 2 {
+        return Err(E::msg(format!(
+            "gguf token_embd.weight: expected rank-2, got dims {dims:?}"
+        )));
+    }
+    // llama.cpp stores GGUF tensors as [in, out] in dim order, so for an
+    // embedding stored as [vocab, hidden] the dims are [hidden, vocab].
+    let vocab_size = if dims[0] == embedding_length {
+        dims[1]
+    } else if dims[1] == embedding_length {
+        dims[0]
+    } else {
+        return Err(E::msg(format!(
+            "gguf token_embd.weight: neither dim matches hidden_size={embedding_length}; dims={dims:?}"
+        )));
+    };
+
+    let head_dim = embedding_length / head_count;
+    if rope_dim != head_dim {
+        // Most LLaMA GGUF files set rope.dimension_count == head_dim; warn
+        // (don't fail) and prefer head_dim since the lazy LLaMA forward
+        // doesn't currently support partial-rope.
+        eprintln!(
+            "warning: llama.rope.dimension_count ({rope_dim}) != head_dim ({head_dim}); using head_dim"
+        );
+    }
+
+    Ok(LlamaFullConfig {
+        hidden_size: embedding_length,
+        intermediate_size: intermediate_length,
+        vocab_size,
+        num_hidden_layers: block_count,
+        num_attention_heads: head_count,
+        num_key_value_heads: head_count_kv,
+        head_dim,
+        rms_norm_eps,
+        rope_theta: rope_freq_base as f64,
+        max_position_embeddings: max_seq_len,
+        bos_token_id: None,
+        eos_token_id: None,
+        rope_scaling: None,
+        tie_word_embeddings: false,
+    })
+}
+
 fn format_size(size_in_bytes: usize) -> String {
     if size_in_bytes < 1_000 {
         format!("{size_in_bytes}B")
@@ -439,13 +552,11 @@ fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    #[cfg(feature = "cuda")]
-    fuel::quantized::cuda::set_force_dmmv(args.force_dmmv);
-
-    #[cfg(feature = "cuda")]
-    fuel::cuda::set_gemm_reduced_precision_f16(true);
-    #[cfg(feature = "cuda")]
-    fuel::cuda::set_gemm_reduced_precision_bf16(true);
+    // Lazy port: dmmv/force-dmmv toggling and gemm-reduced-precision setters
+    // are eager-Tensor-side knobs; the lazy graph executor configures them
+    // separately. We accept the flag for CLI compatibility but ignore it.
+    let _ = args.force_dmmv;
+    let _ = args.gqa; // GGUF carries head_count_kv directly; no override needed.
 
     let _guard = if args.tracing {
         let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
@@ -467,82 +578,64 @@ fn main() -> anyhow::Result<()> {
         args.temperature, args.repeat_penalty, args.repeat_last_n
     );
 
+    // Architectures unsupported by `lazy_quantized_llama` — Mixtral (MoE)
+    // and Phi3 — would need their own lazy GGUF loaders.
+    match args.which {
+        Which::Mixtral | Which::MixtralInstruct => {
+            anyhow::bail!(
+                "lazy quantized binary: Mixtral (MoE) GGUF is not supported by `lazy_quantized_llama`. \
+                 Use the eager `quantized` binary or wait for a `lazy_quantized_mixtral` port."
+            );
+        }
+        Which::Phi3 => {
+            anyhow::bail!(
+                "lazy quantized binary: Phi3 GGUF goes through `lazy_quantized_phi3`, not this binary. \
+                 Use the eager `quantized` binary or the `quantized-phi` example."
+            );
+        }
+        _ => {}
+    }
+
     let model_path = args.model()?;
     let start = std::time::Instant::now();
-    let device = fuel_examples::device(args.cpu)?;
+    let _device = fuel_examples::device(args.cpu)?;
 
-    let mut model = match model_path.extension().and_then(|v| v.to_str()) {
-        Some("gguf") => {
-            let mmaped = fuel::quantized::gguf_mmap::MmapedContent::from_path(&model_path)
-                .map_err(|e| e.with_path(&model_path))?;
-            let header_done = start.elapsed();
-            let (mmap, model_content) = mmaped.into_parts();
-            let mut total_size_in_bytes = 0;
-            for (_, tensor) in model_content.tensor_infos.iter() {
-                let elem_count = tensor.shape.elem_count();
-                total_size_in_bytes +=
-                    elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
-            }
-            println!(
-                "mmapped {:?} tensors ({}); header in {:.2}s",
-                model_content.tensor_infos.len(),
-                &format_size(total_size_in_bytes),
-                header_done.as_secs_f32(),
-            );
-            let w = {
-                let mut cursor = std::io::Cursor::new(&mmap[..]);
-                ModelWeights::from_gguf(model_content, &mut cursor, &device)?
-            };
-            drop(mmap);
-            w
-        }
-        Some("ggml" | "bin") | Some(_) | None => {
-            let mut file = std::fs::File::open(&model_path)?;
-            let model = ggml_file::Content::read(&mut file, &device)
-                .map_err(|e| e.with_path(model_path))?;
-            let mut total_size_in_bytes = 0;
-            for (_, tensor) in model.tensors.iter() {
-                let elem_count = tensor.shape().elem_count();
-                total_size_in_bytes +=
-                    elem_count * tensor.dtype().type_size() / tensor.dtype().block_size();
-            }
-            println!(
-                "loaded {:?} tensors ({}) in {:.2}s",
-                model.tensors.len(),
-                &format_size(total_size_in_bytes),
-                start.elapsed().as_secs_f32(),
-            );
-            println!("params: {:?}", model.hparams);
-            let default_gqa = match args.which {
-                Which::L7b
-                | Which::L13b
-                | Which::L7bChat
-                | Which::L13bChat
-                | Which::L7bCode
-                | Which::L13bCode
-                | Which::L34bCode
-                | Which::Leo7b
-                | Which::Leo13b
-                | Which::L8b
-                | Which::SmolLM2_1BInstruct
-                | Which::SmolLM2_360MInstruct
-                | Which::DeepseekR1Llama8b
-                | Which::Phi3 => 1,
-                Which::Mixtral
-                | Which::MixtralInstruct
-                | Which::Mistral7b
-                | Which::Mistral7bInstruct
-                | Which::Mistral7bInstructV02
-                | Which::Zephyr7bAlpha
-                | Which::Zephyr7bBeta
-                | Which::L70b
-                | Which::L70bChat
-                | Which::OpenChat35
-                | Which::Starling7bAlpha => 8,
-            };
-            ModelWeights::from_ggml(model, args.gqa.unwrap_or(default_gqa))?
-        }
-    };
+    // GGUF is the only supported on-disk format for the lazy LLaMA loader.
+    match model_path.extension().and_then(|v| v.to_str()) {
+        Some("gguf") => {}
+        Some(other) => anyhow::bail!(
+            "lazy quantized binary: only .gguf files are supported (got .{other}). \
+             Use the eager `quantized` binary for legacy .ggml/.bin files."
+        ),
+        None => anyhow::bail!(
+            "lazy quantized binary: only .gguf files are supported (no extension). \
+             Use the eager `quantized` binary for legacy .ggml/.bin files."
+        ),
+    }
+
+    // Mmap once to print summary stats and derive config; the lazy loader
+    // re-mmaps internally (cheap; the OS shares page cache).
+    let mmaped = fuel::quantized::gguf_mmap::MmapedContent::from_path(&model_path)
+        .map_err(|e| E::msg(format!("mmap: {e}")))?;
+    let header_done = start.elapsed();
+    let mc_content = mmaped.content();
+    let mut total_size_in_bytes = 0;
+    for (_, tensor) in mc_content.tensor_infos.iter() {
+        let elem_count = tensor.shape.elem_count();
+        total_size_in_bytes +=
+            elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
+    }
+    println!(
+        "mmapped {:?} tensors ({}); header in {:.2}s",
+        mc_content.tensor_infos.len(),
+        &format_size(total_size_in_bytes),
+        header_done.as_secs_f32(),
+    );
+    drop(mmaped);
+
+    let cfg = llama_config_from_gguf(&model_path)?;
+    let model = QuantizedLlama3Model::from_gguf(&model_path, &cfg)
+        .map_err(|e| E::msg(format!("from_gguf: {e}")))?;
     println!("model built");
 
     let tokenizer = args.tokenizer()?;
@@ -554,6 +647,7 @@ fn main() -> anyhow::Result<()> {
         None => Prompt::One(DEFAULT_PROMPT.to_string()),
     };
 
+    let vocab = cfg.vocab_size;
     let mut pre_prompt_tokens = vec![];
     for prompt_index in 0.. {
         let prompt_str = match &prompt {
@@ -601,8 +695,8 @@ fn main() -> anyhow::Result<()> {
 
         let prompt_tokens = [&pre_prompt_tokens, tokens.get_ids()].concat();
         let to_sample = args.sample_len.saturating_sub(1);
-        let prompt_tokens = if prompt_tokens.len() + to_sample > model::MAX_SEQ_LEN - 10 {
-            let to_remove = prompt_tokens.len() + to_sample + 10 - model::MAX_SEQ_LEN;
+        let prompt_tokens = if prompt_tokens.len() + to_sample > MAX_SEQ_LEN - 10 {
+            let to_remove = prompt_tokens.len() + to_sample + 10 - MAX_SEQ_LEN;
             prompt_tokens[prompt_tokens.len().saturating_sub(to_remove)..].to_vec()
         } else {
             prompt_tokens
@@ -623,18 +717,30 @@ fn main() -> anyhow::Result<()> {
             LogitsProcessor::from_sampling(args.seed, sampling)
         };
 
+        // Realize the lazy logits for the LAST position and wrap them as an
+        // eager Tensor for the sampling / repeat-penalty utilities, which
+        // still operate on `fuel::Tensor`.
+        let realize_last = |logits_lazy: fuel::lazy::LazyTensor, seq: usize| -> Result<Tensor> {
+            let flat = logits_lazy.realize_f32();
+            let last_off = (seq - 1) * vocab;
+            let last: Vec<f32> = flat[last_off..last_off + vocab].to_vec();
+            Tensor::new(last, &Device::cpu()).map_err(|e| E::msg(format!("logits tensor: {e}")))
+        };
+
         let start_prompt_processing = std::time::Instant::now();
         let mut next_token = if !args.split_prompt {
-            let input = Tensor::new(prompt_tokens.as_slice(), &device)?.unsqueeze(0)?;
-            let logits = model.forward(&input, 0)?;
-            let logits = logits.squeeze(0)?;
+            let logits_lazy = model
+                .forward(&prompt_tokens, 0)
+                .map_err(|e| E::msg(format!("forward: {e}")))?;
+            let logits = realize_last(logits_lazy, prompt_tokens.len())?;
             logits_processor.sample(&logits)?
         } else {
             let mut next_token = 0;
             for (pos, token) in prompt_tokens.iter().enumerate() {
-                let input = Tensor::new(&[*token], &device)?.unsqueeze(0)?;
-                let logits = model.forward(&input, pos)?;
-                let logits = logits.squeeze(0)?;
+                let logits_lazy = model
+                    .forward(&[*token], pos)
+                    .map_err(|e| E::msg(format!("forward: {e}")))?;
+                let logits = realize_last(logits_lazy, 1)?;
                 next_token = logits_processor.sample(&logits)?
             }
             next_token
@@ -660,9 +766,10 @@ fn main() -> anyhow::Result<()> {
         let start_post_prompt = std::time::Instant::now();
         let mut sampled = 0;
         for index in 0..to_sample {
-            let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
-            let logits = model.forward(&input, prompt_tokens.len() + index)?;
-            let logits = logits.squeeze(0)?;
+            let logits_lazy = model
+                .forward(&[next_token], prompt_tokens.len() + index)
+                .map_err(|e| E::msg(format!("forward: {e}")))?;
+            let logits = realize_last(logits_lazy, 1)?;
             let logits = if args.repeat_penalty == 1. {
                 logits
             } else {

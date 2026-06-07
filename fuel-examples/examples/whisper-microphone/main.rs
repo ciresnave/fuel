@@ -1,12 +1,39 @@
-﻿#[cfg(feature = "accelerate")]
+//! Whisper microphone — lazy port.
+//!
+//! Streams audio from the default input device, resamples to 16 kHz,
+//! buffers 10-second windows, runs the Whisper encoder + greedy /
+//! temperature-fallback decoder via `fuel::lazy_whisper`, and prints
+//! the running transcription.
+//!
+//! Migration notes vs the eager binary:
+//!   * `fuel_transformers::models::whisper` → `fuel::lazy_whisper`
+//!     (`WhisperConfig` / `WhisperModel` / `WhisperWeights`) and
+//!     `fuel::lazy_whisper_audio` for the host-side pcm→log-mel
+//!     pipeline.
+//!   * The eager `Model::encoder_forward` / `decoder_forward` /
+//!     `decoder_final_linear` triad collapses into a single
+//!     `forward_decoder(&tokens, &encoder_out)` that returns logits of
+//!     shape `[1, seq, vocab]`. The no-speech / sample-row logic
+//!     extracts the relevant row from the realized f32 vec instead of
+//!     using `Tensor::i(..)`.
+//!   * `mel` rides as a flat `Vec<f32>` of shape `[num_mel_bins, T]`
+//!     (no Tensor wrapper) — narrowing along the time axis is a
+//!     row-major slice copy. The lazy encoder requires an even
+//!     `mel_time`; oddities are trimmed away.
+//!   * `suppress_tokens` is loaded from the raw config.json — the lazy
+//!     `WhisperConfig` doesn't carry that field.
+//!   * `--quantized` is preserved in the CLI and dispatches to
+//!     `lazy_quantized_whisper::QuantizedWhisperModel::from_gguf`. That
+//!     loader is currently a stub and errors at construction time;
+//!     normal (safetensors) mode runs end-to-end.
+
+#[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
 #[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 use anyhow::{Error as E, Result};
-use fuel::{Device, IndexOp, Tensor};
-use fuel_nn::{ops::softmax, VarBuilder};
 use clap::{Parser, ValueEnum};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use rand::{distr::Distribution, SeedableRng};
@@ -14,47 +41,68 @@ use tokenizers::Tokenizer;
 
 mod multilingual;
 
-use fuel_transformers::models::whisper::{self as m, audio, Config};
+use fuel::lazy::LazyTensor;
+use fuel::lazy_whisper::{WhisperConfig, WhisperModel, WhisperWeights};
+use fuel::lazy_quantized_whisper::QuantizedWhisperModel;
+use fuel::lazy_whisper_audio as audio;
+use fuel::safetensors::MmapedSafetensors;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
+// ---- Whisper audio + tokenizer constants -----------------------------------
+//
+// These live alongside the eager `fuel_transformers::models::whisper`
+// constants but the lazy port doesn't re-export them. The values match
+// the OpenAI Whisper reference verbatim.
+const SAMPLE_RATE: usize = audio::SAMPLE_RATE;
+const HOP_LENGTH: usize = audio::HOP_LENGTH;
+const N_FRAMES: usize = audio::N_SAMPLES / HOP_LENGTH; // 3000 frames per 30-second chunk
+
+const NO_SPEECH_THRESHOLD: f64 = 0.6;
+const LOGPROB_THRESHOLD: f64 = -1.0;
+const TEMPERATURES: [f64; 6] = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
+const COMPRESSION_RATIO_THRESHOLD: f64 = 2.4;
+
+const SOT_TOKEN: &str = "<|startoftranscript|>";
+const TRANSCRIBE_TOKEN: &str = "<|transcribe|>";
+const TRANSLATE_TOKEN: &str = "<|translate|>";
+const NO_TIMESTAMPS_TOKEN: &str = "<|notimestamps|>";
+const EOT_TOKEN: &str = "<|endoftext|>";
+const NO_SPEECH_TOKENS: [&str; 2] = ["<|nocaptions|>", "<|nospeech|>"];
+
 pub enum Model {
-    Normal(m::model::Whisper),
-    Quantized(m::quantized_model::Whisper),
+    Normal(WhisperModel),
+    Quantized(QuantizedWhisperModel),
 }
 
-// Maybe we should use some traits rather than doing the dispatch for all these.
 impl Model {
-    pub fn config(&self) -> &Config {
+    pub fn config(&self) -> &WhisperConfig {
         match self {
             Self::Normal(m) => &m.config,
             Self::Quantized(m) => &m.config,
         }
     }
 
-    pub fn encoder_forward(&mut self, x: &Tensor, flush: bool) -> fuel::Result<Tensor> {
+    /// Run the encoder on a row-major `(num_mel_bins, mel_time)` mel
+    /// spectrogram and return the `[1, mel_time/2, d_model]` encoder
+    /// context lazy tensor.
+    pub fn encoder_forward(&self, mel: &[f32], mel_time: usize) -> fuel::Result<LazyTensor> {
         match self {
-            Self::Normal(m) => m.encoder.forward(x, flush),
-            Self::Quantized(m) => m.encoder.forward(x, flush),
+            Self::Normal(m) => m.forward_encoder(mel, mel_time),
+            Self::Quantized(m) => m.forward_encoder(mel, mel_time),
         }
     }
 
+    /// Run the decoder for the full `tokens` prefix and return the
+    /// `[1, seq, vocab_size]` logits lazy tensor.
     pub fn decoder_forward(
-        &mut self,
-        x: &Tensor,
-        xa: &Tensor,
-        flush: bool,
-    ) -> fuel::Result<Tensor> {
+        &self,
+        tokens: &[u32],
+        encoder_out: &LazyTensor,
+    ) -> fuel::Result<LazyTensor> {
         match self {
-            Self::Normal(m) => m.decoder.forward(x, xa, flush),
-            Self::Quantized(m) => m.decoder.forward(x, xa, flush),
-        }
-    }
-
-    pub fn decoder_final_linear(&self, x: &Tensor) -> fuel::Result<Tensor> {
-        match self {
-            Self::Normal(m) => m.decoder.final_linear(x),
-            Self::Quantized(m) => m.decoder.final_linear(x),
+            Self::Normal(m) => m.forward_decoder(tokens, encoder_out),
+            Self::Quantized(m) => m.forward_decoder(tokens, encoder_out),
         }
     }
 }
@@ -80,12 +128,15 @@ struct Segment {
 
 struct Decoder {
     model: Model,
+    /// Optional per-vocab additive mask. Indices in `suppress_tokens`
+    /// (and `<|notimestamps|>` when `timestamps` is true) are set to
+    /// `-inf`; everything else is `0.0`.
+    suppress_tokens: Vec<f32>,
     rng: rand::rngs::StdRng,
     task: Option<Task>,
     timestamps: bool,
     verbose: bool,
     tokenizer: Tokenizer,
-    suppress_tokens: Tensor,
     sot_token: u32,
     transcribe_token: u32,
     translate_token: u32,
@@ -101,32 +152,31 @@ impl Decoder {
         model: Model,
         tokenizer: Tokenizer,
         seed: u64,
-        device: &Device,
+        suppress_token_ids: &[u32],
         language_token: Option<u32>,
         task: Option<Task>,
         timestamps: bool,
         verbose: bool,
     ) -> Result<Self> {
-        let no_timestamps_token = token_id(&tokenizer, m::NO_TIMESTAMPS_TOKEN)?;
+        let no_timestamps_token = token_id(&tokenizer, NO_TIMESTAMPS_TOKEN)?;
         // Suppress the notimestamps token when in timestamps mode.
         // https://github.com/openai/whisper/blob/e8622f9afc4eba139bf796c210f5c01081000472/whisper/decoding.py#L452
-        let suppress_tokens: Vec<f32> = (0..model.config().vocab_size as u32)
+        let vocab_size = model.config().vocab_size;
+        let suppress_set: std::collections::HashSet<u32> = suppress_token_ids.iter().copied().collect();
+        let suppress_tokens: Vec<f32> = (0..vocab_size as u32)
             .map(|i| {
-                if model.config().suppress_tokens.contains(&i)
-                    || timestamps && i == no_timestamps_token
-                {
+                if suppress_set.contains(&i) || (timestamps && i == no_timestamps_token) {
                     f32::NEG_INFINITY
                 } else {
                     0f32
                 }
             })
             .collect();
-        let suppress_tokens = Tensor::new(suppress_tokens.as_slice(), device)?;
-        let sot_token = token_id(&tokenizer, m::SOT_TOKEN)?;
-        let transcribe_token = token_id(&tokenizer, m::TRANSCRIBE_TOKEN)?;
-        let translate_token = token_id(&tokenizer, m::TRANSLATE_TOKEN)?;
-        let eot_token = token_id(&tokenizer, m::EOT_TOKEN)?;
-        let no_speech_token = m::NO_SPEECH_TOKENS
+        let sot_token = token_id(&tokenizer, SOT_TOKEN)?;
+        let transcribe_token = token_id(&tokenizer, TRANSCRIBE_TOKEN)?;
+        let translate_token = token_id(&tokenizer, TRANSLATE_TOKEN)?;
+        let eot_token = token_id(&tokenizer, EOT_TOKEN)?;
+        let no_speech_token = NO_SPEECH_TOKENS
             .iter()
             .find_map(|token| token_id(&tokenizer, token).ok());
         let no_speech_token = match no_speech_token {
@@ -151,13 +201,18 @@ impl Decoder {
         })
     }
 
-    fn decode(&mut self, mel: &Tensor, t: f64) -> Result<DecodingResult> {
-        let model = &mut self.model;
-        let audio_features = model.encoder_forward(mel, true)?;
+    fn decode(&mut self, mel: &[f32], mel_time: usize, t: f64) -> Result<DecodingResult> {
+        let model = &self.model;
+        let audio_features = model
+            .encoder_forward(mel, mel_time)
+            .map_err(|e| E::msg(format!("encoder: {e}")))?;
         if self.verbose {
-            println!("audio features: {:?}", audio_features.dims());
+            println!("audio features mel_time/2: {}", mel_time / 2);
         }
-        let sample_len = model.config().max_target_positions / 2;
+        let cfg = model.config();
+        let vocab = cfg.vocab_size;
+        let max_target = cfg.max_target_positions;
+        let sample_len = max_target / 2;
         let mut sum_logprob = 0f64;
         let mut no_speech_prob = f64::NAN;
         let mut tokens = vec![self.sot_token];
@@ -172,27 +227,43 @@ impl Decoder {
             tokens.push(self.no_timestamps_token);
         }
         for i in 0..sample_len {
-            let tokens_t = Tensor::new(tokens.as_slice(), mel.device())?;
-
-            // The model expects a batch dim but this inference loop does not handle
-            // it so we add it at this point.
-            let tokens_t = tokens_t.unsqueeze(0)?;
-            let ys = model.decoder_forward(&tokens_t, &audio_features, i == 0)?;
-
-            // Extract the no speech probability on the first iteration by looking at the first
-            // token logits and the probability for the according token.
-            if i == 0 {
-                let logits = model.decoder_final_linear(&ys.i(..1)?)?.i(0)?.i(0)?;
-                no_speech_prob = softmax(&logits, 0)?
-                    .i(self.no_speech_token as usize)?
-                    .to_scalar::<f32>()? as f64;
+            // forward_decoder returns logits of shape [1, seq, vocab].
+            let logits = model
+                .decoder_forward(&tokens, &audio_features)
+                .map_err(|e| E::msg(format!("decoder: {e}")))?;
+            let flat = logits.realize_f32();
+            let seq = tokens.len();
+            if flat.len() != seq * vocab {
+                anyhow::bail!(
+                    "decoder logits unexpected size: got {} expected {} (= seq {seq} * vocab {vocab})",
+                    flat.len(), seq * vocab,
+                );
             }
 
-            let (_, seq_len, _) = ys.dims3()?;
-            let logits = model
-                .decoder_final_linear(&ys.i((..1, seq_len - 1..))?)?
-                .i(0)?
-                .i(0)?;
+            // Extract the no_speech probability on the first iteration by looking at the first
+            // token logits and the probability for the according token.
+            if i == 0 {
+                let first_row = &flat[0..vocab];
+                let row_max = first_row
+                    .iter()
+                    .copied()
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let mut sum = 0.0_f64;
+                for &v in first_row {
+                    sum += ((v - row_max) as f64).exp();
+                }
+                let ns_logit = first_row[self.no_speech_token as usize];
+                no_speech_prob = (((ns_logit - row_max) as f64).exp()) / sum;
+            }
+
+            // Last-row logits for the next-token decision.
+            let last_row_start = (seq - 1) * vocab;
+            let mut row: Vec<f32> = flat[last_row_start..last_row_start + vocab].to_vec();
+            // Apply additive suppress mask.
+            for (r, s) in row.iter_mut().zip(self.suppress_tokens.iter()) {
+                *r += *s;
+            }
+
             // TODO: Besides suppress tokens, we should apply the heuristics from
             // ApplyTimestampRules, i.e.:
             // - Timestamps come in pairs, except before EOT.
@@ -200,26 +271,39 @@ impl Decoder {
             // - If the sum of the probabilities of timestamps is higher than any other tokens,
             //   only consider timestamps when sampling.
             // https://github.com/openai/whisper/blob/e8622f9afc4eba139bf796c210f5c01081000472/whisper/decoding.py#L439
-            let logits = logits.broadcast_add(&self.suppress_tokens)?;
             let next_token = if t > 0f64 {
-                let prs = softmax(&(&logits / t)?, 0)?;
-                let logits_v: Vec<f32> = prs.to_vec1()?;
-                let distr = rand::distr::weighted::WeightedIndex::new(&logits_v)?;
+                let scaled: Vec<f32> = row.iter().map(|v| *v / t as f32).collect();
+                let row_max = scaled.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let mut probs: Vec<f32> = scaled
+                    .iter()
+                    .map(|v| ((*v - row_max) as f64).exp() as f32)
+                    .collect();
+                let sum: f32 = probs.iter().sum();
+                if sum > 0.0 {
+                    for p in probs.iter_mut() {
+                        *p /= sum;
+                    }
+                }
+                let distr = rand::distr::weighted::WeightedIndex::new(&probs)?;
                 distr.sample(&mut self.rng) as u32
             } else {
-                let logits_v: Vec<f32> = logits.to_vec1()?;
-                logits_v
-                    .iter()
+                row.iter()
                     .enumerate()
                     .max_by(|(_, u), (_, v)| u.total_cmp(v))
                     .map(|(i, _)| i as u32)
                     .unwrap()
             };
             tokens.push(next_token);
-            let prob = softmax(&logits, fuel::D::Minus1)?
-                .i(next_token as usize)?
-                .to_scalar::<f32>()? as f64;
-            if next_token == self.eot_token || tokens.len() > model.config().max_target_positions {
+
+            // Per-token probability of `next_token` from a softmax over the masked row (used for
+            // avg_logprob — matches the eager binary).
+            let row_max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum = 0.0_f64;
+            for &v in &row {
+                sum += ((v - row_max) as f64).exp();
+            }
+            let prob = (((row[next_token as usize] - row_max) as f64).exp()) / sum;
+            if next_token == self.eot_token || tokens.len() > max_target {
                 break;
             }
             sum_logprob += prob.ln();
@@ -237,18 +321,18 @@ impl Decoder {
         })
     }
 
-    fn decode_with_fallback(&mut self, segment: &Tensor) -> Result<DecodingResult> {
-        for (i, &t) in m::TEMPERATURES.iter().enumerate() {
-            let dr: Result<DecodingResult> = self.decode(segment, t);
-            if i == m::TEMPERATURES.len() - 1 {
+    fn decode_with_fallback(&mut self, mel: &[f32], mel_time: usize) -> Result<DecodingResult> {
+        for (i, &t) in TEMPERATURES.iter().enumerate() {
+            let dr: Result<DecodingResult> = self.decode(mel, mel_time, t);
+            if i == TEMPERATURES.len() - 1 {
                 return dr;
             }
             // On errors, we try again with a different temperature.
             match dr {
                 Ok(dr) => {
-                    let needs_fallback = dr.compression_ratio > m::COMPRESSION_RATIO_THRESHOLD
-                        || dr.avg_logprob < m::LOGPROB_THRESHOLD;
-                    if !needs_fallback || dr.no_speech_prob > m::NO_SPEECH_THRESHOLD {
+                    let needs_fallback = dr.compression_ratio > COMPRESSION_RATIO_THRESHOLD
+                        || dr.avg_logprob < LOGPROB_THRESHOLD;
+                    if !needs_fallback || dr.no_speech_prob > NO_SPEECH_THRESHOLD {
                         return Ok(dr);
                     }
                 }
@@ -260,19 +344,28 @@ impl Decoder {
         unreachable!()
     }
 
-    fn run(&mut self, mel: &Tensor, times: Option<(f64, f64)>) -> Result<Vec<Segment>> {
-        let (_, _, content_frames) = mel.dims3()?;
+    fn run(&mut self, mel: &[f32], mel_time: usize, times: Option<(f64, f64)>) -> Result<Vec<Segment>> {
+        let num_mel_bins = self.model.config().num_mel_bins;
+        let content_frames = mel_time;
         let mut seek = 0;
         let mut segments = vec![];
         while seek < content_frames {
             let start = std::time::Instant::now();
-            let time_offset = (seek * m::HOP_LENGTH) as f64 / m::SAMPLE_RATE as f64;
-            let segment_size = usize::min(content_frames - seek, m::N_FRAMES);
-            let mel_segment = mel.narrow(2, seek, segment_size)?;
-            let segment_duration = (segment_size * m::HOP_LENGTH) as f64 / m::SAMPLE_RATE as f64;
-            let dr = self.decode_with_fallback(&mel_segment)?;
+            let time_offset = (seek * HOP_LENGTH) as f64 / SAMPLE_RATE as f64;
+            let mut segment_size = usize::min(content_frames - seek, N_FRAMES);
+            // The lazy encoder requires an even mel_time (stride-2 conv).
+            if !segment_size.is_multiple_of(2) {
+                segment_size -= 1;
+            }
+            if segment_size == 0 {
+                break;
+            }
+            let mel_segment =
+                narrow_time_axis(mel, num_mel_bins, content_frames, seek, segment_size);
+            let segment_duration = (segment_size * HOP_LENGTH) as f64 / SAMPLE_RATE as f64;
+            let dr = self.decode_with_fallback(&mel_segment, segment_size)?;
             seek += segment_size;
-            if dr.no_speech_prob > m::NO_SPEECH_THRESHOLD && dr.avg_logprob < m::LOGPROB_THRESHOLD {
+            if dr.no_speech_prob > NO_SPEECH_THRESHOLD && dr.avg_logprob < LOGPROB_THRESHOLD {
                 println!("no speech detected, skipping {seek} {dr:?}");
                 continue;
             }
@@ -346,17 +439,28 @@ impl Decoder {
         self.language_token = language_token;
     }
 
-    #[allow(dead_code)]
-    fn reset_kv_cache(&mut self) {
-        match &mut self.model {
-            Model::Normal(m) => m.reset_kv_cache(),
-            Model::Quantized(m) => m.reset_kv_cache(),
-        }
+    fn model(&self) -> &Model {
+        &self.model
     }
+}
 
-    fn model(&mut self) -> &mut Model {
-        &mut self.model
+/// Narrow a row-major `(num_mel_bins, total_frames)` mel tensor along
+/// the time axis to `(num_mel_bins, segment_size)` starting at frame
+/// `start`. Mirrors `Tensor::narrow(2, start, segment_size)` for the
+/// `(1, num_mel_bins, total_frames)` layout the eager binary used.
+pub(crate) fn narrow_time_axis(
+    mel: &[f32],
+    num_mel_bins: usize,
+    total_frames: usize,
+    start: usize,
+    segment_size: usize,
+) -> Vec<f32> {
+    let mut out = Vec::with_capacity(num_mel_bins * segment_size);
+    for m in 0..num_mel_bins {
+        let row_off = m * total_frames + start;
+        out.extend_from_slice(&mel[row_off..row_off + segment_size]);
     }
+    out
 }
 
 pub fn token_id(tokenizer: &Tokenizer, token: &str) -> fuel::Result<u32> {
@@ -437,7 +541,8 @@ impl WhichModel {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Run on CPU rather than on GPU.
+    /// Run on CPU rather than on GPU. The lazy port realizes through
+    /// the default router today; this flag is preserved for CLI parity.
     #[arg(long)]
     cpu: bool,
 
@@ -498,7 +603,10 @@ pub fn main() -> Result<()> {
     } else {
         None
     };
-    let device = fuel_examples::device(args.cpu)?;
+    // `cpu` flag is preserved for CLI parity; lazy currently routes
+    // through the default backend pipeline.
+    let _ = args.cpu;
+
     let (default_model, default_revision) = if args.quantized {
         ("lmz/fuel-whisper", "main")
     } else {
@@ -535,24 +643,45 @@ pub fn main() -> Result<()> {
         };
         (config, tokenizer, model)
     };
-    let config: Config = serde_json::from_str(&std::fs::read_to_string(config_filename)?)?;
+    let config_str = std::fs::read_to_string(config_filename)?;
+    let config: WhisperConfig = WhisperConfig::from_hf_json_str(&config_str)
+        .map_err(|e| E::msg(format!("parse config: {e}")))?;
+    // suppress_tokens is not declared on the lazy WhisperConfig; pull
+    // it out of the raw JSON so the decoder still applies the original
+    // Whisper suppression mask.
+    let suppress_token_ids: Vec<u32> = {
+        let v: serde_json::Value = serde_json::from_str(&config_str)?;
+        v.get("suppress_tokens")
+            .and_then(|t| t.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_i64().map(|i| i as u32))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
     let model = if args.quantized {
-        let vb = fuel_transformers::quantized_var_builder::VarBuilder::from_gguf(
-            &weights_filename,
-            &device,
-        )?;
-        Model::Quantized(m::quantized_model::Whisper::load(&vb, config.clone())?)
+        Model::Quantized(
+            QuantizedWhisperModel::from_gguf(&weights_filename)
+                .map_err(|e| E::msg(format!("quantized whisper from_gguf: {e}")))?,
+        )
     } else {
-        let vb =
-            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], m::DTYPE, &device)? };
-        Model::Normal(m::model::Whisper::load(&vb, config.clone())?)
+        let st = unsafe { MmapedSafetensors::multi(&[weights_filename]) }
+            .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+        let weights = WhisperWeights::load_from_mmapped(&st, &config)
+            .map_err(|e| E::msg(format!("load whisper weights: {e}")))?;
+        Model::Normal(WhisperModel {
+            config: config.clone(),
+            weights,
+        })
     };
+
     let mut decoder = Decoder::new(
         model,
         tokenizer.clone(),
         args.seed,
-        &device,
+        &suppress_token_ids,
         /* language_token */ None,
         args.task,
         args.timestamps,
@@ -645,13 +774,26 @@ pub fn main() -> Result<()> {
             buffered_pcm.copy_within(full_chunks * 1024.., 0);
             buffered_pcm.truncate(remainder);
         }
-        let mel = audio::pcm_to_mel(&config, &pcm, &mel_filters);
-        let mel_len = mel.len();
-        let mel = Tensor::from_vec(
-            mel,
-            (1, config.num_mel_bins, mel_len / config.num_mel_bins),
-            &device,
-        )?;
+        let num_mel_bins = config.num_mel_bins;
+        let mel = audio::pcm_to_mel(&pcm, &mel_filters, num_mel_bins)
+            .map_err(|e| E::msg(format!("pcm_to_mel: {e}")))?;
+        let mel_total = mel.len() / num_mel_bins;
+        // Lazy encoder requires an even mel_time (stride-2 conv).
+        let mel_time = mel_total - (mel_total % 2);
+        if mel_time == 0 {
+            continue;
+        }
+        // Trim each row to mel_time columns.
+        let mel: Vec<f32> = if mel_time == mel_total {
+            mel
+        } else {
+            let mut trimmed = Vec::with_capacity(num_mel_bins * mel_time);
+            for m in 0..num_mel_bins {
+                let row = &mel[m * mel_total..(m + 1) * mel_total];
+                trimmed.extend_from_slice(&row[..mel_time]);
+            }
+            trimmed
+        };
 
         // on the first iteration, we detect the language and set the language token.
         if !language_token_set {
@@ -660,6 +802,7 @@ pub fn main() -> Result<()> {
                     decoder.model(),
                     &tokenizer,
                     &mel,
+                    mel_time,
                 )?),
                 (false, None) => None,
                 (true, Some(language)) => match token_id(&tokenizer, &format!("<|{language}|>")) {
@@ -674,8 +817,7 @@ pub fn main() -> Result<()> {
             decoder.set_language_token(language_token);
             language_token_set = true;
         }
-        decoder.run(&mel, None)?;
-        decoder.reset_kv_cache();
+        decoder.run(&mel, mel_time, None)?;
     }
 
     Ok(())
