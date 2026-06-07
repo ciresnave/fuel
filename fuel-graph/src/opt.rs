@@ -2146,6 +2146,140 @@ where
     inserted
 }
 
+/// Phase 2.2 of the picker arc — insert `Op::Contiguize` before any
+/// kernel-bearing node whose chosen kernel doesn't accept strided
+/// inputs but whose live input layout is non-contiguous (strided,
+/// offset, or both).
+///
+/// # When to call
+///
+/// After Phase 2.1's `insert_cross_device_copies` and after the
+/// picker has committed to per-node kernel choices. The picker's
+/// commitment determines the `KernelCaps::strided_input` flag for
+/// each node; this pass reads that flag via the `kernel_accepts_strided`
+/// callback and inserts layout-fixups where the flag is false and
+/// the input is strided.
+///
+/// # Callback contract
+///
+/// `kernel_accepts_strided(consumer_id) -> bool` returns `true` if
+/// the kernel resolved for that node tolerates strided / offset
+/// inputs (i.e. its `KernelCaps::strided_input == true`). The
+/// callback is opaque to this pass — typical wiring reads the
+/// picker's commit-to-winner alternative set and queries the
+/// winner's caps. When `false`, this pass inserts `Op::Contiguize`
+/// on every non-contiguous input.
+///
+/// # Skips
+///
+/// - View ops (`Transpose`, `Permute`, `BroadcastTo`, `Slice`,
+///   `Unsqueeze`, `Squeeze`, `Flip`) — they preserve strided
+///   layouts intentionally.
+/// - Structural ops (`Const`, `Release`, `Reshape`, `Contiguize`,
+///   `Copy`, `Move`, `Alloc`, `ZeroFill`, `WriteSlice`) — their
+///   executor arms handle strided naturally or are not kernel-
+///   bearing.
+///
+/// # CSE
+///
+/// When two consumers share a non-contiguous input AND both kernels
+/// reject strided, one `Op::Contiguize` node serves both. The
+/// per-pass cache is keyed on producer NodeId (no target-device
+/// dimension — Contiguize is device-inheriting).
+///
+/// # Idempotence
+///
+/// Running this pass on an already-rewritten graph adds zero new
+/// nodes: an inserted `Op::Contiguize` has a contiguous + zero-offset
+/// output layout, so the subsequent fixup check (`is_contiguous &&
+/// start_offset == 0`) succeeds and the input is skipped.
+///
+/// Returns the number of `Op::Contiguize` nodes inserted.
+pub fn insert_layout_fixups<F>(
+    graph: &mut Graph,
+    roots: &[NodeId],
+    kernel_accepts_strided: F,
+) -> usize
+where
+    F: Fn(NodeId) -> bool,
+{
+    let order = topo_order_multi(graph, roots);
+    // CSE: producer NodeId → Contiguize NodeId. No device dim since
+    // Contiguize inherits the producer's residency.
+    let mut fixup_cache: HashMap<NodeId, NodeId> = HashMap::new();
+    let mut inserted = 0usize;
+    let mut rewires: Vec<(NodeId, NodeId, NodeId)> = Vec::new();
+
+    for &consumer_id in &order {
+        // Snapshot the consumer to release the borrow before
+        // mutation.
+        let (consumer_op, consumer_inputs) = {
+            let node = graph.node(consumer_id);
+            (node.op.clone(), node.inputs.clone())
+        };
+
+        // Skip non-kernel-bearing nodes — their executor arms
+        // either preserve strided layouts (view ops, Reshape) or
+        // are structural with no kernel to mismatch on (Const,
+        // Release, Copy, Move, Alloc, ZeroFill, WriteSlice,
+        // Contiguize).
+        if consumer_op.is_view_op()
+            || matches!(
+                consumer_op,
+                Op::Const
+                    | Op::Release
+                    | Op::Reshape(_)
+                    | Op::Contiguize
+                    | Op::Copy { .. }
+                    | Op::Move { .. }
+                    | Op::Alloc { .. }
+                    | Op::ZeroFill
+                    | Op::WriteSlice { .. }
+            )
+        {
+            continue;
+        }
+
+        // The kernel accepts strided inputs directly — no fixup.
+        if kernel_accepts_strided(consumer_id) {
+            continue;
+        }
+
+        for input_id in consumer_inputs {
+            let input_layout = graph.layout(input_id);
+            if input_layout.is_contiguous() && input_layout.start_offset() == 0 {
+                continue;
+            }
+
+            let fixup_id = match fixup_cache.get(&input_id) {
+                Some(&id) => id,
+                None => {
+                    let (shape, dtype) = {
+                        let p = graph.node(input_id);
+                        (p.shape.clone(), p.dtype)
+                    };
+                    let id = graph.push(Node {
+                        op: Op::Contiguize,
+                        inputs: vec![input_id],
+                        shape,
+                        dtype,
+                    });
+                    fixup_cache.insert(input_id, id);
+                    inserted += 1;
+                    id
+                }
+            };
+            rewires.push((consumer_id, input_id, fixup_id));
+        }
+    }
+
+    for (consumer, old_input, new_input) in rewires {
+        graph.rewrite_input(consumer, old_input, new_input);
+    }
+
+    inserted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3508,5 +3642,189 @@ mod tests {
             shares_storage_cpu_devices_only,
         );
         assert_eq!(inserted, 1);
+    }
+
+    // ===== Phase 2.2 — insert_layout_fixups =====
+
+    fn count_contiguize_nodes(graph: &SharedGraph) -> usize {
+        let g = graph.read().unwrap();
+        (0..g.len())
+            .filter(|i| matches!(g.node(NodeId(*i)).op, Op::Contiguize))
+            .count()
+    }
+
+    /// All-contiguous-input graph: pass adds nothing regardless of
+    /// the kernel_accepts_strided predicate.
+    #[test]
+    fn insert_fixups_no_strided_inputs_no_fixups() {
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
+        let c = a.add(&b);
+        let graph = c.graph().clone();
+
+        let before = count_contiguize_nodes(&graph);
+        let inserted = {
+            let mut g = graph.write().unwrap();
+            insert_layout_fixups(&mut g, &[c.id()], |_| false)
+        };
+        assert_eq!(inserted, 0);
+        assert_eq!(count_contiguize_nodes(&graph), before);
+    }
+
+    /// Strided input (Transpose) feeding a kernel that rejects
+    /// strided: one Contiguize gets inserted between them and the
+    /// consumer's input gets rewired.
+    #[test]
+    fn insert_fixups_strided_input_rejecting_kernel_inserts_contiguize() {
+        // 2x3 const, transpose to 3x2, then "consumer" reads the
+        // transposed view. The consumer kernel claims it can't
+        // handle strided.
+        let a = Tensor::from_f32(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
+        // Transpose produces a strided view via the layout side-table.
+        let at = a.transpose();
+        // A binary op as our "consumer" (Op::Add is kernel-bearing,
+        // not a view op).
+        let b = at.const_f32_like(vec![0.0; 6], Shape::from_dims(&[3, 2]));
+        let c = at.add(&b);
+        let graph = c.graph().clone();
+
+        let before = count_contiguize_nodes(&graph);
+        let inserted = {
+            let mut g = graph.write().unwrap();
+            // Kernel rejects strided for every node.
+            insert_layout_fixups(&mut g, &[c.id()], |_| false)
+        };
+        // One Contiguize for the transposed input of `c`. (`b` is a
+        // contiguous Const → no fixup.)
+        assert_eq!(inserted, 1);
+        assert_eq!(count_contiguize_nodes(&graph) - before, 1);
+
+        // c's first input was `at`; after rewrite it should point
+        // to the new Op::Contiguize node.
+        let g = graph.read().unwrap();
+        let c_node = g.node(c.id());
+        let new_input = g.node(c_node.inputs[0]);
+        assert!(
+            matches!(new_input.op, Op::Contiguize),
+            "consumer's strided input must be rewired through Op::Contiguize, \
+             got {:?}",
+            new_input.op,
+        );
+        // The Contiguize's input is the original transposed view.
+        assert_eq!(new_input.inputs, vec![at.id()]);
+    }
+
+    /// Strided input feeding a kernel that accepts strided: pass
+    /// skips the input, no Contiguize inserted.
+    #[test]
+    fn insert_fixups_strided_input_accepting_kernel_no_fixup() {
+        let a = Tensor::from_f32(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
+        let at = a.transpose();
+        let b = at.const_f32_like(vec![0.0; 6], Shape::from_dims(&[3, 2]));
+        let c = at.add(&b);
+        let graph = c.graph().clone();
+
+        let before = count_contiguize_nodes(&graph);
+        let inserted = {
+            let mut g = graph.write().unwrap();
+            // Every kernel accepts strided — no fixup.
+            insert_layout_fixups(&mut g, &[c.id()], |_| true)
+        };
+        assert_eq!(inserted, 0);
+        assert_eq!(count_contiguize_nodes(&graph), before);
+    }
+
+    /// CSE: two non-strided-tolerant consumers reading the same
+    /// transposed view share one inserted Contiguize node.
+    #[test]
+    fn insert_fixups_cse_dedupes_shared_strided_input() {
+        let a = Tensor::from_f32(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
+        let at = a.transpose();
+        // Two consumers of the same transposed view.
+        let b = at.const_f32_like(vec![0.0; 6], Shape::from_dims(&[3, 2]));
+        let c1 = at.add(&b);
+        let c2 = at.mul(&b);
+        let graph = c1.graph().clone();
+
+        let inserted = {
+            let mut g = graph.write().unwrap();
+            insert_layout_fixups(&mut g, &[c1.id(), c2.id()], |_| false)
+        };
+        // Exactly ONE Contiguize, shared between the two consumers.
+        assert_eq!(inserted, 1);
+
+        let g = graph.read().unwrap();
+        let c1_input = g.node(c1.id()).inputs[0];
+        let c2_input = g.node(c2.id()).inputs[0];
+        assert_eq!(
+            c1_input, c2_input,
+            "CSE: both consumers must share the same Contiguize node",
+        );
+        assert!(matches!(g.node(c1_input).op, Op::Contiguize));
+    }
+
+    /// Idempotency: running the pass twice on the same graph adds
+    /// 0 new nodes the second time.
+    #[test]
+    fn insert_fixups_idempotent() {
+        let a = Tensor::from_f32(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
+        let at = a.transpose();
+        let b = at.const_f32_like(vec![0.0; 6], Shape::from_dims(&[3, 2]));
+        let c = at.add(&b);
+        let graph = c.graph().clone();
+
+        let first = {
+            let mut g = graph.write().unwrap();
+            insert_layout_fixups(&mut g, &[c.id()], |_| false)
+        };
+        assert_eq!(first, 1, "first run inserts one Contiguize");
+
+        let second = {
+            let mut g = graph.write().unwrap();
+            insert_layout_fixups(&mut g, &[c.id()], |_| false)
+        };
+        assert_eq!(second, 0, "second run is a no-op");
+    }
+
+    /// View ops in the consumer position do NOT get Contiguize
+    /// inserted before them — they preserve strided layouts
+    /// intentionally as part of their semantics.
+    #[test]
+    fn insert_fixups_skips_view_op_consumers() {
+        let a = Tensor::from_f32(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            Shape::from_dims(&[2, 3]),
+            cpu_dev(),
+        );
+        let at = a.transpose();
+        // Permute on a transposed view: both are view ops, the
+        // strided layout flows through unchanged.
+        let ap = at.permute(&[1, 0]);
+        let graph = ap.graph().clone();
+
+        let inserted = {
+            let mut g = graph.write().unwrap();
+            insert_layout_fixups(&mut g, &[ap.id()], |_| false)
+        };
+        assert_eq!(
+            inserted, 0,
+            "view ops preserve strided layouts; no Contiguize should be inserted",
+        );
     }
 }
