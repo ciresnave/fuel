@@ -17,7 +17,8 @@
 //! - [`Map`] -- a simple adapter that wraps any [`crate::Module`] as a
 //!   [`StreamingModule`] with no internal buffering.
 //!
-use crate::{Result, Shape, Tensor};
+use crate::tensor::Tensor;
+use crate::{Result, Shape};
 
 /// Convenience bound combining [`crate::shape::Dim`] and `Copy` for dimension arguments in
 /// streaming operations.

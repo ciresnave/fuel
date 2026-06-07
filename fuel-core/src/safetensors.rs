@@ -30,8 +30,8 @@
 //!
 use crate::op::BackpropOp;
 use crate::storage::Storage;
-use crate::tensor::from_storage;
-use crate::{DType, Device, Error, Result, Tensor, WithDType};
+use crate::tensor::{from_storage, Tensor};
+use crate::{DType, Device, Error, Result, WithDType};
 use crate::HostBuffer;
 use safetensors::tensor as st;
 use safetensors::tensor::SafeTensors;

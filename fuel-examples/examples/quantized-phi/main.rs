@@ -13,7 +13,6 @@ use fuel::lazy_llama_full::LlamaFullConfig;
 use fuel::lazy_phi3::Phi3Config;
 use fuel::lazy_quantized_llama::QuantizedLlama3Model;
 use fuel::lazy_quantized_phi3::QuantizedPhi3Model;
-use fuel::Tensor;
 use fuel_transformers::generation::{LogitsProcessor, Sampling};
 
 use fuel_examples::token_output_stream::TokenOutputStream;
@@ -178,9 +177,9 @@ enum ModelCfg {
 
 impl Model {
     /// Forward the model over the given token slice at `start_pos` and
-    /// return the per-token logits of the LAST position as a small
-    /// CPU `Tensor` suitable for `LogitsProcessor::sample`.
-    fn forward_last_logits(&self, tokens: &[u32], start_pos: usize) -> anyhow::Result<Tensor> {
+    /// return the per-token logits of the LAST position as a plain
+    /// `Vec<f32>` suitable for `LogitsProcessor::sample`.
+    fn forward_last_logits(&self, tokens: &[u32], start_pos: usize) -> anyhow::Result<Vec<f32>> {
         let (logits_flat, vocab) = match self {
             Self::Phi3(m, v) => (m.forward(tokens, start_pos).map_err(E::msg)?.realize_f32(), *v),
             Self::Phi3b(m, v) => (m.forward(tokens, start_pos).map_err(E::msg)?.realize_f32(), *v),
@@ -190,9 +189,7 @@ impl Model {
             anyhow::bail!("forward_last_logits: empty token slice");
         }
         let last_off = (seq - 1) * vocab;
-        let last: Vec<f32> = logits_flat[last_off..last_off + vocab].to_vec();
-        let logits = Tensor::new(last, &fuel::Device::cpu())?;
-        Ok(logits)
+        Ok(logits_flat[last_off..last_off + vocab].to_vec())
     }
 }
 
@@ -451,17 +448,15 @@ fn main() -> anyhow::Result<()> {
     let start_post_prompt = std::time::Instant::now();
     let mut sampled = 0;
     for index in 0..to_sample {
-        let logits = model.forward_last_logits(&[next_token], tokens.len() + index)?;
-        let logits = if args.repeat_penalty == 1. {
-            logits
-        } else {
+        let mut logits = model.forward_last_logits(&[next_token], tokens.len() + index)?;
+        if args.repeat_penalty != 1. {
             let start_at = all_tokens.len().saturating_sub(args.repeat_last_n);
             fuel_transformers::utils::apply_repeat_penalty(
-                &logits,
+                &mut logits,
                 args.repeat_penalty,
                 &all_tokens[start_at..],
-            )?
-        };
+            );
+        }
         next_token = logits_processor.sample(&logits)?;
         all_tokens.push(next_token);
         if let Some(t) = tos.next_token(next_token)? {

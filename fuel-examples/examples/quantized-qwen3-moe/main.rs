@@ -11,7 +11,6 @@ use tokenizers::Tokenizer;
 
 use fuel::lazy_quantized_qwen3_moe::QuantizedQwen3MoeModel;
 use fuel::lazy_qwen3_moe::Qwen3MoeConfig;
-use fuel::Tensor;
 use fuel::DType;
 use fuel_transformers::generation::{LogitsProcessor, Sampling};
 
@@ -396,11 +395,11 @@ fn main() -> anyhow::Result<()> {
         LogitsProcessor::from_sampling(args.seed, sampling)
     };
 
-    // Pick the last position's logits from a (1, seq, vocab) flat realize.
-    let last_logits_tensor = |flat: &[f32], seq: usize, vocab: usize| -> Result<Tensor> {
+    // Pick the last position's logits from a (1, seq, vocab) flat realize
+    // as a plain `Vec<f32>` for the LogitsProcessor sampler.
+    let last_logits_tensor = |flat: &[f32], seq: usize, vocab: usize| -> Result<Vec<f32>> {
         let off = (seq - 1) * vocab;
-        let v: Vec<f32> = flat[off..off + vocab].to_vec();
-        Tensor::new(v, &fuel::Device::cpu()).map_err(|e| E::msg(format!("logits tensor: {e}")))
+        Ok(flat[off..off + vocab].to_vec())
     };
 
     let start_prompt_processing = std::time::Instant::now();
@@ -445,16 +444,15 @@ fn main() -> anyhow::Result<()> {
             .map_err(|e| E::msg(format!("forward: {e}")))?;
         let flat = logits_lazy.realize_f32();
         let logits = last_logits_tensor(&flat, 1, cfg.vocab_size)?;
-        let logits = if args.repeat_penalty == 1. {
-            logits
-        } else {
+        let mut logits = logits;
+        if args.repeat_penalty != 1. {
             let start_at = all_tokens.len().saturating_sub(args.repeat_last_n);
             fuel_transformers::utils::apply_repeat_penalty(
-                &logits,
+                &mut logits,
                 args.repeat_penalty,
                 &all_tokens[start_at..],
-            )?
-        };
+            );
+        }
         next_token = logits_processor.sample(&logits)?;
         all_tokens.push(next_token);
         if let Some(t) = tos.next_token(next_token)? {

@@ -11,7 +11,8 @@
 //! [`fuel_core_types::quantized::QuantizedDeviceKernels`] — adding a new
 //! backend requires zero edits in this module.
 
-use crate::{DType, Device, Result, Shape, Tensor, D};
+use crate::tensor::Tensor;
+use crate::{DType, Device, Result, Shape, D};
 pub use fuel_core_types::quantized::{
     DynQuantizedStorage, GgmlDType, QuantizedDeviceKernels,
 };

@@ -9,7 +9,8 @@
 
 use std::collections::HashMap;
 
-use crate::{Result, Tensor};
+use crate::tensor::Tensor;
+use crate::Result;
 
 pub use fuel_formats::pickle::{
     OpCode, Object, Stack, TensorInfo, read_pth_tensor_info,

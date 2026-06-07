@@ -25,7 +25,8 @@
 //! # Load multiple values from a npz file.
 //! values = np.loadz("test.npz")
 //! ```
-use crate::{DType, Device, Error, Result, Shape, Tensor};
+use crate::tensor::Tensor;
+use crate::{DType, Device, Error, Result, Shape};
 use byteorder::{LittleEndian, ReadBytesExt};
 use half::{bf16, f16, slice::HalfFloatSliceExt};
 use std::collections::HashMap;

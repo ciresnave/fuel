@@ -2532,6 +2532,101 @@ them.
 
 ---
 
+## Eager-retirement follow-ups (post-Phase γ)
+
+Phase γ (the Eager Tensor retirement program) shipped the bulk of the migration
+off `fuel_core::Tensor` to `LazyTensor`, but a handful of items got quarantined
+or deferred along the way rather than block the main sweep. Each bullet below
+captures one such item with the minimum context needed to pick it up cold in a
+future session. Group ordering mirrors the rough cost ladder — the binaries
+need lazy ports of missing model families; the WASM crates need a workspace-
+wide swap; the fuel-core integration tests are small mechanical fixes; the
+fuel-book work is documentation; the lazy-side gaps are net-new primitives.
+
+### 1. Re-migrate the 12 quarantined `fuel-examples` binaries
+
+Each binary was set aside because its target model family doesn't yet have a
+lazy port (or, in two cases, because the binary is a legacy demo superseded by
+a newer port that already migrated). Restoring each one means landing the lazy
+port called out, then doing the standard binary swap (lazy_X imports + lazy
+weight loader + LazyTensor signatures).
+
+- **debertav2** — needs `ForMaskedLM` + `ForSequenceClassification` heads in `lazy_debertav2` (encoder body already ports cleanly; the two task heads are the missing piece).
+- **xlm-roberta** — needs `ForMaskedLM` + `ForSequenceClassification` heads in `lazy_xlm_roberta` (same shape as debertav2 — encoder ready, heads missing).
+- **csm** — needs the autoregressive generation loop driver in `lazy_csm`; the underlying transformer blocks are already there, the AR decode harness is what's missing.
+- **metavoice** — needs a `lazy_encodec` port (MetaVoice's neural audio codec dependency); the MetaVoice text-to-speech model itself can land once Encodec is available.
+- **stable-diffusion-3** — needs the full `lazy_sd3` family: the triple-CLIP text-encoder composer (CLIP-L + CLIP-G + T5-XXL), the SD3 VAE, and the flow-match Euler sampler with SLG (Skip Layer Guidance).
+- **llava** — needs `HFLLaVAConfig` + `LLaVAConfig` + `utils::select_best_resolution` in `lazy_llava` (the multi-resolution image preprocessing helper that picks the closest supported grid); the underlying CLIP + LLaMA ports are already lazy.
+- **llama_multiprocess** — cuda + nccl + flash-attn feature-gated; open question whether to ship a lazy multi-process driver at all, or wait until tensor-parallel inference has a clearer story in the lazy substrate. Tracked, not necessarily promised.
+- **mamba-minimal** — legacy demo, supplanted by the full `mamba` / `mamba2` ports that already migrated; likely a deletion rather than a remigration, but pending a sanity check that nothing depends on the minimal shape.
+- **paddleocr-vl** — still needs an `HFConfig` helper in `lazy_paddleocr_vl` to bridge HuggingFace-style config JSON to the fuel-internal config struct; layer code is already lazy.
+- **quantized-lfm2** — needs the base `lazy_lfm2` port to land first (LFM2 currently has no fp32/bf16 lazy port at all, so the quantized variant has nothing to specialize over).
+- **rwkv** — needs the RWKV tokenizer ported (~95 LOC, inline-able) into `lazy_rwkv5` or a sibling tokenizer module; the model layers themselves are already lazy via `lazy_rwkv5` / `lazy_rwkv7`.
+- **trocr** — needs `vit` + `trocr` ported into `lazy_vit` / `lazy_trocr` internals (the OCR-specific decoder is the trocr-specific part; the ViT encoder body is shared with the broader ViT port).
+
+### 2. Re-migrate the 10 fuel-wasm-examples crates + fuel-wasm-tests
+
+The entire WASM example tree is currently quarantined out of the workspace
+(removed from `[workspace.members]`) because every crate depends on
+`fuel_transformers::models::*` (retired in Phase H) and `fuel_nn::*` (retired
+in Phase β4). Restoring the tree mirrors the `fuel-examples` program: per
+crate, swap to the corresponding `lazy_X` module, and inline small helpers for
+the handful of API points that don't have a 1:1 lazy equivalent yet (notably
+`ops::softmax`, the `Linear` layer wrapper, and the VarMap-style loaders the
+WASM binaries use for compact safetensors loading).
+
+- `fuel-wasm-examples/bert`
+- `fuel-wasm-examples/blip`
+- `fuel-wasm-examples/llama2-c`
+- `fuel-wasm-examples/moondream`
+- `fuel-wasm-examples/phi`
+- `fuel-wasm-examples/quant-qwen3`
+- `fuel-wasm-examples/segment-anything`
+- `fuel-wasm-examples/t5`
+- `fuel-wasm-examples/whisper`
+- `fuel-wasm-examples/yolo`
+- `fuel-wasm-tests`
+
+### 3. Fuel-core integration test fixups (pre-existing breakage, not retirement-related)
+
+These three integration tests were already broken before Phase γ started, but
+were left untouched during the sweep so the retirement diffs stayed focused.
+They are small mechanical fixes against the current `LazyTensor` + storage-seam
+API, not architectural follow-ups.
+
+- `tests/phase6b_cuda_anchor.rs` — the `realize_f32_*` methods are now `Result`-returning; needs `?` insertion at the call sites. Separately, `ClipTextConfig` gained a required `activation` field that this test's fixture doesn't populate.
+- `tests/cuda_composed_bisect.rs` — same `Result`-vs-`LazyTensor` mismatch across `realize_f32`, `matmul`, and `rms_norm_last_dim` call sites.
+- `tests/tensor_tests.rs` — the storage seam now returns `Arc<RwLock<Storage>>` instead of a `RwLockReadGuard`; the test reaches through the old guard shape and needs to be retargeted at the `Arc<RwLock<...>>` API.
+
+### 4. fuel-book doctest cleanup
+
+`fuel-book/src/simplified.rs` is currently `mod`-gated off because it consumed
+`fuel_nn::{Linear, VarMap, VarBuilder, SGD, Module, Optimizer, ops::log_softmax,
+loss::nll}` — all retired in Phase β4. Port it to the lazy substrate:
+`LazyTensor` + `LazyVar` + `lazy_nn_loss::nll` + `LazyAdamW` (SGD's lazy
+equivalent is the AdamW family; for a strict SGD port, a `LazySGD` would be a
+small additional follow-up).
+
+### 5. fuel-book markdown docs
+
+Five `.md` files under `fuel-book/src/guide` and `fuel-book/src/inference`
+reference `fuel_nn` in prose and in inline code examples. Update both to use
+the lazy substrate (`LazyTensor`, `lazy_nn::*`, `LazyVar`, `lazy_nn_loss::*`,
+and `LazyAdamW`). Doc-only change; no fuel-core code touched.
+
+### 6. Lazy-side primitive gaps surfaced during retirement (defer to follow-up)
+
+These three primitives were tagged during Phase γ as "would have been nice to
+have during the binary migrations" but were not load-bearing for any binary
+that actually shipped — each one was worked around at the call site. They
+warrant first-class lazy implementations when a downstream consumer needs them.
+
+- **General-axis softmax on LazyTensor** — currently only `softmax_last_dim` is exposed; a general `softmax(axis)` would close a recurring port-time papercut for models that softmax over a non-trailing axis (typical in attention rewrites and some vision heads).
+- **`max_pool2d` with `-inf` padding** — only the zero-padded variant is exposed today; some segmentation and detection heads expect `-inf` padding (so padded positions can never win the max). The shape is the same as the existing zero-padded kernel with a different fill constant; the lazy fanout is the work item.
+- **`LazyConv2d::absorb_bn` helper** — for inference-time folding of a following BatchNorm into the conv's weight + bias (the standard "fuse BN" optimization). Small algebraic helper; deferred because no current lazy binary needs it at the API surface (the folding ports that do exist do it ad-hoc at load time).
+
+---
+
 ## Anti-goals by layer
 
 These are explicit rules. When a proposed addition fits one of these descriptions,

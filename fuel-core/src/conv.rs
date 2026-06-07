@@ -3,7 +3,7 @@
 //! This module re-exports the parameter structs from `fuel-core-types` and
 //! provides the [`Tensor`] methods that execute convolutions.
 
-use crate::{op::BackpropOp, op::Op, Error, Result, Tensor};
+use crate::{op::BackpropOp, op::Op, tensor::Tensor, Error, Result};
 
 pub use fuel_core_types::conv::{
     CudnnFwdAlgo, ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,

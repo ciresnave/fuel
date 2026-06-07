@@ -1,6 +1,7 @@
 ﻿//! Methods for backpropagation of gradients.
 use crate::op::{BinaryOp, Op, ReduceOp, UnaryOp};
-use crate::{Error, Result, Tensor, TensorId};
+use crate::tensor::{Tensor, TensorId};
+use crate::{Error, Result};
 use std::collections::HashMap;
 
 // arg has been reduced to node via reduce_dims, expand it back to arg.

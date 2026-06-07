@@ -7,7 +7,7 @@
 //! [`BackpropOp`] wrapper manages optional graph tracking.
 //!
 #![allow(clippy::redundant_closure_call)]
-use crate::Tensor;
+use crate::tensor::Tensor;
 use float8::F8E4M3 as f8e4m3;
 use half::{bf16, f16};
 use num_traits::float::Float;
