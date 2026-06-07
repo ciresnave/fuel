@@ -2419,6 +2419,45 @@ impl LazyTensor {
         Ok(Self { inner: self.inner.log_softmax_last_dim()? })
     }
 
+    /// Numerically-stable softmax along an arbitrary axis. Accepts any
+    /// [`Dim`]. Decomposes into `max_keepdim` / `broadcast_sub` / `exp` /
+    /// `sum_keepdim` / `broadcast_div`, all of which already accept
+    /// `D: Dim`, so this is a pure composition with no new graph op.
+    ///
+    /// When `dim` resolves to the last axis, prefer
+    /// [`Self::softmax_last_dim`], which dispatches to the fused
+    /// `SoftmaxLastDim` op (single kernel rather than five graph nodes).
+    pub fn softmax<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        // Resolve once to a concrete `usize` so we can pass it to each
+        // composed call (the `Dim` trait doesn't require `Copy`, so we
+        // can't reuse the generic `D` across multiple calls).
+        let axis: usize = dim.to_index(&shape, "softmax")?;
+        let m = self.max_keepdim(axis)?;
+        let shifted = self.broadcast_sub(&m)?;
+        let e = shifted.exp();
+        let s = e.sum_keepdim(axis)?;
+        e.broadcast_div(&s)
+    }
+
+    /// Numerically-stable `log(softmax(self))` along an arbitrary axis.
+    /// Accepts any [`Dim`]. Computes `x - max - log(sum(exp(x - max)))`
+    /// — the standard log-sum-exp form, which avoids the explicit
+    /// `softmax`-then-`log` underflow path. Pure composition over
+    /// existing primitives.
+    ///
+    /// When `dim` resolves to the last axis, prefer
+    /// [`Self::log_softmax_last_dim`], which dispatches to the fused
+    /// `LogSoftmaxLastDim` op.
+    pub fn log_softmax<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+        let shape = self.inner.shape();
+        let axis: usize = dim.to_index(&shape, "log_softmax")?;
+        let m = self.max_keepdim(axis)?;
+        let shifted = self.broadcast_sub(&m)?;
+        let lse = shifted.exp().sum_keepdim(axis)?.log();
+        shifted.broadcast_sub(&lse)
+    }
+
     /// Argmin along `dim`, returning a U32 tensor with the reduced dim
     /// removed. Non-differentiable. Bad `dim` surfaces as a typed
     /// error at build time. Accepts any [`Dim`].
@@ -3748,6 +3787,24 @@ impl LazyTensor {
         stride: (usize, usize),
         padding: (usize, usize),
     ) -> std::result::Result<Self, fuel_core_types::Error> {
+        // Default: zero-padded (legacy behavior). For PyTorch-correct
+        // semantics where padded slots must never win the max, use
+        // [`Self::max_pool2d_with_pad_value`] with `f32::NEG_INFINITY`.
+        self.max_pool2d_with_pad_value(kernel, stride, padding, 0.0)
+    }
+
+    /// `max_pool2d` variant where the boundary padding is filled with an
+    /// explicit `pad_value` instead of `0.0`. Pass `f32::NEG_INFINITY`
+    /// for PyTorch-correct semantics (padded slots can never win the
+    /// max). All other constraints match [`Self::max_pool2d`]; the only
+    /// difference is the constant value the implicit boundary pad uses.
+    pub fn max_pool2d_with_pad_value(
+        &self,
+        kernel: (usize, usize),
+        stride: (usize, usize),
+        padding: (usize, usize),
+        pad_value: f32,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
         let dims = self.shape().dims().to_vec();
         if dims.len() != 4 {
             return Err(fuel_core_types::Error::Msg(format!(
@@ -3784,8 +3841,8 @@ impl LazyTensor {
         let extra_h = h_total.saturating_sub(h_padded_min);
         let extra_w = w_total.saturating_sub(w_padded_min);
         let padded = self
-            .pad_with_zeros(2, ph, ph + extra_h)?
-            .pad_with_zeros(3, pw, pw + extra_w)?;
+            .pad_with_value(2, ph, ph + extra_h, pad_value)?
+            .pad_with_value(3, pw, pw + extra_w, pad_value)?;
         // For each (ky, kx) collect the strided tap.
         let mut acc: Option<LazyTensor> = None;
         for ky in 0..kh {
@@ -3983,24 +4040,39 @@ impl LazyTensor {
     }
 
     /// Pad with zeros along `dim`: `left` zeros before, `right` zeros
-    /// after. Wraps [`Self::pad`] with `PadMode::Constant` and value 0
-    /// for the named dim (other dims get `(0, 0)`). Composite — no new
-    /// graph op. Accepts any [`Dim`].
+    /// after. Thin wrapper over [`Self::pad_with_value`] with `value = 0.0`.
+    /// Composite — no new graph op. Accepts any [`Dim`].
     pub fn pad_with_zeros<D: Dim>(
         &self,
         dim: D,
         left: usize,
         right: usize,
     ) -> std::result::Result<Self, fuel_core_types::Error> {
+        self.pad_with_value(dim, left, right, 0.0)
+    }
+
+    /// Pad with a constant `value` along `dim`: `before` slots before,
+    /// `after` slots after. Wraps [`Self::pad`] with `PadMode::Constant`
+    /// for the named dim (other dims get `(0, 0)`); the `f32` value is
+    /// widened to the graph op's `f64` param. Useful for `-inf` padding
+    /// around max-reductions (e.g. PyTorch-style `max_pool2d`, where
+    /// padded positions must never win the max). Accepts any [`Dim`].
+    pub fn pad_with_value<D: Dim>(
+        &self,
+        dim: D,
+        before: usize,
+        after: usize,
+        value: f32,
+    ) -> std::result::Result<Self, fuel_core_types::Error> {
         let shape = self.shape();
-        let dim = dim.to_index(&shape, "pad_with_zeros")?;
+        let dim = dim.to_index(&shape, "pad_with_value")?;
         let rank = shape.dims().len();
-        if left == 0 && right == 0 {
+        if before == 0 && after == 0 {
             return Ok(self.clone());
         }
         let mut padding: Vec<(usize, usize)> = vec![(0, 0); rank];
-        padding[dim] = (left, right);
-        self.pad(padding, fuel_graph::PadMode::Constant, 0.0)
+        padding[dim] = (before, after);
+        self.pad(padding, fuel_graph::PadMode::Constant, value as f64)
     }
 
     /// Coordinate grids from rank-1 inputs. Matches PyTorch's
@@ -9273,6 +9345,161 @@ mod phase_a1_wrapper_tests {
     }
 
     #[test]
+    fn softmax_general_axis_matches_hand_computed_rank3_middle_axis() {
+        // shape [2, 3, 2] — softmax along axis=1 (the size-3 axis).
+        // Layout (row-major): element (b, r, c) lives at b*6 + r*2 + c.
+        // We hand-pick values so each (b, c) lane's max is exactly 0 to
+        // make the reference closed-form: probs = exp(x) / sum_r exp(x).
+        // Lane (b=0, c=0): values [-1, 0, -2]  → exp = [e^-1, 1, e^-2]
+        // Lane (b=0, c=1): values [ 0,-3, -1]  → exp = [1, e^-3, e^-1]
+        // Lane (b=1, c=0): values [-2,-1,  0]  → exp = [e^-2, e^-1, 1]
+        // Lane (b=1, c=1): values [-1,-1,  0]  → exp = [e^-1, e^-1, 1]
+        let data: Vec<f32> = vec![
+            // b=0
+            -1.0,  0.0,   // r=0, c=0..1
+             0.0, -3.0,   // r=1
+            -2.0, -1.0,   // r=2
+            // b=1
+            -2.0, -1.0,   // r=0
+            -1.0, -1.0,   // r=1
+             0.0,  0.0,   // r=2
+        ];
+        let t = cpu_f32(data, &[2, 3, 2]);
+        let out = t.softmax(1_usize).unwrap();
+        assert_eq!(out.shape().dims(), &[2, 3, 2]);
+        let v = out.realize_f32();
+
+        // Reference: closed-form softmax per (b, c) lane.
+        let lane_softmax = |xs: [f32; 3]| -> [f32; 3] {
+            let m = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let exps = [(xs[0] - m).exp(), (xs[1] - m).exp(), (xs[2] - m).exp()];
+            let s = exps[0] + exps[1] + exps[2];
+            [exps[0] / s, exps[1] / s, exps[2] / s]
+        };
+        // Re-extract source lanes
+        let lanes: [[f32; 3]; 4] = [
+            [-1.0,  0.0, -2.0],   // (b=0, c=0)
+            [ 0.0, -3.0, -1.0],   // (b=0, c=1)
+            [-2.0, -1.0,  0.0],   // (b=1, c=0)
+            [-1.0, -1.0,  0.0],   // (b=1, c=1)
+        ];
+        let refs: Vec<[f32; 3]> = lanes.iter().map(|l| lane_softmax(*l)).collect();
+
+        // out[b, r, c] at index b*6 + r*2 + c — verify each (b, c) lane.
+        for b in 0..2 {
+            for c in 0..2 {
+                let lane_ix = b * 2 + c;
+                for r in 0..3 {
+                    let got = v[b * 6 + r * 2 + c];
+                    let want = refs[lane_ix][r];
+                    assert!(
+                        (got - want).abs() < 1e-6,
+                        "softmax mismatch at (b={b}, r={r}, c={c}): got {got}, want {want}",
+                    );
+                }
+                // sanity: lane sums to 1
+                let sum: f32 = (0..3).map(|r| v[b * 6 + r * 2 + c]).sum();
+                assert!((sum - 1.0).abs() < 1e-6, "lane (b={b},c={c}) sums to {sum}");
+            }
+        }
+    }
+
+    #[test]
+    fn softmax_last_axis_matches_softmax_last_dim() {
+        let data: Vec<f32> = vec![
+            1.0,  2.0, -1.0,  0.5,
+            0.0, -2.0,  3.0,  1.5,
+            // batch dim 2
+            4.0, -1.0,  2.0,  0.0,
+            -3.0, 0.25, 0.75, 1.0,
+        ];
+        let t = cpu_f32(data, &[2, 2, 4]);
+        let via_general = t.softmax(2_usize).unwrap();
+        let via_fused = t.softmax_last_dim().unwrap();
+        assert_eq!(via_general.shape().dims(), via_fused.shape().dims());
+        let g = via_general.realize_f32();
+        let f = via_fused.realize_f32();
+        assert_eq!(g.len(), f.len());
+        for (i, (a, b)) in g.iter().zip(f.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "softmax (general axis=2) vs softmax_last_dim diverge at {i}: {a} vs {b}",
+            );
+        }
+    }
+
+    #[test]
+    fn log_softmax_general_axis_matches_hand_computed_rank3_middle_axis() {
+        // Same construction as the softmax test, but compare against
+        // closed-form log_softmax per (b, c) lane.
+        let data: Vec<f32> = vec![
+            -1.0,  0.0,
+             0.0, -3.0,
+            -2.0, -1.0,
+            -2.0, -1.0,
+            -1.0, -1.0,
+             0.0,  0.0,
+        ];
+        let t = cpu_f32(data, &[2, 3, 2]);
+        let out = t.log_softmax(1_usize).unwrap();
+        assert_eq!(out.shape().dims(), &[2, 3, 2]);
+        let v = out.realize_f32();
+
+        let lane_log_softmax = |xs: [f32; 3]| -> [f32; 3] {
+            let m = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let shifted = [xs[0] - m, xs[1] - m, xs[2] - m];
+            let lse = (shifted[0].exp() + shifted[1].exp() + shifted[2].exp()).ln();
+            [shifted[0] - lse, shifted[1] - lse, shifted[2] - lse]
+        };
+        let lanes: [[f32; 3]; 4] = [
+            [-1.0,  0.0, -2.0],
+            [ 0.0, -3.0, -1.0],
+            [-2.0, -1.0,  0.0],
+            [-1.0, -1.0,  0.0],
+        ];
+        let refs: Vec<[f32; 3]> = lanes.iter().map(|l| lane_log_softmax(*l)).collect();
+
+        for b in 0..2 {
+            for c in 0..2 {
+                let lane_ix = b * 2 + c;
+                for r in 0..3 {
+                    let got = v[b * 6 + r * 2 + c];
+                    let want = refs[lane_ix][r];
+                    assert!(
+                        (got - want).abs() < 1e-6,
+                        "log_softmax mismatch at (b={b}, r={r}, c={c}): got {got}, want {want}",
+                    );
+                    // log_softmax values must be <= 0
+                    assert!(got <= 1e-6, "log_softmax produced positive value: {got}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn log_softmax_last_axis_matches_log_softmax_last_dim() {
+        let data: Vec<f32> = vec![
+            1.0,  2.0, -1.0,  0.5,
+            0.0, -2.0,  3.0,  1.5,
+            4.0, -1.0,  2.0,  0.0,
+            -3.0, 0.25, 0.75, 1.0,
+        ];
+        let t = cpu_f32(data, &[2, 2, 4]);
+        let via_general = t.log_softmax(2_usize).unwrap();
+        let via_fused = t.log_softmax_last_dim().unwrap();
+        assert_eq!(via_general.shape().dims(), via_fused.shape().dims());
+        let g = via_general.realize_f32();
+        let f = via_fused.realize_f32();
+        assert_eq!(g.len(), f.len());
+        for (i, (a, b)) in g.iter().zip(f.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "log_softmax (general axis=2) vs log_softmax_last_dim diverge at {i}: {a} vs {b}",
+            );
+        }
+    }
+
+    #[test]
     fn argmin_dim_drops_reduced_axis() {
         let t = cpu_f32(vec![3.0, 1.0, 2.0, 0.5, 5.0, 4.0], &[2, 3]);
         let out = t.argmin_dim(1_usize).unwrap();
@@ -10345,6 +10572,111 @@ mod phase_a5_factory_tests {
     fn pad_with_zeros_rejects_bad_dim() {
         let t = cpu_f32(vec![1.0, 2.0], &[2]);
         assert!(t.pad_with_zeros(3, 1, 1).is_err());
+    }
+
+    #[test]
+    fn pad_with_value_zero_matches_pad_with_zeros() {
+        // pad_with_value(_, _, _, 0.0) must be observationally identical
+        // to pad_with_zeros — the latter is now a wrapper for the former.
+        let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let via_zeros = t.pad_with_zeros(0, 1, 2).unwrap();
+        let via_value = t.pad_with_value(0, 1, 2, 0.0).unwrap();
+        assert_eq!(via_zeros.shape().dims(), via_value.shape().dims());
+        assert_eq!(via_zeros.shape().dims(), &[5, 2]);
+        assert_eq!(via_zeros.realize_f32(), via_value.realize_f32());
+        assert_eq!(
+            via_value.realize_f32(),
+            vec![0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0],
+        );
+    }
+
+    #[test]
+    fn pad_with_value_neg_inf_then_max_reduce_ignores_pad() {
+        // Negative interior values: -1, -2, -3. Pad with -inf on both
+        // sides. Max along dim 0 must be the interior max (-1.0), not
+        // -inf. This is the load-bearing property for max_pool2d.
+        let t = cpu_f32(vec![-1.0, -2.0, -3.0], &[3]);
+        let padded = t.pad_with_value(0, 2, 2, f32::NEG_INFINITY).unwrap();
+        assert_eq!(padded.shape().dims(), &[7]);
+        let v = padded.realize_f32();
+        // Layout: [-inf, -inf, -1, -2, -3, -inf, -inf]
+        assert!(v[0].is_infinite() && v[0].is_sign_negative());
+        assert!(v[1].is_infinite() && v[1].is_sign_negative());
+        assert_eq!(v[2], -1.0);
+        assert_eq!(v[3], -2.0);
+        assert_eq!(v[4], -3.0);
+        assert!(v[5].is_infinite() && v[5].is_sign_negative());
+        assert!(v[6].is_infinite() && v[6].is_sign_negative());
+        // max along the only dim drops the pad and returns the interior max.
+        let m = padded.max_all().realize_f32();
+        assert_eq!(m, vec![-1.0]);
+    }
+
+    #[test]
+    fn pad_with_value_identity_when_both_zero() {
+        // The early-out path must fire regardless of value (no spurious
+        // graph node when there's nothing to pad).
+        let t = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
+        let p = t.pad_with_value(0, 0, 0, f32::NEG_INFINITY).unwrap();
+        assert_eq!(p.realize_f32(), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn pad_with_value_rejects_bad_dim() {
+        let t = cpu_f32(vec![1.0, 2.0], &[2]);
+        assert!(t.pad_with_value(3, 1, 1, 0.0).is_err());
+    }
+
+    #[test]
+    fn max_pool2d_with_pad_value_neg_inf_on_negative_interior() {
+        // Negative-only interior values: a zero-padded max_pool2d would
+        // incorrectly return 0 in boundary windows. -inf padding gives
+        // the PyTorch-correct answer (the interior max).
+        //
+        // 1x1x3x3 tensor, all values negative:
+        //   [ -1, -2, -3 ]
+        //   [ -4, -5, -6 ]
+        //   [ -7, -8, -9 ]
+        // With kernel=3, stride=1, padding=1, output is 3x3 where the
+        // (1,1) center sees the full grid → max = -1.
+        let x = cpu_f32(
+            vec![-1.0, -2.0, -3.0, -4.0, -5.0, -6.0, -7.0, -8.0, -9.0],
+            &[1, 1, 3, 3],
+        );
+        let out = x
+            .max_pool2d_with_pad_value((3, 3), (1, 1), (1, 1), f32::NEG_INFINITY)
+            .unwrap();
+        assert_eq!(out.shape().dims(), &[1, 1, 3, 3]);
+        let v = out.realize_f32();
+        // Top-left corner (0,0): window sees only [(0,0),(0,1),(1,0),(1,1)]
+        // = [-1,-2,-4,-5]; padded slots are -inf → max = -1.
+        assert_eq!(v[0], -1.0);
+        // Center (1,1): no padded slots in window → max of all 9 = -1.
+        assert_eq!(v[4], -1.0);
+        // Bottom-right (2,2): window sees [(1,1),(1,2),(2,1),(2,2)]
+        // = [-5,-6,-8,-9]; padded slots are -inf → max = -5.
+        assert_eq!(v[8], -5.0);
+
+        // Sanity: zero-padded max_pool2d would mistakenly return 0 here
+        // (the padded zeros beat every negative interior value).
+        let zero_pad = x.max_pool2d((3, 3), (1, 1), (1, 1)).unwrap();
+        let vz = zero_pad.realize_f32();
+        assert_eq!(vz[0], 0.0);
+        assert_eq!(vz[8], 0.0);
+    }
+
+    #[test]
+    fn max_pool2d_with_pad_value_zero_matches_max_pool2d() {
+        // With pad_value = 0.0, the new variant must agree with the
+        // legacy max_pool2d byte-for-byte.
+        let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
+        let x = cpu_f32(data, &[1, 1, 4, 4]);
+        let a = x.max_pool2d((2, 2), (2, 2), (0, 0)).unwrap();
+        let b = x
+            .max_pool2d_with_pad_value((2, 2), (2, 2), (0, 0), 0.0)
+            .unwrap();
+        assert_eq!(a.shape().dims(), b.shape().dims());
+        assert_eq!(a.realize_f32(), b.realize_f32());
     }
 
     // ---- Phase A.6 conv1d composite tests ----
