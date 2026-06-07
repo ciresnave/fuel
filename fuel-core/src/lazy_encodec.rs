@@ -1452,7 +1452,7 @@ mod tests {
         );
         let codes: Vec<LazyTensor> = (0..cfg.num_codebooks)
             .map(|i| anchor.const_u32_like(
-                (0..t_latent).map(|t| ((i + t) % cfg.codebook_size) as u32).collect(),
+                (0..t_latent).map(|t| ((i + t) % cfg.codebook_size) as u32).collect::<Vec<u32>>(),
                 Shape::from_dims(&[1, t_latent]),
             ))
             .collect();

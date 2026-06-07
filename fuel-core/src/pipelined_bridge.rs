@@ -70,10 +70,14 @@ use fuel_core_types::{
     probe::BackendId, DeviceLocation, Error, HostBuffer, Result,
 };
 use fuel_graph::{Graph, Node, NodeId, Op, topo_order_multi};
-use fuel_dispatch::{pipelined::{PipelinedExecutor, StorageCache}};
+use fuel_graph::opt::execution_plan;
+use fuel_dispatch::dispatch::global_bindings;
+use fuel_dispatch::plan::{compile_plan, ExecutionPlan, PlanOptions};
+use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
 use fuel_storage::{BackendStorage, Storage};
 
 use crate::Device;
+use crate::topology::SystemTopology;
 
 // ---------------------------------------------------------------------------
 // Public entry points
@@ -129,8 +133,15 @@ pub fn realize_one_as_with_initial<T: bytemuck::Pod>(
     let cpu_target = effective_targets
         .pop()
         .expect("prepare returns one effective target per input target");
-    let (storage, _layout) =
-        PipelinedExecutor::realize(graph.clone(), cpu_target, cache)?;
+    // Phase 4.2: build an ExecutionPlan via SystemTopology-driven
+    // placements so the optimizer ranker (Phases 1.1–1.5 + 3) gets
+    // to pick among co-located backends per node. The plan ships
+    // alongside the realize call; the executor's plan-aware dispatch
+    // (Phase 4.1) reads `AlternativeSet::winner` per node.
+    let plan = build_execution_plan(graph, &[cpu_target])?;
+    let (storage, _layout) = PipelinedExecutor::realize_with_plan(
+        graph.clone(), cpu_target, cache, plan,
+    )?;
     extract_cpu_bytes_typed::<T>(&storage)
 }
 
@@ -145,8 +156,13 @@ pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
         return Ok(Vec::new());
     }
     let (cache, _, effective_targets) = prepare(graph, targets, device, initial)?;
-    let results = PipelinedExecutor::realize_many(
-        graph.clone(), &effective_targets, cache,
+    // Phase 4.2: same plan-aware dispatch story as the single-target
+    // path. `build_execution_plan` derives a topo order over the
+    // effective_targets and builds the per-node AlternativeSets via
+    // `compile_plan`.
+    let plan = build_execution_plan(graph, &effective_targets)?;
+    let results = PipelinedExecutor::realize_many_with_plan(
+        graph.clone(), &effective_targets, cache, plan,
     )?;
     let mut out = Vec::with_capacity(results.len());
     for (storage, _layout) in results {
@@ -185,6 +201,77 @@ fn extract_cpu_bytes_typed<T: bytemuck::Pod>(
         }
     };
     Ok(bytemuck::cast_slice::<u8, T>(bytes).to_vec())
+}
+
+// ---------------------------------------------------------------------------
+// Execution-plan build (Phase 4.2)
+// ---------------------------------------------------------------------------
+
+/// Build a topology-driven [`ExecutionPlan`] for the given realize
+/// targets. The plan's per-node `AlternativeSet`s are populated
+/// by [`fuel_dispatch::plan::compile_plan`] with placements derived
+/// from [`SystemTopology::backends_for`] — every co-located backend
+/// on each node's target device competes, with [`SystemTopology::capabilities`]
+/// feeding the cost composer.
+///
+/// Phase 4.2 of the picker-work arc. The plan flows through to
+/// `PipelinedExecutor::realize_with_plan` / `realize_many_with_plan`;
+/// the executor's [`fuel_dispatch::pipelined`] dispatch reads the
+/// per-node winner via [Phase 4.1's `resolve_compiled`].
+///
+/// Caller invariants:
+///
+/// - `prepare()` has already been called, so every reachable
+///   computational node has `target_backend` set (a requirement of
+///   `compile_plan`).
+/// - `targets` are the `effective_targets` returned by `prepare()`
+///   — for non-CPU realizes that's the spliced `Op::Copy` nodes.
+///
+/// On every call the helper snapshots [`SystemTopology::current()`]
+/// — generation-aware (cheap if nothing changed since last call,
+/// rebuilds + atomically swaps on a probe / registration bump).
+/// The snapshot is alive for the duration of `compile_plan`; closures
+/// borrow it.
+fn build_execution_plan(
+    graph: &Arc<RwLock<Graph>>,
+    targets: &[NodeId],
+) -> Result<Arc<ExecutionPlan>> {
+    let topology = SystemTopology::current();
+
+    // execution_plan respects both data-flow and ordering edges so
+    // the plan's coverage matches the executor's walk exactly.
+    let order = {
+        let g = graph
+            .read()
+            .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
+        execution_plan(&g, targets)
+    };
+
+    // Closures borrow the topology snapshot. `placements_for_device`
+    // returns every backend co-located on the node's target device;
+    // `capabilities_for` looks up that backend's BackendCapabilities
+    // for the Layer-1 cost composer.
+    let placements_for = |dev: fuel_core_types::DeviceLocation|
+        -> Vec<fuel_core_types::probe::BackendId>
+    {
+        topology.backends_for(dev).to_vec()
+    };
+    let capabilities_for = |b: fuel_core_types::probe::BackendId|
+        -> Option<&fuel_core_types::backend::BackendCapabilities>
+    {
+        topology.capabilities(b)
+    };
+
+    let g = graph
+        .read()
+        .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
+    let options = PlanOptions::new()
+        .with_placements_for_device(&placements_for)
+        .with_capabilities_for(&capabilities_for);
+
+    let bindings_guard = global_bindings();
+    let plan = compile_plan(&g, &order, &bindings_guard, &options)?;
+    Ok(Arc::new(plan))
 }
 
 // ---------------------------------------------------------------------------
