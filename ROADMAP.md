@@ -2543,13 +2543,21 @@ need lazy ports of missing model families; the WASM crates need a workspace-
 wide swap; the fuel-core integration tests are small mechanical fixes; the
 fuel-book work is documentation; the lazy-side gaps are net-new primitives.
 
-### 1. Re-migrate the 12 quarantined `fuel-examples` binaries
+### 0. Closed (deleted)
+
+These follow-ups were resolved by deleting the underlying binary directory
+outright. Captured here so future readers see the decision rather than
+wondering where the entry went.
+
+- **mamba-minimal** — deleted 2026-06-07. The `_mamba-minimal_retired/` directory was supplanted by the full `lazy_mamba` + `lazy_mamba2` ports (both already migrated with working binaries), so the legacy minimal demo had no remaining consumer. No workspace member referenced it; the directory held only a stale README.
+- **llama_multiprocess** — deleted 2026-06-07. The `_llama_multiprocess_retired/` directory was already emptied of `.rs` sources in Phase H, and `docs/session-prompts/lazy-multi-process-inference.md` explicitly recommends deferring a lazy multi-process driver until a real Fuel consumer needs multi-GPU tensor-parallel inference. Until that demand lands, there's no point keeping the empty directory around — when the work is picked up, the session prompt has everything needed to recreate `fuel-examples/examples/llama_multiprocess/{main.rs,model.rs}` from scratch against the lazy substrate.
+
+### 1. Re-migrate the 10 quarantined `fuel-examples` binaries
 
 Each binary was set aside because its target model family doesn't yet have a
-lazy port (or, in two cases, because the binary is a legacy demo superseded by
-a newer port that already migrated). Restoring each one means landing the lazy
-port called out, then doing the standard binary swap (lazy_X imports + lazy
-weight loader + LazyTensor signatures).
+lazy port. Restoring each one means landing the lazy port called out, then
+doing the standard binary swap (lazy_X imports + lazy weight loader +
+LazyTensor signatures).
 
 - **debertav2** — needs `ForMaskedLM` + `ForSequenceClassification` heads in `lazy_debertav2` (encoder body already ports cleanly; the two task heads are the missing piece).
 - **xlm-roberta** — needs `ForMaskedLM` + `ForSequenceClassification` heads in `lazy_xlm_roberta` (same shape as debertav2 — encoder ready, heads missing).
@@ -2557,8 +2565,6 @@ weight loader + LazyTensor signatures).
 - **metavoice** — needs a `lazy_encodec` port (MetaVoice's neural audio codec dependency); the MetaVoice text-to-speech model itself can land once Encodec is available.
 - **stable-diffusion-3** — needs the full `lazy_sd3` family: the triple-CLIP text-encoder composer (CLIP-L + CLIP-G + T5-XXL), the SD3 VAE, and the flow-match Euler sampler with SLG (Skip Layer Guidance).
 - **llava** — needs `HFLLaVAConfig` + `LLaVAConfig` + `utils::select_best_resolution` in `lazy_llava` (the multi-resolution image preprocessing helper that picks the closest supported grid); the underlying CLIP + LLaMA ports are already lazy.
-- **llama_multiprocess** — cuda + nccl + flash-attn feature-gated; open question whether to ship a lazy multi-process driver at all, or wait until tensor-parallel inference has a clearer story in the lazy substrate. Tracked, not necessarily promised.
-- **mamba-minimal** — legacy demo, supplanted by the full `mamba` / `mamba2` ports that already migrated; likely a deletion rather than a remigration, but pending a sanity check that nothing depends on the minimal shape.
 - **paddleocr-vl** — still needs an `HFConfig` helper in `lazy_paddleocr_vl` to bridge HuggingFace-style config JSON to the fuel-internal config struct; layer code is already lazy.
 - **quantized-lfm2** — needs the base `lazy_lfm2` port to land first (LFM2 currently has no fp32/bf16 lazy port at all, so the quantized variant has nothing to specialize over).
 - **rwkv** — needs the RWKV tokenizer ported (~95 LOC, inline-able) into `lazy_rwkv5` or a sibling tokenizer module; the model layers themselves are already lazy via `lazy_rwkv5` / `lazy_rwkv7`.

@@ -29,10 +29,12 @@
 //! # Scope (v1)
 //!
 //! - Forward-only, single batch, F32, single contiguous image stream.
-//! - Image partitioning uses nearest-neighbor resize to keep the
-//!   host helper deterministic and dependency-free. The PaddleOCR
-//!   eager preprocessor uses bilinear; matching that goes alongside
-//!   the eager image loader, deferred to its own follow-up.
+//! - Image partitioning inside the fixed-tile [`forward_with_image`]
+//!   path uses nearest-neighbor resize to keep the host helper
+//!   deterministic and dependency-free. The OCR-quality preprocessor
+//!   ([`bilinear_resize_to_grid`]) does CatmullRom bilinear-style
+//!   resize + ImageNet normalization on the whole image at once; the
+//!   NaViT-style encoder consumes its output directly.
 //! - Text uses 1D positions (M-RoPE collapses to 1D for text-only
 //!   positions — see the text sub-port's deviation test). True 3D
 //!   M-RoPE position assignment for vision tokens is left to the
@@ -317,6 +319,116 @@ fn resize_nearest_chw(
             }
         }
     }
+}
+
+// ---- Bilinear image preprocessor -------------------------------------------
+
+/// ImageNet-style per-channel mean, applied after `/ 255.0` in
+/// [`bilinear_resize_to_grid`]. Matches the
+/// `transformers`/`torchvision` convention used by the bulk of pre-
+/// trained vision encoders (ViT / SigLIP / CLIP / DINOv2 / ...).
+pub const IMAGENET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+
+/// ImageNet-style per-channel standard deviation, paired with
+/// [`IMAGENET_MEAN`] inside [`bilinear_resize_to_grid`].
+pub const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
+
+/// Smart-resize `image` to the entry in `supported_grids` whose
+/// aspect ratio is closest to the input's, apply CatmullRom bilinear-
+/// style resize, ImageNet-style per-channel normalize, and wrap the
+/// result as a `(1, 3, h_grid, w_grid)` F32 [`LazyTensor`] on CPU.
+///
+/// This is the OCR-quality preprocessor for the NaViT-style entry
+/// point. The fixed-tile [`PaddleOcrVlModel::forward`] path still
+/// owns its in-tree nearest-neighbor partition (see
+/// `resize_nearest_chw`); the bilinear path is what's recommended
+/// for production OCR.
+///
+/// Returns `(pixels, h_grid, w_grid)`.
+///
+/// # Errors
+/// - `supported_grids` is empty.
+/// - The input image has zero width or height.
+/// - Any grid in `supported_grids` has a zero dimension.
+pub fn bilinear_resize_to_grid(
+    image: &::image::DynamicImage,
+    supported_grids: &[(usize, usize)],
+) -> Result<(LazyTensor, usize, usize)> {
+    if supported_grids.is_empty() {
+        return Err(crate::Error::Msg(
+            "bilinear_resize_to_grid: supported_grids must be non-empty".into(),
+        ).bt());
+    }
+    let src_w = image.width() as usize;
+    let src_h = image.height() as usize;
+    if src_w == 0 || src_h == 0 {
+        return Err(crate::Error::Msg(format!(
+            "bilinear_resize_to_grid: image dimensions must be > 0 (got {src_w}x{src_h})",
+        )).bt());
+    }
+    if let Some((idx, &(gh, gw))) = supported_grids
+        .iter()
+        .enumerate()
+        .find(|&(_, &(gh, gw))| gh == 0 || gw == 0)
+    {
+        return Err(crate::Error::Msg(format!(
+            "bilinear_resize_to_grid: supported_grids[{idx}] = ({gh}, {gw}) has a zero dim",
+        )).bt());
+    }
+
+    // Aspect-ratio nearest match. We measure log-ratio distance so a
+    // 1:2 input is equidistant from (1, 2) and (2, 1) candidates the
+    // same way it is from (2, 4) and (4, 2). Ties prefer the earlier
+    // entry — caller controls ordering.
+    let src_ar = (src_w as f64) / (src_h as f64);
+    let src_log_ar = src_ar.ln();
+    let mut best_idx = 0_usize;
+    let mut best_dist = f64::INFINITY;
+    for (i, &(gh, gw)) in supported_grids.iter().enumerate() {
+        let cand_ar = (gw as f64) / (gh as f64);
+        let dist = (cand_ar.ln() - src_log_ar).abs();
+        if dist < best_dist {
+            best_dist = dist;
+            best_idx = i;
+        }
+    }
+    let (h_grid, w_grid) = supported_grids[best_idx];
+
+    // Host-side resize on the `image` crate's RGB8 buffer. The retired
+    // eager binary used CatmullRom for this preprocessor; we keep it
+    // for fidelity. The `image` workspace dep is enabled with `jpeg`
+    // and `png` features, which covers the document-image use case.
+    // Absolute `::image::*` paths avoid the local `image` parameter
+    // shadowing the crate name.
+    let rgb = image.to_rgb8();
+    let resized = ::image::imageops::resize(
+        &rgb,
+        w_grid as u32,
+        h_grid as u32,
+        ::image::imageops::FilterType::CatmullRom,
+    );
+
+    // Channel-major (CHW) ImageNet normalize: (byte / 255 - mean) / std.
+    let channels = 3_usize;
+    let plane = h_grid * w_grid;
+    let mut data = vec![0_f32; channels * plane];
+    for y in 0..h_grid {
+        for x in 0..w_grid {
+            let p = resized.get_pixel(x as u32, y as u32);
+            let off = y * w_grid + x;
+            for c in 0..channels {
+                let v = (p[c] as f32) / 255.0;
+                data[c * plane + off] = (v - IMAGENET_MEAN[c]) / IMAGENET_STD[c];
+            }
+        }
+    }
+
+    let tensor = LazyTensor::from_f32(
+        Arc::<[f32]>::from(data),
+        Shape::from_dims(&[1, channels, h_grid, w_grid]),
+        &Device::cpu(),
+    );
+    Ok((tensor, h_grid, w_grid))
 }
 
 // ---- Safetensors loader ----------------------------------------------------
@@ -691,6 +803,132 @@ mod tests {
         let bad_tokens: Vec<u32> = vec![2, image_token_id, 3];
         let err = model.forward(Some(&img), &bad_tokens, image_token_id, 0);
         assert!(err.is_err(), "mismatched placeholder count must error");
+    }
+
+    mod preprocess {
+        use super::*;
+        use image::{DynamicImage, ImageBuffer, Rgb};
+
+        /// Build a small synthetic RGB image with a per-channel gradient
+        /// so resize / normalize behavior is observable without external
+        /// fixtures.
+        fn synthetic_rgb(width: u32, height: u32) -> DynamicImage {
+            let mut buf: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(width, height);
+            for (x, y, pixel) in buf.enumerate_pixels_mut() {
+                let r = ((x * 255) / width.max(1)).min(255) as u8;
+                let g = ((y * 255) / height.max(1)).min(255) as u8;
+                let b = (((x + y) * 255) / (width + height).max(1)).min(255) as u8;
+                *pixel = Rgb([r, g, b]);
+            }
+            DynamicImage::ImageRgb8(buf)
+        }
+
+        /// Solid-fill RGB image — useful for hand-verifying normalization.
+        fn solid_rgb(width: u32, height: u32, rgb: [u8; 3]) -> DynamicImage {
+            let mut buf: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(width, height);
+            for (_, _, pixel) in buf.enumerate_pixels_mut() {
+                *pixel = Rgb(rgb);
+            }
+            DynamicImage::ImageRgb8(buf)
+        }
+
+        /// Square input + square candidates: should snap to the first
+        /// matching square. The output tensor must be `(1, 3, h, w)`
+        /// and entirely finite.
+        #[test]
+        fn picks_square_grid_for_square_input() {
+            let img = synthetic_rgb(40, 40);
+            let grids = [(28, 28), (28, 56), (56, 28)];
+            let (pixels, h, w) =
+                bilinear_resize_to_grid(&img, &grids).expect("resize");
+            assert_eq!((h, w), (28, 28));
+            assert_eq!(pixels.shape().dims(), &[1, 3, 28, 28]);
+            let data = pixels.realize_f32();
+            assert_eq!(data.len(), 3 * 28 * 28);
+            for (i, &v) in data.iter().enumerate() {
+                assert!(v.is_finite(), "pixel[{i}] = {v} not finite");
+            }
+        }
+
+        /// Landscape input prefers landscape grid (wider than tall).
+        #[test]
+        fn picks_landscape_grid_for_landscape_input() {
+            // 2:1 landscape input.
+            let img = synthetic_rgb(80, 40);
+            let grids = [(28, 28), (28, 56), (56, 28)];
+            let (_, h, w) =
+                bilinear_resize_to_grid(&img, &grids).expect("resize");
+            assert_eq!((h, w), (28, 56), "expected (28, 56) for 2:1 landscape");
+        }
+
+        /// Portrait input prefers portrait grid (taller than wide).
+        #[test]
+        fn picks_portrait_grid_for_portrait_input() {
+            let img = synthetic_rgb(40, 80);
+            let grids = [(28, 28), (28, 56), (56, 28)];
+            let (_, h, w) =
+                bilinear_resize_to_grid(&img, &grids).expect("resize");
+            assert_eq!((h, w), (56, 28), "expected (56, 28) for 1:2 portrait");
+        }
+
+        /// A solid mid-gray image (128, 128, 128) should normalize to a
+        /// well-known per-channel constant under the ImageNet mean/std,
+        /// regardless of grid size. Hand-derive the expected values and
+        /// hold the implementation to them.
+        #[test]
+        fn normalization_matches_imagenet_constants() {
+            let img = solid_rgb(8, 8, [128, 128, 128]);
+            let (pixels, h, w) =
+                bilinear_resize_to_grid(&img, &[(28, 28)]).expect("resize");
+            let data = pixels.realize_f32();
+            let plane = h * w;
+            let v = 128.0_f32 / 255.0;
+            let expected_r = (v - IMAGENET_MEAN[0]) / IMAGENET_STD[0];
+            let expected_g = (v - IMAGENET_MEAN[1]) / IMAGENET_STD[1];
+            let expected_b = (v - IMAGENET_MEAN[2]) / IMAGENET_STD[2];
+            // CHW layout: channel c starts at offset c * plane.
+            // CatmullRom on a constant image yields the same constant
+            // back, so every pixel within a channel must equal the
+            // expected per-channel value.
+            let tol = 1e-5_f32;
+            for i in 0..plane {
+                assert!(
+                    (data[i] - expected_r).abs() < tol,
+                    "R[{i}] = {} vs {expected_r}",
+                    data[i],
+                );
+                assert!(
+                    (data[plane + i] - expected_g).abs() < tol,
+                    "G[{i}] = {} vs {expected_g}",
+                    data[plane + i],
+                );
+                assert!(
+                    (data[2 * plane + i] - expected_b).abs() < tol,
+                    "B[{i}] = {} vs {expected_b}",
+                    data[2 * plane + i],
+                );
+            }
+        }
+
+        /// Empty `supported_grids` is a clear caller error and must
+        /// surface as a typed build-time `Result::Err`, not a panic.
+        #[test]
+        fn empty_supported_grids_errors() {
+            let img = synthetic_rgb(8, 8);
+            let err = bilinear_resize_to_grid(&img, &[]);
+            assert!(err.is_err(), "empty supported_grids must error");
+        }
+
+        /// A grid containing a zero dimension would silently produce a
+        /// zero-pixel tensor; we'd rather fail loud at the API boundary.
+        #[test]
+        fn zero_dim_grid_errors() {
+            let img = synthetic_rgb(8, 8);
+            let err = bilinear_resize_to_grid(&img, &[(0, 28)]);
+            assert!(err.is_err(), "(0, 28) grid must error");
+            let err = bilinear_resize_to_grid(&img, &[(28, 0)]);
+            assert!(err.is_err(), "(28, 0) grid must error");
+        }
     }
 
     mod load {
