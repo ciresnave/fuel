@@ -337,6 +337,36 @@ impl CsmModel {
         decoder_h.matmul(&head)
     }
 
+    /// Demo wrapper exercising the v1 lazy_csm surface end-to-end **without**
+    /// the backbone Llama. Embeds a single interleaved frame and applies
+    /// `codebook0_head` directly to the embedded representation, returning
+    /// `(embed, codebook0_logits)`. The shapes match what the full pipeline
+    /// would feed to the backbone + read from its hidden state, but no AR
+    /// state is involved.
+    ///
+    /// This is the binary-demo path while the dual-Llama AR loop (which
+    /// runs `backbone.forward_embeds(emb, pos)` then a 31-step decoder per
+    /// generated audio frame) is still consumer-side TODO.
+    ///
+    /// Inputs match [`Self::embed_frame`]:
+    ///   - `audio_codes` — flat `seq_len * num_codebooks` audio code ids.
+    ///   - `text_tokens` — flat `seq_len` text token ids.
+    ///   - `tokens_mask` — flat `seq_len * (num_codebooks + 1)` mask.
+    ///
+    /// Returns `(embed, codebook0_logits)` with shapes
+    /// `(1, seq_len, backbone_dim)` and `(1, seq_len, audio_vocab_size)`.
+    pub fn forward_single_frame(
+        &self,
+        audio_codes: &[u32],
+        text_tokens: &[u32],
+        tokens_mask: &[u8],
+        anchor: &LazyTensor,
+    ) -> Result<(LazyTensor, LazyTensor)> {
+        let embed = self.embed_frame(audio_codes, text_tokens, tokens_mask, anchor)?;
+        let logits = self.codebook0_logits(&embed);
+        Ok((embed, logits))
+    }
+
     /// Look up one audio codebook embedding for a sampled code.
     /// Applies the codebook-i offset (`i * audio_vocab_size`) before
     /// the lookup. Result shape `(1, 1, backbone_dim)`.

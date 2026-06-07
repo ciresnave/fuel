@@ -2044,8 +2044,8 @@ fn allocates_twice_when_transferring_to_same_device() -> Result<()> {
     let t1 = Tensor::from_vec(data, (512, 512), &first)?;
     let t2 = t1.to_device(&second)?;
 
-    let (storage1, _) = t1.storage_and_layout()?;
-    let (storage2, _) = t2.storage_and_layout()?;
+    let (storage1_arc, _) = t1.storage_and_layout()?;
+    let (storage2_arc, _) = t2.storage_and_layout()?;
     let extract = |s: RwLockReadGuard<'_, Storage>| {
         use baracuda_driver::DevicePtr;
         let c = s.downcast_ref::<fuel_core::CudaStorage>().expect("expected cuda storage");
@@ -2053,8 +2053,8 @@ fn allocates_twice_when_transferring_to_same_device() -> Result<()> {
         let ptr = slice.device_ptr().0;
         ptr
     };
-    let id1 = extract(storage1);
-    let id2 = extract(storage2);
+    let id1 = extract(storage1_arc.read().unwrap());
+    let id2 = extract(storage2_arc.read().unwrap());
     assert_ne!(id1, id2);
     Ok(())
 }

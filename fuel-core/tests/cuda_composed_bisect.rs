@@ -81,28 +81,30 @@ fn build_inputs() -> Inputs {
 }
 
 #[test]
-fn bisect_a_just_first_matmul() {
-    if !cuda_present() { return; }
+fn bisect_a_just_first_matmul() -> Result<(), Box<dyn std::error::Error>> {
+    if !cuda_present() { return Ok(()); }
     let i = build_inputs();
-    let y = i.x.matmul(&i.w1);
+    let y = i.x.matmul(&i.w1)?;
     let (r, c) = realize_both(&y);
     report("A: x @ w1 (rank-3)", &r, &c);
     fuel_core::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
+    Ok(())
 }
 
 #[test]
-fn bisect_b_matmul_then_rmsnorm() {
-    if !cuda_present() { return; }
+fn bisect_b_matmul_then_rmsnorm() -> Result<(), Box<dyn std::error::Error>> {
+    if !cuda_present() { return Ok(()); }
     let i = build_inputs();
-    let y = i.x.matmul(&i.w1).rms_norm_last_dim(1e-5);
+    let y = i.x.matmul(&i.w1)?.rms_norm_last_dim(1e-5)?;
     let (r, c) = realize_both(&y);
     report("B: matmul → rms_norm", &r, &c);
     fuel_core::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
+    Ok(())
 }
 
 #[test]
-fn bisect_c_just_rmsnorm() {
-    if !cuda_present() { return; }
+fn bisect_c_just_rmsnorm() -> Result<(), Box<dyn std::error::Error>> {
+    if !cuda_present() { return Ok(()); }
     // [1, 8, 32] direct rms_norm — skip the upstream matmul, supply
     // the "post-matmul" tensor directly so we isolate rms_norm's
     // behaviour from any contiguity / stride state matmul might leave
@@ -111,15 +113,16 @@ fn bisect_c_just_rmsnorm() {
     let dim_mid = 32_usize;
     let data: Vec<f32> = gen_lcg(12345, seq * dim_mid);
     let x = LazyTensor::from_f32(data, Shape::from_dims(&[1, seq, dim_mid]), &fuel_core::Device::cpu());
-    let y = x.rms_norm_last_dim(1e-5);
+    let y = x.rms_norm_last_dim(1e-5)?;
     let (r, c) = realize_both(&y);
     report("C: rms_norm only", &r, &c);
     fuel_core::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
+    Ok(())
 }
 
 #[test]
-fn bisect_d_rmsnorm_then_matmul() {
-    if !cuda_present() { return; }
+fn bisect_d_rmsnorm_then_matmul() -> Result<(), Box<dyn std::error::Error>> {
+    if !cuda_present() { return Ok(()); }
     let seq = 8_usize;
     let dim_mid = 32_usize;
     let dim_out = 8_usize;
@@ -129,18 +132,20 @@ fn bisect_d_rmsnorm_then_matmul() {
         Arc::<[f32]>::from(gen_lcg(37037, dim_mid * dim_out)),
         Shape::from_dims(&[dim_mid, dim_out]),
     );
-    let y = x.rms_norm_last_dim(1e-5).matmul(&w2);
+    let y = x.rms_norm_last_dim(1e-5)?.matmul(&w2)?;
     let (r, c) = realize_both(&y);
     report("D: rms_norm → matmul", &r, &c);
     fuel_core::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
+    Ok(())
 }
 
 #[test]
-fn bisect_e_full_chain() {
-    if !cuda_present() { return; }
+fn bisect_e_full_chain() -> Result<(), Box<dyn std::error::Error>> {
+    if !cuda_present() { return Ok(()); }
     let i = build_inputs();
-    let y = i.x.matmul(&i.w1).rms_norm_last_dim(1e-5).matmul(&i.w2);
+    let y = i.x.matmul(&i.w1)?.rms_norm_last_dim(1e-5)?.matmul(&i.w2)?;
     let (r, c) = realize_both(&y);
     report("E: matmul → rms_norm → matmul (full)", &r, &c);
     fuel_core::test_utils::assert_allclose_f32(&c, &r, 1e-3, 1e-3);
+    Ok(())
 }

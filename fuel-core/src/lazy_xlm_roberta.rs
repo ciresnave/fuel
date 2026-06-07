@@ -430,6 +430,246 @@ impl XlmrWeights {
     }
 }
 
+// ---- Masked LM head --------------------------------------------------------
+
+/// Weights for the XLM-RoBERTa masked-language-model head.
+///
+/// HuggingFace layout (`xlm-roberta-base` / `xlm-roberta-large`):
+///
+///   - `lm_head.dense.weight`        `[hidden, hidden]`
+///   - `lm_head.dense.bias`          `[hidden]`
+///   - `lm_head.layer_norm.weight`   `[hidden]`
+///   - `lm_head.layer_norm.bias`     `[hidden]`
+///   - `lm_head.decoder.weight`      `[vocab, hidden]`
+///   - `lm_head.decoder.bias`        `[vocab]`
+///
+/// The eager port tied `lm_head.decoder.weight` to
+/// `roberta.embeddings.word_embeddings.weight` transposed. v1 of the
+/// lazy port carries the decoder explicitly (HF checkpoints store the
+/// tensor, so loading it is the simpler path), at the cost of a small
+/// memory duplication. A `tied`-mode follow-up is welcome.
+#[derive(Debug, Clone)]
+pub struct ForMaskedLMWeights {
+    pub lm_head_dense_weight:   WeightStorage,
+    pub lm_head_dense_bias:     Arc<[f32]>,
+    pub lm_head_ln_gain:        Arc<[f32]>,
+    pub lm_head_ln_bias:        Arc<[f32]>,
+    pub lm_head_decoder_weight: WeightStorage,
+    pub lm_head_decoder_bias:   Arc<[f32]>,
+}
+
+/// XLM-RoBERTa with a masked-language-model head on top of the base
+/// encoder. Output shape: `(1, seq, vocab_size)`.
+#[derive(Debug, Clone)]
+pub struct XlmrForMaskedLM {
+    pub base:                   XlmrModel,
+    pub lm_head_dense_weight:   WeightStorage,
+    pub lm_head_dense_bias:     Arc<[f32]>,
+    pub lm_head_ln_gain:        Arc<[f32]>,
+    pub lm_head_ln_bias:        Arc<[f32]>,
+    pub lm_head_decoder_weight: WeightStorage,
+    pub lm_head_decoder_bias:   Arc<[f32]>,
+}
+
+impl XlmrForMaskedLM {
+    /// Run a forward pass and return masked-LM logits over the vocab,
+    /// shape `(1, seq, vocab_size)`.
+    pub fn forward(
+        &self,
+        tokens: &[u32],
+        attention_mask: Option<&LazyTensor>,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.base.config;
+        let h = self.base.forward(tokens, attention_mask)?;
+
+        // lm_head: dense -> gelu -> layer_norm -> decoder.
+        // `apply_linear` matmuls a `(1, seq, hidden)` activation by a
+        // `(hidden, hidden)` weight to give `(1, seq, hidden)`.
+        let dense = self.lm_head_dense_weight
+            .apply_linear(&h, cfg.hidden_size, cfg.hidden_size);
+        let dense = dense.add_trailing_bias(Arc::clone(&self.lm_head_dense_bias))?;
+        let act = dense.gelu_erf();
+        let normed = act.layer_norm_affine(
+            Arc::clone(&self.lm_head_ln_gain),
+            Arc::clone(&self.lm_head_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
+        let logits = self.lm_head_decoder_weight
+            .apply_linear(&normed, cfg.hidden_size, cfg.vocab_size);
+        let logits = logits.add_trailing_bias(Arc::clone(&self.lm_head_decoder_bias))?;
+        Ok(logits)
+    }
+}
+
+impl ForMaskedLMWeights {
+    /// Load the MLM-head tensors from a HuggingFace safetensors file
+    /// using the standard `lm_head.*` naming. Tensor dtypes follow the
+    /// existing XlmrWeights loader (F32 vectors via `load_tensor_as_f32`,
+    /// transposed matrices via `load_transposed_matrix_preserve_dtype`).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &XlmrConfig,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let v = cfg.vocab_size;
+        let lm_head_dense_weight = ltm(st, "lm_head.dense.weight", h, h)?;
+        let lm_head_dense_bias = Arc::from(load_tensor_as_f32(
+            st, "lm_head.dense.bias",
+        )?);
+        let lm_head_ln_gain = Arc::from(load_tensor_as_f32(
+            st, "lm_head.layer_norm.weight",
+        )?);
+        let lm_head_ln_bias = Arc::from(load_tensor_as_f32(
+            st, "lm_head.layer_norm.bias",
+        )?);
+        let lm_head_decoder_weight = ltm(st, "lm_head.decoder.weight", v, h)?;
+        let lm_head_decoder_bias = Arc::from(load_tensor_as_f32(
+            st, "lm_head.decoder.bias",
+        )?);
+        Ok(Self {
+            lm_head_dense_weight,
+            lm_head_dense_bias,
+            lm_head_ln_gain,
+            lm_head_ln_bias,
+            lm_head_decoder_weight,
+            lm_head_decoder_bias,
+        })
+    }
+}
+
+impl XlmrForMaskedLM {
+    /// Load the full MaskedLM model (base encoder + lm_head) from a
+    /// HuggingFace safetensors file in one call.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: XlmrConfig,
+    ) -> Result<Self> {
+        let base_weights = XlmrWeights::load_from_mmapped(st, &cfg)?;
+        let head = ForMaskedLMWeights::load_from_mmapped(st, &cfg)?;
+        Ok(Self {
+            base: XlmrModel { config: cfg, weights: base_weights },
+            lm_head_dense_weight:   head.lm_head_dense_weight,
+            lm_head_dense_bias:     head.lm_head_dense_bias,
+            lm_head_ln_gain:        head.lm_head_ln_gain,
+            lm_head_ln_bias:        head.lm_head_ln_bias,
+            lm_head_decoder_weight: head.lm_head_decoder_weight,
+            lm_head_decoder_bias:   head.lm_head_decoder_bias,
+        })
+    }
+}
+
+// ---- Sequence classification head -----------------------------------------
+
+/// Weights for the XLM-RoBERTa sequence-classification head.
+///
+/// HuggingFace layout (`xlm-roberta-{base,large}` fine-tunes):
+///
+///   - `classifier.dense.weight`     `[hidden, hidden]`
+///   - `classifier.dense.bias`       `[hidden]`
+///   - `classifier.out_proj.weight`  `[num_labels, hidden]`
+///   - `classifier.out_proj.bias`    `[num_labels]`
+#[derive(Debug, Clone)]
+pub struct ForSequenceClassificationWeights {
+    pub classifier_dense_weight:    WeightStorage,
+    pub classifier_dense_bias:      Arc<[f32]>,
+    pub classifier_out_proj_weight: WeightStorage,
+    pub classifier_out_proj_bias:   Arc<[f32]>,
+}
+
+/// XLM-RoBERTa with a sequence-classification head on top of the base
+/// encoder. The eager port (and HF) take the first-token hidden state
+/// (`<s>` / CLS), run it through a tanh-activated dense projection, and
+/// then through an `out_proj` linear. Output shape: `(1, num_labels)`.
+#[derive(Debug, Clone)]
+pub struct XlmrForSequenceClassification {
+    pub base:                       XlmrModel,
+    pub num_labels:                 usize,
+    pub classifier_dense_weight:    WeightStorage,
+    pub classifier_dense_bias:      Arc<[f32]>,
+    pub classifier_out_proj_weight: WeightStorage,
+    pub classifier_out_proj_bias:   Arc<[f32]>,
+}
+
+impl XlmrForSequenceClassification {
+    /// Run a forward pass and return per-label logits of shape
+    /// `(1, num_labels)`.
+    pub fn forward(
+        &self,
+        tokens: &[u32],
+        attention_mask: Option<&LazyTensor>,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.base.config;
+        let h = self.base.forward(tokens, attention_mask)?;
+        // First-token hidden state: (1, seq, hidden) -> slice along dim
+        // 1 starting at 0, length 1 -> (1, 1, hidden) -> reshape to
+        // (1, hidden).
+        let cls = h
+            .slice(1_usize, 0, 1)?
+            .reshape(Shape::from_dims(&[1, cfg.hidden_size]))?;
+        // dense (hidden -> hidden) + bias + tanh.
+        let dense = self.classifier_dense_weight
+            .apply_linear(&cls, cfg.hidden_size, cfg.hidden_size);
+        let dense = dense.add_trailing_bias(Arc::clone(&self.classifier_dense_bias))?;
+        let act = dense.tanh();
+        // out_proj (hidden -> num_labels) + bias.
+        let logits = self.classifier_out_proj_weight
+            .apply_linear(&act, cfg.hidden_size, self.num_labels);
+        let logits = logits.add_trailing_bias(Arc::clone(&self.classifier_out_proj_bias))?;
+        Ok(logits)
+    }
+}
+
+impl ForSequenceClassificationWeights {
+    /// Load the classifier head tensors using the HF
+    /// `classifier.{dense,out_proj}.{weight,bias}` naming.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &XlmrConfig,
+        num_labels: usize,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let classifier_dense_weight = ltm(st, "classifier.dense.weight", h, h)?;
+        let classifier_dense_bias = Arc::from(load_tensor_as_f32(
+            st, "classifier.dense.bias",
+        )?);
+        let classifier_out_proj_weight = ltm(
+            st, "classifier.out_proj.weight", num_labels, h,
+        )?;
+        let classifier_out_proj_bias = Arc::from(load_tensor_as_f32(
+            st, "classifier.out_proj.bias",
+        )?);
+        Ok(Self {
+            classifier_dense_weight,
+            classifier_dense_bias,
+            classifier_out_proj_weight,
+            classifier_out_proj_bias,
+        })
+    }
+}
+
+impl XlmrForSequenceClassification {
+    /// Load the full sequence-classification model (base encoder +
+    /// classifier head) from a HuggingFace safetensors file in one call.
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: XlmrConfig,
+        num_labels: usize,
+    ) -> Result<Self> {
+        let base_weights = XlmrWeights::load_from_mmapped(st, &cfg)?;
+        let head = ForSequenceClassificationWeights::load_from_mmapped(st, &cfg, num_labels)?;
+        Ok(Self {
+            base: XlmrModel { config: cfg, weights: base_weights },
+            num_labels,
+            classifier_dense_weight:    head.classifier_dense_weight,
+            classifier_dense_bias:      head.classifier_dense_bias,
+            classifier_out_proj_weight: head.classifier_out_proj_weight,
+            classifier_out_proj_bias:   head.classifier_out_proj_bias,
+        })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -558,6 +798,269 @@ mod tests {
         }
         assert!(max_diff > 1e-6,
             "RoBERTa position offset (modifying row pad_idx+1) must affect output, max_diff = {max_diff}");
+    }
+
+    // ---- Head fixtures ---------------------------------------------------
+
+    fn tiny_for_masked_lm(cfg: &XlmrConfig) -> XlmrForMaskedLM {
+        let mut s: u32 = 71717;
+        let next = move || -> f32 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+        };
+        let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
+        let h = cfg.hidden_size;
+        let v = cfg.vocab_size;
+        XlmrForMaskedLM {
+            base: XlmrModel { config: cfg.clone(), weights: tiny_weights(cfg) },
+            lm_head_dense_weight:   WeightStorage::F32(vec_of(h * h, &mut *nb)),
+            lm_head_dense_bias:     vec_of(h, &mut *nb),
+            lm_head_ln_gain:        Arc::from(vec![1.0_f32; h]),
+            lm_head_ln_bias:        Arc::from(vec![0.0_f32; h]),
+            lm_head_decoder_weight: WeightStorage::F32(vec_of(h * v, &mut *nb)),
+            lm_head_decoder_bias:   vec_of(v, &mut *nb),
+        }
+    }
+
+    fn tiny_for_sequence_classification(
+        cfg: &XlmrConfig, num_labels: usize,
+    ) -> XlmrForSequenceClassification {
+        let mut s: u32 = 90909;
+        let next = move || -> f32 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+        };
+        let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
+        let h = cfg.hidden_size;
+        XlmrForSequenceClassification {
+            base: XlmrModel { config: cfg.clone(), weights: tiny_weights(cfg) },
+            num_labels,
+            classifier_dense_weight:    WeightStorage::F32(vec_of(h * h, &mut *nb)),
+            classifier_dense_bias:      vec_of(h, &mut *nb),
+            classifier_out_proj_weight: WeightStorage::F32(vec_of(h * num_labels, &mut *nb)),
+            classifier_out_proj_bias:   vec_of(num_labels, &mut *nb),
+        }
+    }
+
+    /// `XlmrForMaskedLM::forward` returns logits of shape
+    /// `(1, seq, vocab_size)` and all outputs are finite.
+    #[test]
+    fn for_masked_lm_forward_shape() {
+        let cfg = tiny_cfg();
+        let model = tiny_for_masked_lm(&cfg);
+        let toks = [1_u32, 2, 3, 4, 5];
+        let out = model.forward(&toks, None).unwrap();
+        assert_eq!(out.shape().dims(), &[1, toks.len(), cfg.vocab_size]);
+        for &v in &out.realize_f32() {
+            assert!(v.is_finite(), "non-finite MLM logit: {v}");
+        }
+    }
+
+    /// `XlmrForSequenceClassification::forward` returns logits of
+    /// shape `(1, num_labels)` and all outputs are finite.
+    #[test]
+    fn for_sequence_classification_forward_shape() {
+        let cfg = tiny_cfg();
+        let num_labels = 3;
+        let model = tiny_for_sequence_classification(&cfg, num_labels);
+        let toks = [1_u32, 2, 3, 4];
+        let out = model.forward(&toks, None).unwrap();
+        assert_eq!(out.shape().dims(), &[1, num_labels]);
+        for &v in &out.realize_f32() {
+            assert!(v.is_finite(), "non-finite classifier logit: {v}");
+        }
+    }
+
+    // ---- Safetensors round-trip fixtures --------------------------------
+
+    /// Append `n` f32 values to `owned` under `name` as a 1-D shape.
+    fn push_f32_1d(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        name: &str,
+        values: &[f32],
+    ) {
+        let mut bytes = Vec::with_capacity(values.len() * 4);
+        for v in values { bytes.extend_from_slice(&v.to_le_bytes()); }
+        owned.push((name.to_string(), vec![values.len()], bytes));
+    }
+
+    /// Append a multi-dim f32 tensor of given shape, filled by `nb()`.
+    fn push_f32(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        name: &str,
+        shape: Vec<usize>,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        let n: usize = shape.iter().product();
+        let mut bytes = Vec::with_capacity(n * 4);
+        for _ in 0..n { bytes.extend_from_slice(&nb().to_le_bytes()); }
+        owned.push((name.to_string(), shape, bytes));
+    }
+
+    /// Push a HuggingFace LayerNorm prefix (`<prefix>.{weight,bias}`).
+    fn push_ln(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        prefix: &str,
+        c: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        push_f32(owned, &format!("{prefix}.weight"), vec![c], nb);
+        push_f32(owned, &format!("{prefix}.bias"),   vec![c], nb);
+    }
+
+    /// Push an HF Linear (`<prefix>.{weight,bias}`). HF stores weight
+    /// as `[out, in]`.
+    fn push_linear(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        prefix: &str,
+        in_features: usize,
+        out_features: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        push_f32(
+            owned, &format!("{prefix}.weight"),
+            vec![out_features, in_features], nb,
+        );
+        push_f32(owned, &format!("{prefix}.bias"), vec![out_features], nb);
+    }
+
+    fn push_base_encoder(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        cfg: &XlmrConfig,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        let prefix = "roberta.";
+        // Embeddings.
+        push_f32(
+            owned, &format!("{prefix}embeddings.word_embeddings.weight"),
+            vec![cfg.vocab_size, cfg.hidden_size], nb,
+        );
+        push_f32(
+            owned, &format!("{prefix}embeddings.position_embeddings.weight"),
+            vec![cfg.max_position_embeddings, cfg.hidden_size], nb,
+        );
+        push_f32(
+            owned, &format!("{prefix}embeddings.token_type_embeddings.weight"),
+            vec![cfg.type_vocab_size, cfg.hidden_size], nb,
+        );
+        push_ln(owned, &format!("{prefix}embeddings.LayerNorm"), cfg.hidden_size, nb);
+        // Encoder layers.
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("{prefix}encoder.layer.{i}");
+            push_linear(owned, &format!("{p}.attention.self.query"),
+                cfg.hidden_size, cfg.hidden_size, nb);
+            push_linear(owned, &format!("{p}.attention.self.key"),
+                cfg.hidden_size, cfg.hidden_size, nb);
+            push_linear(owned, &format!("{p}.attention.self.value"),
+                cfg.hidden_size, cfg.hidden_size, nb);
+            push_linear(owned, &format!("{p}.attention.output.dense"),
+                cfg.hidden_size, cfg.hidden_size, nb);
+            push_ln(owned, &format!("{p}.attention.output.LayerNorm"),
+                cfg.hidden_size, nb);
+            push_linear(owned, &format!("{p}.intermediate.dense"),
+                cfg.hidden_size, cfg.intermediate_size, nb);
+            push_linear(owned, &format!("{p}.output.dense"),
+                cfg.intermediate_size, cfg.hidden_size, nb);
+            push_ln(owned, &format!("{p}.output.LayerNorm"), cfg.hidden_size, nb);
+        }
+    }
+
+    fn build_safetensors_file(
+        owned: Vec<(String, Vec<usize>, Vec<u8>)>,
+        tag: &str,
+    ) -> std::path::PathBuf {
+        use safetensors::tensor::TensorView;
+        use std::collections::HashMap;
+        let mut tensors: HashMap<String, TensorView<'_>> = HashMap::new();
+        for (name, shape, bytes) in &owned {
+            let view = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
+                .expect("TensorView::new");
+            tensors.insert(name.clone(), view);
+        }
+        let serialized = safetensors::serialize(&tensors, None)
+            .expect("safetensors::serialize");
+        let tmp = std::env::temp_dir().join(format!(
+            "fuel_xlmr_heads_{}_{tag}_{}.safetensors",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::write(&tmp, &serialized).expect("write tmp");
+        tmp
+    }
+
+    fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
+        let mut s = seed;
+        move || {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+        }
+    }
+
+    /// Round-trip the MaskedLM head through safetensors using the
+    /// standard HF naming and check the forward shape.
+    #[test]
+    fn for_masked_lm_load_from_mmapped_round_trip() {
+        let cfg = tiny_cfg();
+        let mut nb = rng_seed(12345);
+
+        let mut owned: Vec<(String, Vec<usize>, Vec<u8>)> = Vec::new();
+        push_base_encoder(&mut owned, &cfg, &mut nb);
+        // lm_head.
+        push_linear(&mut owned, "lm_head.dense",
+            cfg.hidden_size, cfg.hidden_size, &mut nb);
+        push_ln(&mut owned, "lm_head.layer_norm", cfg.hidden_size, &mut nb);
+        push_linear(&mut owned, "lm_head.decoder",
+            cfg.hidden_size, cfg.vocab_size, &mut nb);
+
+        let tmp = build_safetensors_file(owned, "mlm");
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&tmp) }
+            .expect("MmapedSafetensors::new");
+
+        let model = XlmrForMaskedLM::load_from_mmapped(&st, cfg.clone())
+            .expect("XlmrForMaskedLM::load_from_mmapped");
+
+        let toks = [1_u32, 2, 3, 4];
+        let out = model.forward(&toks, None).unwrap();
+        assert_eq!(out.shape().dims(), &[1, toks.len(), cfg.vocab_size]);
+        for &v in &out.realize_f32() {
+            assert!(v.is_finite(), "non-finite MLM logit from loaded model: {v}");
+        }
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Round-trip the SequenceClassification head through safetensors
+    /// using the standard HF naming and check the forward shape.
+    #[test]
+    fn for_sequence_classification_load_from_mmapped_round_trip() {
+        let cfg = tiny_cfg();
+        let num_labels = 4;
+        let mut nb = rng_seed(54321);
+
+        let mut owned: Vec<(String, Vec<usize>, Vec<u8>)> = Vec::new();
+        push_base_encoder(&mut owned, &cfg, &mut nb);
+        push_linear(&mut owned, "classifier.dense",
+            cfg.hidden_size, cfg.hidden_size, &mut nb);
+        push_linear(&mut owned, "classifier.out_proj",
+            cfg.hidden_size, num_labels, &mut nb);
+
+        let tmp = build_safetensors_file(owned, "seq");
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&tmp) }
+            .expect("MmapedSafetensors::new");
+
+        let model = XlmrForSequenceClassification::load_from_mmapped(
+            &st, cfg.clone(), num_labels,
+        ).expect("XlmrForSequenceClassification::load_from_mmapped");
+
+        let toks = [1_u32, 2, 3, 4, 5];
+        let out = model.forward(&toks, None).unwrap();
+        assert_eq!(out.shape().dims(), &[1, num_labels]);
+        for &v in &out.realize_f32() {
+            assert!(v.is_finite(), "non-finite classifier logit from loaded model: {v}");
+        }
+
+        let _ = std::fs::remove_file(&tmp);
     }
 
     /// `forward_intermediate_layers` returns one tensor per
