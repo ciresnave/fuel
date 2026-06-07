@@ -194,6 +194,7 @@ pub mod lazy_tiny_vit;
 pub mod lazy_rwkv5;
 pub mod lazy_rwkv6;
 pub mod lazy_rwkv7;
+pub mod lazy_rwkv_tokenizer;
 pub mod lazy_siglip;
 pub mod lazy_smollm3;
 pub mod lazy_snac;

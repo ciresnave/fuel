@@ -19,9 +19,21 @@
 //! `deberta-v3-large`, `deberta-v3-small`, and `mdeberta-v3-base`.
 
 use crate::lazy::{LazyTensor, WeightStorage};
-use crate::Result;
+use crate::{DType, Result};
 use fuel_core_types::Shape;
+use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Activation / weight dtype used by the lazy DeBERTa-v2 port. The
+/// binary references this constant to pick a tokenizer/dtype-aware
+/// loader path, matching the eager port that fixed it to `f32`.
+pub const DTYPE: DType = DType::F32;
+
+/// HuggingFace-style `id2label` map. DeBERTa fine-tunes for token-
+/// or sequence-classification ship one of these in their `config.json`
+/// (string keys like `"0"`, `"1"`, … in the JSON; deserialized to a
+/// `u32 → String` map here).
+pub type Id2Label = HashMap<u32, String>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DebertaV2Config {
@@ -36,6 +48,9 @@ pub struct DebertaV2Config {
     pub position_buckets: usize,
     /// Clamp on |relative_pos| before bucketing.
     pub max_relative_positions: usize,
+    /// Optional `id2label` map (present on most fine-tuned task
+    /// checkpoints; absent on raw encoder bases).
+    pub id2label: Option<Id2Label>,
 }
 
 impl DebertaV2Config {
@@ -51,6 +66,7 @@ impl DebertaV2Config {
             layer_norm_eps: 1e-7,
             position_buckets: 256,
             max_relative_positions: 512,
+            id2label: None,
         }
     }
     /// `microsoft/deberta-v3-large`.
@@ -65,6 +81,7 @@ impl DebertaV2Config {
             layer_norm_eps: 1e-7,
             position_buckets: 256,
             max_relative_positions: 512,
+            id2label: None,
         }
     }
     /// `microsoft/deberta-v3-small`.
@@ -79,9 +96,77 @@ impl DebertaV2Config {
             layer_norm_eps: 1e-7,
             position_buckets: 256,
             max_relative_positions: 512,
+            id2label: None,
         }
     }
     pub fn head_dim(&self) -> usize { self.hidden_size / self.num_attention_heads }
+
+    /// Parse a HuggingFace `config.json` string. Strict on the fields
+    /// the lazy port needs (`vocab_size`, `hidden_size`, …) but tolerant
+    /// to the long tail of dropout / initializer / activation knobs the
+    /// eager port consumed (this lazy v1 hardcodes them).
+    ///
+    /// Optional fields:
+    /// - `position_buckets` (defaults to 256, matching v3-base/large)
+    /// - `max_relative_positions` (defaults to `max_position_embeddings`)
+    /// - `layer_norm_eps` (defaults to 1e-7)
+    /// - `id2label` (string-keyed JSON object → `u32 → String`)
+    pub fn from_hf_json_str(s: &str) -> crate::Result<Self> {
+        let v: serde_json::Value = serde_json::from_str(s)
+            .map_err(|e| crate::Error::Msg(format!("parsing deberta-v2 config.json: {e}")).bt())?;
+
+        let get_usize = |key: &str| -> crate::Result<usize> {
+            v.get(key)
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .ok_or_else(|| crate::Error::Msg(format!(
+                    "deberta-v2 config.json: missing/invalid field {key:?}",
+                )).bt())
+        };
+
+        let vocab_size = get_usize("vocab_size")?;
+        let hidden_size = get_usize("hidden_size")?;
+        let num_hidden_layers = get_usize("num_hidden_layers")?;
+        let num_attention_heads = get_usize("num_attention_heads")?;
+        let intermediate_size = get_usize("intermediate_size")?;
+        let max_position_embeddings = get_usize("max_position_embeddings")?;
+
+        let layer_norm_eps = v.get("layer_norm_eps")
+            .and_then(|x| x.as_f64()).unwrap_or(1e-7);
+        let position_buckets = v.get("position_buckets")
+            .and_then(|x| x.as_u64()).map(|x| x as usize).unwrap_or(256);
+        // HF ships -1 to mean "use max_position_embeddings"; accept that.
+        let max_relative_positions = match v.get("max_relative_positions").and_then(|x| x.as_i64()) {
+            Some(n) if n >= 1 => n as usize,
+            _ => max_position_embeddings,
+        };
+
+        let id2label = parse_id2label(v.get("id2label"));
+
+        Ok(Self {
+            vocab_size,
+            hidden_size,
+            num_hidden_layers,
+            num_attention_heads,
+            intermediate_size,
+            max_position_embeddings,
+            layer_norm_eps,
+            position_buckets,
+            max_relative_positions,
+            id2label,
+        })
+    }
+}
+
+fn parse_id2label(v: Option<&serde_json::Value>) -> Option<Id2Label> {
+    let obj = v?.as_object()?;
+    let mut out = HashMap::new();
+    for (k, val) in obj {
+        let id = k.parse::<u32>().ok()?;
+        let label = val.as_str()?.to_string();
+        out.insert(id, label);
+    }
+    Some(out)
 }
 
 // ---- Weight structures ------------------------------------------------------
@@ -482,6 +567,219 @@ impl DebertaV2Weights {
     }
 }
 
+// ---- Task heads ------------------------------------------------------------
+
+/// Per-token NER prediction. Mirrors the eager port's `NERItem`
+/// (the binary's `--task=ner` path returns `Vec<Vec<NERItem>>`,
+/// one inner Vec per input sentence).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NERItem {
+    /// Predicted entity label (looked up via `Id2Label`).
+    pub entity: String,
+    /// Softmax probability of the chosen label.
+    pub score: f32,
+    /// Surface form of the corresponding sub-word token.
+    pub word: String,
+    /// Token index inside the input sequence (after CLS/SEP framing).
+    pub index: usize,
+}
+
+/// Per-sequence classification prediction. Mirrors the eager port's
+/// `TextClassificationItem` (the binary's `--task=text-classification`
+/// path returns `Vec<TextClassificationItem>`, one per input sentence).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextClassificationItem {
+    pub label: String,
+    pub score: f32,
+}
+
+// ---- DebertaV2NERModel -----------------------------------------------------
+
+/// Weights for the NER (token-classification) head: a single linear
+/// `classifier` layer applied to every token's encoder hidden state.
+#[derive(Debug, Clone)]
+pub struct DebertaV2NERWeights {
+    pub encoder: DebertaV2Weights,
+    /// `[hidden_size, num_labels]` after the load-time transpose.
+    pub classifier: LinearWeights,
+}
+
+/// Token-classification model. Wraps the encoder and a per-token
+/// linear classifier — the canonical `AutoModelForTokenClassification`
+/// shape on the HuggingFace side.
+///
+/// Forward returns logits of shape `(1, seq, num_labels)`. Batch size
+/// is fixed to 1 in line with the rest of the lazy port.
+#[derive(Debug, Clone)]
+pub struct DebertaV2NERModel {
+    pub config: DebertaV2Config,
+    pub weights: DebertaV2NERWeights,
+    pub num_labels: usize,
+}
+
+impl DebertaV2NERModel {
+    /// Build a NER model from already-loaded weights. `num_labels` is
+    /// the number of entity classes (length of `id2label`).
+    pub fn new(
+        config: DebertaV2Config,
+        weights: DebertaV2NERWeights,
+        num_labels: usize,
+    ) -> Self {
+        Self { config, weights, num_labels }
+    }
+
+    /// Run prefill + the NER head. `token_type_ids` / `attention_mask`
+    /// are accepted to match the binary's call shape but are currently
+    /// unused (the lazy encoder doesn't yet ingest either — see the
+    /// module docstring for v1 scope).
+    pub fn forward(
+        &self,
+        input_ids: &[u32],
+        token_type_ids: Option<&[u32]>,
+        attention_mask: Option<&[u32]>,
+    ) -> Result<LazyTensor> {
+        let _ = token_type_ids;
+        let _ = attention_mask;
+        let encoder = DebertaV2Model {
+            config: self.config.clone(),
+            weights: self.weights.encoder.clone(),
+        };
+        let hidden = encoder.forward(input_ids)?;
+        // hidden: (1, seq, hidden). Anchor for the classifier consts.
+        let anchor = LazyTensor::from_u32(
+            input_ids.to_vec(),
+            Shape::from_dims(&[input_ids.len()]),
+            &crate::Device::cpu(),
+        );
+        // Apply classifier to every token. apply_linear_with_bias
+        // works on the trailing dim — exactly what we want here.
+        apply_linear(&hidden, &self.weights.classifier, &anchor)
+    }
+}
+
+impl DebertaV2NERWeights {
+    /// Load encoder + token-classification head from a HuggingFace
+    /// safetensors checkpoint.
+    ///
+    /// Expected tensor names (in addition to the encoder prefix used
+    /// by [`DebertaV2Weights::load_from_mmapped`]):
+    /// - `classifier.weight`  — shape `[num_labels, hidden_size]`
+    /// - `classifier.bias`    — shape `[num_labels]` (optional; zeros
+    ///   are substituted when absent — matches HF's `linear_no_bias`
+    ///   variant in the older code paths).
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &DebertaV2Config,
+        num_labels: usize,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let encoder = DebertaV2Weights::load_from_mmapped(st, cfg)?;
+        let w = ltm(st, "classifier.weight", num_labels, cfg.hidden_size)?;
+        let b = match load_tensor_as_f32(st, "classifier.bias") {
+            Ok(v) => Arc::from(v),
+            Err(_) => Arc::from(vec![0.0_f32; num_labels]),
+        };
+        Ok(Self {
+            encoder,
+            classifier: LinearWeights { w, b },
+        })
+    }
+}
+
+// ---- DebertaV2SeqClassificationModel ---------------------------------------
+
+/// Weights for the sequence-classification head: a pooler `dense`
+/// (hidden → hidden) followed by tanh, then a `classifier` linear
+/// (hidden → num_labels). The pooler reads the `[CLS]` token only.
+#[derive(Debug, Clone)]
+pub struct DebertaV2SeqClassificationWeights {
+    pub encoder: DebertaV2Weights,
+    pub pooler_dense: LinearWeights,
+    pub classifier: LinearWeights,
+}
+
+/// Sequence-classification model. Mirrors the eager
+/// `DebertaV2SeqClassificationModel`: pool the first-token hidden
+/// state via dense + tanh, then project to per-class logits.
+///
+/// Forward returns logits of shape `(1, num_labels)`.
+#[derive(Debug, Clone)]
+pub struct DebertaV2SeqClassificationModel {
+    pub config: DebertaV2Config,
+    pub weights: DebertaV2SeqClassificationWeights,
+    pub num_labels: usize,
+}
+
+impl DebertaV2SeqClassificationModel {
+    pub fn new(
+        config: DebertaV2Config,
+        weights: DebertaV2SeqClassificationWeights,
+        num_labels: usize,
+    ) -> Self {
+        Self { config, weights, num_labels }
+    }
+
+    /// Run prefill + sequence-classification head.
+    pub fn forward(
+        &self,
+        input_ids: &[u32],
+        token_type_ids: Option<&[u32]>,
+        attention_mask: Option<&[u32]>,
+    ) -> Result<LazyTensor> {
+        let _ = token_type_ids;
+        let _ = attention_mask;
+        let encoder = DebertaV2Model {
+            config: self.config.clone(),
+            weights: self.weights.encoder.clone(),
+        };
+        let hidden = encoder.forward(input_ids)?; // (1, seq, hidden)
+        // First-token ([CLS]) hidden state: (1, 1, hidden) → (1, hidden).
+        let cls = hidden.slice(1_usize, 0, 1)?.squeeze(1_usize)?;
+        let anchor = LazyTensor::from_u32(
+            input_ids.to_vec(),
+            Shape::from_dims(&[input_ids.len()]),
+            &crate::Device::cpu(),
+        );
+        // pooler.dense → tanh → classifier.
+        let pooled = apply_linear(&cls, &self.weights.pooler_dense, &anchor)?;
+        let pooled = pooled.tanh();
+        apply_linear(&pooled, &self.weights.classifier, &anchor)
+    }
+}
+
+impl DebertaV2SeqClassificationWeights {
+    /// Load encoder + pooler + classifier head from a HuggingFace
+    /// safetensors checkpoint.
+    ///
+    /// Expected tensor names (in addition to the encoder prefix):
+    /// - `pooler.dense.weight`   — `[hidden_size, hidden_size]`
+    /// - `pooler.dense.bias`     — `[hidden_size]`
+    /// - `classifier.weight`     — `[num_labels, hidden_size]`
+    /// - `classifier.bias`       — `[num_labels]` (optional; zeros
+    ///   substituted on absence)
+    pub fn load_from_mmapped(
+        st: &crate::safetensors::MmapedSafetensors,
+        cfg: &DebertaV2Config,
+        num_labels: usize,
+    ) -> Result<Self> {
+        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
+        let h = cfg.hidden_size;
+        let encoder = DebertaV2Weights::load_from_mmapped(st, cfg)?;
+        let pooler_w = ltm(st, "pooler.dense.weight", h, h)?;
+        let pooler_b = Arc::from(load_tensor_as_f32(st, "pooler.dense.bias")?);
+        let classifier_w = ltm(st, "classifier.weight", num_labels, h)?;
+        let classifier_b = match load_tensor_as_f32(st, "classifier.bias") {
+            Ok(v) => Arc::from(v),
+            Err(_) => Arc::from(vec![0.0_f32; num_labels]),
+        };
+        Ok(Self {
+            encoder,
+            pooler_dense: LinearWeights { w: pooler_w, b: pooler_b },
+            classifier: LinearWeights { w: classifier_w, b: classifier_b },
+        })
+    }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
@@ -524,6 +822,7 @@ mod tests {
             layer_norm_eps: 1e-7,
             position_buckets: 8,
             max_relative_positions: 16,
+            id2label: None,
         }
     }
 
@@ -609,5 +908,248 @@ mod tests {
         assert_eq!(large.hidden_size, 1024);
         let small = DebertaV2Config::v3_small();
         assert_eq!(small.num_hidden_layers, 6);
+    }
+
+    // ---- Task head tests ---------------------------------------------------
+
+    fn build_ner_weights(
+        cfg: &DebertaV2Config, num_labels: usize,
+    ) -> DebertaV2NERWeights {
+        let mut nb = rng_seed(2027);
+        let encoder = build_weights(cfg);
+        let classifier = linear_w(cfg.hidden_size, num_labels, &mut nb);
+        DebertaV2NERWeights { encoder, classifier }
+    }
+
+    fn build_seq_cls_weights(
+        cfg: &DebertaV2Config, num_labels: usize,
+    ) -> DebertaV2SeqClassificationWeights {
+        let mut nb = rng_seed(2028);
+        let encoder = build_weights(cfg);
+        let pooler_dense = linear_w(cfg.hidden_size, cfg.hidden_size, &mut nb);
+        let classifier = linear_w(cfg.hidden_size, num_labels, &mut nb);
+        DebertaV2SeqClassificationWeights {
+            encoder, pooler_dense, classifier,
+        }
+    }
+
+    #[test]
+    fn ner_forward_shape_per_token_logits() {
+        let cfg = tiny_config();
+        let num_labels = 5;
+        let weights = build_ner_weights(&cfg, num_labels);
+        let model = DebertaV2NERModel::new(cfg.clone(), weights, num_labels);
+        let ids: Vec<u32> = (1..9).collect();
+        let logits = model.forward(&ids, None, None).unwrap();
+        assert_eq!(logits.shape().dims(), &[1, ids.len(), num_labels]);
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite(), "non-finite NER logit: {v}");
+        }
+    }
+
+    #[test]
+    fn seq_classification_forward_shape_one_per_sequence() {
+        let cfg = tiny_config();
+        let num_labels = 3;
+        let weights = build_seq_cls_weights(&cfg, num_labels);
+        let model = DebertaV2SeqClassificationModel::new(cfg, weights, num_labels);
+        let ids: Vec<u32> = (1..9).collect();
+        let logits = model.forward(&ids, None, None).unwrap();
+        assert_eq!(logits.shape().dims(), &[1, num_labels]);
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite(), "non-finite seq-class logit: {v}");
+        }
+    }
+
+    // ---- Safetensors fixture round-trip -----------------------------------
+
+    fn push_f32(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        name: &str,
+        shape: Vec<usize>,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        let n: usize = shape.iter().product();
+        let mut bytes = Vec::with_capacity(n * 4);
+        for _ in 0..n { bytes.extend_from_slice(&nb().to_le_bytes()); }
+        owned.push((name.to_string(), shape, bytes));
+    }
+
+    fn push_ln(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        prefix: &str,
+        c: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        // HF DeBERTa LayerNorm fields are `.weight` / `.bias`.
+        push_f32(owned, &format!("{prefix}.weight"), vec![c], nb);
+        push_f32(owned, &format!("{prefix}.bias"), vec![c], nb);
+    }
+
+    fn push_lin(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        prefix: &str,
+        in_features: usize,
+        out_features: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        // HF stores Linear weight as [out, in].
+        push_f32(
+            owned, &format!("{prefix}.weight"),
+            vec![out_features, in_features], nb,
+        );
+        push_f32(owned, &format!("{prefix}.bias"), vec![out_features], nb);
+    }
+
+    fn push_encoder(
+        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
+        cfg: &DebertaV2Config,
+        nb: &mut dyn FnMut() -> f32,
+    ) {
+        let h = cfg.hidden_size;
+        let inter = cfg.intermediate_size;
+        // Embeddings.
+        push_f32(owned, "embeddings.word_embeddings.weight",
+            vec![cfg.vocab_size, h], nb);
+        push_ln(owned, "embeddings.LayerNorm", h, nb);
+        // Relative-position embeddings.
+        push_f32(owned, "encoder.rel_embeddings.weight",
+            vec![2 * cfg.position_buckets, h], nb);
+        push_ln(owned, "encoder.LayerNorm", h, nb);
+        // Transformer stack.
+        for i in 0..cfg.num_hidden_layers {
+            let p = format!("encoder.layer.{i}");
+            push_lin(owned, &format!("{p}.attention.self.query_proj"), h, h, nb);
+            push_lin(owned, &format!("{p}.attention.self.key_proj"), h, h, nb);
+            push_lin(owned, &format!("{p}.attention.self.value_proj"), h, h, nb);
+            push_lin(owned, &format!("{p}.attention.output.dense"), h, h, nb);
+            push_ln(owned, &format!("{p}.attention.output.LayerNorm"), h, nb);
+            push_lin(owned, &format!("{p}.intermediate.dense"), h, inter, nb);
+            push_lin(owned, &format!("{p}.output.dense"), inter, h, nb);
+            push_ln(owned, &format!("{p}.output.LayerNorm"), h, nb);
+        }
+    }
+
+    fn build_safetensors_file(
+        owned: Vec<(String, Vec<usize>, Vec<u8>)>,
+        tag: &str,
+    ) -> std::path::PathBuf {
+        use safetensors::tensor::TensorView;
+        use std::collections::HashMap;
+        let mut tensors: HashMap<String, TensorView<'_>> = HashMap::new();
+        for (name, shape, bytes) in &owned {
+            let view = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
+                .expect("TensorView::new");
+            tensors.insert(name.clone(), view);
+        }
+        let serialized = safetensors::serialize(&tensors, None)
+            .expect("safetensors::serialize");
+        let tmp = std::env::temp_dir().join(format!(
+            "fuel_debertav2_load_test_{}_{tag}.safetensors",
+            std::process::id(),
+        ));
+        std::fs::write(&tmp, &serialized).expect("write tmp");
+        tmp
+    }
+
+    #[test]
+    fn ner_weights_round_trip_through_safetensors_fixture() {
+        let cfg = tiny_config();
+        let num_labels = 4;
+        let mut nb = rng_seed(31);
+
+        let mut owned: Vec<(String, Vec<usize>, Vec<u8>)> = Vec::new();
+        push_encoder(&mut owned, &cfg, &mut nb);
+        push_lin(&mut owned, "classifier", cfg.hidden_size, num_labels, &mut nb);
+
+        let tmp = build_safetensors_file(owned, "ner");
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&tmp) }
+            .expect("MmapedSafetensors::new");
+
+        let weights = DebertaV2NERWeights::load_from_mmapped(&st, &cfg, num_labels)
+            .expect("load NER weights");
+        let model = DebertaV2NERModel::new(cfg.clone(), weights, num_labels);
+
+        let ids = vec![1_u32, 2, 3, 4, 5, 6, 7, 8];
+        let logits = model.forward(&ids, None, None).unwrap();
+        assert_eq!(logits.shape().dims(), &[1, ids.len(), num_labels]);
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite(), "non-finite NER logit after load: {v}");
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn seq_classification_weights_round_trip_through_safetensors_fixture() {
+        let cfg = tiny_config();
+        let num_labels = 2;
+        let mut nb = rng_seed(41);
+
+        let mut owned: Vec<(String, Vec<usize>, Vec<u8>)> = Vec::new();
+        push_encoder(&mut owned, &cfg, &mut nb);
+        push_lin(&mut owned, "pooler.dense",
+            cfg.hidden_size, cfg.hidden_size, &mut nb);
+        push_lin(&mut owned, "classifier",
+            cfg.hidden_size, num_labels, &mut nb);
+
+        let tmp = build_safetensors_file(owned, "seqcls");
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&tmp) }
+            .expect("MmapedSafetensors::new");
+
+        let weights = DebertaV2SeqClassificationWeights::load_from_mmapped(
+            &st, &cfg, num_labels,
+        ).expect("load seq-cls weights");
+        let model = DebertaV2SeqClassificationModel::new(
+            cfg, weights, num_labels,
+        );
+
+        let ids = vec![1_u32, 2, 3, 4, 5, 6, 7, 8];
+        let logits = model.forward(&ids, None, None).unwrap();
+        assert_eq!(logits.shape().dims(), &[1, num_labels]);
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite(), "non-finite seq-class logit after load: {v}");
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn from_hf_json_str_parses_id2label() {
+        let json = r#"{
+            "vocab_size": 128100,
+            "hidden_size": 768,
+            "num_hidden_layers": 12,
+            "num_attention_heads": 12,
+            "intermediate_size": 3072,
+            "max_position_embeddings": 512,
+            "layer_norm_eps": 1e-7,
+            "position_buckets": 256,
+            "max_relative_positions": -1,
+            "id2label": {"0": "O", "1": "B-PER", "2": "I-PER"}
+        }"#;
+        let cfg = DebertaV2Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.vocab_size, 128_100);
+        assert_eq!(cfg.position_buckets, 256);
+        // -1 → defaults to max_position_embeddings.
+        assert_eq!(cfg.max_relative_positions, 512);
+        let labels = cfg.id2label.expect("id2label parsed");
+        assert_eq!(labels.len(), 3);
+        assert_eq!(labels.get(&0).map(String::as_str), Some("O"));
+        assert_eq!(labels.get(&1).map(String::as_str), Some("B-PER"));
+        assert_eq!(labels.get(&2).map(String::as_str), Some("I-PER"));
+    }
+
+    #[test]
+    fn from_hf_json_str_id2label_optional() {
+        let json = r#"{
+            "vocab_size": 100,
+            "hidden_size": 16,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "intermediate_size": 32,
+            "max_position_embeddings": 32
+        }"#;
+        let cfg = DebertaV2Config::from_hf_json_str(json).unwrap();
+        assert!(cfg.id2label.is_none());
+        assert_eq!(cfg.position_buckets, 256);
     }
 }

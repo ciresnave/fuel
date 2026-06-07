@@ -44,6 +44,7 @@ use crate::lazy::{
 use crate::lazy_clip::{ClipEncoderLayerWeights, ClipVisionConfig, ClipVisionWeights};
 use crate::{Device, Result};
 use fuel_core_types::Shape;
+use serde::Deserialize;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -52,6 +53,176 @@ pub struct LlavaConfig {
     pub text_config: LlamaConfig,
     /// Projected dim — must equal `text_config.dim`.
     pub projection_dim: usize,
+}
+
+// ---- HuggingFace JSON config -----------------------------------------------
+
+/// JSON shape of the `vision_config` block inside HF LLaVA's
+/// `config.json`. Mirrors `HFLLaVAVisionConfig` from the retired
+/// eager port; only the fields the lazy port actually consumes
+/// are required, everything else is ignored.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HFLlavaVisionConfig {
+    pub hidden_size: usize,
+    pub image_size: usize,
+    pub intermediate_size: usize,
+    pub num_attention_heads: usize,
+    pub num_hidden_layers: usize,
+    pub patch_size: usize,
+    #[serde(default = "default_vision_projection_dim")]
+    pub projection_dim: usize,
+}
+
+fn default_vision_projection_dim() -> usize {
+    // CLIP ViT-L/14 default; only used when the HF config omits
+    // the field (which it does on some LLaVA variants).
+    768
+}
+
+/// JSON shape of the `text_config` block inside HF LLaVA's
+/// `config.json`. Same minimalism: only fields the lazy port
+/// uses are required.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HFLlavaTextConfig {
+    pub hidden_size: usize,
+    pub intermediate_size: usize,
+    pub max_position_embeddings: usize,
+    pub num_attention_heads: usize,
+    pub num_hidden_layers: usize,
+    pub num_key_value_heads: usize,
+    pub vocab_size: usize,
+    #[serde(default = "default_rms_norm_eps")]
+    pub rms_norm_eps: f64,
+    #[serde(default = "default_rope_theta")]
+    pub rope_theta: f64,
+}
+
+fn default_rms_norm_eps() -> f64 { 1e-5 }
+fn default_rope_theta() -> f64 { 10_000.0 }
+
+/// Top-level HF LLaVA `config.json` deserialization target.
+/// Used by [`HFLlavaConfig::from_hf_json_str`] to convert a
+/// remote config string into our internal [`LlavaConfig`].
+///
+/// Only `vision_config`, `text_config`, and (when present)
+/// `projection_dim` are consumed; all other HF-specific knobs
+/// (image_grid_pinpoints, vision_feature_layer, projector
+/// activation, etc.) are accepted but ignored — v1 of the lazy
+/// port only models the "linear" projector + per-patch features
+/// at a single resolution.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HFLlavaConfig {
+    pub vision_config: HFLlavaVisionConfig,
+    pub text_config: HFLlavaTextConfig,
+    /// Output dim of the MM projector. Must equal `text_config.hidden_size`
+    /// for v1. When the field is omitted (older configs) it defaults to
+    /// `text_config.hidden_size` post-parse.
+    #[serde(default)]
+    pub projection_dim: Option<usize>,
+}
+
+impl HFLlavaConfig {
+    /// Parse an HF LLaVA `config.json` and convert it to our
+    /// internal [`LlavaConfig`]. Returns an error if the projector
+    /// dim is inconsistent with `text_config.hidden_size`.
+    pub fn from_hf_json_str(json: &str) -> Result<LlavaConfig> {
+        let parsed: HFLlavaConfig = serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing llava config.json: {e}")).bt())?;
+        parsed.to_llava_config()
+    }
+
+    /// Build the internal [`LlavaConfig`] from this parsed HF
+    /// config. Validates that `projection_dim == text.hidden_size`
+    /// (the v1 lazy port's hard constraint).
+    pub fn to_llava_config(&self) -> Result<LlavaConfig> {
+        let t = &self.text_config;
+        let v = &self.vision_config;
+        let projection_dim = self.projection_dim.unwrap_or(t.hidden_size);
+        if projection_dim != t.hidden_size {
+            crate::bail!(
+                "llava: projection_dim ({}) must equal text hidden_size ({}) for v1",
+                projection_dim,
+                t.hidden_size,
+            );
+        }
+        if t.hidden_size % t.num_attention_heads != 0 {
+            crate::bail!(
+                "llava: text hidden_size ({}) not divisible by num_attention_heads ({})",
+                t.hidden_size,
+                t.num_attention_heads,
+            );
+        }
+        let head_dim = t.hidden_size / t.num_attention_heads;
+        let vision_config = ClipVisionConfig {
+            embed_dim: v.hidden_size,
+            intermediate_size: v.intermediate_size,
+            num_hidden_layers: v.num_hidden_layers,
+            num_attention_heads: v.num_attention_heads,
+            projection_dim: v.projection_dim,
+            num_channels: 3,
+            image_size: v.image_size,
+            patch_size: v.patch_size,
+        };
+        let _ = t.max_position_embeddings; // accepted but not modeled in LlamaConfig
+        let text_config = LlamaConfig {
+            vocab_size: t.vocab_size,
+            dim: t.hidden_size,
+            n_layers: t.num_hidden_layers,
+            n_heads: t.num_attention_heads,
+            n_kv_heads: t.num_key_value_heads,
+            head_dim,
+            ffn_dim: t.intermediate_size,
+            norm_eps: t.rms_norm_eps,
+            rope_base: t.rope_theta,
+        };
+        Ok(LlavaConfig {
+            vision_config,
+            text_config,
+            projection_dim,
+        })
+    }
+}
+
+/// Select the best (width, height) from `possible_resolutions`
+/// for an input image of `original_size = (width, height)`. Uses
+/// the standard LLaVA-NeXT scoring: pick the resolution that
+/// maximizes the effective (post-fit) pixel count, breaking ties
+/// by minimum wasted area. Mirrors `select_best_resolution` from
+/// the retired eager port (`fuel-transformers/.../llava/utils.rs`).
+///
+/// `possible_resolutions` is typically an HF `image_grid_pinpoints`
+/// list; v1 of the lazy LLaVA port runs single-resolution only, so
+/// this helper is provided primarily for the example binary's
+/// pre-processing path.
+pub fn select_best_resolution(
+    original_size: (u32, u32),
+    possible_resolutions: &[(u32, u32)],
+) -> (u32, u32) {
+    let (original_width, original_height) = original_size;
+    let mut best_fit = (0_u32, 0_u32);
+    let original_width_f = original_width as f32;
+    let original_height_f = original_height as f32;
+    let mut max_effective_resolution = 0_u32;
+    let mut min_wasted_resolution = u32::MAX;
+    for &(width, height) in possible_resolutions {
+        let width_f = width as f32;
+        let height_f = height as f32;
+        let scale = (width_f / original_width_f).min(height_f / original_height_f);
+        let downscaled_width = (original_width_f * scale) as u32;
+        let downscaled_height = (original_height_f * scale) as u32;
+        let effective_resolution =
+            std::cmp::min(width * height, downscaled_width * downscaled_height);
+        let wasted_resolution = width * height - effective_resolution;
+        if effective_resolution > max_effective_resolution
+            || (effective_resolution == max_effective_resolution
+                && wasted_resolution < min_wasted_resolution)
+        {
+            best_fit = (width, height);
+            max_effective_resolution = effective_resolution;
+            min_wasted_resolution = wasted_resolution;
+        }
+    }
+    best_fit
 }
 
 #[derive(Debug, Clone)]
@@ -856,6 +1027,129 @@ mod tests {
             //   vision_tower.vision_model.*
             //   multi_modal_projector.linear_1.*
             //   language_model.model.* + language_model.lm_head.weight
+        }
+    }
+
+    mod hf_config {
+        use super::*;
+
+        /// Trimmed llava-1.5-7b-hf style `config.json`: just the
+        /// vision_config + text_config blocks the loader needs.
+        const SAMPLE_HF: &str = r#"{
+            "vision_config": {
+                "hidden_size": 1024,
+                "image_size": 336,
+                "intermediate_size": 4096,
+                "num_attention_heads": 16,
+                "num_hidden_layers": 24,
+                "patch_size": 14,
+                "projection_dim": 768
+            },
+            "text_config": {
+                "hidden_size": 4096,
+                "intermediate_size": 11008,
+                "max_position_embeddings": 4096,
+                "num_attention_heads": 32,
+                "num_hidden_layers": 32,
+                "num_key_value_heads": 32,
+                "vocab_size": 32000,
+                "rms_norm_eps": 1e-5,
+                "rope_theta": 10000.0
+            },
+            "projection_dim": 4096
+        }"#;
+
+        #[test]
+        fn from_hf_json_str_parses_llava_1_5_7b_shape() {
+            let cfg = HFLlavaConfig::from_hf_json_str(SAMPLE_HF).expect("parse");
+            // Vision side
+            assert_eq!(cfg.vision_config.embed_dim, 1024);
+            assert_eq!(cfg.vision_config.image_size, 336);
+            assert_eq!(cfg.vision_config.patch_size, 14);
+            assert_eq!(cfg.vision_config.num_patches(), (336 / 14) * (336 / 14));
+            // Text side
+            assert_eq!(cfg.text_config.dim, 4096);
+            assert_eq!(cfg.text_config.n_layers, 32);
+            assert_eq!(cfg.text_config.head_dim, 4096 / 32);
+            assert_eq!(cfg.text_config.vocab_size, 32000);
+            assert!((cfg.text_config.rope_base - 10_000.0).abs() < 1e-6);
+            // Projection
+            assert_eq!(cfg.projection_dim, 4096);
+        }
+
+        #[test]
+        fn from_hf_json_str_defaults_projection_to_text_dim() {
+            let json = r#"{
+                "vision_config": {
+                    "hidden_size": 768,
+                    "image_size": 224,
+                    "intermediate_size": 3072,
+                    "num_attention_heads": 12,
+                    "num_hidden_layers": 12,
+                    "patch_size": 14
+                },
+                "text_config": {
+                    "hidden_size": 2048,
+                    "intermediate_size": 5504,
+                    "max_position_embeddings": 4096,
+                    "num_attention_heads": 16,
+                    "num_hidden_layers": 16,
+                    "num_key_value_heads": 16,
+                    "vocab_size": 32000
+                }
+            }"#;
+            let cfg = HFLlavaConfig::from_hf_json_str(json).expect("parse");
+            assert_eq!(cfg.projection_dim, 2048);
+            assert!((cfg.text_config.norm_eps - 1e-5).abs() < 1e-12);
+            assert!((cfg.text_config.rope_base - 10_000.0).abs() < 1e-6);
+        }
+
+        #[test]
+        fn rejects_mismatched_projection_dim() {
+            let json = r#"{
+                "vision_config": {
+                    "hidden_size": 768, "image_size": 224, "intermediate_size": 3072,
+                    "num_attention_heads": 12, "num_hidden_layers": 12, "patch_size": 14
+                },
+                "text_config": {
+                    "hidden_size": 2048, "intermediate_size": 5504,
+                    "max_position_embeddings": 4096, "num_attention_heads": 16,
+                    "num_hidden_layers": 16, "num_key_value_heads": 16, "vocab_size": 32000
+                },
+                "projection_dim": 4096
+            }"#;
+            let err = HFLlavaConfig::from_hf_json_str(json)
+                .expect_err("should reject projection_dim != text hidden_size");
+            let msg = format!("{err}");
+            assert!(msg.contains("projection_dim"), "got: {msg}");
+        }
+    }
+
+    mod best_resolution {
+        use super::*;
+
+        #[test]
+        fn picks_largest_effective_for_landscape() {
+            let grid: &[(u32, u32)] =
+                &[(336, 336), (672, 336), (336, 672), (672, 672), (1008, 336)];
+            // A wide image (3:1) should snap to the widest pinpoint.
+            let pick = select_best_resolution((1024, 320), grid);
+            assert_eq!(pick, (1008, 336));
+        }
+
+        #[test]
+        fn picks_largest_effective_for_portrait() {
+            let grid: &[(u32, u32)] =
+                &[(336, 336), (672, 336), (336, 672), (672, 672), (336, 1008)];
+            let pick = select_best_resolution((320, 1024), grid);
+            assert_eq!(pick, (336, 1008));
+        }
+
+        #[test]
+        fn picks_square_for_square_input() {
+            let grid: &[(u32, u32)] = &[(336, 336), (672, 336), (336, 672), (672, 672)];
+            let pick = select_best_resolution((512, 512), grid);
+            assert_eq!(pick, (672, 672));
         }
     }
 }

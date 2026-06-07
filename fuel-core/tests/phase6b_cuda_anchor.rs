@@ -32,10 +32,11 @@ use fuel_core::lazy_qwen2_moe::{
     ExpertWeights, Qwen2MoeConfig, Qwen2MoeLayerWeights, Qwen2MoeModel, Qwen2MoeWeights,
 };
 use fuel_core::lazy_sd_text_encoder::{
-    ClipLayerWeights, ClipTextWeights, SdTextEncoder, ClipTextConfig,
+    ClipLayerWeights, ClipTextActivation, ClipTextWeights, SdTextEncoder, ClipTextConfig,
 };
 use fuel_core::lazy_whisper::WhisperModel;
 use fuel_core::lazy_yolov8::{YoloV8Config, YoloV8Model, YoloV8Weights};
+use fuel_core::Result;
 use fuel_core_types::{probe::BackendId, Shape};
 use std::sync::Arc;
 
@@ -62,10 +63,10 @@ fn cuda_present() -> bool {
 }
 
 #[test]
-fn single_matmul_cuda_matches_reference_within_tolerance() {
+fn single_matmul_cuda_matches_reference_within_tolerance() -> Result<()> {
     if !cuda_present() {
         eprintln!("skipping: no CUDA device visible to Fuel");
-        return;
+        return Ok(());
     }
 
     // 32×48 @ 48×24 — deterministic inputs.
@@ -74,7 +75,7 @@ fn single_matmul_cuda_matches_reference_within_tolerance() {
     let b_data: Vec<f32> = (0..(k * n)).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
     let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[m, k]), &fuel_core::Device::cpu());
     let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
-    let c = a.matmul(&b);
+    let c = a.matmul(&b)?;
 
     let reference = c.realize_f32_reference();
 
@@ -89,6 +90,7 @@ fn single_matmul_cuda_matches_reference_within_tolerance() {
     // kernel suite. Any drift is gemm sum-order accumulation and is
     // well under 1e-4 at these shapes.
     fuel_core::test_utils::assert_allclose_f32(&cuda_out, &reference, 1e-4, 1e-4);
+    Ok(())
 }
 
 /// Deterministic LCG-backed tiny weights for a synthetic LLaMA.
@@ -175,8 +177,8 @@ fn llama_2layer_cuda_matches_reference() {
 /// extended to accept the strided variant alongside the natural
 /// row/col-major contiguous cases.
 #[test]
-fn bert_cuda_matches_reference() {
-    if !cuda_present() { return; }
+fn bert_cuda_matches_reference() -> Result<()> {
+    if !cuda_present() { return Ok(()); }
     let cfg = BertConfig {
         vocab_size:              100,
         hidden_size:             32,
@@ -209,21 +211,24 @@ fn bert_cuda_matches_reference() {
     };
     let model = BertModel { config: cfg.clone(), weights };
     let ids: Vec<u32> = (0..8).collect();
-    let hidden = model.forward(&ids);
+    let hidden = model.forward(&ids)?;
     assert_cuda_oracle(&hidden, 5e-3, 5e-3);
+    Ok(())
 }
 
 /// SD's CLIP text encoder uses the same BERT-style K^T transpose
 /// pattern that the gemm_config strided-input fix unblocked.
 #[test]
-fn sd_clip_text_encoder_cuda_matches_reference() {
-    if !cuda_present() { return; }
+fn sd_clip_text_encoder_cuda_matches_reference() -> Result<()> {
+    if !cuda_present() { return Ok(()); }
     let cfg = ClipTextConfig {
         vocab_size: 100, hidden_size: 16,
         num_hidden_layers: 2, num_attention_heads: 4,
         intermediate_size: 32, max_position_embeddings: 8,
         layer_norm_eps: 1e-5,
         bos_token_id: 0, eos_token_id: 2, pad_token_id: 1,
+        // SD 1.5 / SDXL TE1 preset default — matches `ClipTextConfig::sd_v1()`.
+        activation: ClipTextActivation::QuickGelu,
     };
     let h = cfg.hidden_size;
     let z = |n: usize| Arc::<[f32]>::from(vec![0.0_f32; n]);
@@ -245,8 +250,9 @@ fn sd_clip_text_encoder_cuda_matches_reference() {
     };
     let model = SdTextEncoder { config: cfg.clone(), weights };
     let tokens: Vec<u32> = (0..cfg.max_position_embeddings as u32).collect();
-    let hidden = model.forward(&tokens);
+    let hidden = model.forward(&tokens)?;
     assert_cuda_oracle(&hidden, 5e-3, 5e-3);
+    Ok(())
 }
 
 /// Qwen2-MoE uses BERT-shaped attention plus dense MoE routing
@@ -254,8 +260,8 @@ fn sd_clip_text_encoder_cuda_matches_reference() {
 /// Exercises the gemm_config strided-input fix for K^T plus the
 /// per-expert weighted-sum matmul chain.
 #[test]
-fn qwen2_moe_cuda_matches_reference() {
-    if !cuda_present() { return; }
+fn qwen2_moe_cuda_matches_reference() -> Result<()> {
+    if !cuda_present() { return Ok(()); }
     // Minimal MoE config — same shapes as the existing CPU oracle test
     // in fuel-core/src/lazy_qwen2_moe.rs `tiny_cfg`.
     // Mirrors lazy_qwen2_moe::tests::tiny_cfg — these are the exact
@@ -308,8 +314,9 @@ fn qwen2_moe_cuda_matches_reference() {
     };
     let model = Qwen2MoeModel { config: cfg.clone(), weights };
     let tokens: Vec<u32> = vec![1, 2, 3, 4];
-    let logits = model.forward(&tokens);
+    let logits = model.forward(&tokens)?;
     assert_cuda_oracle(&logits, 5e-3, 5e-3);
+    Ok(())
 }
 
 /// Whisper exercises encoder + decoder + cross-attention + Conv1d
@@ -319,17 +326,18 @@ fn qwen2_moe_cuda_matches_reference() {
 /// is the more interesting test — it adds cross-attention on top
 /// of the encoder's output.
 #[test]
-fn whisper_decoder_cuda_matches_reference() {
-    if !cuda_present() { return; }
+fn whisper_decoder_cuda_matches_reference() -> Result<()> {
+    if !cuda_present() { return Ok(()); }
     let cfg = fuel_core::lazy_whisper::tiny_cfg();
     let weights = fuel_core::lazy_whisper::zero_weights(&cfg);
     let model = WhisperModel { config: cfg.clone(), weights };
     // mel_time = 32 → encoder produces 16 source tokens.
     let mel = vec![0.0_f32; cfg.num_mel_bins * 32];
-    let enc = model.forward_encoder(&mel, 32);
+    let enc = model.forward_encoder(&mel, 32)?;
     let tokens: Vec<u32> = vec![1, 2, 3, 4];
-    let logits = model.forward_decoder(&tokens, &enc);
+    let logits = model.forward_decoder(&tokens, &enc)?;
     assert_cuda_oracle(&logits, 5e-3, 5e-3);
+    Ok(())
 }
 
 /// ConvNeXt is conv-heavy: stem patchify + depthwise 7×7 + inverted-
@@ -339,14 +347,15 @@ fn whisper_decoder_cuda_matches_reference() {
 /// CUDA path (executor wrapping, layer norm, GELU, MLP matmuls)
 /// produces oracle-equivalent output.
 #[test]
-fn convnext_cuda_matches_reference() {
-    if !cuda_present() { return; }
+fn convnext_cuda_matches_reference() -> Result<()> {
+    if !cuda_present() { return Ok(()); }
     let cfg = fuel_core::lazy_convnext::tiny_cfg();
     let weights = fuel_core::lazy_convnext::zero_weights(&cfg);
     let model = ConvNextModel { weights, config: cfg.clone() };
     let image = vec![0.0_f32; cfg.in_channels * cfg.image_size * cfg.image_size];
-    let logits = model.forward(&image);
+    let logits = model.forward(&image)?;
     assert_cuda_oracle(&logits, 5e-3, 5e-3);
+    Ok(())
 }
 
 /// CUDA grouped (depthwise) conv2d via cuDNN's set_group_count.
@@ -355,8 +364,8 @@ fn convnext_cuda_matches_reference() {
 /// padding 3, groups == c_in == c_out. Requires the `cudnn` feature
 /// (im2col fallback bails on groups>1).
 #[test]
-fn cuda_depthwise_conv2d_matches_reference() {
-    if !cuda_present() { return; }
+fn cuda_depthwise_conv2d_matches_reference() -> Result<()> {
+    if !cuda_present() { return Ok(()); }
     let (n, c, h, w_sz) = (1usize, 16, 8, 8);
     let k = 7;
     let pad = 3;
@@ -366,13 +375,14 @@ fn cuda_depthwise_conv2d_matches_reference() {
         .map(|i| ((i as f32) * 1.7e-3).cos()).collect();
     let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, c, h, w_sz]), &fuel_core::Device::cpu());
     let weight = x.const_f32_like(w_data, Shape::from_dims(&[c, 1, k, k]));
-    let y = x.conv2d(&weight, None, (1, 1), (pad, pad), c); // groups = c → depthwise
+    let y = x.conv2d(&weight, None, (1, 1), (pad, pad), c)?; // groups = c → depthwise
     assert_cuda_oracle(&y, 5e-4, 5e-4);
+    Ok(())
 }
 
 #[test]
-fn yolov8_cuda_matches_reference() {
-    if !cuda_present() { return; }
+fn yolov8_cuda_matches_reference() -> Result<()> {
+    if !cuda_present() { return Ok(()); }
     // YOLOv8 is conv-heavy; Conv2D currently CPU-falls-back inside the
     // CUDA executor. Test still verifies end-to-end correctness.
     let mut cfg = YoloV8Config::v8n();
@@ -380,9 +390,10 @@ fn yolov8_cuda_matches_reference() {
     let weights = YoloV8Weights::zeros(&cfg);
     let model = YoloV8Model { config: cfg.clone(), weights };
     let image = vec![0.0_f32; 3 * cfg.image_size * cfg.image_size];
-    let raw = model.forward(&image);
+    let raw = model.forward(&image)?;
     // Loose tolerance — many ops compose, even when most run on CPU
     // the CUDA executor's TrackedTensor wrapping introduces rounding.
     assert_cuda_oracle(&raw.cls_logits, 5e-3, 5e-3);
     assert_cuda_oracle(&raw.reg_dists,  5e-3, 5e-3);
+    Ok(())
 }
