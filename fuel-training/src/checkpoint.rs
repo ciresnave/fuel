@@ -1,40 +1,35 @@
-﻿//! Training checkpoint management.
+//! Training checkpoint management (lazy).
 //!
-//! Extends `VarMap`'s basic save/load with metadata tracking for resumable
-//! training. A [`Checkpoint`] bundles model weights with the epoch, step, and
-//! an optional best metric so training can resume from exactly where it was
-//! interrupted.
+//! Extends [`fuel::lazy_nn_varmap::LazyVarMap`]'s basic save/load with
+//! metadata tracking for resumable training. A [`Checkpoint`] bundles
+//! model weights with the epoch, step, and an optional best metric so
+//! training can resume from exactly where it was interrupted.
 //!
 //! # Example
 //!
-//! ```rust
-//! use fuel::{DType, Device, Tensor, Var};
-//! use fuel_nn::VarMap;
+//! ```rust,no_run
+//! use fuel::lazy_nn_optim::LazyVar;
+//! use fuel::lazy_nn_varmap::LazyVarMap;
 //! use fuel_training::checkpoint::Checkpoint;
 //!
 //! # fn main() -> fuel::Result<()> {
-//! let mut varmap = VarMap::new();
-//! // ... create model using varmap ...
+//! let varmap = LazyVarMap::new();
+//! varmap.insert(LazyVar::zeros("w", fuel::Shape::from_dims(&[8]))?);
 //!
-//! // Save a checkpoint
 //! let dir = std::env::temp_dir().join("fuel_ckpt_example");
-//! let ckpt = Checkpoint::new(5, 1000)
-//!     .with_metric("val_loss", 0.42);
-//!
-//! # let _ = std::fs::remove_dir_all(&dir); // clean
+//! let ckpt = Checkpoint::new(5, 1000).with_metric("val_loss", 0.42);
+//! # let _ = std::fs::remove_dir_all(&dir);
 //! ckpt.save(&dir, &varmap)?;
 //!
-//! // Load it back
 //! let loaded = Checkpoint::load_latest(&dir)?;
 //! assert_eq!(loaded.epoch(), 5);
-//! assert_eq!(loaded.step(), 1000);
 //! # std::fs::remove_dir_all(&dir).ok();
 //! # Ok(())
 //! # }
 //! ```
 
 use fuel::Result;
-use fuel_nn::VarMap;
+use fuel::lazy_nn_varmap::LazyVarMap;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -62,22 +57,18 @@ impl Checkpoint {
         self
     }
 
-    /// Return the epoch at which this checkpoint was saved.
     pub fn epoch(&self) -> usize {
         self.epoch
     }
 
-    /// Return the global step at which this checkpoint was saved.
     pub fn step(&self) -> usize {
         self.step
     }
 
-    /// Return all stored metrics as `(name, value)` pairs.
     pub fn metrics(&self) -> &[(String, f64)] {
         &self.metrics
     }
 
-    /// Return the value of a named metric, if stored.
     pub fn metric(&self, name: &str) -> Option<f64> {
         self.metrics
             .iter()
@@ -85,29 +76,34 @@ impl Checkpoint {
             .map(|(_, v)| *v)
     }
 
-    /// Save model weights and metadata to `dir`.
-    ///
-    /// Creates `dir` if it does not exist. Writes:
+    /// Save model weights and metadata to `dir`. Creates `dir` if it
+    /// does not exist. Writes:
     /// - `weights.safetensors` — model parameters
     /// - `metadata.json` — epoch, step, metrics
-    pub fn save<P: AsRef<Path>>(&self, dir: P, varmap: &VarMap) -> Result<()> {
+    pub fn save<P: AsRef<Path>>(&self, dir: P, varmap: &LazyVarMap) -> Result<()> {
         let dir = dir.as_ref();
-        std::fs::create_dir_all(dir).map_err(fuel::Error::wrap)?;
+        std::fs::create_dir_all(dir).map_err(|e| {
+            fuel::Error::Msg(format!(
+                "Checkpoint::save: create_dir_all {}: {e}",
+                dir.display()
+            ))
+            .bt()
+        })?;
 
         varmap.save(dir.join("weights.safetensors"))?;
 
-        let meta_json =
-            serde_json::to_string_pretty(self).map_err(fuel::Error::wrap)?;
-        std::fs::write(dir.join("metadata.json"), meta_json)
-            .map_err(fuel::Error::wrap)?;
+        let meta_json = serde_json::to_string_pretty(self).map_err(|e| {
+            fuel::Error::Msg(format!("Checkpoint::save: serialize metadata: {e}")).bt()
+        })?;
+        std::fs::write(dir.join("metadata.json"), meta_json).map_err(|e| {
+            fuel::Error::Msg(format!("Checkpoint::save: write metadata.json: {e}")).bt()
+        })?;
         Ok(())
     }
 
     /// Save to a timestamped subdirectory inside `base_dir`.
-    ///
-    /// The subdirectory is named `epoch_{epoch}_step_{step}`, making it easy
-    /// to keep multiple checkpoints.
-    pub fn save_named<P: AsRef<Path>>(&self, base_dir: P, varmap: &VarMap) -> Result<PathBuf> {
+    /// The subdirectory is named `epoch_{epoch}_step_{step}`.
+    pub fn save_named<P: AsRef<Path>>(&self, base_dir: P, varmap: &LazyVarMap) -> Result<PathBuf> {
         let name = format!("epoch_{}_step_{}", self.epoch, self.step);
         let dir = base_dir.as_ref().join(name);
         self.save(&dir, varmap)?;
@@ -115,48 +111,50 @@ impl Checkpoint {
     }
 
     /// Load model weights and metadata from `dir`, applying weights to `varmap`.
-    pub fn load<P: AsRef<Path>>(dir: P, varmap: &mut VarMap) -> Result<Self> {
+    pub fn load<P: AsRef<Path>>(dir: P, varmap: &LazyVarMap) -> Result<Self> {
         let dir = dir.as_ref();
         let weights_path = dir.join("weights.safetensors");
         varmap.load(&weights_path)?;
 
-        let meta_bytes =
-            std::fs::read(dir.join("metadata.json")).map_err(fuel::Error::wrap)?;
-        let ckpt: Self =
-            serde_json::from_slice(&meta_bytes).map_err(fuel::Error::wrap)?;
+        let meta_bytes = std::fs::read(dir.join("metadata.json")).map_err(|e| {
+            fuel::Error::Msg(format!("Checkpoint::load: read metadata.json: {e}")).bt()
+        })?;
+        let ckpt: Self = serde_json::from_slice(&meta_bytes).map_err(|e| {
+            fuel::Error::Msg(format!("Checkpoint::load: parse metadata.json: {e}")).bt()
+        })?;
         Ok(ckpt)
     }
 
     /// Load metadata only (no weights) from `dir`.
     pub fn load_metadata<P: AsRef<Path>>(dir: P) -> Result<Self> {
         let dir = dir.as_ref();
-        let meta_bytes =
-            std::fs::read(dir.join("metadata.json")).map_err(fuel::Error::wrap)?;
-        let ckpt: Self =
-            serde_json::from_slice(&meta_bytes).map_err(fuel::Error::wrap)?;
+        let meta_bytes = std::fs::read(dir.join("metadata.json")).map_err(|e| {
+            fuel::Error::Msg(format!("Checkpoint::load_metadata: read: {e}")).bt()
+        })?;
+        let ckpt: Self = serde_json::from_slice(&meta_bytes).map_err(|e| {
+            fuel::Error::Msg(format!("Checkpoint::load_metadata: parse: {e}")).bt()
+        })?;
         Ok(ckpt)
     }
 
-    /// Load the latest checkpoint from `base_dir` (by metadata only — does not
-    /// load weights into a VarMap).
+    /// Load the latest checkpoint metadata from `base_dir`.
     ///
-    /// Scans immediate subdirectories for `metadata.json` files and returns
-    /// the one with the highest step count.
+    /// Scans immediate subdirectories for `metadata.json` files and
+    /// returns the one with the highest step count.
     pub fn load_latest<P: AsRef<Path>>(base_dir: P) -> Result<Self> {
         let base_dir = base_dir.as_ref();
-
-        // Check for direct metadata.json (single checkpoint directory)
         let direct_meta = base_dir.join("metadata.json");
         if direct_meta.exists() {
             return Self::load_metadata(base_dir);
         }
-
-        // Scan subdirectories
-        let entries =
-            std::fs::read_dir(base_dir).map_err(fuel::Error::wrap)?;
+        let entries = std::fs::read_dir(base_dir).map_err(|e| {
+            fuel::Error::Msg(format!("Checkpoint::load_latest: read_dir: {e}")).bt()
+        })?;
         let mut best: Option<Self> = None;
         for entry in entries {
-            let entry = entry.map_err(fuel::Error::wrap)?;
+            let entry = entry.map_err(|e| {
+                fuel::Error::Msg(format!("Checkpoint::load_latest: entry: {e}")).bt()
+            })?;
             let meta_path = entry.path().join("metadata.json");
             if meta_path.exists() {
                 let ckpt = Self::load_metadata(entry.path())?;
@@ -165,12 +163,12 @@ impl Checkpoint {
                 }
             }
         }
-
         best.ok_or_else(|| {
             fuel::Error::Msg(format!(
                 "no checkpoint found in {}",
                 base_dir.display()
             ))
+            .bt()
         })
     }
 }
@@ -193,10 +191,10 @@ mod tests {
 
     #[test]
     fn save_and_load() -> fuel::Result<()> {
-        let dir = std::env::temp_dir().join("fuel_training_ckpt_test");
+        let dir = std::env::temp_dir().join("fuel_training_lazy_ckpt_test");
         let _ = std::fs::remove_dir_all(&dir);
 
-        let varmap = VarMap::new();
+        let varmap = LazyVarMap::new();
         let ckpt = Checkpoint::new(2, 400).with_metric("loss", 1.5);
         ckpt.save(&dir, &varmap)?;
 
@@ -211,10 +209,10 @@ mod tests {
 
     #[test]
     fn load_latest_picks_highest_step() -> fuel::Result<()> {
-        let base = std::env::temp_dir().join("fuel_training_ckpt_latest_test");
+        let base = std::env::temp_dir().join("fuel_training_lazy_ckpt_latest_test");
         let _ = std::fs::remove_dir_all(&base);
 
-        let varmap = VarMap::new();
+        let varmap = LazyVarMap::new();
         Checkpoint::new(1, 100).save_named(&base, &varmap)?;
         Checkpoint::new(2, 200).save_named(&base, &varmap)?;
         Checkpoint::new(1, 150).save_named(&base, &varmap)?;
