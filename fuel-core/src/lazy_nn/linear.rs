@@ -13,7 +13,10 @@
 use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_nn::LazyModule;
+use crate::lazy_nn_varbuilder::LazyVarBuilder;
 use fuel_core_types::Shape;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use std::sync::Arc;
 
 /// Linear (fully connected) layer over `LazyTensor`.
@@ -104,6 +107,77 @@ impl LazyModule for LazyLinear {
             None => Ok(y),
         }
     }
+}
+
+// ============================================================================
+// Free factories — `lazy_nn::linear(in, out, vs)` style constructors
+// ============================================================================
+
+/// Kaiming-like fan-in uniform sample of `n` f32 values in
+/// `(-bound, +bound)` with `bound = 1 / sqrt(in_features)`. Matches
+/// PyTorch's `nn.Linear` default init (weight and bias both ~
+/// `U(-1/sqrt(fan_in), +1/sqrt(fan_in))`) and is close enough to the
+/// retired `fuel_nn::linear` recipe to keep small-fixture forward
+/// outputs bounded.
+///
+/// Seeded deterministically from `in_features`, `n`, and `seed_salt`
+/// so successive `linear()` calls in the same process produce stable
+/// values across runs without forcing the caller to thread an RNG.
+fn fan_in_kaiming_uniform(in_features: usize, n: usize, seed_salt: u64) -> Vec<f32> {
+    use rand::Rng;
+    let bound = 1.0_f32 / (in_features as f32).sqrt();
+    let seed = (in_features as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add((n as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9))
+        .wrapping_add(seed_salt);
+    let mut rng = StdRng::seed_from_u64(seed);
+    (0..n).map(|_| rng.random_range(-bound..bound)).collect()
+}
+
+/// Free factory: build a [`LazyLinear`] with weight + bias registered
+/// into `vs`'s underlying [`crate::lazy_nn_varmap::LazyVarMap`] under
+/// the names `"<prefix>.weight"` and `"<prefix>.bias"`.
+///
+/// The weight is laid out `[in_features, out_features]` (the layout
+/// [`crate::lazy::WeightStorage::apply_linear`] expects). Init follows
+/// a Kaiming-fan-in uniform: `U(-1/sqrt(in_features), +1/sqrt(in_features))`,
+/// approximating the retired `fuel_nn::linear` semantics.
+pub fn linear(
+    in_features: usize,
+    out_features: usize,
+    vs: &LazyVarBuilder,
+) -> Result<LazyLinear> {
+    let weight_var = vs.get_with(
+        Shape::from_dims(&[in_features, out_features]),
+        "weight",
+        |s| fan_in_kaiming_uniform(in_features, s.elem_count(), 0),
+    )?;
+    // Bias gets the same Kaiming-fan-in uniform bound (this matches
+    // PyTorch's `nn.Linear` default: bias ~ U(-1/sqrt(fan_in), +1/sqrt(fan_in))).
+    let bias_var = vs.get_with(
+        Shape::from_dims(&[out_features]),
+        "bias",
+        |s| fan_in_kaiming_uniform(in_features, s.elem_count(), 1),
+    )?;
+    let weight = WeightStorage::F32(Arc::from(weight_var.to_vec()));
+    let bias: Arc<[f32]> = Arc::from(bias_var.to_vec());
+    LazyLinear::new(weight, Some(bias), in_features, out_features)
+}
+
+/// Free factory: bias-less variant of [`linear`]. Only `"<prefix>.weight"`
+/// is registered into the underlying [`crate::lazy_nn_varmap::LazyVarMap`].
+pub fn linear_no_bias(
+    in_features: usize,
+    out_features: usize,
+    vs: &LazyVarBuilder,
+) -> Result<LazyLinear> {
+    let weight_var = vs.get_with(
+        Shape::from_dims(&[in_features, out_features]),
+        "weight",
+        |s| fan_in_kaiming_uniform(in_features, s.elem_count(), 0),
+    )?;
+    let weight = WeightStorage::F32(Arc::from(weight_var.to_vec()));
+    LazyLinear::new_no_bias(weight, in_features, out_features)
 }
 
 #[cfg(test)]
@@ -245,5 +319,50 @@ mod tests {
                 "linear_no_bias[{i}] forward {a} != apply_linear {d}",
             );
         }
+    }
+
+    #[test]
+    fn factory_registers_weight_and_bias_and_forward_shape_matches() {
+        use crate::DType;
+        use crate::lazy_nn_varbuilder::LazyVarBuilder;
+        use crate::lazy_nn_varmap::LazyVarMap;
+
+        let in_features = 4;
+        let out_features = 3;
+        let seq = 5;
+
+        let map = LazyVarMap::new();
+        let vs = LazyVarBuilder::from_varmap(map.clone(), DType::F32, Device::cpu());
+
+        let layer = super::linear(in_features, out_features, &vs.pp("proj")).unwrap();
+        assert_eq!(layer.in_features(), in_features);
+        assert_eq!(layer.out_features(), out_features);
+
+        // Both parameters should be registered under the prefixed paths.
+        assert!(map.get("proj.weight").is_some(), "weight not registered");
+        assert!(map.get("proj.bias").is_some(), "bias not registered");
+        assert_eq!(map.get("proj.weight").unwrap().shape().dims(), &[in_features, out_features]);
+        assert_eq!(map.get("proj.bias").unwrap().shape().dims(), &[out_features]);
+
+        // Forward gives the expected output shape on a small fixture.
+        let x_data: Vec<f32> = ramp_f32(seq * in_features, 0.05, -0.1);
+        let x = LazyTensor::from_f32(
+            x_data, Shape::from_dims(&[seq, in_features]), &Device::cpu(),
+        );
+        let y = layer.forward(&x).unwrap();
+        assert_eq!(y.shape().dims(), &[seq, out_features]);
+        let got = y.realize_f32();
+        assert_eq!(got.len(), seq * out_features);
+        for (i, v) in got.iter().enumerate() {
+            assert!(v.is_finite(), "factory linear out[{i}] = {v} not finite");
+        }
+
+        // `linear_no_bias` registers only weight.
+        let map2 = LazyVarMap::new();
+        let vs2 = LazyVarBuilder::from_varmap(map2.clone(), DType::F32, Device::cpu());
+        let layer_nb = super::linear_no_bias(in_features, out_features, &vs2.pp("nb")).unwrap();
+        assert!(layer_nb.bias().is_none());
+        assert!(map2.get("nb.weight").is_some());
+        assert!(map2.get("nb.bias").is_none());
     }
 }

@@ -26,7 +26,7 @@ pub use activation::{
 };
 pub use conv::{LazyConv1d, LazyConv1dConfig, LazyConv2d, LazyConv2dConfig};
 pub use embedding::LazyEmbedding;
-pub use linear::LazyLinear;
+pub use linear::{LazyLinear, linear, linear_no_bias};
 pub use lora::LazyLoraLinear;
 pub use moe::{LazyMoeExpert, LazyMoeLayer, LazyMoeRouter};
 pub use norm::{LazyBatchNorm2d, LazyGroupNorm, LazyLayerNorm, LazyRmsNorm};

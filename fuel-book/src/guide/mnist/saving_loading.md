@@ -2,7 +2,7 @@
 
 ## Saving and Loading Models
 
-After training a model, it is useful to save and subsequently load the model parameters. In Fuel, this functionality is managed through the `VarMap` data structure, with parameters stored on disk using the [safetensors](https://huggingface.co/docs/safetensors/index) format.
+After training a model, it is useful to save and subsequently load the model parameters. In Fuel, this functionality is managed through the `LazyVarMap` data structure, with parameters stored on disk using the [safetensors](https://huggingface.co/docs/safetensors/index) format.
 
 ### Saving Model Parameters
 
@@ -18,28 +18,28 @@ fn training_loop(
     let train_images = m.train_images.to_device(&dev)?;
     let train_labels = train_labels.to_dtype(DType::U32)?.to_device(&dev)?;
 
-    // Initialize a VarMap for trainable parameters
-    let varmap = VarMap::new();
-    let vs = VarBuilder::from_varmap(&varmap, DType::F32, &dev);
-    let model = Model::new(vs.clone())?;
+    // Initialize a LazyVarMap for trainable parameters
+    let varmap = LazyVarMap::new();
+    let vs = LazyVarBuilder::from_varmap(varmap.clone(), DType::F32, dev.clone());
+    let model = Model::new(&vs)?;
 
     let learning_rate = 0.05;
     let epochs = 10;
 
     // Initialize stochastic gradient descent optimizer
-    let mut sgd = fuel_nn::SGD::new(varmap.all_vars(), learning_rate)?;
+    let mut sgd = LazySgd::new(varmap.all_vars(), learning_rate)?;
     let test_images = m.test_images.to_device(&dev)?;
     let test_labels = m.test_labels.to_dtype(DType::U32)?.to_device(&dev)?;
-    
+
     for epoch in 1..epochs {
         // Standard MNIST forward pass
         let logits = model.forward(&train_images)?;
-        let log_sm = ops::log_softmax(&logits, D::Minus1)?;
-        
-        // Compute Negative Log Likelihood loss
-        let loss = loss::nll(&log_sm, &train_labels)?;
+        let log_sm = logits.log_softmax(D::Minus1)?;
 
-        // Perform backward pass and update weights
+        // Compute Negative Log Likelihood loss
+        let loss = loss::nll(&log_sm, &train_labels, loss::Reduction::Mean)?;
+
+        // Backward + step in a single call.
         sgd.backward_step(&loss)?;
 
         // Evaluate model on test set
@@ -57,7 +57,7 @@ fn training_loop(
             test_accuracy
         );
     }
-    
+
     // Save model weights to disk
     varmap.save("model_weights.safetensors")?;
     Ok(())
@@ -80,7 +80,7 @@ $ cargo run --release
 
 ### Loading Model Parameters
 
-Now that we have saved our model parameters, we can modify the code to load them. The primary change required is to make the `varmap` variable mutable:
+Now that we have saved our model parameters, we can modify the code to load them. `LazyVarMap::load` mutates parameter buffers in place through interior mutability, so the binding does not need to be `mut`:
 
 ```rust
 fn training_loop(
@@ -92,31 +92,33 @@ fn training_loop(
     let train_images = m.train_images.to_device(&dev)?;
     let train_labels = train_labels.to_dtype(DType::U32)?.to_device(&dev)?;
 
-    // Create a mutable VarMap for trainable parameters
-    let mut varmap = VarMap::new();
-    let vs = VarBuilder::from_varmap(&varmap, DType::F32, &dev);
-    let model = Model::new(vs.clone())?;
+    // Create a LazyVarMap for trainable parameters
+    let varmap = LazyVarMap::new();
+    let vs = LazyVarBuilder::from_varmap(varmap.clone(), DType::F32, dev.clone());
+    let model = Model::new(&vs)?;
 
-    // Load pre-trained weights from file
+    // Load pre-trained weights from file (matches parameters by name —
+    // `Model::new` must run first so the VarMap knows the expected names
+    // and shapes).
     varmap.load("model_weights.safetensors")?;
 
     let learning_rate = 0.05;
     let epochs = 10;
 
     // Initialize stochastic gradient descent optimizer
-    let mut sgd = fuel_nn::SGD::new(varmap.all_vars(), learning_rate)?;
+    let mut sgd = LazySgd::new(varmap.all_vars(), learning_rate)?;
     let test_images = m.test_images.to_device(&dev)?;
     let test_labels = m.test_labels.to_dtype(DType::U32)?.to_device(&dev)?;
-    
+
     for epoch in 1..epochs {
         // Standard MNIST forward pass
         let logits = model.forward(&train_images)?;
-        let log_sm = ops::log_softmax(&logits, D::Minus1)?;
-        
-        // Compute Negative Log Likelihood loss
-        let loss = loss::nll(&log_sm, &train_labels)?;
+        let log_sm = logits.log_softmax(D::Minus1)?;
 
-        // Perform backward pass and update weights
+        // Compute Negative Log Likelihood loss
+        let loss = loss::nll(&log_sm, &train_labels, loss::Reduction::Mean)?;
+
+        // Backward + step in a single call.
         sgd.backward_step(&loss)?;
 
         // Evaluate model on test set
@@ -134,7 +136,7 @@ fn training_loop(
             test_accuracy
         );
     }
-    
+
     // Save updated weights back to disk
     varmap.save("model_weights.safetensors")?;
     Ok(())
