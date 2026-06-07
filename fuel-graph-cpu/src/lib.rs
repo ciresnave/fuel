@@ -585,6 +585,7 @@ fn eval_node(
         Op::Cast(target) => eval_cast(*target, inputs, cache),
         Op::BroadcastTo(target_shape) => eval_broadcast_to(target_shape, inputs, cache),
         Op::Reshape(target_shape) => eval_reshape(target_shape, inputs, cache),
+        Op::Contiguize => eval_reshape(shape, inputs, cache),
         Op::ReduceSumTo(target_shape) => eval_reduce_sum_to(target_shape, inputs, cache),
         Op::ReduceMaxTo(target_shape) => eval_reduce_max_to(target_shape, inputs, cache),
         Op::Unsqueeze { dim } => eval_unsqueeze(*dim, inputs, cache),

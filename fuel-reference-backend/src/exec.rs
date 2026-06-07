@@ -611,6 +611,7 @@ pub fn eval_node_with_op(
         Op::Cast(target) => eval_cast(*target, inputs, cache),
         Op::BroadcastTo(target_shape) => eval_broadcast_to(target_shape, inputs, cache),
         Op::Reshape(target_shape) => eval_reshape(target_shape, inputs, cache),
+        Op::Contiguize => eval_reshape(shape, inputs, cache),
         Op::Unsqueeze { dim } => eval_unsqueeze(*dim, inputs, cache),
         Op::Squeeze { dim } => eval_squeeze(*dim, inputs, cache),
         Op::ReduceSumTo(target_shape) => eval_reduce_sum_to(target_shape, inputs, cache),
