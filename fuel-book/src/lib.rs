@@ -1,8 +1,10 @@
-﻿// `simplified` (the from-scratch MNIST classifier walkthrough) depended on
-// `fuel-nn`, which was retired during the eager-Tensor retirement program.
-// It needs a LazyTensor rewrite before being re-enabled here.
-// #[cfg(test)]
-// pub mod simplified;
+﻿// `simplified` (the from-scratch MNIST classifier walkthrough) was revived
+// on the lazy substrate after `fuel-nn` was retired during the
+// eager-Tensor retirement program. It exercises `LazyLinear`,
+// `LazyVarMap` + `LazyVarBuilder`, `LazySgd`, `LazyTensor::log_softmax`,
+// and `lazy_nn_loss::nll`.
+#[cfg(test)]
+pub mod simplified;
 
 #[cfg(test)]
 mod tests {

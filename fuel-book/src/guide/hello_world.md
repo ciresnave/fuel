@@ -6,15 +6,16 @@ Open `src/main.rs` and fill in this content:
 
 ```rust
 # extern crate fuel_core;
-use fuel_core::{Device, Result, Tensor};
+use fuel_core::{DType, Device, Result};
+use fuel_core::lazy::LazyTensor;
 
 struct Model {
-    first: Tensor,
-    second: Tensor,
+    first: LazyTensor,
+    second: LazyTensor,
 }
 
 impl Model {
-    fn forward(&self, image: &Tensor) -> Result<Tensor> {
+    fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
         let x = image.matmul(&self.first)?;
         let x = x.relu()?;
         x.matmul(&self.second)
@@ -25,11 +26,11 @@ fn main() -> Result<()> {
     // Use fuel::cuda_backend::new_device(0)?; to use the GPU.
     let device = Device::Cpu;
 
-    let first = Tensor::randn(0f32, 1.0, (784, 100), &device)?;
-    let second = Tensor::randn(0f32, 1.0, (100, 10), &device)?;
+    let first = LazyTensor::randn((784, 100), 0.0, 1.0, DType::F32, &device)?;
+    let second = LazyTensor::randn((100, 10), 0.0, 1.0, DType::F32, &device)?;
     let model = Model { first, second };
 
-    let dummy_image = Tensor::randn(0f32, 1.0, (1, 784), &device)?;
+    let dummy_image = LazyTensor::randn((1, 784), 0.0, 1.0, DType::F32, &device)?;
 
     let digit = model.forward(&dummy_image)?;
     println!("Digit {digit:?} digit");
@@ -50,13 +51,14 @@ the classical `Linear` layer. We can do as such
 
 ```rust
 # extern crate fuel_core;
-# use fuel_core::{Device, Result, Tensor};
-struct Linear{
-    weight: Tensor,
-    bias: Tensor,
+# use fuel_core::{DType, Device, Result};
+# use fuel_core::lazy::LazyTensor;
+struct Linear {
+    weight: LazyTensor,
+    bias: LazyTensor,
 }
-impl Linear{
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+impl Linear {
+    fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
         let x = x.matmul(&self.weight)?;
         x.broadcast_add(&self.bias)
     }
@@ -68,7 +70,7 @@ struct Model {
 }
 
 impl Model {
-    fn forward(&self, image: &Tensor) -> Result<Tensor> {
+    fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
         let x = self.first.forward(image)?;
         let x = x.relu()?;
         self.second.forward(&x)
@@ -80,13 +82,14 @@ This will change the model running code into a new function
 
 ```rust
 # extern crate fuel_core;
-# use fuel_core::{Device, Result, Tensor};
-# struct Linear{
-#     weight: Tensor,
-#     bias: Tensor,
+# use fuel_core::{DType, Device, Result};
+# use fuel_core::lazy::LazyTensor;
+# struct Linear {
+#     weight: LazyTensor,
+#     bias: LazyTensor,
 # }
-# impl Linear{
-#     fn forward(&self, x: &Tensor) -> Result<Tensor> {
+# impl Linear {
+#     fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
 #         let x = x.matmul(&self.weight)?;
 #         x.broadcast_add(&self.bias)
 #     }
@@ -98,7 +101,7 @@ This will change the model running code into a new function
 # }
 # 
 # impl Model {
-#     fn forward(&self, image: &Tensor) -> Result<Tensor> {
+#     fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
 #         let x = self.first.forward(image)?;
 #         let x = x.relu()?;
 #         self.second.forward(&x)
@@ -110,15 +113,15 @@ fn main() -> Result<()> {
     let device = fuel::cuda_backend::device_if_available(0)?;
 
     // Creating a dummy model
-    let weight = Tensor::randn(0f32, 1.0, (784, 100), &device)?;
-    let bias = Tensor::randn(0f32, 1.0, (100, ), &device)?;
-    let first = Linear{weight, bias};
-    let weight = Tensor::randn(0f32, 1.0, (100, 10), &device)?;
-    let bias = Tensor::randn(0f32, 1.0, (10, ), &device)?;
-    let second = Linear{weight, bias};
+    let weight = LazyTensor::randn((784, 100), 0.0, 1.0, DType::F32, &device)?;
+    let bias = LazyTensor::randn((100,), 0.0, 1.0, DType::F32, &device)?;
+    let first = Linear { weight, bias };
+    let weight = LazyTensor::randn((100, 10), 0.0, 1.0, DType::F32, &device)?;
+    let bias = LazyTensor::randn((10,), 0.0, 1.0, DType::F32, &device)?;
+    let second = Linear { weight, bias };
     let model = Model { first, second };
 
-    let dummy_image = Tensor::randn(0f32, 1.0, (1, 784), &device)?;
+    let dummy_image = LazyTensor::randn((1, 784), 0.0, 1.0, DType::F32, &device)?;
 
     // Inference on the model
     let digit = model.forward(&dummy_image)?;
@@ -128,34 +131,29 @@ fn main() -> Result<()> {
 ```
 
 Now it works, it is a great way to create your own layers.
-But most of the classical layers are already implemented in [fuel-nn](https://github.com/huggingface/fuel/tree/main/fuel-nn).
+But most of the classical layers are already implemented in `fuel_core::lazy_nn` — the lazy neural-network substrate that sits on top of `LazyTensor`.
 
-## Using `fuel_nn`.
+## Using `fuel_core::lazy_nn`.
 
-For instance [Linear](https://github.com/huggingface/fuel/blob/main/fuel-nn/src/linear.rs) is already there.
-This Linear is coded with PyTorch layout in mind, to reuse better existing models out there, so it uses the transpose of the weights and not the weights directly.
+For instance [`LazyLinear`](https://github.com/huggingface/fuel/blob/main/fuel-core/src/lazy_nn/linear.rs) is already there, along with the `lazy_nn::linear(in, out, vs)` free factory that registers the layer's weights into a `LazyVarMap` via a `LazyVarBuilder`. The weight is laid out `[in_features, out_features]`, matching the layout `LazyTensor::matmul` consumes directly — no transpose at forward time.
 
-So instead we can simplify our example:
-
-```bash
-cargo add --git https://github.com/huggingface/fuel.git fuel-nn
-```
-
-And rewrite our examples using it
+So instead we can simplify our example by leaning on the lazy `nn` factories:
 
 ```rust
 # extern crate fuel_core;
-# extern crate fuel_nn;
-use fuel_core::{Device, Result, Tensor};
-use fuel_nn::{Linear, Module};
+use fuel_core::{DType, Device, Result};
+use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy_nn::{LazyLinear, LazyModule, linear};
+use fuel_core::lazy_nn_varbuilder::LazyVarBuilder;
+use fuel_core::lazy_nn_varmap::LazyVarMap;
 
 struct Model {
-    first: Linear,
-    second: Linear,
+    first: LazyLinear,
+    second: LazyLinear,
 }
 
 impl Model {
-    fn forward(&self, image: &Tensor) -> Result<Tensor> {
+    fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
         let x = self.first.forward(image)?;
         let x = x.relu()?;
         self.second.forward(&x)
@@ -166,16 +164,16 @@ fn main() -> Result<()> {
     // Use fuel::cuda_backend::new_device(0)?; to use the GPU.
     let device = Device::Cpu;
 
-    // This has changed (784, 100) -> (100, 784) !
-    let weight = Tensor::randn(0f32, 1.0, (100, 784), &device)?;
-    let bias = Tensor::randn(0f32, 1.0, (100, ), &device)?;
-    let first = Linear::new(weight, Some(bias));
-    let weight = Tensor::randn(0f32, 1.0, (10, 100), &device)?;
-    let bias = Tensor::randn(0f32, 1.0, (10, ), &device)?;
-    let second = Linear::new(weight, Some(bias));
+    // The VarMap owns the parameters; the VarBuilder threads naming +
+    // dtype + device through layer factories.
+    let varmap = LazyVarMap::new();
+    let vs = LazyVarBuilder::from_varmap(varmap.clone(), DType::F32, device.clone());
+
+    let first = linear(784, 100, &vs.pp("first"))?;
+    let second = linear(100, 10, &vs.pp("second"))?;
     let model = Model { first, second };
 
-    let dummy_image = Tensor::randn(0f32, 1.0, (1, 784), &device)?;
+    let dummy_image = LazyTensor::randn((1, 784), 0.0, 1.0, DType::F32, &device)?;
 
     let digit = model.forward(&dummy_image)?;
     println!("Digit {digit:?} digit");

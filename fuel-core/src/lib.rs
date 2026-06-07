@@ -151,6 +151,7 @@ pub mod lazy_nn_loss;
 pub mod lazy_nn_one_hot;
 pub mod lazy_nn_optim;
 pub mod lazy_nn_prelu;
+pub mod lazy_nn_varbuilder;
 pub mod lazy_nn_varmap;
 pub mod lazy_nomic_bert;
 pub mod lazy_nvembed_v2;
