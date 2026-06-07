@@ -15,7 +15,7 @@
 
 use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_nn::LazyModule;
+use crate::lazy_nn::{LazyBatchNorm2d, LazyModule};
 use fuel_core_types::Shape;
 use std::sync::Arc;
 
@@ -286,6 +286,107 @@ impl LazyConv2d {
     pub fn out_channels(&self) -> usize { self.out_channels }
     pub fn kernel_h(&self) -> usize { self.kernel_h }
     pub fn kernel_w(&self) -> usize { self.kernel_w }
+
+    /// Fold a following [`LazyBatchNorm2d`] into this conv's weight and
+    /// bias, returning a new [`LazyConv2d`] that produces the same
+    /// activations as `bn(self(x))` in BN eval mode.
+    ///
+    /// Math (mirrors `CbsWeights::fuse_bn` in `lazy_yolov8`):
+    ///   `scale[c] = γ[c] / sqrt(running_var[c] + eps)`
+    ///   `new_weight[c, ...] = old_weight[c, ...] · scale[c]`
+    ///   `new_bias[c]   = (old_bias[c] - running_mean[c]) · scale[c] + β[c]`
+    /// where `(γ, β, running_mean, running_var, eps)` come from `bn`,
+    /// and `old_bias[c]` defaults to 0 when this conv has no bias.
+    ///
+    /// `bn.num_features()` must equal this conv's `out_channels`. The
+    /// returned conv reuses this conv's config (padding / stride /
+    /// dilation / groups) verbatim; the weight dtype is preserved
+    /// (F32 stays F32, BF16 stays BF16 via a host-side round-trip).
+    ///
+    /// Errors:
+    /// - if `bn.num_features() != self.out_channels`
+    /// - if the weight storage is [`WeightStorage::Q4_0`] or
+    ///   [`WeightStorage::WithLoRA`] — BN absorption requires a host
+    ///   f32 view, which neither variant exposes losslessly.
+    pub fn absorb_bn(&self, bn: &LazyBatchNorm2d) -> Result<LazyConv2d> {
+        if bn.num_features() != self.out_channels {
+            return Err(crate::Error::Msg(format!(
+                "LazyConv2d::absorb_bn: bn.num_features ({}) must equal \
+                 conv.out_channels ({})",
+                bn.num_features(), self.out_channels,
+            )).bt());
+        }
+
+        // Read conv weight as host f32. F32 is direct; BF16 round-trips
+        // through f32 for the math, then back to bf16 for storage so
+        // the fused module keeps its native dtype. Q4_0/WithLoRA can't
+        // be folded losslessly — surface that rather than silently
+        // dequantizing.
+        let c_out = self.out_channels;
+        let per_out = (self.in_channels / self.cfg.groups) * self.kernel_h * self.kernel_w;
+        let weight_f32: Vec<f32> = match &self.weight {
+            WeightStorage::F32(a) => a.iter().copied().collect(),
+            WeightStorage::BF16(a) => a.iter().map(|v| v.to_f32()).collect(),
+            WeightStorage::Q4_0 { .. } => {
+                return Err(crate::Error::Msg(
+                    "LazyConv2d::absorb_bn: Q4_0 weights cannot be folded \
+                     with a following BatchNorm (no lossless host f32 \
+                     view). Dequantize first, fold, then requantize if \
+                     desired.".into(),
+                ).bt());
+            }
+            WeightStorage::WithLoRA { .. } => {
+                return Err(crate::Error::Msg(
+                    "LazyConv2d::absorb_bn: LoRA-wrapped weights cannot be \
+                     folded with a following BatchNorm (the adapter must \
+                     be applied to activations, not weights). Merge LoRA \
+                     into the base first, then fold.".into(),
+                ).bt());
+            }
+        };
+        debug_assert_eq!(weight_f32.len(), c_out * per_out);
+
+        let gamma = bn.weight();
+        let beta = bn.bias();
+        let mean = bn.running_mean();
+        let var = bn.running_var();
+        let eps32 = bn.eps() as f32;
+
+        // Per-channel scale and the fused bias term.
+        let mut new_weight = vec![0.0_f32; c_out * per_out];
+        let mut new_bias = vec![0.0_f32; c_out];
+        for c in 0..c_out {
+            let scale = gamma[c] / (var[c] + eps32).sqrt();
+            let base = c * per_out;
+            for j in 0..per_out {
+                new_weight[base + j] = weight_f32[base + j] * scale;
+            }
+            let old_b = self.bias.as_ref().map(|b| b[c]).unwrap_or(0.0_f32);
+            new_bias[c] = (old_b - mean[c]) * scale + beta[c];
+        }
+
+        // Preserve the original weight dtype.
+        let folded_weight = match &self.weight {
+            WeightStorage::F32(_) => WeightStorage::F32(Arc::from(new_weight)),
+            WeightStorage::BF16(_) => {
+                let as_bf16: Vec<half::bf16> =
+                    new_weight.into_iter().map(half::bf16::from_f32).collect();
+                WeightStorage::BF16(Arc::from(as_bf16))
+            }
+            // The Q4_0 / WithLoRA arms returned early above.
+            WeightStorage::Q4_0 { .. } | WeightStorage::WithLoRA { .. } => unreachable!(),
+        };
+
+        LazyConv2d::new(
+            folded_weight,
+            Some(Arc::from(new_bias)),
+            self.cfg,
+            self.in_channels,
+            self.out_channels,
+            self.kernel_h,
+            self.kernel_w,
+        )
+    }
 }
 
 impl LazyModule for LazyConv2d {
@@ -500,6 +601,201 @@ mod tests {
                 "conv2d_with_bias[{i}] module {a} != direct {d}",
             );
         }
+    }
+
+    #[test]
+    fn conv2d_absorb_bn_matches_conv_then_bn() {
+        // (a) conv2d → batch_norm on a small fixture must equal a
+        //     single conv2d whose weights have absorbed the BN.
+        let n = 2;
+        let cin = 3;
+        let cout = 4;
+        let h = 5;
+        let w_in = 5;
+        let kh = 3;
+        let kw = 3;
+        let cfg = LazyConv2dConfig {
+            padding: (1, 1),
+            stride: (1, 1),
+            dilation: (1, 1),
+            groups: 1,
+        };
+
+        let weight: Vec<f32> = ramp_f32(cout * cin * kh * kw, 0.02, -0.15);
+        // BN affine + running stats — pick distinct ramps per buffer so
+        // the math actually exercises each term.
+        let gamma: Vec<f32> = ramp_f32(cout, 0.1, 0.5);
+        let beta: Vec<f32> = ramp_f32(cout, 0.07, -0.3);
+        let r_mean: Vec<f32> = ramp_f32(cout, 0.05, 0.2);
+        // running_var must stay strictly positive.
+        let r_var: Vec<f32> = (0..cout).map(|i| 0.3 + (i as f32) * 0.1).collect();
+        let eps = 1e-5_f64;
+
+        // No-bias conv to keep the no-bias absorb path on test (a).
+        let conv = LazyConv2d::new(
+            WeightStorage::F32(Arc::from(weight)),
+            None,
+            cfg, cin, cout, kh, kw,
+        ).unwrap();
+        let bn = LazyBatchNorm2d::new(
+            Arc::from(gamma),
+            Arc::from(beta),
+            Arc::from(r_mean),
+            Arc::from(r_var),
+            eps,
+            cout,
+        ).unwrap();
+
+        let x_data: Vec<f32> = ramp_f32(n * cin * h * w_in, 0.013, -0.4);
+
+        // Path 1: conv → bn.
+        let x1 = LazyTensor::from_f32(
+            x_data.clone(),
+            Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu(),
+        );
+        let y1 = bn.forward(&conv.forward(&x1).unwrap()).unwrap().realize_f32();
+
+        // Path 2: absorb_bn → single conv.
+        let fused = conv.absorb_bn(&bn).unwrap();
+        let x2 = LazyTensor::from_f32(
+            x_data,
+            Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu(),
+        );
+        let y2 = fused.forward(&x2).unwrap().realize_f32();
+
+        assert_eq!(y1.len(), y2.len());
+        for (i, (a, b)) in y1.iter().zip(y2.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "absorb_bn[{i}] conv→bn = {a}, fused = {b}",
+            );
+        }
+
+        // Sanity: fused conv must now carry a bias even though the
+        // original conv had none (BN's β alone produces a non-zero
+        // per-channel offset).
+        assert!(fused.bias().is_some());
+    }
+
+    #[test]
+    fn conv2d_absorb_bn_merges_existing_bias() {
+        // (b) absorb_bn on a conv that already has a bias correctly
+        //     merges the existing bias into the new bias.
+        //     With c_out = 1 the math collapses to scalars we can
+        //     check by hand:
+        //       scale = γ / sqrt(var + eps)
+        //       new_bias = (old_bias - mean) · scale + β
+        //       new_weight = old_weight · scale
+        let cin = 2;
+        let cout = 1;
+        let kh = 2;
+        let kw = 2;
+        let cfg = LazyConv2dConfig::default();
+
+        let weight: Vec<f32> = vec![0.5, -0.25, 0.75, 0.1, -0.3, 0.4, 0.2, -0.6];
+        debug_assert_eq!(weight.len(), cout * cin * kh * kw);
+        let old_bias_val = 0.7_f32;
+        let conv = LazyConv2d::new(
+            WeightStorage::F32(Arc::from(weight.clone())),
+            Some(Arc::from(vec![old_bias_val])),
+            cfg, cin, cout, kh, kw,
+        ).unwrap();
+
+        let gamma = 2.0_f32;
+        let beta = -0.5_f32;
+        let mean = 0.25_f32;
+        let var = 0.75_f32;
+        let eps = 1e-4_f64;
+
+        let bn = LazyBatchNorm2d::new(
+            Arc::from(vec![gamma]),
+            Arc::from(vec![beta]),
+            Arc::from(vec![mean]),
+            Arc::from(vec![var]),
+            eps,
+            cout,
+        ).unwrap();
+
+        let fused = conv.absorb_bn(&bn).unwrap();
+
+        let scale = gamma / (var + eps as f32).sqrt();
+        let expected_bias = (old_bias_val - mean) * scale + beta;
+
+        let folded_bias = fused.bias().expect("absorb_bn must produce a bias").clone();
+        assert_eq!(folded_bias.len(), 1);
+        assert!(
+            (folded_bias[0] - expected_bias).abs() < 1e-6,
+            "merged bias mismatch: got {}, expected {}",
+            folded_bias[0], expected_bias,
+        );
+
+        // Weight: each element multiplied by scale.
+        let folded_w = match fused.weight() {
+            WeightStorage::F32(a) => a.clone(),
+            _ => panic!("expected F32 weight after absorb_bn on F32 conv"),
+        };
+        assert_eq!(folded_w.len(), weight.len());
+        for (i, (orig, got)) in weight.iter().zip(folded_w.iter()).enumerate() {
+            let expected = *orig * scale;
+            assert!(
+                (got - expected).abs() < 1e-6,
+                "folded_weight[{i}] = {got}, expected {expected}",
+            );
+        }
+
+        // End-to-end: conv→bn must equal fused conv on a small input,
+        // even with the existing bias on the original conv.
+        let n = 1;
+        let h = 3;
+        let w_in = 3;
+        let x_data: Vec<f32> = ramp_f32(n * cin * h * w_in, 0.1, -0.2);
+        let x1 = LazyTensor::from_f32(
+            x_data.clone(),
+            Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu(),
+        );
+        let y1 = bn.forward(&conv.forward(&x1).unwrap()).unwrap().realize_f32();
+        let x2 = LazyTensor::from_f32(
+            x_data,
+            Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu(),
+        );
+        let y2 = fused.forward(&x2).unwrap().realize_f32();
+        assert_eq!(y1.len(), y2.len());
+        for (i, (a, b)) in y1.iter().zip(y2.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "absorb_bn_with_bias[{i}] conv→bn = {a}, fused = {b}",
+            );
+        }
+    }
+
+    #[test]
+    fn conv2d_absorb_bn_rejects_channel_mismatch() {
+        let cin = 2;
+        let cout = 3;
+        let kh = 3;
+        let kw = 3;
+        let weight = ramp_f32(cout * cin * kh * kw, 0.01, 0.0);
+        let conv = LazyConv2d::new(
+            WeightStorage::F32(Arc::from(weight)),
+            None,
+            LazyConv2dConfig::default(),
+            cin, cout, kh, kw,
+        ).unwrap();
+        let wrong_features = cout + 1;
+        let bn = LazyBatchNorm2d::new(
+            Arc::from(vec![1.0_f32; wrong_features]),
+            Arc::from(vec![0.0_f32; wrong_features]),
+            Arc::from(vec![0.0_f32; wrong_features]),
+            Arc::from(vec![1.0_f32; wrong_features]),
+            1e-5,
+            wrong_features,
+        ).unwrap();
+        let err = conv.absorb_bn(&bn).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("absorb_bn") && msg.contains("num_features"),
+            "expected channel-mismatch message, got: {msg}",
+        );
     }
 
     #[test]
