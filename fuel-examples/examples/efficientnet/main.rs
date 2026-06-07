@@ -1,4 +1,4 @@
-﻿//! EfficientNet implementation.
+//! EfficientNet implementation.
 //!
 //! https://arxiv.org/abs/1905.11946
 
@@ -8,10 +8,13 @@ extern crate intel_mkl_src;
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-use fuel::{DType, IndexOp, D};
-use fuel_nn::{Module, VarBuilder};
-use fuel_transformers::models::efficientnet::{EfficientNet, MBConvConfig};
 use clap::{Parser, ValueEnum};
+
+use fuel::lazy::LazyTensor;
+use fuel::lazy_efficientnet::{EfficientNetConfig, EfficientNetModel, EfficientNetWeights};
+use fuel::safetensors::MmapedSafetensors;
+use fuel::{Device, Shape};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Which {
@@ -45,10 +48,21 @@ struct Args {
 pub fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let device = fuel_examples::device(args.cpu)?;
+    // Lazy realizes through CPU/router; `cpu` flag preserved for CLI parity.
+    let _ = args.cpu;
+    let device = Device::cpu();
 
-    let image = fuel_examples::imagenet::load_image224(args.image)?.to_device(&device)?;
-    println!("loaded image {image:?}");
+    // Image loading still uses the eager imagenet helper (returns shape
+    // (3, 224, 224)). Convert to a flat f32 vec and build a lazy
+    // (1, 3, 224, 224) tensor.
+    let eager_image = fuel_examples::imagenet::load_image224(&args.image)?;
+    println!("loaded image {eager_image:?}");
+    let image_vec: Vec<f32> = eager_image.flatten_all()?.to_vec1::<f32>()?;
+    let image = LazyTensor::from_f32(
+        Arc::<[f32]>::from(image_vec),
+        Shape::from_dims(&[1, 3, 224, 224]),
+        &device,
+    );
 
     let model_file = match args.model {
         None => {
@@ -68,23 +82,27 @@ pub fn main() -> anyhow::Result<()> {
         }
         Some(model) => model.into(),
     };
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model_file], DType::F32, &device)? };
+
+    let nclasses = fuel_examples::imagenet::CLASS_COUNT as usize;
     let cfg = match args.which {
-        Which::B0 => MBConvConfig::b0(),
-        Which::B1 => MBConvConfig::b1(),
-        Which::B2 => MBConvConfig::b2(),
-        Which::B3 => MBConvConfig::b3(),
-        Which::B4 => MBConvConfig::b4(),
-        Which::B5 => MBConvConfig::b5(),
-        Which::B6 => MBConvConfig::b6(),
-        Which::B7 => MBConvConfig::b7(),
+        Which::B0 => EfficientNetConfig::b0(nclasses),
+        Which::B1 => EfficientNetConfig::b1(nclasses),
+        Which::B2 => EfficientNetConfig::b2(nclasses),
+        Which::B3 => EfficientNetConfig::b3(nclasses),
+        Which::B4 => EfficientNetConfig::b4(nclasses),
+        Which::B5 => EfficientNetConfig::b5(nclasses),
+        Which::B6 => EfficientNetConfig::b6(nclasses),
+        Which::B7 => EfficientNetConfig::b7(nclasses),
     };
-    let model = EfficientNet::new(vb, cfg, fuel_examples::imagenet::CLASS_COUNT as usize)?;
+
+    let st = unsafe { MmapedSafetensors::new(&model_file) }?;
+    let weights = EfficientNetWeights::load_from_mmapped(&st, &cfg)?;
+    let model = EfficientNetModel { config: cfg, weights };
     println!("model built");
-    let logits = model.forward(&image.unsqueeze(0)?)?;
-    let prs = fuel_nn::ops::softmax(&logits, D::Minus1)?
-        .i(0)?
-        .to_vec1::<f32>()?;
+
+    let logits = model.forward(&image)?;
+    let probs = logits.softmax_last_dim()?;
+    let prs = probs.realize_f32();
     let mut prs = prs.iter().enumerate().collect::<Vec<_>>();
     prs.sort_by(|(_, p1), (_, p2)| p2.total_cmp(p1));
     for &(category_idx, pr) in prs.iter().take(5) {

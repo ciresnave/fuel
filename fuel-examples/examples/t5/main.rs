@@ -1,4 +1,4 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
@@ -6,17 +6,11 @@ extern crate accelerate_src;
 use std::io::Write;
 use std::path::PathBuf;
 
-use fuel_transformers::models::t5;
-
 use anyhow::{Error as E, Result};
-use fuel::{DType, Device, Tensor};
-use fuel_nn::VarBuilder;
-use fuel_transformers::generation::LogitsProcessor;
 use clap::{Parser, ValueEnum};
+use fuel::lazy_t5::{T5Activation, T5Config, T5Model, T5Weights};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
-
-const DTYPE: DType = DType::F32;
 
 #[derive(Clone, Debug, Copy, ValueEnum)]
 enum Which {
@@ -95,17 +89,116 @@ struct Args {
     /// The model to be used.
     #[arg(long, default_value = "t5-small")]
     which: Which,
+
+    /// The seed to use when generating random samples.
+    #[arg(long, default_value_t = 299792458)]
+    seed: u64,
+}
+
+/// Parsed HF `config.json` for T5 / mT5. Mirrors the fields used by the
+/// eager `t5::Config`. The lazy `T5Config` only needs a strict subset, so
+/// we hold on to the auxiliary fields (`pad_token_id`, `eos_token_id`,
+/// `decoder_start_token_id`) here.
+struct LoadedT5 {
+    cfg: T5Config,
+    pad_token_id: u32,
+    eos_token_id: u32,
+    decoder_start_token_id: Option<u32>,
+}
+
+fn parse_t5_config(json: &str) -> Result<LoadedT5> {
+    let v: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| E::msg(format!("parsing T5 config.json: {e}")))?;
+    let get_usize = |key: &str| -> Result<usize> {
+        v.get(key)
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .ok_or_else(|| E::msg(format!("T5 config.json: missing/invalid field {key:?}")))
+    };
+    let get_usize_opt = |key: &str| -> Option<usize> {
+        v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
+    };
+    let get_f64 = |key: &str, default: f64| -> f64 {
+        v.get(key).and_then(|x| x.as_f64()).unwrap_or(default)
+    };
+    let get_bool = |key: &str, default: bool| -> bool {
+        v.get(key).and_then(|x| x.as_bool()).unwrap_or(default)
+    };
+
+    let vocab_size = get_usize("vocab_size")?;
+    let d_model = get_usize("d_model")?;
+    let d_kv = get_usize("d_kv")?;
+    let d_ff = get_usize("d_ff")?;
+    let num_layers = get_usize("num_layers")?;
+    let num_decoder_layers = get_usize_opt("num_decoder_layers");
+    let num_heads = get_usize("num_heads")?;
+    let relative_attention_num_buckets = get_usize("relative_attention_num_buckets")?;
+    let relative_attention_max_distance = get_usize_opt("relative_attention_max_distance").unwrap_or(128);
+    let layer_norm_epsilon = get_f64("layer_norm_epsilon", 1e-6);
+    let tie_word_embeddings = get_bool("tie_word_embeddings", true);
+
+    // Parse `feed_forward_proj` — HF uses strings like "relu", "gated-gelu",
+    // "gated-silu", "gelu_new", etc.
+    let ffp: &str = v
+        .get("feed_forward_proj")
+        .and_then(|x| x.as_str())
+        .unwrap_or("relu");
+    let (gated_ffn, activation) = match ffp {
+        "gated-gelu" => (true, T5Activation::GeluPytorchTanh),
+        "gated-silu" => (true, T5Activation::Silu),
+        "relu" => (false, T5Activation::Relu),
+        "silu" | "swish" => (false, T5Activation::Silu),
+        "gelu" => (false, T5Activation::Gelu),
+        "gelu_new" | "gelu_pytorch_tanh" => (false, T5Activation::GeluPytorchTanh),
+        other => {
+            // Tolerate "gated-X" generic shape.
+            if let Some(inner) = other.strip_prefix("gated-") {
+                let act = match inner {
+                    "gelu" => T5Activation::GeluPytorchTanh,
+                    "silu" | "swish" => T5Activation::Silu,
+                    "relu" => T5Activation::Relu,
+                    _ => T5Activation::GeluPytorchTanh,
+                };
+                (true, act)
+            } else {
+                (false, T5Activation::Relu)
+            }
+        }
+    };
+
+    let pad_token_id = get_usize_opt("pad_token_id").unwrap_or(0) as u32;
+    let eos_token_id = get_usize_opt("eos_token_id").unwrap_or(1) as u32;
+    let decoder_start_token_id = get_usize_opt("decoder_start_token_id").map(|x| x as u32);
+
+    Ok(LoadedT5 {
+        cfg: T5Config {
+            vocab_size,
+            d_model,
+            d_kv,
+            d_ff,
+            num_layers,
+            num_decoder_layers,
+            num_heads,
+            relative_attention_num_buckets,
+            relative_attention_max_distance,
+            layer_norm_epsilon,
+            activation,
+            gated_ffn,
+            tie_word_embeddings,
+        },
+        pad_token_id,
+        eos_token_id,
+        decoder_start_token_id,
+    })
 }
 
 struct T5ModelBuilder {
-    device: Device,
-    config: t5::Config,
+    loaded: LoadedT5,
     weights_filename: Vec<PathBuf>,
 }
 
 impl T5ModelBuilder {
     pub fn load(args: &Args) -> Result<(Self, Tokenizer)> {
-        let device = fuel_examples::device(args.cpu)?;
         let (default_model, default_revision) = match args.which {
             Which::T5Base => ("t5-base", "main"),
             Which::T5Small => ("t5-small", "refs/pr/15"),
@@ -156,32 +249,27 @@ impl T5ModelBuilder {
                 }
             }
         };
-        let config = std::fs::read_to_string(config_filename)?;
-        let mut config: t5::Config = serde_json::from_str(&config)?;
-        config.use_cache = !args.disable_cache;
+        let config_json = std::fs::read_to_string(config_filename)?;
+        let loaded = parse_t5_config(&config_json)?;
         let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
         Ok((
             Self {
-                device,
-                config,
+                loaded,
                 weights_filename,
             },
             tokenizer,
         ))
     }
 
-    pub fn build_encoder(&self) -> Result<t5::T5EncoderModel> {
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&self.weights_filename, DTYPE, &self.device)?
-        };
-        Ok(t5::T5EncoderModel::load(vb, &self.config)?)
-    }
-
-    pub fn build_conditional_generation(&self) -> Result<t5::T5ForConditionalGeneration> {
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&self.weights_filename, DTYPE, &self.device)?
-        };
-        Ok(t5::T5ForConditionalGeneration::load(vb, &self.config)?)
+    pub fn build(&self) -> Result<T5Model> {
+        let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&self.weights_filename) }
+            .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+        let weights = T5Weights::load_from_mmapped(&st, &self.loaded.cfg)
+            .map_err(|e| E::msg(format!("load t5 weights: {e}")))?;
+        Ok(T5Model {
+            config: self.loaded.cfg.clone(),
+            weights,
+        })
     }
 }
 
@@ -199,34 +287,41 @@ fn main() -> Result<()> {
         None
     };
 
+    // `--cpu` and `--disable-cache` retained for CLI compatibility; the lazy
+    // port runs on the graph executor (no per-step KV cache yet) so both are
+    // effectively no-ops.
+    let _ = args.cpu;
+    let _ = args.disable_cache;
+
     let (builder, mut tokenizer) = T5ModelBuilder::load(&args)?;
-    let device = &builder.device;
     let tokenizer = tokenizer
         .with_padding(None)
         .with_truncation(None)
         .map_err(E::msg)?;
-    match args.prompt {
+    match args.prompt.clone() {
         Some(prompt) => {
-            let tokens = tokenizer
+            let tokens: Vec<u32> = tokenizer
                 .encode(prompt, true)
                 .map_err(E::msg)?
                 .get_ids()
                 .to_vec();
-            let input_token_ids = Tensor::new(&tokens[..], device)?.unsqueeze(0)?;
             if !args.decode {
-                let mut model = builder.build_encoder()?;
+                let model = builder.build()?;
                 let start = std::time::Instant::now();
-                let ys = model.forward(&input_token_ids)?;
-                println!("{ys}");
+                let ys = model
+                    .forward_encoder(&tokens)
+                    .map_err(|e| E::msg(format!("encoder forward: {e}")))?;
+                let data = ys.realize_f32();
+                println!("encoder output shape: {:?}", ys.shape().dims());
+                println!("first 8 values: {:?}", &data[..data.len().min(8)]);
                 println!("Took {:?}", start.elapsed());
             } else {
-                let mut model = builder.build_conditional_generation()?;
-                let mut output_token_ids = [builder
-                    .config
+                let model = builder.build()?;
+                let decoder_start = builder
+                    .loaded
                     .decoder_start_token_id
-                    .unwrap_or(builder.config.pad_token_id)
-                    as u32]
-                .to_vec();
+                    .unwrap_or(builder.loaded.pad_token_id);
+                let mut output_token_ids: Vec<u32> = vec![decoder_start];
                 if let Some(decoder_prompt) = &args.decoder_prompt {
                     print!("{decoder_prompt}");
                     output_token_ids.extend(
@@ -242,36 +337,42 @@ fn main() -> Result<()> {
                 } else {
                     Some(args.temperature)
                 };
-                let mut logits_processor = LogitsProcessor::new(299792458, temperature, args.top_p);
-                let encoder_output = model.encode(&input_token_ids)?;
+                let encoder_out = model
+                    .forward_encoder(&tokens)
+                    .map_err(|e| E::msg(format!("encoder forward: {e}")))?;
                 let start = std::time::Instant::now();
+                let vocab_size = builder.loaded.cfg.vocab_size;
+                let eos_token_id = builder.loaded.eos_token_id;
 
                 for index in 0.. {
                     if output_token_ids.len() > 512 {
                         break;
                     }
-                    let decoder_token_ids = if index == 0 || !builder.config.use_cache {
-                        Tensor::new(output_token_ids.as_slice(), device)?.unsqueeze(0)?
-                    } else {
-                        let last_token = *output_token_ids.last().unwrap();
-                        Tensor::new(&[last_token], device)?.unsqueeze(0)?
-                    };
+                    // Lazy port has no KV cache — each step re-runs the
+                    // decoder over the full target prefix.
                     let logits = model
-                        .decode(&decoder_token_ids, &encoder_output)?
-                        .squeeze(0)?;
-                    let logits = if args.repeat_penalty == 1. {
-                        logits
-                    } else {
+                        .forward_decoder(&output_token_ids, &encoder_out)
+                        .map_err(|e| E::msg(format!("decoder forward: {e}")))?;
+                    let logits_data = logits.realize_f32();
+                    let tgt_len = output_token_ids.len();
+                    let last_off = (tgt_len - 1) * vocab_size;
+                    let mut last_logits: Vec<f32> =
+                        logits_data[last_off..last_off + vocab_size].to_vec();
+                    if args.repeat_penalty != 1.0 {
                         let start_at = output_token_ids.len().saturating_sub(args.repeat_last_n);
-                        fuel_transformers::utils::apply_repeat_penalty(
-                            &logits,
+                        apply_repeat_penalty(
+                            &mut last_logits,
                             args.repeat_penalty,
                             &output_token_ids[start_at..],
-                        )?
-                    };
-
-                    let next_token_id = logits_processor.sample(&logits)?;
-                    if next_token_id as usize == builder.config.eos_token_id {
+                        );
+                    }
+                    let next_token_id = sample(
+                        &last_logits,
+                        temperature.map(|t| t as f32).unwrap_or(0.0),
+                        args.top_p.map(|p| p as f32),
+                        args.seed.wrapping_add(index as u64),
+                    );
+                    if next_token_id == eos_token_id {
                         break;
                     }
                     output_token_ids.push(next_token_id);
@@ -290,7 +391,7 @@ fn main() -> Result<()> {
             }
         }
         None => {
-            let mut model = builder.build_encoder()?;
+            let model = builder.build()?;
             let sentences = [
                 "The cat sits outside",
                 "A man is playing guitar",
@@ -302,26 +403,38 @@ fn main() -> Result<()> {
                 "Do you like pizza?",
             ];
             let n_sentences = sentences.len();
-            let mut all_embeddings = Vec::with_capacity(n_sentences);
+            let d_model = builder.loaded.cfg.d_model;
+            // Each entry is a `[d_model]` pooled embedding for one sentence.
+            let mut all_embeddings: Vec<Vec<f32>> = Vec::with_capacity(n_sentences);
             for sentence in sentences {
-                let tokens = tokenizer
+                let tokens: Vec<u32> = tokenizer
                     .encode(sentence, true)
                     .map_err(E::msg)?
                     .get_ids()
                     .to_vec();
-                let token_ids = Tensor::new(&tokens[..], model.device())?.unsqueeze(0)?;
-                let embeddings = model.forward(&token_ids)?;
-                println!("generated embeddings {:?}", embeddings.shape());
-                // Apply some avg-pooling by taking the mean embedding value for all tokens (including padding)
-                let (_n_sentence, n_tokens, _hidden_size) = embeddings.dims3()?;
-                let embeddings = (embeddings.sum(1)? / (n_tokens as f64))?;
-                let embeddings = if args.normalize_embeddings {
-                    normalize_l2(&embeddings)?
-                } else {
-                    embeddings
-                };
-                println!("pooled embeddings {:?}", embeddings.shape());
-                all_embeddings.push(embeddings)
+                let embeddings = model
+                    .forward_encoder(&tokens)
+                    .map_err(|e| E::msg(format!("encoder forward: {e}")))?;
+                let dims = embeddings.shape().dims().to_vec();
+                println!("generated embeddings {:?}", dims);
+                // Shape is (1, n_tokens, d_model); mean-pool across token axis.
+                let data = embeddings.realize_f32();
+                let n_tokens = dims[1];
+                let mut pooled = vec![0.0_f32; d_model];
+                for t in 0..n_tokens {
+                    for h in 0..d_model {
+                        pooled[h] += data[t * d_model + h];
+                    }
+                }
+                let inv = 1.0_f32 / (n_tokens as f32);
+                for v in &mut pooled {
+                    *v *= inv;
+                }
+                if args.normalize_embeddings {
+                    normalize_l2(&mut pooled);
+                }
+                println!("pooled embeddings ({} dims)", pooled.len());
+                all_embeddings.push(pooled);
             }
 
             let mut similarities = vec![];
@@ -332,9 +445,9 @@ fn main() -> Result<()> {
                     .take(n_sentences)
                     .skip(i + 1)
                 {
-                    let sum_ij = (e_i * e_j)?.sum_all()?.to_scalar::<f32>()?;
-                    let sum_i2 = (e_i * e_i)?.sum_all()?.to_scalar::<f32>()?;
-                    let sum_j2 = (e_j * e_j)?.sum_all()?.to_scalar::<f32>()?;
+                    let sum_ij: f32 = e_i.iter().zip(e_j.iter()).map(|(a, b)| a * b).sum();
+                    let sum_i2: f32 = e_i.iter().map(|a| a * a).sum();
+                    let sum_j2: f32 = e_j.iter().map(|a| a * a).sum();
                     let cosine_similarity = sum_ij / (sum_i2 * sum_j2).sqrt();
                     similarities.push((cosine_similarity, i, j))
                 }
@@ -348,6 +461,95 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-pub fn normalize_l2(v: &Tensor) -> Result<Tensor> {
-    Ok(v.broadcast_div(&v.sqr()?.sum_keepdim(1)?.sqrt()?)?)
+fn normalize_l2(v: &mut [f32]) {
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        let inv = 1.0 / norm;
+        for x in v {
+            *x *= inv;
+        }
+    }
+}
+
+fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
+    let mut seen = std::collections::HashSet::new();
+    for &t in context {
+        if !seen.insert(t) {
+            continue;
+        }
+        let idx = t as usize;
+        if idx < logits.len() {
+            let v = logits[idx];
+            logits[idx] = if v >= 0.0 { v / penalty } else { v * penalty };
+        }
+    }
+}
+
+fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u32 {
+    if temperature <= 0.0 {
+        let mut best_i = 0usize;
+        let mut best = logits[0];
+        for (i, &v) in logits.iter().enumerate().skip(1) {
+            if v > best {
+                best = v;
+                best_i = i;
+            }
+        }
+        return best_i as u32;
+    }
+    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let inv_t = 1.0 / temperature.max(1e-6);
+    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    for p in &mut probs {
+        *p /= sum.max(1e-30);
+    }
+    let mut idx: Vec<usize> = (0..probs.len()).collect();
+    idx.sort_unstable_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap());
+    let mut keep_mask: Vec<bool> = vec![true; probs.len()];
+    if let Some(p_cut) = top_p {
+        let mut cum2 = 0.0;
+        let mut allow = true;
+        for &i in &idx {
+            if !keep_mask[i] {
+                continue;
+            }
+            if !allow {
+                keep_mask[i] = false;
+                continue;
+            }
+            cum2 += probs[i];
+            if cum2 >= p_cut {
+                allow = false;
+            }
+        }
+    }
+    let mut filtered: Vec<f32> = probs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| if keep_mask[i] { *p } else { 0.0 })
+        .collect();
+    let s: f32 = filtered.iter().sum();
+    if s > 0.0 {
+        for v in &mut filtered {
+            *v /= s;
+        }
+    } else {
+        return 0;
+    }
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    state ^= state >> 33;
+    state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    state ^= state >> 33;
+    let r = (state as f32) / (u64::MAX as f32);
+    let mut cum = 0.0;
+    for (i, p) in filtered.iter().enumerate() {
+        cum += *p;
+        if r <= cum {
+            return i as u32;
+        }
+    }
+    (filtered.len() - 1) as u32
 }

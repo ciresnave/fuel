@@ -1,14 +1,17 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
+use anyhow::Error as E;
 use clap::{Parser, ValueEnum};
 
-use fuel::{DType, IndexOp, D};
-use fuel_nn::{Module, VarBuilder};
-use fuel_transformers::models::hiera;
+use fuel::lazy::LazyTensor;
+use fuel::lazy_hiera::{HieraConfig, HieraModel, HieraWeights};
+use fuel::safetensors::MmapedSafetensors;
+use fuel::{Device, Shape};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Which {
@@ -33,14 +36,14 @@ impl Which {
         format!("timm/hiera_{name}_224.mae_in1k_ft_in1k")
     }
 
-    fn config(&self) -> hiera::Config {
+    fn config(&self) -> HieraConfig {
         match self {
-            Self::Tiny => hiera::Config::tiny(),
-            Self::Small => hiera::Config::small(),
-            Self::Base => hiera::Config::base(),
-            Self::BasePlus => hiera::Config::base_plus(),
-            Self::Large => hiera::Config::large(),
-            Self::Huge => hiera::Config::huge(),
+            Self::Tiny => HieraConfig::tiny(),
+            Self::Small => HieraConfig::small(),
+            Self::Base => HieraConfig::base(),
+            Self::BasePlus => HieraConfig::base_plus(),
+            Self::Large => HieraConfig::large(),
+            Self::Huge => HieraConfig::huge(),
         }
     }
 }
@@ -64,10 +67,21 @@ struct Args {
 pub fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let device = fuel_examples::device(args.cpu)?;
+    // Lazy path realizes via CPU/router; `cpu` flag preserved for CLI parity.
+    let _ = args.cpu;
+    let device = Device::cpu();
 
-    let image = fuel_examples::imagenet::load_image224(args.image)?.to_device(&device)?;
-    println!("loaded image {image:?}");
+    // Image loading still uses the eager imagenet helper (returns
+    // shape (3, 224, 224)). Convert to a flat f32 vec and build a
+    // lazy (1, 3, 224, 224) tensor.
+    let eager_image = fuel_examples::imagenet::load_image224(&args.image)?;
+    println!("loaded image {eager_image:?}");
+    let image_vec: Vec<f32> = eager_image.flatten_all()?.to_vec1::<f32>()?;
+    let image = LazyTensor::from_f32(
+        Arc::<[f32]>::from(image_vec),
+        Shape::from_dims(&[1, 3, 224, 224]),
+        &device,
+    );
 
     let model_file = match args.model {
         None => {
@@ -79,13 +93,18 @@ pub fn main() -> anyhow::Result<()> {
         Some(model) => model.into(),
     };
 
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model_file], DType::F32, &device)? };
-    let model = hiera::hiera(&args.which.config(), 1000, vb)?;
+    let cfg = args.which.config();
+    let st = unsafe { MmapedSafetensors::multi(&[&model_file]) }
+        .map_err(|e| E::msg(format!("mmap: {e}")))?;
+    let weights = HieraWeights::load_from_mmapped(&st, &cfg)
+        .map_err(|e| E::msg(format!("weights: {e}")))?;
+    let model = HieraModel { config: cfg, weights };
     println!("model built");
-    let logits = model.forward(&image.unsqueeze(0)?)?;
-    let prs = fuel_nn::ops::softmax(&logits, D::Minus1)?
-        .i(0)?
-        .to_vec1::<f32>()?;
+
+    let logits_t = model.forward(&image)?;
+    let probs_t = logits_t.softmax_last_dim()?;
+    let prs = probs_t.realize_f32();
+
     let mut prs = prs.iter().enumerate().collect::<Vec<_>>();
     prs.sort_by(|(_, p1), (_, p2)| p2.total_cmp(p1));
     for &(category_idx, pr) in prs.iter().take(5) {

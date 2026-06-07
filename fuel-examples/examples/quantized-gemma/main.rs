@@ -1,18 +1,18 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
+use anyhow::Error as E;
 use clap::{Parser, ValueEnum};
 use std::io::Write;
 use tokenizers::Tokenizer;
 
-use fuel::Tensor;
-use fuel_transformers::generation::{LogitsProcessor, Sampling};
+use fuel::lazy_gemma3::{Gemma3Config, GemmaActivation};
+use fuel::lazy_quantized_gemma3::QuantizedGemma3Model;
 
 use fuel_examples::token_output_stream::TokenOutputStream;
-use fuel_transformers::models::quantized_gemma3::ModelWeights;
 
 const DEFAULT_PROMPT: &str = "Write a function to calculate fibonacci num";
 
@@ -144,6 +144,185 @@ enum Prompt {
     One(String),
 }
 
+/// Derive a Gemma3Config from GGUF metadata + tensor-shape inspection.
+///
+/// Mirrors the eager loader's metadata read for the architecture-side fields
+/// (head counts, key length, RMS norm eps, RoPE bases, sliding window) and
+/// recovers vocab_size / intermediate_size from the token_embd and ffn_down
+/// tensor shapes. Fields that Gemma 3 does not exercise (softcaps,
+/// attention_bias) are filled with the architecture's documented defaults.
+fn gemma3_config_from_gguf(
+    content: &fuel::quantized::gguf_file::Content,
+) -> anyhow::Result<Gemma3Config> {
+    // Probe architecture prefix (gemma3 / gemma2 / gemma) — matches the
+    // eager loader's behaviour.
+    let prefix = ["gemma3", "gemma2", "gemma", "gemma-embedding"]
+        .iter()
+        .find(|p| {
+            content
+                .metadata
+                .contains_key(&format!("{}.attention.head_count", p))
+        })
+        .copied()
+        .unwrap_or("gemma3");
+
+    let md_get = |s: &str| -> anyhow::Result<&fuel::quantized::gguf_file::Value> {
+        let key = format!("{prefix}.{s}");
+        content
+            .metadata
+            .get(&key)
+            .ok_or_else(|| E::msg(format!("cannot find {key} in metadata")))
+    };
+
+    let num_attention_heads = md_get("attention.head_count")?.to_u32()? as usize;
+    let num_key_value_heads = md_get("attention.head_count_kv")?.to_u32()? as usize;
+    let num_hidden_layers = md_get("block_count")?.to_u32()? as usize;
+    let hidden_size = md_get("embedding_length")?.to_u32()? as usize;
+    let head_dim = md_get("attention.key_length")?.to_u32()? as usize;
+    let rms_norm_eps = md_get("attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
+    let sliding_window = md_get("attention.sliding_window")?.to_u32()? as usize;
+
+    let sliding_window_pattern = md_get("attention.sliding_window_type")
+        .and_then(|m| Ok(m.to_u32()? as usize))
+        .unwrap_or(6);
+
+    let rope_theta = md_get("rope.freq_base")
+        .and_then(|m| Ok(m.to_f32()? as f64))
+        .unwrap_or(1_000_000.0);
+    let rope_local_base_freq = md_get("rope.local_freq_base")
+        .and_then(|m| Ok(m.to_f32()? as f64))
+        .unwrap_or(10_000.0);
+
+    // Recover vocab_size and intermediate_size from tensor shapes:
+    //   token_embd.weight is [vocab_size, hidden_size]
+    //   blk.0.ffn_down.weight is [hidden_size, intermediate_size]
+    let tok = content
+        .tensor_infos
+        .get("token_embd.weight")
+        .ok_or_else(|| E::msg("gguf missing token_embd.weight"))?;
+    let vocab_size = tok.shape.dims()[0];
+
+    let ffn_down = content
+        .tensor_infos
+        .get("blk.0.ffn_down.weight")
+        .ok_or_else(|| E::msg("gguf missing blk.0.ffn_down.weight"))?;
+    // ffn_down shape: [hidden_size, intermediate_size] in GGUF [out, in] order.
+    let intermediate_size = ffn_down.shape.dims()[1];
+
+    // Gemma 3 dropped the attention/final logit softcaps (which Gemma 2 had).
+    // The eager forward in fuel-transformers reflects this — no softcap is
+    // applied. Bias projections are absent in Gemma-3 GGUFs (attention_bias=false).
+    Ok(Gemma3Config {
+        vocab_size,
+        hidden_size,
+        intermediate_size,
+        num_hidden_layers,
+        num_attention_heads,
+        num_key_value_heads,
+        head_dim,
+        rms_norm_eps,
+        rope_theta,
+        rope_local_base_freq,
+        max_position_embeddings: 8192,
+        sliding_window,
+        sliding_window_pattern,
+        attention_bias: false,
+        hidden_activation: GemmaActivation::GeluPytorchTanh,
+        attn_logit_softcapping: None,
+        final_logit_softcapping: None,
+    })
+}
+
+fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, ctx: &[u32]) {
+    let mut seen = std::collections::HashSet::new();
+    for &t in ctx {
+        if !seen.insert(t) {
+            continue;
+        }
+        let i = t as usize;
+        if i < logits.len() {
+            let v = logits[i];
+            logits[i] = if v >= 0.0 { v / penalty } else { v * penalty };
+        }
+    }
+}
+
+fn sample(
+    logits: &[f32], temp: f32, top_k: Option<usize>, top_p: Option<f32>, seed: u64,
+) -> u32 {
+    if temp <= 0.0 {
+        let mut bi = 0usize;
+        let mut b = logits[0];
+        for (i, &v) in logits.iter().enumerate().skip(1) {
+            if v > b {
+                b = v;
+                bi = i;
+            }
+        }
+        return bi as u32;
+    }
+    let m = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let inv = 1.0 / temp.max(1e-6);
+    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - m) * inv).exp()).collect();
+    let s: f32 = probs.iter().sum();
+    for p in &mut probs {
+        *p /= s.max(1e-30);
+    }
+    let mut idx: Vec<usize> = (0..probs.len()).collect();
+    idx.sort_unstable_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap());
+    let mut keep = vec![true; probs.len()];
+    if let Some(k) = top_k {
+        for &i in idx.iter().skip(k) {
+            keep[i] = false;
+        }
+    }
+    if let Some(pc) = top_p {
+        let mut c = 0.0;
+        let mut allow = true;
+        for &i in &idx {
+            if !keep[i] {
+                continue;
+            }
+            if !allow {
+                keep[i] = false;
+                continue;
+            }
+            c += probs[i];
+            if c >= pc {
+                allow = false;
+            }
+        }
+    }
+    let mut f: Vec<f32> = probs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| if keep[i] { *p } else { 0.0 })
+        .collect();
+    let ss: f32 = f.iter().sum();
+    if ss > 0.0 {
+        for v in &mut f {
+            *v /= ss;
+        }
+    } else {
+        return 0;
+    }
+    let mut st = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    st ^= st >> 33;
+    st = st.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    st ^= st >> 33;
+    let r = (st as f32) / (u64::MAX as f32);
+    let mut c = 0.0;
+    for (i, p) in f.iter().enumerate() {
+        c += *p;
+        if r <= c {
+            return i as u32;
+        }
+    }
+    (f.len() - 1) as u32
+}
+
 fn main() -> anyhow::Result<()> {
     use tracing_chrome::ChromeLayerBuilder;
     use tracing_subscriber::prelude::*;
@@ -171,29 +350,33 @@ fn main() -> anyhow::Result<()> {
 
     let model_path = args.model()?;
     let start = std::time::Instant::now();
-    let device = fuel_examples::device(args.cpu)?;
+    let _device = fuel_examples::device(args.cpu)?;
 
-    let mmaped = fuel::quantized::gguf_mmap::MmapedContent::from_path(&model_path)
-        .map_err(|e| e.with_path(&model_path))?;
-    let header_done = start.elapsed();
-    let (mmap, model_content) = mmaped.into_parts();
-    let mut total_size_in_bytes = 0;
-    for (_, tensor) in model_content.tensor_infos.iter() {
-        let elem_count = tensor.shape.elem_count();
-        total_size_in_bytes +=
-            elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
-    }
-    println!(
-        "mmapped {:?} tensors ({}); header in {:.2}s",
-        model_content.tensor_infos.len(),
-        &format_size(total_size_in_bytes),
-        header_done.as_secs_f32(),
-    );
-    let mut model = {
-        let mut cursor = std::io::Cursor::new(&mmap[..]);
-        ModelWeights::from_gguf(model_content, &mut cursor, &device)?
+    // Open the GGUF once to read metadata + compute on-disk size, then drop
+    // the mmap before letting the lazy loader re-open it. (The lazy
+    // `QuantizedGemma3Model::from_gguf` opens its own mmap internally.)
+    let cfg = {
+        let mmaped = fuel::quantized::gguf_mmap::MmapedContent::from_path(&model_path)
+            .map_err(|e| e.with_path(&model_path))?;
+        let header_done = start.elapsed();
+        let (_mmap, model_content) = mmaped.into_parts();
+        let mut total_size_in_bytes = 0;
+        for (_, tensor) in model_content.tensor_infos.iter() {
+            let elem_count = tensor.shape.elem_count();
+            total_size_in_bytes +=
+                elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
+        }
+        println!(
+            "mmapped {:?} tensors ({}); header in {:.2}s",
+            model_content.tensor_infos.len(),
+            &format_size(total_size_in_bytes),
+            header_done.as_secs_f32(),
+        );
+        gemma3_config_from_gguf(&model_content)?
     };
-    drop(mmap);
+
+    let model = QuantizedGemma3Model::from_gguf(&model_path, &cfg)
+        .map_err(|e| E::msg(format!("load gguf: {e}")))?;
     println!("model built in {:.2}s total", start.elapsed().as_secs_f32());
 
     let tokenizer = args.tokenizer()?;
@@ -247,34 +430,37 @@ fn main() -> anyhow::Result<()> {
             prompt_tokens
         };
         let mut all_tokens = vec![];
-        let mut logits_processor = {
-            let temperature = args.temperature;
-            let sampling = if temperature <= 0. {
-                Sampling::ArgMax
-            } else {
-                match (args.top_k, args.top_p) {
-                    (None, None) => Sampling::All { temperature },
-                    (Some(k), None) => Sampling::TopK { k, temperature },
-                    (None, Some(p)) => Sampling::TopP { p, temperature },
-                    (Some(k), Some(p)) => Sampling::TopKThenTopP { k, p, temperature },
-                }
-            };
-            LogitsProcessor::from_sampling(args.seed, sampling)
+        let vocab_size = cfg.vocab_size;
+
+        // Pick a single logit row [vocab_size] (the last seq position) from
+        // a forward call whose logits have shape [1, seq, vocab_size].
+        let last_logits = |logits_vec: Vec<f32>, seq: usize| -> Vec<f32> {
+            let last_off = (seq - 1) * vocab_size;
+            logits_vec[last_off..last_off + vocab_size].to_vec()
         };
+
+        let temp = args.temperature as f32;
+        let top_p = args.top_p.map(|p| p as f32);
+        let top_k = args.top_k;
 
         let start_prompt_processing = std::time::Instant::now();
         let mut next_token = if !args.split_prompt {
-            let input = Tensor::new(prompt_tokens.as_slice(), &device)?.unsqueeze(0)?;
-            let logits = model.forward(&input, 0)?;
-            let logits = logits.squeeze(0)?;
-            logits_processor.sample(&logits)?
+            let seq = prompt_tokens.len();
+            let logits = model
+                .forward(&prompt_tokens, 0)
+                .map_err(|e| E::msg(format!("forward: {e}")))?;
+            let logits_v = logits.realize_f32();
+            let last = last_logits(logits_v, seq);
+            sample(&last, temp, top_k, top_p, args.seed)
         } else {
             let mut next_token = 0;
             for (pos, token) in prompt_tokens.iter().enumerate() {
-                let input = Tensor::new(&[*token], &device)?.unsqueeze(0)?;
-                let logits = model.forward(&input, pos)?;
-                let logits = logits.squeeze(0)?;
-                next_token = logits_processor.sample(&logits)?
+                let logits = model
+                    .forward(&[*token], pos)
+                    .map_err(|e| E::msg(format!("forward: {e}")))?;
+                let logits_v = logits.realize_f32();
+                let last = last_logits(logits_v, 1);
+                next_token = sample(&last, temp, top_k, top_p, args.seed.wrapping_add(pos as u64));
             }
             next_token
         };
@@ -295,20 +481,22 @@ fn main() -> anyhow::Result<()> {
         let start_post_prompt = std::time::Instant::now();
         let mut sampled = 0;
         for index in 0..to_sample {
-            let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
-            let logits = model.forward(&input, prompt_tokens.len() + index)?;
-            let logits = logits.squeeze(0)?;
-            let logits = if args.repeat_penalty == 1. {
-                logits
-            } else {
+            let logits = model
+                .forward(&[next_token], prompt_tokens.len() + index)
+                .map_err(|e| E::msg(format!("forward: {e}")))?;
+            let logits_v = logits.realize_f32();
+            let mut last = last_logits(logits_v, 1);
+            if args.repeat_penalty != 1. {
                 let start_at = all_tokens.len().saturating_sub(args.repeat_last_n);
-                fuel_transformers::utils::apply_repeat_penalty(
-                    &logits,
-                    args.repeat_penalty,
-                    &all_tokens[start_at..],
-                )?
-            };
-            next_token = logits_processor.sample(&logits)?;
+                apply_repeat_penalty(&mut last, args.repeat_penalty, &all_tokens[start_at..]);
+            }
+            next_token = sample(
+                &last,
+                temp,
+                top_k,
+                top_p,
+                args.seed.wrapping_add((index + 1) as u64),
+            );
             all_tokens.push(next_token);
             if let Some(t) = tos.next_token(next_token)? {
                 print!("{t}");

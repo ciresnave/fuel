@@ -1,20 +1,22 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
+use anyhow::Error as E;
 use clap::{Parser, ValueEnum};
 use std::io::Write;
 use tokenizers::Tokenizer;
 
+use fuel::lazy_llama_full::LlamaFullConfig;
+use fuel::lazy_phi3::Phi3Config;
+use fuel::lazy_quantized_llama::QuantizedLlama3Model;
+use fuel::lazy_quantized_phi3::QuantizedPhi3Model;
 use fuel::Tensor;
 use fuel_transformers::generation::{LogitsProcessor, Sampling};
 
 use fuel_examples::token_output_stream::TokenOutputStream;
-use fuel_transformers::models::quantized_llama::ModelWeights as Phi3b;
-use fuel_transformers::models::quantized_phi::ModelWeights as Phi2;
-use fuel_transformers::models::quantized_phi3::ModelWeights as Phi3;
 
 const DEFAULT_PROMPT: &str = "Write a function to count prime numbers up to N. ";
 
@@ -157,20 +159,147 @@ fn format_size(size_in_bytes: usize) -> String {
     }
 }
 
+/// Lazy variant of the original eager `Model` enum. Each variant
+/// holds a `QuantizedXModel` whose `forward(tokens, start_pos)` returns
+/// a `LazyTensor` of shape `(1, seq, vocab_size)`.
 enum Model {
-    Phi2(Phi2),
-    Phi3(Phi3),
-    Phi3b(Phi3b),
+    Phi3(QuantizedPhi3Model, usize),  // (model, vocab_size)
+    Phi3b(QuantizedLlama3Model, usize),
+}
+
+/// Intermediate config bundle — built from GGUF metadata, then handed
+/// to the matching `from_gguf` constructor. Decoupling config
+/// extraction from the weight load lets us drop the metadata-only mmap
+/// before re-opening the file for the (much larger) weight pass.
+enum ModelCfg {
+    Phi3(Phi3Config),
+    Phi3b(LlamaFullConfig),
 }
 
 impl Model {
-    fn forward(&mut self, xs: &Tensor, pos: usize) -> fuel::Result<Tensor> {
-        match self {
-            Self::Phi2(m) => m.forward(xs, pos),
-            Self::Phi3(m) => m.forward(xs, pos),
-            Self::Phi3b(m) => m.forward(xs, pos),
+    /// Forward the model over the given token slice at `start_pos` and
+    /// return the per-token logits of the LAST position as a small
+    /// CPU `Tensor` suitable for `LogitsProcessor::sample`.
+    fn forward_last_logits(&self, tokens: &[u32], start_pos: usize) -> anyhow::Result<Tensor> {
+        let (logits_flat, vocab) = match self {
+            Self::Phi3(m, v) => (m.forward(tokens, start_pos).map_err(E::msg)?.realize_f32(), *v),
+            Self::Phi3b(m, v) => (m.forward(tokens, start_pos).map_err(E::msg)?.realize_f32(), *v),
+        };
+        let seq = tokens.len();
+        if seq == 0 {
+            anyhow::bail!("forward_last_logits: empty token slice");
         }
+        let last_off = (seq - 1) * vocab;
+        let last: Vec<f32> = logits_flat[last_off..last_off + vocab].to_vec();
+        let logits = Tensor::new(last, &fuel::Device::cpu())?;
+        Ok(logits)
     }
+}
+
+/// Read a metadata field as a `usize` (auto-upcasting smaller integers
+/// via `Value::to_u64`).
+fn md_usize(
+    md: &std::collections::HashMap<String, fuel::quantized::gguf_file::Value>,
+    key: &str,
+) -> anyhow::Result<usize> {
+    let v = md
+        .get(key)
+        .ok_or_else(|| E::msg(format!("gguf metadata: missing {key:?}")))?;
+    Ok(v.to_u64().map_err(E::msg)? as usize)
+}
+
+/// Read a metadata field as an `f64` (auto-upcasting from `f32`).
+fn md_f64(
+    md: &std::collections::HashMap<String, fuel::quantized::gguf_file::Value>,
+    key: &str,
+) -> anyhow::Result<f64> {
+    let v = md
+        .get(key)
+        .ok_or_else(|| E::msg(format!("gguf metadata: missing {key:?}")))?;
+    if let Ok(x) = v.to_f64() {
+        Ok(x)
+    } else if let Ok(x) = v.to_f32() {
+        Ok(x as f64)
+    } else {
+        anyhow::bail!("gguf metadata: {key:?} is not a float")
+    }
+}
+
+/// Build a `Phi3Config` by reading GGUF metadata. Mirrors the eager
+/// `quantized_phi3::ModelWeights::from_gguf` extraction.
+fn phi3_config_from_gguf(
+    md: &std::collections::HashMap<String, fuel::quantized::gguf_file::Value>,
+) -> anyhow::Result<Phi3Config> {
+    let num_attention_heads = md_usize(md, "phi3.attention.head_count")?;
+    let num_key_value_heads = md_usize(md, "phi3.attention.head_count_kv")?;
+    let num_hidden_layers = md_usize(md, "phi3.block_count")?;
+    let hidden_size = md_usize(md, "phi3.embedding_length")?;
+    let max_position_embeddings = md_usize(md, "phi3.context_length")?;
+    let intermediate_size = md_usize(md, "phi3.feed_forward_length")?;
+    let rms_norm_eps = md_f64(md, "phi3.attention.layer_norm_rms_epsilon")?;
+    let rope_theta = md_f64(md, "phi3.rope.freq_base").unwrap_or(10_000.0);
+    let vocab_size = md_usize(md, "phi3.vocab_size")
+        .ok()
+        .or_else(|| {
+            // Fallback: use the token-list metadata length if present.
+            md.get("tokenizer.ggml.tokens")
+                .and_then(|v| v.to_vec().ok().map(|arr| arr.len()))
+        })
+        .ok_or_else(|| E::msg("gguf metadata: cannot determine vocab_size"))?;
+
+    Ok(Phi3Config {
+        vocab_size,
+        hidden_size,
+        intermediate_size,
+        num_hidden_layers,
+        num_attention_heads,
+        num_key_value_heads,
+        max_position_embeddings,
+        rope_theta,
+        rms_norm_eps,
+        tie_word_embeddings: false,
+    })
+}
+
+/// Build a `LlamaFullConfig` for the Phi3b path (Phi-3 via the
+/// llama-family loader). Reads the same `phi3.*` metadata keys as
+/// `phi3_config_from_gguf` and projects them into the LLaMA shape.
+fn llama_config_from_phi3_gguf(
+    md: &std::collections::HashMap<String, fuel::quantized::gguf_file::Value>,
+) -> anyhow::Result<LlamaFullConfig> {
+    let num_attention_heads = md_usize(md, "phi3.attention.head_count")?;
+    let num_key_value_heads = md_usize(md, "phi3.attention.head_count_kv")?;
+    let num_hidden_layers = md_usize(md, "phi3.block_count")?;
+    let hidden_size = md_usize(md, "phi3.embedding_length")?;
+    let max_position_embeddings = md_usize(md, "phi3.context_length")?;
+    let intermediate_size = md_usize(md, "phi3.feed_forward_length")?;
+    let rms_norm_eps = md_f64(md, "phi3.attention.layer_norm_rms_epsilon")?;
+    let rope_theta = md_f64(md, "phi3.rope.freq_base").unwrap_or(10_000.0);
+    let vocab_size = md_usize(md, "phi3.vocab_size")
+        .ok()
+        .or_else(|| {
+            md.get("tokenizer.ggml.tokens")
+                .and_then(|v| v.to_vec().ok().map(|arr| arr.len()))
+        })
+        .ok_or_else(|| E::msg("gguf metadata: cannot determine vocab_size"))?;
+    let head_dim = hidden_size / num_attention_heads;
+
+    Ok(LlamaFullConfig {
+        hidden_size,
+        intermediate_size,
+        vocab_size,
+        num_hidden_layers,
+        num_attention_heads,
+        num_key_value_heads,
+        head_dim,
+        rms_norm_eps,
+        rope_theta,
+        max_position_embeddings,
+        bos_token_id: None,
+        eos_token_id: None,
+        rope_scaling: None,
+        tie_word_embeddings: false,
+    })
 }
 
 fn main() -> anyhow::Result<()> {
@@ -186,6 +315,11 @@ fn main() -> anyhow::Result<()> {
         None
     };
 
+    // --use_flash_attn is accepted for CLI compatibility with the eager
+    // binary, but the lazy port's attention path is fixed. Touch the
+    // flag so clippy doesn't flag it as unused.
+    let _ = args.use_flash_attn;
+
     println!(
         "avx: {}, neon: {}, simd128: {}, f16c: {}",
         fuel::utils::with_avx(),
@@ -198,40 +332,71 @@ fn main() -> anyhow::Result<()> {
         args.temperature, args.repeat_penalty, args.repeat_last_n
     );
 
+    // Phi-2 is not yet ported to a lazy module; fail early with a
+    // descriptive message so users know to wait for / request a
+    // `lazy_quantized_phi` port.
+    if args.which == Which::Phi2 {
+        anyhow::bail!(
+            "lazy quantized-phi binary: Phi-2 is not yet supported. \
+             No `lazy_quantized_phi` module exists. Use `--which phi-3`, \
+             `--which phi-3b`, or `--which phi-4`, or wait for a \
+             `lazy_quantized_phi` port."
+        );
+    }
+
     let model_path = args.model()?;
     let start = std::time::Instant::now();
-    let device = fuel_examples::device(args.cpu)?;
+    let _device = fuel_examples::device(args.cpu)?;
 
-    let mmaped = fuel::quantized::gguf_mmap::MmapedContent::from_path(&model_path)
-        .map_err(|e| e.with_path(&model_path))?;
-    let header_done = start.elapsed();
-    let (mmap, model_content) = mmaped.into_parts();
-    let mut total_size_in_bytes = 0;
-    for (_, tensor) in model_content.tensor_infos.iter() {
-        let elem_count = tensor.shape.elem_count();
-        total_size_in_bytes +=
-            elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
-    }
-    println!(
-        "mmapped {:?} tensors ({}); header in {:.2}s",
-        model_content.tensor_infos.len(),
-        &format_size(total_size_in_bytes),
-        header_done.as_secs_f32(),
-    );
-    let mut model = {
-        let mut cursor = std::io::Cursor::new(&mmap[..]);
+    // Open the GGUF once to compute the displayed size + extract the
+    // model config from the metadata. The actual weight load is done
+    // by `QuantizedXModel::from_gguf(path, &cfg)`, which re-opens the
+    // file internally (the second mmap is cheap — the OS page cache
+    // is hot from this first pass).
+    let model_cfg = {
+        let mmaped = fuel::quantized::gguf_mmap::MmapedContent::from_path(&model_path)
+            .map_err(|e| e.with_path(&model_path))?;
+        let header_done = start.elapsed();
+        let model_content = mmaped.content();
+        let mut total_size_in_bytes = 0;
+        for (_, tensor) in model_content.tensor_infos.iter() {
+            let elem_count = tensor.shape.elem_count();
+            total_size_in_bytes +=
+                elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
+        }
+        println!(
+            "mmapped {:?} tensors ({}); header in {:.2}s",
+            model_content.tensor_infos.len(),
+            &format_size(total_size_in_bytes),
+            header_done.as_secs_f32(),
+        );
         match args.which {
-            Which::Phi2 => Model::Phi2(Phi2::from_gguf(model_content, &mut cursor, &device)?),
-            Which::Phi3 | Which::Phi4 => Model::Phi3(Phi3::from_gguf(
-                args.use_flash_attn,
-                model_content,
-                &mut cursor,
-                &device,
-            )?),
-            Which::Phi3b => Model::Phi3b(Phi3b::from_gguf(model_content, &mut cursor, &device)?),
+            Which::Phi2 => unreachable!("phi-2 was rejected above"),
+            Which::Phi3 | Which::Phi4 => ModelCfg::Phi3(
+                phi3_config_from_gguf(&model_content.metadata)
+                    .map_err(|e| E::msg(format!("phi3 config from gguf: {e}")))?,
+            ),
+            Which::Phi3b => ModelCfg::Phi3b(
+                llama_config_from_phi3_gguf(&model_content.metadata)
+                    .map_err(|e| E::msg(format!("llama config from phi3 gguf: {e}")))?,
+            ),
         }
     };
-    drop(mmap);
+
+    let model = match model_cfg {
+        ModelCfg::Phi3(cfg) => {
+            let vocab = cfg.vocab_size;
+            let m = QuantizedPhi3Model::from_gguf(&model_path, &cfg)
+                .map_err(|e| E::msg(format!("QuantizedPhi3Model::from_gguf: {e}")))?;
+            Model::Phi3(m, vocab)
+        }
+        ModelCfg::Phi3b(cfg) => {
+            let vocab = cfg.vocab_size;
+            let m = QuantizedLlama3Model::from_gguf(&model_path, &cfg)
+                .map_err(|e| E::msg(format!("QuantizedLlama3Model::from_gguf: {e}")))?;
+            Model::Phi3b(m, vocab)
+        }
+    };
     println!("model built in {:.2}s total", start.elapsed().as_secs_f32());
 
     let tokenizer = args.tokenizer()?;
@@ -242,7 +407,7 @@ fn main() -> anyhow::Result<()> {
         .tokenizer()
         .encode(prompt_str, true)
         .map_err(anyhow::Error::msg)?;
-    let tokens = tokens.get_ids();
+    let tokens = tokens.get_ids().to_vec();
     let to_sample = args.sample_len.saturating_sub(1);
     let mut all_tokens = vec![];
     let mut logits_processor = {
@@ -262,16 +427,12 @@ fn main() -> anyhow::Result<()> {
 
     let start_prompt_processing = std::time::Instant::now();
     let mut next_token = if !args.split_prompt {
-        let input = Tensor::new(tokens, &device)?.unsqueeze(0)?;
-        let logits = model.forward(&input, 0)?;
-        let logits = logits.squeeze(0)?;
+        let logits = model.forward_last_logits(&tokens, 0)?;
         logits_processor.sample(&logits)?
     } else {
         let mut next_token = 0;
         for (pos, token) in tokens.iter().enumerate() {
-            let input = Tensor::new(&[*token], &device)?.unsqueeze(0)?;
-            let logits = model.forward(&input, pos)?;
-            let logits = logits.squeeze(0)?;
+            let logits = model.forward_last_logits(&[*token], pos)?;
             next_token = logits_processor.sample(&logits)?
         }
         next_token
@@ -290,9 +451,7 @@ fn main() -> anyhow::Result<()> {
     let start_post_prompt = std::time::Instant::now();
     let mut sampled = 0;
     for index in 0..to_sample {
-        let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
-        let logits = model.forward(&input, tokens.len() + index)?;
-        let logits = logits.squeeze(0)?;
+        let logits = model.forward_last_logits(&[next_token], tokens.len() + index)?;
         let logits = if args.repeat_penalty == 1. {
             logits
         } else {

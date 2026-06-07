@@ -1,17 +1,17 @@
-﻿#[cfg(feature = "mkl")]
+#[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-use fuel_transformers::object_detection::{non_maximum_suppression, Bbox};
-mod darknet;
-
-use anyhow::Result;
-use fuel::{DType, Device, Tensor};
-use fuel_nn::{Module, VarBuilder};
+use anyhow::{Error as E, Result};
 use clap::Parser;
 use image::{DynamicImage, ImageBuffer};
+
+use fuel::lazy_yolov3::{
+    decode_and_nms, YoloV3Config, YoloV3Detection, YoloV3Model, YoloV3NmsConfig, YoloV3Weights,
+};
+use fuel::safetensors::MmapedSafetensors;
 
 // Assumes x1 <= x2 and y1 <= y2
 pub fn draw_rect(
@@ -35,62 +35,34 @@ pub fn draw_rect(
     }
 }
 
+/// Render detections onto the original image. `dets` is in **network
+/// input pixel space** (size `w × h`); we scale to the original image
+/// dimensions on the fly.
 pub fn report(
-    pred: &Tensor,
+    dets: &[YoloV3Detection],
     img: DynamicImage,
     w: usize,
     h: usize,
-    confidence_threshold: f32,
-    nms_threshold: f32,
 ) -> Result<DynamicImage> {
-    let pred = pred.to_device(&Device::cpu())?;
-    let (npreds, pred_size) = pred.dims2()?;
-    let nclasses = pred_size - 5;
-    // The bounding boxes grouped by (maximum) class index.
-    let mut bboxes: Vec<Vec<Bbox<()>>> = (0..nclasses).map(|_| vec![]).collect();
-    // Extract the bounding boxes for which confidence is above the threshold.
-    for index in 0..npreds {
-        let pred = Vec::<f32>::try_from(pred.get(index)?)?;
-        let confidence = pred[4];
-        if confidence > confidence_threshold {
-            let mut class_index = 0;
-            for i in 0..nclasses {
-                if pred[5 + i] > pred[5 + class_index] {
-                    class_index = i
-                }
-            }
-            if pred[class_index + 5] > 0. {
-                let bbox = Bbox {
-                    xmin: pred[0] - pred[2] / 2.,
-                    ymin: pred[1] - pred[3] / 2.,
-                    xmax: pred[0] + pred[2] / 2.,
-                    ymax: pred[1] + pred[3] / 2.,
-                    confidence,
-                    data: (),
-                };
-                bboxes[class_index].push(bbox)
-            }
-        }
-    }
-    non_maximum_suppression(&mut bboxes, nms_threshold);
-    // Annotate the original image and print boxes information.
     let (initial_h, initial_w) = (img.height(), img.width());
     let w_ratio = initial_w as f32 / w as f32;
     let h_ratio = initial_h as f32 / h as f32;
     let mut img = img.to_rgb8();
-    for (class_index, bboxes_for_class) in bboxes.iter().enumerate() {
-        for b in bboxes_for_class.iter() {
-            println!(
-                "{}: {:?}",
-                fuel_examples::coco_classes::NAMES[class_index],
-                b
-            );
-            let xmin = ((b.xmin * w_ratio) as u32).clamp(0, initial_w - 1);
-            let ymin = ((b.ymin * h_ratio) as u32).clamp(0, initial_h - 1);
-            let xmax = ((b.xmax * w_ratio) as u32).clamp(0, initial_w - 1);
-            let ymax = ((b.ymax * h_ratio) as u32).clamp(0, initial_h - 1);
-            draw_rect(&mut img, xmin, xmax, ymin, ymax);
-        }
+    for det in dets {
+        println!(
+            "{}: score={:.3} bbox={:?}",
+            fuel_examples::coco_classes::NAMES[det.class_id],
+            det.score,
+            det.bbox,
+        );
+        let xmin = ((det.bbox[0] * w_ratio) as u32).clamp(0, initial_w - 1);
+        let ymin = ((det.bbox[1] * h_ratio) as u32).clamp(0, initial_h - 1);
+        let xmax = ((det.bbox[2] * w_ratio) as u32).clamp(0, initial_w - 1);
+        let ymax = ((det.bbox[3] * h_ratio) as u32).clamp(0, initial_h - 1);
+        // Guard against degenerate boxes where xmin == xmax or ymin == ymax.
+        let xmax = xmax.max(xmin);
+        let ymax = ymax.max(ymin);
+        draw_rect(&mut img, xmin, xmax, ymin, ymax);
     }
     Ok(DynamicImage::ImageRgb8(img))
 }
@@ -102,8 +74,17 @@ struct Args {
     #[arg(long)]
     model: Option<String>,
 
+    /// Darknet `.cfg` path. Optional and unused by the lazy port (the
+    /// canonical `YoloV3Config` matches the official 608×608 / 80-class
+    /// configuration). Kept for CLI compatibility with the eager
+    /// binary.
     #[arg(long)]
     config: Option<String>,
+
+    /// Override the network input size (must be divisible by 32).
+    /// Defaults to the canonical 608.
+    #[arg(long)]
+    image_size: Option<usize>,
 
     images: Vec<String>,
 
@@ -117,18 +98,6 @@ struct Args {
 }
 
 impl Args {
-    fn config(&self) -> anyhow::Result<std::path::PathBuf> {
-        let path = match &self.config {
-            Some(config) => std::path::PathBuf::from(config),
-            None => {
-                let api = hf_hub::api::sync::Api::new()?;
-                let api = api.model("lmz/fuel-yolo-v3".to_string());
-                api.get("yolo-v3.cfg")?
-            }
-        };
-        Ok(path)
-    }
-
     fn model(&self) -> anyhow::Result<std::path::PathBuf> {
         let path = match &self.model {
             Some(model) => std::path::PathBuf::from(model),
@@ -145,45 +114,67 @@ impl Args {
 pub fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Create the model and load the weights from the file.
-    let model = args.model()?;
-    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model], DType::F32, &Device::cpu())? };
-    let config = args.config()?;
-    let darknet = darknet::parse_config(config)?;
-    let model = darknet.build_model(vb)?;
+    // Build the config — canonical defaults with optional size override.
+    let mut cfg = YoloV3Config::yolo_v3();
+    if let Some(sz) = args.image_size {
+        if sz % 32 != 0 {
+            anyhow::bail!("image_size {sz} must be divisible by 32 (5 stride-2 downsamples)");
+        }
+        cfg.image_size = sz;
+    }
+    let _ = &args.config; // kept for CLI parity; not consumed by the lazy port.
+
+    // Load weights from the safetensors checkpoint.
+    let model_file = args.model()?;
+    let st = unsafe { MmapedSafetensors::multi(&[model_file]) }
+        .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
+    let weights = YoloV3Weights::load_from_mmapped(&st, &cfg)
+        .map_err(|e| E::msg(format!("load yolov3 weights: {e}")))?;
+    let model = YoloV3Model {
+        config: cfg.clone(),
+        weights,
+    };
+
+    let nms_cfg = YoloV3NmsConfig {
+        score_threshold: args.confidence_threshold,
+        iou_threshold: args.nms_threshold,
+        top_k: 300,
+    };
 
     for image_name in args.images.iter() {
         println!("processing {image_name}");
         let mut image_name = std::path::PathBuf::from(image_name);
-        // Load the image file and resize it.
-        let net_width = darknet.width()?;
-        let net_height = darknet.height()?;
+        let net_width = cfg.image_size;
+        let net_height = cfg.image_size;
 
+        // Load image, resize to (net_width, net_height), and produce a
+        // CHW f32 vector in `[0, 1]` pixel values.
         let original_image = image::ImageReader::open(&image_name)?
             .decode()
-            .map_err(fuel::Error::wrap)?;
-        let image = {
-            let data = original_image
-                .resize_exact(
-                    net_width as u32,
-                    net_height as u32,
-                    image::imageops::FilterType::Triangle,
-                )
-                .to_rgb8()
-                .into_raw();
-            Tensor::from_vec(data, (net_width, net_height, 3), &Device::cpu())?.permute((2, 0, 1))?
-        };
-        let image = (image.unsqueeze(0)?.to_dtype(DType::F32)? * (1. / 255.))?;
-        let predictions = model.forward(&image)?.squeeze(0)?;
-        println!("generated predictions {predictions:?}");
-        let image = report(
-            &predictions,
-            original_image,
-            net_width,
-            net_height,
-            args.confidence_threshold,
-            args.nms_threshold,
-        )?;
+            .map_err(|e| E::msg(format!("decode image: {e}")))?;
+        let resized = original_image.resize_exact(
+            net_width as u32,
+            net_height as u32,
+            image::imageops::FilterType::Triangle,
+        );
+        let rgb = resized.to_rgb8();
+        let mut chw = vec![0.0_f32; 3 * net_height * net_width];
+        for y in 0..net_height {
+            for x in 0..net_width {
+                let p = rgb.get_pixel(x as u32, y as u32);
+                for c in 0..3 {
+                    chw[(c * net_height + y) * net_width + x] = p.0[c] as f32 / 255.0;
+                }
+            }
+        }
+
+        let raw = model
+            .forward(&chw)
+            .map_err(|e| E::msg(format!("forward: {e}")))?;
+        let dets = decode_and_nms(&raw, cfg.num_classes, &nms_cfg);
+        println!("generated {} detections", dets.len());
+
+        let image = report(&dets, original_image, net_width, net_height)?;
         image_name.set_extension("pp.jpg");
         println!("writing {image_name:?}");
         image.save(image_name)?
