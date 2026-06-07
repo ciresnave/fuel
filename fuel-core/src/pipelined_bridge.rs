@@ -70,7 +70,7 @@ use fuel_core_types::{
     probe::BackendId, DeviceLocation, Error, HostBuffer, Result,
 };
 use fuel_graph::{Graph, Node, NodeId, Op, topo_order_multi};
-use fuel_graph::opt::execution_plan;
+use fuel_graph::opt::{execution_plan, insert_layout_fixups};
 use fuel_dispatch::dispatch::global_bindings;
 use fuel_dispatch::plan::{compile_plan, ExecutionPlan, PlanOptions};
 use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
@@ -165,6 +165,11 @@ fn dispatch_with_plan_retry(
     // structurally-empty layer for the executor to consume.
     loop {
         let plan = build_execution_plan(graph, &[cpu_target])?;
+        // Phase 2.2: insert Op::Contiguize before any kernel whose
+        // chosen winner doesn't advertise `KernelCaps::strided_input`
+        // and whose live input layout is non-contiguous. CSE-deduped
+        // across consumers; idempotent on retry.
+        apply_layout_fixups(graph, &[cpu_target], &plan)?;
         let cache_for_attempt = cache.clone();
         match PipelinedExecutor::realize_with_plan(
             graph.clone(), cpu_target, cache_for_attempt, plan,
@@ -181,6 +186,33 @@ fn dispatch_with_plan_retry(
     }
 }
 
+/// Phase 2.2 wiring: insert `Op::Contiguize` before kernels whose
+/// committed winner rejects strided inputs. The callback queries
+/// the plan's per-node `AlternativeSet::winner()` for its caps.
+/// Idempotent — safe to call on retry.
+///
+/// When a node has no plan entry (the picker skipped it because
+/// `op_to_op_kind` returned `None`, typical for view ops + structural
+/// ops), the callback returns `true` (= no fixup needed); the
+/// executor's auto-Contiguize gate at execute time is the safety net
+/// for these.
+fn apply_layout_fixups(
+    graph: &Arc<RwLock<Graph>>,
+    roots: &[NodeId],
+    plan: &Arc<ExecutionPlan>,
+) -> Result<()> {
+    let mut g = graph
+        .write()
+        .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
+    insert_layout_fixups(&mut g, roots, |id| {
+        plan.alternatives(id)
+            .and_then(|set| set.winner())
+            .map(|cand| cand.caps.strided_input)
+            .unwrap_or(true)
+    });
+    Ok(())
+}
+
 /// Multi-target counterpart of [`realize_one_as_with_initial`].
 pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
     graph: &Arc<RwLock<Graph>>,
@@ -192,13 +224,15 @@ pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
         return Ok(Vec::new());
     }
     let (cache, _, effective_targets) = prepare(graph, targets, device, initial)?;
-    // Phase 4.2 + 4.3: plan-aware dispatch with topology-stale retry.
-    // See `dispatch_with_plan_retry` for the single-target version
-    // of the loop; this multi-target sibling shares the same shape.
+    // Phase 4.2 + 4.3 + 2.2: plan-aware dispatch with topology-stale
+    // retry and layout-fixup insertion. See `dispatch_with_plan_retry`
+    // for the single-target version of the loop; this multi-target
+    // sibling shares the same shape.
     const MAX_PLAN_REBUILDS: usize = 3;
     let mut attempt = 0;
     let results = loop {
         let plan = build_execution_plan(graph, &effective_targets)?;
+        apply_layout_fixups(graph, &effective_targets, &plan)?;
         let cache_for_attempt = cache.clone();
         match PipelinedExecutor::realize_many_with_plan(
             graph.clone(), &effective_targets, cache_for_attempt, plan,
