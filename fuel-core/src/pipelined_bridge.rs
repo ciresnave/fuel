@@ -436,7 +436,7 @@ fn prepare(
             .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
         for &id in &order {
             let node = g.node(id);
-            if matches!(node.op, Op::Const | Op::Release)
+            if matches!(node.op, Op::Const | Op::Release | Op::Contiguize)
                 || node.op.is_view_op()
                 || matches!(node.op, Op::Reshape(_))
             {

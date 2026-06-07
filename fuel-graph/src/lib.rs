@@ -539,6 +539,21 @@ pub enum Op {
     /// see [`Op::Unsqueeze`] for the metadata-only-view variant that
     /// inserts a size-1 dim without ever materializing.
     Reshape(Shape),
+    /// Materialize a contiguous copy of the input. Output shape and
+    /// dtype match the input; only the layout changes (strides become
+    /// row-major, start_offset becomes 0). Zero-cost when the input
+    /// is already contiguous + zero-offset — the executor adopts the
+    /// input's Storage Arc unchanged in that case.
+    ///
+    /// First-class IR concern so the optimizer (Phase 2.2) can insert
+    /// layout-fixups before kernels that don't advertise
+    /// [`crate::KernelCaps::strided_input`] without overloading
+    /// [`Op::Reshape`]'s "change shape" semantics. The executor
+    /// compiles this to the same `WorkItemKind::ContiguizeOf` arm
+    /// `Op::Reshape` uses; the only difference is that
+    /// `Op::Contiguize`'s output shape equals its input shape, so
+    /// the executor's element-count sanity check is trivial.
+    Contiguize,
     /// Insert a size-1 dimension at position `dim` (range `0..=rank`,
     /// where `dim == rank` appends to the end). Strictly more efficient
     /// than [`Op::Reshape`] for the size-1-insertion case: this is a
@@ -1143,6 +1158,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Cast(_)              => "Cast",
         Op::BroadcastTo(_)       => "BroadcastTo",
         Op::Reshape(_)           => "Reshape",
+        Op::Contiguize           => "Contiguize",
         Op::Unsqueeze{..}        => "Unsqueeze",
         Op::Squeeze{..}          => "Squeeze",
         Op::ReduceSumTo(_)       => "ReduceSumTo",
@@ -4031,6 +4047,31 @@ impl Tensor {
         })
     }
 
+    /// Append an `Op::Contiguize` node that materializes a
+    /// contiguous copy of `self`. Output shape and dtype match the
+    /// input; only the layout changes to contiguous + zero-offset.
+    /// Zero-copy when the input is already contiguous + zero-offset
+    /// (the executor adopts the input Storage Arc unchanged).
+    ///
+    /// First-class IR node so the optimizer (Phase 2.2) can insert
+    /// layout-fixups before kernels that don't advertise
+    /// [`crate::KernelCaps::strided_input`] without overloading
+    /// [`Self::reshape`]'s "change shape" semantics.
+    pub fn contiguize(&self) -> Tensor {
+        let shape = self.shape().clone();
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op: Op::Contiguize,
+            inputs: vec![self.id],
+            shape,
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
     /// Append a `Reshape` node producing `self`'s data under a new shape.
     /// The new shape must have the same total element count as the
     /// current shape.
@@ -6641,6 +6682,15 @@ impl Tensor {
                         dtype,
                     );
                     accumulate_grad(&mut upstream, x, grad_x, &graph_handle);
+                }
+                Op::Contiguize => {
+                    // Forward: y = contiguize(x). Identity at the
+                    // value level; only the layout differs. Backward:
+                    // pass upstream through unchanged. The
+                    // downstream `accumulate_grad` will sum this
+                    // into x's gradient regardless of x's own layout.
+                    let x = inputs[0];
+                    accumulate_grad(&mut upstream, x, up_id, &graph_handle);
                 }
                 Op::Unsqueeze { dim: _ } => {
                     // Forward: y = unsqueeze(x, dim) — inserts a size-1

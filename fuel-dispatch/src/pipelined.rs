@@ -1288,6 +1288,40 @@ fn compile_one(
         });
     }
 
+    if matches!(node.op, Op::Contiguize) {
+        // Op::Contiguize: same execute-time path as Reshape, but
+        // output shape == input shape so there's no element-count
+        // check. Zero-copy when input is already contiguous +
+        // zero-offset (the ContiguizeOf arm in execute_work_item
+        // adopts the input Arc); otherwise auto_contiguize allocates
+        // a fresh contiguous Storage on the input's backend.
+        if inputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "Op::Contiguize expects 1 input, got {}",
+                inputs.len(),
+            ))
+            .bt());
+        }
+        let output_layout = Layout::contiguous(node.shape.clone());
+        layout_cache.insert(id, output_layout.clone());
+        let target_backend = graph
+            .target_backend(id)
+            .or_else(|| graph.target_backend(inputs[0]))
+            .unwrap_or(BackendId::Cpu);
+        return Ok(WorkItem {
+            node_id: id,
+            inputs,
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::ContiguizeOf { input: node.inputs[0] },
+            compiled: None,
+            output_layout,
+            destructive_input,
+            output_bundle: None,
+        });
+    }
+
     let target_backend = graph.target_backend(id).ok_or_else(|| {
         Error::Msg(format!(
             "PipelinedExecutor: node {:?} ({:?}) has no target_backend set",
@@ -4153,6 +4187,105 @@ mod tests {
     use super::*;
     use fuel_core_types::Shape;
     use fuel_graph::Node;
+
+    /// Op::Contiguize on a contiguous-already input is zero-copy:
+    /// the executor adopts the input Storage Arc unchanged.
+    #[test]
+    fn op_contiguize_zero_copy_on_contiguous_input() {
+        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (const_id, contig_id) = {
+            let mut g = graph.write().unwrap();
+            let const_id = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::F32,
+            });
+            let contig_id = g.push(Node {
+                op: Op::Contiguize,
+                inputs: vec![const_id],
+                shape: Shape::from_dims(&[2, 2]),
+                dtype: DType::F32,
+            });
+            // No need to set target_backend on Contiguize — the
+            // executor inherits or defaults to CPU.
+            (const_id, contig_id)
+        };
+
+        let mut inputs = StorageCache::new();
+        let input_arc = Arc::new(RwLock::new(storage));
+        let input_arc_for_compare = Arc::clone(&input_arc);
+        inputs.insert(const_id, input_arc);
+
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, contig_id, inputs).expect("realize");
+
+        // Same Arc → zero-copy adoption. Compare by raw pointer.
+        assert!(
+            Arc::ptr_eq(&result_arc, &input_arc_for_compare),
+            "Op::Contiguize on contiguous input must adopt the input Arc (zero copy)",
+        );
+    }
+
+    /// Op::Contiguize on a strided input (here: a transposed view)
+    /// materializes a fresh contiguous Storage. The output bytes
+    /// reflect the strided view's logical content, not the input
+    /// storage's underlying memory order.
+    #[test]
+    fn op_contiguize_materializes_on_strided_input() {
+        // 2x3 row-major: [[1,2,3],[4,5,6]] → transpose → 3x2:
+        // [[1,4],[2,5],[3,6]]. The transposed view shares the
+        // original buffer; Op::Contiguize on the transpose
+        // materializes contiguous bytes matching the transposed
+        // logical order.
+        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (const_id, _transpose_id, contig_id) = {
+            let mut g = graph.write().unwrap();
+            let const_id = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
+            });
+            let transpose_id = g.push(Node {
+                op: Op::Transpose,
+                inputs: vec![const_id],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: DType::F32,
+            });
+            let contig_id = g.push(Node {
+                op: Op::Contiguize,
+                inputs: vec![transpose_id],
+                shape: Shape::from_dims(&[3, 2]),
+                dtype: DType::F32,
+            });
+            (const_id, transpose_id, contig_id)
+        };
+
+        let mut inputs = StorageCache::new();
+        inputs.insert(const_id, Arc::new(RwLock::new(storage)));
+
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, contig_id, inputs).expect("realize");
+
+        let guard = result_arc.read().unwrap();
+        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+            c
+        } else {
+            panic!("expected Cpu storage");
+        };
+        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
+        // Transposed logical order: [1,4,2,5,3,6].
+        assert_eq!(
+            typed,
+            &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0],
+            "contiguized transpose must reflect logical (transposed) byte order",
+        );
+    }
 
     /// E2E: 3-node graph (Const + Const + Add), pre-seeded inputs,
     /// realized through the compiler+executor thread pair, returns
