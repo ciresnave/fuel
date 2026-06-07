@@ -41,10 +41,8 @@ members = [
     "fuel-training",
     "fuel-transformers",
     "fuel-ug",
-    # fuel-wasm-examples/* and fuel-wasm-tests quarantined in Phase β4 of
-    # the eager-retirement program — they import `fuel_transformers::models::*`
-    # and `fuel_nn::*`, both of which are now retired. See ROADMAP for the
-    # per-crate wasm migration plan.
+    "fuel-wasm-examples/*",
+    "fuel-wasm-tests",
     "tensor-tools",
 ]
 # What `cargo build`, `cargo check`, `cargo test` without `-p` or
@@ -79,6 +77,8 @@ default-members = [
     "fuel-transformers",
     "fuel-training",
     "fuel-ug",
+    "fuel-wasm-examples/*",
+    "fuel-wasm-tests",
     "tensor-tools",
 ]
 resolver = "2"

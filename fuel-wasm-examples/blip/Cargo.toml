@@ -9,8 +9,11 @@ categories.workspace = true
 license.workspace = true
 
 [dependencies]
+# `fuel` is the workspace alias for `fuel-core` (see root Cargo.toml:
+# `fuel = { path = "./fuel-core", package = "fuel-core" }`). It exposes
+# `fuel_core::lazy_blip` / `lazy_blip_text` / `lazy_blip_vision`.
 fuel = { workspace = true }
-fuel-nn = { workspace = true }
+# fuel-transformers is still needed for `generation::LogitsProcessor`.
 fuel-transformers = { workspace = true }
 tokenizers = { workspace = true, features = ["unstable_wasm"] }
 num-traits = { workspace = true }
@@ -19,6 +22,7 @@ num-traits = { workspace = true }
 anyhow = { workspace = true }
 byteorder = { workspace = true }
 getrandom = { version = "0.2", features = ["js"] }
+half = { workspace = true }
 image = { workspace = true }
 log = { workspace = true }
 safetensors = { workspace = true }

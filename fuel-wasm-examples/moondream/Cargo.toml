@@ -10,8 +10,9 @@ license.workspace = true
 
 [dependencies]
 fuel = { workspace = true }
-fuel-nn = { workspace = true }
-fuel-transformers = { workspace = true }
+# fuel-nn dropped 2026-06-07: migrated off retired eager VarBuilder/ops onto
+# lazy substrate (`fuel::lazy_moondream`).
+fuel-transformers = { workspace = true } # generation::LogitsProcessor + utils::apply_repeat_penalty (non-models surfaces still live)
 tokenizers = { workspace = true, features = ["unstable_wasm"] }
 num-traits = { workspace = true }
 

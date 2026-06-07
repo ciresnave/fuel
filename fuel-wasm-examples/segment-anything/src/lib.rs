@@ -1,7 +1,10 @@
-﻿use fuel_transformers::models::segment_anything::sam;
-use wasm_bindgen::prelude::*;
+// Re-export the lazy SAM types so the wasm binary can use them through
+// this crate (`use fuel_wasm_example_sam as sam; sam::SamModel; …`).
+pub use fuel::lazy_sam::{SamModel, SamModelConfig};
+/// SAM input image side (Meta default = 1024).
+pub const IMAGE_SIZE: usize = 1024;
 
-pub use sam::{Sam, IMAGE_SIZE};
+use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 extern "C" {

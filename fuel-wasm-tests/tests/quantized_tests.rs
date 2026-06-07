@@ -10,7 +10,8 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 #[wasm_bindgen_test]
 fn quantized_matmul_neg() -> Result<()> {
-    let cpu = &Device::Cpu;
+    let cpu = Device::cpu();
+    let cpu = &cpu;
     let (m, k, n) = (3, 64, 4);
     let lhs = (0..(m * k))
         .map(|v| v as f32 - (m * k) as f32 / 2.0)
@@ -41,7 +42,18 @@ fn quantized_matmul_neg() -> Result<()> {
         ]
     );
 
-    let qtensor = quantized::QTensor::new(quantized::QStorage::Cpu(Box::new(rhs_t)), (4, 64))?;
+    // Phase A storage-unification: `QStorage` is no longer an enum with a
+    // `Cpu(Box<dyn QuantizedType>)` variant — it's `Box<dyn DynQuantizedStorage>`,
+    // and per-backend wrappers (`CpuQStorage`, `QCudaStorage`, `QMetalStorage`)
+    // live in their respective backend crates. From a WASM test we can't reach
+    // the backend-crate constructor without pulling in `fuel-cpu-backend`, so
+    // we re-quantize through `QTensor::quantize` — semantically identical
+    // (`BlockQ4_0::from_float` is what both paths ultimately call) and
+    // keeps the test free of backend-crate deps.
+    let qtensor = quantized::QTensor::quantize(
+        &Tensor::from_slice(&rhs, (n, k), cpu)?,
+        quantized::GgmlDType::Q4_0,
+    )?;
     let matmul = quantized::QMatMul::from_qtensor(qtensor)?;
     let res = matmul.forward(&tensor_lhs)?;
     assert_eq!(
