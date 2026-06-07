@@ -138,11 +138,47 @@ pub fn realize_one_as_with_initial<T: bytemuck::Pod>(
     // to pick among co-located backends per node. The plan ships
     // alongside the realize call; the executor's plan-aware dispatch
     // (Phase 4.1) reads `AlternativeSet::winner` per node.
-    let plan = build_execution_plan(graph, &[cpu_target])?;
-    let (storage, _layout) = PipelinedExecutor::realize_with_plan(
-        graph.clone(), cpu_target, cache, plan,
-    )?;
+    //
+    // Phase 4.3: retry on `TopologyChanged`. If the live
+    // SystemTopology generation advances between plan-build and
+    // dispatch (a backend registered/unregistered mid-flight), the
+    // executor surfaces `Error::TopologyChanged`; we rebuild the
+    // plan against the fresh topology and try again. Cap at
+    // `MAX_PLAN_REBUILDS` to prevent infinite spin under pathological
+    // probe churn.
+    let storage = dispatch_with_plan_retry(graph, cpu_target, cache)?;
     extract_cpu_bytes_typed::<T>(&storage)
+}
+
+/// Phase 4.3 retry-on-stale-plan loop for the single-target path.
+/// Pulled out so the multi-target path can reuse the same retry
+/// shape.
+fn dispatch_with_plan_retry(
+    graph: &Arc<RwLock<Graph>>,
+    cpu_target: NodeId,
+    cache: StorageCache,
+) -> Result<Arc<RwLock<Storage>>> {
+    const MAX_PLAN_REBUILDS: usize = 3;
+    let mut attempt = 0;
+    // Hold a clone of `cache` outside the loop; the inner clone per-
+    // attempt shares the Arcs (cheap) while keeping a fresh
+    // structurally-empty layer for the executor to consume.
+    loop {
+        let plan = build_execution_plan(graph, &[cpu_target])?;
+        let cache_for_attempt = cache.clone();
+        match PipelinedExecutor::realize_with_plan(
+            graph.clone(), cpu_target, cache_for_attempt, plan,
+        ) {
+            Ok((storage, _layout)) => return Ok(storage),
+            Err(e) if matches!(e, Error::TopologyChanged { .. })
+                && attempt + 1 < MAX_PLAN_REBUILDS =>
+            {
+                attempt += 1;
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// Multi-target counterpart of [`realize_one_as_with_initial`].
@@ -156,14 +192,27 @@ pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
         return Ok(Vec::new());
     }
     let (cache, _, effective_targets) = prepare(graph, targets, device, initial)?;
-    // Phase 4.2: same plan-aware dispatch story as the single-target
-    // path. `build_execution_plan` derives a topo order over the
-    // effective_targets and builds the per-node AlternativeSets via
-    // `compile_plan`.
-    let plan = build_execution_plan(graph, &effective_targets)?;
-    let results = PipelinedExecutor::realize_many_with_plan(
-        graph.clone(), &effective_targets, cache, plan,
-    )?;
+    // Phase 4.2 + 4.3: plan-aware dispatch with topology-stale retry.
+    // See `dispatch_with_plan_retry` for the single-target version
+    // of the loop; this multi-target sibling shares the same shape.
+    const MAX_PLAN_REBUILDS: usize = 3;
+    let mut attempt = 0;
+    let results = loop {
+        let plan = build_execution_plan(graph, &effective_targets)?;
+        let cache_for_attempt = cache.clone();
+        match PipelinedExecutor::realize_many_with_plan(
+            graph.clone(), &effective_targets, cache_for_attempt, plan,
+        ) {
+            Ok(r) => break r,
+            Err(e) if matches!(e, Error::TopologyChanged { .. })
+                && attempt + 1 < MAX_PLAN_REBUILDS =>
+            {
+                attempt += 1;
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    };
     let mut out = Vec::with_capacity(results.len());
     for (storage, _layout) in results {
         out.push(extract_cpu_bytes_typed::<T>(&storage)?);

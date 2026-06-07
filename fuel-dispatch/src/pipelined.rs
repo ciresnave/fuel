@@ -448,9 +448,31 @@ impl PipelinedExecutor {
         // populate the cache. After each destructive op
         // (Op::Release / Op::Move) evict the destroyed input from
         // the cache, unless it's the realize target.
+        //
+        // Phase 4.3: at each dispatch-chunk boundary (target_backend
+        // change), check the live SystemTopology generation against
+        // the plan's stamped generation. Mismatch surfaces
+        // `Error::TopologyChanged`; the realize layer
+        // (`pipelined_bridge`) catches it, rebuilds the plan against
+        // the fresh topology, and retries.
+        let plan_generation: Option<u64> = plan.as_ref().map(|p| p.generation);
+        let mut current_chunk_backend: Option<BackendId> = None;
         let mut cache: StorageCache = inputs;
         for item in rx {
             let item = item?;
+            if let Some(plan_gen) = plan_generation {
+                if current_chunk_backend != Some(item.target_backend) {
+                    let live = crate::dispatch::topology_generation();
+                    if live != plan_gen {
+                        return Err(Error::TopologyChanged {
+                            plan_generation: plan_gen,
+                            current_generation: live,
+                        }
+                        .bt());
+                    }
+                    current_chunk_backend = Some(item.target_backend);
+                }
+            }
             execute_work_item(&item, &mut cache, &mut layout_cache)?;
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
@@ -567,9 +589,26 @@ impl PipelinedExecutor {
             compiler_thread_body(graph_for_compiler, order_for_compiler, plan_for_compiler, tx);
         });
 
+        // Phase 4.3: per-chunk SystemTopology generation check (see
+        // realize_inner for the rationale).
+        let plan_generation: Option<u64> = plan.as_ref().map(|p| p.generation);
+        let mut current_chunk_backend: Option<BackendId> = None;
         let mut cache: StorageCache = inputs;
         for item in rx {
             let item = item?;
+            if let Some(plan_gen) = plan_generation {
+                if current_chunk_backend != Some(item.target_backend) {
+                    let live = crate::dispatch::topology_generation();
+                    if live != plan_gen {
+                        return Err(Error::TopologyChanged {
+                            plan_generation: plan_gen,
+                            current_generation: live,
+                        }
+                        .bt());
+                    }
+                    current_chunk_backend = Some(item.target_backend);
+                }
+            }
             execute_work_item(&item, &mut cache, &mut layout_cache)?;
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
@@ -8773,6 +8812,7 @@ mod tests {
         let plan = Arc::new(ExecutionPlan {
             order: Vec::new(),
             alternatives,
+            generation: crate::dispatch::topology_generation(),
         });
 
         let (result_arc, _) =
@@ -8905,6 +8945,7 @@ mod tests {
         let plan = Arc::new(ExecutionPlan {
             order: Vec::new(),
             alternatives,
+            generation: crate::dispatch::topology_generation(),
         });
 
         let (result_arc, _) =
@@ -8923,5 +8964,95 @@ mod tests {
             &[2.0, 4.0, 6.0],
             "AlternativeSet's winner (first-pushed candidate, 2*lhs) must be dispatched",
         );
+    }
+
+    // ===== Phase 4.3 — dispatch-chunk topology-generation check =====
+
+    /// Phase 4.3, test 1: a plan stamped with a generation that
+    /// doesn't match the live counter surfaces
+    /// `Error::TopologyChanged`. The check fires at the first
+    /// dispatch-chunk boundary (the first kernel-bearing item).
+    ///
+    /// Implementation note: we stamp `live + 1` rather than calling
+    /// `bump_topology_generation()` because the counter is process-
+    /// global and bumping would race with other tests that also
+    /// construct `ExecutionPlan { generation: live, ... }`. The
+    /// executor's `!=` check fires for stamps in either direction.
+    #[test]
+    fn phase4_3_topology_changed_surfaces_error() {
+        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
+            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
+
+        let mut set = AlternativeSet::empty();
+        set.push(Candidate {
+            kernel: double_lhs_kernel_f32,
+            caps: KernelCaps::empty(),
+            backend: BackendId::Cpu,
+            device: DeviceLocation::Cpu,
+            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            static_cost: Default::default(),
+            op_params: OpParams::None,
+            coupling: Vec::new(),
+        });
+        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
+        alternatives.insert(add_id, set);
+
+        // Stamp a stale generation (live + 1, guaranteed not to
+        // match the current counter without disturbing global state).
+        let live = crate::dispatch::topology_generation();
+        let plan = Arc::new(ExecutionPlan {
+            order: Vec::new(),
+            alternatives,
+            generation: live + 1,
+        });
+
+        let result = PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan);
+        let err = result.expect_err("stale plan must surface TopologyChanged");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("topology generation"),
+            "error must name topology generation: {msg}",
+        );
+    }
+
+    /// Phase 4.3, test 2: when the plan's stamped generation matches
+    /// the live generation, the dispatch-chunk boundary check passes
+    /// silently and the plan's winner runs as normal.
+    #[test]
+    fn phase4_3_generation_match_passes_through() {
+        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
+            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
+
+        let mut set = AlternativeSet::empty();
+        set.push(Candidate {
+            kernel: double_lhs_kernel_f32,
+            caps: KernelCaps::empty(),
+            backend: BackendId::Cpu,
+            device: DeviceLocation::Cpu,
+            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            static_cost: Default::default(),
+            op_params: OpParams::None,
+            coupling: Vec::new(),
+        });
+        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
+        alternatives.insert(add_id, set);
+        let plan = Arc::new(ExecutionPlan {
+            order: Vec::new(),
+            alternatives,
+            generation: crate::dispatch::topology_generation(),
+        });
+
+        let (result_arc, _) =
+            PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan)
+                .expect("matching-generation plan must dispatch successfully");
+
+        let guard = result_arc.read().unwrap();
+        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+            c
+        } else {
+            panic!("expected Cpu storage");
+        };
+        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
+        assert_eq!(typed, &[2.0, 4.0, 6.0]);
     }
 }

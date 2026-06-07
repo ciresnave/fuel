@@ -211,6 +211,27 @@ pub enum Error {
         actual: usize,
     },
 
+    /// The `ExecutionPlan` consumed by the executor was built against
+    /// an older `SystemTopology` generation than the one observable
+    /// at dispatch time — backends were added, removed, or had their
+    /// capabilities re-probed since the plan was committed. Caught
+    /// at dispatch-chunk boundaries by Phase 4.3 of the picker-work
+    /// arc; the realize layer catches this and rebuilds the plan
+    /// against the fresh topology.
+    ///
+    /// `plan_generation` is the counter the plan was stamped with at
+    /// `compile_plan` time. `current_generation` is the value
+    /// `fuel_dispatch::dispatch::topology_generation()` observed when
+    /// the executor crossed the chunk boundary.
+    #[error(
+        "execution plan was built against topology generation {plan_generation}, \
+         but generation {current_generation} is now current; rebuild and retry"
+    )]
+    TopologyChanged {
+        plan_generation: u64,
+        current_generation: u64,
+    },
+
     // === Other Errors ===
     #[error("the fuel crate has not been built with cuda support")]
     NotCompiledWithCudaSupport,
