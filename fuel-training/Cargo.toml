@@ -10,16 +10,16 @@
     version.workspace    = true
 
 [dependencies]
-    fuel     = { workspace = true }
-    fuel-nn  = { workspace = true }
+    fuel       = { workspace = true }
+    fuel-graph = { workspace = true }
     serde      = { workspace = true }
     serde_json = { workspace = true }
     tracing    = { workspace = true }
 
 [features]
-    accelerate = ["fuel-nn/accelerate", "fuel/accelerate"]
-    cuda       = ["fuel-nn/cuda", "fuel/cuda"]
-    cudnn      = ["fuel-nn/cudnn", "fuel/cudnn"]
+    accelerate = ["fuel/accelerate"]
+    cuda       = ["fuel/cuda"]
+    cudnn      = ["fuel/cudnn"]
     default    = []
-    metal      = ["fuel-nn/metal", "fuel/metal"]
-    mkl        = ["fuel-nn/mkl", "fuel/mkl"]
+    metal      = ["fuel/metal"]
+    mkl        = ["fuel/mkl"]

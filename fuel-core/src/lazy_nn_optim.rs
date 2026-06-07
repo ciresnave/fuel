@@ -126,7 +126,7 @@ impl LazyVar {
         Ok(())
     }
 
-    fn last_node_id(&self) -> Option<NodeId> {
+    pub fn last_node_id(&self) -> Option<NodeId> {
         *self.last_node.read().unwrap()
     }
 }

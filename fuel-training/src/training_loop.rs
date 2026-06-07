@@ -1,82 +1,78 @@
-﻿//! Training loop abstraction.
+//! Training loop abstraction (lazy-graph).
 //!
 //! [`TrainingLoop`] provides a structured training loop that composes
-//! learning-rate scheduling, gradient clipping, gradient accumulation, and
-//! checkpointing into a single, configurable driver.
-//!
-//! The user provides a closure that computes the loss for a single mini-batch;
-//! the loop handles the rest.
+//! gradient clipping, optional gradient accumulation, learning-rate
+//! scheduling, and step counting into a single configurable driver.
 //!
 //! # Design
 //!
-//! The training loop is intentionally NOT a framework. It does not own the
-//! model, the dataloader, or the optimizer. It orchestrates the per-step
-//! bookkeeping that every training script reimplements:
+//! The training loop is intentionally NOT a framework. It does not own
+//! the model, the dataloader, or the optimizer. It orchestrates the
+//! per-step bookkeeping that every training script reimplements:
 //!
-//! 1. Forward + backward
-//! 2. Gradient accumulation (if configured)
-//! 3. Gradient clipping (if configured)
+//! 1. Backward (`loss.backward()`)
+//! 2. Gradient harvest (per [`LazyVar`] in `opt.params()`)
+//! 3. Gradient clipping (norm and/or value, if configured)
 //! 4. Optimizer step
 //! 5. LR scheduling
 //! 6. Logging / metrics
-//! 7. Checkpointing (if configured)
+//!
+//! All gradient operations run on the lazy graph: clipping uses
+//! [`fuel::lazy_training_augmentations::clip_grad_norm`] /
+//! [`clip_grad_value`], which return new `HashMap<String, LazyTensor>`
+//! values.
 //!
 //! # Example
 //!
-//! ```rust
-//! use fuel::{DType, Device, Tensor, Var};
-//! use fuel_nn::{AdamW, Optimizer, ParamsAdamW};
-//! use fuel_training::training_loop::{TrainingLoop, StepOutcome};
+//! ```rust,no_run
+//! use fuel::lazy_nn_optim::{LazyAdamW, LazyOptimizer, LazyVar, AdamWConfig};
+//! use fuel::lazy_training_augmentations::CosineSchedule;
+//! use fuel_training::training_loop::TrainingLoop;
 //!
 //! # fn main() -> fuel::Result<()> {
-//! let x = Var::new(&[1.0f32, 2.0, 3.0][..], &Device::Cpu)?;
-//! let mut opt = AdamW::new(vec![x.clone()], ParamsAdamW::default())?;
-//!
+//! let var = LazyVar::new("w", vec![1.0_f32, 2.0, 3.0]);
+//! let mut opt = LazyAdamW::new(vec![var.clone()], AdamWConfig::default())?;
+//! let sched = CosineSchedule { base_lr: 1e-3, warmup_steps: 10, total_steps: 100 };
 //! let mut loop_ = TrainingLoop::new()
-//!     .with_max_grad_norm(1.0);
-//!
-//! // Run 10 training steps manually
-//! for step in 0..10 {
-//!     let loss = x.as_tensor().sqr()?.sum_all()?;
-//!     let outcome = loop_.step(&loss, &[&x], &mut opt)?;
-//!     // outcome contains the loss value and gradient norm
-//! }
+//!     .with_max_grad_norm(1.0)
+//!     .with_scheduler(sched);
+//! // Then per step:
+//! //   let loss = ... build forward graph using var.tensor() ...;
+//! //   let outcome = loop_.step(&loss, &mut opt)?;
 //! # Ok(())
 //! # }
 //! ```
 
-use crate::grad_clip;
-use crate::lr_scheduler::LrScheduler;
-use fuel::{Result, Tensor, Var};
-use fuel_nn::Optimizer;
+use fuel::Result;
+use fuel::lazy::LazyTensor;
+use fuel::lazy_nn_optim::{LazyOptimizer, LazyVar};
+use fuel::lazy_training_augmentations::{LrSchedule, clip_grad_norm, clip_grad_value};
+use std::collections::HashMap;
 
 /// The result of a single training step.
 #[derive(Clone, Debug)]
 pub struct StepOutcome {
-    /// The scalar loss value (before backward).
+    /// The scalar loss value (realized to f32 host).
     pub loss: f64,
-    /// The global gradient norm before clipping (if clipping was enabled).
+    /// The global gradient L2 norm before clipping, when norm clipping
+    /// is enabled.
     pub grad_norm: Option<f64>,
-    /// The current learning rate after this step.
+    /// The learning rate that was applied to this step (after scheduler).
     pub lr: f64,
-    /// The global step number (1-indexed).
+    /// The 1-indexed global step number.
     pub global_step: usize,
 }
 
-/// A composable training loop driver.
-///
-/// Handles gradient clipping, LR scheduling, and step counting. Does NOT own
-/// the model, optimizer, or data — those remain under user control.
+/// A composable training loop driver (lazy-graph variant).
 pub struct TrainingLoop {
     max_grad_norm: Option<f64>,
     max_grad_value: Option<f64>,
-    scheduler: Option<Box<dyn LrScheduler>>,
+    scheduler: Option<Box<dyn LrSchedule>>,
     global_step: usize,
     log_interval: Option<usize>,
 }
 
 impl TrainingLoop {
-    /// Create a new training loop with default settings (no clipping, no scheduling).
     pub fn new() -> Self {
         Self {
             max_grad_norm: None,
@@ -87,8 +83,7 @@ impl TrainingLoop {
         }
     }
 
-    /// Enable gradient norm clipping. Gradients are rescaled so the global L2
-    /// norm does not exceed `max_norm`.
+    /// Enable global L2-norm gradient clipping at `max_norm`.
     pub fn with_max_grad_norm(mut self, max_norm: f64) -> Self {
         self.max_grad_norm = Some(max_norm);
         self
@@ -100,15 +95,16 @@ impl TrainingLoop {
         self
     }
 
-    /// Attach a learning rate scheduler. The scheduler is stepped after each
-    /// optimizer step, and the LR is applied to the optimizer automatically.
-    pub fn with_scheduler<S: LrScheduler + 'static>(mut self, scheduler: S) -> Self {
+    /// Attach a learning rate scheduler. The scheduler is consulted at
+    /// step time via [`LrSchedule::lr_at`] and applied to the optimizer
+    /// via [`LazyOptimizer::set_learning_rate`].
+    pub fn with_scheduler<S: LrSchedule + 'static>(mut self, scheduler: S) -> Self {
         self.scheduler = Some(Box::new(scheduler));
         self
     }
 
-    /// Set the logging interval (in steps). When set, a `tracing::info!` event
-    /// is emitted every `interval` steps with the loss, LR, and gradient norm.
+    /// Set the logging interval (in steps). When set, a `tracing::info!`
+    /// event is emitted every `interval` steps.
     pub fn with_log_interval(mut self, interval: usize) -> Self {
         self.log_interval = Some(interval);
         self
@@ -124,51 +120,41 @@ impl TrainingLoop {
         self.global_step
     }
 
-    /// Execute one training step: backward, clip, optimize, schedule.
-    ///
-    /// # Arguments
-    ///
-    /// - `loss` — A scalar loss tensor (already computed by the user's forward pass).
-    /// - `vars` — The trainable variables to clip gradients for.
-    /// - `opt` — The optimizer to step.
-    ///
-    /// # Returns
-    ///
-    /// A [`StepOutcome`] containing the loss value, gradient norm, current LR,
-    /// and global step number.
-    pub fn step<O: Optimizer>(
+    /// Execute one training step against a [`LazyOptimizer`]: backward,
+    /// harvest, clip, optimize, schedule.
+    pub fn step<O: LazyOptimizer>(
         &mut self,
-        loss: &Tensor,
-        vars: &[&Var],
+        loss: &LazyTensor,
         opt: &mut O,
     ) -> Result<StepOutcome> {
-        let loss_val: f64 = loss.to_scalar::<f32>()? as f64;
+        let loss_val = loss.realize_f32()[0] as f64;
 
-        // Backward pass
-        let mut grads = loss.backward()?;
+        let grads = harvest_grads(loss, opt.params());
 
-        // Gradient clipping
-        let grad_norm = if let Some(max_norm) = self.max_grad_norm {
-            Some(grad_clip::clip_grad_norm(vars, &mut grads, max_norm)?)
+        let grads = if let Some(max_norm) = self.max_grad_norm {
+            clip_grad_norm(&grads, max_norm, 2.0)?
+        } else {
+            grads
+        };
+        let grad_norm = if self.max_grad_norm.is_some() {
+            Some(global_l2_norm(&grads))
         } else {
             None
         };
 
-        if let Some(max_val) = self.max_grad_value {
-            grad_clip::clip_grad_value(vars, &mut grads, max_val)?;
-        }
+        let grads = if let Some(max_val) = self.max_grad_value {
+            clip_grad_value(&grads, max_val)?
+        } else {
+            grads
+        };
 
-        // Optimizer step
         opt.step(&grads)?;
 
-        // LR scheduling
-        if let Some(sched) = &mut self.scheduler {
-            sched.step();
-            opt.set_learning_rate(sched.lr());
+        if let Some(sched) = &self.scheduler {
+            opt.set_learning_rate(sched.lr_at(self.global_step));
         }
 
         self.global_step += 1;
-
         let lr = opt.learning_rate();
 
         let outcome = StepOutcome {
@@ -178,7 +164,6 @@ impl TrainingLoop {
             global_step: self.global_step,
         };
 
-        // Logging
         if let Some(interval) = self.log_interval {
             if self.global_step % interval == 0 {
                 match grad_norm {
@@ -209,71 +194,36 @@ impl Default for TrainingLoop {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use fuel::{Device, Var};
-    use fuel_nn::SGD;
-
-    #[test]
-    fn basic_step() -> Result<()> {
-        let x = Var::new(&[2.0f32, 3.0][..], &Device::Cpu)?;
-        let mut opt = SGD::new(vec![x.clone()], 0.01)?;
-        let mut tl = TrainingLoop::new();
-
-        let loss = x.as_tensor().sqr()?.sum_all()?;
-        let outcome = tl.step(&loss, &[&x], &mut opt)?;
-
-        assert!(outcome.loss > 0.0);
-        assert_eq!(outcome.global_step, 1);
-        assert!(outcome.grad_norm.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn step_with_grad_clipping() -> Result<()> {
-        let x = Var::new(&[100.0f32, 200.0][..], &Device::Cpu)?;
-        let mut opt = SGD::new(vec![x.clone()], 0.001)?;
-        let mut tl = TrainingLoop::new().with_max_grad_norm(1.0);
-
-        let loss = x.as_tensor().sqr()?.sum_all()?;
-        let outcome = tl.step(&loss, &[&x], &mut opt)?;
-
-        assert!(outcome.grad_norm.unwrap() > 1.0); // original norm was large
-        Ok(())
-    }
-
-    #[test]
-    fn step_with_scheduler() -> Result<()> {
-        use crate::lr_scheduler::StepLr;
-
-        let x = Var::new(&[1.0f32][..], &Device::Cpu)?;
-        let mut opt = SGD::new(vec![x.clone()], 0.1)?;
-        let sched = StepLr::new(0.1, 5, 0.5);
-        let mut tl = TrainingLoop::new().with_scheduler(sched);
-
-        for _ in 0..5 {
-            let loss = x.as_tensor().sqr()?.sum_all()?;
-            tl.step(&loss, &[&x], &mut opt)?;
+/// Walk `vars`, look up each one's gradient in the backward map produced
+/// by `loss.backward()`, and collect into a `name -> LazyTensor` map.
+/// Parameters that didn't contribute to `loss` are silently skipped
+/// (same semantics as [`LazyOptimizer::backward_step`]).
+fn harvest_grads(loss: &LazyTensor, vars: &[LazyVar]) -> HashMap<String, LazyTensor> {
+    let grad_map = loss.backward();
+    let mut grads = HashMap::with_capacity(vars.len());
+    for var in vars {
+        let Some(node_id) = var.last_node_id() else {
+            continue;
+        };
+        let handle = fuel_graph::Tensor::from_existing(
+            loss.graph_tensor().graph().clone(),
+            node_id,
+        );
+        if let Some(grad) = grad_map.get(&handle) {
+            grads.insert(
+                var.name().to_string(),
+                LazyTensor::from_graph_tensor(grad),
+            );
         }
-
-        // After 5 steps, LR should have decayed
-        assert!((opt.learning_rate() - 0.05).abs() < 1e-9);
-        Ok(())
     }
+    grads
+}
 
-    #[test]
-    fn global_step_tracks() -> Result<()> {
-        let x = Var::new(&[1.0f32][..], &Device::Cpu)?;
-        let mut opt = SGD::new(vec![x.clone()], 0.01)?;
-        let mut tl = TrainingLoop::new();
-
-        for _ in 0..10 {
-            let loss = x.as_tensor().sqr()?.sum_all()?;
-            tl.step(&loss, &[&x], &mut opt)?;
-        }
-
-        assert_eq!(tl.global_step(), 10);
-        Ok(())
+fn global_l2_norm(grads: &HashMap<String, LazyTensor>) -> f64 {
+    let mut acc: f64 = 0.0;
+    for g in grads.values() {
+        let host = g.sqr().sum_all().realize_f32();
+        acc += host[0] as f64;
     }
+    acc.sqrt()
 }

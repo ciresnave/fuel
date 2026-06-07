@@ -3,8 +3,9 @@
 //! **Layer**: Training  |  **Stability**: experimental
 //!
 //! Training orchestration for the Fuel ML framework. This crate is the
-//! canonical home for training-loop infrastructure on top of `fuel-core`
-//! and `fuel-nn`.
+//! canonical home for training-loop infrastructure on top of the lazy
+//! substrate in `fuel-core` (LazyOptimizer, LazyVar, LazyVarMap, the
+//! `lazy_training_augmentations` schedulers and grad clippers).
 //!
 //! ## Modules
 //!
@@ -32,36 +33,54 @@
 //! fuel-core        (tensors, devices, autograd)
 //! ```
 //!
-//! Nothing in `fuel-core` or `fuel-nn` depends on this crate. It is a
-//! leaf that aggregates; it does not define.
+//! Nothing in `fuel-core` depends on this crate. It is a leaf that
+//! aggregates; it does not define.
 //!
 //! ## Example
 //!
-//! ```rust
-//! use fuel::{DType, Device, Tensor, Var};
-//! use fuel_nn::{AdamW, Optimizer, ParamsAdamW};
+//! ```rust,no_run
+//! use fuel::lazy_nn_optim::{LazyAdamW, LazyOptimizer, LazyVar, AdamWConfig};
+//! use fuel::lazy_training_augmentations::CosineSchedule;
 //! use fuel_training::training_loop::TrainingLoop;
-//! use fuel_training::lr_scheduler::CosineWithWarmupLr;
 //!
 //! # fn main() -> fuel::Result<()> {
-//! let x = Var::new(&[1.0f32, 2.0, 3.0][..], &Device::Cpu)?;
-//! let mut opt = AdamW::new(vec![x.clone()], ParamsAdamW::default())?;
-//!
-//! let sched = CosineWithWarmupLr::new(0.001, 10, 100);
+//! let x = LazyVar::new("x", fuel::Shape::from_dims(&[3]), vec![1.0_f32, 2.0, 3.0])?;
+//! let mut opt = LazyAdamW::new(vec![x.clone()], AdamWConfig::default())?;
+//! let sched = CosineSchedule { base_lr: 1e-3, warmup_steps: 10, total_steps: 100 };
 //! let mut loop_ = TrainingLoop::new()
 //!     .with_max_grad_norm(1.0)
 //!     .with_scheduler(sched);
-//!
-//! for step in 0..100 {
-//!     let loss = x.as_tensor().sqr()?.sum_all()?;
-//!     let outcome = loop_.step(&loss, &[&x], &mut opt)?;
-//! }
+//! // Per step: build a `LazyTensor` loss using `x.tensor(&anchor)`, then
+//! //   `loop_.step(&loss, &mut opt)?;`
 //! # Ok(())
 //! # }
 //! ```
 
 pub mod checkpoint;
-pub mod grad_accum;
-pub mod grad_clip;
-pub mod lr_scheduler;
 pub mod training_loop;
+
+// Re-exports from the lazy training substrate in fuel-core. These used to
+// live in fuel-training as eager wrappers around fuel-nn's Optimizer; the
+// lazy equivalents have strictly broader coverage so the eager modules are
+// retired and only re-exported here for source-compatibility.
+
+pub mod grad_accum {
+    //! Gradient accumulation (lazy). Re-export of
+    //! [`fuel::lazy_training_augmentations_extras::GradAccumulator`].
+    pub use fuel::lazy_training_augmentations_extras::GradAccumulator;
+}
+
+pub mod grad_clip {
+    //! Gradient clipping (lazy). Re-exports of
+    //! [`fuel::lazy_training_augmentations::{clip_grad_norm, clip_grad_value}`].
+    pub use fuel::lazy_training_augmentations::{clip_grad_norm, clip_grad_value};
+}
+
+pub mod lr_scheduler {
+    //! Learning-rate schedulers (lazy). Re-exports of
+    //! [`fuel::lazy_training_augmentations::{LrSchedule, CosineSchedule,
+    //! LinearWarmupSchedule, PolynomialSchedule, StepSchedule}`].
+    pub use fuel::lazy_training_augmentations::{
+        CosineSchedule, LinearWarmupSchedule, LrSchedule, PolynomialSchedule, StepSchedule,
+    };
+}
