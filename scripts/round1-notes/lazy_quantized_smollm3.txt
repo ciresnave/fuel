@@ -1,0 +1,10 @@
+# quantized-smollm3
+
+Module: lazy_quantized_smollm3
+Lib decl line: pub mod lazy_quantized_smollm3;
+Lib anchor before: pub mod lazy_pixtral;
+Tests: 3 passed, 0 failed
+Test names: forward_shape_finite_with_q4_0_weights, q4_0_round_trip_via_dequantize, forward_embeds_matches_forward_after_token_lookup
+
+## Notes
+Ports the GGUF-quantized SmolLM3 variant. The new QuantizedSmolLm3Model wraps the existing SmolLm3Model so the forward path is identical to lazy_smollm3 — only the Linear weight storage changes from F32/BF16 to WeightStorage::Q4_0. Two construction paths: (a) from_f32_bake takes a SmolLm3Weights bundle and quantizes each of attn_{q,k,v,o}/ffn_{gate,up,down}/output via fuel_quantized::BlockQ4_0::from_float, applying the [in,out]→[out,in] transpose to match GGUF's native row-major block layout; (b) from_gguf mmap-loads a SmolLM3 GGUF checkpoint following the Phi-2 loader convention — Q4_0 tensors stay quantized via bytes_to_u32_arc, other GGML dtypes (F32/F16/BF16/Q4_0) dequantize to F32 and transpose for the F32 path, with optional tied-embedding fallback when output.weight is absent. forward / forward_embeds / forward_hidden / forward_hidden_embeds / embed_tokens_anchored delegate straight through to the inner SmolLm3Model. Three tests: shape+finite+matches-Q4_0 on a 2-layer 32×32 toy config, f32→Q4_0→dequant round-trip bounded by ~0.1 (block-quant noise), and forward vs forward_embeds parity within 1e-4.

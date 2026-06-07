@@ -97,7 +97,7 @@ impl FlashAttn {
                 );
             }
 
-            let (alibi_slopes_arc, alibi_slopes_layout) = alibi_slopes.storage_and_layout();
+            let (alibi_slopes_arc, alibi_slopes_layout) = alibi_slopes.storage_and_layout()?;
             let alibi_slopes = alibi_slopes_arc.read().unwrap();
 
             if num_heads != alibi_slopes_layout.shape().dims1()? {
@@ -469,7 +469,7 @@ impl FlashAttnVarLen {
         let out_shape = q_l.shape().clone();
         let out_l = Layout::contiguous(&out_shape);
 
-        let (seqlens_q_arc, seqlens_q_layout) = self.seqlens_q.storage_and_layout();
+        let (seqlens_q_arc, seqlens_q_layout) = self.seqlens_q.storage_and_layout()?;
         let seqlens_q_guard = seqlens_q_arc.read().unwrap();
         let seqlens_q = seqlens_q_guard
             .downcast_ref::<fuel::CudaStorage>()
@@ -480,7 +480,7 @@ impl FlashAttnVarLen {
             None => fuel::bail!("seqlens_q has to be contiguous"),
         };
 
-        let (seqlens_k_arc, seqlens_k_layout) = self.seqlens_k.storage_and_layout();
+        let (seqlens_k_arc, seqlens_k_layout) = self.seqlens_k.storage_and_layout()?;
         let seqlens_k_guard = seqlens_k_arc.read().unwrap();
         let seqlens_k = seqlens_k_guard
             .downcast_ref::<fuel::CudaStorage>()
@@ -564,7 +564,7 @@ impl FlashAttnVarLen {
                 );
             }
 
-            let (alibi_slopes_arc, alibi_slopes_layout) = alibi_slopes.storage_and_layout();
+            let (alibi_slopes_arc, alibi_slopes_layout) = alibi_slopes.storage_and_layout()?;
             let alibi_slopes = alibi_slopes_arc.read().unwrap();
 
             if num_heads != alibi_slopes_layout.shape().dims1()? {

@@ -1,0 +1,10 @@
+# metavoice-main
+
+Module: lazy_metavoice
+Lib decl line: pub mod lazy_metavoice;
+Lib anchor before: pub mod lazy_mamba2;
+Tests: 4 passed, 0 failed
+Test names: forward_shape_and_finite, multi_codebook_head_output_shape, forward_embeds_matches_forward, speaker_conditioning_changes_output
+
+## Notes
+Ported the MetaVoice main TTS LM as `fuel-core/src/lazy_metavoice.rs`. Architecture: decoder-only transformer matching the eager stage-2 transformer in `fuel-transformers/src/models/audio/metavoice.rs` — bias-free GQA-capable causal LM with RMSNorm + RoPE + SwiGLU FFN. Per-layer weights reuse `crate::lazy::LayerWeights` (shape-compatible with LLaMA/Mistral). Speaker conditioning: an `(speaker_emb_dim → hidden_size)` linear projection of the speaker embedding is broadcast-added across all sequence positions before the first transformer block; the eager `spk_cond_mask` row gating is collapsed to all-ones since the lazy v1 contract takes a single per-sequence speaker vector. To compose a `speaker_embed: &LazyTensor` from the upstream `lazy_metavoice_speaker_encoder` (which lives on its own graph) with the token-embedding graph, `anchor_speaker` realizes the speaker vector to f32 and re-anchors it on the embeds graph via `const_f32_like`. Multi-codebook head: after the final RmsNorm, the last sequence position is narrowed out, projected through `num_codebooks` separate bias-free linears, and stacked to produce `(1, num_codebooks, vocab_size)`. All 4 required tests pass (forward_shape_and_finite, forward_embeds_matches_forward, multi_codebook_head_output_shape, speaker_conditioning_changes_output) on a tiny 2-layer/4-head/2-kv-head/4-codebook config.

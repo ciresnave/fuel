@@ -32,7 +32,6 @@ members = [
     "fuel-lazy-examples",
     "fuel-metal-backend",
     "fuel-metal-kernels",
-    "fuel-nn",
     "fuel-onnx",
     "fuel-parallel",
     "fuel-pyo3",
@@ -42,8 +41,10 @@ members = [
     "fuel-training",
     "fuel-transformers",
     "fuel-ug",
-    "fuel-wasm-examples/*",
-    "fuel-wasm-tests",
+    # fuel-wasm-examples/* and fuel-wasm-tests quarantined in Phase β4 of
+    # the eager-retirement program — they import `fuel_transformers::models::*`
+    # and `fuel_nn::*`, both of which are now retired. See ROADMAP for the
+    # per-crate wasm migration plan.
     "tensor-tools",
 ]
 # What `cargo build`, `cargo check`, `cargo test` without `-p` or
@@ -72,15 +73,12 @@ default-members = [
     "fuel-datasets",
     "fuel-examples",
     "fuel-inference",
-    "fuel-nn",
     "fuel-parallel",
     "fuel-pyo3",
     "fuel-quantized",
     "fuel-transformers",
     "fuel-training",
     "fuel-ug",
-    "fuel-wasm-examples/*",
-    "fuel-wasm-tests",
     "tensor-tools",
 ]
 resolver = "2"
@@ -133,7 +131,6 @@ fuel-formats = { path = "./fuel-formats", version = "0.10.2" }
 fuel-inference = { path = "./fuel-inference", version = "0.10.2" }
 fuel-metal-backend = { path = "./fuel-metal-backend", version = "0.10.2" }
 fuel-metal-kernels = { path = "./fuel-metal-kernels", version = "0.10.2" }
-fuel-nn = { path = "./fuel-nn", version = "0.10.2" }
 fuel-onnx = { path = "./fuel-onnx", version = "0.10.2" }
 fuel-parallel = { path = "./fuel-parallel", version = "0.10.2" }
 fuel-quantized = { path = "./fuel-quantized", version = "0.10.2" }

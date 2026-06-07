@@ -1,0 +1,14 @@
+# qwen3-vl-composition
+Module: lazy_qwen3_vl
+Lib decl: pub mod lazy_qwen3_vl;
+Anchor: pub mod lazy_qwen3_vl_text;
+Tests: 5 passed
+Names: forward_text_only_matches_qwen3_vl_text_forward, forward_with_image_changes_output, image_token_slot_scatter_correctness, multimodal_projector_dim_change, end_to_end_tiny_video_plus_text
+
+Sub-port 3 — Qwen3-VL composition layer at fuel-core/src/lazy_qwen3_vl.rs. Wires the shipped Qwen3VlVisionModel + Qwen3VlTextModel with a shared Qwen3VlMultimodalProjector (vision out_hidden -> text hidden) plus DeepStack residual injection. Forward path: (1) vision tower runs per-modality with cu_seqlens=[0, N]; (2) projector applies to final embeds + per-DeepStack residuals; (3) substitute_visual_embeds replaces text rows at image_token_id / video_token_id slots via the gather-then-mask pattern from lazy_voxtral (no scatter primitive needed); (4) build_mrope_position_grid emits (start_pos+i, start_pos+i, start_pos+i) for text tokens and (start_pos+slot, h, w) for visual slots derived from a row-major PatchGrid; (5) text model invoked through new forward_embeds_with_deepstack with per-text-layer zero-elsewhere residuals.
+
+Small additive extension to fuel-core/src/lazy_qwen3_vl_text.rs: added pub fn forward_embeds_with_deepstack and an internal run_backbone_embeds_with_deepstack helper; existing forward / forward_embeds / forward_hidden_embeds now delegate through it. All 5 prior text-model tests + 5 vision tests + 5 new composition tests still pass (25 qwen3* lib tests green, 0 failed).
+
+lib.rs registration: inserted "pub mod lazy_qwen3_vl;" between lazy_qwen3_moe and lazy_qwen3_vl_text to preserve alphabetical order.
+
+Open follow-ups (deferred per spec scope): multi-image cu_seqlens batching uses a single block today (single image / single video at a time); incremental decode with seqlen_offset > 0 is wired into MROPE positions only — KV cache integration is the next port. Spatial merger (vision_config.spatial_merge_size) is not applied; the lazy vision tower currently emits one embedding per input patch, so callers must supply exactly num_patches image/video token slots.

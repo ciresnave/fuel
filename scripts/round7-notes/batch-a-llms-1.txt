@@ -1,0 +1,23 @@
+# batch-a-llms-1
+success: false
+migrated: 
+skipped: bert (infrastructure gap: session interrupted before completing API exploration of lazy_bert::BertModel from_hub vs new constructor surface and verifying tokenizer/encode signature against existing eager main.rs; no cargo build attempted)
+  - bert_single_file_binary (infrastructure gap: depends on bert migration baseline; not attempted)
+  - bigcode (infrastructure gap: lazy_bigcode API surface not verified; session interrupted before reading module)
+  - chatglm (infrastructure gap: lazy_chatglm API surface not verified; session interrupted)
+  - codegeex4-9b (infrastructure gap: codegeex4-9b is a glm4 variant — lazy_glm4 vs lazy_glm4_new mapping not resolved; session interrupted)
+  - debertav2 (infrastructure gap: lazy_debertav2 API not verified; session interrupted)
+  - deepseekv2 (infrastructure gap: lazy_deepseek2 (note name mismatch v2 vs 2) API not verified; session interrupted)
+  - distilbert (infrastructure gap: lazy_distilbert API not verified; session interrupted)
+  - falcon (infrastructure gap: lazy_falcon API not verified; session interrupted)
+  - gemma (infrastructure gap: gemma has 4 lazy variants (lazy_gemma, lazy_gemma2, lazy_gemma3, lazy_gemma4_text) and eager binary's --which arg dispatches across them; selection logic not designed; session interrupted)
+
+Session was interrupted very early — I had only read the worktree directory listing, the lazy module list (confirming all 10 target lazy modules exist in fuel-core/src/), and the eager llama/main.rs (not even in this batch) plus the head of lazy_bert.rs. No main.rs was rewritten and no cargo build was run.
+
+Key findings before interruption that should help the next session:
+1. All 10 lazy modules exist: lazy_bert, lazy_bigcode, lazy_chatglm, lazy_debertav2, lazy_deepseek2 (note: module is `deepseek2` not `deepseekv2`), lazy_distilbert, lazy_falcon, lazy_gemma + lazy_gemma2 + lazy_gemma3 + lazy_gemma4_text (4 variants — gemma binary likely needs `--which` dispatch), lazy_glm4 + lazy_glm4_new (codegeex4-9b is a glm4 variant).
+2. lazy_bert::BertModel exposes both `new(config, weights)` and `from_hub(repo_id)` constructors, plus `forward(token_ids: &[u32]) -> Result<LazyTensor>` and a companion `BertTokenizer::from_hub`. The docstring example shows the canonical migration shape: from_hub → tokenizer.encode → model.forward(&ids) → .realize_f32().
+3. No prior migration template exists in fuel-examples/ — this is the first batch of its kind, so a pattern needs to be established (likely worth doing one binary end-to-end first, getting cargo build green, then applying to the rest).
+4. lazy_bert.rs is 700+ lines — each lazy_* module needs ~5 min just to map its public surface; doing 10 of them plus rewrite plus cargo build per binary is a multi-hour task that exceeds a single sub-agent turn.
+
+Recommendation for next dispatch: split this batch into 2 binaries per sub-agent (or one anchor binary first to lock the pattern), and front-load a "read all 10 lazy module public APIs" pass before any rewriting.

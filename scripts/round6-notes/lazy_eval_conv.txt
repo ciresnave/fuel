@@ -1,0 +1,19 @@
+# onnx-eval-sub-port-2
+Tests: 8 passed
+Names: conv2d_forward_known_kernel_shape_match, conv_transpose2d_forward_shape, pad_constant_adds_zeros, pad_reflect_errors_with_sub_port_message, maxpool2d_kernel_2_stride_2_halves_spatial_dims, avgpool2d_returns_mean_within_kernel_window, globalavgpool_collapses_to_channel_means, globalmaxpool_collapses_to_channel_maxes
+
+Sub-port 2 of port-onnx-eval.md ships Conv/ConvTranspose/Pad/MaxPool/AveragePool/GlobalAveragePool/GlobalMaxPool through the existing `try_dispatch_node` fallthrough hook in `lazy_eval.rs:480`. Key design decisions:
+
+1. **Auto-pad resolution** — `parse_auto_pad` maps ONNX `auto_pad` attribute to a 4-variant `AutoPad` enum. For Conv: SAME_UPPER/SAME_LOWER compute total_pad via `((out_size-1)*s + k - in_size).max(0)` and split with the appropriate floor/ceil distribution; VALID = no pad; NOTSET reads the explicit `pads` attribute.
+
+2. **Asymmetric padding** — `apply_asymmetric_pads` pre-pads the input with `LazyTensor::pad_with_zeros` per axis when `pre != post`, then passes `(pre, post)` = `(0, 0)` symmetric residual into Conv. Symmetric pads ride through Conv2D's native `padding` argument.
+
+3. **ConvTranspose** — `resolve_conv_transpose_pads` handles SAME_* via the inverted ONNX formula (`total_pad = max(kernel - stride, 0)`). Asymmetric output_padding is rejected with a clean error since `conv_transpose2d` only accepts a symmetric `(pad_h, pad_w)`. Bias is handled out-of-band via `add_channel_bias` since the lazy `conv_transpose*` primitives don't take a bias parameter.
+
+4. **Pad** — Only `mode = "constant"` with zero fill is implemented. `reflect`/`edge`/`wrap` modes surface the "sub-port" pointer pattern. Non-zero `constant_value` also routes to a future sub-port since `fuel_graph::PadMode` is not exposed through the `fuel` umbrella crate; `pad_with_zeros` is used per dim instead. Opset 11+ (`pads` as input) and Opset <11 (`pads` as attribute) are both supported.
+
+5. **Pooling** — MaxPool / AveragePool reject `auto_pad SAME_*` (lazy primitives only take symmetric padding), `ceil_mode != 0`, dilations != 1, and the indices output of MaxPool. GlobalAveragePool / GlobalMaxPool collapse spatial dims via `mean_keepdim` / `max_keepdim` chains, matching ONNX's keep-spatial-as-1 contract.
+
+6. **lazy_eval.rs touch** — the existing `unsupported_op_errors_cleanly` test used Conv to verify the sub-port pointer pattern; since Conv now succeeds, the test was rerouted to Softmax (sub-port 3), preserving the test's intent (clean sub-port error message).
+
+All 13 tests pass (8 new + 5 pre-existing).

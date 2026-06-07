@@ -1,0 +1,10 @@
+# quantized-whisper
+
+Module: lazy_quantized_whisper
+Lib decl line: pub mod lazy_quantized_whisper;
+Lib anchor before: pub mod lazy_pixtral;
+Tests: 3 passed, 0 failed
+Test names: lazy_quantized_whisper::tests::encoder_forward_shape_finite_with_q4_0, lazy_quantized_whisper::tests::decoder_forward_shape_finite_with_q4_0, lazy_quantized_whisper::tests::attention_projections_use_q4_0_weights
+
+## Notes
+Ports the GGUF-quantized Whisper variant by paralleling the plain `lazy_whisper` architecture: the encoder + decoder transformer blocks (Q/K/V/O attention projections and FC1/FC2 FFN matrices) flip from F32 to `WeightStorage::Q4_0`, while the conv1d stem, sinusoidal/learned positional tables, LayerNorm gains/biases, and token-embedding stay F32 — matching whisper.cpp's convention. A `quantize_in_out_to_q4_0` helper re-transposes the `[in_features, out_features]` F32 weights back to the GGUF `[out, in]` layout, runs `BlockQ4_0::from_float` per row, then packs the 18-byte block stream into the `u32` word array `WeightStorage::Q4_0` expects (with a single-block zero-pad when the total byte count is not a multiple of 4). Forward path reuses `lazy_whisper::conv1d_k3_s1_p1` / `conv1d_k3_s2_p1` for the conv stem and `WeightStorage::apply_linear` → `qmatmul` for every quantized projection. Three tests cover the encoder shape+finite gate, decoder shape+finite gate, and a structural check that every attention/FFN matrix is in fact a `WeightStorage::Q4_0` variant. The `from_gguf` on-disk constructor surface is declared but returns an "wire up the GGUF reader" error for now — the F32-bake path is the live constructor.

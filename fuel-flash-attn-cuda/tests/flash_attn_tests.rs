@@ -1,6 +1,17 @@
 ﻿use anyhow::Result;
 use fuel::{DType, Device, IndexOp, Tensor, D};
 
+/// Numerically-stable softmax along `dim`. Inlined to avoid a fuel-nn
+/// dependency (fuel-nn was retired in Phase β4 of the eager-retirement
+/// program).
+fn softmax(xs: &Tensor, dim: D) -> Result<Tensor> {
+    let max = xs.max_keepdim(dim)?;
+    let diff = xs.broadcast_sub(&max)?;
+    let num = diff.exp()?;
+    let den = num.sum_keepdim(dim)?;
+    Ok(num.broadcast_div(&den)?)
+}
+
 fn to_vec3_round(t: Tensor, digits: i32) -> Result<Vec<Vec<Vec<f32>>>> {
     let b = 10f32.powi(digits);
     let t = t.to_vec3::<f32>()?;
@@ -21,7 +32,7 @@ fn fa_acausal(q: &Tensor, k: &Tensor, v: &Tensor, softmax_scale: f32) -> Result<
     let k = k.to_dtype(DType::F32)?;
     let v = v.to_dtype(DType::F32)?;
     let att = (q.matmul(&k.t()?)? * softmax_scale as f64)?;
-    let att = fuel_nn::ops::softmax(&att, D::Minus1)?;
+    let att = softmax(&att, D::Minus1)?;
     // Convert to contiguous as matmul doesn't support strided vs for now.
     let output = att.matmul(&v.contiguous()?)?.to_dtype(in_dtype)?;
     Ok(output)
@@ -35,7 +46,7 @@ fn fa_acausal_softcap(q: &Tensor, k: &Tensor, v: &Tensor, softcap: f32) -> Resul
     // let att = (q.matmul(&k.t()?)? * softmax_scale as f64)?;
     let att = q.matmul(&k.t()?)?;
     let att = (softcap as f64 * ((att / softcap as f64)?.tanh())?)?;
-    let att = fuel_nn::ops::softmax(&att, D::Minus1)?;
+    let att = softmax(&att, D::Minus1)?;
     // Convert to contiguous as matmul doesn't support strided vs for now.
     let output = att.matmul(&v.contiguous()?)?.to_dtype(in_dtype)?;
     Ok(output)

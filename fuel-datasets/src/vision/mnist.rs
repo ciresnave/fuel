@@ -30,7 +30,7 @@ fn read_labels(filename: &std::path::Path) -> Result<Tensor> {
     let mut data = vec![0u8; samples as usize];
     buf_reader.read_exact(&mut data)?;
     let samples = data.len();
-    Tensor::from_vec(data, samples, &Device::Cpu)
+    Tensor::from_vec(data, samples, &Device::cpu())
 }
 
 fn read_images(filename: &std::path::Path) -> Result<Tensor> {
@@ -42,7 +42,7 @@ fn read_images(filename: &std::path::Path) -> Result<Tensor> {
     let data_len = samples * rows * cols;
     let mut data = vec![0u8; data_len];
     buf_reader.read_exact(&mut data)?;
-    let tensor = Tensor::from_vec(data, (samples, rows * cols), &Device::Cpu)?;
+    let tensor = Tensor::from_vec(data, (samples, rows * cols), &Device::cpu())?;
     tensor.to_dtype(DType::F32)? / 255.
 }
 
@@ -88,10 +88,10 @@ fn load_parquet(parquet: SerializedFileReader<std::fs::File>) -> Result<(Tensor,
             }
         }
     }
-    let images = (Tensor::from_vec(buffer_images, (samples, 784), &Device::Cpu)?
+    let images = (Tensor::from_vec(buffer_images, (samples, 784), &Device::cpu())?
         .to_dtype(DType::F32)?
         / 255.)?;
-    let labels = Tensor::from_vec(buffer_labels, (samples,), &Device::Cpu)?;
+    let labels = Tensor::from_vec(buffer_labels, (samples,), &Device::cpu())?;
     Ok((images, labels))
 }
 

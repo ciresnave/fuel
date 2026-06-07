@@ -1,0 +1,32 @@
+# gemma4-audio
+
+Module: lazy_gemma4_audio
+Lib decl line: pub mod lazy_gemma4_audio;
+Lib anchor before: pub mod lazy_gemma3;
+Tests: 3 passed, 0 failed
+Test names: lazy_gemma4_audio::tests::forward_shape_and_finite_tiny, lazy_gemma4_audio::tests::chunked_attention_mask_block_band, lazy_gemma4_audio::tests::rel_pos_bias_table_lookup
+
+## Notes
+Single-file lazy port of fuel-transformers Gemma4 audio encoder (Conformer).
+
+Design choices vs eager:
+- No `audio_mel_mask` input — v1 assumes uniformly padded mel. The eager mask logic (validity mask × causal mask) is deferred to a follow-up batching session.
+- Chunked attention is implemented via a full (T, T) block-band additive mask built host-side and broadcast-added to QKᵀ scores, rather than the eager's `extract_block_context` 5-D matmul. Cleaner lazy graph at equivalent semantics for v1's no-mask single-input path.
+- Relative position bias uses the spec's Shaw-style learnable `(2*max_rel + 1, num_heads)` table + index_select, NOT the eager's sinusoidal-projection + relative-shift trick. The spec explicitly described the Shaw form.
+
+Test surface:
+- `forward_shape_and_finite_tiny`: tiny config (model_dim=16, depth=2, num_heads=4, chunk_size=16, left_chunks=1, mel_T=64, n_mels=8). Sanity-checks output shape `(1, 16, 16)` (T 64→32→16 after two stride-2 SSCP convs) and all-finite output. F_out 8→4→2 inside SSCP; flattened C_out·F_out=32 projected to hidden_size=16.
+- `chunked_attention_mask_block_band`: 4 chunks of 16 frames + left_chunks=1; mask is host-built via the public `chunked_band_mask_values` and asserted cell-by-cell — attendable cells are 0.0, blocked cells are < -1e8.
+- `rel_pos_bias_table_lookup`: hand-traces (i,j)→bucket for tiny config, validates diagonal at max_rel, validates +3/-3 offsets, then realizes the model's `build_rel_pos_indices` U32 tensor and compares vector-equal.
+
+Files modified:
+- fuel-core/src/lazy_gemma4_audio.rs (new, 599 LOC including tests)
+- fuel-core/src/lib.rs (added `pub mod lazy_gemma4_audio;` immediately after `lazy_gemma3`)
+
+cargo test -p fuel-core --lib lazy_gemma4_audio:: → 3 passed; 0 failed; 0 ignored.
+
+Deferred (call out for follow-up sessions):
+1. `audio_mel_mask` input for variable-length batches.
+2. Wiring this encoder into `lazy_gemma4_mm_embed` as the audio-side projector (sub-port 2 of the spec).
+3. The eager's elaborate Shaw-style + relative-shift Conformer rel-pos transform — current Shaw table is the spec's recommendation but does not bit-match the eager.
+4. Per-dim-scale softplus on Q (eager's per_dim_scale weight is omitted in v1 — Q scaling is just `1/sqrt(head_dim)`).

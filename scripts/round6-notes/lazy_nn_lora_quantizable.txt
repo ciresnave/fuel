@@ -1,0 +1,5 @@
+# nn-layers-sub-port-5
+Tests: 4 passed
+Names: lora_zero_alpha_matches_base_linear, lora_unit_alpha_adds_lora_correction_to_base, quantizable_linear_with_f32_weight_matches_lazy_linear, quantizable_linear_with_q4_0_weight_runs_and_finite
+
+All three target files (fuel-core/src/lazy_nn/{lora.rs, quantizable_linear.rs, mod.rs}) were already present in the worktree, complete and consistent with sub-port 5 spec. Verified by running cargo test on both modules — 2/2 lora tests + 2/2 quantizable_linear tests pass. mod.rs already wires `pub mod lora;` + `pub mod quantizable_linear;` plus re-exports `LazyLoraLinear` and `LazyQuantizableLinear`. Implementation routes through `WeightStorage::with_lora` + `apply_linear` and adds bias via `broadcast_add(const_f32_like)`; LazyQuantizableLinear refuses `WithLoRA` at construction time and otherwise delegates to `apply_linear`, mirroring eager API surface.

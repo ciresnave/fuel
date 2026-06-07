@@ -1,0 +1,16 @@
+# onnx-eval-sub-port-3
+Tests: 8 passed
+Names: batchnorm_eval_mode_matches_hand_computed, layernorm_normalizes_along_axis, softmax_axis_minus_one_sums_to_one_per_row, relu_matches_lazy_tensor_relu_directly, gelu_matches_lazy_tensor_gelu_directly, sigmoid_at_zero_is_half, tanh_at_zero_is_zero, leaky_relu_with_slope_0_1_at_minus_2_is_minus_0_2
+
+Sub-port 3 was already shipped at fuel-onnx/src/lazy_eval_norm.rs with all 8 required tests + lazy_eval.rs fallthrough wired through crate::lazy_eval_norm::try_dispatch. Ran `cargo test -p fuel-onnx --lib lazy_eval_norm` — all 8 tests pass in 0.04s. No edits required.
+
+Op coverage delivered:
+- BatchNormalization (eval/inference mode; rejects training_mode=1; broadcast over channel axis 1)
+- LayerNormalization (axis + epsilon, optional bias, mean/var via mean_keepdim suffix reduction)
+- Softmax / LogSoftmax (axis-aware via permute swap-axis-to-last, then softmax_last_dim, then inverse permute)
+- Relu / Gelu / Sigmoid / Tanh (delegated to LazyTensor primitives)
+- LeakyRelu (relu(x) + alpha*(x - relu(x)) decomposition)
+- Elu (relu(x) + alpha*(exp(min(x,0)) - 1) decomposition; min via -relu(-x))
+- HardSigmoid (clamp(alpha*x + beta, 0, 1))
+
+Entrypoint: pub fn try_dispatch(node, values, device, anchor) -> Result<bool> — returns Ok(true) on handled, Ok(false) on unknown so lazy_eval's fallthrough error path can fire.

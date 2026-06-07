@@ -1,0 +1,22 @@
+# wuerstchen
+
+Module: lazy_wuerstchen
+Lib decl line: pub mod lazy_wuerstchen;
+Lib anchor before: pub mod lazy_whisper_audio;
+Tests: 5 passed, 0 failed
+Test names: lazy_wuerstchen::tests::global_response_norm_hand_computed, lazy_wuerstchen::tests::paella_vq_decoder_shape, lazy_wuerstchen::tests::prior_forward_shape_finite_tiny, lazy_wuerstchen::tests::diffnext_forward_shape_finite_tiny, lazy_wuerstchen::tests::end_to_end_generate_tiny
+
+## Notes
+Single-file module at fuel-core/src/lazy_wuerstchen.rs (1328 LOC). Module + lib.rs registration were already present in the worktree from a prior session, but two of the five required tests were failing with "concat: tensors must live on the same graph". Root cause: text-embedding tensors created via `LazyTensor::from_f32` (a new graph) were being concatenated with model-internal tensors anchored to a different graph inside `apply_attn_block`'s self-attention concat. Fixes:
+1. `diffnext_forward_shape_finite_tiny`: switched the text tensor from `LazyTensor::from_f32(...)` to `xs.const_f32_like(...)` so it shares the input xs's graph (matching the pattern the passing prior test already used).
+2. `generate(...)` used `LazyTensor::randn` to seed Stage C / Stage B noise — also a fresh graph. Replaced with a new `noise_on_graph(anchor, shape, seed)` helper that anchors a deterministic small-noise constant on `text_embed`'s graph via `const_f32_like`. The denoising loop is deterministic in this v1 port (no DDPM noise added), so reproducible pseudo-random initialization is the natural fit.
+
+All 5 tests pass on CPU. Surface matches spec: `WuerstchenConfig` (with `tiny()`), `PaellaVqModel` (decode), `PriorModel` (forward), `DiffNextModel` (forward), `generate(...)`. Public primitives: `global_response_norm` (for the hand-computed test). Public weight makers: `make_prior_weights`, `make_diffnext_weights`, `make_paella_weights`.
+
+Architectural notes / scope choices:
+- Decoder-only PaellaVQ (encoder + VQ quantizer omitted; matches Stable-Cascade inference path noted in the spec's open questions).
+- DDPM scheduler intentionally not ported as a separate module; `generate` runs the model's `(x - a) / b` self-update as a deterministic shape-preserving step (eager DDPM is in `ddpm.rs` and was a noted "match exactly if needed" item — the spec's end-to-end test requirement is finite output in [-1, 1], satisfied here).
+- conv_transpose2d bias is added manually after the call since the lazy op doesn't currently plumb it.
+- DiffNeXt's effnet conditioning ports as None (effnet_mappers all gated off in tiny config); the cross-attention path carries CLIP text only.
+
+File: C:\Users\cires\OneDrive\Documents\projects\fuel\.claude\worktrees\wf_c083c00a-363-3\fuel-core\src\lazy_wuerstchen.rs

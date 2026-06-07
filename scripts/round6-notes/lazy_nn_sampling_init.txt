@@ -1,0 +1,5 @@
+# nn-layers-sub-port-7
+Tests: 8 passed
+Names: greedy_picks_max_index, temperature_sample_with_very_low_temp_picks_argmax, top_k_sample_only_picks_from_top_k_indices, top_p_sample_with_p_1_equals_full_distribution, xavier_uniform_mean_zero_variance_2_over_fan_in_plus_fan_out, kaiming_uniform_distribution_check, normal_initializer_mean_within_tolerance, uniform_in_range
+
+Sub-port 7 was already implemented in the worktree: fuel-core/src/lazy_nn/sampling.rs (greedy/temperature_sample/top_k_sample/top_p_sample) + fuel-core/src/lazy_nn/init.rs (xavier_uniform/kaiming_uniform/normal/uniform). lazy_nn/mod.rs registers `pub mod sampling;` and `pub mod init;`. All 7 spec-required tests pass plus an extra `uniform_in_range` smoke test. RNG is rand::rngs::StdRng + SeedableRng. Sampling helpers realize logits via LazyTensor::realize_f32 then do host-side argmax/softmax/multinomial.

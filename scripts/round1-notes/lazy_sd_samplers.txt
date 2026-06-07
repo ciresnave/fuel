@@ -1,0 +1,10 @@
+# sd-samplers
+
+Module: lazy_sd_samplers
+Lib decl line: pub mod lazy_sd_samplers;
+Lib anchor before: pub mod lazy_yi;
+Tests: 4 passed, 0 failed
+Test names: lazy_sd_samplers::tests::ddim_step_finite_on_tiny_sample, lazy_sd_samplers::tests::ddpm_step_finite_on_tiny_sample, lazy_sd_samplers::tests::set_timesteps_produces_descending_schedule, lazy_sd_samplers::tests::add_noise_matches_alpha_blend
+
+## Notes
+Ports the SD scheduler trait + DDIM + DDPM (sub-port 2 of 4 from port-sd-samplers.md). Host-side f64 schedule arithmetic (linspace, beta schedules, alphas_cumprod) is replicated from the eager `schedulers.rs` / `ddim.rs` / `ddpm.rs` end-to-end; the resulting per-step f64 coefficients fold into the graph as `LazyTensor::mul_scalar` / `add_scalar` calls, so no new graph ops are needed. The `SdScheduler` trait matches the spec's signature literally (single-element `timesteps: &[usize]` slice consumed via `timesteps[0]`, mirroring how SD callers pass one batched index). `step()` covers all three `PredictionType` variants (Epsilon/VPrediction/Sample) plus DDPM's full variance ladder (FixedSmall/FixedSmallLog/FixedLarge/FixedLargeLog/Learned) and `clip_sample`. The reverse-step noise injection (DDIM `eta > 0`, DDPM `t > 0`) is generated via a local `randn_like_on_graph` helper that draws f32 normal samples host-side and attaches them as a `const_f32_like` of the anchor tensor — this is required because `LazyTensor::randn` creates a fresh graph and would fail the same-graph check on the subsequent `add`. Skipped per sub-port boundary: UniPC, Euler-ancestral, SD attention blocks. All four required tests pass on the CPU reference backend (descending schedule on both schedulers, finite step output on tiny samples, exact alpha-blend match at t=0 within 1e-5).

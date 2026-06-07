@@ -1,0 +1,5 @@
+# nn-layers-sub-port-3
+Tests: 6 passed
+Names: layer_norm_forward_shape_and_finite, layer_norm_zero_eps_unit_gain_zero_bias_normalizes_to_unit_variance, rms_norm_matches_rms_norm_affine_directly, group_norm_forward_shape, batch_norm_eval_uses_running_stats, batch_norm_eval_per_channel_with_two_features
+
+Sub-port 3 of port-nn-layers.md complete. Four wrappers landed: LazyLayerNorm (optional bias, lowers to layer_norm_affine or layer_norm_last_dim+broadcast_mul when bias=None), LazyRmsNorm (lowers to rms_norm_affine), LazyGroupNorm (reshape (B,C,...) -> (B,G,(C/G)*spatial), layer_norm_last_dim, reshape back, broadcast affine on dim 1), LazyBatchNorm2d (eval-only — fuses weight/sqrt(var+eps) and bias - mean*scale at forward time then dispatches to channel_affine_4d, matching eager BatchNorm::forward_eval). All buffers held as Arc<[f32]>. Validation at construction time (sizes, num_channels divisibility, eps >= 0), rank/channel-count checks at forward time. 6/6 tests pass including the spec's required hand-computed BatchNorm golden (x=2, mean=1, var=1, eps=0, weight=1, bias=0.5 -> 1.5) plus a per-channel two-feature golden.

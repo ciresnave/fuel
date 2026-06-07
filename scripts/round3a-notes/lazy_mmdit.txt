@@ -1,0 +1,12 @@
+# mmdit
+
+Module: lazy_mmdit
+Lib decl line: pub mod lazy_mmdit;
+Lib anchor before: pub mod lazy_modernbert;
+Tests: 3 passed, 0 failed
+Test names: lazy_mmdit::tests::forward_shape_and_finite_tiny, lazy_mmdit::tests::modulation_zero_scale_is_layernorm, lazy_mmdit::tests::modulation_zero_gate_is_residual
+
+## Notes
+Single-file module at fuel-core/src/lazy_mmdit.rs (787 LOC). pub mod lazy_mmdit; was already in lib.rs at line 133 (between lazy_mixformer and lazy_modernbert). Port covers: MmDitConfig + MmDitWeights + MmDitModel with forward(img, txt, timestep, y); DoubleStreamBlock and SingleStreamBlock both as pub wrapper structs and as apply_double_stream / apply_single_stream free functions; pub fn apply_modulation((1+scale)*x + shift); sinusoidal timestep embedding + 2-layer SiLU MLP for the t+y conditioning vector; joint attention with concat'd K/V/Q along the sequence axis, post-attention narrow-split back; gated_residual helper; F32 only; batch >= 1 supported via broadcasts. Forward returns just the image segment per DiT convention.
+
+Tests required graph-anchoring fix: every secondary input (img, t, y, zero, delta, gate) must be built via x.const_f32_like(...) off the first LazyTensor::from_f32 because multiple from_f32 calls produce independent graphs and ops then panic with "tensors must live on the same graph".

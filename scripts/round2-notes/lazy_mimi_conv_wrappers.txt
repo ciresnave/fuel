@@ -1,0 +1,15 @@
+# mimi-conv-wrappers
+Module: lazy_mimi_conv_wrappers
+Lib decl: pub mod lazy_mimi_conv_wrappers;
+Anchor: pub mod lazy_mimi_conv_transpose;
+Tests: 6 passed
+Names: downsample_forward_shape_stride_2, downsample_forward_shape_stride_4, upsample_forward_shape_stride_2, upsample_forward_shape_stride_4, downsample_streaming_equals_one_shot, upsample_streaming_equals_one_shot
+
+Sub-port 3 of port-mimi-conv.md complete. ConvDownsample1dWeights wraps StreamableConv1dWeights (kernel=2*stride, groups=1, no bias/norm, Replicate padding); ConvTrUpsample1dWeights wraps StreamableConvTranspose1dWeights (kernel=2*stride, groups=dim depthwise, no bias/norm). Both expose new(stride, dim, causal, raw_weight), forward(xs), step(state, xs).
+
+Side-effect bug fix: while exercising the wrappers I uncovered a pre-existing bug in fuel-core/src/lazy_mimi_conv.rs `pad_last_1d` Replicate path: it called `repeat(Shape::from_dims(&[b, c, left]))` which `repeat` interprets as per-axis repeat counts — so when c > 1 the channel dim multiplied (e.g. 2-channel input padded with Replicate produced 4 channels, triggering concat shape mismatch). The original sub-port 1 test only used c=1 so the latent bug never surfaced. Fixed to `repeat(Shape::from_dims(&[1, 1, left]))`. All 18 pre-existing tests in lazy_mimi_conv + lazy_mimi_conv_transpose continue to pass plus the 6 new wrapper tests.
+
+The two file paths touched:
+- fuel-core/src/lazy_mimi_conv_wrappers.rs (new, 300 lines)
+- fuel-core/src/lazy_mimi_conv.rs (Replicate-path fix, 6 lines changed)
+- fuel-core/src/lib.rs (one new `pub mod` line)

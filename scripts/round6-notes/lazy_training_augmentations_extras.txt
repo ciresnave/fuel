@@ -1,0 +1,12 @@
+# training-augs-sub-port-3-4-5
+Tests: 10 passed
+Names: grad_accumulator_two_microbatches_average, grad_accumulator_take_clears_state, grad_accumulator_zero_microbatches_errors, grad_accumulator_unknown_name_errors, mixed_precision_bf16_forward_roundtrips_within_bf16_tol, cast_for_forward_same_dtype_is_identity, cast_grads_back_to_master_dtype, cast_grads_back_already_master_is_identity, inplace_sgd_step_subtracts_lr_times_grad, inplace_sgd_step_zero_lr_is_noop
+
+Sub-ports 3 + 4 + 5 of port-training-augmentations.md shipped to fuel-core/src/lazy_training_augmentations_extras.rs (lib.rs already had the `pub mod` line at line 189). All 10 tests pass.
+
+Surface delivered:
+- GradAccumulator { accum, microbatches, count } with new(microbatches) -> Result<Self> (errors on 0), accumulate(HashMap<String, LazyTensor>) -> Result<()> (validates same name set across calls), take_and_scale() -> Result<HashMap<String, LazyTensor>> (clears state, scales by 1/microbatches), plus count()/microbatches() getters.
+- MixedPrecisionConfig { forward_dtype, master_dtype }, cast_for_forward (no-op when already matching), cast_grads_back (per-tensor no-op when already master_dtype).
+- apply_inplace_sgd_step(&mut param, &grad, lr) -> Result<()>. Documented gap: LazyTensor has no in-place add primitive (only unary in-place activations from Phase 4-5 / project_inplace_ops_complete). Implementation uses `*param = param.sub(grad.mul_scalar(lr))` — destructive from caller POV, fresh graph node internally.
+
+Test setup gotcha: separate `LazyTensor::from_f32` calls produce tensors on different graphs (fuel-graph panics "tensors must live on the same graph" in add/sub). Tests use `seed.const_f32_like(...)` to build sibling tensors on the same graph for accumulate + sgd-step tests.

@@ -146,7 +146,7 @@ fn main() -> Result<()> {
             let pcm_lt = LazyTensor::from_f32(
                 pcm,
                 Shape::from_dims(&[1, 1, pcm_len]),
-                &fuel::Device::Cpu,
+                &fuel::Device::cpu(),
             );
             println!("input pcm shape: {:?}", pcm_lt.shape().dims());
             let codes = model
@@ -187,7 +187,7 @@ fn main() -> Result<()> {
             let anchor = LazyTensor::from_f32(
                 vec![0.0_f32],
                 Shape::from_dims(&[1]),
-                &fuel::Device::Cpu,
+                &fuel::Device::cpu(),
             );
             let codes_lt =
                 anchor.const_u32_like(codes_data, Shape::from_dims(&codes_shape));

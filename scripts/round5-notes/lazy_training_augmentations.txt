@@ -1,0 +1,10 @@
+# training-augmentations-sub-port-1
+Module: lazy_training_augmentations
+Crate: fuel-core
+Path: src/lazy_training_augmentations.rs
+Lib decl: pub mod lazy_training_augmentations;
+Anchor: pub mod lazy_trocr;
+Tests: 7 passed
+Names: cosine_schedule_warmup_then_decay, linear_warmup_schedule_linear_ramp, polynomial_schedule_power_2_decays_quadratically, step_schedule_drops_at_milestones, clip_grad_norm_total_under_max_is_identity, clip_grad_norm_total_over_max_scales_to_max, clip_grad_value_clamps_elementwise
+
+Module file `fuel-core/src/lazy_training_augmentations.rs` and its `pub mod lazy_training_augmentations;` declaration in `fuel-core/src/lib.rs` were already in place from prior work on this worktree. Verified the implementation covers the full sub-port 1 + 2 spec: LrSchedule trait + CosineSchedule / LinearWarmupSchedule / PolynomialSchedule / StepSchedule + clip_grad_norm (supports L1, L2, Linf, general Lp; host-side cross-tensor reduction; no-op fast path) + clip_grad_value. All 7 required tests pass on first run (cargo test -p fuel-core --lib lazy_training_augmentations). No edits required.
