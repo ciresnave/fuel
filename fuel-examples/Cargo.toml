@@ -102,10 +102,6 @@ tekken = ["tekken-rs"]
 buildtime-download = []
 
 [[example]]
-name = "llama_multiprocess"
-required-features = ["cuda", "nccl", "flash-attn"]
-
-[[example]]
 name = "reinforcement-learning"
 required-features = ["pyo3"]
 
