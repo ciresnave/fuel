@@ -54,11 +54,7 @@
 //! - [`fuel-datasets`](https://docs.rs/fuel-datasets): training datasets.
 //! - [`fuel-onnx`](https://docs.rs/fuel-onnx): ONNX import.
 
-pub mod fused_moe;
 pub mod generation;
-pub mod models;
 pub mod object_detection;
 pub mod pipelines;
-pub mod quantized_nn;
-pub mod quantized_var_builder;
 pub mod utils;
