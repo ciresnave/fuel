@@ -374,6 +374,34 @@ impl PipelinedExecutor {
         target: NodeId,
         inputs: StorageCache,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
+        Self::realize_inner(graph, target, inputs, None)
+    }
+
+    /// Plan-aware sibling of [`realize`]. The compiler thread
+    /// consults `plan.alternatives(node)` for each kernel-bearing
+    /// node first — the picker's committed winner is dispatched.
+    /// Nodes not in the plan's map (view ops, structural ops,
+    /// anything the optimizer left out) fall through to the legacy
+    /// first-registered binding-table lookup.
+    ///
+    /// Phase 4.1 of the picker-work arc. This is the load-bearing
+    /// wire from the optimizer ranker (Phases 1.1–1.5 + 3) to the
+    /// executor.
+    pub fn realize_with_plan(
+        graph: Arc<RwLock<Graph>>,
+        target: NodeId,
+        inputs: StorageCache,
+        plan: Arc<ExecutionPlan>,
+    ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
+        Self::realize_inner(graph, target, inputs, Some(plan))
+    }
+
+    fn realize_inner(
+        graph: Arc<RwLock<Graph>>,
+        target: NodeId,
+        inputs: StorageCache,
+        plan: Option<Arc<ExecutionPlan>>,
+    ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
         // Auto-insert safety copies for in-place ops whose target
         // has additional readers in this realize set (residual-
         // connection cycle break). No-op when no destructive ops
@@ -410,8 +438,9 @@ impl PipelinedExecutor {
 
         // Compiler thread: read graph nodes, resolve kernels,
         // push WorkItems. On error, push the error and bail.
+        let plan_for_compiler = plan.clone();
         let compiler = thread::spawn(move || {
-            compiler_thread_body(graph_for_compiler, order_for_compiler, None, tx);
+            compiler_thread_body(graph_for_compiler, order_for_compiler, plan_for_compiler, tx);
         });
 
         // Executor on this thread: consume WorkItems, gather
@@ -473,6 +502,27 @@ impl PipelinedExecutor {
         targets: &[NodeId],
         inputs: StorageCache,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
+        Self::realize_many_inner(graph, targets, inputs, None)
+    }
+
+    /// Plan-aware sibling of [`realize_many`]. The compiler
+    /// consults `plan.alternatives(node)` for each kernel-bearing
+    /// node first. Phase 4.1 of the picker-work arc.
+    pub fn realize_many_with_plan(
+        graph: Arc<RwLock<Graph>>,
+        targets: &[NodeId],
+        inputs: StorageCache,
+        plan: Arc<ExecutionPlan>,
+    ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
+        Self::realize_many_inner(graph, targets, inputs, Some(plan))
+    }
+
+    fn realize_many_inner(
+        graph: Arc<RwLock<Graph>>,
+        targets: &[NodeId],
+        inputs: StorageCache,
+        plan: Option<Arc<ExecutionPlan>>,
+    ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
         if targets.is_empty() {
             return Ok(Vec::new());
         }
@@ -511,9 +561,10 @@ impl PipelinedExecutor {
         let (tx, rx) = channel::<Result<WorkItem>>();
         let graph_for_compiler = Arc::clone(&graph);
         let order_for_compiler = order.clone();
+        let plan_for_compiler = plan.clone();
 
         let compiler = thread::spawn(move || {
-            compiler_thread_body(graph_for_compiler, order_for_compiler, None, tx);
+            compiler_thread_body(graph_for_compiler, order_for_compiler, plan_for_compiler, tx);
         });
 
         let mut cache: StorageCache = inputs;
@@ -863,8 +914,8 @@ fn compile_one(
             })?;
             let op_params = op_to_op_params(graph, node, layout_cache)?;
             let dtypes = build_lookup_dtypes(graph, node);
-            let compiled = compile_node(
-                op_kind, &dtypes, target_backend, op_params, bindings,
+            let compiled = resolve_compiled(
+                id, op_kind, &dtypes, target_backend, op_params, bindings, plan,
             )?;
             // Output adopts target's Layout (same Storage Arc, same shape).
             let output_layout = graph.layout(inputs[target_idx]);
@@ -906,8 +957,8 @@ fn compile_one(
         })?;
         let op_params = op_to_op_params(graph, node, layout_cache)?;
         let dtypes = build_lookup_dtypes(graph, node);
-        let compiled = compile_node(
-            OpKind::WriteSlice, &dtypes, target_backend, op_params, bindings,
+        let compiled = resolve_compiled(
+            id, OpKind::WriteSlice, &dtypes, target_backend, op_params, bindings, plan,
         )?;
         // Output adopts the destination's Layout — same Storage Arc,
         // same shape. Downstream consumers that want a post-write
@@ -951,8 +1002,8 @@ fn compile_one(
         })?;
         let op_params = op_to_op_params(graph, node, layout_cache)?;
         let dtypes = build_lookup_dtypes(graph, node);
-        let compiled = compile_node(
-            OpKind::WriteSliceRotating, &dtypes, target_backend, op_params, bindings,
+        let compiled = resolve_compiled(
+            id, OpKind::WriteSliceRotating, &dtypes, target_backend, op_params, bindings, plan,
         )?;
         let output_layout = graph.layout(inputs[0]);
         layout_cache.insert(id, output_layout.clone());
@@ -1074,8 +1125,8 @@ fn compile_one(
         })?;
         let op_params = OpParams::None;
         let dtypes = build_lookup_dtypes(graph, node);
-        let compiled = compile_node(
-            OpKind::Copy, &dtypes, target_backend, op_params, bindings,
+        let compiled = resolve_compiled(
+            id, OpKind::Copy, &dtypes, target_backend, op_params, bindings, plan,
         )?;
         // Output layout: contiguous in the node's shape (mirrors the
         // source's logical shape). Auto-contiguize on the input side
@@ -1163,7 +1214,7 @@ fn compile_one(
     // (Concat) collapse to the canonical `[T_in, T_out]` shorthand to
     // match how registrations index them.
     let dtypes = build_lookup_dtypes(graph, node);
-    let compiled = compile_node(op_kind, &dtypes, target_backend, op_params, bindings)?;
+    let compiled = resolve_compiled(id, op_kind, &dtypes, target_backend, op_params, bindings, plan)?;
     let output_layout = Layout::contiguous(node.shape.clone());
     layout_cache.insert(id, output_layout.clone());
     // Multi-output: snapshot the producer's bundle metadata. When
@@ -8604,5 +8655,273 @@ mod tests {
         );
         let ls_value = typed[last_state_layout.start_offset()];
         assert!((ls_value - 6.0).abs() < 1e-5, "last_state expected 6.0 got {ls_value}");
+    }
+
+    // ===== Phase 4.1 — plan-aware compile_one =====
+    //
+    // These tests construct an `ExecutionPlan` directly (bypassing
+    // `compile_plan`) so we can pin a specific winner kernel per
+    // node and observe that `realize_with_plan` dispatches it. The
+    // four scenarios cover the load-bearing contract:
+    //
+    //   1. Plan-resolved kernel wins (vs first-registered).
+    //   2. Plan present but no entry → legacy fallback.
+    //   3. Existing `realize` (no plan) → byte-identical to pre-4.1.
+    //   4. Plan with cross-backend winner overrides graph
+    //      `target_backend`.
+    //
+    // The trick: register the legacy "Add" kernel through the global
+    // bindings table (standard sum), then build a custom kernel that
+    // doubles the LHS — feed it into the plan's `AlternativeSet`
+    // winner. If the plan path is wired, the output is 2× LHS; if
+    // it falls back to legacy, the output is LHS + RHS.
+
+    use crate::fused::PrecisionGuarantee;
+    use crate::kernel::KernelCaps;
+    use crate::plan::ExecutionPlan;
+    use crate::ranker::{AlternativeSet, Candidate};
+    use std::collections::HashMap as StdHashMap;
+
+    /// Custom kernel for Phase 4.1 tests: writes `2 * inputs[0]`
+    /// into `outputs[0]` (ignoring `inputs[1]`). Distinguishes the
+    /// picker-resolved path from the legacy first-registered Add
+    /// kernel's sum behavior in test 1 and test 4.
+    fn double_lhs_kernel_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[Layout],
+        _params: &OpParams,
+    ) -> Result<()> {
+        let lhs_guard = inputs[0].read().map_err(|_| poisoned("lhs lock"))?;
+        let doubled: Vec<f32> = if let fuel_storage::BackendStorage::Cpu(c) = &lhs_guard.inner {
+            c.as_slice().expect("f32 cast").iter().map(|x: &f32| x * 2.0).collect()
+        } else {
+            panic!("test kernel: lhs must be CPU storage");
+        };
+        let mut out_guard = outputs[0]
+            .write()
+            .map_err(|_| poisoned("output lock"))?;
+        if let fuel_storage::BackendStorage::Cpu(c) = &mut out_guard.inner {
+            c.as_slice_mut().expect("f32 cast").copy_from_slice(&doubled);
+        } else {
+            panic!("test kernel: output must be CPU storage");
+        }
+        Ok(())
+    }
+
+    /// Build a fresh Add(F32) graph + pre-seeded `inputs` cache.
+    /// Returns `(graph, lhs_id, rhs_id, add_id, inputs)`.
+    fn build_add_graph(
+        lhs: &[f32],
+        rhs: &[f32],
+        target_backend: BackendId,
+    ) -> (Arc<RwLock<Graph>>, NodeId, NodeId, NodeId, StorageCache) {
+        assert_eq!(lhs.len(), rhs.len());
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (lhs_id, rhs_id, add_id) = {
+            let mut g = graph.write().unwrap();
+            let lhs_id = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[lhs.len()]),
+                dtype: DType::F32,
+            });
+            let rhs_id = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[lhs.len()]),
+                dtype: DType::F32,
+            });
+            let add_id = g.push(Node {
+                op: Op::Add,
+                inputs: vec![lhs_id, rhs_id],
+                shape: Shape::from_dims(&[lhs.len()]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(add_id, target_backend);
+            (lhs_id, rhs_id, add_id)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(lhs_id, Arc::new(RwLock::new(fuel_storage::from_slice_cpu(lhs))));
+        inputs.insert(rhs_id, Arc::new(RwLock::new(fuel_storage::from_slice_cpu(rhs))));
+        (graph, lhs_id, rhs_id, add_id, inputs)
+    }
+
+    /// Phase 4.1, test 1: an `ExecutionPlan` whose `AlternativeSet`
+    /// for the Add node has `double_lhs_kernel_f32` as winner is
+    /// dispatched by `realize_with_plan`. Result is `2 * lhs`, not
+    /// `lhs + rhs` — proves the picker's pick reached the executor.
+    #[test]
+    fn phase4_1_plan_resolved_kernel_wins() {
+        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
+            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
+
+        let winner = Candidate {
+            kernel: double_lhs_kernel_f32,
+            caps: KernelCaps::empty(),
+            backend: BackendId::Cpu,
+            device: DeviceLocation::Cpu,
+            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            static_cost: Default::default(),
+            op_params: OpParams::None,
+            coupling: Vec::new(),
+        };
+        let mut set = AlternativeSet::empty();
+        set.push(winner);
+        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
+        alternatives.insert(add_id, set);
+        let plan = Arc::new(ExecutionPlan {
+            order: Vec::new(),
+            alternatives,
+        });
+
+        let (result_arc, _) =
+            PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan)
+                .expect("realize_with_plan");
+
+        let guard = result_arc.read().unwrap();
+        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+            c
+        } else {
+            panic!("expected Cpu storage");
+        };
+        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
+        assert_eq!(
+            typed,
+            &[2.0, 4.0, 6.0],
+            "winner kernel must be dispatched (2*lhs), not legacy Add (lhs+rhs)",
+        );
+    }
+
+    /// Phase 4.1, test 2: an `ExecutionPlan` with no entry for the
+    /// Add node falls through to the legacy first-registered binding-
+    /// table Add kernel. Result is the standard sum.
+    #[test]
+    fn phase4_1_fallback_when_plan_has_no_entry() {
+        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
+            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
+
+        // Plan exists but `alternatives` is empty — every node falls
+        // through.
+        let plan = Arc::new(ExecutionPlan::empty());
+
+        let (result_arc, _) =
+            PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan)
+                .expect("realize_with_plan");
+
+        let guard = result_arc.read().unwrap();
+        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+            c
+        } else {
+            panic!("expected Cpu storage");
+        };
+        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
+        assert_eq!(
+            typed,
+            &[11.0, 22.0, 33.0],
+            "empty plan must fall through to legacy Add (lhs+rhs)",
+        );
+    }
+
+    /// Phase 4.1, test 3: the existing no-plan `realize` path is
+    /// byte-identical to pre-4.1. The same workload through the
+    /// plan-less call surface must still produce the sum.
+    #[test]
+    fn phase4_1_existing_realize_path_unchanged() {
+        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
+            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
+
+        let (result_arc, _) =
+            PipelinedExecutor::realize(graph, add_id, inputs).expect("realize");
+
+        let guard = result_arc.read().unwrap();
+        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+            c
+        } else {
+            panic!("expected Cpu storage");
+        };
+        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
+        assert_eq!(
+            typed,
+            &[11.0, 22.0, 33.0],
+            "no-plan realize must remain byte-identical to pre-4.1 (lhs+rhs)",
+        );
+    }
+
+    /// Phase 4.1, test 4: an `AlternativeSet` with multiple
+    /// candidates dispatches the first (the winner — the top
+    /// candidate after rank+truncate). This proves
+    /// [`crate::ranker::AlternativeSet::winner`] is what
+    /// `resolve_compiled` reads, not e.g. the last entry or a
+    /// random pick.
+    ///
+    /// Both candidates use the same backend (Cpu) — full cross-
+    /// backend override depends on Phase 4.2's `prepare()` loosening
+    /// since today's executor consults the graph node's
+    /// `target_backend` for output allocation. Phase 4.1's contract
+    /// is "kernel ref + caps come from the winner"; backend dispatch
+    /// for output allocation is downstream.
+    #[test]
+    fn phase4_1_alternative_set_winner_dispatched() {
+        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
+            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
+
+        // First-pushed candidate is the winner; second is a runner-
+        // up that must NOT be dispatched. Both are Cpu — only the
+        // kernel-ref differs.
+        let winner = Candidate {
+            kernel: double_lhs_kernel_f32,
+            caps: KernelCaps::empty(),
+            backend: BackendId::Cpu,
+            device: DeviceLocation::Cpu,
+            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            static_cost: Default::default(),
+            op_params: OpParams::None,
+            coupling: Vec::new(),
+        };
+        let runner_up = Candidate {
+            // Loud kernel that would panic if dispatched — proves
+            // the winner is what runs.
+            kernel: |_, _, _, _| {
+                panic!(
+                    "Phase 4.1: runner-up Candidate kernel was dispatched — \
+                     resolve_compiled must read AlternativeSet::winner, NOT a \
+                     non-winner entry",
+                )
+            },
+            caps: KernelCaps::empty(),
+            backend: BackendId::Cpu,
+            device: DeviceLocation::Cpu,
+            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            static_cost: Default::default(),
+            op_params: OpParams::None,
+            coupling: Vec::new(),
+        };
+        let mut set = AlternativeSet::empty();
+        set.push(winner);
+        set.push(runner_up);
+        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
+        alternatives.insert(add_id, set);
+        let plan = Arc::new(ExecutionPlan {
+            order: Vec::new(),
+            alternatives,
+        });
+
+        let (result_arc, _) =
+            PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan)
+                .expect("realize_with_plan");
+
+        let guard = result_arc.read().unwrap();
+        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+            c
+        } else {
+            panic!("expected Cpu storage");
+        };
+        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
+        assert_eq!(
+            typed,
+            &[2.0, 4.0, 6.0],
+            "AlternativeSet's winner (first-pushed candidate, 2*lhs) must be dispatched",
+        );
     }
 }
