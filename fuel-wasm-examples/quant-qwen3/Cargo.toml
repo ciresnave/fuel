@@ -13,11 +13,15 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-#simd-flash-attn = ["fuel-nn/simd-flash-attn", "fuel-transformers/simd-flash-attn"]
+#simd-flash-attn = ["fuel-transformers/simd-flash-attn"]
 
 [dependencies]
+# `fuel` is the `fuel-core` package re-export; it provides
+# `fuel::lazy_quantized_qwen3::*` and `fuel::quantized::gguf_file::*`.
 fuel = { workspace = true }
-fuel-nn = { workspace = true }
+# fuel-transformers is still needed for `generation::LogitsProcessor` and
+# `utils::apply_repeat_penalty`. The retired `fuel_transformers::models::*`
+# surface has been replaced by `fuel::lazy_quantized_qwen3`.
 fuel-transformers = { workspace = true} #, features = ["simd-flash-attn"] }
 tokenizers = { workspace = true, features = ["unstable_wasm"] }
 num-traits = { workspace = true }

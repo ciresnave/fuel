@@ -1,7 +1,7 @@
-﻿use fuel_transformers::models::bert;
+use fuel::lazy_bert;
 use wasm_bindgen::prelude::*;
 
-pub use bert::{BertModel, Config, DTYPE};
+pub use lazy_bert::{BertConfig, BertModel, BertWeights};
 pub use tokenizers::{PaddingParams, Tokenizer};
 
 #[wasm_bindgen]

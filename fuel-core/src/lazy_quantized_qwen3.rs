@@ -195,9 +195,33 @@ impl QuantizedQwen3Model {
     ) -> Result<Self> {
         use crate::quantized::gguf_mmap::MmapedContent;
         let mc = MmapedContent::from_path(path)?;
-        let content = mc.content();
         let mmap_arc = mc.mmap();
         let mmap_bytes: &[u8] = &mmap_arc[..];
+        Self::from_gguf_content_and_bytes(mc.content(), mmap_bytes, cfg)
+    }
+
+    /// Load a GGUF-quantized Qwen3 checkpoint from an in-memory byte
+    /// buffer. Used by callers that already have the full GGUF file
+    /// resident (e.g. WASM, where the host passes a `Vec<u8>` rather
+    /// than a path). Semantics match [`Self::from_gguf`] — the byte
+    /// buffer must contain the complete GGUF file (header + tensor
+    /// data).
+    pub fn from_gguf_bytes(bytes: &[u8], cfg: &Qwen3Config) -> Result<Self> {
+        use crate::quantized::gguf_file::Content;
+        use std::io::Cursor;
+        let mut cursor = Cursor::new(bytes);
+        let content = Content::read(&mut cursor)?;
+        Self::from_gguf_content_and_bytes(&content, bytes, cfg)
+    }
+
+    /// Shared body for the path- and bytes-based GGUF loaders. `bytes`
+    /// must cover the entire GGUF file starting at byte 0 — tensor
+    /// offsets are interpreted relative to `content.tensor_data_offset`.
+    fn from_gguf_content_and_bytes(
+        content: &crate::quantized::gguf_file::Content,
+        bytes: &[u8],
+        cfg: &Qwen3Config,
+    ) -> Result<Self> {
         let data_off = content.tensor_data_offset as usize;
 
         let get_tensor_bytes = |name: &str| -> Result<(&[u8], crate::quantized::GgmlDType, Vec<usize>)> {
@@ -208,7 +232,7 @@ impl QuantizedQwen3Model {
             let block_size = info.ggml_dtype.block_size();
             let bytes_len = elems / block_size * info.ggml_dtype.type_size();
             let start = data_off + info.offset as usize;
-            Ok((&mmap_bytes[start..start + bytes_len], info.ggml_dtype, info.shape.dims().to_vec()))
+            Ok((&bytes[start..start + bytes_len], info.ggml_dtype, info.shape.dims().to_vec()))
         };
 
         let load_f32 = |name: &str| -> Result<Vec<f32>> {
@@ -345,6 +369,70 @@ impl QuantizedQwen3Model {
 
 fn layer_err(idx: usize, name: &str, e: crate::Error) -> crate::Error {
     crate::Error::Msg(format!("layer {idx} {name}: {e}")).bt()
+}
+
+/// Build a [`Qwen3Config`] from parsed GGUF metadata + tensor infos.
+/// Mirrors the `qwen3_cfg_from_gguf` helper in the
+/// `fuel-examples/quantized-qwen3` binary so callers that already have
+/// a parsed `Content` (e.g. WASM hosts that parse from a byte slice)
+/// can derive the config without reimplementing key lookups.
+///
+/// `vocab_size` falls back to the first dim of `token_embd.weight`
+/// when `qwen3.vocab_size` is absent (GGUF reverses dims on read so
+/// `dims[0]` is the vocabulary axis). Tied-embedding status is
+/// inferred from the presence of `output.weight`.
+pub fn qwen3_config_from_gguf_content(
+    content: &crate::quantized::gguf_file::Content,
+) -> Result<Qwen3Config> {
+    let md = &content.metadata;
+    let get = |k: &str| -> Result<&crate::quantized::gguf_file::Value> {
+        md.get(k).ok_or_else(|| crate::Error::Msg(
+            format!("gguf metadata: missing key {k:?}")
+        ).bt())
+    };
+    let num_attention_heads = get("qwen3.attention.head_count")?.to_u32()? as usize;
+    let num_key_value_heads = get("qwen3.attention.head_count_kv")?.to_u32()? as usize;
+    let head_dim = get("qwen3.attention.key_length")?.to_u32()? as usize;
+    let num_hidden_layers = get("qwen3.block_count")?.to_u32()? as usize;
+    let hidden_size = get("qwen3.embedding_length")?.to_u32()? as usize;
+    let intermediate_size = get("qwen3.feed_forward_length")?.to_u32()? as usize;
+    let max_position_embeddings = get("qwen3.context_length")?.to_u32()? as usize;
+    let rms_norm_eps = get("qwen3.attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
+    let rope_theta = get("qwen3.rope.freq_base")?.to_f32()? as f64;
+    let vocab_size = match md.get("qwen3.vocab_size") {
+        Some(v) => v.to_u32()? as usize,
+        None => {
+            let info = content.tensor_infos.get("token_embd.weight")
+                .ok_or_else(|| crate::Error::Msg(
+                    "gguf: missing token_embd.weight".into()
+                ).bt())?;
+            let dims = info.shape.dims();
+            if dims.is_empty() {
+                return Err(crate::Error::Msg(
+                    "gguf: token_embd.weight has empty shape".into()
+                ).bt());
+            }
+            dims[0]
+        }
+    };
+    let tie_word_embeddings = !content.tensor_infos.contains_key("output.weight");
+    Ok(Qwen3Config {
+        vocab_size,
+        hidden_size,
+        intermediate_size,
+        num_hidden_layers,
+        num_attention_heads,
+        num_key_value_heads,
+        head_dim,
+        max_position_embeddings,
+        sliding_window: None,
+        max_window_layers: 0,
+        use_sliding_window: false,
+        rope_theta,
+        rms_norm_eps,
+        attention_bias: false,
+        tie_word_embeddings,
+    })
 }
 
 fn check_q4_0_divisible(name: &str, n: usize) -> Result<()> {

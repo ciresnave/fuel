@@ -1,5 +1,7 @@
-﻿use fuel::quantized::gguf_file;
-use fuel::{DType, Device, Tensor};
+use fuel::lazy_quantized_qwen3::{
+    qwen3_config_from_gguf_content, QuantizedQwen3Model,
+};
+use fuel::quantized::gguf_file;
 use fuel_transformers::generation::LogitsProcessor;
 use fuel_wasm_chat_template::{ChatTemplate, ChatTemplateOptions, Conversation, Message};
 use js_sys::Date;
@@ -8,11 +10,10 @@ use tokenizers::Tokenizer;
 use wasm_bindgen::prelude::*;
 
 use crate::profiler::ProfileGuard;
-use fuel_transformers::models::quantized_qwen3::ModelWeights as QuantizedQwen3;
 
 #[wasm_bindgen]
 pub struct Model {
-    model: QuantizedQwen3,
+    model: QuantizedQwen3Model,
     tokenizer: Tokenizer,
     logits_processor: LogitsProcessor,
     repeat_penalty: f32,
@@ -20,9 +21,15 @@ pub struct Model {
     eos_token: u32,
     enable_thinking: bool,
 
+    /// Cached vocab size to avoid re-reading config on every step.
+    vocab_size: usize,
+
     // === KV Cache Management ===
     /// Actual token IDs that are in the KV cache.
     /// This is the source of truth for what's been processed.
+    /// In the lazy API there is no explicit KV-cache handle — `start_pos`
+    /// passed to `forward` IS the KV-cache position, so `kv_tokens.len()`
+    /// directly drives the next `start_pos`.
     kv_tokens: Vec<u32>,
 
     /// Tokens generated during the current assistant turn.
@@ -45,8 +52,6 @@ impl Model {
     pub fn load(weights: Vec<u8>, tokenizer: Vec<u8>, _config: Vec<u8>) -> Result<Model, JsError> {
         let _prof = ProfileGuard::new("total_load");
         console_error_panic_hook::set_once();
-
-        let device = Device::Cpu;
 
         let _prof = ProfileGuard::new("load_tokenizer");
         console_log!("Loading tokenizer...");
@@ -72,16 +77,25 @@ impl Model {
             weights.len() as f64 / 1_048_576.0
         );
 
-        let model = {
+        // Parse the GGUF header from the in-memory byte slice. WASM
+        // hosts hand us a `Vec<u8>` rather than a path, so we use the
+        // bytes-based loader rather than `from_gguf` (which would mmap
+        // a file — not available in wasm32-unknown-unknown).
+        let (model, vocab_size) = {
             let _prof = ProfileGuard::new("parse_gguf");
 
-            let mut cursor = Cursor::new(weights);
+            let mut cursor = Cursor::new(weights.as_slice());
             let content = gguf_file::Content::read(&mut cursor)
                 .map_err(|e| JsError::new(&format!("Failed to read GGUF: {}", e)))?;
 
-            console_log!("GGUF file parsed, loading model weights...");
+            console_log!("GGUF file parsed, deriving config and loading model weights...");
 
-            QuantizedQwen3::from_gguf(content, &mut cursor, &device)?
+            let cfg = qwen3_config_from_gguf_content(&content)
+                .map_err(|e| JsError::new(&format!("Failed to derive Qwen3 config: {}", e)))?;
+            let vocab = cfg.vocab_size;
+            let model = QuantizedQwen3Model::from_gguf_bytes(&weights, &cfg)
+                .map_err(|e| JsError::new(&format!("Failed to load model: {}", e)))?;
+            (model, vocab)
         };
 
         let load_time = (Date::now() - start) / 1000.0;
@@ -97,6 +111,7 @@ impl Model {
             repeat_last_n: 64,
             eos_token,
             enable_thinking: true,
+            vocab_size,
             kv_tokens: Vec::new(),
             current_gen_tokens: Vec::new(),
             conversation: None,
@@ -117,8 +132,10 @@ impl Model {
 
         self.enable_thinking = enable_thinking;
 
-        // Clear KV cache for new conversation
-        self.model.clear_kv_cache();
+        // "Clear KV cache" in the lazy API is just dropping the
+        // `start_pos` accumulator back to 0 — the model carries no
+        // intermediate state between `forward` calls beyond the
+        // `tokens / start_pos` arguments the caller passes.
         self.kv_tokens.clear();
         self.current_gen_tokens.clear();
         self.current_response.clear();
@@ -161,8 +178,7 @@ You are a helpful AI assistant.",
 
         self.enable_thinking = enable_thinking;
 
-        // Clear KV cache for new conversation
-        self.model.clear_kv_cache();
+        // Clear KV cache for new conversation (see `start_conversation`).
         self.kv_tokens.clear();
         self.current_gen_tokens.clear();
         self.current_response.clear();
@@ -340,7 +356,8 @@ You are a helpful AI assistant.",
         if let Some(conv) = self.conversation.as_mut() {
             conv.clear();
         }
-        self.model.clear_kv_cache();
+        // Drop KV-cache state (the lazy model has no separate handle —
+        // resetting `kv_tokens` resets `start_pos` for the next forward).
         self.kv_tokens.clear();
         self.current_gen_tokens.clear();
         self.current_response.clear();
@@ -439,7 +456,6 @@ You are a helpful AI assistant.",
         self.current_response.clear();
         self.conversation = None;
         self.is_first_turn = true;
-        self.model.clear_kv_cache();
     }
 }
 
@@ -478,6 +494,14 @@ impl Model {
         result
     }
 
+    /// Slice the last-position row out of a flat `(1, seq, vocab)` lazy
+    /// logits buffer as an owned `Vec<f32>` ready for
+    /// `LogitsProcessor::sample` + `apply_repeat_penalty`.
+    fn last_logits_row(&self, logits_flat: &[f32], seq: usize) -> Vec<f32> {
+        let last_off = (seq - 1) * self.vocab_size;
+        logits_flat[last_off..last_off + self.vocab_size].to_vec()
+    }
+
     /// Process prompt tokens and return the first generated token.
     /// Note: This updates KV cache internally but does NOT modify kv_tokens.
     /// The caller (chat/init_with_prompt) is responsible for token tracking.
@@ -488,43 +512,40 @@ impl Model {
     ) -> fuel::Result<(String, u32)> {
         let _prof = ProfileGuard::new("process_prompt");
 
-        let dev = Device::Cpu;
-
-        let input = {
-            let _prof = ProfileGuard::new("create_input_tensor");
-            Tensor::new(tokens, &dev)?.unsqueeze(0)?
-        };
-
-        // Forward pass through all prompt tokens
-        let logits = {
+        // Forward pass through all prompt tokens. The lazy API takes
+        // a `&[u32]` directly — no intermediate Tensor allocation
+        // needed.
+        let logits_lazy = {
             let _prof = ProfileGuard::new("model_forward_prompt");
-            self.model.forward(&input, start_pos)?
+            self.model.forward(tokens, start_pos)?
         };
 
-        let logits = {
+        let logits_flat = {
+            let _prof = ProfileGuard::new("logits_realize");
+            logits_lazy.realize_f32()
+        };
+
+        let mut logits = {
             let _prof = ProfileGuard::new("logits_post_process");
-            logits.squeeze(0)?.to_dtype(DType::F32)?
+            self.last_logits_row(&logits_flat, tokens.len())
         };
 
         // Apply repeat penalty using all tokens (cached + new prompt tokens)
-        let all_context: Vec<u32> = self
-            .kv_tokens
-            .iter()
-            .chain(tokens.iter())
-            .copied()
-            .collect();
-
-        let logits = if self.repeat_penalty == 1. {
-            logits
-        } else {
+        if self.repeat_penalty != 1. {
             let _prof = ProfileGuard::new("apply_repeat_penalty");
+            let all_context: Vec<u32> = self
+                .kv_tokens
+                .iter()
+                .chain(tokens.iter())
+                .copied()
+                .collect();
             let start_at = all_context.len().saturating_sub(self.repeat_last_n);
             fuel_transformers::utils::apply_repeat_penalty(
-                &logits,
+                &mut logits,
                 self.repeat_penalty,
                 &all_context[start_at..],
-            )?
-        };
+            );
+        }
 
         // Sample first token
         let next_token = {
@@ -552,42 +573,39 @@ impl Model {
     fn process_generation(&mut self, token_to_process: u32) -> fuel::Result<String> {
         let _prof = ProfileGuard::new("process_generation");
 
-        let dev = Device::Cpu;
-
-        let input = {
-            let _prof = ProfileGuard::new("create_input_tensor");
-            Tensor::new(&[token_to_process], &dev)?.unsqueeze(0)?
-        };
-
         // Position is the next slot in the sequence (token_to_process hasn't been added yet)
         let pos = self.kv_tokens.len();
 
-        // Forward pass for single token - this adds it to KV cache
-        let logits = {
+        // Forward pass for single token - this drives the cached
+        // attention path inside the lazy graph.
+        let logits_lazy = {
             let _prof = ProfileGuard::new("model_forward_gen");
-            self.model.forward(&input, pos)?
+            self.model.forward(&[token_to_process], pos)?
         };
 
         // NOW add the processed token to kv_tokens (it's in KV cache now)
         self.kv_tokens.push(token_to_process);
 
-        let logits = {
+        let logits_flat = {
+            let _prof = ProfileGuard::new("logits_realize");
+            logits_lazy.realize_f32()
+        };
+
+        let mut logits = {
             let _prof = ProfileGuard::new("logits_post_process");
-            logits.squeeze(0)?.to_dtype(DType::F32)?
+            self.last_logits_row(&logits_flat, 1)
         };
 
         // Apply repeat penalty
-        let logits = if self.repeat_penalty == 1. {
-            logits
-        } else {
+        if self.repeat_penalty != 1. {
             let _prof = ProfileGuard::new("apply_repeat_penalty");
             let start_at = self.kv_tokens.len().saturating_sub(self.repeat_last_n);
             fuel_transformers::utils::apply_repeat_penalty(
-                &logits,
+                &mut logits,
                 self.repeat_penalty,
                 &self.kv_tokens[start_at..],
-            )?
-        };
+            );
+        }
 
         // Sample next token
         let next_token = {

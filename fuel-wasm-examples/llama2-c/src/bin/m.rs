@@ -1,4 +1,5 @@
-﻿use fuel::{Device, Tensor};
+use fuel::inference_context::InferenceContext;
+use fuel::Device;
 use fuel_transformers::generation::LogitsProcessor;
 use fuel_wasm_example_llama2::worker::{Model as M, ModelData};
 use wasm_bindgen::prelude::*;
@@ -14,20 +15,25 @@ pub struct Model {
 impl Model {
     fn process(&mut self, tokens: &[u32]) -> fuel::Result<String> {
         const REPEAT_LAST_N: usize = 64;
-        let dev = Device::Cpu;
-        let input = Tensor::new(tokens, &dev)?.unsqueeze(0)?;
-        let logits = self.inner.llama.forward(&input, tokens.len())?;
-        let logits = logits.squeeze(0)?;
-        let logits = if self.repeat_penalty == 1. || tokens.is_empty() {
-            logits
-        } else {
+        let dev = Device::cpu();
+        let mut ctx = InferenceContext::new(dev);
+        let mut cache = self.inner.cache.lock().unwrap();
+        let logits = self
+            .inner
+            .llama
+            .forward_with_kv_context(tokens, &mut cache, &mut ctx)?;
+        // `forward_with_kv_context` already returns the last position's
+        // logits as `Vec<f32>`; apply the repeat penalty host-side and
+        // sample.
+        let mut logits = logits;
+        if self.repeat_penalty != 1.0 && !self.tokens.is_empty() {
             let start_at = self.tokens.len().saturating_sub(REPEAT_LAST_N);
             fuel_transformers::utils::apply_repeat_penalty(
-                &logits,
+                &mut logits,
                 self.repeat_penalty,
                 &self.tokens[start_at..],
-            )?
-        };
+            );
+        }
 
         let next_token = self.logits_processor.sample(&logits)?;
         self.tokens.push(next_token);
@@ -61,7 +67,9 @@ impl Model {
 
     #[wasm_bindgen]
     pub fn get_seq_len(&mut self) -> usize {
-        self.inner.config.seq_len
+        // The lazy port has no built-in `seq_len`; mirror the WASM
+        // worker's 1024-token cap from `worker::SEQ_LEN_MAX`.
+        1024
     }
 
     #[wasm_bindgen]
@@ -73,12 +81,10 @@ impl Model {
         repeat_penalty: f32,
         seed: u64,
     ) -> Result<String, JsError> {
-        // First reset the cache.
+        // First reset the KV cache.
         {
-            let mut cache = self.inner.cache.kvs.lock().unwrap();
-            for elem in cache.iter_mut() {
-                *elem = None
-            }
+            let mut cache = self.inner.cache.lock().unwrap();
+            cache.clear();
         }
         let temp = if temp <= 0. { None } else { Some(temp) };
         let top_p = if top_p <= 0. || top_p >= 1. {
