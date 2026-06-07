@@ -1,0 +1,10 @@
+# whisper-audio
+
+Module: lazy_whisper_audio
+Lib decl line: pub mod lazy_whisper_audio;
+Lib anchor before: pub mod lazy_whisper;
+Tests: 4 passed, 0 failed
+Test names: lazy_whisper_audio::tests::hann_window_endpoints_and_peak, lazy_whisper_audio::tests::sine_wave_pcm_to_mel_finite, lazy_whisper_audio::tests::shape_for_30s_input, lazy_whisper_audio::tests::silence_clamps_to_floor
+
+## Notes
+Pure host-side f32 STFT + log-mel preprocessing for Whisper, ported from fuel-transformers/src/models/audio/whisper/audio.rs. Surface: hann_window (symmetric Hann), stft (Hann-windowed power spectrum with folded one-sided bins, recursive radix-2 FFT with naive DFT fallback for odd lengths), log_mel (filterbank matmul + log10 + max-minus-8 floor + (x+4)/4 rescale matching whisper.cpp), pcm_to_mel (pad-or-truncate to 480000 samples then STFT + log_mel with N_FFT=400, HOP_LENGTH=160). No lazy-graph involvement, no embedded mel filterbank blobs — callers supply (n_mels, n_fft/2+1) row-major filters as specified. Constants SAMPLE_RATE/N_FFT/HOP_LENGTH/CHUNK_LENGTH/N_SAMPLES re-exported. Result-returning log_mel/pcm_to_mel validate filterbank and per-frame bin counts via crate::bail!. Tests: Hann endpoints/peak sanity, 440Hz sine produces all-finite non-constant (80, 3001) output, 30s zero buffer has correct (80, 3001) shape, silence yields uniform -1.5 floor (log10(1e-10)=-10, mmax=-10, floor=-18, clamp keeps -10, (-10+4)/4=-1.5) — no -inf. Bumped a sibling 'aocl' worktree symlink dependency; cargo test ran via PowerShell. 4/4 tests pass; clean compile (existing crate warnings unchanged).

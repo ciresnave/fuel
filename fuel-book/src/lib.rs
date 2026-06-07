@@ -1,5 +1,8 @@
-﻿#[cfg(test)]
-pub mod simplified;
+﻿// `simplified` (the from-scratch MNIST classifier walkthrough) depended on
+// `fuel-nn`, which was retired during the eager-Tensor retirement program.
+// It needs a LazyTensor rewrite before being re-enabled here.
+// #[cfg(test)]
+// pub mod simplified;
 
 #[cfg(test)]
 mod tests {
@@ -20,7 +23,7 @@ let repo = api.model("bert-base-uncased".to_string());
 
 let weights_filename = repo.get("model.safetensors").await.unwrap();
 
-let weights = fuel::safetensors::load(weights_filename, &Device::Cpu).unwrap();
+let weights = fuel::safetensors::load(weights_filename, &Device::cpu()).unwrap();
 // ANCHOR_END: book_hub_1
         assert_eq!(weights.len(), 206);
     }
@@ -41,7 +44,7 @@ let weights_filename = repo.get("model.safetensors").unwrap();
 
 let file = fs::File::open(weights_filename).unwrap();
 let mmap = unsafe { Mmap::map(&file).unwrap() };
-let weights = fuel::safetensors::load_buffer(&mmap[..], &Device::Cpu).unwrap();
+let weights = fuel::safetensors::load_buffer(&mmap[..], &Device::cpu()).unwrap();
 // ANCHOR_END: book_hub_2
         assert_eq!(weights.len(), 206);
     }
@@ -99,7 +102,7 @@ let dtype: DType = dtype.try_into().unwrap();
 
 // TODO: Implement from_buffer_iterator so we can skip the extra CPU alloc.
 let raw: Vec<u8> = iterator.into_iter().flatten().cloned().collect();
-let tp_tensor = Tensor::from_raw_buffer(&raw, dtype, &tp_shape, &Device::Cpu).unwrap();
+let tp_tensor = Tensor::from_raw_buffer(&raw, dtype, &tp_shape, &Device::cpu()).unwrap();
 // ANCHOR_END: book_hub_3
         assert_eq!(view.shape(), &[768, 768]);
         assert_eq!(tp_tensor.dims(), &[192, 768]);
@@ -158,8 +161,8 @@ for row in test_parquet{
         }
     }
 }
-let test_images = (Tensor::from_vec(test_buffer_images, (test_samples, 784), &Device::Cpu)?.to_dtype(DType::F32)? / 255.)?;
-let test_labels = Tensor::from_vec(test_buffer_labels, (test_samples, ), &Device::Cpu)?;
+let test_images = (Tensor::from_vec(test_buffer_images, (test_samples, 784), &Device::cpu())?.to_dtype(DType::F32)? / 255.)?;
+let test_labels = Tensor::from_vec(test_buffer_labels, (test_samples, ), &Device::cpu())?;
 
 let train_samples = 60_000;
 let mut train_buffer_images: Vec<u8> = Vec::with_capacity(train_samples * 784);
@@ -178,8 +181,8 @@ for row in train_parquet{
         }
     }
 }
-let train_images = (Tensor::from_vec(train_buffer_images, (train_samples, 784), &Device::Cpu)?.to_dtype(DType::F32)? / 255.)?;
-let train_labels = Tensor::from_vec(train_buffer_labels, (train_samples, ), &Device::Cpu)?;
+let train_images = (Tensor::from_vec(train_buffer_images, (train_samples, 784), &Device::cpu())?.to_dtype(DType::F32)? / 255.)?;
+let train_labels = Tensor::from_vec(train_buffer_labels, (train_samples, ), &Device::cpu())?;
 
 let mnist = fuel_datasets::vision::Dataset {
     train_images,

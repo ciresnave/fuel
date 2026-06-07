@@ -67,7 +67,7 @@ impl Dataset {
 /// use fuel_datasets::nlp::tinystories::{Dataset, DatasetRandomIter};
 /// use fuel::Device;
 /// let ds = Dataset::new("data/tinystories")?;
-/// let iter = DatasetRandomIter::new(&ds, false, 512, Device::Cpu);
+/// let iter = DatasetRandomIter::new(&ds, false, 512, Device::cpu());
 /// # Ok::<(), fuel::Error>(())
 /// ```
 pub struct DatasetRandomIter<'a> {

@@ -1,0 +1,22 @@
+# mimi-encodec
+Module: lazy_mimi_encodec
+Lib decl: pub mod lazy_mimi_encodec;
+Anchor: pub mod lazy_mimi_conv_transpose;
+Tests: 6 passed
+Names: v0_1_config_matches_kyutai_canonical_dims, v0_1_codebook_override_propagates, new_rejects_stride_mismatch, tiny_encode_decode_round_trip_shape, streaming_decode_equals_one_shot, streaming_encode_equals_one_shot
+
+Top-level Mimi neural audio codec composition port shipped at fuel-core/src/lazy_mimi_encodec.rs (already present, this session brought streaming_encode_equals_one_shot to green).
+
+Surface:
+- MimiEncodecConfig + v0_1(num_codebooks) preset (24kHz / 12.5Hz / ResampleMethod::Conv / 16 codebooks default)
+- MimiEncodecModel::{new, encode, decode, encode_step, decode_step}
+- MimiEncodecEncodeState / MimiEncodecDecodeState (host-side buffers — robust against cross-graph chunks)
+
+Key fix this session: the prior streaming impl buffered chunks as LazyTensor and concatenated, which panicked in fuel_graph::Tensor::concat when successive streaming chunks were created via fresh LazyTensor::from_f32 calls (each creates a new graph and concat asserts same-graph). Refactored both encode_step and decode_step to keep host-side Vec buffers (PCM as Vec<f32>, codes as Vec<Vec<u32>> per codebook) and rebuild a single LazyTensor::from_* per step on the cumulative buffer. Streaming-equals-one-shot still holds bit-for-bit because the SeaNet path is fully causal (left-pad-only in Constant + Replicate modes), so running encode on a prefix of PCM produces identical leading codes to running it on the full PCM.
+
+Test fix: streaming_encode_equals_one_shot rebuilds the (q, frame) row-major layout that the one-shot realize_u32 returns by bucketing emitted codes per codebook across all streaming steps. The original test interleaved per-step (q, frame) outputs which doesn't equal the global (q, frame) layout.
+
+Build: clean (66 warnings, all pre-existing).
+Test run: 6/6 lazy_mimi_encodec:: tests pass.
+
+ResampleMethod::Interpolate variant carried for type compatibility with the eager Config but not implemented — both build paths only use ::Conv.

@@ -9,7 +9,7 @@
 /// use fuel_datasets::Batcher;
 ///
 /// let tensors: Vec<Tensor> = (0..10u32)
-///     .map(|i| Tensor::new(&[i], &Device::Cpu).unwrap())
+///     .map(|i| Tensor::new(&[i], &Device::cpu()).unwrap())
 ///     .collect();
 /// let batcher = Batcher::new1(tensors.into_iter()).batch_size(3);
 /// // Produces batches of 3 (plus a remainder of 1 if return_last_incomplete_batch is set).
@@ -52,7 +52,7 @@ impl<I> Batcher<I> {
 /// use fuel::{Tensor, Device};
 /// use fuel_datasets::Batcher;
 /// let tensors: Vec<Tensor> = (0..4u32)
-///     .map(|i| Tensor::new(&[i], &Device::Cpu).unwrap())
+///     .map(|i| Tensor::new(&[i], &Device::cpu()).unwrap())
 ///     .collect();
 /// let _batcher = Batcher::new1(tensors.into_iter());
 /// ```
@@ -69,8 +69,8 @@ pub struct Iter1<I: Iterator<Item = Tensor>> {
 /// use fuel_datasets::Batcher;
 /// let pairs: Vec<(Tensor, Tensor)> = (0..4u32)
 ///     .map(|i| (
-///         Tensor::new(&[i], &Device::Cpu).unwrap(),
-///         Tensor::new(&[i * 2], &Device::Cpu).unwrap(),
+///         Tensor::new(&[i], &Device::cpu()).unwrap(),
+///         Tensor::new(&[i * 2], &Device::cpu()).unwrap(),
 ///     ))
 ///     .collect();
 /// let _batcher = Batcher::new2(pairs.into_iter());
@@ -99,7 +99,7 @@ impl<I: Iterator<Item = (Tensor, Tensor)>> Batcher<Iter2<I>> {
 /// use fuel::{Tensor, Device};
 /// use fuel_datasets::Batcher;
 /// let tensors: Vec<fuel::Result<Tensor>> = (0..4u32)
-///     .map(|i| Tensor::new(&[i], &Device::Cpu))
+///     .map(|i| Tensor::new(&[i], &Device::cpu()))
 ///     .collect();
 /// let _batcher = Batcher::new_r1(tensors.into_iter());
 /// ```
@@ -116,8 +116,8 @@ pub struct IterResult1<I: Iterator<Item = Result<Tensor>>> {
 /// use fuel_datasets::Batcher;
 /// let pairs: Vec<fuel::Result<(Tensor, Tensor)>> = (0..4u32)
 ///     .map(|i| Ok((
-///         Tensor::new(&[i], &Device::Cpu)?,
-///         Tensor::new(&[i * 2], &Device::Cpu)?,
+///         Tensor::new(&[i], &Device::cpu())?,
+///         Tensor::new(&[i * 2], &Device::cpu())?,
 ///     )))
 ///     .collect();
 /// let _batcher = Batcher::new_r2(pairs.into_iter());

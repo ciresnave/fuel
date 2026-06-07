@@ -194,7 +194,7 @@ fn main() -> Result<()> {
                 let anchor = LazyTensor::from_f32(
                     vec![0.0_f32],
                     Shape::from_dims(&[1]),
-                    &fuel::Device::Cpu,
+                    &fuel::Device::cpu(),
                 );
                 let lt = anchor.const_u32_like(u32_data, Shape::from_dims(&shape));
                 codes.push(lt);

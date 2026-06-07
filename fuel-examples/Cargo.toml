@@ -15,7 +15,6 @@ fuel = { workspace = true }
 fuel-cpu-backend = { workspace = true }
 fuel-cuda-backend = { workspace = true, optional = true }
 fuel-datasets = { workspace = true, optional = true }
-fuel-nn = { workspace = true }
 fuel-transformers = { workspace = true }
 fuel-flash-attn-cuda = { workspace = true, optional = true }
 fuel-onnx = { workspace = true, optional = true }
@@ -71,28 +70,25 @@ default = []
 accelerate = [
     "dep:accelerate-src",
     "fuel/accelerate",
-    "fuel-nn/accelerate",
     "fuel-transformers/accelerate",
 ]
 cuda = [
     "fuel/cuda",
-    "fuel-nn/cuda",
     "fuel-transformers/cuda",
     "dep:cudaforge",
     "dep:baracuda-driver",
     "dep:fuel-cuda-backend",
 ]
-cudnn = ["fuel/cudnn", "fuel-nn/cudnn", "fuel-transformers/cudnn"]
+cudnn = ["fuel/cudnn", "fuel-transformers/cudnn"]
 flash-attn = ["cuda", "fuel-transformers/flash-attn", "dep:fuel-flash-attn-cuda"]
 mkl = [
     "dep:intel-mkl-src",
     "fuel/mkl",
-    "fuel-nn/mkl",
     "fuel-transformers/mkl",
 ]
 nccl = ["cuda", "fuel/nccl", "dep:baracuda-nccl", "dep:half"]
 onnx = ["fuel-onnx"]
-metal = ["fuel/metal", "fuel-nn/metal"]
+metal = ["fuel/metal"]
 microphone = ["cpal", "rubato"]
 encodec = ["cpal", "symphonia", "rubato"]
 mimi = ["cpal", "symphonia", "rubato"]

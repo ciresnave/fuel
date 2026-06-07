@@ -1,0 +1,8 @@
+# sd-samplers-unipc
+Module: lazy_sd_samplers_unipc
+Lib decl: pub mod lazy_sd_samplers_unipc;
+Anchor: pub mod lazy_sd_samplers;
+Tests: 6 passed
+Names: solve_linear_3x3_recovers_identity, set_timesteps_produces_descending_schedule, history_window_advances_per_step, add_noise_alpha_sigma_blend, order_2_predictor_step_finite, order_3_predictor_corrector_step_finite
+
+Module was already present at fuel-core/src/lazy_sd_samplers_unipc.rs and `pub mod lazy_sd_samplers_unipc;` was already in lib.rs (alphabetically after lazy_sd_samplers;). Verified `cargo test -p fuel-core --lib lazy_sd_samplers_unipc::` passes all 6 tests including the 4 required: order_2_predictor_step_finite, order_3_predictor_corrector_step_finite, set_timesteps_produces_descending_schedule, history_window_advances_per_step. Scope covers solver_order in {1,2,3}, Bh1+Bh2 solver types, Epsilon/Sample/VPrediction prediction, Karras+Exponential sigma schedules with FromSigmas+Linspace timestep grids, predictor (UniP) + corrector (UniC) with configurable skip set, lower_order_final ramp-down, and host-side Gauss-Jordan linear solver for the rhos coefficients. Deferred items documented at module level: dynamic thresholding (pixel-space only, not standard SD latents) and SdeDpmSolverPlusPlus stochastic variant. No file edits were necessary; the prior session's port already met spec.

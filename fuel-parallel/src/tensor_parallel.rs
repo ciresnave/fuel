@@ -32,9 +32,69 @@
 //! ```
 
 use crate::comm::{Communicator, ReduceOp};
-use fuel::{Module, Result, Tensor};
-use fuel_nn::Linear;
+use fuel::{Context, Result, Tensor};
 use serde::{Deserialize, Serialize};
+
+/// Minimal inlined Linear layer (was `fuel_nn::Linear`).
+///
+/// Mirrors the eager surface `fuel-parallel` consumes: a weight tensor +
+/// optional bias with `new(w, b)` and `forward(&self, x) -> Result<Tensor>`
+/// computing `y = x @ w.t() + b`. Inlined here so `fuel-parallel` doesn't
+/// depend on `fuel-nn`.
+#[derive(Clone, Debug)]
+pub struct Linear {
+    weight: Tensor,
+    bias: Option<Tensor>,
+}
+
+impl Linear {
+    pub fn new(weight: Tensor, bias: Option<Tensor>) -> Self {
+        Self { weight, bias }
+    }
+
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let in_features = self.weight.dim(1)?;
+        let out_features = self.weight.dim(0)?;
+        let input_shape = x.shape().clone();
+        // Avoid a broadcasted matmul when possible — it's much slower than the
+        // standard matmul on cuda/cpu. Mirrors fuel-nn's Linear::forward.
+        let x = match *x.dims() {
+            [b1, b2, m, k] => {
+                if x.is_contiguous() {
+                    let w = self.weight.t()?;
+                    x.reshape((b1 * b2 * m, k))?
+                        .matmul(&w)?
+                        .reshape((b1, b2, m, ()))?
+                } else {
+                    let w = self.weight.broadcast_left((b1, b2))?.t()?;
+                    x.matmul(&w)?
+                }
+            }
+            [bsize, m, k] => {
+                if x.is_contiguous() {
+                    let w = self.weight.t()?;
+                    x.reshape((bsize * m, k))?
+                        .matmul(&w)?
+                        .reshape((bsize, m, ()))?
+                } else {
+                    let w = self.weight.broadcast_left(bsize)?.t()?;
+                    x.matmul(&w)?
+                }
+            }
+            _ => {
+                let w = self.weight.t()?;
+                x.matmul(&w)?
+            }
+        };
+        match &self.bias {
+            None => Ok(x),
+            Some(bias) => x.broadcast_add(bias),
+        }
+        .with_context(|| {
+            format!("Linear({in_features}->{out_features}): input shape {input_shape:?}")
+        })
+    }
+}
 
 /// Which dimension to shard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -251,7 +311,7 @@ mod tests {
 
     #[test]
     fn column_parallel_forward() {
-        let device = Device::Cpu;
+        let device = Device::cpu();
         // 3×2 input, 2×4 weight → 3×4 output (column-sharded to 2×2 on this rank)
         let w = Tensor::ones((2, 2), DType::F32, &device).unwrap();
         let linear = Linear::new(w, None);
@@ -268,7 +328,7 @@ mod tests {
 
     #[test]
     fn row_parallel_forward() {
-        let device = Device::Cpu;
+        let device = Device::cpu();
         let w = Tensor::ones((4, 2), DType::F32, &device).unwrap();
         let linear = Linear::new(w, None);
         let shard = TensorShard {

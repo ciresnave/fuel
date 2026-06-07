@@ -24,7 +24,6 @@ half            = { workspace = true }
 
 [dev-dependencies]
 anyhow  = { workspace = true }
-fuel-nn = { workspace = true, features = ["cuda"] }
 
 [features]
 default = []

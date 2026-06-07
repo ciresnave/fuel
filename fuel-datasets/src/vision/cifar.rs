@@ -33,8 +33,8 @@ fn read_file(filename: &std::path::Path) -> Result<(Tensor, Tensor)> {
         .flatten()
         .copied()
         .collect::<Vec<_>>();
-    let labels = Tensor::from_vec(labels, SAMPLES_PER_FILE, &Device::Cpu)?;
-    let images = Tensor::from_vec(images, (SAMPLES_PER_FILE, C, H, W), &Device::Cpu)?;
+    let labels = Tensor::from_vec(labels, SAMPLES_PER_FILE, &Device::cpu())?;
+    let images = Tensor::from_vec(images, (SAMPLES_PER_FILE, C, H, W), &Device::cpu())?;
     let images = (images.to_dtype(DType::F32)? / 255.)?;
     Ok((images, labels))
 }
@@ -93,11 +93,11 @@ fn load_parquet(parquet: SerializedFileReader<std::fs::File>) -> Result<(Tensor,
         }
     }
     // Reorder image-rs convention (width, height, channels) to fuel/pytorch convolution convention (channels, height, width)
-    let images = (Tensor::from_vec(buffer_images, (samples, 32, 32, 3), &Device::Cpu)?
+    let images = (Tensor::from_vec(buffer_images, (samples, 32, 32, 3), &Device::cpu())?
         .to_dtype(DType::F32)?
         .permute((0, 3, 2, 1))?
         / 255.)?;
-    let labels = Tensor::from_vec(buffer_labels, (samples,), &Device::Cpu)?;
+    let labels = Tensor::from_vec(buffer_labels, (samples,), &Device::cpu())?;
     Ok((images, labels))
 }
 

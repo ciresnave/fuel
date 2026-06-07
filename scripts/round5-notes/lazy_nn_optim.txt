@@ -1,0 +1,10 @@
+# nn-optim
+Module: lazy_nn_optim
+Crate: fuel-core
+Path: src/lazy_nn_optim.rs
+Lib decl: pub mod lazy_nn_optim;
+Anchor: pub mod lazy_nomic_bert;
+Tests: 9 passed
+Names: lazy_var_round_trip, sgd_unit_lr_unit_grad_subtracts_unit, sgd_zero_lr_does_not_change_params, sgd_with_momentum_accumulates_velocity, adamw_first_step_matches_textbook_formula, adamw_weight_decay_subtracts_before_update, backward_step_runs_loss_backward_then_step, empty_param_set_is_noop, set_learning_rate_updates_for_next_step
+
+The file fuel-core/src/lazy_nn_optim.rs already existed in the worktree with a complete implementation (LazyVar + LazyOptimizer trait + LazySgd + LazyAdamW + 9 tests covering all spec-required cases). It was not yet wired into fuel-core/src/lib.rs; this session added `pub mod lazy_nn_optim;` alphabetically (between lazy_mpt and lazy_nomic_bert). All 9 tests pass on CPU. Key design notes: LazyVar carries name + shape + Arc<RwLock<Vec<f32>>> host buffer + Arc<RwLock<Option<NodeId>>> last_node; tensor(&anchor) splices the current value as a graph const and records the issued NodeId so backward_step can fetch the gradient via Tensor::from_existing + GradMap::get. step() builds update ops as LazyTensor expressions and realizes everything via realize_many_f32. SGD momentum/weight_decay match torch semantics (g' = g + wd*w, v = mom*v + g', w -= lr*v). AdamW uses decoupled weight decay (w *= (1 - lr*lambda); w -= lr_scale_m * m / (sqrt(v)*sqrt(scale_v) + eps)) — bit-equivalent to the eager impl's fused-scalar form. F32 + CPU realize only for v1; other dtypes/devices deferred together with port-training-augmentations.md.

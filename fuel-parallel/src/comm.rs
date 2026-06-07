@@ -87,7 +87,7 @@ pub trait Communicator: Send {
 /// assert_eq!(comm.info().rank, 0);
 /// assert_eq!(comm.info().world_size, 1);
 ///
-/// let t = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::Cpu).unwrap();
+/// let t = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::cpu()).unwrap();
 /// let reduced = comm.all_reduce(&t, ReduceOp::Sum).unwrap();
 /// // Identity: result equals input
 /// assert_eq!(reduced.to_vec1::<f32>().unwrap(), vec![1.0, 2.0, 3.0]);
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn identity_all_reduce() {
         let comm = IdentityComm;
-        let t = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::Cpu).unwrap();
+        let t = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::cpu()).unwrap();
         let result = comm.all_reduce(&t, ReduceOp::Sum).unwrap();
         assert_eq!(result.to_vec1::<f32>().unwrap(), vec![1.0, 2.0, 3.0]);
     }
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn identity_all_gather() {
         let comm = IdentityComm;
-        let t = Tensor::new(&[1.0f32, 2.0], &Device::Cpu).unwrap();
+        let t = Tensor::new(&[1.0f32, 2.0], &Device::cpu()).unwrap();
         let result = comm.all_gather(&t, 0).unwrap();
         assert_eq!(result.to_vec1::<f32>().unwrap(), vec![1.0, 2.0]);
     }
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn identity_broadcast() {
         let comm = IdentityComm;
-        let t = Tensor::new(&[5.0f32], &Device::Cpu).unwrap();
+        let t = Tensor::new(&[5.0f32], &Device::cpu()).unwrap();
         let result = comm.broadcast(&t, 0).unwrap();
         assert_eq!(result.to_vec1::<f32>().unwrap(), vec![5.0]);
     }
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn identity_reduce_scatter() {
         let comm = IdentityComm;
-        let t = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::Cpu).unwrap();
+        let t = Tensor::new(&[1.0f32, 2.0, 3.0], &Device::cpu()).unwrap();
         let result = comm.reduce_scatter(&t, ReduceOp::Sum, 0).unwrap();
         assert_eq!(result.to_vec1::<f32>().unwrap(), vec![1.0, 2.0, 3.0]);
     }

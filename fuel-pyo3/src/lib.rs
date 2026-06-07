@@ -81,11 +81,13 @@ enum PyDevice {
 
 impl PyDevice {
     fn from_device(device: &Device) -> Self {
-        match device {
-            Device::Cpu => Self::Cpu,
-            Device::Cuda(_) => Self::Cuda,
-            Device::Metal(_) => Self::Metal,
-            Device::Custom(_) => Self::Cpu, // Custom backends map to Cpu for PyO3 purposes
+        if device.is_cuda() {
+            Self::Cuda
+        } else if device.is_metal() {
+            Self::Metal
+        } else {
+            // Cpu and custom backends map to Cpu for PyO3 purposes
+            Self::Cpu
         }
     }
 
@@ -263,7 +265,7 @@ impl PyTensor {
     // TODO: Handle arbitrary input dtype and shape.
     /// Creates a new tensor from a Python value. The value can be a scalar or array-like object.
     fn new(py: Python<'_>, data: Py<PyAny>) -> PyResult<Self> {
-        use Device::Cpu;
+        let Cpu = Device::cpu();
         let tensor = if let Ok(vs) = data.extract::<u32>(py) {
             Tensor::new(vs, &Cpu).map_err(wrap_err)?
         } else if let Ok(vs) = data.extract::<i64>(py) {
@@ -590,7 +592,7 @@ impl PyTensor {
                 }
                 Ok((
                     Indexer::IndexSelect(
-                        Tensor::from_vec(indexes, list.len(), &Device::Cpu).map_err(wrap_err)?,
+                        Tensor::from_vec(indexes, list.len(), &Device::cpu()).map_err(wrap_err)?,
                     ),
                     current_dim + 1,
                 ))
@@ -1267,7 +1269,7 @@ impl PyQTensor {
     /// Dequantizes the tensor.
     /// &RETURNS&: Tensor
     fn dequantize(&self) -> PyResult<PyTensor> {
-        let tensor = self.0.dequantize(&Device::Cpu).map_err(wrap_err)?;
+        let tensor = self.0.dequantize(&Device::cpu()).map_err(wrap_err)?;
         Ok(PyTensor(tensor))
     }
 
@@ -1286,7 +1288,7 @@ impl PyQTensor {
 /// Loads a safetensors file. Returns a dictionary mapping tensor names to tensors.
 /// &RETURNS&: Dict[str,Tensor]
 fn load_safetensors(path: &str, py: Python<'_>) -> PyResult<Py<PyAny>> {
-    let res = ::fuel::safetensors::load(path, &Device::Cpu).map_err(wrap_err)?;
+    let res = ::fuel::safetensors::load(path, &Device::cpu()).map_err(wrap_err)?;
     let res = res
         .into_iter()
         .map(|(key, value)| (key, PyTensor(value)))
@@ -1539,7 +1541,17 @@ fn fuel_utils(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// &RETURNS&: Tensor
 fn softmax(tensor: PyTensor, dim: i64) -> PyResult<PyTensor> {
     let dim = actual_dim(&tensor, dim).map_err(wrap_err)?;
-    let sm = fuel_nn::ops::softmax(&tensor.0, dim).map_err(wrap_err)?;
+    // Numerically-stable softmax (inlined from former fuel_nn::ops::softmax):
+    //   max = xs.max_keepdim(dim)
+    //   num = (xs - max).exp()
+    //   den = num.sum_keepdim(dim)
+    //   out = num / den
+    let xs = &tensor.0;
+    let max = xs.max_keepdim(dim).map_err(wrap_err)?;
+    let diff = xs.broadcast_sub(&max).map_err(wrap_err)?;
+    let num = diff.exp().map_err(wrap_err)?;
+    let den = num.sum_keepdim(dim).map_err(wrap_err)?;
+    let sm = num.broadcast_div(&den).map_err(wrap_err)?;
     Ok(PyTensor(sm))
 }
 
@@ -1570,7 +1582,15 @@ fn max_pool2d(tensor: PyTensor, ksize: usize, stride: usize) -> PyResult<PyTenso
 /// Applies the Sigmoid Linear Unit (SiLU) function to a given tensor.
 /// &RETURNS&: Tensor
 fn silu(tensor: PyTensor) -> PyResult<PyTensor> {
-    let s = fuel_nn::ops::silu(&tensor.0).map_err(wrap_err)?;
+    // SiLU(x) = x * sigmoid(x) = x / (1 + exp(-x))
+    // Composed from eager Tensor primitives (formerly fuel_nn::ops::silu, which
+    // delegated to xs.silu()).
+    let t = &tensor.0;
+    let neg = t.neg().map_err(wrap_err)?;
+    let sig = ((neg.exp().map_err(wrap_err)? + 1f64).map_err(wrap_err)?)
+        .recip()
+        .map_err(wrap_err)?;
+    let s = (t * &sig).map_err(wrap_err)?;
     Ok(PyTensor(s))
 }
 

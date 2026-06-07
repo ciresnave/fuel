@@ -1,0 +1,15 @@
+# batch-c-vision-3
+success: false
+migrated: 
+skipped: segformer (Task interrupted by user before lazy module API could be inspected)
+  - segment-anything (Task interrupted by user before migration started)
+  - siglip (Task interrupted by user before migration started)
+  - vit (Task interrupted by user before migration started)
+  - vgg (Task interrupted by user before migration started)
+  - yolo-v3 (Task interrupted by user before migration started; note lazy_yolov3 module not shipped, only lazy_yolov8)
+  - yolo-v8 (Task interrupted by user before migration started)
+  - based (Task interrupted by user before migration started)
+  - blip (Task interrupted by user before migration started)
+  - chinese_clip (Task interrupted by user before migration started)
+
+Initial reconnaissance findings before interruption:\n- All 10 target binaries have corresponding lazy_*.rs modules in fuel-core/src/ EXCEPT yolo-v3 (only lazy_yolov8.rs exists; yolo-v3 would need a new lazy module or could share lazy_yolov8 if architectures overlap — needs investigation).\n- LazyTensor lives at fuel_core::lazy::LazyTensor (fuel-core/src/lazy.rs).\n- No existing fuel-examples/examples/* binary uses LazyTensor yet — no reference migration pattern in the worktree. Recent commits show lazy_resnet was wired in commit e298dcf1 with a resnet-lazy binary, but that binary doesn't live under fuel-examples/examples/resnet/ — search yielded zero LazyTensor consumers in fuel-examples/.\n- This means each migration in this batch would be establishing the migration pattern from scratch; an earlier batch (or a reference implementation under a different path like fuel-examples/examples/resnet-lazy) needs to land first to anchor the pattern. Without that pattern reference, each binary would require fresh investigation of: VarBuilder→Mmapedsafetensors equivalent in lazy land, lazy module forward() input/output types, device selection seam, dtype anchoring, and the realize_f32() result-extraction surface.

@@ -1,0 +1,28 @@
+# sd-samplers-euler
+Module: lazy_sd_samplers_euler
+Lib decl: pub mod lazy_sd_samplers_euler;
+Anchor: pub mod lazy_sd_samplers;
+Tests: 4 passed
+Names: sigmas_descend, step_finite_on_tiny_sample, set_timesteps_zero_noise_matches_deterministic, init_noise_sigma_correct
+
+Ported Euler-ancestral discrete scheduler from fuel-transformers/.../euler_ancestral_discrete.rs (230 LOC) to fuel-core/src/lazy_sd_samplers_euler.rs. Key design choices:
+
+1. Two-surface step: Inherent `step(model_output, timestep_idx, sample, noise)` takes caller-provided noise (per spec — caller controls RNG). `SdScheduler::step(model_output, timestep, sample)` trait impl looks up `timestep_idx` from the schedule and internally generates noise via `randn_like_on_graph` for pipeline interchangeability with DDIM/DDPM.
+
+2. Reused existing types: `BetaSchedule`, `PredictionType`, `TimestepSpacing`, `SdScheduler` trait all imported from crate::lazy_sd_samplers (per spec direction).
+
+3. Small host-side helpers (linspace, betas_for_alpha_bar, build_betas, build_alphas_cumprod, randn_like_on_graph, interp) duplicated locally since they're crate-private in lazy_sd_samplers. interp is reimplemented as numpy.interp-equivalent (clamps out-of-range to endpoints; bsearch via partition_point) — works for the monotone xs the schedule produces.
+
+4. Sigma formulas match eager 1:1: sigma_up = sqrt(sigma_to^2 * (sigma_from^2 - sigma_to^2) / sigma_from^2) with .max(0.0) guard for FP slop; sigma_down = sqrt(sigma_to^2 - sigma_up^2); pred_original per prediction_type; prev = sample + (sample - pred_original)/sigma_from * (sigma_down - sigma_from); final = prev + noise * sigma_up.
+
+5. init_noise_sigma: Leading -> sqrt(max_sigma^2 + 1) (matches eager scale_model_input convention); Linspace/Trailing -> max_sigma directly.
+
+6. PredictionType::Sample bails out (matches eager `bail!`) — not implemented in source either.
+
+7. Tests:
+   - sigmas_descend: confirms inference_steps+1 sigmas, descending, ending in 0.0.
+   - step_finite_on_tiny_sample: smoke test with noise=0 on (1,4) tensor.
+   - set_timesteps_zero_noise_matches_deterministic: numerical golden — recomputes pred_original/derivative/dt in host f64 and asserts step output matches within 1e-4 (Epsilon path).
+   - init_noise_sigma_correct: checks both Leading (sqrt(max_sigma^2+1)) and Linspace (max_sigma) cases.
+
+All 4 tests pass under `cargo test -p fuel-core --lib lazy_sd_samplers_euler::`.

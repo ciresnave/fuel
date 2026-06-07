@@ -1,0 +1,8 @@
+# paddleocr-vl-composition
+Module: lazy_paddleocr_vl
+Lib decl: pub mod lazy_paddleocr_vl;
+Anchor: pub mod lazy_paddleocr_vl_text;
+Tests: 5 passed
+Names: forward_text_only_matches_paddleocr_vl_text_forward, forward_with_image_changes_output, aspect_ratio_chooser_drives_tile_count, tile_partition_round_trip_shape, end_to_end_tiny_image_plus_text
+
+PaddleOCR-VL composition layer wiring text + vision sub-ports. Pipeline: aspect_ratio_chooser picks a (rows, cols) tile grid from the (C, H, W) image; partition_image carves it host-side into row-major tiles; each tile gets nearest-neighbor resized to the encoder's (image_size, image_size) working resolution; the stacked tile tensor flows through PaddleOcrVlVisionModel for projected vision features; host-side run-segmentation builds the combined text+vision embedding by alternately slicing text_embeds (anchored on the vision graph via embed_tokens_anchored) and vision_embeds; the result feeds PaddleOcrVlTextModel::forward_embeds. Key gotcha: text and vision streams must share a graph -- the first attempt used Device::cpu()-anchored embed_tokens and concat panicked with "tensors must live on the same graph"; switching to vision_embeds.embed_tokens_anchored fixed it. Validates that #placeholders == #vision_tokens at build time. File path: fuel-core/src/lazy_paddleocr_vl.rs

@@ -1,0 +1,10 @@
+# nn-layers-sub-port-1
+Module: lazy_nn
+Crate: fuel-core
+Path: src/lazy_nn/mod.rs
+Lib decl: pub mod lazy_nn;
+Anchor: pub mod lazy_nomic_bert;
+Tests: 5 passed
+Names: linear_forward_shape_and_finite, linear_with_bias_matches_apply_linear_plus_broadcast_add_golden, linear_no_bias_matches_apply_linear, embedding_forward_shape_for_token_seq, embedding_lookup_matches_index_select_baseline
+
+All three files (mod.rs, linear.rs, embedding.rs) were already present in the worktree at fuel-core/src/lazy_nn/. pub mod lazy_nn; is already wired into fuel-core/src/lib.rs at line 144 (alphabetical between lazy_mpt and lazy_nomic_bert). All 5 required tests pass via `cargo test -p fuel-core --lib lazy_nn::`. LazyLinear holds weight as WeightStorage in [in_features, out_features] layout and uses apply_linear + broadcast_add for bias. LazyEmbedding holds Arc<[f32]> table, validates U32 input, flattens/index_selects/reshapes to append hidden dim. LazyModule trait has blanket impls for Fn closures and Option<&M>.

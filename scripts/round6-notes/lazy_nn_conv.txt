@@ -1,0 +1,5 @@
+# nn-layers-sub-port-2
+Tests: 5 passed
+Names: conv1d_forward_shape_for_strided_input, conv1d_no_bias_matches_lazy_tensor_conv1d_directly, conv2d_forward_shape_for_strided_input, conv2d_with_bias_matches_lazy_tensor_conv2d_plus_broadcast, conv2d_depthwise_groups_equals_in_channels
+
+Sub-port 2 (Conv1d + Conv2d Module wrappers) was already shipped on this worktree: fuel-core/src/lazy_nn/conv.rs is in place and src/lazy_nn/mod.rs already declares `pub mod conv;` plus the re-exports. Verified by `cargo test -p fuel-core --lib lazy_nn::conv::` — all 5 required tests pass. Surface matches spec: LazyConv1dConfig{padding, stride, dilation, groups}; LazyConv2dConfig{padding:(usize,usize), stride:(usize,usize), dilation:(usize,usize), groups}; LazyConv1d / LazyConv2d both impl LazyModule, with build-time validation of groups divisibility, weight elem count, and bias length, and forward-time rejection of dilation != 1 (LazyTensor::conv1d/conv2d only accept stride/padding/groups).

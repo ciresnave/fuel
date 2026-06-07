@@ -1,0 +1,5 @@
+# nn-layers-sub-port-6
+Tests: 4 passed
+Names: moe_router_outputs_top_k_indices_and_weights_sum_to_one, moe_layer_forward_shape_matches_input, moe_layer_single_expert_top_1_equals_expert_forward_directly, moe_layer_with_uniform_router_averages_experts
+
+Sub-port 6 of port-nn-layers — MoE router + experts + layer. Files were already present in the worktree from a previous attempt; the implementation had a `LazyTensor::eq` call on U32 indices, which the CPU backend doesn't support (no EqualElementwise on U32 + no Cast from U32 → F32). Rewrote `LazyMoeLayer::forward` to use a dense `[N, num_experts]` weights matrix built via `scatter_add(dim=1, indices, weights)` from zero — then narrows column `e` for each expert and broadcast-multiplies. Avoids `eq` entirely; per-token gating is exact. All 4 spec tests pass. `mod.rs` already declares `pub mod moe;` + re-exports `LazyMoeExpert / LazyMoeLayer / LazyMoeRouter`.
