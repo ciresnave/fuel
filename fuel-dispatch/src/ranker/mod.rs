@@ -42,6 +42,7 @@ pub mod enumerate;
 pub mod filter;
 pub mod filters;
 pub mod judge;
+pub mod runtime_selector;
 
 pub use alternative_set::{AlternativeSet, DEFAULT_MAX_N};
 pub use candidate::{Candidate, CouplingAdjustment};
@@ -54,3 +55,4 @@ pub use filters::{
     StridedInputPreferenceFilter,
 };
 pub use judge::{HashMapJudge, JudgeOracle};
+pub use runtime_selector::{RuntimeSelector, WinnerSelector};
