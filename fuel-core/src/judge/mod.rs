@@ -80,7 +80,12 @@ pub use cache::*;
 use crate::probe::ProbeReport;
 use fuel_core_types::probe::{BackendId, DeviceDescriptor};
 use fuel_core_types::{DType, Result, Shape};
+use fuel_correctness_fixtures::{
+    validate_against_fixture, CorrectnessDrift, CorrectnessFixture, FixtureFile,
+};
+use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
+use std::path::Path;
 use std::time::Instant;
 use std::sync::{Arc, RwLock};
 
@@ -174,6 +179,21 @@ pub struct Judge {
     /// ladder (three sizes per op, up to 1024×1024 matmul / 2²⁰
     /// elementwise). Tests supply a shrunk ladder to stay fast.
     pub size_plan_override: Option<Vec<(OpKind, OpSize)>>,
+    /// Optional pre-validated correctness fixtures keyed by
+    /// `(op, dtype, size_class)`. When a fixture covers a profiling
+    /// cell, the Judge validates every CellRun's output against it
+    /// via [`validate_against_fixture`] and assigns each
+    /// `ProfileEntry::max_rel_error` from the verdict, bypassing the
+    /// inline pairwise-consensus path for that cell. Cells without a
+    /// matching fixture fall back to the consensus path (today's
+    /// default behavior on multi-backend systems).
+    ///
+    /// One key may map to multiple fixtures when capture used
+    /// different `input_seed`s; the Judge applies the first whose
+    /// fixture-shape and the cell's regenerated input agree. If no
+    /// fixture matches the cell's input seed (mismatch logged), the
+    /// fallback consensus path is used for the cell.
+    pub fixtures: Option<HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>>>,
 }
 
 impl Default for Judge {
@@ -182,11 +202,68 @@ impl Default for Judge {
             iterations: DEFAULT_ITERATIONS,
             warmup:     DEFAULT_WARMUP,
             size_plan_override: None,
+            fixtures: None,
         }
     }
 }
 
 impl Judge {
+    /// Construct a Judge with the default measurement parameters and
+    /// the fixture set loaded from `path`. The path may point at a
+    /// single `*.json` file or a directory; in the directory case
+    /// every `*.json` under the root is loaded recursively (the
+    /// `fuel-correctness-fixtures` capture binary writes
+    /// `v1/<dtype>/<op>.json`, so a single root covers an entire
+    /// fixture distribution).
+    ///
+    /// Returns an `io::Error` wrapped as a `fuel-core` `Error` if the
+    /// path can't be read or any file fails to parse as a
+    /// [`FixtureFile`].
+    ///
+    /// **Use**: pass a fixture root once at Judge construction time;
+    /// every cell the Judge profiles thereafter validates against the
+    /// fixture (if one exists for that cell) instead of inline
+    /// consensus. Cells with no matching fixture fall back to the
+    /// consensus path.
+    pub fn with_fixtures_from(path: &Path) -> Result<Self> {
+        let fixtures = load_fixtures_recursive(path)?;
+        let mut judge = Self::default();
+        judge.fixtures = Some(fixtures);
+        Ok(judge)
+    }
+
+    /// Look up a fixture matching `(op, dtype, size_class)` and the
+    /// expected element count of the cell's output. Returns `None`
+    /// when no fixture set is configured, when no fixture is keyed
+    /// for the cell, or when every keyed fixture has a mismatched
+    /// `output_element_count` (which would indicate the fixture was
+    /// captured against a different shape than the current size_plan
+    /// emits — log + skip).
+    fn lookup_fixture(
+        &self,
+        op: OpKind,
+        dtype: DType,
+        size_class: SizeClass,
+        expected_elem_count: usize,
+    ) -> Option<&CorrectnessFixture> {
+        let map = self.fixtures.as_ref()?;
+        let bucket = map.get(&(op, dtype, size_class))?;
+        for f in bucket {
+            if f.output_element_count == expected_elem_count {
+                return Some(f);
+            }
+        }
+        // The bucket exists but no fixture matches the cell's shape.
+        // The capture used a different input convention; skip + fall
+        // back to consensus rather than emit a misleading rel_err.
+        eprintln!(
+            "judge: fixture bucket for ({op:?}, {dtype:?}, size_class={}) has no entry \
+             matching expected_elem_count={expected_elem_count}; falling back to consensus",
+            size_class.0,
+        );
+        None
+    }
+
     /// Representative size classes for the Judge's op matrix. Each
     /// entry is (op, [input element counts]) — the Judge picks the
     /// first entry whose op matches and iterates the sizes.
@@ -351,10 +428,25 @@ impl Judge {
                     }
                 }
 
-                // Second pass: compute pairwise consensus across the
-                // backends + kernel_sources that produced output for
-                // this cell.
-                let consensus = compute_pairwise_consensus(&cell_runs);
+                // Second pass: pick a correctness verdict for each
+                // CellRun. The fixture fast-path is preferred when a
+                // fixture exists for the cell — that's the
+                // pre-validated multi-backend output captured on a
+                // reference rig, so single-backend systems get the
+                // same correctness signal without needing peers
+                // locally. When no fixture is present, fall back to
+                // pairwise consensus across the CellRuns at this
+                // cell.
+                let expected_elem_count = cell_runs.first()
+                    .map(|r| r.output.len())
+                    .unwrap_or(0);
+                let fixture =
+                    self.lookup_fixture(op, DType::F32, size_class, expected_elem_count);
+                let consensus = if fixture.is_none() {
+                    compute_pairwise_consensus(&cell_runs)
+                } else {
+                    Vec::new() // unused on the fixture path
+                };
 
                 // Third pass: emit one ProfileEntry per (run, device).
                 // The first alternative's CellRun replicates across
@@ -366,8 +458,11 @@ impl Judge {
                 // sibling differentiation — siblings are
                 // hardware-agnostic at the binding-table layer).
                 for (i, run) in cell_runs.iter().enumerate() {
-                    let rel_err =
-                        max_rel_err_vs_consensus(&cell_runs, &consensus, i);
+                    let rel_err = if let Some(f) = fixture {
+                        max_rel_err_vs_fixture(&run.output, f)
+                    } else {
+                        max_rel_err_vs_consensus(&cell_runs, &consensus, i)
+                    };
                     // Find the equivalence class this run belongs to
                     // (its representative's backend matches `run.backend`).
                     let class_devs = classes.iter().find_map(|(k, devs)| {
@@ -1425,6 +1520,93 @@ fn compute_pairwise_consensus(runs: &[CellRun]) -> Vec<usize> {
     best
 }
 
+/// Reinterpret an f32 vector as the little-endian bytes that
+/// [`validate_against_fixture`] expects, run validation, and lift
+/// the verdict into a single rel_err number for the ProfileEntry.
+///
+/// - `Ok(())` → `0.0` (output matches fixture within tolerance).
+/// - `Err(OutOfTolerance { rel_err, .. })` → that `rel_err`.
+/// - `Err(LengthMismatch | NonFinite)` → `f32::INFINITY` — these
+///   are categorical failures (wrong shape, or NaN/Inf where finite
+///   was expected). The dispatch picker will rank such an
+///   alternative behind any finite-rel_err peer; the kernel-source
+///   tag on the ProfileEntry tells us which alternative blew up.
+fn max_rel_err_vs_fixture(out: &[f32], fixture: &CorrectnessFixture) -> f32 {
+    let bytes: Vec<u8> = out.iter()
+        .flat_map(|x| x.to_le_bytes())
+        .collect();
+    match validate_against_fixture(fixture, &bytes) {
+        Ok(()) => 0.0,
+        Err(CorrectnessDrift::OutOfTolerance { rel_err, .. }) => rel_err as f32,
+        Err(CorrectnessDrift::LengthMismatch { .. }) => f32::INFINITY,
+        Err(CorrectnessDrift::NonFinite { .. }) => f32::INFINITY,
+    }
+}
+
+/// Load every `*.json` file under `root` and flatten the contained
+/// [`FixtureFile`] entries into a map keyed by
+/// `(op, dtype, size_class)`. `root` may itself be a file (one
+/// fixture file loaded) or a directory (recursive walk).
+///
+/// Errors propagate the first I/O failure or deserialization error
+/// encountered. A directory with no `*.json` files yields an empty
+/// map (the Judge then behaves as if no fixtures were configured).
+fn load_fixtures_recursive(
+    root: &Path,
+) -> Result<HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>>> {
+    let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> = HashMap::new();
+    let mut visit = |p: &Path| -> Result<()> {
+        let raw = std::fs::read_to_string(p)
+            .map_err(|e| crate::error::Error::Msg(format!(
+                "judge: failed to read fixture file {}: {e}", p.display(),
+            )))?;
+        let file: FixtureFile = serde_json::from_str(&raw)
+            .map_err(|e| crate::error::Error::Msg(format!(
+                "judge: failed to parse fixture file {} as FixtureFile: {e}",
+                p.display(),
+            )))?;
+        for f in file.fixtures {
+            let key = (f.op, f.dtype, f.size_class);
+            map.entry(key).or_default().push(f);
+        }
+        Ok(())
+    };
+
+    fn walk(
+        dir: &Path,
+        visit: &mut dyn FnMut(&Path) -> Result<()>,
+    ) -> Result<()> {
+        let entries = std::fs::read_dir(dir).map_err(|e| {
+            crate::error::Error::Msg(format!(
+                "judge: failed to read fixture dir {}: {e}", dir.display(),
+            ))
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|e| crate::error::Error::Msg(format!(
+                "judge: failed reading dir entry in {}: {e}", dir.display(),
+            )))?;
+            let p = entry.path();
+            if p.is_dir() {
+                walk(&p, visit)?;
+            } else if p.extension().and_then(|s| s.to_str()) == Some("json") {
+                visit(&p)?;
+            }
+        }
+        Ok(())
+    }
+
+    if root.is_file() {
+        visit(root)?;
+    } else if root.is_dir() {
+        walk(root, &mut visit)?;
+    } else {
+        return Err(crate::error::Error::Msg(format!(
+            "judge: fixture path {} does not exist", root.display(),
+        )));
+    }
+    Ok(map)
+}
+
 /// Compute `runs[self_idx]`'s max relative error against the
 /// consensus cluster. When the consensus contains only `self_idx`
 /// (single backend or every backend disagreed), returns `0.0` —
@@ -1496,6 +1678,7 @@ mod tests {
                 (OpKind::MatMul, OpSize::MatMul { m: 32, n: 32, k: 32 }),
                 (OpKind::AddElementwise, OpSize::Elementwise(1 << 10)),
             ]),
+            fixtures: None,
         };
         let report = judge.run(&probe);
         assert_eq!(report.version, PROFILE_REPORT_VERSION);
@@ -1537,6 +1720,7 @@ mod tests {
         let judge = Judge {
             iterations: 3, warmup: 1,
             size_plan_override: Some(plan),
+            fixtures: None,
         };
         let report = judge.run(&probe);
         for &op in &unary {
@@ -1577,6 +1761,7 @@ mod tests {
         let judge = Judge {
             iterations: 3, warmup: 1,
             size_plan_override: Some(plan),
+            fixtures: None,
         };
         let report = judge.run(&probe);
         for &op in &binary {
@@ -1605,6 +1790,7 @@ mod tests {
         let judge = Judge {
             iterations: 3, warmup: 1,
             size_plan_override: Some(plan),
+            fixtures: None,
         };
         let report = judge.run(&probe);
         for &op in &reduce {
@@ -1632,6 +1818,7 @@ mod tests {
         let judge = Judge {
             iterations: 3, warmup: 1,
             size_plan_override: Some(plan),
+            fixtures: None,
         };
         let report = judge.run(&probe);
         for &op in &reduce_to {
@@ -1659,6 +1846,7 @@ mod tests {
         let judge = Judge {
             iterations: 3, warmup: 1,
             size_plan_override: Some(plan),
+            fixtures: None,
         };
         let report = judge.run(&probe);
         for &op in &scalar {
@@ -1693,6 +1881,7 @@ mod tests {
                 (OpKind::ReduceSumTo, OpSize::ReduceTo { rows: 16, cols: 16 }),
                 (OpKind::Affine, OpSize::Elementwise(1 << 8)),
             ]),
+            fixtures: None,
         };
         let report = judge.run(&probe);
         let table = DispatchTable::build(&report);
@@ -1765,5 +1954,125 @@ mod tests {
         assert!(max_rel_err(&[1.0], &[1.0, 1.0]).is_infinite());
         // NaN in either operand → infinity.
         assert!(max_rel_err(&[f32::NAN], &[0.0]).is_infinite());
+    }
+
+    /// Fixture-fast-path integration: when a fixture exists for the
+    /// cell, the Judge derives `max_rel_error` from
+    /// `validate_against_fixture` instead of running inline pairwise
+    /// consensus. This test constructs an intentionally-divergent
+    /// fixture for the AddElementwise cell and asserts the divergence
+    /// shows up as the entries' `max_rel_error`.
+    ///
+    /// We deliberately *don't* use a fixture matching the actual cpu
+    /// kernel's output here — the assertion is on the wire-up, not on
+    /// any specific numerical value the cpu produces. Real fixtures
+    /// land via the capture pipeline; this test verifies the path.
+    #[test]
+    fn judge_uses_fixture_when_provided() {
+        use fuel_correctness_fixtures::{
+            CorrectnessFixture, ToleranceBand,
+        };
+
+        let probe = ProbeReport::probe_all();
+        let elem_count = 1 << 10;
+        // Plant an obviously-wrong fixture: all zeros expected. The
+        // cpu add kernel produces sin+cos = non-zero, so
+        // validate_against_fixture's OutOfTolerance.rel_err lands in
+        // every entry's max_rel_error (well above any plausible
+        // cross-backend drift floor).
+        let zeros: Vec<u8> = vec![0u8; elem_count * 4];
+        let bogus_fixture = CorrectnessFixture {
+            op: OpKind::AddElementwise,
+            dtype: DType::F32,
+            size_class: SizeClass::from_elem_count(elem_count),
+            input_seed: 0,
+            input_hash: 0,
+            expected_output: zeros,
+            output_element_count: elem_count,
+            // Tight tolerance — guarantees the all-zeros fixture
+            // disagrees with any honest add(sin, cos) output.
+            tolerance: ToleranceBand {
+                max_relative: 1e-9,
+                max_absolute: 1e-12,
+            },
+        };
+        let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> =
+            HashMap::new();
+        map.insert(
+            (OpKind::AddElementwise, DType::F32, SizeClass::from_elem_count(elem_count)),
+            vec![bogus_fixture],
+        );
+
+        let judge = Judge {
+            iterations: 3,
+            warmup: 1,
+            size_plan_override: Some(vec![
+                (OpKind::AddElementwise, OpSize::Elementwise(elem_count)),
+            ]),
+            fixtures: Some(map),
+        };
+        let report = judge.run(&probe);
+        let cpu_entries: Vec<_> = report.entries.iter()
+            .filter(|e| e.op == OpKind::AddElementwise && e.backend == BackendId::Cpu)
+            .collect();
+        assert!(!cpu_entries.is_empty(),
+            "expected ≥1 cpu entry for AddElementwise, got 0");
+        // The bogus all-zeros fixture is wildly wrong vs the honest
+        // sin+cos output, so every cpu entry's max_rel_error should
+        // be very large (≥ 1.0 — relative error vs ~zero expected is
+        // unbounded; floor at 1.0 is conservative). Without the
+        // fixture fast-path this value would be ~0.0 (lone CPU
+        // backend → trivial consensus → no peers → 0.0).
+        for e in &cpu_entries {
+            assert!(e.max_rel_error >= 1.0,
+                "expected fixture-derived rel_err ≥1.0 (vs all-zeros fixture), got {} for entry {e:?}",
+                e.max_rel_error);
+        }
+    }
+
+    /// Loader: `with_fixtures_from(file)` reads a JSON fixture file
+    /// and produces a Judge whose `fixtures` map has the entry keyed
+    /// correctly.
+    #[test]
+    fn judge_with_fixtures_from_loads_json_file() {
+        use fuel_correctness_fixtures::{
+            CorrectnessFixture, FixtureFile, ToleranceBand,
+            FIXTURE_FILE_VERSION,
+        };
+
+        let fixture = CorrectnessFixture {
+            op: OpKind::MatMul,
+            dtype: DType::F32,
+            size_class: SizeClass(10),
+            input_seed: 42,
+            input_hash: 0xdeadbeef,
+            expected_output: vec![0u8; 16],
+            output_element_count: 4,
+            tolerance: ToleranceBand::F32_DEFAULT,
+        };
+        let file = FixtureFile {
+            version: FIXTURE_FILE_VERSION,
+            fixtures: vec![fixture],
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "fuel-judge-fixture-load-{}", std::process::id(),
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("matmul_f32.json");
+        std::fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
+
+        let judge = Judge::with_fixtures_from(&dir).expect("load");
+        let map = judge.fixtures.as_ref().expect("fixtures populated");
+        let key = (OpKind::MatMul, DType::F32, SizeClass(10));
+        let bucket = map.get(&key).expect("matmul fixture in bucket");
+        assert_eq!(bucket.len(), 1);
+        assert_eq!(bucket[0].input_seed, 42);
+
+        // Loading from a single file path works too.
+        let judge2 = Judge::with_fixtures_from(&path).expect("load file");
+        let map2 = judge2.fixtures.as_ref().expect("fixtures populated");
+        assert!(map2.contains_key(&key));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

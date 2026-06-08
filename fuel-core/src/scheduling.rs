@@ -707,6 +707,7 @@ mod tests {
                 size_plan_override: Some(vec![
                     (OpKind::MatMul, OpSize::MatMul { m: 32, n: 32, k: 32 }),
                 ]),
+                fixtures: None,
             },
             dispatch: Default::default(),
         };
@@ -739,6 +740,7 @@ mod tests {
             size_plan_override: Some(vec![
                 (OpKind::MatMul, OpSize::MatMul { m: 16, n: 16, k: 16 }),
             ]),
+            fixtures: None,
         };
 
         let first = prepare_dispatch_table(ScheduleOptions {
@@ -924,6 +926,7 @@ mod tests {
                 size_plan_override: Some(vec![
                     (OpKind::MatMul, OpSize::MatMul { m: 32, n: 32, k: 32 }),
                 ]),
+                fixtures: None,
             },
             dispatch: Default::default(),
         };
