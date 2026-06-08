@@ -66,6 +66,15 @@ pub struct Candidate {
     /// architecture v1.0 §04 "Coupling between decisions" for the
     /// long-term shape.
     pub coupling: Vec<CouplingAdjustment>,
+    /// Diagnostic tag identifying the kernel's implementation source
+    /// (e.g. `"portable-cpu"`, `"aocl"`, `"mkl"`, `"cublas"`).
+    /// Copied from the `BindingEntry::kernel_source` of the binding
+    /// this candidate was enumerated from. Never used for dispatch —
+    /// the picker distinguishes candidates by `kernel` (function-
+    /// pointer identity). Surfaces in Judge telemetry and selector
+    /// diagnostics so logs can name which kernel won at a decision
+    /// point even when several share `(backend, device)`.
+    pub kernel_source: &'static str,
 }
 
 /// One conditional cost contribution attached to a [`Candidate`].
@@ -126,6 +135,7 @@ mod tests {
             },
             op_params: OpParams::None,
             coupling: Vec::new(),
+            kernel_source: "",
         };
         assert_eq!(c.backend, BackendId::Cpu);
         assert_eq!(c.static_cost.flops, 100);
