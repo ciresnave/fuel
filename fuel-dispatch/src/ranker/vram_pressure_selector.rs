@@ -15,11 +15,13 @@
 //! [`BackendRuntime::would_fit`] for the projected output bytes and:
 //!
 //! - **[`FitStatus::WontFit`]** → skip the candidate entirely
-//! - **[`FitStatus::Tight`]** → demote by one rank (keep visible,
-//!   but prefer comfortable alternatives if any exist)
+//! - **[`FitStatus::Tight`]** → demote below Comfortable / Unknown
+//!   (keep visible, but prefer Comfortable / Unknown alternatives
+//!   if any exist)
 //! - **[`FitStatus::Comfortable`]** / **[`FitStatus::Unknown`]** →
-//!   leave in place (Unknown is honest "no signal"; we don't pretend
-//!   it's pressure)
+//!   leave in place. Unknown is honest "no signal"; we don't
+//!   pretend it's pressure, so it sorts equal to Comfortable. The
+//!   cost-rank winner breaks ties.
 //!
 //! If every candidate is `WontFit`, the selector falls back to the
 //! static winner — the caller already lost (an OOM is coming), but
@@ -38,11 +40,14 @@
 //!   the duration of one `select` call — the lookup callback owns
 //!   the lifecycle.
 //! - `estimate_output_bytes`: maps a `Candidate` to a projected
-//!   output-size estimate. A common default is
-//!   `c.static_cost.bytes_moved / 2` (rough fraction of input+output
-//!   bandwidth that's the output write), but callers with better
-//!   data (NodeId → output shape resolved at plan time) plug their
-//!   own estimator in.
+//!   output-size estimate. The default
+//!   ([`default_estimate_output_bytes`]) returns
+//!   `c.static_cost.bytes_moved`, which is a deliberately
+//!   pessimistic upper bound — `bytes_moved` includes reads +
+//!   writes + intermediates, so it overcounts the true output
+//!   allocation by ~3-10×. Callers with the live node-output
+//!   shape resolved at plan time (Shape × DType bytes) should plug
+//!   a tighter estimator in.
 //!
 //! Both are `Arc<dyn Fn>` so the selector stays cloneable + shareable
 //! across executor threads.
@@ -171,11 +176,23 @@ impl RuntimeSelector for VramPressureSelector {
         // ranked) order and pick the first comfortable / unknown /
         // tight survivor. Skipped candidates are never picked.
         //
-        // Priority: Comfortable > Unknown > Tight. We DON'T sort —
-        // we walk in cost-rank order and remember the best status
-        // seen so far. That way ties break toward the static winner.
+        // Priority: {Comfortable, Unknown} > Tight. Unknown is
+        // honest "no signal" — we don't pretend it's pressure, so
+        // it sorts equal to Comfortable. We DON'T sort — we walk
+        // in cost-rank order and remember the best status seen so
+        // far. That way ties (including Comfortable-vs-Unknown
+        // ties) break toward the static winner.
         let mut best_idx: Option<usize> = None;
         let mut best_status: Option<FitStatus> = None;
+
+        // Score: lower is better. Comfortable = Unknown = 0, Tight = 1.
+        fn score_of(s: FitStatus) -> u8 {
+            match s {
+                FitStatus::Comfortable | FitStatus::Unknown => 0,
+                FitStatus::Tight => 1,
+                FitStatus::WontFit => unreachable!("filtered above"),
+            }
+        }
 
         for (i, c) in alts.iter().enumerate() {
             let status = self.fit_status_for(c);
@@ -184,19 +201,8 @@ impl RuntimeSelector for VramPressureSelector {
                 continue;
             }
 
-            // Score: lower is better. Comfortable=0, Unknown=1, Tight=2.
-            let score = match status {
-                FitStatus::Comfortable => 0u8,
-                FitStatus::Unknown => 1,
-                FitStatus::Tight => 2,
-                FitStatus::WontFit => unreachable!("filtered above"),
-            };
-            let prev_score = best_status.map(|s| match s {
-                FitStatus::Comfortable => 0u8,
-                FitStatus::Unknown => 1,
-                FitStatus::Tight => 2,
-                FitStatus::WontFit => unreachable!(),
-            });
+            let score = score_of(status);
+            let prev_score = best_status.map(score_of);
             match prev_score {
                 None => {
                     best_idx = Some(i);
@@ -410,25 +416,27 @@ mod tests {
         );
     }
 
-    /// Unknown (lookup returns None) doesn't penalize — the
-    /// candidate stays admissible at Unknown rank between
-    /// Comfortable and Tight.
+    /// Unknown sorts equal to Comfortable — no penalty. The
+    /// cost-winner that came first in the alt set keeps its
+    /// position when its fit status is Unknown and the runner-up
+    /// is Comfortable. We don't pretend "no signal" is pressure.
     #[test]
-    fn unknown_preserves_position_below_comfortable() {
+    fn unknown_ties_with_comfortable_preserves_winner() {
         let mut set = AlternativeSet::empty();
         // Cost winner is Cuda (cheaper). CPU is the runner-up.
         set.push(make_candidate(BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }, 100));
         set.push(make_candidate(BackendId::Cpu, DeviceLocation::Cpu, 100));
 
         // Lookup returns a runtime ONLY for CPU; CUDA is Unknown.
-        // CPU is comfortable → it should win over Unknown CUDA.
+        // CPU is Comfortable; Unknown ties with Comfortable, so the
+        // first-in-cost-rank survivor (CUDA) wins the tie.
         let lookup = single_backend_lookup(BackendId::Cpu, Some(10_000), Some(10_000));
         let sel = make_selector(lookup);
         let pick = sel.select(&set).expect("non-empty");
         assert_eq!(
             pick.backend,
-            BackendId::Cpu,
-            "Unknown CUDA demoted below Comfortable CPU",
+            BackendId::Cuda,
+            "Unknown ties with Comfortable; cost-rank winner preserved",
         );
     }
 
