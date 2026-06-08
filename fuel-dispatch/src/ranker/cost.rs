@@ -532,25 +532,25 @@ mod tests {
             cpu_layer1,
         );
         bindings.register_full(
-            OpKind::AddElementwise, &dtypes, BackendId::Aocl, noop_b,
+            OpKind::AddElementwise, &dtypes, BackendId::Cuda, noop_b,
             KernelCaps::empty(), PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
             aocl_layer1,
         );
         let mut set = AlternativeSet::from_candidates(
             vec![
                 Candidate { backend: BackendId::Cpu, ..candidate_with_cost(noop_a, CostEstimate::default()) },
-                Candidate { backend: BackendId::Aocl, ..candidate_with_cost(noop_b, CostEstimate::default()) },
+                Candidate { backend: BackendId::Cuda, ..candidate_with_cost(noop_b, CostEstimate::default()) },
             ],
             DEFAULT_MAX_N,
         );
         let lookup: HashMap<BackendId, BackendCapabilities> = [
             (BackendId::Cpu, caps_for_test(BackendId::Cpu)),
-            (BackendId::Aocl, caps_for_test(BackendId::Aocl)),
+            (BackendId::Cuda, caps_for_test(BackendId::Cuda)),
         ].into_iter().collect();
         let sc = SizeClass::from_elem_count(4);
         let mut judge = crate::ranker::judge::HashMapJudge::new();
         judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cpu, 500);
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Aocl, 100);
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cuda, 100);
 
         compute_static_costs(
             &mut set, OpKind::AddElementwise, &dtypes,
@@ -559,7 +559,7 @@ mod tests {
         set.rank_by_composite_cost();
         assert_eq!(
             set.winner().unwrap().backend,
-            BackendId::Aocl,
+            BackendId::Cuda,
             "Layer-2 measurement reverses Layer-1 verdict",
         );
     }
@@ -581,25 +581,25 @@ mod tests {
             KernelCaps::empty(), PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU, cheap,
         );
         bindings.register_full(
-            OpKind::AddElementwise, &dtypes, BackendId::Aocl, noop_b,
+            OpKind::AddElementwise, &dtypes, BackendId::Cuda, noop_b,
             KernelCaps::empty(), PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU, expensive,
         );
         let mut set = AlternativeSet::from_candidates(
             vec![
                 Candidate { backend: BackendId::Cpu, ..candidate_with_cost(noop_a, CostEstimate::default()) },
-                Candidate { backend: BackendId::Aocl, ..candidate_with_cost(noop_b, CostEstimate::default()) },
+                Candidate { backend: BackendId::Cuda, ..candidate_with_cost(noop_b, CostEstimate::default()) },
             ],
             DEFAULT_MAX_N,
         );
         let lookup: HashMap<BackendId, BackendCapabilities> = [
             (BackendId::Cpu, caps_for_test(BackendId::Cpu)),
-            (BackendId::Aocl, caps_for_test(BackendId::Aocl)),
+            (BackendId::Cuda, caps_for_test(BackendId::Cuda)),
         ].into_iter().collect();
         let sc = SizeClass::from_elem_count(4);
         let mut judge = crate::ranker::judge::HashMapJudge::new();
         // Only measure Aocl (Judge said it's 20ns — way better than
         // Layer-1's 10000-FLOP estimate).
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Aocl, 20);
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cuda, 20);
 
         compute_static_costs(
             &mut set, OpKind::AddElementwise, &dtypes,
@@ -608,7 +608,7 @@ mod tests {
         set.rank_by_composite_cost();
         // CPU = Layer-1 cost = 50 ns; Aocl = Layer-2 = 20 ns → Aocl wins.
         assert_eq!(
-            set.winner().unwrap().backend, BackendId::Aocl,
+            set.winner().unwrap().backend, BackendId::Cuda,
             "partial Judge coverage still influences ranking",
         );
     }

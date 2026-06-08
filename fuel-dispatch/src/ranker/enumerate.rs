@@ -224,16 +224,16 @@ mod tests {
         // multi-backend story.
         let bindings = table_with(&[
             (BackendId::Cpu, noop_a),
-            (BackendId::Aocl, noop_b),
-            (BackendId::Mkl, noop_c),
+            (BackendId::Cuda, noop_b),
+            (BackendId::Vulkan, noop_c),
         ]);
         let set = enumerate_candidates_default(
             OpKind::AddElementwise,
             &one_dtype_key(),
             &[
                 (BackendId::Cpu, DeviceLocation::Cpu),
-                (BackendId::Aocl, DeviceLocation::Cpu),
-                (BackendId::Mkl, DeviceLocation::Cpu),
+                (BackendId::Cuda, DeviceLocation::Cpu),
+                (BackendId::Vulkan, DeviceLocation::Cpu),
             ],
             &OpParams::None,
             &bindings,
@@ -244,7 +244,7 @@ mod tests {
             .iter()
             .map(|c| c.backend)
             .collect();
-        assert_eq!(backends, vec![BackendId::Cpu, BackendId::Aocl, BackendId::Mkl]);
+        assert_eq!(backends, vec![BackendId::Cpu, BackendId::Cuda, BackendId::Vulkan]);
         // All three are at DeviceLocation::Cpu — the CPU storage
         // substrate is shared so no Op::Copy is needed between them.
         assert!(set.alternatives().iter().all(|c| c.device == DeviceLocation::Cpu));
@@ -322,7 +322,7 @@ mod tests {
     fn op_params_cloned_onto_every_candidate() {
         let bindings = table_with(&[
             (BackendId::Cpu, noop_a),
-            (BackendId::Aocl, noop_b),
+            (BackendId::Cuda, noop_b),
         ]);
         // Use a non-None variant to verify the clone is actually
         // happening rather than every candidate getting the trivial
@@ -333,7 +333,7 @@ mod tests {
             &one_dtype_key(),
             &[
                 (BackendId::Cpu, DeviceLocation::Cpu),
-                (BackendId::Aocl, DeviceLocation::Cpu),
+                (BackendId::Cuda, DeviceLocation::Cpu),
             ],
             &params,
             &bindings,

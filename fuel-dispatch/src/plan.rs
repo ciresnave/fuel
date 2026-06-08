@@ -98,9 +98,7 @@ impl ExecutionPlan {
 /// default to ordinal 0).
 pub fn default_device_for(backend: BackendId) -> DeviceLocation {
     match backend {
-        BackendId::Cpu
-        | BackendId::Aocl
-        | BackendId::Mkl => DeviceLocation::Cpu,
+        BackendId::Cpu => DeviceLocation::Cpu,
         BackendId::Cuda => DeviceLocation::Cuda { gpu_id: 0 },
         BackendId::Vulkan => DeviceLocation::Vulkan { gpu_id: 0 },
         BackendId::Metal => DeviceLocation::Metal { gpu_id: 0 },
@@ -510,8 +508,6 @@ mod tests {
     #[test]
     fn default_device_per_backend_matches_router_convention() {
         assert_eq!(default_device_for(BackendId::Cpu), DeviceLocation::Cpu);
-        assert_eq!(default_device_for(BackendId::Aocl), DeviceLocation::Cpu);
-        assert_eq!(default_device_for(BackendId::Mkl), DeviceLocation::Cpu);
         assert_eq!(
             default_device_for(BackendId::Cuda),
             DeviceLocation::Cuda { gpu_id: 0 },
@@ -627,7 +623,7 @@ mod tests {
         // target_backend (Cpu).
         register_add_f32(
             &mut table,
-            BackendId::Aocl,
+            BackendId::Cuda,
             noop_kernel_b,
             PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
         );
@@ -651,7 +647,7 @@ mod tests {
         );
         register_add_f32(
             &mut table,
-            BackendId::Aocl,
+            BackendId::Cuda,
             noop_kernel_b,
             PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
         );
@@ -660,7 +656,7 @@ mod tests {
         let order = topo_order(&g, add_id);
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
             if dev == DeviceLocation::Cpu {
-                vec![BackendId::Cpu, BackendId::Aocl]
+                vec![BackendId::Cpu, BackendId::Cuda]
             } else {
                 vec![]
             }
@@ -745,7 +741,7 @@ mod tests {
         table.register_full(
             OpKind::AddElementwise,
             &[DType::F32, DType::F32, DType::F32],
-            BackendId::Aocl,
+            BackendId::Cuda,
             noop_kernel_b,
             KernelCaps::empty(),
             PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
@@ -756,7 +752,7 @@ mod tests {
         let order = topo_order(&g, add_id);
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
             if dev == DeviceLocation::Cpu {
-                vec![BackendId::Cpu, BackendId::Aocl]
+                vec![BackendId::Cpu, BackendId::Cuda]
             } else {
                 vec![]
             }
@@ -771,7 +767,7 @@ mod tests {
         assert_eq!(alts.len(), 2);
         assert_eq!(
             alts.winner().unwrap().backend,
-            BackendId::Aocl,
+            BackendId::Cuda,
             "cheaper static cost wins after ranking",
         );
     }
@@ -804,7 +800,7 @@ mod tests {
         table.register_full(
             OpKind::AddElementwise,
             &[DType::F32, DType::F32, DType::F32],
-            BackendId::Aocl, noop_kernel_b, KernelCaps::empty(),
+            BackendId::Cuda, noop_kernel_b, KernelCaps::empty(),
             PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU, aocl_layer1,
         );
 
@@ -812,7 +808,7 @@ mod tests {
         let order = topo_order(&g, add_id);
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
             if dev == DeviceLocation::Cpu {
-                vec![BackendId::Cpu, BackendId::Aocl]
+                vec![BackendId::Cpu, BackendId::Cuda]
             } else { vec![] }
         };
         let cpu_caps_val = cpu_caps();
@@ -823,7 +819,7 @@ mod tests {
         let sc = SizeClass::from_elem_count(3);
         let mut judge = HashMapJudge::new();
         judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cpu, 5_000);
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Aocl, 20);
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cuda, 20);
 
         let opts = PlanOptions::new()
             .with_placements_for_device(&placements_fn)
@@ -835,7 +831,7 @@ mod tests {
         assert_eq!(alts.len(), 2);
         assert_eq!(
             alts.winner().unwrap().backend,
-            BackendId::Aocl,
+            BackendId::Cuda,
             "Layer-2 measurement reverses Layer-1 verdict via compile_plan",
         );
     }
@@ -845,7 +841,7 @@ mod tests {
         let mut table = KernelBindingTable::new();
         // Three CPU-substrate backends competing at one decision
         // point — `truncate_to_top_n` should keep only the top 2.
-        for backend in [BackendId::Cpu, BackendId::Aocl, BackendId::Mkl] {
+        for backend in [BackendId::Cpu, BackendId::Cuda, BackendId::Vulkan] {
             register_add_f32(
                 &mut table,
                 backend,
@@ -860,8 +856,8 @@ mod tests {
             if dev == DeviceLocation::Cpu {
                 vec![
                     BackendId::Cpu,
-                    BackendId::Aocl,
-                    BackendId::Mkl,
+                    BackendId::Cuda,
+                    BackendId::Vulkan,
                 ]
             } else {
                 vec![]

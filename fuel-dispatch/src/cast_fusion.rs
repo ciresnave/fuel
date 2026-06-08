@@ -71,8 +71,6 @@ const ALL_BACKENDS: &[BackendId] = &[
     BackendId::Cuda,
     BackendId::Vulkan,
     BackendId::Metal,
-    BackendId::Mkl,
-    BackendId::Aocl,
 ];
 
 /// Map a `fuel_graph::Op` variant to its corresponding `OpKind`.

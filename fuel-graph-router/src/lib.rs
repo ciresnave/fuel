@@ -603,24 +603,24 @@ impl_dyn_backend!(
 );
 
 // AOCL is a CPU backend — its storage type is `AnyRefTensor`, the
-// same as `CpuBackend`'s. So `AnyStorage::Cpu` wraps both, and
-// switching between them is a vtable swap rather than a transfer.
+// same as `CpuBackend`'s. AOCL and oneMKL both register their
+// kernels under `BackendId::Cpu` (with `kernel_source: "aocl"` /
+// `"mkl"` tags); the Router treats them as the CPU substrate at
+// the device-placement level.
 #[cfg(feature = "aocl")]
 impl_dyn_backend!(
     AoclBackend, as_cpu, AnyStorage::Cpu,
     DeviceLocation::Cpu,
     CPU_CAPABILITIES,
-    BackendId::Aocl
+    BackendId::Cpu
 );
 
-// oneMKL: same story as AOCL — CPU storage, same `AnyStorage::Cpu`
-// wrapper, dispatch table picks per op.
 #[cfg(feature = "onemkl")]
 impl_dyn_backend!(
     MklBackend, as_cpu, AnyStorage::Cpu,
     DeviceLocation::Cpu,
     CPU_CAPABILITIES,
-    BackendId::Mkl
+    BackendId::Cpu
 );
 
 // -- Router ----------------------------------------------------------------
