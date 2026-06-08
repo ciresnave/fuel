@@ -897,4 +897,26 @@ impl CudaDevice {
         self.stream.synchronize().map_err(fuel_core_types::Error::wrap)?;
         Ok(())
     }
+
+    /// Free and total device memory in bytes, as `(free, total)`, via
+    /// baracuda's `cuMemGetInfo` wrapper (alpha.66). One cheap driver
+    /// call — no kernel launch, no stream sync — so it is fine to poll
+    /// at sub-realize granularity without caching.
+    ///
+    /// `cuMemGetInfo` reports for the CUDA context **currently active on
+    /// the calling thread**, not for `self` as such. The runtime
+    /// memory-pressure selector may poll from a thread that has never
+    /// touched CUDA (or, in a multi-GPU process, one bound to a sibling
+    /// device's context), so we push this device's context for the
+    /// duration of the query and pop it afterward — leaving whatever was
+    /// current on the thread untouched. Pop runs even when the query
+    /// itself fails.
+    pub fn vram_info(&self) -> Result<(u64, u64)> {
+        self.context.push().w()?;
+        let info = baracuda_driver::mem_get_info();
+        // Restore the caller's prior context regardless of the query
+        // outcome; surfacing the pop error would mask the real one.
+        let _ = baracuda_driver::Context::pop();
+        info.w()
+    }
 }

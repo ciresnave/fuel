@@ -555,3 +555,33 @@ impl DynBackendDevice for CudaDevice {
         Some(self)
     }
 }
+
+// ---------------------------------------------------------------------------
+// impl BackendRuntime for CudaDevice  (contract v0.3, Tier 1)
+// ---------------------------------------------------------------------------
+//
+// Step 2 of the backend-contract v0.3 migration order
+// (docs/architecture/05-backend-contract.md §Current compliance): now that
+// baracuda alpha.66 ships the `cuMemGetInfo` wrappers, CUDA reports real
+// device memory pressure instead of the placeholder `None` the contract
+// prescribed while the baracuda ask was in flight.
+//
+// Honesty contract: a failed driver query (context torn down at shutdown,
+// driver unloaded) maps to `None`, never a fabricated number. Selectors
+// treat `None` as "no signal — fall back to static cost," exactly as they
+// did before this signal existed.
+
+impl fuel_core_types::backend::BackendRuntime for CudaDevice {
+    /// Device-local free VRAM via `cuMemGetInfo` (driver estimate —
+    /// includes this process, other processes, and driver internals).
+    /// `None` if the driver query fails.
+    fn available_bytes(&self) -> Option<u64> {
+        self.vram_info().ok().map(|(free, _total)| free)
+    }
+
+    /// Total VRAM on this device via `cuMemGetInfo`. `None` if the driver
+    /// query fails.
+    fn total_bytes(&self) -> Option<u64> {
+        self.vram_info().ok().map(|(_free, total)| total)
+    }
+}
