@@ -1367,34 +1367,6 @@ impl LazyTensor {
         executor.realize_f32(&self.inner).into_vec()
     }
 
-    /// Realize on the AOCL CPU backend via [`PipelinedExecutor`].
-    /// AOCL is a CPU backend (just a different BLAS routing); the
-    /// pipelined path treats it as CPU at the storage layer. The
-    /// kernel-binding-table picks the AOCL alternatives for matmul
-    /// etc. when AOCL kernels are registered.
-    ///
-    /// `_executor` is ignored — kept in the signature for backward
-    /// compatibility with the Phase 6b Judge's measurement loop;
-    /// the Judge constructs executors per measurement and we just
-    /// disregard them now.
-    #[cfg(feature = "aocl")]
-    pub fn realize_f32_aocl(
-        &self,
-        _executor: &mut GraphExecutor<fuel_aocl_cpu_backend::AoclBackend>,
-    ) -> Vec<f32> {
-        // AOCL is a CPU backend at the storage layer; the kernel
-        // table routes matmul etc. to AOCL kernels when registered.
-        self.realize_f32()
-    }
-
-    /// Realize on the oneMKL CPU backend. Mirrors `realize_f32_aocl`.
-    #[cfg(feature = "onemkl")]
-    pub fn realize_f32_mkl(
-        &self,
-        _executor: &mut GraphExecutor<fuel_mkl_cpu_backend::MklBackend>,
-    ) -> Vec<f32> {
-        self.realize_f32()
-    }
 }
 
 /// Realize many tensors in a single CPU topo-walk. Phase 7.6 step 9c E.2.

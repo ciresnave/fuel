@@ -78,10 +78,6 @@ pub fn registry() -> Vec<&'static dyn BackendFactory> {
     let mut v: Vec<&'static dyn BackendFactory> = vec![
         &CpuFactory,
     ];
-    #[cfg(feature = "aocl")]
-    v.push(&AoclFactory);
-    #[cfg(feature = "onemkl")]
-    v.push(&MklFactory);
     #[cfg(feature = "cuda")]
     v.push(&CudaFactory);
     #[cfg(feature = "vulkan")]
@@ -113,49 +109,12 @@ impl BackendFactory for CpuFactory {
     }
 }
 
-// ---------------------------------------------------------------------
-// AOCL CPU
-// ---------------------------------------------------------------------
-
-#[cfg(feature = "aocl")]
-pub struct AoclFactory;
-
-#[cfg(feature = "aocl")]
-impl BackendFactory for AoclFactory {
-    fn id(&self) -> BackendId { BackendId::Aocl }
-    fn enumerate_devices(&self) -> Result<Vec<DeviceDescriptor>> {
-        fuel_aocl_cpu_backend::probe::enumerate_devices()
-    }
-    fn try_make_realizer(&self, _device_index: u32) -> Result<Box<dyn LazyRealizer>> {
-        let backend = fuel_aocl_cpu_backend::AoclBackend::try_new()
-            .map_err(|e| fuel_core_types::Error::Msg(
-                format!("AoclBackend::try_new failed: {e}")
-            ))?;
-        Ok(Box::new(Realizer { exe: GraphExecutor::new(backend) }))
-    }
-}
-
-// ---------------------------------------------------------------------
-// MKL CPU
-// ---------------------------------------------------------------------
-
-#[cfg(feature = "onemkl")]
-pub struct MklFactory;
-
-#[cfg(feature = "onemkl")]
-impl BackendFactory for MklFactory {
-    fn id(&self) -> BackendId { BackendId::Mkl }
-    fn enumerate_devices(&self) -> Result<Vec<DeviceDescriptor>> {
-        fuel_mkl_cpu_backend::probe::enumerate_devices()
-    }
-    fn try_make_realizer(&self, _device_index: u32) -> Result<Box<dyn LazyRealizer>> {
-        let backend = fuel_mkl_cpu_backend::MklBackend::try_new()
-            .map_err(|e| fuel_core_types::Error::Msg(
-                format!("MklBackend::try_new failed: {e}")
-            ))?;
-        Ok(Box::new(Realizer { exe: GraphExecutor::new(backend) }))
-    }
-}
+// AOCL + MKL factories retired 2026-06-08 (backend-extensions
+// Phase 2). They were vestigial after AOCL/MKL kernels became
+// kernel-source extensions of `BackendId::Cpu` via the binding
+// table — the factories created realizers identical to
+// `CpuFactory`'s. The picker now selects among CPU-substrate
+// alternatives by `kernel_source`; no per-vendor factory needed.
 
 // ---------------------------------------------------------------------
 // CUDA

@@ -493,9 +493,7 @@ impl SystemTopology {
 /// the fallback keeps `shares_storage` correct.
 fn default_substrate_for(backend: BackendId) -> SubstrateClass {
     match backend {
-        BackendId::Cpu
-        | BackendId::Aocl
-        | BackendId::Mkl => SubstrateClass::HostBytes,
+        BackendId::Cpu => SubstrateClass::HostBytes,
         BackendId::Cuda => SubstrateClass::CudaUntyped,
         BackendId::Vulkan => SubstrateClass::VulkanBuffer,
         BackendId::Metal => SubstrateClass::MetalBuffer,
@@ -513,9 +511,7 @@ fn default_substrate_for(backend: BackendId) -> SubstrateClass {
 /// `build_at`.
 fn default_device_for(backend: BackendId) -> DeviceLocation {
     match backend {
-        BackendId::Cpu | BackendId::Aocl | BackendId::Mkl => {
-            DeviceLocation::Cpu
-        }
+        BackendId::Cpu => DeviceLocation::Cpu,
         BackendId::Cuda => DeviceLocation::Cuda { gpu_id: 0 },
         BackendId::Vulkan => DeviceLocation::Vulkan { gpu_id: 0 },
         BackendId::Metal => DeviceLocation::Metal { gpu_id: 0 },

@@ -152,11 +152,11 @@ mod tests {
     #[test]
     fn winner_selector_returns_set_winner() {
         let mut set = AlternativeSet::empty();
-        set.push(make_candidate(BackendId::Aocl, 100));
+        set.push(make_candidate(BackendId::Cuda, 100));
         set.push(make_candidate(BackendId::Cpu, 200));
         let selector = WinnerSelector;
         let pick = selector.select(&set).expect("non-empty set");
-        assert_eq!(pick.backend, BackendId::Aocl);
+        assert_eq!(pick.backend, BackendId::Cuda);
     }
 
     /// WinnerSelector on empty set returns None — matches
@@ -185,8 +185,8 @@ mod tests {
         }
 
         let mut set = AlternativeSet::empty();
-        set.push(make_candidate(BackendId::Aocl, 100));
-        set.push(make_candidate(BackendId::Mkl, 200));
+        set.push(make_candidate(BackendId::Cuda, 100));
+        set.push(make_candidate(BackendId::Vulkan, 200));
         set.push(make_candidate(BackendId::Cpu, 300));
 
         let pick = LastEntrySelector.select(&set).expect("non-empty");
@@ -196,7 +196,7 @@ mod tests {
         );
         // And the default would have picked AOCL — proves they
         // disagree.
-        assert_eq!(WinnerSelector.select(&set).unwrap().backend, BackendId::Aocl);
+        assert_eq!(WinnerSelector.select(&set).unwrap().backend, BackendId::Cuda);
     }
 
     /// Trait is dyn-compatible so the executor can pass

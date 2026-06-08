@@ -30,7 +30,12 @@
 
 pub mod binding_table;
 mod dll_path;
-pub mod probe;
+// `probe` module retired 2026-06-08: MKL is no longer a separate
+// backend (no `BackendId::Mkl`); its kernels register as siblings
+// of fuel-cpu-backend at `BackendId::Cpu` with `kernel_source:
+// "mkl"`. The runtime `probe_mkl_loadable()` check below stays
+// — it's the gate that determines whether MKL kernels register
+// into the binding table at startup.
 
 pub use binding_table::register_mkl_cpu_kernels;
 

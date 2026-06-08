@@ -157,11 +157,6 @@ fn pick_to_location(pick: Pick) -> Option<DeviceLocation> {
         BackendId::Cuda      => Some(DeviceLocation::Cuda   { gpu_id: pick.device_index as usize }),
         BackendId::Vulkan    => Some(DeviceLocation::Vulkan { gpu_id: pick.device_index as usize }),
         BackendId::Metal     => Some(DeviceLocation::Metal  { gpu_id: pick.device_index as usize }),
-        // CPU-vendor variants (Mkl, Aocl) collapse to plain Cpu —
-        // they're picked by the per-CPU-backend selection layer, not
-        // by the device-placement layer.
-        BackendId::Mkl       => Some(DeviceLocation::Cpu),
-        BackendId::Aocl      => Some(DeviceLocation::Cpu),
         // BackendId is #[non_exhaustive]; future variants get the
         // CPU fallback until they have a placement rule of their own.
         _ => Some(DeviceLocation::Cpu),

@@ -71,10 +71,11 @@ pub enum BackendId {
     Vulkan,
     /// `fuel-metal-backend` (future — not yet probe-wired).
     Metal,
-    /// `fuel-mkl-cpu-backend` (Phase 7b, Intel CPU variant).
-    Mkl,
-    /// `fuel-aocl-cpu-backend` (Phase 7b, AMD CPU variant).
-    Aocl,
+    // `Aocl` and `Mkl` variants retired 2026-06-08 (backend-extensions
+    // Phase 2). AOCL and oneMKL are now kernel-source extensions of
+    // `BackendId::Cpu` — their kernels register as siblings at the
+    // same binding-table key, distinguished by `BindingEntry::kernel_source`.
+    // See `docs/architecture/05-backend-contract.md` §Trait surface.
 }
 
 impl BackendId {
@@ -86,8 +87,6 @@ impl BackendId {
             BackendId::Cuda      => "cuda",
             BackendId::Vulkan    => "vulkan",
             BackendId::Metal     => "metal",
-            BackendId::Mkl       => "mkl",
-            BackendId::Aocl      => "aocl",
         }
     }
 }
