@@ -13,7 +13,19 @@
     bytemuck        = { workspace = true }
     serde           = { version = "1", features = ["derive"], optional = true }
     serde_json      = { version = "1", optional = true }
+    rand            = { workspace = true, optional = true }
 
 [features]
     default = []
     serde   = ["dep:serde", "dep:serde_json", "fuel-core-types/serde"]
+    # Capture-pipeline helpers + the `fuel-capture-fixtures` binary.
+    # Enables deterministic input generation (`rand`), JSON file
+    # emission (`serde_json`), and the consensus-clustering helpers
+    # that the binary drives. Single-backend consumers of the
+    # validator path do NOT need this feature.
+    capture = ["serde", "dep:rand", "dep:serde_json"]
+
+[[bin]]
+    name              = "fuel-capture-fixtures"
+    path              = "src/bin/fuel-capture-fixtures.rs"
+    required-features = ["capture"]
