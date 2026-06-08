@@ -1,6 +1,6 @@
 # Backend contract
 
-**Status**: v0.4 (draft, 2026-06-07). v0.4 changes: Reference backend retired from the dispatch system. No `BackendId::Reference` enum variant, no `ReferenceFactory`, no `LazyTensor::realize_f32_reference()`, no `fuel_reference_backend::probe` module. Judge correctness comparison now uses pairwise consensus across whatever backends are present at each profiling cell — no privileged oracle. The `fuel-reference-backend` crate remains as a test-oracle utility (`exec::realize_f32` + `attention` + `ops`) for callers that explicitly want textbook scalar math, but it is no longer architecturally privileged. v0.3 changes (preserved): concrete trait surface, Tier 1/2/3 mandatory/optional framing, per-backend compliance snapshot, inference-vs-training capability split, `Option<u64>` honest returns for runtime state. v0.2 changes (preserved): `PrecisionGuarantee` structure replacing binary OracleGrade; Reference's architectural privilege replaced by the "always-built coverage commitment" on fuel-cpu-backend; opt-in kernel-stat telemetry upload.
+**Status**: v0.4 (draft, 2026-06-08). v0.4 changes: Reference backend retired from the dispatch system. No `BackendId::Reference` enum variant, no `ReferenceFactory`, no `LazyTensor::realize_f32_reference()`, no `fuel_reference_backend::probe` module. Judge correctness comparison now uses pairwise consensus across whatever backends are present at each profiling cell — no privileged oracle. The `fuel-reference-backend` crate remains as a test-oracle utility (`exec::realize_f32` + `attention` + `ops`) for callers that explicitly want textbook scalar math, but it is no longer architecturally privileged. AOCL and MKL are collapsed into `BackendId::Cpu`: they no longer have their own `BackendId` variants (no `BackendId::Aocl`, no `BackendId::Mkl`) and are distinguished from the portable CPU kernels by a `kernel_source` tag on each binding-table entry / `ProfileEntry` / `Pick`. They share the singleton `CpuBackendDevice` and therefore inherit its `BackendRuntime` impl. v0.3 changes (preserved): concrete trait surface, Tier 1/2/3 mandatory/optional framing, per-backend compliance snapshot, inference-vs-training capability split, `Option<u64>` honest returns for runtime state. v0.2 changes (preserved): `PrecisionGuarantee` structure replacing binary OracleGrade; Reference's architectural privilege replaced by the "always-built coverage commitment" on fuel-cpu-backend; opt-in kernel-stat telemetry upload.
 
 What backends provide to the Foundation layer, what they don't decide, and how the boundary is enforced. Anchored in the architectural principle from [01-identity](01-identity.md): **backends advertise; they don't decide.** Every strategic choice (placement, fusion, kernel selection, slot assignment, tolerance trade-off) lives at the DAG level. Backends provide the substrate the optimizer reasons about.
 
@@ -14,7 +14,7 @@ Every backend (CPU, CUDA, Vulkan, Metal, AOCL, MKL, future ones) exposes a unifo
 
 Reported once when the backend instance is registered; immutable thereafter without restart:
 
-- **Identity**: a `BackendId` (Cpu, Cuda, Vulkan, Metal, AoclCpu, MklCpu, ...) plus a `DeviceLocation` distinguishing physical instances within the backend (CUDA GPU 0 vs GPU 1).
+- **Identity**: a `BackendId` (Cpu, Cuda, Vulkan, Metal, ...) plus a `DeviceLocation` distinguishing physical instances within the backend (CUDA GPU 0 vs GPU 1). Vendor CPU kernels (AOCL, MKL) live under `BackendId::Cpu` and are distinguished by a `kernel_source` tag on each binding-table entry, not by separate `BackendId` variants.
 - **Op-dtype support set**: `(OpKind, DType)` pairs the backend has kernels for. The Router reads this to know what's dispatchable here. Routing checks `contains(&(op, dtype))` before dispatching.
 - **Per-kernel cost annotation**: a function `cost(shapes, params, capabilities) -> CostEstimate { flops, bytes_moved, kernel_overhead_ns }` per registered kernel. Used by the optimizer's static-cost layer (see [04-optimization](04-optimization.md#cost-model-static-annotations-refined-by-empirical-judge-data-accounting-for-parallelism)). Pessimistic upper bounds are the convention; conservative on uncertainty.
 - **Per-kernel `PrecisionGuarantee`**: each kernel declares its precision properties as a structure with multiple optional bounds (see [Per-kernel precision guarantees](#per-kernel-precision-guarantees) below). Replaces the binary "oracle vs production" framing. The optimizer reads these to decide whether a kernel is admissible under a given tolerance budget; calibration tooling reads them to pick comparators for tolerance discovery.
@@ -445,17 +445,17 @@ by tools and diagnostics, never by the dispatch hot path.
 
 ## Current compliance
 
-Snapshot of where each backend stands relative to the v0.3 ideal as
-of 2026-06-07. This table is descriptive (what exists today), not
+Snapshot of where each backend stands relative to the v0.4 ideal as
+of 2026-06-08. This table is descriptive (what exists today), not
 prescriptive (what must exist); the gaps are the migration backlog.
 
 | Backend | Identity | Caps | Runtime | Streams | Pressure | Diag |
 | ------- | -------- | ---- | ------- | ------- | -------- | ---- |
-| `fuel-cpu-backend` | ✅ | ✅ | ❌ planned | n/a | ❌ planned | ❌ |
-| `fuel-aocl-cpu-backend` | ✅ | ✅ | ❌ planned | n/a | ❌ planned | ❌ |
-| `fuel-mkl-cpu-backend` | ✅ | ✅ | ❌ planned | n/a | ❌ planned | ❌ |
+| `fuel-cpu-backend` | ✅ | ✅ | ✅ (OS-query via `system_memory`) | n/a | ❌ planned | ❌ |
+| `fuel-aocl-cpu-backend` | ✅ via `BackendId::Cpu` | ✅ | ✅ via shared `CpuBackendDevice` | n/a | ❌ planned | ❌ |
+| `fuel-mkl-cpu-backend` | ✅ via `BackendId::Cpu` | ✅ | ✅ via shared `CpuBackendDevice` | n/a | ❌ planned | ❌ |
 | `fuel-cuda-backend` (baracuda) | ✅ | ✅ | ✅ (baracuda alpha.66 `cuMemGetInfo`) | partial | ❌ | ❌ |
-| `fuel-vulkan-backend` (vulkane) | ✅ | ✅ | partial inherent | ✅ inherent | ✅ inherent | ❌ |
+| `fuel-vulkan-backend` (vulkane) | ✅ | ✅ | ✅ (trait surface) | ✅ inherent | ✅ inherent | ❌ |
 
 `fuel-reference-backend` v0.4 retirement note: the Reference backend
 was removed from the dispatch system in v0.4 (2026-06-07). It no
@@ -474,17 +474,21 @@ Legend:
 
 Migration order recommended by this contract:
 
-1. **`BackendRuntime` for CPU + Vulkan + Reference** — ship the
-   trait, move Vulkan's inherent methods behind it, add CPU OS-query
-   impl, add Reference synthetic-∞ impl. Single commit. *(In flight
-   immediately following this doc.)*
-2. **`BackendRuntime` for CUDA** — ✅ done (baracuda alpha.66). The
-   `cuMemGetInfo` wrappers (`baracuda_driver::mem_get_info` +
-   `Device::vram_info`) landed, so `CudaDevice::available_bytes` /
-   `total_bytes` report real device memory; a failed driver query
-   maps to `None` and selectors fall back to static cost as before.
-   The query pushes the device's context for the duration of the call
-   so it is correct when polled off the dispatch thread.
+1. **`BackendRuntime` for CPU + Vulkan** — ✅ done (commit
+   `63b8b188`). CPU ships an OS-query impl (`fuel-cpu-backend/src/
+   system_memory.rs`, Linux `/proc/meminfo` + Windows
+   `GlobalMemoryStatusEx`); Vulkan's inherent `vram_budget` /
+   `vram_used` are now exposed through the trait. AOCL + MKL inherit
+   via the shared singleton `CpuBackendDevice`. Reference no longer
+   has an impl — the backend was retired in v0.4.
+2. **`BackendRuntime` for CUDA** — ✅ done (commit `5f16ff9d`,
+   baracuda alpha.66). The `cuMemGetInfo` wrappers
+   (`baracuda_driver::mem_get_info` + `Device::vram_info`) landed,
+   so `CudaDevice::available_bytes` / `total_bytes` report real
+   device memory; a failed driver query maps to `None` and selectors
+   fall back to static cost as before. The query pushes the device's
+   context for the duration of the call so it is correct when polled
+   off the dispatch thread.
 3. **`BackendStreams` for CUDA + Vulkan** — formalize stream / queue
    counts as trait methods. Trim out the inherent methods that
    selectors currently touch directly.
