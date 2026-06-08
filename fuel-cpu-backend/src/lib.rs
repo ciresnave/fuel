@@ -17,6 +17,7 @@ pub mod host_storage;
 pub mod ops;
 pub mod probe;
 pub mod quantized;
+pub mod system_memory;
 pub mod utils;
 
 /// Phase 7.5 storage-unification target: byte-shaped CPU storage

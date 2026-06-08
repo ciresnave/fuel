@@ -81,6 +81,24 @@ impl fuel_core_types::backend::HostStorage for CpuStorage {
 #[derive(Debug, Clone, Copy)]
 pub struct CpuBackendDevice;
 
+impl fuel_core_types::backend::BackendRuntime for CpuBackendDevice {
+    /// System-wide available RAM via the OS query in
+    /// [`crate::system_memory`]. `None` on platforms without an
+    /// implemented query (macOS + unknown). The signal reflects
+    /// total OS state, not Fuel's per-process usage — selectors
+    /// should weight it accordingly.
+    fn available_bytes(&self) -> Option<u64> {
+        crate::system_memory::available_bytes()
+    }
+
+    /// Total physical RAM via the OS query in
+    /// [`crate::system_memory`]. `None` on platforms without an
+    /// implemented query.
+    fn total_bytes(&self) -> Option<u64> {
+        crate::system_memory::total_bytes()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -1361,5 +1379,53 @@ fn cpu_to_dtype(src: &HostBuffer, layout: &Layout, dtype: DType) -> Result<HostB
         DType::F64 => Ok(HostBuffer::F64(as_f64)),
         DType::F8E4M3 => Ok(HostBuffer::F8E4M3(as_f64.into_iter().map(F8E4M3::from_f64).collect())),
         _ => Err(Error::UnsupportedDTypeForOp(dtype, "to_dtype").bt()),
+    }
+}
+
+#[cfg(test)]
+mod backend_runtime_tests {
+    use super::*;
+    use fuel_core_types::backend::{BackendRuntime, FitStatus};
+
+    /// CpuBackendDevice implements BackendRuntime. On a supported
+    /// platform (Linux/Windows) reports `Some(_)`; on an unsupported
+    /// platform reports `None`. Both are valid honest outcomes per
+    /// the trait contract.
+    #[test]
+    fn cpu_backend_device_implements_backend_runtime() {
+        let dev = CpuBackendDevice;
+        let avail = dev.available_bytes();
+        let total = dev.total_bytes();
+        // Either both `Some` or both `None` — system_memory's
+        // capture_platform never mixes them.
+        match (avail, total) {
+            (Some(a), Some(t)) => {
+                assert!(t > 0);
+                assert!(a <= t);
+            }
+            (None, None) => {
+                // Unsupported platform (macOS / BSD / etc.) — valid.
+            }
+            mixed => panic!("inconsistent availability report: {mixed:?}"),
+        }
+    }
+
+    /// would_fit defers to the default trait method which derives
+    /// from available + total. On supported platforms, asking for
+    /// a 1-byte allocation should be Comfortable; on unsupported,
+    /// Unknown.
+    #[test]
+    fn cpu_backend_device_would_fit_smoke() {
+        let dev = CpuBackendDevice;
+        let status = dev.would_fit(1);
+        match (dev.available_bytes(), status) {
+            (Some(_), FitStatus::Comfortable | FitStatus::Tight) => {
+                // Either is fine — depends on host load.
+            }
+            (None, FitStatus::Unknown) => {
+                // Unsupported platform — also fine.
+            }
+            other => panic!("unexpected (signal, status) pair: {other:?}"),
+        }
     }
 }

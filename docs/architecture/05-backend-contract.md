@@ -1,6 +1,6 @@
 # Backend contract
 
-**Status**: v0.2 (draft, 2026-05-09). v0.2 changes: (1) per-kernel error characteristics formalized as a `PrecisionGuarantee` structure with multiple optional bounds (replaces the binary OracleGrade concept); (2) the "Reference backend special status" section is replaced with "Per-kernel precision guarantees and the always-built coverage commitment"; (3) backend telemetry includes opt-in upload of locally-aggregated kernel-stat summaries to the project's telemetry server.
+**Status**: v0.3 (draft, 2026-06-07). v0.3 changes: (1) concrete trait surface added at §Trait surface — pinning the previous architectural prose to actual Rust trait shapes; (2) mandatory / optional tier framing for the trait surface, replacing implicit "every backend should have X" with explicit "every backend MUST implement Tier 1; MAY implement Tiers 2–3"; (3) per-backend compliance snapshot at §Current compliance — what each backend implements today, what's missing relative to the ideal contract; (4) inference vs training capability split at §Capability requirements — which contract pieces are load-bearing for which workload; (5) `Option<u64>` returns for runtime-state methods so backends can honestly say "not measurable" without forcing dishonest numbers. v0.2 changes (preserved): (1) per-kernel error characteristics formalized as a `PrecisionGuarantee` structure with multiple optional bounds (replaces the binary OracleGrade concept); (2) the "Reference backend special status" section is replaced with "Per-kernel precision guarantees and the always-built coverage commitment"; (3) backend telemetry includes opt-in upload of locally-aggregated kernel-stat summaries to the project's telemetry server.
 
 What backends provide to the Foundation layer, what they don't decide, and how the boundary is enforced. Anchored in the architectural principle from [01-identity](01-identity.md): **backends advertise; they don't decide.** Every strategic choice (placement, fusion, kernel selection, slot assignment, tolerance trade-off) lives at the DAG level. Backends provide the substrate the optimizer reasons about.
 
@@ -66,7 +66,7 @@ The boundary: **fuel controls dispatch granularity (which slot, which device, wh
 A "slot" is a uniform abstraction at the contract surface. What it represents underneath differs per backend:
 
 | Backend | Slot maps to | Strictness |
-|---------|--------------|------------|
+| ------- | ------------ | ---------- |
 | CUDA | Stream | Strict — concurrent kernels actually run on the device when streams have capacity |
 | Vulkan | Queue | Strict — separate queues execute independently |
 | CPU (rayon kernels) | Bounded sub-pool of the global rayon pool | Strict — `pool.install` reserves N threads |
@@ -178,3 +178,400 @@ Cross-backend correctness tests have to use bounded-error comparison, not bit-eq
 - [07-tolerance](07-tolerance.md) — per-kernel error characteristics and how they gate admissibility.
 - [11-persistence](11-persistence.md) — kernel-revision hashes used for cache invalidation.
 - ROADMAP §"Phase 7" — backend-modularity and pluggable-dispatch decisions.
+
+---
+
+## Trait surface
+
+The prose above describes what backends provide. This section pins
+that to the concrete Rust trait shapes every backend implements.
+The traits compose: every backend implements Tier 1; backends with
+the corresponding underlying primitive implement Tiers 2 and 3.
+
+Naming and layout convention:
+
+- All Tier 1 trait methods live in `fuel-core-types::backend` so
+  every crate can name them without depending on backend
+  implementations.
+- Trait impls live in the per-backend crate (`fuel-cpu-backend`,
+  `fuel-cuda-backend`, `fuel-vulkan-backend`, `fuel-aocl-cpu-backend`,
+  `fuel-mkl-cpu-backend`, `fuel-reference-backend`).
+- The picker / optimizer / planner consume only the trait — never
+  inherent methods on a specific backend type.
+
+### Tier 1 — Mandatory (every backend must implement)
+
+Tier 1 is the picker's load-bearing surface. A backend that cannot
+satisfy Tier 1 cannot participate in dispatch.
+
+#### `BackendIdentity`
+
+```rust
+pub trait BackendIdentity {
+    /// Stable enum membership — `BackendId::Cpu`, `BackendId::Cuda`,
+    /// `BackendId::Vulkan`, etc.
+    fn backend_id(&self) -> BackendId;
+
+    /// Specific device within the backend's family. Stateless
+    /// backends (CPU, Reference, AOCL, MKL) return
+    /// `DeviceLocation::Cpu`; multi-device backends return their
+    /// concrete location.
+    fn device_location(&self) -> DeviceLocation;
+
+    /// Identity comparison — same backend AND same device. Used by
+    /// SystemTopology's `shares_storage` and by the executor's
+    /// dispatch-chunk boundary detection.
+    fn same_device(&self, other: &dyn BackendIdentity) -> bool;
+}
+```
+
+`DynBackendDevice` is the existing trait; v0.3 names the contract
+explicitly so a future split (e.g. separating identity from the
+allocator surface) doesn't break consumers.
+
+#### `BackendCapabilityProvider`
+
+```rust
+pub trait BackendCapabilityProvider {
+    /// Snapshot of the backend's capabilities. Capabilities are
+    /// static at backend instantiation — no runtime mutation, no
+    /// versioning. Adding a new dtype or op to a backend requires
+    /// recompiling Fuel.
+    fn capabilities(&self) -> BackendCapabilities;
+}
+```
+
+Already present at [fuel-core-types/src/backend.rs](../../fuel-core-types/src/backend.rs).
+v0.3 confirms it stays in Tier 1 unchanged.
+
+#### `BackendRuntime` (NEW in v0.3)
+
+```rust
+pub trait BackendRuntime {
+    /// Bytes currently available for new allocations on this
+    /// backend's device. `None` when the backend genuinely cannot
+    /// measure (no OS query, no vendor API exposes it). Selectors
+    /// treat `None` as "no pressure signal — fall back to static
+    /// cost."
+    ///
+    /// Cheap to call (cached for ~100ms internally if the
+    /// underlying query is non-trivial). Selectors poll at
+    /// sub-realize granularity, not in tight loops.
+    fn available_bytes(&self) -> Option<u64>;
+
+    /// Total memory on this backend's device. Static after first
+    /// call; cached unconditionally. `None` for backends with
+    /// unbounded notional capacity (e.g. Reference — synthetic
+    /// "infinite memory").
+    fn total_bytes(&self) -> Option<u64>;
+
+    /// Predictive fit-check: would an allocation of `size` bytes
+    /// likely succeed given current state? Returns `Tight` when
+    /// projected usage crosses a configurable pressure threshold
+    /// (typically 0.85 of `total_bytes`).
+    ///
+    /// Default implementation derives from `available_bytes` +
+    /// `total_bytes`. Backends with native predictive APIs (Vulkan
+    /// `VK_EXT_memory_budget`) override for accuracy.
+    fn would_fit(&self, size: u64) -> FitStatus {
+        match (self.available_bytes(), self.total_bytes()) {
+            (Some(avail), Some(total)) => {
+                if size > avail { FitStatus::WontFit }
+                else if (avail - size) as f64 / total as f64 > 0.85 { FitStatus::Tight }
+                else { FitStatus::Comfortable }
+            }
+            _ => FitStatus::Unknown,
+        }
+    }
+}
+
+pub enum FitStatus {
+    /// Allocation projected to fit comfortably.
+    Comfortable,
+    /// Allocation projected to fit but leaves the device tight.
+    /// Selector should prefer a less-loaded backend if available.
+    Tight,
+    /// Allocation projected NOT to fit. Selector should pick a
+    /// different backend or surface a planner-level error.
+    WontFit,
+    /// Backend cannot answer — `available_bytes` returned `None`.
+    /// Selector falls back to static cost.
+    Unknown,
+}
+```
+
+Every backend implements `BackendRuntime`. The `Option<u64>` returns
+let backends honestly report what they can measure without forcing
+fabrication. The default `would_fit` implementation makes the
+pressure-aware selector backend-agnostic: it queries the trait, the
+trait reports honestly, the selector decides.
+
+### Tier 2 — Conditional (backend-dependent primitives)
+
+Tier 2 is for backends whose underlying primitive exposes the
+signal. Selectors check at runtime whether the backend implements
+the trait (via downcast through `BackendId` dispatch) and adapt.
+
+#### `BackendStreams`
+
+For backends with a deferred-execution / queue model.
+
+```rust
+pub trait BackendStreams: BackendRuntime {
+    /// Number of slots (streams / queues / thread-pool tasks)
+    /// currently busy with submitted-but-not-yet-finished work.
+    /// `None` when the backend dispatches synchronously and has no
+    /// queue concept.
+    fn pending_work_count(&self) -> Option<u32>;
+
+    /// Maximum concurrent in-flight work this backend supports
+    /// (advertised slot capacity from `BackendCapabilities`). Used
+    /// by the runtime route picker for dispatch lookahead sizing.
+    fn slot_capacity(&self) -> u32;
+
+    /// Block until all submitted work on this backend's slots has
+    /// completed. Used at realize boundaries and by training-loop
+    /// barriers (gradient accumulation, optimizer step).
+    fn flush(&self) -> Result<()>;
+}
+```
+
+Implemented by: CUDA (streams), Vulkan (queues / command buffers).
+Not implemented by: CPU (synchronous dispatch), Reference (synchronous).
+Future backends with stream-like primitives (Metal command queues, ROCm streams)
+implement when added.
+
+#### `BackendPressureSignals`
+
+For backends with push-based pressure notification.
+
+```rust
+pub trait BackendPressureSignals: BackendRuntime {
+    /// Register a callback that fires when memory pressure crosses
+    /// `threshold` (as fraction of `total_bytes`, e.g. 0.85). The
+    /// `hysteresis` prevents rapid re-fire as usage oscillates;
+    /// `Relieved` fires when usage drops `hysteresis` below threshold.
+    ///
+    /// Callbacks run on whatever thread crossed the threshold. The
+    /// backend MUST release internal locks before firing so the
+    /// callback may safely re-enter the backend (e.g. to trigger
+    /// eviction).
+    fn register_pressure_callback(
+        &self,
+        threshold: f64,
+        hysteresis: f64,
+        callback: Box<dyn Fn(PressureKind) + Send + Sync>,
+    ) -> Result<PressureCallbackId>;
+
+    fn unregister_pressure_callback(&self, id: PressureCallbackId) -> bool;
+}
+
+pub enum PressureKind {
+    /// Usage crossed above `threshold`.
+    Crossed,
+    /// Usage dropped below `threshold - hysteresis`.
+    Relieved,
+}
+```
+
+Implemented by: Vulkan (`VK_EXT_memory_budget` callbacks via
+vulkane). Not implemented by: most others. Selectors that want push
+notifications check `BackendId` against the registry of implementors.
+
+### Tier 3 — Optional (introspection / diagnostics)
+
+Tier 3 is purely for diagnostics, debugging, and user-facing
+inspection. No selector / planner / optimizer takes a dependency on
+Tier 3.
+
+#### `BackendDiagnostics`
+
+```rust
+pub trait BackendDiagnostics {
+    /// Human-readable vendor + device identifier.
+    /// E.g. "NVIDIA GeForce RTX 4070" / "AMD Ryzen 9 7950X" /
+    /// "Apple M3 Pro".
+    fn device_name(&self) -> String;
+
+    /// Driver / runtime version string.
+    /// E.g. "CUDA 12.4" / "Vulkan 1.3.290" / "AOCL 4.2".
+    fn driver_version(&self) -> Option<String>;
+
+    /// Vendor-reported peak compute throughput in FLOPS, by dtype.
+    /// Best-effort — many backends report nothing.
+    fn peak_throughput(&self, dtype: DType) -> Option<u64>;
+
+    /// Vendor-reported peak memory bandwidth in bytes/sec.
+    fn peak_memory_bandwidth(&self) -> Option<u64>;
+}
+```
+
+For now: implemented opportunistically; absent until a consumer
+needs it (e.g. a `fuel-info` subcommand that prints "what backends
+are visible and what can they do").
+
+## Mandatory vs optional — summary
+
+```text
+Tier 1 (mandatory)        Tier 2 (conditional)    Tier 3 (optional)
+─────────────────         ───────────────────     ─────────────────
+BackendIdentity           BackendStreams          BackendDiagnostics
+BackendCapabilityProvider BackendPressureSignals
+BackendRuntime
+```
+
+The picker, optimizer ranker, route picker, executor, and planner
+only consume Tier 1 directly. Tier 2 is consumed via feature-detect
+(`if let Some(streams) = backend.as_streams()`); Tier 3 is consumed
+by tools and diagnostics, never by the dispatch hot path.
+
+## Current compliance
+
+Snapshot of where each backend stands relative to the v0.3 ideal as
+of 2026-06-07. This table is descriptive (what exists today), not
+prescriptive (what must exist); the gaps are the migration backlog.
+
+| Backend | Identity | Caps | Runtime | Streams | Pressure | Diag |
+| ------- | -------- | ---- | ------- | ------- | -------- | ---- |
+| `fuel-cpu-backend` | ✅ | ✅ | ❌ planned | n/a | ❌ planned | ❌ |
+| `fuel-aocl-cpu-backend` | ✅ | ✅ | ❌ planned | n/a | ❌ planned | ❌ |
+| `fuel-mkl-cpu-backend` | ✅ | ✅ | ❌ planned | n/a | ❌ planned | ❌ |
+| `fuel-cuda-backend` (baracuda) | ✅ | ✅ | ⏳ baracuda ask in flight | partial | ❌ | ❌ |
+| `fuel-vulkan-backend` (vulkane) | ✅ | ✅ | partial inherent | ✅ inherent | ✅ inherent | ❌ |
+| `fuel-reference-backend` | n/a | n/a | n/a | n/a | n/a | n/a |
+
+`fuel-reference-backend` n/a row note: the reference backend bypasses
+the pipelined executor through its own `realize_f32` entry point in
+[fuel-core/src/factories.rs](../../fuel-core/src/factories.rs) and has
+no device-handle type to attach trait impls to. When / if a `ReferenceBackendDevice`
+type lands (paralleling `CpuBackendDevice`), the synthetic-∞ impl
+(`available_bytes` → `Some(u64::MAX)`, `total_bytes` → `Some(u64::MAX)`)
+becomes a ~10-line follow-up.
+
+Legend:
+
+- ✅ — implements the trait fully today.
+- ⏳ — actively in progress (e.g. a request out to a sibling crate).
+- ❌ planned — known gap, migration scheduled in upcoming work.
+- partial — provides the signal via inherent methods but not via
+  the trait surface; migrate to trait impl as part of v0.3 rollout.
+- n/a — Tier 2 trait doesn't apply (e.g. CPU has no stream concept).
+
+Migration order recommended by this contract:
+
+1. **`BackendRuntime` for CPU + Vulkan + Reference** — ship the
+   trait, move Vulkan's inherent methods behind it, add CPU OS-query
+   impl, add Reference synthetic-∞ impl. Single commit. *(In flight
+   immediately following this doc.)*
+2. **`BackendRuntime` for CUDA** — gated on baracuda's `cuMemGetInfo`
+   wrapper landing. Until then, CUDA returns `Option::None` from
+   `available_bytes` / `total_bytes` — selectors gracefully fall
+   back to static cost.
+3. **`BackendStreams` for CUDA + Vulkan** — formalize stream / queue
+   counts as trait methods. Trim out the inherent methods that
+   selectors currently touch directly.
+4. **`BackendPressureSignals` for Vulkan** — promote vulkane's
+   pressure-callback API to the trait. CUDA impl waits on baracuda
+   exposing notifications (lower priority than `MemGetInfo`).
+5. **Tier 3 diagnostics** — opportunistic, no scheduled migration;
+   add when a consumer materializes.
+
+## Capability requirements — inference vs training
+
+Different workloads load-bear on different parts of the contract.
+A backend complete for inference may be insufficient for training,
+and vice versa.
+
+### Required for inference
+
+A backend is **inference-complete** when it implements:
+
+- All Tier 1 (`BackendIdentity`, `BackendCapabilityProvider`,
+  `BackendRuntime`).
+- Forward kernels for the inference op set: matmul / fused-matmul,
+  the activation set (silu / gelu / relu / softmax / etc.), the
+  normalization set (rms_norm / layer_norm), attention (FlashAttention
+  or PagedAttention), elementwise unary + binary, reductions, casts,
+  conv2d if vision is in scope.
+- `Op::Copy` kernels into and out of CPU (the realize-root D2H path
+  depends on this).
+- Quantized matmul (Q4_0 / Q4_K_M / Q8_0 at minimum) if the backend
+  serves quantized inference workloads.
+
+`BackendStreams` is helpful for inference (pipeline depth, multi-
+request batching) but not strictly required — synchronous dispatch
+suffices for single-request inference.
+
+### Additional requirements for training
+
+A backend becomes **training-complete** when it adds, on top of
+inference-complete:
+
+- Backward kernels for every forward kernel it ships, OR a fused-op
+  backward (e.g. `Op::Fused(POWI_BACKWARD)`, `Op::Fused(FLCE_BACKWARD)`).
+  The autograd machinery in fuel-graph emits backward ops; backends
+  that lack backward kernels fall back to CPU at every gradient
+  edge, which is usually too slow to be useful.
+- In-place op variants (`Op::AddInplace`, `Op::SubInplace`, etc.)
+  for optimizer-step efficiency. Optional in v1 — without them,
+  every parameter update allocates a fresh storage; with them,
+  Adam-style updates mutate in place. The architecture's
+  graph-tracked version safety (see
+  [project_graph_tracked_version_safety.md](../../C:/Users/cires/.claude/projects/c--Users-cires-OneDrive-Documents-projects-fuel/memory/project_graph_tracked_version_safety.md))
+  makes this safe.
+- `BackendStreams::flush()` — gradient accumulation across multiple
+  micro-batches requires barrier semantics. Without `flush()` the
+  training loop cannot reliably sequence backward, optimizer step,
+  and zero-grad in order.
+- Deterministic-seed RNG for backends running dropout / weight-init.
+  Currently scoped via [project_baracuda_alpha_31_integration.md](../../C:/Users/cires/.claude/projects/c--Users-cires-OneDrive-Documents-projects-fuel/memory/project_baracuda_alpha_31_integration.md)
+  pattern (`set_seed` + `get_current_seed` on the device handle).
+
+`BackendPressureSignals` is helpful for training (large activation
+checkpoints generate variable memory pressure) but Tier 2 — backends
+without it fall back to `BackendRuntime::would_fit` polling.
+
+### Pluggability target
+
+A new backend (e.g. ROCm, Metal compute, TPU) is "Fuel-pluggable"
+when it implements Tier 1. That suffices for it to be part of the
+optimizer's plan-time enumeration and the executor's dispatch. Tier
+2 / 3 / training-completeness are progressive enhancements; they
+unlock specific features but don't block participation.
+
+## What the v0.3 trait surface enables
+
+For the picker arc (Phases 1–5):
+
+- **Picker 1 (optimizer ranker)** — already complete; queries
+  `BackendCapabilityProvider::capabilities()` and the binding-table
+  for op-coverage filtering. v0.3 changes nothing here.
+- **Picker 2 (`RuntimeSelector`)** — `VramPressureSelector`,
+  `MemoryPressureSelector`, future `LoadAwareSelector` all become
+  backend-agnostic: they query Tier 1 / Tier 2 traits, never
+  branch on `BackendId`.
+- **Coupled-cost composition (Phase 2.3)** — derives transfer costs
+  from `BackendCapabilities::transfer_paths` (already in Tier 1)
+  and bandwidth estimates from peak-throughput diagnostics if
+  available, falling back to probed values. Buildable today.
+
+For the training arc:
+
+- **Gradient checkpointing decisions** — read `available_bytes` to
+  decide whether to materialize an activation now or recompute on
+  backward. Today's checkpoint heuristics are static; reading the
+  trait lets them adapt to live memory state.
+- **Mixed-precision casting** — `BackendCapabilities::op_dtype_support`
+  already determines admissibility; v0.3 doesn't change this.
+
+For the multi-device / multi-host arc (out of scope today, but
+worth naming):
+
+- **Backend hotplug** — `SystemTopology::generation` already detects
+  topology changes; per-backend registration / deregistration goes
+  through the same path. Tier 1 backends just need to keep their
+  `BackendRuntime` impl returning sane values across their lifecycle.
+- **Cross-host transfer paths** — when a future backend exposes
+  network-attached devices, `BackendCapabilities::transfer_paths`
+  gains entries for the remote `DeviceLocation`s and the optimizer
+  plans across them without further contract changes.
