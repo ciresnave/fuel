@@ -45,7 +45,7 @@ pub mod residency_eviction;
 pub use residency_eviction::ResidencyEvictionRule;
 
 use fuel_core_types::{bail, Capability, DType, DeviceLocation, HostBuffer, Layout, Result, Shape};
-use fuel_core_types::dispatch::{Criterion, DispatchTable, OpKind, SizeClass};
+use fuel_core_types::dispatch::{Criterion, DispatchTable, OpKind, Pick, SizeClass};
 use fuel_core_types::probe::BackendId;
 use fuel_graph_cpu::CpuBackend;
 use fuel_graph_executor::{BinaryOp, GraphBackend, UnaryOp};
@@ -151,6 +151,19 @@ pub trait DynBackend {
     /// dispatch the right one based on the empirical dispatch
     /// table's pick.
     fn backend_id(&self) -> BackendId;
+
+    /// Kernel-source tag distinguishing this backend instance when
+    /// multiple instances share the same `(backend_id, device)` pair.
+    /// Mirrors `Pick::kernel_source` / `BindingEntry::kernel_source`:
+    /// `"portable-cpu"`, `"aocl"`, `"mkl"`, etc.
+    ///
+    /// Routers use this to resolve a [`Pick`] to the specific
+    /// `DynBackend` whose kernel produced the winning measurement.
+    /// Default `""` matches the legacy single-impl-per-slot
+    /// convention and the `Pick::kernel_source` fallback for cells
+    /// with no sibling — appropriate for Vulkan / CUDA where each
+    /// `(BackendId, device)` has exactly one registered backend.
+    fn kernel_source(&self) -> &'static str { "" }
 
     /// Ops this backend implements natively. The Router/scheduler
     /// consults this slice to route nodes, plan transfers, and
@@ -318,10 +331,17 @@ pub trait DynBackend {
 /// backend. `$cast` is the AnyStorage accessor (e.g. `as_cpu`);
 /// `$wrap` is the AnyStorage variant constructor (e.g. `AnyStorage::Cpu`).
 macro_rules! impl_dyn_backend {
-    ($backend:ty, $cast:ident, $wrap:path, $device:expr, $caps:expr, $backend_id:expr) => {
+    // Full form: caller specifies a kernel_source tag (e.g.
+    // "portable-cpu", "aocl", "mkl") that disambiguates siblings
+    // sharing the same `(BackendId, DeviceLocation)`. Required for
+    // every CPU-family backend now that AOCL/MKL register under
+    // `BackendId::Cpu` and the dispatch table tracks them via
+    // `Pick::kernel_source`.
+    ($backend:ty, $cast:ident, $wrap:path, $device:expr, $caps:expr, $backend_id:expr, $kernel_source:expr) => {
         impl DynBackend for $backend {
             fn device(&self) -> DeviceLocation { $device }
             fn backend_id(&self) -> BackendId { $backend_id }
+            fn kernel_source(&self) -> &'static str { $kernel_source }
             fn capabilities(&self) -> &[Capability] { $caps }
 
             fn alloc_zeros(&self, shape: &Shape, dtype: DType) -> Result<AnyStorage> {
@@ -496,6 +516,12 @@ macro_rules! impl_dyn_backend {
             // Router, same-device falls back to try_clone via default.
         }
     };
+    // Legacy 6-arg form: kernel_source defaults to "". Use for
+    // backends with exactly one impl per `(BackendId, DeviceLocation)`
+    // — Vulkan, CUDA today.
+    ($backend:ty, $cast:ident, $wrap:path, $device:expr, $caps:expr, $backend_id:expr) => {
+        impl_dyn_backend!($backend, $cast, $wrap, $device, $caps, $backend_id, "");
+    };
 }
 
 /// The 16 ops every concrete backend implements on `GraphBackend`
@@ -584,7 +610,7 @@ const CUDA_CAPABILITIES: &[Capability] = &[
     Capability::MatMulQ4KM,
 ];
 
-impl_dyn_backend!(CpuBackend, as_cpu, AnyStorage::Cpu, DeviceLocation::Cpu, CPU_CAPABILITIES, BackendId::Cpu);
+impl_dyn_backend!(CpuBackend, as_cpu, AnyStorage::Cpu, DeviceLocation::Cpu, CPU_CAPABILITIES, BackendId::Cpu, "portable-cpu");
 
 #[cfg(feature = "vulkan")]
 impl_dyn_backend!(
@@ -612,7 +638,8 @@ impl_dyn_backend!(
     AoclBackend, as_cpu, AnyStorage::Cpu,
     DeviceLocation::Cpu,
     CPU_CAPABILITIES,
-    BackendId::Cpu
+    BackendId::Cpu,
+    "aocl"
 );
 
 #[cfg(feature = "onemkl")]
@@ -620,7 +647,8 @@ impl_dyn_backend!(
     MklBackend, as_cpu, AnyStorage::Cpu,
     DeviceLocation::Cpu,
     CPU_CAPABILITIES,
-    BackendId::Cpu
+    BackendId::Cpu,
+    "mkl"
 );
 
 // -- Router ----------------------------------------------------------------
@@ -828,19 +856,60 @@ impl Router {
             ))
     }
 
-    /// Find a specific backend by `BackendId` at a given device. Used
-    /// after the dispatch table picks (BackendId, device) — the
-    /// Router still needs to locate the matching attached backend.
-    fn backend_for_id(&self, id: BackendId, loc: DeviceLocation) -> Option<&dyn DynBackend> {
-        self.backends.iter()
-            .find(|b| b.backend_id() == id && b.device() == loc)
-            .map(|b| b.as_ref())
+    /// Find the attached backend matching a [`Pick`] — `(BackendId,
+    /// DeviceLocation, kernel_source)`. Multiple backends can share
+    /// the same `(BackendId, DeviceLocation)` slot (e.g. portable
+    /// `CpuBackend`, `AoclBackend`, `MklBackend` all at
+    /// `(BackendId::Cpu, DeviceLocation::Cpu)`); the `kernel_source`
+    /// tag picked by the dispatch table is what disambiguates which
+    /// kernel actually won the contest.
+    ///
+    /// Resolution order:
+    ///
+    /// 1. Exact match on all three of `(BackendId, DeviceLocation,
+    ///    kernel_source)`. This is the path the Phase 6b dispatch
+    ///    table is designed to drive end-to-end.
+    /// 2. First backend matching `(BackendId, DeviceLocation)`
+    ///    ignoring `kernel_source`, **with a `eprintln!` warning**.
+    ///    Reached when a Pick names a `kernel_source` no attached
+    ///    backend declares — typically because the profile was
+    ///    produced on a host that had AOCL/MKL loaded but this
+    ///    Router doesn't (compiled out, or the app didn't add it).
+    /// 3. `None` if no `(BackendId, DeviceLocation)` match at all.
+    fn backend_for_pick(&self, pick: &Pick, loc: DeviceLocation) -> Option<&dyn DynBackend> {
+        // 1. Exact (backend_id, device, kernel_source) match.
+        if let Some(b) = self.backends.iter().find(|b| {
+            b.backend_id() == pick.backend
+                && b.device() == loc
+                && b.kernel_source() == pick.kernel_source
+        }) {
+            return Some(b.as_ref());
+        }
+        // 2. (backend_id, device) match with a different kernel_source.
+        //    The Pick named a sibling kernel this Router doesn't carry;
+        //    fall back to whatever sibling IS attached and warn so the
+        //    drift surfaces in logs.
+        if let Some(b) = self.backends.iter().find(|b| {
+            b.backend_id() == pick.backend && b.device() == loc
+        }) {
+            eprintln!(
+                "Router::backend_for_pick: pick named kernel_source={:?} for \
+                 ({:?}, {:?}) but no attached backend carries that tag; \
+                 falling back to first-registered ({:?}). Profile table may \
+                 reflect a host with siblings this Router doesn't load.",
+                pick.kernel_source, pick.backend, loc, b.kernel_source(),
+            );
+            return Some(b.as_ref());
+        }
+        // 3. No `(backend_id, device)` match at all.
+        None
     }
 
     /// Pick a backend for a single op based on the empirical
     /// dispatch table (when present). Falls through to
     /// `backend_for(target)` if the table is absent, the op isn't
-    /// profiled, or the picked BackendId isn't attached.
+    /// profiled, or the picked `(BackendId, kernel_source)` isn't
+    /// attached.
     ///
     /// `n_elements` is the bucketing input — typically the output
     /// element count for matmul / unary / binary ops. The dispatch
@@ -856,13 +925,13 @@ impl Router {
         if let Some(table) = &self.dispatch_table {
             let class = SizeClass::from_elem_count(n_elements);
             if let Some(pick) = table.pick_nearest(op, dtype, class, self.dispatch_criterion) {
-                if let Some(b) = self.backend_for_id(pick.backend, target) {
+                if let Some(b) = self.backend_for_pick(&pick, target) {
                     return Ok(b);
                 }
                 // Pick named a backend that isn't attached to this
-                // Router (compiled out, or the app didn't add it).
-                // Silent fall-through — the table is advisory, not
-                // authoritative.
+                // Router at all (compiled out, or the app didn't add
+                // it). Silent fall-through — the table is advisory,
+                // not authoritative.
             }
         }
         self.backend_for(target)
@@ -1123,4 +1192,154 @@ impl GraphBackend for Router {
     // add_assign_scaled) keep their default `bail` impls, and the
     // executor falls back to CPU reference via `cpu_fallback` for them.
     // Phase 2.5 fills these in as needed.
+}
+
+#[cfg(test)]
+mod tests {
+    //! `backend_for_pick` / `pick_for_op` regression tests for the
+    //! kernel_source-aware routing landed 2026-06-08. Validates the
+    //! Router resolves a [`Pick`] to the specific `DynBackend` whose
+    //! `kernel_source()` matches the picked tag — not just the first
+    //! `(BackendId, DeviceLocation)` match.
+    //!
+    //! Uses an in-test fake `DynBackend` so the tests don't depend on
+    //! the `aocl` / `onemkl` features being enabled at build time. The
+    //! fake declares no capabilities and bails on every op method — we
+    //! only exercise `device()` / `backend_id()` / `kernel_source()`,
+    //! which is all `backend_for_pick` reads.
+    use super::*;
+    use fuel_core_types::dispatch::{
+        DispatchTable, OpKind, ProfileEntry, ProfileReport, SizeClass,
+        PROFILE_REPORT_VERSION,
+    };
+
+    /// Test DynBackend that records nothing — used only to verify
+    /// the Router picks the right one by `kernel_source`.
+    struct FakeCpuBackend {
+        ks: &'static str,
+    }
+
+    impl DynBackend for FakeCpuBackend {
+        fn device(&self) -> DeviceLocation { DeviceLocation::Cpu }
+        fn backend_id(&self) -> BackendId { BackendId::Cpu }
+        fn kernel_source(&self) -> &'static str { self.ks }
+        // All op methods default to `bail` — we never call them in
+        // these tests.
+    }
+
+    /// Build a dispatch table with one entry naming the given
+    /// kernel_source as the winner for `MatMul/F32` at SizeClass(12).
+    fn dispatch_table_for(kernel_source: &str) -> DispatchTable {
+        let report = ProfileReport {
+            version: PROFILE_REPORT_VERSION,
+            entries: vec![ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(12),
+                backend: BackendId::Cpu,
+                device_index: 0,
+                latency_ns: 100,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: kernel_source.into(),
+            }],
+        };
+        DispatchTable::build(&report)
+    }
+
+    fn router_with_portable_and_aocl_fakes() -> Router {
+        let mut r = Router::new();
+        // Register portable-cpu first so it's the "first-registered"
+        // fallback. AOCL second — the pick named "aocl" must still
+        // route to it.
+        let portable: Arc<dyn DynBackend> = Arc::new(FakeCpuBackend { ks: "portable-cpu" });
+        let aocl: Arc<dyn DynBackend> = Arc::new(FakeCpuBackend { ks: "aocl" });
+        r.backends.push(portable);
+        r.backends.push(aocl);
+        r.default_device = DeviceLocation::Cpu;
+        r
+    }
+
+    #[test]
+    fn backend_for_pick_returns_aocl_when_pick_names_aocl() {
+        let r = router_with_portable_and_aocl_fakes();
+        let pick = Pick {
+            backend: BackendId::Cpu,
+            device_index: 0,
+            kernel_source: "aocl",
+        };
+        let b = r.backend_for_pick(&pick, DeviceLocation::Cpu)
+            .expect("aocl sibling attached");
+        assert_eq!(b.kernel_source(), "aocl",
+            "kernel_source-matched backend must win even when not first-registered");
+    }
+
+    #[test]
+    fn backend_for_pick_returns_portable_when_pick_names_portable() {
+        let r = router_with_portable_and_aocl_fakes();
+        let pick = Pick {
+            backend: BackendId::Cpu,
+            device_index: 0,
+            kernel_source: "portable-cpu",
+        };
+        let b = r.backend_for_pick(&pick, DeviceLocation::Cpu)
+            .expect("portable-cpu sibling attached");
+        assert_eq!(b.kernel_source(), "portable-cpu");
+    }
+
+    #[test]
+    fn backend_for_pick_falls_back_to_first_when_kernel_source_absent() {
+        // Pick names "mkl" — neither attached backend carries that
+        // tag. Router falls back to the first matching
+        // `(BackendId, DeviceLocation)` — the portable-cpu we added
+        // first — and emits an eprintln warning (not asserted; just
+        // observed in test output).
+        let r = router_with_portable_and_aocl_fakes();
+        let pick = Pick {
+            backend: BackendId::Cpu,
+            device_index: 0,
+            kernel_source: "mkl",
+        };
+        let b = r.backend_for_pick(&pick, DeviceLocation::Cpu)
+            .expect("fallback to first-registered for unknown kernel_source");
+        assert_eq!(b.kernel_source(), "portable-cpu",
+            "first-registered fallback when kernel_source has no match");
+    }
+
+    #[test]
+    fn backend_for_pick_returns_none_when_no_backend_id_match() {
+        // Pick names BackendId::Vulkan but only CPU siblings are
+        // attached. No backend_id match → None (caller falls back to
+        // `backend_for(target)` per `pick_for_op` semantics).
+        let r = router_with_portable_and_aocl_fakes();
+        let pick = Pick {
+            backend: BackendId::Vulkan,
+            device_index: 0,
+            kernel_source: "slang",
+        };
+        assert!(r.backend_for_pick(&pick, DeviceLocation::Cpu).is_none());
+    }
+
+    #[test]
+    fn pick_for_op_routes_to_kernel_source_winner() {
+        // End-to-end check: with a dispatch table that names "aocl"
+        // the winner at MatMul/F32/SizeClass(12), pick_for_op should
+        // route through `backend_for_pick` to the aocl-tagged fake.
+        let mut r = router_with_portable_and_aocl_fakes();
+        let table = Arc::new(dispatch_table_for("aocl"));
+        r.dispatch_table = Some(table);
+        // SizeClass(12) = log2-bucket for ~4K elements.
+        let n_elems = 1 << 12;
+        let b = r.pick_for_op(OpKind::MatMul, DType::F32, n_elems, DeviceLocation::Cpu)
+            .expect("pick_for_op resolves");
+        assert_eq!(b.kernel_source(), "aocl");
+    }
+
+    #[test]
+    fn cpu_backend_declares_portable_cpu_kernel_source() {
+        // Sanity: the real CpuBackend reports "portable-cpu" so it
+        // matches a Pick whose `kernel_source` came back as
+        // `"portable-cpu"` (the interned-tag convention).
+        assert_eq!(CpuBackend.kernel_source(), "portable-cpu");
+    }
 }
