@@ -154,7 +154,6 @@ fn op_to_kind(op: &Op) -> Option<OpKind> {
 fn pick_to_location(pick: Pick) -> Option<DeviceLocation> {
     match pick.backend {
         BackendId::Cpu       => Some(DeviceLocation::Cpu),
-        BackendId::Reference => Some(DeviceLocation::Cpu),
         BackendId::Cuda      => Some(DeviceLocation::Cuda   { gpu_id: pick.device_index as usize }),
         BackendId::Vulkan    => Some(DeviceLocation::Vulkan { gpu_id: pick.device_index as usize }),
         BackendId::Metal     => Some(DeviceLocation::Metal  { gpu_id: pick.device_index as usize }),

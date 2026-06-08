@@ -28,7 +28,7 @@ fn cuda_present() -> bool {
 }
 
 fn realize_both(t: &LazyTensor) -> (Vec<f32>, Vec<f32>) {
-    let reference = t.realize_f32_reference();
+    let reference = t.realize_f32();
     let cuda_device = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 should be available");
     let cuda = t.realize_f32_cuda(&cuda_device);

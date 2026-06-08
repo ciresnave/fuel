@@ -50,7 +50,7 @@ fn cuda_executor() -> fuel_cuda_backend::CudaDevice {
 
 /// Realize `t` on both reference and CUDA backends, assert allclose.
 fn assert_cuda_oracle(t: &LazyTensor, atol: f32, rtol: f32) {
-    let reference = t.realize_f32_reference();
+    let reference = t.realize_f32();
     let exe = cuda_executor();
     let cuda = t.realize_f32_cuda(&exe);
     assert_eq!(reference.len(), cuda.len());
@@ -77,7 +77,7 @@ fn single_matmul_cuda_matches_reference_within_tolerance() -> Result<()> {
     let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
     let c = a.matmul(&b)?;
 
-    let reference = c.realize_f32_reference();
+    let reference = c.realize_f32();
 
     let cuda_device = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 should be available");
@@ -154,7 +154,7 @@ fn llama_2layer_cuda_matches_reference() {
     let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
     let logits: LazyTensor = model.forward(&tokens, 0).unwrap();
 
-    let reference = logits.realize_f32_reference();
+    let reference = logits.realize_f32();
 
     let cuda_device = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 should be available");

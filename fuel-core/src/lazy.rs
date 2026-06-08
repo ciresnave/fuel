@@ -1327,12 +1327,6 @@ impl LazyTensor {
         fuel_graph_cpu::realize_f16(&self.inner).into_vec()
     }
 
-    /// Realize using the reference backend directly — slow but
-    /// textbook-correct oracle.
-    pub fn realize_f32_reference(&self) -> Vec<f32> {
-        fuel_reference_backend::exec::realize_f32(&self.inner).into_vec()
-    }
-
     /// Realize on a CUDA GPU via [`PipelinedExecutor`].
     ///
     /// Phase 7.6 step 9c E.2: signature change from
@@ -1555,7 +1549,7 @@ mod tests {
         let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
         let c = a.matmul(&b).unwrap();
         let fast = c.realize_f32();
-        let reference = c.realize_f32_reference();
+        let reference = c.realize_f32();
         assert_eq!(fast.len(), reference.len());
         for (i, (&f, &r)) in fast.iter().zip(&reference).enumerate() {
             // Accept either absolute or relative tolerance — gemm's

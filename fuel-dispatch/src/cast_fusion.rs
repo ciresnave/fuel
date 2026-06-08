@@ -68,7 +68,6 @@ pub fn cast_fusion_predicate() -> CapabilityPredicate {
 /// Op pair per optimization pass).
 const ALL_BACKENDS: &[BackendId] = &[
     BackendId::Cpu,
-    BackendId::Reference,
     BackendId::Cuda,
     BackendId::Vulkan,
     BackendId::Metal,

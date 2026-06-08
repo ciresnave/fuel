@@ -50,7 +50,7 @@ fn aocl_conv2d_matches_reference_dense() {
         (1, 16, 32, 32, 32, 3, (2, 2), (1, 1)),  // YOLO-style stride-2
     ] {
         let y = build_conv_graph(n, ci, h, w, co, k, s, p);
-        let reference = y.realize_f32_reference();
+        let reference = y.realize_f32();
         let aocl = y.realize_f32_aocl(&mut exe);
         assert_close(
             &reference, &aocl,
@@ -73,7 +73,7 @@ fn mkl_conv2d_matches_reference_dense() {
         (1, 16, 32, 32, 32, 3, (2, 2), (1, 1)),
     ] {
         let y = build_conv_graph(n, ci, h, w, co, k, s, p);
-        let reference = y.realize_f32_reference();
+        let reference = y.realize_f32();
         let mkl = y.realize_f32_mkl(&mut exe);
         assert_close(
             &reference, &mkl,

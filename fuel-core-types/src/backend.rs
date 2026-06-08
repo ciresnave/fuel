@@ -321,7 +321,7 @@ mod tests {
         impl BackendCapabilityProvider for DummyDevice {
             fn capabilities(&self) -> BackendCapabilities {
                 BackendCapabilities {
-                    backend_id: BackendId::Reference,
+                    backend_id: BackendId::Cpu,
                     device_location: DeviceLocation::Cpu,
                     op_dtype_support: HashSet::new(),
                     required_alignment: 1,
@@ -333,7 +333,7 @@ mod tests {
         }
         let d = DummyDevice;
         let caps = d.capabilities();
-        assert_eq!(caps.backend_id, BackendId::Reference);
+        assert_eq!(caps.backend_id, BackendId::Cpu);
     }
 
     /// Smoke: TransferPath enum is comparable + hashable.

@@ -745,21 +745,16 @@ pub struct Pick {
 /// Options for building a [`DispatchTable`].
 #[derive(Debug, Clone, Copy)]
 pub struct DispatchOptions {
-    pub include_reference: bool,
     pub accuracy_penalty:  f64,
 }
 
 impl Default for DispatchOptions {
     fn default() -> Self {
-        Self { include_reference: false, accuracy_penalty: DEFAULT_ACCURACY_PENALTY }
+        Self { accuracy_penalty: DEFAULT_ACCURACY_PENALTY }
     }
 }
 
 impl DispatchOptions {
-    pub fn with_reference_backend(mut self, include: bool) -> Self {
-        self.include_reference = include;
-        self
-    }
     pub fn with_balanced_penalty(mut self, k: f64) -> Self {
         self.accuracy_penalty = k;
         self
@@ -776,7 +771,6 @@ pub struct DispatchTable {
     /// closest profiled bucket.
     size_index: HashMap<(OpKind, DType), Vec<SizeClass>>,
     accuracy_penalty: f64,
-    include_reference: bool,
 }
 
 impl DispatchTable {
@@ -787,10 +781,9 @@ impl DispatchTable {
 
     pub fn build_with(report: &ProfileReport, opts: DispatchOptions) -> Self {
         let mut tbl = Self {
-            entries:           HashMap::new(),
-            size_index:        HashMap::new(),
-            accuracy_penalty:  opts.accuracy_penalty,
-            include_reference: opts.include_reference,
+            entries:          HashMap::new(),
+            size_index:       HashMap::new(),
+            accuracy_penalty: opts.accuracy_penalty,
         };
         tbl.rebuild_from(report);
         tbl
@@ -801,9 +794,6 @@ impl DispatchTable {
         self.size_index.clear();
         let mut groups: HashMap<(OpKind, DType, SizeClass), Vec<&ProfileEntry>> = HashMap::new();
         for e in &report.entries {
-            if !self.include_reference && e.backend == BackendId::Reference {
-                continue;
-            }
             groups.entry((e.op, e.dtype, e.size_class)).or_default().push(e);
         }
         for ((op, dtype, size_class), group) in &groups {

@@ -50,7 +50,7 @@ pub fn assert_tensor_eq(t1: &Tensor, t2: &Tensor) -> Result<()> {
 /// absolute tolerance `atol` OR relative tolerance `rtol`.
 ///
 /// Used by the Phase 6a CI oracle gate — every anchor model's forward
-/// pass runs on both `realize_f32()` (fast) and `realize_f32_reference()`
+/// pass runs on both `realize_f32()` (fast) and `realize_f32()`
 /// (oracle), and the two outputs must agree within tolerance. Prints
 /// the first mismatching index plus max abs/rel deviations when the
 /// assertion fires so divergences are easy to localize.
@@ -110,7 +110,7 @@ pub fn assert_cuda_matches_reference(
         eprintln!("assert_cuda_matches_reference: no CUDA device, skipping");
         return;
     }
-    let reference = t.realize_f32_reference();
+    let reference = t.realize_f32();
     let dev = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 available since probe found one");
     let cuda = t.realize_f32_cuda(&dev);

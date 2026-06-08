@@ -54,7 +54,7 @@ fn mkl_matmul_matches_reference() {
     let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
     let c = a.matmul(&b);
 
-    let reference = c.realize_f32_reference();
+    let reference = c.realize_f32();
     let mkl_out = c.realize_f32_mkl(&mut exe);
     assert_eq!(reference.len(), mkl_out.len());
     for (i, (&r, &x)) in reference.iter().zip(mkl_out.iter()).enumerate() {

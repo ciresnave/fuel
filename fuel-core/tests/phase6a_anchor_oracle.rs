@@ -27,7 +27,7 @@ use std::sync::Arc;
 /// tolerance — both are deterministic CPU code; differences are
 /// gemm sum-order drift only.
 fn assert_cpu_oracle(t: &LazyTensor, atol: f32, rtol: f32) {
-    let reference = t.realize_f32_reference();
+    let reference = t.realize_f32();
     let cpu = t.realize_f32();
     assert_eq!(reference.len(), cpu.len(), "length mismatch");
     fuel_core::test_utils::assert_allclose_f32(&cpu, &reference, atol, rtol);

@@ -865,7 +865,7 @@ mod tests {
         );
 
         // Phase 6a oracle gate.
-        let out_ref = hidden.realize_f32_reference();
+        let out_ref = hidden.realize_f32();
         crate::test_utils::assert_allclose_f32(&out, &out_ref, 1e-4, 1e-3);
     }
 

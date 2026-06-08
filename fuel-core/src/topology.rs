@@ -494,7 +494,6 @@ impl SystemTopology {
 fn default_substrate_for(backend: BackendId) -> SubstrateClass {
     match backend {
         BackendId::Cpu
-        | BackendId::Reference
         | BackendId::Aocl
         | BackendId::Mkl => SubstrateClass::HostBytes,
         BackendId::Cuda => SubstrateClass::CudaUntyped,
@@ -514,7 +513,7 @@ fn default_substrate_for(backend: BackendId) -> SubstrateClass {
 /// `build_at`.
 fn default_device_for(backend: BackendId) -> DeviceLocation {
     match backend {
-        BackendId::Cpu | BackendId::Reference | BackendId::Aocl | BackendId::Mkl => {
+        BackendId::Cpu | BackendId::Aocl | BackendId::Mkl => {
             DeviceLocation::Cpu
         }
         BackendId::Cuda => DeviceLocation::Cuda { gpu_id: 0 },

@@ -68,7 +68,7 @@ fn run_case(label: &str, b: usize, hq: usize, hkv: usize, sq: usize, sk: usize, 
     let v = q.const_f32_like(v_data, Shape::from_dims(&[b, hkv, sk, d]));
     let out = q.flash_attn(&k, &v, None, scale, causal, None, None, None);
     let vk = out.realize_f32_vulkan(&mut exe);
-    let reference = out.realize_f32_reference();
+    let reference = out.realize_f32();
     assert_close(label, &vk, &reference, 5e-4, 5e-4);
 }
 
