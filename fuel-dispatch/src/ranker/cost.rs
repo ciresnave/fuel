@@ -220,6 +220,7 @@ mod tests {
             static_cost: cost,
             op_params: OpParams::None,
             coupling: Vec::new(),
+            kernel_source: "",
         }
     }
 

@@ -58,29 +58,43 @@ pub fn register_mkl_cpu_kernels(table: &mut KernelBindingTable) {
     };
     let cpu = BackendId::Cpu;
     let f32_dt = DType::F32;
-    table.register_with_precision(
+    // Backend-extensions refactor (2026-06-07): MKL is now a
+    // kernel-source extension of the CPU substrate (parallel to AOCL).
+    // Registrations land under `BackendId::Cpu` with the `"mkl"`
+    // source tag; the optimizer ranker enumerates them as siblings of
+    // fuel-cpu-backend's portable kernels at the same decision point.
+    table.register_full_with_source(
         OpKind::MatMul,
         &[f32_dt, f32_dt, f32_dt],
         cpu,
         matmul_f32_mkl_cpu_wrapper,
+        fuel_dispatch::kernel::KernelCaps::empty(),
         MKL_PRECISION,
+        fuel_dispatch::kernel::unknown_cost,
+        "mkl",
     );
     // Conv2D — same wrapper handles both 3-operand (x, w, out) and
     // 4-operand (x, w, bias, out) keys; the wrapper distinguishes by
     // `inputs.len()`.
-    table.register_with_precision(
+    table.register_full_with_source(
         OpKind::Conv2D,
         &[f32_dt, f32_dt, f32_dt],
         cpu,
         conv2d_f32_mkl_cpu_wrapper,
+        fuel_dispatch::kernel::KernelCaps::empty(),
         MKL_PRECISION,
+        fuel_dispatch::kernel::unknown_cost,
+        "mkl",
     );
-    table.register_with_precision(
+    table.register_full_with_source(
         OpKind::Conv2D,
         &[f32_dt, f32_dt, f32_dt, f32_dt],
         cpu,
         conv2d_f32_mkl_cpu_wrapper,
+        fuel_dispatch::kernel::KernelCaps::empty(),
         MKL_PRECISION,
+        fuel_dispatch::kernel::unknown_cost,
+        "mkl",
     );
 }
 

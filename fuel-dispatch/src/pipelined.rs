@@ -8995,6 +8995,7 @@ mod tests {
             static_cost: Default::default(),
             op_params: OpParams::None,
             coupling: Vec::new(),
+            kernel_source: "",
         };
         let mut set = AlternativeSet::empty();
         set.push(winner);
@@ -9109,6 +9110,7 @@ mod tests {
             static_cost: Default::default(),
             op_params: OpParams::None,
             coupling: Vec::new(),
+            kernel_source: "",
         };
         let runner_up = Candidate {
             // Loud kernel that would panic if dispatched — proves
@@ -9127,6 +9129,7 @@ mod tests {
             static_cost: Default::default(),
             op_params: OpParams::None,
             coupling: Vec::new(),
+            kernel_source: "",
         };
         let mut set = AlternativeSet::empty();
         set.push(winner);
@@ -9184,6 +9187,7 @@ mod tests {
             static_cost: Default::default(),
             op_params: OpParams::None,
             coupling: Vec::new(),
+            kernel_source: "",
         });
         let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
         alternatives.insert(add_id, set);
@@ -9224,6 +9228,7 @@ mod tests {
             static_cost: Default::default(),
             op_params: OpParams::None,
             coupling: Vec::new(),
+            kernel_source: "",
         });
         let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
         alternatives.insert(add_id, set);
@@ -9270,6 +9275,7 @@ mod tests {
             static_cost: Default::default(),
             op_params: OpParams::None,
             coupling: Vec::new(),
+            kernel_source: "",
         });
         let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
         alternatives.insert(add_id, set);
@@ -9345,6 +9351,7 @@ mod tests {
             static_cost: Default::default(),
             op_params: OpParams::None,
             coupling: Vec::new(),
+            kernel_source: "",
         });
         set.push(Candidate {
             kernel: triple_lhs_kernel_f32,
@@ -9355,6 +9362,7 @@ mod tests {
             static_cost: Default::default(),
             op_params: OpParams::None,
             coupling: Vec::new(),
+            kernel_source: "",
         });
         let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
         alternatives.insert(add_id, set);
@@ -9427,6 +9435,7 @@ mod tests {
             static_cost: Default::default(),
             op_params: OpParams::None,
             coupling: Vec::new(),
+            kernel_source: "",
         });
         let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
         alternatives.insert(add_id, set);

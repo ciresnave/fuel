@@ -734,6 +734,19 @@ pub struct BindingEntry {
     pub caps: KernelCaps,
     pub precision: crate::fused::PrecisionGuarantee,
     pub cost: CostFn,
+    /// Diagnostic tag identifying the kernel's implementation source
+    /// when multiple alternatives register at the same `(op, dtypes,
+    /// backend)` key. Used to distinguish e.g. AOCL's matmul from
+    /// MKL's matmul from the portable scalar matmul — all three live
+    /// at `(MatMul, [F32×3], Cpu)` as siblings.
+    ///
+    /// `""` is the default for kernels that don't need to distinguish.
+    /// Conventional values: `"portable-cpu"` for fuel-cpu-backend
+    /// scalar/gemm kernels, `"aocl"` for AOCL-BLAS, `"mkl"` for oneMKL,
+    /// `"cublas"` / `"cutlass"` for CUDA variants. The string is
+    /// diagnostic-only — never used for dispatch routing (the kernel
+    /// function pointer is the dispatch identifier).
+    pub kernel_source: &'static str,
 }
 
 #[derive(Default)]
@@ -856,8 +869,31 @@ impl KernelBindingTable {
         precision: crate::fused::PrecisionGuarantee,
         cost: CostFn,
     ) {
+        self.register_full_with_source(
+            op, dtypes, backend, kernel, caps, precision, cost, "",
+        );
+    }
+
+    /// Phase: backend-extensions refactor (2026-06-07). Same as
+    /// [`Self::register_full`] but tags the binding with a
+    /// `kernel_source` identifier used to distinguish kernels that
+    /// register at the same `(op, dtypes, backend)` key from
+    /// different implementation sources (AOCL vs MKL vs portable
+    /// CPU, etc.). The tag is diagnostic-only — the picker still
+    /// distinguishes alternatives by function-pointer identity.
+    pub fn register_full_with_source(
+        &mut self,
+        op: OpKind,
+        dtypes: &[DType],
+        backend: BackendId,
+        kernel: KernelRef,
+        caps: KernelCaps,
+        precision: crate::fused::PrecisionGuarantee,
+        cost: CostFn,
+        kernel_source: &'static str,
+    ) {
         let key = (op, SmallVec::from_slice(dtypes), backend);
-        let entry = BindingEntry { kernel, caps, precision, cost };
+        let entry = BindingEntry { kernel, caps, precision, cost, kernel_source };
         let alts = self.bindings.entry(key).or_default();
         let new_ptr = kernel as *const () as usize;
         if alts.iter().any(|e| (e.kernel as *const () as usize) == new_ptr) {

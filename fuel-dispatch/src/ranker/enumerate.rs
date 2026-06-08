@@ -96,6 +96,7 @@ pub fn enumerate_candidates(
                 static_cost: Default::default(),
                 op_params: op_params.clone(),
                 coupling: Vec::new(),
+                kernel_source: entry.kernel_source,
             });
         }
     }

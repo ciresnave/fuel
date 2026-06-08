@@ -76,6 +76,7 @@ mod tests {
             static_cost: Default::default(),
             op_params: OpParams::None,
             coupling: Vec::new(),
+            kernel_source: "",
         }
     }
 

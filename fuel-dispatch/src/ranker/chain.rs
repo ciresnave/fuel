@@ -104,6 +104,7 @@ mod tests {
             static_cost: CostEstimate { flops, bytes_moved: 0, kernel_overhead_ns: 0 },
             op_params: OpParams::None,
             coupling: Vec::new(),
+            kernel_source: "",
         }
     }
 
