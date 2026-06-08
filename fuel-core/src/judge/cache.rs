@@ -172,6 +172,32 @@ mod tests {
             latency_ns:    latency,
             iterations:    7,
             max_rel_error: err,
+            kernel_source: String::new(),
+        }
+    }
+
+    /// Variant that lets a test pin a specific `kernel_source` on the
+    /// fixture entry — exercises per-alternative dispatch (e.g. AOCL
+    /// vs MKL siblings at one cell).
+    #[allow(dead_code)]
+    fn entry_with_source(
+        backend: BackendId,
+        op: OpKind,
+        size: u8,
+        latency: u64,
+        err: f32,
+        kernel_source: &str,
+    ) -> ProfileEntry {
+        ProfileEntry {
+            op,
+            dtype:         DType::F32,
+            size_class:    SizeClass(size),
+            backend,
+            device_index:  0,
+            latency_ns:    latency,
+            iterations:    7,
+            max_rel_error: err,
+            kernel_source: kernel_source.to_string(),
         }
     }
 
@@ -193,7 +219,11 @@ mod tests {
     fn fastest_picks_lowest_latency() {
         let tbl = DispatchTable::build(&sample_report());
         let p = tbl.pick(OpKind::MatMul, DType::F32, SizeClass(12), Criterion::Fastest).unwrap();
-        assert_eq!(p, Pick { backend: BackendId::Cuda, device_index: 0 });
+        assert_eq!(p, Pick {
+            backend: BackendId::Cuda,
+            device_index: 0,
+            kernel_source: "",
+        });
     }
 
     #[test]
@@ -201,7 +231,11 @@ mod tests {
         let tbl = DispatchTable::build(&sample_report());
         let p = tbl.pick(OpKind::MatMul, DType::F32, SizeClass(12), Criterion::MostAccurate).unwrap();
         // CPU has 1e-6 rel_err; CUDA has 1e-4. CPU wins MostAccurate.
-        assert_eq!(p, Pick { backend: BackendId::Cpu, device_index: 0 });
+        assert_eq!(p, Pick {
+            backend: BackendId::Cpu,
+            device_index: 0,
+            kernel_source: "",
+        });
     }
 
     #[test]
@@ -210,7 +244,11 @@ mod tests {
         // Size class 14: not profiled. Nearest are 12 (diff 2) and 16
         // (diff 2). Tie-break prefers larger → 16 → CPU wins fastest.
         let p = tbl.pick_nearest(OpKind::MatMul, DType::F32, SizeClass(14), Criterion::Fastest).unwrap();
-        assert_eq!(p, Pick { backend: BackendId::Cpu, device_index: 0 });
+        assert_eq!(p, Pick {
+            backend: BackendId::Cpu,
+            device_index: 0,
+            kernel_source: "",
+        });
     }
 
     #[test]
@@ -219,5 +257,47 @@ mod tests {
         let keys = tbl.keys();
         // Two distinct (op, dtype, size_class) triples in the sample
         assert_eq!(keys.len(), 2);
+    }
+
+    /// Per-alternative measurement v2: two CPU kernel siblings at one
+    /// `(op, dtype, size_class)` cell produce two separate
+    /// `ProfileEntry`s. The picker selects the faster as winner; the
+    /// `Pick::kernel_source` surfaces which sibling won, even though
+    /// both share `(BackendId::Cpu, device_index=0)`.
+    #[test]
+    fn two_kernel_sources_at_one_cpu_cell_produce_two_entries_and_picker_names_winner() {
+        let report = ProfileReport {
+            version: PROFILE_REPORT_VERSION,
+            entries: vec![
+                // Two CPU MatMul kernels at the same cell: AOCL is faster
+                // (200 µs) vs portable-cpu (1 ms). They differ ONLY in
+                // kernel_source — same backend, same device.
+                entry_with_source(
+                    BackendId::Cpu, OpKind::MatMul, 12, 1_000_000, 1e-6, "portable-cpu",
+                ),
+                entry_with_source(
+                    BackendId::Cpu, OpKind::MatMul, 12,   200_000, 1e-6, "aocl",
+                ),
+            ],
+        };
+
+        // ProfileEntry shape: both entries are present and the
+        // kernel_source field distinguishes them.
+        assert_eq!(report.entries.len(), 2);
+        let portable = &report.entries[0];
+        let aocl     = &report.entries[1];
+        assert_eq!(portable.kernel_source, "portable-cpu");
+        assert_eq!(aocl.kernel_source,     "aocl");
+        assert_eq!(portable.backend, aocl.backend); // same backend
+        assert_eq!(portable.device_index, aocl.device_index); // same device
+
+        // DispatchTable picks the winner ACROSS kernel_sources at one
+        // cell. Pick.kernel_source identifies it.
+        let tbl = DispatchTable::build(&report);
+        let p = tbl.pick(OpKind::MatMul, DType::F32, SizeClass(12), Criterion::Fastest).unwrap();
+        assert_eq!(p.backend, BackendId::Cpu);
+        assert_eq!(p.device_index, 0);
+        // AOCL is faster → wins Fastest.
+        assert_eq!(p.kernel_source, "aocl");
     }
 }
