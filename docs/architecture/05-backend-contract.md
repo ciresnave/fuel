@@ -1,6 +1,6 @@
 # Backend contract
 
-**Status**: v0.3 (draft, 2026-06-07). v0.3 changes: (1) concrete trait surface added at §Trait surface — pinning the previous architectural prose to actual Rust trait shapes; (2) mandatory / optional tier framing for the trait surface, replacing implicit "every backend should have X" with explicit "every backend MUST implement Tier 1; MAY implement Tiers 2–3"; (3) per-backend compliance snapshot at §Current compliance — what each backend implements today, what's missing relative to the ideal contract; (4) inference vs training capability split at §Capability requirements — which contract pieces are load-bearing for which workload; (5) `Option<u64>` returns for runtime-state methods so backends can honestly say "not measurable" without forcing dishonest numbers. v0.2 changes (preserved): (1) per-kernel error characteristics formalized as a `PrecisionGuarantee` structure with multiple optional bounds (replaces the binary OracleGrade concept); (2) the "Reference backend special status" section is replaced with "Per-kernel precision guarantees and the always-built coverage commitment"; (3) backend telemetry includes opt-in upload of locally-aggregated kernel-stat summaries to the project's telemetry server.
+**Status**: v0.4 (draft, 2026-06-07). v0.4 changes: Reference backend retired from the dispatch system. No `BackendId::Reference` enum variant, no `ReferenceFactory`, no `LazyTensor::realize_f32_reference()`, no `fuel_reference_backend::probe` module. Judge correctness comparison now uses pairwise consensus across whatever backends are present at each profiling cell — no privileged oracle. The `fuel-reference-backend` crate remains as a test-oracle utility (`exec::realize_f32` + `attention` + `ops`) for callers that explicitly want textbook scalar math, but it is no longer architecturally privileged. v0.3 changes (preserved): concrete trait surface, Tier 1/2/3 mandatory/optional framing, per-backend compliance snapshot, inference-vs-training capability split, `Option<u64>` honest returns for runtime state. v0.2 changes (preserved): `PrecisionGuarantee` structure replacing binary OracleGrade; Reference's architectural privilege replaced by the "always-built coverage commitment" on fuel-cpu-backend; opt-in kernel-stat telemetry upload.
 
 What backends provide to the Foundation layer, what they don't decide, and how the boundary is enforced. Anchored in the architectural principle from [01-identity](01-identity.md): **backends advertise; they don't decide.** Every strategic choice (placement, fusion, kernel selection, slot assignment, tolerance trade-off) lives at the DAG level. Backends provide the substrate the optimizer reasons about.
 
@@ -154,7 +154,25 @@ The architecture makes one structural commitment that replaces the historical "r
 
 This makes the coverage guarantee a contract clause, not a separate crate. It's testable: a CI lint asserts the always-built backend has a `bit_stable` kernel for every primitive `Op` variant. New primitives added to the IR (rare) trigger a coverage-failure until the backend ships the corresponding kernel.
 
-The fuel-reference-backend crate, where it exists today, becomes "the backend whose entire kernel set has `bit_stable_on_same_hardware: true`." It may continue to exist for clarity (some users prefer a single crate where every kernel is oracle-grade); architecturally its role is no longer special. Its kernels could equivalently live as `bit_stable`-tagged kernels inside fuel-cpu-backend; the choice is implementation convenience, not architectural commitment.
+The `fuel-reference-backend` crate, as of v0.4 (2026-06-07), no longer participates in the dispatch system. `BackendId::Reference` is removed, `ReferenceFactory` is removed, `LazyTensor::realize_f32_reference()` is removed, and the crate's `probe` module is deleted. What remains is `fuel_reference_backend::exec::realize_f32` + `attention` + `ops` — a test-oracle utility available to callers that explicitly want textbook scalar math (e.g. backend test suites validating their own kernels). The crate is no longer architecturally privileged; the bit-stable coverage commitment is fulfilled by fuel-cpu-backend's portable kernels, and the Judge's correctness comparison uses pairwise consensus across the backends present at each profiling cell (no privileged oracle). See §Pairwise consensus correctness below.
+
+## Pairwise consensus correctness
+
+Pre-v0.4 the Judge compared every backend's output against a privileged Reference kernel and recorded `max_rel_error` as "drift vs Reference." v0.4 retires the privileged oracle: for each `(op, dtype, size_class)` profiling cell, the Judge runs every backend present in the probe, clusters their outputs by mutual `rel_err < CONSENSUS_EPSILON` (default 1e-3), and records each backend's `max_rel_error` as "drift vs the consensus cluster's other members."
+
+Semantics:
+
+- **N=0 backends at a cell**: no entries emitted.
+- **N=1**: trivial consensus `[0]`; the lone backend's `max_rel_error` is `0.0` by convention (no peers means no comparison reference). Callers interpret this as "no cross-backend signal available," not "perfect."
+- **N=2 agreeing within epsilon**: consensus is both; each reports its rel_err against the other (typically small, reflecting f32 accumulation-order drift between honest implementations).
+- **N=2 disagreeing**: consensus is `[0]` (first wins ties by index); the other gets the disagreement as its rel_err. The discrepancy is surfaced but neither answer is independently validated — callers should treat this as "human review needed" rather than "the first one is right."
+- **N≥3 with one outlier**: consensus is the cluster that mutually agrees (typically the majority); outlier reports its rel_err vs the cluster.
+
+This is more honest than the Reference-vs-everyone model. Reference's bit-stability was always per-hardware (textbook scalar loops on different CPUs produce different bits), so "matches Reference" was never a global truth. Consensus instead asks "does this backend match the other honest implementations available here?" — which is the actual question correctness telemetry should answer.
+
+The pre-retirement Reference comparator can still be invoked by tests that explicitly want it via `fuel_reference_backend::exec::realize_f32(&graph_tensor)` — the crate remains as a test-oracle utility. It just isn't the dispatch system's special oracle.
+
+Future work: capture consensus outputs into a distributable fixture file (proposed in [`docs/session-prompts/reference-backend-retirement.md`](../session-prompts/reference-backend-retirement.md)) so subsequent Judge runs on systems with fewer backends can validate against pre-agreed outputs instead of needing ≥2 backends locally for inline consensus. v0.4 ships the inline-consensus core; fixture capture is the optimization on top.
 
 ## Cross-backend precision comparisons
 
@@ -436,17 +454,14 @@ prescriptive (what must exist); the gaps are the migration backlog.
 | `fuel-cpu-backend` | ✅ | ✅ | ❌ planned | n/a | ❌ planned | ❌ |
 | `fuel-aocl-cpu-backend` | ✅ | ✅ | ❌ planned | n/a | ❌ planned | ❌ |
 | `fuel-mkl-cpu-backend` | ✅ | ✅ | ❌ planned | n/a | ❌ planned | ❌ |
-| `fuel-cuda-backend` (baracuda) | ✅ | ✅ | ⏳ baracuda ask in flight | partial | ❌ | ❌ |
+| `fuel-cuda-backend` (baracuda) | ✅ | ✅ | ✅ (baracuda alpha.66 `cuMemGetInfo`) | partial | ❌ | ❌ |
 | `fuel-vulkan-backend` (vulkane) | ✅ | ✅ | partial inherent | ✅ inherent | ✅ inherent | ❌ |
-| `fuel-reference-backend` | n/a | n/a | n/a | n/a | n/a | n/a |
 
-`fuel-reference-backend` n/a row note: the reference backend bypasses
-the pipelined executor through its own `realize_f32` entry point in
-[fuel-core/src/factories.rs](../../fuel-core/src/factories.rs) and has
-no device-handle type to attach trait impls to. When / if a `ReferenceBackendDevice`
-type lands (paralleling `CpuBackendDevice`), the synthetic-∞ impl
-(`available_bytes` → `Some(u64::MAX)`, `total_bytes` → `Some(u64::MAX)`)
-becomes a ~10-line follow-up.
+`fuel-reference-backend` v0.4 retirement note: the Reference backend
+was removed from the dispatch system in v0.4 (2026-06-07). It no
+longer has a `BackendId` variant, doesn't participate in the picker
+or Judge, and isn't part of the contract surface. The crate remains
+as a test-oracle utility — see §The always-built coverage commitment.
 
 Legend:
 
@@ -463,10 +478,13 @@ Migration order recommended by this contract:
    trait, move Vulkan's inherent methods behind it, add CPU OS-query
    impl, add Reference synthetic-∞ impl. Single commit. *(In flight
    immediately following this doc.)*
-2. **`BackendRuntime` for CUDA** — gated on baracuda's `cuMemGetInfo`
-   wrapper landing. Until then, CUDA returns `Option::None` from
-   `available_bytes` / `total_bytes` — selectors gracefully fall
-   back to static cost.
+2. **`BackendRuntime` for CUDA** — ✅ done (baracuda alpha.66). The
+   `cuMemGetInfo` wrappers (`baracuda_driver::mem_get_info` +
+   `Device::vram_info`) landed, so `CudaDevice::available_bytes` /
+   `total_bytes` report real device memory; a failed driver query
+   maps to `None` and selectors fall back to static cost as before.
+   The query pushes the device's context for the duration of the call
+   so it is correct when polled off the dispatch thread.
 3. **`BackendStreams` for CUDA + Vulkan** — formalize stream / queue
    counts as trait methods. Trim out the inherent methods that
    selectors currently touch directly.

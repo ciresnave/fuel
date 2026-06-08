@@ -61,10 +61,6 @@ use serde::{Deserialize, Serialize};
 #[non_exhaustive]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum BackendId {
-    /// `fuel-reference-backend` — textbook-correct CPU executor used as
-    /// the oracle. Always available; included in the dispatch table
-    /// mostly as a correctness-check last-resort fallback.
-    Reference,
     /// `fuel-cpu-backend` — optimized CPU executor (gemm + rayon).
     /// One descriptor per physical CPU in the current scope; NUMA
     /// splits are Phase 7b territory.
@@ -86,7 +82,6 @@ impl BackendId {
     /// paths, and JSON keys. Stable across Fuel versions.
     pub fn as_str(self) -> &'static str {
         match self {
-            BackendId::Reference => "reference",
             BackendId::Cpu       => "cpu",
             BackendId::Cuda      => "cuda",
             BackendId::Vulkan    => "vulkan",
@@ -200,7 +195,6 @@ mod tests {
 
     #[test]
     fn backend_id_as_str_is_stable() {
-        assert_eq!(BackendId::Reference.as_str(), "reference");
         assert_eq!(BackendId::Cpu.as_str(), "cpu");
         assert_eq!(BackendId::Cuda.as_str(), "cuda");
         assert_eq!(BackendId::Vulkan.as_str(), "vulkan");

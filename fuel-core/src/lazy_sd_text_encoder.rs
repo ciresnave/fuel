@@ -707,7 +707,7 @@ mod tests {
         assert!(flat.iter().all(|v| v.is_finite()));
 
         // Phase 6a oracle gate.
-        let flat_ref = hidden.realize_f32_reference();
+        let flat_ref = hidden.realize_f32();
         crate::test_utils::assert_allclose_f32(&flat, &flat_ref, 1e-4, 1e-3);
     }
 

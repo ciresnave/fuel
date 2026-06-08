@@ -997,11 +997,15 @@ mod tests {
     }
 
     #[test]
-    fn judge_profiles_cpu_and_reference_on_small_matmul() {
-        // Minimal end-to-end: probe (captures cpu + reference), run
-        // the Judge with a shrunk size plan + iteration count so the
-        // test stays in the low-second range, verify both backends
-        // produce an entry and their relative error is small.
+    fn judge_profiles_cpu_on_small_matmul() {
+        // Post-Reference-retirement (2026-06-07): with Reference
+        // gone, the local single-backend (CPU) is alone in its
+        // (op, dtype, size) cell. Consensus is trivially `[0]`;
+        // `max_rel_error` is `0.0` (no peers to measure drift
+        // against). The test verifies the Judge still produces
+        // entries with sane timing data when only one backend is
+        // available — the single-backend edge case in the
+        // consensus algorithm.
         let probe = ProbeReport::probe_all();
         let judge = Judge {
             iterations: 3,
@@ -1014,29 +1018,11 @@ mod tests {
         let report = judge.run(&probe);
         assert_eq!(report.version, PROFILE_REPORT_VERSION);
         assert!(report.entries.iter().any(|e| e.backend == BackendId::Cpu));
-        assert!(report.entries.iter().any(|e| e.backend == BackendId::Reference));
-        // Post-Reference-retirement note: this test runs both CPU
-        // (gemm path) and Reference (textbook triple-loop) and
-        // expects them in consensus. Each reports its max rel_err
-        // against the OTHER (no longer vs itself), so both rows
-        // carry a small-but-nonzero value reflecting f32
-        // accumulation-order drift. The pre-retirement assertion
-        // `Reference.max_rel_error == 0.0` (vs itself) is obsolete;
-        // the new check is "both backends are in consensus, so
-        // their reported rel_err is below the consensus epsilon
-        // floor of 1e-3."
-        for e in report.entries.iter().filter(|e| e.backend == BackendId::Reference) {
-            assert!(e.max_rel_error < CONSENSUS_EPSILON,
-                "reference outside consensus with cpu at {e:?}");
-        }
-        // CPU fast path vs Reference (consensus peer): gemm's
-        // blocked sum order differs from the reference textbook
-        // triple-loop, so accumulated f32 drift on a 32×32 matmul
-        // is ~1e-7 relative. The 1e-3 consensus floor is the cliff
-        // beyond which we'd suspect an actual bug, not rounding.
+        // Single-backend cells: rel_err is 0.0 by convention (no
+        // peers means no comparison reference). Latency is real.
         for e in report.entries.iter().filter(|e| e.backend == BackendId::Cpu) {
-            assert!(e.max_rel_error < CONSENSUS_EPSILON,
-                "cpu outside consensus with reference: {e:?}");
+            assert_eq!(e.max_rel_error, 0.0,
+                "single-backend cell should report 0.0 rel_err: {e:?}");
             assert!(e.latency_ns > 0);
         }
     }

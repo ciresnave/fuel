@@ -46,7 +46,11 @@
 pub mod attention;
 pub mod exec;
 pub mod ops;
-pub mod probe;
+// `probe` retired 2026-06-07: the Reference backend is no longer a
+// participant in the dispatch system (no `BackendId::Reference`,
+// no `ReferenceFactory`). What remains is the `exec::realize_f32`
+// + `attention` + `ops` surface, available as a test-oracle utility
+// for callers that explicitly want textbook scalar math.
 
 use fuel_core_types::Shape;
 use std::sync::Arc;

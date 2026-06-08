@@ -125,25 +125,13 @@ impl BandwidthMatrix {
             seen_keys.insert(BackendId::Cpu, true);
         }
 
-        // Reference backend is CPU-equivalent; reuse the CPU cost.
-        if probe.devices.iter().any(|d| d.backend == BackendId::Reference) {
-            let n = entries.iter().find(|e| e.src == BackendId::Cpu && e.dst == BackendId::Cpu)
-                .map(|e| e.ns_per_byte)
-                .unwrap_or(measure_cpu_memcpy(bytes, iters));
-            entries.push(TransferCost {
-                src: BackendId::Reference,
-                dst: BackendId::Reference,
-                ns_per_byte: n,
-            });
-        }
-
         // For each non-CPU backend, measure (Cpu → backend) upload
         // and (backend → Cpu) download. We measure the FIRST device
         // in each backend's class; the same-SKU equivalence class
         // shares the result.
         let mut measured_backends: HashMap<BackendId, ()> = HashMap::new();
         for d in &probe.devices {
-            if matches!(d.backend, BackendId::Cpu | BackendId::Reference) {
+            if matches!(d.backend, BackendId::Cpu) {
                 continue;
             }
             if measured_backends.contains_key(&d.backend) {

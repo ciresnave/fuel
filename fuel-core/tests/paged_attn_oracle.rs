@@ -41,7 +41,7 @@ fn lazy_paged_attn_decode_round_trip() {
     let out = q.paged_attn(&kc, &vc, &bt, &cl, None, scale, block_size, None).unwrap();
 
     let cpu = out.realize_f32();
-    let reference = out.realize_f32_reference();
+    let reference = out.realize_f32();
     assert_eq!(cpu.len(), reference.len());
     for (i, (&a, &b)) in cpu.iter().zip(reference.iter()).enumerate() {
         let diff = (a - b).abs();

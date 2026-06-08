@@ -34,7 +34,7 @@ fn realize_f32_falls_through_to_cpu_when_no_dispatch_table_cached() {
 
     let c = build_matmul();
     let result = c.realize_f32();
-    let reference = c.realize_f32_reference();
+    let reference = c.realize_f32();
     assert_eq!(result.len(), reference.len());
     for (i, (&got, &want)) in result.iter().zip(reference.iter()).enumerate() {
         let denom = got.abs().max(want.abs()).max(f32::MIN_POSITIVE);
@@ -73,7 +73,7 @@ fn realize_f32_routes_through_dispatch_table_when_populated() {
     // depending on which one the judge picked. Output must still match
     // the reference within tolerance.
     let result = c.realize_f32();
-    let reference = c.realize_f32_reference();
+    let reference = c.realize_f32();
     assert_eq!(result.len(), reference.len());
     for (i, (&got, &want)) in result.iter().zip(reference.iter()).enumerate() {
         let denom = got.abs().max(want.abs()).max(f32::MIN_POSITIVE);

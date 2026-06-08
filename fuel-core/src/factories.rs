@@ -76,7 +76,6 @@ pub trait BackendFactory: Send + Sync {
 pub fn registry() -> Vec<&'static dyn BackendFactory> {
     #[allow(unused_mut)]
     let mut v: Vec<&'static dyn BackendFactory> = vec![
-        &ReferenceFactory,
         &CpuFactory,
     ];
     #[cfg(feature = "aocl")]
@@ -94,32 +93,6 @@ pub fn registry() -> Vec<&'static dyn BackendFactory> {
 /// isn't compiled into this build.
 pub fn factory_for(id: BackendId) -> Option<&'static dyn BackendFactory> {
     registry().into_iter().find(|f| f.id() == id)
-}
-
-// ---------------------------------------------------------------------
-// Reference — slow textbook backend, used as the precision oracle.
-// Doesn't go through GraphExecutor; it has its own crate-level
-// realize_f32 entry point. Wrap in a dedicated realizer.
-// ---------------------------------------------------------------------
-
-pub struct ReferenceFactory;
-
-struct ReferenceRealizer;
-
-impl LazyRealizer for ReferenceRealizer {
-    fn realize_f32(&mut self, tensor: &LazyTensor) -> Vec<f32> {
-        fuel_reference_backend::exec::realize_f32(tensor.graph_tensor()).into_vec()
-    }
-}
-
-impl BackendFactory for ReferenceFactory {
-    fn id(&self) -> BackendId { BackendId::Reference }
-    fn enumerate_devices(&self) -> Result<Vec<DeviceDescriptor>> {
-        fuel_reference_backend::probe::enumerate_devices()
-    }
-    fn try_make_realizer(&self, _device_index: u32) -> Result<Box<dyn LazyRealizer>> {
-        Ok(Box::new(ReferenceRealizer))
-    }
 }
 
 // ---------------------------------------------------------------------

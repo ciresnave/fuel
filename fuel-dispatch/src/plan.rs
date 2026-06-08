@@ -98,8 +98,7 @@ impl ExecutionPlan {
 /// default to ordinal 0).
 pub fn default_device_for(backend: BackendId) -> DeviceLocation {
     match backend {
-        BackendId::Reference
-        | BackendId::Cpu
+        BackendId::Cpu
         | BackendId::Aocl
         | BackendId::Mkl => DeviceLocation::Cpu,
         BackendId::Cuda => DeviceLocation::Cuda { gpu_id: 0 },
@@ -844,7 +843,9 @@ mod tests {
     #[test]
     fn compile_plan_truncates_to_max_n() {
         let mut table = KernelBindingTable::new();
-        for backend in [BackendId::Cpu, BackendId::Aocl, BackendId::Mkl, BackendId::Reference] {
+        // Three CPU-substrate backends competing at one decision
+        // point — `truncate_to_top_n` should keep only the top 2.
+        for backend in [BackendId::Cpu, BackendId::Aocl, BackendId::Mkl] {
             register_add_f32(
                 &mut table,
                 backend,
@@ -861,7 +862,6 @@ mod tests {
                     BackendId::Cpu,
                     BackendId::Aocl,
                     BackendId::Mkl,
-                    BackendId::Reference,
                 ]
             } else {
                 vec![]

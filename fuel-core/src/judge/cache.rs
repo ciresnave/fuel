@@ -182,26 +182,25 @@ mod tests {
                 // Size class 12: CUDA wins fastest (2ms < 10ms) but errs more
                 entry(BackendId::Cpu,       OpKind::MatMul, 12, 10_000_000, 1e-6),
                 entry(BackendId::Cuda,      OpKind::MatMul, 12,  2_000_000, 1e-4),
-                entry(BackendId::Reference, OpKind::MatMul, 12,200_000_000, 0.0),
                 // Size class 16: CPU is fastest + most accurate
                 entry(BackendId::Cpu,       OpKind::MatMul, 16,   500_000, 1e-6),
                 entry(BackendId::Cuda,      OpKind::MatMul, 16, 1_000_000, 1e-3),
-                entry(BackendId::Reference, OpKind::MatMul, 16,15_000_000, 0.0),
             ],
         }
     }
 
     #[test]
-    fn fastest_picks_lowest_latency_nonreference() {
+    fn fastest_picks_lowest_latency() {
         let tbl = DispatchTable::build(&sample_report());
         let p = tbl.pick(OpKind::MatMul, DType::F32, SizeClass(12), Criterion::Fastest).unwrap();
         assert_eq!(p, Pick { backend: BackendId::Cuda, device_index: 0 });
     }
 
     #[test]
-    fn most_accurate_excludes_reference_by_default() {
+    fn most_accurate_picks_lowest_rel_err() {
         let tbl = DispatchTable::build(&sample_report());
         let p = tbl.pick(OpKind::MatMul, DType::F32, SizeClass(12), Criterion::MostAccurate).unwrap();
+        // CPU has 1e-6 rel_err; CUDA has 1e-4. CPU wins MostAccurate.
         assert_eq!(p, Pick { backend: BackendId::Cpu, device_index: 0 });
     }
 
@@ -212,17 +211,6 @@ mod tests {
         // (diff 2). Tie-break prefers larger → 16 → CPU wins fastest.
         let p = tbl.pick_nearest(OpKind::MatMul, DType::F32, SizeClass(14), Criterion::Fastest).unwrap();
         assert_eq!(p, Pick { backend: BackendId::Cpu, device_index: 0 });
-    }
-
-    #[test]
-    fn build_with_reference_includes_reference() {
-        let tbl = DispatchTable::build_with(
-            &sample_report(),
-            DispatchOptions::default().with_reference_backend(true),
-        );
-        // Reference is now a candidate; for size 12 most-accurate, ref's 0.0 wins
-        let p = tbl.pick(OpKind::MatMul, DType::F32, SizeClass(12), Criterion::MostAccurate).unwrap();
-        assert_eq!(p, Pick { backend: BackendId::Reference, device_index: 0 });
     }
 
     #[test]
