@@ -217,7 +217,7 @@ fn run_mock(out_dir: &std::path::Path, review_file: Option<&std::path::Path>) ->
     for cell in cells {
         let outputs = mock_outputs_for(cell);
         // Mock-mode "input" is a tiny stub; live mode would call
-        // `deterministic_f32_input(cell.input_seed,
+        // `deterministic_f32_input(cell.op,
         // size_class_to_elem_count(cell.size_class))`.
         let input = [0.5_f32, 0.5, 0.5];
         let tolerance = default_tolerance_for(cell.op, cell.dtype);

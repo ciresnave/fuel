@@ -72,8 +72,8 @@ use serde::{Deserialize, Serialize};
 /// capture front-ends without forking the data-model crate.
 ///
 /// Gated on the `capture` feature so single-backend consumers
-/// of the fixtures don't pay the `rand` / `serde_json` /
-/// filesystem-helper cost. Validators only need [`validate_against_fixture`]
+/// of the fixtures don't pay the `serde_json` / filesystem-helper
+/// cost. Validators only need [`validate_against_fixture`]
 /// + the data model.
 #[cfg(feature = "capture")]
 pub mod capture;
