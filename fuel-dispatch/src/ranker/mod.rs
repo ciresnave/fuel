@@ -42,7 +42,9 @@ pub mod enumerate;
 pub mod filter;
 pub mod filters;
 pub mod judge;
+pub mod judge_aware_selector;
 pub mod runtime_selector;
+pub mod vram_pressure_selector;
 
 pub use alternative_set::{AlternativeSet, DEFAULT_MAX_N};
 pub use candidate::{Candidate, CouplingAdjustment};
@@ -55,4 +57,9 @@ pub use filters::{
     StridedInputPreferenceFilter,
 };
 pub use judge::{HashMapJudge, JudgeOracle};
+pub use judge_aware_selector::JudgeAwareSelector;
 pub use runtime_selector::{RuntimeSelector, WinnerSelector};
+pub use vram_pressure_selector::{
+    default_estimate_output_bytes, BackendRuntimeHandle, BackendRuntimeLookup,
+    OutputBytesEstimator, VramPressureSelector,
+};
