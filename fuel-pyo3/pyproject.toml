@@ -1,4 +1,4 @@
-﻿[project]
+[project]
 name = 'fuel-nn'
 requires-python = '>=3.7'
 authors = [
@@ -32,4 +32,4 @@ target-version = ['py35']
 
 [project.optional-dependencies]
 testing = ["pytest", "black==22.3"]
-huggingface = ["transformers>=4.33.3", "huggingface-hub>=0.17.3"]
+huggingface = ["transformers>=4.57.6", "huggingface-hub>=0.17.3"]
