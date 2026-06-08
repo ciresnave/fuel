@@ -818,8 +818,8 @@ mod tests {
         // first-input-shape rule gives elem_count 3.
         let sc = SizeClass::from_elem_count(3);
         let mut judge = HashMapJudge::new();
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cpu, 5_000);
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cuda, 20);
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cpu, "", 5_000);
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cuda, "", 20);
 
         let opts = PlanOptions::new()
             .with_placements_for_device(&placements_fn)
