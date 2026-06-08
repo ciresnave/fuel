@@ -193,6 +193,62 @@ Cross-references are fine — an architecture-decision-log entry can link to the
 
 ---
 
+## 2026-06-08 — Model interchange architecture established
+
+**Sections affected**: 13 (interchange, new), 02 (layers), 00 (index).
+**Phase / PR**: design pass — no code.
+**Bumped to**: 13 established at v0.1, refined same-session to v0.2 (StableHLO promoted to import + export; *representation ≠ op* disposition framing); 02 v0.2 → v0.3; 00 index updated (new section 13 row + cross-link map).
+
+**What changed**: established the model import/export architecture as new section [13-interchange](13-interchange.md). The core commitments: (1) external formats decompose along two *independent* axes — weight payload and graph payload — so interchange splits into weight interchange and graph interchange, reused at different rates; (2) the base map ([03-ir](03-ir.md)) is the single hub — fuel's primitive `Op` vocabulary *is* the interchange vocabulary, no second neutral IR; (3) the native on-disk graph format is **not new** — it reuses [11-persistence](11-persistence.md)'s base-map serialization and DAG-format-version machinery, shipped standalone with weights external; (4) crate structure is three core+leaf tiers — format (`fuel-formats` + IR-free `fuel-format-*`), interchange (`fuel-interchange-weights` + `fuel-interchange-graph` cores + per-format `fuel-format-interchange-*` binding leaves), model (`fuel-model-core` registry + `fuel-model-*`) — with the per-format node↔weight binding as the only format-local glue; (5) the model registry uses link-time distributed registration (`inventory`/`linkme`); (6) high-demand models are split into their own crates now, the long tail extracted lazily; (7) host-language source is ingested by *tracing* (which collapses into the graph-import path), while a dev-time `fuel-codegen` scaffolder emits draft parametric `fuel-model-*` crates from source AST, sharing the graph-interchange op-map.
+
+**Why**: the user wants fuel to read/write models from/to as many external formats as practical, and to stop hand-coding each new architecture from scratch. A design dialogue established that the popular "four distribution categories" framing (HF source / ONNX-IR / TorchScript-GGUF / JIT-codegen) conflates weight+tag formats with graph formats and miscategorizes JIT/codegen (which fuel *is*, not ingests). Re-deriving the taxonomy around the weight⊥graph axes — and grounding it in fuel's existing base-map and persistence commitments — produced a structure where most of the "weight side" is already built (`fuel-formats` + the architecture zoo) and the genuinely new work is the graph op-mapper plus a registry.
+
+**Alternatives considered**:
+
+- *One fused weight+graph interchange crate.* Rejected — it couples the IR-free format tier to `fuel-graph` and breaks the "safetensors-only consumer pulls almost nothing" guarantee. The parse/map seam keeps the format tier IR-free.
+- *A second neutral IR for interchange to map into.* Rejected — the base map already is the hub; a second intermediate adds a translation hop and a vocabulary to maintain for no gain.
+- *A separate native DAG distribution format.* Rejected — duplicates [11-persistence](11-persistence.md)'s base-map serialization; the base map is already hardware-independent and shippable, so the interchange format reuses it.
+- *Big-bang split of all ~65 existing models into per-model crates up front.* Rejected against the [02-layers stopping rule](02-layers.md#stopping-rule-for-new-crates) as a speculative split; high-demand models are pre-split (near-certain consumers), the tail stays lazy.
+- *Static-AST parsing of host-language source as the import mechanism.* Rejected — a model's compute graph is a runtime property (depth/branches resolve from config at instantiation), so static parsing yields a scaffold, not a correct graph. Tracing is the correct automatic path and it *is* the graph-import path; static AST is reserved for the scaffolder's draft output.
+- *TorchScript / TensorRT `.plan` as interchange targets.* Rejected — TorchScript is deprecated upstream and unparseable outside libtorch; `.plan` is a kernel-baked non-portable engine. Import the source (ONNX) instead.
+
+**Implications going forward**:
+
+- The prerequisite structure is the **tier seam + registry** (the interchange cores, the IR-free format tier, `fuel-model-core` with `inventory`), justified now because the importer and scaffolder are real consumers. The per-model crate explosion rides the scaffolder and lazy extraction, *after* one importer validates the seam — it is not a precondition.
+- ONNX is the flagship import+export target; `.pt2` (Core-ATen) and **StableHLO (import + export via MLIR FFI — the JAX/TF/XLA convergence point, and the only clean path to JAX)** follow; weight formats reuse the existing `fuel-formats` parsers plus the model registry.
+- The interchange importer follows a **disposition model** (*representation ≠ op*): a source op maps to a primitive, a decomposition, a fused op, an **import-time lowering** (control flow → predication/unrolling, dynamic shape → specialization), or **another Fuel layer** (multi-output bundles, scheduler, weight-interchange quant). Only constructs with no graph representation (unbounded data-dependent side-effecting loops, unknown `custom_call`) hard-reject. The worked example + Fuel completeness audit is `docs/interchange/stablehlo-to-fuel-op-map.md` (119 StableHLO ops; ≈100 covered/handled; gaps = sort/top-k, pooling, FFT, inverse-trig, product-reduce — add only under real consumer pressure). The `L` import-lowering toolkit is shared across ONNX / ATen / StableHLO importers.
+- The former `fuel-onnx` IO-layer placeholder ([02-layers](02-layers.md)) resolves into `fuel-format-onnx` (parse) + `fuel-format-interchange-onnx` (map).
+- Implementation sequencing, format dossiers, Rust-crate landscape, and caller-migration tranches live in the migration plan (`docs/session-prompts/model-interchange-import-export-plan.md`), per the set's phase-doc convention.
+
+**Related artifacts**: [13-interchange](13-interchange.md) (new section); `docs/session-prompts/model-interchange-import-export-plan.md` (migration plan); this session's [02-layers](02-layers.md) v0.3 revision and [00-index](00-index.md) edits.
+
+---
+
+## 2026-06-08 — Runtime-snapshot persistence artifact (L3); save-all-activations rejected
+
+**Sections affected**: 11 (persistence), 13 (interchange — one-line cross-link).
+**Phase / PR**: design pass — no code.
+**Bumped to**: 11 v1.0 → v1.1.
+
+**What changed**: added a third, optional persistence artifact — the **runtime snapshot** — capturing designated durable runtime state (KV-caches, optimizer state, producer-marked long-lived intermediates) so a process can *resume* a live computation. Framed the full save surface as three layers: **L1 model** (base map + weights; the native `.fuel` artifact), **L2 + plan** (the optimization cache; hot-load by skipping optimization), **L3 + snapshot** (resume live state). "Save with vs without the plan/runtime state" is *which sibling artifacts a caller writes*, not a flag inside a monolithic file.
+
+**Why**: a user requirement to save "everything in the graph including in-flight data," with an explicit question of whether saving *all activations* would make hot-load launch faster. Analysis: it would not. Input-dependent activations are invalid across launches (a new input can't reuse them; if the input is identical, cache the output). Reloading large activations is bandwidth-bound at every disk→host→device hop while recompute stays on-device — the same trade that makes gradient checkpointing recompute rather than store. The real launch-speed levers (mmap weights, plan cache, lazy `KernelRef`) already live in L1+L2. So the snapshot persists *designated durable state*, not the executor's full realized-node cache.
+
+**Alternatives considered**:
+
+- *Save every realized activation for fastest hot-load.* Rejected — no launch-speed gain (bandwidth-bound reload ≥ on-device recompute; input-dependent activations unreusable) and large disk cost.
+- *Merge model + plan + snapshot into one file.* Rejected — divergent lifecycles (weights shared everywhere, plan hardware-dependent, snapshot run-dependent); merging forces re-shipping weights when the plan changes and over-invalidates. Sibling files, per the existing 11-persistence decision.
+- *Drop the snapshot concept (leave durable state to app code).* Rejected — KV-cache / optimizer-state checkpointing is a real serving/training need; a defined artifact + invalidation is worth the architecture line.
+
+**Implications going forward**:
+
+- The genuinely launch-relevant precompute case (input-independent derived values not already constant-folded — e.g. dequantized weights) is an optional **derived-weights** variant of the *model* artifact, not an activation snapshot.
+- F2 (Serde on Fuel-IR) implements L1 first; L2 is the existing cache design; L3 lands when a resumable-state consumer (serving KV-cache persistence or a training checkpoint) needs it.
+
+**Related artifacts**: [11-persistence §Runtime snapshots](11-persistence.md#runtime-snapshots-resuming-designated-durable-state-l3); [13-interchange](13-interchange.md); `docs/session-prompts/model-interchange-import-export-plan.md`.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.

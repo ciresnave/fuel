@@ -24,6 +24,7 @@
 | 10 | [decisions-log](10-decisions-log.md) | Material architectural changes over time |
 | 11 | [persistence](11-persistence.md) | Optimization-cache and tolerance-recipe sibling artifacts; format, invalidation, mmap |
 | 12 | [multi-output](12-multi-output.md) | Option-C bundled storage + `Op::View`/`Op::ViewOwned`/`Op::ScatterIntoSlot`; multi-output authoring contract |
+| 13 | [interchange](13-interchange.md) | Model import/export; weight⊥graph axes; base map as hub; per-format binding seam; native format reuses base-map serialization; scaffolder |
 
 ---
 
@@ -92,6 +93,10 @@ The architecture sections aren't independent. Below is the dependency graph — 
 09 non-goals          (referenced by 01, 04, 07; mostly self-contained)
 10 decisions-log      (records changes to all of 01-09, 11)
 11 persistence ──→ 03, 04, 05, 06, 07, 08   (cross-cuts everything that produces a persistable artifact)
+
+13 interchange ──┬──→ 02 layers       (crate tiers that implement import/export)
+                 ├──→ 03 ir            (the base map is the interchange hub)
+                 └──→ 11 persistence   (native format reuses the base-map serialization)
 ```
 
 If you change 03 (the IR), expect to revise 04, 05, 06, 11. If you change 04 (the optimization model), expect to revise 06, 07, 08, 11. If you change 01 (identity), the whole set may need re-anchoring.
