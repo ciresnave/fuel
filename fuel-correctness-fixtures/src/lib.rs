@@ -65,6 +65,19 @@ use fuel_core_types::DType;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+/// Capture-pipeline helpers used by the `fuel-capture-fixtures`
+/// binary: pairwise consensus clustering, deterministic input
+/// generation, consensus-median fixture selection, and on-disk
+/// emission. Public so external tooling can build alternative
+/// capture front-ends without forking the data-model crate.
+///
+/// Gated on the `capture` feature so single-backend consumers
+/// of the fixtures don't pay the `rand` / `serde_json` /
+/// filesystem-helper cost. Validators only need [`validate_against_fixture`]
+/// + the data model.
+#[cfg(feature = "capture")]
+pub mod capture;
+
 /// Tolerance band for fixture comparison. A kernel's output is
 /// considered matching the fixture if every element is within
 /// either the absolute or relative bound (whichever is looser).
