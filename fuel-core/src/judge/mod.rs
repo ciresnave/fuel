@@ -278,30 +278,75 @@ impl Judge {
     /// `probe`. Skips backends that aren't compiled in; logs (stderr)
     /// any backend that's present but hasn't been wired into the
     /// Judge yet (e.g. Vulkan in this revision).
+    ///
+    /// **Reference-retirement note (2026-06-07)**: the loop order is
+    /// inverted relative to the pre-retirement shape — outer over
+    /// `(op, size)`, inner over equivalence classes. This lets Judge
+    /// collect all backends' outputs at a given cell, compute pairwise
+    /// consensus across them, and assign each entry's `max_rel_error`
+    /// relative to the consensus cluster (no privileged "reference
+    /// output" required). When only one backend is available at a
+    /// cell, consensus is trivial and `max_rel_error = 0.0` (no peers
+    /// to compare against — the caller treats the lone backend as
+    /// authoritative).
     pub fn run(&self, probe: &ProbeReport) -> ProfileReport {
         let mut entries = Vec::new();
-
-        // Equivalence-class deduplication: measure one representative
-        // per class, replicate the entry across every device_index in
-        // the class.
         let classes = probe.equivalence_classes();
-        for (_key, devs) in &classes {
-            // Pick the first device as the representative. Deterministic
-            // because `HashMap::get` returns a consistent ordering within
-            // a single process run (and we don't compare across runs —
-            // profile entries carry their own device_index so dispatch
-            // lookups are by full identity, not by index).
-            let rep = devs[0];
-            for &op in PROFILED_OPS {
-                for sz in self.size_plan(op) {
-                    if let Some(entry) = self.measure_on_device(op, DType::F32, &sz, rep) {
-                        // Replicate the (latency, error) across every
-                        // device in the class — only the device_index
-                        // field differs.
+        // Stable iteration order over equivalence classes — sort
+        // class keys so the profile report is deterministic across
+        // runs (HashMap iteration order is not guaranteed across
+        // process invocations).
+        let mut class_keys: Vec<_> = classes.keys().collect();
+        class_keys.sort_by_key(|k| (k.backend as u32, k.device_id, k.vendor_id));
+
+        for &op in PROFILED_OPS {
+            for sz in self.size_plan(op) {
+                let size_class = SizeClass::from_elem_count(sz.total_elements());
+
+                // First pass: per equivalence-class representative,
+                // measure latency + capture the kernel's output for
+                // consensus comparison.
+                let mut cell_runs: Vec<CellRun> = Vec::with_capacity(class_keys.len());
+                for key in &class_keys {
+                    let devs = &classes[key];
+                    let rep = devs[0];
+                    if let Some(run) = self.measure_on_device_capturing(op, DType::F32, &sz, rep) {
+                        cell_runs.push(run);
+                    }
+                }
+
+                // Second pass: compute pairwise consensus across the
+                // backends that produced output for this cell.
+                let consensus = compute_pairwise_consensus(&cell_runs);
+
+                // Third pass: emit one ProfileEntry per device,
+                // replicated across each equivalence class. The
+                // `max_rel_error` is derived from consensus position.
+                for (i, run) in cell_runs.iter().enumerate() {
+                    let rel_err =
+                        max_rel_err_vs_consensus(&cell_runs, &consensus, i);
+                    // Find the equivalence class this run belongs to
+                    // (its representative's backend matches `run.backend`).
+                    let class_devs = classes.iter().find_map(|(k, devs)| {
+                        if k.backend == run.backend
+                            && devs[0].device_index == run.device_index
+                        {
+                            Some(devs)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(devs) = class_devs {
                         for d in devs {
                             entries.push(ProfileEntry {
+                                op,
+                                dtype: DType::F32,
+                                size_class,
+                                backend: run.backend,
                                 device_index: d.device_index,
-                                ..entry.clone()
+                                latency_ns: run.latency_ns,
+                                iterations: run.iterations,
+                                max_rel_error: rel_err,
                             });
                         }
                     }
@@ -313,18 +358,24 @@ impl Judge {
     }
 
     /// Measure one (op, dtype, size) cell on one representative
-    /// device. Returns `None` if the backend isn't compiled in or
-    /// if its constructor errors out.
-    fn measure_on_device(
+    /// device, capturing the kernel's output alongside the timing
+    /// data so the caller can compute pairwise consensus across
+    /// backends. Returns `None` if the backend isn't compiled in,
+    /// its constructor errors out, or the realize itself fails.
+    ///
+    /// **Reference-retirement note (2026-06-07)**: replaces the
+    /// pre-retirement `measure_on_device` which compared against
+    /// `tensor.realize_f32_reference()` per-cell. The new flow
+    /// defers correctness comparison to [`Self::run`]'s consensus
+    /// pass.
+    fn measure_on_device_capturing(
         &self,
         op: OpKind,
         dtype: DType,
         size: &OpSize,
         device: &DeviceDescriptor,
-    ) -> Option<ProfileEntry> {
+    ) -> Option<CellRun> {
         assert_eq!(dtype, DType::F32, "judge: only f32 wired for now");
-
-        let size_class = SizeClass::from_elem_count(size.total_elements());
 
         // Walk the factory registry instead of naming each backend.
         // A backend that isn't compiled in simply doesn't appear in
@@ -351,27 +402,29 @@ impl Judge {
             }
         };
 
-        let entry = self.time_op(op, size, device, size_class, realizer.as_mut());
+        let cell = self.time_op_capturing(op, size, device, realizer.as_mut());
         drop(realizer);
-        entry
+        cell
     }
 
-    /// Build the op's input graph, realize it for warmup+timed runs,
-    /// measure latency, compare against reference for precision.
+    /// Build the op's input graph, realize it for warmup + timed
+    /// runs, measure latency, capture the first iteration's output.
+    /// Returns the captured output alongside the timing data; the
+    /// caller computes correctness via consensus across backends
+    /// (see [`Self::run`]).
     ///
-    /// Both the reference realize and the backend's realize are wrapped
-    /// in `catch_unwind` — a backend that doesn't yet implement the op
-    /// (or panics on a corner-case input) is logged and skipped, not
-    /// fatal to the run. This is what makes the Judge safe to expand
-    /// across the full op surface ahead of every backend's coverage.
-    fn time_op(
+    /// All realize calls are wrapped in `catch_unwind` — a backend
+    /// that doesn't yet implement the op (or panics on a corner-
+    /// case input) is logged and skipped, not fatal to the run.
+    /// This is what makes the Judge safe to expand across the full
+    /// op surface ahead of every backend's coverage.
+    fn time_op_capturing(
         &self,
         op: OpKind,
         size: &OpSize,
         device: &DeviceDescriptor,
-        size_class: SizeClass,
         realizer: &mut dyn crate::factories::LazyRealizer,
-    ) -> Option<ProfileEntry> {
+    ) -> Option<CellRun> {
         let tensor = match std::panic::catch_unwind(AssertUnwindSafe(|| {
             build_input_graph(op, size)
         })) {
@@ -384,25 +437,10 @@ impl Judge {
             }
         };
 
-        // Precision check — do this first while the reference
-        // backend's output is fresh (avoids fighting the compiler
-        // over closure borrows later).
-        let reference_out = match std::panic::catch_unwind(AssertUnwindSafe(|| {
-            tensor.realize_f32_reference()
-        })) {
-            Ok(v) => v,
-            Err(_) => {
-                eprintln!(
-                    "judge: skipping {op}@{size:?} — reference realize panicked",
-                );
-                return None;
-            }
-        };
-
-        // Warmup — discard timings; stabilize kernel caches, warm up
-        // any BLAS internal state, fault-in heap. If any warmup call
-        // panics (e.g. backend doesn't support this op), skip the
-        // entire (op, backend) cell.
+        // Warmup — discard timings; stabilize kernel caches, warm
+        // up any BLAS internal state, fault-in heap. If any warmup
+        // call panics (e.g. backend doesn't support this op), skip
+        // the entire (op, backend) cell.
         for _ in 0..self.warmup {
             let r = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 realizer.realize_f32(&tensor)
@@ -416,10 +454,13 @@ impl Judge {
             }
         }
 
-        // Timed iterations — record each and take the median so one
-        // pre-empted scheduler tick doesn't skew the number.
+        // Timed iterations — record each and take the median so
+        // one pre-empted scheduler tick doesn't skew the number.
+        // Capture the first iteration's output for consensus
+        // comparison; subsequent iterations discard the output
+        // (correctness is deterministic for a given backend + input).
         let mut timings_ns = Vec::with_capacity(self.iterations as usize);
-        let mut max_rel_error: f32 = 0.0;
+        let mut captured_output: Option<Vec<f32>> = None;
         for _ in 0..self.iterations {
             let t0 = Instant::now();
             let out = match std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -436,25 +477,20 @@ impl Judge {
             };
             let elapsed_ns = t0.elapsed().as_nanos() as u64;
             timings_ns.push(elapsed_ns);
-
-            // Only compare on the first iteration to save work; precision
-            // is deterministic for a given (backend, input).
-            if timings_ns.len() == 1 {
-                max_rel_error = max_rel_err(&out, &reference_out);
+            if captured_output.is_none() {
+                captured_output = Some(out);
             }
         }
         timings_ns.sort_unstable();
         let median = timings_ns[timings_ns.len() / 2];
+        let output = captured_output?;
 
-        Some(ProfileEntry {
-            op,
-            dtype: DType::F32,
-            size_class,
+        Some(CellRun {
             backend: device.backend,
             device_index: device.device_index,
+            output,
             latency_ns: median,
             iterations: self.iterations,
-            max_rel_error,
         })
     }
 }
@@ -792,6 +828,149 @@ fn max_rel_err(a: &[f32], b: &[f32]) -> f32 {
     worst
 }
 
+// =============================================================
+// Pairwise consensus — Reference-retirement replacement (2026-06-07)
+// =============================================================
+//
+// Pre-retirement, Judge compared every backend's output against
+// `tensor.realize_f32_reference()` to populate `ProfileEntry::max_rel_error`.
+// That privileged the `fuel-reference-backend` crate as THE oracle —
+// the architectural decision in v0.2 of `05-backend-contract.md`
+// demoted Reference but the code lagged.
+//
+// Post-retirement, Judge runs every available backend's kernel for
+// each (op, dtype, size) cell, clusters the outputs by mutual
+// `rel_err < CONSENSUS_EPSILON`, and computes each backend's
+// `max_rel_error` against the largest cluster (the "consensus
+// group"). A backend in the consensus group reports its max
+// within-cluster rel_err (typically near 0); a backend outside
+// the consensus reports its rel_err against the cluster — that's
+// the outlier signal callers want.
+
+/// Generous epsilon for cross-backend consensus clustering.
+/// Different backends produce numerically-different bits for the
+/// same logical operation (IEEE rounding rules + accumulation
+/// order differ across BLAS impls, GPU shader cores, etc.); the
+/// cluster definition has to accommodate this. `1e-3` is loose
+/// enough that floating-point accumulation reordering won't push
+/// honest implementations out of consensus while still catching
+/// kernels that are silently wrong.
+///
+/// Per-op tightening can land later via per-op
+/// `PrecisionGuarantee::max_relative` if a particular op family
+/// warrants tighter clustering. The 1e-3 default matches the
+/// `assert!(e.max_rel_error < 5e-3)` thresholds used in Judge's
+/// own tests below — both numbers reflect "this is the noise
+/// floor for honest cross-backend implementations of f32 math."
+const CONSENSUS_EPSILON: f32 = 1e-3;
+
+/// One backend's measurement for one (op, dtype, size) cell —
+/// kernel output captured alongside latency for downstream
+/// consensus comparison.
+#[derive(Debug)]
+struct CellRun {
+    backend: BackendId,
+    device_index: u32,
+    output: Vec<f32>,
+    latency_ns: u64,
+    iterations: u32,
+}
+
+/// Compute the largest mutually-close cluster across `runs`. Returns
+/// indices into `runs` (sorted ascending) of the consensus members.
+///
+/// Algorithm: for each run i, build the set of runs that pairwise
+/// agree with i (and with each other). The largest such set is the
+/// consensus. Ties broken by lowest first-index — deterministic.
+///
+/// Edge cases:
+/// - Empty `runs`: empty consensus.
+/// - Single run: trivial consensus of [0]. The lone backend is
+///   authoritative by absence of peers.
+/// - Two runs agreeing within `CONSENSUS_EPSILON`: consensus is
+///   both; each reports its rel_err against the other (small).
+/// - Two runs disagreeing: consensus is [0] (first wins ties by
+///   index); the other gets the disagreement as its rel_err.
+///   Callers should treat 2-backend cells with disagreement as
+///   "human review needed" — neither answer is independently
+///   validated.
+/// - Three runs with one outlier: consensus is the two that agree;
+///   the outlier reports its rel_err against the cluster.
+fn compute_pairwise_consensus(runs: &[CellRun]) -> Vec<usize> {
+    let n = runs.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    if n == 1 {
+        return vec![0];
+    }
+
+    // Pairwise rel_err matrix: agree[i][j] = (max_rel_err < CONSENSUS_EPSILON).
+    let mut agree = vec![vec![false; n]; n];
+    for i in 0..n {
+        agree[i][i] = true;
+        for j in (i + 1)..n {
+            let close = max_rel_err(&runs[i].output, &runs[j].output) < CONSENSUS_EPSILON;
+            agree[i][j] = close;
+            agree[j][i] = close;
+        }
+    }
+
+    // For each i, expand a cluster greedily: start with {i}, add
+    // each j ∈ neighbors that pairwise-agrees with all current
+    // members. Greedy — but for small N (typical: 2-4 backends),
+    // exhaustive search would also be cheap. Greedy is correct
+    // when the threshold defines a true equivalence-like relation;
+    // for f32 cross-backend agreement that's a reasonable assumption.
+    let mut best: Vec<usize> = vec![0];
+    for i in 0..n {
+        let mut cluster = vec![i];
+        for j in 0..n {
+            if j == i {
+                continue;
+            }
+            // j joins iff agrees with every existing member.
+            if cluster.iter().all(|&k| agree[j][k]) {
+                cluster.push(j);
+            }
+        }
+        cluster.sort_unstable();
+        // Larger cluster wins; ties broken by lower starting index.
+        if cluster.len() > best.len() {
+            best = cluster;
+        }
+    }
+    best
+}
+
+/// Compute `runs[self_idx]`'s max relative error against the
+/// consensus cluster. When the consensus contains only `self_idx`
+/// (single backend or every backend disagreed), returns `0.0` —
+/// there's no peer to measure drift against.
+fn max_rel_err_vs_consensus(
+    runs: &[CellRun],
+    consensus: &[usize],
+    self_idx: usize,
+) -> f32 {
+    let peers: Vec<usize> = consensus
+        .iter()
+        .copied()
+        .filter(|&i| i != self_idx)
+        .collect();
+    if peers.is_empty() {
+        return 0.0;
+    }
+    let self_out = &runs[self_idx].output;
+    let mut worst = 0.0_f32;
+    for i in peers {
+        let e = max_rel_err(self_out, &runs[i].output);
+        if e > worst {
+            worst = e;
+        }
+    }
+    worst
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -836,19 +1015,28 @@ mod tests {
         assert_eq!(report.version, PROFILE_REPORT_VERSION);
         assert!(report.entries.iter().any(|e| e.backend == BackendId::Cpu));
         assert!(report.entries.iter().any(|e| e.backend == BackendId::Reference));
-        // Reference backend vs itself: rel error exactly 0.
+        // Post-Reference-retirement note: this test runs both CPU
+        // (gemm path) and Reference (textbook triple-loop) and
+        // expects them in consensus. Each reports its max rel_err
+        // against the OTHER (no longer vs itself), so both rows
+        // carry a small-but-nonzero value reflecting f32
+        // accumulation-order drift. The pre-retirement assertion
+        // `Reference.max_rel_error == 0.0` (vs itself) is obsolete;
+        // the new check is "both backends are in consensus, so
+        // their reported rel_err is below the consensus epsilon
+        // floor of 1e-3."
         for e in report.entries.iter().filter(|e| e.backend == BackendId::Reference) {
-            assert_eq!(e.max_rel_error, 0.0,
-                "reference backend disagrees with itself at {e:?}");
+            assert!(e.max_rel_error < CONSENSUS_EPSILON,
+                "reference outside consensus with cpu at {e:?}");
         }
-        // CPU fast path vs reference: gemm's blocked sum order
-        // differs from the reference textbook triple-loop, so
-        // accumulated f32 drift on a 1024×1024 matmul can reach
-        // ~1e-3 relative. 5e-3 is the cliff beyond which we'd
-        // suspect an actual bug, not rounding.
+        // CPU fast path vs Reference (consensus peer): gemm's
+        // blocked sum order differs from the reference textbook
+        // triple-loop, so accumulated f32 drift on a 32×32 matmul
+        // is ~1e-7 relative. The 1e-3 consensus floor is the cliff
+        // beyond which we'd suspect an actual bug, not rounding.
         for e in report.entries.iter().filter(|e| e.backend == BackendId::Cpu) {
-            assert!(e.max_rel_error < 5e-3,
-                "cpu fast path diverges too far from reference: {e:?}");
+            assert!(e.max_rel_error < CONSENSUS_EPSILON,
+                "cpu outside consensus with reference: {e:?}");
             assert!(e.latency_ns > 0);
         }
     }
