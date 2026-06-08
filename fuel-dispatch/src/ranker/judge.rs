@@ -15,11 +15,16 @@
 //!
 //! # The contract
 //!
-//! For each `(op, dtype, size_class, backend)` lookup, return the
-//! measured median latency in nanoseconds when available. `None`
-//! means "no measurement" — the cost composer leaves the Layer-1
-//! static estimate in place rather than substituting a fabricated
-//! number.
+//! For each `(op, dtype, size_class, backend, kernel_source)`
+//! lookup, return the measured median latency in nanoseconds when
+//! available. `None` means "no measurement" — the cost composer
+//! leaves the Layer-1 static estimate in place rather than
+//! substituting a fabricated number.
+//!
+//! `kernel_source` distinguishes sibling kernels that register at the
+//! same `(backend, device)` pair — e.g. AOCL vs MKL vs portable-cpu
+//! at `BackendId::Cpu`, or cuBLAS vs CUTLASS at `BackendId::Cuda`.
+//! Use `""` for the legacy single-impl cells.
 //!
 //! Implementors are typically free-function HashMaps built once
 //! from a `ProfileReport`. The trait stays narrow on purpose: the
@@ -35,16 +40,23 @@ use fuel_core_types::DType;
 /// Layer-2 refinement source.
 pub trait JudgeOracle: Send + Sync {
     /// Median wall-clock latency in nanoseconds for the
-    /// `(op, dtype, size_class, backend)` cell. Returns `None`
-    /// when the cell isn't profiled. Callers MUST treat absence as
-    /// "no measurement" — not "zero" — so the static estimate
-    /// stays the fallback.
+    /// `(op, dtype, size_class, backend, kernel_source)` cell.
+    /// Returns `None` when the cell isn't profiled. Callers MUST
+    /// treat absence as "no measurement" — not "zero" — so the
+    /// static estimate stays the fallback.
+    ///
+    /// `kernel_source` is the [`fuel_core_types::dispatch::Pick::kernel_source`]
+    /// tag (e.g. `"aocl"`, `"mkl"`, `"cublas"`, `"cutlass"`,
+    /// `"portable-cpu"`, `"slang"`) — required to disambiguate
+    /// sibling kernels at the same `(backend, device)` slot. Pass
+    /// `""` for legacy / single-impl cells.
     fn measured_latency_ns(
         &self,
         op: OpKind,
         dtype: DType,
         size_class: SizeClass,
         backend: BackendId,
+        kernel_source: &str,
     ) -> Option<u64>;
 }
 
@@ -59,7 +71,7 @@ pub trait JudgeOracle: Send + Sync {
 /// changes.
 #[derive(Debug, Default, Clone)]
 pub struct HashMapJudge {
-    entries: std::collections::HashMap<(OpKind, DType, SizeClass, BackendId), u64>,
+    entries: std::collections::HashMap<(OpKind, DType, SizeClass, BackendId, String), u64>,
 }
 
 impl HashMapJudge {
@@ -71,16 +83,22 @@ impl HashMapJudge {
     /// Insert one measured latency. Replaces any prior entry with
     /// the same key (last-write-wins, mirroring the conventions in
     /// `fuel_core::judge::DispatchTable::rebuild_from`).
+    ///
+    /// `kernel_source` distinguishes sibling kernels at the same
+    /// `(backend, device)` slot — see [`JudgeOracle::measured_latency_ns`].
+    /// The owned `String` is stored as part of the key; pass `""`
+    /// for legacy single-impl cells.
     pub fn insert(
         &mut self,
         op: OpKind,
         dtype: DType,
         size_class: SizeClass,
         backend: BackendId,
+        kernel_source: &str,
         latency_ns: u64,
     ) {
         self.entries
-            .insert((op, dtype, size_class, backend), latency_ns);
+            .insert((op, dtype, size_class, backend, kernel_source.to_string()), latency_ns);
     }
 
     /// Total number of populated cells.
@@ -101,8 +119,16 @@ impl JudgeOracle for HashMapJudge {
         dtype: DType,
         size_class: SizeClass,
         backend: BackendId,
+        kernel_source: &str,
     ) -> Option<u64> {
-        self.entries.get(&(op, dtype, size_class, backend)).copied()
+        // Look up via the borrowed-key trick: build a tuple with an
+        // owned `String` only when needed. Most cells use `""` or a
+        // small interned tag so the allocation is cheap, and HashMap
+        // borrow-trait keys for tuples-with-String don't work
+        // out-of-the-box.
+        self.entries
+            .get(&(op, dtype, size_class, backend, kernel_source.to_string()))
+            .copied()
     }
 }
 
@@ -119,6 +145,7 @@ mod tests {
             DType::F32,
             SizeClass(16),
             BackendId::Cuda,
+            "cublas",
             5_000_000,
         );
         assert_eq!(j.len(), 1);
@@ -128,6 +155,7 @@ mod tests {
                 DType::F32,
                 SizeClass(16),
                 BackendId::Cuda,
+                "cublas",
             ),
             Some(5_000_000),
         );
@@ -142,31 +170,64 @@ mod tests {
                 DType::F32,
                 SizeClass(8),
                 BackendId::Cpu,
+                "",
             )
             .is_none());
     }
 
     #[test]
-    fn hashmap_judge_last_write_wins() {
+    fn hashmap_judge_last_write_wins_per_kernel_source() {
+        // Same (op, dtype, size, backend) but identical kernel_source —
+        // last write wins per cell.
         let mut j = HashMapJudge::new();
-        let key = (OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu);
-        j.insert(key.0, key.1, key.2, key.3, 1_000);
-        j.insert(key.0, key.1, key.2, key.3, 2_000);
+        j.insert(
+            OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "aocl", 1_000,
+        );
+        j.insert(
+            OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "aocl", 2_000,
+        );
         assert_eq!(
-            j.measured_latency_ns(key.0, key.1, key.2, key.3),
+            j.measured_latency_ns(
+                OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "aocl",
+            ),
             Some(2_000),
         );
+        // Distinct kernel_source at the same (op, dtype, size, backend)
+        // produces a DISTINCT entry — no collision.
+        j.insert(
+            OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "mkl", 1_500,
+        );
+        assert_eq!(j.len(), 2);
+        assert_eq!(
+            j.measured_latency_ns(
+                OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "mkl",
+            ),
+            Some(1_500),
+        );
+        assert_eq!(
+            j.measured_latency_ns(
+                OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "aocl",
+            ),
+            Some(2_000),
+        );
+        // Unknown kernel_source at the same (op, dtype, size, backend)
+        // misses — no fallthrough to either sibling.
+        assert!(j
+            .measured_latency_ns(
+                OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "portable-cpu",
+            )
+            .is_none());
     }
 
     #[test]
     fn hashmap_judge_distinguishes_backends_at_same_key() {
         let mut j = HashMapJudge::new();
         let (op, dt, sc) = (OpKind::MatMul, DType::F32, SizeClass(16));
-        j.insert(op, dt, sc, BackendId::Cpu, 1_000_000);
-        j.insert(op, dt, sc, BackendId::Cuda, 100_000);
-        assert_eq!(j.measured_latency_ns(op, dt, sc, BackendId::Cpu), Some(1_000_000));
-        assert_eq!(j.measured_latency_ns(op, dt, sc, BackendId::Cuda), Some(100_000));
-        assert!(j.measured_latency_ns(op, dt, sc, BackendId::Vulkan).is_none());
+        j.insert(op, dt, sc, BackendId::Cpu, "", 1_000_000);
+        j.insert(op, dt, sc, BackendId::Cuda, "", 100_000);
+        assert_eq!(j.measured_latency_ns(op, dt, sc, BackendId::Cpu, ""), Some(1_000_000));
+        assert_eq!(j.measured_latency_ns(op, dt, sc, BackendId::Cuda, ""), Some(100_000));
+        assert!(j.measured_latency_ns(op, dt, sc, BackendId::Vulkan, "").is_none());
     }
 
     #[test]
@@ -179,6 +240,7 @@ mod tests {
                 DType::F32,
                 SizeClass(0),
                 BackendId::Cpu,
+                "",
             )
             .is_none());
     }

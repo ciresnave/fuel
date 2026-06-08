@@ -143,8 +143,9 @@ pub fn compute_static_costs(
         .unwrap_or(SizeClass(0));
     for i in 0..set.len() {
         let backend = set.alternatives()[i].backend;
+        let kernel_source = set.alternatives()[i].kernel_source;
         let Some(latency_ns) = judge
-            .measured_latency_ns(op_kind, principal_dtype, size_class, backend)
+            .measured_latency_ns(op_kind, principal_dtype, size_class, backend, kernel_source)
         else {
             continue;
         };
@@ -454,7 +455,7 @@ mod tests {
         let sc = SizeClass::from_elem_count(4);
 
         let mut judge = HashMapJudge::new();
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cpu, 250);
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cpu, "", 250);
 
         compute_static_costs(
             &mut set,
@@ -549,8 +550,8 @@ mod tests {
         ].into_iter().collect();
         let sc = SizeClass::from_elem_count(4);
         let mut judge = crate::ranker::judge::HashMapJudge::new();
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cpu, 500);
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cuda, 100);
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cpu, "", 500);
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cuda, "", 100);
 
         compute_static_costs(
             &mut set, OpKind::AddElementwise, &dtypes,
@@ -599,7 +600,7 @@ mod tests {
         let mut judge = crate::ranker::judge::HashMapJudge::new();
         // Only measure Aocl (Judge said it's 20ns — way better than
         // Layer-1's 10000-FLOP estimate).
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cuda, 20);
+        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cuda, "", 20);
 
         compute_static_costs(
             &mut set, OpKind::AddElementwise, &dtypes,
@@ -634,7 +635,7 @@ mod tests {
         // Latency exceeds u32::MAX ns (~4.3 s).
         judge.insert(
             OpKind::AddElementwise, DType::F32,
-            SizeClass::from_elem_count(4), BackendId::Cpu,
+            SizeClass::from_elem_count(4), BackendId::Cpu, "",
             u64::MAX,
         );
         compute_static_costs(

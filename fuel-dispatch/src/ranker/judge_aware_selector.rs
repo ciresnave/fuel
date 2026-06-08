@@ -121,9 +121,20 @@ impl JudgeAwareSelector {
     }
 
     /// Look up the candidate's measured latency, if any.
+    ///
+    /// Threads the candidate's `kernel_source` through the Judge so
+    /// sibling kernels at the same `(backend, device)` slot (e.g.
+    /// AOCL vs MKL vs portable-cpu under `BackendId::Cpu`) get their
+    /// own measurement, instead of collapsing onto whichever
+    /// registered last.
     fn measured_latency(&self, c: &Candidate) -> Option<u64> {
-        self.judge
-            .measured_latency_ns(self.op, self.dtype, self.size_class, c.backend)
+        self.judge.measured_latency_ns(
+            self.op,
+            self.dtype,
+            self.size_class,
+            c.backend,
+            c.kernel_source,
+        )
     }
 }
 
@@ -290,6 +301,7 @@ mod tests {
             DType::F32,
             SizeClass(16),
             BackendId::Cuda,
+            "",
             10_000_000,
         );
         judge.insert(
@@ -297,6 +309,7 @@ mod tests {
             DType::F32,
             SizeClass(16),
             BackendId::Cpu,
+            "",
             1_000_000,
         );
 
@@ -326,6 +339,7 @@ mod tests {
             DType::F32,
             SizeClass(16),
             BackendId::Cpu,
+            "",
             500_000,
         );
 
@@ -352,6 +366,7 @@ mod tests {
             DType::F32,
             SizeClass(16),
             BackendId::Cuda,
+            "",
             10_000,
         );
         judge.insert(
@@ -359,6 +374,7 @@ mod tests {
             DType::F32,
             SizeClass(16),
             BackendId::Cpu,
+            "",
             5_000,
         );
         judge.insert(
@@ -366,6 +382,7 @@ mod tests {
             DType::F32,
             SizeClass(16),
             BackendId::Vulkan,
+            "",
             1_000,
         );
 
@@ -394,6 +411,7 @@ mod tests {
             DType::F32,
             SizeClass(16),
             BackendId::Cpu,
+            "",
             1_000,
         );
 
@@ -417,8 +435,8 @@ mod tests {
         set.push(make_candidate(BackendId::Cpu, 200));
 
         let mut judge = HashMapJudge::new();
-        judge.insert(OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cuda, 5_000);
-        judge.insert(OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, 5_000);
+        judge.insert(OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cuda, "", 5_000);
+        judge.insert(OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "", 5_000);
 
         let sel = make_selector(judge);
         let pick = sel.select(&set).expect("non-empty");
