@@ -15,7 +15,7 @@ byteorder = { workspace = true }
 fuel-aocl-cpu-backend = { workspace = true, optional = true }
 fuel-mkl-cpu-backend = { workspace = true, optional = true }
 fuel-core-types = { workspace = true, features = ["serde"] }
-fuel-correctness-fixtures = { workspace = true, features = ["serde"] }
+fuel-correctness-fixtures = { workspace = true, features = ["serde", "capture"] }
 fuel-cpu-backend = { workspace = true }
 fuel-dispatch = { workspace = true }
 fuel-storage = { workspace = true }

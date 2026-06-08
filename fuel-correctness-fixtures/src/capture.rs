@@ -148,7 +148,13 @@ pub fn representative_capture_matrix() -> Vec<CaptureCell> {
 /// toolchain irreproducible on another. Instead, derive the seed
 /// from a stable u64-mixed combination of the op's `as_str()`
 /// (stable, public API), the dtype byte size, and the size class.
-fn derive_seed(op: OpKind, dtype: DType, sc: SizeClass) -> u64 {
+///
+/// Public so the Judge's fixture-loader path can derive the same
+/// per-cell seed when looking up a fixture: the lookup key is
+/// `(op, dtype, size_class) + seed + input_hash`; both producer
+/// (capture tool) and consumer (Judge) must agree on the seed for
+/// the seed-match check to mean anything.
+pub fn derive_seed(op: OpKind, dtype: DType, sc: SizeClass) -> u64 {
     // SplitMix-style mix of stable inputs. `op.as_str()` is
     // committed-stable per `fuel_core_types::dispatch::OpKind::as_str`
     // (used in profile-report serialization — changing it is a

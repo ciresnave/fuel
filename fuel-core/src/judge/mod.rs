@@ -82,6 +82,7 @@ use fuel_core_types::probe::{BackendId, DeviceDescriptor};
 use fuel_core_types::{DType, Result, Shape};
 use fuel_correctness_fixtures::{
     validate_against_fixture, CorrectnessDrift, CorrectnessFixture, FixtureFile,
+    FIXTURE_FILE_VERSION,
 };
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
@@ -235,32 +236,97 @@ impl Judge {
     /// Look up a fixture matching `(op, dtype, size_class)` and the
     /// expected element count of the cell's output. Returns `None`
     /// when no fixture set is configured, when no fixture is keyed
-    /// for the cell, or when every keyed fixture has a mismatched
-    /// `output_element_count` (which would indicate the fixture was
-    /// captured against a different shape than the current size_plan
-    /// emits — log + skip).
+    /// for the cell, when no fixture matches the cell's output
+    /// shape, when the fixture's `input_seed` doesn't match the
+    /// Judge-derived per-cell seed, or when the fixture's
+    /// `input_hash` doesn't match the regenerated input bytes.
+    ///
+    /// **Triple-agreement contract (2026-06-08)**: a fixture is
+    /// accepted iff
+    ///
+    ///   1. `(op, dtype, size_class)` matches the bucket key, AND
+    ///   2. `output_element_count` matches the cell's output shape, AND
+    ///   3. `input_seed` matches
+    ///      [`fuel_correctness_fixtures::capture::derive_seed`]'s
+    ///      output for this cell, AND
+    ///   4. `input_hash` matches
+    ///      [`fuel_correctness_fixtures::capture::hash_f32_input`]
+    ///      applied to the regenerated input via
+    ///      [`fuel_correctness_fixtures::capture::deterministic_f32_input`].
+    ///
+    /// Failure of any check is logged and the cell falls back to
+    /// inline pairwise consensus (the caller's
+    /// `compute_pairwise_consensus` path runs).
+    ///
+    /// `input_elem_count` is the number of f32 elements the capture
+    /// tool's `deterministic_f32_input` would emit for this cell —
+    /// the caller derives it from the live `OpSize` via
+    /// [`OpSize::input_elements`]. It is decoupled from
+    /// `output_element_count` because binary ops carry `[a, b]`
+    /// concatenated (input = 2 × N) while their output is a single
+    /// `[n]` buffer.
     fn lookup_fixture(
         &self,
         op: OpKind,
         dtype: DType,
         size_class: SizeClass,
-        expected_elem_count: usize,
+        output_elem_count: usize,
+        input_elem_count: usize,
     ) -> Option<&CorrectnessFixture> {
         let map = self.fixtures.as_ref()?;
         let bucket = map.get(&(op, dtype, size_class))?;
+
+        // Derive the per-cell seed once — capture's `derive_seed`
+        // is a pure function of (op, dtype, size_class).
+        let expected_seed =
+            fuel_correctness_fixtures::capture::derive_seed(op, dtype, size_class);
+
+        // Lazily regenerate and hash the input only when a fixture's
+        // shape + seed agree (the hash is the expensive check).
+        let mut regenerated_hash: Option<u64> = None;
+        let mut shape_matches = false;
         for f in bucket {
-            if f.output_element_count == expected_elem_count {
-                return Some(f);
+            if f.output_element_count != output_elem_count {
+                continue;
             }
+            shape_matches = true;
+            if f.input_seed != expected_seed {
+                eprintln!(
+                    "judge: fixture for ({op:?}, {dtype:?}, size_class={}) seed mismatch \
+                     (fixture seed={}, expected={}); falling back to consensus",
+                    size_class.0, f.input_seed, expected_seed,
+                );
+                continue;
+            }
+            let actual_hash = *regenerated_hash.get_or_insert_with(|| {
+                let input =
+                    fuel_correctness_fixtures::capture::deterministic_f32_input(
+                        op,
+                        input_elem_count,
+                    );
+                fuel_correctness_fixtures::capture::hash_f32_input(&input)
+            });
+            if f.input_hash != actual_hash {
+                eprintln!(
+                    "judge: fixture input drifted for ({op:?}, {dtype:?}, \
+                     size_class={}, seed={}); fixture hash={}, regenerated hash={}; \
+                     falling back to consensus",
+                    size_class.0, f.input_seed, f.input_hash, actual_hash,
+                );
+                continue;
+            }
+            return Some(f);
         }
-        // The bucket exists but no fixture matches the cell's shape.
-        // The capture used a different input convention; skip + fall
-        // back to consensus rather than emit a misleading rel_err.
-        eprintln!(
-            "judge: fixture bucket for ({op:?}, {dtype:?}, size_class={}) has no entry \
-             matching expected_elem_count={expected_elem_count}; falling back to consensus",
-            size_class.0,
-        );
+        if !shape_matches {
+            // The bucket exists but no fixture matches the cell's shape.
+            // The capture used a different input convention; skip + fall
+            // back to consensus rather than emit a misleading rel_err.
+            eprintln!(
+                "judge: fixture bucket for ({op:?}, {dtype:?}, size_class={}) has no entry \
+                 matching output_element_count={output_elem_count}; falling back to consensus",
+                size_class.0,
+            );
+        }
         None
     }
 
@@ -440,8 +506,14 @@ impl Judge {
                 let expected_elem_count = cell_runs.first()
                     .map(|r| r.output.len())
                     .unwrap_or(0);
-                let fixture =
-                    self.lookup_fixture(op, DType::F32, size_class, expected_elem_count);
+                let input_elem_count = sz.input_elements(op);
+                let fixture = self.lookup_fixture(
+                    op,
+                    DType::F32,
+                    size_class,
+                    expected_elem_count,
+                    input_elem_count,
+                );
                 let consensus = if fixture.is_none() {
                     compute_pairwise_consensus(&cell_runs)
                 } else {
@@ -1088,6 +1160,30 @@ impl OpSize {
             OpSize::ReduceTo { rows, cols } => rows * cols,
         }
     }
+
+    /// Element count of the input buffer the capture tool's
+    /// [`fuel_correctness_fixtures::capture::deterministic_f32_input`]
+    /// would emit for an op of this size. Used by the Judge's
+    /// fixture-lookup path to regenerate-and-hash the input.
+    ///
+    /// Per-op shape (mirrors capture's `deterministic_f32_input`):
+    /// - MatMul: `m*k + k*n` — `a_data` followed by `b_data`.
+    /// - Elementwise (binary): `2 * n` — `[a, b]` concatenated.
+    /// - Elementwise (unary / scalar / clamp / powi): `n`.
+    /// - Reduce / ReduceTo: `rows * cols`.
+    ///
+    /// `op` is needed to disambiguate binary vs unary on the
+    /// `Elementwise(n)` shape.
+    fn input_elements(&self, op: OpKind) -> usize {
+        match *self {
+            OpSize::MatMul { m, n, k } => m * k + k * n,
+            OpSize::Elementwise(n) => {
+                if is_binary_elementwise(op) { 2 * n } else { n }
+            }
+            OpSize::Reduce { rows, cols } => rows * cols,
+            OpSize::ReduceTo { rows, cols } => rows * cols,
+        }
+    }
 }
 
 /// Build a 1-node graph for the given (op, size) that takes constant
@@ -1551,6 +1647,11 @@ fn max_rel_err_vs_fixture(out: &[f32], fixture: &CorrectnessFixture) -> f32 {
 /// Errors propagate the first I/O failure or deserialization error
 /// encountered. A directory with no `*.json` files yields an empty
 /// map (the Judge then behaves as if no fixtures were configured).
+///
+/// Files whose `FixtureFile.version` does not match the current
+/// [`FIXTURE_FILE_VERSION`] are skipped with a stderr warning. The
+/// load itself is non-fatal — a single stale file in the fixture
+/// distribution shouldn't strand the rest of the run.
 fn load_fixtures_recursive(
     root: &Path,
 ) -> Result<HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>>> {
@@ -1565,6 +1666,16 @@ fn load_fixtures_recursive(
                 "judge: failed to parse fixture file {} as FixtureFile: {e}",
                 p.display(),
             )))?;
+        if file.version != FIXTURE_FILE_VERSION {
+            eprintln!(
+                "judge: skipping fixture file {} — version {} does not match \
+                 current FIXTURE_FILE_VERSION ({}); regenerate via fuel-capture-fixtures",
+                p.display(),
+                file.version,
+                FIXTURE_FILE_VERSION,
+            );
+            return Ok(());
+        }
         for f in file.fixtures {
             let key = (f.op, f.dtype, f.size_class);
             map.entry(key).or_default().push(f);
@@ -1975,18 +2086,35 @@ mod tests {
 
         let probe = ProbeReport::probe_all();
         let elem_count = 1 << 10;
+        let sc = SizeClass::from_elem_count(elem_count);
         // Plant an obviously-wrong fixture: all zeros expected. The
         // cpu add kernel produces sin+cos = non-zero, so
         // validate_against_fixture's OutOfTolerance.rel_err lands in
         // every entry's max_rel_error (well above any plausible
         // cross-backend drift floor).
+        //
+        // The fixture must satisfy the triple-agreement contract
+        // (seed + hash + shape) for `lookup_fixture` to return it.
+        // We use the same `derive_seed` / `deterministic_f32_input` /
+        // `hash_f32_input` the capture tool uses, so the lookup path
+        // accepts the (deliberately-wrong-expected-output) fixture.
         let zeros: Vec<u8> = vec![0u8; elem_count * 4];
+        let seed = fuel_correctness_fixtures::capture::derive_seed(
+            OpKind::AddElementwise, DType::F32, sc,
+        );
+        // AddElementwise is binary: input is the concatenated `[a, b]`
+        // buffer of length `2 * n`.
+        let input = fuel_correctness_fixtures::capture::deterministic_f32_input(
+            OpKind::AddElementwise, 2 * elem_count,
+        );
+        let input_hash =
+            fuel_correctness_fixtures::capture::hash_f32_input(&input);
         let bogus_fixture = CorrectnessFixture {
             op: OpKind::AddElementwise,
             dtype: DType::F32,
-            size_class: SizeClass::from_elem_count(elem_count),
-            input_seed: 0,
-            input_hash: 0,
+            size_class: sc,
+            input_seed: seed,
+            input_hash,
             expected_output: zeros,
             output_element_count: elem_count,
             // Tight tolerance — guarantees the all-zeros fixture
@@ -2074,5 +2202,178 @@ mod tests {
         assert!(map2.contains_key(&key));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Loader: fixture files whose `version` doesn't match the
+    /// current `FIXTURE_FILE_VERSION` are skipped with a stderr
+    /// warning. The load itself is non-fatal — a single stale file
+    /// in the distribution shouldn't strand the rest of the run.
+    #[test]
+    fn judge_load_skips_mismatched_version() {
+        use fuel_correctness_fixtures::{
+            CorrectnessFixture, FixtureFile, ToleranceBand,
+        };
+
+        let good_fixture = CorrectnessFixture {
+            op: OpKind::MatMul,
+            dtype: DType::F32,
+            size_class: SizeClass(10),
+            input_seed: 1,
+            input_hash: 2,
+            expected_output: vec![0u8; 16],
+            output_element_count: 4,
+            tolerance: ToleranceBand::F32_DEFAULT,
+        };
+        let bad_version_file = FixtureFile {
+            version: FIXTURE_FILE_VERSION + 999,
+            fixtures: vec![good_fixture.clone()],
+        };
+        let good_version_file = FixtureFile {
+            version: FIXTURE_FILE_VERSION,
+            fixtures: vec![CorrectnessFixture {
+                op: OpKind::AddElementwise,
+                ..good_fixture
+            }],
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "fuel-judge-fixture-version-{}", std::process::id(),
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let bad_path = dir.join("matmul_f32.json");
+        let good_path = dir.join("add_f32.json");
+        std::fs::write(&bad_path, serde_json::to_string(&bad_version_file).unwrap())
+            .unwrap();
+        std::fs::write(&good_path, serde_json::to_string(&good_version_file).unwrap())
+            .unwrap();
+
+        let judge = Judge::with_fixtures_from(&dir).expect("load");
+        let map = judge.fixtures.as_ref().expect("fixtures populated");
+        // The bad-version file is silently dropped; the good-version
+        // file's bucket is still present.
+        assert!(
+            !map.contains_key(&(OpKind::MatMul, DType::F32, SizeClass(10))),
+            "expected mismatched-version file to be skipped",
+        );
+        assert!(
+            map.contains_key(&(OpKind::AddElementwise, DType::F32, SizeClass(10))),
+            "expected good-version file to be loaded",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `lookup_fixture` returns `None` for a fixture whose `input_seed`
+    /// doesn't match the Judge-derived per-cell seed. The caller (run)
+    /// then falls back to inline consensus.
+    #[test]
+    fn lookup_fixture_skips_seed_mismatch() {
+        use fuel_correctness_fixtures::{CorrectnessFixture, ToleranceBand};
+
+        let op = OpKind::AddElementwise;
+        let dtype = DType::F32;
+        let elem_count = 1 << 10;
+        let sc = SizeClass::from_elem_count(elem_count);
+        let input = fuel_correctness_fixtures::capture::deterministic_f32_input(
+            op, 2 * elem_count,
+        );
+        let input_hash = fuel_correctness_fixtures::capture::hash_f32_input(&input);
+        // Plant the right hash but the wrong seed — the lookup must
+        // skip the fixture even though the hash would have matched.
+        let real_seed = fuel_correctness_fixtures::capture::derive_seed(op, dtype, sc);
+        let wrong_seed = real_seed.wrapping_add(1);
+        let fixture = CorrectnessFixture {
+            op,
+            dtype,
+            size_class: sc,
+            input_seed: wrong_seed,
+            input_hash,
+            expected_output: vec![0u8; elem_count * 4],
+            output_element_count: elem_count,
+            tolerance: ToleranceBand::F32_DEFAULT,
+        };
+        let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> =
+            HashMap::new();
+        map.insert((op, dtype, sc), vec![fixture]);
+        let judge = Judge { fixtures: Some(map), ..Judge::default() };
+        let got = judge.lookup_fixture(op, dtype, sc, elem_count, 2 * elem_count);
+        assert!(
+            got.is_none(),
+            "fixture with mismatched seed should be skipped (got {got:?})",
+        );
+    }
+
+    /// `lookup_fixture` returns `None` for a fixture whose `input_hash`
+    /// doesn't match the regenerated input. The caller falls back to
+    /// inline consensus.
+    #[test]
+    fn lookup_fixture_skips_hash_mismatch() {
+        use fuel_correctness_fixtures::{CorrectnessFixture, ToleranceBand};
+
+        let op = OpKind::AddElementwise;
+        let dtype = DType::F32;
+        let elem_count = 1 << 10;
+        let sc = SizeClass::from_elem_count(elem_count);
+        let real_seed =
+            fuel_correctness_fixtures::capture::derive_seed(op, dtype, sc);
+        let input = fuel_correctness_fixtures::capture::deterministic_f32_input(
+            op, 2 * elem_count,
+        );
+        let real_hash =
+            fuel_correctness_fixtures::capture::hash_f32_input(&input);
+        // Plant the right seed but a wrong hash. The lookup must skip.
+        let wrong_hash = real_hash.wrapping_add(0xfeed_face);
+        let fixture = CorrectnessFixture {
+            op,
+            dtype,
+            size_class: sc,
+            input_seed: real_seed,
+            input_hash: wrong_hash,
+            expected_output: vec![0u8; elem_count * 4],
+            output_element_count: elem_count,
+            tolerance: ToleranceBand::F32_DEFAULT,
+        };
+        let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> =
+            HashMap::new();
+        map.insert((op, dtype, sc), vec![fixture]);
+        let judge = Judge { fixtures: Some(map), ..Judge::default() };
+        let got = judge.lookup_fixture(op, dtype, sc, elem_count, 2 * elem_count);
+        assert!(
+            got.is_none(),
+            "fixture with drifted input_hash should be skipped (got {got:?})",
+        );
+    }
+
+    /// `lookup_fixture` accepts a fixture when (op, dtype, size_class) +
+    /// output shape + seed + input_hash all agree. Triple-agreement
+    /// contract.
+    #[test]
+    fn lookup_fixture_accepts_triple_agreement() {
+        use fuel_correctness_fixtures::{CorrectnessFixture, ToleranceBand};
+
+        let op = OpKind::AddElementwise;
+        let dtype = DType::F32;
+        let elem_count = 1 << 10;
+        let sc = SizeClass::from_elem_count(elem_count);
+        let seed = fuel_correctness_fixtures::capture::derive_seed(op, dtype, sc);
+        let input = fuel_correctness_fixtures::capture::deterministic_f32_input(
+            op, 2 * elem_count,
+        );
+        let hash = fuel_correctness_fixtures::capture::hash_f32_input(&input);
+        let fixture = CorrectnessFixture {
+            op,
+            dtype,
+            size_class: sc,
+            input_seed: seed,
+            input_hash: hash,
+            expected_output: vec![0u8; elem_count * 4],
+            output_element_count: elem_count,
+            tolerance: ToleranceBand::F32_DEFAULT,
+        };
+        let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> =
+            HashMap::new();
+        map.insert((op, dtype, sc), vec![fixture]);
+        let judge = Judge { fixtures: Some(map), ..Judge::default() };
+        let got = judge.lookup_fixture(op, dtype, sc, elem_count, 2 * elem_count);
+        assert!(got.is_some(), "triple-agreement fixture should be returned");
     }
 }
