@@ -1,0 +1,19 @@
+[package]
+    categories.workspace = true
+    description          = "Distributable correctness fixtures for Fuel — pre-validated kernel outputs that single-backend systems use to validate their backends without needing a peer for pairwise consensus."
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-correctness-fixtures"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    fuel-core-types = { workspace = true }
+    bytemuck        = { workspace = true }
+    serde           = { version = "1", features = ["derive"], optional = true }
+    serde_json      = { version = "1", optional = true }
+
+[features]
+    default = []
+    serde   = ["dep:serde", "dep:serde_json", "fuel-core-types/serde"]
