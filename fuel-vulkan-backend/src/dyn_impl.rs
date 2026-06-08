@@ -72,6 +72,33 @@ impl VulkanBackendDevice {
     }
 }
 
+impl fuel_core_types::backend::BackendRuntime for VulkanBackendDevice {
+    /// Vulkan VRAM available = budget − used. Driver-level signal
+    /// from `VK_EXT_memory_budget`. Returns `None` when the
+    /// extension isn't loaded or the device doesn't support it
+    /// (older Vulkan drivers); selectors fall back to static cost
+    /// in that case.
+    fn available_bytes(&self) -> Option<u64> {
+        if !self.inner.has_memory_budget_support() {
+            return None;
+        }
+        let budget = self.inner.vram_budget();
+        let used = self.inner.vram_used();
+        Some(budget.saturating_sub(used))
+    }
+
+    /// Vulkan VRAM budget — total this process is allowed to use on
+    /// device-local heaps. Driver estimate from
+    /// `VK_EXT_memory_budget`. `None` when the extension isn't
+    /// available.
+    fn total_bytes(&self) -> Option<u64> {
+        if !self.inner.has_memory_budget_support() {
+            return None;
+        }
+        Some(self.inner.vram_budget())
+    }
+}
+
 fn vulkan_dyn_err(method: &'static str) -> Error {
     Error::Msg(format!(
         "VulkanBackendDevice::{method}: Vulkan does not return DynBackendStorage \

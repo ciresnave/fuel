@@ -188,6 +188,101 @@ pub trait BackendCapabilityProvider {
     fn capabilities(&self) -> BackendCapabilities;
 }
 
+/// Predictive fit-check result for a projected allocation. Consumed
+/// by [`BackendRuntime::would_fit`] and read by Picker 2's pressure-
+/// aware selectors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FitStatus {
+    /// Allocation projected to fit comfortably (post-alloc usage
+    /// below the pressure threshold, default 0.85 of total).
+    Comfortable,
+    /// Allocation projected to fit but leaves the device tight
+    /// (post-alloc usage above the pressure threshold). Selectors
+    /// should prefer a less-loaded co-located backend if available.
+    Tight,
+    /// Allocation projected NOT to fit (size > available bytes).
+    /// Selectors should pick a different backend; planner-level
+    /// surfaces a typed error if no alternative.
+    WontFit,
+    /// Backend cannot answer — `available_bytes` returned `None`.
+    /// Selectors fall back to static cost.
+    Unknown,
+}
+
+/// Runtime state every backend reports. Phase 5.1/5.2 substrate of
+/// the picker arc — replaces backend-specific inherent methods (e.g.
+/// `VulkanBackend::vram_budget`, future `BaracudaDevice::vram_free`)
+/// with a uniform contract surface. See architecture v0.3
+/// (`docs/architecture/05-backend-contract.md`) §Trait surface for
+/// the full tiering.
+///
+/// # Honesty contract
+///
+/// `Option<u64>` returns let backends say "I genuinely can't measure
+/// this" without forcing fabrications. Selectors MUST treat `None`
+/// as "no signal — fall back to static cost," NEVER as "zero
+/// available memory."
+///
+/// # Caching
+///
+/// Implementations are expected to be cheap to call (sub-millisecond
+/// for cache hits, well under a microsecond on a hot path).
+/// Implementations that wrap non-trivial queries (parsing
+/// `/proc/meminfo`, OS syscalls) SHOULD internally cache results for
+/// ~100ms to amortize the cost of selector polling.
+pub trait BackendRuntime {
+    /// Bytes currently available for new allocations on this
+    /// backend's device. `None` when the backend genuinely cannot
+    /// measure (no OS query exposed, no vendor API supports it).
+    ///
+    /// "Available" semantics are device-relative:
+    ///
+    /// - CPU backends report system-wide free memory (OS query).
+    ///   Note this is shared with the whole OS — other processes
+    ///   can inflate / deflate the value unpredictably. The signal
+    ///   is noisier than per-process VRAM tracking; selectors
+    ///   should weight it accordingly.
+    /// - GPU backends report device-local free memory (driver query).
+    ///   Driver estimates include this process, other processes,
+    ///   and driver internals.
+    /// - Reference / synthetic backends MAY return `Some(u64::MAX)`
+    ///   to advertise "unbounded" capacity (never reports pressure).
+    fn available_bytes(&self) -> Option<u64>;
+
+    /// Total memory on this backend's device. Static after first
+    /// call; implementations cache unconditionally. `None` for
+    /// backends with unbounded notional capacity (e.g. Reference
+    /// returns `Some(u64::MAX)`, or `None` if the backend prefers
+    /// to advertise "unknowable").
+    fn total_bytes(&self) -> Option<u64>;
+
+    /// Predictive fit-check: would an allocation of `size` bytes
+    /// likely succeed given current state? Returns [`FitStatus::Tight`]
+    /// when projected post-allocation usage crosses the pressure
+    /// threshold (default 0.85 of total).
+    ///
+    /// Default implementation derives the answer from
+    /// [`Self::available_bytes`] + [`Self::total_bytes`]. Backends
+    /// with native predictive APIs (Vulkan `VK_EXT_memory_budget`)
+    /// override for accuracy — driver-level predictive checks can
+    /// detect fragmentation that a simple bytes-available subtraction
+    /// would miss.
+    fn would_fit(&self, size: u64) -> FitStatus {
+        match (self.available_bytes(), self.total_bytes()) {
+            (Some(a), _) if size > a => FitStatus::WontFit,
+            (Some(a), Some(t)) if t > 0 => {
+                let post_used = t.saturating_sub(a.saturating_sub(size));
+                if (post_used as f64) / (t as f64) > 0.85 {
+                    FitStatus::Tight
+                } else {
+                    FitStatus::Comfortable
+                }
+            }
+            _ => FitStatus::Unknown,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,5 +350,73 @@ mod tests {
         set.insert(TransferPath::Peer);  // dup
         set.insert(TransferPath::DeviceCopy);
         assert_eq!(set.len(), 2);
+    }
+
+    // ===== BackendRuntime default `would_fit` impl =====
+
+    /// Test harness: an in-memory backend with configurable available
+    /// / total bytes for testing the default `would_fit` derivation.
+    struct MockRuntime {
+        available: Option<u64>,
+        total: Option<u64>,
+    }
+    impl BackendRuntime for MockRuntime {
+        fn available_bytes(&self) -> Option<u64> { self.available }
+        fn total_bytes(&self) -> Option<u64> { self.total }
+    }
+
+    /// Allocation strictly larger than available bytes → `WontFit`.
+    #[test]
+    fn would_fit_wont_fit_when_size_exceeds_available() {
+        let r = MockRuntime { available: Some(1_000), total: Some(10_000) };
+        assert_eq!(r.would_fit(1_001), FitStatus::WontFit);
+    }
+
+    /// Small allocation that leaves usage well under the threshold
+    /// → `Comfortable`.
+    #[test]
+    fn would_fit_comfortable_when_post_alloc_under_threshold() {
+        // total=100, available=80 → currently using 20.
+        // size=10 → post-used=30, post-used/total=0.3 < 0.85.
+        let r = MockRuntime { available: Some(80), total: Some(100) };
+        assert_eq!(r.would_fit(10), FitStatus::Comfortable);
+    }
+
+    /// Allocation that fits but pushes usage above the 0.85
+    /// threshold → `Tight`.
+    #[test]
+    fn would_fit_tight_when_post_alloc_above_threshold() {
+        // total=100, available=20 → currently using 80.
+        // size=10 → post-used=90, post-used/total=0.9 > 0.85.
+        let r = MockRuntime { available: Some(20), total: Some(100) };
+        assert_eq!(r.would_fit(10), FitStatus::Tight);
+    }
+
+    /// `None` for either field → `Unknown`. Honest "I don't know,"
+    /// not a false `Comfortable` or `WontFit`.
+    #[test]
+    fn would_fit_unknown_on_none_signals() {
+        let r1 = MockRuntime { available: None, total: Some(100) };
+        let r2 = MockRuntime { available: Some(50), total: None };
+        let r3 = MockRuntime { available: None, total: None };
+        assert_eq!(r1.would_fit(10), FitStatus::Unknown);
+        assert_eq!(r2.would_fit(10), FitStatus::Unknown);
+        assert_eq!(r3.would_fit(10), FitStatus::Unknown);
+    }
+
+    /// `total == 0` produces `Unknown` rather than a divide-by-zero
+    /// or a spurious `Tight`. Defensive.
+    #[test]
+    fn would_fit_unknown_on_zero_total() {
+        let r = MockRuntime { available: Some(0), total: Some(0) };
+        assert_eq!(r.would_fit(0), FitStatus::Unknown);
+    }
+
+    /// Zero-byte allocation is always Comfortable on a non-saturated
+    /// backend.
+    #[test]
+    fn would_fit_zero_byte_alloc() {
+        let r = MockRuntime { available: Some(50), total: Some(100) };
+        assert_eq!(r.would_fit(0), FitStatus::Comfortable);
     }
 }
