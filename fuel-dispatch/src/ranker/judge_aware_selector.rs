@@ -56,7 +56,7 @@ use std::sync::Arc;
 use fuel_core_types::dispatch::{OpKind, SizeClass};
 use fuel_core_types::DType;
 
-use super::{AlternativeSet, Candidate, JudgeOracle, RuntimeSelector};
+use super::{composite_ns, AlternativeSet, Candidate, JudgeOracle, RuntimeSelector};
 
 /// Phase 5.2 runtime selector that re-queries the Judge at dispatch
 /// time and re-ranks candidates by the freshest measured latency.
@@ -156,69 +156,36 @@ impl RuntimeSelector for JudgeAwareSelector {
             return None;
         }
 
-        // Compute a stable rank key per candidate:
+        // Rank every candidate by a single nanosecond figure:
         //
-        // - Candidates with a Judge measurement rank by that latency
-        //   (lower = better).
-        // - Candidates without a Judge measurement keep their input
-        //   position (preserving Picker 1's static rank).
+        // - Measured candidates use the Judge's measured latency.
+        // - Unmeasured candidates use `composite_ns(static_cost)`,
+        //   the same Layer-1 scalar Picker 1 already ranks by.
         //
-        // We pick by argmin over rank-keys, walking in original order
-        // so ties break toward the static winner. The rank-key is a
-        // pair (has_measurement: u8 inverted, latency_or_static_pos):
+        // This produces a uniform ordering across both groups: a
+        // 100ms measured kernel correctly loses to a 50ns unmeasured
+        // one when the Layer-1 estimate is trustworthy. The prior
+        // shape ("any measured candidate trumps all unmeasured
+        // candidates") was wrong — see the 2026-06-08 adversarial
+        // verification of the Phase 5.2 selector. Treating the two
+        // groups on equal footing is the principled fix.
         //
-        // - measured candidates: (0, latency_ns)
-        // - unmeasured candidates: (1, original_idx as u64)
-        //
-        // The (0, _) tier always wins over (1, _) when at least one
-        // candidate has a measurement. When every candidate is
-        // measured, latency_ns picks the fastest. When none are
-        // measured, original_idx preserves the static order (idx=0
-        // wins → set.winner()).
-        //
-        // BUT — that ordering would always demote unmeasured
-        // candidates below measured ones, which is wrong: a 1us
-        // measurement should beat a no-measurement candidate at
-        // position 0, but a 100ms measurement should NOT beat a
-        // no-measurement candidate at position 0 (we have no signal
-        // saying static-winner is worse). The correct semantics is
-        // "if the Judge has measurements for ALL candidates, pick
-        // the lowest-latency; otherwise fall back to static rank
-        // for the unmeasured tier and only re-rank within the
-        // measured tier."
-        //
-        // Simplest correct shape: walk the set, find the best
-        // measured candidate (by lowest latency). If that latency
-        // beats the inferred static-cost composite of the winner,
-        // pick it. Otherwise pick the static winner.
-        //
-        // Even simpler shape, and what we ship: re-rank candidates
-        // by latency among the ones with measurements. The winner
-        // is whichever measured candidate has the lowest latency.
-        // If NO candidate has a measurement, fall back to
-        // `set.winner()`. This treats the Judge data as
-        // authoritative when present — which it is, as the only
-        // empirical signal.
-        let measured: Vec<(usize, u64)> = alts
+        // Tie-break by original index so ties resolve toward
+        // Picker 1's static rank — preserving determinism and the
+        // `set.winner()` invariant when every candidate scores the
+        // same.
+        let (best_idx, _) = alts
             .iter()
             .enumerate()
-            .filter_map(|(i, c)| self.measured_latency(c).map(|ns| (i, ns)))
-            .collect();
-
-        if measured.is_empty() {
-            // No fresh signal — defer to the static winner.
-            return set.winner();
-        }
-
-        // Pick the lowest-latency measured candidate. Ties break
-        // toward the lower original index (preserves static order
-        // on ties), which is what `min_by_key` gives us when paired
-        // with stable iteration order.
-        let best = measured
-            .into_iter()
-            .min_by_key(|&(idx, ns)| (ns, idx))
+            .map(|(i, c)| {
+                let score = self
+                    .measured_latency(c)
+                    .unwrap_or_else(|| composite_ns(&c.static_cost));
+                (i, score)
+            })
+            .min_by_key(|&(idx, score)| (score, idx))
             .expect("non-empty after the early return");
-        alts.get(best.0)
+        alts.get(best_idx)
     }
 }
 
@@ -322,17 +289,23 @@ mod tests {
         );
     }
 
-    /// Only one candidate measured → it wins (the only fresh signal
-    /// trumps static-only candidates, as that's the only datum we
-    /// have).
+    /// Only one candidate measured → measured and unmeasured rank
+    /// uniformly on the same nanosecond axis. A fast (low static
+    /// cost) unmeasured candidate beats a slow measured one; a
+    /// fast measurement beats a high static cost. The selector no
+    /// longer auto-promotes every measured candidate above every
+    /// unmeasured one.
     #[test]
-    fn single_measurement_wins_against_unmeasured() {
+    fn single_measurement_competes_uniformly_against_unmeasured() {
+        // Case A: the measurement is slow → unmeasured static
+        // winner should still win.
         let mut set = AlternativeSet::empty();
         set.push(make_candidate(BackendId::Cuda, 100));
         set.push(make_candidate(BackendId::Cpu, 200));
         set.push(make_candidate(BackendId::Vulkan, 300));
 
-        // Only CPU has a measurement.
+        // CPU measured at 500_000 ns — slow compared to the
+        // unmeasured CUDA (composite_ns = 100 ns).
         let mut judge = HashMapJudge::new();
         judge.insert(
             OpKind::MatMul,
@@ -342,13 +315,34 @@ mod tests {
             "",
             500_000,
         );
+        let sel = make_selector(judge);
+        let pick = sel.select(&set).expect("non-empty");
+        assert_eq!(
+            pick.backend,
+            BackendId::Cuda,
+            "slow measurement does NOT trump a faster unmeasured static cost",
+        );
 
+        // Case B: the measurement is fast → the measured candidate
+        // wins.
+        let mut set = AlternativeSet::empty();
+        set.push(make_candidate(BackendId::Cuda, 1_000_000));
+        set.push(make_candidate(BackendId::Cpu, 2_000_000));
+        let mut judge = HashMapJudge::new();
+        judge.insert(
+            OpKind::MatMul,
+            DType::F32,
+            SizeClass(16),
+            BackendId::Cpu,
+            "",
+            500,
+        );
         let sel = make_selector(judge);
         let pick = sel.select(&set).expect("non-empty");
         assert_eq!(
             pick.backend,
             BackendId::Cpu,
-            "only candidate with a measurement → it wins",
+            "fast measurement beats slower unmeasured static cost",
         );
     }
 
@@ -476,5 +470,89 @@ mod tests {
         assert_eq!(sel.op(), OpKind::AddElementwise);
         assert_eq!(sel.dtype(), DType::BF16);
         assert_eq!(sel.size_class(), SizeClass(7));
+    }
+
+    /// Two `BackendId::Cpu` candidates with distinct `kernel_source`
+    /// tags receive DISTINCT measurements from the Judge. The trait
+    /// fix that threads `kernel_source` into `measured_latency_ns`
+    /// only matters if the selector propagates it correctly — this
+    /// test pins that behavior.
+    ///
+    /// Without the fix, the second `judge.insert(..., "aocl", _)` and
+    /// `judge.insert(..., "mkl", _)` would collide on the same key and
+    /// last-write-wins would collapse the ranking. With the fix, each
+    /// sibling kernel is judged on its own merits and the selector
+    /// picks the cheaper of the two.
+    #[test]
+    fn distinct_kernel_sources_get_distinct_measurements() {
+        let mut set = AlternativeSet::empty();
+        // Two Cpu candidates: aocl and mkl. Identical backend, identical
+        // device, identical static cost — only `kernel_source` differs.
+        let mut c_aocl = make_candidate(BackendId::Cpu, 500);
+        c_aocl.kernel_source = "aocl";
+        let mut c_mkl = make_candidate(BackendId::Cpu, 500);
+        c_mkl.kernel_source = "mkl";
+        set.push(c_aocl);
+        set.push(c_mkl);
+
+        // Judge: aocl is slow (10ms), mkl is fast (1ms).
+        let mut judge = HashMapJudge::new();
+        judge.insert(
+            OpKind::MatMul,
+            DType::F32,
+            SizeClass(16),
+            BackendId::Cpu,
+            "aocl",
+            10_000_000,
+        );
+        judge.insert(
+            OpKind::MatMul,
+            DType::F32,
+            SizeClass(16),
+            BackendId::Cpu,
+            "mkl",
+            1_000_000,
+        );
+
+        let sel = make_selector(judge);
+        let pick = sel.select(&set).expect("non-empty");
+        assert_eq!(pick.backend, BackendId::Cpu);
+        assert_eq!(
+            pick.kernel_source, "mkl",
+            "selector threads kernel_source into the Judge so siblings rank independently",
+        );
+
+        // Flip the measurements and confirm the OTHER sibling wins.
+        let mut set = AlternativeSet::empty();
+        let mut c_aocl = make_candidate(BackendId::Cpu, 500);
+        c_aocl.kernel_source = "aocl";
+        let mut c_mkl = make_candidate(BackendId::Cpu, 500);
+        c_mkl.kernel_source = "mkl";
+        set.push(c_aocl);
+        set.push(c_mkl);
+
+        let mut judge = HashMapJudge::new();
+        judge.insert(
+            OpKind::MatMul,
+            DType::F32,
+            SizeClass(16),
+            BackendId::Cpu,
+            "aocl",
+            500_000,
+        );
+        judge.insert(
+            OpKind::MatMul,
+            DType::F32,
+            SizeClass(16),
+            BackendId::Cpu,
+            "mkl",
+            5_000_000,
+        );
+        let sel = make_selector(judge);
+        let pick = sel.select(&set).expect("non-empty");
+        assert_eq!(
+            pick.kernel_source, "aocl",
+            "flipped measurements → other sibling wins, proving siblings are not collapsed",
+        );
     }
 }
