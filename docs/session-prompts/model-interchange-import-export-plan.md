@@ -198,15 +198,65 @@ Fuel-IR (~110 prims + 23 fused) ≠ ONNX (~187) ≠ Core ATen (~180) ≠ StableH
 
 ---
 
-## 6. Proposed crate layout
+## 6. Crate layout (FINALIZED — see [architecture §13](../architecture/13-interchange.md) + [§02](../architecture/02-layers.md))
 
-- `fuel-formats` — stays the transport-agnostic **container** parser home (already is). Add ONNX protobuf
-  parse here (pure data → structs), GGUF/safetensors **write** paths.
-- **`fuel-interchange`** (new) — depends on `fuel-graph` + `fuel-formats`. Houses the **graph op-mappers**
-  (ONNX↔IR, later ATen→IR, StableHLO export-FFI) and the native `.fuel` serde. Keeps op-mapping out of the
-  lean `fuel-graph` core.
-- `fuel-transformers` — gains the **arch registry** (F1) + `AutoModel::from_path`.
-- `fuel-tokenizers` (new, thin) — wraps `tokenizers`/`kitoken`; one place for tokenizer ingest.
+Three core+leaf tiers, split on the weight⊥graph axis. Per-format and high-demand-model leaves are
+separate crates (not feature gates); the long model tail stays in an umbrella and is extracted lazily.
+
+**Format tier — IR-free byte parsing** (`fuel-core-types` only):
+- `fuel-formats` — shared substrate (transport traits, dtype map, errors). Already exists.
+- `fuel-format-safetensors`, `-gguf`, `-pickle`, `-onnx`, … — one per format, bytes → format structs.
+  `fuel-format-onnx` is the parse half of the retired `fuel-onnx` placeholder.
+
+**Interchange tier — translate ↔ the base map:**
+- `fuel-interchange-weights` — named tensors + dtype + **quant recipe** → `Storage`. Used by *every*
+  interchange leaf (graph formats load weights too). The quant interpreter lives here, once.
+- `fuel-interchange-graph` — op DAG ↔ base map: op-map helpers, decomposition/fusion-recognition,
+  conformance matrix, and **native-format read/write that reuses [11-persistence](../architecture/11-persistence.md)'s
+  base-map serialization** (no new DAG format).
+- `fuel-format-interchange-{onnx,gguf,safetensors,pickle,…}` — per-format leaves owning the one
+  un-hoistable thing: the **node↔weight binding**. Weight-only leaves depend on the weights core; graph
+  leaves depend on both cores + their `fuel-format-*` peer.
+
+**Model tier:**
+- `fuel-model-core` — `Model` trait, `model_type` → builder **registry** via link-time `inventory`/`linkme`,
+  `AutoModel::from_path`, and the imported-graph→known-arch recognizer.
+- `fuel-model-*` — one architecture per crate; self-registering. **Pre-split now:** llama, qwen, mistral,
+  gemma, phi, mamba, whisper, bert, clip/siglip, stable-diffusion/flux. Generic blocks (RoPE, RMSNorm,
+  GQA, SwiGLU) stay in `fuel-nn`; shared-component crates only on real cross-model duplication.
+- `fuel-transformers` — optional umbrella re-exporting `fuel-model-*` behind features; home for the
+  lazy long tail until each is extracted under real pressure.
+
+**Dev tooling (not runtime):**
+- `fuel-codegen` — CLI scaffolder: source AST (+ optional trace oracle) → draft self-registering
+  `fuel-model-*` crate. Reuses `fuel-interchange-graph`'s op-map (a traced model is ATen). Heavy parse
+  deps stay out of the runtime graph.
+- `fuel-tokenizers` — thin wrapper over the Rust-native `tokenizers` crate (+ `kitoken` for SP/tiktoken).
+
+## 6b. Migration tranches (do in order)
+
+**T0 — Tier seam + registry (prerequisite; justified now).** Establish `fuel-interchange-weights` +
+`fuel-interchange-graph` cores, split `fuel-formats` → `fuel-format-*` for the existing parsers
+(safetensors/gguf/pickle), stand up `fuel-model-core` with `inventory` registration + `AutoModel::from_path`,
+move the existing weight-load logic (`VarBuilder`/`LazyTensor::from_safetensors`) behind
+`fuel-interchange-weights`. Correct callers (bounded — only format/model-loading sites move). Reconcile the
+native format against 11-persistence's base-map serialization. **No new format capability yet — this is the
+homes the new work needs.**
+
+**T1 — Validate the seam with one vertical slice.** Native `.fuel` base-map round-trip *or* the first
+`fuel-format-onnx` import. Proves the op-map/binding seam before committing to breadth.
+
+**T2 — Pre-split high-demand models.** Extract the ten `fuel-model-*` crates above from `fuel-transformers`
+into self-registering crates; umbrella re-exports them behind features. Caller fixes are mechanical.
+
+**T3 — Breadth + scaffolder.** ONNX import/export coverage; `fuel-codegen` (rides T1's op-map); `.pt2`
+Core-ATen import; StableHLO export via FFI. The per-model long-tail explosion happens here, *via* the
+scaffolder and lazy extraction — never as a big-bang.
+
+**Timing note:** T0/T2 are mechanical, high-churn, low-capability moves — schedule them when they won't
+collide head-on with other in-flight branches (storage-unification, etc.). Workspace path-deps + shared
+version keep cross-cutting changes to "edit N files, one `cargo build`"; defer any independent crates.io
+publishing until a model/format crate stabilizes.
 
 ---
 
@@ -237,13 +287,24 @@ TensorRT `.plan` (kernel-baked, non-portable), TF SavedModel full-fidelity (FFI-
 
 ---
 
-## 8. Open decisions for the user
+## 8. Decisions
 
-- **Priority axis:** import (consume the world's models) vs export (emit Fuel models elsewhere)? The plan
-  front-loads import (more immediate value); export rides the same op-mapper a step later.
-- **ONNX dependency stance:** hand-roll the protobuf parse (zero-backend-dep, matches `fuel-formats`
-  philosophy, recommended) vs depend on `candle-onnx`/`tract` for the mapper (faster start, heavier dep).
-- **Coverage bar for v1 ONNX import:** "transformer + CNN inference ops" (~40 ops, fast) vs "broad opset"
-  (long tail of rarely-used ops). Recommend the former, expand on demand (`no_consumer_not_a_reason` cuts
-  both ways — but a 187-op spec has a genuinely cold tail).
+**Resolved (2026-06-08, recorded in [architecture §13](../architecture/13-interchange.md) + decisions-log):**
+
+- **Weight⊥graph separation** — interchange splits into weight + graph; format tier stays IR-free.
+- **Hub** — the base map; no second neutral IR.
+- **Native format** — reuses 11-persistence's base-map serialization; not a new format.
+- **Crate granularity** — per-format + per-model leaves (not feature gates); link-time `inventory`
+  registration; optional `fuel-transformers` umbrella; pre-split high-demand models, lazy long tail.
+- **Sequencing** — tier seam + registry (T0) → validate with one importer (T1) → pre-split models (T2)
+  → breadth + scaffolder (T3). The per-model explosion rides the scaffolder, not a big-bang.
+
+**Still open — defer to when T1/T3 start (recommendations noted):**
+
+- **Priority axis:** import vs export first. *Recommend import-first* (more immediate value); export rides
+  the same op-mapper a step later.
+- **ONNX dependency stance:** hand-roll the protobuf parse (zero-backend-dep, matches the IR-free format
+  tier — *recommended*) vs depend on `candle-onnx`/`tract` for the mapper (faster start, heavier dep).
+- **v1 ONNX import coverage:** "transformer + CNN inference ops" (~40 ops — *recommended*) vs "broad opset"
+  (the genuinely cold ~187-op tail). Expand on demand.
 ```

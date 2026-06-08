@@ -1,6 +1,6 @@
 # Persistence
 
-**Status**: v1.0 (2026-05-09). v1.0 changes: (1) cache files are mmap'd at process startup, not read into memory; the cache format's mmap-friendly layout becomes load-bearing rather than aspirational; (2) cache updates use write-new-file-and-swap, not in-place writable-mmap modification; (3) per-decision-point dependency records support scoped re-optimization (per [06-runtime §Scoped re-optimization](06-runtime.md#scoped-re-optimization)). v0.2 added "Cache generation and distribution" section covering the `fuel cache generate` CLI tool, named target sets, sibling-file convention with HF Hub / GitHub auto-discovery, multi-version DAG-format support, opportunistic migration during background re-optimization, community-aggregated empirical data refining static annotations, and auto-populated named target sets from opt-in telemetry.
+**Status**: v1.1 (2026-06-08). v1.1 adds the optional **runtime snapshot** (L3) artifact — designated durable runtime state (KV-caches, optimizer state) for resuming a live computation — plus the three-layer *model / +plan / +snapshot* save framing, and records the decision against saving all activations (bandwidth-bound reload loses to on-device recompute). v1.0 (2026-05-09) changes: (1) cache files are mmap'd at process startup, not read into memory; the cache format's mmap-friendly layout becomes load-bearing rather than aspirational; (2) cache updates use write-new-file-and-swap, not in-place writable-mmap modification; (3) per-decision-point dependency records support scoped re-optimization (per [06-runtime §Scoped re-optimization](06-runtime.md#scoped-re-optimization)). v0.2 added "Cache generation and distribution" section covering the `fuel cache generate` CLI tool, named target sets, sibling-file convention with HF Hub / GitHub auto-discovery, multi-version DAG-format support, opportunistic migration during background re-optimization, community-aggregated empirical data refining static annotations, and auto-populated named target sets from opt-in telemetry.
 
 How fuel persists computed artifacts across process restarts: the optimization cache (which lets reload skip optimization), the tolerance recipe (which captures discovered per-op tolerance budgets), and the architectural commitments around format, invalidation, distribution, and offline pre-optimization.
 
@@ -16,6 +16,8 @@ Fuel produces two persistable artifacts that live alongside the model file:
 - **Tolerance recipe** (`model.fuel-tolerance` or similar): per-op tolerance budgets discovered by calibration. Lets a process load discovered tolerances without re-running calibration. **Hardware-independent.**
 
 The two artifacts have different invalidation criteria — distinct lifecycles — so they're separate files, not one merged blob.
+
+A third, **optional** artifact — the **runtime snapshot** — captures designated durable runtime state (KV-caches, optimizer state) for *resuming* a live computation rather than restarting it. It has the most ephemeral lifecycle of the three. See [Runtime snapshots](#runtime-snapshots-resuming-designated-durable-state-l3) for the full three-layer save model (model / +plan / +snapshot) and why it is not a blind activation dump.
 
 ## What gets cached: the optimization artifact
 
@@ -227,6 +229,46 @@ The two are complementary:
 - **First realize, no cache**: concurrent execute starts dispatch as soon as the optimization frontier crosses the first nodes.
 - **Subsequent realize, cache hit**: cache load skips optimization; runtime dispatches from the precomputed plan directly.
 - **Cache hit but graph extended (autoregressive decoding)**: load the cache for the original graph; concurrent-optimize the appended portion as decoding proceeds.
+
+## Runtime snapshots: resuming designated durable state (L3)
+
+The optimization cache lets a process skip *optimization* on reload; it does not capture *runtime state* — the tensors a live computation has accumulated. A third, optional artifact, the **runtime snapshot**, captures designated durable state so a process can *resume* a paused computation instead of restarting it. This completes a three-layer save model:
+
+- **L1 — model** (base map + weights): portable, hardware-independent. The native `.fuel` artifact ([13-interchange](13-interchange.md)).
+- **L2 — + plan** (the optimization cache above): hardware-dependent; hot-loads by skipping optimization.
+- **L3 — + snapshot** (designated durable state): process/run-dependent; resumes live state.
+
+"Save with vs without the plan / runtime state" is **not a flag inside one file** — it is *which sibling artifacts a caller writes*. L1 alone is a cold-loadable model; L1+L2 hot-loads on matching hardware; L1+L2+L3 resumes a session. Keeping them as separate siblings is the same lifecycle argument as the cache vs recipe split: the model is valid everywhere, the plan is valid per-fingerprint, the snapshot is valid for one run.
+
+### What a snapshot contains: designated durable state, not all activations
+
+A snapshot persists state that is **durable and expensive to recompute**, explicitly enumerated by the producer — never a blind dump of the executor's realized-node cache:
+
+- **KV-caches** — a serving session's accumulated attention state (backed by `Op::WriteSlice` / `Op::WriteSliceRotating`). Persisting these checkpoints a conversation.
+- **Optimizer state** — training moments / momentum / step counters.
+- **Producer-designated long-lived intermediates** — a costly partial result a producer explicitly marks resumable.
+
+### Why not save every activation
+
+Persisting the full set of realized activations to make a hot load "come up running" does **not** speed launch, and usually slows it:
+
+- **Input-dependent activations are invalid across launches.** A forward pass's intermediates are a function of *that* input; a fresh launch with any other input cannot reuse them. (If the input is identical, the *output* is the thing to cache, not the intermediates.)
+- **Reload is bandwidth-bound; recompute stays on-device.** Activations are large — often larger than the weights. Loading them disk → host → device is bandwidth-bound at every hop, while recompute keeps the work on-device where compute is cheap relative to transfer. This is the same trade that makes **gradient checkpointing** recompute activations rather than store them: when bandwidth is the constraint, recompute wins, and disk is a slower tier than the device memory those schemes already avoid.
+- **The real launch-speed levers are already in L1+L2.** mmap'd weights (near-instant load) + the plan cache (skip optimization) + lazy `KernelRef` resolution. The first forward pass's compute is input-dependent and unavoidable; saved activations don't shorten it.
+
+So the architecture commits to **designated durable state**, not all-activations.
+
+### Optional: materialized derived constants
+
+The one place the "precompute and save" intuition pays off is **input-independent** derived values not already constant-folded into L1/L2 — e.g. a quantized model dequantized to a wider dtype at first use, or precompute tables the optimizer didn't fold. These can be persisted as an optional **derived-weights** variant of the model artifact, trading disk for skipped one-time preprocessing. This is a *weight* artifact (input-independent, reusable across runs), not an activation snapshot, and it is opt-in.
+
+### Snapshot invalidation
+
+The snapshot has the **most ephemeral** lifecycle of the three artifacts, so it is the most strongly separated:
+
+- **Model hash** + **base-map / graph identity** must match — a snapshot is meaningless against a different graph.
+- **Hardware fingerprint** matches when the snapshot holds device-resident tensors (it usually does).
+- Written on **explicit checkpoint** only — never write-through per step (the same no-write-amplification rule the cache follows).
 
 ## Concerns to honor
 
