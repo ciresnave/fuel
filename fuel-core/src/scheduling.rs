@@ -565,7 +565,7 @@ pub fn dp_plan(
     placement
         .into_iter()
         .map(|(id, b)| {
-            let pick = crate::judge::Pick { backend: b, device_index: 0 };
+            let pick = crate::judge::Pick { backend: b, device_index: 0, kernel_source: "" };
             (id, pick_to_location(pick).unwrap_or(fallback_device))
         })
         .collect()
@@ -793,6 +793,7 @@ mod tests {
             latency_ns: latency,
             iterations: 1,
             max_rel_error: 0.0,
+            kernel_source: String::new(),
         };
         let report = ProfileReport {
             version: PROFILE_REPORT_VERSION,
@@ -859,9 +860,9 @@ mod tests {
     fn apply_placement_plan_skips_pre_set_hints() {
         let entries = vec![
             ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0 },
+                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
             ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0 },
+                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
         ];
         let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
         let table = DispatchTable::build(&report);
@@ -958,9 +959,9 @@ mod tests {
         // on CPU is cheaper.
         let entries = vec![
             ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
-                backend: BackendId::Cpu,  device_index: 0, latency_ns:    10_000, iterations: 1, max_rel_error: 0.0 },
+                backend: BackendId::Cpu,  device_index: 0, latency_ns:    10_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
             ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
-                backend: BackendId::Cuda, device_index: 0, latency_ns:     5_000, iterations: 1, max_rel_error: 0.0 },
+                backend: BackendId::Cuda, device_index: 0, latency_ns:     5_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
         ];
         let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
         let table = DispatchTable::build(&report);
@@ -1010,9 +1011,9 @@ mod tests {
         use crate::transfer_cost::{BandwidthMatrix, TransferCost, BANDWIDTH_REPORT_VERSION};
         let entries = vec![
             ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0 },
+                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
             ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0 },
+                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
         ];
         let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
         let table = DispatchTable::build(&report);
@@ -1054,13 +1055,13 @@ mod tests {
     fn auto_place_and_route_inserts_copies_for_split_graph() {
         let entries = vec![
             ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
-                backend: BackendId::Cpu,  device_index: 0, latency_ns:    10_000, iterations: 1, max_rel_error: 0.0 },
+                backend: BackendId::Cpu,  device_index: 0, latency_ns:    10_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
             ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
-                backend: BackendId::Cuda, device_index: 0, latency_ns: 2_000_000, iterations: 1, max_rel_error: 0.0 },
+                backend: BackendId::Cuda, device_index: 0, latency_ns: 2_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
             ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0 },
+                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
             ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0 },
+                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
         ];
         let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
         let table = DispatchTable::build(&report);
@@ -1118,13 +1119,13 @@ mod tests {
         // Hand-craft a dispatch table: size 12 → CPU, size 20 → CUDA.
         let entries = vec![
             ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
-                backend: BackendId::Cpu,  device_index: 0, latency_ns:    10_000, iterations: 1, max_rel_error: 0.0 },
+                backend: BackendId::Cpu,  device_index: 0, latency_ns:    10_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
             ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
-                backend: BackendId::Cuda, device_index: 0, latency_ns: 2_000_000, iterations: 1, max_rel_error: 0.0 },
+                backend: BackendId::Cuda, device_index: 0, latency_ns: 2_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
             ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0 },
+                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
             ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0 },
+                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
         ];
         let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
         let table = DispatchTable::build(&report);

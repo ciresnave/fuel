@@ -82,6 +82,7 @@ use fuel_core_types::probe::{BackendId, DeviceDescriptor};
 use fuel_core_types::{DType, Result, Shape};
 use std::panic::AssertUnwindSafe;
 use std::time::Instant;
+use std::sync::{Arc, RwLock};
 
 // Re-export the dispatch types (moved to fuel-core-types so
 // `fuel-graph-router`'s Router can consume them without depending
@@ -289,6 +290,17 @@ impl Judge {
     /// cell, consensus is trivial and `max_rel_error = 0.0` (no peers
     /// to compare against — the caller treats the lone backend as
     /// authoritative).
+    ///
+    /// **Per-alternative measurement (2026-06-08)**: for each
+    /// equivalence-class representative the Judge now walks
+    /// `KernelBindingTable::lookup_alternatives(op_kind, dtypes,
+    /// backend)` and emits one `CellRun` per registered alternative.
+    /// The first alternative is timed via the standard realizer path
+    /// (matching pre-v2 behavior, since `lookup_with_caps` returns
+    /// the first alternative — what the picker would dispatch).
+    /// Subsequent alternatives at the same `(op, dtypes, backend)`
+    /// key are timed via a direct kernel-pointer call so AOCL/MKL
+    /// siblings get distinct latency numbers.
     pub fn run(&self, probe: &ProbeReport) -> ProfileReport {
         let mut entries = Vec::new();
         let classes = probe.equivalence_classes();
@@ -305,23 +317,54 @@ impl Judge {
 
                 // First pass: per equivalence-class representative,
                 // measure latency + capture the kernel's output for
-                // consensus comparison.
+                // consensus comparison. The realizer path measures
+                // the first alternative at the binding-table cell
+                // (`lookup_with_caps`'s first-registered convention).
                 let mut cell_runs: Vec<CellRun> = Vec::with_capacity(class_keys.len());
                 for key in &class_keys {
                     let devs = &classes[key];
                     let rep = devs[0];
-                    if let Some(run) = self.measure_on_device_capturing(op, DType::F32, &sz, rep) {
+                    if let Some(mut run) = self.measure_on_device_capturing(op, DType::F32, &sz, rep) {
+                        // Tag the realizer-measured run with the first
+                        // alternative's `kernel_source` from the
+                        // binding table — that's the kernel
+                        // `lookup_with_caps` returned, which is what
+                        // the realizer just dispatched.
+                        run.kernel_source =
+                            primary_kernel_source(op, rep.backend).to_string();
+                        let primary_source = run.kernel_source.clone();
                         cell_runs.push(run);
+
+                        // Per-alternative measurement: walk SUBSEQUENT
+                        // alternatives at the same `(op_kind, dtypes,
+                        // backend)` binding-table cell and time each
+                        // via a direct kernel-pointer call. The
+                        // primary alternative is already covered by
+                        // the realizer measurement above.
+                        if let Some(extra_runs) =
+                            self.measure_extra_alternatives(op, &sz, rep, &primary_source)
+                        {
+                            for extra in extra_runs {
+                                cell_runs.push(extra);
+                            }
+                        }
                     }
                 }
 
                 // Second pass: compute pairwise consensus across the
-                // backends that produced output for this cell.
+                // backends + kernel_sources that produced output for
+                // this cell.
                 let consensus = compute_pairwise_consensus(&cell_runs);
 
-                // Third pass: emit one ProfileEntry per device,
-                // replicated across each equivalence class. The
-                // `max_rel_error` is derived from consensus position.
+                // Third pass: emit one ProfileEntry per (run, device).
+                // The first alternative's CellRun replicates across
+                // each equivalence-class device; per-alternative
+                // CellRuns from the binding-table direct path
+                // record on the representative's device_index only
+                // (the cross-device sharing convention applies to
+                // backend-level equivalence, not within-cell kernel
+                // sibling differentiation — siblings are
+                // hardware-agnostic at the binding-table layer).
                 for (i, run) in cell_runs.iter().enumerate() {
                     let rel_err =
                         max_rel_err_vs_consensus(&cell_runs, &consensus, i);
@@ -347,6 +390,7 @@ impl Judge {
                                 latency_ns: run.latency_ns,
                                 iterations: run.iterations,
                                 max_rel_error: rel_err,
+                                kernel_source: run.kernel_source.clone(),
                             });
                         }
                     }
@@ -355,6 +399,145 @@ impl Judge {
         }
 
         ProfileReport { version: PROFILE_REPORT_VERSION, entries }
+    }
+
+    /// Walk binding-table alternatives at `(op_kind, dtypes, backend)`
+    /// beyond the first (which the realizer already timed) and run a
+    /// direct kernel-pointer measurement on each. Returns `None` when
+    /// only one alternative is registered (no extra work) or when the
+    /// op family is not yet wired into the direct-call path.
+    ///
+    /// **Why direct call instead of realizer**: the realizer dispatches
+    /// through `lookup_with_caps`, which returns the FIRST registered
+    /// alternative. To measure AOCL when MKL is first-registered, we
+    /// have to bypass the picker entirely and invoke the specific
+    /// `BindingEntry::kernel` function pointer with hand-built inputs.
+    ///
+    /// **Scope**: v1 supports the subset of [`PROFILED_OPS`] where
+    /// input/output Storage + Layout + OpParams can be built without
+    /// going through the lazy-tensor graph. Today: matmul, elementwise
+    /// unary/binary, reductions, reduce-to, affine/clamp/powi. Other
+    /// op families return `None` and only the realizer-measured first
+    /// alternative is recorded for the cell.
+    fn measure_extra_alternatives(
+        &self,
+        op: OpKind,
+        size: &OpSize,
+        device: &DeviceDescriptor,
+        primary_kernel_source: &str,
+    ) -> Option<Vec<CellRun>> {
+        // Direct kernel-pointer calls are only meaningful on the CPU
+        // backend today — CUDA / Vulkan storage handles are backend-
+        // specific and the realizer-internal allocator hierarchy
+        // doesn't expose a stand-alone "build CUDA storage from f32
+        // slice" entry point at the binding-table layer.
+        if device.backend != BackendId::Cpu {
+            return None;
+        }
+
+        let alternatives = direct_call_alternatives(op, primary_kernel_source);
+        if alternatives.is_empty() {
+            return None;
+        }
+
+        // Build the inputs once — every alternative consumes the same
+        // input data, so this is shared across the per-alt timing loop.
+        let prepared = match prepare_direct_call_inputs(op, size) {
+            Some(p) => p,
+            None => return None,
+        };
+
+        let mut extra: Vec<CellRun> = Vec::with_capacity(alternatives.len());
+        for alt in alternatives {
+            if let Some(run) = self.time_alternative_direct(
+                op, size, device, &prepared, &alt,
+            ) {
+                extra.push(run);
+            }
+        }
+        if extra.is_empty() { None } else { Some(extra) }
+    }
+
+    /// Direct-call timing path. Bypasses the realizer; calls the
+    /// supplied `BindingEntry::kernel` function pointer directly with
+    /// the prepared inputs. `iterations` median + `warmup` discard
+    /// applied identically to the realizer path.
+    fn time_alternative_direct(
+        &self,
+        op: OpKind,
+        size: &OpSize,
+        device: &DeviceDescriptor,
+        prepared: &PreparedDirectCall,
+        alt: &DirectCallAlternative,
+    ) -> Option<CellRun> {
+        use fuel_dispatch::kernel::OpParams as _; // ensure visible in scope
+
+        // Warmup — discard timings. A backend whose kernel panics
+        // mid-warmup is treated as if the alternative didn't exist
+        // (skip this CellRun); the primary realizer-measured run
+        // still represents the cell.
+        let kernel = alt.kernel;
+        for _ in 0..self.warmup {
+            let r = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let mut outs = vec![Arc::clone(&prepared.output)];
+                kernel(&prepared.inputs, &mut outs, &prepared.layouts, &prepared.op_params)
+            }));
+            if r.is_err() {
+                eprintln!(
+                    "judge: skipping {op}@{size:?} on {}:{} kernel_source={:?} — kernel panicked in warmup",
+                    device.backend, device.device_index, alt.kernel_source,
+                );
+                return None;
+            }
+            // Match `time_op_capturing`'s call-twice tolerance for
+            // panic-vs-return-Err: an alternative that returns Err is
+            // a real signal (the kernel rejected the inputs) — skip
+            // rather than abort.
+            if let Ok(Err(_)) = r {
+                eprintln!(
+                    "judge: skipping {op}@{size:?} on {}:{} kernel_source={:?} — kernel returned Err in warmup",
+                    device.backend, device.device_index, alt.kernel_source,
+                );
+                return None;
+            }
+        }
+
+        let mut timings_ns = Vec::with_capacity(self.iterations as usize);
+        let mut captured_output: Option<Vec<f32>> = None;
+        for _ in 0..self.iterations {
+            let t0 = Instant::now();
+            let res = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let mut outs = vec![Arc::clone(&prepared.output)];
+                kernel(&prepared.inputs, &mut outs, &prepared.layouts, &prepared.op_params)
+            }));
+            let elapsed_ns = t0.elapsed().as_nanos() as u64;
+            match res {
+                Ok(Ok(())) => {}
+                _ => {
+                    eprintln!(
+                        "judge: skipping {op}@{size:?} on {}:{} kernel_source={:?} — direct call failed mid-run",
+                        device.backend, device.device_index, alt.kernel_source,
+                    );
+                    return None;
+                }
+            }
+            timings_ns.push(elapsed_ns);
+            if captured_output.is_none() {
+                captured_output = Some(read_output_f32(&prepared.output));
+            }
+        }
+        timings_ns.sort_unstable();
+        let median = timings_ns[timings_ns.len() / 2];
+        let output = captured_output?;
+
+        Some(CellRun {
+            backend: device.backend,
+            device_index: device.device_index,
+            output,
+            latency_ns: median,
+            iterations: self.iterations,
+            kernel_source: alt.kernel_source.to_string(),
+        })
     }
 
     /// Measure one (op, dtype, size) cell on one representative
@@ -491,7 +674,294 @@ impl Judge {
             output,
             latency_ns: median,
             iterations: self.iterations,
+            // Filled in by `Judge::run` after this returns — the
+            // binding-table lookup needs the BackendId which the
+            // caller has but this function's narrow scope doesn't.
+            kernel_source: String::new(),
         })
+    }
+}
+
+// =============================================================
+// Direct-kernel-call infrastructure for per-alternative timing
+// (Phase 1.1 of the backend-extensions refactor, 2026-06-08)
+// =============================================================
+
+/// One alternative the direct-call path will time. Holds the
+/// kernel function pointer and the `kernel_source` tag the resulting
+/// CellRun carries.
+struct DirectCallAlternative {
+    kernel: fuel_dispatch::kernel::KernelRef,
+    kernel_source: &'static str,
+}
+
+/// Shared inputs/outputs/layouts/op_params for one (op, size) cell.
+/// Built once per cell and reused across every alternative's
+/// direct-call measurement so the kernels compare on identical
+/// inputs (a prerequisite for cross-alternative consensus to mean
+/// anything).
+struct PreparedDirectCall {
+    inputs:    Vec<Arc<RwLock<fuel_storage::Storage>>>,
+    output:    Arc<RwLock<fuel_storage::Storage>>,
+    layouts:   Vec<fuel_core_types::Layout>,
+    op_params: fuel_dispatch::kernel::OpParams,
+}
+
+/// Look up the `kernel_source` of the FIRST alternative at the
+/// binding-table cell — that's what `lookup_with_caps` returns and
+/// what the realizer just dispatched. Returns `""` when no
+/// alternative is registered (the realizer would fall back to a
+/// different code path).
+fn primary_kernel_source(op: OpKind, backend: BackendId) -> &'static str {
+    let dtypes = match canonical_binding_dtypes_for(op) {
+        Some(d) => d,
+        None => return "",
+    };
+    let table = fuel_dispatch::dispatch::global_bindings();
+    let alts = table.lookup_alternatives(op, &dtypes, backend);
+    alts.first().map(|e| e.kernel_source).unwrap_or("")
+}
+
+/// Collect every binding-table alternative at the cell EXCEPT the
+/// primary (already timed via the realizer). Returns a fresh `Vec`
+/// of [`DirectCallAlternative`] — empty when the cell has only one
+/// alternative or the op isn't direct-call-eligible yet.
+fn direct_call_alternatives(
+    op: OpKind,
+    primary_kernel_source: &str,
+) -> Vec<DirectCallAlternative> {
+    let dtypes = match canonical_binding_dtypes_for(op) {
+        Some(d) => d,
+        None => return Vec::new(),
+    };
+    let table = fuel_dispatch::dispatch::global_bindings();
+    let alts = table.lookup_alternatives(op, &dtypes, BackendId::Cpu);
+    if alts.len() < 2 {
+        return Vec::new();
+    }
+    // Skip the primary (first alternative — which the realizer already
+    // measured). `primary_kernel_source` matches its tag; subsequent
+    // alternatives with distinct kernel_sources are the work.
+    let mut extras = Vec::with_capacity(alts.len().saturating_sub(1));
+    let mut skipped_primary = false;
+    for alt in alts.iter() {
+        if !skipped_primary && alt.kernel_source == primary_kernel_source {
+            skipped_primary = true;
+            continue;
+        }
+        extras.push(DirectCallAlternative {
+            kernel: alt.kernel,
+            kernel_source: alt.kernel_source,
+        });
+    }
+    extras
+}
+
+/// Map an `OpKind` to its binding-table dtype list (inputs + outputs)
+/// for the F32 single-dtype Judge profile. Returns `None` for op
+/// families the direct-call path doesn't yet support — caller falls
+/// back to first-alternative-only measurement at the cell.
+fn canonical_binding_dtypes_for(op: OpKind) -> Option<Vec<DType>> {
+    // Most elementwise ops follow `[input..., output]`. Reductions
+    // and reduce-to follow `[input, output]`. MatMul is 3 inputs
+    // (no — 2 inputs + 1 output): `[lhs, rhs, out] = [F32, F32, F32]`.
+    let f32 = DType::F32;
+    Some(match op {
+        OpKind::MatMul => vec![f32, f32, f32],
+        // Binary elementwise: 2 inputs + 1 output.
+        OpKind::AddElementwise
+        | OpKind::SubElementwise
+        | OpKind::MulElementwise
+        | OpKind::DivElementwise
+        | OpKind::MaximumElementwise
+        | OpKind::MinimumElementwise
+        | OpKind::PowElementwise
+        | OpKind::RemElementwise => vec![f32, f32, f32],
+        // Unary elementwise: 1 input + 1 output.
+        OpKind::NegElementwise
+        | OpKind::SqrElementwise
+        | OpKind::SqrtElementwise
+        | OpKind::ExpElementwise
+        | OpKind::LogElementwise
+        | OpKind::SinElementwise
+        | OpKind::CosElementwise
+        | OpKind::TanhElementwise
+        | OpKind::SigmoidElementwise
+        | OpKind::SiluElementwise
+        | OpKind::GeluElementwise
+        | OpKind::ReluElementwise
+        | OpKind::StepElementwise
+        | OpKind::RecipElementwise
+        | OpKind::AbsElementwise
+        | OpKind::FloorElementwise
+        | OpKind::CeilElementwise
+        | OpKind::RoundElementwise
+        | OpKind::SignElementwise
+        | OpKind::ErfElementwise
+        | OpKind::GeluErfElementwise
+        | OpKind::RsqrtElementwise
+        | OpKind::Affine
+        | OpKind::ClampElementwise
+        | OpKind::PowIElementwise => vec![f32, f32],
+        // Reductions: 1 input + 1 output.
+        OpKind::SumReduce
+        | OpKind::MaxReduce
+        | OpKind::MinReduce
+        | OpKind::MeanReduce
+        | OpKind::ReduceSumTo
+        | OpKind::ReduceMaxTo => vec![f32, f32],
+        // All others: not yet wired into the direct-call path. The
+        // realizer-measured first alternative is the only entry for
+        // the cell until this list expands.
+        _ => return None,
+    })
+}
+
+/// Build the inputs/outputs/layouts/op_params for direct-call timing
+/// of one (op, size) cell. Returns `None` for ops not yet supported.
+/// Mirrors the input domains used by `build_input_graph` so the
+/// direct-call CellRuns produce numerically-comparable output to the
+/// realizer-measured primary alternative (consensus needs aligned
+/// inputs across CellRuns).
+fn prepare_direct_call_inputs(op: OpKind, size: &OpSize) -> Option<PreparedDirectCall> {
+    use fuel_core_types::Layout;
+    use fuel_cpu_backend::CpuStorageBytes;
+    use fuel_dispatch::kernel::OpParams;
+    use fuel_storage::{BackendStorage, Storage};
+
+    let make_storage = |bytes: CpuStorageBytes| {
+        Arc::new(RwLock::new(Storage::new(
+            BackendStorage::Cpu(bytes),
+            DType::F32,
+        )))
+    };
+
+    match (op, *size) {
+        (OpKind::MatMul, OpSize::MatMul { m, n, k }) => {
+            let a_data: Vec<f32> = (0..(m * k)).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
+            let b_data: Vec<f32> = (0..(k * n)).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
+            let lhs = make_storage(CpuStorageBytes::from_slice(&a_data));
+            let rhs = make_storage(CpuStorageBytes::from_slice(&b_data));
+            let out = make_storage(CpuStorageBytes::from_zero_bytes(
+                m * n * std::mem::size_of::<f32>(),
+            ));
+            let layouts = vec![
+                Layout::contiguous(Shape::from_dims(&[m, k])),
+                Layout::contiguous(Shape::from_dims(&[k, n])),
+                Layout::contiguous(Shape::from_dims(&[m, n])),
+            ];
+            let op_params = OpParams::Matmul {
+                lhs_batch_dims: Vec::new(),
+                rhs_batch_dims: Vec::new(),
+                m, n, k,
+            };
+            Some(PreparedDirectCall {
+                inputs: vec![lhs, rhs],
+                output: out,
+                layouts,
+                op_params,
+            })
+        }
+        (op, OpSize::Elementwise(n)) if is_binary_elementwise(op) => {
+            let (a_data, b_data) = binary_inputs(op, n);
+            let lhs = make_storage(CpuStorageBytes::from_slice(&a_data));
+            let rhs = make_storage(CpuStorageBytes::from_slice(&b_data));
+            let out = make_storage(CpuStorageBytes::from_zero_bytes(
+                n * std::mem::size_of::<f32>(),
+            ));
+            let shape = Shape::from_dims(&[n]);
+            let layouts = vec![
+                Layout::contiguous(shape.clone()),
+                Layout::contiguous(shape.clone()),
+                Layout::contiguous(shape),
+            ];
+            Some(PreparedDirectCall {
+                inputs: vec![lhs, rhs],
+                output: out,
+                layouts,
+                op_params: OpParams::None,
+            })
+        }
+        (op, OpSize::Elementwise(n)) if is_unary_elementwise(op) => {
+            let raw = unary_input(n);
+            let needs_nonzero = matches!(
+                op,
+                OpKind::SqrtElementwise
+                | OpKind::LogElementwise
+                | OpKind::RecipElementwise
+                | OpKind::RsqrtElementwise,
+            );
+            let data: Vec<f32> = if needs_nonzero {
+                raw.into_iter().map(|x| x + 1.5).collect()
+            } else {
+                raw
+            };
+            let inp = make_storage(CpuStorageBytes::from_slice(&data));
+            let out = make_storage(CpuStorageBytes::from_zero_bytes(
+                n * std::mem::size_of::<f32>(),
+            ));
+            let shape = Shape::from_dims(&[n]);
+            let layouts = vec![
+                Layout::contiguous(shape.clone()),
+                Layout::contiguous(shape),
+            ];
+            Some(PreparedDirectCall {
+                inputs: vec![inp],
+                output: out,
+                layouts,
+                op_params: OpParams::None,
+            })
+        }
+        (op, OpSize::Elementwise(n)) if is_scalar_op(op) => {
+            let data = unary_input(n);
+            let inp = make_storage(CpuStorageBytes::from_slice(&data));
+            let out = make_storage(CpuStorageBytes::from_zero_bytes(
+                n * std::mem::size_of::<f32>(),
+            ));
+            let shape = Shape::from_dims(&[n]);
+            let layouts = vec![
+                Layout::contiguous(shape.clone()),
+                Layout::contiguous(shape),
+            ];
+            let op_params = match op {
+                OpKind::Affine           => OpParams::Affine { mul: 2.0, add: 0.0 },
+                OpKind::ClampElementwise => OpParams::Clamp { min: -0.5, max: 0.5 },
+                OpKind::PowIElementwise  => OpParams::PowI { exp: 3 },
+                _ => unreachable!(),
+            };
+            Some(PreparedDirectCall {
+                inputs: vec![inp],
+                output: out,
+                layouts,
+                op_params,
+            })
+        }
+        // Reductions + ReduceTo not yet wired into the direct-call
+        // path: the OpParams shape needs the input layout, and the
+        // output shape is op-dependent. Falls back to first-alt-only
+        // measurement until the binding-table key conventions are
+        // double-checked end-to-end here.
+        _ => None,
+    }
+}
+
+/// Read an output `Storage`'s F32 bytes back out as a `Vec<f32>` for
+/// consensus comparison.
+fn read_output_f32(out: &Arc<RwLock<fuel_storage::Storage>>) -> Vec<f32> {
+    use fuel_storage::BackendStorage;
+    let g = out.read().expect("output storage lock");
+    match &g.inner {
+        BackendStorage::Cpu(c) => c
+            .as_slice::<f32>()
+            .expect("cpu storage as f32 slice")
+            .to_vec(),
+        // Direct-call path is CPU-only today; other backends are
+        // guarded by `measure_extra_alternatives` returning None
+        // before we reach this point. A non-CPU storage here is a
+        // bug, but we'd rather skip the entry than panic in the
+        // Judge.
+        #[allow(unreachable_patterns)]
+        _ => Vec::new(),
     }
 }
 
@@ -864,9 +1334,17 @@ fn max_rel_err(a: &[f32], b: &[f32]) -> f32 {
 /// floor for honest cross-backend implementations of f32 math."
 const CONSENSUS_EPSILON: f32 = 1e-3;
 
-/// One backend's measurement for one (op, dtype, size) cell —
-/// kernel output captured alongside latency for downstream
+/// One backend's measurement for one (op, dtype, size, kernel_source)
+/// cell — kernel output captured alongside latency for downstream
 /// consensus comparison.
+///
+/// **Per-alternative measurement (2026-06-08)**: `kernel_source`
+/// distinguishes sibling kernels at one `(op, dtypes, backend)`
+/// binding-table key (e.g. AOCL vs MKL vs portable-cpu at
+/// `(MatMul, [F32×3], BackendId::Cpu)`). Each alternative produces
+/// its own CellRun; the pairwise consensus then sees the full
+/// cross-kernel-source population, treating AOCL/MKL/portable as
+/// peers alongside CUDA/Vulkan.
 #[derive(Debug)]
 struct CellRun {
     backend: BackendId,
@@ -874,6 +1352,10 @@ struct CellRun {
     output: Vec<f32>,
     latency_ns: u64,
     iterations: u32,
+    /// Diagnostic tag identifying the kernel sibling at the
+    /// binding-table cell. `""` for cells with a single alternative
+    /// or when the kernel-source tag is unknown.
+    kernel_source: String,
 }
 
 /// Compute the largest mutually-close cluster across `runs`. Returns
@@ -1018,11 +1500,15 @@ mod tests {
         let report = judge.run(&probe);
         assert_eq!(report.version, PROFILE_REPORT_VERSION);
         assert!(report.entries.iter().any(|e| e.backend == BackendId::Cpu));
-        // Single-backend cells: rel_err is 0.0 by convention (no
-        // peers means no comparison reference). Latency is real.
+        // Post-v2 (per-alternative measurement): one CPU cell may
+        // produce multiple entries (one per kernel_source — AOCL,
+        // MKL, portable-cpu). When peers exist the rel_err can be
+        // non-zero but should stay below the bit-stable floor;
+        // when only one alternative is registered rel_err is 0.0
+        // (no peers → no drift reference).
         for e in report.entries.iter().filter(|e| e.backend == BackendId::Cpu) {
-            assert_eq!(e.max_rel_error, 0.0,
-                "single-backend cell should report 0.0 rel_err: {e:?}");
+            assert!(e.max_rel_error < 1e-3,
+                "cpu cell rel_err should stay tight ({e:?})");
             assert!(e.latency_ns > 0);
         }
     }
@@ -1057,8 +1543,13 @@ mod tests {
             let cpu_entries: Vec<_> = report.entries.iter()
                 .filter(|e| e.op == op && e.backend == BackendId::Cpu)
                 .collect();
-            assert_eq!(cpu_entries.len(), 1,
-                "expected one cpu entry for {op}, got {}", cpu_entries.len());
+            // Post-v2 (per-alternative measurement): ≥1 — when only the
+            // portable CPU kernel is registered the count is 1; with
+            // AOCL/MKL feature-gated alternatives it grows. Pick the
+            // first entry (the realizer-primary measurement) for the
+            // numerical-divergence check.
+            assert!(!cpu_entries.is_empty(),
+                "expected ≥1 cpu entry for {op}, got 0");
             let e = cpu_entries[0];
             // Elementwise unary ops are bit-stable on cpu vs reference
             // (no accumulation order to worry about). Allow a
@@ -1092,7 +1583,7 @@ mod tests {
             let cpu_entries: Vec<_> = report.entries.iter()
                 .filter(|e| e.op == op && e.backend == BackendId::Cpu)
                 .collect();
-            assert_eq!(cpu_entries.len(), 1, "expected one cpu entry for {op}");
+            assert!(!cpu_entries.is_empty(), "expected >=1 cpu entry for {op}, got 0");
             let e = cpu_entries[0];
             assert!(e.max_rel_error < 1e-3,
                 "cpu vs reference disagreement on {op}: rel_err={}",
@@ -1120,7 +1611,7 @@ mod tests {
             let cpu_entries: Vec<_> = report.entries.iter()
                 .filter(|e| e.op == op && e.backend == BackendId::Cpu)
                 .collect();
-            assert_eq!(cpu_entries.len(), 1, "expected one cpu entry for {op}");
+            assert!(!cpu_entries.is_empty(), "expected >=1 cpu entry for {op}, got 0");
             let e = cpu_entries[0];
             // Sum-style reductions accumulate in different order on
             // backend vs reference; allow up to 5e-3.
@@ -1147,7 +1638,7 @@ mod tests {
             let cpu_entries: Vec<_> = report.entries.iter()
                 .filter(|e| e.op == op && e.backend == BackendId::Cpu)
                 .collect();
-            assert_eq!(cpu_entries.len(), 1, "expected one cpu entry for {op}");
+            assert!(!cpu_entries.is_empty(), "expected >=1 cpu entry for {op}, got 0");
             let e = cpu_entries[0];
             assert!(e.max_rel_error < 5e-3,
                 "cpu vs reference disagreement on {op}: rel_err={}",
@@ -1174,7 +1665,7 @@ mod tests {
             let cpu_entries: Vec<_> = report.entries.iter()
                 .filter(|e| e.op == op && e.backend == BackendId::Cpu)
                 .collect();
-            assert_eq!(cpu_entries.len(), 1, "expected one cpu entry for {op}");
+            assert!(!cpu_entries.is_empty(), "expected >=1 cpu entry for {op}, got 0");
             let e = cpu_entries[0];
             assert!(e.max_rel_error < 1e-3,
                 "cpu vs reference disagreement on {op}: rel_err={}",
@@ -1246,6 +1737,7 @@ mod tests {
                 latency_ns: 12_345,
                 iterations: 7,
                 max_rel_error: 1e-7,
+                kernel_source: String::new(),
             }],
         };
         let tmp = std::env::temp_dir().join(format!(

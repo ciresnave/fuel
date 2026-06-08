@@ -22,7 +22,14 @@ use serde::{Deserialize, Serialize};
 /// Schema version for persisted profile reports. Bump when the
 /// entry layout changes in a way that can't be covered by
 /// `#[serde(default)]`.
-pub const PROFILE_REPORT_VERSION: u32 = 1;
+///
+/// **v2 (2026-06-08)**: per-alternative measurement landed —
+/// [`ProfileEntry`] gains `kernel_source` so the AOCL/MKL/portable-cpu
+/// kernel siblings at one `(op, dtype, size_class, BackendId::Cpu)`
+/// cell each get their own measured entry. v1 reports lacked the
+/// field and were ambiguous about which CPU-substrate kernel they
+/// timed; old reports load as `Ok(None)` (cache miss → re-Judge).
+pub const PROFILE_REPORT_VERSION: u32 = 2;
 
 /// Op kinds the Judge profiles. Adding a variant + a Judge match
 /// arm extends the profile matrix; existing reports parse forward
@@ -632,8 +639,17 @@ impl SizeClass {
     }
 }
 
-/// Single (op_kind, dtype, size_class) × (backend, device_index)
-/// datum produced by one measurement run.
+/// Single (op_kind, dtype, size_class) × (backend, device_index,
+/// kernel_source) datum produced by one measurement run.
+///
+/// **Per-alternative measurement (2026-06-08)**: `kernel_source`
+/// distinguishes kernels that register at the same
+/// `(op, dtypes, backend)` decision point in the binding table —
+/// AOCL vs MKL vs portable-cpu, cuBLAS vs CUTLASS, etc. Each
+/// sibling alternative produces its own [`ProfileEntry`]; the
+/// dispatch table picks the best entry per cell across both
+/// backends and kernel_sources. Default empty string preserves the
+/// pre-v2 shape for kernels that don't need to distinguish.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ProfileEntry {
@@ -649,6 +665,21 @@ pub struct ProfileEntry {
     /// Max relative element-wise error vs the reference backend's
     /// output on the same input.
     pub max_rel_error: f32,
+    /// Diagnostic tag identifying which kernel sibling produced this
+    /// measurement when multiple alternatives register at the same
+    /// `(op, dtypes, backend)` binding-table key. Mirrors
+    /// `BindingEntry::kernel_source` (in `fuel-dispatch`). `""` is
+    /// the pre-v2 default for kernels that don't need to distinguish;
+    /// conventional values include `"portable-cpu"`, `"aocl"`,
+    /// `"mkl"`, `"cublas"`, `"cutlass"`.
+    ///
+    /// Owned `String` (not `&'static str`) so the field round-trips
+    /// through serde — deserialized reports can't carry borrowed
+    /// data with a `'static` lifetime. The producer-side `Judge`
+    /// converts from `BindingEntry::kernel_source: &'static str`
+    /// via `.to_string()` at measurement time.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub kernel_source: String,
 }
 
 /// A persistable table of every profile measurement the Judge
@@ -734,12 +765,53 @@ struct DispatchKey {
     criterion:  Criterion,
 }
 
-/// Where the dispatch table decided an op should run.
+/// Where the dispatch table decided an op should run, and which
+/// kernel sibling won at that decision point.
+///
+/// **Per-alternative measurement (2026-06-08)**: `kernel_source`
+/// surfaces the winning [`ProfileEntry::kernel_source`] so
+/// consumers (Router, planner, telemetry) can name the actual
+/// kernel — critical when multiple alternatives register at
+/// `(BackendId::Cpu)` (e.g. AOCL vs MKL vs portable-cpu) and the
+/// (backend, device) pair alone is ambiguous. `""` for legacy
+/// reports / single-impl cells.
+///
+/// `Pick` stays `Copy` (and `&'static str` is `Copy`); the picker
+/// preserves the string identity by reading it directly from the
+/// winning `ProfileEntry` — its `String` value is matched against
+/// the well-known interned set via [`kernel_source_intern`] so the
+/// `&'static str` is the same pointer the binding-table entry
+/// carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Pick {
     pub backend:      BackendId,
     pub device_index: u32,
+    /// Diagnostic tag from the winning [`ProfileEntry::kernel_source`].
+    /// `""` when no sibling distinguishes the cell.
+    #[cfg_attr(feature = "serde", serde(default = "default_kernel_source"))]
+    pub kernel_source: &'static str,
+}
+
+#[cfg(feature = "serde")]
+fn default_kernel_source() -> &'static str { "" }
+
+/// Intern a kernel-source string into a `&'static str` matching the
+/// well-known conventional tags. Unknown tags fall back to `""`
+/// (diagnostic-only field — losing an unknown tag is preferable to
+/// leaking a heap allocation through `Box::leak`). The set mirrors
+/// the documented convention on
+/// [`BindingEntry::kernel_source`](../../fuel_dispatch/struct.BindingEntry.html#structfield.kernel_source).
+pub fn kernel_source_intern(s: &str) -> &'static str {
+    match s {
+        ""             => "",
+        "portable-cpu" => "portable-cpu",
+        "aocl"         => "aocl",
+        "mkl"          => "mkl",
+        "cublas"       => "cublas",
+        "cutlass"      => "cutlass",
+        _              => "",
+    }
 }
 
 /// Options for building a [`DispatchTable`].
@@ -801,8 +873,9 @@ impl DispatchTable {
                 if let Some(winner) = self.pick_winner(group, criterion) {
                     let key = DispatchKey { op: *op, dtype: *dtype, size_class: *size_class, criterion };
                     self.entries.insert(key, Pick {
-                        backend:      winner.backend,
-                        device_index: winner.device_index,
+                        backend:       winner.backend,
+                        device_index:  winner.device_index,
+                        kernel_source: kernel_source_intern(&winner.kernel_source),
                     });
                 }
             }
