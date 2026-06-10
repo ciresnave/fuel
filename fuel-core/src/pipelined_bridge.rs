@@ -348,9 +348,23 @@ fn build_execution_plan(
     let g = graph
         .read()
         .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
-    let options = PlanOptions::new()
+
+    // Layer-2 cost refinement (Phase 3 → production, 2026-06-10):
+    // when the Judge has cached profile data — populated this
+    // process or lazily loaded from a prior run's persisted report —
+    // attach the oracle so `compile_plan`'s cost composer refines
+    // Layer-1 static estimates with measured latencies per
+    // `(op, dtype, size_class, backend, kernel_source)` cell. No
+    // cached profile → `None` → pure Layer-1 ranking, identical to
+    // the pre-oracle behavior. Cells the Judge never measured miss
+    // inside the oracle and keep their Layer-1 estimate too.
+    let judge_oracle = crate::judge::cached_oracle();
+    let mut options = PlanOptions::new()
         .with_placements_for_device(&placements_for)
         .with_capabilities_for(&capabilities_for);
+    if let Some(oracle) = judge_oracle.as_deref() {
+        options = options.with_judge(oracle);
+    }
 
     let bindings_guard = global_bindings();
     let plan = compile_plan(&g, &order, &bindings_guard, &options)?;
