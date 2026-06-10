@@ -155,6 +155,28 @@ pub fn backend_for_device(loc: DeviceLocation) -> BackendId {
 /// `default_device_for(target_backend)` (legacy stamped graphs) →
 /// error.
 ///
+/// # `fallback_placements_for`
+///
+/// Picker-arc step 4b. When the node's decision device has NO
+/// registered implementation for its `(op, dtypes)` — primary
+/// enumeration came back empty — this closure supplies the
+/// OFF-DEVICE placements the picker may consider instead, making
+/// the CPU-fallback case a first-class plan-time decision instead
+/// of an executor-level special case. Locality is preserved: the
+/// closure is never consulted while the decision device has at
+/// least one registered candidate.
+///
+/// Constraints enforced by `compile_plan`:
+///
+/// - **Destructive ops never fall back** (`Op::destructive_input()`
+///   is `Some`): in-place mutation semantics don't survive moving
+///   the op away from the device that owns its mutation target;
+///   those ops keep the plan-time `NoBackendForOp` error.
+/// - **Fallback sets freeze to their single ranked winner**: the
+///   residency stitch (`Op::Copy` insertion) is a graph rewrite
+///   computed from the static winner, so a dispatch-time selector
+///   must not be able to pick a sibling on a different device.
+///
 /// # `capabilities_for`
 ///
 /// Required when `populate_costs` is true (the default). The
@@ -180,6 +202,11 @@ pub struct PlanOptions<'env> {
     /// Realize-call device pin (picker-arc step 4a). See struct
     /// docs.
     pub pinned_device: Option<DeviceLocation>,
+    /// Off-device fallback enumerator for missing-impl ops
+    /// (picker-arc step 4b). See struct docs.
+    pub fallback_placements_for: Option<
+        &'env (dyn Fn(DeviceLocation) -> Vec<(BackendId, DeviceLocation)> + 'env),
+    >,
     /// Capabilities lookup. Required when `populate_costs` is
     /// true.
     pub capabilities_for: Option<&'env CapabilitiesLookup<'env>>,
@@ -199,6 +226,7 @@ impl Default for PlanOptions<'_> {
             populate_costs: true,
             placements_for_device: None,
             pinned_device: None,
+            fallback_placements_for: None,
             capabilities_for: None,
             judge: None,
         }
@@ -247,6 +275,20 @@ impl<'env> PlanOptions<'env> {
     /// Picker-arc step 4a.
     pub fn with_pinned_device(mut self, device: DeviceLocation) -> Self {
         self.pinned_device = Some(device);
+        self
+    }
+
+    /// Attach an off-device fallback enumerator, consulted ONLY
+    /// when a node's decision device has no registered
+    /// implementation for its `(op, dtypes)`. Wire to the
+    /// `SystemTopology` device list for production. Picker-arc
+    /// step 4b — see struct docs for the destructive-op and
+    /// single-winner constraints.
+    pub fn with_fallback_placements_for(
+        mut self,
+        f: &'env (dyn Fn(DeviceLocation) -> Vec<(BackendId, DeviceLocation)> + 'env),
+    ) -> Self {
+        self.fallback_placements_for = Some(f);
         self
     }
 
@@ -379,10 +421,37 @@ pub fn compile_plan(
             options.max_alternatives_per_node,
         );
 
-        // Fail-fast: if enumeration found nothing, surface the
-        // missing-binding error before filters can also empty the
-        // set (which would produce a less-specific
-        // FilterRejected).
+        // Picker-arc step 4b: when the decision device has NO
+        // implementation for this (op, dtypes), admit off-device
+        // candidates from the fallback enumerator. The missing-impl
+        // op becomes a plan-time picker decision (the bridge
+        // stitches residency via Op::Copy insertion around the
+        // off-device winner) instead of a realize-time error.
+        // Destructive ops never fall back — in-place mutation
+        // semantics don't survive moving the op away from the
+        // device that owns its mutation target.
+        let mut from_fallback = false;
+        if set.is_empty() && node.op.destructive_input().is_none() {
+            if let Some(fallback) = options.fallback_placements_for {
+                let fb_placements = fallback(target_device);
+                if !fb_placements.is_empty() {
+                    set = enumerate_candidates(
+                        op_kind,
+                        &dtypes,
+                        &fb_placements,
+                        &op_params,
+                        bindings_table,
+                        options.max_alternatives_per_node,
+                    );
+                    from_fallback = !set.is_empty();
+                }
+            }
+        }
+
+        // Fail-fast: if enumeration found nothing (on the decision
+        // device AND via fallback), surface the missing-binding
+        // error before filters can also empty the set (which would
+        // produce a less-specific FilterRejected).
         if set.is_empty() {
             return Err(missing_binding_error(
                 bindings_table,
@@ -445,6 +514,16 @@ pub fn compile_plan(
         }
 
         set.truncate_to_top_n();
+
+        // Step 4b: off-device fallback sets freeze to their single
+        // ranked winner. The bridge's residency stitch (Op::Copy
+        // insertion) is a graph rewrite computed from the static
+        // winner; leaving siblings on OTHER devices in the set
+        // would let a dispatch-time selector pick a candidate whose
+        // inputs were never copied to its device.
+        if from_fallback && set.len() > 1 {
+            set.retain_indices(&[0]);
+        }
 
         // After truncation an empty set is the surfaceable error
         // (the filter chain or rank dropped everything). The chain
@@ -1143,6 +1222,203 @@ mod tests {
         assert!(
             plan.alternatives(copy_id).is_none(),
             "Op::Copy is residency-determined — no plan entry",
+        );
+    }
+
+    /// Step 4b: an op with no implementation on the pinned device
+    /// falls back to an off-device candidate — the missing-impl op
+    /// becomes a plan-time picker decision.
+    #[test]
+    fn compile_plan_fallback_admits_off_device_candidate() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut table = KernelBindingTable::new();
+        // Add f32 registered ONLY on Cpu — the pinned CUDA device
+        // has no impl.
+        register_add_f32(
+            &mut table,
+            BackendId::Cpu,
+            noop_kernel,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+
+        let mut g = Graph::new();
+        let lhs = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        let add = g.push(Node {
+            op: Op::Add,
+            inputs: vec![lhs, lhs],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        let order = topo_order(&g, add);
+
+        let placements_fn = move |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == cuda0 { vec![BackendId::Cuda] } else { vec![BackendId::Cpu] }
+        };
+        let fallback_fn = |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+            vec![(BackendId::Cpu, DeviceLocation::Cpu)]
+        };
+        let opts = PlanOptions::new()
+            .without_cost_population()
+            .with_pinned_device(cuda0)
+            .with_placements_for_device(&placements_fn)
+            .with_fallback_placements_for(&fallback_fn);
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+        let alts = plan.alternatives(add).expect("Add planned via fallback");
+        assert_eq!(alts.len(), 1, "fallback set frozen to one winner");
+        let w = alts.winner().unwrap();
+        assert_eq!(w.backend, BackendId::Cpu);
+        assert_eq!(w.device, DeviceLocation::Cpu, "off-device placement");
+    }
+
+    /// Step 4b locality: the fallback enumerator is NOT consulted
+    /// while the pinned device has a registered candidate — even if
+    /// the off-device sibling would rank cheaper.
+    #[test]
+    fn compile_plan_fallback_not_consulted_when_pinned_has_impl() {
+        let mut table = KernelBindingTable::new();
+        register_add_f32(
+            &mut table,
+            BackendId::Cpu,
+            noop_kernel,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+        register_add_f32(
+            &mut table,
+            BackendId::Cuda,
+            noop_kernel_b,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+        let (g, add_id) = build_add_graph();
+        let order = topo_order(&g, add_id);
+        let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![] }
+        };
+        let fallback_fn = |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+            panic!(
+                "fallback consulted although the pinned device has an \
+                 implementation — locality policy violated",
+            );
+        };
+        let opts = PlanOptions::new()
+            .without_cost_population()
+            .with_pinned_device(DeviceLocation::Cpu)
+            .with_placements_for_device(&placements_fn)
+            .with_fallback_placements_for(&fallback_fn);
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+        let alts = plan.alternatives(add_id).unwrap();
+        assert_eq!(alts.len(), 1);
+        assert_eq!(alts.winner().unwrap().device, DeviceLocation::Cpu);
+    }
+
+    /// Step 4b: destructive ops never fall back — the plan-time
+    /// NoBackendForOp error is preserved.
+    #[test]
+    fn compile_plan_fallback_denied_for_destructive_ops() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut table = KernelBindingTable::new();
+        // ReluInplace registered ONLY on Cpu; pinned device is CUDA.
+        table.register_full(
+            OpKind::ReluInplace,
+            &[DType::F32, DType::F32],
+            BackendId::Cpu,
+            noop_kernel,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            unknown_cost,
+        );
+        let mut g = Graph::new();
+        let lhs = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        let relu = g.push(Node {
+            op: Op::ReluInplace,
+            inputs: vec![lhs],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        let order = topo_order(&g, relu);
+        let placements_fn = move |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == cuda0 { vec![BackendId::Cuda] } else { vec![BackendId::Cpu] }
+        };
+        let fallback_fn = |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+            vec![(BackendId::Cpu, DeviceLocation::Cpu)]
+        };
+        let opts = PlanOptions::new()
+            .without_cost_population()
+            .with_pinned_device(cuda0)
+            .with_placements_for_device(&placements_fn)
+            .with_fallback_placements_for(&fallback_fn);
+        let err = compile_plan(&g, &order, &table, &opts).unwrap_err();
+        assert!(
+            matches!(err, Error::NoBackendForOp { op: OpKind::ReluInplace, .. }),
+            "destructive op must NOT fall back off-device; got {err:?}",
+        );
+    }
+
+    /// Step 4b: even when MULTIPLE off-device backends could serve
+    /// the op, the fallback set freezes to a single winner so the
+    /// dispatch-time selector can't diverge from the residency
+    /// stitch.
+    #[test]
+    fn compile_plan_fallback_freezes_to_single_winner() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let vk0 = DeviceLocation::Vulkan { gpu_id: 0 };
+        let mut table = KernelBindingTable::new();
+        register_add_f32(
+            &mut table,
+            BackendId::Cpu,
+            noop_kernel,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+        register_add_f32(
+            &mut table,
+            BackendId::Vulkan,
+            noop_kernel_b,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+
+        let mut g = Graph::new();
+        let lhs = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        let add = g.push(Node {
+            op: Op::Add,
+            inputs: vec![lhs, lhs],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        let order = topo_order(&g, add);
+        let placements_fn = move |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == cuda0 { vec![BackendId::Cuda] } else { vec![] }
+        };
+        let fallback_fn = move |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+            vec![
+                (BackendId::Cpu, DeviceLocation::Cpu),
+                (BackendId::Vulkan, vk0),
+            ]
+        };
+        let opts = PlanOptions::new()
+            .without_cost_population()
+            .with_pinned_device(cuda0)
+            .with_placements_for_device(&placements_fn)
+            .with_fallback_placements_for(&fallback_fn);
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+        let alts = plan.alternatives(add).unwrap();
+        assert_eq!(
+            alts.len(),
+            1,
+            "fallback set must freeze to its single ranked winner",
         );
     }
 
