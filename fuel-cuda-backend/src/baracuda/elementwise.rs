@@ -263,24 +263,12 @@ unary_kernel!(unary_gelu_tanh_f32, unary_gelu_tanh_f32, 4, "unary_gelu_tanh_f32"
 unary_kernel!(unary_silu_f32, unary_silu_f32, 4, "unary_silu_f32");
 unary_kernel!(unary_sigmoid_f32, unary_sigmoid_f32, 4, "unary_sigmoid_f32");
 
-/// Heaviside step (`1.0` where `x > 0`, else `0.0`) composed from two
-/// baracuda launches: `sign(x)` then `relu` in place on the result.
-/// `relu(sign(x))` matches Fuel's `StepElementwise` strict-
-/// inequality contract exactly: positive → `relu(1) = 1`, zero →
-/// `relu(0) = 0`, negative → `relu(-1) = 0`, and NaN → `0` (CUDA
-/// `fmaxf(NaN, 0) = 0`, same as the CPU kernel's `NaN > 0 = false`).
-/// Baracuda has no native step kernel; this composite stands in until
-/// one ships upstream. `sign` handles strided inputs; its output is
-/// freshly-allocated contiguous, satisfying the in-place relu's
-/// contig + zero-offset contract.
-pub fn unary_step_f32(
-    src: &CudaStorageBytes,
-    layout: Option<&Layout>,
-) -> Result<CudaStorageBytes> {
-    let mut signs = unary_sign_f32(src, layout)?;
-    unary_inplace_relu_f32(&mut signs)?;
-    Ok(signs)
-}
+// Heaviside step — baracuda's native `unary_step_*` (Phase 31)
+// matches Fuel's `StepElementwise` contract exactly: `(x > 0) ? 1 : 0`
+// with NaN → 0. The kernel shipped in alpha.66 without a
+// baracuda-kernels facade wrapper, but the sys-level FFI symbols are
+// all present, which is the layer this manifest binds anyway.
+unary_kernel!(unary_step_f32, unary_step_f32, 4, "unary_step_f32");
 
 /// Manifest macro for one (kind, dtype) in-place unary entry. Emits a
 /// `pub fn <name>(target: &mut CudaStorageBytes) -> Result<()>` that
@@ -472,6 +460,10 @@ unary_kernel!(unary_gelu_bf16, unary_gelu_bf16, 2, "unary_gelu_bf16");
 unary_kernel!(unary_gelu_tanh_f64, unary_gelu_tanh_f64, 8, "unary_gelu_tanh_f64");
 unary_kernel!(unary_gelu_tanh_f16, unary_gelu_tanh_f16, 2, "unary_gelu_tanh_f16");
 unary_kernel!(unary_gelu_tanh_bf16, unary_gelu_tanh_bf16, 2, "unary_gelu_tanh_bf16");
+
+unary_kernel!(unary_step_f64, unary_step_f64, 8, "unary_step_f64");
+unary_kernel!(unary_step_f16, unary_step_f16, 2, "unary_step_f16");
+unary_kernel!(unary_step_bf16, unary_step_bf16, 2, "unary_step_bf16");
 
 unary_kernel!(unary_silu_f64, unary_silu_f64, 8, "unary_silu_f64");
 unary_kernel!(unary_silu_f16, unary_silu_f16, 2, "unary_silu_f16");
