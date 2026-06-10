@@ -116,6 +116,10 @@ impl DynBackendDevice for VulkanBackendDevice {
         DeviceLocation::Vulkan { gpu_id: self.inner.gpu_id }
     }
 
+    fn as_backend_runtime(&self) -> Option<&dyn fuel_core_types::backend::BackendRuntime> {
+        Some(self)
+    }
+
     fn same_device_dyn(&self, other: &dyn DynBackendDevice) -> bool {
         other
             .as_any()

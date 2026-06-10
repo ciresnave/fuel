@@ -67,6 +67,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use fuel_core_types::backend::{BackendRuntime, FitStatus};
+use fuel_core_types::dyn_backend::DynBackendDevice;
 use fuel_core_types::{
     probe::BackendId, DeviceLocation, Error, HostBuffer, Result,
 };
@@ -77,6 +79,10 @@ use fuel_graph::opt::{
 use fuel_dispatch::dispatch::global_bindings;
 use fuel_dispatch::plan::{compile_plan, ExecutionPlan, PlanOptions};
 use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
+use fuel_dispatch::ranker::{
+    BackendRuntimeHandle, BackendRuntimeLookup, ChainedSelector, JudgeOracle,
+    RuntimeSelector,
+};
 use fuel_storage::{BackendStorage, Storage};
 
 use crate::Device;
@@ -149,17 +155,29 @@ pub fn realize_one_as_with_initial<T: bytemuck::Pod>(
     // plan against the fresh topology and try again. Cap at
     // `MAX_PLAN_REBUILDS` to prevent infinite spin under pathological
     // probe churn.
-    let storage = dispatch_with_plan_retry(graph, cpu_target, cache)?;
+    //
+    // Picker-arc step 3: dispatch through the production runtime
+    // selector (Picker 2) — VramPressure guard + JudgeAware rank.
+    // See `production_selector_for`.
+    let selector = production_selector_for(device);
+    let storage = dispatch_with_plan_retry(graph, cpu_target, cache, selector)?;
     extract_cpu_bytes_typed::<T>(&storage)
 }
 
 /// Phase 4.3 retry-on-stale-plan loop for the single-target path.
 /// Pulled out so the multi-target path can reuse the same retry
 /// shape.
+///
+/// `selector` is the production runtime selector (Picker 2) from
+/// [`production_selector_for`] — `Some` routes through
+/// [`PipelinedExecutor::realize_with_plan_and_selector`]; `None`
+/// (opt-out knob set) keeps the selector-less plan path, whose
+/// dispatch takes `AlternativeSet::winner` per node.
 fn dispatch_with_plan_retry(
     graph: &Arc<RwLock<Graph>>,
     cpu_target: NodeId,
     cache: StorageCache,
+    selector: Option<Arc<dyn RuntimeSelector>>,
 ) -> Result<Arc<RwLock<Storage>>> {
     const MAX_PLAN_REBUILDS: usize = 3;
     let mut attempt = 0;
@@ -174,9 +192,15 @@ fn dispatch_with_plan_retry(
         // across consumers; idempotent on retry.
         apply_layout_fixups(graph, &[cpu_target], &plan)?;
         let cache_for_attempt = cache.clone();
-        match PipelinedExecutor::realize_with_plan(
-            graph.clone(), cpu_target, cache_for_attempt, plan,
-        ) {
+        let result = match selector.as_ref() {
+            Some(sel) => PipelinedExecutor::realize_with_plan_and_selector(
+                graph.clone(), cpu_target, cache_for_attempt, plan, Arc::clone(sel),
+            ),
+            None => PipelinedExecutor::realize_with_plan(
+                graph.clone(), cpu_target, cache_for_attempt, plan,
+            ),
+        };
+        match result {
             Ok((storage, _layout)) => return Ok(storage),
             Err(e) if matches!(e, Error::TopologyChanged { .. })
                 && attempt + 1 < MAX_PLAN_REBUILDS =>
@@ -230,16 +254,25 @@ pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
     // Phase 4.2 + 4.3 + 2.2: plan-aware dispatch with topology-stale
     // retry and layout-fixup insertion. See `dispatch_with_plan_retry`
     // for the single-target version of the loop; this multi-target
-    // sibling shares the same shape.
+    // sibling shares the same shape. Picker-arc step 3: dispatch
+    // through the production runtime selector (Picker 2).
+    let selector = production_selector_for(device);
     const MAX_PLAN_REBUILDS: usize = 3;
     let mut attempt = 0;
     let results = loop {
         let plan = build_execution_plan(graph, &effective_targets)?;
         apply_layout_fixups(graph, &effective_targets, &plan)?;
         let cache_for_attempt = cache.clone();
-        match PipelinedExecutor::realize_many_with_plan(
-            graph.clone(), &effective_targets, cache_for_attempt, plan,
-        ) {
+        let result = match selector.as_ref() {
+            Some(sel) => PipelinedExecutor::realize_many_with_plan_and_selector(
+                graph.clone(), &effective_targets, cache_for_attempt, plan,
+                Arc::clone(sel),
+            ),
+            None => PipelinedExecutor::realize_many_with_plan(
+                graph.clone(), &effective_targets, cache_for_attempt, plan,
+            ),
+        };
+        match result {
             Ok(r) => break r,
             Err(e) if matches!(e, Error::TopologyChanged { .. })
                 && attempt + 1 < MAX_PLAN_REBUILDS =>
@@ -372,6 +405,111 @@ fn build_execution_plan(
     let bindings_guard = global_bindings();
     let plan = compile_plan(&g, &order, &bindings_guard, &options)?;
     Ok(Arc::new(plan))
+}
+
+// ---------------------------------------------------------------------------
+// Production runtime selector (picker arc step 3)
+// ---------------------------------------------------------------------------
+
+/// Opt-out knob for the production runtime selector. Matches the
+/// `FUEL_*` env-var convention (`FUEL_FORCE_F32`, `FUEL_Q8_KV`, ...):
+/// set `FUEL_DISABLE_RUNTIME_SELECTOR=1` to fall back to the
+/// selector-less plan path (per-node `AlternativeSet::winner`, the
+/// pre-step-3 behavior). Default: selector ON.
+fn runtime_selector_disabled() -> bool {
+    std::env::var("FUEL_DISABLE_RUNTIME_SELECTOR").ok().as_deref() == Some("1")
+}
+
+/// Build the production Picker 2 for one realize call: a
+/// [`ChainedSelector`] composing
+///
+/// - the **VramPressure guard** over live [`BackendRuntime`] handles
+///   ([`backend_runtime_lookup_for`] — the realize device + the
+///   always-present CPU backend), and
+/// - the **JudgeAware rank** over the cached profile oracle
+///   ([`crate::judge::cached_oracle`], the same Layer-2 source
+///   `build_execution_plan` feeds `PlanOptions::with_judge`). The
+///   selector re-queries at dispatch time, so measurements landing
+///   after a plan freezes still influence the pick.
+///
+/// Both signals degrade honestly: no cached profile → static-cost
+/// ranking; no runtime handle for a candidate → `FitStatus::Unknown`
+/// (tier-equal with Comfortable). With neither signal the pick is
+/// exactly `AlternativeSet::winner()` on every plan-produced set —
+/// today's behavior.
+///
+/// Returns `None` when [`runtime_selector_disabled`] — the dispatch
+/// loops then call the selector-less `realize_with_plan` APIs.
+fn production_selector_for(device: &Device) -> Option<Arc<dyn RuntimeSelector>> {
+    if runtime_selector_disabled() {
+        return None;
+    }
+    let judge: Option<Arc<dyn JudgeOracle>> = crate::judge::cached_oracle()
+        .map(|oracle| oracle as Arc<dyn JudgeOracle>);
+    let lookup = backend_runtime_lookup_for(device);
+    Some(Arc::new(ChainedSelector::with_default_estimator(
+        judge,
+        Some(lookup),
+    )))
+}
+
+/// [`BackendRuntime`] adapter over a live device handle. Owns the
+/// `Arc<dyn DynBackendDevice>` so the boxed handle the selector
+/// borrows stays valid for the duration of a `select` call; every
+/// query delegates through
+/// [`DynBackendDevice::as_backend_runtime`]. Devices without a
+/// runtime impl (Metal today) answer `None` / `Unknown` — honest
+/// no-signal, never fabricated pressure.
+struct DeviceRuntimeHandle(Arc<dyn DynBackendDevice>);
+
+impl BackendRuntime for DeviceRuntimeHandle {
+    fn available_bytes(&self) -> Option<u64> {
+        self.0.as_backend_runtime().and_then(|r| r.available_bytes())
+    }
+
+    fn total_bytes(&self) -> Option<u64> {
+        self.0.as_backend_runtime().and_then(|r| r.total_bytes())
+    }
+
+    // Delegate rather than re-derive: backends may override
+    // `would_fit` with native predictive checks (e.g. Vulkan's
+    // VK_EXT_memory_budget fragmentation awareness).
+    fn would_fit(&self, size: u64) -> FitStatus {
+        match self.0.as_backend_runtime() {
+            Some(r) => r.would_fit(size),
+            None => FitStatus::Unknown,
+        }
+    }
+}
+
+/// Live-handle lookup for the VramPressure guard. Resolves:
+///
+/// - the realize device's `(backend, location)` → the realize
+///   `Device`'s own handle (the only live GPU handle the bridge
+///   holds — with today's monolithic pinning every GPU candidate in
+///   the plan targets exactly this device);
+/// - `(Cpu, DeviceLocation::Cpu)` → a fresh stateless
+///   [`fuel_cpu_backend::dyn_impl::CpuBackendDevice`] (covers the
+///   realize-root D2H copies + CPU candidates when realizing on a
+///   GPU);
+/// - anything else → `None` (= `FitStatus::Unknown`, no signal).
+///   Multi-GPU realizes will widen this when a live device registry
+///   lands.
+fn backend_runtime_lookup_for(device: &Device) -> BackendRuntimeLookup {
+    let realize_loc = device.location();
+    let realize_backend = location_to_backend_id(realize_loc);
+    let inner: Arc<dyn DynBackendDevice> = device.inner.clone();
+    Arc::new(move |backend, loc| {
+        if backend == realize_backend && loc == realize_loc {
+            return Some(Box::new(DeviceRuntimeHandle(Arc::clone(&inner)))
+                as BackendRuntimeHandle);
+        }
+        if backend == BackendId::Cpu && loc == DeviceLocation::Cpu {
+            return Some(Box::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice)
+                as BackendRuntimeHandle);
+        }
+        None
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1205,6 +1343,60 @@ mod tests {
             Some(BackendId::Cpu),
             "re-stamp sweep restores the source-backend stamp after \
              the monolithic loop clobbered it",
+        );
+    }
+
+    /// Picker-arc step 3 end-to-end: a CPU realize through
+    /// `realize_one_as_with_initial` runs the production
+    /// `ChainedSelector` path (`realize_with_plan_and_selector`,
+    /// default ON) and produces correct bytes. With no pressure
+    /// signal beyond Comfortable/Unknown and CPU-only candidates,
+    /// the chained selector degenerates to the static winner —
+    /// pinning the no-signal-parity guarantee at the bridge level.
+    #[test]
+    fn production_selector_cpu_realize_end_to_end() {
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (c1, c2, add) = {
+            let mut g = graph.write().unwrap();
+            let c1 = push_node(&mut g, Op::Const, vec![]);
+            let c2 = push_node(&mut g, Op::Const, vec![]);
+            let add = push_node(&mut g, Op::Add, vec![c1, c2]);
+            (c1, c2, add)
+        };
+        let mut initial = StorageCache::new();
+        initial.insert(c1, cpu_storage_f32(&[1.0, 2.0, 3.0, 4.0]));
+        initial.insert(c2, cpu_storage_f32(&[10.0, 20.0, 30.0, 40.0]));
+
+        let device = crate::Device::cpu();
+        assert!(
+            production_selector_for(&device).is_some(),
+            "production selector defaults ON (no opt-out env set)",
+        );
+
+        let out = realize_one_as_with_initial::<f32>(&graph, add, &device, initial)
+            .expect("realize through the production selector path");
+        assert_eq!(out, vec![11.0, 22.0, 33.0, 44.0]);
+    }
+
+    /// The live-handle lookup resolves the realize device + CPU and
+    /// answers `None` (no signal) for everything else. On this host
+    /// the CPU handle reports real memory numbers on Windows/Linux;
+    /// we only assert the wiring (a handle exists and `would_fit`
+    /// answers without panicking), not the OS-specific values.
+    #[test]
+    fn backend_runtime_lookup_resolves_cpu_and_misses_others() {
+        let device = crate::Device::cpu();
+        let lookup = backend_runtime_lookup_for(&device);
+
+        let cpu = lookup(BackendId::Cpu, DeviceLocation::Cpu)
+            .expect("CPU handle always resolvable");
+        // Any FitStatus is acceptable — platform-dependent signal —
+        // the call itself must succeed.
+        let _ = cpu.would_fit(1);
+
+        assert!(
+            lookup(BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }).is_none(),
+            "no live handle for a backend that isn't the realize device",
         );
     }
 }

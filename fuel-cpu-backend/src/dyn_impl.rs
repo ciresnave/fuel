@@ -1022,6 +1022,10 @@ impl DynBackendDevice for CpuBackendDevice {
         DeviceLocation::Cpu
     }
 
+    fn as_backend_runtime(&self) -> Option<&dyn fuel_core_types::backend::BackendRuntime> {
+        Some(self)
+    }
+
     fn same_device_dyn(&self, other: &dyn DynBackendDevice) -> bool {
         other.as_any().downcast_ref::<CpuBackendDevice>().is_some()
     }

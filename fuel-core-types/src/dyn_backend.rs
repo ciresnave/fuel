@@ -382,4 +382,17 @@ pub trait DynBackendDevice: Send + Sync + std::fmt::Debug {
     fn as_quantized_kernels(&self) -> Option<&dyn crate::quantized::QuantizedDeviceKernels> {
         None
     }
+
+    /// Optional runtime-state adapter (backend contract v0.4, Tier 1).
+    /// Backends whose device type implements
+    /// [`crate::backend::BackendRuntime`] return `Some(self)` so
+    /// holders of an `Arc<dyn DynBackendDevice>` (the picker arc's
+    /// pressure-aware runtime selectors) can query live memory
+    /// signals without naming concrete backend types. Backends
+    /// without a runtime impl keep the default `None` — selectors
+    /// treat that as [`crate::backend::FitStatus::Unknown`] (no
+    /// signal), never as pressure.
+    fn as_backend_runtime(&self) -> Option<&dyn crate::backend::BackendRuntime> {
+        None
+    }
 }
