@@ -75,7 +75,9 @@
 //! criteria without re-profiling.
 
 pub mod cache;
+pub mod oracle;
 pub use cache::*;
+pub use oracle::ProfileJudgeOracle;
 
 use crate::probe::ProbeReport;
 use fuel_core_types::probe::{BackendId, DeviceDescriptor};

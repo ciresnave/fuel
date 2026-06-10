@@ -44,6 +44,7 @@
 //!    Router's default backend until [`populate_dispatch_table`]
 //!    runs successfully.
 
+use crate::judge::oracle::ProfileJudgeOracle;
 use fuel_core_types::Result;
 pub use fuel_core_types::dispatch::{
     Criterion, DispatchOptions, DispatchTable, OpKind, Pick, ProfileEntry, ProfileReport,
@@ -52,20 +53,44 @@ pub use fuel_core_types::dispatch::{
 
 use std::sync::{Arc, OnceLock, RwLock};
 
-/// Process-wide dispatch table. The outer `OnceLock` is set on
+/// Both artifacts the Judge's profile run produces, derived from the
+/// SAME [`ProfileReport`] so they can never disagree about what was
+/// measured:
+///
+/// - `table` — winners-only O(1) lookup for the Router's routed
+///   realize path.
+/// - `oracle` — every raw measurement (losing alternatives included)
+///   for the optimizer ranker's Layer-2 cost refinement
+///   ([`fuel_dispatch::plan::PlanOptions::with_judge`]).
+#[derive(Clone)]
+struct CachedJudge {
+    table:  Arc<DispatchTable>,
+    oracle: Arc<ProfileJudgeOracle>,
+}
+
+impl CachedJudge {
+    fn from_report(report: &ProfileReport) -> Self {
+        Self {
+            table:  Arc::new(DispatchTable::build(report)),
+            oracle: Arc::new(ProfileJudgeOracle::from_report(report)),
+        }
+    }
+}
+
+/// Process-wide Judge cache. The outer `OnceLock` is set on
 /// first access, with lazy-loaded contents from disk if a prior
 /// run persisted a profile for the current hardware. The inner
 /// `RwLock` exists so [`populate_dispatch_table`] and [`invalidate`]
 /// can update the cache after first access — `OnceLock` alone is
 /// write-once, which would prevent re-profiling on driver upgrades.
-static DISPATCH_TABLE: OnceLock<RwLock<Option<Arc<DispatchTable>>>> = OnceLock::new();
+static DISPATCH_TABLE: OnceLock<RwLock<Option<CachedJudge>>> = OnceLock::new();
 
-fn slot() -> &'static RwLock<Option<Arc<DispatchTable>>> {
+fn slot() -> &'static RwLock<Option<CachedJudge>> {
     DISPATCH_TABLE.get_or_init(|| {
         // First access this process: try to populate from disk
         // synchronously. Sub-millisecond if a valid prior profile
         // exists for the same hardware; returns None otherwise.
-        let initial = try_load_persisted().map(Arc::new);
+        let initial = try_load_persisted();
         RwLock::new(initial)
     })
 }
@@ -80,7 +105,30 @@ fn slot() -> &'static RwLock<Option<Arc<DispatchTable>>> {
 /// run's profile from disk — sub-millisecond on cache hit.
 /// Subsequent calls return without touching the filesystem.
 pub fn cached() -> Option<Arc<DispatchTable>> {
-    slot().read().unwrap().clone()
+    // A poisoned lock means a panic mid-update elsewhere; treat it
+    // as "no profile" rather than propagating the panic — callers
+    // all have a default-backend fallback.
+    slot()
+        .read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|c| Arc::clone(&c.table)))
+}
+
+/// The currently-active [`ProfileJudgeOracle`], if any — same
+/// lifecycle and data source as [`cached`], but exposing EVERY raw
+/// measurement (losing alternatives included) instead of winners
+/// only. The pipelined bridge attaches it to
+/// [`fuel_dispatch::plan::PlanOptions::with_judge`] so `compile_plan`
+/// refines Layer-1 static costs with measured latencies.
+///
+/// Returns `None` when no profile has been computed for this
+/// hardware — plan compilation then ranks on Layer-1 static costs
+/// alone, exactly the pre-oracle behavior.
+pub fn cached_oracle() -> Option<Arc<ProfileJudgeOracle>> {
+    slot()
+        .read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|c| Arc::clone(&c.oracle)))
 }
 
 /// Force-populate the dispatch table by running the probe + judge
@@ -113,8 +161,11 @@ pub fn populate_dispatch_table() -> Result<()> {
         }
         report.save(&p)?;
     }
-    let table = Arc::new(DispatchTable::build(&report));
-    *slot().write().unwrap() = Some(table);
+    let built = CachedJudge::from_report(&report);
+    *slot()
+        .write()
+        .map_err(|_| fuel_core_types::Error::Msg("judge cache lock poisoned".into()))? =
+        Some(built);
     Ok(())
 }
 
@@ -129,7 +180,9 @@ pub fn populate_dispatch_table() -> Result<()> {
 /// in-memory table and [`populate_dispatch_table`] would no-op
 /// because of its idempotence guard.
 pub fn invalidate() -> Result<()> {
-    *slot().write().unwrap() = None;
+    *slot()
+        .write()
+        .map_err(|_| fuel_core_types::Error::Msg("judge cache lock poisoned".into()))? = None;
     if let Some(p) = crate::probe::default_report_path() {
         let _ = std::fs::remove_file(&p);
     }
@@ -139,11 +192,11 @@ pub fn invalidate() -> Result<()> {
     Ok(())
 }
 
-/// Try to load a previously-persisted dispatch table from disk.
-/// Returns `None` if anything is missing, the schema versions
-/// mismatch, or the current hardware doesn't match what was probed
-/// when the profile was last saved.
-fn try_load_persisted() -> Option<DispatchTable> {
+/// Try to load a previously-persisted profile from disk. Returns
+/// `None` if anything is missing, the schema versions mismatch, or
+/// the current hardware doesn't match what was probed when the
+/// profile was last saved.
+fn try_load_persisted() -> Option<CachedJudge> {
     let probe_path = crate::probe::default_report_path()?;
     let prior_probe = crate::probe::ProbeReport::load(&probe_path).ok().flatten()?;
     let now_probe = crate::probe::ProbeReport::probe_all();
@@ -152,7 +205,7 @@ fn try_load_persisted() -> Option<DispatchTable> {
     }
     let judge_path = super::default_report_path()?;
     let report = ProfileReport::load(&judge_path).ok().flatten()?;
-    Some(DispatchTable::build(&report))
+    Some(CachedJudge::from_report(&report))
 }
 
 #[cfg(test)]
