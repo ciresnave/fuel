@@ -2003,14 +2003,17 @@ pub fn insert_evict_reload(
 // When the picker (or a user pin) commits a kernel-bearing node to a
 // `DeviceLocation` that doesn't share a storage substrate with one of
 // its inputs' resident `DeviceLocation`, the data needs to actually
-// move. Today the executor reacts to this lazily via
-// `pipelined_bridge`'s realize-root splicing for the FINAL output;
-// nothing handles cross-device edges INSIDE the graph.
+// move. The executor handles the FINAL output via `pipelined_bridge`'s
+// realize-root splicing; cross-device edges INSIDE the graph are
+// handled here.
 //
 // `insert_cross_device_copies` is the pre-execute pass that handles
 // internal cross-device edges. Architecture v1.0 §04 names the
 // optimizer as the owner of transfer-op insertion — this is that
-// owner.
+// owner. Wired into `fuel-core::pipelined_bridge::prepare()` (picker
+// arc step 2): the bridge derives `placement_for` from the monolithic
+// `target_backend` pinning + the StorageCache's resident locations,
+// and `shares_storage` from `SystemTopology`.
 //
 // The pass deliberately doesn't decide placements itself — callers
 // (the optimizer ranker / picker) commit to placements first, then
@@ -2053,9 +2056,14 @@ pub fn insert_evict_reload(
 ///
 /// # Returns
 ///
-/// The number of `Op::Copy` nodes inserted. Useful for diagnostics
-/// + the metric the optimizer reports when deciding whether to
-/// pursue alternative placements that minimize transfers.
+/// The `NodeId`s of the inserted `Op::Copy` nodes, in insertion
+/// order. Callers typically need these to stamp executor metadata
+/// on the new nodes — e.g. `fuel-core::pipelined_bridge` sets
+/// `target_backend` = the SOURCE backend (the pipelined executor's
+/// Op::Copy kernel-lookup convention: the transfer kernel runs on
+/// the backend the bytes come FROM). `.len()` is the transfer-count
+/// metric the optimizer reports when deciding whether to pursue
+/// alternative placements that minimize transfers.
 ///
 /// # Idempotence
 ///
@@ -2075,7 +2083,7 @@ pub fn insert_cross_device_copies<P, S>(
     roots: &[NodeId],
     placement_for: P,
     shares_storage: S,
-) -> usize
+) -> Vec<NodeId>
 where
     P: Fn(NodeId) -> Option<DeviceLocation>,
     S: Fn(DeviceLocation, DeviceLocation) -> bool,
@@ -2083,7 +2091,7 @@ where
     let order = topo_order_multi(graph, roots);
     // CSE on inserted copies: `(producer, target_device) → Op::Copy NodeId`.
     let mut copy_cache: HashMap<(NodeId, DeviceLocation), NodeId> = HashMap::new();
-    let mut inserted = 0usize;
+    let mut inserted: Vec<NodeId> = Vec::new();
 
     // Two passes: first compute the rewires we want, then apply
     // them. Splitting avoids borrow issues with graph mutation
@@ -2131,7 +2139,7 @@ where
                     // consumer reads.
                     graph.set_placement(id, consumer_placement);
                     copy_cache.insert((producer_id, consumer_placement), id);
-                    inserted += 1;
+                    inserted.push(id);
                     id
                 }
             };
@@ -3435,7 +3443,7 @@ mod tests {
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
         );
-        assert_eq!(inserted, 0, "same-device edge → no copy needed");
+        assert_eq!(inserted.len(), 0, "same-device edge → no copy needed");
         assert_eq!(g.len(), pre_len, "graph unchanged");
     }
 
@@ -3454,7 +3462,7 @@ mod tests {
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
         );
-        assert_eq!(inserted, 1);
+        assert_eq!(inserted.len(), 1);
         assert_eq!(g.len(), pre_len + 1, "one new Op::Copy node appended");
         // Consumer's input now points at the new Op::Copy (not n1).
         let consumer_inputs = &g.node(n2).inputs;
@@ -3491,7 +3499,7 @@ mod tests {
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
         );
-        assert_eq!(inserted, 1, "CSE — one Op::Copy serves both consumers");
+        assert_eq!(inserted.len(), 1, "CSE — one Op::Copy serves both consumers");
         assert_eq!(g.len(), pre_len + 1);
         // Both consumers point at the SAME Op::Copy node.
         let a_input = g.node(cuda_a).inputs[0];
@@ -3520,7 +3528,7 @@ mod tests {
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
         );
-        assert_eq!(inserted, 2, "distinct targets → distinct copies");
+        assert_eq!(inserted.len(), 2, "distinct targets → distinct copies");
         let cuda_input = g.node(cuda_c).inputs[0];
         let vk_input = g.node(vk_c).inputs[0];
         assert_ne!(cuda_input, vk_input);
@@ -3542,7 +3550,7 @@ mod tests {
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
         );
-        assert_eq!(inserted, 0, "producer with no placement → skip");
+        assert_eq!(inserted.len(), 0, "producer with no placement → skip");
     }
 
     /// `Op::Copy` and `Op::Move` are themselves transfers — the pass
@@ -3571,7 +3579,7 @@ mod tests {
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
         );
-        assert_eq!(inserted, 0, "the existing Op::Copy is not re-wrapped");
+        assert_eq!(inserted.len(), 0, "the existing Op::Copy is not re-wrapped");
         assert_eq!(g.len(), pre_len);
     }
 
@@ -3595,8 +3603,8 @@ mod tests {
             |id| placements_after.get(&id).copied(),
             shares_storage_cpu_devices_only,
         );
-        assert_eq!(first, 1);
-        assert_eq!(second, 0, "re-run sees inserted-Copy as on-target; no new copies");
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 0, "re-run sees inserted-Copy as on-target; no new copies");
     }
 
     /// Cross-GPU edge (CUDA gpu_id 0 → CUDA gpu_id 1) → copy inserted
@@ -3612,7 +3620,7 @@ mod tests {
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
         );
-        assert_eq!(inserted, 1, "cross-gpu_id is cross-device too");
+        assert_eq!(inserted.len(), 1, "cross-gpu_id is cross-device too");
         let copy_id = g.node(n2).inputs[0];
         let copy_node = g.node(copy_id);
         assert!(matches!(copy_node.op, Op::Copy { target } if target == cuda1));
@@ -3641,7 +3649,7 @@ mod tests {
             |id| external.get(&id).copied(),
             shares_storage_cpu_devices_only,
         );
-        assert_eq!(inserted, 1);
+        assert_eq!(inserted.len(), 1);
     }
 
     // ===== Phase 2.2 — insert_layout_fixups =====
