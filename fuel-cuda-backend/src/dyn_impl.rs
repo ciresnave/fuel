@@ -554,6 +554,10 @@ impl DynBackendDevice for CudaDevice {
     ) -> Option<&dyn fuel_core_types::quantized::QuantizedDeviceKernels> {
         Some(self)
     }
+
+    fn as_backend_runtime(&self) -> Option<&dyn fuel_core_types::backend::BackendRuntime> {
+        Some(self)
+    }
 }
 
 // ---------------------------------------------------------------------------
