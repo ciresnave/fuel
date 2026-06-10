@@ -1963,6 +1963,8 @@ pub mod unary {
     cuda_unary_baracuda_wrapper!(tanh_f32, bk::unary_tanh_f32);
     cuda_unary_baracuda_wrapper!(relu_f32, bk::unary_relu_f32);
     cuda_unary_baracuda_wrapper!(gelu_f32, bk::unary_gelu_f32);
+    cuda_unary_baracuda_wrapper!(gelu_tanh_f32, bk::unary_gelu_tanh_f32);
+    cuda_unary_baracuda_wrapper!(step_f32, bk::unary_step_f32);
     cuda_unary_baracuda_wrapper!(silu_f32, bk::unary_silu_f32);
     cuda_unary_baracuda_wrapper!(sigmoid_f32, bk::unary_sigmoid_f32);
 
@@ -2090,6 +2092,7 @@ pub mod unary {
     cuda_unary_baracuda_wrapper!(tanh_f16, bk::unary_tanh_f16);
     cuda_unary_baracuda_wrapper!(relu_f16, bk::unary_relu_f16);
     cuda_unary_baracuda_wrapper!(gelu_f16, bk::unary_gelu_f16);
+    cuda_unary_baracuda_wrapper!(gelu_tanh_f16, bk::unary_gelu_tanh_f16);
     cuda_unary_baracuda_wrapper!(silu_f16, bk::unary_silu_f16);
     cuda_unary_baracuda_wrapper!(sigmoid_f16, bk::unary_sigmoid_f16);
 
@@ -2106,6 +2109,7 @@ pub mod unary {
     cuda_unary_baracuda_wrapper!(tanh_bf16, bk::unary_tanh_bf16);
     cuda_unary_baracuda_wrapper!(relu_bf16, bk::unary_relu_bf16);
     cuda_unary_baracuda_wrapper!(gelu_bf16, bk::unary_gelu_bf16);
+    cuda_unary_baracuda_wrapper!(gelu_tanh_bf16, bk::unary_gelu_tanh_bf16);
     cuda_unary_baracuda_wrapper!(silu_bf16, bk::unary_silu_bf16);
     cuda_unary_baracuda_wrapper!(sigmoid_bf16, bk::unary_sigmoid_bf16);
 
@@ -2122,6 +2126,7 @@ pub mod unary {
     cuda_unary_baracuda_wrapper!(tanh_f64, bk::unary_tanh_f64);
     cuda_unary_baracuda_wrapper!(relu_f64, bk::unary_relu_f64);
     cuda_unary_baracuda_wrapper!(gelu_f64, bk::unary_gelu_f64);
+    cuda_unary_baracuda_wrapper!(gelu_tanh_f64, bk::unary_gelu_tanh_f64);
     cuda_unary_baracuda_wrapper!(silu_f64, bk::unary_silu_f64);
     cuda_unary_baracuda_wrapper!(sigmoid_f64, bk::unary_sigmoid_f64);
 
@@ -2569,7 +2574,17 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(CosElementwise,     &u(f32), cuda, unary::cos_f32,     strided);
     table.register_with_caps(TanhElementwise,    &u(f32), cuda, unary::tanh_f32,    strided);
     table.register_with_caps(ReluElementwise,    &u(f32), cuda, unary::relu_f32,    strided);
-    table.register_with_caps(GeluElementwise,    &u(f32), cuda, unary::gelu_f32,    strided);
+    // GeluElementwise is contractually the TANH approximation (see the
+    // OpKind doc); baracuda's plain `unary_gelu_*` is erf-flavored and
+    // registers under GeluErfElementwise instead. The two were
+    // conflated until the 2026-06-10 live-sweep caught the ~1e-4
+    // divergence vs the CPU kernel.
+    table.register_with_caps(GeluElementwise,    &u(f32), cuda, unary::gelu_tanh_f32, strided);
+    table.register_with_caps(GeluErfElementwise, &u(f32), cuda, unary::gelu_f32,    strided);
+    // StepElementwise composes relu(sign(x)) — exact strict-inequality
+    // semantics; baracuda has no native step kernel (upstream ask
+    // queued). F32 only, matching the pre-retirement PTX coverage.
+    table.register_with_caps(StepElementwise,    &u(f32), cuda, unary::step_f32,    strided);
     table.register_with_caps(SiluElementwise,    &u(f32), cuda, unary::silu_f32,    strided);
     table.register_with_caps(SigmoidElementwise, &u(f32), cuda, unary::sigmoid_f32, strided);
 
@@ -2586,7 +2601,8 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(CosElementwise,     &u(f16), cuda, unary::cos_f16,     strided);
     table.register_with_caps(TanhElementwise,    &u(f16), cuda, unary::tanh_f16,    strided);
     table.register_with_caps(ReluElementwise,    &u(f16), cuda, unary::relu_f16,    strided);
-    table.register_with_caps(GeluElementwise,    &u(f16), cuda, unary::gelu_f16,    strided);
+    table.register_with_caps(GeluElementwise,    &u(f16), cuda, unary::gelu_tanh_f16, strided);
+    table.register_with_caps(GeluErfElementwise, &u(f16), cuda, unary::gelu_f16,    strided);
     table.register_with_caps(SiluElementwise,    &u(f16), cuda, unary::silu_f16,    strided);
     table.register_with_caps(SigmoidElementwise, &u(f16), cuda, unary::sigmoid_f16, strided);
 
@@ -2602,7 +2618,8 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(CosElementwise,     &u(bf16), cuda, unary::cos_bf16,     strided);
     table.register_with_caps(TanhElementwise,    &u(bf16), cuda, unary::tanh_bf16,    strided);
     table.register_with_caps(ReluElementwise,    &u(bf16), cuda, unary::relu_bf16,    strided);
-    table.register_with_caps(GeluElementwise,    &u(bf16), cuda, unary::gelu_bf16,    strided);
+    table.register_with_caps(GeluElementwise,    &u(bf16), cuda, unary::gelu_tanh_bf16, strided);
+    table.register_with_caps(GeluErfElementwise, &u(bf16), cuda, unary::gelu_bf16,    strided);
     table.register_with_caps(SiluElementwise,    &u(bf16), cuda, unary::silu_bf16,    strided);
     table.register_with_caps(SigmoidElementwise, &u(bf16), cuda, unary::sigmoid_bf16, strided);
 
@@ -2618,7 +2635,8 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(CosElementwise,     &u(f64), cuda, unary::cos_f64,     strided);
     table.register_with_caps(TanhElementwise,    &u(f64), cuda, unary::tanh_f64,    strided);
     table.register_with_caps(ReluElementwise,    &u(f64), cuda, unary::relu_f64,    strided);
-    table.register_with_caps(GeluElementwise,    &u(f64), cuda, unary::gelu_f64,    strided);
+    table.register_with_caps(GeluElementwise,    &u(f64), cuda, unary::gelu_tanh_f64, strided);
+    table.register_with_caps(GeluErfElementwise, &u(f64), cuda, unary::gelu_f64,    strided);
     table.register_with_caps(SiluElementwise,    &u(f64), cuda, unary::silu_f64,    strided);
     table.register_with_caps(SigmoidElementwise, &u(f64), cuda, unary::sigmoid_f64, strided);
 }

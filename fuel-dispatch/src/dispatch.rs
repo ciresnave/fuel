@@ -6709,21 +6709,24 @@ mod tests {
         assert!(result.is_ok(), "CPU AddElementwise+F32 should be registered");
     }
 
-    /// When the `cuda` feature is on, the CUDA PTX path AND the
-    /// baracuda path are both auto-registered into the global table.
-    /// Before this change, both paths were test-only and production
-    /// callers got an empty CUDA surface even with `--features cuda`.
+    /// When the `cuda` feature is on, `register_cuda_kernels` (the
+    /// post-retirement residue: cuBLAS MatMul / ReduceTo / Copy /
+    /// CausalConv1d) AND `register_baracuda_cuda_kernels` are both
+    /// auto-registered into the global table. The PTX-duplicate
+    /// unary/binary registrations were stripped in the
+    /// fuel-cuda-kernels retirement (commit d9898fec), so elementwise
+    /// keys carry exactly ONE alternative — baracuda's.
     #[cfg(feature = "cuda")]
     #[test]
     fn global_bindings_auto_registers_cuda_paths() {
         let b = global_bindings();
-        // PTX path: F32 MatMul should resolve.
-        let ptx = b.lookup(
+        // register_cuda_kernels residue: F32 MatMul via cuBLAS.
+        let cublas = b.lookup(
             OpKind::MatMul,
             &[DType::F32, DType::F32, DType::F32],
             BackendId::Cuda,
         );
-        assert!(ptx.is_ok(), "PTX F32 MatMul should be auto-registered on Cuda");
+        assert!(cublas.is_ok(), "cuBLAS F32 MatMul should be auto-registered on Cuda");
 
         // Baracuda path: int8 MatMul exists only via baracuda. If this
         // resolves, both paths fired.
@@ -6737,17 +6740,18 @@ mod tests {
             "baracuda int8 MatMul should be auto-registered on Cuda",
         );
 
-        // Sibling-alternative check: F32 unary Neg has both PTX and
-        // baracuda registrations after the changes; expect 2+
-        // alternatives at that key.
+        // Post-strip invariant: F32 unary Neg resolves with exactly
+        // one alternative (baracuda is the single source of truth for
+        // CUDA elementwise; a second entry would mean a duplicate
+        // registration crept back in).
         let alts = b.lookup_alternatives(
             OpKind::NegElementwise,
             &[DType::F32, DType::F32],
             BackendId::Cuda,
         );
         assert!(
-            alts.len() >= 2,
-            "expected >=2 CUDA Neg F32 alternatives (PTX + baracuda); got {}",
+            alts.len() == 1,
+            "expected exactly 1 CUDA Neg F32 alternative (baracuda); got {}",
             alts.len(),
         );
     }

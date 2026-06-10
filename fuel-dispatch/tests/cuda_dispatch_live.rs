@@ -16,7 +16,7 @@ use std::sync::{Arc, RwLock};
 
 use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Layout, Shape};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{dispatch::{register_cuda_kernels, register_cpu_kernels}, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::{register_cuda_kernels, register_cpu_kernels}, kernel::{KernelBindingTable, OpParams}};
 use fuel_storage::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -74,6 +74,7 @@ fn add_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let lhs = build_storage_cuda(&dev, &[1.0_f32, 2.0, 3.0, 4.0]);
     let rhs = build_storage_cuda(&dev, &[10.0_f32, 20.0, 30.0, 40.0]);
@@ -118,6 +119,7 @@ fn sub_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let lhs = build_storage_cuda(&dev, &[10.0_f32, 20.0, 30.0, 40.0]);
     let rhs = build_storage_cuda(&dev, &[1.0_f32, 2.0, 3.0, 4.0]);
@@ -158,6 +160,7 @@ fn mul_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let lhs = build_storage_cuda(&dev, &[1.0_f32, 2.0, 3.0, 4.0]);
     let rhs = build_storage_cuda(&dev, &[10.0_f32, 20.0, 30.0, 40.0]);
@@ -198,6 +201,7 @@ fn div_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let lhs = build_storage_cuda(&dev, &[10.0_f32, 40.0, 90.0, 160.0]);
     let rhs = build_storage_cuda(&dev, &[1.0_f32, 2.0, 3.0, 4.0]);
@@ -238,6 +242,7 @@ fn maximum_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let lhs = build_storage_cuda(&dev, &[1.0_f32, 5.0, -2.0, 4.0]);
     let rhs = build_storage_cuda(&dev, &[3.0_f32, 2.0, 0.0, 4.0]);
@@ -278,6 +283,7 @@ fn minimum_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let lhs = build_storage_cuda(&dev, &[1.0_f32, 5.0, -2.0, 4.0]);
     let rhs = build_storage_cuda(&dev, &[3.0_f32, 2.0, 0.0, 4.0]);
@@ -324,6 +330,7 @@ fn sub_elementwise_f32_broadcast_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     // Shape: B=2, N=3, M=4. lhs is [B, N, 1] with 6 storage elements
     // that broadcast across M; rhs is [B, N, M] contiguous with 24
@@ -398,6 +405,7 @@ fn relu_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let src = build_storage_cuda(&dev, &[-2.0_f32, -0.5, 0.0, 1.5, 3.0]);
     let out_bytes = CudaStorageBytes::alloc(&dev, 20).expect("out alloc");
@@ -436,6 +444,7 @@ fn neg_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let src = build_storage_cuda(&dev, &[1.0_f32, -2.0, 3.0, -4.0]);
     let out_bytes = CudaStorageBytes::alloc(&dev, 16).expect("out alloc");
@@ -469,6 +478,7 @@ fn sqr_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let src = build_storage_cuda(&dev, &[1.0_f32, 2.0, 3.0, 4.0]);
     let out_bytes = CudaStorageBytes::alloc(&dev, 16).expect("out alloc");
@@ -502,6 +512,7 @@ fn sqrt_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let src = build_storage_cuda(&dev, &[1.0_f32, 4.0, 9.0, 16.0]);
     let out_bytes = CudaStorageBytes::alloc(&dev, 16).expect("out alloc");
@@ -535,6 +546,7 @@ fn recip_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let src = build_storage_cuda(&dev, &[1.0_f32, 2.0, 4.0, 8.0]);
     let out_bytes = CudaStorageBytes::alloc(&dev, 16).expect("out alloc");
@@ -568,6 +580,7 @@ fn abs_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let src = build_storage_cuda(&dev, &[-1.0_f32, -2.0, 3.0, -4.0]);
     let out_bytes = CudaStorageBytes::alloc(&dev, 16).expect("out alloc");
@@ -603,6 +616,7 @@ fn tanh_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [-2.0_f32, -0.5, 0.0, 0.5, 2.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -639,6 +653,7 @@ fn exp_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [-1.0_f32, 0.0, 0.5, 1.0, 2.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -675,6 +690,7 @@ fn log_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [0.5_f32, 1.0, 2.0, std::f32::consts::E, 10.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -711,6 +727,7 @@ fn sin_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [
         0.0_f32,
@@ -753,6 +770,7 @@ fn cos_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [
         0.0_f32,
@@ -795,6 +813,7 @@ fn sigmoid_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [-2.0_f32, -0.5, 0.0, 0.5, 2.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -831,6 +850,7 @@ fn silu_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [-2.0_f32, -0.5, 0.0, 0.5, 2.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -869,6 +889,7 @@ fn gelu_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [-2.0_f32, -0.5, 0.0, 0.5, 2.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -912,6 +933,7 @@ fn step_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [-2.0_f32, -0.5, 0.0, 0.5, 2.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -951,6 +973,7 @@ fn sum_reduce_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -996,6 +1019,7 @@ fn max_reduce_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [1.0_f32, 5.0, 2.0, 4.0, 3.0, 6.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -1040,6 +1064,7 @@ fn min_reduce_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [1.0_f32, 5.0, 2.0, 4.0, 3.0, 6.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -1088,6 +1113,7 @@ fn mean_reduce_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -1135,6 +1161,7 @@ fn matmul_f32_rank2_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     // lhs [2,3] = [[1,2,3],[4,5,6]], rhs [3,2] = [[1,2],[3,4],[5,6]].
     let lhs = build_storage_cuda(&dev, &[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -1188,6 +1215,7 @@ fn matmul_f32_batched_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     // batch 0: rank-2 inputs from above; batch 1: all ones.
     let lhs_data = [
@@ -1250,6 +1278,7 @@ fn matmul_f32_gqa_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     // 4 distinct 2×3 lhs matrices, 2 distinct 3×2 rhs matrices.
     let lhs_data: Vec<f32> = (0..(4 * 2 * 3)).map(|i| i as f32).collect();
@@ -1351,6 +1380,7 @@ fn matmul_bf16_rank2_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let (m, n, k) = (16_usize, 16_usize, 32_usize);
     let a_f32: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.01).sin()).collect();
@@ -1409,6 +1439,7 @@ fn matmul_bf16_batched_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let (m, n, k, batches) = (16_usize, 16_usize, 32_usize, 2_usize);
     let mut a_bf16 = vec![half::bf16::ZERO; batches * m * k];
@@ -1505,6 +1536,7 @@ fn matmul_f16_rank2_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let (m, n, k) = (16_usize, 16_usize, 32_usize);
     let a_f32: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.01).sin()).collect();
@@ -1562,6 +1594,7 @@ fn affine_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [1.0_f32, 2.0, 3.0, 4.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -1669,6 +1702,7 @@ fn cast_f32_to_bf16_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let src_f32: &[f32] = &[1.0, 2.0, 3.0, 4.0, -1.5, 0.0, 100.0, 256.0];
     let src_bytes: &[u8] = bytemuck::cast_slice(src_f32);
@@ -1690,6 +1724,7 @@ fn cast_bf16_to_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let values: &[f32] = &[1.0, 2.0, 3.0, -1.5, 0.0];
     let bf16_bits: Vec<u16> = values.iter().map(|&v| half::bf16::from_f32(v).to_bits()).collect();
@@ -1711,6 +1746,7 @@ fn cast_f32_to_f16_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let src_f32: &[f32] = &[1.0, 2.0, 3.0, 4.0, -1.5, 0.0, 100.0, 256.0];
     let src_bytes: &[u8] = bytemuck::cast_slice(src_f32);
@@ -1730,6 +1766,7 @@ fn cast_f32_to_f64_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let src_f32: &[f32] = &[1.0, 2.0, 3.5, -0.25, 1e6, 1e-6];
     let src_bytes: &[u8] = bytemuck::cast_slice(src_f32);
@@ -1750,6 +1787,7 @@ fn cast_u8_to_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let src_u8: &[u8] = &[0, 1, 2, 127, 128, 255];
     let host = run_cast(&table, &dev, src_u8, DType::U8, DType::F32, src_u8.len());
@@ -1770,6 +1808,7 @@ fn cast_f32_to_i64_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let src_f32: &[f32] = &[0.0, 1.5, -1.5, 100.9, -100.9];
     let src_bytes: &[u8] = bytemuck::cast_slice(src_f32);
@@ -1792,6 +1831,7 @@ fn reduce_sum_to_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -1838,6 +1878,7 @@ fn reduce_max_to_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs = [1.0_f32, 5.0, 2.0, 4.0, 3.0, 6.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -1885,6 +1926,7 @@ fn index_select_f32_u32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     // Source: 4 rows × 3 columns of F32, distinct values per row so a
     // permutation of rows is easy to verify.
@@ -1969,6 +2011,7 @@ fn gather_f32_u32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     // Source: 2 rows × 4 columns of F32.
     let src_f32: [f32; 8] = [
@@ -2048,6 +2091,7 @@ fn clamp_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs: [f32; 7] = [-3.0, -1.0, 0.0, 1.0, 2.0, 5.0, 1.5];
     let src = build_storage_cuda(&dev, &xs);
@@ -2094,6 +2138,7 @@ fn powi_elementwise_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     let xs: [f32; 5] = [-2.0, -1.0, 0.0, 1.5, 3.0];
     let src = build_storage_cuda(&dev, &xs);
@@ -2139,6 +2184,7 @@ fn concat_f32_three_inputs_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     // Three inputs with shapes [2, 1, 2], [2, 2, 2], [2, 1, 2].
     // outer_count=2, input_dim_sizes=[1, 2, 1], inner_count=2.
@@ -2225,6 +2271,7 @@ fn argmax_dim_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     // [2, 3]: row 0 max at idx 1 (5.0), row 1 max at idx 2 (6.0).
     let xs: [f32; 6] = [
@@ -2270,6 +2317,7 @@ fn argmin_dim_f32_through_binding_table() {
     let mut table = KernelBindingTable::new();
     register_cpu_kernels(&mut table);
     register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
 
     // [2, 3]: row 0 min at idx 0 (1.0), row 1 min at idx 1 (3.0).
     let xs: [f32; 6] = [

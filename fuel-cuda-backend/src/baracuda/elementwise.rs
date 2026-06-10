@@ -259,8 +259,28 @@ unary_kernel!(unary_cos_f32, unary_cos_f32, 4, "unary_cos_f32");
 unary_kernel!(unary_tanh_f32, unary_tanh_f32, 4, "unary_tanh_f32");
 unary_kernel!(unary_relu_f32, unary_relu_f32, 4, "unary_relu_f32");
 unary_kernel!(unary_gelu_f32, unary_gelu_f32, 4, "unary_gelu_f32");
+unary_kernel!(unary_gelu_tanh_f32, unary_gelu_tanh_f32, 4, "unary_gelu_tanh_f32");
 unary_kernel!(unary_silu_f32, unary_silu_f32, 4, "unary_silu_f32");
 unary_kernel!(unary_sigmoid_f32, unary_sigmoid_f32, 4, "unary_sigmoid_f32");
+
+/// Heaviside step (`1.0` where `x > 0`, else `0.0`) composed from two
+/// baracuda launches: `sign(x)` then `relu` in place on the result.
+/// `relu(sign(x))` matches Fuel's `StepElementwise` strict-
+/// inequality contract exactly: positive → `relu(1) = 1`, zero →
+/// `relu(0) = 0`, negative → `relu(-1) = 0`, and NaN → `0` (CUDA
+/// `fmaxf(NaN, 0) = 0`, same as the CPU kernel's `NaN > 0 = false`).
+/// Baracuda has no native step kernel; this composite stands in until
+/// one ships upstream. `sign` handles strided inputs; its output is
+/// freshly-allocated contiguous, satisfying the in-place relu's
+/// contig + zero-offset contract.
+pub fn unary_step_f32(
+    src: &CudaStorageBytes,
+    layout: Option<&Layout>,
+) -> Result<CudaStorageBytes> {
+    let mut signs = unary_sign_f32(src, layout)?;
+    unary_inplace_relu_f32(&mut signs)?;
+    Ok(signs)
+}
 
 /// Manifest macro for one (kind, dtype) in-place unary entry. Emits a
 /// `pub fn <name>(target: &mut CudaStorageBytes) -> Result<()>` that
@@ -290,27 +310,33 @@ macro_rules! unary_inplace_kernel {
 // f16) — baracuda exposes all 20 per-dtype symbols via its forward
 // `unary_*_run` family which the `unary_inplace_kernel!` macro
 // reuses with same-pointer dispatch.
+//
+// The `gelu` entries bind baracuda's `unary_gelu_tanh_*` stems:
+// Fuel's `OpKind::GeluInplace` is contractually the tanh
+// approximation, while baracuda's plain `unary_gelu_*` is
+// erf-flavored (that family backs `GeluErfElementwise` /
+// `GeluErfInplace` instead).
 unary_inplace_kernel!(unary_inplace_relu_f32,    unary_relu_f32,    4, "unary_inplace_relu_f32");
 unary_inplace_kernel!(unary_inplace_silu_f32,    unary_silu_f32,    4, "unary_inplace_silu_f32");
-unary_inplace_kernel!(unary_inplace_gelu_f32,    unary_gelu_f32,    4, "unary_inplace_gelu_f32");
+unary_inplace_kernel!(unary_inplace_gelu_f32,    unary_gelu_tanh_f32, 4, "unary_inplace_gelu_f32");
 unary_inplace_kernel!(unary_inplace_tanh_f32,    unary_tanh_f32,    4, "unary_inplace_tanh_f32");
 unary_inplace_kernel!(unary_inplace_sigmoid_f32, unary_sigmoid_f32, 4, "unary_inplace_sigmoid_f32");
 
 unary_inplace_kernel!(unary_inplace_relu_f64,    unary_relu_f64,    8, "unary_inplace_relu_f64");
 unary_inplace_kernel!(unary_inplace_silu_f64,    unary_silu_f64,    8, "unary_inplace_silu_f64");
-unary_inplace_kernel!(unary_inplace_gelu_f64,    unary_gelu_f64,    8, "unary_inplace_gelu_f64");
+unary_inplace_kernel!(unary_inplace_gelu_f64,    unary_gelu_tanh_f64, 8, "unary_inplace_gelu_f64");
 unary_inplace_kernel!(unary_inplace_tanh_f64,    unary_tanh_f64,    8, "unary_inplace_tanh_f64");
 unary_inplace_kernel!(unary_inplace_sigmoid_f64, unary_sigmoid_f64, 8, "unary_inplace_sigmoid_f64");
 
 unary_inplace_kernel!(unary_inplace_relu_bf16,    unary_relu_bf16,    2, "unary_inplace_relu_bf16");
 unary_inplace_kernel!(unary_inplace_silu_bf16,    unary_silu_bf16,    2, "unary_inplace_silu_bf16");
-unary_inplace_kernel!(unary_inplace_gelu_bf16,    unary_gelu_bf16,    2, "unary_inplace_gelu_bf16");
+unary_inplace_kernel!(unary_inplace_gelu_bf16,    unary_gelu_tanh_bf16, 2, "unary_inplace_gelu_bf16");
 unary_inplace_kernel!(unary_inplace_tanh_bf16,    unary_tanh_bf16,    2, "unary_inplace_tanh_bf16");
 unary_inplace_kernel!(unary_inplace_sigmoid_bf16, unary_sigmoid_bf16, 2, "unary_inplace_sigmoid_bf16");
 
 unary_inplace_kernel!(unary_inplace_relu_f16,    unary_relu_f16,    2, "unary_inplace_relu_f16");
 unary_inplace_kernel!(unary_inplace_silu_f16,    unary_silu_f16,    2, "unary_inplace_silu_f16");
-unary_inplace_kernel!(unary_inplace_gelu_f16,    unary_gelu_f16,    2, "unary_inplace_gelu_f16");
+unary_inplace_kernel!(unary_inplace_gelu_f16,    unary_gelu_tanh_f16, 2, "unary_inplace_gelu_f16");
 unary_inplace_kernel!(unary_inplace_tanh_f16,    unary_tanh_f16,    2, "unary_inplace_tanh_f16");
 unary_inplace_kernel!(unary_inplace_sigmoid_f16, unary_sigmoid_f16, 2, "unary_inplace_sigmoid_f16");
 
@@ -442,6 +468,10 @@ unary_kernel!(unary_relu_bf16, unary_relu_bf16, 2, "unary_relu_bf16");
 unary_kernel!(unary_gelu_f64, unary_gelu_f64, 8, "unary_gelu_f64");
 unary_kernel!(unary_gelu_f16, unary_gelu_f16, 2, "unary_gelu_f16");
 unary_kernel!(unary_gelu_bf16, unary_gelu_bf16, 2, "unary_gelu_bf16");
+
+unary_kernel!(unary_gelu_tanh_f64, unary_gelu_tanh_f64, 8, "unary_gelu_tanh_f64");
+unary_kernel!(unary_gelu_tanh_f16, unary_gelu_tanh_f16, 2, "unary_gelu_tanh_f16");
+unary_kernel!(unary_gelu_tanh_bf16, unary_gelu_tanh_bf16, 2, "unary_gelu_tanh_bf16");
 
 unary_kernel!(unary_silu_f64, unary_silu_f64, 8, "unary_silu_f64");
 unary_kernel!(unary_silu_f16, unary_silu_f16, 2, "unary_silu_f16");
