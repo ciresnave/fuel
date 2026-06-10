@@ -106,6 +106,19 @@ pub fn default_device_for(backend: BackendId) -> DeviceLocation {
     }
 }
 
+/// The `BackendId` that owns a `DeviceLocation`'s storage substrate.
+/// Total — `BackendId` mirrors `DeviceLocation` 1:1 (AOCL/MKL are
+/// `kernel_source` siblings under `Cpu`, not distinct backends).
+/// Inverse of [`default_device_for`] modulo GPU ordinals.
+pub fn backend_for_device(loc: DeviceLocation) -> BackendId {
+    match loc {
+        DeviceLocation::Cpu => BackendId::Cpu,
+        DeviceLocation::Cuda { .. } => BackendId::Cuda,
+        DeviceLocation::Vulkan { .. } => BackendId::Vulkan,
+        DeviceLocation::Metal { .. } => BackendId::Metal,
+    }
+}
+
 /// Plan-time configuration the caller hands to [`compile_plan`].
 ///
 /// Most fields have sensible defaults via [`PlanOptions::new`] +
@@ -126,6 +139,21 @@ pub fn default_device_for(backend: BackendId) -> DeviceLocation {
 /// `(target_backend, placement)` from the graph node's side-table.
 /// Matches the pre-1.5 picker's pinned-backend behavior; useful as
 /// a transitional default and for tests.
+///
+/// # `pinned_device`
+///
+/// Picker-arc step 4a. When `Some`, nodes WITHOUT an explicit graph
+/// placement resolve their decision device to this location — the
+/// realize call's pinned DEVICE. This replaces the bridge's
+/// pre-plan monolithic per-node `set_target_backend` loop: the
+/// graph no longer needs `target_backend` stamped before planning;
+/// the plan's per-node winner is stamped back onto the graph AFTER
+/// planning (`fuel-core::pipelined_bridge::stamp_plan_backends`).
+///
+/// Resolution priority per node: explicit `Graph::placement` (the
+/// scheduler's per-node assignment) → `pinned_device` →
+/// `default_device_for(target_backend)` (legacy stamped graphs) →
+/// error.
 ///
 /// # `capabilities_for`
 ///
@@ -149,6 +177,9 @@ pub struct PlanOptions<'env> {
     /// docs.
     pub placements_for_device:
         Option<&'env (dyn Fn(DeviceLocation) -> Vec<BackendId> + 'env)>,
+    /// Realize-call device pin (picker-arc step 4a). See struct
+    /// docs.
+    pub pinned_device: Option<DeviceLocation>,
     /// Capabilities lookup. Required when `populate_costs` is
     /// true.
     pub capabilities_for: Option<&'env CapabilitiesLookup<'env>>,
@@ -167,6 +198,7 @@ impl Default for PlanOptions<'_> {
             max_alternatives_per_node: DEFAULT_MAX_N,
             populate_costs: true,
             placements_for_device: None,
+            pinned_device: None,
             capabilities_for: None,
             judge: None,
         }
@@ -209,6 +241,15 @@ impl<'env> PlanOptions<'env> {
         self
     }
 
+    /// Pin the realize call's device. Nodes without an explicit
+    /// graph placement enumerate their candidates at this location
+    /// — no per-node `target_backend` stamp needed before planning.
+    /// Picker-arc step 4a.
+    pub fn with_pinned_device(mut self, device: DeviceLocation) -> Self {
+        self.pinned_device = Some(device);
+        self
+    }
+
     /// Attach a capabilities lookup. Required when `populate_costs`
     /// is true.
     pub fn with_capabilities_for(mut self, f: &'env CapabilitiesLookup<'env>) -> Self {
@@ -234,10 +275,17 @@ impl<'env> PlanOptions<'env> {
 ///   `Op::Const`, ops not yet wired into dispatch), the node gets
 ///   no entry — view-only adoption + const adoption flow through
 ///   the legacy paths unchanged.
+/// - `Op::Copy` nodes get no entry either (picker-arc step 4a):
+///   their kernel backend is residency-determined (the SOURCE
+///   backend), so transfer-kernel resolution stays with the
+///   executor's `compile_node` path keyed by the bridge-maintained
+///   source-backend stamp.
 /// - Otherwise:
-///   1. Resolve `(op_kind, dtypes, target_backend, device)` from
-///      the graph (`target_backend` via `Graph::target_backend`,
-///      `device` via `Graph::placement` or `default_device_for`).
+///   1. Resolve `(op_kind, dtypes, device)` from the graph + the
+///      options (`device` via `Graph::placement`, then
+///      `PlanOptions::pinned_device`, then
+///      `default_device_for(target_backend)` for legacy stamped
+///      graphs).
 ///   2. Build the placement list — either via
 ///      `options.placements_for_device` (cross-backend mode) or
 ///      `[(target_backend, device)]` (legacy single-backend mode).
@@ -271,16 +319,42 @@ pub fn compile_plan(
             continue;
         };
 
-        let target_backend = graph.target_backend(id).ok_or_else(|| {
-            Error::Msg(format!(
-                "compile_plan: node {:?} ({:?}) has no target_backend set",
-                id, node.op,
-            ))
-            .bt()
-        })?;
+        // Op::Copy is residency-determined, not a picker decision:
+        // its kernel runs on the backend that owns the SOURCE bytes
+        // (`copy_from_cpu_wrapper` for H2D, the source backend's
+        // download wrapper for D2H). Enumerating it against a single
+        // decision device would key the lookup at the wrong end of
+        // the transfer for placement-carrying copies (the consumer
+        // device, where the H2D copy's kernel does NOT run). The
+        // executor's legacy `compile_node` path resolves these via
+        // the source-backend `target_backend` stamp maintained by
+        // the bridge's copy-insertion passes. Picker-arc step 4a.
+        if matches!(node.op, fuel_graph::Op::Copy { .. }) {
+            continue;
+        }
+
+        // Decision-device resolution (step 4a): explicit per-node
+        // placement (scheduler assignments) → the realize call's
+        // pinned device → the legacy stamped-backend default.
+        let explicit_backend = graph.target_backend(id);
         let target_device = graph
             .placement(id)
-            .unwrap_or_else(|| default_device_for(target_backend));
+            .or(options.pinned_device)
+            .or_else(|| explicit_backend.map(default_device_for))
+            .ok_or_else(|| {
+                Error::Msg(format!(
+                    "compile_plan: node {:?} ({:?}) has no device context — \
+                     set PlanOptions::pinned_device, a graph placement, or \
+                     the node's target_backend",
+                    id, node.op,
+                ))
+                .bt()
+            })?;
+        // Diagnostic backend for error reporting; also the legacy
+        // single-backend placement when no topology enumerator is
+        // configured.
+        let diag_backend =
+            explicit_backend.unwrap_or_else(|| backend_for_device(target_device));
         let dtypes = build_lookup_dtypes(graph, node);
 
         // Build the placement list: cross-backend if a topology
@@ -292,7 +366,7 @@ pub fn compile_plan(
                     .into_iter()
                     .map(|backend| (backend, target_device))
                     .collect(),
-                None => vec![(target_backend, target_device)],
+                None => vec![(diag_backend, target_device)],
             };
 
         let op_params = candidate_default_op_params(graph, node);
@@ -314,7 +388,7 @@ pub fn compile_plan(
                 bindings_table,
                 op_kind,
                 &dtypes,
-                target_backend,
+                diag_backend,
             ));
         }
 
@@ -383,7 +457,7 @@ pub fn compile_plan(
                 bindings_table,
                 op_kind,
                 &dtypes,
-                target_backend,
+                diag_backend,
             ));
         }
 
@@ -918,6 +992,158 @@ mod tests {
         let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
         let alts = plan.alternatives(add_id).unwrap();
         assert_eq!(alts.len(), 2, "truncated to max_alternatives_per_node");
+    }
+
+    /// Step 4a parity: an UNSTAMPED graph planned with
+    /// `with_pinned_device(Cpu)` produces the same alternative sets
+    /// as the legacy stamped graph — candidate-for-candidate
+    /// (backend, device, kernel, kernel_source).
+    #[test]
+    fn compile_plan_pinned_device_matches_stamped_plan() {
+        let mut table = KernelBindingTable::new();
+        register_add_f32(
+            &mut table,
+            BackendId::Cpu,
+            noop_kernel,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+
+        let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu]
+            } else {
+                vec![]
+            }
+        };
+
+        // Legacy: stamped target_backend, no pinned device.
+        let (g_stamped, add_stamped) = build_add_graph();
+        let order_stamped = topo_order(&g_stamped, add_stamped);
+        let opts_stamped = PlanOptions::new()
+            .without_cost_population()
+            .with_placements_for_device(&placements_fn);
+        let plan_stamped =
+            compile_plan(&g_stamped, &order_stamped, &table, &opts_stamped)
+                .expect("stamped compile");
+
+        // New: same graph shape, NO target_backend anywhere, pinned
+        // device instead.
+        let mut g = Graph::new();
+        let lhs = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        let rhs = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        let add = g.push(Node {
+            op: Op::Add,
+            inputs: vec![lhs, rhs],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        let order = topo_order(&g, add);
+        let opts = PlanOptions::new()
+            .without_cost_population()
+            .with_placements_for_device(&placements_fn)
+            .with_pinned_device(DeviceLocation::Cpu);
+        let plan = compile_plan(&g, &order, &table, &opts).expect("pinned compile");
+
+        let a = plan_stamped.alternatives(add_stamped).expect("stamped set");
+        let b = plan.alternatives(add).expect("pinned set");
+        assert_eq!(a.len(), b.len(), "same candidate count");
+        for (ca, cb) in a.alternatives().iter().zip(b.alternatives()) {
+            assert_eq!(ca.backend, cb.backend);
+            assert_eq!(ca.device, cb.device);
+            assert_eq!(ca.kernel as usize, cb.kernel as usize, "same kernel ref");
+            assert_eq!(ca.kernel_source, cb.kernel_source);
+        }
+        assert_eq!(a.context(), b.context(), "same decision context");
+    }
+
+    /// Step 4a: a node with neither a placement, nor a pinned
+    /// device, nor a target_backend stamp is a plan-time error —
+    /// fail-fast with an actionable message.
+    #[test]
+    fn compile_plan_errors_without_any_device_context() {
+        let mut table = KernelBindingTable::new();
+        register_add_f32(
+            &mut table,
+            BackendId::Cpu,
+            noop_kernel,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+        let mut g = Graph::new();
+        let lhs = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        let add = g.push(Node {
+            op: Op::Add,
+            inputs: vec![lhs, lhs],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        let order = topo_order(&g, add);
+        let opts = PlanOptions::new().without_cost_population();
+        let err = compile_plan(&g, &order, &table, &opts).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("no device context"),
+            "expected the device-context diagnostic, got: {msg}",
+        );
+    }
+
+    /// Step 4a: `Op::Copy` nodes are excluded from the plan map —
+    /// their kernel is residency-determined (source backend), so
+    /// dispatch flows through the executor's legacy `compile_node`
+    /// path keyed by the bridge's source-backend stamp.
+    #[test]
+    fn compile_plan_skips_op_copy_nodes() {
+        let mut table = KernelBindingTable::new();
+        register_add_f32(
+            &mut table,
+            BackendId::Cpu,
+            noop_kernel,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+        // A Copy registration exists — the skip must not depend on
+        // the table lacking one.
+        table.register_full(
+            OpKind::Copy,
+            &[DType::F32, DType::F32],
+            BackendId::Cpu,
+            noop_kernel_b,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            unknown_cost,
+        );
+
+        let (mut g, add_id) = build_add_graph();
+        let copy_id = g.push(Node {
+            op: Op::Copy { target: DeviceLocation::Cpu },
+            inputs: vec![add_id],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        g.set_target_backend(copy_id, BackendId::Cpu);
+        let order = topo_order(&g, copy_id);
+        let opts = PlanOptions::new()
+            .without_cost_population()
+            .with_pinned_device(DeviceLocation::Cpu);
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+        assert!(plan.alternatives(add_id).is_some(), "Add is planned");
+        assert!(
+            plan.alternatives(copy_id).is_none(),
+            "Op::Copy is residency-determined — no plan entry",
+        );
     }
 
     #[test]
