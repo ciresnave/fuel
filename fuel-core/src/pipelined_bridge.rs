@@ -408,7 +408,12 @@ fn build_execution_plan(
     // Closures borrow the topology snapshot. `placements_for_device`
     // returns every backend co-located on the node's target device;
     // `capabilities_for` looks up that backend's BackendCapabilities
-    // for the Layer-1 cost composer.
+    // for the Layer-1 cost composer; `fallback_for` (picker-arc step
+    // 4b) enumerates every OTHER device's backends, consulted by
+    // `compile_plan` only when the decision device has no
+    // implementation for an (op, dtypes) — the missing-impl op then
+    // becomes a picker decision and the cross-device-copy pass
+    // stitches residency around the off-device winner.
     let placements_for = |dev: fuel_core_types::DeviceLocation|
         -> Vec<fuel_core_types::probe::BackendId>
     {
@@ -418,6 +423,20 @@ fn build_execution_plan(
         -> Option<&fuel_core_types::backend::BackendCapabilities>
     {
         topology.capabilities(b)
+    };
+    let fallback_for = |dev: fuel_core_types::DeviceLocation|
+        -> Vec<(fuel_core_types::probe::BackendId, fuel_core_types::DeviceLocation)>
+    {
+        let mut out = Vec::new();
+        for &d in topology.devices() {
+            if d == dev {
+                continue;
+            }
+            for &b in topology.backends_for(d) {
+                out.push((b, d));
+            }
+        }
+        out
     };
 
     let g = graph
@@ -437,7 +456,8 @@ fn build_execution_plan(
     let mut options = PlanOptions::new()
         .with_placements_for_device(&placements_for)
         .with_capabilities_for(&capabilities_for)
-        .with_pinned_device(pinned_device);
+        .with_pinned_device(pinned_device)
+        .with_fallback_placements_for(&fallback_for);
     if let Some(oracle) = judge_oracle.as_deref() {
         options = options.with_judge(oracle);
     }
@@ -1560,6 +1580,224 @@ mod tests {
         let out = realize_one_as_with_initial::<f32>(&graph, add, &device, initial)
             .expect("realize through the production selector path");
         assert_eq!(out, vec![11.0, 22.0, 33.0, 44.0]);
+    }
+
+    /// Real CPU negation kernel for the step-4b end-to-end test —
+    /// reads `inputs[0]` as f32 and writes the negation into
+    /// `outputs[0]`.
+    fn neg_kernel_cpu_f32(
+        inputs: &[Arc<RwLock<Storage>>],
+        outputs: &mut [Arc<RwLock<Storage>>],
+        _layouts: &[fuel_core_types::Layout],
+        _params: &fuel_dispatch::kernel::OpParams,
+    ) -> Result<()> {
+        let negated: Vec<f32> = {
+            let guard = inputs[0]
+                .read()
+                .map_err(|_| Error::Msg("input lock poisoned".into()).bt())?;
+            let BackendStorage::Cpu(c) = &guard.inner else {
+                return Err(Error::Msg("test kernel: input must be CPU".into()).bt());
+            };
+            let typed: &[f32] = c.as_slice().expect("f32 cast");
+            typed.iter().map(|x| -x).collect()
+        };
+        let mut out = outputs[0]
+            .write()
+            .map_err(|_| Error::Msg("output lock poisoned".into()).bt())?;
+        let BackendStorage::Cpu(c) = &mut out.inner else {
+            return Err(Error::Msg("test kernel: output must be CPU".into()).bt());
+        };
+        c.as_slice_mut().expect("f32 cast").copy_from_slice(&negated);
+        Ok(())
+    }
+
+    /// Step 4b end-to-end on CPU, no GPU needed: the realize device
+    /// is pinned to CUDA but the (synthetic) binding table has Neg
+    /// f32 ONLY on CPU. The picker's off-device fallback places the
+    /// op on CPU, the stamping pass commits BackendId::Cpu, the
+    /// residency pass proves no crossing (the const lives on CPU
+    /// too), and the executor realizes the plan's winner kernel
+    /// correctly on CPU.
+    #[test]
+    fn fallback_off_device_node_realizes_on_cpu_end_to_end() {
+        use fuel_core_types::dispatch::OpKind;
+        use fuel_dispatch::kernel::{unknown_cost, KernelBindingTable, KernelCaps};
+
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (c1, neg) = {
+            let mut g = graph.write().unwrap();
+            let c1 = push_node(&mut g, Op::Const, vec![]);
+            let neg = push_node(&mut g, Op::Neg, vec![c1]);
+            (c1, neg)
+        };
+        let mut cache = StorageCache::new();
+        cache.insert(c1, cpu_storage_f32(&[1.0, 2.0, 3.0, 4.0]));
+
+        // Synthetic table: Neg f32 registered ONLY under Cpu — the
+        // pinned CUDA device has no implementation.
+        let mut table = KernelBindingTable::new();
+        table.register_full(
+            OpKind::NegElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cpu,
+            neg_kernel_cpu_f32,
+            KernelCaps::empty(),
+            fuel_dispatch::fused::PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            unknown_cost,
+        );
+
+        let placements_fn = move |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == cuda0 { vec![BackendId::Cuda] } else { vec![BackendId::Cpu] }
+        };
+        let fallback_fn = |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+            vec![(BackendId::Cpu, DeviceLocation::Cpu)]
+        };
+        let options = PlanOptions::new()
+            .without_cost_population()
+            .with_pinned_device(cuda0)
+            .with_placements_for_device(&placements_fn)
+            .with_fallback_placements_for(&fallback_fn);
+        let plan = {
+            let g = graph.read().unwrap();
+            let order = fuel_graph::topo_order(&g, neg);
+            compile_plan(&g, &order, &table, &options).expect("plan with fallback")
+        };
+        let winner = plan
+            .alternatives(neg)
+            .and_then(|s| s.winner())
+            .expect("fallback winner");
+        assert_eq!(winner.backend, BackendId::Cpu);
+        assert_eq!(winner.device, DeviceLocation::Cpu, "placed off-device");
+
+        stamp_plan_backends(&graph, &[neg], &plan, cuda0).unwrap();
+        assert_eq!(
+            graph.read().unwrap().target_backend(neg),
+            Some(BackendId::Cpu),
+            "off-device winner's backend stamped",
+        );
+        let inserted = insert_resident_input_copies(
+            &graph, &[neg], &cache, cuda0, &plan,
+        )
+        .unwrap();
+        assert_eq!(
+            inserted, 0,
+            "const lives on CPU; the fallback node runs on CPU — no crossing",
+        );
+
+        let (storage, _layout) = PipelinedExecutor::realize_with_plan(
+            Arc::clone(&graph), neg, cache, Arc::new(plan),
+        )
+        .expect("realize the off-device fallback winner on CPU");
+        let guard = storage.read().unwrap();
+        let BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected CPU storage from the fallback node");
+        };
+        let typed: &[f32] = c.as_slice().expect("f32 cast");
+        assert_eq!(typed, &[-1.0, -2.0, -3.0, -4.0]);
+    }
+
+    /// Step 4b residency stitch: when an off-device fallback winner
+    /// feeds a consumer planned on the pinned device, the
+    /// cross-device-copy pass inserts exactly one Op::Copy on the
+    /// crossing, targeting the consumer device and stamped with the
+    /// SOURCE backend. Graph-rewrite assertions only — no GPU.
+    #[test]
+    fn fallback_winner_crossing_gets_copy_stitched() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (c1, neg, sqr) = {
+            let mut g = graph.write().unwrap();
+            let c1 = push_node(&mut g, Op::Const, vec![]);
+            let neg = push_node(&mut g, Op::Neg, vec![c1]);
+            let sqr = push_node(&mut g, Op::Sqr, vec![neg]);
+            (c1, neg, sqr)
+        };
+        let mut cache = StorageCache::new();
+        cache.insert(c1, cpu_storage_f32(&[1.0; 4]));
+
+        // Neg fell back to CPU; Sqr stays on the pinned CUDA device.
+        let plan = plan_with_winners(&[
+            (neg, BackendId::Cpu, DeviceLocation::Cpu),
+            (sqr, BackendId::Cuda, cuda0),
+        ]);
+        stamp_plan_backends(&graph, &[sqr], &plan, cuda0).unwrap();
+        let inserted = insert_resident_input_copies(
+            &graph, &[sqr], &cache, cuda0, &plan,
+        )
+        .unwrap();
+        assert_eq!(inserted, 1, "one crossing (neg→sqr) → one copy");
+
+        let g = graph.read().unwrap();
+        let bridge_id = g.node(sqr).inputs[0];
+        assert_ne!(bridge_id, neg, "sqr rewired off the raw fallback output");
+        let bridge = g.node(bridge_id);
+        assert!(
+            matches!(bridge.op, Op::Copy { target } if target == cuda0),
+            "bridge copy targets the consumer device; got {:?}",
+            bridge.op,
+        );
+        assert_eq!(bridge.inputs, vec![neg], "copy reads the fallback output");
+        assert_eq!(
+            g.target_backend(bridge_id),
+            Some(BackendId::Cpu),
+            "copy stamped with the SOURCE backend (bytes live on CPU)",
+        );
+        assert_eq!(
+            g.target_backend(neg),
+            Some(BackendId::Cpu),
+            "fallback node keeps its off-device stamp",
+        );
+        assert_eq!(
+            g.target_backend(sqr),
+            Some(BackendId::Cuda),
+            "pinned-device consumer keeps its winner stamp",
+        );
+    }
+
+    /// Step 4b realize-root coherence: a root Op::Copy (placement-
+    /// less splice) whose input fell back off-device gets re-stamped
+    /// with the SOURCE backend by the residency pass — the download
+    /// kernel must run where the bytes actually live, not on the
+    /// pinned device.
+    #[test]
+    fn realize_root_copy_restamped_to_fallback_source() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (c1, neg, root_copy) = {
+            let mut g = graph.write().unwrap();
+            let c1 = push_node(&mut g, Op::Const, vec![]);
+            let neg = push_node(&mut g, Op::Neg, vec![c1]);
+            // Mimic prepare()'s realize-root splice (no placement).
+            let root_copy = push_node(
+                &mut g,
+                Op::Copy { target: DeviceLocation::Cpu },
+                vec![neg],
+            );
+            (c1, neg, root_copy)
+        };
+        let mut cache = StorageCache::new();
+        cache.insert(c1, cpu_storage_f32(&[1.0; 4]));
+
+        let plan = plan_with_winners(&[(neg, BackendId::Cpu, DeviceLocation::Cpu)]);
+        stamp_plan_backends(&graph, &[root_copy], &plan, cuda0).unwrap();
+        assert_eq!(
+            graph.read().unwrap().target_backend(root_copy),
+            Some(BackendId::Cuda),
+            "stamping pass defaults the planless root copy to the pinned backend",
+        );
+
+        let inserted = insert_resident_input_copies(
+            &graph, &[root_copy], &cache, cuda0, &plan,
+        )
+        .unwrap();
+        assert_eq!(inserted, 0, "Op::Copy consumers are never re-wrapped");
+        assert_eq!(
+            graph.read().unwrap().target_backend(root_copy),
+            Some(BackendId::Cpu),
+            "re-stamp sweep moves the root copy onto the SOURCE backend \
+             (its input fell back to CPU)",
+        );
     }
 
     /// The live-handle lookup resolves the realize device + CPU and

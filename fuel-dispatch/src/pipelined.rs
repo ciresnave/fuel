@@ -319,8 +319,15 @@ fn extend_with_side_effect_roots(graph: &Graph, user_roots: &[NodeId]) -> Vec<No
 /// long-term home for "this op on this device" is graph-level
 /// dispatch insertion (Op::Copy edges to a backend that does
 /// support the shape), which makes the routing decision visible in
-/// the IR rather than hidden in the executor. Until that work
-/// lands, callers see a clear error when coverage is missing.
+/// the IR rather than hidden in the executor. Picker-arc step 4b
+/// landed exactly that: `compile_plan`'s off-device fallback
+/// (`PlanOptions::fallback_placements_for`) admits a candidate on
+/// another device when the pinned device lacks the implementation,
+/// and the bridge's cross-device-copy pass stitches residency
+/// around the off-device winner. There is exactly ONE fallback
+/// owner — the plan-time picker; this executor still dispatches
+/// fail-fast, and ops with no implementation anywhere surface the
+/// plan-time `NoBackendForOp` error.
 ///
 /// This is a deliberate departure from the legacy executor's
 /// `cpu_fallback(op, inputs, shape, dtype, cache)` semantics.
