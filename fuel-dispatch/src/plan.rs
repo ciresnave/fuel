@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 
-use fuel_core_types::dispatch::OpKind;
+use fuel_core_types::dispatch::{OpKind, SizeClass};
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, DeviceLocation, Error, Result, Shape};
 use fuel_graph::{Graph, NodeId};
@@ -37,7 +37,7 @@ use crate::kernel::KernelBindingTable;
 use crate::pipelined::{build_lookup_dtypes, op_to_op_kind};
 use crate::ranker::{
     apply_filter_chain, compute_static_costs, default_chain, enumerate_candidates,
-    AlternativeSet, CapabilitiesLookup, FilterContext, JudgeOracle,
+    AlternativeSet, CapabilitiesLookup, DecisionContext, FilterContext, JudgeOracle,
     PrecisionRequirement, DEFAULT_MAX_N,
 };
 
@@ -316,6 +316,27 @@ pub fn compile_plan(
                 &dtypes,
                 target_backend,
             ));
+        }
+
+        // Stamp the decision-point identity so dispatch-time
+        // selectors (Picker 2) can re-query the Judge per candidate.
+        // The derivation mirrors `compute_static_costs`'s Layer-2
+        // lookup key exactly: principal dtype = first lookup dtype,
+        // size class = first input's element count (SizeClass(0)
+        // for nullary ops).
+        if let Some(&principal_dtype) = dtypes.first() {
+            let size_class = node
+                .inputs
+                .first()
+                .map(|&input_id| {
+                    SizeClass::from_elem_count(graph.node(input_id).shape.elem_count())
+                })
+                .unwrap_or(SizeClass(0));
+            set.set_context(DecisionContext {
+                op: op_kind,
+                principal_dtype,
+                size_class,
+            });
         }
 
         // Apply the default filter chain.
@@ -834,6 +855,33 @@ mod tests {
             BackendId::Cuda,
             "Layer-2 measurement reverses Layer-1 verdict via compile_plan",
         );
+    }
+
+    /// `compile_plan` stamps each set with the decision-point
+    /// context using the same key derivation as the cost composer's
+    /// Layer-2 lookup: principal dtype = first lookup dtype, size
+    /// class = first input's element count.
+    #[test]
+    fn compile_plan_stamps_decision_context() {
+        use fuel_core_types::dispatch::SizeClass;
+
+        let mut table = KernelBindingTable::new();
+        register_add_f32(
+            &mut table,
+            BackendId::Cpu,
+            noop_kernel,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+        let (g, add_id) = build_add_graph();
+        let order = topo_order(&g, add_id);
+        let opts = PlanOptions::new().without_cost_population();
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+        let alts = plan.alternatives(add_id).expect("Add alternatives present");
+        let ctx = alts.context().expect("context stamped");
+        assert_eq!(ctx.op, OpKind::AddElementwise);
+        assert_eq!(ctx.principal_dtype, DType::F32);
+        // build_add_graph inputs are shape [3].
+        assert_eq!(ctx.size_class, SizeClass::from_elem_count(3));
     }
 
     #[test]
