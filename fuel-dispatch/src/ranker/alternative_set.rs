@@ -10,9 +10,40 @@
 //!
 //! [`apply_filter_chain`]: super::apply_filter_chain
 
+use fuel_core_types::dispatch::{OpKind, SizeClass};
+use fuel_core_types::DType;
 use smallvec::SmallVec;
 
 use super::candidate::Candidate;
+
+/// Plan-time identity of the decision point an [`AlternativeSet`]
+/// belongs to — the `(op, principal dtype, size class)` triple the
+/// Judge keys its measurements on.
+///
+/// Stamped by `compile_plan` so dispatch-time selectors (Picker 2)
+/// can re-query the [`super::JudgeOracle`] per candidate without
+/// being constructed per node. The derivation matches
+/// [`super::cost::compute_static_costs`]'s Layer-2 lookup exactly:
+///
+/// - `principal_dtype` — the first entry of the node's lookup
+///   dtypes (first input's dtype by `build_lookup_dtypes`
+///   convention).
+/// - `size_class` — [`SizeClass::from_elem_count`] of the FIRST
+///   input's shape (`SizeClass(0)` for nullary ops), matching the
+///   Judge profiler's bucketing.
+///
+/// A set without a context (`AlternativeSet::context() == None`)
+/// simply disables judge re-querying in context-aware selectors —
+/// they fall back to the candidates' static costs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecisionContext {
+    /// Dispatch OpKind of the decision point.
+    pub op: OpKind,
+    /// Principal dtype (first lookup dtype) — the Judge's dtype axis.
+    pub principal_dtype: DType,
+    /// Size bucket of the first input — the Judge's size axis.
+    pub size_class: SizeClass,
+}
 
 /// Default top-N preservation per architecture v1.0 §04
 /// ("Default N=3 per decision point gives the runtime picker
@@ -38,6 +69,10 @@ pub const DEFAULT_MAX_N: usize = 3;
 pub struct AlternativeSet {
     candidates: SmallVec<[Candidate; 4]>,
     max_n: usize,
+    /// Decision-point identity for dispatch-time Judge re-queries.
+    /// `None` until `compile_plan` stamps it (or for hand-built
+    /// test sets) — context-aware selectors then skip the Judge leg.
+    context: Option<DecisionContext>,
 }
 
 impl AlternativeSet {
@@ -48,6 +83,7 @@ impl AlternativeSet {
         Self {
             candidates: SmallVec::new(),
             max_n: DEFAULT_MAX_N,
+            context: None,
         }
     }
 
@@ -58,6 +94,7 @@ impl AlternativeSet {
         Self {
             candidates: SmallVec::new(),
             max_n,
+            context: None,
         }
     }
 
@@ -68,7 +105,22 @@ impl AlternativeSet {
         Self {
             candidates: SmallVec::from_vec(candidates),
             max_n,
+            context: None,
         }
+    }
+
+    /// Stamp the decision-point identity. `compile_plan` calls this
+    /// once per kernel-bearing node; the context survives filtering,
+    /// ranking, and truncation untouched (it describes the decision
+    /// point, not the candidates).
+    pub fn set_context(&mut self, ctx: DecisionContext) {
+        self.context = Some(ctx);
+    }
+
+    /// The decision-point identity, if stamped. Dispatch-time
+    /// selectors use this to key [`super::JudgeOracle`] lookups.
+    pub fn context(&self) -> Option<&DecisionContext> {
+        self.context.as_ref()
     }
 
     /// Append one candidate. Used by the enumerator as it walks
@@ -312,5 +364,36 @@ mod tests {
             DEFAULT_MAX_N,
         );
         s.retain_indices(&[5]);
+    }
+
+    /// Context defaults to None, round-trips through `set_context`,
+    /// and survives retain + truncate (it describes the decision
+    /// point, not the candidates).
+    #[test]
+    fn context_round_trips_and_survives_mutation() {
+        use fuel_core_types::dispatch::{OpKind, SizeClass};
+        use fuel_core_types::DType;
+
+        let mut s = AlternativeSet::from_candidates(
+            vec![dummy_candidate(1), dummy_candidate(2), dummy_candidate(3)],
+            2,
+        );
+        assert!(s.context().is_none(), "fresh sets carry no context");
+
+        let ctx = DecisionContext {
+            op: OpKind::MatMul,
+            principal_dtype: DType::F32,
+            size_class: SizeClass(16),
+        };
+        s.set_context(ctx);
+        assert_eq!(s.context(), Some(&ctx));
+
+        s.retain_indices(&[0, 2]);
+        s.truncate_to_top_n();
+        assert_eq!(
+            s.context(),
+            Some(&ctx),
+            "context survives retain + truncate",
+        );
     }
 }

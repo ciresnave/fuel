@@ -37,6 +37,7 @@
 pub mod alternative_set;
 pub mod candidate;
 pub mod chain;
+pub mod chained_selector;
 pub mod cost;
 pub mod enumerate;
 pub mod filter;
@@ -46,9 +47,10 @@ pub mod judge_aware_selector;
 pub mod runtime_selector;
 pub mod vram_pressure_selector;
 
-pub use alternative_set::{AlternativeSet, DEFAULT_MAX_N};
+pub use alternative_set::{AlternativeSet, DecisionContext, DEFAULT_MAX_N};
 pub use candidate::{Candidate, CouplingAdjustment};
 pub use chain::apply_filter_chain;
+pub use chained_selector::ChainedSelector;
 pub use cost::{composite_ns, compute_static_costs, CapabilitiesLookup};
 pub use enumerate::{enumerate_candidates, enumerate_candidates_default};
 pub use filter::{AlternativeFilter, FilterClass, FilterContext};
