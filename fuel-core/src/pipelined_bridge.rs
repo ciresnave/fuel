@@ -140,6 +140,31 @@ pub fn realize_one_as_with_initial<T: bytemuck::Pod>(
     device: &Device,
     initial: StorageCache,
 ) -> Result<Vec<T>> {
+    realize_one_as_with_initial_reporting::<T>(graph, target, device, initial)
+        .map(|(bytes, _root_kernel_source)| bytes)
+}
+
+/// [`realize_one_as_with_initial`] sibling that additionally reports
+/// the `kernel_source` of the alternative the picker dispatched for
+/// the realize ROOT — `target`, the caller's node, not the spliced
+/// D2H `Op::Copy` that `prepare()` adds on top of it.
+///
+/// Executor-unification Session 3 rider: the Judge's bridge realizer
+/// (`crate::factories::BridgeRealizer`) consumes this so the
+/// realizer-measured `CellRun` records the TRUE dispatched sibling at
+/// multi-alternative cells (portable/AOCL/MKL at one CPU key) instead
+/// of assuming the first-registered one.
+///
+/// `None` means the plan carried no `AlternativeSet` for the root —
+/// the executor then dispatched the first-registered binding via its
+/// `compile_node` fallback, so callers wanting an attribution tag in
+/// that case should fall back to the first-registered convention.
+pub fn realize_one_as_with_initial_reporting<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    target: NodeId,
+    device: &Device,
+    initial: StorageCache,
+) -> Result<(Vec<T>, Option<&'static str>)> {
     let (cache, _backend_id, mut effective_targets) =
         prepare(graph, &[target], device, initial)?;
     let Some(cpu_target) = effective_targets.pop() else {
@@ -171,10 +196,10 @@ pub fn realize_one_as_with_initial<T: bytemuck::Pod>(
     // selector (Picker 2) — VramPressure guard + JudgeAware rank.
     // See `production_selector_for`.
     let selector = production_selector_for(device);
-    let storage = dispatch_with_plan_retry(
-        graph, cpu_target, cache, selector, device.location(),
+    let (storage, root_kernel_source) = dispatch_with_plan_retry(
+        graph, cpu_target, cache, selector, device.location(), target,
     )?;
-    extract_cpu_bytes_typed::<T>(&storage)
+    Ok((extract_cpu_bytes_typed::<T>(&storage)?, root_kernel_source))
 }
 
 /// Phase 4.3 retry-on-stale-plan loop for the single-target path.
@@ -221,13 +246,14 @@ fn dispatch_with_plan_retry(
     cache: StorageCache,
     selector: Option<Arc<dyn RuntimeSelector>>,
     pinned_loc: DeviceLocation,
-) -> Result<Arc<RwLock<Storage>>> {
+    report_node: NodeId,
+) -> Result<(Arc<RwLock<Storage>>, Option<&'static str>)> {
     let mut attempt = 0;
     // Hold a clone of `cache` outside the loop; the inner clone per-
     // attempt shares the Arcs (cheap) while keeping a fresh
     // structurally-empty layer for the executor to consume.
     loop {
-        let plan = build_execution_plan(graph, &[cpu_target], pinned_loc)?;
+        let plan = build_execution_plan(graph, &[cpu_target], pinned_loc, &cache)?;
         // Step 4a: commit the picker's winners to the graph BEFORE
         // residency stitching + ordering derivation read them.
         stamp_plan_backends(graph, &[cpu_target], &plan, pinned_loc)?;
@@ -244,14 +270,24 @@ fn dispatch_with_plan_retry(
         let cache_for_attempt = cache.clone();
         let result = match selector.as_ref() {
             Some(sel) => PipelinedExecutor::realize_with_plan_and_selector(
-                graph.clone(), cpu_target, cache_for_attempt, plan, Arc::clone(sel),
+                graph.clone(), cpu_target, cache_for_attempt,
+                Arc::clone(&plan), Arc::clone(sel),
             ),
             None => PipelinedExecutor::realize_with_plan(
-                graph.clone(), cpu_target, cache_for_attempt, plan,
+                graph.clone(), cpu_target, cache_for_attempt,
+                Arc::clone(&plan),
             ),
         };
         match result {
-            Ok((storage, _layout)) => return Ok(storage),
+            Ok((storage, _layout)) => {
+                // Session 3 rider: report which sibling the picker
+                // dispatched for `report_node`, from the SAME plan
+                // (and selector) the successful attempt ran with.
+                let dispatched = dispatched_kernel_source(
+                    &plan, selector.as_deref(), report_node,
+                );
+                return Ok((storage, dispatched));
+            }
             Err(e) if matches!(e, Error::TopologyChanged { .. })
                 && attempt + 1 < MAX_PLAN_REBUILDS =>
             {
@@ -262,6 +298,33 @@ fn dispatch_with_plan_retry(
             Err(e) => return Err(e),
         }
     }
+}
+
+/// Replicate the executor's `resolve_compiled` pick for one node
+/// against the plan that just dispatched: the runtime selector's
+/// choice when one is active, the static `AlternativeSet::winner`
+/// otherwise. `None` when the plan has no `AlternativeSet` for the
+/// node — the executor then dispatched the first-registered binding
+/// via its `compile_node` fallback.
+///
+/// Honesty note: a selector (e.g. JudgeAware) re-queries live state
+/// per `select` call, so this post-realize re-query could in
+/// principle diverge from the pick the executor's compile thread made
+/// moments earlier — that requires a concurrent Judge-profile or
+/// VRAM-pressure shift mid-realize. Acceptable for a diagnostic
+/// attribution tag; if exactness ever matters, the stronger seam is
+/// the executor recording its actual pick per node.
+fn dispatched_kernel_source(
+    plan: &ExecutionPlan,
+    selector: Option<&dyn RuntimeSelector>,
+    node: NodeId,
+) -> Option<&'static str> {
+    let set = plan.alternatives(node)?;
+    let pick = match selector {
+        Some(s) => s.select(set),
+        None => set.winner(),
+    }?;
+    Some(pick.kernel_source)
 }
 
 /// Phase 2.2 wiring: insert `Op::Contiguize` before kernels whose
@@ -313,7 +376,7 @@ pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
     let pinned_loc = device.location();
     let mut attempt = 0;
     let results = loop {
-        let plan = build_execution_plan(graph, &effective_targets, pinned_loc)?;
+        let plan = build_execution_plan(graph, &effective_targets, pinned_loc, &cache)?;
         stamp_plan_backends(graph, &effective_targets, &plan, pinned_loc)?;
         insert_resident_input_copies(
             graph, &effective_targets, &cache, pinned_loc, &plan,
@@ -412,10 +475,25 @@ fn extract_cpu_bytes_typed<T: bytemuck::Pod>(
 /// rebuilds + atomically swaps on a probe / registration bump).
 /// The snapshot is alive for the duration of `compile_plan`; closures
 /// borrow it.
+///
+/// ## Planner Stage 2 (2026-06-11)
+///
+/// `cache` is `prepare()`'s StorageCache (const uploads + persistent
+/// `initial` slots). It feeds `PlanOptions::with_input_residency` so
+/// `compile_plan`'s residency walk prices already-resident inputs
+/// from where their bytes actually live — the same
+/// [`cached_storage_location`] derivation `effective_placements`
+/// uses for the residency stitch. The topology snapshot doubles as
+/// the `TransferEstimator` (`SystemTopology::estimate_transfer_ns`,
+/// Stage-1 calibration behind it), making the inbound-transfer cost
+/// term + the priced off-device admission live on every plan.
+/// Single-device hosts see no change: zero transfer paths, zero
+/// terms, and an empty `fallback_for` keeps every set on-device.
 fn build_execution_plan(
     graph: &Arc<RwLock<Graph>>,
     targets: &[NodeId],
     pinned_device: DeviceLocation,
+    cache: &StorageCache,
 ) -> Result<Arc<ExecutionPlan>> {
     let topology = SystemTopology::current();
 
@@ -476,11 +554,32 @@ fn build_execution_plan(
     // the pre-oracle behavior. Cells the Judge never measured miss
     // inside the oracle and keep their Layer-1 estimate too.
     let judge_oracle = crate::judge::cached_oracle();
+
+    // Planner Stage 2: residency for already-resident graph inputs
+    // (consts uploaded by build_const_cache + InferenceContext
+    // persistent slots) — where the bytes actually live, via the
+    // same derivation `effective_placements` uses. Lock-poison /
+    // unresolvable-location cases answer `None` (no pricing signal)
+    // rather than erroring: planning degrades to unpriced edges,
+    // and the catastrophic-poison case still surfaces on the
+    // realize path proper.
+    let input_residency = |id: NodeId| -> Option<DeviceLocation> {
+        let slot = cache.get(&id)?;
+        let guard = slot.read().ok()?;
+        cached_storage_location(&guard)
+    };
+
     let mut options = PlanOptions::new()
         .with_placements_for_device(&placements_for)
         .with_capabilities_for(&capabilities_for)
         .with_pinned_device(pinned_device)
-        .with_fallback_placements_for(&fallback_for);
+        .with_fallback_placements_for(&fallback_for)
+        // Stage 2: the topology snapshot IS the production
+        // TransferEstimator (see the trait impl in
+        // `crate::topology`). Same-device queries cost zero without
+        // touching the lazy calibration probe.
+        .with_transfer_estimator(&*topology)
+        .with_input_residency(&input_residency);
     if let Some(oracle) = judge_oracle.as_deref() {
         options = options.with_judge(oracle);
     }
@@ -1497,6 +1596,7 @@ mod tests {
                 precision:
                     fuel_dispatch::fused::PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
                 static_cost: Default::default(),
+                inbound_transfer_ns: 0,
                 op_params: fuel_dispatch::kernel::OpParams::None,
                 coupling: Vec::new(),
                 kernel_source: "",
@@ -1580,6 +1680,86 @@ mod tests {
         );
     }
 
+    /// Planner Stage 2 fuel-core adapter, CPU-only integration: the
+    /// `SystemTopology`-as-`TransferEstimator` impl + the cache-
+    /// residency callback thread through `compile_plan` and change
+    /// NOTHING on a single-device host — zero inbound-transfer
+    /// terms, candidate-for-candidate identical plan. (Zero probed
+    /// paths is pinned by `transfer_cost::tests::
+    /// calibrate_cpu_only_is_empty`; this test never queries a
+    /// cross-device pair, so the same-device short-circuit
+    /// guarantees the lazy calibration probe can't fire even on
+    /// GPU-featured builds — where the local CPU-only binding table
+    /// keeps every candidate and residency on CPU anyway.)
+    #[test]
+    fn stage2_cpu_only_estimator_leaves_plan_unchanged() {
+        use fuel_core_types::dispatch::OpKind;
+        use fuel_dispatch::kernel::{unknown_cost, KernelBindingTable, KernelCaps};
+
+        let mut table = KernelBindingTable::new();
+        table.register_full(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            noop_kernel_for_tests,
+            KernelCaps::empty(),
+            fuel_dispatch::fused::PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            unknown_cost,
+        );
+
+        let mut g = Graph::new();
+        let c1 = push_node(&mut g, Op::Const, vec![]);
+        let add = push_node(&mut g, Op::Add, vec![c1, c1]);
+        let order = topo_order_multi(&g, &[add]);
+
+        // The const's bytes are CPU-resident — what build_const_cache
+        // produces for a CPU realize.
+        let mut cache = StorageCache::new();
+        cache.insert(c1, cpu_storage_f32(&[1.0; 4]));
+
+        let topology = SystemTopology::current();
+        let placements_for = |dev: DeviceLocation| -> Vec<BackendId> {
+            topology.backends_for(dev).to_vec()
+        };
+        let capabilities_for = |b: BackendId|
+            -> Option<&fuel_core_types::backend::BackendCapabilities>
+        { topology.capabilities(b) };
+        // Same closure shape build_execution_plan wires.
+        let input_residency = |id: NodeId| -> Option<DeviceLocation> {
+            let slot = cache.get(&id)?;
+            let guard = slot.read().ok()?;
+            cached_storage_location(&guard)
+        };
+
+        let base_opts = PlanOptions::new()
+            .with_pinned_device(DeviceLocation::Cpu)
+            .with_placements_for_device(&placements_for)
+            .with_capabilities_for(&capabilities_for);
+        let base = compile_plan(&g, &order, &table, &base_opts).expect("base plan");
+
+        let wired_opts = PlanOptions::new()
+            .with_pinned_device(DeviceLocation::Cpu)
+            .with_placements_for_device(&placements_for)
+            .with_capabilities_for(&capabilities_for)
+            .with_transfer_estimator(&*topology)
+            .with_input_residency(&input_residency);
+        let wired = compile_plan(&g, &order, &table, &wired_opts).expect("wired plan");
+
+        let a = base.alternatives(add).expect("base set");
+        let b = wired.alternatives(add).expect("wired set");
+        assert_eq!(a.len(), b.len(), "same candidate count");
+        for (ca, cb) in a.alternatives().iter().zip(b.alternatives()) {
+            assert_eq!(ca.backend, cb.backend);
+            assert_eq!(ca.device, cb.device);
+            assert_eq!(ca.kernel as usize, cb.kernel as usize, "same kernel ref");
+            assert_eq!(ca.kernel_source, cb.kernel_source);
+            assert_eq!(
+                cb.inbound_transfer_ns, 0,
+                "CPU-only host: zero transfer terms",
+            );
+        }
+    }
+
     /// Picker-arc step 3 end-to-end: a CPU realize through
     /// `realize_one_as_with_initial` runs the production
     /// `ChainedSelector` path (`realize_with_plan_and_selector`,
@@ -1610,6 +1790,52 @@ mod tests {
         let out = realize_one_as_with_initial::<f32>(&graph, add, &device, initial)
             .expect("realize through the production selector path");
         assert_eq!(out, vec![11.0, 22.0, 33.0, 44.0]);
+    }
+
+    /// Session 3 rider: the reporting realize returns the
+    /// `kernel_source` of the picker's pick for the realize ROOT (the
+    /// caller's node — not the spliced D2H `Op::Copy` on top of it).
+    /// The CPU Add f32 cell always has at least one binding-table
+    /// alternative, so the plan covers the root and the report is
+    /// `Some`; its value must be one of the cell's registered tags
+    /// (under default features that's the lone portable registration;
+    /// with onemkl/aocl siblings it's whichever the picker ranks
+    /// first — membership, not position, is the contract).
+    #[test]
+    fn reporting_realize_returns_root_kernel_source() {
+        use fuel_core_types::dispatch::OpKind;
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (c1, c2, add) = {
+            let mut g = graph.write().unwrap();
+            let c1 = push_node(&mut g, Op::Const, vec![]);
+            let c2 = push_node(&mut g, Op::Const, vec![]);
+            let add = push_node(&mut g, Op::Add, vec![c1, c2]);
+            (c1, c2, add)
+        };
+        let mut initial = StorageCache::new();
+        initial.insert(c1, cpu_storage_f32(&[1.0, 2.0, 3.0, 4.0]));
+        initial.insert(c2, cpu_storage_f32(&[10.0, 20.0, 30.0, 40.0]));
+
+        let device = crate::Device::cpu();
+        let (out, root_kernel_source) =
+            realize_one_as_with_initial_reporting::<f32>(&graph, add, &device, initial)
+                .expect("reporting realize");
+        assert_eq!(out, vec![11.0, 22.0, 33.0, 44.0]);
+
+        let src = root_kernel_source
+            .expect("plan covers the Add root → dispatched-sibling report present");
+        let bindings = global_bindings();
+        let alts = bindings.lookup_alternatives(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+        );
+        assert!(
+            alts.iter().any(|e| e.kernel_source == src),
+            "reported kernel_source {src:?} must be a registered sibling at \
+             the (AddElementwise, [F32;3], Cpu) cell",
+        );
     }
 
     /// Real CPU negation kernel for the step-4b end-to-end test —

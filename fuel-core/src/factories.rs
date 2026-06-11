@@ -51,6 +51,21 @@ use fuel_dispatch::pipelined::StorageCache;
 /// the Judge logs and skips the cell.
 pub trait LazyRealizer {
     fn realize_f32(&mut self, tensor: &LazyTensor) -> Result<Vec<f32>>;
+
+    /// `kernel_source` of the alternative the picker dispatched for
+    /// the most recent [`Self::realize_f32`]'s root node (Session 3
+    /// rider — the Judge tags the realizer-measured `CellRun` with
+    /// this so multi-sibling cells record the TRUE dispatched
+    /// sibling).
+    ///
+    /// `None` means "no report": either no realize has run yet, or
+    /// the plan carried no `AlternativeSet` for the root (the
+    /// executor then dispatched the first-registered binding — the
+    /// caller's fallback attribution should match that convention).
+    /// Defaulted so test stubs without a picker stay one-method.
+    fn last_kernel_source(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// Bridge-backed realizer pinned to one [`crate::Device`].
@@ -64,11 +79,14 @@ pub trait LazyRealizer {
 struct BridgeRealizer {
     device: crate::Device,
     cache: StorageCache,
+    /// Picker attribution from the most recent realize — see
+    /// [`LazyRealizer::last_kernel_source`].
+    last_kernel_source: Option<&'static str>,
 }
 
 impl BridgeRealizer {
     fn new(device: crate::Device) -> Self {
-        Self { device, cache: StorageCache::new() }
+        Self { device, cache: StorageCache::new(), last_kernel_source: None }
     }
 }
 
@@ -93,12 +111,19 @@ impl LazyRealizer for BridgeRealizer {
             std::mem::take(&mut self.cache),
         )?;
 
-        crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
-            &graph,
-            target,
-            &self.device,
-            self.cache.clone(),
-        )
+        let (bytes, root_kernel_source) =
+            crate::pipelined_bridge::realize_one_as_with_initial_reporting::<f32>(
+                &graph,
+                target,
+                &self.device,
+                self.cache.clone(),
+            )?;
+        self.last_kernel_source = root_kernel_source;
+        Ok(bytes)
+    }
+
+    fn last_kernel_source(&self) -> Option<&'static str> {
+        self.last_kernel_source
     }
 }
 

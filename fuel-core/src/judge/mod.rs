@@ -440,12 +440,14 @@ impl Judge {
     /// equivalence-class representative the Judge now walks
     /// `KernelBindingTable::lookup_alternatives(op_kind, dtypes,
     /// backend)` and emits one `CellRun` per registered alternative.
-    /// The first alternative is timed via the standard realizer path
-    /// (matching pre-v2 behavior, since `lookup_with_caps` returns
-    /// the first alternative — what the picker would dispatch).
-    /// Subsequent alternatives at the same `(op, dtypes, backend)`
-    /// key are timed via a direct kernel-pointer call so AOCL/MKL
-    /// siblings get distinct latency numbers.
+    /// One alternative is timed via the standard realizer path; its
+    /// CellRun is attributed to the sibling the picker ACTUALLY
+    /// dispatched (the bridge's post-realize report — Session 3
+    /// rider, 2026-06-11 — with first-registered fallback when the
+    /// plan had no entry for the measured root). The remaining
+    /// alternatives at the same `(op, dtypes, backend)` key are
+    /// timed via a direct kernel-pointer call so AOCL/MKL siblings
+    /// get distinct latency numbers.
     pub fn run(&self, probe: &ProbeReport) -> ProfileReport {
         let mut entries = Vec::new();
         let classes = probe.equivalence_classes();
@@ -463,31 +465,27 @@ impl Judge {
                 // First pass: per equivalence-class representative,
                 // measure latency + capture the kernel's output for
                 // consensus comparison. The realizer path measures
-                // the first alternative at the binding-table cell
-                // (`lookup_with_caps`'s first-registered convention).
+                // whichever alternative the picker dispatches; its
+                // CellRun already carries that sibling's
+                // `kernel_source` (the bridge's post-realize report,
+                // filled in by `time_op_capturing` — Session 3 rider).
                 let mut cell_runs: Vec<CellRun> = Vec::with_capacity(class_keys.len());
                 for key in &class_keys {
                     let devs = &classes[key];
                     let rep = devs[0];
-                    if let Some(mut run) = self.measure_on_device_capturing(op, DType::F32, &sz, rep) {
-                        // Tag the realizer-measured run with the first
-                        // alternative's `kernel_source` from the
-                        // binding table — that's the kernel
-                        // `lookup_with_caps` returned, which is what
-                        // the realizer just dispatched.
-                        run.kernel_source =
-                            primary_kernel_source(op, rep.backend).to_string();
-                        let primary_source = run.kernel_source.clone();
+                    if let Some(run) = self.measure_on_device_capturing(op, DType::F32, &sz, rep) {
+                        let dispatched_source = run.kernel_source.clone();
                         cell_runs.push(run);
 
-                        // Per-alternative measurement: walk SUBSEQUENT
-                        // alternatives at the same `(op_kind, dtypes,
-                        // backend)` binding-table cell and time each
-                        // via a direct kernel-pointer call. The
-                        // primary alternative is already covered by
-                        // the realizer measurement above.
+                        // Per-alternative measurement: walk the
+                        // REMAINING alternatives at the same
+                        // `(op_kind, dtypes, backend)` binding-table
+                        // cell and time each via a direct
+                        // kernel-pointer call. The dispatched
+                        // alternative is already covered by the
+                        // realizer measurement above.
                         if let Some(extra_runs) =
-                            self.measure_extra_alternatives(op, &sz, rep, &primary_source)
+                            self.measure_extra_alternatives(op, &sz, rep, &dispatched_source)
                         {
                             for extra in extra_runs {
                                 cell_runs.push(extra);
@@ -571,29 +569,31 @@ impl Judge {
     }
 
     /// Walk binding-table alternatives at `(op_kind, dtypes, backend)`
-    /// beyond the first (which the realizer already timed) and run a
+    /// beyond the one the realizer already timed (the picker's
+    /// dispatched sibling, `dispatched_kernel_source`) and run a
     /// direct kernel-pointer measurement on each. Returns `None` when
     /// only one alternative is registered (no extra work) or when the
     /// op family is not yet wired into the direct-call path.
     ///
     /// **Why direct call instead of realizer**: the realizer dispatches
-    /// through `lookup_with_caps`, which returns the FIRST registered
-    /// alternative. To measure AOCL when MKL is first-registered, we
-    /// have to bypass the picker entirely and invoke the specific
-    /// `BindingEntry::kernel` function pointer with hand-built inputs.
+    /// through the picker, which selects ONE alternative per realize.
+    /// To measure the siblings the picker didn't choose (e.g. AOCL
+    /// when MKL won the rank), we have to bypass the picker entirely
+    /// and invoke each specific `BindingEntry::kernel` function
+    /// pointer with hand-built inputs.
     ///
     /// **Scope**: v1 supports the subset of [`PROFILED_OPS`] where
     /// input/output Storage + Layout + OpParams can be built without
     /// going through the lazy-tensor graph. Today: matmul, elementwise
     /// unary/binary, reductions, reduce-to, affine/clamp/powi. Other
-    /// op families return `None` and only the realizer-measured first
-    /// alternative is recorded for the cell.
+    /// op families return `None` and only the realizer-measured
+    /// dispatched alternative is recorded for the cell.
     fn measure_extra_alternatives(
         &self,
         op: OpKind,
         size: &OpSize,
         device: &DeviceDescriptor,
-        primary_kernel_source: &str,
+        dispatched_kernel_source: &str,
     ) -> Option<Vec<CellRun>> {
         // Direct kernel-pointer calls are only meaningful on the CPU
         // backend today — CUDA / Vulkan storage handles are backend-
@@ -604,7 +604,7 @@ impl Judge {
             return None;
         }
 
-        let alternatives = direct_call_alternatives(op, primary_kernel_source);
+        let alternatives = direct_call_alternatives(op, dispatched_kernel_source);
         if alternatives.is_empty() {
             return None;
         }
@@ -884,16 +884,28 @@ impl Judge {
         let median = timings_ns[timings_ns.len() / 2];
         let output = captured_output?;
 
+        // Attribution (executor-unification Session 3 rider): the
+        // bridge realizer reports the `kernel_source` of the
+        // alternative the picker actually dispatched for the measured
+        // root. At multi-sibling cells (portable/AOCL/MKL at one CPU
+        // key) the dispatched sibling can differ from the
+        // first-registered one, so the realizer's report is the only
+        // truthful tag. `None` (no plan entry for the root, or a
+        // realizer impl without a picker) falls back to the
+        // first-registered tag — exactly the alternative the
+        // executor's `compile_node` fallback dispatches in that case.
+        let kernel_source = match realizer.last_kernel_source() {
+            Some(src) => src.to_string(),
+            None => primary_kernel_source(op, device.backend).to_string(),
+        };
+
         Some(CellRun {
             backend: device.backend,
             device_index: device.device_index,
             output,
             latency_ns: median,
             iterations: self.iterations,
-            // Filled in by `Judge::run` after this returns — the
-            // binding-table lookup needs the BackendId which the
-            // caller has but this function's narrow scope doesn't.
-            kernel_source: String::new(),
+            kernel_source,
         })
     }
 }
@@ -924,10 +936,13 @@ struct PreparedDirectCall {
 }
 
 /// Look up the `kernel_source` of the FIRST alternative at the
-/// binding-table cell — that's what `lookup_with_caps` returns and
-/// what the realizer just dispatched. Returns `""` when no
-/// alternative is registered (the realizer would fall back to a
-/// different code path).
+/// binding-table cell. Post-Session-3-rider this is the FALLBACK
+/// attribution only — used when the realizer reports no dispatched
+/// sibling ([`crate::factories::LazyRealizer::last_kernel_source`]
+/// returned `None`, i.e. the plan had no entry for the measured root
+/// and the executor's `compile_node` fallback dispatched the
+/// first-registered binding). Returns `""` when no alternative is
+/// registered at all.
 fn primary_kernel_source(op: OpKind, backend: BackendId) -> &'static str {
     let dtypes = match canonical_binding_dtypes_for(op) {
         Some(d) => d,
@@ -960,12 +975,12 @@ fn has_binding_alternative(op: OpKind, backend: BackendId) -> bool {
 }
 
 /// Collect every binding-table alternative at the cell EXCEPT the
-/// primary (already timed via the realizer). Returns a fresh `Vec`
-/// of [`DirectCallAlternative`] — empty when the cell has only one
-/// alternative or the op isn't direct-call-eligible yet.
+/// dispatched one (already timed via the realizer). Returns a fresh
+/// `Vec` of [`DirectCallAlternative`] — empty when the cell has only
+/// one alternative or the op isn't direct-call-eligible yet.
 fn direct_call_alternatives(
     op: OpKind,
-    primary_kernel_source: &str,
+    dispatched_kernel_source: &str,
 ) -> Vec<DirectCallAlternative> {
     let dtypes = match canonical_binding_dtypes_for(op) {
         Some(d) => d,
@@ -976,14 +991,17 @@ fn direct_call_alternatives(
     if alts.len() < 2 {
         return Vec::new();
     }
-    // Skip the primary (first alternative — which the realizer already
-    // measured). `primary_kernel_source` matches its tag; subsequent
-    // alternatives with distinct kernel_sources are the work.
+    // Skip the alternative the realizer already measured — the FIRST
+    // entry whose tag matches `dispatched_kernel_source`, wherever it
+    // sits in registration order (the picker is free to dispatch a
+    // non-first sibling). If no tag matches (off-cell dispatch — a
+    // fallback placement ran the root elsewhere), nothing is skipped:
+    // every CPU sibling at the cell is then unmeasured work.
     let mut extras = Vec::with_capacity(alts.len().saturating_sub(1));
-    let mut skipped_primary = false;
+    let mut skipped_dispatched = false;
     for alt in alts.iter() {
-        if !skipped_primary && alt.kernel_source == primary_kernel_source {
-            skipped_primary = true;
+        if !skipped_dispatched && alt.kernel_source == dispatched_kernel_source {
+            skipped_dispatched = true;
             continue;
         }
         extras.push(DirectCallAlternative {
@@ -1839,6 +1857,70 @@ mod tests {
     fn op_kind_display_is_stable() {
         assert_eq!(OpKind::MatMul.to_string(), "matmul");
         assert_eq!(OpKind::AddElementwise.to_string(), "add");
+    }
+
+    /// Session 3 rider: the realizer-measured CellRun records the
+    /// `kernel_source` the realizer REPORTS — the picker's dispatched
+    /// sibling — not the binding table's first-registered alternative.
+    /// A realizer with no report (`last_kernel_source() == None`,
+    /// e.g. the plan had no entry for the root) falls back to the
+    /// first-registered tag, matching the executor's `compile_node`
+    /// fallback at exactly that decision point.
+    #[test]
+    fn cell_run_kernel_source_comes_from_realizer_report() {
+        struct StubRealizer {
+            src: Option<&'static str>,
+        }
+        impl crate::factories::LazyRealizer for StubRealizer {
+            fn realize_f32(
+                &mut self,
+                _tensor: &crate::lazy::LazyTensor,
+            ) -> Result<Vec<f32>> {
+                Ok(vec![0.0; 8])
+            }
+            fn last_kernel_source(&self) -> Option<&'static str> {
+                self.src
+            }
+        }
+
+        let judge = Judge {
+            iterations: 1,
+            warmup: 0,
+            size_plan_override: None,
+            fixtures: None,
+        };
+        let device = DeviceDescriptor {
+            backend: BackendId::Cpu,
+            device_index: 0,
+            hardware_sku: "test-cpu".into(),
+            vendor_id: 0,
+            device_id: 0,
+            compute_capability: None,
+            driver_version: String::new(),
+            total_memory_bytes: 0,
+            location: fuel_core_types::DeviceLocation::Cpu,
+        };
+        let op = OpKind::AddElementwise;
+        let size = OpSize::Elementwise(8);
+
+        // Realizer reports a dispatched sibling → CellRun carries it
+        // verbatim, regardless of registration order at the cell.
+        let mut reporting = StubRealizer { src: Some("stub-sibling") };
+        let run = judge
+            .time_op_capturing(op, &size, &device, &mut reporting)
+            .expect("stub realize succeeds");
+        assert_eq!(run.kernel_source, "stub-sibling");
+
+        // No report → first-registered fallback attribution.
+        let mut silent = StubRealizer { src: None };
+        let run = judge
+            .time_op_capturing(op, &size, &device, &mut silent)
+            .expect("stub realize succeeds");
+        assert_eq!(
+            run.kernel_source,
+            primary_kernel_source(op, BackendId::Cpu),
+            "no realizer report → first-registered binding-table tag",
+        );
     }
 
     #[test]
