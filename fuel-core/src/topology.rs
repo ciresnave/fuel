@@ -568,6 +568,31 @@ impl SystemTopology {
     }
 }
 
+/// Planner Stage-2 adapter: `SystemTopology` IS the production
+/// [`fuel_dispatch::ranker::TransferEstimator`]. The optimizer
+/// ranker lives in `fuel-dispatch`, which must not depend on
+/// `fuel-core` (dependency direction), so `compile_plan` consumes
+/// transfer pricing through the trait — threaded via
+/// `PlanOptions::with_transfer_estimator` in
+/// `pipelined_bridge::build_execution_plan` — while the numbers
+/// come from the Stage-1 [`TransferCalibration`] behind
+/// [`SystemTopology::estimate_transfer_ns`] (probed lazily once per
+/// generation; conservative per-path-class fallbacks otherwise).
+/// Same-device queries short-circuit to zero WITHOUT touching the
+/// calibration, so CPU-only plans never trigger a probe.
+impl fuel_dispatch::ranker::TransferEstimator for SystemTopology {
+    fn estimate_transfer_ns(
+        &self,
+        src: DeviceLocation,
+        dst: DeviceLocation,
+        bytes: u64,
+    ) -> u64 {
+        // Inherent method (same name) takes resolution priority —
+        // no recursion.
+        SystemTopology::estimate_transfer_ns(self, src, dst, bytes)
+    }
+}
+
 /// Default substrate class for a backend. Used when a backend
 /// hasn't registered its [`BackendCapabilities`] yet (so we don't
 /// have an explicit declaration). Stays in lockstep with what each

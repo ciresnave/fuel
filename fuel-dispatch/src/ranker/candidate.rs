@@ -55,6 +55,18 @@ pub struct Candidate {
     /// Phase 1.4's cost composition reads this; Phase 3's Judge
     /// integration refines it with Layer-2 measurements.
     pub static_cost: CostEstimate,
+    /// Planner Stage-2 inbound-transfer term: estimated nanoseconds
+    /// to move this decision point's inputs from their committed
+    /// residencies onto `device`, summed over every input whose
+    /// residency differs from `device`. Populated by
+    /// [`super::cost::apply_inbound_transfer_costs`] when a
+    /// `TransferEstimator` is threaded through `PlanOptions`; zero
+    /// when all inputs are co-resident, residency is unknown, or no
+    /// estimator is configured. Kept separate from `static_cost` so
+    /// Layer-2 Judge refinement (which REPLACES the kernel-time
+    /// estimate) never clobbers the transfer term — ranking adds the
+    /// two (`composite_ns(static_cost) + inbound_transfer_ns`).
+    pub inbound_transfer_ns: u64,
     /// The op-specific parameter payload that will accompany this
     /// kernel call. Cloned here so the candidate is self-contained
     /// for plan-time reasoning. Most ops carry `OpParams::None`.
@@ -133,6 +145,7 @@ mod tests {
                 bytes_moved: 400,
                 kernel_overhead_ns: 50,
             },
+            inbound_transfer_ns: 0,
             op_params: OpParams::None,
             coupling: Vec::new(),
             kernel_source: "",

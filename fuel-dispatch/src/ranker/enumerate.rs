@@ -94,6 +94,9 @@ pub fn enumerate_candidates(
                 // candidate's backend/device + binding-table entry
                 // when it needs the live CostFn output.
                 static_cost: Default::default(),
+                // Stage-2 transfer pricing populates this after
+                // enumeration (`apply_inbound_transfer_costs`).
+                inbound_transfer_ns: 0,
                 op_params: op_params.clone(),
                 coupling: Vec::new(),
                 kernel_source: entry.kernel_source,

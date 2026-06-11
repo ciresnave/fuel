@@ -85,6 +85,7 @@ mod tests {
                 ..PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU
             },
             static_cost: Default::default(),
+            inbound_transfer_ns: 0,
             op_params: OpParams::None,
             coupling: Vec::new(),
             kernel_source: "",

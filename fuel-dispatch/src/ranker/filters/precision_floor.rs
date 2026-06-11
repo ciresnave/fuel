@@ -165,6 +165,7 @@ mod tests {
             device: DeviceLocation::Cpu,
             precision,
             static_cost: Default::default(),
+            inbound_transfer_ns: 0,
             op_params: OpParams::None,
             coupling: Vec::new(),
             kernel_source: "",

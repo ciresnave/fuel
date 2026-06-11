@@ -141,6 +141,7 @@ mod tests {
                 bytes_moved: cost_ns,
                 kernel_overhead_ns: 0,
             },
+            inbound_transfer_ns: 0,
             op_params: OpParams::None,
             coupling: Vec::new(),
             kernel_source: "",

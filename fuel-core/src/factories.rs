@@ -111,6 +111,25 @@ impl LazyRealizer for BridgeRealizer {
             std::mem::take(&mut self.cache),
         )?;
 
+        // Planner Stage 2 (2026-06-11): the Judge measures a
+        // SPECIFIC backend at a SPECIFIC device, so hard-pin every
+        // reachable node with an explicit placement. The priced
+        // off-device admission relax only applies to soft
+        // (realize-call) pins — without this stamp the planner
+        // could legitimately move a profiled op to a "cheaper"
+        // sibling device and the cell would record a mislabeled
+        // latency. Idempotent across the warmup + timed re-realizes
+        // of one cell (same graph, same device).
+        {
+            let mut g = graph
+                .write()
+                .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
+            let loc = self.device.location();
+            for &id in &order {
+                g.set_placement(id, loc);
+            }
+        }
+
         let (bytes, root_kernel_source) =
             crate::pipelined_bridge::realize_one_as_with_initial_reporting::<f32>(
                 &graph,

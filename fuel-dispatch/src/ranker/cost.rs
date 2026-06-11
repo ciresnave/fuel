@@ -32,12 +32,70 @@
 use fuel_core_types::backend::BackendCapabilities;
 use fuel_core_types::dispatch::{OpKind, SizeClass};
 use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, Shape};
+use fuel_core_types::{DType, DeviceLocation, Shape};
 
 use super::alternative_set::AlternativeSet;
 use super::judge::JudgeOracle;
 use crate::fused::CostEstimate;
 use crate::kernel::{KernelBindingTable, OpParams};
+
+/// Plan-time transfer-cost oracle — planner Stage 2
+/// (`docs/session-prompts/load-time-incremental-planner.md`).
+///
+/// Prices moving `bytes` from `src` to `dst` in wall-clock
+/// nanoseconds. `fuel-dispatch` must not depend on `fuel-core`
+/// (dependency direction), so the production numbers — Stage 1's
+/// `SystemTopology::estimate_transfer_ns`, backed by the lazily
+/// probed per-generation `TransferCalibration` — thread in through
+/// this trait on `PlanOptions`, mirroring how [`JudgeOracle`] was
+/// threaded in Phase 3. Tests use synthetic implementations; unit
+/// tests must never depend on live calibration.
+///
+/// Contract:
+///
+/// - `src == dst` must cost zero (no bytes move).
+/// - Never panics; conservative estimates for unknown paths.
+/// - Monotonic in `bytes` for a fixed path.
+pub trait TransferEstimator: Send + Sync {
+    /// Estimated wall-clock nanoseconds to move `bytes` from `src`
+    /// to `dst`. Zero when `src == dst`.
+    fn estimate_transfer_ns(
+        &self,
+        src: DeviceLocation,
+        dst: DeviceLocation,
+        bytes: u64,
+    ) -> u64;
+}
+
+/// Populate [`super::Candidate::inbound_transfer_ns`] on every
+/// candidate in `set`: the sum over `inputs` of
+/// `estimator.estimate_transfer_ns(src, candidate.device, bytes)`.
+///
+/// `inputs` carries one `(resident device, byte size)` pair per
+/// decision-point input whose residency is KNOWN at plan time
+/// (committed producer placements + caller-supplied residency for
+/// graph inputs). Inputs with unknown residency are simply absent —
+/// no term fires for them, which is the conservative direction (an
+/// unpriceable edge never justifies *or* penalizes a move).
+///
+/// Inputs already resident on the candidate's device contribute
+/// zero by the [`TransferEstimator`] contract, so co-located
+/// candidates rank purely on kernel cost. Saturating arithmetic
+/// throughout.
+pub fn apply_inbound_transfer_costs(
+    set: &mut AlternativeSet,
+    inputs: &[(DeviceLocation, u64)],
+    estimator: &dyn TransferEstimator,
+) {
+    for i in 0..set.len() {
+        let dst = set.alternatives()[i].device;
+        let mut total: u64 = 0;
+        for &(src, bytes) in inputs {
+            total = total.saturating_add(estimator.estimate_transfer_ns(src, dst, bytes));
+        }
+        set.set_inbound_transfer_ns(i, total);
+    }
+}
 
 /// Convert a `CostEstimate` into a sortable composite nanosecond
 /// figure. Lower is better. Treats compute + memory as parallel
@@ -219,9 +277,33 @@ mod tests {
             device: DeviceLocation::Cpu,
             precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
             static_cost: cost,
+            inbound_transfer_ns: 0,
             op_params: OpParams::None,
             coupling: Vec::new(),
             kernel_source: "",
+        }
+    }
+
+    /// Synthetic estimator: zero same-device, otherwise
+    /// `latency + bytes * ns_per_byte`. Deterministic — no live
+    /// calibration anywhere near unit tests.
+    struct FlatEstimator {
+        ns_per_byte: u64,
+        latency_ns: u64,
+    }
+
+    impl TransferEstimator for FlatEstimator {
+        fn estimate_transfer_ns(
+            &self,
+            src: DeviceLocation,
+            dst: DeviceLocation,
+            bytes: u64,
+        ) -> u64 {
+            if src == dst {
+                return 0;
+            }
+            self.latency_ns
+                .saturating_add(bytes.saturating_mul(self.ns_per_byte))
         }
     }
 
@@ -647,5 +729,115 @@ mod tests {
             u32::MAX,
             "u64 → u32 saturating cast pins at u32::MAX",
         );
+    }
+
+    // ===== Planner Stage 2: inbound-transfer pricing =====
+
+    /// Per-candidate term = sum over inputs; co-resident inputs
+    /// contribute zero.
+    #[test]
+    fn inbound_transfer_sums_over_offdevice_inputs_only() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut set = AlternativeSet::from_candidates(
+            vec![
+                // Local CPU candidate.
+                candidate_with_cost(noop_a, CostEstimate::default()),
+                // Off-device CUDA candidate.
+                Candidate {
+                    backend: BackendId::Cuda,
+                    device: cuda0,
+                    ..candidate_with_cost(noop_b, CostEstimate::default())
+                },
+            ],
+            DEFAULT_MAX_N,
+        );
+        let est = FlatEstimator { ns_per_byte: 1, latency_ns: 100 };
+        // Two inputs resident on CPU: 12 bytes and 8 bytes.
+        let inputs = [(DeviceLocation::Cpu, 12_u64), (DeviceLocation::Cpu, 8_u64)];
+        apply_inbound_transfer_costs(&mut set, &inputs, &est);
+        assert_eq!(
+            set.alternatives()[0].inbound_transfer_ns, 0,
+            "co-resident inputs price zero",
+        );
+        assert_eq!(
+            set.alternatives()[1].inbound_transfer_ns,
+            (100 + 12) + (100 + 8),
+            "off-device candidate pays latency + bytes per input",
+        );
+    }
+
+    /// Unknown-residency inputs are absent from the slice — no term
+    /// fires, candidates keep zero.
+    #[test]
+    fn inbound_transfer_empty_inputs_prices_zero() {
+        let mut set = AlternativeSet::from_candidates(
+            vec![candidate_with_cost(noop_a, CostEstimate::default())],
+            DEFAULT_MAX_N,
+        );
+        let est = FlatEstimator { ns_per_byte: 1_000_000, latency_ns: u64::MAX };
+        apply_inbound_transfer_costs(&mut set, &[], &est);
+        assert_eq!(set.alternatives()[0].inbound_transfer_ns, 0);
+    }
+
+    /// Saturating accumulation — absurd per-input estimates pin at
+    /// u64::MAX instead of overflowing.
+    #[test]
+    fn inbound_transfer_saturates() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut set = AlternativeSet::from_candidates(
+            vec![Candidate {
+                backend: BackendId::Cuda,
+                device: cuda0,
+                ..candidate_with_cost(noop_a, CostEstimate::default())
+            }],
+            DEFAULT_MAX_N,
+        );
+        let est = FlatEstimator { ns_per_byte: 0, latency_ns: u64::MAX };
+        let inputs = [(DeviceLocation::Cpu, 1_u64), (DeviceLocation::Cpu, 1_u64)];
+        apply_inbound_transfer_costs(&mut set, &inputs, &est);
+        assert_eq!(set.alternatives()[0].inbound_transfer_ns, u64::MAX);
+    }
+
+    /// The transfer term composes with ranking: equal kernel costs,
+    /// the co-resident candidate wins; a big-enough kernel gap still
+    /// outranks the transfer.
+    #[test]
+    fn inbound_transfer_flips_rank_only_when_it_dominates() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let local = |ns: u64| candidate_with_cost(
+            noop_a,
+            CostEstimate { flops: ns, bytes_moved: 0, kernel_overhead_ns: 0 },
+        );
+        let remote = |ns: u64| Candidate {
+            backend: BackendId::Cuda,
+            device: cuda0,
+            ..candidate_with_cost(noop_b, CostEstimate {
+                flops: ns,
+                bytes_moved: 0,
+                kernel_overhead_ns: 0,
+            })
+        };
+        let est = FlatEstimator { ns_per_byte: 0, latency_ns: 1_000 };
+        let inputs = [(DeviceLocation::Cpu, 4_u64)];
+
+        // Tiny op: remote kernel "faster" (500 vs 600) but the 1µs
+        // crossing dominates → local wins.
+        let mut tiny = AlternativeSet::from_candidates(
+            vec![remote(500), local(600)],
+            DEFAULT_MAX_N,
+        );
+        apply_inbound_transfer_costs(&mut tiny, &inputs, &est);
+        tiny.rank_by_composite_cost();
+        assert_eq!(tiny.winner().unwrap().device, DeviceLocation::Cpu);
+
+        // Huge op: kernel gap (10µs) dwarfs the crossing → remote
+        // wins despite paying the transfer.
+        let mut huge = AlternativeSet::from_candidates(
+            vec![local(20_000), remote(10_000)],
+            DEFAULT_MAX_N,
+        );
+        apply_inbound_transfer_costs(&mut huge, &inputs, &est);
+        huge.rank_by_composite_cost();
+        assert_eq!(huge.winner().unwrap().device, cuda0);
     }
 }
