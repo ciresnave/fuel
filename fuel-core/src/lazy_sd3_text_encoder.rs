@@ -288,6 +288,9 @@ impl Sd3TripleClip {
         }
 
         // 1. CLIP-L: penultimate-layer hidden + EOS-pooled final hidden.
+        //    This forward seeds THE graph; CLIP-G and T5 below anchor
+        //    onto it so the cross-encoder concats compose in-graph
+        //    (cross-graph concat is a build error).
         let (clip_l_final, clip_l_pen) = self
             .clip_l
             .forward_until_encoder_layer(prompt_tokens_clip_l, -2)?;
@@ -299,7 +302,7 @@ impl Sd3TripleClip {
         //    then project the pooled vector through the no-bias linear.
         let (clip_g_final, clip_g_pen) = self
             .clip_g
-            .forward_until_encoder_layer(prompt_tokens_clip_g, -2)?;
+            .forward_until_encoder_layer_anchored(&clip_l_final, prompt_tokens_clip_g, -2)?;
         let clip_g_pooled_raw = clip_g_final
             .slice(1_usize, eos_pos_clip_g, 1)?
             .reshape(Shape::from_dims(&[1, clip_g_dim]))?;
@@ -315,7 +318,12 @@ impl Sd3TripleClip {
         let clip_concat = clip_l_pen.concat(&clip_g_pen, 2_usize)?;
         let pad_amount = SD3_CONTEXT_DIM - SD3_POOLED_DIM;
         let clip_padded = clip_concat.pad_with_zeros(2_usize, 0, pad_amount)?;
-        let t5_hidden = self.t5.forward_encoder(prompt_tokens_t5)?;
+        // T5 anchored on the shared graph: embed tokens off the CLIP-L
+        // anchor, then run the encoder over the pre-embedded input.
+        let t5_embeds = self
+            .t5
+            .embed_tokens_anchored(&clip_l_final, prompt_tokens_t5)?;
+        let t5_hidden = self.t5.forward_encoder_embeds(&t5_embeds)?;
         let context = clip_padded.concat(&t5_hidden, 1_usize)?;
 
         Ok((context, y))
