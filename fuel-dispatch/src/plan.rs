@@ -33,13 +33,15 @@ use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, DeviceLocation, Error, Result, Shape};
 use fuel_graph::{Graph, NodeId};
 
+use smallvec::SmallVec;
+
 use crate::kernel::KernelBindingTable;
 use crate::pipelined::{build_lookup_dtypes, op_to_op_kind};
 use crate::ranker::{
-    apply_filter_chain, apply_inbound_transfer_costs, compute_static_costs,
-    default_chain, enumerate_candidates, AlternativeSet, CapabilitiesLookup,
-    DecisionContext, FilterContext, JudgeOracle, PrecisionRequirement,
-    TransferEstimator, DEFAULT_MAX_N,
+    apply_filter_chain, apply_inbound_transfer_costs, composite_ns,
+    compute_static_costs, default_chain, enumerate_candidates, AlternativeSet,
+    CapabilitiesLookup, ChainInput, DecisionContext, FilterContext, JudgeOracle,
+    PlacementDp, PrecisionRequirement, TransferEstimator, DEFAULT_MAX_N,
 };
 
 /// Per-realize execution plan. Built by [`compile_plan`].
@@ -429,6 +431,35 @@ impl<'env> PlanOptions<'env> {
 /// resolves feed the inbound-transfer pricing; unknown residency
 /// prices no term (conservative — an unpriceable edge neither
 /// justifies nor penalizes a move).
+///
+/// ## Stage-3 carry-forward placement DP
+///
+/// Relaxed nodes whose admissible candidates span ≥ 2 devices defer
+/// their winner choice to the carry-forward DP
+/// ([`crate::ranker::placement_dp`]): the walk opens a state row
+/// per such node (`best[d]` = accumulated cost arriving with output
+/// on `d`), extends rows along the dominant chain (view-shaped
+/// pass-throughs alias through), merges joins per-device by the
+/// cheaper producer state, prices the exit crossing back to the
+/// realize target on terminal rows, and backtracks the cheapest
+/// terminal state into per-node device commitments. Each committed
+/// row's `AlternativeSet` is then priced, ranked, and pruned to the
+/// committed device — preserving the Stage-2 single-device-set
+/// invariant the residency stitch depends on.
+///
+/// Gating: a row only opens when the node is relaxed (estimator +
+/// fallback enumerator configured, no explicit placement, not
+/// destructive, not already-resident) AND its candidates span more
+/// than one device. Single-device plans never open a row and take
+/// the Stage-2 greedy path bit-identically — zero overhead beyond
+/// an empty-map check per node.
+///
+/// Documented debt (see the `placement_dp` module docs): fan-out
+/// rows chain into their FIRST consumer only (later consumers price
+/// that edge as unknown); diamonds re-anchor the second branch as a
+/// fresh chain; hard-pinned consumers of an open row close it
+/// toward their device at walk time, which prices the crossing but
+/// cannot revisit it later.
 pub fn compile_plan(
     graph: &Graph,
     order: &[NodeId],
@@ -449,6 +480,11 @@ pub fn compile_plan(
     let mut residency: HashMap<NodeId, DeviceLocation> =
         HashMap::with_capacity(order.len());
 
+    // Stage-3 DP state. Empty (and cost-free) unless multi-device
+    // placement freedom actually materializes at some node.
+    let mut dp = PlacementDp::new();
+    let mut dp_drafts: HashMap<NodeId, NodeDraft> = HashMap::new();
+
     for &id in order {
         let node = graph.node(id);
 
@@ -456,21 +492,91 @@ pub fn compile_plan(
         // targets, explicit placements, already-resident inputs.
         let early = early_residency(graph, options, id, node);
 
-        let winner_device = match plan_node(
+        let mut dp_row_opened = false;
+        let winner_device = match build_node_draft(
             graph,
             id,
             node,
             bindings_table,
             options,
-            &residency,
         )? {
-            Some(set) => {
-                let dev = set.winner().map(|w| w.device);
-                alternatives_map.insert(id, set);
-                dev
+            Some(draft) => {
+                let devices = distinct_devices(&draft.set);
+                let dp_estimator = options.transfer_estimator.filter(|_| {
+                    draft.relaxed && early.is_none() && devices.len() >= 2
+                });
+                if let Some(est) = dp_estimator {
+                    // Stage 3: open a DP row instead of committing a
+                    // winner. Residency stays unresolved until the
+                    // backtrack commits a device.
+                    open_dp_row(&mut dp, graph, id, node, &draft.set, &devices, &residency, est);
+                    dp_drafts.insert(id, draft);
+                    dp_row_opened = true;
+                    None
+                } else {
+                    // Stage-2 greedy finalize. When the node's device
+                    // is already determined (single-device candidate
+                    // set — hard pins, destructive ops, frozen
+                    // fallbacks), close any open producer rows toward
+                    // it FIRST so the close prices the crossing and
+                    // the finalize prices the edge.
+                    if let Some(est) = options.transfer_estimator {
+                        if let [single] = devices.as_slice() {
+                            close_open_inputs(
+                                &mut dp, graph, node, *single, est, &mut residency,
+                            );
+                        }
+                    }
+                    let set = finalize_node_greedy(
+                        graph,
+                        node,
+                        draft,
+                        bindings_table,
+                        options,
+                        &residency,
+                    )?;
+                    let dev = set.winner().map(|w| w.device);
+                    // Multi-device greedy sets (legacy missing-impl
+                    // fallback shapes) learn their device only after
+                    // ranking — close producers toward the winner.
+                    if devices.len() > 1 {
+                        if let (Some(est), Some(wd)) =
+                            (options.transfer_estimator, dev)
+                        {
+                            close_open_inputs(
+                                &mut dp, graph, node, wd, est, &mut residency,
+                            );
+                        }
+                    }
+                    alternatives_map.insert(id, set);
+                    dev
+                }
             }
-            None => None,
+            None => {
+                // Structural / residency-determined nodes. An
+                // `Op::Copy`/`Op::Move` consuming an open row anchors
+                // the chain at its transfer target (the production
+                // realize-root splice is exactly this shape — closing
+                // here IS the exit pricing through an explicit node).
+                if let fuel_graph::Op::Copy { target } | fuel_graph::Op::Move { target } =
+                    node.op
+                {
+                    if let Some(est) = options.transfer_estimator {
+                        close_open_inputs(
+                            &mut dp, graph, node, target, est, &mut residency,
+                        );
+                    }
+                }
+                None
+            }
         };
+
+        if dp_row_opened {
+            // Residency intentionally NOT committed — the DP owns
+            // this node's placement; priorities 5–6 must not leak a
+            // stamp-derived device downstream.
+            continue;
+        }
 
         // Commit this node's residency for downstream consumers.
         let resident = early
@@ -491,12 +597,7 @@ pub fn compile_plan(
                 // view ops, Reshape, Contiguize produce no new
                 // residency; they follow their data input (already
                 // resolved — the walk is topological).
-                if node.op.is_view_op()
-                    || matches!(
-                        node.op,
-                        fuel_graph::Op::Reshape(_) | fuel_graph::Op::Contiguize
-                    )
-                {
+                if is_passthrough(node) {
                     node.inputs.first().and_then(|i| residency.get(i)).copied()
                 } else {
                     None
@@ -504,6 +605,99 @@ pub fn compile_plan(
             });
         if let Some(loc) = resident {
             residency.insert(id, loc);
+        } else if is_passthrough(node) {
+            // Stage 3: a pass-through of a DP-tracked node keeps the
+            // chain connected — alias it to the producer's row so
+            // consumers extend through the view. (If the row already
+            // committed, surface its device as this view's residency,
+            // mirroring priority 6.)
+            if let Some(&input) = node.inputs.first() {
+                let root = dp.resolve(input);
+                if let Some(dev) = dp.committed_device(root) {
+                    residency.insert(id, dev);
+                } else {
+                    dp.add_alias(id, root);
+                }
+            }
+        }
+    }
+
+    // Stage 3: commit the DP (exit pricing + backtrack), then
+    // finalize each deferred row against the committed placements.
+    if !dp_drafts.is_empty() {
+        let Some(est) = options.transfer_estimator else {
+            // Rows only open with an estimator; this is unreachable
+            // in practice but degrades typed rather than panicking.
+            return Err(Error::Msg(
+                "compile_plan: placement DP rows exist without a transfer \
+                 estimator — internal invariant violated"
+                    .into(),
+            )
+            .bt());
+        };
+        let commits =
+            dp.finish(options.pinned_device, |nid| node_bytes(graph, nid), est);
+        for (n, d) in commits {
+            residency.insert(n, d);
+        }
+        // Pass-through residency for view chains the walk left
+        // unresolved (views of DP nodes) — topo order, so producers
+        // resolve before their views.
+        for &id in order {
+            if residency.contains_key(&id) {
+                continue;
+            }
+            let node = graph.node(id);
+            if is_passthrough(node) {
+                if let Some(&loc) =
+                    node.inputs.first().and_then(|i| residency.get(i))
+                {
+                    residency.insert(id, loc);
+                }
+            }
+        }
+        // Finalize deferred rows in topo order: price inbound
+        // transfers from the final residencies, rank, prune to the
+        // DP-committed device (Stage-2 single-device-set invariant),
+        // truncate.
+        for &id in order {
+            let Some(draft) = dp_drafts.remove(&id) else {
+                continue;
+            };
+            let chosen = dp.committed_device(id).ok_or_else(|| {
+                Error::Msg(format!(
+                    "compile_plan: placement DP left node {:?} uncommitted — \
+                     internal invariant violated",
+                    id,
+                ))
+                .bt()
+            })?;
+            let node = graph.node(id);
+            let mut set = draft.set;
+            let inputs = priced_inputs_for(graph, node, &residency);
+            apply_inbound_transfer_costs(&mut set, &inputs, est);
+            set.rank_by_composite_cost();
+            let keep: Vec<usize> = set
+                .alternatives()
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| (c.device == chosen).then_some(i))
+                .collect();
+            if keep.len() < set.len() {
+                set.retain_indices(&keep);
+            }
+            set.truncate_to_top_n();
+            if set.is_empty() {
+                // Defensive — the committed device came from the
+                // row's own candidates, so this shouldn't fire.
+                return Err(missing_binding_error(
+                    bindings_table,
+                    draft.op_kind,
+                    &draft.dtypes,
+                    draft.diag_backend,
+                ));
+            }
+            alternatives_map.insert(id, set);
         }
     }
 
@@ -512,6 +706,127 @@ pub fn compile_plan(
         alternatives: alternatives_map,
         generation,
     })
+}
+
+/// Residency-inheriting pass-throughs: view ops, `Reshape`,
+/// `Contiguize` produce no new residency — their bytes follow their
+/// data input.
+fn is_passthrough(node: &fuel_graph::Node) -> bool {
+    node.op.is_view_op()
+        || matches!(node.op, fuel_graph::Op::Reshape(_) | fuel_graph::Op::Contiguize)
+}
+
+/// Distinct candidate devices in first-seen order (the enumerator
+/// lists the decision device first, so index 0 is the locality
+/// anchor and DP argmin ties break toward it).
+fn distinct_devices(set: &AlternativeSet) -> SmallVec<[DeviceLocation; 4]> {
+    let mut out: SmallVec<[DeviceLocation; 4]> = SmallVec::new();
+    for c in set.alternatives() {
+        if !out.contains(&c.device) {
+            out.push(c.device);
+        }
+    }
+    out
+}
+
+/// Output bytes of a node — element count × dtype size, saturating.
+/// Sub-byte dtypes price latency-only (same bounded undercount as
+/// [`priced_inputs_for`]).
+fn node_bytes(graph: &Graph, id: NodeId) -> u64 {
+    let n = graph.node(id);
+    (n.shape.elem_count() as u64).saturating_mul(n.dtype.size_in_bytes() as u64)
+}
+
+/// Stage 3: open a DP row for a relaxed multi-device node. Inputs
+/// partition into known-fixed residencies (priced per device into
+/// the row's base cost), open-row chain edges (extended via the DP
+/// recurrence), and unknown edges (no term — conservative).
+#[allow(clippy::too_many_arguments)]
+fn open_dp_row(
+    dp: &mut PlacementDp,
+    graph: &Graph,
+    id: NodeId,
+    node: &fuel_graph::Node,
+    set: &AlternativeSet,
+    devices: &[DeviceLocation],
+    residency: &HashMap<NodeId, DeviceLocation>,
+    est: &dyn TransferEstimator,
+) {
+    // Per-device node cost: the cheapest same-device candidate's
+    // composite (static + Judge-refined) figure.
+    let device_costs: Vec<(DeviceLocation, u64)> = devices
+        .iter()
+        .map(|&d| {
+            let min = set
+                .alternatives()
+                .iter()
+                .filter(|c| c.device == d)
+                .map(|c| composite_ns(&c.static_cost))
+                .min()
+                .unwrap_or(u64::MAX);
+            (d, min)
+        })
+        .collect();
+
+    let mut fixed: Vec<(DeviceLocation, u64)> = Vec::new();
+    let mut chains: Vec<ChainInput> = Vec::new();
+    for &input in &node.inputs {
+        let bytes = node_bytes(graph, input);
+        if let Some(&src) = residency.get(&input) {
+            fixed.push((src, bytes));
+            continue;
+        }
+        let root = dp.resolve(input);
+        if dp.is_open(root) {
+            match chains.iter_mut().find(|ci| ci.producer == root) {
+                Some(ci) => ci.edge_bytes.push(bytes),
+                None => chains.push(ChainInput {
+                    producer: root,
+                    edge_bytes: smallvec::smallvec![bytes],
+                }),
+            }
+        } else if let Some(dev) = dp.committed_device(root) {
+            // Producer row already closed toward an earlier consumer
+            // — its device is fixed now.
+            fixed.push((dev, bytes));
+        }
+        // else: chained-but-uncommitted or genuinely unknown — no
+        // term (documented fan-out debt).
+    }
+    dp.push_row(id, &device_costs, &fixed, &chains, est);
+}
+
+/// Close any open producer rows feeding `node` toward `toward` —
+/// the consumer's (already-known) device. Commitments merge into
+/// the walk's residency view so the consumer's own pricing and all
+/// later consumers see them; direct inputs that alias to a
+/// committed row inherit its device (pass-through residency).
+fn close_open_inputs(
+    dp: &mut PlacementDp,
+    graph: &Graph,
+    node: &fuel_graph::Node,
+    toward: DeviceLocation,
+    est: &dyn TransferEstimator,
+    residency: &mut HashMap<NodeId, DeviceLocation>,
+) {
+    for &input in &node.inputs {
+        if residency.contains_key(&input) {
+            continue;
+        }
+        let root = dp.resolve(input);
+        if dp.is_open(root) {
+            let commits =
+                dp.close_toward(root, toward, &[node_bytes(graph, input)], est);
+            for (n, d) in commits {
+                residency.insert(n, d);
+            }
+        }
+        if !residency.contains_key(&input) {
+            if let Some(d) = dp.committed_device(root) {
+                residency.insert(input, d);
+            }
+        }
+    }
 }
 
 /// Stage-2 residency, priorities 1–3: rules that resolve a node's
@@ -562,19 +877,41 @@ fn priced_inputs_for(
         .collect()
 }
 
-/// `compile_plan`'s per-node body: enumeration + filter chain +
-/// cost composition + rank for one kernel-bearing node. Returns
-/// `Ok(None)` for nodes that get no plan entry (view ops,
+/// The residency-independent half of one node's plan: the
+/// enumerated + filtered + statically-costed candidate set, plus
+/// the flags the finalize step (greedy or DP) needs. Produced by
+/// [`build_node_draft`]; consumed by [`finalize_node_greedy`] or
+/// deferred into the Stage-3 DP.
+struct NodeDraft {
+    set: AlternativeSet,
+    /// Stage-2 priced-admission regime (estimator + fallback +
+    /// non-destructive + no explicit placement).
+    relaxed: bool,
+    /// Set was produced by the legacy missing-impl fallback —
+    /// freezes to its single ranked winner.
+    from_fallback: bool,
+    /// Static costs (Layer 1 + Judge Layer 2) were computed —
+    /// gates transfer pricing + ranking in the finalize step,
+    /// mirroring the `populate_costs && capabilities_for` gate.
+    costed: bool,
+    op_kind: OpKind,
+    dtypes: Vec<DType>,
+    diag_backend: BackendId,
+}
+
+/// `compile_plan`'s per-node enumeration phase: enumeration +
+/// filter chain + static cost composition for one kernel-bearing
+/// node — everything that does NOT depend on producer residency.
+/// Returns `Ok(None)` for nodes that get no plan entry (view ops,
 /// `Op::Const`, residency-determined `Op::Copy`/`Op::Move`, ops
 /// without a dispatch OpKind).
-fn plan_node(
+fn build_node_draft(
     graph: &Graph,
     id: NodeId,
     node: &fuel_graph::Node,
     bindings_table: &KernelBindingTable,
     options: &PlanOptions<'_>,
-    residency: &HashMap<NodeId, DeviceLocation>,
-) -> Result<Option<AlternativeSet>> {
+) -> Result<Option<NodeDraft>> {
     let Some(op_kind) = op_to_op_kind(&node.op) else {
         return Ok(None);
     };
@@ -793,8 +1130,10 @@ fn plan_node(
         });
     }
 
-    // Cost composition + rank (optional — tests may skip).
-    if options.populate_costs {
+    // Static cost composition (optional — tests may skip). Layer-1
+    // via the binding-table CostFns + Layer-2 Judge refinement;
+    // both residency-independent, so they belong to the draft.
+    let costed = if options.populate_costs {
         if let Some(caps_for) = options.capabilities_for {
             let input_shapes: Vec<Shape> = node
                 .inputs
@@ -810,17 +1149,60 @@ fn plan_node(
                 caps_for,
                 options.judge,
             );
-            // Stage 2: price the transfers each candidate's
-            // placement would induce from its inputs' committed
-            // residencies. Runs AFTER the Layer-2 Judge refinement
-            // (which REPLACES the kernel-time estimate) so the
-            // transfer term survives; the rank adds the two.
-            if let Some(estimator) = options.transfer_estimator {
-                let inputs = priced_inputs_for(graph, node, residency);
-                apply_inbound_transfer_costs(&mut set, &inputs, estimator);
-            }
-            set.rank_by_composite_cost();
+            true
+        } else {
+            false
         }
+    } else {
+        false
+    };
+
+    Ok(Some(NodeDraft {
+        set,
+        relaxed,
+        from_fallback,
+        costed,
+        op_kind,
+        dtypes,
+        diag_backend,
+    }))
+}
+
+/// `compile_plan`'s per-node commit phase, Stage-2 greedy regime:
+/// inbound-transfer pricing against the committed producer
+/// residencies, rank, relaxed winner-device prune, truncation, and
+/// the fallback freeze. The Stage-3 DP path replaces this for
+/// deferred rows (pricing + prune happen after the backtrack
+/// instead).
+fn finalize_node_greedy(
+    graph: &Graph,
+    node: &fuel_graph::Node,
+    draft: NodeDraft,
+    bindings_table: &KernelBindingTable,
+    options: &PlanOptions<'_>,
+    residency: &HashMap<NodeId, DeviceLocation>,
+) -> Result<AlternativeSet> {
+    let NodeDraft {
+        mut set,
+        relaxed,
+        from_fallback,
+        costed,
+        op_kind,
+        dtypes,
+        diag_backend,
+    } = draft;
+
+    if costed {
+        // Stage 2: price the transfers each candidate's placement
+        // would induce from its inputs' committed residencies. Runs
+        // AFTER the Layer-2 Judge refinement (which REPLACES the
+        // kernel-time estimate) so the transfer term survives; the
+        // rank adds the two.
+        if let Some(estimator) = options.transfer_estimator {
+            let inputs = priced_inputs_for(graph, node, residency);
+            apply_inbound_transfer_costs(&mut set, &inputs, estimator);
+        }
+        set.rank_by_composite_cost();
     }
 
     // Stage 2: after the priced rank, prune the relaxed set to the
@@ -874,7 +1256,7 @@ fn plan_node(
         ));
     }
 
-    Ok(Some(set))
+    Ok(set)
 }
 
 /// Build an `Error::NoBackendForOp` diagnostic for a decision
@@ -2354,5 +2736,625 @@ mod tests {
         // kernel.
         assert_eq!(alts.len(), 1);
         assert!(alts.winner().unwrap().caps.strided_input);
+    }
+
+    // =====================================================================
+    // Planner Stage 3: carry-forward placement DP
+    // =====================================================================
+
+    /// Byte-aware synthetic estimator: zero same-device, otherwise
+    /// `latency + bytes·ns_per_byte`.
+    struct BytesEstimator {
+        latency_ns: u64,
+        ns_per_byte: u64,
+    }
+
+    impl crate::ranker::TransferEstimator for BytesEstimator {
+        fn estimate_transfer_ns(
+            &self,
+            src: DeviceLocation,
+            dst: DeviceLocation,
+            bytes: u64,
+        ) -> u64 {
+            if src == dst {
+                return 0;
+            }
+            self.latency_ns
+                .saturating_add(bytes.saturating_mul(self.ns_per_byte))
+        }
+    }
+
+    fn cost_50(
+        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+    ) -> crate::fused::CostEstimate {
+        crate::fused::CostEstimate { flops: 50, bytes_moved: 0, kernel_overhead_ns: 0 }
+    }
+    fn cost_100(
+        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+    ) -> crate::fused::CostEstimate {
+        crate::fused::CostEstimate { flops: 100, bytes_moved: 0, kernel_overhead_ns: 0 }
+    }
+    fn cost_300(
+        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+    ) -> crate::fused::CostEstimate {
+        crate::fused::CostEstimate { flops: 300, bytes_moved: 0, kernel_overhead_ns: 0 }
+    }
+    fn cost_800(
+        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+    ) -> crate::fused::CostEstimate {
+        crate::fused::CostEstimate { flops: 800, bytes_moved: 0, kernel_overhead_ns: 0 }
+    }
+    fn cost_5000(
+        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+    ) -> crate::fused::CostEstimate {
+        crate::fused::CostEstimate { flops: 5000, bytes_moved: 0, kernel_overhead_ns: 0 }
+    }
+    fn cost_100_000(
+        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+    ) -> crate::fused::CostEstimate {
+        crate::fused::CostEstimate {
+            flops: 100_000,
+            bytes_moved: 0,
+            kernel_overhead_ns: 0,
+        }
+    }
+
+    /// Register a unary `(F32 → F32)` kernel with an explicit cost.
+    fn register_unary_f32(
+        table: &mut KernelBindingTable,
+        op: OpKind,
+        backend: BackendId,
+        kernel: crate::kernel::KernelRef,
+        cost: crate::kernel::CostFn,
+    ) {
+        table.register_full(
+            op,
+            &[DType::F32, DType::F32],
+            backend,
+            kernel,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            cost,
+        );
+    }
+
+    fn push_f32(g: &mut Graph, op: Op, inputs: Vec<NodeId>, dims: &[usize]) -> NodeId {
+        g.push(Node {
+            op,
+            inputs,
+            shape: Shape::from_dims(dims),
+            dtype: DType::F32,
+        })
+    }
+
+    /// Stage 3 test (a): a mid-sequence GPU segment beats all-CPU
+    /// and all-GPU, and the per-op GPU win (700 ns) is SMALLER than
+    /// the crossing (1000 ns) — greedy would never move (the first
+    /// op of the migration can't justify the crossing alone), but
+    /// the accumulated DP state amortizes one entry + one exit
+    /// crossing over the segment's combined win.
+    ///
+    /// Chain: c → n1(Sqr) → n2(Neg) → n3(Neg) → n4(Neg) → n5(Sqr).
+    /// Sqr: CPU 100 / GPU 5000 (GPU-hostile endpoints).
+    /// Neg: CPU 800 / GPU 100 (per-op win 700 < 1000 crossing).
+    ///
+    /// All-CPU = 100 + 3·800 + 100 = 2600.
+    /// Mid-GPU = 100 + 1000 + 3·100 + 1000 + 100 = 2500. ← winner
+    /// All-GPU = 1000 + 5000 + 3·100 + 5000 + 1000 = 12300.
+    #[test]
+    fn dp_mid_sequence_gpu_segment_beats_all_cpu_and_all_gpu() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut table = KernelBindingTable::new();
+        register_unary_f32(&mut table, OpKind::SqrElementwise, BackendId::Cpu, noop_kernel, cost_100);
+        register_unary_f32(&mut table, OpKind::SqrElementwise, BackendId::Cuda, noop_kernel_b, cost_5000);
+        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cpu, noop_kernel, cost_800);
+        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cuda, noop_kernel_b, cost_100);
+
+        let mut g = Graph::new();
+        let c = push_f32(&mut g, Op::Const, vec![], &[4]);
+        let n1 = push_f32(&mut g, Op::Sqr, vec![c], &[4]);
+        let n2 = push_f32(&mut g, Op::Neg, vec![n1], &[4]);
+        let n3 = push_f32(&mut g, Op::Neg, vec![n2], &[4]);
+        let n4 = push_f32(&mut g, Op::Neg, vec![n3], &[4]);
+        let n5 = push_f32(&mut g, Op::Sqr, vec![n4], &[4]);
+        let order = topo_order(&g, n5);
+
+        let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![BackendId::Cuda] }
+        };
+        let fallback_fn = move |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+            if dev == DeviceLocation::Cpu {
+                vec![(BackendId::Cuda, cuda0)]
+            } else {
+                vec![(BackendId::Cpu, DeviceLocation::Cpu)]
+            }
+        };
+        let residency_fn =
+            move |id: NodeId| -> Option<DeviceLocation> { (id == c).then_some(DeviceLocation::Cpu) };
+        let est = FlatEstimator { latency_ns: 1_000 };
+        let cpu_caps_val = cpu_caps();
+        let caps_fn = |_: BackendId| Some(&cpu_caps_val);
+        let opts = PlanOptions::new()
+            .with_pinned_device(DeviceLocation::Cpu)
+            .with_placements_for_device(&placements_fn)
+            .with_fallback_placements_for(&fallback_fn)
+            .with_capabilities_for(&caps_fn)
+            .with_transfer_estimator(&est)
+            .with_input_residency(&residency_fn);
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+
+        let dev_of = |id: NodeId| plan.alternatives(id).unwrap().winner().unwrap().device;
+        assert_eq!(dev_of(n1), DeviceLocation::Cpu, "GPU-hostile entry stays CPU");
+        assert_eq!(dev_of(n2), cuda0, "segment start migrates");
+        assert_eq!(dev_of(n3), cuda0, "segment interior stays GPU");
+        assert_eq!(dev_of(n4), cuda0, "segment end stays GPU");
+        assert_eq!(dev_of(n5), DeviceLocation::Cpu, "GPU-hostile exit returns");
+
+        // Transfer diagnostics on the final sets: the two crossings
+        // are priced exactly once each, on the segment boundary
+        // winners.
+        let inbound = |id: NodeId| plan.alternatives(id).unwrap().winner().unwrap().inbound_transfer_ns;
+        assert_eq!(inbound(n2), 1_000, "entry crossing priced on the first GPU op");
+        assert_eq!(inbound(n3), 0);
+        assert_eq!(inbound(n4), 0);
+        assert_eq!(inbound(n5), 1_000, "exit crossing priced on the return op");
+
+        // The surviving sets live on ONE device each (residency
+        // stitch invariant).
+        for id in [n1, n2, n3, n4, n5] {
+            let d = dev_of(id);
+            assert!(
+                plan.alternatives(id).unwrap().alternatives().iter().all(|c| c.device == d),
+                "set pruned to the DP-committed device",
+            );
+        }
+    }
+
+    /// Stage 3 test (b): a FUSED op that is locally faster on device
+    /// A loses to staying on B when its stranding cost exceeds its
+    /// win — the over-move case greedy inbound pricing cannot see.
+    ///
+    /// Chain: c → n1(Neg) → f(Fused SoftmaxLastDim) → n2(Sqr, CPU-only).
+    /// Estimator: 10 ns latency + 1 ns/byte. n1 output is 4 bytes;
+    /// f's output is 1024 bytes (shapes are synthetic — compile_plan
+    /// never executes).
+    ///
+    /// n1: CPU 100 000 / GPU 100 → migrates to GPU regardless.
+    /// f:  CPU 300 / GPU 100. Arriving states: CPU = 300 + 14 = 428
+    /// (via GPU n1), GPU = 100 + 114 = 214 — locally GPU wins, and
+    /// greedy would commit it (inbound favors GPU: 100 + 0 < 300 +
+    /// 14). But f's 1024-byte output must land on CPU for n2:
+    /// GPU 214 + 1034 = 1248 vs CPU 428 → the DP keeps f on CPU.
+    #[test]
+    fn dp_fused_op_loses_when_stranding_exceeds_local_win() {
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut table = KernelBindingTable::new();
+        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cpu, noop_kernel, cost_100_000);
+        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cuda, noop_kernel_b, cost_100);
+        register_unary_f32(&mut table, OpKind::SoftmaxLastDim, BackendId::Cpu, noop_kernel, cost_300);
+        register_unary_f32(&mut table, OpKind::SoftmaxLastDim, BackendId::Cuda, noop_kernel_b, cost_100);
+        // Sqr exists ONLY on CPU — the chain's anchor.
+        register_unary_f32(&mut table, OpKind::SqrElementwise, BackendId::Cpu, noop_kernel, cost_100);
+
+        let mut g = Graph::new();
+        let c = push_f32(&mut g, Op::Const, vec![], &[1]);
+        let n1 = push_f32(&mut g, Op::Neg, vec![c], &[1]);
+        let f = push_f32(
+            &mut g,
+            Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim),
+            vec![n1],
+            &[256],
+        );
+        let n2 = push_f32(&mut g, Op::Sqr, vec![f], &[256]);
+        let order = topo_order(&g, n2);
+
+        let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![BackendId::Cuda] }
+        };
+        let fallback_fn = move |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+            if dev == DeviceLocation::Cpu {
+                vec![(BackendId::Cuda, cuda0)]
+            } else {
+                vec![(BackendId::Cpu, DeviceLocation::Cpu)]
+            }
+        };
+        let residency_fn =
+            move |id: NodeId| -> Option<DeviceLocation> { (id == c).then_some(DeviceLocation::Cpu) };
+        let est = BytesEstimator { latency_ns: 10, ns_per_byte: 1 };
+        let cpu_caps_val = cpu_caps();
+        let caps_fn = |_: BackendId| Some(&cpu_caps_val);
+        let opts = PlanOptions::new()
+            .with_pinned_device(DeviceLocation::Cpu)
+            .with_placements_for_device(&placements_fn)
+            .with_fallback_placements_for(&fallback_fn)
+            .with_capabilities_for(&caps_fn)
+            .with_transfer_estimator(&est)
+            .with_input_residency(&residency_fn);
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+
+        let dev_of = |id: NodeId| plan.alternatives(id).unwrap().winner().unwrap().device;
+        assert_eq!(dev_of(n1), cuda0, "the huge-win producer migrates");
+        assert_eq!(
+            dev_of(f),
+            DeviceLocation::Cpu,
+            "the locally-faster fused op stays where its output is needed",
+        );
+        assert_eq!(dev_of(n2), DeviceLocation::Cpu);
+        assert!(
+            plan.alternatives(f).unwrap().alternatives().iter().all(|c| c.device == DeviceLocation::Cpu),
+            "fused set pruned to the committed device",
+        );
+    }
+
+    /// Stage 3 test (c): exit pricing — a final op stays on the
+    /// realize target although moving would win locally, because
+    /// the return crossing prices the move out.
+    ///
+    /// Inputs resident on GPU; realize target CPU; flat 1000 ns
+    /// crossings. Local view: GPU 100 + 0 ≪ CPU 50 + 1000. With the
+    /// exit: GPU 100 + 1000 = 1100 vs CPU 1050 → CPU.
+    #[test]
+    fn dp_exit_pricing_keeps_final_op_on_realize_target() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut table = KernelBindingTable::new();
+        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cpu, noop_kernel, cost_50);
+        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cuda, noop_kernel_b, cost_100);
+
+        let mut g = Graph::new();
+        let c = push_f32(&mut g, Op::Const, vec![], &[4]);
+        let n = push_f32(&mut g, Op::Neg, vec![c], &[4]);
+        let order = topo_order(&g, n);
+
+        let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![BackendId::Cuda] }
+        };
+        let fallback_fn = move |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+            if dev == DeviceLocation::Cpu {
+                vec![(BackendId::Cuda, cuda0)]
+            } else {
+                vec![(BackendId::Cpu, DeviceLocation::Cpu)]
+            }
+        };
+        let residency_fn =
+            move |id: NodeId| -> Option<DeviceLocation> { (id == c).then_some(cuda0) };
+        let est = FlatEstimator { latency_ns: 1_000 };
+        let cpu_caps_val = cpu_caps();
+        let caps_fn = |_: BackendId| Some(&cpu_caps_val);
+        let opts = PlanOptions::new()
+            .with_pinned_device(DeviceLocation::Cpu)
+            .with_placements_for_device(&placements_fn)
+            .with_fallback_placements_for(&fallback_fn)
+            .with_capabilities_for(&caps_fn)
+            .with_transfer_estimator(&est)
+            .with_input_residency(&residency_fn);
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+        let w = plan.alternatives(n).unwrap().winner().unwrap();
+        assert_eq!(
+            w.device,
+            DeviceLocation::Cpu,
+            "exit pricing flips the locally-winning GPU placement",
+        );
+        assert_eq!(
+            w.inbound_transfer_ns, 1_000,
+            "the GPU-resident input's crossing is priced on the CPU winner",
+        );
+    }
+
+    /// Stage 3 test (c) inverse: when the kernel gap dwarfs both
+    /// crossings, the final op legitimately moves despite the exit.
+    #[test]
+    fn dp_exit_pricing_does_not_pin_when_kernel_gap_dominates() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut table = KernelBindingTable::new();
+        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cpu, noop_kernel, cost_10_000_000);
+        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cuda, noop_kernel_b, cost_100);
+
+        let mut g = Graph::new();
+        let c = push_f32(&mut g, Op::Const, vec![], &[4]);
+        let n = push_f32(&mut g, Op::Neg, vec![c], &[4]);
+        let order = topo_order(&g, n);
+
+        let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![BackendId::Cuda] }
+        };
+        let fallback_fn = move |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+            if dev == DeviceLocation::Cpu {
+                vec![(BackendId::Cuda, cuda0)]
+            } else {
+                vec![(BackendId::Cpu, DeviceLocation::Cpu)]
+            }
+        };
+        let residency_fn =
+            move |id: NodeId| -> Option<DeviceLocation> { (id == c).then_some(cuda0) };
+        let est = FlatEstimator { latency_ns: 1_000 };
+        let cpu_caps_val = cpu_caps();
+        let caps_fn = |_: BackendId| Some(&cpu_caps_val);
+        let opts = PlanOptions::new()
+            .with_pinned_device(DeviceLocation::Cpu)
+            .with_placements_for_device(&placements_fn)
+            .with_fallback_placements_for(&fallback_fn)
+            .with_capabilities_for(&caps_fn)
+            .with_transfer_estimator(&est)
+            .with_input_residency(&residency_fn);
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+        assert_eq!(plan.alternatives(n).unwrap().winner().unwrap().device, cuda0);
+    }
+
+    /// Stage 3 test (d): single-DEVICE plan equality. Two backends
+    /// co-located on one device with the full Stage-3 option set
+    /// wired (estimator + fallback + residency) produce the same
+    /// plan, candidate-for-candidate, as the unwired baseline — the
+    /// DP never opens a row when only one device has candidates.
+    #[test]
+    fn dp_single_device_plan_equals_greedy_plan() {
+        let mut table = KernelBindingTable::new();
+        register_add_f32(
+            &mut table,
+            BackendId::Cpu,
+            noop_kernel,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+        register_add_f32(
+            &mut table,
+            BackendId::Cuda,
+            noop_kernel_b,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+        let (g, add_id) = build_add_graph();
+        let order = topo_order(&g, add_id);
+        // Both backends co-located at DeviceLocation::Cpu — one
+        // device, two backends.
+        let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu, BackendId::Cuda]
+            } else {
+                vec![]
+            }
+        };
+        let fallback_fn =
+            |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> { Vec::new() };
+        let residency_fn =
+            |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
+        let cpu_caps_val = cpu_caps();
+        let caps_fn = |_: BackendId| Some(&cpu_caps_val);
+
+        let base_opts = PlanOptions::new()
+            .with_placements_for_device(&placements_fn)
+            .with_capabilities_for(&caps_fn);
+        let base = compile_plan(&g, &order, &table, &base_opts).expect("base");
+
+        let est = FlatEstimator { latency_ns: 1_000_000 };
+        let wired_opts = PlanOptions::new()
+            .with_placements_for_device(&placements_fn)
+            .with_fallback_placements_for(&fallback_fn)
+            .with_capabilities_for(&caps_fn)
+            .with_transfer_estimator(&est)
+            .with_input_residency(&residency_fn);
+        let wired = compile_plan(&g, &order, &table, &wired_opts).expect("wired");
+
+        assert_eq!(base.alternatives.len(), wired.alternatives.len());
+        let a = base.alternatives(add_id).unwrap();
+        let b = wired.alternatives(add_id).unwrap();
+        assert_eq!(a.len(), b.len(), "same candidate count");
+        for (ca, cb) in a.alternatives().iter().zip(b.alternatives()) {
+            assert_eq!(ca.backend, cb.backend);
+            assert_eq!(ca.device, cb.device);
+            assert_eq!(ca.kernel as usize, cb.kernel as usize, "same kernel ref");
+            assert_eq!(ca.static_cost, cb.static_cost, "same Layer-1 cost");
+            assert_eq!(cb.inbound_transfer_ns, 0, "no transfer term fires");
+        }
+        assert_eq!(a.context(), b.context(), "same decision context");
+    }
+
+    /// Stage 3 test (e) helper: build the diamond (a → b, a → c2,
+    /// b+c2 → d), plan it with the given crossing latency, and
+    /// assert every kernel-bearing node committed to `expect`.
+    fn run_diamond_regime(latency_ns: u64, expect: DeviceLocation) {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut table = KernelBindingTable::new();
+        for op in [
+            OpKind::NegElementwise,
+            OpKind::SqrElementwise,
+            OpKind::ReluElementwise,
+        ] {
+            register_unary_f32(&mut table, op, BackendId::Cpu, noop_kernel, cost_100);
+            register_unary_f32(&mut table, op, BackendId::Cuda, noop_kernel_b, cost_10);
+        }
+        table.register_full(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            noop_kernel,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            cost_100,
+        );
+        table.register_full(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cuda,
+            noop_kernel_b,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            cost_10,
+        );
+
+        let mut g = Graph::new();
+        let c0 = push_f32(&mut g, Op::Const, vec![], &[4]);
+        let a = push_f32(&mut g, Op::Neg, vec![c0], &[4]);
+        let b = push_f32(&mut g, Op::Sqr, vec![a], &[4]);
+        let c2 = push_f32(&mut g, Op::Relu, vec![a], &[4]);
+        let d = push_f32(&mut g, Op::Add, vec![b, c2], &[4]);
+        let order = topo_order(&g, d);
+
+        let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![BackendId::Cuda] }
+        };
+        let fallback_fn = move |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+            if dev == DeviceLocation::Cpu {
+                vec![(BackendId::Cuda, cuda0)]
+            } else {
+                vec![(BackendId::Cpu, DeviceLocation::Cpu)]
+            }
+        };
+        let residency_fn = move |id: NodeId| -> Option<DeviceLocation> {
+            (id == c0).then_some(DeviceLocation::Cpu)
+        };
+        let est = FlatEstimator { latency_ns };
+        let cpu_caps_val = cpu_caps();
+        let caps_fn = |_: BackendId| Some(&cpu_caps_val);
+        let opts = PlanOptions::new()
+            .with_pinned_device(DeviceLocation::Cpu)
+            .with_placements_for_device(&placements_fn)
+            .with_fallback_placements_for(&fallback_fn)
+            .with_capabilities_for(&caps_fn)
+            .with_transfer_estimator(&est)
+            .with_input_residency(&residency_fn);
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+        for id in [a, b, c2, d] {
+            assert_eq!(
+                plan.alternatives(id).unwrap().winner().unwrap().device,
+                expect,
+                "diamond join must commit a consistent placement",
+            );
+        }
+    }
+
+    /// Stage 3 test (e): a diamond merges without panicking and
+    /// commits a consistent placement. Both cost regimes exercised:
+    /// transfers dominate → everything stays on CPU; kernel gap
+    /// dominates with free transfers → everything moves to the GPU.
+    #[test]
+    fn dp_diamond_join_merges_consistently() {
+        // 1 ms crossings — the 90 ns/op GPU win never pays.
+        run_diamond_regime(1_000_000, DeviceLocation::Cpu);
+        // Free transfers + 10× kernel gap.
+        run_diamond_regime(0, DeviceLocation::Cuda { gpu_id: 0 });
+    }
+
+    /// Stage 3 perf guard: the DP is O(nodes × devices²). A
+    /// 1000-node chain with two devices must plan comfortably under
+    /// a wall-clock sanity bound (expected: low milliseconds — the
+    /// generous bound only guards against accidental quadratic
+    /// blowups in nodes).
+    #[test]
+    fn dp_thousand_node_chain_plans_within_sanity_bound() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut table = KernelBindingTable::new();
+        // Equal costs — ties must break toward the decision device
+        // along the whole chain.
+        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cpu, noop_kernel, cost_100);
+        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cuda, noop_kernel_b, cost_100);
+
+        let mut g = Graph::new();
+        let c = push_f32(&mut g, Op::Const, vec![], &[4]);
+        let mut prev = c;
+        let mut nodes = Vec::with_capacity(1000);
+        for _ in 0..1000 {
+            let n = push_f32(&mut g, Op::Neg, vec![prev], &[4]);
+            nodes.push(n);
+            prev = n;
+        }
+        let order = topo_order(&g, prev);
+
+        let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![BackendId::Cuda] }
+        };
+        let fallback_fn = move |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+            if dev == DeviceLocation::Cpu {
+                vec![(BackendId::Cuda, cuda0)]
+            } else {
+                vec![(BackendId::Cpu, DeviceLocation::Cpu)]
+            }
+        };
+        let residency_fn =
+            move |id: NodeId| -> Option<DeviceLocation> { (id == c).then_some(DeviceLocation::Cpu) };
+        let est = FlatEstimator { latency_ns: 10 };
+        let cpu_caps_val = cpu_caps();
+        let caps_fn = |_: BackendId| Some(&cpu_caps_val);
+        let opts = PlanOptions::new()
+            .with_pinned_device(DeviceLocation::Cpu)
+            .with_placements_for_device(&placements_fn)
+            .with_fallback_placements_for(&fallback_fn)
+            .with_capabilities_for(&caps_fn)
+            .with_transfer_estimator(&est)
+            .with_input_residency(&residency_fn);
+
+        let start = std::time::Instant::now();
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_secs() < 5,
+            "1000-node DP plan took {elapsed:?} — pathological scaling",
+        );
+
+        assert_eq!(plan.alternatives.len(), 1000);
+        for &n in &nodes {
+            assert_eq!(
+                plan.alternatives(n).unwrap().winner().unwrap().device,
+                DeviceLocation::Cpu,
+                "equal-cost ties break toward the decision device end-to-end",
+            );
+        }
+    }
+
+    /// Stage 3: a view-shaped pass-through between two DP nodes
+    /// keeps the chain connected (the alias map) — the segment still
+    /// migrates as one unit instead of breaking at the Reshape.
+    #[test]
+    fn dp_chain_connects_through_view_passthroughs() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut table = KernelBindingTable::new();
+        // Per-op win 700 < 1000 crossing; combined win 2100 > 2000 —
+        // the segment only migrates if the chain survives the
+        // Reshape between n1 and n2.
+        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cpu, noop_kernel, cost_800);
+        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cuda, noop_kernel_b, cost_100);
+
+        let mut g = Graph::new();
+        let c = push_f32(&mut g, Op::Const, vec![], &[4]);
+        let n1 = push_f32(&mut g, Op::Neg, vec![c], &[4]);
+        let r = push_f32(&mut g, Op::Reshape(Shape::from_dims(&[2, 2])), vec![n1], &[2, 2]);
+        let n2 = push_f32(&mut g, Op::Neg, vec![r], &[2, 2]);
+        let n3 = push_f32(&mut g, Op::Neg, vec![n2], &[2, 2]);
+        let order = topo_order(&g, n3);
+
+        let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![BackendId::Cuda] }
+        };
+        let fallback_fn = move |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+            if dev == DeviceLocation::Cpu {
+                vec![(BackendId::Cuda, cuda0)]
+            } else {
+                vec![(BackendId::Cpu, DeviceLocation::Cpu)]
+            }
+        };
+        let residency_fn =
+            move |id: NodeId| -> Option<DeviceLocation> { (id == c).then_some(DeviceLocation::Cpu) };
+        let est = FlatEstimator { latency_ns: 1_000 };
+        let cpu_caps_val = cpu_caps();
+        let caps_fn = |_: BackendId| Some(&cpu_caps_val);
+        let opts = PlanOptions::new()
+            .with_pinned_device(DeviceLocation::Cpu)
+            .with_placements_for_device(&placements_fn)
+            .with_fallback_placements_for(&fallback_fn)
+            .with_capabilities_for(&caps_fn)
+            .with_transfer_estimator(&est)
+            .with_input_residency(&residency_fn);
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+
+        // All-CPU = 2400; migrate-at-n1 = 3×100 + 1000 (entry) +
+        // 1000 (exit) = 2300 → the whole segment moves, THROUGH the
+        // reshape.
+        for id in [n1, n2, n3] {
+            assert_eq!(
+                plan.alternatives(id).unwrap().winner().unwrap().device,
+                cuda0,
+                "the chain must not break at the Reshape pass-through",
+            );
+        }
+        assert!(plan.alternatives(r).is_none(), "Reshape carries no plan entry");
     }
 }
