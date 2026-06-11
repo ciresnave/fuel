@@ -713,7 +713,12 @@ mod tests {
         };
 
         let (table, profile) = prepare_dispatch_table(opts).expect("prepare");
-        assert!(profile.entries.len() >= 2, "profile should have cpu + ref entries");
+        // Post Reference retirement (2026-06-07) CPU is the only
+        // unconditionally-present backend, so the only guaranteed
+        // profile entries are CPU ones.
+        assert!(
+            profile.entries.iter().any(|e| e.backend == BackendId::Cpu),
+            "profile should have at least one cpu entry, got {:?}", profile.entries);
         assert!(table.len() >= 1, "dispatch table should have at least one entry");
 
         // Both files should exist now.
