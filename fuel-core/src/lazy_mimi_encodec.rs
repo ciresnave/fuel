@@ -767,17 +767,6 @@ mod tests {
         }
     }
 
-    /// Realize a u32-dtype LazyTensor through the pipelined executor
-    /// (the legacy reference backend doesn't carry U8-output ops like
-    /// Op::Gt, which the quantizer's argmin pulls into the graph).
-    fn realize_u32_pipelined(t: &LazyTensor) -> Vec<u32> {
-        let gt = t.graph_tensor();
-        let graph = gt.graph().clone();
-        let id = gt.id();
-        crate::pipelined_bridge::realize_one_as::<u32>(&graph, id, &Device::cpu())
-            .expect("realize u32 via pipelined")
-    }
-
     #[test]
     fn streaming_encode_equals_one_shot() {
         let n_q = 2;
@@ -791,7 +780,7 @@ mod tests {
         let pcm_t = LazyTensor::from_f32(
             pcm.clone(), Shape::from_dims(&[1, 1, t_audio]), &Device::cpu(),
         );
-        let one_shot = realize_u32_pipelined(&model.encode(&pcm_t).unwrap());
+        let one_shot = model.encode(&pcm_t).unwrap().realize_u32();
         assert_eq!(one_shot.len(), 1 * n_q * t_codes);
 
         // Stream PCM in chunks smaller than total_stride so the
@@ -814,7 +803,7 @@ mod tests {
             if let Some(codes) = out {
                 let dims = codes.shape().dims().to_vec();
                 let new_frames = dims[2];
-                let flat = realize_u32_pipelined(&codes);
+                let flat = codes.realize_u32();
                 // codes are (1, n_q, new_frames) row-major. Append each
                 // codebook row to its per-q bucket.
                 for q in 0..n_q {

@@ -873,10 +873,16 @@ impl LazyTensor {
     }
 
     /// Realize as a `u32` (index) `Vec`.
+    ///
+    /// Routes through the [`PipelinedExecutor`] like [`Self::realize_f32`]
+    /// — the legacy fuel-reference-backend executor predates U8-output
+    /// ops (comparison masks feeding argmin/argmax) and rejects them.
     pub fn realize_u32(&self) -> Vec<u32> {
-        fuel_reference_backend::exec::realize(&self.inner)
-            .into_u32()
-            .into_vec()
+        let graph = self.inner.graph().clone();
+        let target = self.inner.id();
+        let device = crate::Device::cpu();
+        crate::pipelined_bridge::realize_one_as::<u32>(&graph, target, &device)
+            .expect("realize_u32 via PipelinedExecutor")
     }
 
     // ---- reductions ----
