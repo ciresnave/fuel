@@ -75,6 +75,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let lm_head_data: Vec<f32> = match &model.weights.output {
         WeightStorage::F32(a) => a.to_vec(),
         WeightStorage::BF16(a) => a.iter().map(|x| x.to_f32()).collect(),
+        other => {
+            return Err(format!(
+                "llama-finetune-vulkan demo expects an F32/BF16 lm_head, got {other:?}"
+            ).into());
+        }
     };
     let params = vec![
         Parameter::new_f32(
@@ -149,6 +154,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let orig_lm_head: Vec<f32> = match &model.weights.output {
         WeightStorage::F32(a) => a.to_vec(),
         WeightStorage::BF16(a) => a.iter().map(|x| x.to_f32()).collect(),
+        other => {
+            return Err(format!(
+                "llama-finetune-vulkan demo expects an F32/BF16 lm_head, got {other:?}"
+            ).into());
+        }
     };
     let max_delta = final_lm_head.iter().zip(&orig_lm_head)
         .map(|(a, b)| (a - b).abs())

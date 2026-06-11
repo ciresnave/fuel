@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("Running forward pass...");
     let t0 = Instant::now();
-    let raw = model.forward(&image);
+    let raw = model.forward(&image)?;
     let cls_flat = raw.cls_logits.realize_f32();
     let reg_flat = raw.reg_dists.realize_f32();
     let elapsed = t0.elapsed();

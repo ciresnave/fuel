@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("Running one denoising step...");
     let t0 = Instant::now();
-    let out_t = unet.forward(&latent, 0.0, &text, h_lat, w_lat);
+    let out_t = unet.forward(&latent, 0.0, &text, h_lat, w_lat)?;
     let out = out_t.realize_f32();
     eprintln!("Forward done in {:.2?}", t0.elapsed());
 
