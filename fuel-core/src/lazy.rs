@@ -5309,6 +5309,36 @@ impl LlamaModel {
         cache: &mut KvCache,
         ctx: &mut InferenceContext,
     ) -> crate::Result<Vec<f32>> {
+        self.forward_with_kv_context_impl(tokens, cache, ctx, false)
+    }
+
+    /// All-positions variant of [`Self::forward_with_kv_context`]:
+    /// returns `seq * vocab_size` logits (flat, row-major over
+    /// position). Used by speculative decoding's verification step —
+    /// the target model runs forward on the K drafted tokens at once
+    /// and needs per-position logits to accept/reject each draft.
+    ///
+    /// Cache semantics identical to `forward_with_kv_context`; on
+    /// reject, the caller invokes [`KvCache::truncate_to`] to roll
+    /// back (a pure metadata update on the pre-allocated-buffer path —
+    /// rows past `cached_len` stop being read and are overwritten by
+    /// the next `Op::WriteSlice` at the same positions).
+    pub fn forward_with_kv_context_all_positions(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+    ) -> crate::Result<Vec<f32>> {
+        self.forward_with_kv_context_impl(tokens, cache, ctx, true)
+    }
+
+    fn forward_with_kv_context_impl(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        return_all_positions: bool,
+    ) -> crate::Result<Vec<f32>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -5408,17 +5438,23 @@ impl LlamaModel {
 
         let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
         let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
-        let last_pos = seq - 1;
-        let last_logits = logits
-            .slice(1, last_pos, 1).unwrap()
-            .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap();
+        // For spec-decode verification we need per-position logits;
+        // otherwise slice to the last position for decode/prefill.
+        let logits_root = if return_all_positions {
+            logits.reshape(Shape::from_dims(&[seq * cfg.vocab_size]))?
+        } else {
+            let last_pos = seq - 1;
+            logits
+                .slice(1, last_pos, 1)?
+                .reshape(Shape::from_dims(&[cfg.vocab_size]))?
+        };
 
         // Realize through InferenceContext. The WriteSlice nodes
         // mutate the cache buffers as a side effect; downstream
         // attention reads through the post-write Slice views.
         let logits_vec = ctx.realize_one_as::<f32>(
-            last_logits.inner.graph(),
-            last_logits.inner.id(),
+            logits_root.inner.graph(),
+            logits_root.inner.id(),
         )?;
 
         // Clean up per-step bindings from ctx so they don't accumulate
@@ -6015,6 +6051,275 @@ impl LlamaModel {
             |_| {},
         )
     }
+
+    /// Speculative decoding through the `forward_with_kv_context`
+    /// path (KvCache + InferenceContext + the pipelined executor).
+    ///
+    /// Uses a `draft` model to predict `k` tokens autoregressively,
+    /// then has `self` (the target) verify all `k` positions in a
+    /// single forward. Accepts a prefix of the drafts per `strategy`:
+    ///
+    /// - `Greedy`: longest prefix where target's argmax matches
+    ///   draft's token. On mismatch, emit target's argmax as the
+    ///   bonus. Output is provably identical to plain greedy
+    ///   generation from the target, regardless of the draft.
+    /// - `Temperature`: Leviathan-style probability-ratio accept.
+    ///   Sample draft tokens from draft's temperature-scaled
+    ///   distribution; accept each with probability
+    ///   `min(1, p_target(d) / p_draft(d))`. On reject, sample the
+    ///   replacement from `(p_target - p_draft)_+ / Z`. Distribution
+    ///   of outputs is provably identical to plain sampled generation
+    ///   from the target.
+    ///
+    /// Rejected drafts are rolled back via [`KvCache::truncate_to`] —
+    /// a pure metadata update on the pre-allocated-buffer path. The
+    /// cache rolls back to the committed prefix (accepted drafts
+    /// only); the bonus token's K/V is written by the explicit
+    /// bonus-advance forward at its true position.
+    ///
+    /// Note: the retired legacy-executor implementation truncated the
+    /// target cache to `committed + accepted + 1` on rejection,
+    /// leaving the rejected draft's K/V row in place at the bonus
+    /// position and appending the bonus one position too far. The
+    /// resulting logits drift was measured at ~4e-3 (vs ~1e-6 gemm
+    /// noise) on the tiny test fixture — real positional corruption,
+    /// though small enough there that the argmax never flipped and
+    /// the legacy token-equality tests (which only exercised the
+    /// accepted == k path) couldn't see it. This implementation
+    /// truncates to `committed + accepted` so the bonus advance lands
+    /// at the correct position;
+    /// `spec_decode_kv_context_divergent_draft_matches_greedy_baseline`
+    /// locks the lossless-greedy property.
+    ///
+    /// Expected speedup 1.5-3× at good acceptance rates (same-family
+    /// drafts only — cross-family drafts or different tokenizers will
+    /// have <20% acceptance and net-negative speedup).
+    ///
+    /// Preconditions:
+    /// - `draft.config.vocab_size == self.config.vocab_size` (so
+    ///   target's distribution over draft's vocab is well-defined).
+    /// - Both models share the same tokenizer (caller's
+    ///   responsibility).
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_streaming_spec_with_kv_context(
+        &self,
+        draft: &LlamaModel,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        k: usize,
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        device: &Device,
+        dtype: DType,
+        mut on_token: impl FnMut(u32),
+    ) -> crate::Result<Vec<u32>> {
+        if draft.config.vocab_size != self.config.vocab_size {
+            fuel_core_types::bail!(
+                "spec-decode: draft vocab {} != target vocab {}",
+                draft.config.vocab_size, self.config.vocab_size,
+            );
+        }
+        if k == 0 {
+            fuel_core_types::bail!("spec-decode: k must be >= 1");
+        }
+        if prompt_tokens.is_empty() {
+            return Err(fuel_core_types::Error::Msg(
+                "generate_streaming_spec_with_kv_context: prompt is empty".to_string(),
+            ).bt());
+        }
+
+        let mut tokens: Vec<u32> = prompt_tokens.to_vec();
+        let vocab = self.config.vocab_size;
+
+        // RNG state threading. Only used in Temperature mode.
+        let mut rng_state: u64 = match strategy {
+            SamplingStrategy::Temperature { seed, .. } => seed,
+            _ => 0,
+        };
+        let temp = match strategy {
+            SamplingStrategy::Temperature { temp, .. } => temp,
+            SamplingStrategy::Greedy => 1.0, // unused in greedy
+        };
+
+        // KV capacity: the committed sequence never exceeds
+        // `prompt + max_new`; both caches transiently hold up to `k`
+        // not-yet-accepted rows past the committed prefix (draft
+        // phase / verify phase) before truncation rolls them back.
+        let max_seq_len = prompt_tokens.len() + max_new_tokens + k;
+        let mut target_cache = KvCache::with_capacity(
+            self.config.n_layers, self.config.n_kv_heads, self.config.head_dim,
+            max_seq_len, dtype, device,
+        )?;
+        let mut draft_cache = KvCache::with_capacity(
+            draft.config.n_layers, draft.config.n_kv_heads, draft.config.head_dim,
+            max_seq_len, dtype, device,
+        )?;
+        let mut target_ctx = InferenceContext::new(device.clone());
+        let mut draft_ctx = InferenceContext::new(device.clone());
+
+        // Prefill both caches with the prompt.
+        let mut target_last_logits =
+            self.forward_with_kv_context(&tokens, &mut target_cache, &mut target_ctx)?;
+        let mut draft_last_logits =
+            draft.forward_with_kv_context(&tokens, &mut draft_cache, &mut draft_ctx)?;
+
+        let mut emitted = 0usize;
+
+        while emitted < max_new_tokens {
+            // --- Draft phase: K tokens. In Greedy mode, argmax; in
+            // Temperature mode, sample from draft's temp-scaled dist.
+            // We ALSO stash each draft's probability distribution for
+            // the Temperature accept rule.
+            let mut drafts: Vec<u32> = Vec::with_capacity(k);
+            let mut draft_probs_stash: Vec<Vec<f32>> = Vec::with_capacity(k);
+            for _ in 0..k {
+                let d = match strategy {
+                    SamplingStrategy::Greedy => {
+                        // We don't need draft_probs in greedy, but the
+                        // slot has to exist to keep indexing uniform.
+                        draft_probs_stash.push(Vec::new());
+                        spec_argmax(&draft_last_logits)
+                    }
+                    SamplingStrategy::Temperature { .. } => {
+                        let probs = spec_softmax_temp(&draft_last_logits, temp);
+                        let d = spec_sample_cat(&probs, &mut rng_state);
+                        draft_probs_stash.push(probs);
+                        d
+                    }
+                };
+                drafts.push(d);
+                draft_last_logits = draft.forward_with_kv_context(
+                    &[d], &mut draft_cache, &mut draft_ctx,
+                )?;
+            }
+
+            // --- Verify phase: target runs forward on the K drafts.
+            let verify_logits = self.forward_with_kv_context_all_positions(
+                &drafts, &mut target_cache, &mut target_ctx,
+            )?;
+            debug_assert_eq!(verify_logits.len(), drafts.len() * vocab);
+
+            // --- Accept phase: strategy-specific. ---
+            let mut accepted = 0usize;
+            let bonus_token: u32;
+            match strategy {
+                SamplingStrategy::Greedy => {
+                    let mut mismatched: Option<u32> = None;
+                    for i in 0..drafts.len() {
+                        let prev_row = if i == 0 {
+                            &target_last_logits[..]
+                        } else {
+                            &verify_logits[(i - 1) * vocab .. i * vocab]
+                        };
+                        let target_pick = spec_argmax(prev_row);
+                        if target_pick == drafts[i] {
+                            accepted += 1;
+                        } else {
+                            mismatched = Some(target_pick);
+                            break;
+                        }
+                    }
+                    bonus_token = match mismatched {
+                        Some(t) => t,
+                        None => spec_argmax(
+                            &verify_logits[(drafts.len() - 1) * vocab .. drafts.len() * vocab],
+                        ),
+                    };
+                }
+                SamplingStrategy::Temperature { .. } => {
+                    // Leviathan accept rule. For each i:
+                    //   q_i = draft's prob of drafts[i]
+                    //   p_i = target's prob of drafts[i] (from prev[i])
+                    //   accept with prob min(1, p_i / q_i)
+                    // On reject: sample replacement from (p - q)_+ / Z.
+                    let mut rejected_replacement: Option<u32> = None;
+                    for i in 0..drafts.len() {
+                        let prev_row = if i == 0 {
+                            &target_last_logits[..]
+                        } else {
+                            &verify_logits[(i - 1) * vocab .. i * vocab]
+                        };
+                        let target_probs = spec_softmax_temp(prev_row, temp);
+                        let draft_probs = &draft_probs_stash[i];
+                        let d_tok = drafts[i] as usize;
+                        let p = target_probs[d_tok];
+                        let q = draft_probs[d_tok];
+                        let ratio = if q > 0.0 { (p / q).min(1.0) } else { 0.0 };
+                        let u = spec_next_u01(&mut rng_state);
+                        if u < ratio {
+                            accepted += 1;
+                        } else {
+                            // Replacement from (p - q)_+ / sum.
+                            let mut residual: Vec<f32> = target_probs.iter().zip(draft_probs.iter())
+                                .map(|(&pt, &qt)| (pt - qt).max(0.0))
+                                .collect();
+                            let sum: f32 = residual.iter().sum();
+                            if sum > 0.0 {
+                                for r in residual.iter_mut() { *r /= sum; }
+                                rejected_replacement = Some(spec_sample_cat(&residual, &mut rng_state));
+                            } else {
+                                // Degenerate case (should only happen if
+                                // distributions match exactly — then any
+                                // sample from target_probs is equally valid).
+                                rejected_replacement = Some(spec_sample_cat(&target_probs, &mut rng_state));
+                            }
+                            break;
+                        }
+                    }
+                    bonus_token = match rejected_replacement {
+                        Some(t) => t,
+                        None => {
+                            // All K accepted — sample bonus from target's
+                            // last-position distribution.
+                            let last_row = &verify_logits[(drafts.len() - 1) * vocab .. drafts.len() * vocab];
+                            let probs = spec_softmax_temp(last_row, temp);
+                            spec_sample_cat(&probs, &mut rng_state)
+                        }
+                    };
+                }
+            }
+
+            // --- Roll back both caches to the committed prefix. ---
+            // Both caches advanced by K during draft/verify, but only
+            // `accepted` of those K positions hold committed tokens.
+            // The bonus token's K/V is NOT in either cache (the verify
+            // row at the bonus position belongs to the first rejected
+            // draft); the bonus-advance forwards below write it at the
+            // correct position. When accepted == k both truncates are
+            // no-ops and the bonus appends at the cache tail.
+            let committed_base = target_cache.cached_len - k;
+            target_cache.truncate_to(committed_base + accepted);
+            let draft_committed_base = draft_cache.cached_len - k;
+            draft_cache.truncate_to(draft_committed_base + accepted);
+
+            // --- Emit accepted drafts + bonus ---
+            for i in 0..accepted {
+                tokens.push(drafts[i]);
+                on_token(drafts[i]);
+                emitted += 1;
+                if emitted >= max_new_tokens { return Ok(tokens); }
+                if eos_id == Some(drafts[i]) { return Ok(tokens); }
+            }
+            tokens.push(bonus_token);
+            on_token(bonus_token);
+            emitted += 1;
+            if eos_id == Some(bonus_token) { return Ok(tokens); }
+            if emitted >= max_new_tokens { return Ok(tokens); }
+
+            // --- Advance both caches + both "last_logits" by the bonus
+            // token. The draft needs to see the bonus (which it didn't
+            // produce); the target writes the bonus K/V at its true
+            // position and returns fresh logits for the next
+            // accept-check on draft[0].
+            target_last_logits = self.forward_with_kv_context(
+                &[bonus_token], &mut target_cache, &mut target_ctx,
+            )?;
+            draft_last_logits = draft.forward_with_kv_context(
+                &[bonus_token], &mut draft_cache, &mut draft_ctx,
+            )?;
+        }
+        Ok(tokens)
+    }
 }
 
 // ---- Device-resident KVCache infrastructure (extracted) ------------------
@@ -6600,6 +6905,50 @@ pub fn sample_logits(
     }
 }
 
+// ---- Speculative-decoding helpers ---------------------------------------
+//
+// Shared by `generate_streaming_spec_with_kv_context`'s draft / accept
+// phases. All host-side: spec decode's accept rule operates on logits
+// vectors already downloaded from the device.
+
+/// Greedy argmax over a logits row.
+fn spec_argmax(logits: &[f32]) -> u32 {
+    let mut best = 0;
+    let mut best_v = logits[0];
+    for (i, &v) in logits.iter().enumerate().skip(1) {
+        if v > best_v { best_v = v; best = i; }
+    }
+    best as u32
+}
+
+/// Temperature-scaled softmax. Returns normalized probabilities.
+fn spec_softmax_temp(logits: &[f32], temp: f32) -> Vec<f32> {
+    let inv_t = if temp == 0.0 { 1.0 } else { 1.0 / temp };
+    let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let exp: Vec<f32> = logits.iter().map(|&x| ((x - max) * inv_t).exp()).collect();
+    let sum: f32 = exp.iter().sum();
+    exp.iter().map(|&x| x / sum).collect()
+}
+
+/// Advance a deterministic LCG and return a u01 uniform.
+fn spec_next_u01(state: &mut u64) -> f32 {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    (*state >> 32) as f32 / u32::MAX as f32
+}
+
+/// Sample a category from a distribution summing to ~1.
+fn spec_sample_cat(probs: &[f32], state: &mut u64) -> u32 {
+    let u = spec_next_u01(state);
+    let mut cum = 0.0_f32;
+    for (i, &p) in probs.iter().enumerate() {
+        cum += p;
+        if u <= cum { return i as u32; }
+    }
+    (probs.len() - 1) as u32
+}
+
 /// Sample a categorical distribution using a small deterministic LCG.
 /// Takes `probs` (assumed to sum to ~1) and a mutable RNG state,
 /// returns a sampled index.
@@ -7156,6 +7505,361 @@ impl PhiModel {
             last_logits = self.forward_with_cache_gpu_on(&[next], &mut cache, executor);
         }
         Ok(tokens)
+    }
+
+    // ===== Phase 7.6 step 9c E.3.3/E.3.4 — KvCache + InferenceContext =====
+    //
+    // The pipelined-executor forward/generate family, mirroring
+    // `LlamaModel::forward_with_kv_context`. Pre-allocated KV buffers
+    // (`KvCache::with_capacity`) + `Op::WriteSlice` in-graph mutation;
+    // runs on CPU, CUDA, and Vulkan via binding-table dispatch. Phi-2
+    // has no GQA, so the cache's `n_kv_heads` slot carries `n_heads`.
+
+    /// Variant of [`Self::apply_layer_with_cache`] that uses
+    /// pre-allocated KV-cache buffers + `Op::WriteSlice`. The K/V
+    /// caches are bound via `k_cache_const` / `v_cache_const` (Const
+    /// placeholders the caller has wired into [`InferenceContext`]);
+    /// the post-write tensors are sliced to the `cached_len + seq`
+    /// extent for attention. The cache mutation is in-graph as a side
+    /// effect of the WriteSlice nodes.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_layer_with_kv_writes(
+        &self,
+        x: &LazyTensor,
+        layer: &PhiLayerWeights,
+        k_cache_const: &LazyTensor,
+        v_cache_const: &LazyTensor,
+        cached_len: usize,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+    ) -> crate::Result<LazyTensor> {
+        let cfg = &self.config;
+        let x_shape = x.shape();
+        let dims = x_shape.dims();
+        let batch = dims[0];
+        let seq = dims[1];
+        let kv_dim = cfg.n_heads * cfg.head_dim;  // no GQA in Phi-2
+        let total_seq = cached_len + seq;
+
+        // Shared pre-block LayerNorm.
+        let x_norm = x.layer_norm_affine(
+            Arc::clone(&layer.norm_gain), Arc::clone(&layer.norm_bias),
+            cfg.layer_norm_eps,
+        )?;
+
+        // Q/K/V projections with bias — identical to apply_layer_with_cache.
+        let (q, k, v) = match &layer.attn_qkv {
+            PhiQkv::Split { q, q_bias, k, k_bias, v, v_bias } => {
+                let q_out = q.apply_linear_with_bias(&x_norm, cfg.dim, cfg.dim, Arc::clone(q_bias))?;
+                let k_out = k.apply_linear_with_bias(&x_norm, cfg.dim, kv_dim, Arc::clone(k_bias))?;
+                let v_out = v.apply_linear_with_bias(&x_norm, cfg.dim, kv_dim, Arc::clone(v_bias))?;
+                (q_out, k_out, v_out)
+            }
+            PhiQkv::Packed { qkv, qkv_bias } => {
+                let combined = qkv.apply_linear_with_bias(&x_norm, cfg.dim, 3 * cfg.dim, Arc::clone(qkv_bias))?;
+                let last = combined.rank() - 1;
+                let q_out = combined.slice(last, 0, cfg.dim)?;
+                let k_out = combined.slice(last, cfg.dim, cfg.dim)?;
+                let v_out = combined.slice(last, 2 * cfg.dim, cfg.dim)?;
+                (q_out, k_out, v_out)
+            }
+        };
+
+        // Split heads → [batch, n_heads, seq, head_dim].
+        let q_h = q
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))?
+            .permute([0, 2, 1, 3_usize])?;
+        let k_h = k
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))?
+            .permute([0, 2, 1, 3_usize])?;
+        let v_h = v
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))?
+            .permute([0, 2, 1, 3_usize])?;
+
+        // Partial RoPE on Q and K (first `rotary_dim` entries rotate).
+        let q_r = partial_rope(&q_h, rope_cos, rope_sin, cfg.rotary_dim, cfg.head_dim);
+        let k_r = partial_rope(&k_h, rope_cos, rope_sin, cfg.rotary_dim, cfg.head_dim);
+
+        // Write fresh K/V into the pre-allocated cache buffers via
+        // Op::WriteSlice; slice the post-write buffer to the visible
+        // `[..., 0..total_seq, ...]` extent for attention.
+        let write_ranges = vec![
+            (0, batch),
+            (0, cfg.n_heads),
+            (cached_len, cached_len + seq),
+            (0, cfg.head_dim),
+        ];
+        let k_full_buffer = k_cache_const.write_slice(&k_r, write_ranges.clone())?;
+        let v_full_buffer = v_cache_const.write_slice(&v_h, write_ranges)?;
+        let full_k = k_full_buffer.slice(2, 0, total_seq)?;
+        let full_v = v_full_buffer.slice(2, 0, total_seq)?;
+
+        // Attention: Q @ K^T, scale, mask, softmax, @ V — identical to
+        // apply_layer_with_cache from here.
+        let k_t = full_k.transpose()?;
+        let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
+        let scores = q_r.matmul(&k_t)?;
+        let mut mask_data = vec![0.0_f32; seq * total_seq];
+        for q_idx in 0..seq {
+            let abs_q = cached_len + q_idx;
+            for k_idx in (abs_q + 1)..total_seq {
+                mask_data[q_idx * total_seq + k_idx] = f32::NEG_INFINITY;
+            }
+        }
+        let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, total_seq]));
+        let scores_scaled = LazyTensor { inner: scores.inner.mul_scalar(scale) };
+        let scores_masked = scores_scaled.broadcast_add(&mask)?;
+        let attn = scores_masked.softmax_last_dim()?;
+        let attn_v = attn.matmul(&full_v)?;
+
+        // Merge heads: [batch, n_heads, seq, head_dim] → [batch, seq, dim].
+        let merged = attn_v
+            .permute([0, 2, 1, 3_usize])?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
+        let attn_out = layer.attn_dense.apply_linear_with_bias(
+            &merged, cfg.dim, cfg.dim, Arc::clone(&layer.attn_dense_bias),
+        )?;
+
+        // MLP branch (shares x_norm with the attention branch).
+        let fc1_out = layer.mlp_fc1.apply_linear_with_bias(
+            &x_norm, cfg.dim, cfg.ffn_dim, Arc::clone(&layer.mlp_fc1_bias),
+        )?;
+        let gelu_out = fc1_out.gelu();
+        let mlp_out = layer.mlp_fc2.apply_linear_with_bias(
+            &gelu_out, cfg.ffn_dim, cfg.dim, Arc::clone(&layer.mlp_fc2_bias),
+        )?;
+
+        // Parallel residual: x + attn_out + mlp_out.
+        x.add(&attn_out)?.add(&mlp_out)
+    }
+
+    /// Forward pass using pre-allocated KV-cache buffers and
+    /// `Op::WriteSlice`; returns last-position logits. Mirrors
+    /// [`LlamaModel::forward_with_kv_context`] — see its docs for the
+    /// architectural notes. The cache must have been constructed via
+    /// [`KvCache::with_capacity`] with `n_kv_heads == n_heads` (Phi-2
+    /// has no GQA).
+    pub fn forward_with_kv_context(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+    ) -> crate::Result<Vec<f32>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        let cached_len = cache.cached_len;
+
+        if seq == 0 {
+            return Err(fuel_core_types::Error::Msg(
+                "PhiModel::forward_with_kv_context: zero tokens".to_string(),
+            ).bt());
+        }
+        if cache.n_layers() != cfg.n_layers {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "PhiModel::forward_with_kv_context: cache n_layers {} != model n_layers {}",
+                cache.n_layers(), cfg.n_layers,
+            )).bt());
+        }
+        let max_seq_len = cache.max_seq_len.ok_or_else(|| {
+            fuel_core_types::Error::Msg(
+                "PhiModel::forward_with_kv_context: cache was constructed via with_dims \
+                 (no pre-allocated buffers); call KvCache::with_capacity(...) for the \
+                 WriteSlice path".to_string(),
+            ).bt()
+        })?;
+        if cached_len + seq > max_seq_len {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "PhiModel::forward_with_kv_context: cached_len ({cached_len}) + seq \
+                 ({seq}) > max_seq_len ({max_seq_len})",
+            )).bt());
+        }
+        let cache_dtype = cache.dtype.unwrap_or(DType::F32);
+        if cache.n_kv_heads != cfg.n_heads || cache.head_dim != cfg.head_dim {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "PhiModel::forward_with_kv_context: cache shape (n_kv_heads={}, \
+                 head_dim={}) disagrees with model config (n_heads={}, head_dim={})",
+                cache.n_kv_heads, cache.head_dim, cfg.n_heads, cfg.head_dim,
+            )).bt());
+        }
+
+        // Embed lookup + reshape to [batch, seq, dim].
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &Device::cpu(),
+        );
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let mut h = embed
+            .index_select(0, &token_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
+
+        // RoPE tables are sized for `rotary_dim`, not the full
+        // head_dim — partial RoPE rotates only the first `rotary_dim`
+        // entries.
+        let (rope_cos, rope_sin) = h.rope_tables_const(
+            cfg.rope_base, cached_len, seq, cfg.rotary_dim,
+        );
+
+        // Per-layer: bind the cache K + V Arcs to fresh Const NodeIds,
+        // dispatch through the WriteSlice variant, clean up the
+        // per-step bindings after realize.
+        let cache_shape = Shape::from_dims(
+            &[batch, cfg.n_heads, max_seq_len, cfg.head_dim],
+        );
+        let mut bound_node_ids: Vec<fuel_graph::NodeId> =
+            Vec::with_capacity(2 * cfg.n_layers);
+        for (li, layer_weights) in weights.layers.iter().enumerate() {
+            let k_arc = cache.slot_storage(li, KvSlot::K).ok_or_else(|| {
+                fuel_core_types::Error::Msg(format!(
+                    "PhiModel::forward_with_kv_context: cache layer {li} has no K slot \
+                     (with_capacity should have populated all layers)",
+                )).bt()
+            })?;
+            let v_arc = cache.slot_storage(li, KvSlot::V).ok_or_else(|| {
+                fuel_core_types::Error::Msg(format!(
+                    "PhiModel::forward_with_kv_context: cache layer {li} has no V slot",
+                )).bt()
+            })?;
+            let k_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
+            let v_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
+            let k_id = k_cache_node.inner.id();
+            let v_id = v_cache_node.inner.id();
+            ctx.insert(k_id, k_arc);
+            ctx.insert(v_id, v_arc);
+            bound_node_ids.push(k_id);
+            bound_node_ids.push(v_id);
+
+            h = self.apply_layer_with_kv_writes(
+                &h,
+                layer_weights,
+                &k_cache_node,
+                &v_cache_node,
+                cached_len,
+                &rope_cos,
+                &rope_sin,
+            )?;
+        }
+
+        // Final LayerNorm, output projection (+ optional bias).
+        let h_norm = h.layer_norm_affine(
+            Arc::clone(&weights.final_norm_gain), Arc::clone(&weights.final_norm_bias),
+            cfg.layer_norm_eps,
+        )?;
+        let logits_no_bias = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
+        let logits = match &weights.output_bias {
+            Some(b) => {
+                let b_t = h_norm.const_f32_like(
+                    Arc::clone(b), Shape::from_dims(&[cfg.vocab_size]));
+                logits_no_bias.broadcast_add(&b_t)?
+            }
+            None => logits_no_bias,
+        };
+
+        let last_pos = seq - 1;
+        let last_logits = logits
+            .slice(1, last_pos, 1)?
+            .reshape(Shape::from_dims(&[cfg.vocab_size]))?;
+
+        // Realize through InferenceContext. The WriteSlice nodes
+        // mutate the cache buffers as a side effect.
+        let logits_vec = ctx.realize_one_as::<f32>(
+            last_logits.inner.graph(),
+            last_logits.inner.id(),
+        )?;
+
+        // Clean up per-step bindings so they don't accumulate across
+        // decode steps (each step gets a fresh graph; the previous
+        // step's NodeIds are dead).
+        for id in bound_node_ids {
+            ctx.remove(id);
+        }
+
+        // Bump cache state.
+        cache.cached_len += seq;
+        for li in 0..cfg.n_layers {
+            cache.bump_version(li, KvSlot::K);
+            cache.bump_version(li, KvSlot::V);
+        }
+
+        Ok(logits_vec)
+    }
+
+    /// Streaming generation through [`Self::forward_with_kv_context`].
+    /// Allocates a pre-allocated [`KvCache`] of capacity
+    /// `prompt_tokens.len() + max_new_tokens` on `device`, then loops
+    /// prefill + decode, calling `on_token` for each generated token.
+    /// Mirrors [`LlamaModel::generate_streaming_with_kv_context`].
+    pub fn generate_streaming_with_kv_context(
+        &self,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        device: &Device,
+        dtype: DType,
+        mut on_token: impl FnMut(u32),
+    ) -> crate::Result<Vec<u32>> {
+        let cfg = &self.config;
+        if prompt_tokens.is_empty() {
+            return Err(fuel_core_types::Error::Msg(
+                "PhiModel::generate_streaming_with_kv_context: prompt is empty".to_string(),
+            ).bt());
+        }
+        let mut tokens: Vec<u32> = prompt_tokens.to_vec();
+        let mut rng_state: u64 = match strategy {
+            SamplingStrategy::Temperature { seed, .. } => seed,
+            _ => 0,
+        };
+
+        let max_seq_len = prompt_tokens.len() + max_new_tokens;
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_heads, cfg.head_dim,
+            max_seq_len, dtype, device,
+        )?;
+        let mut ctx = InferenceContext::new(device.clone());
+
+        // Prefill: one forward pass over the full prompt.
+        let mut last_logits =
+            self.forward_with_kv_context(prompt_tokens, &mut cache, &mut ctx)?;
+
+        // Decode loop.
+        for _ in 0..max_new_tokens {
+            let next = sample_logits(&last_logits, strategy, &mut rng_state);
+            tokens.push(next);
+            on_token(next);
+            if let Some(eos) = eos_id {
+                if next == eos {
+                    break;
+                }
+            }
+            last_logits =
+                self.forward_with_kv_context(&[next], &mut cache, &mut ctx)?;
+        }
+        Ok(tokens)
+    }
+
+    /// Non-streaming convenience wrapper around
+    /// [`Self::generate_streaming_with_kv_context`].
+    pub fn generate_with_kv_context(
+        &self,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        device: &Device,
+        dtype: DType,
+    ) -> crate::Result<Vec<u32>> {
+        self.generate_streaming_with_kv_context(
+            prompt_tokens,
+            max_new_tokens,
+            strategy,
+            eos_id,
+            device,
+            dtype,
+            |_| {},
+        )
     }
 
     /// Load weights from a HuggingFace Hub repo (e.g. "microsoft/phi-2").
@@ -7765,7 +8469,13 @@ mod generate_tests {
     /// Same tiny-weight helper as the llama_tests module, duplicated
     /// here to keep these tests self-contained.
     fn make_tiny_weights(cfg: &LlamaConfig) -> LlamaWeights {
-        let mut s: u32 = 9999;
+        make_tiny_weights_seeded(cfg, 9999)
+    }
+
+    /// Seeded variant — spec-decode tests use a second seed to build
+    /// a draft model that genuinely diverges from the target.
+    fn make_tiny_weights_seeded(cfg: &LlamaConfig, seed: u32) -> LlamaWeights {
+        let mut s: u32 = seed;
         let mut next = || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1
@@ -8495,6 +9205,283 @@ mod generate_tests {
         }
     }
 
+    // ---- kv-context all-positions + spec decode (E.3.4 port) ----------
+
+    /// The all-positions variant's last row must equal what the
+    /// regular (last-only) variant produces. Same graph, same cache
+    /// state, same tokens — only the output shape differs.
+    #[test]
+    fn forward_with_kv_context_all_positions_last_row_matches_last_only() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    2,
+            n_kv_heads: 2,
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let model = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let tokens = [1_u32, 2, 3, 4, 5];
+        let device = Device::cpu();
+
+        // Path A: regular last-only forward.
+        let mut cache_a = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
+            tokens.len(), DType::F32, &device,
+        ).expect("cache_a");
+        let mut ctx_a = InferenceContext::new(device.clone());
+        let last_only = model
+            .forward_with_kv_context(&tokens, &mut cache_a, &mut ctx_a)
+            .expect("last-only forward");
+        assert_eq!(last_only.len(), cfg.vocab_size);
+
+        // Path B: all-positions forward.
+        let mut cache_b = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
+            tokens.len(), DType::F32, &device,
+        ).expect("cache_b");
+        let mut ctx_b = InferenceContext::new(device.clone());
+        let all = model
+            .forward_with_kv_context_all_positions(&tokens, &mut cache_b, &mut ctx_b)
+            .expect("all-positions forward");
+        assert_eq!(all.len(), tokens.len() * cfg.vocab_size);
+
+        // Last row of `all` must match last_only.
+        let last_pos = tokens.len() - 1;
+        let all_last = &all[last_pos * cfg.vocab_size .. (last_pos + 1) * cfg.vocab_size];
+        for (i, (a, b)) in all_last.iter().zip(last_only.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "vocab idx {i}: all_positions={a} vs last_only={b}",
+            );
+        }
+
+        // Both caches should have advanced by the same amount.
+        assert_eq!(cache_a.cached_len, cache_b.cached_len);
+    }
+
+    /// `KvCache::truncate_to` rollback semantics on the pre-allocated
+    /// WriteSlice path: decode a token, roll it back, decode different
+    /// tokens through the same positions — the final logits must match
+    /// an uninterrupted run that never saw the rolled-back token.
+    /// This is exactly spec decode's reject path: stale K/V rows past
+    /// `cached_len` must stop being read and must be overwritten by
+    /// the next `Op::WriteSlice` at the same positions.
+    #[test]
+    fn kv_cache_truncate_then_redecode_matches_uninterrupted_decode() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    2,
+            n_kv_heads: 2,
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let model = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let device = Device::cpu();
+
+        // Path A (reference): prefill [3,7,1] then decode 9 then 2.
+        let mut cache_a = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, 5, DType::F32, &device,
+        ).expect("cache_a");
+        let mut ctx_a = InferenceContext::new(device.clone());
+        model.forward_with_kv_context(&[3, 7, 1], &mut cache_a, &mut ctx_a).expect("prefill A");
+        model.forward_with_kv_context(&[9], &mut cache_a, &mut ctx_a).expect("decode A1");
+        let expected = model
+            .forward_with_kv_context(&[2], &mut cache_a, &mut ctx_a)
+            .expect("decode A2");
+
+        // Path B: prefill [3,7,1], decode a WRONG token (11) at
+        // position 3, roll it back, then decode [9, 2] through the
+        // same positions in one step.
+        let mut cache_b = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, 5, DType::F32, &device,
+        ).expect("cache_b");
+        let mut ctx_b = InferenceContext::new(device.clone());
+        model.forward_with_kv_context(&[3, 7, 1], &mut cache_b, &mut ctx_b).expect("prefill B");
+        model.forward_with_kv_context(&[11], &mut cache_b, &mut ctx_b).expect("decode B wrong");
+        assert_eq!(cache_b.cached_len, 4);
+        cache_b.truncate_to(3);
+        assert_eq!(cache_b.cached_len, 3);
+        let actual = model
+            .forward_with_kv_context(&[9, 2], &mut cache_b, &mut ctx_b)
+            .expect("redecode B");
+        assert_eq!(cache_b.cached_len, 5);
+
+        assert_eq!(actual.len(), expected.len());
+        // Tolerance: path A attends over (cached 4 + fresh 1) rows,
+        // path B over (cached 3 + fresh 2) — standard O(ε) gemm
+        // accumulation-order drift, same band as the other kv-context
+        // parity tests.
+        for (i, (a, b)) in actual.iter().zip(expected.iter()).enumerate() {
+            let diff = (a - b).abs();
+            let rel = diff / a.abs().max(b.abs()).max(1e-6);
+            assert!(
+                diff < 5e-3 || rel < 1e-2,
+                "logit[{i}]: redecode={a}, uninterrupted={b}, diff={diff}",
+            );
+        }
+    }
+
+    /// Spec decode with the target as its own draft: every draft is
+    /// trivially argmax-matched, acceptance is 100%, and the output
+    /// must equal a plain greedy run through the same kv-context path.
+    #[test]
+    fn spec_decode_kv_context_self_draft_matches_greedy_baseline() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    2,
+            n_kv_heads: 2,
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let model = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let prompt = [3_u32, 7, 1];
+        let max_new = 8;
+        let device = Device::cpu();
+
+        let baseline = model.generate_with_kv_context(
+            &prompt, max_new, SamplingStrategy::Greedy, None,
+            &device, DType::F32,
+        ).expect("baseline generate");
+
+        for k in [2_usize, 4] {
+            let spec_out = model.generate_streaming_spec_with_kv_context(
+                &model, &prompt, max_new, k,
+                SamplingStrategy::Greedy, None,
+                &device, DType::F32, |_| {},
+            ).expect("spec generate");
+            assert_eq!(
+                spec_out, baseline,
+                "K={k}: spec-decode must match baseline when draft == target",
+            );
+        }
+    }
+
+    /// Greedy spec decode is lossless for ANY draft: on the first
+    /// mismatch the target's own argmax is emitted and the rejected
+    /// draft rows are rolled back, so the output must equal plain
+    /// greedy generation from the target. A draft with different
+    /// weights forces genuine rejections, exercising the
+    /// `KvCache::truncate_to` rollback + bonus-position re-write that
+    /// the self-draft test (100% acceptance) never reaches.
+    ///
+    /// The retired legacy-executor implementation got this rollback
+    /// wrong: it kept one stale K/V row at the bonus position
+    /// (truncate to `committed + accepted + 1`) and appended the
+    /// bonus one position too far — measured ~4e-3 logit drift on
+    /// this fixture (argmax happened to survive, so its
+    /// token-equality tests passed).
+    #[test]
+    fn spec_decode_kv_context_divergent_draft_matches_greedy_baseline() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    2,
+            n_kv_heads: 2,
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let target = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights_seeded(&cfg, 9999),
+        };
+        let draft = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights_seeded(&cfg, 4242),
+        };
+        let prompt = [3_u32, 7, 1];
+        let max_new = 8;
+        let device = Device::cpu();
+
+        let baseline = target.generate_with_kv_context(
+            &prompt, max_new, SamplingStrategy::Greedy, None,
+            &device, DType::F32,
+        ).expect("baseline generate");
+
+        for k in [1_usize, 2, 4] {
+            let spec_out = target.generate_streaming_spec_with_kv_context(
+                &draft, &prompt, max_new, k,
+                SamplingStrategy::Greedy, None,
+                &device, DType::F32, |_| {},
+            ).expect("spec generate");
+            assert_eq!(
+                spec_out, baseline,
+                "K={k}: greedy spec-decode must be lossless for a divergent draft",
+            );
+        }
+    }
+
+    /// In Temperature mode with draft == target, the accept coin's
+    /// ratio = min(1, p_target/p_draft) = 1.0, so acceptance is 100%.
+    /// We can't bit-match against a plain sampled baseline because the
+    /// RNG sequences diverge (spec-decode draws more randoms per
+    /// output token than plain gen), but we can assert: (a) output has
+    /// expected length, (b) all tokens are in vocab, (c) prompt prefix
+    /// is preserved.
+    #[test]
+    fn spec_decode_kv_context_sampled_self_draft_produces_valid_tokens() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    2,
+            n_kv_heads: 2,
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let model = LlamaModel {
+            config:  cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let prompt = [3_u32, 7, 1];
+        let max_new = 6;
+        let device = Device::cpu();
+
+        for k in [2_usize, 4] {
+            let out = model.generate_streaming_spec_with_kv_context(
+                &model, &prompt, max_new, k,
+                SamplingStrategy::Temperature { temp: 0.8, seed: 42 },
+                None,
+                &device, DType::F32, |_| {},
+            ).expect("spec sampled generate");
+
+            // The emit loop returns the moment `emitted == max_new`,
+            // so the output is exactly prompt + max_new tokens.
+            assert_eq!(out.len(), prompt.len() + max_new,
+                "K={k}: expected {} tokens, got {}",
+                prompt.len() + max_new, out.len());
+            assert_eq!(&out[..prompt.len()], &prompt);
+            for &t in &out {
+                assert!((t as usize) < cfg.vocab_size, "K={k}: token {t} out of vocab");
+            }
+        }
+    }
+
     #[test]
     fn sample_multinomial_respects_distribution() {
         // Heavy-loaded distribution: 99% on index 0. The sampler
@@ -8743,6 +9730,242 @@ mod generate_tests {
         cache.truncate_to(0, &backend).unwrap();
         assert_eq!(cache.cached_len, 0);
         assert!(cache.layers[0].is_none());
+    }
+}
+
+#[cfg(test)]
+mod phi_kv_context_tests {
+    use super::*;
+    use crate::inference_context::{InferenceContext, KvCache};
+
+    /// Build tiny Phi-2-shaped weights (Split QKV + biases everywhere,
+    /// partial RoPE) for kv-context forward tests.
+    fn make_tiny_phi(cfg: &PhiConfig, seed: u32) -> PhiWeights {
+        let mut s: u32 = seed;
+        let mut next = || -> f32 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1
+        };
+        let mut vec_of = |n: usize| -> Arc<[f32]> {
+            let v: Vec<f32> = (0..n).map(|_| next()).collect();
+            Arc::from(v)
+        };
+        let d = cfg.dim;
+        let kv_dim = cfg.n_heads * cfg.head_dim;
+        PhiWeights {
+            token_embedding: vec_of(cfg.vocab_size * d),
+            layers: (0..cfg.n_layers)
+                .map(|_| PhiLayerWeights {
+                    attn_qkv: PhiQkv::Split {
+                        q: vec_of(d * d).into(),
+                        q_bias: vec_of(d),
+                        k: vec_of(d * kv_dim).into(),
+                        k_bias: vec_of(kv_dim),
+                        v: vec_of(d * kv_dim).into(),
+                        v_bias: vec_of(kv_dim),
+                    },
+                    attn_dense: vec_of(d * d).into(),
+                    attn_dense_bias: vec_of(d),
+                    mlp_fc1: vec_of(d * cfg.ffn_dim).into(),
+                    mlp_fc1_bias: vec_of(cfg.ffn_dim),
+                    mlp_fc2: vec_of(cfg.ffn_dim * d).into(),
+                    mlp_fc2_bias: vec_of(d),
+                    norm_gain: Arc::from(vec![1.0_f32; d]),
+                    norm_bias: vec_of(d),
+                })
+                .collect(),
+            final_norm_gain: Arc::from(vec![1.0_f32; d]),
+            final_norm_bias: vec_of(d),
+            output: vec_of(d * cfg.vocab_size).into(),
+            output_bias: Some(vec_of(cfg.vocab_size)),
+        }
+    }
+
+    fn tiny_cfg() -> PhiConfig {
+        PhiConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    2,
+            head_dim:   4,
+            ffn_dim:    16,
+            layer_norm_eps: 1e-5,
+            rope_base:  10000.0,
+            partial_rotary_factor: 0.5,
+            rotary_dim: 2,
+            tie_word_embeddings: false,
+        }
+    }
+
+    /// Prefill + decode through `PhiModel::forward_with_kv_context`
+    /// must match the legacy device-resident cached forward
+    /// (`forward_with_cache_gpu_on` on the CPU backend) step for step.
+    /// This is the pre-retirement parity gate for the Phi `_gpu_on`
+    /// family.
+    #[test]
+    fn phi_forward_with_kv_context_matches_legacy_gpu_on() {
+        use fuel_graph_executor::GraphExecutor;
+        let cfg = tiny_cfg();
+        let model = PhiModel {
+            config:  cfg.clone(),
+            weights: make_tiny_phi(&cfg, 7777),
+        };
+        let prompt = [1_u32, 5, 9];
+        let next_token = 12_u32;
+
+        // Legacy path.
+        let mut exec = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
+        let mut legacy_cache: KVCache<fuel_graph_cpu::CpuBackend> =
+            KVCache::with_dims(cfg.n_layers, cfg.n_heads, cfg.head_dim);
+        let legacy_prefill =
+            model.forward_with_cache_gpu_on(&prompt, &mut legacy_cache, &mut exec);
+        let legacy_decode =
+            model.forward_with_cache_gpu_on(&[next_token], &mut legacy_cache, &mut exec);
+
+        // New path.
+        let device = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_heads, cfg.head_dim,
+            prompt.len() + 1, DType::F32, &device,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(device);
+        let new_prefill = model
+            .forward_with_kv_context(&prompt, &mut cache, &mut ctx)
+            .expect("prefill");
+        let new_decode = model
+            .forward_with_kv_context(&[next_token], &mut cache, &mut ctx)
+            .expect("decode");
+
+        assert_eq!(legacy_prefill.len(), new_prefill.len());
+        for (i, (a, b)) in new_prefill.iter().zip(legacy_prefill.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "prefill logit[{i}]: kv_context={a} legacy={b}",
+            );
+        }
+        assert_eq!(legacy_decode.len(), new_decode.len());
+        for (i, (a, b)) in new_decode.iter().zip(legacy_decode.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "decode logit[{i}]: kv_context={a} legacy={b}",
+            );
+        }
+        assert_eq!(cache.cached_len, prompt.len() + 1);
+    }
+
+    /// Greedy generation through the new kv-context path must produce
+    /// the identical token sequence to the legacy `_gpu_on` streaming
+    /// generate. Pre-retirement parity gate for
+    /// `PhiModel::generate_streaming_gpu_on`.
+    #[test]
+    fn phi_generate_with_kv_context_matches_legacy_generate() {
+        use fuel_graph_executor::GraphExecutor;
+        let cfg = tiny_cfg();
+        let model = PhiModel {
+            config:  cfg.clone(),
+            weights: make_tiny_phi(&cfg, 7777),
+        };
+        let prompt = [1_u32, 5, 9];
+        let max_new = 8;
+
+        let mut exec = GraphExecutor::new(fuel_graph_cpu::CpuBackend);
+        let legacy = model.generate_streaming_gpu_on(
+            &prompt, max_new, SamplingStrategy::Greedy, None,
+            &mut exec, |_| {},
+        ).expect("legacy generate");
+
+        let device = Device::cpu();
+        let new_path = model.generate_with_kv_context(
+            &prompt, max_new, SamplingStrategy::Greedy, None,
+            &device, DType::F32,
+        ).expect("kv-context generate");
+
+        assert_eq!(new_path, legacy, "greedy token sequences must be identical");
+    }
+
+    /// KV-cache self-consistency on the new path: a monolithic prefill
+    /// over N tokens must produce the same last-position logits as a
+    /// shorter prefill followed by single-token decode steps through
+    /// the same positions. Catches cache-position bugs without
+    /// referencing the legacy path (survives its retirement).
+    #[test]
+    fn phi_kv_context_decode_consistent_with_monolithic_prefill() {
+        let cfg = tiny_cfg();
+        let model = PhiModel {
+            config:  cfg.clone(),
+            weights: make_tiny_phi(&cfg, 7777),
+        };
+        let tokens = [1_u32, 5, 9, 12];
+        let device = Device::cpu();
+
+        // Path A: monolithic prefill over all 4 tokens.
+        let mut cache_a = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_heads, cfg.head_dim,
+            tokens.len(), DType::F32, &device,
+        ).expect("cache_a");
+        let mut ctx_a = InferenceContext::new(device.clone());
+        let expected = model
+            .forward_with_kv_context(&tokens, &mut cache_a, &mut ctx_a)
+            .expect("monolithic prefill");
+
+        // Path B: prefill 3, decode 1.
+        let mut cache_b = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_heads, cfg.head_dim,
+            tokens.len(), DType::F32, &device,
+        ).expect("cache_b");
+        let mut ctx_b = InferenceContext::new(device.clone());
+        model
+            .forward_with_kv_context(&tokens[..3], &mut cache_b, &mut ctx_b)
+            .expect("prefill B");
+        let actual = model
+            .forward_with_kv_context(&tokens[3..], &mut cache_b, &mut ctx_b)
+            .expect("decode B");
+
+        assert_eq!(actual.len(), expected.len());
+        // Same O(ε) gemm accumulation-order band as the LLaMA
+        // kv-context parity tests.
+        for (i, (a, b)) in actual.iter().zip(expected.iter()).enumerate() {
+            let diff = (a - b).abs();
+            let rel = diff / a.abs().max(b.abs()).max(1e-6);
+            assert!(
+                diff < 5e-3 || rel < 1e-2,
+                "logit[{i}]: chunked={a}, monolithic={b}, diff={diff}",
+            );
+        }
+        assert_eq!(cache_a.cached_len, cache_b.cached_len);
+    }
+
+    /// `forward_with_kv_context` build-time validation: with_dims
+    /// caches (no pre-allocated buffers) and capacity overflows are
+    /// rejected with typed errors, not panics.
+    #[test]
+    fn phi_forward_with_kv_context_rejects_invalid_cache() {
+        let cfg = tiny_cfg();
+        let model = PhiModel {
+            config:  cfg.clone(),
+            weights: make_tiny_phi(&cfg, 7777),
+        };
+        let device = Device::cpu();
+        let mut ctx = InferenceContext::new(device.clone());
+
+        // with_dims cache → typed error.
+        let mut dims_cache = KvCache::with_dims(cfg.n_layers, cfg.n_heads, cfg.head_dim);
+        let err = model
+            .forward_with_kv_context(&[1, 2], &mut dims_cache, &mut ctx)
+            .expect_err("with_dims cache must be rejected");
+        assert!(format!("{err}").contains("with_capacity"));
+
+        // Capacity overflow → typed error.
+        let mut small_cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_heads, cfg.head_dim, 2, DType::F32, &device,
+        ).expect("small cache");
+        model
+            .forward_with_kv_context(&[1, 2], &mut small_cache, &mut ctx)
+            .expect("fits exactly");
+        let err = model
+            .forward_with_kv_context(&[3], &mut small_cache, &mut ctx)
+            .expect_err("overflow must be rejected");
+        assert!(format!("{err}").contains("max_seq_len"));
     }
 }
 
