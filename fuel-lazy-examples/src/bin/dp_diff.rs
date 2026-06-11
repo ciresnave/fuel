@@ -162,7 +162,6 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Mul             => "Mul",
         Op::Div             => "Div",
         Op::MatMul          => "MatMul",
-        Op::Conv2D{..}      => "Conv2D",
         Op::Permute(_)      => "Permute",
         Op::Reshape(_)      => "Reshape",
         Op::BroadcastTo(_)  => "BroadcastTo",
@@ -172,10 +171,10 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Gelu            => "Gelu",
         Op::Relu            => "Relu",
         Op::Sigmoid         => "Sigmoid",
-        Op::SoftmaxLastDim  => "Softmax",
-        Op::LayerNormLastDim{..} => "LayerNorm",
-        Op::RmsNormLastDim{..}   => "RmsNorm",
-        Op::Rope            => "Rope",
+        // Softmax / LayerNorm / RmsNorm / Rope / Conv2D all flow
+        // through `Op::Fused(FusedOpId, …)` since the FusedOpRegistry
+        // migration; the per-id breakdown isn't needed here.
+        Op::Fused(..)       => "Fused",
         _ => "Other",
     }
 }
@@ -234,7 +233,7 @@ fn build_bert_stress() -> AnchorBuild {
     };
     let model = BertModel { config: cfg, weights };
     let ids: Vec<u32> = (0..256).collect();
-    AnchorBuild { label: "BERT (stress)".into(), outputs: vec![model.forward(&ids)] }
+    AnchorBuild { label: "BERT (stress)".into(), outputs: vec![model.forward(&ids).expect("bert stress forward")] }
 }
 
 fn build_bert() -> AnchorBuild {
@@ -265,16 +264,19 @@ fn build_bert() -> AnchorBuild {
     };
     let model = BertModel { config: cfg, weights };
     let ids: Vec<u32> = (0..8).collect();
-    let out = model.forward(&ids);
+    let out = model.forward(&ids).expect("bert forward");
     AnchorBuild { label: "BERT".into(), outputs: vec![out] }
 }
 
 fn build_clip() -> AnchorBuild {
-    use fuel::lazy_sd_text_encoder::{ClipLayerWeights, ClipTextConfig, ClipTextWeights, SdTextEncoder};
+    use fuel::lazy_sd_text_encoder::{
+        ClipLayerWeights, ClipTextActivation, ClipTextConfig, ClipTextWeights, SdTextEncoder,
+    };
     let cfg = ClipTextConfig {
         vocab_size: 100, hidden_size: 16, num_hidden_layers: 2,
         num_attention_heads: 4, intermediate_size: 32, max_position_embeddings: 8,
         layer_norm_eps: 1e-5, bos_token_id: 0, eos_token_id: 2, pad_token_id: 1,
+        activation: ClipTextActivation::QuickGelu,
     };
     let h = cfg.hidden_size;
     let z = |n: usize| Arc::<[f32]>::from(vec![0.0_f32; n]);
@@ -296,7 +298,7 @@ fn build_clip() -> AnchorBuild {
     };
     let model = SdTextEncoder { config: cfg.clone(), weights };
     let tokens: Vec<u32> = (0..cfg.max_position_embeddings as u32).collect();
-    AnchorBuild { label: "SD CLIP".into(), outputs: vec![model.forward(&tokens)] }
+    AnchorBuild { label: "SD CLIP".into(), outputs: vec![model.forward(&tokens).expect("clip forward")] }
 }
 
 fn build_qwen2_moe() -> AnchorBuild {

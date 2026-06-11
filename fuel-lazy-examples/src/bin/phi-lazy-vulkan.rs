@@ -23,7 +23,7 @@ fn main() {
 #[cfg(feature = "vulkan")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use fuel::lazy::{LlamaTokenizer, PhiModel, SamplingStrategy};
-    use fuel_graph_executor::GraphExecutor;
+    use fuel::{DType, Device};
     use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
     use std::io::Write;
     use std::time::Instant;
@@ -96,7 +96,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = VulkanBackend::with_selection(selection)?;
     eprintln!("done in {:.2?} — {}", t0.elapsed(), backend.device_name);
 
-    let mut executor = GraphExecutor::new(backend);
+    // Phase 7.6 step 9c E.3.3/E.3.4: the pipelined executor handles
+    // backend dispatch via `Device`; no GraphBackend executor needed.
+    // KvCache + InferenceContext live on this device.
+    let device: Device = backend.into();
 
     let t0 = Instant::now();
     let model = match &gguf_path {
@@ -135,12 +138,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut streamed = prompt_tokens.clone();
     let mut printed_text = tokenizer.decode(&streamed, true)?;
     let t0 = Instant::now();
-    let output_tokens = model.generate_streaming_gpu_on(
+    let output_tokens = model.generate_streaming_with_kv_context(
         &prompt_tokens,
         max_new,
         SamplingStrategy::Temperature { temp: 0.8, seed: 42 },
         tokenizer.eos_id(),
-        &mut executor,
+        &device,
+        DType::F32,
         |tok| {
             streamed.push(tok);
             if let Ok(full) = tokenizer.decode(&streamed, true) {
@@ -163,17 +167,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         elapsed,
         elapsed.as_secs_f64() / new_tokens.max(1) as f64,
     );
-
-    eprintln!();
-    eprintln!("Vulkan op stats (host-side submit time):");
-    for (name, s) in executor.backend.op_stats_snapshot() {
-        let avg_us = if s.count == 0 { 0 } else { (s.total_ns / s.count as u128) / 1000 };
-        eprintln!(
-            "  {name:20} count={:>7} total={:>7}ms avg={avg_us}us",
-            s.count,
-            s.total_ns / 1_000_000,
-        );
-    }
 
     Ok(())
 }

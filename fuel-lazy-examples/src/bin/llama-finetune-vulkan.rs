@@ -116,18 +116,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let dim = cfg.dim;
         let iseq = input_seq;
 
+        // `TrainState::step`'s loss-builder closure is infallible
+        // (returns `LazyTensor`); shape errors in this fixed-shape
+        // demo graph indicate a bug, so expect() is appropriate here.
         let loss = state.step(&mut executor, move |_graph, params| {
             let lm_head = &params["lm_head"];
 
             // Forward: all 22 frozen layers → hidden state.
             // Pass lm_head as the graph anchor so all nodes land on
             // the same graph the parameters live on.
-            let hidden = model_ref.forward_hidden_anchored(&ids, 0, lm_head)?;
+            let hidden = model_ref.forward_hidden_anchored(&ids, 0, lm_head)
+                .expect("frozen forward");
             // [1, input_seq, dim] → [input_seq, dim]
-            let hidden = hidden.reshape(Shape::from_dims(&[iseq, dim]))?;
+            let hidden = hidden.reshape(Shape::from_dims(&[iseq, dim]))
+                .expect("hidden reshape");
 
             // Trainable output head → logits [input_seq, vocab_size]
-            let logits = hidden.matmul(lm_head)?;
+            let logits = hidden.matmul(lm_head).expect("lm_head matmul");
 
             // Cross-entropy loss against next-token targets.
             let target = lm_head.const_f32_like(tgt, Shape::from_dims(&[iseq, vocab]));
