@@ -222,24 +222,78 @@ pub fn realize_one_as_with_initial_reporting<T: bytemuck::Pod>(
 /// placements, and the layout-fixup pass runs last. Re-planning
 /// after a `TopologyChanged` retry re-runs the whole sequence so
 /// stamps stay consistent with the fresh plan.
-/// Cap on plan rebuilds when the executor surfaces
-/// `Error::TopologyChanged` mid-dispatch. Six attempts with the
-/// exponential backoff below give a churn burst ~63ms to settle
-/// before the error escapes to the caller — enough for hotplug
-/// storms and the test suite's concurrent generation churn, while
-/// genuinely persistent churn still fails loudly.
-const MAX_PLAN_REBUILDS: usize = 6;
+/// Settle budget for `TopologyChanged` plan rebuilds, measured from
+/// the **last observed generation movement**, not from retry start.
+/// A generation bump means registration state is actively
+/// reconfiguring; as long as the counter keeps moving, rebuilding
+/// and waiting is the correct behavior, so observed movement resets
+/// the deadline. The budget therefore bounds the *quiescent-but-
+/// still-failing* case: once the topology stops changing, a realize
+/// that still can't dispatch within this window fails loudly with
+/// the executor's typed error. (History: an attempt-capped ~63ms
+/// budget flaked 50% of suite runs — the churn test's 50µs bumper
+/// sleeps stretch to ~15ms each under Windows timer resolution,
+/// and a fixed-from-start 2s cap could still expire while attempts
+/// were burning real plan-build/dispatch time inside the storm.)
+const TOPOLOGY_SETTLE_BUDGET: std::time::Duration =
+    std::time::Duration::from_secs(2);
 
-/// Exponential settle-wait between `TopologyChanged` plan rebuilds:
-/// 1, 2, 4, 8, 16ms for attempts 0..=4 (the 6th attempt dispatches
-/// immediately after the last wait). A topology generation bump
-/// means registration state is actively moving; rebuilding the plan
-/// in a tight loop just re-reads the same moving state — a brief
-/// sleep is the correct primitive here, not a perf-path concern
-/// (this only runs when a rebuild is already required).
+/// Belt-and-braces ceiling on rebuild iterations, bounding the
+/// perpetual-churn case (a device flapping indefinitely keeps
+/// resetting the settle deadline; the iteration ceiling is what
+/// finally stops us). With the 16ms backoff cap this is ≥4s of
+/// pure waiting plus per-attempt plan/dispatch time — far beyond
+/// any legitimate reconfiguration.
+const MAX_PLAN_REBUILDS: usize = 256;
+
+/// Capped exponential settle-wait between `TopologyChanged` plan
+/// rebuilds: 1, 2, 4, 8, then 16ms per attempt thereafter. A brief
+/// sleep is the correct primitive — rebuilding in a tight loop just
+/// re-reads the same moving registration state. Not a perf-path
+/// concern (this only runs when a rebuild is already required).
 fn topology_retry_backoff(attempt: usize) {
     let ms = 1u64 << attempt.min(4);
     std::thread::sleep(std::time::Duration::from_millis(ms));
+}
+
+/// Retry bookkeeping for the `TopologyChanged` loops: tracks the
+/// last topology generation observed and the time it was last seen
+/// to MOVE, so the settle budget measures quiescence rather than
+/// total elapsed time.
+struct TopologyRetryState {
+    attempt: usize,
+    last_gen: u64,
+    last_movement: std::time::Instant,
+}
+
+impl TopologyRetryState {
+    fn new() -> Self {
+        Self {
+            attempt: 0,
+            last_gen: fuel_dispatch::dispatch::topology_generation(),
+            last_movement: std::time::Instant::now(),
+        }
+    }
+
+    /// Called on a `TopologyChanged` error. Returns true when the
+    /// retry should continue (after sleeping the backoff), false
+    /// when the budget is exhausted and the error should escape.
+    fn permit_retry(&mut self) -> bool {
+        let now_gen = fuel_dispatch::dispatch::topology_generation();
+        if now_gen != self.last_gen {
+            // The topology is still moving — reset the settle clock.
+            self.last_gen = now_gen;
+            self.last_movement = std::time::Instant::now();
+        }
+        if self.attempt + 1 >= MAX_PLAN_REBUILDS
+            || self.last_movement.elapsed() >= TOPOLOGY_SETTLE_BUDGET
+        {
+            return false;
+        }
+        topology_retry_backoff(self.attempt);
+        self.attempt += 1;
+        true
+    }
 }
 
 fn dispatch_with_plan_retry(
@@ -250,7 +304,7 @@ fn dispatch_with_plan_retry(
     pinned_loc: DeviceLocation,
     report_node: NodeId,
 ) -> Result<(Arc<RwLock<Storage>>, Option<&'static str>)> {
-    let mut attempt = 0;
+    let mut retry = TopologyRetryState::new();
     // Hold a clone of `cache` outside the loop; the inner clone per-
     // attempt shares the Arcs (cheap) while keeping a fresh
     // structurally-empty layer for the executor to consume.
@@ -291,10 +345,8 @@ fn dispatch_with_plan_retry(
                 return Ok((storage, dispatched));
             }
             Err(e) if matches!(e, Error::TopologyChanged { .. })
-                && attempt + 1 < MAX_PLAN_REBUILDS =>
+                && retry.permit_retry() =>
             {
-                topology_retry_backoff(attempt);
-                attempt += 1;
                 continue;
             }
             Err(e) => return Err(e),
@@ -376,7 +428,7 @@ pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
     // selector (Picker 2).
     let selector = production_selector_for(device);
     let pinned_loc = device.location();
-    let mut attempt = 0;
+    let mut retry = TopologyRetryState::new();
     let results = loop {
         let plan = build_execution_plan(graph, &effective_targets, pinned_loc, &cache)?;
         stamp_plan_backends(graph, &effective_targets, &plan, pinned_loc)?;
@@ -397,10 +449,8 @@ pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
         match result {
             Ok(r) => break r,
             Err(e) if matches!(e, Error::TopologyChanged { .. })
-                && attempt + 1 < MAX_PLAN_REBUILDS =>
+                && retry.permit_retry() =>
             {
-                topology_retry_backoff(attempt);
-                attempt += 1;
                 continue;
             }
             Err(e) => return Err(e),

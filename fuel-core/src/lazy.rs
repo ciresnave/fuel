@@ -7264,65 +7264,6 @@ fn cpu_dequant_q8_0_bytes(bytes: &[u8]) -> Vec<f32> {
     out
 }
 
-/// Split a packed Phi-2 attn_qkv tensor into separate Q, K, V weight
-/// storages. The GGUF layout is `[3*dim, dim]` with Q occupying rows
-/// `[0..dim)`, K `[dim..2*dim)`, V `[2*dim..3*dim)`. For Q4_0 we can
-/// split byte ranges directly since each "row" of `dim` elements is
-/// exactly `dim/32 * 18` bytes.
-fn split_qkv(
-    bytes: &[u8],
-    dt: crate::quantized::GgmlDType,
-    dim: usize,
-    kv_dim: usize,
-) -> crate::Result<(WeightStorage, WeightStorage, WeightStorage)> {
-    // Phi-2 has n_kv_heads == n_heads, so kv_dim == dim. Accept that invariant.
-    if kv_dim != dim {
-        crate::bail!("split_qkv: only supports Phi-2's symmetric attention (dim={dim}, kv_dim={kv_dim})");
-    }
-    use crate::quantized::GgmlDType;
-    let force_f32 = std::env::var("FUEL_FORCE_F32").is_ok();
-    match dt {
-        GgmlDType::Q4_0 if !force_f32 => {
-            let bpb = 18usize;
-            let epb = 32usize;
-            let blocks_per_row = dim / epb;
-            let bytes_per_section = dim * blocks_per_row * bpb;
-            if bytes.len() != 3 * bytes_per_section {
-                crate::bail!(
-                    "split_qkv Q4_0: byte count {} ≠ 3 × {} = {}",
-                    bytes.len(), bytes_per_section, 3 * bytes_per_section,
-                );
-            }
-            let q_words = bytes_to_u32_arc(&bytes[0..bytes_per_section]);
-            let k_words = bytes_to_u32_arc(&bytes[bytes_per_section..2*bytes_per_section]);
-            let v_words = bytes_to_u32_arc(&bytes[2*bytes_per_section..3*bytes_per_section]);
-            Ok((
-                WeightStorage::Q4_0 { words: q_words, bytes_len: bytes_per_section, in_features: dim, out_features: dim },
-                WeightStorage::Q4_0 { words: k_words, bytes_len: bytes_per_section, in_features: dim, out_features: dim },
-                WeightStorage::Q4_0 { words: v_words, bytes_len: bytes_per_section, in_features: dim, out_features: dim },
-            ))
-        }
-        _ => {
-            // Non-Q4_0: dequantize the whole blob to F32, then split by rows.
-            let all_f32 = dequant_gguf_bytes_to_f32(bytes, dt, "attn_qkv")?;
-            let per_section = dim * dim;
-            if all_f32.len() != 3 * per_section {
-                crate::bail!(
-                    "split_qkv F-dtype: {} elems ≠ 3 × {}", all_f32.len(), per_section,
-                );
-            }
-            let q: Vec<f32> = all_f32[0..per_section].to_vec();
-            let k: Vec<f32> = all_f32[per_section..2*per_section].to_vec();
-            let v: Vec<f32> = all_f32[2*per_section..3*per_section].to_vec();
-            Ok((
-                WeightStorage::F32(Arc::from(q)),
-                WeightStorage::F32(Arc::from(k)),
-                WeightStorage::F32(Arc::from(v)),
-            ))
-        }
-    }
-}
-
 /// Apply rotary embeddings to only the first `rotary_dim` entries of
 /// the last dimension; pass the remaining `head_dim - rotary_dim` entries
 /// through unchanged. Used by Phi-2 and Phi-3 which rotate only a
