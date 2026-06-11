@@ -12,11 +12,10 @@
 
 use crate::inference_context::{InferenceContext, KvCache};
 use crate::lazy::{
-    KVCache, LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, LazyTensor,
+    LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, LazyTensor,
     SamplingStrategy, WeightStorage,
 };
 use crate::{DType, Device, Result};
-use fuel_graph_executor::{GraphBackend, GraphExecutor};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,78 +235,18 @@ impl Llama2cModel {
         )
     }
 
-    /// Device-resident KV-aware forward, backend-generic. Keys and
-    /// values stay on the device that owns `B::Storage` across decode
-    /// steps — no D2H/H2D round-trip per token. Used by `llama-lazy-
-    /// cuda` and `llama-lazy-vulkan` binaries.
-    ///
-    /// Delegates to [`LlamaModel::forward_with_cache_gpu_on`].
-    pub fn forward_with_cache_gpu_on<B: GraphBackend>(
-        &self,
-        tokens: &[u32],
-        cache: &mut KVCache<B>,
-        executor: &mut GraphExecutor<B>,
-    ) -> Vec<f32> {
-        let llama = LlamaModel {
-            config: self.config.to_llama_config(),
-            weights: self.weights.clone(),
-        };
-        llama.forward_with_cache_gpu_on(tokens, cache, executor)
-    }
-
-    /// Same as [`Self::forward_with_cache_gpu_on`] but returns logits
-    /// for ALL positions (used by speculative decode's accept/reject
-    /// path) instead of just the last position.
-    pub fn forward_with_cache_gpu_on_all_positions<B: GraphBackend>(
-        &self,
-        tokens: &[u32],
-        cache: &mut KVCache<B>,
-        executor: &mut GraphExecutor<B>,
-    ) -> Vec<f32> {
-        let llama = LlamaModel {
-            config: self.config.to_llama_config(),
-            weights: self.weights.clone(),
-        };
-        llama.forward_with_cache_gpu_on_all_positions(tokens, cache, executor)
-    }
-
-    /// Backend-generic streaming decode with device-resident KV cache.
-    /// For `B = CudaBackend` / `VulkanBackend` / future GPU backends
-    /// the K/V bytes never leave the device. Collapses to a
-    /// host-resident cache for `B = CpuBackend`.
-    ///
-    /// Delegates to [`LlamaModel::generate_streaming_gpu_on`].
-    pub fn generate_streaming_gpu_on<B: GraphBackend>(
-        &self,
-        prompt_tokens: &[u32],
-        max_new_tokens: usize,
-        strategy: SamplingStrategy,
-        eos_id: Option<u32>,
-        executor: &mut GraphExecutor<B>,
-        on_token: impl FnMut(u32),
-    ) -> Result<Vec<u32>> {
-        let llama = LlamaModel {
-            config: self.config.to_llama_config(),
-            weights: self.weights.clone(),
-        };
-        llama.generate_streaming_gpu_on(
-            prompt_tokens, max_new_tokens, strategy, eos_id, executor, on_token,
-        )
-    }
-
-    /// Speculative decode against a `draft` Llama2cModel. The draft
-    /// model proposes up to `k` next tokens; the target (this model)
-    /// then verifies them in a single parallel forward and accepts a
-    /// prefix. On rejection, the draft cache is rolled back via
-    /// `KVCache::truncate_to`.
+    /// Speculative decode against a `draft` Llama2cModel through the
+    /// kv-context path. The draft proposes up to `k` next tokens; the
+    /// target (this model) verifies them in a single parallel forward
+    /// and accepts a prefix. On rejection, both caches are rolled
+    /// back via `KvCache::truncate_to`.
     ///
     /// `draft.config.vocab_size` must equal `self.config.vocab_size`.
     ///
-    /// Delegates to [`LlamaModel::generate_streaming_spec`]. The draft
-    /// Llama2cModel is converted to an inline LlamaModel on entry; both
-    /// the target and draft executors are caller-owned.
+    /// Delegates to
+    /// [`LlamaModel::generate_streaming_spec_with_kv_context`].
     #[allow(clippy::too_many_arguments)]
-    pub fn generate_streaming_spec<B: GraphBackend>(
+    pub fn generate_streaming_spec_with_kv_context(
         &self,
         draft: &Llama2cModel,
         prompt_tokens: &[u32],
@@ -315,8 +254,8 @@ impl Llama2cModel {
         k: usize,
         strategy: SamplingStrategy,
         eos_id: Option<u32>,
-        target_executor: &mut GraphExecutor<B>,
-        draft_executor: &mut GraphExecutor<B>,
+        device: &Device,
+        dtype: DType,
         on_token: impl FnMut(u32),
     ) -> Result<Vec<u32>> {
         let target_inline = LlamaModel {
@@ -327,34 +266,20 @@ impl Llama2cModel {
             config: draft.config.to_llama_config(),
             weights: draft.weights.clone(),
         };
-        target_inline.generate_streaming_spec(
+        target_inline.generate_streaming_spec_with_kv_context(
             &draft_inline, prompt_tokens, max_new_tokens, k, strategy, eos_id,
-            target_executor, draft_executor, on_token,
+            device, dtype, on_token,
         )
     }
 
-    /// CUDA-specific convenience wrapper around
-    /// [`Self::generate_streaming_gpu_on`] for callers that already
-    /// hold a `GraphExecutor<CudaBackend>`. Delegates to
-    /// [`LlamaModel::generate_streaming_cuda`].
-    #[cfg(feature = "cuda")]
-    pub fn generate_streaming_cuda(
-        &self,
-        prompt_tokens: &[u32],
-        max_new_tokens: usize,
-        strategy: SamplingStrategy,
-        eos_id: Option<u32>,
-        executor: &mut GraphExecutor<fuel_cuda_backend::CudaBackend>,
-        on_token: impl FnMut(u32),
-    ) -> Result<Vec<u32>> {
-        let llama = LlamaModel {
-            config: self.config.to_llama_config(),
-            weights: self.weights.clone(),
-        };
-        llama.generate_streaming_cuda(
-            prompt_tokens, max_new_tokens, strategy, eos_id, executor, on_token,
-        )
-    }
+    // The device-resident `*_gpu_on` delegate family
+    // (`forward_with_cache_gpu_on`, `forward_with_cache_gpu_on_all_positions`,
+    // `generate_streaming_gpu_on`, `generate_streaming_spec`,
+    // `generate_streaming_cuda`) retired in Unification Session 4
+    // (E.3.4) together with the underlying `LlamaModel` methods and
+    // `lazy_kv_cache_device::KVCache<B>`. The `*_with_kv_context`
+    // family above is the sole forward/generate surface; callers pass
+    // a `Device` and the pipelined executor handles backend dispatch.
 
     /// Download a Llama-2-shape checkpoint (TinyLlama, Llama-2-7B,
     /// etc.) from the HuggingFace Hub and build a ready-to-forward
@@ -888,6 +813,67 @@ mod tests {
                 "logit[{i}] differs: nocache={a} cached={b}",
             );
         }
+    }
+
+    /// Greedy spec decode through the Llama2c delegate must equal
+    /// plain greedy generation (greedy spec decode is lossless for
+    /// any draft). Uses the model as its own draft — the underlying
+    /// rollback machinery is covered by the LlamaModel-level
+    /// divergent-draft test.
+    #[test]
+    fn generate_streaming_spec_with_kv_context_matches_greedy() {
+        let cfg = Llama2cConfig {
+            dim: 16, hidden_dim: 32, n_layers: 2,
+            n_heads: 4, n_kv_heads: 2, vocab_size: 32,
+            head_dim: 4, norm_eps: 1e-5, rope_theta: 10_000.0,
+        };
+        let mut s: u32 = 86420;
+        let mut next = || -> f32 {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
+        };
+        let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
+            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
+        };
+        let h = cfg.dim; let i = cfg.hidden_dim;
+        let kv = cfg.n_kv_heads * cfg.head_dim;
+        let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
+        let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
+        let layers: Vec<LayerWeights> = (0..cfg.n_layers).map(|_| LayerWeights {
+            attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)), attn_q_bias: None,
+            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_k_bias: None,
+            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)), attn_v_bias: None,
+            attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+            ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *nb)),
+            ffn_up:   WeightStorage::F32(vec_of(h * i, &mut *nb)),
+            ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
+            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
+        }).collect();
+        let weights = LlamaWeights {
+            token_embedding,
+            layers,
+            final_norm_gain: Arc::from(vec![1.0_f32; h]),
+            output: WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb)),
+        };
+        let model = Llama2cModel { config: cfg.clone(), weights };
+
+        let prompt = [2_u32, 9, 4];
+        let max_new = 6;
+        let device = crate::Device::cpu();
+
+        let baseline = model.generate_with_kv_context(
+            &prompt, max_new, SamplingStrategy::Greedy, None,
+            &device, crate::DType::F32,
+        ).expect("baseline");
+
+        let spec = model.generate_streaming_spec_with_kv_context(
+            &model, &prompt, max_new, 2,
+            SamplingStrategy::Greedy, None,
+            &device, crate::DType::F32, |_| {},
+        ).expect("spec");
+
+        assert_eq!(spec, baseline);
     }
 
     #[test]
