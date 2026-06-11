@@ -2088,6 +2088,8 @@ pub mod binary {
     cuda_binary_baracuda_wrapper!(div_f32, bk::binary_div_f32);
     cuda_binary_baracuda_wrapper!(maximum_f32, bk::binary_maximum_f32);
     cuda_binary_baracuda_wrapper!(minimum_f32, bk::binary_minimum_f32);
+    cuda_binary_baracuda_wrapper!(pow_f32, bk::binary_pow_f32);
+    cuda_binary_baracuda_wrapper!(rem_f32, bk::binary_rem_f32);
 
     cuda_binary_baracuda_wrapper!(add_f16, bk::binary_add_f16);
     cuda_binary_baracuda_wrapper!(sub_f16, bk::binary_sub_f16);
@@ -2095,6 +2097,8 @@ pub mod binary {
     cuda_binary_baracuda_wrapper!(div_f16, bk::binary_div_f16);
     cuda_binary_baracuda_wrapper!(maximum_f16, bk::binary_maximum_f16);
     cuda_binary_baracuda_wrapper!(minimum_f16, bk::binary_minimum_f16);
+    cuda_binary_baracuda_wrapper!(pow_f16, bk::binary_pow_f16);
+    cuda_binary_baracuda_wrapper!(rem_f16, bk::binary_rem_f16);
 
     cuda_binary_baracuda_wrapper!(add_bf16, bk::binary_add_bf16);
     cuda_binary_baracuda_wrapper!(sub_bf16, bk::binary_sub_bf16);
@@ -2102,6 +2106,8 @@ pub mod binary {
     cuda_binary_baracuda_wrapper!(div_bf16, bk::binary_div_bf16);
     cuda_binary_baracuda_wrapper!(maximum_bf16, bk::binary_maximum_bf16);
     cuda_binary_baracuda_wrapper!(minimum_bf16, bk::binary_minimum_bf16);
+    cuda_binary_baracuda_wrapper!(pow_bf16, bk::binary_pow_bf16);
+    cuda_binary_baracuda_wrapper!(rem_bf16, bk::binary_rem_bf16);
 
     cuda_binary_baracuda_wrapper!(add_f64, bk::binary_add_f64);
     cuda_binary_baracuda_wrapper!(sub_f64, bk::binary_sub_f64);
@@ -2109,6 +2115,8 @@ pub mod binary {
     cuda_binary_baracuda_wrapper!(div_f64, bk::binary_div_f64);
     cuda_binary_baracuda_wrapper!(maximum_f64, bk::binary_maximum_f64);
     cuda_binary_baracuda_wrapper!(minimum_f64, bk::binary_minimum_f64);
+    cuda_binary_baracuda_wrapper!(pow_f64, bk::binary_pow_f64);
+    cuda_binary_baracuda_wrapper!(rem_f64, bk::binary_rem_f64);
 }
 
 // ===========================================================================
@@ -2142,6 +2150,10 @@ pub mod unary {
     cuda_unary_baracuda_wrapper!(step_f32, bk::unary_step_f32);
     cuda_unary_baracuda_wrapper!(silu_f32, bk::unary_silu_f32);
     cuda_unary_baracuda_wrapper!(sigmoid_f32, bk::unary_sigmoid_f32);
+    cuda_unary_baracuda_wrapper!(floor_f32, bk::unary_floor_f32);
+    cuda_unary_baracuda_wrapper!(ceil_f32, bk::unary_ceil_f32);
+    cuda_unary_baracuda_wrapper!(round_f32, bk::unary_round_f32);
+    cuda_unary_baracuda_wrapper!(erf_f32, bk::unary_erf_f32);
 
     // In-place unary surface — Phase 3e of in-place ops infrastructure.
     // Reuses the same baracuda symbols but the wrapper passes the
@@ -2271,6 +2283,11 @@ pub mod unary {
     cuda_unary_baracuda_wrapper!(step_f16, bk::unary_step_f16);
     cuda_unary_baracuda_wrapper!(silu_f16, bk::unary_silu_f16);
     cuda_unary_baracuda_wrapper!(sigmoid_f16, bk::unary_sigmoid_f16);
+    cuda_unary_baracuda_wrapper!(rsqrt_f16, bk::unary_rsqrt_f16);
+    cuda_unary_baracuda_wrapper!(floor_f16, bk::unary_floor_f16);
+    cuda_unary_baracuda_wrapper!(ceil_f16, bk::unary_ceil_f16);
+    cuda_unary_baracuda_wrapper!(round_f16, bk::unary_round_f16);
+    cuda_unary_baracuda_wrapper!(erf_f16, bk::unary_erf_f16);
 
     // bf16
     cuda_unary_baracuda_wrapper!(neg_bf16, bk::unary_neg_bf16);
@@ -2289,6 +2306,11 @@ pub mod unary {
     cuda_unary_baracuda_wrapper!(step_bf16, bk::unary_step_bf16);
     cuda_unary_baracuda_wrapper!(silu_bf16, bk::unary_silu_bf16);
     cuda_unary_baracuda_wrapper!(sigmoid_bf16, bk::unary_sigmoid_bf16);
+    cuda_unary_baracuda_wrapper!(rsqrt_bf16, bk::unary_rsqrt_bf16);
+    cuda_unary_baracuda_wrapper!(floor_bf16, bk::unary_floor_bf16);
+    cuda_unary_baracuda_wrapper!(ceil_bf16, bk::unary_ceil_bf16);
+    cuda_unary_baracuda_wrapper!(round_bf16, bk::unary_round_bf16);
+    cuda_unary_baracuda_wrapper!(erf_bf16, bk::unary_erf_bf16);
 
     // f64
     cuda_unary_baracuda_wrapper!(neg_f64, bk::unary_neg_f64);
@@ -2307,6 +2329,11 @@ pub mod unary {
     cuda_unary_baracuda_wrapper!(step_f64, bk::unary_step_f64);
     cuda_unary_baracuda_wrapper!(silu_f64, bk::unary_silu_f64);
     cuda_unary_baracuda_wrapper!(sigmoid_f64, bk::unary_sigmoid_f64);
+    cuda_unary_baracuda_wrapper!(rsqrt_f64, bk::unary_rsqrt_f64);
+    cuda_unary_baracuda_wrapper!(floor_f64, bk::unary_floor_f64);
+    cuda_unary_baracuda_wrapper!(ceil_f64, bk::unary_ceil_f64);
+    cuda_unary_baracuda_wrapper!(round_f64, bk::unary_round_f64);
+    cuda_unary_baracuda_wrapper!(erf_f64, bk::unary_erf_f64);
 
     // Wrappers are `pub fn` (per the macro); accessible as
     // `unary::<name>` from `register_baracuda_cuda_kernels` below.
@@ -2318,9 +2345,11 @@ pub mod unary {
 /// be called on the same table; step 9a's append-on-register makes
 /// them coexist.
 ///
-/// Coverage today: 53 unary entries across F32/F16/BF16/F64.
-/// Subsequent commits fan out to binary / ternary / norm / softmax /
-/// attention / GGUF / MoE / int-GEMM / etc.
+/// Coverage spans unary / binary / reduce / norm / softmax /
+/// attention / indexing / GGUF / int-GEMM / cast / conv across
+/// F32/F16/BF16/F64 (see the per-family sections below). The
+/// 2026-06-11 sweep closed the Judge's cuda:0 elementwise gap:
+/// Rsqrt/Floor/Ceil/Round/Erf unary + Pow/Rem binary.
 pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     use OpKind::*;
     let cuda = BackendId::Cuda;
@@ -2346,6 +2375,11 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(DivElementwise,     &b(f32), cuda, binary::div_f32,     strided);
     table.register_with_caps(MaximumElementwise, &b(f32), cuda, binary::maximum_f32, strided);
     table.register_with_caps(MinimumElementwise, &b(f32), cuda, binary::minimum_f32, strided);
+    // Pow = elementwise tensor^tensor; Rem = PyTorch-convention
+    // remainder (sign of divisor) — bound to baracuda's `binary_mod_*`
+    // (Python-style), NOT `binary_remainder_*` (C99 fmod).
+    table.register_with_caps(PowElementwise,     &b(f32), cuda, binary::pow_f32,     strided);
+    table.register_with_caps(RemElementwise,     &b(f32), cuda, binary::rem_f32,     strided);
 
     // ----- F16 / BF16 / F64 binary (net-new dtype coverage on CUDA) -----
     table.register_with_caps(AddElementwise,     &b(f16), cuda, binary::add_f16,     strided);
@@ -2354,6 +2388,8 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(DivElementwise,     &b(f16), cuda, binary::div_f16,     strided);
     table.register_with_caps(MaximumElementwise, &b(f16), cuda, binary::maximum_f16, strided);
     table.register_with_caps(MinimumElementwise, &b(f16), cuda, binary::minimum_f16, strided);
+    table.register_with_caps(PowElementwise,     &b(f16), cuda, binary::pow_f16,     strided);
+    table.register_with_caps(RemElementwise,     &b(f16), cuda, binary::rem_f16,     strided);
 
     table.register_with_caps(AddElementwise,     &b(bf16), cuda, binary::add_bf16,     strided);
     table.register_with_caps(SubElementwise,     &b(bf16), cuda, binary::sub_bf16,     strided);
@@ -2361,6 +2397,8 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(DivElementwise,     &b(bf16), cuda, binary::div_bf16,     strided);
     table.register_with_caps(MaximumElementwise, &b(bf16), cuda, binary::maximum_bf16, strided);
     table.register_with_caps(MinimumElementwise, &b(bf16), cuda, binary::minimum_bf16, strided);
+    table.register_with_caps(PowElementwise,     &b(bf16), cuda, binary::pow_bf16,     strided);
+    table.register_with_caps(RemElementwise,     &b(bf16), cuda, binary::rem_bf16,     strided);
 
     table.register_with_caps(AddElementwise,     &b(f64), cuda, binary::add_f64,     strided);
     table.register_with_caps(SubElementwise,     &b(f64), cuda, binary::sub_f64,     strided);
@@ -2368,6 +2406,8 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(DivElementwise,     &b(f64), cuda, binary::div_f64,     strided);
     table.register_with_caps(MaximumElementwise, &b(f64), cuda, binary::maximum_f64, strided);
     table.register_with_caps(MinimumElementwise, &b(f64), cuda, binary::minimum_f64, strided);
+    table.register_with_caps(PowElementwise,     &b(f64), cuda, binary::pow_f64,     strided);
+    table.register_with_caps(RemElementwise,     &b(f64), cuda, binary::rem_f64,     strided);
 
     // ----- Reduce (single dispatch covers all axis configurations;
     //       the wrapper destructures OpParams::Reduce { dims, keepdim }) -----
@@ -2765,6 +2805,16 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(StepElementwise,    &u(f32), cuda, unary::step_f32,    strided);
     table.register_with_caps(SiluElementwise,    &u(f32), cuda, unary::silu_f32,    strided);
     table.register_with_caps(SigmoidElementwise, &u(f32), cuda, unary::sigmoid_f32, strided);
+    // Judge cuda:0 coverage gap (2026-06-11): Rsqrt's wrapper existed
+    // but was never registered; Floor/Ceil/Round/Erf forward manifests
+    // are net-new. RoundElementwise is banker's rounding on both sides
+    // (CPU `round_ties_even`, baracuda `rint`); ErfElementwise is the
+    // plain error function (`erff`), verified against the .cu functor.
+    table.register_with_caps(RsqrtElementwise,   &u(f32), cuda, unary::rsqrt_f32,   strided);
+    table.register_with_caps(FloorElementwise,   &u(f32), cuda, unary::floor_f32,   strided);
+    table.register_with_caps(CeilElementwise,    &u(f32), cuda, unary::ceil_f32,    strided);
+    table.register_with_caps(RoundElementwise,   &u(f32), cuda, unary::round_f32,   strided);
+    table.register_with_caps(ErfElementwise,     &u(f32), cuda, unary::erf_f32,     strided);
 
     // ----- F16 unary (net-new dtype coverage for CUDA — PTX path is
     //       f32-only today) -----
@@ -2784,6 +2834,11 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(StepElementwise,    &u(f16), cuda, unary::step_f16,    strided);
     table.register_with_caps(SiluElementwise,    &u(f16), cuda, unary::silu_f16,    strided);
     table.register_with_caps(SigmoidElementwise, &u(f16), cuda, unary::sigmoid_f16, strided);
+    table.register_with_caps(RsqrtElementwise,   &u(f16), cuda, unary::rsqrt_f16,   strided);
+    table.register_with_caps(FloorElementwise,   &u(f16), cuda, unary::floor_f16,   strided);
+    table.register_with_caps(CeilElementwise,    &u(f16), cuda, unary::ceil_f16,    strided);
+    table.register_with_caps(RoundElementwise,   &u(f16), cuda, unary::round_f16,   strided);
+    table.register_with_caps(ErfElementwise,     &u(f16), cuda, unary::erf_f16,     strided);
 
     // ----- BF16 unary -----
     table.register_with_caps(NegElementwise,     &u(bf16), cuda, unary::neg_bf16,     strided);
@@ -2802,6 +2857,11 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(StepElementwise,    &u(bf16), cuda, unary::step_bf16,    strided);
     table.register_with_caps(SiluElementwise,    &u(bf16), cuda, unary::silu_bf16,    strided);
     table.register_with_caps(SigmoidElementwise, &u(bf16), cuda, unary::sigmoid_bf16, strided);
+    table.register_with_caps(RsqrtElementwise,   &u(bf16), cuda, unary::rsqrt_bf16,   strided);
+    table.register_with_caps(FloorElementwise,   &u(bf16), cuda, unary::floor_bf16,   strided);
+    table.register_with_caps(CeilElementwise,    &u(bf16), cuda, unary::ceil_bf16,    strided);
+    table.register_with_caps(RoundElementwise,   &u(bf16), cuda, unary::round_bf16,   strided);
+    table.register_with_caps(ErfElementwise,     &u(bf16), cuda, unary::erf_bf16,     strided);
 
     // ----- F64 unary -----
     table.register_with_caps(NegElementwise,     &u(f64), cuda, unary::neg_f64,     strided);
@@ -2820,6 +2880,11 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(StepElementwise,    &u(f64), cuda, unary::step_f64,    strided);
     table.register_with_caps(SiluElementwise,    &u(f64), cuda, unary::silu_f64,    strided);
     table.register_with_caps(SigmoidElementwise, &u(f64), cuda, unary::sigmoid_f64, strided);
+    table.register_with_caps(RsqrtElementwise,   &u(f64), cuda, unary::rsqrt_f64,   strided);
+    table.register_with_caps(FloorElementwise,   &u(f64), cuda, unary::floor_f64,   strided);
+    table.register_with_caps(CeilElementwise,    &u(f64), cuda, unary::ceil_f64,    strided);
+    table.register_with_caps(RoundElementwise,   &u(f64), cuda, unary::round_f64,   strided);
+    table.register_with_caps(ErfElementwise,     &u(f64), cuda, unary::erf_f64,     strided);
 
     // ----- Dense FP MatMul (Phase 74 gemm_dense; alpha.67) -----
     // Packed row-major contract (the wrapper validates byte lengths),
