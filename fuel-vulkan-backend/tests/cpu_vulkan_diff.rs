@@ -354,10 +354,10 @@ fn vulkan_trains_linear_regression_sgd() {
             let b = &params["b"];
             let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
             let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
-            let w_b = w.broadcast_to(Shape::from_dims(&[len]));
-            let b_b = b.broadcast_to(Shape::from_dims(&[len]));
-            let y_hat = x.mul(&w_b).add(&b_b);
-            let diff = y_hat.sub(&y);
+            let w_b = w.broadcast_to(Shape::from_dims(&[len])).expect("broadcast w");
+            let b_b = b.broadcast_to(Shape::from_dims(&[len])).expect("broadcast b");
+            let y_hat = x.mul(&w_b).expect("mul").add(&b_b).expect("add");
+            let diff = y_hat.sub(&y).expect("sub");
             diff.sqr().sum_all().mul_scalar(1.0 / len as f64)
         }).unwrap();
         if step == 0 || step == 1999 { /* just pace */ }
@@ -365,7 +365,7 @@ fn vulkan_trains_linear_regression_sgd() {
     let w_final = state.param_to_host("w", &exe).unwrap()[0];
     let b_final = state.param_to_host("b", &exe).unwrap()[0];
     eprintln!("vulkan SGD final: w = {w_final}, b = {b_final}");
-    let _ = LazyTensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), cpu_dev()); // silence unused-import
+    let _ = LazyTensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), &fuel_core::Device::cpu()); // silence unused-import
     assert!((w_final - 2.0).abs() < 0.1, "w={w_final}");
     assert!((b_final - 3.0).abs() < 0.5, "b={b_final}");
 }
@@ -700,7 +700,7 @@ fn make_q8_0_blocks(n_blocks: usize, seed: u32) -> (Vec<u8>, Vec<f32>) {
 /// Returns (raw block bytes, CPU-dequantized F32 expected output).
 fn make_q4_km_blocks(n_blocks: usize, seed: u32) -> (Vec<u8>, Vec<f32>) {
     use half::f16;
-    use fuel_core::quantized::k_quants::{BlockQ4K, GgmlType};
+    use fuel_core::quantized::{BlockQ4K, GgmlType};
     const QK_K: usize = 256;
     const BYTES_PER_BLOCK: usize = 144;
 
@@ -876,15 +876,23 @@ fn vulkan_vram_budget_queries_return_sensible_values() {
     }
 }
 
-/// End-to-end park/unpark: populate a KVCache's layers with known
-/// F32 data, park the cache, verify each layer is now host-backed
-/// AND that its tier says so, unpark, verify data round-trips
-/// bit-for-bit. Exercises the whole tiering pipeline: evict per
-/// layer, ResidencyFile allocation, fault-back on restore.
+/// End-to-end evict/fault_back over a KV-cache-shaped working set:
+/// upload known F32 data for 3 layers' worth of K/V tensors, evict
+/// each to a ResidencyFile (verify host tier), fault each back
+/// (verify device tier), and confirm the data round-trips
+/// bit-for-bit. Exercises the whole tiering pipeline: per-tensor
+/// evict, ResidencyFile allocation, fault-back on restore.
+///
+/// Historical note: this test originally drove the same pipeline
+/// through `fuel_core::lazy::KVCache::{park, unpark}` — that wrapper
+/// retired with the legacy `*_gpu_on` generate family (Unification
+/// Session 4); its successor `inference_context::KvCache` is
+/// backend-erased, so tiered-residency orchestration moves to the
+/// residency planner (Op::Move arc). The evict/fault_back primitives
+/// under test are unchanged.
 #[test]
 #[ignore]
-fn vulkan_kvcache_park_unpark_preserves_layer_data() {
-    use fuel_core::lazy::{KVCache, KVCacheEntry};
+fn vulkan_evict_fault_back_preserves_kv_layer_data() {
     use fuel_graph_executor::GraphBackend;
     use fuel_vulkan_backend::residency::ResidencyFile;
     use fuel_vulkan_backend::Tier;
@@ -905,18 +913,19 @@ fn vulkan_kvcache_park_unpark_preserves_layer_data() {
     let _guard = PathGuard(path.clone());
     let file = Arc::new(ResidencyFile::create(&path, 256 * 1024).unwrap());
 
-    // Tiny cache: 3 layers × [1, 2, 4, 4] shape = 32 F32 elements each layer.
+    // Tiny working set: 3 layers × [1, 2, 4, 4] shape = 32 F32
+    // elements per K/V tensor.
     let n_layers = 3;
     let n_kv = 2;
     let head_dim = 4;
     let seq = 4;
-    let mut cache: KVCache<VulkanBackend> = KVCache::with_dims(n_layers, n_kv, head_dim);
-    cache.cached_len = seq;
 
     // Distinctive per-layer data so we can verify survival.
     // value(li, h, s, d) = li*10000 + h*1000 + s*10 + d
     let shape = fuel_core_types::Shape::from_dims(&[1, n_kv, seq, head_dim]);
     let mut originals: Vec<Vec<f32>> = Vec::new();
+    let mut layers: Vec<(fuel_vulkan_backend::VulkanStorage, fuel_vulkan_backend::VulkanStorage)> =
+        Vec::new();
     for li in 0..n_layers {
         let data: Vec<f32> = (0..(n_kv * seq * head_dim)).map(|i| {
             let d = i % head_dim;
@@ -926,49 +935,45 @@ fn vulkan_kvcache_park_unpark_preserves_layer_data() {
         }).collect();
         let k = vk.upload(&fuel_core_types::HostBuffer::F32(data.clone()), &shape).unwrap();
         let v = vk.upload(&fuel_core_types::HostBuffer::F32(data.clone()), &shape).unwrap();
-        cache.set_layer(li, KVCacheEntry::F32 { k, v });
+        layers.push((k, v));
         originals.push(data);
     }
 
-    // Park. Each layer's K/V should now be host-backed.
-    cache.park(&vk, &file).expect("park");
-    assert!(cache.parked, "parked flag should be true");
-    assert_eq!(cache.cached_len, seq, "cached_len preserved across park");
-    for li in 0..n_layers {
-        let entry = cache.layer(li).expect("layer still populated");
-        if let KVCacheEntry::F32 { k, v } = entry {
-            assert_eq!(k.tier, Tier::OnHost, "layer {li} K should be on host after park");
-            assert_eq!(v.tier, Tier::OnHost, "layer {li} V should be on host after park");
-        } else { panic!("unexpected Q8 after park"); }
+    // Evict ("park"): each K/V should now be host-backed; drop the
+    // device-backed handles so the VRAM sub-allocations return to
+    // the buffer pool.
+    let mut parked: Vec<(fuel_vulkan_backend::VulkanStorage, fuel_vulkan_backend::VulkanStorage)> =
+        Vec::new();
+    for (li, (k, v)) in layers.into_iter().enumerate() {
+        let k_host = vk.evict(&k, &file).expect("evict K");
+        let v_host = vk.evict(&v, &file).expect("evict V");
+        drop(k);
+        drop(v);
+        assert_eq!(k_host.tier, Tier::OnHost, "layer {li} K should be on host after evict");
+        assert_eq!(v_host.tier, Tier::OnHost, "layer {li} V should be on host after evict");
+        parked.push((k_host, v_host));
     }
 
-    // Double-park should fail.
-    assert!(cache.park(&vk, &file).is_err(), "double-park should fail");
-
-    // Unpark. Each layer should be device-backed again.
-    cache.unpark(&vk).expect("unpark");
-    assert!(!cache.parked);
-    for li in 0..n_layers {
-        let entry = cache.layer(li).unwrap();
-        if let KVCacheEntry::F32 { k, v } = entry {
-            assert_eq!(k.tier, Tier::OnDevice, "layer {li} K should be back on device");
-            assert_eq!(v.tier, Tier::OnDevice, "layer {li} V should be back on device");
-            // Download K and V; must bit-match the original.
-            let k_host = match vk.download(k).unwrap() {
-                fuel_core_types::HostBuffer::F32(v) => v,
-                _ => panic!("expected F32"),
-            };
-            let v_host = match vk.download(v).unwrap() {
-                fuel_core_types::HostBuffer::F32(v) => v,
-                _ => panic!("expected F32"),
-            };
-            assert_eq!(k_host, originals[li], "layer {li} K data lost across park/unpark");
-            assert_eq!(v_host, originals[li], "layer {li} V data lost across park/unpark");
-        } else { panic!("unexpected Q8 after unpark"); }
+    // Fault back ("unpark"): each K/V should be device-backed again
+    // and bit-match the original data.
+    for (li, (k_host, v_host)) in parked.into_iter().enumerate() {
+        let k_dev = vk.fault_back(&k_host).expect("fault_back K");
+        let v_dev = vk.fault_back(&v_host).expect("fault_back V");
+        drop(k_host);
+        drop(v_host);
+        assert_eq!(k_dev.tier, Tier::OnDevice, "layer {li} K should be back on device");
+        assert_eq!(v_dev.tier, Tier::OnDevice, "layer {li} V should be back on device");
+        let k_back = match vk.download(&k_dev).unwrap() {
+            fuel_core_types::HostBuffer::F32(v) => v,
+            _ => panic!("expected F32"),
+        };
+        let v_back = match vk.download(&v_dev).unwrap() {
+            fuel_core_types::HostBuffer::F32(v) => v,
+            _ => panic!("expected F32"),
+        };
+        assert_eq!(k_back, originals[li], "layer {li} K data lost across evict/fault_back");
+        assert_eq!(v_back, originals[li], "layer {li} V data lost across evict/fault_back");
     }
-
-    // Double-unpark should fail.
-    assert!(cache.unpark(&vk).is_err(), "double-unpark should fail");
 }
 
 /// evict_from_candidates walks the LRU-ordered list and evicts
@@ -1768,14 +1773,14 @@ fn vulkan_trains_mini_model_with_rms_norm_and_softmax() {
             let target = w1.const_f32_like(tgt, Shape::from_dims(&[seq, vocab]));
 
             // Forward: RMSNorm → matmul → softmax → matmul → loss
-            let h = x.rms_norm_last_dim(1e-5);
-            let h = h.matmul(w1);
-            let h = h.softmax_last_dim();
-            let logits = h.matmul(w2);
+            let h = x.rms_norm_last_dim(1e-5).expect("rms_norm");
+            let h = h.matmul(w1).expect("matmul w1");
+            let h = h.softmax_last_dim().expect("softmax");
+            let logits = h.matmul(w2).expect("matmul w2");
 
             // MSE loss against target (simpler than cross-entropy for
             // this validation — just need loss to decrease)
-            let diff = logits.sub(&target);
+            let diff = logits.sub(&target).expect("sub");
             diff.sqr().mean_all()
         }).unwrap();
         losses.push(loss);
@@ -1838,7 +1843,12 @@ fn vulkan_strided_matmul_matches_contiguous_reference() {
 
     // Strided K^T: same buffer as full_k, transposed strides
     let stride_per_head = seq * hd;
-    let kt_strides = vec![n_kv * stride_per_head, stride_per_head, 1usize, hd];
+    let kt_strides = vec![
+        (n_kv * stride_per_head) as isize,
+        stride_per_head as isize,
+        1isize,
+        hd as isize,
+    ];
     let kt_layout_strided = Layout::new(kt_shape.clone(), kt_strides.into(), 0);
 
     let bmnk = (32usize, 1usize, seq, hd);

@@ -822,7 +822,7 @@ impl<B: GraphBackend> GraphExecutor<B> {
     /// Useful for running models larger than VRAM: configure the
     /// limit to some fraction of available VRAM, leaving headroom
     /// for activations, KV cache, and working-set buffers. Pair with
-    /// [`KVCache::park`] for idle KV eviction.
+    /// the Vulkan backend's `evict` primitive for idle KV eviction.
     ///
     /// `None` disables the limit (today's default — unbounded
     /// accumulation, matches pre-tiering behavior).

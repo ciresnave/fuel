@@ -13,7 +13,8 @@
 //!
 //! - **[`KvCache`]**, **[`KvLayer`]**, **[`KvLayerId`]**, **[`KvSlot`]**,
 //!   **[`AuthorityState`]**: the backend-erased KV cache primitive that
-//!   replaces `lazy::KVCache<B>` and `lazy::LlamaKVCache`. Single
+//!   replaced `lazy::KVCache<B>` and `lazy::LlamaKVCache` (both
+//!   retired — E.3.3.D and Unification Session 4 E.3.4). Single
 //!   concrete type with no generic-over-B parameter; each layer holds
 //!   `Arc<RwLock<Storage>>` for K and V plus side-table metadata
 //!   (layout, monotonic version, coherence authority).
@@ -33,11 +34,6 @@
 //!   them yet — every layer starts and stays `AuthorityState::Host`
 //!   for the lifetime of the session in single-device usage.
 //!   Phase J (multi-GPU) activates the protocol.
-//! - **`forward_with_cache_on` migration**: the legacy `KVCache<B>`
-//!   and `LlamaKVCache` from `lazy.rs` are still the active types
-//!   for autoregressive decoding. Phase E.3.3 ports them to use
-//!   `KvCache` + `InferenceContext`.
-//! - **`generate_*` + speculative decoding**: Phase E.3.4.
 //! - **Weight persistence**: weights stay in the graph's storage_map
 //!   per the design discussion; the persistent map handles KV layers
 //!   and transient cross-step state only.

@@ -56,13 +56,15 @@
 //! [`host_buffer_to_bytes`] (per-dtype HostBuffer → bytes
 //! conversion — orthogonal to the device-dispatch concern).
 //!
-//! ## Not yet covered (Phase E.3+)
+//! ## Phase E.3 coverage (complete)
 //!
-//! - `KVCache<B>` and `forward_with_cache_on<B>` — autoregressive
-//!   decoding needs a const cache that survives realize calls; the
-//!   pattern is "caller holds a long-lived `StorageCache` across
-//!   calls" but the API surface for that lands in Phase E.3.
-//! - `generate_*` and speculative decoding loops — same.
+//! Autoregressive decoding (the former `KVCache<B>` /
+//! `forward_with_cache_on<B>` / `generate_*` / speculative-decode
+//! surfaces) runs through [`crate::inference_context`]: a long-lived
+//! `InferenceContext` seeds each realize call's `StorageCache` and
+//! `KvCache::with_capacity` + `Op::WriteSlice` keep K/V device-
+//! resident across steps. The legacy generic-over-`B` family retired
+//! in Unification Session 4 (E.3.4).
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -596,7 +598,7 @@ fn build_execution_plan(
 // ---------------------------------------------------------------------------
 
 /// Opt-out knob for the production runtime selector. Matches the
-/// `FUEL_*` env-var convention (`FUEL_FORCE_F32`, `FUEL_Q8_KV`, ...):
+/// `FUEL_*` env-var convention (`FUEL_FORCE_F32`, `FUEL_TRACE`, ...):
 /// set `FUEL_DISABLE_RUNTIME_SELECTOR=1` to fall back to the
 /// selector-less plan path (per-node `AlternativeSet::winner`, the
 /// pre-step-3 behavior). Default: selector ON.
