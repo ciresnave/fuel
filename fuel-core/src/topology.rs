@@ -22,8 +22,15 @@
 //!   capability-provider refactor lands.
 //! - **TDP-3** `shares_storage` is keyed by `(BackendId,
 //!   DeviceLocation)` so CUDA gpu_id=0 vs gpu_id=1 distinguish.
-//! - **TDP-4** TransferPath is returned as the enum discriminator;
-//!   numeric cost estimates are deferred.
+//! - **TDP-4** TransferPath is returned as the enum discriminator.
+//!   Numeric cost estimates — deferred at TDP-4 time — shipped as
+//!   Stage 1 of the load-time incremental planner
+//!   (`docs/session-prompts/load-time-incremental-planner.md`):
+//!   [`SystemTopology::transfer_estimate`] /
+//!   [`SystemTopology::estimate_transfer_ns`] price every path,
+//!   backed by a lazily-probed once-per-generation
+//!   [`TransferCalibration`] with conservative per-path-class
+//!   fallbacks for unprobed paths.
 //! - **TDP-5** Lifecycle uses a generation counter
 //!   ([`fuel_dispatch::dispatch::topology_generation`]) plus an
 //!   `RwLock<Option<Arc<…>>>`. `current()` rebuilds atomically when
@@ -38,7 +45,7 @@
 //!   [`SystemTopology::capabilities_op_coverage_is_subset`].
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use fuel_core_types::backend::{BackendCapabilities, SubstrateClass, TransferPath};
 use fuel_core_types::dispatch::OpKind;
@@ -47,6 +54,7 @@ use fuel_core_types::{DType, DeviceLocation};
 use fuel_dispatch::dispatch::{global_bindings, global_registry, topology_generation};
 
 use crate::probe::ProbeReport;
+use crate::transfer_cost::{TransferCalibration, TransferEstimate};
 
 /// Process-wide cached topology. Holds at most one `Arc<SystemTopology>`
 /// at a time; replaced atomically when the generation counter advances.
@@ -103,6 +111,12 @@ pub struct SystemTopology {
     /// can be cross-checked against this for the TDP-7 divergence
     /// guard.
     binding_op_coverage: HashMap<BackendId, HashSet<(OpKind, DType)>>,
+    /// Numeric per-path transfer calibration (planner Stage 1).
+    /// Probed lazily on the first [`Self::transfer_calibration`] /
+    /// [`Self::transfer_estimate`] call and cached for the lifetime
+    /// of this snapshot — i.e. once per topology generation. Empty
+    /// (and free to build) on CPU-only hosts.
+    transfer_calibration: OnceLock<TransferCalibration>,
 }
 
 impl SystemTopology {
@@ -261,6 +275,77 @@ impl SystemTopology {
             .get(&(src, dst))
             .copied()
             .unwrap_or(TransferPath::HostStaging)
+    }
+
+    /// Numeric per-path transfer calibration — Stage 1 of the
+    /// load-time incremental planner
+    /// (`docs/session-prompts/load-time-incremental-planner.md`).
+    ///
+    /// The first call on a snapshot runs the calibration probe
+    /// (timed H2D/D2H round-trips through the byte-storage substrate
+    /// APIs, a few tens of ms per GPU device); every later call —
+    /// from any thread — returns the cached result. Because the
+    /// snapshot itself is rebuilt at most once per topology
+    /// generation, the probe runs at most once per generation.
+    /// CPU-only hosts probe zero paths and return an empty
+    /// calibration immediately — no probe, no error.
+    ///
+    /// Most consumers want [`Self::transfer_estimate`] /
+    /// [`Self::estimate_transfer_ns`], which add the fallback
+    /// pricing for unprobed paths; this accessor exposes the raw
+    /// probed set for diagnostics and tests.
+    pub fn transfer_calibration(&self) -> &TransferCalibration {
+        self.transfer_calibration
+            .get_or_init(|| TransferCalibration::calibrate(&self.devices))
+    }
+
+    /// Numeric cost model for moving bytes `src → dst`, for the
+    /// planner's cost composer (Stage 2) and placement DP (Stage 3).
+    /// Never fails:
+    ///
+    /// 1. a probed estimate for the exact path wins;
+    /// 2. an unprobed device-to-device pair whose two host legs were
+    ///    both probed prices as their serial composition (today's
+    ///    cross-GPU transfers route through host staging — see
+    ///    [`Self::transfer_path`]);
+    /// 3. anything else uses the conservative per-path-class static
+    ///    defaults documented on [`TransferEstimate::fallback_for`].
+    ///
+    /// Triggers the lazy calibration probe on first use (see
+    /// [`Self::transfer_calibration`]).
+    pub fn transfer_estimate(&self, src: DeviceLocation, dst: DeviceLocation) -> TransferEstimate {
+        if src == dst {
+            return TransferEstimate::fallback_for(TransferPath::SameDevice);
+        }
+        let cal = self.transfer_calibration();
+        if let Some(e) = cal.probed(src, dst) {
+            return e;
+        }
+        if src != DeviceLocation::Cpu && dst != DeviceLocation::Cpu {
+            if let (Some(d2h), Some(h2d)) = (
+                cal.probed(src, DeviceLocation::Cpu),
+                cal.probed(DeviceLocation::Cpu, dst),
+            ) {
+                return TransferEstimate::compose_staged(d2h, h2d);
+            }
+        }
+        TransferEstimate::fallback_for(self.transfer_path(src, dst))
+    }
+
+    /// Estimated wall-clock nanoseconds to move `bytes` from `src`
+    /// to `dst`. Zero when `src == dst` (no transfer needed).
+    /// Saturating, monotonic in `bytes`, and never panics — unprobed
+    /// paths use the conservative fallbacks, never a garbage zero.
+    pub fn estimate_transfer_ns(
+        &self,
+        src: DeviceLocation,
+        dst: DeviceLocation,
+        bytes: u64,
+    ) -> u64 {
+        if src == dst {
+            return 0;
+        }
+        self.transfer_estimate(src, dst).estimate_ns(bytes)
     }
 
     /// Per-backend [`BackendCapabilities`] snapshot if the backend has
@@ -478,6 +563,7 @@ impl SystemTopology {
             capabilities,
             transfer_paths,
             binding_op_coverage,
+            transfer_calibration: OnceLock::new(),
         }
     }
 }
@@ -562,6 +648,136 @@ mod tests {
             topology.transfer_path(DeviceLocation::Cpu, DeviceLocation::Cpu),
             TransferPath::SameDevice,
         );
+    }
+
+    /// Stage 1 cache contract: the calibration probe runs at most
+    /// once per snapshot (and snapshots rebuild at most once per
+    /// generation) — two calls on the same snapshot return the same
+    /// cached instance.
+    #[test]
+    fn transfer_calibration_cached_per_snapshot() {
+        let topology = SystemTopology::current();
+        let a = topology.transfer_calibration();
+        let b = topology.transfer_calibration();
+        assert!(
+            std::ptr::eq(a, b),
+            "transfer_calibration must be probed once and cached on the snapshot",
+        );
+        // A fresh generation gets a fresh snapshot and therefore a
+        // fresh (lazy) calibration slot.
+        SystemTopology::refresh();
+        let next = SystemTopology::current();
+        assert!(
+            !std::ptr::eq(a, next.transfer_calibration()),
+            "a new generation's snapshot must carry its own calibration",
+        );
+    }
+
+    /// Same-device moves cost zero; cross-device estimates are never
+    /// garbage-zero and grow monotonically with bytes.
+    #[test]
+    fn transfer_estimate_same_device_zero_and_fallback_monotonic() {
+        let topology = SystemTopology::current();
+        assert_eq!(
+            topology.estimate_transfer_ns(DeviceLocation::Cpu, DeviceLocation::Cpu, 64 << 20),
+            0,
+        );
+        // gpu_id 7 exists on no probe report — this pair is
+        // guaranteed unprobed in every build configuration, so it
+        // exercises the HostStaging fallback deterministically.
+        let phantom = DeviceLocation::Cuda { gpu_id: 7 };
+        let est = topology.transfer_estimate(DeviceLocation::Cpu, phantom);
+        assert_eq!(
+            est,
+            crate::transfer_cost::TransferEstimate::fallback_for(TransferPath::HostStaging),
+            "unprobed path must price via the per-path-class fallback",
+        );
+        let small = topology.estimate_transfer_ns(DeviceLocation::Cpu, phantom, 64 * 1024);
+        let large = topology.estimate_transfer_ns(DeviceLocation::Cpu, phantom, 64 << 20);
+        assert!(small > 0, "unprobed cross-device transfer must never cost zero");
+        assert!(large > small, "estimate must be monotonic in bytes");
+    }
+
+    /// Live RTX 4070 calibration over the CUDA byte-storage path.
+    /// Run: `cargo test -p fuel-core --lib --features cuda
+    /// topology::tests::live_cuda_transfer_calibration -- --ignored`
+    #[cfg(feature = "cuda")]
+    #[test]
+    #[ignore = "requires a live CUDA GPU"]
+    fn live_cuda_transfer_calibration_sane() {
+        let topology = SystemTopology::current();
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        assert!(
+            topology.devices().contains(&cuda0),
+            "live test expects a CUDA device, got {:?}",
+            topology.devices(),
+        );
+        let cal = topology.transfer_calibration();
+        let h2d = cal
+            .probed(DeviceLocation::Cpu, cuda0)
+            .expect("H2D path must be probed on a CUDA host");
+        let d2h = cal
+            .probed(cuda0, DeviceLocation::Cpu)
+            .expect("D2H path must be probed on a CUDA host");
+        const GB: u64 = 1_000_000_000;
+        for (label, est) in [("H2D", h2d), ("D2H", d2h)] {
+            assert!(
+                (GB..=100 * GB).contains(&est.bandwidth_bytes_per_sec),
+                "{label} bandwidth out of sane bounds (1-100 GB/s): {est:?}",
+            );
+        }
+        // estimate_ns monotonic across the calibration sizes, and
+        // strictly larger for a 1000× larger transfer.
+        let est = topology.transfer_estimate(DeviceLocation::Cpu, cuda0);
+        let ns_small = est.estimate_ns(64 * 1024);
+        let ns_mid = est.estimate_ns(4 << 20);
+        let ns_large = est.estimate_ns(64 << 20);
+        assert!(ns_small <= ns_mid && ns_mid <= ns_large);
+        assert!(ns_large > ns_small, "64 MB must cost more than 64 KB");
+    }
+
+    /// Live Vulkan sibling of the CUDA calibration test, with
+    /// direction-asymmetric bounds reflecting what the byte-storage
+    /// path actually costs:
+    ///
+    /// - **H2D** is write-combined host→staging plus a device copy —
+    ///   GB/s-class (0.2–100 GB/s bound; staging-buffer creation +
+    ///   a fenced one-shot submit per call keep it below CUDA's).
+    /// - **D2H** reads back through a host-visible mapped pointer
+    ///   that on NVIDIA Windows is typically *not* HOST_CACHED, so
+    ///   the CPU-side copy runs at uncached-read speeds — measured
+    ///   ~140 MB/s on the RTX 4070 box. That slowness is real (it's
+    ///   what the planner must price), so the bound only guards
+    ///   against garbage: 10 MB/s–100 GB/s.
+    #[cfg(feature = "vulkan")]
+    #[test]
+    #[ignore = "requires a live Vulkan GPU"]
+    fn live_vulkan_transfer_calibration_sane() {
+        let topology = SystemTopology::current();
+        let vk0 = DeviceLocation::Vulkan { gpu_id: 0 };
+        assert!(
+            topology.devices().contains(&vk0),
+            "live test expects a Vulkan device, got {:?}",
+            topology.devices(),
+        );
+        let cal = topology.transfer_calibration();
+        let h2d = cal
+            .probed(DeviceLocation::Cpu, vk0)
+            .expect("H2D path must be probed on a Vulkan host");
+        let d2h = cal
+            .probed(vk0, DeviceLocation::Cpu)
+            .expect("D2H path must be probed on a Vulkan host");
+        const GB: u64 = 1_000_000_000;
+        assert!(
+            (GB / 5..=100 * GB).contains(&h2d.bandwidth_bytes_per_sec),
+            "H2D bandwidth out of sane bounds (0.2-100 GB/s): {h2d:?}",
+        );
+        assert!(
+            (10_000_000..=100 * GB).contains(&d2h.bandwidth_bytes_per_sec),
+            "D2H bandwidth out of sane bounds (10 MB/s-100 GB/s): {d2h:?}",
+        );
+        let est = topology.transfer_estimate(DeviceLocation::Cpu, vk0);
+        assert!(est.estimate_ns(64 << 20) > est.estimate_ns(64 * 1024));
     }
 
     /// CPU's BackendCapabilities is always registered, so the
