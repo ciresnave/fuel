@@ -258,6 +258,39 @@ impl SdTextEncoder {
         tokens: &[u32],
         until_layer: isize,
     ) -> crate::Result<(LazyTensor, LazyTensor)> {
+        let token_emb = LazyTensor::from_f32(
+            self.weights.token_embedding.clone(),
+            Shape::from_dims(&[self.config.vocab_size, self.config.hidden_size]),
+            &crate::Device::cpu(),
+        );
+        self.forward_until_encoder_layer_seeded(token_emb, tokens, until_layer)
+    }
+
+    /// Like [`Self::forward_until_encoder_layer`], but builds every
+    /// node on `anchor`'s graph instead of seeding a fresh one. Use
+    /// this when composing this encoder with other sub-models whose
+    /// outputs must concatenate in-graph (e.g. the SD3 triple-CLIP
+    /// composer) — mirrors the `T5Model::forward_decoder` convention
+    /// of threading a graph anchor to avoid cross-graph build errors.
+    pub fn forward_until_encoder_layer_anchored(
+        &self,
+        anchor: &LazyTensor,
+        tokens: &[u32],
+        until_layer: isize,
+    ) -> crate::Result<(LazyTensor, LazyTensor)> {
+        let token_emb = anchor.const_f32_like(
+            self.weights.token_embedding.clone(),
+            Shape::from_dims(&[self.config.vocab_size, self.config.hidden_size]),
+        );
+        self.forward_until_encoder_layer_seeded(token_emb, tokens, until_layer)
+    }
+
+    fn forward_until_encoder_layer_seeded(
+        &self,
+        token_emb: LazyTensor,
+        tokens: &[u32],
+        until_layer: isize,
+    ) -> crate::Result<(LazyTensor, LazyTensor)> {
         let cfg = &self.config;
         assert_eq!(
             tokens.len(), cfg.max_position_embeddings,
@@ -275,11 +308,6 @@ impl SdTextEncoder {
         );
         let until_idx = until as usize;
 
-        let token_emb = LazyTensor::from_f32(
-            self.weights.token_embedding.clone(),
-            Shape::from_dims(&[cfg.vocab_size, h]),
-            &crate::Device::cpu(),
-        );
         let input_ids = token_emb.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let pos_ids: Vec<u32> = (0..seq as u32).collect();
         let position_ids = token_emb.const_u32_like(pos_ids, Shape::from_dims(&[seq]));
