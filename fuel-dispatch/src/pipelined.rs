@@ -143,6 +143,32 @@ enum WorkItemKind {
     Copy {
         target_location: DeviceLocation,
     },
+    /// `Op::Move { target }` — `Op::Copy`'s destructive sibling:
+    /// produce a fresh Storage on `target_location` via the same
+    /// data-movement kernel (binding-table lookup at
+    /// `(OpKind::Copy, [dt, dt], source_backend)`; output allocation
+    /// driven by `target_location`), then release the source. The
+    /// release half is NOT handled in the executor's arm — it rides
+    /// the realize loop's `destructive_input` cleanup
+    /// (`Op::Move::destructive_input() == Some(0)`), exactly like
+    /// `Op::Release`: the cache's Arc to the source drops after the
+    /// move runs and the Drop chain frees device memory (sync for
+    /// CPU, stream-deferred for async backends).
+    ///
+    /// Ordering safety is the graph's job, not this arm's:
+    /// `execution_plan` integrates `derive_ordering`, which pins the
+    /// Move AFTER every non-destructive reader of the source's alias
+    /// set, and `insert_safety_copies` snapshots the source for any
+    /// reader that data-flow-depends on the Move's output. A Move
+    /// therefore never strands a sibling consumer of its source.
+    ///
+    /// Same-device moves are legal and match the legacy
+    /// `GraphExecutor` contract: a plain copy producing fresh
+    /// storage on the same device, with the source still evicted
+    /// afterward.
+    Move {
+        target_location: DeviceLocation,
+    },
     /// `Op::Alloc { target }` — produce a freshly-allocated, zero-
     /// initialized Storage on `target_location` with the node's shape
     /// + dtype. Zero inputs.
@@ -990,7 +1016,7 @@ fn compile_one(
     // allocating fresh bytes. The compile-time predicate is exactly
     // `op.destructive_input().is_some()` AND NOT one of the
     // structural ops (WriteSlice / ZeroFill / Release / Move) which
-    // have their own dedicated WorkItemKind arms above this one.
+    // have their own dedicated WorkItemKind arms in this function.
     if !matches!(node.op,
         Op::WriteSlice { .. } | Op::WriteSliceRotating { .. } | Op::ZeroFill | Op::Release | Op::Move { .. },
     ) {
@@ -1246,6 +1272,58 @@ fn compile_one(
             dtype: node.dtype,
             target_backend,
             kind: WorkItemKind::Copy { target_location: target },
+            compiled: Some(compiled),
+            output_layout,
+            destructive_input,
+            output_bundle: None,
+        });
+    }
+
+    if let Op::Move { target } = node.op {
+        // Op::Move { target }: identical data-movement half to
+        // Op::Copy — kernel lookup at (OpKind::Copy, [dt, dt],
+        // source_backend); output allocated on `target` by the
+        // executor's Copy/Move arm. The destructive half (release
+        // the source) rides the realize loop's `destructive_input`
+        // cleanup via the snapshot taken at the top of this function
+        // (`Op::Move::destructive_input() == Some(0)`). Ordering
+        // safety (a Move must not strand a sibling consumer of its
+        // source) is `execution_plan`/`derive_ordering`'s job — the
+        // Move is pinned after every non-destructive reader of the
+        // source's alias set before any work item is emitted.
+        if inputs.len() != 1 {
+            return Err(Error::Msg(format!(
+                "Op::Move expects 1 input, got {}",
+                inputs.len(),
+            ))
+            .bt());
+        }
+        let target_backend = graph.target_backend(id).ok_or_else(|| {
+            Error::Msg(format!(
+                "PipelinedExecutor: Op::Move node {:?} has no target_backend \
+                 set (= source backend, the one whose kernel runs the \
+                 transfer)",
+                id
+            ))
+            .bt()
+        })?;
+        let op_params = OpParams::None;
+        let dtypes = build_lookup_dtypes(graph, node);
+        let compiled = resolve_compiled(
+            id, OpKind::Copy, &dtypes, target_backend, op_params, bindings, plan, selector,
+        )?;
+        // Output layout: contiguous in the node's shape, same as
+        // Op::Copy (the transfer materializes strided sources via
+        // auto-contiguize on the input side).
+        let output_layout = Layout::contiguous(node.shape.clone());
+        layout_cache.insert(id, output_layout.clone());
+        return Ok(WorkItem {
+            node_id: id,
+            inputs,
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::Move { target_location: target },
             compiled: Some(compiled),
             output_layout,
             destructive_input,
@@ -1605,6 +1683,13 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         // arm, since target_location differs from target_backend for
         // this op (the only one with that property today).
         Op::Copy { .. } => Some(OpKind::Copy),
+        // Op::Move dispatches the same data-movement kernel as
+        // Op::Copy — the destructive release of the source is
+        // realize-loop bookkeeping (`destructive_input` cleanup), not
+        // a kernel. Same OpKind, same source-backend key convention.
+        // `compile_plan` skips both (residency-determined, not a
+        // picker decision).
+        Op::Move { .. } => Some(OpKind::Copy),
         // Phase 3 of the in-place ops infrastructure: each in-place Op
         // variant maps to its OpKind so the binding-table dispatch can
         // resolve a kernel. The executor's dedicated WorkItemKind
@@ -3528,31 +3613,42 @@ fn execute_work_item(
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(())
         }
-        WorkItemKind::Copy { target_location } => {
-            // Op::Copy { target }: kernel lookup at (OpKind::Copy,
-            // [dt, dt], source_backend) — the wrapper downloads from
-            // its own residency into a freshly-allocated output on
-            // `target_location`. We auto-contiguize the input first
-            // so the kernel always sees the logical view's bytes (a
-            // transpose-view source materializes into a contiguous
-            // buffer before download).
+        WorkItemKind::Copy { target_location }
+        | WorkItemKind::Move { target_location } => {
+            // Op::Copy / Op::Move { target }: kernel lookup at
+            // (OpKind::Copy, [dt, dt], source_backend) — the wrapper
+            // downloads from its own residency into a freshly-
+            // allocated output on `target_location`. We auto-
+            // contiguize the input first so the kernel always sees
+            // the logical view's bytes (a transpose-view source
+            // materializes into a contiguous buffer before download).
+            //
+            // Move shares this entire data-movement half; its
+            // destructive half (release the source) is driven by the
+            // realize loop's `destructive_input` cleanup after this
+            // arm returns — see `WorkItemKind::Move`.
+            let op_label = if matches!(item.kind, WorkItemKind::Move { .. }) {
+                "Move"
+            } else {
+                "Copy"
+            };
             let compiled = item.compiled.as_ref().ok_or_else(|| {
                 Error::Msg(format!(
-                    "PipelinedExecutor: Copy work item {:?} has no compiled node",
+                    "PipelinedExecutor: {op_label} work item {:?} has no compiled node",
                     item.node_id,
                 ))
                 .bt()
             })?;
             if item.inputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    "PipelinedExecutor: Copy work item {:?} expects 1 input, got {}",
+                    "PipelinedExecutor: {op_label} work item {:?} expects 1 input, got {}",
                     item.node_id, item.inputs.len(),
                 )).bt());
             }
             let src_id = item.inputs[0];
             let src_arc = cache.get(&src_id).cloned().ok_or_else(|| {
                 Error::Msg(format!(
-                    "PipelinedExecutor: Copy input {:?} of {:?} not realized",
+                    "PipelinedExecutor: {op_label} input {:?} of {:?} not realized",
                     src_id, item.node_id,
                 ))
                 .bt()
@@ -3585,7 +3681,7 @@ fn execute_work_item(
                     let is_whole_bundle = layout_bytes_for_guard >= bundle_bytes;
                     if is_whole_bundle {
                         return Err(Error::Msg(format!(
-                            "PipelinedExecutor: Op::Copy on a bundled producer \
+                            "PipelinedExecutor: Op::{op_label} on a bundled producer \
                              ({:?}) is not yet supported (Option C followup). \
                              Use Op::View → Op::Copy → Op::ViewOwned for \
                              per-slot cross-device moves, or wait for the \
@@ -3597,7 +3693,7 @@ fn execute_work_item(
             }
             let src_layout = layout_cache.get(&src_id).cloned().ok_or_else(|| {
                 Error::Msg(format!(
-                    "PipelinedExecutor: Copy input {:?} of {:?} has no cached layout",
+                    "PipelinedExecutor: {op_label} input {:?} of {:?} has no cached layout",
                     src_id, item.node_id,
                 ))
                 .bt()
@@ -3641,12 +3737,12 @@ fn execute_work_item(
                 DeviceLocation::Cuda { gpu_id } => {
                     let cuda_dev = find_cuda_device_in_cache(cache, *gpu_id)
                         .ok_or_else(|| Error::Msg(format!(
-                            "Op::Copy on Cuda {{ gpu_id: {} }}: no CUDA \
+                            "Op::{op_label} on Cuda {{ gpu_id: {} }}: no CUDA \
                              storage in input cache to derive the device \
                              handle from. The caller must seed the cache \
                              (e.g. via `fuel-core::pipelined_bridge::\
                              device_seed_storage`) before realizing an \
-                             H2D Op::Copy.",
+                             H2D Op::{op_label}.",
                             gpu_id,
                         )).bt())?;
                     let cuda_bytes =
@@ -3655,21 +3751,21 @@ fn execute_work_item(
                 }
                 #[cfg(not(feature = "cuda"))]
                 DeviceLocation::Cuda { .. } => {
-                    return Err(Error::Msg(
-                        "Op::Copy target Cuda but fuel-storage wasn't built \
-                         with --features cuda".to_string(),
-                    ).bt());
+                    return Err(Error::Msg(format!(
+                        "Op::{op_label} target Cuda but fuel-storage wasn't built \
+                         with --features cuda",
+                    )).bt());
                 }
                 #[cfg(feature = "vulkan")]
                 DeviceLocation::Vulkan { gpu_id } => {
                     let backend = find_vulkan_backend_in_cache(cache, *gpu_id)
                         .ok_or_else(|| Error::Msg(format!(
-                            "Op::Copy on Vulkan {{ gpu_id: {} }}: no Vulkan \
+                            "Op::{op_label} on Vulkan {{ gpu_id: {} }}: no Vulkan \
                              storage in input cache to derive the backend \
                              handle from. The caller must seed the cache \
                              (e.g. via `fuel-core::pipelined_bridge::\
                              device_seed_storage`) before realizing an \
-                             H2D Op::Copy.",
+                             H2D Op::{op_label}.",
                             gpu_id,
                         )).bt())?;
                     let vk_bytes = backend.alloc_bytes_handle(n_bytes)?;
@@ -3677,14 +3773,14 @@ fn execute_work_item(
                 }
                 #[cfg(not(feature = "vulkan"))]
                 DeviceLocation::Vulkan { .. } => {
-                    return Err(Error::Msg(
-                        "Op::Copy target Vulkan but fuel-storage wasn't built \
-                         with --features vulkan".to_string(),
-                    ).bt());
+                    return Err(Error::Msg(format!(
+                        "Op::{op_label} target Vulkan but fuel-storage wasn't built \
+                         with --features vulkan",
+                    )).bt());
                 }
                 other => {
                     return Err(Error::Msg(format!(
-                        "PipelinedExecutor: Op::Copy target_location {:?} not yet \
+                        "PipelinedExecutor: Op::{op_label} target_location {:?} not yet \
                          wired (CPU + CUDA + Vulkan covered; Metal extends when \
                          its byte-storage substrate is ready).",
                         other
@@ -8380,6 +8476,189 @@ mod tests {
         assert_eq!(item.destructive_input, Some(0));
         assert_eq!(item.inputs, vec![src_id]);
         assert_eq!(item.elem_count, 0, "Release output is the zero-element marker");
+    }
+
+    // --- Op::Move (executor-unification Session 1, gap 13) --------
+
+    /// `compile_one` emits a `WorkItemKind::Move` for `Op::Move` with
+    /// `destructive_input = Some(0)` and a resolved transfer kernel
+    /// (binding-table lookup at `(OpKind::Copy, [dt, dt], source
+    /// backend)` — Move shares Op::Copy's data-movement kernel).
+    #[test]
+    fn compile_one_emits_move_with_destructive_input() {
+        let graph_rc = Arc::new(RwLock::new(Graph::new()));
+        let (src_id, move_id) = {
+            let mut g = graph_rc.write().unwrap();
+            let src = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let mv = g.push(Node {
+                op: Op::Move { target: DeviceLocation::Cpu }, inputs: vec![src],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            g.set_target_backend(mv, BackendId::Cpu);
+            (src, mv)
+        };
+        let g = graph_rc.read().unwrap();
+        let bindings = crate::dispatch::global_bindings();
+        let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
+        let item = compile_one(&g, move_id, &mut layout_cache, &bindings, None, None)
+            .expect("compile_one Op::Move");
+        assert!(matches!(
+            item.kind,
+            WorkItemKind::Move { target_location: DeviceLocation::Cpu },
+        ));
+        assert_eq!(item.destructive_input, Some(0), "Move destroys its source");
+        assert_eq!(item.inputs, vec![src_id]);
+        assert!(
+            item.compiled.is_some(),
+            "Move resolves a transfer kernel at (OpKind::Copy, [dt, dt], source backend)",
+        );
+    }
+
+    /// Move-to-same-device is the degenerate case: per the legacy
+    /// `GraphExecutor` contract (`Op::Copy | Op::Move` shared arm →
+    /// `backend.copy_to`) it is a plain copy — fresh storage on the
+    /// same device, data intact — and the source is still evicted
+    /// afterward (destructive semantics don't depend on the devices
+    /// differing).
+    #[test]
+    fn pipelined_op_move_same_device_is_plain_copy() {
+        let src = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (src_id, move_id) = {
+            let mut g = graph.write().unwrap();
+            let src = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            let mv = g.push(Node {
+                op: Op::Move { target: DeviceLocation::Cpu }, inputs: vec![src],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            g.set_target_backend(mv, BackendId::Cpu);
+            (src, mv)
+        };
+        let src_arc = Arc::new(RwLock::new(src));
+        let src_arc_external = Arc::clone(&src_arc);
+        let mut inputs = StorageCache::new();
+        inputs.insert(src_id, src_arc);
+
+        let (out, layout) =
+            PipelinedExecutor::realize(graph, move_id, inputs).expect("realize Op::Move");
+        let guard = out.read().unwrap();
+        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else { panic!() };
+        assert_eq!(
+            c.as_slice::<f32>().unwrap(),
+            &[1.0, 2.0, 3.0, 4.0],
+            "Op::Move output should carry input's data to target",
+        );
+        assert!(layout.is_contiguous());
+        drop(guard);
+        assert!(
+            !Arc::ptr_eq(&out, &src_arc_external),
+            "same-device Move is a plain copy — fresh storage, not an alias",
+        );
+        // The realize loop's destructive_input cleanup dropped the
+        // cache's Arc to the source; only the test's external clone
+        // survives.
+        assert_eq!(
+            Arc::strong_count(&src_arc_external),
+            1,
+            "Op::Move should evict the cache's Arc to its source",
+        );
+    }
+
+    /// The multiple-consumer-source case: a Move must NOT strand
+    /// another consumer of its source. `execution_plan` (via
+    /// `derive_ordering`, keyed off `destructive_input`) pins the
+    /// Move AFTER the sibling reader; the executor's post-Move cache
+    /// eviction then can't break the reader. Mirrors the legacy
+    /// `op_move_pinned_after_sibling_reader_via_derive_ordering`
+    /// test in fuel-graph-router/tests/cross_device.rs.
+    ///
+    ///   a   = const [1, 2, 3, 4]
+    ///   b   = relu(a)        (non-destructive sibling reader)
+    ///   m   = move(a, Cpu)   (destructive — evicts a once run)
+    ///   out = add(b, m)      → [2, 4, 6, 8]
+    #[test]
+    fn pipelined_op_move_multi_consumer_source_not_stranded() {
+        let a = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (a_id, out_id) = {
+            let mut g = graph.write().unwrap();
+            let a = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            let b = g.push(Node {
+                op: Op::Relu, inputs: vec![a],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            let m = g.push(Node {
+                op: Op::Move { target: DeviceLocation::Cpu }, inputs: vec![a],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            let out = g.push(Node {
+                op: Op::Add, inputs: vec![b, m],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            g.set_target_backend(b, BackendId::Cpu);
+            g.set_target_backend(m, BackendId::Cpu);
+            g.set_target_backend(out, BackendId::Cpu);
+            (a, out)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(a_id, Arc::new(RwLock::new(a)));
+
+        let (out, _) = PipelinedExecutor::realize(graph, out_id, inputs)
+            .expect("realize add(relu(a), move(a))");
+        let guard = out.read().unwrap();
+        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else { panic!() };
+        assert_eq!(
+            c.as_slice::<f32>().unwrap(),
+            &[2.0, 4.0, 6.0, 8.0],
+            "relu(a) must run before move(a) evicts a",
+        );
+    }
+
+    /// A Move whose source is itself in the realize target set must
+    /// not evict it — the caller asked for the source's storage. The
+    /// destructive cleanup's `target_set` gate covers Move exactly
+    /// like Release.
+    #[test]
+    fn pipelined_op_move_source_in_target_set_not_evicted() {
+        let a = fuel_storage::from_slice_cpu(&[5.0_f32, 6.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (a_id, move_id) = {
+            let mut g = graph.write().unwrap();
+            let a = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let mv = g.push(Node {
+                op: Op::Move { target: DeviceLocation::Cpu }, inputs: vec![a],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            g.set_target_backend(mv, BackendId::Cpu);
+            (a, mv)
+        };
+        let a_arc = Arc::new(RwLock::new(a));
+        let a_arc_external = Arc::clone(&a_arc);
+        let mut inputs = StorageCache::new();
+        inputs.insert(a_id, a_arc);
+
+        let out = PipelinedExecutor::realize_many(graph, &[move_id, a_id], inputs)
+            .expect("realize_many [move, source]");
+        assert_eq!(out.len(), 2);
+        let mv_guard = out[0].0.read().unwrap();
+        let fuel_storage::BackendStorage::Cpu(c) = &mv_guard.inner else { panic!() };
+        assert_eq!(c.as_slice::<f32>().unwrap(), &[5.0, 6.0]);
+        assert!(
+            Arc::ptr_eq(&out[1].0, &a_arc_external),
+            "requested source must survive the Move's destructive cleanup",
+        );
     }
 
     // --- realize_many (Phase 7.6 step 9c Phase A) ----------------

@@ -693,8 +693,8 @@ fn prepare(
 /// - **No plan entry** (structural ops the planner skips —
 ///   `Op::Copy` / `Op::Move` / `Op::Alloc` / `Op::ZeroFill` — plus
 ///   ops without an OpKind mapping) → stamp the pinned device's
-///   backend, exactly like the old loop. `Op::Copy` stamps are
-///   subsequently corrected to the SOURCE backend by
+///   backend, exactly like the old loop. `Op::Copy` / `Op::Move`
+///   stamps are subsequently corrected to the SOURCE backend by
 ///   [`insert_resident_input_copies`]'s re-stamp sweep where the
 ///   source's placement resolves.
 ///
@@ -1124,8 +1124,10 @@ fn effective_placements(
 /// this pass inserted on a PREVIOUS realize call (whose correct
 /// stamp is the source backend, not the realize backend). This
 /// helper therefore runs after the stamping pass and re-stamps every
-/// `Op::Copy` whose source location resolves with the SOURCE's
-/// backend — the transfer kernel runs where the bytes come from.
+/// `Op::Copy` / `Op::Move` whose source location resolves with the
+/// SOURCE's backend — the transfer kernel runs where the bytes come
+/// from (Move dispatches the same `OpKind::Copy` kernel; only its
+/// destructive-release bookkeeping differs).
 /// That covers placement-carrying copies (this pass's own inserts)
 /// AND placement-less copies (realize-root splices, safety copies):
 /// under the locality policy a root splice's source resolves to the
@@ -1198,13 +1200,13 @@ fn insert_resident_input_copies(
         g.set_target_backend(copy_id, location_to_backend_id(src_loc));
     }
 
-    // Re-stamp pre-existing copies with their SOURCE backend (see
-    // doc comment) — placement-carrying copies from previous realize
-    // calls AND placement-less realize-root splices whose source
-    // resolves. `order` predates the insertions above, so this never
-    // touches the freshly stamped nodes.
+    // Re-stamp pre-existing copies/moves with their SOURCE backend
+    // (see doc comment) — placement-carrying copies from previous
+    // realize calls AND placement-less realize-root splices whose
+    // source resolves. `order` predates the insertions above, so this
+    // never touches the freshly stamped nodes.
     for &id in &order {
-        if !matches!(g.node(id).op, Op::Copy { .. }) {
+        if !matches!(g.node(id).op, Op::Copy { .. } | Op::Move { .. }) {
             continue;
         }
         let Some(&src) = g.node(id).inputs.first() else { continue };

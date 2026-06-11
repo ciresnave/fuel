@@ -317,9 +317,9 @@ impl<'env> PlanOptions<'env> {
 ///   `Op::Const`, ops not yet wired into dispatch), the node gets
 ///   no entry — view-only adoption + const adoption flow through
 ///   the legacy paths unchanged.
-/// - `Op::Copy` nodes get no entry either (picker-arc step 4a):
-///   their kernel backend is residency-determined (the SOURCE
-///   backend), so transfer-kernel resolution stays with the
+/// - `Op::Copy` / `Op::Move` nodes get no entry either (picker-arc
+///   step 4a): their kernel backend is residency-determined (the
+///   SOURCE backend), so transfer-kernel resolution stays with the
 ///   executor's `compile_node` path keyed by the bridge-maintained
 ///   source-backend stamp.
 /// - Otherwise:
@@ -361,17 +361,20 @@ pub fn compile_plan(
             continue;
         };
 
-        // Op::Copy is residency-determined, not a picker decision:
-        // its kernel runs on the backend that owns the SOURCE bytes
-        // (`copy_from_cpu_wrapper` for H2D, the source backend's
-        // download wrapper for D2H). Enumerating it against a single
-        // decision device would key the lookup at the wrong end of
-        // the transfer for placement-carrying copies (the consumer
-        // device, where the H2D copy's kernel does NOT run). The
-        // executor's legacy `compile_node` path resolves these via
-        // the source-backend `target_backend` stamp maintained by
-        // the bridge's copy-insertion passes. Picker-arc step 4a.
-        if matches!(node.op, fuel_graph::Op::Copy { .. }) {
+        // Op::Copy / Op::Move are residency-determined, not picker
+        // decisions: their kernel runs on the backend that owns the
+        // SOURCE bytes (`copy_from_cpu_wrapper` for H2D, the source
+        // backend's download wrapper for D2H). Enumerating them
+        // against a single decision device would key the lookup at
+        // the wrong end of the transfer for placement-carrying
+        // copies (the consumer device, where the H2D copy's kernel
+        // does NOT run). The executor's legacy `compile_node` path
+        // resolves these via the source-backend `target_backend`
+        // stamp maintained by the bridge's copy-insertion passes.
+        // Picker-arc step 4a; Op::Move added with the executor's
+        // Move arm (Op::Move maps to OpKind::Copy — same kernel,
+        // destructive release is realize-loop bookkeeping).
+        if matches!(node.op, fuel_graph::Op::Copy { .. } | fuel_graph::Op::Move { .. }) {
             continue;
         }
 
@@ -1222,6 +1225,50 @@ mod tests {
         assert!(
             plan.alternatives(copy_id).is_none(),
             "Op::Copy is residency-determined — no plan entry",
+        );
+    }
+
+    /// `Op::Move` follows `Op::Copy`'s exclusion: it dispatches the
+    /// same residency-determined transfer kernel (`OpKind::Copy` on
+    /// the SOURCE backend), so it gets no plan entry either.
+    #[test]
+    fn compile_plan_skips_op_move_nodes() {
+        let mut table = KernelBindingTable::new();
+        register_add_f32(
+            &mut table,
+            BackendId::Cpu,
+            noop_kernel,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+        // A Copy registration exists (Op::Move keys the same row) —
+        // the skip must not depend on the table lacking one.
+        table.register_full(
+            OpKind::Copy,
+            &[DType::F32, DType::F32],
+            BackendId::Cpu,
+            noop_kernel_b,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            unknown_cost,
+        );
+
+        let (mut g, add_id) = build_add_graph();
+        let move_id = g.push(Node {
+            op: Op::Move { target: DeviceLocation::Cpu },
+            inputs: vec![add_id],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        g.set_target_backend(move_id, BackendId::Cpu);
+        let order = topo_order(&g, move_id);
+        let opts = PlanOptions::new()
+            .without_cost_population()
+            .with_pinned_device(DeviceLocation::Cpu);
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+        assert!(plan.alternatives(add_id).is_some(), "Add is planned");
+        assert!(
+            plan.alternatives(move_id).is_none(),
+            "Op::Move is residency-determined — no plan entry",
         );
     }
 
