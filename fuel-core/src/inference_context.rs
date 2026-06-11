@@ -5,7 +5,7 @@
 //!
 //! - **[`InferenceContext`]**: a host-side per-session struct holding
 //!   long-lived `Arc<RwLock<Storage>>` references that survive across
-//!   realize calls. Replaces the legacy `GraphExecutor<B>::const_pool`
+//!   realize calls. Replaces the legacy executor's `const_pool`
 //!   for the pipelined dispatch world. Today's backing is a simple
 //!   in-memory `HashMap<NodeId, Arc<...>>`; future work may swap this
 //!   for an mmap-backed coherent store per

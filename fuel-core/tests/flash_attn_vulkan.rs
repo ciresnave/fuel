@@ -67,7 +67,15 @@ fn run_case(label: &str, b: usize, hq: usize, hkv: usize, sq: usize, sk: usize, 
     let k = q.const_f32_like(k_data, Shape::from_dims(&[b, hkv, sk, d]));
     let v = q.const_f32_like(v_data, Shape::from_dims(&[b, hkv, sk, d]));
     let out = q.flash_attn(&k, &v, None, scale, causal, None, None, None);
-    let vk = out.realize_f32_vulkan(&mut exe);
+    // Deliberately pinned to the legacy executor's FA2 trait launcher
+    // (`GraphBackend::flash_attn` on VulkanBackend) until the queued
+    // FA2 eager-wrapper retirement session — Vulkan has no FlashAttn
+    // binding-table registration yet, so the pipelined path would
+    // off-device-fallback to CPU and this parity gate would compare
+    // CPU against CPU. `LazyTensor::realize_f32_vulkan` was deleted in
+    // executor-unification Session 2; the pin now lives here, with the
+    // test that owns it.
+    let vk = exe.realize_f32(out.graph_tensor()).into_vec();
     let reference = out.realize_f32();
     assert_close(label, &vk, &reference, 5e-4, 5e-4);
 }

@@ -1400,26 +1400,16 @@ impl LazyTensor {
             .expect("realize_f32_cuda via PipelinedExecutor")
     }
 
-    /// Realize on a Vulkan GPU via the generic executor. Mirrors the
-    /// CUDA helper above so the Phase 6b Judge can profile Vulkan
-    /// equivalence classes uniformly with CUDA.
-    ///
-    /// **NOT migrated to PipelinedExecutor yet** — kept on the
-    /// legacy executor for Judge-loop measurement parity with
-    /// CUDA's `realize_f32_cuda`. The PipelinedExecutor path for
-    /// Vulkan-resident realize is wired via the
-    /// [`Op::Copy { target: Cpu }`](fuel_graph::Op::Copy) splice in
-    /// [`crate::pipelined_bridge::realize_one_as_with_initial`]
-    /// (bridge-retirement Phase 2, post-9c) and is exercised through
-    /// `realize_f32` on the live-Vulkan tests.
-    #[cfg(feature = "vulkan")]
-    pub fn realize_f32_vulkan(
-        &self,
-        executor: &mut GraphExecutor<fuel_vulkan_backend::VulkanBackend>,
-    ) -> Vec<f32> {
-        executor.realize_f32(&self.inner).into_vec()
-    }
-
+    // `realize_f32_vulkan` (legacy-executor signature) deleted in
+    // executor-unification Session 2 (2026-06-11). Its Judge-parity
+    // rationale expired when the Judge re-pointed onto the pipelined
+    // bridge — Vulkan profiling now realizes through
+    // `pipelined_bridge::realize_one_as` on a Vulkan `Device`, the
+    // same path production `realize_f32` uses. The one external
+    // caller (`fuel-core/tests/flash_attn_vulkan.rs`, which
+    // deliberately pins the legacy FA2 trait launcher until the
+    // queued FA2 eager-wrapper retirement session) constructs its
+    // executor locally and realizes `tensor.graph_tensor()` directly.
 }
 
 /// Realize many tensors in a single CPU topo-walk. Phase 7.6 step 9c E.2.
