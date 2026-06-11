@@ -11,7 +11,6 @@
 
 use fuel_core::lazy::LazyTensor;
 use fuel_core_types::{probe::BackendId, Shape};
-use fuel_graph_executor::GraphExecutor;
 use std::sync::Arc;
 
 fn gen_lcg(seed: u32, n: usize) -> Vec<f32> {
@@ -27,6 +26,10 @@ fn cuda_present() -> bool {
     probe.devices.iter().any(|d| d.backend == BackendId::Cuda)
 }
 
+/// Realize on CPU and on CUDA — both through the pipelined bridge
+/// (executor-unification Session 1: the legacy `GraphExecutor` import
+/// this file carried is gone; `realize_f32` / `realize_f32_cuda` are
+/// the PipelinedExecutor entries).
 fn realize_both(t: &LazyTensor) -> (Vec<f32>, Vec<f32>) {
     let reference = t.realize_f32();
     let cuda_device = fuel_cuda_backend::CudaDevice::new(0)

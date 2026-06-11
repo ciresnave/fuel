@@ -4,10 +4,19 @@
 //!
 //! `from_storage` builds a single-node graph with `Op::Const(None)` and
 //! pre-populates the graph's `storage_map` slot with the caller-supplied
-//! `Arc<RwLock<Storage>>`. Realizing through any executor that's been
-//! taught slot-first dispatch (G2 step 1: fuel-graph-executor,
-//! fuel-graph-cpu, fuel-reference-backend) consumes the slot's bytes
-//! directly — no host-side `ConstData` round-trip.
+//! `Arc<RwLock<Storage>>`. Realizing consumes the slot's bytes directly —
+//! no host-side `ConstData` round-trip.
+//!
+//! Executor-unification Session 1 (re-audit `846f7908`): the realize
+//! tests originally ran one copy each through the three executors that
+//! had been taught slot-first dispatch (fuel-graph-cpu,
+//! fuel-reference-backend, fuel-graph-executor). Those per-executor
+//! variants are collapsed onto the one production path —
+//! [`fuel_core::pipelined_bridge::realize_one_as`] →
+//! `PipelinedExecutor`, whose `ConstAdopt` work item is the slot-first
+//! dispatch under test. Two dispatch shapes stay covered: a slot-backed
+//! Const as the realize root, and slot-backed Consts feeding a kernel
+//! work item.
 
 use fuel_core::{Device, Tensor};
 use fuel_core_types::Shape;
@@ -45,10 +54,12 @@ fn from_storage_builds_single_const_node_with_slot_populated() {
     );
 }
 
-/// Realizing a from_storage tensor through fuel-graph-cpu produces the
-/// slot's bytes — the slot-first dispatch consumes them directly.
+/// Realizing a from_storage tensor through the pipelined bridge
+/// produces the slot's bytes — the executor's `ConstAdopt` slot-first
+/// dispatch consumes them directly, with the slot-backed Const as the
+/// realize root.
 #[test]
-fn from_storage_realizes_through_graph_cpu() {
+fn from_storage_realizes_through_pipelined_bridge() {
     let device = Device::cpu();
     let data = vec![10.0_f32, 20.0, 30.0, 40.0, 50.0, 60.0];
     let legacy = Tensor::from_slice(&data, (2, 3), &device).unwrap();
@@ -57,53 +68,17 @@ fn from_storage_realizes_through_graph_cpu() {
     let t = fuel_graph::Tensor::from_storage(
         storage_arc, Shape::from_dims(&[2, 3]), fuel_core_types::DType::F32,
     );
+    assert_eq!(t.shape().dims(), &[2, 3]);
 
-    // Realize through fuel-graph-cpu's slot-first realize loop.
-    let realized = fuel_graph_cpu::realize_f32(&t);
-    assert_eq!(realized.shape().dims(), &[2, 3]);
-    assert_eq!(realized.as_slice(), data.as_slice());
-}
-
-/// Realizing through fuel-reference-backend's slot-first dispatch.
-#[test]
-fn from_storage_realizes_through_reference() {
-    let device = Device::cpu();
-    let data = vec![1.0_f32, -2.0, 3.5, -4.5];
-    let legacy = Tensor::from_slice(&data, (4,), &device).unwrap();
-    let storage_arc = legacy.realized_storage().unwrap();
-
-    let t = fuel_graph::Tensor::from_storage(
-        storage_arc, Shape::from_dims(&[4]), fuel_core_types::DType::F32,
-    );
-
-    let realized = fuel_reference_backend::exec::realize_f32(&t);
-    assert_eq!(realized.shape().dims(), &[4]);
-    assert_eq!(realized.as_slice(), data.as_slice());
-}
-
-/// Realizing through fuel-graph-executor + CpuBackend (the
-/// generic-over-B path) — slot-first dispatch in that realize loop
-/// consumes the slot identically.
-#[test]
-fn from_storage_realizes_through_graph_executor() {
-    let device = Device::cpu();
-    let data = vec![7.0_f32, 8.0, 9.0];
-    let legacy = Tensor::from_slice(&data, (3,), &device).unwrap();
-    let storage_arc = legacy.realized_storage().unwrap();
-
-    let t = fuel_graph::Tensor::from_storage(
-        storage_arc, Shape::from_dims(&[3]), fuel_core_types::DType::F32,
-    );
-
-    let mut exe = fuel_graph_executor::GraphExecutor::new(fuel_graph_cpu::CpuBackend);
-    let realized = exe.realize_f32(&t);
-    assert_eq!(realized.shape().dims(), &[3]);
-    assert_eq!(realized.as_slice(), data.as_slice());
+    let realized = fuel_core::pipelined_bridge::realize_one_as::<f32>(
+        t.graph(), t.id(), &device,
+    ).expect("realize from_storage root via PipelinedExecutor");
+    assert_eq!(realized, data);
 }
 
 /// const_like_from_storage attaches a slot-only Const to the same
-/// graph as `self`, allowing both ConstData-backed and slot-backed
-/// leaves to coexist on one graph.
+/// graph as `self`, allowing multiple slot-backed leaves to coexist
+/// on one graph — and feeding a kernel work item from slot bytes.
 #[test]
 fn const_like_from_storage_shares_graph() {
     let device = Device::cpu();
@@ -125,9 +100,11 @@ fn const_like_from_storage_shares_graph() {
     assert!(std::sync::Arc::ptr_eq(a.graph(), b.graph()));
 
     // Build a + b via the existing fuel-graph operator. Slot-first
-    // dispatch covers both inputs; the executor's add op produces the
-    // sum from those bytes.
+    // dispatch covers both inputs; the executor's add kernel produces
+    // the sum from those bytes.
     let sum = a.add(&b);
-    let realized = fuel_graph_cpu::realize_f32(&sum);
-    assert_eq!(realized.as_slice(), &[5.0, 7.0, 9.0]);
+    let realized = fuel_core::pipelined_bridge::realize_one_as::<f32>(
+        sum.graph(), sum.id(), &device,
+    ).expect("realize slot-fed add via PipelinedExecutor");
+    assert_eq!(realized, &[5.0, 7.0, 9.0]);
 }
