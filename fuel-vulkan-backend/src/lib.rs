@@ -197,6 +197,85 @@ impl CoopMatrixShape {
     }
 }
 
+/// Downloads at or below this many bytes stage through the persistent
+/// host-cached download pool; larger ones take a dedicated transient
+/// `VkDeviceMemory` allocation instead (custom-pool blocks are only
+/// reclaimed at `destroy_pool`, so staging a one-off multi-hundred-MB
+/// readback through the pool would pin that much host RAM forever).
+const DOWNLOAD_POOL_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Block size for the host-cached download pool. Sized so a single
+/// block covers every pooled download (≤ [`DOWNLOAD_POOL_MAX_BYTES`])
+/// with headroom for concurrent readbacks, while keeping the
+/// steady-state pinned-host-RAM cost of the pool small.
+const DOWNLOAD_POOL_BLOCK_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Transient host-side staging target for a D2H readback. Both
+/// variants carry the `TRANSFER_DST` buffer the device copy targets;
+/// they differ only in how the backing host memory was obtained.
+enum DownloadStaging {
+    /// Sub-allocated and persistently mapped — from the host-cached
+    /// download pool when the device has one, otherwise from the
+    /// allocator's default `HostVisible` pick (correct but uncached:
+    /// CPU reads run at write-combined speeds).
+    Pooled(Buffer, Allocation),
+    /// One dedicated `VkDeviceMemory` on the host-cached type for
+    /// large readbacks — freed on drop, so big downloads don't
+    /// permanently grow the pool.
+    Dedicated(Buffer, DeviceMemory),
+}
+
+impl DownloadStaging {
+    /// The `TRANSFER_DST` buffer to record the device→staging copy into.
+    fn buffer(&self) -> &Buffer {
+        match self {
+            DownloadStaging::Pooled(b, _) | DownloadStaging::Dedicated(b, _) => b,
+        }
+    }
+
+    /// Copy the staged bytes out to `out` after the device copy has
+    /// completed. Both paths read through a HOST_COHERENT mapping
+    /// (the download memory type is probed with COHERENT required),
+    /// so no `vkInvalidateMappedMemoryRanges` is needed first.
+    fn read_into(&mut self, out: &mut [u8]) -> fuel_core_types::Result<()> {
+        if out.is_empty() {
+            return Ok(());
+        }
+        match self {
+            DownloadStaging::Pooled(_, alloc) => {
+                let mapped = alloc.mapped_ptr().ok_or_else(|| {
+                    fuel_core_types::Error::Msg(
+                        "download staging: pooled alloc not mapped".into(),
+                    )
+                })?;
+                // Safety: the staging buffer (and its sub-allocation)
+                // was created with size >= out.len(), and the mapping
+                // stays valid while `alloc` lives.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        mapped as *const u8,
+                        out.as_mut_ptr(),
+                        out.len(),
+                    );
+                }
+            }
+            DownloadStaging::Dedicated(_, mem) => {
+                let mapped = mem.map().map_err(vk_err)?;
+                // Safety: the mapping covers the whole allocation,
+                // which is at least out.len() bytes.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        mapped.as_ptr() as *const u8,
+                        out.as_mut_ptr(),
+                        out.len(),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Vulkan compute backend with pre-compiled shader pipelines.
 pub struct VulkanBackend {
     pub device: Device,
@@ -233,6 +312,22 @@ pub struct VulkanBackend {
     /// BTreeMap<byte_size, stack-of-free-buffers-of-that-size>. Enables
     /// O(log n) best-fit lookup via `range(size..).next()`.
     buffer_pool: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<u64, Vec<(Buffer, Allocation)>>>>,
+    /// Memory-type index used for D2H download staging: the first
+    /// `HOST_VISIBLE | HOST_COHERENT | HOST_CACHED` type compatible
+    /// with `TRANSFER_DST` staging buffers, probed at init. CPU reads
+    /// from the uncached (write-combined) host-visible type the
+    /// allocator picks by default run ~140 MB/s on NVIDIA Windows —
+    /// the classic 10-50× readback penalty — while cached reads are
+    /// GB/s-class. `None` when the device exposes no coherent+cached
+    /// host type; downloads then fall back to the default
+    /// `HostVisible` pick (correct, just slow). COHERENT is required
+    /// because vulkane exposes no `vkInvalidateMappedMemoryRanges`
+    /// wrapper, so a non-coherent cached type cannot be read safely.
+    download_mem_type: Option<u32>,
+    /// Custom allocator pool on `download_mem_type` that small
+    /// (≤ [`DOWNLOAD_POOL_MAX_BYTES`]) download staging buffers
+    /// sub-allocate from. `None` iff `download_mem_type` is `None`.
+    download_pool: Option<PoolHandle>,
     /// Supported cooperative-matrix tile shapes, queried at init from
     /// `VK_KHR_cooperative_matrix`. Empty if the extension is not
     /// available. Used by the matmul dispatch to decide whether to
@@ -434,6 +529,49 @@ impl VulkanBackend {
         let recorder = Mutex::new(Recorder::new(&device, queue_family).map_err(vk_err)?);
         let allocator = std::sync::Arc::new(Allocator::new(&device, &physical).map_err(vk_err)?);
 
+        // D2H download staging wants HOST_CACHED host memory: CPU
+        // reads from the uncached (write-combined) host-visible type
+        // run ~140 MB/s on NVIDIA Windows. Probe a TRANSFER_DST
+        // buffer's allowed memory types (identical for every buffer
+        // with the same usage/flags per the Vulkan spec) and pick the
+        // first VISIBLE|COHERENT|CACHED one — NVIDIA exposes
+        // VISIBLE|COHERENT|CACHED on Windows. COHERENT is required:
+        // vulkane has no vkInvalidateMappedMemoryRanges wrapper, so a
+        // non-coherent cached type can't be read safely and we'd
+        // rather fall back to the slow-but-correct default pick.
+        // Uploads keep using the default HostVisible (write-combined)
+        // selection, which is the right choice for H2D writes.
+        let download_mem_type = Buffer::new(
+            &device,
+            BufferCreateInfo { size: 4, usage: BufferUsage::TRANSFER_DST },
+        )
+        .ok()
+        .and_then(|probe| {
+            physical.find_memory_type(
+                probe.memory_requirements().memory_type_bits,
+                MemoryPropertyFlags::HOST_VISIBLE
+                    | MemoryPropertyFlags::HOST_COHERENT
+                    | MemoryPropertyFlags::HOST_CACHED,
+            )
+        });
+        let download_pool = download_mem_type.and_then(|idx| {
+            allocator
+                .create_pool(PoolCreateInfo {
+                    memory_type_index: idx,
+                    strategy: AllocationStrategy::FreeList,
+                    block_size: DOWNLOAD_POOL_BLOCK_BYTES,
+                    max_block_count: 0,
+                })
+                .ok()
+        });
+        if download_mem_type.is_none() {
+            tracing::warn!(
+                "no HOST_VISIBLE|HOST_COHERENT|HOST_CACHED memory type \
+                 for download staging — D2H readback will run at \
+                 uncached-read speeds",
+            );
+        }
+
         let buffer_pool = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
         Ok(Self {
             device,
@@ -448,6 +586,8 @@ impl VulkanBackend {
             op_stats: OpStats::default(),
             coop_matrix_shapes,
             buffer_pool,
+            download_mem_type,
+            download_pool,
         })
     }
 
@@ -928,6 +1068,58 @@ impl VulkanBackend {
         Ok(())
     }
 
+    /// Create the transient staging target for a D2H readback.
+    ///
+    /// Prefers the probed `HOST_VISIBLE | HOST_COHERENT | HOST_CACHED`
+    /// memory type ([`Self::download_mem_type`]): reading uncached
+    /// write-combined host memory from the CPU is the classic 10-50×
+    /// readback penalty. Small downloads sub-allocate from the
+    /// persistent cached pool; large ones take a dedicated allocation
+    /// that is freed at end of call. When the device exposes no
+    /// coherent+cached host type, falls back to the allocator's
+    /// default `HostVisible` selection (correct, just slow).
+    fn create_download_staging(
+        &self,
+        byte_size: u64,
+    ) -> fuel_core_types::Result<DownloadStaging> {
+        let size = byte_size.max(1);
+        if self.download_mem_type.is_some() {
+            if size > DOWNLOAD_POOL_MAX_BYTES {
+                let (buf, mem) = Buffer::new_bound(
+                    &self.device,
+                    &self.physical,
+                    BufferCreateInfo { size, usage: BufferUsage::TRANSFER_DST },
+                    MemoryPropertyFlags::HOST_VISIBLE
+                        | MemoryPropertyFlags::HOST_COHERENT
+                        | MemoryPropertyFlags::HOST_CACHED,
+                ).map_err(vk_err)?;
+                return Ok(DownloadStaging::Dedicated(buf, mem));
+            }
+            if let Some(pool) = self.download_pool {
+                let (buf, alloc) = self.allocator.create_buffer(
+                    BufferCreateInfo { size, usage: BufferUsage::TRANSFER_DST },
+                    AllocationCreateInfo {
+                        // usage is ignored when a pool is given — the
+                        // pool's memory type already decided it.
+                        mapped: true,
+                        pool: Some(pool),
+                        ..Default::default()
+                    },
+                ).map_err(vk_err)?;
+                return Ok(DownloadStaging::Pooled(buf, alloc));
+            }
+        }
+        let (buf, alloc) = self.allocator.create_buffer(
+            BufferCreateInfo { size, usage: BufferUsage::TRANSFER_DST },
+            AllocationCreateInfo {
+                usage: AllocationUsage::HostVisible,
+                mapped: true,
+                ..Default::default()
+            },
+        ).map_err(vk_err)?;
+        Ok(DownloadStaging::Pooled(buf, alloc))
+    }
+
     /// Phase 7.5 A4 substrate D2H. Reads a `VulkanStorageBytes`'s
     /// bytes back to host as a fresh `Vec<u8>`. Flushes any pending
     /// async ops first, then runs a one-shot device→staging copy
@@ -947,46 +1139,20 @@ impl VulkanBackend {
             )
         })?;
         self.flush_pending()?;
-        let (staging_buf, staging_alloc) = self
-            .allocator
-            .create_buffer(
-                BufferCreateInfo {
-                    size: byte_size.max(1),
-                    usage: BufferUsage::TRANSFER_DST,
-                },
-                AllocationCreateInfo {
-                    usage: AllocationUsage::HostVisible,
-                    mapped: true,
-                    ..Default::default()
-                },
-            )
-            .map_err(vk_err)?;
+        let mut staging = self.create_download_staging(byte_size)?;
         self.queue
             .one_shot(&self.device, self.queue_family, |cmd| {
                 cmd.copy_buffer(
                     buffer,
-                    &staging_buf,
+                    staging.buffer(),
                     &[BufferCopy { src_offset: 0, dst_offset: 0, size: byte_size.max(1) }],
                 );
                 Ok(())
             })
             .map_err(vk_err)?;
         let mut out = vec![0_u8; storage.len_bytes()];
-        if !out.is_empty() {
-            let mapped = staging_alloc
-                .mapped_ptr()
-                .ok_or_else(|| fuel_core_types::Error::Msg(
-                    "download_bytes: staging alloc not mapped".into()))?;
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    mapped as *const u8,
-                    out.as_mut_ptr(),
-                    out.len(),
-                );
-            }
-        }
-        drop(staging_buf);
-        drop(staging_alloc);
+        staging.read_into(&mut out)?;
+        drop(staging);
         Ok(out)
     }
 
@@ -1081,42 +1247,31 @@ impl VulkanBackend {
         // finished on the GPU. flush_pending host-waits on our
         // timeline semaphore and drops in-flight resources.
         self.flush_pending()?;
-        // Staging via the allocator (host-visible + mapped).
-        let (staging_buf, staging_alloc) = {
+        // Staging: host-cached when available (see
+        // `create_download_staging`), host-visible + mapped otherwise.
+        let mut staging = {
             let _s = debug_span!("vk_download_alloc_staging").entered();
-            self.allocator.create_buffer(
-                BufferCreateInfo { size: byte_size.max(1), usage: BufferUsage::TRANSFER_DST },
-                AllocationCreateInfo {
-                    usage: AllocationUsage::HostVisible,
-                    mapped: true,
-                    ..Default::default()
-                },
-            ).map_err(vk_err)?
+            self.create_download_staging(byte_size)?
         };
         {
             let _s = info_span!("vk_download_copy").entered();
             self.queue.one_shot(&self.device, self.queue_family, |cmd| {
-                cmd.copy_buffer(storage.buffer(), &staging_buf, &[BufferCopy {
+                cmd.copy_buffer(storage.buffer(), staging.buffer(), &[BufferCopy {
                     src_offset: 0, dst_offset: 0, size: byte_size,
                 }]);
                 Ok(())
             }).map_err(vk_err)?;
         }
         let _s = debug_span!("vk_download_memcpy").entered();
-        let mapped = staging_alloc
-            .mapped_ptr()
-            .ok_or_else(|| fuel_core_types::Error::Msg(
-                "download_slice: staging alloc not mapped".into()))?;
         let mut out = vec![T::default(); n];
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                mapped as *const u8,
-                out.as_mut_ptr() as *mut u8,
-                n * std::mem::size_of::<T>(),
-            );
-        }
-        drop(staging_buf);
-        drop(staging_alloc);
+        let out_byte_len = n * std::mem::size_of::<T>();
+        // Safety: viewing the freshly-initialized Vec<T> as bytes for
+        // the staging read; T is Copy and the byte length matches.
+        let out_bytes = unsafe {
+            std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, out_byte_len)
+        };
+        staging.read_into(out_bytes)?;
+        drop(staging);
         Ok(out)
     }
 
