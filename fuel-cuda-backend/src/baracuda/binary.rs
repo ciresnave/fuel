@@ -8,12 +8,17 @@
 //!
 //! ## Coverage today
 //!
-//! - FP math: add / sub / mul / div / maximum / minimum, across the
-//!   four-dtype family (F32 / F16 / BF16 / F64).
+//! - FP math: add / sub / mul / div / maximum / minimum / pow / rem,
+//!   across the four-dtype family (F32 / F16 / BF16 / F64).
+//!
+//! Fuel's `RemElementwise` is contractually PyTorch-style
+//! (`a - floor(a/b) * b`, sign follows the divisor) — that maps to
+//! baracuda's `binary_mod_*` (Python-style modulo), NOT
+//! `binary_remainder_*` (C99 `fmod`, sign follows the dividend).
 //!
 //! Ops baracuda ships that Fuel doesn't yet have OpKinds for
-//! (`atan2`, `copysign`, `hypot`, `fmax`, `fmin`, `nextafter`, `pow`,
-//! `remainder`, `floor_divide`, `mod`, `lerp`) and `BinaryCmp*`
+//! (`atan2`, `copysign`, `hypot`, `fmax`, `fmin`, `nextafter`,
+//! `remainder` (fmod-style), `floor_divide`, `lerp`) and `BinaryCmp*`
 //! (output dtype Bool — Fuel doesn't have Bool today) are wired up
 //! incrementally as Fuel grows those primitive ops.
 
@@ -235,6 +240,14 @@ binary_kernel!(binary_div_f32, div_f32, 4, "binary_div_f32");
 binary_kernel!(binary_maximum_f32, maximum_f32, 4, "binary_maximum_f32");
 binary_kernel!(binary_minimum_f32, minimum_f32, 4, "binary_minimum_f32");
 
+// Pow: elementwise `pow(a[i], b[i])`, IEEE-754 NaN semantics — matches
+// Fuel's `PowElementwise` contract (`powf`/`powf` on CPU).
+binary_kernel!(binary_pow_f32, pow_f32, 4, "binary_pow_f32");
+// Rem: Fuel-side name is `rem` but the FFI stem is baracuda's `mod`
+// (Python-style modulo, sign of divisor) — the semantic match for
+// Fuel's PyTorch-convention `RemElementwise`. See the module doc.
+binary_kernel!(binary_rem_f32, mod_f32, 4, "binary_mod_f32");
+
 // ---------------------------------------------------------------------------
 // F16 / BF16 / F64 binary kernels — mirrors of F32 above
 // ---------------------------------------------------------------------------
@@ -245,6 +258,8 @@ binary_kernel!(binary_mul_f16, mul_f16, 2, "binary_mul_f16");
 binary_kernel!(binary_div_f16, div_f16, 2, "binary_div_f16");
 binary_kernel!(binary_maximum_f16, maximum_f16, 2, "binary_maximum_f16");
 binary_kernel!(binary_minimum_f16, minimum_f16, 2, "binary_minimum_f16");
+binary_kernel!(binary_pow_f16, pow_f16, 2, "binary_pow_f16");
+binary_kernel!(binary_rem_f16, mod_f16, 2, "binary_mod_f16");
 
 binary_kernel!(binary_add_bf16, add_bf16, 2, "binary_add_bf16");
 binary_kernel!(binary_sub_bf16, sub_bf16, 2, "binary_sub_bf16");
@@ -252,6 +267,8 @@ binary_kernel!(binary_mul_bf16, mul_bf16, 2, "binary_mul_bf16");
 binary_kernel!(binary_div_bf16, div_bf16, 2, "binary_div_bf16");
 binary_kernel!(binary_maximum_bf16, maximum_bf16, 2, "binary_maximum_bf16");
 binary_kernel!(binary_minimum_bf16, minimum_bf16, 2, "binary_minimum_bf16");
+binary_kernel!(binary_pow_bf16, pow_bf16, 2, "binary_pow_bf16");
+binary_kernel!(binary_rem_bf16, mod_bf16, 2, "binary_mod_bf16");
 
 binary_kernel!(binary_add_f64, add_f64, 8, "binary_add_f64");
 binary_kernel!(binary_sub_f64, sub_f64, 8, "binary_sub_f64");
@@ -259,6 +276,8 @@ binary_kernel!(binary_mul_f64, mul_f64, 8, "binary_mul_f64");
 binary_kernel!(binary_div_f64, div_f64, 8, "binary_div_f64");
 binary_kernel!(binary_maximum_f64, maximum_f64, 8, "binary_maximum_f64");
 binary_kernel!(binary_minimum_f64, minimum_f64, 8, "binary_minimum_f64");
+binary_kernel!(binary_pow_f64, pow_f64, 8, "binary_pow_f64");
+binary_kernel!(binary_rem_f64, mod_f64, 8, "binary_mod_f64");
 
 /// Byte-size lookup for binary-elementwise dtypes.
 pub fn dtype_byte_size(dt: DType) -> usize {

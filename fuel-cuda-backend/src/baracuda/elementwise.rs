@@ -270,6 +270,22 @@ unary_kernel!(unary_sigmoid_f32, unary_sigmoid_f32, 4, "unary_sigmoid_f32");
 // all present, which is the layer this manifest binds anyway.
 unary_kernel!(unary_step_f32, unary_step_f32, 4, "unary_step_f32");
 
+// Rounding family + erf — forward manifests (2026-06-11). The
+// in-place cousins below have bound these symbols since 2026-05-30;
+// the forward entries close the Judge's cuda:0 coverage gap for
+// Floor/Ceil/Round/Erf.
+//
+// Semantics verified against the .cu functors (alpha.67):
+// - `unary_round_*` is `rintf`/`rint` — round-half-to-EVEN, matching
+//   Fuel's `RoundElementwise` contract (banker's rounding, CPU uses
+//   `round_ties_even`).
+// - `unary_erf_*` is the plain Gauss error function (`erff`/`erf`),
+//   NOT a gelu flavor.
+unary_kernel!(unary_floor_f32, unary_floor_f32, 4, "unary_floor_f32");
+unary_kernel!(unary_ceil_f32, unary_ceil_f32, 4, "unary_ceil_f32");
+unary_kernel!(unary_round_f32, unary_round_f32, 4, "unary_round_f32");
+unary_kernel!(unary_erf_f32, unary_erf_f32, 4, "unary_erf_f32");
+
 /// Manifest macro for one (kind, dtype) in-place unary entry. Emits a
 /// `pub fn <name>(target: &mut CudaStorageBytes) -> Result<()>` that
 /// calls `unary_inplace_run` against the matching baracuda contig
@@ -484,6 +500,29 @@ unary_kernel!(unary_sqr_bf16, unary_square_bf16, 2, "unary_square_bf16");
 unary_kernel!(unary_sqrt_f64, unary_sqrt_f64, 8, "unary_sqrt_f64");
 unary_kernel!(unary_sqrt_f16, unary_sqrt_f16, 2, "unary_sqrt_f16");
 unary_kernel!(unary_sqrt_bf16, unary_sqrt_bf16, 2, "unary_sqrt_bf16");
+
+// rsqrt — f32 manifest has existed since the Tier-1 fanout; the
+// remaining three dtypes land with the 2026-06-11 Judge coverage
+// sweep (the binding-table registration was missing for all four).
+unary_kernel!(unary_rsqrt_f64, unary_rsqrt_f64, 8, "unary_rsqrt_f64");
+unary_kernel!(unary_rsqrt_f16, unary_rsqrt_f16, 2, "unary_rsqrt_f16");
+unary_kernel!(unary_rsqrt_bf16, unary_rsqrt_bf16, 2, "unary_rsqrt_bf16");
+
+unary_kernel!(unary_floor_f64, unary_floor_f64, 8, "unary_floor_f64");
+unary_kernel!(unary_floor_f16, unary_floor_f16, 2, "unary_floor_f16");
+unary_kernel!(unary_floor_bf16, unary_floor_bf16, 2, "unary_floor_bf16");
+
+unary_kernel!(unary_ceil_f64, unary_ceil_f64, 8, "unary_ceil_f64");
+unary_kernel!(unary_ceil_f16, unary_ceil_f16, 2, "unary_ceil_f16");
+unary_kernel!(unary_ceil_bf16, unary_ceil_bf16, 2, "unary_ceil_bf16");
+
+unary_kernel!(unary_round_f64, unary_round_f64, 8, "unary_round_f64");
+unary_kernel!(unary_round_f16, unary_round_f16, 2, "unary_round_f16");
+unary_kernel!(unary_round_bf16, unary_round_bf16, 2, "unary_round_bf16");
+
+unary_kernel!(unary_erf_f64, unary_erf_f64, 8, "unary_erf_f64");
+unary_kernel!(unary_erf_f16, unary_erf_f16, 2, "unary_erf_f16");
+unary_kernel!(unary_erf_bf16, unary_erf_bf16, 2, "unary_erf_bf16");
 
 /// Byte-size lookup for the dtypes baracuda's unary kernels accept.
 /// Used by the registration helper below to pick the right output

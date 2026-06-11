@@ -2351,3 +2351,193 @@ fn argmin_dim_f32_through_binding_table() {
     let host_u32: &[u32] = bytemuck::cast_slice(&host);
     assert_eq!(host_u32, &[0_u32, 1]);
 }
+
+// =============================================================================
+// Judge cuda:0 coverage gap closure (2026-06-11) — Ceil / Floor /
+// Round / Erf / Rsqrt / Pow / Rem. One test per newly registered op.
+// =============================================================================
+
+/// Run a unary elementwise op through the binding table on F32 input
+/// and return the host F32 output. Shared by the coverage-gap tests
+/// below.
+fn run_unary_f32(op: OpKind, xs: &[f32]) -> Vec<f32> {
+    let dev = CudaDevice::new(0).expect("CUDA device");
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
+
+    let src = build_storage_cuda(&dev, xs);
+    let out_bytes = CudaStorageBytes::alloc(&dev, xs.len() * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(op, &[DType::F32, DType::F32], BackendId::Cuda)
+        .unwrap_or_else(|e| panic!("lookup ({op:?}, F32, Cuda): {e:?}"));
+
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    bytemuck::cast_slice::<u8, f32>(&host).to_vec()
+}
+
+/// Run a binary elementwise op through the binding table on F32
+/// inputs and return the host F32 output.
+fn run_binary_f32(op: OpKind, lhs: &[f32], rhs: &[f32]) -> Vec<f32> {
+    assert_eq!(lhs.len(), rhs.len());
+    let dev = CudaDevice::new(0).expect("CUDA device");
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
+
+    let lhs_s = build_storage_cuda(&dev, lhs);
+    let rhs_s = build_storage_cuda(&dev, rhs);
+    let out_bytes = CudaStorageBytes::alloc(&dev, lhs.len() * 4).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
+
+    let lhs_arc = Arc::new(RwLock::new(lhs_s));
+    let rhs_arc = Arc::new(RwLock::new(rhs_s));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(op, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
+        .unwrap_or_else(|e| panic!("lookup ({op:?}, F32, Cuda): {e:?}"));
+
+    kernel(
+        &[lhs_arc.clone(), rhs_arc.clone()],
+        &mut [out_arc.clone()],
+        &binary_layouts(&[lhs.len()]),
+        &OpParams::None,
+    )
+    .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    bytemuck::cast_slice::<u8, f32>(&host).to_vec()
+}
+
+/// End-to-end: FloorElementwise F32 through the binding table.
+#[test]
+#[ignore]
+fn floor_elementwise_f32_through_binding_table() {
+    if dev_or_skip().is_none() { return; }
+    let xs = [-1.5_f32, -0.5, 0.0, 0.5, 1.5, 2.999, -3.001];
+    let got = run_unary_f32(OpKind::FloorElementwise, &xs);
+    let expected: Vec<f32> = xs.iter().map(|v| v.floor()).collect();
+    assert_eq!(got, expected);
+}
+
+/// End-to-end: CeilElementwise F32 through the binding table.
+#[test]
+#[ignore]
+fn ceil_elementwise_f32_through_binding_table() {
+    if dev_or_skip().is_none() { return; }
+    let xs = [-1.5_f32, -0.5, 0.0, 0.5, 1.5, 2.999, -3.001];
+    let got = run_unary_f32(OpKind::CeilElementwise, &xs);
+    let expected: Vec<f32> = xs.iter().map(|v| v.ceil()).collect();
+    assert_eq!(got, expected);
+}
+
+/// End-to-end: RoundElementwise F32 through the binding table.
+/// Fuel's contract is **banker's rounding** (round-half-to-even,
+/// CPU = `f32::round_ties_even`); baracuda's kernel is `rintf` which
+/// matches in the default rounding mode. The halfway points are the
+/// load-bearing cases — `f32::round` (half-away-from-zero) would give
+/// 1, 3, -1, -3 instead.
+#[test]
+#[ignore]
+fn round_elementwise_f32_halfway_through_binding_table() {
+    if dev_or_skip().is_none() { return; }
+    let xs = [0.5_f32, 1.5, 2.5, 3.5, -0.5, -1.5, -2.5, 1.4999, 2.5001];
+    let got = run_unary_f32(OpKind::RoundElementwise, &xs);
+    // Same formula the CPU binding-table kernel uses.
+    let expected: Vec<f32> = xs.iter().map(|v| v.round_ties_even()).collect();
+    assert_eq!(got, expected, "round must be ties-to-even, not half-away-from-zero");
+    // Spot-check the halves explicitly so a convention regression
+    // reads clearly: 0.5 → 0, 1.5 → 2, 2.5 → 2, -0.5 → -0.
+    assert_eq!(&got[..3], &[0.0_f32, 2.0, 2.0]);
+    assert_eq!(got[4], 0.0);
+}
+
+/// End-to-end: ErfElementwise F32 through the binding table. Value
+/// check against reference Gauss-error-function values — these
+/// distinguish plain `erf(x)` from both gelu flavors (gelu_erf(1) ≈
+/// 0.84134 vs erf(1) ≈ 0.84270; the 1e-6 epsilon catches a flavor
+/// mix-up like the one fixed in 9b53da38).
+#[test]
+#[ignore]
+fn erf_elementwise_f32_through_binding_table() {
+    if dev_or_skip().is_none() { return; }
+    let xs = [0.0_f32, 0.5, 1.0, -1.0, 2.0, -2.0];
+    let got = run_unary_f32(OpKind::ErfElementwise, &xs);
+    // Reference values (Abramowitz & Stegun / mpmath, f32-rounded).
+    let expected = [
+        0.0_f32,
+        0.520_499_88,
+        0.842_700_79,
+        -0.842_700_79,
+        0.995_322_27,
+        -0.995_322_27,
+    ];
+    assert_close(&got, &expected, 1e-6);
+}
+
+/// End-to-end: RsqrtElementwise F32 through the binding table. The
+/// wrapper existed since Tier 1 but was never registered — this is
+/// the first test that can reach it.
+#[test]
+#[ignore]
+fn rsqrt_elementwise_f32_through_binding_table() {
+    if dev_or_skip().is_none() { return; }
+    let xs = [1.0_f32, 4.0, 0.25, 100.0, 2.0];
+    let got = run_unary_f32(OpKind::RsqrtElementwise, &xs);
+    let expected: Vec<f32> = xs.iter().map(|v| 1.0 / v.sqrt()).collect();
+    assert_close(&got, &expected, 1e-6);
+}
+
+/// End-to-end: PowElementwise F32 (tensor^tensor) through the binding
+/// table. IEEE-754 semantics: negative base with non-integer exponent
+/// is NaN.
+#[test]
+#[ignore]
+fn pow_elementwise_f32_through_binding_table() {
+    if dev_or_skip().is_none() { return; }
+    let lhs = [2.0_f32, 4.0, -2.0, 9.0, 5.0];
+    let rhs = [3.0_f32, 0.5, 2.0, 0.5, 0.0];
+    let got = run_binary_f32(OpKind::PowElementwise, &lhs, &rhs);
+    let expected = [8.0_f32, 2.0, 4.0, 3.0, 1.0];
+    assert_close(&got, &expected, 1e-5);
+
+    // pow(-2, 0.5) = NaN per IEEE-754 (matches CPU `powf`).
+    let nan_out = run_binary_f32(OpKind::PowElementwise, &[-2.0], &[0.5]);
+    assert!(nan_out[0].is_nan(), "pow(-2, 0.5) must be NaN, got {}", nan_out[0]);
+}
+
+/// End-to-end: RemElementwise F32 through the binding table. Fuel's
+/// contract is the **PyTorch convention** `a - floor(a/b) * b` (sign
+/// of the divisor) — bound to baracuda's `binary_mod_*`. The
+/// mixed-sign cases are the load-bearing ones: C99 `fmod` (baracuda's
+/// `binary_remainder_*`) would give -2 and 2 for the middle pair.
+#[test]
+#[ignore]
+fn rem_elementwise_f32_pytorch_convention_through_binding_table() {
+    if dev_or_skip().is_none() { return; }
+    let lhs = [5.0_f32, -5.0, 5.0, -5.0, 7.5];
+    let rhs = [3.0_f32, 3.0, -3.0, -3.0, 2.0];
+    let got = run_binary_f32(OpKind::RemElementwise, &lhs, &rhs);
+    // PyTorch / Python `%`: 5%3=2, -5%3=1, 5%-3=-1, -5%-3=-2, 7.5%2=1.5.
+    let expected = [2.0_f32, 1.0, -1.0, -2.0, 1.5];
+    assert_close(&got, &expected, 1e-6);
+}
