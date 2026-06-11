@@ -1141,6 +1141,79 @@ pub fn cost_attn_cpu(
     }
 }
 
+/// Precision guarantee for `(FLASH_ATTN_BACKWARD_{Q,K,V}, Cpu, *)`
+/// impls. The CPU backward is the math-definition gradient: it
+/// recomputes the forward softmax probabilities row-by-row and
+/// accumulates dQ/dK/dV with sequential nested loops — fixed
+/// iteration order, no atomics, no parallel reductions. F32/F64 run
+/// natively; BF16/F16 accumulate in F32 and narrow on store.
+/// Bit-identical re-run on same hardware.
+pub const ATTN_BACKWARD_CPU_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
+    bit_stable_on_same_hardware: true,
+    max_ulp: None,
+    max_relative: None,
+    max_absolute: None,
+    notes: "fuel-cpu-backend FlashAttnBackward{Q,K,V}: math-definition \
+            gradient with recomputed softmax; sequential nested-loop \
+            accumulation (F32 accumulator for half types); \
+            deterministic iteration order; bit-identical re-run on \
+            same hardware. GPU backward kernels (tiled, atomics) \
+            declare their own PrecisionGuarantee when they register.",
+};
+
+/// Cost model for `(FLASH_ATTN_BACKWARD_{Q,K,V}, Cpu)` kernels. The
+/// math-definition backward recomputes the attention probabilities
+/// (one QKᵀ matmul) and then forms dV, dP, dQ and dK — five
+/// `O(B·Hq·Sq·Sk·D)` matmul-shaped passes vs the forward's two.
+/// The CPU byte wrapper additionally computes ALL THREE gradients
+/// per call and persists only the requested one (the Q/K/V OpKind
+/// split has one output each), so the per-call cost does not shrink
+/// with the selected gradient.
+///
+/// Shapes are `[q, k, v, do, (alibi)]` with `q = do = [B, Hq, Sq, D]`,
+/// `k = v = [B, Hkv, Sk, D]`.
+pub fn cost_attn_backward_cpu(
+    shapes: &[Shape],
+    _params: &FusedOpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    if shapes.is_empty() {
+        return CostEstimate::default();
+    }
+    let q_dims = shapes[0].dims();
+    if q_dims.len() != 4 {
+        return CostEstimate::default();
+    }
+    let (b, hq, sq, d) = (
+        q_dims[0] as u64, q_dims[1] as u64,
+        q_dims[2] as u64, q_dims[3] as u64,
+    );
+    let sk: u64 = if shapes.len() >= 2 {
+        let k_dims = shapes[1].dims();
+        if k_dims.len() == 4 { k_dims[2] as u64 } else { sq }
+    } else {
+        sq
+    };
+    // Five matmul-shaped passes (P recompute, dV, dP, dQ, dK):
+    // 2·B·Hq·Sq·Sk·D FLOPs each.
+    let mm_flops = 10u64 * b * hq * sq * sk * d;
+    // Softmax recompute + dS row reductions: ~8·B·Hq·Sq·Sk.
+    let sm_flops = 8u64 * b * hq * sq * sk;
+    // Bandwidth: q + do reads, k + v reads (Hkv ≈ Hq approximation,
+    // mirroring cost_attn_cpu), plus all three gradient buffers
+    // written (the wrapper materializes dQ, dK and dV internally
+    // even though only one persists).
+    let elems_read = 2 * b * hq * sq * d + 2 * b * hq * sk * d;
+    let elems_written = b * hq * sq * d + 2 * b * hq * sk * d;
+    let bytes_moved = (elems_read + elems_written) * 4;
+    CostEstimate {
+        flops: mm_flops + sm_flops,
+        bytes_moved,
+        // Same launch-overhead class as the attention forward.
+        kernel_overhead_ns: 200,
+    }
+}
+
 /// Precision guarantee for `(QMATMUL, Cpu, *)` impls. Quantized
 /// matmul dequantizes inline; the dequant arithmetic is exact for
 /// the quantization scheme's block format, and the F32 matmul
@@ -1790,17 +1863,19 @@ mod tests {
             allowlisted, 0,
             "KNOWN_GAPS allowlist is empty by design; saw {allowlisted} allowlisted",
         );
-        // Sanity: we should see all 21 registered fused ops covered.
+        // Sanity: we should see all 24 registered fused ops covered.
         // 14 from the original Phase 7.6 lineup + PowIBackward
         // (autograd switched from emitting the primitive decomposition
         // to emitting Op::Fused(POWI_BACKWARD, _)) + INPLACE_AFFINE
         // (Phase 3 of the in-place ops infrastructure) +
         // FUSED_SOFTMAX_CROSS_ENTROPY + CAUSAL_CONV1D + SELECTIVE_SCAN
         // + SSD_CHUNK_SCAN + NF4_MATMUL (the full CPU OpKind coverage
-        // plan: FSCE + Mamba-adjacent trio + NF4).
+        // plan: FSCE + Mamba-adjacent trio + NF4) +
+        // FLASH_ATTN_BACKWARD_{Q,K,V} (reusing the binding-table CPU
+        // dispatch wrappers).
         assert_eq!(
-            covered, 21,
-            "expected 21 fused ops covered by bit-stable CPU impls, got {covered}",
+            covered, 24,
+            "expected 24 fused ops covered by bit-stable CPU impls, got {covered}",
         );
     }
 
@@ -1855,8 +1930,10 @@ mod tests {
 
     /// Step 6 + backward-helper follow-up — coverage assertion for
     /// the 12 ops that gained BackendImpls (8 forwards from step 6
-    /// + 4 backward helpers from the follow-up). Each entry should
-    /// have at least the expected CPU impl count after
+    /// + 4 backward helpers from the follow-up), plus the
+    /// FlashAttnBackward{Q,K,V} trio (4 dtypes × 2 alibi shapes
+    /// each, reusing the binding-table CPU wrappers). Each entry
+    /// should have at least the expected CPU impl count after
     /// `default_kernel_registry()` populates.
     #[test]
     fn default_kernel_registry_step6_coverage() {
@@ -1876,6 +1953,9 @@ mod tests {
             (FusedOps::ROPE,                         4),
             (FusedOps::CONV_TRANSPOSE2D,             8),
             (FusedOps::FLASH_ATTN,                   8),
+            (FusedOps::FLASH_ATTN_BACKWARD_Q,        8),
+            (FusedOps::FLASH_ATTN_BACKWARD_K,        8),
+            (FusedOps::FLASH_ATTN_BACKWARD_V,        8),
             (FusedOps::PAGED_ATTN,                   8),
             (FusedOps::QMATMUL,                      1),
             (FusedOps::SOFTMAX_LAST_DIM_BACKWARD,    4),

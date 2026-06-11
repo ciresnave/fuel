@@ -5082,14 +5082,19 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
 /// - `ROPE` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
 /// - `CONV_TRANSPOSE2D` × `Cpu` × {F32, F64, BF16, F16} × {no-bias, with-bias} — 8 impls
 /// - `FLASH_ATTN` × `Cpu` × {F32, F64, BF16, F16} × {no-alibi, with-alibi} — 8 impls
+/// - `FLASH_ATTN_BACKWARD_{Q,K,V}` × `Cpu` × {F32, F64, BF16, F16} × {no-alibi, with-alibi} — 24 impls
 /// - `PAGED_ATTN` × `Cpu` × {F32, F64, BF16, F16} × {no-alibi, with-alibi} — 8 impls
 /// - `QMATMUL` × `Cpu` × {F32 activations + U32 weights} — 1 impl
 /// - `SOFTMAX_LAST_DIM_BACKWARD` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
 /// - `LAYER_NORM_LAST_DIM_BACKWARD` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
 /// - `RMS_NORM_LAST_DIM_BACKWARD` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
 /// - `REDUCE_MAX_TO_BACKWARD` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
+/// - plus the later arrivals registered below: `POWI_BACKWARD`,
+///   `INPLACE_AFFINE`, `FUSED_SOFTMAX_CROSS_ENTROPY`, `CAUSAL_CONV1D`,
+///   `SELECTIVE_SCAN`, `SSD_CHUNK_SCAN` (4 impls each) and
+///   `NF4_MATMUL` (3 impls).
 ///
-/// Total: 69 CPU BackendImpls registered across **all 14** registered
+/// Total: 120 CPU BackendImpls registered across **all 24** registered
 /// fused ops. The architecture v1.0 §05 bit-stable coverage
 /// commitment is now compiler-enforced for the full fused-op set
 /// (no `KNOWN_GAPS` allowlist in the step-7 lint).
@@ -5099,13 +5104,15 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
 /// the step-9 binding-table refactor.
 pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry) {
     use crate::fused::{
-        cost_attn_cpu, cost_causal_conv1d_cpu, cost_conv2d_cpu,
+        cost_attn_backward_cpu, cost_attn_cpu, cost_causal_conv1d_cpu,
+        cost_conv2d_cpu,
         cost_conv_transpose2d_cpu, cost_fused_linear_cpu,
         cost_fused_softmax_cross_entropy_cpu,
         cost_inplace_affine_cpu, cost_nf4_matmul_cpu,
         cost_norm_family_cpu, cost_powi_backward_cpu,
         cost_qmatmul_cpu, cost_reduce_max_to_backward_cpu, cost_rope_cpu,
         cost_selective_scan_cpu, cost_ssd_chunk_scan_cpu,
+        ATTN_BACKWARD_CPU_PRECISION,
         ATTN_CPU_PRECISION, CAUSAL_CONV1D_CPU_PRECISION,
         CONV2D_CPU_PRECISION,
         CONV_TRANSPOSE2D_CPU_PRECISION, FUSED_LINEAR_CPU_PRECISION,
@@ -5160,6 +5167,18 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
     const FA_BF16_A:   &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16];
     const FA_F16_NOA:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16];
     const FA_F16_A:    &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16];
+
+    // FlashAttnBackward{Q,K,V}: (q, k, v, do, [alibi], out) —
+    // no-alibi 5-tuple, with-alibi 6-tuple. Mirrors the binding-table
+    // `fa_bw_no_alibi` / `fa_bw_with_alibi` key shapes.
+    const FAB_F32_NOA:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32];
+    const FAB_F32_A:    &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32];
+    const FAB_F64_NOA:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64];
+    const FAB_F64_A:    &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64];
+    const FAB_BF16_NOA: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16];
+    const FAB_BF16_A:   &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16];
+    const FAB_F16_NOA:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16];
+    const FAB_F16_A:    &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16];
 
     // PagedAttn: (q, kc, vc, bt:U32, cl:U32, [alibi], out).
     const PA_F32_NOA:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::U32, DType::U32, DType::F32];
@@ -5377,6 +5396,109 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         flash_attn_f16_cpu_wrapper,
         cost = cost_attn_cpu,
         precision = ATTN_CPU_PRECISION);
+
+    // FlashAttnBackward{Q,K,V} × 4 dtypes × {no-alibi, with-alibi}.
+    // Reuses the binding-table dispatch wrappers — the CPU kernel
+    // computes all three gradients each call and the wrapper persists
+    // the one matching the OpKind; the cost model accounts for that.
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_F32_NOA,
+        flash_attn_backward_q_f32_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_F32_A,
+        flash_attn_backward_q_f32_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_F64_NOA,
+        flash_attn_backward_q_f64_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_F64_A,
+        flash_attn_backward_q_f64_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_BF16_NOA,
+        flash_attn_backward_q_bf16_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_BF16_A,
+        flash_attn_backward_q_bf16_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_F16_NOA,
+        flash_attn_backward_q_f16_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_F16_A,
+        flash_attn_backward_q_f16_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_F32_NOA,
+        flash_attn_backward_k_f32_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_F32_A,
+        flash_attn_backward_k_f32_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_F64_NOA,
+        flash_attn_backward_k_f64_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_F64_A,
+        flash_attn_backward_k_f64_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_BF16_NOA,
+        flash_attn_backward_k_bf16_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_BF16_A,
+        flash_attn_backward_k_bf16_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_F16_NOA,
+        flash_attn_backward_k_f16_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_F16_A,
+        flash_attn_backward_k_f16_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_F32_NOA,
+        flash_attn_backward_v_f32_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_F32_A,
+        flash_attn_backward_v_f32_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_F64_NOA,
+        flash_attn_backward_v_f64_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_F64_A,
+        flash_attn_backward_v_f64_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_BF16_NOA,
+        flash_attn_backward_v_bf16_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_BF16_A,
+        flash_attn_backward_v_bf16_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_F16_NOA,
+        flash_attn_backward_v_f16_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
+    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_F16_A,
+        flash_attn_backward_v_f16_cpu_wrapper,
+        cost = cost_attn_backward_cpu,
+        precision = ATTN_BACKWARD_CPU_PRECISION);
 
     // PagedAttn × 4 dtypes × {no-alibi, with-alibi}.
     register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_F32_NOA,
