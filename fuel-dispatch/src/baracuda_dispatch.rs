@@ -408,7 +408,7 @@ pub mod indexing {
 // — those need a `FusedLinearInt` op (or extending FusedLinear with
 // int dtypes), which is a separate session.
 
-macro_rules! cuda_gemm_int_baracuda_wrapper {
+macro_rules! cuda_matmul_baracuda_wrapper {
     ($wrapper_name:ident, $baracuda_fn:path $(,)?) => {
         pub fn $wrapper_name(
             inputs: &[Arc<RwLock<Storage>>],
@@ -455,8 +455,183 @@ pub mod gemm_int {
     use super::*;
     use fuel_cuda_backend::baracuda::gemm_int as bk;
 
-    cuda_gemm_int_baracuda_wrapper!(gemm_s8_rrr, bk::gemm_s8_rrr);
-    cuda_gemm_int_baracuda_wrapper!(gemm_u8_rrr, bk::gemm_u8_rrr);
+    cuda_matmul_baracuda_wrapper!(gemm_s8_rrr, bk::gemm_s8_rrr);
+    cuda_matmul_baracuda_wrapper!(gemm_u8_rrr, bk::gemm_u8_rrr);
+}
+
+// ===========================================================================
+// Dense FP GEMM — Phase 74 `gemm_dense` facade (alpha.67)
+// ===========================================================================
+//
+// cuBLAS-backed dense matmul at `(MatMul, [T, T, T], Cuda)` for
+// T ∈ {F32, F64, F16, BF16}. Answers Fuel's 2026-06-10 ask and
+// retires the `register_cuda_kernels` matmul residue: the cuBLAS f32
+// path and the CUTLASS bf16/f16 byte paths are replaced by this one
+// family. f64 is net-new CUDA matmul coverage; GQA / broadcast
+// batches are served uniformly at every dtype (the CUTLASS byte path
+// rejected them). f32 is IEEE binary32 (cuBLAS default math mode,
+// not TF32); f16/bf16 accumulate in f32.
+
+pub mod gemm_dense {
+    use super::*;
+    use fuel_cuda_backend::baracuda::gemm_dense as bk;
+
+    cuda_matmul_baracuda_wrapper!(matmul_f32,  bk::matmul_f32);
+    cuda_matmul_baracuda_wrapper!(matmul_f64,  bk::matmul_f64);
+    cuda_matmul_baracuda_wrapper!(matmul_f16,  bk::matmul_f16);
+    cuda_matmul_baracuda_wrapper!(matmul_bf16, bk::matmul_bf16);
+}
+
+// ===========================================================================
+// Broadcast-reverse reductions — ReduceSumTo / ReduceMaxTo
+// ===========================================================================
+//
+// Autograd's gradient-of-broadcast primitive. The baracuda
+// `reduce_{sum,max}_to_*` symbols have shipped sys-only since
+// alpha.46; the 2026-06-10 ask-reply surfaced them. Replaces the
+// f32-only `register_cuda_kernels` residue with full 4-dtype
+// coverage — f16/bf16/f64 training graphs with broadcasts no longer
+// fall back to CPU at every gradient edge. The FFI takes the input's
+// strides, so these register with `strided_input` caps and skip the
+// auto-Contiguize gate.
+
+macro_rules! cuda_reduce_to_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path, $variant:ident $(,)?) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}",
+                    ),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (input_shape, output_shape) = match params {
+                OpParams::$variant { input_shape, output_shape } => {
+                    (input_shape.clone(), output_shape.clone())
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::", stringify!($variant), ", got {:?}",
+                        ),
+                        other,
+                    )).bt());
+                }
+            };
+            let input_layout = layouts.first().ok_or_else(|| {
+                Error::Msg(
+                    concat!(stringify!($wrapper_name), ": layouts empty").to_string(),
+                ).bt()
+            })?;
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let result = $baracuda_fn(
+                src_cuda, input_layout, &input_shape, &output_shape,
+            )?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod reduce_to {
+    use super::*;
+    use fuel_cuda_backend::baracuda::reduce_to as bk;
+
+    cuda_reduce_to_baracuda_wrapper!(sum_to_f32,  bk::reduce_sum_to_f32,  ReduceSumTo);
+    cuda_reduce_to_baracuda_wrapper!(sum_to_f64,  bk::reduce_sum_to_f64,  ReduceSumTo);
+    cuda_reduce_to_baracuda_wrapper!(sum_to_f16,  bk::reduce_sum_to_f16,  ReduceSumTo);
+    cuda_reduce_to_baracuda_wrapper!(sum_to_bf16, bk::reduce_sum_to_bf16, ReduceSumTo);
+
+    cuda_reduce_to_baracuda_wrapper!(max_to_f32,  bk::reduce_max_to_f32,  ReduceMaxTo);
+    cuda_reduce_to_baracuda_wrapper!(max_to_f64,  bk::reduce_max_to_f64,  ReduceMaxTo);
+    cuda_reduce_to_baracuda_wrapper!(max_to_f16,  bk::reduce_max_to_f16,  ReduceMaxTo);
+    cuda_reduce_to_baracuda_wrapper!(max_to_bf16, bk::reduce_max_to_bf16, ReduceMaxTo);
+}
+
+// ===========================================================================
+// CausalConv1d — baracuda Phase 50 via the Fuel-prepad bridge
+// ===========================================================================
+//
+// Moved here from `register_cuda_kernels` (2026-06-10): the kernels
+// were always baracuda-backed (`causal_conv1d_fuel_prepad_*` strips
+// baracuda's `kernel - 1` leading pad timesteps via one `cuMemcpy2D`
+// D→D so the output matches the CPU kernel bit-for-bit); this file is
+// the architectural home for baracuda coverage.
+
+macro_rules! cuda_causal_conv1d_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path $(,)?) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 3 inputs (x, weight, bias), got {}",
+                    ),
+                    inputs.len(),
+                )).bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 1 output, got {}"),
+                    outputs.len(),
+                )).bt());
+            }
+            let (batch, channels, seq_in, seq_out, kernel, use_silu) = match params {
+                OpParams::CausalConv1d {
+                    batch, channels, seq_in, seq_out, kernel, use_silu,
+                } => (*batch, *channels, *seq_in, *seq_out, *kernel, *use_silu),
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::CausalConv1d, got {:?}",
+                        ),
+                        other,
+                    )).bt());
+                }
+            };
+            let x_guard = read_storage(&inputs[0])?;
+            let w_guard = read_storage(&inputs[1])?;
+            let bias_guard = read_storage(&inputs[2])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let x_cuda    = cuda_input(&x_guard)?;
+            let w_cuda    = cuda_input(&w_guard)?;
+            let bias_cuda = cuda_input(&bias_guard)?;
+            let result = $baracuda_fn(
+                x_cuda, w_cuda, bias_cuda,
+                batch, channels, seq_in, seq_out, kernel, use_silu,
+            )?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod conv1d {
+    use super::*;
+    use fuel_cuda_backend::baracuda::mamba as bk;
+
+    cuda_causal_conv1d_baracuda_wrapper!(causal_conv1d_f32,  bk::causal_conv1d_fuel_prepad_f32);
+    cuda_causal_conv1d_baracuda_wrapper!(causal_conv1d_f64,  bk::causal_conv1d_fuel_prepad_f64);
+    cuda_causal_conv1d_baracuda_wrapper!(causal_conv1d_bf16, bk::causal_conv1d_fuel_prepad_bf16);
+    cuda_causal_conv1d_baracuda_wrapper!(causal_conv1d_f16,  bk::causal_conv1d_fuel_prepad_f16);
 }
 
 // ===========================================================================
@@ -2645,4 +2820,35 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(StepElementwise,    &u(f64), cuda, unary::step_f64,    strided);
     table.register_with_caps(SiluElementwise,    &u(f64), cuda, unary::silu_f64,    strided);
     table.register_with_caps(SigmoidElementwise, &u(f64), cuda, unary::sigmoid_f64, strided);
+
+    // ----- Dense FP MatMul (Phase 74 gemm_dense; alpha.67) -----
+    // Packed row-major contract (the wrapper validates byte lengths),
+    // so no strided caps — the auto-Contiguize gate stays in front.
+    table.register(MatMul, &b(f32),  cuda, gemm_dense::matmul_f32);
+    table.register(MatMul, &b(f64),  cuda, gemm_dense::matmul_f64);
+    table.register(MatMul, &b(f16),  cuda, gemm_dense::matmul_f16);
+    table.register(MatMul, &b(bf16), cuda, gemm_dense::matmul_bf16);
+
+    // ----- Broadcast-reverse reductions (sys symbols since alpha.46) -----
+    // The FFI is stride-driven on the input side; advertise
+    // strided_input so transposed-view gradients skip Contiguize.
+    table.register_with_caps(ReduceSumTo, &u(f32),  cuda, reduce_to::sum_to_f32,  strided);
+    table.register_with_caps(ReduceSumTo, &u(f64),  cuda, reduce_to::sum_to_f64,  strided);
+    table.register_with_caps(ReduceSumTo, &u(f16),  cuda, reduce_to::sum_to_f16,  strided);
+    table.register_with_caps(ReduceSumTo, &u(bf16), cuda, reduce_to::sum_to_bf16, strided);
+    table.register_with_caps(ReduceMaxTo, &u(f32),  cuda, reduce_to::max_to_f32,  strided);
+    table.register_with_caps(ReduceMaxTo, &u(f64),  cuda, reduce_to::max_to_f64,  strided);
+    table.register_with_caps(ReduceMaxTo, &u(f16),  cuda, reduce_to::max_to_f16,  strided);
+    table.register_with_caps(ReduceMaxTo, &u(bf16), cuda, reduce_to::max_to_bf16, strided);
+
+    // ----- CausalConv1d (baracuda Phase 50 via the Fuel-prepad bridge;
+    //       moved from register_cuda_kernels 2026-06-10) -----
+    for (dt, w) in [
+        (f32,  conv1d::causal_conv1d_f32  as crate::kernel::KernelRef),
+        (f64,  conv1d::causal_conv1d_f64),
+        (bf16, conv1d::causal_conv1d_bf16),
+        (f16,  conv1d::causal_conv1d_f16),
+    ] {
+        table.register(CausalConv1d, &[dt, dt, dt, dt], cuda, w);
+    }
 }

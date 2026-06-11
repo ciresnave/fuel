@@ -3154,85 +3154,6 @@ cpu_causal_conv1d_wrapper!(causal_conv1d_f64_cpu_wrapper,  fuel_cpu_backend::byt
 cpu_causal_conv1d_wrapper!(causal_conv1d_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::causal_conv1d_bf16);
 cpu_causal_conv1d_wrapper!(causal_conv1d_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::causal_conv1d_f16);
 
-/// Per-dtype CausalConv1d CUDA dispatch wrapper. Same `[T, T, T, T]`
-/// binding-table key shape as the CPU wrapper; routes to baracuda's
-/// `causal_conv1d_*` (Phase 50, alpha.62) via the Fuel-prepad helper
-/// in `fuel-cuda-backend::baracuda::mamba`. The helper strips the
-/// `kernel - 1` leading zero-pad timesteps from baracuda's output via
-/// a single `cuMemcpy2D` D→D so the wrapper's output buffer matches
-/// the CPU kernel's `[batch, channels, seq_out]` shape bit-for-bit.
-#[cfg(feature = "cuda")]
-macro_rules! cuda_causal_conv1d_wrapper {
-    ($wrapper:ident, $kernel:path) => {
-        fn $wrapper(
-            inputs: &[Arc<RwLock<Storage>>],
-            outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
-            params: &OpParams,
-        ) -> Result<()> {
-            if inputs.len() != 3 {
-                return Err(Error::Msg(format!(
-                    "causal_conv1d cuda wrapper expects 3 inputs (x, weight, bias), got {}",
-                    inputs.len(),
-                ))
-                .bt());
-            }
-            if outputs.len() != 1 {
-                return Err(Error::Msg(format!(
-                    "causal_conv1d cuda wrapper expects 1 output, got {}", outputs.len(),
-                ))
-                .bt());
-            }
-            let (batch, channels, seq_in, seq_out, kernel, use_silu) = match params {
-                OpParams::CausalConv1d {
-                    batch, channels, seq_in, seq_out, kernel, use_silu,
-                } => (*batch, *channels, *seq_in, *seq_out, *kernel, *use_silu),
-                other => {
-                    return Err(Error::Msg(format!(
-                        "causal_conv1d cuda wrapper expects OpParams::CausalConv1d, got {other:?}",
-                    ))
-                    .bt());
-                }
-            };
-            let x_guard = read_storage(&inputs[0])?;
-            let w_guard = read_storage(&inputs[1])?;
-            let bias_guard = read_storage(&inputs[2])?;
-            let mut out_guard = write_storage(&outputs[0])?;
-            let x_cuda    = cuda_input(&x_guard)?;
-            let w_cuda    = cuda_input(&w_guard)?;
-            let bias_cuda = cuda_input(&bias_guard)?;
-            let result = $kernel(
-                x_cuda, w_cuda, bias_cuda,
-                batch, channels, seq_in, seq_out, kernel, use_silu,
-            )?;
-            let out_cuda = cuda_output(&mut out_guard)?;
-            *out_cuda = result;
-            Ok(())
-        }
-    };
-}
-
-#[cfg(feature = "cuda")]
-cuda_causal_conv1d_wrapper!(
-    causal_conv1d_f32_cuda_wrapper,
-    fuel_cuda_backend::baracuda::mamba::causal_conv1d_fuel_prepad_f32
-);
-#[cfg(feature = "cuda")]
-cuda_causal_conv1d_wrapper!(
-    causal_conv1d_f64_cuda_wrapper,
-    fuel_cuda_backend::baracuda::mamba::causal_conv1d_fuel_prepad_f64
-);
-#[cfg(feature = "cuda")]
-cuda_causal_conv1d_wrapper!(
-    causal_conv1d_bf16_cuda_wrapper,
-    fuel_cuda_backend::baracuda::mamba::causal_conv1d_fuel_prepad_bf16
-);
-#[cfg(feature = "cuda")]
-cuda_causal_conv1d_wrapper!(
-    causal_conv1d_f16_cuda_wrapper,
-    fuel_cuda_backend::baracuda::mamba::causal_conv1d_fuel_prepad_f16
-);
-
 /// Per-dtype SelectiveScan dispatch wrapper. Five inputs (u, delta,
 /// a, b, c) → one output (y). Geometry + `delta_softplus` flow
 /// through `OpParams::SelectiveScan`. All six tensors share dtype `T`;
@@ -4767,262 +4688,6 @@ pub(crate) fn cuda_output(s: &mut Storage) -> Result<&mut fuel_cuda_backend::Cud
     }
 }
 
-/// Dispatch wrapper for `(ReduceSumTo, F32, Cuda)`. Broadcast-reverse
-/// reduction (autograd helper); extracts `(input_shape, output_shape)`
-/// from `OpParams::ReduceSumTo`. No baracuda equivalent today, so this
-/// stays in the PTX path until baracuda exposes a broadcast-reverse
-/// reduce primitive.
-#[cfg(feature = "cuda")]
-fn reduce_sum_to_f32_cuda_wrapper(
-    inputs: &[Arc<RwLock<Storage>>],
-    outputs: &mut [Arc<RwLock<Storage>>],
-    layouts: &[Layout],
-    params: &OpParams,
-) -> Result<()> {
-    if inputs.len() != 1 || outputs.len() != 1 {
-        return Err(Error::Msg(format!(
-            "reduce_sum_to_f32_cuda_wrapper: expected 1 input + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
-        ))
-        .bt());
-    }
-    let (input_shape, output_shape) = match params {
-        OpParams::ReduceSumTo { input_shape, output_shape } => {
-            (input_shape.clone(), output_shape.clone())
-        }
-        other => {
-            return Err(Error::Msg(format!(
-                "reduce_sum_to_f32_cuda_wrapper: expected OpParams::ReduceSumTo, got {other:?}",
-            ))
-            .bt())
-        }
-    };
-    let input_layout = layouts.first().ok_or_else(|| {
-        Error::Msg("reduce_sum_to_f32_cuda_wrapper: layouts empty".to_string()).bt()
-    })?;
-    let in_guard = read_storage(&inputs[0])?;
-    let mut out_guard = write_storage(&outputs[0])?;
-    let src_cuda = cuda_input(&in_guard)?;
-    let result = fuel_cuda_backend::byte_kernels::reduce_sum_to_f32(
-        src_cuda, input_layout, &input_shape, &output_shape,
-    )?;
-    let out_cuda = cuda_output(&mut out_guard)?;
-    *out_cuda = result;
-    Ok(())
-}
-
-/// Dispatch wrapper for `(ReduceMaxTo, F32, Cuda)`. Symmetric of
-/// `reduce_sum_to_f32_cuda_wrapper` — only the byte-kernel call
-/// differs (`fast_max_f32` instead of `fast_sum_f32`).
-#[cfg(feature = "cuda")]
-fn reduce_max_to_f32_cuda_wrapper(
-    inputs: &[Arc<RwLock<Storage>>],
-    outputs: &mut [Arc<RwLock<Storage>>],
-    layouts: &[Layout],
-    params: &OpParams,
-) -> Result<()> {
-    if inputs.len() != 1 || outputs.len() != 1 {
-        return Err(Error::Msg(format!(
-            "reduce_max_to_f32_cuda_wrapper: expected 1 input + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
-        ))
-        .bt());
-    }
-    let (input_shape, output_shape) = match params {
-        OpParams::ReduceMaxTo { input_shape, output_shape } => {
-            (input_shape.clone(), output_shape.clone())
-        }
-        other => {
-            return Err(Error::Msg(format!(
-                "reduce_max_to_f32_cuda_wrapper: expected OpParams::ReduceMaxTo, got {other:?}",
-            ))
-            .bt())
-        }
-    };
-    let input_layout = layouts.first().ok_or_else(|| {
-        Error::Msg("reduce_max_to_f32_cuda_wrapper: layouts empty".to_string()).bt()
-    })?;
-    let in_guard = read_storage(&inputs[0])?;
-    let mut out_guard = write_storage(&outputs[0])?;
-    let src_cuda = cuda_input(&in_guard)?;
-    let result = fuel_cuda_backend::byte_kernels::reduce_max_to_f32(
-        src_cuda, input_layout, &input_shape, &output_shape,
-    )?;
-    let out_cuda = cuda_output(&mut out_guard)?;
-    *out_cuda = result;
-    Ok(())
-}
-
-/// Dispatch wrapper for `(MatMul, F32, Cuda)`. First non-PTX, non-
-/// element-wise op through the unified binding table — the underlying
-/// implementation is cuBLAS `gemm_strided_batched_ex`, not a launched
-/// kernel from `fuel-cuda-kernels`. Mirrors the CPU
-/// `matmul_f32_cpu_wrapper` for `OpParams::Matmul` destructuring.
-#[cfg(feature = "cuda")]
-fn matmul_f32_cuda_wrapper(
-    inputs: &[Arc<RwLock<Storage>>],
-    outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
-    params: &OpParams,
-) -> Result<()> {
-    if inputs.len() != 2 {
-        return Err(Error::Msg(format!(
-            "matmul_f32_cuda_wrapper: expected 2 inputs, got {}",
-            inputs.len(),
-        ))
-        .bt());
-    }
-    if outputs.len() != 1 {
-        return Err(Error::Msg(format!(
-            "matmul_f32_cuda_wrapper: expected 1 output, got {}",
-            outputs.len(),
-        ))
-        .bt());
-    }
-    let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-        OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
-            (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
-        }
-        other => {
-            return Err(Error::Msg(format!(
-                "matmul_f32_cuda_wrapper: expected OpParams::Matmul, got {:?}",
-                other,
-            ))
-            .bt())
-        }
-    };
-    let lhs_guard = read_storage(&inputs[0])?;
-    let rhs_guard = read_storage(&inputs[1])?;
-    let mut out_guard = write_storage(&outputs[0])?;
-    let lhs_cuda = cuda_input(&lhs_guard)?;
-    let rhs_cuda = cuda_input(&rhs_guard)?;
-    let result = fuel_cuda_backend::byte_kernels::matmul_f32(
-        lhs_cuda,
-        rhs_cuda,
-        lhs_batch_dims,
-        rhs_batch_dims,
-        m,
-        n,
-        k,
-    )?;
-    let out_cuda = cuda_output(&mut out_guard)?;
-    *out_cuda = result;
-    Ok(())
-}
-
-/// Dispatch wrapper for `(MatMul, BF16, Cuda)`. Routes through
-/// the CUTLASS `LayoutSku::Rrr` SKU in `fuel-cuda-backend`. Net-new
-/// bf16 CUDA matmul coverage on the byte-storage substrate (no
-/// existing cuBLAS bf16 binding-table entry to be sibling with —
-/// Phase 7.6 step 9 migrates primitive ops to the
-/// `FusedKernelRegistry` shape where multiple alternatives at one
-/// decision point become the architecture-target).
-#[cfg(feature = "cuda")]
-fn matmul_bf16_cuda_wrapper(
-    inputs: &[Arc<RwLock<Storage>>],
-    outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
-    params: &OpParams,
-) -> Result<()> {
-    if inputs.len() != 2 {
-        return Err(Error::Msg(format!(
-            "matmul_bf16_cuda_wrapper: expected 2 inputs, got {}",
-            inputs.len(),
-        ))
-        .bt());
-    }
-    if outputs.len() != 1 {
-        return Err(Error::Msg(format!(
-            "matmul_bf16_cuda_wrapper: expected 1 output, got {}",
-            outputs.len(),
-        ))
-        .bt());
-    }
-    let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-        OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
-            (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
-        }
-        other => {
-            return Err(Error::Msg(format!(
-                "matmul_bf16_cuda_wrapper: expected OpParams::Matmul, got {:?}",
-                other,
-            ))
-            .bt())
-        }
-    };
-    let lhs_guard = read_storage(&inputs[0])?;
-    let rhs_guard = read_storage(&inputs[1])?;
-    let mut out_guard = write_storage(&outputs[0])?;
-    let lhs_cuda = cuda_input(&lhs_guard)?;
-    let rhs_cuda = cuda_input(&rhs_guard)?;
-    let result = fuel_cuda_backend::byte_kernels::matmul_bf16(
-        lhs_cuda,
-        rhs_cuda,
-        lhs_batch_dims,
-        rhs_batch_dims,
-        m,
-        n,
-        k,
-    )?;
-    let out_cuda = cuda_output(&mut out_guard)?;
-    *out_cuda = result;
-    Ok(())
-}
-
-/// Dispatch wrapper for `(MatMul, F16, Cuda)`. Mirror of
-/// `matmul_bf16_cuda_wrapper` at `f16`; same CUTLASS Rrr path.
-#[cfg(feature = "cuda")]
-fn matmul_f16_cuda_wrapper(
-    inputs: &[Arc<RwLock<Storage>>],
-    outputs: &mut [Arc<RwLock<Storage>>],
-    _layouts: &[Layout],
-    params: &OpParams,
-) -> Result<()> {
-    if inputs.len() != 2 {
-        return Err(Error::Msg(format!(
-            "matmul_f16_cuda_wrapper: expected 2 inputs, got {}",
-            inputs.len(),
-        ))
-        .bt());
-    }
-    if outputs.len() != 1 {
-        return Err(Error::Msg(format!(
-            "matmul_f16_cuda_wrapper: expected 1 output, got {}",
-            outputs.len(),
-        ))
-        .bt());
-    }
-    let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-        OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
-            (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
-        }
-        other => {
-            return Err(Error::Msg(format!(
-                "matmul_f16_cuda_wrapper: expected OpParams::Matmul, got {:?}",
-                other,
-            ))
-            .bt())
-        }
-    };
-    let lhs_guard = read_storage(&inputs[0])?;
-    let rhs_guard = read_storage(&inputs[1])?;
-    let mut out_guard = write_storage(&outputs[0])?;
-    let lhs_cuda = cuda_input(&lhs_guard)?;
-    let rhs_cuda = cuda_input(&rhs_guard)?;
-    let result = fuel_cuda_backend::byte_kernels::matmul_f16(
-        lhs_cuda,
-        rhs_cuda,
-        lhs_batch_dims,
-        rhs_batch_dims,
-        m,
-        n,
-        k,
-    )?;
-    let out_cuda = cuda_output(&mut out_guard)?;
-    *out_cuda = result;
-    Ok(())
-}
-
 /// Dispatch wrapper for `(OpKind::Copy, [T, T], Cuda)` — D2H from a
 /// CUDA source storage into a freshly-allocated CPU output. The
 /// executor allocates the CPU output before this wrapper runs
@@ -5058,66 +4723,35 @@ fn copy_to_cpu_cuda_wrapper(
     Ok(())
 }
 
-/// Phase 7.5 CUDA registration. Wires CUDA byte-kernel wrappers
-/// into the unified binding table.
+/// Phase 7.5 CUDA registration — now `Op::Copy` D2H only.
 ///
-/// **Scope (post-fuel-cuda-kernels-cleanup, 2026-05-25):** this
-/// function now registers only kernels that `register_baracuda_cuda_kernels`
-/// does NOT cover:
+/// **Scope (post-alpha.67, 2026-06-10):** every compute kernel has
+/// migrated to `register_baracuda_cuda_kernels` — baracuda is the
+/// single CUDA kernel home. The final migrations (answering
+/// `docs/baracuda-ask-fp-gemm-reduce-to-2026-06-10.md`):
 ///
-/// - **MatMul** (f32/bf16/f16) — routed through fuel-cuda-backend's
-///   `matmul_via_cublas` path. Baracuda's MatMul registrations cover
-///   int-GEMM only (S8/U8 RRR); pure-FP cuBLAS matmul stays here
-///   until baracuda grows an FP MatMul wrapper. See
-///   `project_baracuda_cutlass_critique` memory for the CUTLASS
-///   tracking work.
-/// - **ReduceSumTo / ReduceMaxTo** — broadcast-reverse reductions
-///   used by autograd; no baracuda equivalent today.
-/// - **Op::Copy** — D2H byte-buffer transfer (Fuel-specific cross-
-///   device path, lives at this layer rather than in a kernel crate).
+/// - **MatMul** (f32/f64/f16/bf16) → Phase 74 `gemm_dense` facade;
+///   the local cuBLAS f32 path and CUTLASS bf16/f16 byte paths
+///   retired with `byte_kernels`.
+/// - **ReduceSumTo / ReduceMaxTo** (4 dtypes) → baracuda's
+///   `reduce_{sum,max}_to_*` (sys symbols shipped since alpha.46).
+/// - **CausalConv1d** → registration moved (was always
+///   baracuda-backed via the Fuel-prepad bridge).
 ///
-/// All other op families (Binary, Unary, SumReduce/MaxReduce/MinReduce/
-/// MeanReduce, Affine, Clamp, PowI, Concat, IndexSelect, Gather,
-/// ArgMaxDim, ArgMinDim, Cast) were previously registered here as
-/// PTX-path duplicates of baracuda's per-dtype kernels and were
-/// stripped — baracuda is the single source of truth for those.
+/// What stays: **Op::Copy** — D2H byte-buffer transfer, a
+/// Fuel-specific cross-device path that lives at this layer rather
+/// than in any kernel crate.
 #[cfg(feature = "cuda")]
 pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     use OpKind::*;
     let cuda = BackendId::Cuda;
-    let f32_dt = DType::F32;
-    let bf16_dt = DType::BF16;
-    let f16_dt = DType::F16;
-    let unary  = |t: DType| [t, t];
-    let binary = |t: DType| [t, t, t];
-
-    table.register(ReduceSumTo,        &unary(f32_dt), cuda, reduce_sum_to_f32_cuda_wrapper);
-    table.register(ReduceMaxTo,        &unary(f32_dt), cuda, reduce_max_to_f32_cuda_wrapper);
-
-    table.register(MatMul,             &binary(f32_dt), cuda, matmul_f32_cuda_wrapper);
-    table.register(MatMul,             &binary(bf16_dt), cuda, matmul_bf16_cuda_wrapper);
-    table.register(MatMul,             &binary(f16_dt), cuda, matmul_f16_cuda_wrapper);
-
-    // CausalConv1d: 3 inputs (x, weight, bias) + 1 output, uniform
-    // dtype T ∈ {F32, F64, BF16, F16}. Same `[T; 4]` key shape as the
-    // CPU registrations above. Routes through baracuda Phase 50's
-    // `causal_conv1d_*_run` via the Fuel-prepad helper.
-    for (dt, w) in [
-        (DType::F32,  causal_conv1d_f32_cuda_wrapper  as KernelRef),
-        (DType::F64,  causal_conv1d_f64_cuda_wrapper),
-        (DType::BF16, causal_conv1d_bf16_cuda_wrapper),
-        (DType::F16,  causal_conv1d_f16_cuda_wrapper),
-    ] {
-        table.register(CausalConv1d, &[dt, dt, dt, dt], cuda, w);
-    }
 
     // Op::Copy D2H — register at `(OpKind::Copy, [dt, dt], Cuda)` for
     // every dtype the byte-storage substrate supports. Source-backend
     // key (= Cuda); the wrapper produces a CPU output, copying through
     // `CudaStorageBytes::to_cpu_bytes`. Bridge-retirement Phase 2.
-    let u32_dt = DType::U32;
     let copy_dtypes = [
-        f32_dt, bf16_dt, f16_dt, u32_dt,
+        DType::F32, DType::BF16, DType::F16, DType::U32,
         DType::F64, DType::U8, DType::I16, DType::I32, DType::I64,
     ];
     for dt in copy_dtypes {
