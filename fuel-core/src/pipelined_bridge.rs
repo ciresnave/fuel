@@ -752,7 +752,12 @@ fn stamp_plan_backends(
 /// match. The per-target match now lives in the executor's
 /// `WorkItemKind::Copy` arm (output allocation) and the
 /// `copy_from_cpu_wrapper` (per-target H2D).
-fn build_const_cache(
+///
+/// `pub(crate)`: [`crate::factories::LazyRealizer`] (the Judge's
+/// realize seam) calls this directly to maintain a persistent
+/// const cache across its warmup + timed iterations — the pipelined
+/// replacement for the legacy executor's `const_pool` amortization.
+pub(crate) fn build_const_cache(
     graph: &Arc<RwLock<Graph>>,
     order: &[NodeId],
     device: &Device,

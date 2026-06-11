@@ -729,6 +729,34 @@ impl Judge {
     ) -> Option<CellRun> {
         assert_eq!(dtype, DType::F32, "judge: only f32 wired for now");
 
+        // Native-implementation gate (executor-unification Session 2):
+        // the bridge realizer dispatches through the picker, whose
+        // off-device fallback (picker-arc step 4b) would silently run
+        // a missing GPU op on the CPU — and this cell would record a
+        // CPU+transfer latency mislabeled as `device.backend`. The
+        // legacy executor skipped such cells (its trait method
+        // panicked); preserve that contract by requiring a binding-
+        // table alternative at the cell before measuring. CPU is
+        // exempt: it's the fallback root (nowhere to fall back to —
+        // a genuinely missing CPU kernel surfaces as a realize Err
+        // below and the cell is skipped through that path).
+        //
+        // NB: existence-checked via `lookup_alternatives`, NOT via
+        // `primary_kernel_source() == ""` — `kernel_source` is a
+        // diagnostic tag that legitimately defaults to `""` (the
+        // baracuda CUDA registrations are untagged), so an empty tag
+        // does not mean an empty cell.
+        if device.backend != BackendId::Cpu
+            && !has_binding_alternative(op, device.backend)
+        {
+            eprintln!(
+                "judge: skipping {op}@{size:?} on {}:{} — no binding-table \
+                 alternative registered for this backend",
+                device.backend, device.device_index,
+            );
+            return None;
+        }
+
         // Walk the factory registry instead of naming each backend.
         // A backend that isn't compiled in simply doesn't appear in
         // the registry; one whose constructor fails is logged and
@@ -765,11 +793,13 @@ impl Judge {
     /// caller computes correctness via consensus across backends
     /// (see [`Self::run`]).
     ///
-    /// All realize calls are wrapped in `catch_unwind` — a backend
-    /// that doesn't yet implement the op (or panics on a corner-
-    /// case input) is logged and skipped, not fatal to the run.
-    /// This is what makes the Judge safe to expand across the full
-    /// op surface ahead of every backend's coverage.
+    /// All realize calls are wrapped in `catch_unwind` — a kernel
+    /// that panics on a corner-case input is logged and skipped, not
+    /// fatal to the run. Post-Session-2 the realizer also returns
+    /// typed `Err`s (the bridge's no-panics contract); an erroring
+    /// backend is skipped through the same per-cell path. This is
+    /// what makes the Judge safe to expand across the full op
+    /// surface ahead of every backend's coverage.
     fn time_op_capturing(
         &self,
         op: OpKind,
@@ -790,19 +820,29 @@ impl Judge {
         };
 
         // Warmup — discard timings; stabilize kernel caches, warm
-        // up any BLAS internal state, fault-in heap. If any warmup
-        // call panics (e.g. backend doesn't support this op), skip
-        // the entire (op, backend) cell.
+        // up any BLAS internal state, fault-in heap, upload Consts
+        // into the realizer's persistent cache. If any warmup call
+        // panics or errors (e.g. backend doesn't support this op),
+        // skip the entire (op, backend) cell.
         for _ in 0..self.warmup {
-            let r = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            match std::panic::catch_unwind(AssertUnwindSafe(|| {
                 realizer.realize_f32(&tensor)
-            }));
-            if r.is_err() {
-                eprintln!(
-                    "judge: skipping {op}@{size:?} on {}:{} — backend realize panicked",
-                    device.backend, device.device_index,
-                );
-                return None;
+            })) {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    eprintln!(
+                        "judge: skipping {op}@{size:?} on {}:{} — backend realize errored: {e}",
+                        device.backend, device.device_index,
+                    );
+                    return None;
+                }
+                Err(_) => {
+                    eprintln!(
+                        "judge: skipping {op}@{size:?} on {}:{} — backend realize panicked",
+                        device.backend, device.device_index,
+                    );
+                    return None;
+                }
             }
         }
 
@@ -818,7 +858,14 @@ impl Judge {
             let out = match std::panic::catch_unwind(AssertUnwindSafe(|| {
                 realizer.realize_f32(&tensor)
             })) {
-                Ok(v) => v,
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => {
+                    eprintln!(
+                        "judge: skipping {op}@{size:?} on {}:{} — backend realize errored mid-run: {e}",
+                        device.backend, device.device_index,
+                    );
+                    return None;
+                }
                 Err(_) => {
                     eprintln!(
                         "judge: skipping {op}@{size:?} on {}:{} — backend realize panicked mid-run",
@@ -889,6 +936,27 @@ fn primary_kernel_source(op: OpKind, backend: BackendId) -> &'static str {
     let table = fuel_dispatch::dispatch::global_bindings();
     let alts = table.lookup_alternatives(op, &dtypes, backend);
     alts.first().map(|e| e.kernel_source).unwrap_or("")
+}
+
+/// Does the binding table hold ANY alternative at the cell's
+/// canonical F32 `(op, dtypes, backend)` key? Existence check for
+/// the Judge's native-implementation gate — deliberately distinct
+/// from [`primary_kernel_source`], whose `""` return conflates
+/// "no alternative" with "first alternative carries the default
+/// empty kernel_source tag" (untagged registrations are legal and
+/// common — every baracuda CUDA binding is untagged).
+///
+/// Ops without a canonical dtype mapping return `false` — the gate
+/// then skips the (non-CPU) cell rather than risk recording an
+/// off-device-fallback measurement under the wrong backend label.
+/// Unreachable for today's [`PROFILED_OPS`] (all are mapped).
+fn has_binding_alternative(op: OpKind, backend: BackendId) -> bool {
+    let dtypes = match canonical_binding_dtypes_for(op) {
+        Some(d) => d,
+        None => return false,
+    };
+    let table = fuel_dispatch::dispatch::global_bindings();
+    !table.lookup_alternatives(op, &dtypes, backend).is_empty()
 }
 
 /// Collect every binding-table alternative at the cell EXCEPT the
