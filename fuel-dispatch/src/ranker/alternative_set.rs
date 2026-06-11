@@ -191,21 +191,25 @@ impl AlternativeSet {
     }
 
     /// Sort candidates ascending by their composite static cost
-    /// (Layer-1 score; see [`super::cost::composite_ns`]). Stable
-    /// sort — candidates with identical costs keep their relative
-    /// order, which matters when registration order is the
-    /// tie-breaker.
+    /// (Layer-1 score; see [`super::cost::composite_ns`]) plus the
+    /// Stage-2 inbound-transfer term
+    /// ([`Candidate::inbound_transfer_ns`]). Stable sort —
+    /// candidates with identical costs keep their relative order,
+    /// which matters when registration order is the tie-breaker
+    /// (and, post-Stage-2, when decision-device candidates are
+    /// enumerated ahead of off-device ones).
     ///
     /// Phase 1.4 of the picker-work arc. Composite cost is
     /// `max(compute_ns, memory_ns) + overhead_ns`, treating
-    /// compute and memory as parallel (roofline model). Phase 3
-    /// will compose Layer-2 Judge data on top either by refining
-    /// `static_cost` before this call or by providing a separate
-    /// rank method.
+    /// compute and memory as parallel (roofline model). Layer-2
+    /// Judge data refines `static_cost` before this call
+    /// (`compute_static_costs`); the transfer term is added
+    /// serially — the bytes must land before the kernel can run.
     pub fn rank_by_composite_cost(&mut self) {
         use super::cost::composite_ns;
-        self.candidates
-            .sort_by_key(|c| composite_ns(&c.static_cost));
+        self.candidates.sort_by_key(|c| {
+            composite_ns(&c.static_cost).saturating_add(c.inbound_transfer_ns)
+        });
     }
 
     /// Set the `static_cost` field of the candidate at `index`.
@@ -219,6 +223,19 @@ impl AlternativeSet {
             self.candidates.len(),
         );
         self.candidates[index].static_cost = cost;
+    }
+
+    /// Set the Stage-2 inbound-transfer term of the candidate at
+    /// `index`. Used by
+    /// [`super::cost::apply_inbound_transfer_costs`]. Panics in
+    /// debug builds if `index >= len`.
+    pub fn set_inbound_transfer_ns(&mut self, index: usize, ns: u64) {
+        debug_assert!(
+            index < self.candidates.len(),
+            "set_inbound_transfer_ns: index {index} out of range (len={})",
+            self.candidates.len(),
+        );
+        self.candidates[index].inbound_transfer_ns = ns;
     }
 
     /// The current top candidate (first entry). After the full
@@ -257,10 +274,30 @@ mod tests {
             device: DeviceLocation::Cpu,
             precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
             static_cost: CostEstimate { flops, bytes_moved: 0, kernel_overhead_ns: 0 },
+            inbound_transfer_ns: 0,
             op_params: OpParams::None,
             coupling: Vec::new(),
             kernel_source: "",
         }
+    }
+
+    /// Rank composes the inbound-transfer term serially with the
+    /// composite kernel cost.
+    #[test]
+    fn rank_includes_inbound_transfer_term() {
+        let mut s = AlternativeSet::from_candidates(
+            vec![
+                Candidate { inbound_transfer_ns: 5_000, ..dummy_candidate(100) },
+                dummy_candidate(200),
+            ],
+            DEFAULT_MAX_N,
+        );
+        s.rank_by_composite_cost();
+        assert_eq!(
+            s.winner().unwrap().static_cost.flops,
+            200,
+            "200 ns total beats 100 ns kernel + 5 µs transfer",
+        );
     }
 
     #[test]

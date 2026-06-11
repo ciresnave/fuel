@@ -178,9 +178,16 @@ impl RuntimeSelector for JudgeAwareSelector {
             .iter()
             .enumerate()
             .map(|(i, c)| {
+                // Stage 2: the inbound-transfer term adds serially
+                // to both groups — the bytes must land before either
+                // a measured or an estimated kernel can run. Plan-
+                // produced sets are device-pruned so the term is
+                // uniform in practice; adding it keeps the scale
+                // consistent with the plan rank.
                 let score = self
                     .measured_latency(c)
-                    .unwrap_or_else(|| composite_ns(&c.static_cost));
+                    .unwrap_or_else(|| composite_ns(&c.static_cost))
+                    .saturating_add(c.inbound_transfer_ns);
                 (i, score)
             })
             .min_by_key(|&(idx, score)| (score, idx))
@@ -221,6 +228,7 @@ mod tests {
                 bytes_moved: cost,
                 kernel_overhead_ns: 0,
             },
+            inbound_transfer_ns: 0,
             op_params: OpParams::None,
             coupling: Vec::new(),
             kernel_source: "",

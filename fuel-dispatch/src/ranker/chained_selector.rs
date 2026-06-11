@@ -133,20 +133,26 @@ impl ChainedSelector {
 
     /// Rank leg: one uniform nanosecond figure per candidate —
     /// measured latency when the Judge has the cell, static
-    /// composite otherwise.
+    /// composite otherwise — plus the plan-time inbound-transfer
+    /// term (Stage 2). Plan-produced sets are device-pruned so the
+    /// term is uniform across the set in practice; adding it keeps
+    /// the selector's scale consistent with the plan rank.
     fn latency_ns(&self, c: &Candidate, ctx: Option<&DecisionContext>) -> u64 {
-        if let (Some(judge), Some(ctx)) = (self.judge.as_ref(), ctx) {
-            if let Some(measured) = judge.measured_latency_ns(
-                ctx.op,
-                ctx.principal_dtype,
-                ctx.size_class,
-                c.backend,
-                c.kernel_source,
-            ) {
-                return measured;
+        let kernel_ns = (|| {
+            if let (Some(judge), Some(ctx)) = (self.judge.as_ref(), ctx) {
+                if let Some(measured) = judge.measured_latency_ns(
+                    ctx.op,
+                    ctx.principal_dtype,
+                    ctx.size_class,
+                    c.backend,
+                    c.kernel_source,
+                ) {
+                    return measured;
+                }
             }
-        }
-        composite_ns(&c.static_cost)
+            composite_ns(&c.static_cost)
+        })();
+        kernel_ns.saturating_add(c.inbound_transfer_ns)
     }
 }
 
@@ -241,6 +247,7 @@ mod tests {
                 bytes_moved: cost_ns,
                 kernel_overhead_ns: 0,
             },
+            inbound_transfer_ns: 0,
             op_params: OpParams::None,
             coupling: Vec::new(),
             kernel_source: "",

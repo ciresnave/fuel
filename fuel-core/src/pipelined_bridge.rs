@@ -510,11 +510,13 @@ fn build_execution_plan(
     // returns every backend co-located on the node's target device;
     // `capabilities_for` looks up that backend's BackendCapabilities
     // for the Layer-1 cost composer; `fallback_for` (picker-arc step
-    // 4b) enumerates every OTHER device's backends, consulted by
-    // `compile_plan` only when the decision device has no
-    // implementation for an (op, dtypes) — the missing-impl op then
-    // becomes a picker decision and the cross-device-copy pass
-    // stitches residency around the off-device winner.
+    // 4b, relaxed by planner Stage 2) enumerates every OTHER
+    // device's backends. With the transfer estimator wired below,
+    // those off-device candidates ALWAYS enumerate, priced by the
+    // inbound-transfer term — locality emerges from the numbers
+    // (explicitly placed nodes stay hard-pinned; destructive ops
+    // never move). The cross-device-copy pass stitches residency
+    // around any off-device winner.
     let placements_for = |dev: fuel_core_types::DeviceLocation|
         -> Vec<fuel_core_types::probe::BackendId>
     {

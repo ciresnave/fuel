@@ -51,7 +51,10 @@ pub use alternative_set::{AlternativeSet, DecisionContext, DEFAULT_MAX_N};
 pub use candidate::{Candidate, CouplingAdjustment};
 pub use chain::apply_filter_chain;
 pub use chained_selector::ChainedSelector;
-pub use cost::{composite_ns, compute_static_costs, CapabilitiesLookup};
+pub use cost::{
+    apply_inbound_transfer_costs, composite_ns, compute_static_costs, CapabilitiesLookup,
+    TransferEstimator,
+};
 pub use enumerate::{enumerate_candidates, enumerate_candidates_default};
 pub use filter::{AlternativeFilter, FilterClass, FilterContext};
 pub use filters::{
