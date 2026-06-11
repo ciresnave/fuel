@@ -1,6 +1,6 @@
 # Optimization
 
-**Status**: v0.3 (draft, 2026-05-09). v0.3 changes: (1) cost-model layer-1 (static annotations) is explicitly composed of static priors PLUS community-aggregated empirical data when available, not pure static; (2) a precision-filter pass runs before cost ranking, pruning alternatives whose `PrecisionGuarantee` doesn't meet the user's per-call precision requirement. v0.2 changes: (a) Op identity is the single `Op` enum with primitive variants and one `Op::Fused(id, params)` arm — no `NodeKind` discriminator; (b) the top-N model is per-decision-point alternatives with coupled cost adjustments, not N complete graphs; (c) the cost model accounts for parallelism (wall-clock under expected concurrency, not strict-serial sum); (d) diversity-of-routes phrasing clarified.
+**Status**: v0.4 (draft, 2026-06-11). v0.4 changes (per the 2026-06-11 load-time-planning decision): (1) the optimization producer starts at **model load** — planning begins as soon as graph nodes exist, not when `realize()` is entered; `realize()` reduces to wait-for-plan-coverage + dispatch; (2) new §Load-time incremental planning + cost-based placement: numeric transfer pricing, the (position × device) carry-forward placement DP with bounded fused-jump lookback, plan-fragment memoization by structural hash, and the plan as the weight-prefetch schedule; (3) horizontal fusion / similarity scheduling named as a future rule family. v0.3 changes (preserved): (1) cost-model layer-1 (static annotations) is explicitly composed of static priors PLUS community-aggregated empirical data when available, not pure static; (2) a precision-filter pass runs before cost ranking, pruning alternatives whose `PrecisionGuarantee` doesn't meet the user's per-call precision requirement. v0.2 changes: (a) Op identity is the single `Op` enum with primitive variants and one `Op::Fused(id, params)` arm — no `NodeKind` discriminator; (b) the top-N model is per-decision-point alternatives with coupled cost adjustments, not N complete graphs; (c) the cost model accounts for parallelism (wall-clock under expected concurrency, not strict-serial sum); (d) diversity-of-routes phrasing clarified.
 
 How the base map becomes the optimized form. The DecompositionMap and OptimizationMap, the rule engine that drives both, per-decision-point alternative preservation, the sliding window that allows optimization and execution to overlap, and the cost model that ranks candidate plans.
 
@@ -148,6 +148,114 @@ The cost — for routes that use it:
 - **Some optimization opportunities only show up in `WholeGraph` rules.** A workload that benefits substantially from cross-graph CSE or global re-association will favor whole-graph routes; concurrent execution leaves those wins on the table. The optimizer can produce both kinds and let the route picker compare costs honestly.
 
 This concurrent model is more aggressive than what's currently implemented. PR 3's optimizer is synchronous, single-graph, no transactions. Migrating to the concurrent model is itself a multi-phase project (transactions first, then frontier tracking, then per-decision-point alternative tracking, then `Concurrent`/`WholeGraph` rule classification, then per-realize concurrency policy). The architectural commitment is the destination; the migration is phase work.
+
+## Load-time incremental planning + cost-based placement (v0.4)
+
+Decided 2026-06-11. This section gives the concurrent model above its
+driver and its placement algorithm. Session prompt:
+`docs/session-prompts/load-time-incremental-planner.md`.
+
+### Planning starts at model load
+
+The optimization producer starts when graph nodes start existing —
+at model load for loader-built graphs, at op-construction time for
+user-built graphs — not when `realize()` is entered. `realize()`
+becomes: *wait until the plan frontier covers the requested roots,
+then dispatch against the committed plan*. Dispatch never waits for
+global optimality: the first op launches on the best placement known
+at that moment (usually the device the input data is resident on),
+and the planner — working in microseconds while kernels work in
+milliseconds and weight pages fault in from disk — maps far ahead of
+the execution frontier. Everything behind the frontier is sunk;
+everything ahead stays fluid (per-decision-point atomic swap, as
+above).
+
+With mmap'd weights this pipelines three activities: page-in of a
+layer's weights, planning of downstream layers, and execution of
+upstream layers all overlap. The plan itself is the **prefetch
+schedule**: it states which weights are needed on which device in
+what order, so residency management becomes planned prefetch instead
+of demand faulting (see [06-runtime](06-runtime.md)).
+
+### Cost-based placement: the carry-forward DP
+
+Device placement is decided by cost, not locality policy. The
+objective is end-to-end wall-clock of the sequence — which makes
+placement non-local: a locally-fast kernel (fused or not) on device A
+loses if it strands residency that a later segment needs on device B.
+Per-node greedy choice cannot see that; window enumeration over long
+sequences is unnecessary. The mechanism is a carry-forward dynamic
+program over the topo order:
+
+- **State**: for each frontier node, `best[d]` = lowest accumulated
+  cost to arrive here with output resident on device `d`. O(devices)
+  state per node — the accumulated state *summarizes* the entire
+  prefix, which is what makes unbounded segments checkable without
+  re-examining them.
+- **Extension**: when node N arrives, for each device `d`:
+  `best_N[d] = min over d' of (best_{N-1}[d'] + transfer(d'→d,
+  boundary bytes) + cost(N on d))`, where `cost` is the layered cost
+  model below and `transfer` uses calibrated numeric estimates
+  (bytes ÷ measured bandwidth + per-transfer latency) per
+  `SystemTopology` path.
+- **Fused jumps**: fusion candidates enter the same recurrence as
+  multi-node edges — `best_N[d]` also considers
+  `best_{N-k-1}[d'] + transfer + fused_cost(N-k..N on d)` for every
+  registered pattern matching the trailing subgraph. Fusion lookback
+  is **bounded** by the longest registered pattern (~5 ops), so the
+  per-node work is O(devices² + patterns·devices), and a fused op
+  that would strand residency is out-competed naturally: the DP
+  never finalizes a choice until downstream extensions roll its
+  consequences in.
+- **Commit**: choices finalize only at the execution frontier
+  (backtracking from the best current end-state); ahead of the
+  frontier the plan revises freely as the table extends.
+- **DAG branches**: the chain recurrence extends over a topo
+  linearization; at joins the state merge considers both producers'
+  residencies. Model trunks are chain-dominated; branch handling may
+  start heuristic (merge to the cheaper producer device) and tighten
+  later.
+
+Fusion *pattern matching* remains subgraph-shaped, not window-shaped
+(per the DecompositionMap/OptimizationMap rules): when node N
+arrives, patterns are re-probed against the neighborhood within the
+longest-pattern distance of N. Linear windows would both test
+non-adjacent pairs and miss diamond patterns (FlashAttention's
+matmul→softmax→matmul).
+
+### Plan-fragment memoization (repeated structure)
+
+Models repeat structure (32 identical transformer layers). Plan
+fragments memoize by **structural hash** (op sequence + shapes +
+dtypes + params): the planner maps the first instance honestly and
+stamps the rest. The same hash keys three further reuses:
+
+- **Persisted-plan cache** fragments (per
+  [11-persistence](11-persistence.md)) — a second load of the same
+  or a structurally-similar model skips planning for matched
+  fragments.
+- **Record-once-replay execution** — a repeated fragment is the
+  natural capture unit for CUDA Graphs / pre-recorded Vulkan command
+  buffers, replayed per instance with rebased weight pointers.
+  Kernel *binaries* are already cached per (kernel, device); what
+  repetition adds is amortizing launch orchestration.
+- **Activation-pool sizing** — identical fragments have identical
+  intermediate shapes; one fragment-sized buffer ring serves all
+  instances instead of per-instance allocations. (Weights do NOT
+  dedupe — instances share structure, not parameter values.)
+
+### Horizontal fusion / similarity scheduling (future rule family)
+
+When repeated subgraphs are mutually *independent* (no path between
+them — per-head projections, MoE experts, batched branches; NOT
+sequential layer stacks, which are data-dependent), the scheduler may
+group same-shaped ops adjacently and a horizontal-fusion rule may
+merge them into one batched kernel launch. The win is launch-count
+and occupancy, not kernel loading (binaries are already cached); the
+cost is higher peak activation memory (more intermediates live
+simultaneously), which the residency planner arbitrates. This is a
+rule family + scheduling freedom inside `derive_ordering`, gated
+entirely on graph-derived independence.
 
 ## Cost model: static annotations refined by empirical Judge data, accounting for parallelism
 
