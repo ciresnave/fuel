@@ -120,11 +120,17 @@ impl QuantizedQwen3MoeModel {
     /// and the token-embedding table stay in F32 — matching the GGUF
     /// convention used by llama.cpp for Qwen3-MoE releases.
     ///
-    /// `cfg.hidden_size`, `cfg.intermediate_size`,
-    /// `cfg.moe_intermediate_size`, and
-    /// `cfg.num_key_value_heads * cfg.head_dim` must each be a
-    /// multiple of the Q4_0 block size (32). Source weights follow
-    /// the same `[in_features, out_features]` row-major layout as
+    /// Q4_0 blocks run along each Linear's *in_features* axis, so
+    /// every dimension that serves as an in_features must be a
+    /// multiple of the Q4_0 block size (32): `cfg.hidden_size`
+    /// (attn_q/k/v, dense + expert ffn_gate/up, output),
+    /// `cfg.intermediate_size` (dense ffn_down),
+    /// `cfg.moe_intermediate_size` (expert ffn_down), and
+    /// `cfg.num_attention_heads * cfg.head_dim` (attn_o).
+    /// `num_key_value_heads * head_dim` only ever appears as an
+    /// out_features (attn_k / attn_v) and carries no divisibility
+    /// requirement. Source weights follow the same
+    /// `[in_features, out_features]` row-major layout as
     /// [`Qwen3MoeWeights`].
     pub fn from_f32_bake(cfg: Qwen3MoeConfig, src: Qwen3MoeWeights) -> Result<Self> {
         let h = cfg.hidden_size;
@@ -132,10 +138,14 @@ impl QuantizedQwen3MoeModel {
         let moe_int = cfg.moe_intermediate_size;
         let kv = cfg.num_key_value_heads * cfg.head_dim;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
-        check_q4_0_divisible("hidden_size", h)?;
-        check_q4_0_divisible("intermediate_size", inter)?;
-        check_q4_0_divisible("moe_intermediate_size", moe_int)?;
-        check_q4_0_divisible("num_key_value_heads * head_dim", kv)?;
+        // Gate exactly the dims that serve as a Linear in_features —
+        // Q4_0 blocks run along K only. kv (= num_key_value_heads *
+        // head_dim) is only ever an out_features (attn_k / attn_v)
+        // and needs no divisibility (mirrors the gemma3 gate).
+        check_q4_0_divisible("hidden_size (attn_q/k/v, ffn_gate/up, output in-features)", h)?;
+        check_q4_0_divisible("intermediate_size (dense ffn_down in-features)", inter)?;
+        check_q4_0_divisible("moe_intermediate_size (expert ffn_down in-features)", moe_int)?;
+        check_q4_0_divisible("num_attention_heads * head_dim (attn_o in-features)", q_dim)?;
 
         let quantize_linear = |w: &WeightStorage, in_features: usize, out_features: usize| -> Result<WeightStorage> {
             let f32_in_out = match w {

@@ -93,24 +93,31 @@ impl QuantizedLFM2Model {
     /// Construct from in-memory f32 source weights, quantizing each
     /// Linear weight to Q4_0.
     ///
-    /// `cfg.hidden_size`, `cfg.intermediate_size`, and
-    /// `cfg.num_key_value_heads * cfg.head_dim` must each be a multiple
-    /// of the Q4_0 block size (32). Source weights follow the same
-    /// `[in_features, out_features]` row-major layout as
-    /// [`LFM2Weights`].
+    /// Q4_0 blocks run along each Linear's *in_features* axis, so
+    /// every dimension that serves as an in_features must be a
+    /// multiple of the Q4_0 block size (32): `cfg.hidden_size`
+    /// (attn_q/k/v, conv in_proj/out_proj, ffn_gate/up, output),
+    /// `cfg.intermediate_size` (ffn_down), and
+    /// `cfg.num_attention_heads * cfg.head_dim` (attn_o).
+    /// Out-features carry no divisibility requirement — neither
+    /// `num_key_value_heads * head_dim` (attn_k / attn_v outputs)
+    /// nor the conv in_proj's `3 * hidden_size`. Source weights
+    /// follow the same `[in_features, out_features]` row-major
+    /// layout as [`LFM2Weights`].
     pub fn from_f32_bake(cfg: LFM2Config, src: LFM2Weights) -> Result<Self> {
         cfg.validate()?;
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
-        check_q4_0_divisible("hidden_size", h)?;
-        check_q4_0_divisible("intermediate_size", inter)?;
-        check_q4_0_divisible("num_attention_heads * head_dim", q_dim)?;
-        check_q4_0_divisible("num_key_value_heads * head_dim", kv_dim)?;
-        // ShortConv in_proj is hidden -> 3 * hidden; 3 * hidden may not
-        // be a multiple of 32 even when hidden is, so check explicitly.
-        check_q4_0_divisible("3 * hidden_size (conv in_proj)", 3 * h)?;
+        // Gate exactly the dims that serve as a Linear in_features —
+        // Q4_0 blocks run along K only. kv_dim (= num_key_value_heads
+        // * head_dim, attn_k / attn_v) and the conv in_proj's
+        // 3 * hidden are only ever out_features and need no
+        // divisibility (mirrors the gemma3 gate).
+        check_q4_0_divisible("hidden_size (attn_q/k/v, conv in/out_proj, ffn_gate/up, output in-features)", h)?;
+        check_q4_0_divisible("intermediate_size (ffn_down in-features)", inter)?;
+        check_q4_0_divisible("num_attention_heads * head_dim (attn_o in-features)", q_dim)?;
 
         let quantize_linear = |w: &WeightStorage, in_features: usize, out_features: usize| -> Result<WeightStorage> {
             let f32_in_out = match w {
