@@ -48,7 +48,6 @@ pub mod baracuda;
 /// `fuel-core`) can call baracuda FFI symbols without pulling
 /// `baracuda-kernels-sys` in as a direct dep.
 pub use baracuda_kernels_sys;
-pub mod byte_kernels;
 pub mod byte_storage;
 pub mod cutlass;
 pub mod device;

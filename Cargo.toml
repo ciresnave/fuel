@@ -167,29 +167,37 @@ criterion = { version = "0.8", default-features = false }
 # `vram_info` / `vram_free` / `vram_total` accessors. This unblocks step 2
 # of the backend-contract v0.3 migration (`BackendRuntime for CudaDevice`,
 # see docs/architecture/05-backend-contract.md §Current compliance).
-baracuda-types         = { version = "0.0.1-alpha.66", features = ["half-crate", "f8-crate"] }
-baracuda-core          = { version = "0.0.1-alpha.66" }
-baracuda-cuda-sys      = { version = "0.0.1-alpha.66" }
-baracuda-driver        = { version = "0.0.1-alpha.66" }
-baracuda-runtime       = { version = "0.0.1-alpha.66" }
-baracuda-cublas-sys    = { version = "0.0.1-alpha.66" }
-baracuda-cublas        = { version = "0.0.1-alpha.66" }
-baracuda-cudnn-sys     = { version = "0.0.1-alpha.66" }
-baracuda-cudnn         = { version = "0.0.1-alpha.66", features = ["half-crate"] }
-baracuda-curand-sys    = { version = "0.0.1-alpha.66" }
-baracuda-curand        = { version = "0.0.1-alpha.66" }
-baracuda-nvrtc-sys     = { version = "0.0.1-alpha.66" }
-baracuda-nvrtc         = { version = "0.0.1-alpha.66" }
-baracuda-nccl-sys      = { version = "0.0.1-alpha.66" }
-baracuda-nccl          = { version = "0.0.1-alpha.66", features = ["half-crate"] }
-baracuda-cutlass       = { version = "0.0.1-alpha.66" }
+#
+# alpha.67 (Phase 74) answers docs/baracuda-ask-fp-gemm-reduce-to-2026-06-10.md:
+# dense FP GEMM (`gemm_dense_{f32,f64,f16,bf16}_run`, cuBLAS-backed,
+# RRR/RCR/CRR + flexible lds + strided batch) — retires Fuel's
+# `matmul_via_cublas` residue. The reply also surfaced that
+# `reduce_{sum,max}_to_*` has shipped at full 4-dtype coverage since
+# alpha.46 (sys-only, invisible to the facade audit) — Fuel's f32-only
+# reduce-to wrappers generalize against those.
+baracuda-types         = { version = "0.0.1-alpha.67", features = ["half-crate", "f8-crate"] }
+baracuda-core          = { version = "0.0.1-alpha.67" }
+baracuda-cuda-sys      = { version = "0.0.1-alpha.67" }
+baracuda-driver        = { version = "0.0.1-alpha.67" }
+baracuda-runtime       = { version = "0.0.1-alpha.67" }
+baracuda-cublas-sys    = { version = "0.0.1-alpha.67" }
+baracuda-cublas        = { version = "0.0.1-alpha.67" }
+baracuda-cudnn-sys     = { version = "0.0.1-alpha.67" }
+baracuda-cudnn         = { version = "0.0.1-alpha.67", features = ["half-crate"] }
+baracuda-curand-sys    = { version = "0.0.1-alpha.67" }
+baracuda-curand        = { version = "0.0.1-alpha.67" }
+baracuda-nvrtc-sys     = { version = "0.0.1-alpha.67" }
+baracuda-nvrtc         = { version = "0.0.1-alpha.67" }
+baracuda-nccl-sys      = { version = "0.0.1-alpha.67" }
+baracuda-nccl          = { version = "0.0.1-alpha.67", features = ["half-crate"] }
+baracuda-cutlass       = { version = "0.0.1-alpha.67" }
 # baracuda alpha.26 — new ML kernel facade. Fuel uses `baracuda-kernels-sys`
 # (raw extern "C") rather than the safe `baracuda-kernels` Plan-based wrapper
 # so each kernel becomes its own KernelRef in Fuel's binding table — the
 # safe layer's Plan-cached dispatch isn't compatible with Fuel's
 # per-decision-point alternatives composition.
-baracuda-kernels-types = { version = "0.0.1-alpha.66" }
-baracuda-kernels-sys   = { version = "0.0.1-alpha.66", features = [
+baracuda-kernels-types = { version = "0.0.1-alpha.67" }
+baracuda-kernels-sys   = { version = "0.0.1-alpha.67", features = [
     "cudnn",
     "sm89",
     # Phase 48 (Consolidation B) 4-bit weight-only GEMM families.

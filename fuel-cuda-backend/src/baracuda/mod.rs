@@ -51,12 +51,21 @@ pub mod clamp;
 pub mod concat;
 pub mod contiguize;
 pub mod elementwise;
+/// Phase 74 (alpha.67) dense FP GEMM — cuBLAS-backed `gemm_dense_*`
+/// facade. Replaces the retired `byte_kernels` matmul arm (cuBLAS
+/// f32 + CUTLASS bf16/f16) with one uniform 4-dtype family.
+pub mod gemm_dense;
 pub mod gemm_int;
 pub mod powi;
 pub mod gguf;
 pub mod indexing;
 pub mod norm;
 pub mod reduce;
+/// Broadcast-reverse reductions (`ReduceSumTo` / `ReduceMaxTo`) —
+/// sys-only baracuda symbols shipped since alpha.46, surfaced by the
+/// 2026-06-10 ask-reply. Replaces the retired `byte_kernels` reduce
+/// arm and lifts coverage from f32-only to all four FP dtypes.
+pub mod reduce_to;
 pub mod scratch;
 pub mod shape_strides;
 pub mod cumsum;
