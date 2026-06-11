@@ -246,12 +246,14 @@ mod tests {
     #[test]
     fn probe_all_runs_total() {
         // Regardless of which backends are compiled in, this should
-        // never panic and should always include at least the CPU +
-        // reference descriptors.
+        // never panic and should always include at least the CPU
+        // descriptor. (The Reference backend was retired 2026-06-07;
+        // CPU is the only unconditionally-present backend now.)
         let report = ProbeReport::probe_all();
         assert_eq!(report.version, PROBE_REPORT_VERSION);
-        assert!(report.devices.len() >= 2,
-            "reference + cpu should always be present, got {:?}", report.devices);
+        assert!(
+            report.devices.iter().any(|d| d.backend == BackendId::Cpu),
+            "cpu should always be present, got {:?}", report.devices);
         // Verify sort invariant.
         for pair in report.devices.windows(2) {
             let a = &pair[0];
