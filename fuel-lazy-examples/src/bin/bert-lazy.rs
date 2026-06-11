@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("Running forward pass...");
     let t0 = Instant::now();
-    let hidden = model.forward(&token_ids);
+    let hidden = model.forward(&token_ids)?;
     let flat = hidden.realize_f32();
     let elapsed = t0.elapsed();
 

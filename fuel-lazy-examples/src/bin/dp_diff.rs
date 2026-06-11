@@ -337,7 +337,7 @@ fn build_qwen2_moe() -> AnchorBuild {
     };
     let model = Qwen2MoeModel { config: cfg, weights };
     let tokens: Vec<u32> = vec![1, 2, 3, 4];
-    AnchorBuild { label: "Qwen2-MoE".into(), outputs: vec![model.forward(&tokens)] }
+    AnchorBuild { label: "Qwen2-MoE".into(), outputs: vec![model.forward(&tokens).expect("qwen2-moe forward")] }
 }
 
 fn build_whisper_decoder() -> AnchorBuild {
@@ -346,9 +346,9 @@ fn build_whisper_decoder() -> AnchorBuild {
     let weights = zero_weights(&cfg);
     let model = WhisperModel { config: cfg.clone(), weights };
     let mel = vec![0.0_f32; cfg.num_mel_bins * 32];
-    let enc = model.forward_encoder(&mel, 32);
+    let enc = model.forward_encoder(&mel, 32).expect("whisper encoder");
     let tokens: Vec<u32> = vec![1, 2, 3, 4];
-    let logits = model.forward_decoder(&tokens, &enc);
+    let logits = model.forward_decoder(&tokens, &enc).expect("whisper decoder");
     AnchorBuild { label: "Whisper decoder".into(), outputs: vec![logits] }
 }
 
@@ -358,7 +358,7 @@ fn build_convnext() -> AnchorBuild {
     let weights = zero_weights(&cfg);
     let model = ConvNextModel { weights, config: cfg.clone() };
     let image = vec![0.0_f32; cfg.in_channels * cfg.image_size * cfg.image_size];
-    AnchorBuild { label: "ConvNeXt".into(), outputs: vec![model.forward(&image)] }
+    AnchorBuild { label: "ConvNeXt".into(), outputs: vec![model.forward(&image).expect("convnext forward")] }
 }
 
 fn build_yolov8() -> AnchorBuild {
@@ -368,7 +368,7 @@ fn build_yolov8() -> AnchorBuild {
     let weights = YoloV8Weights::zeros(&cfg);
     let model = YoloV8Model { config: cfg.clone(), weights };
     let image = vec![0.0_f32; 3 * cfg.image_size * cfg.image_size];
-    let raw = model.forward(&image);
+    let raw = model.forward(&image).expect("yolov8 forward");
     AnchorBuild { label: "YOLOv8".into(), outputs: vec![raw.cls_logits, raw.reg_dists] }
 }
 

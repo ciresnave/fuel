@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("Running forward pass (~15k lazy ops for tiny)...");
     let t0 = Instant::now();
-    let logits_t = model.forward(&image);
+    let logits_t = model.forward(&image)?;
     let logits = logits_t.realize_f32();
     let elapsed = t0.elapsed();
     eprintln!("Forward done in {:.2?}", elapsed);
