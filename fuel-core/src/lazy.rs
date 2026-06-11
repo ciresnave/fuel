@@ -1291,37 +1291,22 @@ impl LazyTensor {
 
     /// Realize this tensor as an `f32` `Vec`.
     ///
-    /// When [`crate::judge::cached`] returns a populated dispatch
-    /// table — i.e. the app called
-    /// [`crate::judge::populate_dispatch_table`] earlier this
-    /// process, OR a prior process persisted one for this hardware —
-    /// the realize uses a `Router` that consults the table per op,
-    /// picking among every registered CPU backend (`fuel-graph-cpu`
-    /// always; `fuel-aocl-cpu-backend` when the `aocl` feature is on;
-    /// `fuel-mkl-cpu-backend` when `onemkl` is on).
+    /// Routes unconditionally through the pipelined bridge: walk the
+    /// graph, pre-realize Consts onto CPU, plan + dispatch through
+    /// `PipelinedExecutor`, read back the root's bytes.
     ///
-    /// When no table is cached, falls through to the original
-    /// `GraphExecutor<CpuBackend>` path — same behaviour as before
-    /// the Phase 7b refactor. Users who never call
-    /// `populate_dispatch_table` see no behaviour change and pay no
-    /// startup cost.
+    /// Judge profile data still shapes dispatch — on this same path.
+    /// When a profile is cached ([`crate::judge::populate_dispatch_table`]
+    /// ran this process, or a prior run persisted one for this
+    /// hardware), [`crate::judge::cached_oracle`] feeds the picker:
+    /// `compile_plan`'s Layer-2 cost refinement and the JudgeAware
+    /// runtime selector both rank alternatives (portable CPU vs
+    /// AOCL/MKL kernel-source siblings included) by measured latency.
+    /// Executor-unification Session 3 (2026-06-11) deleted the legacy
+    /// `judge::cached()` branch that swapped in a Router-backed
+    /// `GraphExecutor` instead — the picker consumes the same Judge
+    /// data without leaving the production executor.
     pub fn realize_f32(&self) -> Vec<f32> {
-        if let Some(table) = crate::judge::cached() {
-            // Router path: stays on the legacy executor until Phase G
-            // of the 9c migration retires the trait surface the Router
-            // dispatches through.
-            let mut router = fuel_graph_router::Router::new().add_cpu();
-            #[cfg(feature = "aocl")]
-            { router = router.add_aocl(); }
-            #[cfg(feature = "onemkl")]
-            { router = router.add_mkl(); }
-            let router = router.with_dispatch_table(table);
-            let mut exe = GraphExecutor::new(router);
-            return exe.realize_f32(&self.inner).into_vec();
-        }
-        // Pipelined path (Phase 7.6 step 9c E.2): walk the graph,
-        // pre-realize Consts onto CPU, dispatch through
-        // PipelinedExecutor, D2H result.
         let graph = self.inner.graph().clone();
         let target = self.inner.id();
         let device = crate::Device::cpu();
