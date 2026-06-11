@@ -1276,7 +1276,18 @@ impl LazyTensor {
         true
     }
 
-    // ---- realization (the bridge to the reference backend) ----
+    // ---- realization (the pipelined bridge) ----
+    //
+    // Signature note (executor-unification Session 1, re-audit gap 8):
+    // all five typed realize entries (`realize_f32` / `_f64` / `_bf16`
+    // / `_f16` / `_u32`) return `Vec<T>` and panic via `.expect` on
+    // executor errors. The signatures predate the Result-returning
+    // policy and `realize_f32` alone has 350+ in-repo call sites
+    // across ~60 files — converting the family to `Result` is a
+    // coordinated breaking sweep that must move all five together
+    // (one consistent error story), so it gets its own session
+    // rather than riding an executor-port commit. Until then the
+    // `.expect`s stay, uniformly.
 
     /// Realize this tensor as an `f32` `Vec`.
     ///
@@ -1319,18 +1330,54 @@ impl LazyTensor {
     }
 
     /// Realize as an `f64` `Vec`.
+    ///
+    /// Routes through the [`PipelinedExecutor`] like
+    /// [`Self::realize_f32`] — executor-unification Session 1
+    /// (re-audit gap 8) retires the typed `fuel_graph_cpu` recursive
+    /// evaluator from the public API. The root must already be
+    /// F64-dtype (insert [`Self::to_dtype`] otherwise); the guard
+    /// preserves the legacy evaluator's panic-on-mismatch contract —
+    /// without it the byte reinterpretation in
+    /// [`crate::pipelined_bridge::realize_one_as`] would silently
+    /// return garbage.
     pub fn realize_f64(&self) -> Vec<f64> {
-        fuel_graph_cpu::realize_f64(&self.inner).into_vec()
+        let dt = self.inner.dtype();
+        if dt != DType::F64 {
+            panic!("realize_f64: root dtype is {dt:?}, not F64");
+        }
+        let graph = self.inner.graph().clone();
+        let target = self.inner.id();
+        let device = crate::Device::cpu();
+        crate::pipelined_bridge::realize_one_as::<f64>(&graph, target, &device)
+            .expect("realize_f64 via PipelinedExecutor")
     }
 
-    /// Realize as a `bf16` `Vec`.
+    /// Realize as a `bf16` `Vec`. See [`Self::realize_f64`] for the
+    /// routing + dtype-guard rationale.
     pub fn realize_bf16(&self) -> Vec<half::bf16> {
-        fuel_graph_cpu::realize_bf16(&self.inner).into_vec()
+        let dt = self.inner.dtype();
+        if dt != DType::BF16 {
+            panic!("realize_bf16: root dtype is {dt:?}, not BF16");
+        }
+        let graph = self.inner.graph().clone();
+        let target = self.inner.id();
+        let device = crate::Device::cpu();
+        crate::pipelined_bridge::realize_one_as::<half::bf16>(&graph, target, &device)
+            .expect("realize_bf16 via PipelinedExecutor")
     }
 
-    /// Realize as an `f16` `Vec`.
+    /// Realize as an `f16` `Vec`. See [`Self::realize_f64`] for the
+    /// routing + dtype-guard rationale.
     pub fn realize_f16(&self) -> Vec<half::f16> {
-        fuel_graph_cpu::realize_f16(&self.inner).into_vec()
+        let dt = self.inner.dtype();
+        if dt != DType::F16 {
+            panic!("realize_f16: root dtype is {dt:?}, not F16");
+        }
+        let graph = self.inner.graph().clone();
+        let target = self.inner.id();
+        let device = crate::Device::cpu();
+        crate::pipelined_bridge::realize_one_as::<half::f16>(&graph, target, &device)
+            .expect("realize_f16 via PipelinedExecutor")
     }
 
     /// Realize on a CUDA GPU via [`PipelinedExecutor`].
