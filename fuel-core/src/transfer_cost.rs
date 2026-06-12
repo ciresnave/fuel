@@ -18,8 +18,11 @@
 //! # What's in this commit (Phase 6c-A)
 //!
 //! - [`BandwidthMatrix`] data type + serde.
-//! - [`BandwidthMatrix::measure`] that exercises upload + download
-//!   on each enabled backend and records the bandwidth.
+//! - [`BandwidthMatrix::measure`] that times H2D + D2H on each
+//!   enabled backend and records the bandwidth. Since
+//!   executor-unification Session 6 the GPU timing rides the Stage 1
+//!   calibration probes below (byte-storage substrate APIs) instead
+//!   of the retired legacy `GraphBackend` upload/download wrappers.
 //! - JSON persistence (save/load atomic write, schema versioning).
 //!
 //! What's **not** here yet, slated for Phase 6c-B:
@@ -132,6 +135,9 @@ impl BandwidthMatrix {
     }
 
     /// Measurement with explicit buffer size + iteration count.
+    /// `iters` applies to the CPU memcpy baseline; the GPU H2D/D2H
+    /// paths go through the Stage 1 calibration probe (which uses
+    /// [`CALIBRATION_ITERS`] internally).
     pub fn measure_with(probe: &ProbeReport, bytes: usize, iters: u32) -> Self {
         let mut entries: Vec<TransferCost> = Vec::new();
         let mut seen_keys: HashMap<BackendId, bool> = HashMap::new();
@@ -163,7 +169,7 @@ impl BandwidthMatrix {
             }
             measured_backends.insert(d.backend, ());
 
-            if let Some((h2d, d2h)) = measure_h2d_d2h(d, bytes, iters) {
+            if let Some((h2d, d2h)) = measure_h2d_d2h(d, bytes) {
                 entries.push(TransferCost {
                     src: BackendId::Cpu,
                     dst: d.backend,
@@ -245,68 +251,36 @@ fn measure_cpu_memcpy(bytes: usize, iters: u32) -> f64 {
     median / bytes as f64
 }
 
-/// Measure H2D + D2H for a specific (backend, device). Returns the
-/// pair `(h2d_ns_per_byte, d2h_ns_per_byte)` or `None` if the
-/// backend isn't enabled / can't be initialized.
+/// Measure H2D + D2H for a specific (backend, device) through the
+/// Stage 1 calibration probes ([`probe_cuda_device`] /
+/// [`probe_vulkan_device`] — the byte-storage substrate APIs, i.e.
+/// the exact paths the pipelined executor's `Op::Copy` pays). The
+/// probed [`TransferEstimate`]s (linear latency + bandwidth fit) are
+/// flattened to the matrix's single effective `ns_per_byte` at the
+/// requested measurement buffer size.
+///
+/// Returns the pair `(h2d_ns_per_byte, d2h_ns_per_byte)` or `None`
+/// if the backend isn't enabled / can't be initialized.
+///
+/// History: this used to time `upload`/`download` round-trips through
+/// the legacy `GraphBackend` trait (`measure_round_trip_via_backend`)
+/// — the last code-level legacy-executor reference in fuel-core.
+/// Re-pointed onto the calibration substrate (executor-unification
+/// Session 6); iteration count is the probe's [`CALIBRATION_ITERS`].
 fn measure_h2d_d2h(
     device: &fuel_core_types::probe::DeviceDescriptor,
     bytes: usize,
-    iters: u32,
 ) -> Option<(f64, f64)> {
-    let n_f32 = bytes / 4;
-    let host_data: Vec<f32> = (0..n_f32).map(|i| (i as f32) * 1e-3).collect();
-    let host_buf = fuel_core_types::HostBuffer::F32(host_data);
-    let shape = fuel_core_types::Shape::from_dims(&[n_f32]);
-
-    match device.backend {
+    let (h2d, d2h) = match device.backend {
         #[cfg(feature = "cuda")]
-        BackendId::Cuda => {
-            let dev = fuel_cuda_backend::CudaDevice::new(device.device_index as usize).ok()?;
-            let backend = fuel_cuda_backend::CudaBackend::new(dev);
-            measure_round_trip_via_backend(&backend, &host_buf, &shape, bytes, iters)
-        }
+        BackendId::Cuda => probe_cuda_device(device.device_index as usize)?,
         #[cfg(feature = "vulkan")]
-        BackendId::Vulkan => {
-            let backend = fuel_vulkan_backend::VulkanBackend::with_selection(
-                fuel_vulkan_backend::DeviceSelection::Index(device.device_index as usize),
-            ).ok()?;
-            measure_round_trip_via_backend(&backend, &host_buf, &shape, bytes, iters)
-        }
-        _ => None,
-    }
-}
-
-#[cfg(any(feature = "cuda", feature = "vulkan"))]
-fn measure_round_trip_via_backend<B: fuel_graph_executor::GraphBackend>(
-    backend: &B,
-    host_buf: &fuel_core_types::HostBuffer,
-    shape: &fuel_core_types::Shape,
-    bytes: usize,
-    iters: u32,
-) -> Option<(f64, f64)> {
-    // Warmup — first upload may include JIT / kernel-cache costs.
-    let warmup = backend.upload(host_buf, shape).ok()?;
-    let _ = backend.download(&warmup).ok()?;
-    drop(warmup);
-
-    let mut h2d = Vec::with_capacity(iters as usize);
-    let mut d2h = Vec::with_capacity(iters as usize);
-    for _ in 0..iters {
-        let t0 = Instant::now();
-        let storage = backend.upload(host_buf, shape).ok()?;
-        let elapsed_h2d = t0.elapsed().as_nanos() as u64;
-        h2d.push(elapsed_h2d);
-
-        let t1 = Instant::now();
-        let _ = backend.download(&storage).ok()?;
-        let elapsed_d2h = t1.elapsed().as_nanos() as u64;
-        d2h.push(elapsed_d2h);
-    }
-    h2d.sort_unstable();
-    d2h.sort_unstable();
-    let h2d_med = h2d[h2d.len() / 2] as f64;
-    let d2h_med = d2h[d2h.len() / 2] as f64;
-    Some((h2d_med / bytes as f64, d2h_med / bytes as f64))
+        BackendId::Vulkan => probe_vulkan_device(device.device_index as usize)?,
+        _ => return None,
+    };
+    let per_byte =
+        |e: TransferEstimate| e.estimate_ns(bytes as u64) as f64 / bytes.max(1) as f64;
+    Some((per_byte(h2d), per_byte(d2h)))
 }
 
 // ===========================================================================
