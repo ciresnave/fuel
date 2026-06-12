@@ -586,14 +586,14 @@ fn scheduler_plan_then_apply_then_insert_copies_roundtrip() {
     // Now every node has a Cpu placement. insert_copies should see
     // unanimous Cpu and insert zero Copies.
     let before = {
-        let g = c.graph().borrow();
+        let g = c.graph().read().unwrap();
         (0..g.len())
             .filter(|i| matches!(g.node(fuel_graph::NodeId(*i)).op, fuel_graph::Op::Copy { .. }))
             .count()
     };
     fuel_graph::opt::insert_copies(c.graph(), &[c.id()]);
     let after = {
-        let g = c.graph().borrow();
+        let g = c.graph().read().unwrap();
         (0..g.len())
             .filter(|i| matches!(g.node(fuel_graph::NodeId(*i)).op, fuel_graph::Op::Copy { .. }))
             .count()
@@ -771,14 +771,14 @@ fn auto_insert_copies_reconciles_mixed_placement_graph() {
 
     // Count Copies before + after the pass to confirm insertion.
     let before = {
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         (0..g.len())
             .filter(|i| matches!(g.node(fuel_graph::NodeId(*i)).op, fuel_graph::Op::Copy { .. }))
             .count()
     };
     let new_roots = fuel_graph::opt::insert_copies(&graph, &[c.id()]);
     let after = {
-        let g = graph.borrow();
+        let g = graph.read().unwrap();
         (0..g.len())
             .filter(|i| matches!(g.node(fuel_graph::NodeId(*i)).op, fuel_graph::Op::Copy { .. }))
             .count()
@@ -823,78 +823,12 @@ fn router_graph_with_explicit_moves() {
     assert_eq!(result.as_slice(), &[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
 }
 
-/// Residency-planning demo on a Vulkan-backed graph. Builds a
-/// multi-const chain, runs [`ResidencyPlanner`] to extract peak bytes
-/// + ranked eviction candidates, and confirms the peak fits under
-/// the allocator's VRAM budget. This is the analysis half of
-/// residency planning validated against a real backend; the transform
-/// half (auto-insert Op::Copy evicts) is a deferred follow-up.
-#[cfg(feature = "vulkan")]
-#[test]
-#[ignore]
-fn residency_planner_analyzes_vulkan_graph_against_vram_budget() {
-    use fuel_graph_router::residency_planner::ResidencyPlanner;
-    use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
-    use std::sync::Arc as StdArc;
-
-    let vk = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
-        Ok(b) => b,
-        Err(e) => { eprintln!("no Vulkan device; skipping: {e:?}"); return; }
-    };
-
-    // All three same size so broadcasting isn't in play. Total
-    // graph has ~5 nodes — small but enough to show a nonzero
-    // inactive_gap on `a` (produced early, reused late).
-    let a_data: StdArc<[f32]> = vec![1.0_f32; 4 * 1024].into(); // 16 KiB
-    let b_data: StdArc<[f32]> = vec![2.0_f32; 4 * 1024].into();
-    let c_data: StdArc<[f32]> = vec![3.0_f32; 4 * 1024].into();
-    let _keep = (StdArc::clone(&a_data), StdArc::clone(&b_data), StdArc::clone(&c_data));
-
-    let a = Tensor::from_f32(a_data, Shape::from_dims(&[4 * 1024]), cpu_dev());
-    let b = a.const_f32_like(b_data, Shape::from_dims(&[4 * 1024]));
-    let c = a.const_f32_like(c_data, Shape::from_dims(&[4 * 1024]));
-
-    // Graph shape: `a` is used early (in u) and late (in root), so
-    // should show a nontrivial inactive_gap.
-    //   u = relu(a)
-    //   v = b + c
-    //   w = neg(u)
-    //   root = (v + w) + a   <- `a` reappears here
-    let u = a.relu();
-    let v = b.add(&c);
-    let w = u.neg();
-    let root = v.add(&w).add(&a);
-
-    let report = ResidencyPlanner::analyze(root.graph(), &[root.id()]);
-    let vram_budget = vk.vram_budget() as usize;
-
-    eprintln!(
-        "Vulkan VRAM budget: {} bytes ({} MiB)",
-        vram_budget, vram_budget / (1024 * 1024),
-    );
-    eprintln!(
-        "Graph residency: total={} bytes peak={} bytes peak_op_idx={}",
-        report.total_bytes, report.peak_bytes, report.peak_op_index,
-    );
-    eprintln!("Top eviction candidates:");
-    for (i, cand) in report.eviction_candidates.iter().take(5).enumerate() {
-        eprintln!(
-            "  [{i}] node={:?} bytes={} inactive_gap={} (score={})",
-            cand.node, cand.bytes, cand.inactive_gap,
-            cand.bytes * cand.inactive_gap,
-        );
-    }
-
-    assert!(report.peak_bytes > 0);
-    assert!(
-        report.fits_in(vram_budget),
-        "peak {} should fit in VRAM budget {}",
-        report.peak_bytes, vram_budget,
-    );
-    assert_eq!(report.overage(vram_budget), 0);
-}
-
-// ---- CUDA integration with residency eviction ------------------------------
+// The residency-planner Vulkan analysis test and the CUDA
+// ResidencyEvictionRule correctness test moved to
+// `fuel-dispatch::residency` (unit tests) +
+// `fuel-dispatch/tests/residency_eviction_live.rs` (live-GPU
+// evict→fault-back roundtrip) with the Session 6 port onto the
+// pipelined executor.
 
 /// CUDA single-device realize sanity check. Confirms Router routes a
 /// matmul graph to the CUDA backend and produces the expected output.
@@ -928,84 +862,6 @@ fn cuda_router_default_realizes_graph() {
     let mut executor = fuel_graph_executor::GraphExecutor::new(router);
     let result = executor.realize_f32(&c);
     assert_eq!(result.as_slice(), &[4.0_f32, 5.0, 10.0, 11.0]);
-}
-
-/// ResidencyEvictionRule applied to a CUDA graph — validates the rule
-/// is backend-agnostic. The rule inserts `Op::Copy{Cpu}` + `Op::Release`
-/// + `Op::Copy{Cuda}` chains; Router's `copy_to` handles the actual
-/// cross-device transfers. End-to-end bit-exact output check.
-#[cfg(feature = "cuda")]
-#[test]
-#[ignore]
-fn cuda_residency_eviction_rule_preserves_correctness() {
-    use fuel_cuda_backend::CudaDevice;
-    use fuel_cuda_backend::CudaBackend;
-    use fuel_graph_executor::GraphExecutor;
-    use fuel_graph_router::ResidencyEvictionRule;
-
-    let dev = match CudaDevice::new(0) {
-        Ok(d) => d,
-        Err(e) => { eprintln!("no CUDA device; skipping: {e:?}"); return; }
-    };
-
-    // Helper: build the same graph twice — once to realize unmodified
-    // (baseline), once to realize after the rule has applied graph
-    // surgery.
-    let make_graph = || {
-        // Same shape as the CPU correctness test: `a` has two consumers
-        // with a transitive gap, so the rule will evict a.
-        //   a    = [-1, 2, -3, 4]     on CUDA
-        //   b    = relu(a)
-        //   pad  = neg(b)
-        //   pad2 = neg(pad)
-        //   c    = pad2 * a
-        //   out  = b + c
-        let a = Tensor::from_f32(
-            vec![-1.0_f32, 2.0, -3.0, 4.0], Shape::from_dims(&[4]), cpu_dev())
-            .on_device(DeviceLocation::Cuda { gpu_id: 0 });
-        let b = a.relu();
-        let pad = b.neg();
-        let pad2 = pad.neg();
-        let c = pad2.mul(&a);
-        (a, b.add(&c))
-    };
-
-    // --- Baseline: no rule ---------------------------------------------
-    let (_a1, out1) = make_graph();
-    let graph1 = out1.graph().clone();
-    let roots1 = fuel_graph::opt::insert_copies(&graph1, &[out1.id()]);
-
-    let cuda1 = CudaBackend::new(dev.clone());
-    let router1 = Router::new().add_cpu().add_cuda(cuda1);
-    let mut exec1 = GraphExecutor::new(router1);
-    let out1_root = fuel_graph::Tensor::from_existing(graph1.clone(), roots1[0]);
-    let r1 = exec1.realize_f32(&out1_root);
-
-    // --- With ResidencyEvictionRule ------------------------------------
-    // Use the full RuleScheduler pipeline so BaselineRule populates
-    // placement for every node (not just `a`). The rule reads each
-    // candidate's placement to know where to reload — with an incomplete
-    // placement map it would default to Cpu and produce wrong reload
-    // targets.
-    use fuel_graph_router::{RuleScheduler, Scheduler};
-    let (_a2, out2) = make_graph();
-    let graph2 = out2.graph().clone();
-    let roots2 = fuel_graph::opt::insert_copies(&graph2, &[out2.id()]);
-
-    let cuda2 = CudaBackend::new(dev);
-    let router2 = Router::new().add_cpu().add_cuda(cuda2);
-
-    let scheduler = RuleScheduler::default_pipeline()
-        .with_mutating_rule(Box::new(ResidencyEvictionRule::new(1)));
-    let _ = scheduler.plan(&graph2, &[roots2[0]], &router2);
-
-    let mut exec2 = GraphExecutor::new(router2);
-    let out2_root = fuel_graph::Tensor::from_existing(graph2.clone(), roots2[0]);
-    let r2 = exec2.realize_f32(&out2_root);
-
-    assert_eq!(r1.as_slice(), r2.as_slice(),
-        "CUDA residency eviction must preserve output bit-exactly");
-    assert_eq!(r1.as_slice(), &[0.0_f32, 6.0, 0.0, 20.0]);
 }
 
 /// CUDA rope kernel parity vs CPU reference, for the shapes that arise

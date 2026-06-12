@@ -52,6 +52,7 @@ pub mod pipelined;
 pub mod plan;
 pub mod plan_store;
 pub mod ranker;
+pub mod residency;
 pub mod vulkan_dispatch;
 
 pub use compiled::{compile_node, execute_compiled, CompiledNode};
@@ -66,4 +67,8 @@ pub use ranker::{
     CouplingAdjustment, FilterClass, FilterContext, HashMapJudge, JudgeOracle,
     PrecisionFloorFilter, PrecisionRequirement, StridedInputPreferenceFilter,
     TransferEstimator, DEFAULT_MAX_N,
+};
+pub use residency::{
+    insert_residency_evictions, EvictReload, LiveRange, ResidencyPlanner,
+    ResidencyReport,
 };

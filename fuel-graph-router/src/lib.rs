@@ -38,11 +38,9 @@ pub use scheduler::{
     RuleScheduler, Scheduler, SchedulerRule, SimpleScheduler,
 };
 
-pub mod residency_planner;
-pub use residency_planner::{LiveRange, ResidencyPlanner, ResidencyReport};
-
-pub mod residency_eviction;
-pub use residency_eviction::ResidencyEvictionRule;
+// The residency planner + eviction rule moved to
+// `fuel-dispatch::residency` (executor-unification Session 6) —
+// ported onto the pipelined executor with the fused Op::Move chain.
 
 use fuel_core_types::{bail, Capability, DType, DeviceLocation, HostBuffer, Layout, Result, Shape};
 use fuel_core_types::dispatch::{Criterion, DispatchTable, OpKind, Pick, SizeClass};
