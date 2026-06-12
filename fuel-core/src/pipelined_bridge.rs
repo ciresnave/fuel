@@ -80,6 +80,7 @@ use fuel_graph::opt::{
 };
 use fuel_dispatch::dispatch::global_bindings;
 use fuel_dispatch::plan::{compile_plan, ExecutionPlan, PlanOptions};
+use fuel_dispatch::plan_store::PlanStore;
 use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
 use fuel_dispatch::ranker::{
     BackendRuntimeHandle, BackendRuntimeLookup, ChainedSelector, JudgeOracle,
@@ -603,14 +604,26 @@ fn extract_cpu_bytes_typed<T: bytemuck::Pod>(
 /// term + the priced off-device admission live on every plan.
 /// Single-device hosts see no change: zero transfer paths, zero
 /// terms, and an empty `fallback_for` keeps every set on-device.
-fn build_execution_plan(
+///
+/// ## Planner Stage 4a (2026-06-11)
+///
+/// The planning half now sits behind the per-graph
+/// [`fuel_dispatch::plan_store::PlanStore`]: repeat realizes on an
+/// unchanged graph + generation + device reuse the stored plan
+/// (zero planning work — the only per-call graph growth is the
+/// realize-root `Op::Copy` splice, which needs no plan entry), and
+/// decode-loop graph growth replans only the delta via
+/// [`PlanOptions::with_reuse_plan`]. A topology-generation bump
+/// invalidates to a full rebuild — the same signal the Phase-4.3
+/// `TopologyChanged` retry keys on. `FUEL_DISABLE_PLAN_STORE=1`
+/// opts out (every call compiles from scratch, the pre-Stage-4
+/// behavior).
+pub(crate) fn build_execution_plan(
     graph: &Arc<RwLock<Graph>>,
     targets: &[NodeId],
     pinned_device: DeviceLocation,
     cache: &StorageCache,
 ) -> Result<Arc<ExecutionPlan>> {
-    let topology = SystemTopology::current();
-
     // execution_plan respects both data-flow and ordering edges so
     // the plan's coverage matches the executor's walk exactly.
     let order = {
@@ -619,6 +632,39 @@ fn build_execution_plan(
             .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
         execution_plan(&g, targets)
     };
+    if plan_store_disabled() {
+        return Ok(Arc::new(compile_bridge_plan(
+            graph, &order, pinned_device, cache, None,
+        )?));
+    }
+    PlanStore::global().plan_for(graph, pinned_device, &order, &mut |base| {
+        compile_bridge_plan(graph, &order, pinned_device, cache, base)
+    })
+}
+
+/// Opt-out knob for the Stage-4a plan store. Matches the `FUEL_*`
+/// env-var convention: set `FUEL_DISABLE_PLAN_STORE=1` to compile a
+/// fresh plan per realize call (the pre-Stage-4 behavior). Default:
+/// store ON.
+fn plan_store_disabled() -> bool {
+    std::env::var("FUEL_DISABLE_PLAN_STORE").ok().as_deref() == Some("1")
+}
+
+/// The compile half of [`build_execution_plan`]: one `compile_plan`
+/// invocation over a caller-supplied `order`, with all the
+/// production wiring (topology placements + capabilities + pinned
+/// device + priced off-device fallback + transfer estimator + cache
+/// residency + Judge oracle). `reuse` is the plan store's extension
+/// base — covered nodes skip enumeration (see
+/// [`PlanOptions::with_reuse_plan`]).
+pub(crate) fn compile_bridge_plan(
+    graph: &Arc<RwLock<Graph>>,
+    order: &[NodeId],
+    pinned_device: DeviceLocation,
+    cache: &StorageCache,
+    reuse: Option<&Arc<ExecutionPlan>>,
+) -> Result<ExecutionPlan> {
+    let topology = SystemTopology::current();
 
     // Closures borrow the topology snapshot. `placements_for_device`
     // returns every backend co-located on the node's target device;
@@ -699,10 +745,13 @@ fn build_execution_plan(
     if let Some(oracle) = judge_oracle.as_deref() {
         options = options.with_judge(oracle);
     }
+    // Stage 4a: incremental extension over the plan store's base.
+    if let Some(base) = reuse {
+        options = options.with_reuse_plan(base);
+    }
 
     let bindings_guard = global_bindings();
-    let plan = compile_plan(&g, &order, &bindings_guard, &options)?;
-    Ok(Arc::new(plan))
+    compile_plan(&g, order, &bindings_guard, &options)
 }
 
 // ---------------------------------------------------------------------------

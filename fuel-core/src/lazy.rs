@@ -5282,6 +5282,22 @@ impl LlamaModel {
                 .reshape(Shape::from_dims(&[cfg.vocab_size]))?
         };
 
+        // Planner Stage 4a: populate the plan store for this step's
+        // graph before realizing — realize's planning half then HITs
+        // the store instead of rebuilding. This is the v1 (synchronous)
+        // load-time-planning seam; Stage 4b moves the warm onto a
+        // background thread fed by graph-construction events so
+        // planning overlaps weight page-in and upstream execution.
+        // Advisory by design: warm failures are discarded because the
+        // realize below runs the identical planning path and surfaces
+        // any genuine error with full realize context — nothing is
+        // masked, only deferred a few lines.
+        let _ = crate::planner::Planner::warm(
+            logits_root.inner.graph(),
+            &[logits_root.inner.id()],
+            ctx.device(),
+        );
+
         // Realize through InferenceContext. The WriteSlice nodes
         // mutate the cache buffers as a side effect; downstream
         // attention reads through the post-write Slice views.
