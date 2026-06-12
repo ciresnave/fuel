@@ -4688,11 +4688,21 @@ pub(crate) fn cuda_output(s: &mut Storage) -> Result<&mut fuel_cuda_backend::Cud
     }
 }
 
-/// Dispatch wrapper for `(OpKind::Copy, [T, T], Cuda)` — D2H from a
-/// CUDA source storage into a freshly-allocated CPU output. The
-/// executor allocates the CPU output before this wrapper runs
-/// (see [`crate::pipelined::WorkItemKind::Copy`]); the wrapper
-/// calls `CudaStorageBytes::to_cpu_bytes` and copies the result.
+/// Dispatch wrapper for `(OpKind::Copy, [T, T], Cuda)` — copy FROM a
+/// CUDA source storage. The key is the SOURCE backend; the
+/// destination is whatever the executor pre-allocated the output as
+/// (see [`crate::pipelined::WorkItemKind::Copy`]), so the wrapper
+/// routes on the output's variant:
+///
+/// - **CPU output** → D2H via `CudaStorageBytes::to_cpu_bytes`
+///   (the realize-root path; the original sole behavior).
+/// - **CUDA output** → device-to-device via
+///   `CudaStorageBytes::slot_copy_to_new` (one `memcpy_dtod`).
+///   Same-device copies are emitted by `insert_safety_copies` for
+///   destructive ops on GPU-placed tensors and by the residency
+///   machinery — before this routing existed, any such Copy errored
+///   with "cpu kernel wrapper called with non-CPU output"
+///   (residency_eviction_live caught it).
 ///
 /// Dtype-agnostic at the byte level — one wrapper covers every dtype
 /// registered at this key.
@@ -4701,7 +4711,7 @@ pub(crate) fn cuda_output(s: &mut Storage) -> Result<&mut fuel_cuda_backend::Cud
 /// the CUDA branch of `BackendStorage::read_to_cpu_bytes` (deleted
 /// alongside).
 #[cfg(feature = "cuda")]
-fn copy_to_cpu_cuda_wrapper(
+fn copy_from_cuda_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -4709,18 +4719,37 @@ fn copy_to_cpu_cuda_wrapper(
 ) -> Result<()> {
     if inputs.len() != 1 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
-            "copy_to_cpu_cuda_wrapper: expected 1 input + 1 output, got {} + {}",
+            "copy_from_cuda_wrapper: expected 1 input + 1 output, got {} + {}",
             inputs.len(), outputs.len(),
         )).bt());
     }
     let in_guard = read_storage(&inputs[0])?;
     let cuda_src = cuda_input(&in_guard)?;
-    let bytes = cuda_src.to_cpu_bytes()?;
     let mut out_guard = write_storage(&outputs[0])?;
-    let dst = cpu_output(&mut out_guard)?;
-    let n = bytes.len().min(dst.len_bytes());
-    dst.bytes_mut()[..n].copy_from_slice(&bytes[..n]);
-    Ok(())
+    match &mut out_guard.inner {
+        BackendStorage::Cpu(_) => {
+            let bytes = cuda_src.to_cpu_bytes()?;
+            let dst = cpu_output(&mut out_guard)?;
+            let n = bytes.len().min(dst.len_bytes());
+            dst.bytes_mut()[..n].copy_from_slice(&bytes[..n]);
+            Ok(())
+        }
+        BackendStorage::Cuda(_) => {
+            // Device-to-device: replace the pre-allocated output's
+            // bytes with a fresh DtoD copy of the full source buffer.
+            let copied = cuda_src.slot_copy_to_new(0, cuda_src.len_bytes())?;
+            let dst = cuda_output(&mut out_guard)?;
+            *dst = copied;
+            Ok(())
+        }
+        #[allow(unreachable_patterns)]
+        other => Err(Error::Msg(format!(
+            "copy_from_cuda_wrapper: unsupported output substrate {:?} \
+             (CUDA sources copy to CPU or CUDA outputs only; cross-vendor \
+             GPU transfer goes through host staging as two Copy hops)",
+            std::mem::discriminant(other),
+        )).bt()),
+    }
 }
 
 /// Phase 7.5 CUDA registration — now `Op::Copy` D2H only.
@@ -4755,7 +4784,7 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
         DType::F64, DType::U8, DType::I16, DType::I32, DType::I64,
     ];
     for dt in copy_dtypes {
-        table.register(Copy, &[dt, dt], cuda, copy_to_cpu_cuda_wrapper);
+        table.register(Copy, &[dt, dt], cuda, copy_from_cuda_wrapper);
     }
 }
 
