@@ -34,7 +34,7 @@ use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, Error, Layout, Result};
 
 use crate::kernel::{KernelBindingTable, OpParams};
-use fuel_storage::Storage;
+use fuel_storage::{BackendStorage, Storage};
 
 // Re-use the storage-lock helpers from dispatch.rs.
 use crate::dispatch::{read_storage, write_storage};
@@ -4158,12 +4158,36 @@ pub fn copy_to_cpu_vulkan(
              upload_bytes_handle.".to_string()
         ).bt()
     })?;
-    let bytes = backend.download_bytes(vk_src)?;
     let mut out_guard = write_storage(&outputs[0])?;
-    let dst = crate::dispatch::cpu_output(&mut out_guard)?;
-    let n = bytes.len().min(dst.len_bytes());
-    dst.bytes_mut()[..n].copy_from_slice(&bytes[..n]);
-    Ok(())
+    match &mut out_guard.inner {
+        BackendStorage::Cpu(_) => {
+            let bytes = backend.download_bytes(vk_src)?;
+            let dst = crate::dispatch::cpu_output(&mut out_guard)?;
+            let n = bytes.len().min(dst.len_bytes());
+            dst.bytes_mut()[..n].copy_from_slice(&bytes[..n]);
+            Ok(())
+        }
+        BackendStorage::Vulkan(_) => {
+            // Same-device copy: one vkCmdCopyBuffer into a fresh
+            // standalone buffer (safety copies on destructive ops /
+            // residency machinery emit these; before this routing any
+            // Vulkan→Vulkan Copy mis-dispatched into cpu_output).
+            let copied = backend.slot_copy_to_new_handle(
+                vk_src, 0, vk_src.len_bytes(),
+            )?;
+            let dst = vulkan_output(&mut out_guard)?;
+            *dst = copied;
+            Ok(())
+        }
+        #[allow(unreachable_patterns)]
+        other => Err(Error::Msg(format!(
+            "copy_to_cpu_vulkan: unsupported output substrate {:?} \
+             (Vulkan sources copy to CPU or Vulkan outputs only; \
+             cross-vendor GPU transfer goes through host staging as \
+             two Copy hops)",
+            std::mem::discriminant(other),
+        )).bt()),
+    }
 }
 
 // ===========================================================================
