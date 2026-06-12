@@ -50,6 +50,7 @@ pub mod fused;
 pub mod kernel;
 pub mod pipelined;
 pub mod plan;
+pub mod plan_store;
 pub mod ranker;
 pub mod vulkan_dispatch;
 

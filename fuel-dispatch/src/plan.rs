@@ -263,6 +263,23 @@ pub struct PlanOptions<'env> {
     /// (or stays unknown, in which case no transfer term fires on
     /// its edges).
     pub input_residency: Option<&'env (dyn Fn(NodeId) -> Option<DeviceLocation> + 'env)>,
+    /// Planner Stage 4: incremental extension over a previously
+    /// compiled plan. Nodes already covered by `reuse_plan` (an
+    /// `AlternativeSet` exists for them) skip enumeration / filter /
+    /// cost / DP entirely — their stored set is cloned into the new
+    /// plan and their residency commits as the stored winner's
+    /// device (mirroring the priority-4 "plan winner" rule), so the
+    /// delta's pricing sees the same residency picture the original
+    /// walk committed.
+    ///
+    /// The caller (the plan store) is responsible for only reusing
+    /// plans built under the SAME topology generation and pinned
+    /// device — `compile_plan` does not re-validate the reused sets.
+    /// Reused candidates keep their original `inbound_transfer_ns`
+    /// terms; a residency shift between builds is repriced only for
+    /// delta nodes (acceptable drift — placement correctness is
+    /// re-stitched per realize by the bridge's residency passes).
+    pub reuse_plan: Option<&'env ExecutionPlan>,
 }
 
 impl Default for PlanOptions<'_> {
@@ -278,6 +295,7 @@ impl Default for PlanOptions<'_> {
             judge: None,
             transfer_estimator: None,
             input_residency: None,
+            reuse_plan: None,
         }
     }
 }
@@ -376,6 +394,13 @@ impl<'env> PlanOptions<'env> {
         f: &'env (dyn Fn(NodeId) -> Option<DeviceLocation> + 'env),
     ) -> Self {
         self.input_residency = Some(f);
+        self
+    }
+
+    /// Attach a base plan for incremental extension (planner Stage
+    /// 4). See the [`Self::reuse_plan`] field docs.
+    pub fn with_reuse_plan(mut self, base: &'env ExecutionPlan) -> Self {
+        self.reuse_plan = Some(base);
         self
     }
 }
@@ -487,6 +512,23 @@ pub fn compile_plan(
 
     for &id in order {
         let node = graph.node(id);
+
+        // Planner Stage 4: incremental-extension fast path. A node
+        // already covered by the base plan reuses its stored set
+        // verbatim; its residency commits with the same priority
+        // order the full walk uses (early rules, then the stored
+        // winner's device — the priority-4 "plan winner" rule).
+        if let Some(base) = options.reuse_plan {
+            if let Some(set) = base.alternatives(id) {
+                let resident = early_residency(graph, options, id, node)
+                    .or_else(|| set.winner().map(|w| w.device));
+                if let Some(loc) = resident {
+                    residency.insert(id, loc);
+                }
+                alternatives_map.insert(id, set.clone());
+                continue;
+            }
+        }
 
         // Residency priorities 1–3: definitional transfer/alloc
         // targets, explicit placements, already-resident inputs.
@@ -708,6 +750,19 @@ pub fn compile_plan(
     })
 }
 
+/// Does this op receive an `AlternativeSet` entry from
+/// [`compile_plan`]? The single source of truth for the plan-entry
+/// gate, shared by [`build_node_draft`] and the plan store's
+/// coverage check ([`crate::plan_store`]) so the two can never
+/// drift: `true` exactly when `op_to_op_kind` maps the op AND it is
+/// not a residency-determined transfer (`Op::Copy` / `Op::Move`,
+/// whose kernel backend the executor resolves from the bridge-
+/// maintained source-backend stamp).
+pub fn node_needs_plan_entry(op: &fuel_graph::Op) -> bool {
+    op_to_op_kind(op).is_some()
+        && !matches!(op, fuel_graph::Op::Copy { .. } | fuel_graph::Op::Move { .. })
+}
+
 /// Residency-inheriting pass-throughs: view ops, `Reshape`,
 /// `Contiguize` produce no new residency — their bytes follow their
 /// data input.
@@ -912,12 +967,10 @@ fn build_node_draft(
     bindings_table: &KernelBindingTable,
     options: &PlanOptions<'_>,
 ) -> Result<Option<NodeDraft>> {
-    let Some(op_kind) = op_to_op_kind(&node.op) else {
-        return Ok(None);
-    };
-
+    // Gate shared with the plan store's coverage check
+    // ([`node_needs_plan_entry`]): no OpKind mapping → no entry;
     // Op::Copy / Op::Move are residency-determined, not picker
-    // decisions: their kernel runs on the backend that owns the
+    // decisions — their kernel runs on the backend that owns the
     // SOURCE bytes (`copy_from_cpu_wrapper` for H2D, the source
     // backend's download wrapper for D2H). Enumerating them
     // against a single decision device would key the lookup at
@@ -929,9 +982,13 @@ fn build_node_draft(
     // Picker-arc step 4a; Op::Move added with the executor's
     // Move arm (Op::Move maps to OpKind::Copy — same kernel,
     // destructive release is realize-loop bookkeeping).
-    if matches!(node.op, fuel_graph::Op::Copy { .. } | fuel_graph::Op::Move { .. }) {
+    if !node_needs_plan_entry(&node.op) {
         return Ok(None);
     }
+    let Some(op_kind) = op_to_op_kind(&node.op) else {
+        // Unreachable given the gate above; keep the typed shape.
+        return Ok(None);
+    };
 
     // Decision-device resolution (step 4a): explicit per-node
     // placement (scheduler assignments) → the realize call's
