@@ -9,6 +9,7 @@
     version.workspace    = true
 
 [dependencies]
+    float8          = { workspace = true }
     fuel-core-types = { workspace = true }
     half            = { workspace = true }
 
