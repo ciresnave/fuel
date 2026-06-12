@@ -507,6 +507,26 @@ impl InferenceContext {
         )
     }
 
+    /// Realize-split counterpart of [`Self::realize_many_as`]: the
+    /// first `n_host` targets are downloaded to host `Vec<T>`s, the
+    /// rest come back as device-resident `(storage, layout)` pairs —
+    /// no D2H for results that feed the next step's graph. See
+    /// [`crate::pipelined_bridge::realize_split_as_with_initial`].
+    pub fn realize_split_as<T: bytemuck::Pod>(
+        &self,
+        graph: &Arc<RwLock<Graph>>,
+        targets: &[NodeId],
+        n_host: usize,
+    ) -> Result<(Vec<Vec<T>>, Vec<(Arc<RwLock<Storage>>, Layout)>)> {
+        crate::pipelined_bridge::realize_split_as_with_initial::<T>(
+            graph,
+            targets,
+            n_host,
+            &self.device,
+            self.cloned_persistent(),
+        )
+    }
+
     /// Build a [`StorageCache`] containing Arc-clones of every
     /// persistent entry. The clone is cheap (Arc refcount bumps); the
     /// returned `StorageCache` is consumed by the realize call but

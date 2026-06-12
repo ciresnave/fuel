@@ -72,7 +72,7 @@ use std::sync::{Arc, RwLock};
 use fuel_core_types::backend::{BackendRuntime, FitStatus};
 use fuel_core_types::dyn_backend::DynBackendDevice;
 use fuel_core_types::{
-    probe::BackendId, DeviceLocation, Error, HostBuffer, Result,
+    probe::BackendId, DeviceLocation, Error, HostBuffer, Layout, Result,
 };
 use fuel_graph::{Graph, Node, NodeId, Op, topo_order_multi};
 use fuel_graph::opt::{
@@ -419,48 +419,110 @@ pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
         return Ok(Vec::new());
     }
     let (cache, _, effective_targets) = prepare(graph, targets, device, initial)?;
-    // Phase 4.2 + 4.3 + 2.2 + picker-arc 4a: plan-aware dispatch
-    // with topology-stale retry, post-plan winner stamping,
-    // cross-device-copy stitching, and layout-fixup insertion. See
-    // `dispatch_with_plan_retry` for the single-target version of
-    // the loop; this multi-target sibling shares the same shape.
-    // Picker-arc step 3: dispatch through the production runtime
-    // selector (Picker 2).
     let selector = production_selector_for(device);
-    let pinned_loc = device.location();
-    let mut retry = TopologyRetryState::new();
-    let results = loop {
-        let plan = build_execution_plan(graph, &effective_targets, pinned_loc, &cache)?;
-        stamp_plan_backends(graph, &effective_targets, &plan, pinned_loc)?;
-        insert_resident_input_copies(
-            graph, &effective_targets, &cache, pinned_loc, &plan,
-        )?;
-        apply_layout_fixups(graph, &effective_targets, &plan)?;
-        let cache_for_attempt = cache.clone();
-        let result = match selector.as_ref() {
-            Some(sel) => PipelinedExecutor::realize_many_with_plan_and_selector(
-                graph.clone(), &effective_targets, cache_for_attempt, plan,
-                Arc::clone(sel),
-            ),
-            None => PipelinedExecutor::realize_many_with_plan(
-                graph.clone(), &effective_targets, cache_for_attempt, plan,
-            ),
-        };
-        match result {
-            Ok(r) => break r,
-            Err(e) if matches!(e, Error::TopologyChanged { .. })
-                && retry.permit_retry() =>
-            {
-                continue;
-            }
-            Err(e) => return Err(e),
-        }
-    };
+    let results = dispatch_many_with_plan_retry(
+        graph, &effective_targets, cache, selector, device.location(),
+    )?;
     let mut out = Vec::with_capacity(results.len());
     for (storage, _layout) in results {
         out.push(extract_cpu_bytes_typed::<T>(&storage)?);
     }
     Ok(out)
+}
+
+/// Realize-split: realize `targets` in ONE executor pass, download
+/// only the first `n_host` results to host bytes, and return the
+/// remaining results as device-resident storage Arcs + layouts.
+///
+/// The pipelined replacement for the legacy
+/// `GraphExecutor::realize_split` (executor-unification Session 5):
+/// the Trainer realizes `[loss, new_params…, new_opt_state…]` per
+/// step with `n_host = 1` — the loss scalar comes back as host
+/// `Vec<T>` while updated parameters and optimizer moments stay
+/// where the picker placed them, ready to seed the next step's
+/// `StorageCache` without a D2H/H2D round-trip.
+///
+/// Resident results are `(storage, layout)` pairs in `targets` order
+/// (offset by `n_host`); the storage Arc's `BackendStorage` variant
+/// carries the device identity.
+pub fn realize_split_as_with_initial<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    targets: &[NodeId],
+    n_host: usize,
+    device: &Device,
+    initial: StorageCache,
+) -> Result<(Vec<Vec<T>>, Vec<(Arc<RwLock<Storage>>, Layout)>)> {
+    if n_host > targets.len() {
+        return Err(Error::Msg(format!(
+            "realize_split_as_with_initial: n_host ({n_host}) exceeds \
+             target count ({})",
+            targets.len(),
+        ))
+        .bt());
+    }
+    if targets.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let (cache, _, effective_targets) =
+        prepare_split(graph, targets, n_host, device, initial)?;
+    let selector = production_selector_for(device);
+    let results = dispatch_many_with_plan_retry(
+        graph, &effective_targets, cache, selector, device.location(),
+    )?;
+    let mut host_out = Vec::with_capacity(n_host);
+    let mut resident_out = Vec::with_capacity(results.len().saturating_sub(n_host));
+    for (i, (storage, layout)) in results.into_iter().enumerate() {
+        if i < n_host {
+            host_out.push(extract_cpu_bytes_typed::<T>(&storage)?);
+        } else {
+            resident_out.push((storage, layout));
+        }
+    }
+    Ok((host_out, resident_out))
+}
+
+/// Phase 4.2 + 4.3 + 2.2 + picker-arc 4a: plan-aware multi-target
+/// dispatch with topology-stale retry, post-plan winner stamping,
+/// cross-device-copy stitching, and layout-fixup insertion. See
+/// [`dispatch_with_plan_retry`] for the single-target version of the
+/// loop; this multi-target sibling shares the same shape and serves
+/// both [`realize_many_as_with_initial`] and
+/// [`realize_split_as_with_initial`].
+fn dispatch_many_with_plan_retry(
+    graph: &Arc<RwLock<Graph>>,
+    effective_targets: &[NodeId],
+    cache: StorageCache,
+    selector: Option<Arc<dyn RuntimeSelector>>,
+    pinned_loc: DeviceLocation,
+) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
+    let mut retry = TopologyRetryState::new();
+    loop {
+        let plan = build_execution_plan(graph, effective_targets, pinned_loc, &cache)?;
+        stamp_plan_backends(graph, effective_targets, &plan, pinned_loc)?;
+        insert_resident_input_copies(
+            graph, effective_targets, &cache, pinned_loc, &plan,
+        )?;
+        apply_layout_fixups(graph, effective_targets, &plan)?;
+        let cache_for_attempt = cache.clone();
+        let result = match selector.as_ref() {
+            Some(sel) => PipelinedExecutor::realize_many_with_plan_and_selector(
+                graph.clone(), effective_targets, cache_for_attempt, plan,
+                Arc::clone(sel),
+            ),
+            None => PipelinedExecutor::realize_many_with_plan(
+                graph.clone(), effective_targets, cache_for_attempt, plan,
+            ),
+        };
+        match result {
+            Ok(r) => break Ok(r),
+            Err(e) if matches!(e, Error::TopologyChanged { .. })
+                && retry.permit_retry() =>
+            {
+                continue;
+            }
+            Err(e) => break Err(e),
+        }
+    }
 }
 
 /// Read a realize result's CPU bytes and reinterpret them as `Vec<T>`.
@@ -776,6 +838,27 @@ fn prepare(
     device: &Device,
     initial: StorageCache,
 ) -> Result<(StorageCache, BackendId, Vec<NodeId>)> {
+    prepare_split(graph, targets, targets.len(), device, initial)
+}
+
+/// [`prepare`] sibling that splices the D2H `Op::Copy { target: Cpu }`
+/// only on the FIRST `n_host` targets. The remaining targets are
+/// realized as themselves and their results stay wherever the picker
+/// placed them — the realize-split capability (executor-unification
+/// Session 5): the legacy `GraphExecutor::realize_split` kept new
+/// parameter storage on-device while downloading only the loss
+/// scalar, and the Trainer port needs the same shape on the
+/// pipelined path.
+///
+/// `effective_targets[i]` is the spliced Copy NodeId for `i < n_host`
+/// and `targets[i]` itself otherwise, preserving caller order.
+fn prepare_split(
+    graph: &Arc<RwLock<Graph>>,
+    targets: &[NodeId],
+    n_host: usize,
+    device: &Device,
+    initial: StorageCache,
+) -> Result<(StorageCache, BackendId, Vec<NodeId>)> {
     let backend_id = device_to_backend_id(device);
 
     // Phase 2 of bridge-retirement: splice an `Op::Copy { target:
@@ -807,7 +890,14 @@ fn prepare(
             .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
         targets
             .iter()
-            .map(|&src_id| {
+            .enumerate()
+            .map(|(i, &src_id)| {
+                if i >= n_host {
+                    // Device-resident target (realize-split tail):
+                    // no D2H splice — the caller receives the
+                    // storage Arc wherever the picker placed it.
+                    return src_id;
+                }
                 let (shape, dtype) = {
                     let n = g.node(src_id);
                     (n.shape.clone(), n.dtype)
@@ -2130,5 +2220,102 @@ mod tests {
             lookup(BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }).is_none(),
             "no live handle for a backend that isn't the realize device",
         );
+    }
+
+    /// Realize-split (executor-unification Session 5): ONE executor
+    /// pass; the first `n_host` targets come back as host bytes
+    /// (through the spliced D2H Op::Copy), the rest as resident
+    /// storage Arcs + layouts straight from the kernel output.
+    #[test]
+    fn realize_split_host_and_resident() {
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (c1, c2, add, mul) = {
+            let mut g = graph.write().unwrap();
+            let c1 = push_node(&mut g, Op::Const, vec![]);
+            let c2 = push_node(&mut g, Op::Const, vec![]);
+            let add = push_node(&mut g, Op::Add, vec![c1, c2]);
+            let mul = push_node(&mut g, Op::Mul, vec![c1, c2]);
+            (c1, c2, add, mul)
+        };
+        let mut cache = StorageCache::new();
+        cache.insert(c1, cpu_storage_f32(&[1.0, 2.0, 3.0, 4.0]));
+        cache.insert(c2, cpu_storage_f32(&[10.0, 20.0, 30.0, 40.0]));
+
+        let (host, resident) = realize_split_as_with_initial::<f32>(
+            &graph, &[add, mul], 1, &crate::Device::cpu(), cache,
+        )
+        .expect("realize_split");
+
+        assert_eq!(host.len(), 1, "exactly n_host host results");
+        assert_eq!(host[0], vec![11.0, 22.0, 33.0, 44.0]);
+
+        assert_eq!(resident.len(), 1, "remaining targets stay resident");
+        let (storage, layout) = &resident[0];
+        assert_eq!(layout.shape().dims(), &[4]);
+        let guard = storage.read().unwrap();
+        match &guard.inner {
+            BackendStorage::Cpu(c) => {
+                let vals: &[f32] = bytemuck::cast_slice(c.bytes());
+                assert_eq!(vals, &[10.0, 40.0, 90.0, 160.0]);
+            }
+            #[allow(unreachable_patterns)]
+            other => panic!("expected CPU storage, got {other:?}"),
+        }
+    }
+
+    /// The Trainer's step-to-step chaining pattern: a resident result
+    /// from one realize seeds the next realize's StorageCache at a
+    /// fresh placeholder NodeId — no D2H/H2D round-trip, no
+    /// storage_map involvement for the carried state.
+    #[test]
+    fn realize_split_resident_feeds_next_step() {
+        // Step 1: n_host = 0 — everything stays resident.
+        let g1 = Arc::new(RwLock::new(Graph::new()));
+        let (c1, dbl) = {
+            let mut g = g1.write().unwrap();
+            let c1 = push_node(&mut g, Op::Const, vec![]);
+            let dbl = push_node(&mut g, Op::Add, vec![c1, c1]);
+            (c1, dbl)
+        };
+        let mut cache1 = StorageCache::new();
+        cache1.insert(c1, cpu_storage_f32(&[1.0, 2.0, 3.0, 4.0]));
+        let (host1, resident1) = realize_split_as_with_initial::<f32>(
+            &g1, &[dbl], 0, &crate::Device::cpu(), cache1,
+        )
+        .expect("step 1");
+        assert!(host1.is_empty());
+        let (carried, _) = resident1.into_iter().next().expect("one resident");
+
+        // Step 2: fresh graph; the carried Arc binds to a placeholder
+        // Const (no storage_map slot — the cache provides it).
+        let g2 = Arc::new(RwLock::new(Graph::new()));
+        let (ph, sq) = {
+            let mut g = g2.write().unwrap();
+            let ph = push_node(&mut g, Op::Const, vec![]);
+            let sq = push_node(&mut g, Op::Sqr, vec![ph]);
+            (ph, sq)
+        };
+        let mut cache2 = StorageCache::new();
+        cache2.insert(ph, carried);
+        let (host2, resident2) = realize_split_as_with_initial::<f32>(
+            &g2, &[sq], 1, &crate::Device::cpu(), cache2,
+        )
+        .expect("step 2");
+        assert_eq!(host2[0], vec![4.0, 16.0, 36.0, 64.0]);
+        assert!(resident2.is_empty());
+    }
+
+    /// `n_host` beyond the target count is a typed error, not a panic.
+    #[test]
+    fn realize_split_n_host_too_large_errors() {
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let c1 = {
+            let mut g = graph.write().unwrap();
+            push_node(&mut g, Op::Const, vec![])
+        };
+        let err = realize_split_as_with_initial::<f32>(
+            &graph, &[c1], 2, &crate::Device::cpu(), StorageCache::new(),
+        );
+        assert!(err.is_err(), "n_host > targets.len() must be a typed Err");
     }
 }
