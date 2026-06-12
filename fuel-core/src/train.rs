@@ -1,48 +1,64 @@
 //! Training utilities: parameters, optimizers, and the training-step
-//! driver. All generic over `GraphBackend` — SGD and AdamW work on
-//! CPU, CUDA, Vulkan, and any future backend with zero code changes.
+//! driver. Backend-agnostic: the loop realizes through the production
+//! pipelined executor
+//! ([`crate::pipelined_bridge::realize_split_as_with_initial`]), so
+//! SGD and AdamW work on CPU, CUDA, Vulkan, and any future backend
+//! with zero code changes. (Executor-unification Session 5 ported
+//! this off the legacy `GraphExecutor<B>`.)
 //!
 //! ## Design
 //!
-//! Parameters live on-device as `B::Storage` between steps, exactly
-//! like the KV cache does for inference. Each training step:
+//! Parameters live on-device as backend-erased
+//! `Arc<RwLock<Storage>>` between steps, exactly like the KV cache
+//! does for inference. Each training step:
 //!
 //! 1. User callback builds a fresh forward graph, referring to each
-//!    parameter by name.
-//! 2. `TrainState` injects each parameter's current device storage
-//!    via `executor.pre_populate` (same mechanism the KV cache uses).
-//! 3. The step driver calls `loss.backward()` to extend the graph
+//!    parameter by name. Parameters enter the graph as placeholder
+//!    `Op::Const` nodes (`const_placeholder_like`); the step driver
+//!    binds each parameter's current storage Arc through the realize
+//!    call's `StorageCache` — the same persistent-state pattern
+//!    [`crate::inference_context::InferenceContext`] uses for KV
+//!    slots.
+//! 2. The step driver calls `loss.backward()` to extend the graph
 //!    with backward nodes, fetches `grad` per parameter via the
 //!    returned `GradMap`, and appends update ops (`w_new = w - lr·g`
 //!    for SGD; AdamW stacks moment-update and bias-correction ops
 //!    on top).
-//! 4. `realize_split` keeps the new parameter storage on-device;
-//!    only the loss scalar is downloaded to host.
-//! 5. `TrainState` stores the new storage, ready for the next step.
+//! 3. One realize-split per step: `[loss, new_params…, new_opt…]`
+//!    realize together in a single executor pass; only the loss
+//!    scalar is downloaded to host, everything else stays
+//!    device-resident.
+//! 4. `TrainState` stores the new storage Arcs, ready for the next
+//!    step.
 //!
-//! No D2H/H2D per parameter per step. No new backend trait methods
-//! — everything is expressed as existing primitives the backend
-//! already supports.
+//! No D2H/H2D per parameter per step. Initial parameter data starts
+//! host-resident; the first step's cross-device-copy pass uploads it
+//! to the training device, and every subsequent step's outputs are
+//! already device-resident there.
 //!
 //! ## Not yet covered
 //!
 //! - In-place update primitive: today each step allocates a fresh
 //!   buffer for each updated parameter. For TinyLlama-scale that's
-//!   fine; for 70B-class training it's wasteful. Addressed later by
-//!   a trait-level `add_in_place` method.
+//!   fine; for 70B-class training it's wasteful. The pipelined
+//!   executor's `InplaceKernel` arm (in-place Phases 1-5,
+//!   2026-05-30) is the machinery to build on when this matters.
 //! - Gradient accumulation across micro-batches.
 //! - Mixed-precision (bf16 forward / fp32 master weights).
-//! - Gradient clipping.
-//! - LR schedulers.
-//!
-//! Each of those is a small addition once the base loop works.
+//! - BatchNorm-style running-stat (EMA) threading: when a lazy
+//!   BatchNorm lands, its `forward_train` should return the new
+//!   running mean/var as extra outputs and the caller appends them
+//!   to the step's realize-split roots — the multi-target machinery
+//!   here already supports it (eager master-plan Phase G).
 
 use crate::lazy::LazyTensor;
-use fuel_core_types::{DType, HostBuffer, Result, Shape};
-use fuel_graph::{NodeId, SharedGraph, Tensor as GraphTensor};
-use fuel_graph_executor::{GraphBackend, GraphExecutor};
+use crate::Device;
+use fuel_core_types::{DType, Error, Result, Shape};
+use fuel_dispatch::pipelined::StorageCache;
+use fuel_graph::{Graph, Node, NodeId, Op, SharedGraph};
+use fuel_storage::Storage;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// A single trainable parameter. Owns its shape and initial values;
 /// actual device storage lives in `TrainState` after the first step.
@@ -191,11 +207,11 @@ impl LrSchedule for WarmupLinear {
 
 /// Per-parameter optimizer state that lives on-device between steps.
 /// SGD needs nothing; AdamW needs first and second moments.
-pub(crate) enum OptState<B: GraphBackend> {
+pub(crate) enum OptState {
     Sgd,
     AdamW {
-        m: B::Storage,
-        v: B::Storage,
+        m: Arc<RwLock<Storage>>,
+        v: Arc<RwLock<Storage>>,
     },
 }
 
@@ -212,22 +228,30 @@ pub enum GradClip {
 }
 
 /// Training state: all parameters and optimizer state that must
-/// persist across steps. Generic over backend.
-pub struct TrainState<B: GraphBackend> {
-    params: HashMap<String, (B::Storage, Shape)>,
-    opt_state: HashMap<String, OptState<B>>,
+/// persist across steps, held as backend-erased
+/// `Arc<RwLock<Storage>>` (the same currency the
+/// [`crate::inference_context::InferenceContext`] persistent map
+/// uses). The training device is fixed at construction.
+pub struct TrainState {
+    params: HashMap<String, (Arc<RwLock<Storage>>, Shape)>,
+    opt_state: HashMap<String, OptState>,
     param_order: Vec<String>,
     config: OptimizerConfig,
     step_count: u64,
     grad_clip: Option<GradClip>,
+    device: Device,
 }
 
-impl<B: GraphBackend> TrainState<B> {
-    /// Upload all parameters to the device and initialize optimizer
-    /// state. Call once at the start of training.
+impl TrainState {
+    /// Stage all parameters and initialize optimizer state. Call once
+    /// at the start of training.
+    ///
+    /// Initial data is staged host-resident; the first step's
+    /// cross-device-copy pass moves it to `device`, and every
+    /// subsequent step's update outputs are produced there directly.
     pub fn new(
         parameters: &[Parameter],
-        executor: &mut GraphExecutor<B>,
+        device: &Device,
         config: OptimizerConfig,
     ) -> Result<Self> {
         let mut params = HashMap::new();
@@ -235,8 +259,17 @@ impl<B: GraphBackend> TrainState<B> {
         let mut param_order = Vec::with_capacity(parameters.len());
 
         for p in parameters {
-            let buf = HostBuffer::F32(p.initial_data.to_vec());
-            let storage = executor.backend.upload(&buf, &p.shape)?;
+            if p.dtype != DType::F32 {
+                return Err(Error::Msg(format!(
+                    "TrainState::new: parameter '{}' has dtype {:?}; \
+                     only F32 parameters are supported today",
+                    p.name, p.dtype,
+                ))
+                .bt());
+            }
+            let storage = Arc::new(RwLock::new(
+                fuel_storage::from_slice_cpu::<f32>(&p.initial_data),
+            ));
             params.insert(p.name.clone(), (storage, p.shape.clone()));
             param_order.push(p.name.clone());
 
@@ -244,8 +277,13 @@ impl<B: GraphBackend> TrainState<B> {
                 OptimizerConfig::Sgd { .. } => OptState::Sgd,
                 OptimizerConfig::AdamW { .. } => {
                     // m and v start at zero, same shape and dtype as the param.
-                    let m = executor.backend.alloc_zeros(&p.shape, p.dtype)?;
-                    let v = executor.backend.alloc_zeros(&p.shape, p.dtype)?;
+                    let n = p.shape.elem_count();
+                    let m = Arc::new(RwLock::new(
+                        fuel_storage::alloc_cpu_zeroed(DType::F32, n)?,
+                    ));
+                    let v = Arc::new(RwLock::new(
+                        fuel_storage::alloc_cpu_zeroed(DType::F32, n)?,
+                    ));
                     OptState::AdamW { m, v }
                 }
             };
@@ -259,7 +297,13 @@ impl<B: GraphBackend> TrainState<B> {
             config,
             step_count: 0,
             grad_clip: None,
+            device: device.clone(),
         })
+    }
+
+    /// The device this trainer realizes on.
+    pub fn device(&self) -> &Device {
+        &self.device
     }
 
     /// Enable gradient clipping. Applied per step before the
@@ -288,7 +332,6 @@ impl<B: GraphBackend> TrainState<B> {
     pub fn step_with_schedule<S, F>(
         &mut self,
         schedule: &S,
-        executor: &mut GraphExecutor<B>,
         build_loss: F,
     ) -> Result<f32>
     where
@@ -296,7 +339,7 @@ impl<B: GraphBackend> TrainState<B> {
         F: FnOnce(&SharedGraph, &HashMap<String, LazyTensor>) -> LazyTensor,
     {
         self.set_lr(schedule.lr_at(self.step_count));
-        self.step(executor, build_loss)
+        self.step(build_loss)
     }
 
     /// Read-only snapshot of the current optimizer config.
@@ -304,47 +347,67 @@ impl<B: GraphBackend> TrainState<B> {
 
     /// Download a parameter's current value to host. For checkpoint /
     /// inspection; not a hot-path operation.
-    pub fn param_to_host(&self, name: &str, executor: &GraphExecutor<B>) -> Result<Vec<f32>> {
-        let (storage, _shape) = self.params.get(name)
-            .ok_or_else(|| fuel_core_types::Error::Msg(
-                format!("unknown parameter '{name}'")))?;
-        let buf = executor.backend.download(storage)?;
-        match buf {
-            HostBuffer::F32(v) => Ok(v),
-            other => Err(fuel_core_types::Error::Msg(
-                format!("param_to_host: expected F32, got {:?}", other.dtype()))),
-        }
+    ///
+    /// Realizes a one-node graph (a placeholder Const bound to the
+    /// parameter's storage Arc) through the pipelined executor — the
+    /// spliced D2H `Op::Copy` handles CPU and device storage
+    /// uniformly.
+    pub fn param_to_host(&self, name: &str) -> Result<Vec<f32>> {
+        let (storage, shape) = self.params.get(name)
+            .ok_or_else(|| Error::Msg(
+                format!("unknown parameter '{name}'")).bt())?;
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let id = {
+            let mut g = graph.write().map_err(|_| {
+                Error::Msg("param_to_host: graph lock poisoned".into()).bt()
+            })?;
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: shape.clone(),
+                dtype: DType::F32,
+            })
+        };
+        let mut cache = StorageCache::new();
+        cache.insert(id, Arc::clone(storage));
+        crate::pipelined_bridge::realize_one_as_with_initial::<f32>(
+            &graph, id, &self.device, cache,
+        )
     }
 
     /// Run one training step.
     ///
     /// `build_loss` receives a graph handle and a map of parameter
     /// LazyTensor leaves (one per parameter, placeholder Const nodes
-    /// that the step driver injects real device storage for). It
-    /// must return a scalar loss tensor.
+    /// whose storage the step driver binds through the realize
+    /// call's `StorageCache`). It must return a scalar loss tensor.
     ///
     /// Returns the loss value (a single f32).
     pub fn step<F>(
         &mut self,
-        executor: &mut GraphExecutor<B>,
         build_loss: F,
     ) -> Result<f32>
     where
         F: FnOnce(&SharedGraph, &HashMap<String, LazyTensor>) -> LazyTensor,
     {
         // 1. Build parameter placeholder tensors in a fresh graph.
-        //    Use a "seed" LazyTensor to get a fresh SharedGraph.
-        let seed = LazyTensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), &crate::Device::cpu());
+        //    Use a "seed" LazyTensor to get a fresh SharedGraph. The
+        //    seed itself is never realized.
+        let seed = LazyTensor::from_f32(
+            vec![0.0f32], Shape::from_dims(&[1]), &self.device,
+        );
         let graph = seed.graph_tensor().graph().clone();
 
+        // The realize call's input cache: parameter (and optimizer-
+        // moment) storage Arcs bound at their placeholder NodeIds.
+        let mut cache = StorageCache::new();
         let mut param_tensors: HashMap<String, LazyTensor> = HashMap::new();
-        let mut param_node_ids: HashMap<String, NodeId> = HashMap::new();
         for name in &self.param_order {
-            let (_storage, shape) = &self.params[name];
-            // Zero-filled placeholder Const; pre_populate overrides at realize.
-            let zeros: Arc<[f32]> = vec![0.0_f32; shape.elem_count()].into();
-            let t = seed.const_f32_like(zeros, shape.clone());
-            param_node_ids.insert(name.clone(), t.graph_tensor().id());
+            let (storage, shape) = &self.params[name];
+            // Placeholder Const — no storage_map seeding; the cache
+            // provides the bytes at realize.
+            let t = seed.const_placeholder_like(shape.clone(), DType::F32);
+            cache.insert(t.graph_tensor().id(), Arc::clone(storage));
             param_tensors.insert(name.clone(), t);
         }
 
@@ -385,7 +448,10 @@ impl<B: GraphBackend> TrainState<B> {
                         Some(acc) => acc.add(&g_sq_sum).unwrap(),
                     });
                 }
-                let total_sq = total_sq.expect("clip: no gradients");
+                let total_sq = total_sq.ok_or_else(|| Error::Msg(
+                    "gradient clipping requires at least one parameter"
+                        .into(),
+                ).bt())?;
                 let norm = total_sq.sqrt();
                 // `max_norm / norm` is a rank-0 scalar. Protect
                 // against norm=0 by adding a tiny epsilon.
@@ -427,10 +493,29 @@ impl<B: GraphBackend> TrainState<B> {
                     new_param_tensors.push(new_param);
                 }
                 OptimizerConfig::AdamW { lr, beta1, beta2, eps, weight_decay } => {
-                    // Build placeholders for m and v (injected via pre_populate).
-                    let zeros: Arc<[f32]> = vec![0.0_f32; param.graph_tensor().shape().elem_count()].into();
-                    let m_placeholder = seed.const_f32_like(zeros.clone(), param.graph_tensor().shape());
-                    let v_placeholder = seed.const_f32_like(zeros, param.graph_tensor().shape());
+                    // Build placeholders for m and v; their current
+                    // storage Arcs bind through the realize cache.
+                    let param_shape = param.graph_tensor().shape();
+                    let m_placeholder = seed.const_placeholder_like(
+                        param_shape.clone(), DType::F32,
+                    );
+                    let v_placeholder = seed.const_placeholder_like(
+                        param_shape, DType::F32,
+                    );
+                    let (m_arc, v_arc) = match self.opt_state.get(name.as_str()) {
+                        Some(OptState::AdamW { m, v }) => {
+                            (Arc::clone(m), Arc::clone(v))
+                        }
+                        _ => {
+                            return Err(Error::Msg(format!(
+                                "TrainState::step: optimizer state for \
+                                 '{name}' is not AdamW — internal bug",
+                            ))
+                            .bt());
+                        }
+                    };
+                    cache.insert(m_placeholder.graph_tensor().id(), m_arc);
+                    cache.insert(v_placeholder.graph_tensor().id(), v_arc);
                     // new_m = β1·m + (1-β1)·g
                     let m_decayed = m_placeholder.mul_scalar(beta1 as f64);
                     let g_part = grad_lt.mul_scalar((1.0 - beta1) as f64);
@@ -455,42 +540,34 @@ impl<B: GraphBackend> TrainState<B> {
                     let new_param = param.sub(&step_total).unwrap();
                     new_param_tensors.push(new_param);
                     new_opt_tensors.push((name.clone(), new_m, new_v));
-
-                    // Also record the m/v placeholder NodeIds for pre_populate.
-                    param_node_ids.insert(format!("{name}::m"), m_placeholder.graph_tensor().id());
-                    param_node_ids.insert(format!("{name}::v"), v_placeholder.graph_tensor().id());
                 }
             }
         }
 
-        // 5. Inject current parameter and opt-state storage for placeholder nodes.
-        for name in &self.param_order {
-            let (storage, shape) = &self.params[name];
-            let layout = fuel_core_types::Layout::contiguous(shape);
-            let cloned = executor.backend.try_clone(storage, &layout)?;
-            executor.pre_populate(param_node_ids[name], cloned, shape.clone());
-
-            if let OptState::AdamW { m, v } = &self.opt_state[name] {
-                let m_clone = executor.backend.try_clone(m, &layout)?;
-                let v_clone = executor.backend.try_clone(v, &layout)?;
-                executor.pre_populate(param_node_ids[&format!("{name}::m")], m_clone, shape.clone());
-                executor.pre_populate(param_node_ids[&format!("{name}::v")], v_clone, shape.clone());
-            }
+        // 5. Build realize root list: [loss, new_params..., (new_m, new_v)...]
+        let mut roots: Vec<NodeId> = Vec::with_capacity(
+            1 + new_param_tensors.len() + 2 * new_opt_tensors.len(),
+        );
+        roots.push(loss.graph_tensor().id());
+        for np in &new_param_tensors {
+            roots.push(np.graph_tensor().id());
         }
-
-        // 6. Build realize root list: [loss, new_params..., (new_m, new_v)...]
-        let mut roots: Vec<&LazyTensor> = Vec::new();
-        roots.push(&loss);
-        for np in &new_param_tensors { roots.push(np); }
         for (_, nm, nv) in &new_opt_tensors {
-            roots.push(nm);
-            roots.push(nv);
+            roots.push(nm.graph_tensor().id());
+            roots.push(nv.graph_tensor().id());
         }
 
-        // 7. Realize: loss → CPU, everything else stays on device.
-        let inner: Vec<&GraphTensor> = roots.iter().map(|lt| lt.graph_tensor()).collect();
-        let (cpu_results, gpu_results) = executor.realize_split(&inner, 1);
-        let loss_vec = cpu_results.into_iter().next().unwrap();
+        // 6. One realize-split through the pipelined executor:
+        //    loss → host, everything else stays device-resident.
+        let (host, resident) =
+            crate::pipelined_bridge::realize_split_as_with_initial::<f32>(
+                &graph, &roots, 1, &self.device, cache,
+            )?;
+        let loss_vec = host.into_iter().next().ok_or_else(|| Error::Msg(
+            "TrainState::step: realize returned no host result for the \
+             loss root — internal bug"
+                .into(),
+        ).bt())?;
         let loss_scalar = if loss_vec.len() == 1 {
             loss_vec[0]
         } else {
@@ -499,16 +576,34 @@ impl<B: GraphBackend> TrainState<B> {
             loss_vec.iter().sum()
         };
 
-        // 8. Move new storage back into TrainState.
-        let mut iter = gpu_results.into_iter();
+        // 7. Move the new storage Arcs back into TrainState.
+        let mut iter = resident.into_iter();
         for name in &self.param_order {
-            let (new_storage, new_shape) = iter.next().unwrap();
-            self.params.insert(name.clone(), (new_storage, new_shape));
+            let (new_storage, new_layout) = iter.next().ok_or_else(|| {
+                Error::Msg(format!(
+                    "TrainState::step: missing resident result for \
+                     parameter '{name}' — internal bug",
+                ))
+                .bt()
+            })?;
+            self.params.insert(
+                name.clone(),
+                (new_storage, new_layout.shape().clone()),
+            );
         }
         for (name, _, _) in &new_opt_tensors {
-            let (new_m, _) = iter.next().unwrap();
-            let (new_v, _) = iter.next().unwrap();
-            self.opt_state.insert(name.clone(), OptState::AdamW { m: new_m, v: new_v });
+            let (new_m, _) = iter.next().ok_or_else(|| Error::Msg(format!(
+                "TrainState::step: missing resident result for '{name}' \
+                 first moment — internal bug",
+            )).bt())?;
+            let (new_v, _) = iter.next().ok_or_else(|| Error::Msg(format!(
+                "TrainState::step: missing resident result for '{name}' \
+                 second moment — internal bug",
+            )).bt())?;
+            self.opt_state.insert(
+                name.clone(),
+                OptState::AdamW { m: new_m, v: new_v },
+            );
         }
 
         self.step_count += 1;
@@ -626,7 +721,6 @@ mod tests {
     use crate::lazy::LazyTensor;
     use fuel_core_types::DType;
     use fuel_graph::registry::Reduction;
-    use fuel_graph_cpu::CpuBackend;
 
     /// Helper: build an I64 LazyTensor on the same graph as `host`,
     /// using the fuel-graph `const_i64_like` builder. LazyTensor has
@@ -1004,12 +1098,12 @@ mod tests {
         let xs: Vec<f32> = (0..10).map(|i| i as f32).collect();
         let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
 
-        let mut exe = GraphExecutor::new(CpuBackend);
+        let device = crate::Device::cpu();
         let params = vec![
             Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
             Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
         ];
-        let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::sgd(0.01)).unwrap();
+        let mut state = TrainState::new(&params, &device, OptimizerConfig::sgd(0.01)).unwrap();
 
         let n_steps = 2000;
         let x_arc: Arc<[f32]> = xs.clone().into();
@@ -1018,7 +1112,7 @@ mod tests {
             let x_arc_step = x_arc.clone();
             let y_arc_step = y_arc.clone();
             let len = xs.len();
-            let loss = state.step(&mut exe, move |_graph, params| {
+            let loss = state.step(move |_graph, params| {
                 let w = &params["w"];
                 let b = &params["b"];
                 // Build inputs on the SAME graph the parameters live in
@@ -1036,8 +1130,8 @@ mod tests {
                 eprintln!("step {step}: loss = {loss}");
             }
         }
-        let w_final = state.param_to_host("w", &exe).unwrap()[0];
-        let b_final = state.param_to_host("b", &exe).unwrap()[0];
+        let w_final = state.param_to_host("w").unwrap()[0];
+        let b_final = state.param_to_host("b").unwrap()[0];
         eprintln!("final: w = {w_final}, b = {b_final}");
         assert!((w_final - 2.0).abs() < 0.05, "w converged to {w_final}, expected ~2.0");
         assert!((b_final - 3.0).abs() < 0.3, "b converged to {b_final}, expected ~3.0");
@@ -1051,7 +1145,7 @@ mod tests {
     fn adamw_fits_linear_regression() {
         let xs: Vec<f32> = (0..10).map(|i| i as f32).collect();
         let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
-        let mut exe = GraphExecutor::new(CpuBackend);
+        let device = crate::Device::cpu();
         let params = vec![
             Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
             Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
@@ -1060,7 +1154,7 @@ mod tests {
         let cfg = OptimizerConfig::AdamW {
             lr: 0.1, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0,
         };
-        let mut state = TrainState::new(&params, &mut exe, cfg).unwrap();
+        let mut state = TrainState::new(&params, &device, cfg).unwrap();
         let x_arc: Arc<[f32]> = xs.clone().into();
         let y_arc: Arc<[f32]> = ys.clone().into();
         let mut final_loss = 0.0;
@@ -1068,7 +1162,7 @@ mod tests {
             let x_arc_step = x_arc.clone();
             let y_arc_step = y_arc.clone();
             let len = xs.len();
-            let loss = state.step(&mut exe, move |_graph, params| {
+            let loss = state.step(move |_graph, params| {
                 let w = &params["w"];
                 let b = &params["b"];
                 let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
@@ -1084,8 +1178,8 @@ mod tests {
                 eprintln!("adamw step {step}: loss = {loss}");
             }
         }
-        let w_final = state.param_to_host("w", &exe).unwrap()[0];
-        let b_final = state.param_to_host("b", &exe).unwrap()[0];
+        let w_final = state.param_to_host("w").unwrap()[0];
+        let b_final = state.param_to_host("b").unwrap()[0];
         eprintln!("adamw final: w = {w_final}, b = {b_final}, loss = {final_loss}");
         // AdamW converges faster than SGD for this problem — after 500
         // steps we expect both params well within 5% of target.
@@ -1116,14 +1210,14 @@ mod tests {
             ys_onehot[i * n_class + cls] = 1.0;
         }
 
-        let mut exe = GraphExecutor::new(CpuBackend);
+        let device = crate::Device::cpu();
         let params = vec![
             Parameter::new_f32("w", Shape::from_dims(&[n_feat, n_class]),
                 vec![0.01f32, -0.01, 0.02, -0.02]),
             Parameter::new_f32("b", Shape::from_dims(&[n_class]),
                 vec![0.0f32, 0.0]),
         ];
-        let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::sgd(0.1)).unwrap();
+        let mut state = TrainState::new(&params, &device, OptimizerConfig::sgd(0.1)).unwrap();
 
         let x_arc: Arc<[f32]> = xs.into();
         let y_arc: Arc<[f32]> = ys_onehot.into();
@@ -1131,7 +1225,7 @@ mod tests {
         for step in 0..500 {
             let x_arc_step = x_arc.clone();
             let y_arc_step = y_arc.clone();
-            let loss = state.step(&mut exe, move |_graph, params| {
+            let loss = state.step(move |_graph, params| {
                 let w = &params["w"];
                 let b = &params["b"];
                 let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[n, n_feat]));
@@ -1175,12 +1269,12 @@ mod tests {
             })
             .collect();
 
-        let mut exe = GraphExecutor::new(CpuBackend);
+        let device = crate::Device::cpu();
         let params = vec![
             Parameter::new_f32("w", Shape::from_dims(&[d, 1]), vec![0.1f32; d]),
             Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.0f32]),
         ];
-        let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::sgd(0.05)).unwrap();
+        let mut state = TrainState::new(&params, &device, OptimizerConfig::sgd(0.05)).unwrap();
         let x_arc: Arc<[f32]> = xs.into();
         let y_arc: Arc<[f32]> = ys.into();
         let mut initial_loss = 0.0;
@@ -1188,7 +1282,7 @@ mod tests {
         for step in 0..300 {
             let x_arc_step = x_arc.clone();
             let y_arc_step = y_arc.clone();
-            let loss = state.step(&mut exe, move |_graph, params| {
+            let loss = state.step(move |_graph, params| {
                 let w = &params["w"];
                 let b = &params["b"];
                 let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[n, d]));
@@ -1207,6 +1301,114 @@ mod tests {
         assert!(final_loss < initial_loss * 0.5,
             "loss didn't decrease enough: {initial_loss} -> {final_loss}");
         assert!(final_loss.is_finite(), "got non-finite loss: {final_loss}");
+    }
+
+    /// Shared step-builder for the legacy-parity trajectory tests:
+    /// MSE of `y_hat = w·x + b` against `y = 2x + 3` at `x = 0..10`.
+    fn parity_step(
+        state: &mut TrainState,
+        x_arc: &Arc<[f32]>,
+        y_arc: &Arc<[f32]>,
+        len: usize,
+    ) -> f32 {
+        let x_arc_step = x_arc.clone();
+        let y_arc_step = y_arc.clone();
+        state.step(move |_g, p| {
+            let w = &p["w"];
+            let b = &p["b"];
+            let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
+            let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
+            let w_b = w.broadcast_to(Shape::from_dims(&[len])).unwrap();
+            let b_b = b.broadcast_to(Shape::from_dims(&[len])).unwrap();
+            let y_hat = x.mul(&w_b).unwrap().add(&b_b).unwrap();
+            y_hat.sub(&y).unwrap().sqr().sum_all().mul_scalar(1.0 / len as f64)
+        }).unwrap()
+    }
+
+    /// Honesty gate for the Unification Session 5 Trainer port: the
+    /// pinned constants are the EXACT (bit-level) loss trajectory +
+    /// final weights captured from the legacy `GraphExecutor`-based
+    /// Trainer on this same deterministic run immediately before the
+    /// port (main @ c85dd06b, 2026-06-11). The pipelined Trainer must
+    /// reproduce them bit-for-bit — any drift means the port changed
+    /// training semantics and must be root-caused, not tolerated.
+    #[test]
+    fn sgd_trajectory_matches_legacy_executor_bitexact() {
+        let xs: Vec<f32> = (0..10).map(|i| i as f32).collect();
+        let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
+        let x_arc: Arc<[f32]> = xs.clone().into();
+        let y_arc: Arc<[f32]> = ys.into();
+        let device = crate::Device::cpu();
+        let params = vec![
+            Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
+            Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
+        ];
+        let mut state =
+            TrainState::new(&params, &device, OptimizerConfig::sgd(0.01)).unwrap();
+        let mut losses = Vec::new();
+        for _ in 0..50 {
+            losses.push(parity_step(&mut state, &x_arc, &y_arc, xs.len()));
+        }
+        let w = state.param_to_host("w").unwrap()[0];
+        let b = state.param_to_host("b").unwrap()[0];
+        assert_eq!(losses[0].to_bits(), 0x4320e28f, "loss[0]={}", losses[0]);
+        assert_eq!(losses[10].to_bits(), 0x3fd44238, "loss[10]={}", losses[10]);
+        assert_eq!(losses[49].to_bits(), 0x3f887709, "loss[49]={}", losses[49]);
+        assert_eq!(w.to_bits(), 0x40137966, "w={w}");
+        assert_eq!(b.to_bits(), 0x3f8bc541, "b={b}");
+    }
+
+    /// AdamW sibling of
+    /// [`sgd_trajectory_matches_legacy_executor_bitexact`] — also
+    /// pins the optimizer-moment (m/v) round-trip across steps, the
+    /// multi-tensor device-resident state the realize-split carries.
+    ///
+    /// Parity vs legacy (root-caused at port time): loss[0],
+    /// loss[10], and the FINAL WEIGHTS are bit-identical to the
+    /// legacy executor's run. loss[19] is +1 ULP (0x4088ff67 vs
+    /// legacy 0x4088ff66) because the two CPU paths apply scalar
+    /// constants with different precision policies in the Affine
+    /// family: legacy `CpuBackend::affine` computes
+    /// `(x as f64 * mul_f64 + add_f64) as f32`
+    /// (fuel-graph-cpu/src/backend.rs:239), while the pipelined
+    /// byte kernel `affine_f32` casts the scalar to f32 and computes
+    /// in f32 (fuel-cpu-backend/src/byte_kernels.rs:2795) — the
+    /// PyTorch convention (`Scalar.to<scalar_t>()`). AdamW's β
+    /// scalars (0.9/0.999/bias-correction) hit a value where the two
+    /// policies round differently; SGD's scalars happened not to in
+    /// 50 steps. Verified by single-op bisect: for
+    /// x=0x3ac0ad03, x·0.9 → 0x3aad6882 (f32-cast policy, correctly
+    /// rounded vs 0.9f32) vs 0x3aad6883 (f64-intermediate policy).
+    /// The conventional kernel wins; the pinned values below are the
+    /// pipelined path's.
+    #[test]
+    fn adamw_trajectory_matches_legacy_executor_bitexact() {
+        let xs: Vec<f32> = (0..10).map(|i| i as f32).collect();
+        let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
+        let x_arc: Arc<[f32]> = xs.clone().into();
+        let y_arc: Arc<[f32]> = ys.into();
+        let device = crate::Device::cpu();
+        let params = vec![
+            Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
+            Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
+        ];
+        let cfg = OptimizerConfig::AdamW {
+            lr: 0.1, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0,
+        };
+        let mut state = TrainState::new(&params, &device, cfg).unwrap();
+        let mut losses = Vec::new();
+        for _ in 0..20 {
+            losses.push(parity_step(&mut state, &x_arc, &y_arc, xs.len()));
+        }
+        let w = state.param_to_host("w").unwrap()[0];
+        let b = state.param_to_host("b").unwrap()[0];
+        assert_eq!(losses[0].to_bits(), 0x4320e28f, "loss[0]={}", losses[0]);
+        assert_eq!(losses[10].to_bits(), 0x4230169d, "loss[10]={}", losses[10]);
+        // +1 ULP vs legacy 0x4088ff66 — see doc comment (Affine
+        // scalar-precision policy, root-caused).
+        assert_eq!(losses[19].to_bits(), 0x4088ff67, "loss[19]={}", losses[19]);
+        assert_eq!(w.to_bits(), 0x3ff1245b, "w={w}");
+        assert_eq!(b.to_bits(), 0x3ff231e0, "b={b}");
     }
 
     #[test]
@@ -1255,12 +1457,12 @@ mod tests {
         // Unclipped: this LR is wild given the input magnitude →
         // expect divergence (non-finite weights).
         {
-            let mut exe = GraphExecutor::new(CpuBackend);
-            let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::sgd(0.1)).unwrap();
+            let device = crate::Device::cpu();
+            let mut state = TrainState::new(&params, &device, OptimizerConfig::sgd(0.1)).unwrap();
             for _ in 0..10 {
                 let x_arc_step = x_arc.clone();
                 let y_arc_step = y_arc.clone();
-                let _ = state.step(&mut exe, move |_g, p| {
+                let _ = state.step(move |_g, p| {
                     let w = &p["w"]; let b = &p["b"];
                     let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
                     let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
@@ -1270,20 +1472,20 @@ mod tests {
                     y_hat.sub(&y).unwrap().sqr().sum_all().mul_scalar(1.0 / len as f64)
                 }).unwrap();
             }
-            let w = state.param_to_host("w", &exe).unwrap()[0];
+            let w = state.param_to_host("w").unwrap()[0];
             assert!(!w.is_finite(), "expected divergence without clipping, got w={w}");
         }
 
         // Clipped: global-norm clip at 1.0 keeps every step bounded.
         {
-            let mut exe = GraphExecutor::new(CpuBackend);
-            let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::sgd(0.1))
+            let device = crate::Device::cpu();
+            let mut state = TrainState::new(&params, &device, OptimizerConfig::sgd(0.1))
                 .unwrap()
                 .with_grad_clip(Some(GradClip::GlobalNorm(1.0)));
             for _ in 0..200 {
                 let x_arc_step = x_arc.clone();
                 let y_arc_step = y_arc.clone();
-                let _ = state.step(&mut exe, move |_g, p| {
+                let _ = state.step(move |_g, p| {
                     let w = &p["w"]; let b = &p["b"];
                     let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
                     let y = w.const_f32_like(y_arc_step, Shape::from_dims(&[len]));
@@ -1293,8 +1495,8 @@ mod tests {
                     y_hat.sub(&y).unwrap().sqr().sum_all().mul_scalar(1.0 / len as f64)
                 }).unwrap();
             }
-            let w = state.param_to_host("w", &exe).unwrap()[0];
-            let b = state.param_to_host("b", &exe).unwrap()[0];
+            let w = state.param_to_host("w").unwrap()[0];
+            let b = state.param_to_host("b").unwrap()[0];
             assert!(w.is_finite() && b.is_finite(),
                 "clipped training should stay finite, got w={w} b={b}");
         }
@@ -1304,13 +1506,13 @@ mod tests {
     fn sgd_with_warmup_cosine_converges() {
         let xs: Vec<f32> = (0..10).map(|i| i as f32).collect();
         let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
-        let mut exe = GraphExecutor::new(CpuBackend);
+        let device = crate::Device::cpu();
         let params = vec![
             Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
             Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
         ];
         // Start at 0 LR (pure warmup) and use the schedule to ramp up.
-        let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::sgd(0.0)).unwrap();
+        let mut state = TrainState::new(&params, &device, OptimizerConfig::sgd(0.0)).unwrap();
         let sch = super::WarmupCosine { warmup: 100, total: 2000, peak: 0.01, final_lr: 0.001 };
 
         let x_arc: Arc<[f32]> = xs.clone().into();
@@ -1319,7 +1521,7 @@ mod tests {
             let x_arc_step = x_arc.clone();
             let y_arc_step = y_arc.clone();
             let len = xs.len();
-            state.step_with_schedule(&sch, &mut exe, move |_graph, params| {
+            state.step_with_schedule(&sch, move |_graph, params| {
                 let w = &params["w"];
                 let b = &params["b"];
                 let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
@@ -1331,8 +1533,8 @@ mod tests {
                 diff.sqr().sum_all().mul_scalar(1.0 / len as f64)
             }).unwrap();
         }
-        let w_final = state.param_to_host("w", &exe).unwrap()[0];
-        let b_final = state.param_to_host("b", &exe).unwrap()[0];
+        let w_final = state.param_to_host("w").unwrap()[0];
+        let b_final = state.param_to_host("b").unwrap()[0];
         assert!((w_final - 2.0).abs() < 0.05);
         assert!((b_final - 3.0).abs() < 0.3);
     }
