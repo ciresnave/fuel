@@ -1535,7 +1535,43 @@ fn collect_alias_set(
 /// the reader reads `x`). Without intervention, [`execution_plan`]
 /// detects the cycle and panics.
 ///
-/// This pass detects such conflicts and rewrites the graph by:
+/// ## Conflict predicate (dependency-based, NOT topo-position-based)
+///
+/// A reader `R` of the destructive op `D`'s target needs a safety
+/// copy iff `R` is not **provably ordered before** `D`. The proof
+/// obligation is grounded in the executor's actual contract:
+/// [`execution_plan`] emits a linear extension of the *combined*
+/// precedence graph — data edges (`input → consumer`) plus
+/// [`derive_ordering`]'s ordering edges (`reader → destructive op`) —
+/// and the executor dispatches work items strictly sequentially in
+/// that order. Therefore:
+///
+/// - `R` has a path to `D` in the combined graph AND `D` has no
+///   path back to `R` → every valid plan runs `R` before `D`'s
+///   mutation. Safe; **no copy**. (This covers every reader
+///   `derive_ordering` pins directly, plus view-op readers whose
+///   consumers are pinned — the pre-gap readers of an evict-chain
+///   `Op::Move`, for example.)
+/// - `D` has a path to `R` (e.g., the residual pattern: `R`
+///   consumes `D`'s output while also reading `D`'s target) → the
+///   pin edge `R → D` would close a cycle; the executor cannot
+///   order `R` first. **Copy needed.**
+/// - Neither direction → no ordering guarantee exists (possible for
+///   alias-member view readers, which `derive_ordering` deliberately
+///   does not pin). Safety cannot be proven, so **copy needed** —
+///   the conservative default: a spurious copy costs bytes, a
+///   missing copy is silent data corruption.
+///
+/// Historical note: this pass originally inferred conflicts from DFS
+/// topo-order *position* (any reader appearing after `D` in
+/// `topo_order_multi` order was treated as conflicting). Position in
+/// a DFS walk carries no dependency information — an independent
+/// pre-gap reader of a `Op::Move`d tensor could land after the Move
+/// purely because of root visit order, earning a spurious copy
+/// stamped onto the destructive op's device (live-GPU failure,
+/// 2026-06-11).
+///
+/// This pass rewrites each conflict by:
 /// 1. Inserting an `Op::Copy { target: same_device }(X) → X_safe` —
 ///    a same-device byte snapshot independent of `X`'s storage.
 /// 2. Rewiring the conflicting reader's input from `X` to `X_safe`.
@@ -1559,7 +1595,51 @@ fn collect_alias_set(
 /// testing).
 pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize {
     let order = topo_order_multi(graph, roots);
-    let pos: HashMap<NodeId, usize> = order.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+
+    // Combined precedence graph: data edges (input → consumer) plus
+    // derive_ordering's edges (reader → destructive op). This is
+    // exactly the edge set execution_plan linearizes, so path
+    // queries here answer "does every valid plan order A before B?".
+    let ordering = derive_ordering(graph, roots);
+    let node_set: std::collections::HashSet<NodeId> = order.iter().copied().collect();
+    let mut succ: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+    let mut pred: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+    for &nid in &order {
+        for &input in &graph.node(nid).inputs {
+            if node_set.contains(&input) {
+                succ.entry(input).or_default().push(nid);
+                pred.entry(nid).or_default().push(input);
+            }
+        }
+        for &dep in ordering.deps_of(nid) {
+            if node_set.contains(&dep) {
+                succ.entry(dep).or_default().push(nid);
+                pred.entry(nid).or_default().push(dep);
+            }
+        }
+    }
+
+    // All nodes reachable from `start` over `adj` (excluding `start`
+    // itself unless it sits on a cycle). Iterative DFS; the visited
+    // set terminates cyclic combined graphs (the very cycles this
+    // pass exists to break).
+    fn reach(
+        start: NodeId,
+        adj: &HashMap<NodeId, Vec<NodeId>>,
+    ) -> std::collections::HashSet<NodeId> {
+        let mut seen: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
+        let mut stack = vec![start];
+        while let Some(n) = stack.pop() {
+            if let Some(next) = adj.get(&n) {
+                for &m in next {
+                    if seen.insert(m) {
+                        stack.push(m);
+                    }
+                }
+            }
+        }
+        seen
+    }
 
     // Snapshot conflicts before mutating the graph: collect
     // (destructive_op_id, target, conflicting_readers) tuples.
@@ -1577,16 +1657,26 @@ pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize
         let Some(d_idx) = node.op.destructive_input() else { continue };
         if d_idx >= node.inputs.len() { continue }
         let target = node.inputs[d_idx];
-        let nid_pos = pos[&nid];
 
-        // A reader R of `target` causes a cycle iff R comes AFTER the
-        // destructive op in topo order — that means R has a data-flow
-        // dependency on the destructive op, while the ordering edge
-        // wants R to run BEFORE it. The two edges form a cycle.
+        // `forced_before`: nodes with a combined-graph path TO the
+        // destructive op. `forced_after`: nodes the destructive op
+        // has a combined-graph path to. A reader is provably safe
+        // iff it is forced-before AND not forced-after (the latter
+        // would mean its pin edge closes a cycle the executor cannot
+        // satisfy). Anything else — cycle members, descendants, or
+        // readers with no ordering guarantee in either direction —
+        // gets a safety copy. False positives cost a snapshot;
+        // false negatives are silent data corruption.
+        let forced_before = reach(nid, &pred);
+        let forced_after = reach(nid, &succ);
+
         let mut readers: Vec<NodeId> = Vec::new();
-        for &maybe_reader in &order[nid_pos + 1..] {
+        for &maybe_reader in &order {
             if maybe_reader == nid { continue }
-            if graph.node(maybe_reader).inputs.contains(&target) {
+            if !graph.node(maybe_reader).inputs.contains(&target) { continue }
+            let provably_before = forced_before.contains(&maybe_reader)
+                && !forced_after.contains(&maybe_reader);
+            if !provably_before {
                 readers.push(maybe_reader);
             }
         }
@@ -2765,6 +2855,240 @@ mod tests {
             &[y_id],
         );
         assert_eq!(inserted, 0);
+    }
+
+    /// Regression for the 2026-06-11 live-GPU failure: a reader with
+    /// NO dependency relationship to a destructive `Op::Move` must
+    /// not get a safety copy just because DFS visit order happened to
+    /// place it after the Move.
+    ///
+    /// Graph: `a; b = relu(a); m = move(a)`. derive_ordering pins
+    /// `m` after `b` (reader-before-mutator), so every execution_plan
+    /// runs `b` before `m`'s release — no copy is needed in EITHER
+    /// roots order. The old positional predicate inserted a spurious
+    /// copy when roots ordering made `b` land after `m` in
+    /// `topo_order_multi` (which visits the LAST root's subtree
+    /// first), and that copy then inherited the Move's device.
+    #[test]
+    fn insert_safety_copies_no_spurious_copy_for_independent_reader_of_move() {
+        for flip_roots in [false, true] {
+            let a = Tensor::from_f32(
+                vec![1.0_f32, -2.0], Shape::from_dims(&[2]), cpu_dev(),
+            );
+            let b = a.relu();
+            let a_shape = a.shape();
+            let a_dtype = a.dtype();
+            let a_id = a.id();
+            let m_id = a.graph().write().unwrap().push(crate::Node {
+                op: crate::Op::Move { target: DeviceLocation::Cpu },
+                inputs: vec![a_id],
+                shape: a_shape,
+                dtype: a_dtype,
+            });
+            let roots = if flip_roots { [m_id, b.id()] } else { [b.id(), m_id] };
+            // Sanity: in the `[b, m]` roots order, DFS visits m's
+            // subtree first, so b lands positionally AFTER the Move —
+            // the exact shape the old predicate misclassified.
+            let inserted = insert_safety_copies(
+                &mut a.graph().write().unwrap(),
+                &roots,
+            );
+            assert_eq!(
+                inserted, 0,
+                "relu(a) is pinned before move(a) by derive_ordering; \
+                 no copy regardless of roots order (flip_roots={flip_roots})",
+            );
+            let g = a.graph().read().unwrap();
+            assert_eq!(
+                g.node(b.id()).inputs, vec![a_id],
+                "reader must keep reading `a` directly",
+            );
+            drop(g);
+            // The plan must still order the reader before the Move.
+            let plan = execution_plan(&a.graph().read().unwrap(), &roots);
+            let b_pos = plan.iter().position(|&n| n == b.id()).unwrap();
+            let m_pos = plan.iter().position(|&n| n == m_id).unwrap();
+            assert!(b_pos < m_pos, "relu must precede move: {plan:?}");
+        }
+    }
+
+    /// A reader that TRANSITIVELY depends on the destructive op (not
+    /// just via a direct input) still conflicts: the pin edge would
+    /// close a cycle through the intermediate node. The
+    /// dependency-based predicate must use reachability, not direct
+    /// input inspection.
+    ///
+    /// Graph: `y = relu_inplace(x); w = relu(y); z = add(w, x)`.
+    #[test]
+    fn insert_safety_copies_transitive_descendant_reader_gets_copy() {
+        let x = Tensor::from_f32(
+            vec![1.0_f32, -2.0, 3.0, -4.0], Shape::from_dims(&[4]), cpu_dev(),
+        );
+        let x_shape = x.shape();
+        let x_dtype = x.dtype();
+        let x_id = x.id();
+        let (y_id, z_id) = {
+            let mut g = x.graph().write().unwrap();
+            let y_id = g.push(crate::Node {
+                op: crate::Op::ReluInplace,
+                inputs: vec![x_id],
+                shape: x_shape.clone(),
+                dtype: x_dtype,
+            });
+            let w_id = g.push(crate::Node {
+                op: crate::Op::Relu,
+                inputs: vec![y_id],
+                shape: x_shape.clone(),
+                dtype: x_dtype,
+            });
+            let z_id = g.push(crate::Node {
+                op: crate::Op::Add,
+                inputs: vec![w_id, x_id],
+                shape: x_shape,
+                dtype: x_dtype,
+            });
+            (y_id, z_id)
+        };
+        let inserted = insert_safety_copies(
+            &mut x.graph().write().unwrap(),
+            &[z_id],
+        );
+        assert_eq!(inserted, 1, "transitive residual cycle needs one copy");
+        let g = x.graph().read().unwrap();
+        let z_node = g.node(z_id);
+        assert_ne!(z_node.inputs[1], x_id, "z's x input must be rewired");
+        assert!(matches!(g.node(z_node.inputs[1]).op, crate::Op::Copy { .. }));
+        drop(g);
+        let plan = execution_plan(&x.graph().read().unwrap(), &[z_id]);
+        assert!(plan.contains(&y_id), "plan still contains the in-place op");
+    }
+
+    /// A genuinely-parallel reader — no ordering guarantee in either
+    /// direction — keeps its safety copy (conservative default).
+    ///
+    /// The only readers derive_ordering does NOT pin before the
+    /// mutator are alias-set members (view ops of the target). A view
+    /// with consumers is transitively forced before the mutator via
+    /// its pinned consumers; a view that is itself a realize root has
+    /// no ordering guarantee at all. Safety cannot be proven, so the
+    /// pass must copy. Note the old positional predicate got this
+    /// case WRONG in the `[m, v]` roots order (v lands positionally
+    /// before m → no copy; only the plan's stable tiebreak saved it).
+    #[test]
+    fn insert_safety_copies_parallel_view_root_reader_keeps_copy() {
+        let x = Tensor::from_f32(
+            vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]), cpu_dev(),
+        );
+        let v = x.transpose();
+        let x_shape = x.shape();
+        let x_dtype = x.dtype();
+        let x_id = x.id();
+        let m_id = x.graph().write().unwrap().push(crate::Node {
+            op: crate::Op::Move { target: DeviceLocation::Cpu },
+            inputs: vec![x_id],
+            shape: x_shape,
+            dtype: x_dtype,
+        });
+        // Roots [m, v]: DFS visits v's subtree first, so v sits
+        // positionally BEFORE the Move — the shape the positional
+        // predicate silently skipped.
+        let inserted = insert_safety_copies(
+            &mut x.graph().write().unwrap(),
+            &[m_id, v.id()],
+        );
+        assert_eq!(
+            inserted, 1,
+            "unpinned view-root reader has no ordering guarantee → copy",
+        );
+        let g = x.graph().read().unwrap();
+        let v_node = g.node(v.id());
+        assert_ne!(v_node.inputs[0], x_id, "view must be rewired to the snapshot");
+        assert!(matches!(g.node(v_node.inputs[0]).op, crate::Op::Copy { .. }));
+    }
+
+    /// Cycles through ANOTHER destructive op's ordering edge are
+    /// still conflicts — the predicate must walk the combined
+    /// (data + ordering) graph, not just data edges.
+    ///
+    /// Graph:
+    ///   m1 = move(t1); m2 = move(t2)
+    ///   x  = add(m1, t2)   (pin x→m2; data m1→x)
+    ///   r  = add(m2, t1)   (pin r→m1; data m2→r)
+    /// Combined cycle: m1 → x → m2 → r → m1. Neither x nor r is a
+    /// pure-data descendant of the op whose target it reads, yet
+    /// both pins are unsatisfiable. Both need copies; afterwards
+    /// execution_plan must succeed.
+    #[test]
+    fn insert_safety_copies_breaks_cycle_through_other_ordering_edges() {
+        let t1 = Tensor::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let t2 = t1.const_f32_like(vec![3.0_f32, 4.0], Shape::from_dims(&[2]));
+        let shape = t1.shape();
+        let dtype = t1.dtype();
+        let (t1_id, t2_id) = (t1.id(), t2.id());
+        let (x_id, r_id) = {
+            let mut g = t1.graph().write().unwrap();
+            let m1 = g.push(crate::Node {
+                op: crate::Op::Move { target: DeviceLocation::Cpu },
+                inputs: vec![t1_id],
+                shape: shape.clone(), dtype,
+            });
+            let m2 = g.push(crate::Node {
+                op: crate::Op::Move { target: DeviceLocation::Cpu },
+                inputs: vec![t2_id],
+                shape: shape.clone(), dtype,
+            });
+            let x = g.push(crate::Node {
+                op: crate::Op::Add,
+                inputs: vec![m1, t2_id],
+                shape: shape.clone(), dtype,
+            });
+            let r = g.push(crate::Node {
+                op: crate::Op::Add,
+                inputs: vec![m2, t1_id],
+                shape, dtype,
+            });
+            (x, r)
+        };
+        let inserted = insert_safety_copies(
+            &mut t1.graph().write().unwrap(),
+            &[x_id, r_id],
+        );
+        assert_eq!(inserted, 2, "both cross-readers sit on the combined cycle");
+        // The rewritten graph must be plannable (no cycle panic).
+        let plan = execution_plan(&t1.graph().read().unwrap(), &[x_id, r_id]);
+        assert!(plan.contains(&x_id) && plan.contains(&r_id));
+    }
+
+    /// Idempotence under the dependency-based predicate: a second run
+    /// sees the inserted Copy as a pinned, acyclic reader of the
+    /// target and inserts nothing new.
+    #[test]
+    fn insert_safety_copies_idempotent_after_rewrite() {
+        let x = Tensor::from_f32(
+            vec![1.0_f32, -2.0], Shape::from_dims(&[2]), cpu_dev(),
+        );
+        let x_shape = x.shape();
+        let x_dtype = x.dtype();
+        let x_id = x.id();
+        let z_id = {
+            let mut g = x.graph().write().unwrap();
+            let y_id = g.push(crate::Node {
+                op: crate::Op::ReluInplace,
+                inputs: vec![x_id],
+                shape: x_shape.clone(),
+                dtype: x_dtype,
+            });
+            g.push(crate::Node {
+                op: crate::Op::Add,
+                inputs: vec![y_id, x_id],
+                shape: x_shape,
+                dtype: x_dtype,
+            })
+        };
+        let first = insert_safety_copies(&mut x.graph().write().unwrap(), &[z_id]);
+        assert_eq!(first, 1);
+        let second = insert_safety_copies(&mut x.graph().write().unwrap(), &[z_id]);
+        assert_eq!(second, 0, "second run must be a no-op");
     }
 
     #[test]
