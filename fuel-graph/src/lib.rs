@@ -1822,11 +1822,10 @@ impl Tensor {
     ///
     /// Same-device copies are still a legal thing to ask for — the
     /// backend can optimize them into a cheap clone (or the scheduler
-    /// can elide the Copy node entirely). Cross-device copies go
-    /// through the active backend's `GraphBackend::copy_to` — today a
-    /// host round-trip in the
-    /// [`Router`](../fuel_graph_router/struct.Router.html); P2P comes
-    /// later.
+    /// can elide the Copy node entirely). Cross-device copies resolve
+    /// through the pipelined executor's Copy arm (kernel lookup at
+    /// `(OpKind::Copy, [dt, dt], source backend)`) — today a host
+    /// round-trip; P2P comes later.
     pub fn copy_to_device(&self, target: DeviceLocation) -> Self {
         let shape = self.shape();
         let dtype = self.dtype();

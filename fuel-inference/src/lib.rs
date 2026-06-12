@@ -96,11 +96,14 @@ pub mod generation {
 
 /// KV cache implementations for efficient transformer inference.
 ///
-/// Re-exported from `fuel_core::kv_cache`. The canonical implementation
-/// lives in `fuel-core` so both `fuel-nn` and `fuel-inference` can
-/// expose it without circular dependencies.
+/// Re-exported from `fuel-core`. The eager `fuel::kv_cache` module
+/// retired with the eager-Tensor program (Phase β, `1ab1d0c9`); the
+/// pipelined-era equivalents are `fuel::lazy_kv_cache::LazyKvCache`
+/// (graph-level KV state) and `fuel::inference_context::KvCache`
+/// (persistent per-context storage on the production executor).
 pub mod kv_cache {
-    pub use fuel::kv_cache::*;
+    pub use fuel::inference_context::KvCache;
+    pub use fuel::lazy_kv_cache::*;
 }
 
 /// Gumbel-softmax and other sampling primitives.

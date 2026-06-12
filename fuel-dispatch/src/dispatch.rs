@@ -17,8 +17,8 @@
 //! The registry is process-wide (typically initialized once at
 //! application startup via `OnceLock`) but exposed here as a value
 //! so tests and alternative dispatch policies can construct their
-//! own. fuel-graph-router will host the canonical process-wide
-//! instance in Phase B.
+//! own. The canonical process-wide instance lives below
+//! ([`global_registry`] / [`global_bindings`]).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -4766,7 +4766,7 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
 /// Process-wide [`CapabilityRegistry`]. Initialized on first access
 /// via [`global_registry`]; the CPU backend is auto-registered
 /// always (universal fallback). Other backends register themselves
-/// during their initialization in fuel-graph-router or app startup.
+/// during their initialization or app startup.
 ///
 /// Tests that need a private registry should construct one
 /// directly with `CapabilityRegistry::new()` rather than touch the

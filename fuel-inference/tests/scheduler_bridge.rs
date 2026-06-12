@@ -6,12 +6,16 @@
 //! because fuel-inference's lib-test target has unrelated pre-existing
 //! compile errors in `prefix_cache` / `speculative` (Device::Cpu API
 //! drift) that would block the whole lib-test run.
+//!
+//! Session 6 (2026-06-11): fuel-graph-router retired; the rule is now
+//! self-contained (plain `Placement` map, no Router / SchedulerRule).
 
 use fuel_core_types::{DeviceLocation, Shape};
 use fuel_graph::Tensor;
-use fuel_graph_router::{Placement, Router, SchedulerRule};
 use fuel_inference::scheduler::{MemoryScheduler, Priority, RequestInfo};
 use fuel_inference::scheduler_bridge::{
+    MemoryPressureRule, MemoryPressureSnapshot, Placement,
+};
 
 /// Phase 7.5 G2: tests need a real device for slot-populating
 /// constructors. Singleton CpuBackendDevice via OnceLock.
@@ -20,8 +24,6 @@ fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_core_types::DynBackendDevice> {
         = std::sync::OnceLock::new();
     D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
 }
-    MemoryPressureRule, MemoryPressureSnapshot,
-};
 
 #[test]
 fn rule_no_op_when_not_under_pressure() {
@@ -31,9 +33,8 @@ fn rule_no_op_when_not_under_pressure() {
 
     let snapshot = MemoryPressureSnapshot { under_pressure: false, usage_fraction: 0.1 };
     let rule = MemoryPressureRule::new(snapshot);
-    let router = Router::new();
     let mut placement = Placement::new();
-    rule.apply(c.graph(), &[c.id()], &router, &mut placement);
+    rule.apply(c.graph(), &[c.id()], &mut placement);
     assert!(placement.is_empty(),
         "rule must not touch placement when under_pressure=false");
 }
@@ -46,11 +47,10 @@ fn rule_inherits_first_input_placement_under_pressure() {
 
     let snapshot = MemoryPressureSnapshot { under_pressure: true, usage_fraction: 0.95 };
     let rule = MemoryPressureRule::new(snapshot);
-    let router = Router::new();
     let mut placement = Placement::new();
     placement.insert(a.id(), DeviceLocation::Cpu);
 
-    rule.apply(c.graph(), &[c.id()], &router, &mut placement);
+    rule.apply(c.graph(), &[c.id()], &mut placement);
     assert_eq!(placement.get(&a.id()), Some(&DeviceLocation::Cpu));
     assert_eq!(placement.get(&b.id()), Some(&DeviceLocation::Cpu),
         "b should inherit a's placement under pressure");
