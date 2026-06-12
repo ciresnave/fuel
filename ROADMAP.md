@@ -196,11 +196,13 @@ layout and the README example list.
 
 ## Planned Work
 
-Work is organized into nine phases. Later phases depend on earlier ones being
+Work is organized into ten phases. Later phases depend on earlier ones being
 stable but phases within a group can proceed in parallel. Phase 9 is
 extension hooks for downstream consumers (specifically: an out-of-tree
 agentic library); not gated on the others, just gated on a real consumer
-asking for them.
+asking for them. Phase 10 is equivalence-rewrite search; gated on the
+eager-retirement program finishing and the picker accumulating real
+Judge telemetry.
 
 ---
 
@@ -2529,6 +2531,136 @@ internal cleanup). 9b last (biggest investment, biggest design
 risk, depends on the executor staying stable for the rest of Phase
 6/7/8). Total: ~3-4 weeks across all three when a consumer needs
 them.
+
+---
+
+### Phase 10 — Equivalence-rewrite search: device-shaped graph alternatives (research-flavoured)
+
+*Not urgent. Future-facing. Do not pull forward. Sequenced after the
+eager-retirement program completes and after the picker arc has
+accumulated real Judge telemetry in production use. Builds entirely
+on existing seams — rule registry, AlternativeSet, Judge, copy
+insertion, SystemTopology — composing them rather than laying new
+foundation. Inference-first; rewrites on the backward path are
+explicitly out of scope for v1 (they can change training convergence
+even inside tolerance).*
+
+#### Why Phase 10 exists
+
+The picker (fuel-dispatch ranker + Judge + selector chain) answers
+"which kernel should run this node, on which device?" — but it takes
+the graph's *shape* as given. For most op families that's correct:
+GPU-optimal and CPU-optimal differ inside the kernel, not in the
+graph. For a meaningful minority, the best *algorithm* differs per
+target, and the graph shape should change with the placement:
+
+- **Convolution**: im2col+GEMM vs direct vs Winograd — same math,
+  opposite device preferences.
+- **Attention**: FlashAttention's fusion is a GPU memory-hierarchy
+  optimization; a cache-blocked CPU path may prefer the decomposed
+  softmax chain it replaced.
+- **Matmul reassociation**: `(AB)C` vs `A(BC)` — identical result,
+  wildly different FLOPs/traffic depending on dims.
+- **LoRA**: `Wx + B(Ax)` vs `(W+BA)x` depending on batch size.
+- **Fuse-vs-stay-lowered**: fusion always wins today
+  (`optimize_to_fixpoint` gives it the last word), but whether the
+  fused form is best depends on whether the target backend has a
+  good fused kernel — which the binding table already knows.
+
+Generalizing the picker from "choose a kernel for this node" to
+"choose among mathematically equivalent subgraphs for this region"
+lets Fuel automatically retarget parts of a model GPU-shape ↔
+CPU-shape (or NPU/TPU later) wherever the cost model — transfer
+costs included — says it wins.
+
+**Prior art**: this is graph-substitution search — TASO (SOSP '19),
+PET (OSDI '21), Tensat (MLSys '21; equality saturation via the Rust
+`egg` crate), and Unity (OSDI '22; joint rewrite + placement, the
+closest analogue to Fuel's topology-aware version). Published wins:
+1.3-3× on real models. Discovery of *new* equivalence rules is an
+offline tool (TASO-style enumeration + verification), never a
+realize-time activity.
+
+#### Phase 10 building blocks (status today)
+
+| Need | Status |
+| --- | --- |
+| Rewrite engine | ✅ `fuel-graph::opt` rule registry; `RuleFamily::Algebraic` exists |
+| Equivalent forms in the IR | ✅ every lowering/fusion pair IS two equivalent designs — chosen globally + statically today |
+| Per-device empirical cost | ✅ Judge measures real kernels per (op, dtype, size class, backend, device) |
+| Transfer-aware placement cost | ✅ `insert_cross_device_copies` + SystemTopology transfer paths |
+| Precision bookkeeping | ⚠️ `PrecisionGuarantee` is per-kernel; rewrite rules need per-rule deltas |
+| Choice mechanism | ❌ `optimize_to_fixpoint` is one-way greedy, first-match-wins; nothing lets two equivalent forms coexist while a cost model picks |
+| Equivalence rule library | ❌ one resident (cast fusion) |
+| Offline rule discovery + verification | ❌ |
+
+#### Work items (in delivery order)
+
+- [ ] **10a — fuse-vs-lower as a picker decision.** The minimal
+      version of the whole idea. Instead of fusion firing
+      unconditionally, the fused form and the lowered composition
+      become per-subgraph alternatives ranked by Judge data (it
+      already profiles fused kernels against composed primitives).
+      Reuses everything; no new theory. This alone captures the
+      "backend lacks a good fused kernel" case.
+- [ ] **10b — curated algebraic equivalence library.** Grow
+      `RuleFamily::Algebraic` from 1 rule to dozens (hand-curated;
+      this covers most of the published win). Every rule carries a
+      declared precision delta feeding the existing precision-floor
+      filters, and is cost-gated by Judge data instead of
+      always-fire.
+- [ ] **10c — search + joint placement.** Replace greedy rule
+      application with search over rule applications, extracted
+      against Judge costs + transfer costs jointly with device
+      assignment. Escalation order: cost-gated greedy → backtracking
+      over windows (TASO-scale graphs are fine) → e-graphs + ILP
+      extraction (`egg`) only if backtracking hits combinatorial
+      limits. Runs at `compile_plan` time with the plan cached —
+      never per-realize.
+- [ ] **10d — offline rule discovery.** TASO-style: enumerate small
+      candidate graphs over the OpKind vocabulary, verify equivalence
+      against `fuel-reference-backend` + `fuel-correctness-fixtures`
+      as the oracle, emit rules into 10b's library. A build-once
+      tool run per op-vocabulary change, not a runtime feature. This
+      is the "automatically discover alternative designs" endpoint.
+
+#### Hard constraints
+
+- **Floating-point equivalence is tolerance-bounded, never exact.**
+  Reassociation, Winograd, and factoring all change low bits. The
+  gelu erf-vs-tanh incident (fixed `9b53da38`) is the cautionary
+  tale: a ~1e-4 flavor divergence hid inside the 1e-3 consensus
+  epsilon for two weeks. Per-rule precision deltas are mandatory,
+  not decorative — the tolerance story is the actual hard part of
+  this phase; the search is the easy 80%.
+- **Transfers gate cross-device wins.** A CPU-shaped rewrite only
+  wins if the subgraph amortizes 2× PCIe; the extraction objective
+  must always include copy costs (it can — the pieces exist).
+- **No rewrite fires without a cost-model win.** Equivalence alone
+  is never sufficient justification.
+
+#### Success criteria for Phase 10
+
+- At least one anchor model where a device-conditional rewrite
+  (fuse-vs-lower or a conv-algorithm choice) measurably beats the
+  always-fuse pipeline on at least one backend, with the win
+  attributable in the plan trace.
+- Every rule in the library carries a verified precision delta; a
+  rewritten graph's end-to-end tolerance is computable from the
+  rules applied.
+- Search cost is invisible in steady state (plan-cache hit) and
+  bounded at cold compile.
+
+#### Phase 10 honest caveats
+
+This is a research-flavoured effort with strong prior art, not a
+routine engineering task. 10a is days and worth doing early once the
+gates clear; 10b-10c are multi-session; 10d is its own multi-week
+tool. The phase exists in this document so the idea survives — the
+2026-06-10 design discussion that produced it concluded Fuel is
+unusually well-positioned (4 of 5 pieces already built,
+device-agnostic and empirical by design), but that none of it should
+interrupt the eager-retirement program or the picker arc.
 
 ---
 
