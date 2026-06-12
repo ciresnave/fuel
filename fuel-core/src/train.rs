@@ -392,9 +392,17 @@ impl TrainState {
     {
         // 1. Build parameter placeholder tensors in a fresh graph.
         //    Use a "seed" LazyTensor to get a fresh SharedGraph. The
-        //    seed itself is never realized.
+        //    seed itself is NEVER realized — it exists only to mint
+        //    the graph handle — so it deliberately lives on
+        //    Device::cpu(): LazyTensor::from_f32 eagerly uploads its
+        //    host buffer to the tensor's device, and the Vulkan
+        //    byte-shape substrate rejects that upload by design
+        //    (storage_from_host_buffer_owned_dyn returns Err →
+        //    panic in Tensor::from_*). Training's REAL device
+        //    placement comes from `self.device` at the realize-split
+        //    call below, not from the seed.
         let seed = LazyTensor::from_f32(
-            vec![0.0f32], Shape::from_dims(&[1]), &self.device,
+            vec![0.0f32], Shape::from_dims(&[1]), &Device::cpu(),
         );
         let graph = seed.graph_tensor().graph().clone();
 
