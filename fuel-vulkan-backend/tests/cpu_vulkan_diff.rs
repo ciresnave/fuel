@@ -337,19 +337,22 @@ fn vulkan_trains_linear_regression_sgd() {
     };
     let xs: Vec<f32> = (0..10).map(|i| i as f32).collect();
     let ys: Vec<f32> = xs.iter().map(|&x| 2.0 * x + 3.0).collect();
-    let mut exe = GraphExecutor::new(vk_backend);
+    // Unification Session 5: the Trainer realizes through the
+    // production pipelined executor — Backend → Device, no
+    // GraphBackend executor.
+    let device: fuel_core::Device = vk_backend.into();
     let params = vec![
         Parameter::new_f32("w", Shape::from_dims(&[1]), vec![0.1f32]),
         Parameter::new_f32("b", Shape::from_dims(&[1]), vec![0.1f32]),
     ];
-    let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::sgd(0.01)).unwrap();
+    let mut state = TrainState::new(&params, &device, OptimizerConfig::sgd(0.01)).unwrap();
     let x_arc: Arc<[f32]> = xs.clone().into();
     let y_arc: Arc<[f32]> = ys.clone().into();
     for step in 0..2000 {
         let x_arc_step = x_arc.clone();
         let y_arc_step = y_arc.clone();
         let len = xs.len();
-        let _ = state.step(&mut exe, move |_graph, params| {
+        let _ = state.step(move |_graph, params| {
             let w = &params["w"];
             let b = &params["b"];
             let x = w.const_f32_like(x_arc_step, Shape::from_dims(&[len]));
@@ -362,8 +365,8 @@ fn vulkan_trains_linear_regression_sgd() {
         }).unwrap();
         if step == 0 || step == 1999 { /* just pace */ }
     }
-    let w_final = state.param_to_host("w", &exe).unwrap()[0];
-    let b_final = state.param_to_host("b", &exe).unwrap()[0];
+    let w_final = state.param_to_host("w").unwrap()[0];
+    let b_final = state.param_to_host("b").unwrap()[0];
     eprintln!("vulkan SGD final: w = {w_final}, b = {b_final}");
     let _ = LazyTensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), &fuel_core::Device::cpu()); // silence unused-import
     assert!((w_final - 2.0).abs() < 0.1, "w={w_final}");
@@ -1724,7 +1727,6 @@ fn vulkan_roundtrips_bf16_host_buffer() {
 #[ignore]
 fn vulkan_trains_mini_model_with_rms_norm_and_softmax() {
     use fuel_core::train::{OptimizerConfig, Parameter, TrainState};
-    use fuel_core::lazy::LazyTensor;
     use std::sync::Arc;
 
     let vk_backend = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
@@ -1750,8 +1752,8 @@ fn vulkan_trains_mini_model_with_rms_norm_and_softmax() {
             (0..dim*vocab).map(|_| rf()).collect::<Vec<_>>()),
     ];
 
-    let mut exe = GraphExecutor::new(vk_backend);
-    let mut state = TrainState::new(&params, &mut exe, OptimizerConfig::adam_w(0.01)).unwrap();
+    let device: fuel_core::Device = vk_backend.into();
+    let mut state = TrainState::new(&params, &device, OptimizerConfig::adam_w(0.01)).unwrap();
 
     // Input: random [seq, dim] activations. Target: class 0 for each position.
     let input_data: Arc<[f32]> = (0..seq*dim).map(|_| rf()).collect::<Vec<_>>().into();
@@ -1766,7 +1768,7 @@ fn vulkan_trains_mini_model_with_rms_norm_and_softmax() {
     for _step in 0..30 {
         let inp = input_data.clone();
         let tgt = target_data.clone();
-        let loss = state.step(&mut exe, move |_graph, params| {
+        let loss = state.step(move |_graph, params| {
             let w1 = &params["w1"];
             let w2 = &params["w2"];
             let x = w1.const_f32_like(inp, Shape::from_dims(&[seq, dim]));

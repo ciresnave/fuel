@@ -14,7 +14,6 @@
     fuel-cpu-backend = { workspace = true }
     fuel-graph = { workspace = true }
     fuel-cuda-backend = { workspace = true, optional = true }
-    fuel-graph-executor = { workspace = true }
     fuel-vulkan-backend = { workspace = true, optional = true }
     hf-hub = { workspace = true }
     tracing = { workspace = true }
