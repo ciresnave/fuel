@@ -35,9 +35,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use fuel::lazy::{LlamaTokenizer, WeightStorage};
     use fuel::lazy_llama2c::Llama2cModel;
     use fuel::train::{self, OptimizerConfig, Parameter, TrainState};
-    use fuel_graph_executor::GraphExecutor;
     use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
-    use fuel::Shape;
+    use fuel::{Device, Shape};
     use std::io::Write;
     use std::sync::Arc;
     use std::time::Instant;
@@ -66,7 +65,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t0 = Instant::now();
     let backend = VulkanBackend::with_selection(DeviceSelection::PreferDiscrete)?;
     eprintln!("done in {:.2?} — {}", t0.elapsed(), backend.device_name);
-    let mut executor = GraphExecutor::new(backend);
+    // Backend → Device: training realizes through the production
+    // pipelined executor (binding-table dispatch); no GraphBackend
+    // executor needed.
+    let device: Device = backend.into();
 
     // ---- Extract trainable lm_head ----
     // Everything else stays frozen — the forward pass uses
@@ -88,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             lm_head_data,
         ),
     ];
-    let mut state = TrainState::new(&params, &mut executor, OptimizerConfig::adam_w(1e-4))?;
+    let mut state = TrainState::new(&params, &device, OptimizerConfig::adam_w(1e-4))?;
 
     // ---- Training data ----
     let train_text = "The meaning of life is to find happiness in helping others grow.";
@@ -124,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `TrainState::step`'s loss-builder closure is infallible
         // (returns `LazyTensor`); shape errors in this fixed-shape
         // demo graph indicate a bug, so expect() is appropriate here.
-        let loss = state.step(&mut executor, move |_graph, params| {
+        let loss = state.step(move |_graph, params| {
             let lm_head = &params["lm_head"];
 
             // Forward: all 22 frozen layers → hidden state.
@@ -150,7 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("\nDone in {elapsed:.2?} ({:.1} steps/sec)", n_steps as f64 / elapsed.as_secs_f64());
 
     // ---- Inspect result ----
-    let final_lm_head = state.param_to_host("lm_head", &executor)?;
+    let final_lm_head = state.param_to_host("lm_head")?;
     let orig_lm_head: Vec<f32> = match &model.weights.output {
         WeightStorage::F32(a) => a.to_vec(),
         WeightStorage::BF16(a) => a.iter().map(|x| x.to_f32()).collect(),
