@@ -58,7 +58,7 @@ fn cuda_evict_fault_back_roundtrip_preserves_output() {
         let graph: SharedGraph = Arc::new(RwLock::new(Graph::new()));
         let (a, out) = {
             let mut g = graph.write().unwrap();
-            let mut push = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
+            let push = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
                 g.push(Node {
                     op,
                     inputs,
