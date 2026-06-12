@@ -1920,24 +1920,29 @@ pub fn execution_plan(graph: &crate::Graph, roots: &[NodeId]) -> Vec<NodeId> {
 
 /// Insert an evict-chain around `candidate` to free its device storage
 /// during a gap between uses, with automatic reload before the post-gap
-/// consumers. Returns `(cpu_copy_id, release_id, reload_id)`.
+/// consumers. Returns `(move_id, reload_id)`.
 ///
 /// ## What it does
 ///
-/// Inserts three new nodes:
-/// 1. `cpu_copy = Op::Copy { target: Cpu }` reading `candidate` — stages
-///    the data to host memory.
-/// 2. `release = Op::Release` reading `candidate` — destructive; frees
-///    `candidate`'s device-resident storage once it runs. The
-///    [`derive_ordering`] pass pins this to run AFTER every
-///    non-destructive reader of `candidate` (including `cpu_copy` and
-///    whatever pre-gap consumers the caller left untouched).
-/// 3. `reload = Op::Copy { target: src_device }` reading `cpu_copy` —
-///    restages the data to the device right before the post-gap
-///    consumers need it.
+/// Inserts two new nodes:
+/// 1. `mv = Op::Move { target: Cpu }` reading `candidate` — stages the
+///    data to host memory AND destructively releases `candidate`'s
+///    device-resident storage once it runs ([`Op::Move`] is the fused
+///    Copy + Release: `destructive_input() == Some(0)`). The
+///    [`derive_ordering`] pass pins it to run AFTER every
+///    non-destructive reader of `candidate` (the pre-gap consumers the
+///    caller left untouched).
+/// 2. `reload = Op::Copy { target: src_device }` reading `mv` —
+///    restages the data to the device for the post-gap consumers.
 ///
 /// Then rewrites every `post_gap_consumer`'s input edge from `candidate`
 /// to `reload`. Pre-gap consumers keep reading `candidate` directly.
+///
+/// Historical note: the original (legacy-executor era) chain was three
+/// nodes — `Op::Copy{Cpu}` + side-effect-root `Op::Release` +
+/// `Op::Copy{device}`. `Op::Move` collapsed the first two; the fused
+/// node's output is consumed by `reload`, so no side-effect root is
+/// needed.
 ///
 /// ## Caller's responsibility
 ///
@@ -1946,54 +1951,46 @@ pub fn execution_plan(graph: &crate::Graph, roots: &[NodeId]) -> Vec<NodeId> {
 /// - `post_gap_consumers` are NodeIds currently in the graph that each
 ///   have `candidate` in their `inputs`. Typically these come from the
 ///   residency analyzer's gap-positioning logic.
-/// - The caller will update the `Placement` map afterward to place
-///   `cpu_copy` on Cpu and `reload` on `src_device`.
+/// - The caller stamps placement/backend metadata on the new nodes
+///   (`mv` runs on `src_device`'s backend, `reload` on Cpu — the
+///   staged copy's residency) before realizing on the pipelined
+///   executor. `fuel-dispatch::residency::insert_residency_evictions`
+///   does this.
 pub fn insert_evict_reload(
     graph: &SharedGraph,
     candidate: NodeId,
     src_device: DeviceLocation,
     post_gap_consumers: &[NodeId],
-) -> (NodeId, NodeId, NodeId) {
+) -> (NodeId, NodeId) {
     let mut g = graph.write().unwrap();
     let (shape, dtype) = {
         let n = g.node(candidate);
         (n.shape.clone(), n.dtype)
     };
 
-    let cpu_copy_id = g.push(Node {
-        op:     Op::Copy { target: DeviceLocation::Cpu },
+    let move_id = g.push(Node {
+        op:     Op::Move { target: DeviceLocation::Cpu },
         inputs: vec![candidate],
         shape:  shape.clone(),
         dtype,
     });
-    let release_id = g.push(Node {
-        op:     Op::Release,
-        inputs: vec![candidate],
-        shape:  Shape::from_dims(&[0]),
-        dtype:  DType::F32,
-    });
-    // Release's zero-element output has no consumer, so it wouldn't be
-    // reachable from the user's roots. Register it as a side-effect
-    // root so the executor still walks + runs it (freeing `candidate`'s
-    // device memory).
-    g.add_side_effect_root(release_id);
 
     let reload_id = g.push(Node {
         op:     Op::Copy { target: src_device },
-        inputs: vec![cpu_copy_id],
+        inputs: vec![move_id],
         shape,
         dtype,
     });
 
     // Rewrite each post-gap consumer's `candidate` input to `reload_id`.
     // Pre-gap consumers (not in this list) continue reading `candidate`
-    // directly, which is why derive_ordering needs `release_id` to run
+    // directly, which is why derive_ordering needs `move_id` to run
     // after them.
     for &consumer in post_gap_consumers {
         g.rewrite_input(consumer, candidate, reload_id);
     }
 
-    (cpu_copy_id, release_id, reload_id)
+    (move_id, reload_id)
 }
 
 // ===========================================================================
@@ -2833,30 +2830,32 @@ mod tests {
         //   b = relu(a)   (pre-gap consumer — stays wired to a)
         //   c = neg(a)    (post-gap consumer — should be rewired to reload)
         // After insert_evict_reload(a, Cpu, &[c]):
-        //   - 3 new nodes (cpu_copy, release, reload) appended
+        //   - 2 new nodes (move, reload) appended
         //   - c's input list now has `reload_id` instead of `a.id()`
         //   - b's input list STILL has `a.id()` (unchanged)
         let a = Tensor::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.relu();
         let c = a.neg();
 
-        let (cpu_copy_id, release_id, reload_id) = insert_evict_reload(
+        let (move_id, reload_id) = insert_evict_reload(
             a.graph(), a.id(), DeviceLocation::Cpu, &[c.id()],
         );
 
         let g = a.graph().read().unwrap();
-        // cpu_copy is an Op::Copy{Cpu} reading a
-        match &g.node(cpu_copy_id).op {
-            Op::Copy { target: DeviceLocation::Cpu } => {},
-            other => panic!("expected Op::Copy{{Cpu}}, got {other:?}"),
+        // mv is an Op::Move{Cpu} reading a — the fused stage-to-host +
+        // destructive release of a's device storage.
+        match &g.node(move_id).op {
+            Op::Move { target: DeviceLocation::Cpu } => {},
+            other => panic!("expected Op::Move{{Cpu}}, got {other:?}"),
         }
-        assert_eq!(g.node(cpu_copy_id).inputs, vec![a.id()]);
-        // release is Op::Release reading a
-        assert!(matches!(g.node(release_id).op, Op::Release));
-        assert_eq!(g.node(release_id).inputs, vec![a.id()]);
-        // reload is an Op::Copy{Cpu} (src_device passed in) reading cpu_copy
+        assert_eq!(g.node(move_id).inputs, vec![a.id()]);
+        assert_eq!(
+            g.node(move_id).op.destructive_input(), Some(0),
+            "Move must destroy its source so the device storage frees",
+        );
+        // reload is an Op::Copy{Cpu} (src_device passed in) reading mv
         assert!(matches!(g.node(reload_id).op, Op::Copy { .. }));
-        assert_eq!(g.node(reload_id).inputs, vec![cpu_copy_id]);
+        assert_eq!(g.node(reload_id).inputs, vec![move_id]);
         // c's input was rewired
         assert_eq!(g.node(c.id()).inputs, vec![reload_id],
             "post-gap consumer should read from reload, not candidate directly");
