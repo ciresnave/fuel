@@ -244,6 +244,7 @@ mod mkl;
 pub mod factories;
 pub mod inference_context;
 pub mod pipelined_bridge;
+pub mod planner;
 pub mod judge;
 pub mod npy;
 pub mod probe;
