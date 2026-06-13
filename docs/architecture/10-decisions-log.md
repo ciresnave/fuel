@@ -249,6 +249,24 @@ Cross-references are fine — an architecture-decision-log entry can link to the
 
 ---
 
+## 2026-06-13 — Baseline Judge data is bundled in-package (supersedes opt-in download for the baseline path)
+
+**Sections affected**: 06 (runtime — Local Judge baseline initialization), 08 (pattern-harvest — telemetry posture, clarification only).
+**Phase / PR**: design decision — no code yet.
+**Bumped to**: 06 (minor, when the section is next revised); recorded here ahead of the section edit.
+
+**What changed**: the original plan (decision 20, "Local Judge baseline initialization") had a fresh install *optionally download* a community-aggregated baseline profile for its hardware fingerprint. This reverses that for the baseline path: **a baseline Judge dataset is bundled in the Fuel package itself** so a fresh install starts with empirical priors with no network access required. Local profiling + the new online/idle-time measurement path (see ROADMAP §"Online Judge cost feedback" / the expected-vs-real dispatch check) still refine it on the user's exact hardware over time. Telemetry **upload** stays strictly opt-in (unchanged); this decision is about what ships *down* in the box, not what flows *up*.
+
+**Why**: Fuel should "just work" for almost all users, including those with no/limited internet access (rare in the U.S., common in places like Nigeria). An opt-in *download* of baseline data would make a Fuel-based program effectively unusable offline (the cold-start cost model would be static-only). Bundling the data removes that dependency. The user explicitly accepted the change from the earlier opt-in-download plan to achieve broad usability.
+
+**Relationship to the "not bundled hardware-specific cache distribution" non-goal (09)**: no conflict. That non-goal rejects auto-distributing the *optimization cache* (a plan keyed to an exact hardware fingerprint, where a mismatch is silently wrong). Baseline *Judge data* is different: it is empirical priors across hardware classes used only to *seed* the local Judge before local measurement refines it — a starting point, not an authoritative hardware-locked plan. It degrades gracefully (a near-miss hardware class is still a better prior than static-only) rather than being silently wrong.
+
+**Open sub-questions** (for when this is built): which hardware classes to ship, the size/compression budget of the bundled dataset, and whether it is a default feature that can be disabled for minimal builds. The design-discussion conclusion that online/idle-time measurement may make generic baseline data "largely unnecessary" stands as a reason to keep the bundled set modest — it accelerates cold start, it is not the long-term source of truth.
+
+**Related artifacts**: ROADMAP §"Post-wipe resume addendum" follow-ups (online Judge feedback; expected-vs-real dispatch check); [06-runtime](06-runtime.md) §Local Judge baseline initialization (to be revised when implemented).
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.

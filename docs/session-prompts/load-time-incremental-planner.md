@@ -179,3 +179,27 @@ independence. Each is its own session prompt when reached.
 - Live RTX 4070 sweep after executor-touching stages.
 - Baracuda asks (if any kernel gaps surface) are proposed to the
   author first, never assumed.
+
+## Memory planning (must-do for larger-than-VRAM) — added 2026-06-13
+
+Larger-than-VRAM support cannot be claimed until BOTH halves exist. Today
+neither is wired into the production realize path (`insert_residency_evictions`
+is called only from tests; the placement DP prices residency only at Stage 2's
+first cut). Both are required, not optional:
+
+1. **Plan-time, liveness/capacity-aware (part of the DP + optimization).** The
+   planner sees the whole graph, so it must price device-memory *capacity* into
+   placement, size the activation pool from liveness, and refuse/relocate
+   placements that would exceed a device's budget. Extends Stage 2's
+   residency-priced placement and the Stage 5 activation-pool sizing note.
+2. **Realize-time, pressure-driven eviction/paging.** When live device-memory
+   usage crosses a `BackendRuntime` byte budget during realize, evict/page
+   (Move to host/disk, re-stage on next use) — analogous to the retired legacy
+   const-pool LRU but driven by the plan's residency annotations. Wire
+   `insert_residency_evictions` (or its planner-priced successor) into the
+   pipelined executor.
+
+Gate: a synthetic graph whose working set exceeds a configured budget must
+complete on the live GPU via Move/Copy chains (the larger-than-VRAM test).
+Until both land, `06-runtime` should state plainly that larger-than-VRAM models
+are unsupported on the pipelined executor.

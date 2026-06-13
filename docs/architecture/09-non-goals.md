@@ -10,7 +10,9 @@ This section is the negative-space companion to [01-identity](01-identity.md). T
 
 ## Not eager-first
 
-Eager execution mode (immediate evaluation as ops are constructed) hides the DAG and prevents every optimization the rest of this architecture commits to. Fuel's only execution path is lazy + explicit `.realize()`. The performance target is "lazy-realize is fast enough that an eager mode would be a regression" — not "eager is forbidden because we say so."
+Eager execution mode (immediate evaluation as ops are constructed) hides the DAG and prevents every optimization the rest of this architecture commits to. Fuel's only execution path is lazy + explicit `.realize()`.
+
+The performance target is **external, not internal**. Because fuel picks the best available implementation of every op and re-adapts to the live state of the visible devices — things eager code largely cannot do — lazy-realize should keep up with or outperform *every* eager ML framework, not merely fuel's own retired eager path. The first concrete yardstick is Candle (fuel's fork parent: near-unchanged eager Rust, near-zero porting cost): **lazy-realize fast enough that Candle's eager execution looks slow by comparison.** Beating Candle is the floor, not the goal — the same comparison is owed against llama.cpp, PyTorch, ONNX Runtime, Burn/CubeCL, and tch-rs on the parts each does well. This target lost its in-repo comparator when the hybrid eager path was retired in Phase 7.5, so it is enforced by an **out-of-repo benchmark suite** (see ROADMAP §Benchmarking) rather than "eager is forbidden because we say so." Before any non-alpha release the claim must be demonstrated with measurements against the popular frameworks and inference engines — proof, not belief.
 
 What this means concretely:
 

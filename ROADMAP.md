@@ -71,6 +71,197 @@ moves checks 2 + 4; E.3 caller migration moves check 1.
 
 ---
 
+## Post-wipe resume addendum (2026-06-13)
+
+The dev machine was wiped and reinstalled (see `docs/claude-handoff-2026-06-12.md`).
+Environment is restored: Rust 1.96 / edition 2024, CUDA 13 + Vulkan SDK installed,
+sibling path deps `../aocl` (github.com/ciresnave/aocl) and `../vulkane`
+(github.com/ciresnave/vulkane) re-cloned. **`cargo check -p fuel-dispatch` builds
+clean** (warnings only), which clears the handoff's fear that the Stage 4b WIP commit
+`303ae8ca` "may not compile" — it compiles. The resume order in the handoff stands;
+the items below are clarifications and re-prioritizations from a fresh comprehension
+sweep, recorded so they aren't lost.
+
+- **Stage 5 (structural-hash plan-fragment memoization) is the load-bearing fix for
+  production decode — raise its priority.** The measured "1.8×/token" win (commit
+  `99e26dea`) is *planning-overhead-only on a synthetic single-growing-graph loop*. The
+  production decode family (`forward_with_kv_context`) mints a **fresh `Graph` (new
+  `Arc`) every token**, and `PlanStore` keys on `Arc::as_ptr` identity, so **every
+  decode token is a full-replan store miss** today; the per-step `Planner::warm` only
+  helps the same step. Decode-step graphs are *structurally identical* step-to-step (KV
+  writes go into pre-allocated fixed-capacity buffers via `Op::WriteSlice`; only the
+  host scalar `cached_len` changes), so a structural-hash key sitting **beside** the
+  Arc-identity fast path turns decode steps back into fragment hits. Stage 5 is
+  currently **unimplemented** (docs/prompts only). Its acceptance test MUST use fresh
+  `Graph` Arcs per step (the kv-context shape), not one growing graph, and must also
+  settle the sequence-length policy (the structural hash includes exact shapes → zero
+  reuse across prompt lengths without bucketing/capacity).
+
+- **Memory planning is a two-part MUST-DO before claiming larger-than-VRAM support**
+  (spec: `docs/session-prompts/load-time-incremental-planner.md`):
+  1. **Plan-time**: liveness/capacity-aware allocation as part of the placement DP +
+     optimization — the planner sees the whole graph and must price device-memory
+     capacity into placement (activation-pool sizing, residency-priced placement
+     extended past Stage 2's first cut).
+  2. **Realize-time**: pressure-driven eviction/paging added during realize when device
+     memory usage dictates. `insert_residency_evictions` exists but is **not wired into
+     the production pipelined path** — wire it behind a `BackendRuntime` byte budget,
+     with a larger-than-VRAM gate test (a synthetic graph whose working set exceeds a
+     configured budget must complete via Move/Copy chains on the live GPU). Until both
+     land, `06-runtime` should state plainly that larger-than-VRAM models are
+     unsupported on the pipelined executor — silent thrash/failure is worse than a
+     documented limit.
+
+- **Data-dependent output shapes** — design captured in
+  `docs/session-prompts/data-dependent-shapes-design.md`. Needed before Phase 8.5
+  (`Op::NonZeroIndices`), top-k/sort, and dynamic MoE routing. Default approach:
+  capacity (upper-bound) shapes + a valid-count side output via the existing
+  multi-output bundle, downstream ops honoring count via a host-scalar param (the same
+  pattern KV cache already uses with `cached_len`); reserve symbolic-dim
+  realize-time specialization for cases where capacity is too wasteful, and host-realize
+  boundaries only at genuine host decisions (sampling). Promote to `03-ir` when built.
+
+- **Judge baseline distribution (decisions 15/16/20) is committed-but-UNBUILT.** The
+  architecture commits to `fuel cache generate --target-set`, community kernel-stat cost
+  priors, and opt-in "Local Judge baseline initialization" from a community profile
+  keyed to hardware fingerprint (`06-runtime` §Local Judge baseline init,
+  `11-persistence` §Cache generation). **None of it is implemented**: there is no
+  `fuel cache generate` CLI, no target-set code, no community/baseline fetch; a fresh
+  install's Judge starts empty and self-profiles locally. The pre-generate-and-ship plan
+  was not lost — it is unbuilt. **Open decision**: D20 is an *opt-in community download*,
+  not empirical data *bundled in the Fuel package by default*; shipping baseline Judge
+  data in-package (the original intent) is a NEW commitment that warrants its own
+  decisions-log entry. The correctness-fixture path (`Judge::with_fixtures_from`) is
+  unrelated — it ships output *values* for single-backend correctness, not latency.
+
+- **`kernel_source` in the Judge profile key: already DONE** (shipped on main:
+  `JudgeOracle::measured_latency_ns` takes it, `HashMapJudge` keys on it,
+  `JudgeAwareSelector` threads it; AOCL/MKL/portable-cpu siblings under `BackendId::Cpu`
+  rank independently). Residual: the **stale module-doc comment** at
+  `fuel-dispatch/src/ranker/judge_aware_selector.rs:40-52` still claims it isn't done and
+  must be rewritten (it caused a false audit finding). The **real** Judge-coverage gap is
+  separate and open: profiling hardcodes `DType::F32` and a square-only MatMul ladder, so
+  the decode-critical regime (bf16/f16/quantized, m=1 GEMV at realistic `(k,n)`) is
+  unmeasured and runs on static cost. Add GEMV ladders + bf16/f16/QMatMul cells.
+
+- **crates.io naming**: the collision is NOT only `fuel-core`. `fuel-core-types` and
+  `fuel-storage` are also taken by FuelLabs (the latter is an actively-maintained
+  ~1.2M-download crate in FuelLabs/fuel-vm — it will not free up even if `fuel-core` is
+  dissolved into smaller crates, because those are the very crate names). `tensor-tools`
+  is taken by upstream candle (Laurent Mazare), not FuelLabs. Every other workspace crate
+  name is free. crates.io names are globally unique regardless of domain, so "coexist
+  because FuelLabs isn't doing ML" doesn't apply to the published names. Internal
+  crate/dir names can stay through the build-out; pick published names for these four as
+  part of the pre-crates.io cleanup.
+
+### Follow-ups surfaced 2026-06-13 (design-question pass)
+
+- **`fuel-storage` placement.** Verified: it is NOT a formats/disk crate — it's a
+  ~305-line *in-memory* storage substrate (the `Storage` struct + the closed
+  `BackendStorage` enum + `alloc_cpu_zeroed`/`from_slice_cpu`); zero serialization or
+  disk I/O (format work lives in fuel-core: safetensors/pickle/npy). So it does NOT
+  belong in `fuel-formats` (wrong domain) or `fuel-graph` (wrong direction — graph is a
+  consumer). The P0.2c plan to fold `BackendStorage` into a `fuel-core-types` successor
+  is **blocked by a dependency cycle** (core-types is a leaf; the enum needs
+  `CpuStorageBytes` from fuel-cpu-backend, which already depends on core-types) — and
+  resolving it via trait objects conflicts with the perf-motivated enum-not-dyn decision.
+  Conclusion: a thin crate sitting *above* the backend crates is its architecturally
+  correct home; keep it separate (renamed off the FuelLabs-taken `fuel-storage`), and
+  only relocate as part of a deliberate "abstract BackendStorage" refactor.
+  **✅ DONE 2026-06-13**: renamed `fuel-storage` → `fuel-memory` workspace-wide (members,
+  deps, feature-forward strings, all `fuel_storage` source refs); verified — fuel-dispatch
+  + fuel-core compile clean. (Historical doc/prose references left for the deferred cleanup.)
+- **`tensor-tools` → `fuel-tensor-tools`.** It's candle's tensor-tools with imports
+  rewritten to `fuel::*`; it depends on fuel-core (not candle-core) so the crates.io
+  candle version is NOT usable, and the `tensor-tools` name is candle's anyway. It's a
+  useful GGUF/safetensors quant+inspect CLI with no internal consumers. The standing
+  "never run workspace-wide cargo" landmine + red CI are caused by it being a broken
+  default-member: three `Device::Cpu` → `Device::cpu()` API-drift sites
+  (main.rs:20/406/511). Fix = rename package to `fuel-tensor-tools`, change those 3
+  tokens, drop from `default-members`. That clears the landmine AND unblocks CI.
+  **✅ DONE 2026-06-13**: renamed to `fuel-tensor-tools`, the 3 `Device::cpu()` fixes
+  applied, dropped from `default-members`; verified (`cargo check -p fuel-tensor-tools`
+  clean). Bare `cargo check` no longer hits the tensor-tools break.
+- **Vulkan int8 4×8-bit dot product (`VK_KHR_shader_integer_dot_product`).** Verified the
+  fuel-owned Vulkan quantized path **dequantizes to f32 and does float MAC** —
+  `qmatvec_q4_0.slang` (the M=1 decode kernel, ~97% of decode matmuls) widens each 4-bit
+  nibble to f32 before the multiply; Q4_K_M/Q8_0 fully dequant to an f32 scratch then run
+  a plain f32 matmul. The backend never even enables/probes the integer-dot extension. So
+  the path captures the VRAM/bandwidth win (4-bit weights resident) but **throws away the
+  compute/int-dot win** that llama.cpp gets via q8_1-activation + DP4A/`OpSDotKHR`. The
+  repo's own `vulkan-kernel-catchup-audit.md:163` deferred this "pending a
+  `VK_KHR_shader_integer_dot_product` hardware audit" — and both dev GPUs now confirm
+  `shaderIntegerDotProduct4x8BitPacked`, so the precondition is met. Real work (enable the
+  extension/feature, add activation q8/q8_1 quantization, new Slang kernels emitting
+  `OpSDotKHR`); high-leverage for the quantized-decode / llama.cpp-benchmark goal; sequence
+  with §Benchmarking so the win is measured. CUDA already does int dot product inside
+  baracuda (int8 tensor-core MMA + GGML MMVQ q8_1) — that's a baracuda concern, not fuel.
+- **Online Judge cost feedback.** Verified the Judge is **offline-only**: a discrete
+  profiling pass over a fixed matrix (39 F32 primitives × a size ladder), read-only at
+  plan time, with NO per-dispatch writeback. Every fused/composite op (Softmax, RmsNorm,
+  Rope, FlashAttn, FusedLinear), conv, QMatMul, and all non-f32 dtypes are **never
+  measured** and keep their static cost forever. Close the gap with a **two-part,
+  GPU-tracking-free design** (owner's 2026-06-13 proposal, better-shaped than per-kernel
+  device timing): **(1) an expected-vs-real dispatch check** — compare the plan's own
+  predicted whole-sequence runtime against the measured wall-clock of `realize()` (a
+  CPU-side `Instant` around the realize boundary, which already blocks on completion; no
+  per-kernel GPU timestamps). A large mismatch means some cost estimate in that sequence is
+  wrong → flag those (op, dtype, size_class) cells. It's a cheap *detector/trigger*, not a
+  per-op correction (whole-sequence, so it localizes to the graph, not the op), and it
+  doubles as a continuous cost-model-accuracy metric for §Benchmarking. **(2) an idle-time
+  Judge pass** over op-impl cells never timed, detector-flagged cells pushed to the head of
+  the queue, so every op the user actually runs gets measured on the user's exact hardware
+  at least once — at the *real* shapes/dtypes the dispatch path recorded (this also fixes
+  the f32-square-only profiling limit). Bound it (mark cells measured + timestamp; re-profile
+  on hardware/kernel-hash change; yield to real work); feed results into the existing
+  background re-optimization at safe boundaries — never synchronous hot-path cost mutation
+  (which would kill pipelining and break within-run plan reproducibility). Pair with a
+  **bounded exploration policy** (occasionally dispatch a non-winner) — the detector + idle
+  pass measure cells, but only exploration discovers that a *non-dispatched* alternative is
+  faster. Aggregate per cell with an **EWMA / windowed median, not a raw mean** (latency is
+  right-skewed; a raw average is dragged up by tail stalls). Co-execution/contention is NOT
+  folded into per-cell cost (combinatorial blow-up) — it stays a separate concern handled by
+  the parallelism/wall-clock model + live telemetry. This is what makes "cost is
+  empirical, not predicted" true for real workloads. Note: even with this, defaulting
+  unspecified costs to 0 stays wrong — keep the pessimistic-upper-bound prior (the
+  asymmetry: over-estimate = recoverable missed opportunity; under-estimate = misallocation
+  only Judge data fixes, which never arrives for unprofiled ops).
+
+---
+
+## Benchmarking
+
+*Gated on Fuel running inference end-to-end without major speedbumps (the obviously
+incomplete parts finished). Required as proof — not belief — before any non-alpha
+release. This is the out-of-repo enforcement of the lazy-only performance bet stated in
+[01-identity](docs/architecture/01-identity.md) and [09-non-goals](docs/architecture/09-non-goals.md):
+since the in-repo eager path was retired in Phase 7.5, the comparator is now external.*
+
+The thesis is that the lazy DAG should keep up with or **outperform every eager
+framework**, because it picks the best available implementation of each op and adapts to
+live device state — things eager code largely cannot do. That claim is currently
+unproven; this program makes it falsifiable.
+
+- **First yardstick — Candle eager** (fuel's near-unchanged fork parent; near-zero
+  porting cost): same checkpoint, same machine, fuel lazy-realize vs Candle eager.
+  Target: Candle's eager looks slow by comparison. This is the floor.
+- **Beyond Candle**: apples-to-apples against llama.cpp (GGUF/quantized), PyTorch, ONNX
+  Runtime, and Burn/CubeCL + tch-rs on the parts each does well — per-op where
+  meaningful and end-to-end tokens/sec.
+- **Instrumentation the program needs (build alongside the harness)**:
+  - Per-token cost breakdown on a real anchor (graph build / topo / plan / dispatch /
+    kernel wall) on CPU and GPU — the honest test of whether the planner overhead is
+    amortized. Capture as a non-`#[ignore]` perf artifact, not folklore on stderr.
+  - A roofline floor (model bytes ÷ measured memory bandwidth) so "DRAM-bound" claims
+    are checkable rather than asserted.
+  - A quantized end-to-end tokens/sec number (Q4_0 path) — on a bandwidth-bound system
+    this is the largest single lever and the number every external evaluator asks first.
+- **Make a budget constitutional once measured**: e.g. "plan + topo + coverage cost ≤ X%
+  of measured decode-step time on the anchor suite," enforced as a perf gate, so the
+  lazy-only bet has a numeric falsifier in-repo.
+
+---
+
 ## Identity
 
 Fuel is a **layered Rust ML framework**.
