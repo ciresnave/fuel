@@ -12,7 +12,7 @@
 //!
 //! ```rust,ignore
 //! use fuel_graph::opt::{CastFusionRule, RuleRegistry};
-//! use fuel_storage::cast_fusion::cast_fusion_predicate;
+//! use fuel_memory::cast_fusion::cast_fusion_predicate;
 //!
 //! let registry = RuleRegistry::default_rules()
 //!     .with_rule(Box::new(CastFusionRule::new(cast_fusion_predicate())));

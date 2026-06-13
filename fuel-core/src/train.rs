@@ -56,7 +56,7 @@ use crate::Device;
 use fuel_core_types::{DType, Error, Result, Shape};
 use fuel_dispatch::pipelined::StorageCache;
 use fuel_graph::{Graph, Node, NodeId, Op, SharedGraph};
-use fuel_storage::Storage;
+use fuel_memory::Storage;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -268,7 +268,7 @@ impl TrainState {
                 .bt());
             }
             let storage = Arc::new(RwLock::new(
-                fuel_storage::from_slice_cpu::<f32>(&p.initial_data),
+                fuel_memory::from_slice_cpu::<f32>(&p.initial_data),
             ));
             params.insert(p.name.clone(), (storage, p.shape.clone()));
             param_order.push(p.name.clone());
@@ -279,10 +279,10 @@ impl TrainState {
                     // m and v start at zero, same shape and dtype as the param.
                     let n = p.shape.elem_count();
                     let m = Arc::new(RwLock::new(
-                        fuel_storage::alloc_cpu_zeroed(DType::F32, n)?,
+                        fuel_memory::alloc_cpu_zeroed(DType::F32, n)?,
                     ));
                     let v = Arc::new(RwLock::new(
-                        fuel_storage::alloc_cpu_zeroed(DType::F32, n)?,
+                        fuel_memory::alloc_cpu_zeroed(DType::F32, n)?,
                     ));
                     OptState::AdamW { m, v }
                 }

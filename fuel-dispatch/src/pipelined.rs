@@ -21,10 +21,10 @@
 //! `fuel_graph::Graph::storage_map` uses the legacy
 //! `fuel_core_types::Storage` (the `Box<dyn DynBackendStorage>`
 //! newtype). The pipelined executor uses the new
-//! `fuel_storage::Storage` (BackendStorage enum + dtype). During
+//! `fuel_memory::Storage` (BackendStorage enum + dtype). During
 //! the migration the two coexist — neither is converted on the fly.
 //! The pipelined executor takes pre-realized inputs as a
-//! `HashMap<NodeId, Arc<RwLock<fuel_storage::Storage>>>` rather
+//! `HashMap<NodeId, Arc<RwLock<fuel_memory::Storage>>>` rather
 //! than reading from the graph's storage_map. Phase D unifies the
 //! two paths once kernel migration completes.
 //!
@@ -50,7 +50,7 @@ use crate::dispatch::global_bindings;
 use crate::kernel::{KernelBindingTable, KernelDTypes, OpParams};
 use crate::plan::ExecutionPlan;
 use crate::ranker::RuntimeSelector;
-use fuel_storage::Storage;
+use fuel_memory::Storage;
 
 /// Map from NodeId to a realized Storage Arc. Used both as the
 /// input cache (passed in by the caller for pre-realized leaves)
@@ -3211,7 +3211,7 @@ fn execute_work_item(
                         slot, producer, bundle.len(),
                     )).bt()
                 })?;
-                use fuel_storage::BackendStorage;
+                use fuel_memory::BackendStorage;
                 match &guard.inner {
                     BackendStorage::Cpu(cpu_bytes) => {
                         let src_bytes = cpu_bytes.bytes();
@@ -3226,7 +3226,7 @@ fn execute_work_item(
                         let owned = fuel_cpu_backend::CpuStorageBytes::from_bytes(
                             &src_bytes[sv.byte_offset..end],
                         );
-                        fuel_storage::Storage::new(
+                        fuel_memory::Storage::new(
                             BackendStorage::Cpu(owned),
                             sv.dtype,
                         )
@@ -3236,7 +3236,7 @@ fn execute_work_item(
                         let dst = cuda_bytes.slot_copy_to_new(
                             sv.byte_offset, sv.len_bytes(),
                         )?;
-                        fuel_storage::Storage::new(
+                        fuel_memory::Storage::new(
                             BackendStorage::Cuda(dst),
                             sv.dtype,
                         )
@@ -3257,7 +3257,7 @@ fn execute_work_item(
                         let dst = backend.slot_copy_to_new_handle(
                             vk_bytes, sv.byte_offset, sv.len_bytes(),
                         )?;
-                        fuel_storage::Storage::new(
+                        fuel_memory::Storage::new(
                             BackendStorage::Vulkan(dst),
                             sv.dtype,
                         )
@@ -3475,7 +3475,7 @@ fn execute_work_item(
                 // on CPU returns zero-init storage; the following
                 // Op::ZeroFill is a redundant memset the optimizer
                 // can elide and LLVM folds away regardless.
-                DeviceLocation::Cpu => fuel_storage::alloc_cpu_zeroed(item.dtype, item.elem_count)?,
+                DeviceLocation::Cpu => fuel_memory::alloc_cpu_zeroed(item.dtype, item.elem_count)?,
                 #[cfg(feature = "cuda")]
                 DeviceLocation::Cuda { gpu_id } => {
                     let cuda_dev = find_cuda_device_in_cache(cache, *gpu_id)
@@ -3495,7 +3495,7 @@ fn execute_work_item(
                     // uninit bytes.
                     let cuda_bytes =
                         fuel_cuda_backend::CudaStorageBytes::alloc_uninit(&cuda_dev, n_bytes)?;
-                    Storage::new(fuel_storage::BackendStorage::Cuda(cuda_bytes), item.dtype)
+                    Storage::new(fuel_memory::BackendStorage::Cuda(cuda_bytes), item.dtype)
                 }
                 #[cfg(not(feature = "cuda"))]
                 DeviceLocation::Cuda { .. } => {
@@ -3522,7 +3522,7 @@ fn execute_work_item(
                     // Op::ZeroFill (vkCmdFillBuffer) for the
                     // initialization. Faster KV-cache init on Vulkan.
                     let vk_bytes = backend.alloc_bytes_handle(n_bytes)?;
-                    Storage::new(fuel_storage::BackendStorage::Vulkan(vk_bytes), item.dtype)
+                    Storage::new(fuel_memory::BackendStorage::Vulkan(vk_bytes), item.dtype)
                 }
                 #[cfg(not(feature = "vulkan"))]
                 DeviceLocation::Vulkan { .. } => {
@@ -3575,16 +3575,16 @@ fn execute_work_item(
                     .write()
                     .map_err(|_| poisoned("ZeroFill destination storage"))?;
                 match &mut guard.inner {
-                    fuel_storage::BackendStorage::Cpu(c) => {
+                    fuel_memory::BackendStorage::Cpu(c) => {
                         let bytes = c.bytes_mut();
                         bytes.fill(0);
                     }
                     #[cfg(feature = "cuda")]
-                    fuel_storage::BackendStorage::Cuda(c) => {
+                    fuel_memory::BackendStorage::Cuda(c) => {
                         c.zero_async()?;
                     }
                     #[cfg(feature = "vulkan")]
-                    fuel_storage::BackendStorage::Vulkan(v) => {
+                    fuel_memory::BackendStorage::Vulkan(v) => {
                         let backend = v.backend().ok_or_else(|| {
                             Error::Msg(
                                 "Op::ZeroFill on Vulkan: input has no \
@@ -3731,7 +3731,7 @@ fn execute_work_item(
             let n_bytes = item.elem_count * item.dtype.size_in_bytes();
             let output = match target_location {
                 DeviceLocation::Cpu => {
-                    fuel_storage::alloc_cpu_zeroed(item.dtype, item.elem_count)?
+                    fuel_memory::alloc_cpu_zeroed(item.dtype, item.elem_count)?
                 }
                 #[cfg(feature = "cuda")]
                 DeviceLocation::Cuda { gpu_id } => {
@@ -3747,7 +3747,7 @@ fn execute_work_item(
                         )).bt())?;
                     let cuda_bytes =
                         fuel_cuda_backend::CudaStorageBytes::alloc_uninit(&cuda_dev, n_bytes)?;
-                    Storage::new(fuel_storage::BackendStorage::Cuda(cuda_bytes), item.dtype)
+                    Storage::new(fuel_memory::BackendStorage::Cuda(cuda_bytes), item.dtype)
                 }
                 #[cfg(not(feature = "cuda"))]
                 DeviceLocation::Cuda { .. } => {
@@ -3769,7 +3769,7 @@ fn execute_work_item(
                             gpu_id,
                         )).bt())?;
                     let vk_bytes = backend.alloc_bytes_handle(n_bytes)?;
-                    Storage::new(fuel_storage::BackendStorage::Vulkan(vk_bytes), item.dtype)
+                    Storage::new(fuel_memory::BackendStorage::Vulkan(vk_bytes), item.dtype)
                 }
                 #[cfg(not(feature = "vulkan"))]
                 DeviceLocation::Vulkan { .. } => {
@@ -3804,7 +3804,7 @@ fn execute_work_item(
             // `release_id` resolves rather than failing. The actual
             // deallocation of `inputs[0]` is driven by the realize
             // loop's `destructive_input` cleanup (Phase B).
-            let marker = fuel_storage::alloc_cpu_zeroed(item.dtype, 0)?;
+            let marker = fuel_memory::alloc_cpu_zeroed(item.dtype, 0)?;
             cache.insert(item.node_id, Arc::new(RwLock::new(marker)));
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(())
@@ -3953,7 +3953,7 @@ fn execute_work_item(
                 None => (item.elem_count, None),
             };
             let output = match item.target_backend {
-                BackendId::Cpu => fuel_storage::alloc_cpu_zeroed(item.dtype, alloc_elem_count)?,
+                BackendId::Cpu => fuel_memory::alloc_cpu_zeroed(item.dtype, alloc_elem_count)?,
                 #[cfg(feature = "cuda")]
                 BackendId::Cuda => {
                     let first_in = input_arcs.first().ok_or_else(|| {
@@ -3966,7 +3966,7 @@ fn execute_work_item(
                     })?;
                     let guard = first_in.read().map_err(|_| poisoned("input storage"))?;
                     let cuda_in = match &guard.inner {
-                        fuel_storage::BackendStorage::Cuda(c) => c,
+                        fuel_memory::BackendStorage::Cuda(c) => c,
                         other => {
                             return Err(Error::Msg(format!(
                                 "PipelinedExecutor: kernel {:?} target_backend=Cuda but \
@@ -3981,7 +3981,7 @@ fn execute_work_item(
                     let n_bytes = alloc_elem_count * item.dtype.size_in_bytes();
                     let cuda_bytes =
                         fuel_cuda_backend::CudaStorageBytes::alloc(cuda_in.device(), n_bytes)?;
-                    fuel_storage::Storage::new(fuel_storage::BackendStorage::Cuda(cuda_bytes), item.dtype)
+                    fuel_memory::Storage::new(fuel_memory::BackendStorage::Cuda(cuda_bytes), item.dtype)
                 }
                 #[cfg(feature = "vulkan")]
                 BackendId::Vulkan => {
@@ -4002,7 +4002,7 @@ fn execute_work_item(
                     })?;
                     let guard = first_in.read().map_err(|_| poisoned("input storage"))?;
                     let vk_in = match &guard.inner {
-                        fuel_storage::BackendStorage::Vulkan(v) => v,
+                        fuel_memory::BackendStorage::Vulkan(v) => v,
                         other => {
                             return Err(Error::Msg(format!(
                                 "PipelinedExecutor: kernel {:?} target_backend=Vulkan but \
@@ -4028,7 +4028,7 @@ fn execute_work_item(
                     })?;
                     let n_bytes = alloc_elem_count * item.dtype.size_in_bytes();
                     let vk_bytes = backend.alloc_bytes_handle(n_bytes)?;
-                    fuel_storage::Storage::new(fuel_storage::BackendStorage::Vulkan(vk_bytes), item.dtype)
+                    fuel_memory::Storage::new(fuel_memory::BackendStorage::Vulkan(vk_bytes), item.dtype)
                 }
                 other => {
                     return Err(Error::Msg(format!(
@@ -4166,7 +4166,7 @@ fn find_cuda_device_in_cache(
 ) -> Option<fuel_cuda_backend::CudaDevice> {
     for arc in cache.values() {
         let guard = arc.read().ok()?;
-        if let fuel_storage::BackendStorage::Cuda(c) = &guard.inner {
+        if let fuel_memory::BackendStorage::Cuda(c) = &guard.inner {
             // CudaDevice carries its DeviceLocation (gpu_id ordinal)
             // through `location()`; match against the target gpu_id.
             // Multi-GPU future work can refine the match; today's
@@ -4189,7 +4189,7 @@ fn find_vulkan_backend_in_cache(
 ) -> Option<std::sync::Arc<fuel_vulkan_backend::VulkanBackend>> {
     for arc in cache.values() {
         let guard = arc.read().ok()?;
-        if let fuel_storage::BackendStorage::Vulkan(v) = &guard.inner {
+        if let fuel_memory::BackendStorage::Vulkan(v) = &guard.inner {
             if let Some(backend) = v.backend() {
                 if backend.gpu_id == gpu_id {
                     return Some(backend.clone());
@@ -4219,12 +4219,12 @@ fn auto_contiguize(
     let dtype = in_guard.dtype;
     let dtype_size = dtype.size_in_bytes();
     let new_storage = match &in_guard.inner {
-        fuel_storage::BackendStorage::Cpu(c) => {
+        fuel_memory::BackendStorage::Cpu(c) => {
             let new_bytes = fuel_cpu_backend::byte_kernels::contiguize_cpu(c, layout, dtype_size)?;
-            Storage::new(fuel_storage::BackendStorage::Cpu(new_bytes), dtype)
+            Storage::new(fuel_memory::BackendStorage::Cpu(new_bytes), dtype)
         }
         #[cfg(feature = "cuda")]
-        fuel_storage::BackendStorage::Cuda(c) => {
+        fuel_memory::BackendStorage::Cuda(c) => {
             // Native baracuda contiguize (alpha.29). Byte-width-
             // dispatched: 1/2/4/8/16 byte elements all route to the
             // appropriate kernel. Handles signed strides (Flip),
@@ -4240,10 +4240,10 @@ fn auto_contiguize(
                 fuel_cuda_backend::baracuda::contiguize::contiguize_to_fresh(
                     c, layout, dtype_size,
                 )?;
-            Storage::new(fuel_storage::BackendStorage::Cuda(contig), dtype)
+            Storage::new(fuel_memory::BackendStorage::Cuda(contig), dtype)
         }
         #[cfg(feature = "vulkan")]
-        fuel_storage::BackendStorage::Vulkan(v) => {
+        fuel_memory::BackendStorage::Vulkan(v) => {
             // V.1.B stopgap: D2H → CPU contiguize_cpu → H2D. Mirrors
             // the pre-alpha.29 CUDA fallback. V.3.2 of the Vulkan
             // catch-up writes a native Slang contiguize kernel (with
@@ -4269,7 +4269,7 @@ fn auto_contiguize(
             )?;
             let host_contig_bytes = contig_cpu.bytes().to_vec();
             let vk_bytes = backend.upload_bytes_handle(&host_contig_bytes)?;
-            Storage::new(fuel_storage::BackendStorage::Vulkan(vk_bytes), dtype)
+            Storage::new(fuel_memory::BackendStorage::Vulkan(vk_bytes), dtype)
         }
         #[allow(unreachable_patterns)]
         _ => {
@@ -4295,7 +4295,7 @@ mod tests {
     /// the executor adopts the input Storage Arc unchanged.
     #[test]
     fn op_contiguize_zero_copy_on_contiguous_input() {
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (const_id, contig_id) = {
@@ -4343,7 +4343,7 @@ mod tests {
         // original buffer; Op::Contiguize on the transpose
         // materializes contiguous bytes matching the transposed
         // logical order.
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (const_id, _transpose_id, contig_id) = {
@@ -4376,7 +4376,7 @@ mod tests {
             PipelinedExecutor::realize(graph, contig_id, inputs).expect("realize");
 
         let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             c
         } else {
             panic!("expected Cpu storage");
@@ -4395,8 +4395,8 @@ mod tests {
     /// expected sum bytes.
     #[test]
     fn pipelined_realize_const_const_add() {
-        let lhs_storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
-        let rhs_storage = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
+        let lhs_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
+        let rhs_storage = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (lhs_id, rhs_id, add_id) = {
@@ -4431,7 +4431,7 @@ mod tests {
             PipelinedExecutor::realize(graph, add_id, inputs).expect("realize");
 
         let guard = result_arc.read().unwrap();
-        if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().expect("f32 cast");
             assert_eq!(typed, &[11.0, 22.0, 33.0]);
         } else {
@@ -4471,11 +4471,11 @@ mod tests {
         let mut inputs = StorageCache::new();
         inputs.insert(
             lhs_id,
-            Arc::new(RwLock::new(fuel_storage::from_slice_cpu(&[1.0_f32, 2.0]))),
+            Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[1.0_f32, 2.0]))),
         );
         inputs.insert(
             rhs_id,
-            Arc::new(RwLock::new(fuel_storage::from_slice_cpu(&[3.0_f32, 4.0]))),
+            Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[3.0_f32, 4.0]))),
         );
 
         let result = PipelinedExecutor::realize(graph, add_id, inputs);
@@ -4491,7 +4491,7 @@ mod tests {
     /// without calling any kernel.
     #[test]
     fn pipelined_realize_const_only() {
-        let storage = fuel_storage::from_slice_cpu(&[5.0_f32, 6.0, 7.0]);
+        let storage = fuel_memory::from_slice_cpu(&[5.0_f32, 6.0, 7.0]);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let const_id = {
@@ -4510,7 +4510,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, const_id, inputs).expect("realize const");
         let guard = result_arc.read().unwrap();
-        if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
             assert_eq!(typed, &[5.0, 6.0, 7.0]);
         }
@@ -4539,7 +4539,7 @@ mod tests {
     /// dispatch wrapper + kernel through the pipelined executor.
     #[test]
     fn pipelined_realize_const_relu() {
-        let storage = fuel_storage::from_slice_cpu(&[-1.0_f32, 0.0, 0.5, -3.5, 7.25]);
+        let storage = fuel_memory::from_slice_cpu(&[-1.0_f32, 0.0, 0.5, -3.5, 7.25]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, relu_id) = {
             let mut g = graph.write().unwrap();
@@ -4564,7 +4564,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, relu_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().expect("f32 cast");
             assert_eq!(typed, &[0.0, 0.0, 0.5, 0.0, 7.25]);
         }
@@ -4575,9 +4575,9 @@ mod tests {
     /// that intermediates flow through the cache as expected.
     #[test]
     fn pipelined_realize_chained_binary_ops() {
-        let a_storage = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0]);
-        let b_storage = fuel_storage::from_slice_cpu(&[3.0_f32, 5.0]);
-        let c_storage = fuel_storage::from_slice_cpu(&[2.0_f32, 4.0]);
+        let a_storage = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0]);
+        let b_storage = fuel_memory::from_slice_cpu(&[3.0_f32, 5.0]);
+        let c_storage = fuel_memory::from_slice_cpu(&[2.0_f32, 4.0]);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (a_id, b_id, c_id, sub_id, mul_id, div_id) = {
@@ -4624,7 +4624,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, div_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
             assert!((typed[0] - (14.0_f32 / 3.0)).abs() < 1e-6);
             assert!((typed[1] - 12.0).abs() < 1e-6);
@@ -4637,7 +4637,7 @@ mod tests {
     #[test]
     fn pipelined_realize_transpose_is_metadata_only() {
         // shape [2, 3]; transpose → shape [3, 2], strided
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, t_id) = {
             let mut g = graph.write().unwrap();
@@ -4678,7 +4678,7 @@ mod tests {
     fn pipelined_realize_flip_is_metadata_only() {
         // shape [3, 4]; flip dim 0 → shape [3, 4], stride [-4, 1], offset 8.
         let data: Vec<f32> = (1..=12).map(|x| x as f32).collect();
-        let storage = fuel_storage::from_slice_cpu(&data);
+        let storage = fuel_memory::from_slice_cpu(&data);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, f_id) = {
             let mut g = graph.write().unwrap();
@@ -4712,7 +4712,7 @@ mod tests {
     fn pipelined_realize_permute_is_metadata_only() {
         // shape [2, 3, 4]; permute axes [2, 0, 1] → shape [4, 2, 3]
         let data: Vec<f32> = (1..=24).map(|x| x as f32).collect();
-        let storage = fuel_storage::from_slice_cpu(&data);
+        let storage = fuel_memory::from_slice_cpu(&data);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, p_id) = {
             let mut g = graph.write().unwrap();
@@ -4745,7 +4745,7 @@ mod tests {
     /// bytes encode the widened values.
     #[test]
     fn pipelined_realize_cast_f32_to_f64() {
-        let storage = fuel_storage::from_slice_cpu(&[1.5_f32, -2.25, 100.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.5_f32, -2.25, 100.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, c_id) = {
             let mut g = graph.write().unwrap();
@@ -4769,7 +4769,7 @@ mod tests {
 
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F64);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[1.5_f64, -2.25, 100.0]);
@@ -4781,7 +4781,7 @@ mod tests {
     /// Inputs chosen to round-trip exactly through bf16.
     #[test]
     fn pipelined_realize_cast_round_trip_via_bf16() {
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, -3.0, 0.5]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, -3.0, 0.5]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, c1_id, c2_id) = {
             let mut g = graph.write().unwrap();
@@ -4809,7 +4809,7 @@ mod tests {
             PipelinedExecutor::realize(graph, c2_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F32);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0_f32, 2.0, -3.0, 0.5]);
@@ -4823,7 +4823,7 @@ mod tests {
     fn pipelined_realize_slice_is_metadata_only() {
         // shape [5]; slice dim 0 from index 1 with len 3 → shape [3]
         // Source: [10, 20, 30, 40, 50]; slice → [20, 30, 40]
-        let storage = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0, 50.0]);
+        let storage = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0, 50.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, s_id) = {
             let mut g = graph.write().unwrap();
@@ -4862,7 +4862,7 @@ mod tests {
     /// through Op::Slice. Sum of `[20, 30, 40]` is 90.
     #[test]
     fn pipelined_realize_slice_then_sum_all() {
-        let storage = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0, 50.0]);
+        let storage = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0, 50.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, s_id, sum_id) = {
             let mut g = graph.write().unwrap();
@@ -4890,7 +4890,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[90.0]);
@@ -4903,7 +4903,7 @@ mod tests {
     /// data ordering ([4, 3, 2, 1]) is correctly seen by the kernel.
     #[test]
     fn pipelined_realize_flip_then_relu_materializes_in_reverse() {
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, _f_id, r_id) = {
             let mut g = graph.write().unwrap();
@@ -4928,7 +4928,7 @@ mod tests {
         let (result_arc, result_layout) =
             PipelinedExecutor::realize(graph, r_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[4.0, 3.0, 2.0, 1.0]);
@@ -4942,7 +4942,7 @@ mod tests {
     #[test]
     fn pipelined_realize_broadcast_is_metadata_only() {
         // shape [3]; broadcast to [4, 3] — leading dim is 0-stride
-        let storage = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
+        let storage = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, b_id) = {
             let mut g = graph.write().unwrap();
@@ -4979,8 +4979,8 @@ mod tests {
     fn pipelined_realize_matmul_2x3_times_3x2() {
         // [[1, 2, 3], [4, 5, 6]] @ [[7, 8], [9, 10], [11, 12]]
         //   = [[58, 64], [139, 154]]
-        let lhs_storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let rhs_storage = fuel_storage::from_slice_cpu(&[7.0_f32, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let lhs_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let rhs_storage = fuel_memory::from_slice_cpu(&[7.0_f32, 8.0, 9.0, 10.0, 11.0, 12.0]);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (lhs_id, rhs_id, mm_id) = {
@@ -5010,7 +5010,7 @@ mod tests {
         assert!(result_layout.is_contiguous());
 
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[58.0, 64.0, 139.0, 154.0]);
@@ -5021,11 +5021,11 @@ mod tests {
     /// `batch_count` and produces concatenated outputs.
     #[test]
     fn pipelined_realize_matmul_batched_2x_2x2_times_2x2() {
-        let lhs_storage = fuel_storage::from_slice_cpu(&[
+        let lhs_storage = fuel_memory::from_slice_cpu(&[
             1.0_f32, 2.0, 3.0, 4.0, // batch 0
             1.0, 0.0, 0.0, 1.0,     // batch 1 (identity)
         ]);
-        let rhs_storage = fuel_storage::from_slice_cpu(&[
+        let rhs_storage = fuel_memory::from_slice_cpu(&[
             5.0_f32, 6.0, 7.0, 8.0, // batch 0
             10.0, 20.0, 30.0, 40.0, // batch 1
         ]);
@@ -5058,7 +5058,7 @@ mod tests {
         assert!(result_layout.is_contiguous());
 
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         // batch 0: [[1,2],[3,4]] @ [[5,6],[7,8]] = [[19,22],[43,50]]
@@ -5074,8 +5074,8 @@ mod tests {
     /// (AddElementwise, F64) to the f64 wrapper/kernel.
     #[test]
     fn pipelined_realize_add_f64() {
-        let lhs = fuel_storage::from_slice_cpu(&[1.0_f64, 2.0, 3.0]);
-        let rhs = fuel_storage::from_slice_cpu(&[10.0_f64, 20.0, 30.0]);
+        let lhs = fuel_memory::from_slice_cpu(&[1.0_f64, 2.0, 3.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[10.0_f64, 20.0, 30.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -5100,7 +5100,7 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F64);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[11.0_f64, 22.0, 33.0]);
@@ -5114,8 +5114,8 @@ mod tests {
     /// (`NaN == NaN` is false).
     #[test]
     fn pipelined_realize_eq_f32_to_u8_mask() {
-        let lhs = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, f32::NAN, 0.0]);
-        let rhs = fuel_storage::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -0.0]);
+        let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, f32::NAN, 0.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, eq_id) = {
             let mut g = graph.write().unwrap();
@@ -5141,7 +5141,7 @@ mod tests {
             PipelinedExecutor::realize(graph, eq_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U8);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let mask: &[u8] = c.as_slice().expect("u8 view");
@@ -5158,8 +5158,8 @@ mod tests {
     /// `NaN != NaN` per IEEE-754).
     #[test]
     fn pipelined_realize_ne_f32_to_u8_mask() {
-        let lhs = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, f32::NAN, 0.0]);
-        let rhs = fuel_storage::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -0.0]);
+        let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, f32::NAN, 0.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, ne_id) = {
             let mut g = graph.write().unwrap();
@@ -5185,7 +5185,7 @@ mod tests {
             PipelinedExecutor::realize(graph, ne_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U8);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let mask: &[u8] = c.as_slice().expect("u8 view");
@@ -5200,8 +5200,8 @@ mod tests {
     /// `0`).
     #[test]
     fn pipelined_realize_lt_f32_to_u8_mask() {
-        let lhs = fuel_storage::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -1.0]);
-        let rhs = fuel_storage::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0,      0.0]);
+        let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -1.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0,      0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, lt_id) = {
             let mut g = graph.write().unwrap();
@@ -5227,7 +5227,7 @@ mod tests {
             PipelinedExecutor::realize(graph, lt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U8);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let mask: &[u8] = c.as_slice().expect("u8 view");
@@ -5240,8 +5240,8 @@ mod tests {
     /// (`5.0 <= 5.0` = 1, vs Lt's `5.0 < 5.0` = 0). NaN unordered → 0.
     #[test]
     fn pipelined_realize_le_f32_to_u8_mask() {
-        let lhs = fuel_storage::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -1.0]);
-        let rhs = fuel_storage::from_slice_cpu(&[2.0_f32, 5.0, 2.0, 0.0,      0.0]);
+        let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 5.0, 3.0, f32::NAN, -1.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 2.0, 0.0,      0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, le_id) = {
             let mut g = graph.write().unwrap();
@@ -5267,7 +5267,7 @@ mod tests {
             PipelinedExecutor::realize(graph, le_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U8);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let mask: &[u8] = c.as_slice().expect("u8 view");
@@ -5280,8 +5280,8 @@ mod tests {
     /// `0`. NaN unordered → `0`.
     #[test]
     fn pipelined_realize_gt_f32_to_u8_mask() {
-        let lhs = fuel_storage::from_slice_cpu(&[3.0_f32, 5.0, 2.0, f32::NAN, 1.0]);
-        let rhs = fuel_storage::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0,      0.0]);
+        let lhs = fuel_memory::from_slice_cpu(&[3.0_f32, 5.0, 2.0, f32::NAN, 1.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0,      0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, gt_id) = {
             let mut g = graph.write().unwrap();
@@ -5307,7 +5307,7 @@ mod tests {
             PipelinedExecutor::realize(graph, gt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U8);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let mask: &[u8] = c.as_slice().expect("u8 view");
@@ -5322,8 +5322,8 @@ mod tests {
     /// coverage.
     #[test]
     fn pipelined_realize_ge_f32_to_u8_mask() {
-        let lhs = fuel_storage::from_slice_cpu(&[3.0_f32, 5.0, 2.0, f32::NAN, 0.0]);
-        let rhs = fuel_storage::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0,      0.0]);
+        let lhs = fuel_memory::from_slice_cpu(&[3.0_f32, 5.0, 2.0, f32::NAN, 0.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[2.0_f32, 5.0, 3.0, 0.0,      0.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, ge_id) = {
             let mut g = graph.write().unwrap();
@@ -5349,7 +5349,7 @@ mod tests {
             PipelinedExecutor::realize(graph, ge_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U8);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let mask: &[u8] = c.as_slice().expect("u8 view");
@@ -5363,8 +5363,8 @@ mod tests {
     /// `(EqualElementwise, [F64, F64, U8], Cpu)`).
     #[test]
     fn pipelined_realize_eq_f64_to_u8_mask() {
-        let lhs = fuel_storage::from_slice_cpu(&[1.0_f64, 2.0, 3.0]);
-        let rhs = fuel_storage::from_slice_cpu(&[1.0_f64, 2.0, 4.0]);
+        let lhs = fuel_memory::from_slice_cpu(&[1.0_f64, 2.0, 3.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[1.0_f64, 2.0, 4.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, eq_id) = {
             let mut g = graph.write().unwrap();
@@ -5390,7 +5390,7 @@ mod tests {
             PipelinedExecutor::realize(graph, eq_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U8);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let mask: &[u8] = c.as_slice().expect("u8 view");
@@ -5405,9 +5405,9 @@ mod tests {
     fn pipelined_realize_where_f32_picks_per_slot_from_u8_mask() {
         // cond = [1, 0, 1, 0, 1]; a = [1, 2, 3, 4, 5]; b = [10, 20, 30, 40, 50]
         // expected = [1, 20, 3, 40, 5]
-        let cond_storage = fuel_storage::from_slice_cpu(&[1u8, 0, 1, 0, 1]);
-        let a_storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0]);
-        let b_storage = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0, 50.0]);
+        let cond_storage = fuel_memory::from_slice_cpu(&[1u8, 0, 1, 0, 1]);
+        let a_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0]);
+        let b_storage = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0, 50.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (cond_id, a_id, b_id, where_id) = {
             let mut g = graph.write().unwrap();
@@ -5438,7 +5438,7 @@ mod tests {
             PipelinedExecutor::realize(graph, where_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F32);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let out: &[f32] = c.as_slice().expect("f32 view");
@@ -5454,10 +5454,10 @@ mod tests {
         // a = [1, 2, 3]; b = [1, 5, 3] → eq = [1, 0, 1]
         // pick = [10, 20, 30]; fallback = [99, 99, 99]
         // result = [10, 99, 30]
-        let a_storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
-        let b_storage = fuel_storage::from_slice_cpu(&[1.0_f32, 5.0, 3.0]);
-        let pick_storage = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
-        let fb_storage = fuel_storage::from_slice_cpu(&[99.0_f32, 99.0, 99.0]);
+        let a_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
+        let b_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 5.0, 3.0]);
+        let pick_storage = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
+        let fb_storage = fuel_memory::from_slice_cpu(&[99.0_f32, 99.0, 99.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (a_id, b_id, pick_id, fb_id, where_id) = {
             let mut g = graph.write().unwrap();
@@ -5497,7 +5497,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, where_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let out: &[f32] = c.as_slice().expect("f32 view");
@@ -5525,15 +5525,15 @@ mod tests {
             }
         }
         // Weight tensor is U32-typed (rank-1, length = bytes/4)
-        let w_storage = fuel_storage::Storage::new(
-            fuel_storage::BackendStorage::Cpu(
+        let w_storage = fuel_memory::Storage::new(
+            fuel_memory::BackendStorage::Cpu(
                 fuel_cpu_backend::CpuStorageBytes::from_bytes(&w_bytes),
             ),
             DType::U32,
         );
 
         let act_vec: Vec<f32> = (1..=32).map(|x| x as f32).collect();
-        let act_storage = fuel_storage::from_slice_cpu(&act_vec);
+        let act_storage = fuel_memory::from_slice_cpu(&act_vec);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (act_id, w_id, mm_id) = {
@@ -5567,7 +5567,7 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F32);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let r: &[f32] = c.as_slice().unwrap();
@@ -5602,14 +5602,14 @@ mod tests {
             )
         }
         .to_vec();
-        let w_storage = fuel_storage::Storage::new(
-            fuel_storage::BackendStorage::Cpu(
+        let w_storage = fuel_memory::Storage::new(
+            fuel_memory::BackendStorage::Cpu(
                 fuel_cpu_backend::CpuStorageBytes::from_bytes(&w_bytes),
             ),
             DType::U32,
         );
         let act_vec: Vec<f32> = (1..=k).map(|x| x as f32).collect();
-        let act_storage = fuel_storage::from_slice_cpu(&act_vec);
+        let act_storage = fuel_memory::from_slice_cpu(&act_vec);
         // Reference: direct matmul through fuel_quantized.
         let mut ref_out = vec![0.0_f32; n];
         fuel_quantized::matmul::<BlockQ5_0>((1, k, n), &act_vec, &w_blocks, &mut ref_out)
@@ -5646,7 +5646,7 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let r: &[f32] = c.as_slice().unwrap();
@@ -5678,14 +5678,14 @@ mod tests {
             )
         }
         .to_vec();
-        let w_storage = fuel_storage::Storage::new(
-            fuel_storage::BackendStorage::Cpu(
+        let w_storage = fuel_memory::Storage::new(
+            fuel_memory::BackendStorage::Cpu(
                 fuel_cpu_backend::CpuStorageBytes::from_bytes(&w_bytes),
             ),
             DType::U32,
         );
         let act_vec: Vec<f32> = (1..=k).map(|x| x as f32 / 100.0).collect();
-        let act_storage = fuel_storage::from_slice_cpu(&act_vec);
+        let act_storage = fuel_memory::from_slice_cpu(&act_vec);
         let mut ref_out = vec![0.0_f32; n];
         fuel_quantized::matmul::<BlockQ6K>((1, k, n), &act_vec, &w_blocks, &mut ref_out)
             .expect("ref matmul");
@@ -5721,7 +5721,7 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let r: &[f32] = c.as_slice().unwrap();
@@ -5737,7 +5737,7 @@ mod tests {
     fn pipelined_realize_rms_norm_bf16() {
         let v: Vec<half::bf16> = [3.0_f32, 4.0]
             .iter().map(|&x| half::bf16::from_f32(x)).collect();
-        let storage = fuel_storage::from_slice_cpu(&v);
+        let storage = fuel_memory::from_slice_cpu(&v);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -5760,7 +5760,7 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::BF16);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let r: &[half::bf16] = c.as_slice().unwrap();
@@ -5780,8 +5780,8 @@ mod tests {
             .iter().map(|&x| half::bf16::from_f32(x)).collect();
         let rhs_v: Vec<half::bf16> = [1.0_f32, 0.0, 0.0, 1.0]
             .iter().map(|&x| half::bf16::from_f32(x)).collect();
-        let lhs = fuel_storage::from_slice_cpu(&lhs_v);
-        let rhs = fuel_storage::from_slice_cpu(&rhs_v);
+        let lhs = fuel_memory::from_slice_cpu(&lhs_v);
+        let rhs = fuel_memory::from_slice_cpu(&rhs_v);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, mm_id) = {
             let mut g = graph.write().unwrap();
@@ -5806,7 +5806,7 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::BF16);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let r: &[half::bf16] = c.as_slice().unwrap();
@@ -5820,7 +5820,7 @@ mod tests {
     fn pipelined_realize_sum_dim_f16() {
         let v: Vec<half::f16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
             .iter().map(|&x| half::f16::from_f32(x)).collect();
-        let storage = fuel_storage::from_slice_cpu(&v);
+        let storage = fuel_memory::from_slice_cpu(&v);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, sum_id) = {
             let mut g = graph.write().unwrap();
@@ -5840,7 +5840,7 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F16);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let r: &[half::f16] = c.as_slice().unwrap();
@@ -5855,8 +5855,8 @@ mod tests {
             .iter().map(|&x| half::bf16::from_f32(x)).collect();
         let rhs_vec: Vec<half::bf16> = [10.0_f32, 20.0, 30.0]
             .iter().map(|&x| half::bf16::from_f32(x)).collect();
-        let lhs = fuel_storage::from_slice_cpu(&lhs_vec);
-        let rhs = fuel_storage::from_slice_cpu(&rhs_vec);
+        let lhs = fuel_memory::from_slice_cpu(&lhs_vec);
+        let rhs = fuel_memory::from_slice_cpu(&rhs_vec);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -5881,7 +5881,7 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::BF16);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let r: &[half::bf16] = c.as_slice().unwrap();
@@ -5896,7 +5896,7 @@ mod tests {
     fn pipelined_realize_sqr_then_sqrt_f16() {
         let v: Vec<half::f16> = [1.0_f32, 4.0, 9.0]
             .iter().map(|&x| half::f16::from_f32(x)).collect();
-        let storage = fuel_storage::from_slice_cpu(&v);
+        let storage = fuel_memory::from_slice_cpu(&v);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, sqrt_id) = {
             let mut g = graph.write().unwrap();
@@ -5921,7 +5921,7 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, sqrt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F16);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let r: &[half::f16] = c.as_slice().unwrap();
@@ -5936,7 +5936,7 @@ mod tests {
     /// executor.
     #[test]
     fn pipelined_realize_sum_dim_f64() {
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, sum_id) = {
             let mut g = graph.write().unwrap();
@@ -5956,7 +5956,7 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F64);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[6.0_f64, 15.0]);
@@ -5965,8 +5965,8 @@ mod tests {
     /// E2E: F64 matmul through the pipelined executor.
     #[test]
     fn pipelined_realize_matmul_2x3_times_3x2_f64() {
-        let lhs = fuel_storage::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let rhs = fuel_storage::from_slice_cpu(&[7.0_f64, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let lhs = fuel_memory::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[7.0_f64, 8.0, 9.0, 10.0, 11.0, 12.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (l_id, r_id, mm_id) = {
             let mut g = graph.write().unwrap();
@@ -5991,7 +5991,7 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F64);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[58.0_f64, 64.0, 139.0, 154.0]);
@@ -6002,7 +6002,7 @@ mod tests {
     /// graph nodes carry DType::F64.
     #[test]
     fn pipelined_realize_sqr_then_sqrt_f64() {
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f64, 4.0, 9.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f64, 4.0, 9.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, sqrt_id) = {
             let mut g = graph.write().unwrap();
@@ -6027,7 +6027,7 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, sqrt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::F64);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[1.0_f64, 4.0, 9.0]);
@@ -6038,7 +6038,7 @@ mod tests {
     fn pipelined_realize_argmax_dim() {
         // input [2, 3] = [[1, 5, 2], [9, 0, 4]]
         // argmax dim=1 → [1, 0]
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 5.0, 2.0, 9.0, 0.0, 4.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 5.0, 2.0, 9.0, 0.0, 4.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -6058,7 +6058,7 @@ mod tests {
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
         assert_eq!(guard.dtype, DType::U32);
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<u32>().unwrap(), &[1u32, 0]);
@@ -6068,9 +6068,9 @@ mod tests {
     /// rank-1 base tensor at indexed positions.
     #[test]
     fn pipelined_realize_index_add_simple() {
-        let base = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
-        let indices = fuel_storage::from_slice_cpu(&[0u32, 0]);
-        let src = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0]);
+        let base = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
+        let indices = fuel_memory::from_slice_cpu(&[0u32, 0]);
+        let src = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (b_id, i_id, s_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -6099,7 +6099,7 @@ mod tests {
         inputs.insert(s_id, Arc::new(RwLock::new(src)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         // 10 + 1 + 2 = 13; 20 untouched; 30 untouched.
@@ -6113,9 +6113,9 @@ mod tests {
         // base [3, 2] = zeros; indices [2, 2] = [[0, 1], [2, 0]];
         // src [2, 2] = [[1, 2], [3, 4]]; dim=0
         // → out = [[1, 4], [0, 2], [3, 0]]
-        let base = fuel_storage::from_slice_cpu(&[0.0_f32; 6]);
-        let indices = fuel_storage::from_slice_cpu(&[0u32, 1, 2, 0]);
-        let src = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let base = fuel_memory::from_slice_cpu(&[0.0_f32; 6]);
+        let indices = fuel_memory::from_slice_cpu(&[0u32, 1, 2, 0]);
+        let src = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (b_id, i_id, s_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -6144,7 +6144,7 @@ mod tests {
         inputs.insert(s_id, Arc::new(RwLock::new(src)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 4.0, 0.0, 2.0, 3.0, 0.0]);
@@ -6157,9 +6157,9 @@ mod tests {
     fn pipelined_realize_rope_pi_over_two() {
         // x [1, 1, 4] = [1, 2, 3, 4]. cos=[0,0,0,0], sin=[1,1,1,1].
         // Expected: [-3, -4, 1, 2].
-        let x = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
-        let cos = fuel_storage::from_slice_cpu(&[0.0_f32, 0.0, 0.0, 0.0]);
-        let sin = fuel_storage::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0]);
+        let x = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let cos = fuel_memory::from_slice_cpu(&[0.0_f32, 0.0, 0.0, 0.0]);
+        let sin = fuel_memory::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, cos_id, sin_id, r_id) = {
             let mut g = graph.write().unwrap();
@@ -6192,7 +6192,7 @@ mod tests {
         inputs.insert(sin_id, Arc::new(RwLock::new(sin)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, r_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[-3.0, -4.0, 1.0, 2.0]);
@@ -6202,11 +6202,11 @@ mod tests {
     /// output [2, 3] = picks from each row by per-row indices.
     #[test]
     fn pipelined_realize_gather_inner_dim() {
-        let source = fuel_storage::from_slice_cpu(&[
+        let source = fuel_memory::from_slice_cpu(&[
             10.0_f32, 20.0, 30.0, 40.0,
             50.0, 60.0, 70.0, 80.0,
         ]);
-        let indices = fuel_storage::from_slice_cpu(&[0u32, 2, 1, 3, 0, 0]);
+        let indices = fuel_memory::from_slice_cpu(&[0u32, 2, 1, 3, 0, 0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (src_id, idx_id, g_id) = {
             let mut g = graph.write().unwrap();
@@ -6230,7 +6230,7 @@ mod tests {
         inputs.insert(idx_id, Arc::new(RwLock::new(indices)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, g_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(
@@ -6244,13 +6244,13 @@ mod tests {
     /// output is `[seq=3, d_model=3]` with the picked rows.
     #[test]
     fn pipelined_realize_index_select_embedding_lookup() {
-        let table = fuel_storage::from_slice_cpu(&[
+        let table = fuel_memory::from_slice_cpu(&[
             10.0_f32, 11.0, 12.0,    // row 0
             20.0, 21.0, 22.0,        // row 1
             30.0, 31.0, 32.0,        // row 2
             40.0, 41.0, 42.0,        // row 3
         ]);
-        let indices = fuel_storage::from_slice_cpu(&[2u32, 0, 2]);
+        let indices = fuel_memory::from_slice_cpu(&[2u32, 0, 2]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (table_id, idx_id, sel_id) = {
             let mut g = graph.write().unwrap();
@@ -6276,7 +6276,7 @@ mod tests {
             PipelinedExecutor::realize(graph, sel_id, inputs).expect("realize");
         assert_eq!(result_layout.shape().dims(), &[3, 3]);
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(
@@ -6289,7 +6289,7 @@ mod tests {
     /// has unit RMS up to the eps-induced bias.
     #[test]
     fn pipelined_realize_rms_norm_last_dim() {
-        let storage = fuel_storage::from_slice_cpu(&[
+        let storage = fuel_memory::from_slice_cpu(&[
             3.0_f32, 4.0,    // row 0: rms = sqrt(12.5)
             6.0, 8.0,        // row 1: rms = sqrt(50.0) = 5*sqrt(2)
         ]);
@@ -6315,7 +6315,7 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let result: &[f32] = c.as_slice().unwrap();
@@ -6333,7 +6333,7 @@ mod tests {
     /// unit variance.
     #[test]
     fn pipelined_realize_layer_norm_last_dim() {
-        let storage = fuel_storage::from_slice_cpu(&[
+        let storage = fuel_memory::from_slice_cpu(&[
             1.0_f32, 2.0, 3.0,
             10.0, 20.0, 30.0,
         ]);
@@ -6359,7 +6359,7 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let result: &[f32] = c.as_slice().unwrap();
@@ -6380,7 +6380,7 @@ mod tests {
     fn pipelined_realize_softmax_last_dim() {
         // Row 0: [1, 1, 1, 1] → uniform 0.25 each
         // Row 1: [0, 0, 0, 100] → effectively a one-hot at position 3
-        let storage = fuel_storage::from_slice_cpu(&[
+        let storage = fuel_memory::from_slice_cpu(&[
             1.0_f32, 1.0, 1.0, 1.0,
             0.0, 0.0, 0.0, 100.0,
         ]);
@@ -6406,7 +6406,7 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let result: &[f32] = c.as_slice().unwrap();
@@ -6431,8 +6431,8 @@ mod tests {
     /// E2E: Concat along inner dim — two [2, 3] tensors → [2, 6].
     #[test]
     fn pipelined_realize_concat_inner_dim() {
-        let a = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let b = fuel_storage::from_slice_cpu(&[7.0_f32, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let a = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = fuel_memory::from_slice_cpu(&[7.0_f32, 8.0, 9.0, 10.0, 11.0, 12.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (a_id, b_id, c_id) = {
             let mut g = graph.write().unwrap();
@@ -6458,7 +6458,7 @@ mod tests {
             PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         assert_eq!(result_layout.shape().dims(), &[2, 6]);
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(
@@ -6471,9 +6471,9 @@ mod tests {
     /// variable-arity input handling through the executor.
     #[test]
     fn pipelined_realize_concat_three_inputs_outer() {
-        let a = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0]);
-        let b = fuel_storage::from_slice_cpu(&[3.0_f32, 4.0]);
-        let c = fuel_storage::from_slice_cpu(&[5.0_f32, 6.0]);
+        let a = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0]);
+        let b = fuel_memory::from_slice_cpu(&[3.0_f32, 4.0]);
+        let c = fuel_memory::from_slice_cpu(&[5.0_f32, 6.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (a_id, b_id, c_id, cat_id) = {
             let mut g = graph.write().unwrap();
@@ -6502,7 +6502,7 @@ mod tests {
         inputs.insert(c_id, Arc::new(RwLock::new(c)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, cat_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -6512,7 +6512,7 @@ mod tests {
     /// maps it to OpKind::Affine with mul=1, add=c.
     #[test]
     fn pipelined_realize_add_scalar() {
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -6531,7 +6531,7 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[11.0, 12.0, 13.0]);
@@ -6540,7 +6540,7 @@ mod tests {
     /// E2E: Clamp — clamp values to [-2, 2].
     #[test]
     fn pipelined_realize_clamp() {
-        let storage = fuel_storage::from_slice_cpu(&[-5.0_f32, 0.5, 100.0]);
+        let storage = fuel_memory::from_slice_cpu(&[-5.0_f32, 0.5, 100.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -6559,7 +6559,7 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[-2.0, 0.5, 2.0]);
@@ -6568,8 +6568,8 @@ mod tests {
     /// E2E: Maximum — elementwise tensor max.
     #[test]
     fn pipelined_realize_maximum_elementwise() {
-        let lhs_storage = fuel_storage::from_slice_cpu(&[1.0_f32, 5.0, -3.0]);
-        let rhs_storage = fuel_storage::from_slice_cpu(&[2.0_f32, 1.0, -1.0]);
+        let lhs_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 5.0, -3.0]);
+        let rhs_storage = fuel_memory::from_slice_cpu(&[2.0_f32, 1.0, -1.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (lhs_id, rhs_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -6593,7 +6593,7 @@ mod tests {
         inputs.insert(rhs_id, Arc::new(RwLock::new(rhs_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[2.0, 5.0, -1.0]);
@@ -6606,12 +6606,12 @@ mod tests {
         // x [1, 1, 3, 3]: [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
         // weight [1, 1, 2, 2]: all-ones
         // → out [1, 1, 2, 2]: [[12, 16], [24, 28]]
-        let x_storage = fuel_storage::from_slice_cpu(&[
+        let x_storage = fuel_memory::from_slice_cpu(&[
             1.0_f32, 2.0, 3.0,
             4.0, 5.0, 6.0,
             7.0, 8.0, 9.0,
         ]);
-        let w_storage = fuel_storage::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0]);
+        let w_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0]);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, w_id, c_id) = {
@@ -6647,7 +6647,7 @@ mod tests {
         assert_eq!(result_layout.shape().dims(), &[1, 1, 2, 2]);
 
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[12.0, 16.0, 24.0, 28.0]);
@@ -6656,13 +6656,13 @@ mod tests {
     /// E2E: Conv2D with bias (3 inputs).
     #[test]
     fn pipelined_realize_conv2d_with_bias() {
-        let x_storage = fuel_storage::from_slice_cpu(&[
+        let x_storage = fuel_memory::from_slice_cpu(&[
             1.0_f32, 2.0, 3.0,
             4.0, 5.0, 6.0,
             7.0, 8.0, 9.0,
         ]);
-        let w_storage = fuel_storage::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0]);
-        let bias_storage = fuel_storage::from_slice_cpu(&[100.0_f32]);
+        let w_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0]);
+        let bias_storage = fuel_memory::from_slice_cpu(&[100.0_f32]);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, w_id, b_id, c_id) = {
@@ -6701,7 +6701,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[112.0, 116.0, 124.0, 128.0]);
@@ -6710,12 +6710,12 @@ mod tests {
     /// E2E: Conv2D in F64 — same 2x2 sum-kernel test as F32, on doubles.
     #[test]
     fn pipelined_realize_conv2d_f64() {
-        let x_storage = fuel_storage::from_slice_cpu(&[
+        let x_storage = fuel_memory::from_slice_cpu(&[
             1.0_f64, 2.0, 3.0,
             4.0, 5.0, 6.0,
             7.0, 8.0, 9.0,
         ]);
-        let w_storage = fuel_storage::from_slice_cpu(&[1.0_f64, 1.0, 1.0, 1.0]);
+        let w_storage = fuel_memory::from_slice_cpu(&[1.0_f64, 1.0, 1.0, 1.0]);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, w_id, c_id) = {
@@ -6747,7 +6747,7 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[12.0, 16.0, 24.0, 28.0]);
@@ -6760,8 +6760,8 @@ mod tests {
             .iter().map(|v| half::bf16::from_f32(*v)).collect();
         let w_data: Vec<half::bf16> = [1.0_f32, 1.0, 1.0, 1.0]
             .iter().map(|v| half::bf16::from_f32(*v)).collect();
-        let x_storage = fuel_storage::from_slice_cpu(&x_data);
-        let w_storage = fuel_storage::from_slice_cpu(&w_data);
+        let x_storage = fuel_memory::from_slice_cpu(&x_data);
+        let w_storage = fuel_memory::from_slice_cpu(&w_data);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, w_id, c_id) = {
@@ -6793,7 +6793,7 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap()
@@ -6811,8 +6811,8 @@ mod tests {
             .iter().map(|v| half::f16::from_f32(*v)).collect();
         let w_data: Vec<half::f16> = [1.0_f32, 1.0, 1.0, 1.0]
             .iter().map(|v| half::f16::from_f32(*v)).collect();
-        let x_storage = fuel_storage::from_slice_cpu(&x_data);
-        let w_storage = fuel_storage::from_slice_cpu(&w_data);
+        let x_storage = fuel_memory::from_slice_cpu(&x_data);
+        let w_storage = fuel_memory::from_slice_cpu(&w_data);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, w_id, c_id) = {
@@ -6844,7 +6844,7 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let got: Vec<f32> = c.as_slice::<half::f16>().unwrap()
@@ -6871,17 +6871,17 @@ mod tests {
     /// Same softmax math as FlashAttn → ~[8.808, 1.192].
     #[test]
     fn pipelined_realize_paged_attn_f32() {
-        let q = fuel_storage::from_slice_cpu(&[2.0_f32, 0.0]);
-        let k_cache = fuel_storage::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
-        let v_cache = fuel_storage::from_slice_cpu(&[10.0_f32, 0.0, 0.0, 10.0]);
-        let block_table_u32 = fuel_storage::Storage::new(
-            fuel_storage::BackendStorage::Cpu(
+        let q = fuel_memory::from_slice_cpu(&[2.0_f32, 0.0]);
+        let k_cache = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
+        let v_cache = fuel_memory::from_slice_cpu(&[10.0_f32, 0.0, 0.0, 10.0]);
+        let block_table_u32 = fuel_memory::Storage::new(
+            fuel_memory::BackendStorage::Cpu(
                 fuel_cpu_backend::CpuStorageBytes::from_slice(&[0_u32]),
             ),
             DType::U32,
         );
-        let context_lens_u32 = fuel_storage::Storage::new(
-            fuel_storage::BackendStorage::Cpu(
+        let context_lens_u32 = fuel_memory::Storage::new(
+            fuel_memory::BackendStorage::Cpu(
                 fuel_cpu_backend::CpuStorageBytes::from_slice(&[2_u32]),
             ),
             DType::U32,
@@ -6930,7 +6930,7 @@ mod tests {
         inputs.insert(cl_id, Arc::new(RwLock::new(context_lens_u32)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let r = c.as_slice::<f32>().unwrap();
@@ -6951,17 +6951,17 @@ mod tests {
             .iter().map(|x| half::bf16::from_f32(*x)).collect();
         let vc_v: Vec<half::bf16> = [10.0_f32, 0.0, 0.0, 10.0]
             .iter().map(|x| half::bf16::from_f32(*x)).collect();
-        let q = fuel_storage::from_slice_cpu(&q_v);
-        let k_cache = fuel_storage::from_slice_cpu(&kc_v);
-        let v_cache = fuel_storage::from_slice_cpu(&vc_v);
-        let bt = fuel_storage::Storage::new(
-            fuel_storage::BackendStorage::Cpu(
+        let q = fuel_memory::from_slice_cpu(&q_v);
+        let k_cache = fuel_memory::from_slice_cpu(&kc_v);
+        let v_cache = fuel_memory::from_slice_cpu(&vc_v);
+        let bt = fuel_memory::Storage::new(
+            fuel_memory::BackendStorage::Cpu(
                 fuel_cpu_backend::CpuStorageBytes::from_slice(&[0_u32]),
             ),
             DType::U32,
         );
-        let cl = fuel_storage::Storage::new(
-            fuel_storage::BackendStorage::Cpu(
+        let cl = fuel_memory::Storage::new(
+            fuel_memory::BackendStorage::Cpu(
                 fuel_cpu_backend::CpuStorageBytes::from_slice(&[2_u32]),
             ),
             DType::U32,
@@ -7010,7 +7010,7 @@ mod tests {
         inputs.insert(cl_id, Arc::new(RwLock::new(cl)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
@@ -7031,9 +7031,9 @@ mod tests {
     #[test]
     fn pipelined_realize_flash_attn_f32() {
         // [B=1, H=1, S=1or2, D=2]
-        let q = fuel_storage::from_slice_cpu(&[2.0_f32, 0.0]);
-        let k = fuel_storage::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
-        let v = fuel_storage::from_slice_cpu(&[10.0_f32, 0.0, 0.0, 10.0]);
+        let q = fuel_memory::from_slice_cpu(&[2.0_f32, 0.0]);
+        let k = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
+        let v = fuel_memory::from_slice_cpu(&[10.0_f32, 0.0, 0.0, 10.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (q_id, k_id, v_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -7073,7 +7073,7 @@ mod tests {
         inputs.insert(v_id, Arc::new(RwLock::new(v)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let r = c.as_slice::<f32>().unwrap();
@@ -7098,9 +7098,9 @@ mod tests {
         //   query 1: both admissible. scores = q1·k = [0, 1]
         //            softmax = [1/(e+1), e/(e+1)]
         //            out = scores · v = [(5)/(e+1) + 7e/(e+1), 6/(e+1) + 8e/(e+1)]
-        let q = fuel_storage::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
-        let k = fuel_storage::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
-        let v = fuel_storage::from_slice_cpu(&[5.0_f32, 6.0, 7.0, 8.0]);
+        let q = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
+        let k = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
+        let v = fuel_memory::from_slice_cpu(&[5.0_f32, 6.0, 7.0, 8.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (q_id, k_id, v_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -7137,7 +7137,7 @@ mod tests {
         inputs.insert(v_id, Arc::new(RwLock::new(v)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let r = c.as_slice::<f32>().unwrap();
@@ -7161,9 +7161,9 @@ mod tests {
             .iter().map(|x| half::bf16::from_f32(*x)).collect();
         let v_v: Vec<half::bf16> = [10.0_f32, 0.0, 0.0, 10.0]
             .iter().map(|x| half::bf16::from_f32(*x)).collect();
-        let q = fuel_storage::from_slice_cpu(&q_v);
-        let k = fuel_storage::from_slice_cpu(&k_v);
-        let v = fuel_storage::from_slice_cpu(&v_v);
+        let q = fuel_memory::from_slice_cpu(&q_v);
+        let k = fuel_memory::from_slice_cpu(&k_v);
+        let v = fuel_memory::from_slice_cpu(&v_v);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (q_id, k_id, v_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -7200,7 +7200,7 @@ mod tests {
         inputs.insert(v_id, Arc::new(RwLock::new(v)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
@@ -7218,9 +7218,9 @@ mod tests {
     /// + bias = [[14, 25], [20, 31]]
     #[test]
     fn pipelined_realize_fused_linear_f32() {
-        let a = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let b = fuel_storage::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0]);
-        let bias = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0]);
+        let a = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        let bias = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (a_id, b_id, bias_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -7253,7 +7253,7 @@ mod tests {
         inputs.insert(bias_id, Arc::new(RwLock::new(bias)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[14.0, 25.0, 20.0, 31.0]);
@@ -7262,9 +7262,9 @@ mod tests {
     /// E2E: FusedLinear F64 — same shape test on doubles.
     #[test]
     fn pipelined_realize_fused_linear_f64() {
-        let a = fuel_storage::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let b = fuel_storage::from_slice_cpu(&[1.0_f64, 0.0, 0.0, 1.0, 1.0, 1.0]);
-        let bias = fuel_storage::from_slice_cpu(&[10.0_f64, 20.0]);
+        let a = fuel_memory::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = fuel_memory::from_slice_cpu(&[1.0_f64, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        let bias = fuel_memory::from_slice_cpu(&[10.0_f64, 20.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (a_id, b_id, bias_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -7297,7 +7297,7 @@ mod tests {
         inputs.insert(bias_id, Arc::new(RwLock::new(bias)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[14.0, 25.0, 20.0, 31.0]);
@@ -7312,9 +7312,9 @@ mod tests {
             .iter().map(|x| half::bf16::from_f32(*x)).collect();
         let bias_v: Vec<half::bf16> = [10.0_f32, 20.0]
             .iter().map(|x| half::bf16::from_f32(*x)).collect();
-        let a = fuel_storage::from_slice_cpu(&a_v);
-        let b = fuel_storage::from_slice_cpu(&b_v);
-        let bias = fuel_storage::from_slice_cpu(&bias_v);
+        let a = fuel_memory::from_slice_cpu(&a_v);
+        let b = fuel_memory::from_slice_cpu(&b_v);
+        let bias = fuel_memory::from_slice_cpu(&bias_v);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (a_id, b_id, bias_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -7347,7 +7347,7 @@ mod tests {
         inputs.insert(bias_id, Arc::new(RwLock::new(bias)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
@@ -7361,7 +7361,7 @@ mod tests {
     /// Input [[1,2,3],[4,5,6]] → output [5,7,9].
     #[test]
     fn pipelined_realize_reduce_sum_to_f32_drops_leading_axis() {
-        let v = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let v = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -7381,7 +7381,7 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(v)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[5.0, 7.0, 9.0]);
@@ -7395,7 +7395,7 @@ mod tests {
         //          layer 1 = [[13..16],[17..20],[21..24]]
         let mut v: Vec<f32> = (1..=24).map(|x| x as f32).collect();
         let _ = &mut v;
-        let s = fuel_storage::from_slice_cpu(&v);
+        let s = fuel_memory::from_slice_cpu(&v);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -7415,7 +7415,7 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(s)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         // layer0 dim1-sum: col j = 1+5+9, 2+6+10, 3+7+11, 4+8+12 = [15,18,21,24]
@@ -7429,7 +7429,7 @@ mod tests {
     /// E2E: ReduceSumTo F64 — same drop-leading-axis test on doubles.
     #[test]
     fn pipelined_realize_reduce_sum_to_f64() {
-        let v = fuel_storage::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let v = fuel_memory::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -7449,7 +7449,7 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(v)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f64>().unwrap(), &[5.0, 7.0, 9.0]);
@@ -7460,7 +7460,7 @@ mod tests {
     fn pipelined_realize_reduce_max_to_f32_drops_leading_axis() {
         // Input [2,3]: row 0 = [1, 7, 3], row 1 = [4, 2, 6]. Max along
         // dim 0: [4, 7, 6].
-        let v = fuel_storage::from_slice_cpu(&[1.0_f32, 7.0, 3.0, 4.0, 2.0, 6.0]);
+        let v = fuel_memory::from_slice_cpu(&[1.0_f32, 7.0, 3.0, 4.0, 2.0, 6.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -7480,7 +7480,7 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(v)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[4.0, 7.0, 6.0]);
@@ -7492,7 +7492,7 @@ mod tests {
     #[test]
     fn pipelined_realize_reduce_max_to_f32_keepdim_trailing() {
         // Input [2, 3]: row maxes = [3, 6].
-        let v = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let v = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -7512,7 +7512,7 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(v)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[3.0, 6.0]);
@@ -7523,7 +7523,7 @@ mod tests {
     fn pipelined_realize_reduce_sum_to_bf16() {
         let v: Vec<half::bf16> = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]
             .iter().map(|x| half::bf16::from_f32(*x)).collect();
-        let s = fuel_storage::from_slice_cpu(&v);
+        let s = fuel_memory::from_slice_cpu(&v);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, op_id) = {
             let mut g = graph.write().unwrap();
@@ -7543,7 +7543,7 @@ mod tests {
         inputs.insert(in_id, Arc::new(RwLock::new(s)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, op_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
@@ -7562,8 +7562,8 @@ mod tests {
     ///    [3,  7, 4]]
     #[test]
     fn pipelined_realize_conv_transpose2d_f32() {
-        let x_storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
-        let w_storage = fuel_storage::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0]);
+        let x_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let w_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 1.0, 1.0, 1.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, w_id, c_id) = {
             let mut g = graph.write().unwrap();
@@ -7595,7 +7595,7 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(
@@ -7607,8 +7607,8 @@ mod tests {
     /// E2E: ConvTranspose2D F64 — same shape test.
     #[test]
     fn pipelined_realize_conv_transpose2d_f64() {
-        let x_storage = fuel_storage::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0]);
-        let w_storage = fuel_storage::from_slice_cpu(&[1.0_f64, 1.0, 1.0, 1.0]);
+        let x_storage = fuel_memory::from_slice_cpu(&[1.0_f64, 2.0, 3.0, 4.0]);
+        let w_storage = fuel_memory::from_slice_cpu(&[1.0_f64, 1.0, 1.0, 1.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, w_id, c_id) = {
             let mut g = graph.write().unwrap();
@@ -7640,7 +7640,7 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(
@@ -7656,8 +7656,8 @@ mod tests {
             .iter().map(|v| half::bf16::from_f32(*v)).collect();
         let w: Vec<half::bf16> = [1.0_f32, 1.0, 1.0, 1.0]
             .iter().map(|v| half::bf16::from_f32(*v)).collect();
-        let x_storage = fuel_storage::from_slice_cpu(&x);
-        let w_storage = fuel_storage::from_slice_cpu(&w);
+        let x_storage = fuel_memory::from_slice_cpu(&x);
+        let w_storage = fuel_memory::from_slice_cpu(&w);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, w_id, c_id) = {
             let mut g = graph.write().unwrap();
@@ -7689,7 +7689,7 @@ mod tests {
         inputs.insert(w_id, Arc::new(RwLock::new(w_storage)));
         let (result_arc, _) = PipelinedExecutor::realize(graph, c_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let got: Vec<f32> = c.as_slice::<half::bf16>().unwrap().iter().map(|v| v.to_f32()).collect();
@@ -7707,13 +7707,13 @@ mod tests {
         // lhs [4, 1, 2]: heads 0..3 are [[1,2]], [[3,4]], [[5,6]], [[7,8]]
         // rhs [2, 2, 1]: heads 0,1 are [[1],[0]], [[0],[1]]
         // Expected out [4, 1, 1]: [[1]], [[3]], [[6]], [[8]]
-        let lhs_storage = fuel_storage::from_slice_cpu(&[
+        let lhs_storage = fuel_memory::from_slice_cpu(&[
             1.0_f32, 2.0,
             3.0, 4.0,
             5.0, 6.0,
             7.0, 8.0,
         ]);
-        let rhs_storage = fuel_storage::from_slice_cpu(&[
+        let rhs_storage = fuel_memory::from_slice_cpu(&[
             1.0_f32, 0.0,
             0.0, 1.0,
         ]);
@@ -7745,7 +7745,7 @@ mod tests {
         assert_eq!(result_layout.shape().dims(), &[4, 1, 1]);
 
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 3.0, 6.0, 8.0]);
@@ -7761,8 +7761,8 @@ mod tests {
         // rhs.T = [[5, 7], [6, 8]]
         // lhs @ rhs.T = [[1*5+2*6, 1*7+2*8], [3*5+4*6, 3*7+4*8]]
         //             = [[17, 23], [39, 53]]
-        let lhs_storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
-        let rhs_storage = fuel_storage::from_slice_cpu(&[5.0_f32, 6.0, 7.0, 8.0]);
+        let lhs_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let rhs_storage = fuel_memory::from_slice_cpu(&[5.0_f32, 6.0, 7.0, 8.0]);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (lhs_id, rhs_id, t_id, mm_id) = {
@@ -7794,7 +7794,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, mm_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[17.0, 23.0, 39.0, 53.0]);
@@ -7805,7 +7805,7 @@ mod tests {
     /// is contiguous in the new shape.
     #[test]
     fn pipelined_realize_reshape_zero_copy_when_contiguous() {
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, r_id) = {
             let mut g = graph.write().unwrap();
@@ -7835,7 +7835,7 @@ mod tests {
 
         // Bytes are unchanged; just reinterpreted as [3, 2].
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -7850,7 +7850,7 @@ mod tests {
         // shape [2, 3]: 1 2 3 / 4 5 6
         // Transpose → [3, 2] strided
         // Reshape → [6] (forces materialization)
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, t_id, r_id) = {
             let mut g = graph.write().unwrap();
@@ -7883,7 +7883,7 @@ mod tests {
 
         // Materialized transposed bytes flattened: [1, 4, 2, 5, 3, 6].
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
@@ -7901,7 +7901,7 @@ mod tests {
         // shape [2, 3]: rows are [1, 2, 3], [4, 5, 6]
         // After transpose: shape [3, 2], rows are [1, 4], [2, 5], [3, 6]
         // After SumDim(1): shape [3], values [5, 7, 9]
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, t_id, sum_id) = {
             let mut g = graph.write().unwrap();
@@ -7934,7 +7934,7 @@ mod tests {
         assert!(result_layout.is_contiguous());
 
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let typed: &[f32] = c.as_slice().unwrap();
@@ -7950,8 +7950,8 @@ mod tests {
         // BroadcastTo [2, 3]: [[10, 20, 30], [10, 20, 30]]
         // Plus shape [2, 3]: [[1, 2, 3], [4, 5, 6]]
         // Result: [[11, 22, 33], [14, 25, 36]]
-        let bc_input = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
-        let plus_input = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let bc_input = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
+        let plus_input = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (bc_in_id, plus_in_id, b_id, add_id) = {
             let mut g = graph.write().unwrap();
@@ -7986,7 +7986,7 @@ mod tests {
         let (result_arc, _result_layout) =
             PipelinedExecutor::realize(graph, add_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let typed: &[f32] = c.as_slice().unwrap();
@@ -7999,7 +7999,7 @@ mod tests {
     #[test]
     fn pipelined_realize_sum_dim() {
         // shape [2, 3]; reduce dim 1 → output shape [2]
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, sum_id) = {
             let mut g = graph.write().unwrap();
@@ -8020,7 +8020,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
             assert_eq!(typed, &[6.0, 15.0]);
         }
@@ -8031,7 +8031,7 @@ mod tests {
     #[test]
     fn pipelined_realize_sum_all_rank3() {
         let data: Vec<f32> = (1..=24).map(|x| x as f32).collect();
-        let storage = fuel_storage::from_slice_cpu(&data);
+        let storage = fuel_memory::from_slice_cpu(&data);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, sum_id) = {
             let mut g = graph.write().unwrap();
@@ -8052,7 +8052,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, sum_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
             // 1 + 2 + ... + 24 = 300
             assert_eq!(typed, &[300.0]);
@@ -8064,7 +8064,7 @@ mod tests {
     #[test]
     fn pipelined_realize_max_then_mean() {
         // shape [2, 3], MaxDim(1) → [2], MeanDim(0) → []
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 9.0, 3.0, 4.0, 2.0, 8.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 9.0, 3.0, 4.0, 2.0, 8.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, mean_id) = {
             let mut g = graph.write().unwrap();
@@ -8090,7 +8090,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, mean_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
             // MaxDim(1) on [[1,9,3],[4,2,8]] = [9, 8]; MeanDim(0) = 8.5
             assert_eq!(typed, &[8.5]);
@@ -8103,7 +8103,7 @@ mod tests {
     /// dispatch wrappers.
     #[test]
     fn pipelined_realize_sigmoid_then_silu() {
-        let storage = fuel_storage::from_slice_cpu(&[0.0_f32, 1.0, -1.0]);
+        let storage = fuel_memory::from_slice_cpu(&[0.0_f32, 1.0, -1.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, sig_id, silu_id) = {
             let mut g = graph.write().unwrap();
@@ -8131,7 +8131,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, silu_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
             // sigmoid(0) = 0.5; silu(0.5) = 0.5 * sigmoid(0.5) ≈ 0.3112
             assert!((typed[0] - 0.5 * (1.0 / (1.0 + (-0.5_f32).exp()))).abs() < 1e-6);
@@ -8142,7 +8142,7 @@ mod tests {
     /// for non-negative inputs. Exercises the cache reuse path.
     #[test]
     fn pipelined_realize_chained_unary_sqr_then_sqrt() {
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 4.0, 9.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 4.0, 9.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, sqrt_id) = {
             let mut g = graph.write().unwrap();
@@ -8168,7 +8168,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, sqrt_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
             // sqrt(sqr(x)) == |x| == x for non-negative inputs.
             assert_eq!(typed, &[1.0, 4.0, 9.0]);
@@ -8180,9 +8180,9 @@ mod tests {
     /// and intermediate results are cached and reused.
     #[test]
     fn pipelined_realize_chained_adds() {
-        let a_storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0]);
-        let b_storage = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0]);
-        let c_storage = fuel_storage::from_slice_cpu(&[100.0_f32, 200.0]);
+        let a_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0]);
+        let b_storage = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0]);
+        let c_storage = fuel_memory::from_slice_cpu(&[100.0_f32, 200.0]);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (a_id, b_id, c_id, ab_id, abc_id) = {
@@ -8233,7 +8233,7 @@ mod tests {
         let _ = ab_id;
 
         let guard = result_arc.read().unwrap();
-        if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
             // (1+10) + 100 = 111;  (2+20) + 200 = 222.
             assert_eq!(typed, &[111.0, 222.0]);
@@ -8245,7 +8245,7 @@ mod tests {
     /// Output: [1 2 3 / 0 5 6 / 0 0 9]
     #[test]
     fn pipelined_realize_triu_3x3_diag0() {
-        let storage = fuel_storage::from_slice_cpu(&[
+        let storage = fuel_memory::from_slice_cpu(&[
             1.0_f32, 2.0, 3.0,
             4.0,     5.0, 6.0,
             7.0,     8.0, 9.0,
@@ -8269,7 +8269,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let out: &[f32] = c.as_slice().unwrap();
@@ -8284,7 +8284,7 @@ mod tests {
     /// Output: [1 0 0 / 4 5 0 / 7 8 9]
     #[test]
     fn pipelined_realize_tril_3x3_diag0_causal_mask() {
-        let storage = fuel_storage::from_slice_cpu(&[
+        let storage = fuel_memory::from_slice_cpu(&[
             1.0_f32, 2.0, 3.0,
             4.0,     5.0, 6.0,
             7.0,     8.0, 9.0,
@@ -8308,7 +8308,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let out: &[f32] = c.as_slice().unwrap();
@@ -8327,7 +8327,7 @@ mod tests {
     /// Row 1 is row 0 reversed: [-0.4076, -1.4076, -2.4076].
     #[test]
     fn pipelined_realize_log_softmax_last_dim() {
-        let storage = fuel_storage::from_slice_cpu(&[
+        let storage = fuel_memory::from_slice_cpu(&[
             1.0_f32, 2.0, 3.0,
             3.0,     2.0, 1.0,
         ]);
@@ -8350,7 +8350,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let out: &[f32] = c.as_slice().unwrap();
@@ -8383,9 +8383,9 @@ mod tests {
     /// fail compilation pre-Phase B+).
     #[test]
     fn pipelined_realize_merges_op_release_side_effect_root() {
-        let a = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0]);
-        let b = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0]);
-        let c = fuel_storage::from_slice_cpu(&[100.0_f32, 200.0]);
+        let a = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0]);
+        let b = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0]);
+        let c = fuel_memory::from_slice_cpu(&[100.0_f32, 200.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (a_id, b_id, c_id, add_id, release_id) = {
             let mut g = graph.write().unwrap();
@@ -8432,7 +8432,7 @@ mod tests {
             .expect("realize_many");
         assert_eq!(out.len(), 1);
         let add_guard = out[0].0.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(arr) = &add_guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(arr) = &add_guard.inner else { panic!() };
         assert_eq!(arr.as_slice::<f32>().unwrap(), &[11.0, 22.0]);
 
         // The Release's destructive_input cleanup dropped the
@@ -8525,7 +8525,7 @@ mod tests {
     /// differing).
     #[test]
     fn pipelined_op_move_same_device_is_plain_copy() {
-        let src = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let src = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (src_id, move_id) = {
             let mut g = graph.write().unwrap();
@@ -8548,7 +8548,7 @@ mod tests {
         let (out, layout) =
             PipelinedExecutor::realize(graph, move_id, inputs).expect("realize Op::Move");
         let guard = out.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else { panic!() };
         assert_eq!(
             c.as_slice::<f32>().unwrap(),
             &[1.0, 2.0, 3.0, 4.0],
@@ -8584,7 +8584,7 @@ mod tests {
     ///   out = add(b, m)      → [2, 4, 6, 8]
     #[test]
     fn pipelined_op_move_multi_consumer_source_not_stranded() {
-        let a = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let a = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (a_id, out_id) = {
             let mut g = graph.write().unwrap();
@@ -8615,7 +8615,7 @@ mod tests {
         let (out, _) = PipelinedExecutor::realize(graph, out_id, inputs)
             .expect("realize add(relu(a), move(a))");
         let guard = out.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else { panic!() };
         assert_eq!(
             c.as_slice::<f32>().unwrap(),
             &[2.0, 4.0, 6.0, 8.0],
@@ -8629,7 +8629,7 @@ mod tests {
     /// like Release.
     #[test]
     fn pipelined_op_move_source_in_target_set_not_evicted() {
-        let a = fuel_storage::from_slice_cpu(&[5.0_f32, 6.0]);
+        let a = fuel_memory::from_slice_cpu(&[5.0_f32, 6.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (a_id, move_id) = {
             let mut g = graph.write().unwrap();
@@ -8653,7 +8653,7 @@ mod tests {
             .expect("realize_many [move, source]");
         assert_eq!(out.len(), 2);
         let mv_guard = out[0].0.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &mv_guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(c) = &mv_guard.inner else { panic!() };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[5.0, 6.0]);
         assert!(
             Arc::ptr_eq(&out[1].0, &a_arc_external),
@@ -8678,8 +8678,8 @@ mod tests {
     /// Verifies parallel chain handling + return order matches input.
     #[test]
     fn pipelined_realize_many_two_independent_targets() {
-        let lhs = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
-        let rhs = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
+        let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (lhs_id, rhs_id, add_id, mul_id) = {
             let mut g = graph.write().unwrap();
@@ -8714,11 +8714,11 @@ mod tests {
         assert_eq!(out.len(), 2);
 
         let mul_guard = out[0].0.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &mul_guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(c) = &mul_guard.inner else { panic!() };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[10.0, 40.0, 90.0]);
 
         let add_guard = out[1].0.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &add_guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(c) = &add_guard.inner else { panic!() };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[11.0, 22.0, 33.0]);
     }
 
@@ -8726,7 +8726,7 @@ mod tests {
     /// the same output twice. Both outputs are the same Arc (cheap).
     #[test]
     fn pipelined_realize_many_duplicate_target_returns_same_arc() {
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (in_id, neg_id) = {
             let mut g = graph.write().unwrap();
@@ -8758,8 +8758,8 @@ mod tests {
     /// — `a + b` is computed once.
     #[test]
     fn pipelined_realize_many_shared_subgraph_evaluates_once() {
-        let a_storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
-        let b_storage = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
+        let a_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
+        let b_storage = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (a_id, b_id, add_id, mul_id) = {
             let mut g = graph.write().unwrap();
@@ -8792,11 +8792,11 @@ mod tests {
         assert_eq!(out.len(), 2);
 
         let add_guard = out[0].0.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &add_guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(c) = &add_guard.inner else { panic!() };
         assert_eq!(c.as_slice::<f32>().unwrap(), &[11.0, 22.0, 33.0]);
 
         let mul_guard = out[1].0.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &mul_guard.inner else { panic!() };
+        let fuel_memory::BackendStorage::Cpu(c) = &mul_guard.inner else { panic!() };
         // (a + b) * a = [11*1, 22*2, 33*3] = [11, 44, 99].
         assert_eq!(c.as_slice::<f32>().unwrap(), &[11.0, 44.0, 99.0]);
     }
@@ -8806,8 +8806,8 @@ mod tests {
     /// out = [1, -1000, 3, -1000].
     #[test]
     fn pipelined_realize_masked_fill_attention_pattern() {
-        let x_storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
-        let mask_storage = fuel_storage::from_slice_cpu(&[0u8, 1, 0, 1]);
+        let x_storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let mask_storage = fuel_memory::from_slice_cpu(&[0u8, 1, 0, 1]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, mask_id, out_id) = {
             let mut g = graph.write().unwrap();
@@ -8833,7 +8833,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, out_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let out: &[f32] = c.as_slice().unwrap();
@@ -8847,8 +8847,8 @@ mod tests {
     /// canonical KV-cache append shape.
     #[test]
     fn pipelined_realize_write_slice_kv_cache_append() {
-        let dest_storage = fuel_storage::from_slice_cpu(&[0.0_f32; 24]);
-        let src_storage = fuel_storage::from_slice_cpu(&[
+        let dest_storage = fuel_memory::from_slice_cpu(&[0.0_f32; 24]);
+        let src_storage = fuel_memory::from_slice_cpu(&[
             1.0_f32, 2.0,
             3.0,     4.0,
             5.0,     6.0,
@@ -8879,7 +8879,7 @@ mod tests {
         let (result_arc, _) =
             PipelinedExecutor::realize(graph, ws_id, inputs).expect("realize");
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let out: &[f32] = c.as_slice().unwrap();
@@ -8898,8 +8898,8 @@ mod tests {
     /// destination was constructed from.
     #[test]
     fn pipelined_realize_write_slice_aliases_dest_storage() {
-        let dest_storage = fuel_storage::from_slice_cpu(&[0.0_f32; 6]);
-        let src_storage = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0]);
+        let dest_storage = fuel_memory::from_slice_cpu(&[0.0_f32; 6]);
+        let src_storage = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (dest_id, src_id, ws_id, dest_arc_external) = {
             let mut g = graph.write().unwrap();
@@ -8934,7 +8934,7 @@ mod tests {
             "WriteSlice output Arc must be the same Arc as the destination's"
         );
         let guard = dest_arc_external.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let out: &[f32] = c.as_slice().unwrap();
@@ -8960,7 +8960,7 @@ mod tests {
     fn pipelined_inplace_with_multiple_readers_orders_correctly() {
         use fuel_core_types::Shape;
         let data = [1.0_f32, -2.0, 3.0, -4.0];
-        let src_storage = fuel_storage::from_slice_cpu(&data);
+        let src_storage = fuel_memory::from_slice_cpu(&data);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, step_id, sig_id) = {
@@ -8993,7 +8993,7 @@ mod tests {
         // [1, 0, 1, 0]. If the executor ran SigmoidInplace first, step
         // would see all-positive sigmoid outputs and produce [1, 1, 1, 1].
         let step_guard = results[0].0.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &step_guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &step_guard.inner else {
             panic!("expected Cpu storage for step output");
         };
         let step_out: &[f32] = c.as_slice().expect("f32 cast");
@@ -9006,7 +9006,7 @@ mod tests {
         // SigmoidInplace's output Arc IS the mutated cache entry — bytes
         // approximate sigmoid([1, -2, 3, -4]).
         let sig_guard = results[1].0.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &sig_guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &sig_guard.inner else {
             panic!("expected Cpu storage for sigmoid output");
         };
         let sig_out: &[f32] = c.as_slice().expect("f32 cast");
@@ -9039,7 +9039,7 @@ mod tests {
     fn pipelined_residual_connection_inserts_safety_copy() {
         use fuel_core_types::Shape;
         let data = [1.0_f32, -2.0, 3.0, -4.0];
-        let src_storage = fuel_storage::from_slice_cpu(&data);
+        let src_storage = fuel_memory::from_slice_cpu(&data);
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (x_id, _y_id, z_id) = {
@@ -9069,7 +9069,7 @@ mod tests {
                 .expect("realize z — insert_safety_copies must break the cycle");
 
         let guard = result_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let got: &[f32] = c.as_slice().expect("f32 cast");
@@ -9103,7 +9103,7 @@ mod tests {
         };
         cache.insert(
             id,
-            Arc::new(RwLock::new(fuel_storage::from_slice_cpu(data))),
+            Arc::new(RwLock::new(fuel_memory::from_slice_cpu(data))),
         );
         id
     }
@@ -9158,7 +9158,7 @@ mod tests {
         // y[0,0,0] = h * c = 6.0 * 0.5 = 3.0
         // last_state[0,0,0] = h = 6.0
         let guard = y_arc.read().unwrap();
-        let fuel_storage::BackendStorage::Cpu(c_bytes) = &guard.inner else {
+        let fuel_memory::BackendStorage::Cpu(c_bytes) = &guard.inner else {
             panic!("expected Cpu storage");
         };
         let typed: &[f32] = c_bytes.as_slice().expect("f32 cast");
@@ -9209,7 +9209,7 @@ mod tests {
         _params: &OpParams,
     ) -> Result<()> {
         let lhs_guard = inputs[0].read().map_err(|_| poisoned("lhs lock"))?;
-        let doubled: Vec<f32> = if let fuel_storage::BackendStorage::Cpu(c) = &lhs_guard.inner {
+        let doubled: Vec<f32> = if let fuel_memory::BackendStorage::Cpu(c) = &lhs_guard.inner {
             c.as_slice().expect("f32 cast").iter().map(|x: &f32| x * 2.0).collect()
         } else {
             panic!("test kernel: lhs must be CPU storage");
@@ -9217,7 +9217,7 @@ mod tests {
         let mut out_guard = outputs[0]
             .write()
             .map_err(|_| poisoned("output lock"))?;
-        if let fuel_storage::BackendStorage::Cpu(c) = &mut out_guard.inner {
+        if let fuel_memory::BackendStorage::Cpu(c) = &mut out_guard.inner {
             c.as_slice_mut().expect("f32 cast").copy_from_slice(&doubled);
         } else {
             panic!("test kernel: output must be CPU storage");
@@ -9258,8 +9258,8 @@ mod tests {
             (lhs_id, rhs_id, add_id)
         };
         let mut inputs = StorageCache::new();
-        inputs.insert(lhs_id, Arc::new(RwLock::new(fuel_storage::from_slice_cpu(lhs))));
-        inputs.insert(rhs_id, Arc::new(RwLock::new(fuel_storage::from_slice_cpu(rhs))));
+        inputs.insert(lhs_id, Arc::new(RwLock::new(fuel_memory::from_slice_cpu(lhs))));
+        inputs.insert(rhs_id, Arc::new(RwLock::new(fuel_memory::from_slice_cpu(rhs))));
         (graph, lhs_id, rhs_id, add_id, inputs)
     }
 
@@ -9299,7 +9299,7 @@ mod tests {
                 .expect("realize_with_plan");
 
         let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             c
         } else {
             panic!("expected Cpu storage");
@@ -9329,7 +9329,7 @@ mod tests {
                 .expect("realize_with_plan");
 
         let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             c
         } else {
             panic!("expected Cpu storage");
@@ -9354,7 +9354,7 @@ mod tests {
             PipelinedExecutor::realize(graph, add_id, inputs).expect("realize");
 
         let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             c
         } else {
             panic!("expected Cpu storage");
@@ -9436,7 +9436,7 @@ mod tests {
                 .expect("realize_with_plan");
 
         let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             c
         } else {
             panic!("expected Cpu storage");
@@ -9534,7 +9534,7 @@ mod tests {
                 .expect("matching-generation plan must dispatch successfully");
 
         let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             c
         } else {
             panic!("expected Cpu storage");
@@ -9585,7 +9585,7 @@ mod tests {
             .expect("realize_with_plan_and_selector");
 
         let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             c
         } else {
             panic!("expected Cpu storage");
@@ -9617,7 +9617,7 @@ mod tests {
             _params: &OpParams,
         ) -> Result<()> {
             let lhs_guard = inputs[0].read().map_err(|_| poisoned("lhs lock"))?;
-            let tripled: Vec<f32> = if let fuel_storage::BackendStorage::Cpu(c) = &lhs_guard.inner {
+            let tripled: Vec<f32> = if let fuel_memory::BackendStorage::Cpu(c) = &lhs_guard.inner {
                 c.as_slice().expect("f32 cast").iter().map(|x: &f32| x * 3.0).collect()
             } else {
                 panic!("test kernel: lhs must be CPU storage");
@@ -9625,7 +9625,7 @@ mod tests {
             let mut out_guard = outputs[0]
                 .write()
                 .map_err(|_| poisoned("output lock"))?;
-            if let fuel_storage::BackendStorage::Cpu(c) = &mut out_guard.inner {
+            if let fuel_memory::BackendStorage::Cpu(c) = &mut out_guard.inner {
                 c.as_slice_mut().expect("f32 cast").copy_from_slice(&tripled);
             } else {
                 panic!("test kernel: output must be CPU storage");
@@ -9688,7 +9688,7 @@ mod tests {
             .expect("realize_with_plan_and_selector");
 
         let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             c
         } else {
             panic!("expected Cpu storage");
@@ -9761,7 +9761,7 @@ mod tests {
             .expect("realize_with_plan_and_selector");
 
         let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_storage::BackendStorage::Cpu(c) = &guard.inner {
+        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
             c
         } else {
             panic!("expected Cpu storage");

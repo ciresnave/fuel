@@ -86,7 +86,7 @@ use fuel_dispatch::ranker::{
     BackendRuntimeHandle, BackendRuntimeLookup, ChainedSelector, JudgeOracle,
     RuntimeSelector,
 };
-use fuel_storage::{BackendStorage, Storage};
+use fuel_memory::{BackendStorage, Storage};
 
 use crate::Device;
 use crate::topology::SystemTopology;
@@ -1047,7 +1047,7 @@ fn stamp_plan_backends(
 
 /// For each reachable `Op::Const`, take its legacy storage slot,
 /// extract bytes via the dyn host-buffer interface, and produce a
-/// device-resident `fuel_storage::Storage` keyed in a StorageCache by
+/// device-resident `fuel_memory::Storage` keyed in a StorageCache by
 /// the Const's NodeId.
 ///
 /// **CPU device** (target == `DeviceLocation::Cpu`): per-Const

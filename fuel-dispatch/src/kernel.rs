@@ -87,7 +87,7 @@ impl KernelCaps {
     }
 }
 
-use fuel_storage::Storage;
+use fuel_memory::Storage;
 
 /// Uniform function-pointer signature for per-backend op kernels.
 ///
@@ -181,7 +181,7 @@ pub enum OpParams {
     },
 
     /// Matrix multiplication. Carries the dimensions explicitly
-    /// because [`Storage`](fuel_storage::Storage) only holds bytes + dtype;
+    /// because [`Storage`](fuel_memory::Storage) only holds bytes + dtype;
     /// the kernel needs the batch shape and `(m, n, k)` to walk
     /// inputs and outputs.
     ///
@@ -1237,7 +1237,7 @@ mod tests {
 
     /// Smoke: a hand-constructed kernel that allocates the output
     /// Storage outside this crate would be:
-    ///   1. allocate output via fuel_storage::alloc_cpu_zeroed
+    ///   1. allocate output via fuel_memory::alloc_cpu_zeroed
     ///   2. wrap inputs as &[Arc<RwLock<Storage>>]
     ///   3. call the kernel
     /// Phase B5 lands the first such migration; B1 just type-checks
@@ -1256,12 +1256,12 @@ mod tests {
             let in_guard = in_arc.read().unwrap();
             let mut out_guard = out_arc.write().unwrap();
             let in_bytes = match &in_guard.inner {
-                fuel_storage::BackendStorage::Cpu(s) => s.bytes(),
+                fuel_memory::BackendStorage::Cpu(s) => s.bytes(),
                 #[allow(unreachable_patterns)]
                 _ => return Ok(()),
             };
             match &mut out_guard.inner {
-                fuel_storage::BackendStorage::Cpu(s) => {
+                fuel_memory::BackendStorage::Cpu(s) => {
                     s.bytes_mut().copy_from_slice(in_bytes);
                 }
                 #[allow(unreachable_patterns)]
@@ -1270,8 +1270,8 @@ mod tests {
             Ok(())
         }
 
-        let input = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
-        let output = fuel_storage::alloc_cpu_zeroed(DType::F32, 4).unwrap();
+        let input = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let output = fuel_memory::alloc_cpu_zeroed(DType::F32, 4).unwrap();
         let inputs = vec![Arc::new(RwLock::new(input))];
         let mut outputs = vec![Arc::new(RwLock::new(output))];
 
@@ -1280,7 +1280,7 @@ mod tests {
 
         // Output bytes match input.
         let out_guard = outputs[0].read().unwrap();
-        if let fuel_storage::BackendStorage::Cpu(s) = &out_guard.inner {
+        if let fuel_memory::BackendStorage::Cpu(s) = &out_guard.inner {
             let typed: &[f32] = s.as_slice().unwrap();
             assert_eq!(typed, &[1.0, 2.0, 3.0, 4.0]);
         }

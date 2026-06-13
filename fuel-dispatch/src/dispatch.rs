@@ -32,7 +32,7 @@ use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result};
 use crate::kernel::{KernelBindingTable, KernelRef, OpParams};
 #[cfg(feature = "cuda")]
 use crate::kernel::KernelCaps;
-use fuel_storage::{BackendStorage, Storage};
+use fuel_memory::{BackendStorage, Storage};
 
 /// Collection of backend capabilities, queried during DAG
 /// construction to pick which backend handles each op.
@@ -6435,9 +6435,9 @@ mod tests {
             .expect("lookup");
 
         // 5. Allocate input + output Storages.
-        let lhs = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
-        let rhs = fuel_storage::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0]);
-        let out = fuel_storage::alloc_cpu_zeroed(DType::F32, 4).expect("alloc");
+        let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0, 4.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0, 40.0]);
+        let out = fuel_memory::alloc_cpu_zeroed(DType::F32, 4).expect("alloc");
 
         let inputs = vec![Arc::new(RwLock::new(lhs)), Arc::new(RwLock::new(rhs))];
         let mut outputs = vec![Arc::new(RwLock::new(out))];
@@ -6465,8 +6465,8 @@ mod tests {
             .unwrap();
 
         // Only one input — should error, not panic.
-        let lhs = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0]);
-        let out = fuel_storage::alloc_cpu_zeroed(DType::F32, 2).unwrap();
+        let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0]);
+        let out = fuel_memory::alloc_cpu_zeroed(DType::F32, 2).unwrap();
         let inputs = vec![Arc::new(RwLock::new(lhs))];
         let mut outputs = vec![Arc::new(RwLock::new(out))];
 

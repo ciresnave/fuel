@@ -929,8 +929,8 @@ struct DirectCallAlternative {
 /// inputs (a prerequisite for cross-alternative consensus to mean
 /// anything).
 struct PreparedDirectCall {
-    inputs:    Vec<Arc<RwLock<fuel_storage::Storage>>>,
-    output:    Arc<RwLock<fuel_storage::Storage>>,
+    inputs:    Vec<Arc<RwLock<fuel_memory::Storage>>>,
+    output:    Arc<RwLock<fuel_memory::Storage>>,
     layouts:   Vec<fuel_core_types::Layout>,
     op_params: fuel_dispatch::kernel::OpParams,
 }
@@ -1082,7 +1082,7 @@ fn prepare_direct_call_inputs(op: OpKind, size: &OpSize) -> Option<PreparedDirec
     use fuel_core_types::Layout;
     use fuel_cpu_backend::CpuStorageBytes;
     use fuel_dispatch::kernel::OpParams;
-    use fuel_storage::{BackendStorage, Storage};
+    use fuel_memory::{BackendStorage, Storage};
 
     let make_storage = |bytes: CpuStorageBytes| {
         Arc::new(RwLock::new(Storage::new(
@@ -1202,8 +1202,8 @@ fn prepare_direct_call_inputs(op: OpKind, size: &OpSize) -> Option<PreparedDirec
 
 /// Read an output `Storage`'s F32 bytes back out as a `Vec<f32>` for
 /// consensus comparison.
-fn read_output_f32(out: &Arc<RwLock<fuel_storage::Storage>>) -> Vec<f32> {
-    use fuel_storage::BackendStorage;
+fn read_output_f32(out: &Arc<RwLock<fuel_memory::Storage>>) -> Vec<f32> {
+    use fuel_memory::BackendStorage;
     let g = out.read().expect("output storage lock");
     match &g.inner {
         BackendStorage::Cpu(c) => c

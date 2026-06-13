@@ -1361,7 +1361,7 @@ mod tests {
     };
     use fuel_core_types::{DType, Layout, Result as FuelResult, Shape, StrideVec};
     use fuel_graph::{topo_order, Node, Op};
-    use fuel_storage::Storage;
+    use fuel_memory::Storage;
     use smallvec::smallvec;
     use std::collections::HashSet;
     use std::sync::{Arc, RwLock};

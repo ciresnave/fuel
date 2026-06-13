@@ -4,7 +4,7 @@ description = "Unified storage abstraction for fuel: byte-shaped Storage owning 
 edition.workspace = true
 keywords.workspace = true
 license.workspace = true
-name = "fuel-storage"
+name = "fuel-memory"
 repository.workspace = true
 version.workspace = true
 
@@ -25,7 +25,7 @@ fuel-metal-backend = { workspace = true, optional = true }
 # Dispatch infrastructure (KernelBindingTable, registration wrappers,
 # CompiledNode, PipelinedExecutor, ExecutionPlan, ...) moved to
 # fuel-dispatch 2026-05-31; the live-GPU integration tests that
-# exercised those wrappers moved with it. fuel-storage now has no
+# exercised those wrappers moved with it. fuel-memory now has no
 # dev-dependencies beyond what the inline storage tests need.
 
 [features]

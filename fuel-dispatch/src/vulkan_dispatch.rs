@@ -34,7 +34,7 @@ use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, Error, Layout, Result};
 
 use crate::kernel::{KernelBindingTable, OpParams};
-use fuel_storage::{BackendStorage, Storage};
+use fuel_memory::{BackendStorage, Storage};
 
 // Re-use the storage-lock helpers from dispatch.rs.
 use crate::dispatch::{read_storage, write_storage};
@@ -43,7 +43,7 @@ use crate::dispatch::{read_storage, write_storage};
 /// `Err` if the variant isn't `BackendStorage::Vulkan`.
 fn vulkan_input(s: &Storage) -> Result<&fuel_vulkan_backend::VulkanStorageBytes> {
     match &s.inner {
-        fuel_storage::BackendStorage::Vulkan(v) => Ok(v),
+        fuel_memory::BackendStorage::Vulkan(v) => Ok(v),
         #[allow(unreachable_patterns)]
         _ => Err(Error::Msg(
             "vulkan kernel wrapper called with non-Vulkan input".to_string(),
@@ -55,7 +55,7 @@ fn vulkan_input(s: &Storage) -> Result<&fuel_vulkan_backend::VulkanStorageBytes>
 /// Helper: extract `&mut VulkanStorageBytes` from `&mut Storage`.
 fn vulkan_output(s: &mut Storage) -> Result<&mut fuel_vulkan_backend::VulkanStorageBytes> {
     match &mut s.inner {
-        fuel_storage::BackendStorage::Vulkan(v) => Ok(v),
+        fuel_memory::BackendStorage::Vulkan(v) => Ok(v),
         #[allow(unreachable_patterns)]
         _ => Err(Error::Msg(
             "vulkan kernel wrapper called with non-Vulkan output".to_string(),
@@ -2148,7 +2148,7 @@ pub mod pad {
 
 pub mod concat {
     use super::*;
-    use fuel_storage::BackendStorage;
+    use fuel_memory::BackendStorage;
     use fuel_core_types::Shape;
 
     /// Generic concat dispatcher. Takes the per-pair concat call

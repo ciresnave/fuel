@@ -204,7 +204,7 @@ mod tests {
     use crate::ranker::HashMapJudge;
     use fuel_core_types::probe::BackendId;
     use fuel_core_types::{DeviceLocation, Layout, Result};
-    use fuel_storage::Storage;
+    use fuel_memory::Storage;
     use std::sync::{Arc, RwLock};
 
     fn noop_kernel(

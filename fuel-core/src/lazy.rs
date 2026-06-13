@@ -1863,7 +1863,7 @@ impl LazyTensor {
     /// [`InferenceContext::insert`](crate::inference_context::InferenceContext::insert).
     ///
     /// Used by the Phase E.3.3 forward path to bind pre-allocated
-    /// KV-cache storage Arcs (`Arc<RwLock<fuel_storage::Storage>>`)
+    /// KV-cache storage Arcs (`Arc<RwLock<fuel_memory::Storage>>`)
     /// into a per-step graph — the graph's legacy storage_map only
     /// holds `fuel_core_types::Storage`, so direct binding isn't
     /// possible without a type conversion.
@@ -5327,7 +5327,7 @@ impl LlamaModel {
 
 // Phase 7.6 step 9c E.3.3.D — host-resident `LlamaKVCache` retired.
 // Its successor is `KvCache` in `crate::inference_context`, which
-// stores backend-erased `Arc<RwLock<fuel_storage::Storage>>` per slot
+// stores backend-erased `Arc<RwLock<fuel_memory::Storage>>` per slot
 // and supports both the legacy `with_dims` grow-by-replace shape and
 // the new `with_capacity` pre-allocated-buffer shape that
 // `forward_with_kv_context` writes into via `Op::WriteSlice`.

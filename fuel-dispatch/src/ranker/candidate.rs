@@ -120,7 +120,7 @@ mod tests {
     use fuel_core_types::Result;
     use std::sync::{Arc, RwLock};
 
-    use fuel_storage::Storage;
+    use fuel_memory::Storage;
 
     fn noop_kernel(
         _inputs: &[Arc<RwLock<Storage>>],

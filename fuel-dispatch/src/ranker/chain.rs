@@ -82,7 +82,7 @@ mod tests {
     use fuel_core_types::dispatch::OpKind;
     use fuel_core_types::probe::BackendId;
     use fuel_core_types::{DType, DeviceLocation, Layout, Result as FuelResult, Shape};
-    use fuel_storage::Storage;
+    use fuel_memory::Storage;
     use std::sync::{Arc, RwLock};
 
     fn noop(

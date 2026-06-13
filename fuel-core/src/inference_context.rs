@@ -44,7 +44,7 @@ use std::sync::{Arc, RwLock};
 use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result, Shape};
 use fuel_graph::{Graph, Node, NodeId, Op};
 use fuel_dispatch::{pipelined::{PipelinedExecutor, StorageCache}};
-use fuel_storage::{BackendStorage, Storage};
+use fuel_memory::{BackendStorage, Storage};
 
 use crate::Device;
 
@@ -88,7 +88,7 @@ pub enum AuthorityState {
 /// One layer's K + V slots in a backend-erased KV cache.
 ///
 /// Storage Arcs are dispatch-erased: each Arc points at a
-/// [`fuel_storage::BackendStorage`] enum variant (`Cpu`, `Cuda`,
+/// [`fuel_memory::BackendStorage`] enum variant (`Cpu`, `Cuda`,
 /// `Vulkan`, `Metal`). The graph references these Arcs via the
 /// persistent map in [`InferenceContext`]; readers see the bytes
 /// through whichever Layout the graph carries for the consuming
@@ -124,7 +124,7 @@ pub struct KvLayer {
 /// indices are `None`. The model code queries `cache.layer(global_i)`
 /// regardless of which device owns it; the storage Arc inside
 /// [`KvLayer`] carries the device identity via its
-/// [`fuel_storage::BackendStorage`] variant.
+/// [`fuel_memory::BackendStorage`] variant.
 pub struct KvCache {
     pub layers: Vec<Option<KvLayer>>,
     pub cached_len: usize,
@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn context_insert_retrieve() {
         let mut ctx = InferenceContext::new(Device::cpu());
-        let storage = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
+        let storage = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
         let arc = Arc::new(RwLock::new(storage));
         let id = NodeId(42);
 
@@ -577,8 +577,8 @@ mod tests {
     /// still held by the context after each call.
     #[test]
     fn context_persistent_arc_survives_realize() {
-        let lhs_arc = Arc::new(RwLock::new(fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0])));
-        let rhs_arc = Arc::new(RwLock::new(fuel_storage::from_slice_cpu(&[10.0_f32, 20.0, 30.0])));
+        let lhs_arc = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0])));
+        let rhs_arc = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0])));
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (lhs_id, rhs_id, add_id) = {
@@ -652,8 +652,8 @@ mod tests {
     #[test]
     fn kv_cache_set_and_get_layer() {
         let mut cache = KvCache::with_dims(2, 4, 8);
-        let k_arc = Arc::new(RwLock::new(fuel_storage::from_slice_cpu(&[0.0_f32; 32])));
-        let v_arc = Arc::new(RwLock::new(fuel_storage::from_slice_cpu(&[0.0_f32; 32])));
+        let k_arc = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[0.0_f32; 32])));
+        let v_arc = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[0.0_f32; 32])));
         let layout = Layout::contiguous(Shape::from_dims(&[1, 4, 1, 8]));
         cache.set_layer(
             0,
@@ -680,8 +680,8 @@ mod tests {
     #[test]
     fn kv_cache_clear_drops_layers() {
         let mut cache = KvCache::with_dims(2, 4, 8);
-        let k = Arc::new(RwLock::new(fuel_storage::from_slice_cpu(&[0.0_f32; 32])));
-        let v = Arc::new(RwLock::new(fuel_storage::from_slice_cpu(&[0.0_f32; 32])));
+        let k = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[0.0_f32; 32])));
+        let v = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[0.0_f32; 32])));
         let layout = Layout::contiguous(Shape::from_dims(&[1, 4, 1, 8]));
         cache.set_layer(
             0,
@@ -729,7 +729,7 @@ mod tests {
     /// confirm they default sensibly via `KvLayer` construction.
     #[test]
     fn kv_layer_default_authority_is_host() {
-        let arc = Arc::new(RwLock::new(fuel_storage::from_slice_cpu(&[0.0_f32; 4])));
+        let arc = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[0.0_f32; 4])));
         let layout = Layout::contiguous(Shape::from_dims(&[4]));
         let layer = KvLayer {
             k: Arc::clone(&arc),

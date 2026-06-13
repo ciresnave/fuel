@@ -34,7 +34,7 @@ use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, Layout, Result};
 
 use crate::kernel::{KernelBindingTable, KernelCaps, KernelDTypes, KernelRef, OpParams};
-use fuel_storage::Storage;
+use fuel_memory::Storage;
 
 /// A graph node plus its resolved kernel function pointer and
 /// op-specific parameters. Produced by [`compile_node`]; consumed
@@ -148,9 +148,9 @@ mod tests {
         assert_eq!(compiled.output_dtype(), DType::F32);
         assert_eq!(compiled.backend, BackendId::Cpu);
 
-        let lhs = fuel_storage::from_slice_cpu(&[5.0_f32, 6.0, 7.0]);
-        let rhs = fuel_storage::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
-        let out = fuel_storage::alloc_cpu_zeroed(DType::F32, 3).unwrap();
+        let lhs = fuel_memory::from_slice_cpu(&[5.0_f32, 6.0, 7.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0]);
+        let out = fuel_memory::alloc_cpu_zeroed(DType::F32, 3).unwrap();
         let inputs = vec![Arc::new(RwLock::new(lhs)), Arc::new(RwLock::new(rhs))];
         let mut outputs = vec![Arc::new(RwLock::new(out))];
 
@@ -159,7 +159,7 @@ mod tests {
         execute_compiled(&compiled, &inputs, &mut outputs, &layouts).expect("execute");
 
         let out_guard = outputs[0].read().unwrap();
-        if let fuel_storage::BackendStorage::Cpu(c) = &out_guard.inner {
+        if let fuel_memory::BackendStorage::Cpu(c) = &out_guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
             assert_eq!(typed, &[6.0, 8.0, 10.0]);
         }
