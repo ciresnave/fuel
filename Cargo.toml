@@ -37,13 +37,13 @@ members = [
     "fuel-pyo3",
     "fuel-quantized",
     "fuel-reference-backend",
-    "fuel-storage",
+    "fuel-memory",
     "fuel-training",
     "fuel-transformers",
     "fuel-ug",
     "fuel-wasm-examples/*",
     "fuel-wasm-tests",
-    "tensor-tools",
+    "fuel-tensor-tools",
 ]
 # What `cargo build`, `cargo check`, `cargo test` without `-p` or
 # `--workspace` will actually build. Matches the pre-restructure
@@ -65,7 +65,7 @@ default-members = [
     "fuel-vulkan-kernels",
     "fuel-lazy-examples",
     "fuel-reference-backend",
-    "fuel-storage",
+    "fuel-memory",
     "fuel-metal-backend",
     "fuel-datasets",
     "fuel-examples",
@@ -78,7 +78,6 @@ default-members = [
     "fuel-ug",
     "fuel-wasm-examples/*",
     "fuel-wasm-tests",
-    "tensor-tools",
 ]
 resolver = "2"
 
@@ -94,12 +93,15 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 ab_glyph = "0.2.23"
 accelerate-src = { version = "0.3.2" }
-# AOCL: AMD CPU BLAS path. Path deps (out-of-tree workspace at
-# C:\Users\cires\OneDrive\Documents\projects\aocl) for the Phase 7b
-# spike; switch to crates.io versions once the per-CPU-backend
-# selection layer ships.
-aocl-blas  = { path = "../aocl/crates/aocl-blas" }
-aocl-types = { path = "../aocl/crates/aocl-types" }
+# AOCL: AMD CPU BLAS wrappers (github.com/ciresnave/aocl), published on
+# crates.io. Switched from the out-of-tree path dep to crates.io 2026-06-13
+# so a clean clone builds without the sibling checkout. Fuel's surface is
+# tiny and stable across 0.1.x (aocl_blas::gemm + aocl_types::Trans::No).
+# NOTE: building fuel-aocl-cpu-backend still needs a libclang for bindgen +
+# AMD's AOCL install for the prebuilt BLIS lib — those are runtime/build
+# prerequisites, independent of where the Rust wrapper crate comes from.
+aocl-blas  = "0.1"
+aocl-types = "0.1"
 # Intel oneMKL safe wrapper for the Phase 7b second CPU backend.
 # Crates.io release 0.2.0 (2026-05-15) — adds service module
 # (IsaLevel, cpu_* helpers, ThreadCountGuard, AlignedBuffer), RNG
@@ -134,7 +136,7 @@ fuel-onnx = { path = "./fuel-onnx", version = "0.10.2" }
 fuel-parallel = { path = "./fuel-parallel", version = "0.10.2" }
 fuel-quantized = { path = "./fuel-quantized", version = "0.10.2" }
 fuel-reference-backend = { path = "./fuel-reference-backend", version = "0.10.2" }
-fuel-storage = { path = "./fuel-storage", version = "0.10.2" }
+fuel-memory = { path = "./fuel-memory", version = "0.10.2" }
 fuel-training = { path = "./fuel-training", version = "0.10.2" }
 fuel-transformers = { path = "./fuel-transformers", version = "0.10.2" }
 fuel-ug = { path = "./fuel-ug", version = "0.10.2" }

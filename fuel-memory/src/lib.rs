@@ -98,7 +98,7 @@ pub struct Storage {
 /// would otherwise need `#[cfg(feature = "...")]` arms inline.
 ///
 /// ```
-/// # use fuel_storage::{BackendStorage, dispatch_storage};
+/// # use fuel_memory::{BackendStorage, dispatch_storage};
 /// fn len_bytes(s: &BackendStorage) -> usize {
 ///     dispatch_storage!(s, inner => inner.len_bytes())
 /// }

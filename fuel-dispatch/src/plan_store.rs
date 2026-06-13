@@ -738,8 +738,8 @@ mod tests {
     }
 
     fn noop_kernel(
-        _i: &[Arc<RwLock<fuel_storage::Storage>>],
-        _o: &mut [Arc<RwLock<fuel_storage::Storage>>],
+        _i: &[Arc<RwLock<fuel_memory::Storage>>],
+        _o: &mut [Arc<RwLock<fuel_memory::Storage>>],
         _l: &[fuel_core_types::Layout],
         _p: &crate::kernel::OpParams,
     ) -> Result<()> {

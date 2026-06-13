@@ -23,7 +23,7 @@ use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
 use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
 use fuel_dispatch::residency::insert_residency_evictions;
 use fuel_graph::{Graph, Node, NodeId, Op, SharedGraph};
-use fuel_storage::{BackendStorage, Storage};
+use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
     match CudaDevice::new(0) {

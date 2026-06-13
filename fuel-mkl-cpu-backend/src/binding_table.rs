@@ -28,7 +28,7 @@ use std::sync::{Arc, RwLock};
 
 use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Error, Layout, Result};
 use fuel_dispatch::{dispatch::{cpu_input, cpu_output, read_storage, write_storage}, fused::PrecisionGuarantee, kernel::OpParams, KernelBindingTable};
-use fuel_storage::{Storage};
+use fuel_memory::{Storage};
 
 /// Register MKL's CPU-side wrappers as sibling alternatives on the
 /// unified binding table. Trust the caller has already probed MKL (the
@@ -494,7 +494,7 @@ mod tests {
     fn mkl_matmul_matches_scalar_when_available() {
         use fuel_core_types::dispatch::OpKind;
         use fuel_dispatch::{kernel::OpParams};
-use fuel_storage::{BackendStorage, Storage};
+use fuel_memory::{BackendStorage, Storage};
 
         if crate::probe_mkl_loadable().is_err() {
             eprintln!("MKL not available, skipping");
@@ -576,7 +576,7 @@ use fuel_storage::{BackendStorage, Storage};
     /// the canonical "happy" shape MKL's im2col+gemm handles natively.
     #[test]
     fn mkl_conv2d_matches_scalar_when_available() {
-        use fuel_storage::{BackendStorage, Storage};
+        use fuel_memory::{BackendStorage, Storage};
 
         if crate::probe_mkl_loadable().is_err() {
             eprintln!("MKL not available, skipping");

@@ -23,14 +23,12 @@
     half                   = { workspace = true }
     memmap2                = { workspace = true }
     tracing                = { workspace = true }
-    # Local path during 0.7 integration; will flip back to a crates.io
-    # version once we've validated the new budget / defrag APIs against
-    # the live workspace. Vulkane 0.7.0 adds:
-    #   - vram_budget() / vram_used() — VK_EXT_memory_budget proxy
-    #   - register_pressure_callback(threshold, hysteresis, cb)
-    #   - would_fit(size, memory_type) -> FitStatus (predictive)
-    #   - build_defragmentation_plan / apply_defragmentation_plan
-    vulkane                = { path = "../../vulkane/vulkane" }
+    # Flipped from the local path dep back to crates.io 2026-06-13: the
+    # 0.7 budget/defrag APIs (vram_budget/vram_used, register_pressure_callback,
+    # would_fit -> FitStatus, build/apply_defragmentation_plan) are validated
+    # and published; local checkout was 0.8.1 == crates.io 0.8.1. crates.io
+    # version so a clean clone builds without the ../vulkane sibling checkout.
+    vulkane                = "0.8.1"
 
 [dev-dependencies]
     fuel-conv      = { workspace = true }

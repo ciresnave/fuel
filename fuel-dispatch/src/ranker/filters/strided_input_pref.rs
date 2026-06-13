@@ -65,7 +65,7 @@ mod tests {
     use fuel_core_types::dispatch::OpKind;
     use fuel_core_types::probe::BackendId;
     use fuel_core_types::{DType, DeviceLocation, Layout, Result, Shape, StrideVec};
-    use fuel_storage::Storage;
+    use fuel_memory::Storage;
     use smallvec::smallvec;
     use std::sync::{Arc, RwLock};
 

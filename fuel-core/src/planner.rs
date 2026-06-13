@@ -98,7 +98,7 @@ mod tests {
     use fuel_core_types::{DType, Shape};
     use fuel_dispatch::plan_store::{PlanStore, PlanStoreStats};
     use fuel_graph::{Node, Op};
-    use fuel_storage::{BackendStorage, Storage};
+    use fuel_memory::{BackendStorage, Storage};
 
     fn push_node(g: &mut Graph, op: Op, inputs: Vec<NodeId>) -> NodeId {
         g.push(Node {

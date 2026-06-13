@@ -30,7 +30,7 @@ use crate::device::MetalDevice;
 /// Byte-shaped Metal storage. Holds an opaque `Buffer` (Metal's
 /// native byte container), the owning device, and a byte count.
 /// The Metal API treats buffers as bytes regardless of element
-/// type; dtype lives on the [`fuel_storage::Storage`] wrapper.
+/// type; dtype lives on the [`fuel_memory::Storage`] wrapper.
 #[derive(Debug, Clone)]
 pub struct MetalStorageBytes {
     /// Underlying Metal buffer. Cheap to clone (Arc-shared).

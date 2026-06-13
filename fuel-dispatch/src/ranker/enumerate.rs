@@ -124,7 +124,7 @@ mod tests {
     use crate::fused::PrecisionGuarantee;
     use crate::kernel::{unknown_cost, KernelCaps};
     use fuel_core_types::{Layout, Result};
-    use fuel_storage::Storage;
+    use fuel_memory::Storage;
     use std::sync::{Arc, RwLock};
 
     fn noop_a(

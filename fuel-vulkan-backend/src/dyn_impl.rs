@@ -10,7 +10,7 @@
 //! All `*_dyn` methods that return `Box<dyn DynBackendStorage>` are
 //! stubs that error out. Vulkan storage flows through the byte-shape
 //! [`crate::VulkanStorageBytes`] substrate (held inside
-//! [`fuel_storage::Storage`]), not the op-rich `DynBackendStorage`
+//! [`fuel_memory::Storage`]), not the op-rich `DynBackendStorage`
 //! trait. Callers use the byte-storage surface on `VulkanBackend`
 //! ([`VulkanBackend::alloc_bytes_handle`],
 //! [`VulkanBackend::upload_bytes_handle`],
@@ -103,7 +103,7 @@ fn vulkan_dyn_err(method: &'static str) -> Error {
     Error::Msg(format!(
         "VulkanBackendDevice::{method}: Vulkan does not return DynBackendStorage \
          objects. The Vulkan storage path runs on the byte-shape substrate \
-         (VulkanStorageBytes via fuel_storage::Storage). Use the dedicated \
+         (VulkanStorageBytes via fuel_memory::Storage). Use the dedicated \
          allocation surface on VulkanBackend (alloc_bytes_handle, \
          upload_bytes_handle, download_bytes) reached via \
          fuel_core::vulkan_backend::as_device(&device).",

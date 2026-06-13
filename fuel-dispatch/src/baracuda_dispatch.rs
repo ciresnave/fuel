@@ -19,7 +19,7 @@ use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::DType;
 
 use crate::kernel::{KernelBindingTable, KernelCaps, OpParams};
-use fuel_storage::Storage;
+use fuel_memory::Storage;
 
 // Re-use the storage-helpers from dispatch.rs so we read/write
 // CudaStorageBytes the same way the PTX wrappers do.

@@ -1,6 +1,6 @@
 [package]
 categories.workspace = true
-description = "Dispatch infrastructure for fuel: KernelBindingTable, per-backend registration wrappers, CompiledNode + compile_node, ExecutionPlan + compile_plan + resolve_kernel, FusedKernelRegistry, PipelinedExecutor. The layer that takes a graph and runs it against registered backends. Extracted from fuel-storage 2026-05-31."
+description = "Dispatch infrastructure for fuel: KernelBindingTable, per-backend registration wrappers, CompiledNode + compile_node, ExecutionPlan + compile_plan + resolve_kernel, FusedKernelRegistry, PipelinedExecutor. The layer that takes a graph and runs it against registered backends. Extracted from fuel-memory 2026-05-31."
 edition.workspace = true
 keywords.workspace = true
 license.workspace = true
@@ -13,7 +13,7 @@ fuel-core-types = { workspace = true }
 fuel-cpu-backend = { workspace = true }
 fuel-cuda-backend = { workspace = true, optional = true }
 fuel-graph = { workspace = true }
-fuel-storage = { workspace = true }
+fuel-memory = { workspace = true }
 fuel-vulkan-backend = { workspace = true, optional = true }
 bytemuck = { workspace = true }
 half = { workspace = true }
@@ -33,8 +33,8 @@ fuel-conv = { workspace = true }
 [features]
 default = []
 # Per-backend dispatch wrappers. Feature flags propagate the same shape
-# fuel-storage used: each GPU backend's registration entry-point is
+# fuel-memory used: each GPU backend's registration entry-point is
 # gated behind its feature.
-cuda = ["dep:fuel-cuda-backend", "fuel-storage/cuda"]
-vulkan = ["dep:fuel-vulkan-backend", "fuel-storage/vulkan"]
-metal = ["dep:fuel-metal-backend", "fuel-storage/metal"]
+cuda = ["dep:fuel-cuda-backend", "fuel-memory/cuda"]
+vulkan = ["dep:fuel-vulkan-backend", "fuel-memory/vulkan"]
+metal = ["dep:fuel-metal-backend", "fuel-memory/metal"]

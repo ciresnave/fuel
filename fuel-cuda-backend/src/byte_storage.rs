@@ -11,7 +11,7 @@
 //!   slice extraction.
 //! - **`CudaStorageBytes`** (this module): wraps a single
 //!   `DeviceBuffer<u8>` (raw bytes on device) plus `CudaDevice`
-//!   plus `len_bytes`. Dtype lives on the [`fuel_storage::Storage`]
+//!   plus `len_bytes`. Dtype lives on the [`fuel_memory::Storage`]
 //!   wrapper, not here. Implements
 //!   [`fuel_core_types::backend::BackendStorage`].
 //!

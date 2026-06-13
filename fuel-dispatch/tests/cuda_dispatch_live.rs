@@ -17,7 +17,7 @@ use std::sync::{Arc, RwLock};
 use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Layout, Shape};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
 use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::{register_cuda_kernels, register_cpu_kernels}, kernel::{KernelBindingTable, OpParams}};
-use fuel_storage::{BackendStorage, Storage};
+use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
     match CudaDevice::new(0) {

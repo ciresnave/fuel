@@ -585,14 +585,14 @@ mod tests {
             let mut inputs = StorageCache::new();
             inputs.insert(
                 a,
-                Arc::new(RwLock::new(fuel_storage::from_slice_cpu(&[
+                Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[
                     -1.0_f32, 2.0, -3.0, 4.0,
                 ]))),
             );
             let (storage, _layout) =
                 PipelinedExecutor::realize(graph, out, inputs).expect("realize");
             let guard = storage.read().unwrap();
-            let fuel_storage::BackendStorage::Cpu(c) = &guard.inner else {
+            let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
                 panic!("expected CPU output");
             };
             c.as_slice::<f32>().unwrap().to_vec()

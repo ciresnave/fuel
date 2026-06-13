@@ -17,7 +17,7 @@ impl QuantizationMode {
                 // Same behavior as the llama.cpp quantization.
                 let should_quantize = name.ends_with(".weight") && tensor.rank() == 2;
                 if should_quantize {
-                    let tensor = tensor.dequantize(&Device::Cpu)?;
+                    let tensor = tensor.dequantize(&Device::cpu())?;
                     if name == "output.weight" {
                         QTensor::quantize(&tensor, GgmlDType::Q6K)
                     } else {
@@ -403,7 +403,7 @@ fn run_quantize_safetensors(
     let mut out_file = std::fs::File::create(out_file)?;
     let mut tensors = std::collections::HashMap::new();
     for in_file in in_files.iter() {
-        let in_tensors = fuel::safetensors::load(in_file, &Device::Cpu)?;
+        let in_tensors = fuel::safetensors::load(in_file, &Device::cpu())?;
         tensors.extend(in_tensors)
     }
     println!("tensors: {}", tensors.len());
@@ -508,7 +508,7 @@ fn run_quantize(
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let device = Device::Cpu;
+    let device = Device::cpu();
     match args.command {
         Command::Ls {
             files,

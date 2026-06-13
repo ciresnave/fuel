@@ -2453,7 +2453,7 @@ impl Tensor {
     ///
     /// Used by the Phase 7.6 step 9c E.3.3 forward path to bind
     /// pre-allocated KV-cache storage Arcs (held as the new
-    /// `Arc<RwLock<fuel_storage::Storage>>` type, not the legacy
+    /// `Arc<RwLock<fuel_memory::Storage>>` type, not the legacy
     /// `fuel_core_types::Storage` that `const_like_from_storage` takes)
     /// into a per-step graph without re-uploading or type-converting.
     ///

@@ -28,7 +28,7 @@ use std::sync::{Arc, RwLock};
 
 use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Error, Layout, Result};
 use fuel_dispatch::{dispatch::{cpu_input, cpu_output, read_storage, write_storage}, fused::PrecisionGuarantee, kernel::OpParams, KernelBindingTable};
-use fuel_storage::{Storage};
+use fuel_memory::{Storage};
 
 /// Register AOCL's CPU-side wrappers as sibling alternatives on the
 /// unified binding table. Trust the caller has already probed AOCL
@@ -450,7 +450,7 @@ mod tests {
     /// isn't loadable (probe_aocl_loadable errors).
     #[test]
     fn aocl_matmul_matches_scalar_when_available() {
-        use fuel_storage::{BackendStorage, Storage};
+        use fuel_memory::{BackendStorage, Storage};
 
         if crate::probe_aocl_loadable().is_err() {
             eprintln!("AOCL not available, skipping");
@@ -529,7 +529,7 @@ mod tests {
     /// the canonical "happy" shape AOCL's im2col+gemm handles.
     #[test]
     fn aocl_conv2d_matches_scalar_when_available() {
-        use fuel_storage::{BackendStorage, Storage};
+        use fuel_memory::{BackendStorage, Storage};
 
         if crate::probe_aocl_loadable().is_err() {
             eprintln!("AOCL not available, skipping");

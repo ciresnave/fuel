@@ -19,4 +19,4 @@
     fuel-graph-cpu         = { workspace = true }
     fuel-graph-executor    = { workspace = true }
     fuel-reference-backend = { workspace = true }
-    fuel-storage           = { workspace = true }
+    fuel-memory           = { workspace = true }

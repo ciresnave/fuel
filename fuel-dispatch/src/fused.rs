@@ -1590,8 +1590,8 @@ mod tests {
     use std::sync::RwLock;
 
     fn dummy_kernel(
-        _inputs: &[Arc<RwLock<fuel_storage::Storage>>],
-        _outputs: &mut [Arc<RwLock<fuel_storage::Storage>>],
+        _inputs: &[Arc<RwLock<fuel_memory::Storage>>],
+        _outputs: &mut [Arc<RwLock<fuel_memory::Storage>>],
         _layouts: &[Layout],
         _params: &crate::kernel::OpParams,
     ) -> Result<()> {
@@ -1760,7 +1760,7 @@ mod tests {
     /// Every fused op registered in
     /// `fuel_graph::registry::default_registry()` MUST have at least
     /// one CPU `BackendImpl` in
-    /// `fuel_storage::fused::default_kernel_registry()` with
+    /// `fuel_memory::fused::default_kernel_registry()` with
     /// `precision.bit_stable_on_same_hardware == true`. This is the
     /// architecture's correctness anchor: the always-built backend
     /// gives every downstream consumer a deterministic

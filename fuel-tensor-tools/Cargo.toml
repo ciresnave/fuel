@@ -1,5 +1,5 @@
 ﻿[package]
-name = "tensor-tools"
+name = "fuel-tensor-tools"
 version.workspace = true
 edition.workspace = true
 description.workspace = true
