@@ -25,6 +25,7 @@
 | 11 | [persistence](11-persistence.md) | Optimization-cache and tolerance-recipe sibling artifacts; format, invalidation, mmap |
 | 12 | [multi-output](12-multi-output.md) | Option-C bundled storage + `Op::View`/`Op::ViewOwned`/`Op::ScatterIntoSlot`; multi-output authoring contract |
 | 13 | [interchange](13-interchange.md) | Model import/export; weight⊥graph axes; base map as hub; per-format binding seam; native format reuses base-map serialization; scaffolder |
+| 14 | [lifecycle](14-lifecycle.md) | End-to-end flow (load → graph → plan → realize → inference/training) + the canonical glossary; the orientation/spine doc — start here |
 
 ---
 
@@ -32,6 +33,7 @@
 
 **For a new contributor wanting the picture in 30 minutes**:
 
+0. → **[14 lifecycle](14-lifecycle.md)** — the end-to-end flow (load → graph → plan → realize → inference/training) and the canonical glossary. Read this first; it frames everything below.
 1. → 01 identity (5 min)
 2. → 02 layers (3 min)
 3. → 03 ir (8 min)

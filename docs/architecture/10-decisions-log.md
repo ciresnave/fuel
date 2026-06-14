@@ -267,6 +267,60 @@ Cross-references are fine — an architecture-decision-log entry can link to the
 
 ---
 
+## 2026-06-13 — Lifecycle overview section (14) + terminology reconciliation
+
+**Sections affected**: new 14 (lifecycle); 00 (index — added to the set table + reading-order spine).
+**Phase / PR**: doc — no code (one code rename proposed, not yet applied).
+**Bumped to**: new section 14 v0.1.
+
+**What changed**: added [14-lifecycle](14-lifecycle.md), the first document that narrates the whole path end to end (load → build graph → plan → realize → inference/training loop) with a single canonical glossary. It is the orientation/spine doc; 00-index's reading order now points to it first. The set was previously decomposed strictly by concern, so no document walked the full flow — which let terminology drift.
+
+**Why**: a working session surfaced a concrete misunderstanding (an implementation detail, the realize-internal worker thread, was mistaken for a pipeline stage). Aligning users/developers/agents needs one shared, code-accurate narrative + fixed vocabulary.
+
+**Terminology reconciled** (the overview is canonical):
+
+- The realize-internal worker that lowers planned nodes to WorkItems — code symbol `compiler_thread_body`, previously called the "compiler thread" — is renamed **"work-item producer"** (it produces `WorkItem`s; it does not compile machine code and is not a pipeline stage). The code rename of `compiler_thread_body` → `work_item_producer` is approved but not yet applied. `compile_plan` keeps its name, leaving exactly one "compile" in the vocabulary.
+- "the plan" is canonical for the `ExecutionPlan` (a.k.a. "optimized form / optimized DAG").
+- "runtime selector (Picker 2)" is canonical for the surface 06 calls the "route picker" and older code calls the "Router"; "plan-time ranker (Picker 1)" is the `compile_plan` ranking pass.
+
+**Today-vs-intended captured in 14** (so the overview isn't read as fully-built): eager-copy load (not mmap-resident); no load-time planning wired (warm runs per-forward); decode re-plans per token (Stage 5 memoization unbuilt); binding-table lookup happens in the work-item producer at realize time, not at plan-build time.
+
+**Related artifacts**: [14-lifecycle](14-lifecycle.md); [00-index](00-index.md) (table + reading order); the work-item-producer rename is queued against `fuel-dispatch/src/pipelined.rs:734`.
+
+---
+
+## 2026-06-14 — Major redirection: "the plan IS the graph" (multi-path optimization)
+
+**Sections affected (to be revised to match this entry)**: 03 (ir), 04 (optimization), 06 (runtime), 09 (non-goals), 11 (persistence), 13/02 (load vs import), 14 (lifecycle). This entry is the AGREED anchor; the section rewrites implement it. Until a section is revised, this entry wins.
+**Phase / PR**: design redirection from an extended owner design review (the 14-lifecycle doc surfaced that the built code had strayed from the intended architecture). Validated by a standalone frontier-pruning prototype (`C:/Projects/frontier-prototype`, not in the workspace).
+**Status of code**: most of the built optimizer/executor (per-node `AlternativeSet` + separate `ExecutionPlan` + per-node resolve + per-WorkItem dispatch) is a *staging post*, not the destination. Migration is staged so the system stays runnable throughout.
+
+**The core change**: the optimized graph and "the plan" are ONE structure, not two. There is no separate `ExecutionPlan` object; the graph itself, after optimization, is a **multi-path structure** carrying alternative routes that diverge and reconverge, with decisions localized to **branch points**, not every node.
+
+**The agreed decisions** (each reverses or extends prior architecture where noted):
+
+1. **The plan is the graph.** Optimization annotates/transforms the graph in place into a multi-path structure; the surviving N-best routes ARE the optimized model. (Revises 03/04's three-artifact "optimized form as separate annotation" framing toward a single evolving structure; base map = the unoptimized graph, retained as the portable artifact.)
+2. **Multi-path, decisions at branches.** Alternatives are real divergent/reconverging paths; decision points = branch points (few), not per-node. The built "every kernel-bearing node gets an AlternativeSet, resolved per node" over-generalized "decision point" and is the drift to undo.
+3. **The graph is the model, input-independent.** Built at load/import — NOT at `forward()`. Fully built (ideally optimized) before the first input. "No graph until forward runs" is a defect. Nodes need not own storage to exist.
+4. **Load vs import.** `map_from_file()` (or similar) LOADS a finalized native Fuel graph+storage (mmap'd). `from_gguf()`/`from_safetensors()`/HF etc. are IMPORTS (conversion → base map). The native `.fuel` format (L1) is the load path; everything else converts.
+5. **Finalize-to-disk is the default run mode, not a precondition.** Any in-memory model can be finalized to an mmap'd file — yielding fast reload, snapshotting, training-persistence, AND larger-than-RAM in one mechanism — but the base map runs before finalize. Write-back at explicit checkpoints (`msync`), never write-through-per-step.
+6. **Storage classes via "session index."** A node's lifetime/sharing class is inferred from its op (`Op::Const` → shared/weights; cache-write target → session-state with explicit override; else → transient), with multiple storages per node indexed by **session** for session-state. Weights are shared across sessions (not session-indexed). Transient never persists and never crosses to the file, but DOES cross devices mid-realize (D2D) on multi-device paths. Shared written-back only if changed (training); session written-back only on snapshot.
+7. **`optimize_graph` = pathfinders + rankers + optimizers, run lock-step.** Pathfinders add candidate paths (algebraic reshaping; dependency tracking for parallelism; windowed scanner over fused + primitive ops). Rankers measure each path: **timing** (the Judge — see #8), **precision** (digits), **accuracy** (ULP/rounding/monotonicity), **memory** (per-tier vector, see #10). Optimizers merge/discard sub-optimal paths (per-op tolerance; duplicate-path convergence; path-timing) and never strand the last path for a (device,backend) nor touch a path in an active inference/training cycle. Tie-break order: precision → accuracy → memory.
+8. **Bounding the path explosion (prototype-validated).** Naive per-device Pareto pruning EXPLODES (frontier passes 3000 by region 14 of 128). The bound comes from two complementary things: **(a) the right axes** — ONE central time metric (median/average for throughput, p99 for latency; **drop `t_min` as a selection axis** — "fastest best-case" is not a selection goal; the Judge measures the full distribution but the optimizer optimizes on one mode-selected metric), memory as discrete **tiers**, precision/accuracy as discrete levels → a naturally small (~100), FLAT, **lossless** frontier with no cap; and **(b) a crowding-distance-capped beam** (NSGA-II style, per ending-device) as a hard backstop — keep≈32/device matches the no-cap optimum on all tested runtime queries, and bounds even adversarial continuous-axis cases. Per-device bucketing keeps multiple paths per device (time/memory tradeoffs; multi-device-spanning paths) and never strands a device.
+9. **Runtime picks within the surviving frontier by live telemetry** (device load, free memory tier) at branch points — this is competitive edge #3 (top-N route preservation) realized structurally. Kernel-variant choice is largely baked at optimize time; device/path choice adapts at runtime.
+10. **Three-tier memory (disk / host / device) tracked as a vector, not a scalar.** A path has separate host-RAM and device-VRAM (and disk) footprints; dominance and runtime selection are per-tier (which tier is the binding constraint decides which path wins). The plan IS the prefetch schedule across tiers: disk→RAM (mmap demand-paging + `madvise`) for larger-than-RAM, RAM→VRAM (H2D ahead of frontier) for larger-than-VRAM.
+11. **`Storage` must support mmap-backed zero-copy views** (paged), not only owned buffers — prerequisite for larger-than-RAM and the native format. Today's eager-copy load defeats this and is to be replaced.
+12. **Pre-resolving kernels is an optional post-optimize step** (startup-time vs TTFT trade): resolve all `KernelRef`s up front to take the lookup off the hot path, or resolve lazily for fastest first-token.
+13. **Terminology** (per [14-lifecycle](14-lifecycle.md)): the realize-internal worker is the **work-item producer** (code rename of `compiler_thread_body` pending); "the plan" = the optimized graph; "runtime selector (Picker 2)" = the route picker; `compile_plan` keeps its name as the one "compile."
+
+**Why** (the bet, restated): a single multi-path graph optimized offline by pathfinders/rankers/optimizers, dispatched as sequences between few decision points with runtime adaptation per request, is the substrate the five competitive edges actually need — not a per-node alternative side-table resolved one op at a time (which the owner correctly judged "almost eager with a queue"). The prototype shows the feared blowup is avoidable and cheap (~100 paths) with the right axes + a backstop cap.
+
+**Prototype evidence**: `C:/Projects/frontier-prototype` — naive Pareto explodes @region 14 (all seeds); coarse quantization / collapsing min/max only delay it; recommended axes (1 central time + 3 memory tiers + discrete precision/accuracy) → flat ~100-path lossless frontier; capped beam keep=32/device → matches no-cap optimum on all 5 runtime queries; adversarial backstop holds.
+
+**Open items** (to settle during the section rewrites): the exact `keep` to standardize; how a node declares its storage class (inference-from-op + explicit override is the lean); the disk-spill traversal's locality requirement for `optimize_graph`; and the staged-migration sequence against the runnable system.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
