@@ -932,6 +932,23 @@ pub fn eval_node_with_op(
                  path until a differentiable multi-output op lands.",
             );
         }
+        Op::Branch { .. } => {
+            // PR-A0 inert scaffold. `Op::Branch` is the multi-path
+            // phi/merge node; it is a structural arena fact that is
+            // lowered away before realization (once a route is picked
+            // and lowered to runs the merge is invisible to the hot
+            // path), and in A0 it is never constructed at all — so this
+            // arm is unreachable today. To honor the never-panic rule on
+            // this production fallback path we return a zero-element F32
+            // marker rather than `unreachable!`, mirroring the inert
+            // `Op::Release` arm above. A real reference path (if ever
+            // needed) would route through the merge's selected arm.
+            let _ = (inputs, cache);
+            AnyRefTensor::F32(RefTensor::from_arc(
+                std::sync::Arc::<[f32]>::from(Vec::<f32>::new()),
+                Shape::from_dims(&[0]),
+            ))
+        }
     }
 }
 

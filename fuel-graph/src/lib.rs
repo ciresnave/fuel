@@ -973,6 +973,30 @@ pub enum Op {
     /// Mamba training session), it lights up the kernel side along
     /// with its own backward.
     ScatterIntoSlot { slot: u32 },
+
+    /// In-place multi-path (phi/merge) node — the arena representation
+    /// of the optimized form's divergent-then-reconvergent routes.
+    ///
+    /// A `Branch` node's divergent "arms" are encoded in the node's
+    /// existing `inputs: Vec<NodeId>`: each input is the *exit* of one
+    /// candidate route, and `reconverge_at` names the explicit node at
+    /// which those routes merge back into a single value. Because the
+    /// multi-path structure is an arena fact rather than an overlay, it
+    /// persists, compacts, graph-walks, and path-filters exactly like
+    /// any other node; a graph with **zero** `Op::Branch` nodes is
+    /// exactly today's single-route graph (back-compatible by
+    /// construction).
+    ///
+    /// **Inert until PR-A1.** This variant is the PR-A0 scaffold: the
+    /// closed `Op` enum carries it and every exhaustive match handles
+    /// it, but nothing constructs it yet. The `open_branch` /
+    /// `add_arm` / `finalize_branches` builders (with build-time
+    /// validation: reconverge must descend from the diverge point, arms
+    /// internally disjoint, cast-to-uniform at reconverge) land in
+    /// PR-A1. Until then, accessors return a constant ("branch") and
+    /// fallible paths (shape inference, autograd, lowering) return a
+    /// descriptive `Err` rather than panicking.
+    Branch { reconverge_at: NodeId },
 }
 
 impl Op {
@@ -1202,6 +1226,8 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::View{..}             => "View",
         Op::ViewOwned{..}        => "ViewOwned",
         Op::ScatterIntoSlot{..}  => "ScatterIntoSlot",
+        // PR-A0 inert scaffold (the multi-path phi/merge node).
+        Op::Branch{..}           => "Branch",
     }
 }
 
@@ -7907,6 +7933,19 @@ impl Tensor {
                     // gradient propagates back; matches the
                     // Op::Const / Op::Alloc / Op::ZeroFill treatment.
                 }
+                Op::Branch { .. } => {
+                    // PR-A0 inert scaffold. `Op::Branch` is the
+                    // multi-path phi/merge node; it is never constructed
+                    // in A0, so this arm is unreachable today. When the
+                    // PR-A1 builders land, gradient flow through a Branch
+                    // routes via its arms (each an `inputs[i]` route exit)
+                    // and reconverges at `reconverge_at` — not through the
+                    // merge node itself. `backward` is infallible
+                    // (`-> GradMap`), so the no-panic inert handling is to
+                    // drop the gradient at the structural node, matching
+                    // the Op::Const / Op::ScatterIntoSlot treatment above.
+                    // The real per-arm routing lands with the builders.
+                }
                 Op::View { slot } | Op::ViewOwned { slot } => {
                     // Multi-output projection — item 4 backward
                     // composition (Option C, 2026-06-01).
@@ -11550,5 +11589,107 @@ mod tests {
              into the gradient graph; got grad node op = {:?}",
             g.node(grad_id).op,
         );
+    }
+
+    // ----- Op::Branch inert scaffold (Phase A PR-A0 of the
+    // "plan IS the graph" rebuild) -----
+
+    /// Back-compat by construction: a graph with ZERO `Op::Branch`
+    /// nodes builds with exactly the arena it had before the variant
+    /// existed. The locked design guarantees "a graph with zero
+    /// Op::Branch nodes is exactly today's single-route graph" — this
+    /// test pins that: the same builder calls produce the same node
+    /// count, the same topo order, and not a single `Op::Branch` node.
+    #[test]
+    fn zero_branch_graph_builds_unchanged() {
+        // Build: c = (a + b) * a — the same DAG the topo-order tests
+        // use, exercised here purely to prove the arena is untouched by
+        // the new variant.
+        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
+        let sum = a.add(&b);
+        let c = sum.mul(&a);
+
+        let g = c.graph();
+        let guard = g.read().unwrap();
+
+        // Exactly four nodes (a, b, sum, c) — no implicit Branch
+        // anywhere.
+        assert_eq!(guard.len(), 4, "zero-Branch graph must have the same node count as before");
+
+        // Topo order is unchanged and contains zero Branch nodes.
+        let order = topo_order(&guard, c.id());
+        assert_eq!(order.len(), 4);
+        let branch_count = order
+            .iter()
+            .filter(|&&id| matches!(guard.node(id).op, Op::Branch { .. }))
+            .count();
+        assert_eq!(branch_count, 0, "no builder constructs Op::Branch in PR-A0");
+
+        // The ops are exactly the ones the builders emitted (no
+        // structural rewrite slipped in a merge node).
+        assert!(matches!(guard.node(a.id()).op, Op::Const));
+        assert!(matches!(guard.node(b.id()).op, Op::Const));
+        assert!(matches!(guard.node(sum.id()).op, Op::Add));
+        assert!(matches!(guard.node(c.id()).op, Op::Mul));
+    }
+
+    /// The variant exists and its infallible accessor behaves: a
+    /// hand-constructed `Op::Branch` reports `short_name() == "Branch"`,
+    /// and the multi-path encoding (arms = `inputs`, explicit
+    /// `reconverge_at`) round-trips through the arena. This is the only
+    /// place in PR-A0 that constructs the variant — the production
+    /// builders land in PR-A1.
+    #[test]
+    fn branch_variant_exists_and_short_name_works() {
+        // short_name / the Op::short_name() facade both return the
+        // stable "Branch" constant.
+        let reconverge = NodeId(7);
+        let branch_op = Op::Branch { reconverge_at: reconverge };
+        assert_eq!(branch_op.short_name(), "Branch");
+        assert_eq!(op_short_name(&branch_op), "Branch");
+
+        // Structural nodes carry no destructive input (matches the
+        // other structural ops: Const / View / ScatterIntoSlot).
+        assert_eq!(branch_op.destructive_input(), None);
+
+        // Encode a 2-arm merge directly on the arena: two route exits
+        // as `inputs`, the reconvergence node named explicitly. Prove
+        // the encoding survives a push + read-back unchanged.
+        let mut g = Graph::new();
+        let arm0 = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        let arm1 = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        let merged = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        let branch = g.push(Node {
+            op: Op::Branch { reconverge_at: merged },
+            inputs: vec![arm0, arm1],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+
+        let node = g.node(branch);
+        assert_eq!(node.op.short_name(), "Branch");
+        // Arms are the node's inputs (each input = one route's exit).
+        assert_eq!(node.inputs, vec![arm0, arm1]);
+        // The explicit reconvergence node is carried on the op.
+        match node.op {
+            Op::Branch { reconverge_at } => assert_eq!(reconverge_at, merged),
+            ref other => panic!("expected Op::Branch, got {other:?}"),
+        }
     }
 }
