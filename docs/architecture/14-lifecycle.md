@@ -1,6 +1,6 @@
 # Lifecycle: from model file to finished inference/training
 
-**Status**: v0.1 (draft, 2026-06-13).
+**Status**: v0.2 (2026-06-14).
 
 This is the one document that walks the **whole path**, in order: from "load a model
 from disk" to "inference or training has finished." Every other architecture section
@@ -16,7 +16,10 @@ Two reading rules:
 - **Today vs Intended.** Fuel's architecture is partly aspirational. Each stage marks what
   the code does **Today** versus what the architecture **Intends**. Do not read the
   intended steady-state as if it were all implemented — that mismatch is exactly what this
-  document exists to prevent.
+  document exists to prevent. The **Intended** column reflects the 2026-06-14 *"the plan is
+  the graph"* redirection ([10-decisions-log](10-decisions-log.md)); the as-built code largely
+  predates it — a separate `ExecutionPlan`, per-node top-N alternatives, a fresh graph per
+  token, and planning at realize time — so each such gap is called out where it lands.
 
 ---
 
@@ -31,14 +34,23 @@ particular, the **"work-item producer"** and the **"executor"** are two threads 
 realize box* — they are not stages of the pipeline. (This is the single most common
 confusion; see the glossary and stage 4.)
 
+Where the boundary sits matters. Under the redirection, the first two boxes — **build graph**
+and **plan** — are *load-time and input-independent*: the graph, with its optimized multi-path
+form, is built once when the model loads, not rebuilt per request. **realize** and the loops
+are the per-request work. The as-built code instead builds the graph inside `forward` and plans
+at realize time; that single shift (load-time vs forward-time) is the largest Today-vs-Intended
+gap in this document, and it is what makes the decode-per-token re-planning in stage 5 a gap
+rather than the design.
+
 ---
 
 ## Glossary (canonical terms)
 
 **Graph** (a.k.a. *the DAG*, *the IR*) — fuel's intermediate representation: a directed
 acyclic graph of operation **nodes**, held behind `Arc<RwLock<Graph>>`. Append-only;
-nodes are immutable once created. Built lazily as model code calls tensor ops.
-(`fuel-graph`; `Graph` at `fuel-graph/src/lib.rs:1247`.)
+nodes are immutable once created. *(Today: built lazily inside `forward`. Intended: built
+once **at load** and **input-independent** — the graph is a property of the model, not of a
+particular input; [03-ir](03-ir.md).)* (`fuel-graph`; `Graph` at `fuel-graph/src/lib.rs:1247`.)
 
 **Node** — one operation: `{ op, inputs: Vec<NodeId>, shape, dtype }`. Identified by a
 `NodeId` (a `usize` newtype). (`fuel-graph/src/lib.rs:1232`.)
@@ -54,7 +66,11 @@ no data — only a reference to a node. (`fuel-core/src/lazy.rs`, `fuel-graph` `
 **Storage** — an actual typed, contiguous memory buffer (host or device), held as
 `Arc<RwLock<Storage>>`. Lives in the `fuel-memory` crate. The graph references storage by
 node; weights and KV-caches are storage buffers shared across realizes via their `Arc`.
-*(Renamed from `fuel-storage` 2026-06-13.)*
+*(Renamed from `fuel-storage` 2026-06-13.)* *(Intended: each buffer carries a **storage
+class** — **shared** (weights, `Op::Const`; one copy across all sessions), **session**
+(KV-cache and anything keyed by a `SessionId`), or **transient** (activations; freed when
+dead). Today the class is implicit in how each `Arc` is held; [03-ir §Storage classes and
+sessions](03-ir.md).)*
 
 **realize** — the call that crosses from graph-building to execution: `.realize_f32()` and
 friends. Under the load-time-planning design it is conceptually "wait until the plan covers
@@ -65,10 +81,18 @@ the requested roots, then dispatch." Returns host data (or leaves results device
 `ExecutionPlan`: a topological `order`, a sparse map of per-node **alternative sets**, and a
 `generation` stamp. Built by `compile_plan`. (`fuel-dispatch/src/plan.rs:56`.) This document
 uses **"the plan"** as canonical; "optimized form" is the same thing in conceptual prose.
+*(Intended: the optimized paths are not a separate artifact at all — they live **in the
+graph** as a bounded multi-path structure, so "the plan **is** the graph." The standalone
+`ExecutionPlan` is the as-built realization of it; [03-ir §The optimized form](03-ir.md),
+[04-optimization](04-optimization.md).)*
 
 **Alternative set** — for one node, the ranked list of viable `(kernel, backend, device)`
 choices (default top-N = 3). The plan stores a set per kernel-bearing node, not N whole
 competing graphs. (`AlternativeSet`, `fuel-dispatch/src/ranker/alternative_set.rs`.)
+*(Intended: choices attach to **decision (branch) points**, not to every node, and the set
+of retained paths per device is bounded by a **Pareto frontier + crowding cap** rather than a
+fixed top-N; [04-optimization §Bounding the frontier](04-optimization.md). The fixed default
+top-N = 3 is the as-built shape.)*
 
 **`compile_plan` / plan-time ranker ("Picker 1")** — the optimizer pass that builds the
 plan: per node it enumerates candidates, runs the filter chain, computes cost, runs
@@ -150,6 +174,14 @@ layout side-table — zero-copy.
 artifact is largely conceptual (the fused-op registry and a first lowering rule exist; the
 broader rule engine is in progress per [04-optimization](04-optimization.md):314+).
 
+**Intended** ([03-ir](03-ir.md), 2026-06-14 redirection): the graph is **input-independent**
+and built **at load**, not inside `forward`. Loading a native `.fuel` via `map_from_file`
+reconstructs the whole graph (base map + storage + optimized paths) directly — no conversion;
+importing a foreign checkpoint via `from_*` converts it **once** into the base map. Either way
+the structure exists before any input does, and the per-request work in stages 4–6 binds inputs
+to an already-built graph rather than building a new one. The as-built "no graph until `forward`
+runs" path is the current simplification.
+
 ---
 
 ## Stage 3 — Plan (graph → an ExecutionPlan)
@@ -180,8 +212,14 @@ The plan (`order` + per-node alternative sets + `generation`) is memoized in the
   forward, just before realize* (`lazy.rs:5295`), not at model-load. So planning happens at
   realize time, per forward. ([06-runtime](06-runtime.md) v1.1 intends planning to start at
   load; that is the unfinished planner program, Stages 4b–6.)
-- **Per-decision-point alternatives + concurrent optimize** are the intended shape;
-  the current optimizer is closer to synchronous and single-pass ([04-optimization](04-optimization.md):150,314).
+- **The intended optimizer is `optimize_graph`, run at load** — pathfinders propose alternative
+  paths, rankers score each on a per-path cost *vector* (a single central time metric + per-tier
+  memory + discrete precision/accuracy), optimizers rewrite, and the retained paths per device
+  are bounded by a **Pareto frontier + crowding cap** ([04-optimization §Bounding the
+  frontier](04-optimization.md)). The as-built `compile_plan` is instead per-node, fixed top-N,
+  synchronous/single-pass, and runs at realize time. The redirection ([10-decisions-log](10-decisions-log.md)
+  2026-06-14) makes "decisions at branch points, paths in the graph" the target; the
+  frontier-pruning prototype confirmed it stays bounded (~10² paths, lossless at keep ≈ 32/device).
 - **"Pre-resolved at plan time"** is only partly true — see stage 4: the binding-table
   lookup actually happens during realize, in the work-item producer.
 
@@ -240,6 +278,13 @@ plan-build time. The plan path is *mostly* pre-resolved (alternative sets carry 
 pointers), but plan-absent nodes and the fallback still do a live lookup. The consultation
 moved off the executor thread into the producer thread — not all the way back to plan time.
 
+Also intended (redirection): the unit of dispatch is a **run** — a fixed op-sequence between
+two decision points — handed to the executor as a unit, with the **route picker** choosing a
+path only at the **branch points** between runs, not at every op. The as-built executor
+dispatches per WorkItem (per node) and the selector may fire at any kernel-bearing node;
+collapsing straight-line spans into runs (so the picker is consulted a handful of times, not
+once per node) is the intended optimization.
+
 ---
 
 ## Stage 5 — The inference loop (realize, repeatedly, autoregressively)
@@ -270,6 +315,12 @@ identical* step to step (only the host scalar `cached_len` changes), so the inte
 (planner Stage 5, structural-hash plan memoization) is to reuse the plan across steps — *not
 yet built*. The headline "1.8×/token" planning result was measured on a synthetic
 single-growing-graph loop and **does not reach this production decode path** yet.
+
+Under the redirection this gap closes *by construction*: the decode graph is **not** rebuilt
+per token — the loaded, input-independent graph is reused across steps, and the only thing that
+advances is **session-class** storage (the KV-cache, keyed by `SessionId`). Plan reuse then
+falls out of the graph being the same object, instead of needing a structural-hash plan cache
+bolted onto fresh-every-step graphs.
 
 ---
 
@@ -312,6 +363,11 @@ match.
    picker" and older code calls the "Router"; **"plan-time ranker (Picker 1)"** is the
    `compile_plan` ranking pass. Both are "pickers," at different times.
 4. The **work-item producer and executor are inside realize**, not pipeline stages.
+5. **"the plan is the graph"** — the optimized multi-path form lives *in* the graph, not in a
+   separate artifact; "the plan" names that embedded structure in conceptual prose, while the
+   standalone `ExecutionPlan` is the as-built implementation of it (item 2). This is the
+   Intended model the stages above measure Today against ([10-decisions-log](10-decisions-log.md)
+   2026-06-14).
 
 ---
 
@@ -321,4 +377,5 @@ match.
 - [04-optimization](04-optimization.md) — decomposition, the plan, placement, load-time planning.
 - [05-backend-contract](05-backend-contract.md) — what backends advertise; the KernelRef ABI.
 - [06-runtime](06-runtime.md) — the runtime selector, dispatch, the executor.
+- [10-decisions-log](10-decisions-log.md) — the 2026-06-14 "plan is the graph" redirection that the **Intended** column above tracks.
 - ROADMAP §"Post-wipe resume addendum" — the planner-program gaps (Stages 4b–6) referenced above.
