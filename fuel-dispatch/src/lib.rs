@@ -48,6 +48,7 @@ pub mod cost;
 pub mod dispatch;
 pub mod fused;
 pub mod kernel;
+pub mod optimize;
 pub mod pipelined;
 pub mod plan;
 pub mod plan_store;
@@ -58,6 +59,7 @@ pub mod vulkan_dispatch;
 pub use compiled::{compile_node, execute_compiled, CompiledNode};
 pub use kernel::{KernelBindingTable, KernelDTypes, KernelRef, OpParams};
 pub use pipelined::PipelinedExecutor;
+pub use optimize::{optimize_graph, OptimizedGraph};
 pub use plan::{compile_plan, ExecutionPlan, PlanOptions};
 pub use ranker::{
     apply_filter_chain, apply_inbound_transfer_costs, composite_ns,
