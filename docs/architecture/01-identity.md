@@ -30,7 +30,7 @@ A backend that fuses internally cannot decide "this fused matmul+bias+relu costs
 
 `(a+b) * (a-b)` and `a² - b²` produce the same result with different op counts and different memory traffic. `matmul(A, B) + matmul(A, C)` and `matmul(A, B+C)` differ by a full matmul. Distributivity, associativity, factoring, identity-elimination, common-subexpression hoisting across non-trivial boundaries — these are real optimization wins that backend-internal fusion never sees because the patterns span ops the backend would never combine. Fuel's optimization layer searches for these rewrites by treating the DAG as algebraic expressions, not just dependency edges. Pattern matchers can be declarative (with variables) or callable functions; the optimizer is engine-agnostic.
 
-### 3. Top-N route preservation for runtime adaptation
+### 3. Multi-path route preservation for runtime adaptation
 
 Most frameworks commit to a single optimal plan at compile time. Fuel's optimizer expands the DAG to keep multiple competitive routes — a **bounded per-device Pareto frontier** (capped by crowding distance, not a fixed global N) ranked by a cost vector. The runtime route picker reads current backend telemetry — memory pressure, queue depth, currently-loaded weights, request priority — and picks among preserved routes per-request. The same model serves a fast path under low load and a memory-conserving path under contention, without recompilation.
 
