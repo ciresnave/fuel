@@ -1,6 +1,6 @@
 # Persistence
 
-**Status**: v1.1 (2026-06-08). v1.1 adds the optional **runtime snapshot** (L3) artifact — designated durable runtime state (KV-caches, optimizer state) for resuming a live computation — plus the three-layer *model / +plan / +snapshot* save framing, and records the decision against saving all activations (bandwidth-bound reload loses to on-device recompute). v1.0 (2026-05-09) changes: (1) cache files are mmap'd at process startup, not read into memory; the cache format's mmap-friendly layout becomes load-bearing rather than aspirational; (2) cache updates use write-new-file-and-swap, not in-place writable-mmap modification; (3) per-decision-point dependency records support scoped re-optimization (per [06-runtime §Scoped re-optimization](06-runtime.md#scoped-re-optimization)). v0.2 added "Cache generation and distribution" section covering the `fuel cache generate` CLI tool, named target sets, sibling-file convention with HF Hub / GitHub auto-discovery, multi-version DAG-format support, opportunistic migration during background re-optimization, community-aggregated empirical data refining static annotations, and auto-populated named target sets from opt-in telemetry.
+**Status**: v1.2 (2026-06-14). **v1.2 reconciles persistence with the 2026-06-14 "plan IS the graph" redirection** (see [10-decisions-log](10-decisions-log.md)): the native `.fuel` artifact holds the **whole graph** — base map + storage + (after optimization) the optimized multi-path paths — so locally there is no separate cache *file*; the base map is the portable *portion*, and foreign-hardware loads validate-and-scoped-re-optimize ([03-ir §Persisting the unified graph](03-ir.md#persisting-the-unified-graph-base-map--optimized-paths), [06-runtime §Scoped re-optimization](06-runtime.md#scoped-re-optimization)). The separate per-target *distribution* caches below remain valid for **shipping** pre-optimized plans to hardware you don't have locally. Weights/storage are mmap-backed (larger-than-RAM); the Judge baseline ships **bundled in-package** (2026-06-13). v1.1 (2026-06-08) adds the optional **runtime snapshot** (L3) artifact — designated durable runtime state (KV-caches, optimizer state) for resuming a live computation — plus the three-layer *model / +plan / +snapshot* save framing, and records the decision against saving all activations (bandwidth-bound reload loses to on-device recompute). v1.0 (2026-05-09) changes: (1) cache files are mmap'd at process startup, not read into memory; the cache format's mmap-friendly layout becomes load-bearing rather than aspirational; (2) cache updates use write-new-file-and-swap, not in-place writable-mmap modification; (3) per-decision-point dependency records support scoped re-optimization (per [06-runtime §Scoped re-optimization](06-runtime.md#scoped-re-optimization)). v0.2 added "Cache generation and distribution" section covering the `fuel cache generate` CLI tool, named target sets, sibling-file convention with HF Hub / GitHub auto-discovery, multi-version DAG-format support, opportunistic migration during background re-optimization, community-aggregated empirical data refining static annotations, and auto-populated named target sets from opt-in telemetry.
 
 How fuel persists computed artifacts across process restarts: the optimization cache (which lets reload skip optimization), the tolerance recipe (which captures discovered per-op tolerance budgets), and the architectural commitments around format, invalidation, distribution, and offline pre-optimization.
 
@@ -8,33 +8,25 @@ This section cross-cuts most of the other architecture documents. The optimizati
 
 ---
 
-## Two artifacts, two lifecycles
+## Artifacts and their lifecycles
 
-Fuel produces two persistable artifacts that live alongside the model file:
+Because the plan IS the graph, the primary artifact is **the native `.fuel` file itself** — it holds the whole graph: base map + storage + (after optimization) the optimized multi-path paths. Locally there is no separate cache *file*; finalizing a model writes the unified `.fuel`, and reloading it is fast via load-time validation + scoped re-optimization ([03-ir §Persisting the unified graph](03-ir.md#persisting-the-unified-graph-base-map--optimized-paths)). Two further artifacts have distinct lifecycles and so are **separate siblings**, plus one distribution artifact:
 
-- **Optimization cache** (`model.fuel-cache` or similar): the optimized form of a specific model on specific hardware. Lets a process reload an optimized plan without re-running optimization. **Hardware-dependent.**
-- **Tolerance recipe** (`model.fuel-tolerance` or similar): per-op tolerance budgets discovered by calibration. Lets a process load discovered tolerances without re-running calibration. **Hardware-independent.**
+- **Tolerance recipe** (`model.fuel-tolerance` or similar): per-op tolerance budgets from calibration. **Hardware-independent** (keyed to the base map), so it ships once for any hardware — a different lifecycle from the per-hardware optimized paths, hence a separate file.
+- **Runtime snapshot** (L3, optional): designated durable runtime state (KV-caches, optimizer state) for *resuming* a live computation. The most ephemeral lifecycle of all. See [Runtime snapshots](#runtime-snapshots-resuming-designated-durable-state-l3).
+- **Per-target distribution caches** (optional): for *shipping* pre-optimized plans to hardware the producer doesn't have locally, the cache-generation tool emits the optimized portion as separate per-(hardware, backend) artifacts (see [Cache generation and distribution](#cache-generation-and-distribution)). These are the explicit-distribution analogue of the optimized paths the unified `.fuel` carries locally.
 
-The two artifacts have different invalidation criteria — distinct lifecycles — so they're separate files, not one merged blob.
+The three-layer mental model still holds — **L1 model** (base map + weights; the portable portion of the `.fuel`), **L2 + plan** (the optimized paths; in the unified `.fuel` locally, or a per-target cache for shipping), **L3 + snapshot** (resume state) — it is just unified into one file locally rather than always split.
 
-A third, **optional** artifact — the **runtime snapshot** — captures designated durable runtime state (KV-caches, optimizer state) for *resuming* a live computation rather than restarting it. It has the most ephemeral lifecycle of the three. See [Runtime snapshots](#runtime-snapshots-resuming-designated-durable-state-l3) for the full three-layer save model (model / +plan / +snapshot) and why it is not a blind activation dump.
+## What the persisted graph contains (and a distributable cache extracts)
 
-## What gets cached: the optimization artifact
+Because the plan is the graph, the optimized paths are not a separate blob — they are part of the graph the `.fuel` serializes. What that comprises:
 
-Three things compose the optimization cache:
+1. **The base map** — the fully-decomposed primitive DAG ([03-ir](03-ir.md#the-base-map-fully-decomposed-primitive-dag-permanently-retained)); the portable portion, and re-optimization's restart point.
+2. **The optimized multi-path paths** — the bounded per-device Pareto paths with decision points at branches ([04-optimization](04-optimization.md)): rule applications, kernel-variant/placement choices, layout fixups, transfer/cast insertions, cumulative-error and cost annotations, conditional cost adjustments. Hardware-dependent; validated on load.
+3. **Kernel selections per path node**, encoded as `(backend_id, op_kind, dtypes, kernel_revision_hash)` tuples — *not* `KernelRef` function pointers (process-local). On load each tuple re-resolves to a live `KernelRef` via the binding-table catalog (optional pre-resolve, else lazy — [06-runtime](06-runtime.md#kernel-resolution-optional-pre-resolve-else-lazy)).
 
-1. **The base map.** The fully-decomposed primitive DAG (per [03-ir](03-ir.md#the-base-map-fully-decomposed-primitive-dag-permanently-retained)). Already meant to be retained as a permanent artifact in-process; persisting it across processes is a natural extension. Useful for re-optimization from canonical state when conditions change.
-
-2. **The optimized form.** The DAG annotated with per-decision-point alternatives (per [04-optimization §Per-decision-point alternatives](04-optimization.md#per-decision-point-alternatives)). Captures: rule applications, kernel-variant choices, placement decisions, layout fixups, transfer-op insertions, dtype-cast insertions, cumulative error annotations, cost annotations, conditional cost adjustments.
-
-3. **The plan: pre-resolved kernel selections per node per alternative.** Encoded as `(backend_id, op_kind, dtypes, kernel_revision_hash)` tuples. The cached plan stores the *plan*, not the function pointers — `KernelRef`s are process-local addresses and can't be persisted. On load, the runtime re-resolves each plan tuple to a live `KernelRef` using the current process's binding-table catalog.
-
-What's *not* in the cache:
-
-- Function pointers (process-local).
-- Tensor data (the model file holds weights; the cache holds plans).
-- Profile data (the Judge's empirical measurements live separately).
-- Tolerance recipes (separate sibling artifact).
+A **distributable per-target cache** is exactly items 2-3 extracted for one (hardware, backend) target (the base map is shared / shippable separately). What is *never* persisted: function pointers (process-local); the Judge's profile data (separate — and a baseline ships bundled in-package); tolerance recipes (separate sibling).
 
 ## What gets stored: the tolerance recipe artifact
 
@@ -45,6 +37,16 @@ A calibration run (per [07-tolerance §Tolerance discovery and calibration](07-t
 - **Provenance**: who calibrated (opaque opt-in identifier; never tied to user account), how (which search algorithm), against what (reference backend, hardware fingerprint optional).
 
 The recipe's keys reference the base map's structure, so the recipe is portable across hardware: same base map → same locations → same discovered budgets. (Hardware-dependent variation in *cost* is handled by the optimization cache; *what error a model can tolerate* is a model property, not a hardware property.)
+
+## Storage in the native file: mmap, write-back, tiers
+
+The `.fuel` holds the graph's **storage** as well as its structure, by storage class ([03-ir §Storage classes](03-ir.md#storage-classes-and-sessions)):
+
+- **Shared storage (weights)** is mmap-backed — loaded as a zero-copy view paged on demand, never copied wholesale. This is the prerequisite for **running models larger than RAM** (only the working set is resident; the plan prefetches ahead of the execution frontier per [06-runtime §Cross-tier prefetch](06-runtime.md#cross-tier-prefetch-the-plan-is-the-schedule)). Weights are written back **only when they change** (training), at explicit checkpoints — never write-through per step.
+- **Session state** (KV-caches) is written back **only on an explicit snapshot** (L3); an ephemeral session discards it.
+- **Transient activations** are never persisted.
+
+So finalizing after training updates the weights in place (a checkpoint), finalizing after optimization writes the optimized paths, and neither forces re-shipping the other — write-back cadence matches each class's lifecycle, and a crash mid-write can't tear the file because writes land at `msync` checkpoints, not continuously.
 
 ## Format: memory-mappable, sibling-file, schema-versioned
 
@@ -59,14 +61,12 @@ Both artifacts use the same format conventions:
 
 The format is fuel-specific, hand-rolled. We considered flatbuffers / rkyv / capnproto and chose against them: the data is fuel-shape-specific, the schema isn't trying to be cross-language, and a hand-rolled format keeps load logic simple and dependency-free. Schema versioning with strict policy keeps maintenance cost bounded.
 
-## Sibling files, not embedded chunks
+## What is unified vs sibling
 
-Two placement decisions confirmed:
+- **Unified into the native `.fuel`**: the graph — base map + storage + optimized paths. The plan is the graph, so its optimized portion rides in the same file locally (no separate cache file to manage; one artifact to snapshot, copy, or evolve via training). A distribution *stripper* can remove the optimized paths to ship just the portable base map.
+- **Separate siblings** (distinct lifecycles): the **tolerance recipe** (hardware-independent — ships once for all hardware) and the **runtime snapshot** (run-dependent — resumes one session); plus **per-target distribution caches** when *shipping* pre-optimized plans for hardware the producer lacks locally.
 
-- **Sibling files** (e.g., `model.safetensors` + `model.safetensors.fuel-cache` + `model.safetensors.fuel-tolerance`): straightforward; fuel-only artifacts don't pollute the model file; easy to delete to force regeneration; easy to ship/not-ship independently.
-- **Embedded as extension chunks in the model file** (GGUF supports this; safetensors has a metadata field): more compact distribution; tighter coupling; the model file can't be loaded by tools that don't understand fuel's chunks if they require the cache.
-
-The architectural decision: **sibling files**. The cache is per-deployment-environment (different hardware fingerprints → different caches); the model file is shared across environments. Coupling them adds friction without benefit.
+The reasoning is lifecycle, not file-count dogma: data sharing the graph's lifecycle (its own optimized paths) lives in the graph; data with a divergent lifecycle (a hardware-independent recipe, a one-run snapshot, a foreign-target cache) is a sibling so it can be shipped or invalidated independently. (When importing from a *foreign* model file such as safetensors, fuel still writes its native `.fuel` as the load target; the foreign file is the import source, not the runtime artifact.)
 
 ## Invalidation: cache vs recipe
 
