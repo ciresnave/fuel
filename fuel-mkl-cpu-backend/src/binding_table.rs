@@ -1,10 +1,10 @@
 //! Binding-table integration: register MKL kernels as sibling
 //! alternatives on the unified byte-storage CPU dispatch path.
 //!
-//! Counterpart to the legacy `MklBackend` `GraphBackend` impl in
-//! [`crate::MklBackend`]. That impl lives on the `GraphBackend::matmul`
-//! trait path which Phase 7.6 Step 9c is migrating away from; this
-//! module is where MKL lands in the post-Step-9c world.
+//! This is the sole production surface for MKL: the legacy
+//! `GraphBackend for MklBackend` executor adapter was retired in
+//! executor-unification Session 7. MKL's matmul/conv2d wrappers land
+//! here as sibling alternatives on the unified binding table.
 //!
 //! ## Activation
 //!

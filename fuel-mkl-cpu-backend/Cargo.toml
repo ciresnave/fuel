@@ -14,8 +14,4 @@
     fuel-core-types        = { workspace = true }
     fuel-cpu-backend       = { workspace = true }
     fuel-dispatch          = { workspace = true }
-    fuel-graph             = { workspace = true }
-    fuel-graph-cpu         = { workspace = true }
-    fuel-graph-executor    = { workspace = true }
-    fuel-reference-backend = { workspace = true }
-    fuel-memory           = { workspace = true }
+    fuel-memory            = { workspace = true }

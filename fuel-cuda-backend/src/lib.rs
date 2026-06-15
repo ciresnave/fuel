@@ -17,9 +17,6 @@
 //! - [`dyn_impl`] — object-safe `BackendDevice` / `BackendStorage` impls.
 //! - [`error`] — `CudaError` + `WrapErr` trait for baracuda error conversion.
 //! - [`cudnn`] — optional convolution wrapper (feature: `cudnn`).
-//! - [`backend`] — `CudaBackend` implementing `GraphBackend` (this crate's
-//!   primary public surface — the bridge from the fuel-graph executor
-//!   into the CUDA primitives above).
 //!
 //! ## Execution model
 //!
@@ -73,8 +70,11 @@ pub use utils::{Map1, Map1Any, Map2, Map2Any, Map2InPlace, Map3, S};
 // launch-site helpers) can reach it via this crate.
 
 // --- graph executor integration --------------------------------------------
-mod backend;
-pub use backend::CudaBackend;
+// The legacy `GraphBackend for CudaBackend` impl (backend.rs) was retired in
+// executor-unification Session 7 (the trait + the `fuel-graph-executor` crate
+// are gone). Production CUDA realize runs through `fuel-dispatch`'s
+// PipelinedExecutor; the FA2 launcher in `crate::flash_attn::launch` survives
+// for the queued FA2-wrapper retirement session.
 
 use fuel_graph::{topo_order, topo_order_multi, NodeId, Op, Tensor};
 use fuel_core_types::DimVec;
