@@ -1,17 +1,25 @@
-# onemkl v0.2 followups — parked until CUDA Tier-2 + baracuda release ship
+# onemkl v0.2 followups — parked until a concrete consumer lands
 
 **Status:** v0.2.0 landed 2026-05-15. Service-module integration
 (`ThreadCountGuard`, `IsaLevel`, `version_string`, `cpu_frequency_*`,
 `AlignedBuffer`) shipped into `fuel-mkl-cpu-backend` in the same window.
 The three v0.2 categories below are deliberately deferred — each needs
-new Fuel-side seams that don't exist yet and would distract from the
-in-flight CUDA work.
+new Fuel-side seams that don't exist yet.
 
-Pick up when:
-- CUDA Tier 2 (Rope / RmsNorm / LayerNorm / FlashAttn) is in.
-- The baracuda alpha.13 release prep is done and CUDA work resumes.
-- Or, sooner, if a concrete consumer (model / op) lands that needs one
-  of these.
+> Reconciled 2026-06-15 against the 2026-06-14 redirection + current git:
+> the CUDA Tier-2 / baracuda-pin gates are now largely MET, so the real
+> remaining gate is "a concrete consumer lands," not the CUDA work being
+> in flight.
+
+Pick up when a concrete consumer lands that needs one of these. The
+deferral was originally gated behind in-flight CUDA work; that gate is
+now largely met (CUDA Tier 2 — Rope / RmsNorm / LayerNorm / FlashAttn —
+has landed against the current baracuda pin, alpha.67), so the live
+trigger is now a real consumer rather than the CUDA work itself:
+
+- the build-time RNG seam (see §1), or
+- a sparse op family (see §3), or
+- a linear-solve need (see §2).
 
 ## 1. RNG distributions
 

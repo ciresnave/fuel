@@ -1,5 +1,7 @@
 # Session prompt — Fill the `Op` primitive set + seed `FusedOpRegistry`
 
+> **Status (reconciled 2026-06-15 against the 2026-06-14 redirection + current git):** Batches A, B, C **SHIPPED** (commits `9838cc78`..`4d1d7a88` — comparison family + `Where`, the Tier-1 unary fanout, and the Tier-2 irreducible primitives, all landed with cpu+reference kernels). **Only Batch D is live**: the `FusedOpRegistry` seeding (~30+ Tier-3 entries) is **not done** and the plan below for it remains accurate. The kernel-side registry crate placement is now an **open question** (commit `a9efb9f4`): `fuel-memory` vs `fuel-dispatch`, **not** necessarily `fuel-storage/src/dispatch.rs`. Skip the Batch A/B/C work items below as already-built precedent; execute Batch D.
+
 ## What this session is for
 
 The `Op` enum in `fuel-graph` and the `OpKind` dispatch key in `fuel-core-types::dispatch` are partially populated. Audit (post-Recip/Abs landing, tip `896f97da`) found three tiers of missing ops, all surfaced because `OpKind`/`UnaryOp`/`CmpOp` already declare slots for many of them but no graph-level surface exists. This session adds them all — comparison family + `Where` first (because it unblocks everything else), then the mechanical Tier-1 unary fanout, then the irreducible Tier-2 primitives, then a batch of Tier-3 fused ops registered through `FusedOpRegistry` (Phase 7.6's architectural target).
@@ -17,7 +19,7 @@ This session is **NOT parallel-safe** with anything else that touches the `Op` e
 5. **`fuel-core-types/src/op.rs`** — `UnaryOp`, `BinaryOp`, `CmpOp`, `ReduceOp`. Several Tier-1 ops are already declared here; you're filling the `Op`-side gap.
 6. **`fuel-core-types/src/dispatch.rs`** §`pub enum OpKind` — extends to track new families. Mark with `#[non_exhaustive]` (already is) so persisted profiles parse forward.
 7. **`fuel-graph/src/registry.rs`** — `FusedOpRegistry` skeleton from Phase 7.6 step 1. Tier 3 entries register here; cross-reference `docs/fused-op-registry.md`.
-8. **`fuel-storage/src/dispatch.rs`** — the `KernelBindingTable::register` calls + `cpu_unary_wrapper!`/`cpu_binary_wrapper!` macros. New kernels register here.
+8. **Kernel-side registry crate (OPEN — `fuel-memory` vs `fuel-dispatch`, per commit `a9efb9f4`; historically `fuel-storage/src/dispatch.rs`)** — the `KernelBindingTable::register` calls + `cpu_unary_wrapper!`/`cpu_binary_wrapper!` macros. New kernels register here. Note: the 2026-06-14 redirection left the kernel-side registry crate placement unresolved — moving the `BackendImpl` payloads to `fuel-dispatch` is an acceptable resolution if it fits once the executor-unification seam settles. For Batch D (decomposition-only, zero native kernels) this is mostly moot, but confirm the current home before assuming `fuel-storage/src/dispatch.rs`.
 9. **`fuel-cpu-backend/src/byte_kernels.rs`** — where new CPU byte kernels go (use the `unary_f32_kernel!` / `binary_f32_kernel!` macros + their `_f64` / `_bf16` / `_f16` siblings).
 10. **`fuel-storage/src/pipelined.rs`** §`fn op_to_op_kind` — the `Op → OpKind` translation map; every new primitive gets an entry.
 
@@ -242,17 +244,23 @@ cargo test -p fuel-graph -p fuel-graph-cpu -p fuel-reference-backend -p fuel-cor
 
 ## End-of-session deliverable
 
-Branch tip should advance by ~30–40 commits across ~15–20 PRs. Concretely:
+**Already shipped (Batches A/B/C, commits `9838cc78`..`4d1d7a88`) — for reference, not this session's target:**
 
 - **`Op` enum** grew by ~16 variants (6 comparison + Where + 6 unary fanout + Squeeze + Pow + Rsqrt + Rem + Flip + Roll + CumSum + Pad).
 - **`OpKind`** grew by the same set + a few more for the new kernel shapes.
-- **`FusedOpRegistry`** seeded with ~30+ entries across activations, stable-math, trig, boolean reductions, shape compositions, pooling, normalizations, sampling, masking.
-- **Every new primitive** has bit-stable cpu+reference kernels and at least one numerical correctness test.
-- **`LazyTensor`** has builder methods for every new primitive and every Tier-3 fused op.
-- **Judge `PROFILED_OPS`** extends to cover every new elementwise primitive in the unary/binary fanouts.
-- **Memory** has fresh entries summarizing each batch's commits.
+- Each shipped with bit-stable cpu+reference kernels, `LazyTensor` builders, and at least one numerical correctness test.
 
-Stretch goal (deferred to follow-up sessions if not reached): native CUDA / Vulkan / AOCL / MKL kernels for any subset of the new ops where existing PTX/SPIR-V/vendor-BLAS intrinsics provide a single-instruction win.
+**This session's deliverable (Batch D):**
+
+- **`FusedOpRegistry`** seeded with ~30+ entries across activations, stable-math, trig, boolean reductions, shape compositions, pooling, normalizations, sampling, masking (PRs D1–D9). This session ships ZERO native Tier-3 kernels — the canonical decomposition (validated through cpu+reference) is the deliverable.
+- **Every new fused op** decomposes correctly with a numerical-correctness test exercising the decomposition.
+- **`LazyTensor`** gains builder methods for every Tier-3 fused op.
+- **Judge `PROFILED_OPS`** extends only as new elementwise primitives appear inside decompositions (the unary/binary fanout coverage already shipped with Batches A/B).
+- **Memory** has a fresh entry summarizing the Batch D commits.
+
+Branch tip should advance by ~9–12 PRs (one per D1–D9 family, plus any splits). Reconciled note: the per-PR commit-count rhythm from the shipped batches still applies, but Batch D PRs are registry-entry registrations rather than multi-layer `Op`-enum edits, so they are lighter-touch.
+
+Stretch goal (deferred to follow-up sessions if not reached): native CUDA / Vulkan / AOCL / MKL kernels for any subset of the Tier-3 ops where existing PTX/SPIR-V/vendor-BLAS intrinsics provide a single-instruction win.
 
 ## Coordination notes
 

@@ -1,5 +1,9 @@
 # Model Interchange: Import / Export Plan
 
+> **[2026-06-15 banner]** [`docs/architecture/13-interchange.md` v0.3](../architecture/13-interchange.md) is now **AUTHORITATIVE** for interchange; the sections below predate the 2026-06-14 "plan IS the graph" reconciliation and are retained as the **active migration plan** (crate moves, format dossiers, phased roadmap, caller fixes — 13-interchange.md cites this file by path). The concrete stale claims have been reconciled in place (StableHLO is now import+export; the native `.fuel` is the whole-graph serialization; load-vs-import distinction added; primitive count ~80–90); where this file and 13-interchange.md v0.3 still differ in framing, **v0.3 wins.**
+>
+> **Reconciled 2026-06-15** against the 2026-06-14 redirection + current git: StableHLO promoted to import+export, native `.fuel` = whole graph (base map + storage + optimized paths) mmap-backed via 11-persistence, load-vs-import distinction added, primitive count set to ~80–90.
+
 **Status:** Research + plan (2026-06-04). Not yet started.
 **Goal:** Let Fuel *read* a model architecture (the operation sequence, not just weights) from
 as many external sources as practical, and *write* a Fuel model out to formats other engines
@@ -39,9 +43,14 @@ members of that bucket are `torch.export`'s ATen graph and StableHLO, which are 
 ### Net
 
 - The **weight side** is ~60% built. The missing piece is a **registry**, not more parsers.
-- The **graph side** is greenfield. **ONNX is the only flagship-worthy target**; the rest are FFI shims,
-  deferred, or out of scope.
-- A **native Fuel graph format** (Serde on the IR) is a cheap, high-value byproduct of doing export at all.
+- The **graph side** is greenfield. **ONNX is the flagship import+export target** (the only multi-producer,
+  fixed-versioned, Rust-parseable graph standard). **StableHLO is the high-value second graph target — import
+  *and* export** (it is the JAX/TF/XLA convergence point, so one importer covers all three; both directions
+  via FFI, which is why it sits behind ONNX). The remaining graph formats are deferred or out of scope.
+  *(Reconciled 2026-06-15: StableHLO was "FFI shim / export-only"; v0.3 makes it an import path too.)*
+- The **native `.fuel` whole-graph format** reuses [11-persistence](../architecture/11-persistence.md)'s
+  serialization (base map + storage + optimized paths, mmap-backed in-file) — **not** Serde-on-the-IR, and
+  not a byproduct of export. It is the **load** path; conversion from foreign formats is **import**.
 
 ---
 
@@ -59,7 +68,9 @@ members of that bucket are `torch.export`'s ATen graph and StableHLO, which are 
 `Config: Deserialize` struct + a `from_hf_json_str` + a `Model::new(config, vb)` constructor.
 **There is no registry** — the user manually imports the right model type. ← key gap.
 
-**Fuel-IR:** [fuel-graph/src/lib.rs](fuel-graph/src/lib.rs). `Op` enum ≈ **110+ primitive variants**
+**Fuel-IR:** [fuel-graph/src/lib.rs](fuel-graph/src/lib.rs). The canonical primitive vocabulary is
+**~80–90 primitives** ("comparable to stablehlo's primitive set" per [03-ir](../architecture/03-ir.md);
+the as-audited `Op` enum carried more variants at fine granularity, 2026-06-04)
 (elementwise, reductions, shape/dtype, indexing, matmul, scalar, cross-device, multi-output `View`/`ViewOwned`)
 + one `Fused(FusedOpId, params)` arm backed by a **23-entry fused-op registry** (RMSNorm, RoPE, FlashAttn,
 QMatMul, SelectiveScan, …). `Graph` is a node arena + side-tables (`storage_map`, `layouts`,
@@ -88,17 +99,30 @@ register_arch!("llama", LlamaConfig, LlamaModel);   // config struct + construct
 - Return `Result` and validate at build time (Fuel principle): unknown tag → a clear error listing
   supported tags, not a panic.
 
-### F2 — Fuel-IR serialization (`fuel-graph`)
-Add Serde (or a hand-rolled stable codec) to `Op`, `Node`, `Graph`, `OpParams`, side-tables, and the
-fused-op IDs. This gives us:
-- a **native `.fuel` graph format** (round-trips with zero loss — our own opset),
-- the substrate every graph *exporter* writes from and every graph *importer* writes into.
+### F2 — Native `.fuel` whole-graph serialization (reuse 11-persistence)
+The native format is **not** a new codec bolted onto `fuel-graph` — it **reuses
+[11-persistence](../architecture/11-persistence.md)'s serialization** of the graph. A unified `.fuel` holds
+the **whole graph**: the base map (canonical primitive DAG) **plus storage plus any optimized paths**
+(branch-point alternatives), with storage **mmap-backed in-file** rather than split to an external
+safetensors sidecar by default. This gives us:
+- a **native `.fuel` whole-graph format** loaded losslessly with no conversion (round-trips our own opset),
+- the canonical hub the graph *exporters* walk and the graph *importers* build into (the **base map**).
 
 Design notes:
-- Version the format header; the fused-op registry IDs are the stable vocabulary — never renumber, only append.
-- `storage_map` weights serialize **externally** (safetensors sidecar) by default — keep the graph file small
-  and mmap-friendly; embed only on request. (Mirrors ONNX external-data and `.pt2`'s per-tensor blobs.)
+- This is the **load** path (`map_from_file` mmaps the whole graph straight into memory), distinct from the
+  **import** path the rest of this document governs — see the load-vs-import note below.
+- Reuse 11-persistence's base-map serialization; do **not** invent a second on-disk DAG format and do **not**
+  frame this as "add Serde to `fuel-graph` as the native format." Storage classes (shared / session / transient)
+  ride along per 11-persistence.
+- For *distribution*, an exported `.fuel` is stripped to the base map (hardware-independent); a receiver
+  validates-and-scoped-re-optimizes any included optimized paths, or re-optimizes from the base map on
+  different hardware. Embedding vs externalizing storage is a per-export choice, not a fixed sidecar default.
 - This is also the clean place to land graph CSE/validation on load.
+
+> **Load vs import (redirection decision #4).** `map_from_file` **loads** the native `.fuel` whole-graph with
+> no conversion (mmap, lossless). The `from_*` constructors (`from_gguf`, `from_safetensors`, ONNX, `.pt2`,
+> StableHLO) **import** — they convert a foreign format into a base map (lossy, conversion path). Loading is
+> fast and lossless; importing is what the per-format dossiers below cover.
 
 ---
 
@@ -132,13 +156,20 @@ Design notes:
 - **Verdict:** strategically correct future PyTorch path (TorchScript is dead), but high-maintenance and
   greenfield. Tier 2, after ONNX proves the op-mapper.
 
-### StableHLO — **export-via-FFI only (Tier 3)**
+### StableHLO — **import + export via FFI (Tier 3)**
 - **Container:** MLIR dialect; portable artifact = **MLIR bytecode** of the versioned **VHLO** dialect.
-- **Opset:** ~100 small orthogonal compute ops, fully specified. Past v1.0; 5yr-back/2yr-forward compat.
+- **Opset:** ~100 small orthogonal compute ops (~119 in the current spec), fully specified — a near match for
+  fuel's ~80–90 primitives. Past v1.0; 5yr-back/2yr-forward compat. See the worked op map
+  ([docs/interchange/stablehlo-to-fuel-op-map.md](../interchange/stablehlo-to-fuel-op-map.md)).
 - **Rust crates:** **effectively none.** No maintained Rust reader. `melior`/`mlir-sys` bind MLIR generally
   but **don't ship the StableHLO dialect** — you'd link StableHLO's C/C++ API yourself.
-- **Verdict:** you **cannot hand-parse it** without an MLIR runtime. Treat as an **export** target via FFI
-  to the StableHLO C API if/when XLA-ecosystem interop is wanted. Not an import path. Low priority.
+- **Verdict:** you **cannot hand-parse it** without an MLIR runtime, so **both directions ride FFI to the
+  StableHLO C API** (the portable artifact is MLIR/VHLO bytecode). It is now an **import target as well as
+  export**: StableHLO is the convergence point JAX, TensorFlow, and PyTorch/XLA all lower to, so one importer
+  transitively covers all three producers — notably the only clean path to **JAX** models. Export is natural
+  from the base map (also ~100 primitives). The MLIR-runtime requirement keeps it behind ONNX in priority
+  despite the broad reach. Control flow, dynamic shapes, and collectives are handled by import-time lowering /
+  other layers, not rejected (see the op map).
 
 ### TorchScript — **skip (deprecated)**
 Officially deprecated as of PyTorch ~2.9–2.10; PyTorch directs users to `torch.export`. Format embeds
@@ -182,15 +213,21 @@ portability.** The correct flow is ONNX → TensorRT compiles it; never parse `.
 
 ## 5. The op-impedance problem (the core engineering risk)
 
-Fuel-IR (~110 prims + 23 fused) ≠ ONNX (~187) ≠ Core ATen (~180) ≠ StableHLO (~100). Mapping is **not**
-1:1:
+Fuel-IR (~80–90 prims + 23 fused) ≠ ONNX (~187) ≠ Core ATen (~180) ≠ StableHLO (~100/~119 spec). Mapping is
+**not** 1:1:
 - **Import** = decompose each external high-level op into a Fuel primitive sequence (e.g. ONNX `LSTM`,
   `GRU`, `Softmax(axis)`, `BatchNormalization` → primitive graphs; or recognize a known pattern and emit a
   `Fused(...)` directly when one exists, e.g. ONNX `LayerNormalization` → `Fused(LAYER_NORM_LAST_DIM)`).
 - **Export** = the inverse, plus **re-fusion**: a Fuel `Fused(RMS_NORM…)` must lower to the target's
   primitive sequence (most targets lack a native RMSNorm op).
-- **Round-trips are lossy.** Define a conformance matrix per format: which ops are 1:1, which decompose,
-  which are unsupported (→ hard `Result` error at build time, listing the offending op — never silently drop).
+- **Round-trips are lossy.** Define a conformance matrix per format giving every source op a *disposition*:
+  1:1 primitive, decomposition, fused-op recognition, **import-time lowering** (control flow / dynamic shapes
+  / collectives → graph structure, per *representation ≠ op*), or *another Fuel layer*; only a construct with
+  no graph representation at all is a hard `Result` error at build time, naming the offending op — never a
+  silent drop. The worked example is the **StableHLO op map**
+  ([docs/interchange/stablehlo-to-fuel-op-map.md](../interchange/stablehlo-to-fuel-op-map.md)): of 119 spec
+  ops, ≈100 are covered or handled, the hard-reject set is nearly empty, and it names the genuine vocabulary
+  gaps (sort/top-k, pooling, FFT, inverse-trig, product-reduce).
 - **Strategy:** build a declarative **op-mapping table** crate-side, table-driven both directions, with a
   differential-test harness (run Fuel vs `tract`/`onnxruntime` on the same ONNX, assert tensor parity).
   Quantized weights: preserve the scheme through import (store as const blocks / `Fused(QMATMUL)`), don't
@@ -279,7 +316,8 @@ publishing until a model/format crate stabilizes.
 9. GGUF **export** (write path) if not done in Tier 0.
 
 **Tier 3 — Compiler-IR + TF (interop, lower demand)**
-10. StableHLO **export** via FFI to the StableHLO C API (no import).
+10. StableHLO **import + export** via FFI to the StableHLO C API. One importer covers JAX/TF/PyTorch-XLA
+    (their shared lowering target — the only clean path to JAX); export is natural from the base map.
 11. TFLite import (flatbuffer) if demand appears.
 
 **Out of scope (documented, with rationale):** TorchScript (deprecated), CoreML (Apple-only, no Rust crate),
@@ -293,7 +331,11 @@ TensorRT `.plan` (kernel-baked, non-portable), TF SavedModel full-fidelity (FFI-
 
 - **Weight⊥graph separation** — interchange splits into weight + graph; format tier stays IR-free.
 - **Hub** — the base map; no second neutral IR.
-- **Native format** — reuses 11-persistence's base-map serialization; not a new format.
+- **Native format** — reuses 11-persistence's serialization; **not** a new format and **not** Serde-on-`fuel-graph`.
+  The unified `.fuel` is the **whole graph** (base map + storage + optimized paths), storage **mmap-backed
+  in-file** (no external safetensors sidecar by default). `map_from_file` **loads** it with no conversion;
+  the `from_*` constructors **import** (convert a foreign format → base map). *(Reconciled 2026-06-15 to v0.3:
+  was "base-map serialization" / external-sidecar framing.)*
 - **Crate granularity** — per-format + per-model leaves (not feature gates); link-time `inventory`
   registration; optional `fuel-transformers` umbrella; pre-split high-demand models, lazy long tail.
 - **Sequencing** — tier seam + registry (T0) → validate with one importer (T1) → pre-split models (T2)

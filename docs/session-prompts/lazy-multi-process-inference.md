@@ -1,5 +1,7 @@
 # Session prompt — Lazy multi-process inference driver (revive `llama_multiprocess`)
 
+> Reconciled 2026-06-15 against the 2026-06-14 redirection + current git: still an active reservation (ROADMAP designates this prompt as the authoritative recreation source for `llama_multiprocess/{main.rs,model.rs}`); retired-ExecutionPlan language and a moved phase-H link updated.
+
 ## What this session is for
 
 Design and ship the lazy substrate that lets
@@ -8,7 +10,7 @@ working `cargo run --example llama_multiprocess --features cuda,nccl,flash-attn`
 binary. The original was a tensor-parallel LLaMA driver — N child processes,
 one CUDA device each, weights sharded across ranks, an NCCL AllReduce after
 every row-parallel linear. It was quarantined in Phase H
-([eager-retirement-phase-h-plan.md](eager-retirement-phase-h-plan.md), commit
+([eager-retirement-phase-h-plan.md](shipped/eager-retirement-phase-h-plan.md), commit
 `cfcb35cf`) because every load-bearing piece (the eager `LlamaConfig`, the
 eager `CustomOp1` AllReduce, the eager `Linear`, the `ShardedSafeTensors`
 var-builder) lived in code that retired with `fuel-transformers/models/`.
@@ -53,6 +55,12 @@ already chose "orchestrate above" — the comm is a host-side call between
 already-realized tensors.
 
 ### Option I — Comm as graph op (first-class)
+
+> 2026-06-15 note: when Option I is actually picked up, re-evaluate it against
+> the 2026-06-14 branch-point / RUN-dispatch model — comm ops fall inside RUNs
+> (op-sequences between decision points), so the "executor's ordering pass sees
+> the comm dependency natively" pro should be re-read in those terms rather than
+> against the old per-node-alternatives / ExecutionPlan framing.
 
 Add `Op::AllReduce { op: ReduceOp }`, `Op::AllGather { dim }`,
 `Op::ReduceScatter { op, dim }`. Backend dispatch routes through a per-Comm
@@ -357,8 +365,9 @@ Arguments for deferring:
 - The architectural question (Option I vs Option II) is better answered
   *with* a real consumer in hand. Picking now is informed guessing.
 - Phase 7.5 still has open structural work (picker integration, Op::Copy
-  D2H bridge retirement, executor consumes ExecutionPlan) — that's where
-  session capacity is most productive.
+  D2H bridge retirement, the load-time planner / in-place graph optimization —
+  the separate ExecutionPlan artifact was retired by the 2026-06-14 "plan IS
+  the graph" decision) — that's where session capacity is most productive.
 
 Arguments for landing now:
 
@@ -380,7 +389,7 @@ quarantine and treat this prompt as a reservation slot.
 
 - Original implementation (read-only reference): git commit `4ed0c05c`,
   `fuel-examples/examples/llama_multiprocess/{main.rs,model.rs}`.
-- Phase H retirement context: [eager-retirement-phase-h-plan.md](eager-retirement-phase-h-plan.md);
+- Phase H retirement context: [eager-retirement-phase-h-plan.md](shipped/eager-retirement-phase-h-plan.md);
   [eager-tensor-retirement-master-plan.md](eager-tensor-retirement-master-plan.md).
 - Existing eager TP scaffolding: [fuel-parallel/src/tensor_parallel.rs](../../fuel-parallel/src/tensor_parallel.rs);
   [fuel-parallel/src/comm.rs](../../fuel-parallel/src/comm.rs).

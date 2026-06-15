@@ -1,5 +1,15 @@
 # Session prompt — load-time incremental planner + cost-based placement
 
+> **Reconciled 2026-06-15 against the 2026-06-14 redirection + current git: live spec — Stages 1–4a landed, 4b WIP, Stages 5–7 + memory-planning unbuilt; the "incremental driver inside forward" is now reframed as a staging post toward load-time build (see note below).**
+>
+> **Today vs Intended (per [14-lifecycle](../architecture/14-lifecycle.md)).** This program is **not retired** — 3+ stages remain unbuilt and the constitution preserves its substance. But the 2026-06-14 *"the plan is the graph"* redirection ([10-decisions-log](../architecture/10-decisions-log.md) 2026-06-14 entry) reframes what this program is building toward:
+>
+> - The optimized form is **the same graph transformed in place**, not a separate `ExecutionPlan` artifact; alternatives attach to **branch points** as a bounded Pareto frontier (crowding-capped), not per-node top-N; runtime dispatches **runs** between decision points and the route picker chooses only at branch points.
+> - That graph is **built at LOAD and input-independent** — a property of the model, not of a request — so planning is load-time, not a driver that runs from graph-construction events inside `forward()`.
+> - Accordingly, the "Target behavior" formulation below and **Stage 4**'s incremental-driver/plan-store/coverage-wait shape are the **as-built (Today) path** — a *staging post*, conservatively correct, that the redirection **supersedes**: once the graph is built once at load and reused across steps, the planner does not need to run from construction events ahead of an execution frontier. Stages 1–3 (DP + transfer pricing), Stages 6–7, and the memory-planning addendum are preserved by the constitution and are read directly into the Intended design.
+>
+> Status against git: Stage 1 `70018b9c`, Stage 2 `30e35c26`, Stage 3 `0a786821`, Stage 4a `240af759`/`99e26dea` landed; Stage 4b WIP at `303ae8ca` (UNVERIFIED); Stages 5–7 + memory planning unbuilt.
+
 Decision (2026-06-11, Fuel author): **planning moves out of
 `realize()`, and soon** — Fuel should build in this direction before
 more executor work accretes around the realize-time-planning shape.
@@ -72,6 +82,20 @@ algorithm, and its memoization layer.
    units (CUDA Graphs / Vulkan command buffers, weight pointers
    rebased per instance), and fragment-sized activation buffer
    rings. Weights do not dedupe (same structure, different values).
+   *(Redirection note, 2026-06-15: this structural-hash memo — together
+   with its Stage 5 build below — is the **documented near-term decode
+   fix** flagged in [ROADMAP.md:85](../../ROADMAP.md): production decode
+   mints a fresh `Graph` per token so every step is a `PlanStore` miss,
+   and a structural-hash key beside the Arc-identity path turns decode
+   steps back into fragment hits. Under the 2026-06-14 redirection
+   ([14-lifecycle](../architecture/14-lifecycle.md)) this fix becomes
+   **redundant by construction**: the input-independent graph is built
+   once at load and reused across steps, so plan reuse falls out of the
+   graph being the same object rather than needing a structural-hash
+   cache bolted onto fresh-every-step graphs. Keep the pillar — it is
+   still the bridge fix until the load-time graph lands, and the
+   persisted-fragment / record-replay / activation-ring keying it
+   enables remains in the Intended design.)*
 8. **Horizontal fusion / similarity scheduling (later phase).**
    Independent repeated subgraphs (per-head projections, MoE
    experts — NOT sequential layers) may be scheduled adjacently and
@@ -85,7 +109,7 @@ Stages 1–3 are pure additions to today's picker substrate and are
 prerequisites for everything later. Stage 4 is the architectural
 move. Estimated 6–9 sessions total.
 
-### Stage 1 — transfer calibration probe (~half session)
+### Stage 1 — transfer calibration probe (~half session) — LANDED `70018b9c`
 
 Numeric `TransferEstimate` per `SystemTopology` transfer path:
 measure H2D/D2H/D2D at a few sizes per path (Judge-style, once per
@@ -94,7 +118,7 @@ topology snapshot. Pure Fuel-side (`cuMemcpy` timing; Vulkan staging
 equivalents). Un-parks TDP-4 option B. Tests: probe runs on CPU-only
 hosts (zero paths) and on the RTX 4070 box (live, `#[ignore]`).
 
-### Stage 2 — residency plumbing + greedy inbound pricing (~1 session)
+### Stage 2 — residency plumbing + greedy inbound pricing (~1 session) — LANDED `30e35c26`
 
 Thread committed producer placements through `compile_plan`'s walk
 (topo order ⇒ producers decided before consumers). Extend the cost
@@ -107,7 +131,7 @@ migration must pay the crossing alone). Parity tests: single-device
 systems produce identical plans; priced systems never regress a
 locality plan unless the numbers genuinely favor a move.
 
-### Stage 3 — carry-forward placement DP + fused jumps (~1–2 sessions)
+### Stage 3 — carry-forward placement DP + fused jumps (~1–2 sessions) — LANDED `0a786821`
 
 Replace greedy per-node commits with the `(position × device)` DP
 (design pillar 3+4) inside the plan walk. Chain-first: linearize the
@@ -118,7 +142,21 @@ synthetic graphs where (a) a mid-sequence GPU segment beats
 all-CPU/all-GPU, (b) a fused op must LOSE because it strands
 residency, (c) DP plan == greedy plan when transfers dominate.
 
-### Stage 4 — the incremental driver + commit horizon (~2 sessions)
+### Stage 4 — the incremental driver + commit horizon (~2 sessions) — Stage 4a LANDED `240af759`/`99e26dea`; Stage 4b WIP `303ae8ca` (UNVERIFIED)
+
+> **Redirection note (2026-06-15).** This stage's framing — a planner
+> *producer running from graph-construction events*, a plan store keyed
+> by graph identity, and a `realize()` coverage-wait against an
+> execution frontier — is the **as-built (Today) path**, and it is the
+> shape the 2026-06-14 redirection **supersedes**. Under "the plan is
+> the graph," the graph (with its optimized in-place multi-path form) is
+> built **once at load and input-independent**, so there is no driver
+> chasing construction events ahead of a moving frontier and no separate
+> plan store to cover: the optimized graph simply *is* present when
+> realize starts. Keep this stage as the conservatively-correct staging
+> post that gets us there incrementally; do not read it as the steady
+> state. (Stage 4a landed at `240af759`/`99e26dea`; Stage 4b — the
+> plan-store revision/latch surface — is WIP at `303ae8ca`, UNVERIFIED.)
 
 The planner becomes a producer running from graph-construction
 events (model-loader graphs first; user-built graphs subscribe the
@@ -133,6 +171,25 @@ frontier are observed by later chunks, revision behind the frontier
 is rejected.
 
 ### Stage 5 — structural-hash memoization + stamping (~1 session)
+
+> **Redirection note (2026-06-15).** This is the **documented near-term
+> decode fix** ([ROADMAP.md:85](../../ROADMAP.md)) for the live miss:
+> `forward_with_kv_context` mints a fresh `Graph` (new `Arc`) per token
+> and `PlanStore` keys on `Arc::as_ptr`, so every decode token is a full
+> replan today; decode-step graphs are structurally identical (only the
+> host scalar `cached_len` changes — KV writes land in pre-allocated
+> fixed-capacity buffers via `Op::WriteSlice`), so a structural-hash key
+> beside the Arc-identity fast path turns decode steps into fragment
+> hits. **The acceptance test MUST use fresh `Graph` Arcs per step (the
+> kv-context shape), not one growing graph, and must settle the
+> sequence-length policy** (the hash includes exact shapes ⇒ zero reuse
+> across prompt lengths without bucketing/capacity). Under the 2026-06-14
+> redirection ([14-lifecycle](../architecture/14-lifecycle.md)) this stage
+> becomes **redundant by construction**: the graph is built once at load
+> and reused across steps, so the plan persists because it is the *same
+> graph object*, not because a structural-hash cache rematched a
+> fresh-every-step graph. Build it now as the bridge fix; the
+> persisted-fragment keying it aligns (11-persistence) stays Intended.
 
 Fragment hash (ops + shapes + dtypes + params over a bounded
 subgraph), planner-level memo table, stamp-on-match. Validate on a
