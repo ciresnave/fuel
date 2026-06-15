@@ -8,6 +8,8 @@
 > - That graph is **built at LOAD and input-independent** — a property of the model, not of a request — so planning is load-time, not a driver that runs from graph-construction events inside `forward()`.
 > - Accordingly, the "Target behavior" formulation below and **Stage 4**'s incremental-driver/plan-store/coverage-wait shape are the **as-built (Today) path** — a *staging post*, conservatively correct, that the redirection **supersedes**: once the graph is built once at load and reused across steps, the planner does not need to run from construction events ahead of an execution frontier. Stages 1–3 (DP + transfer pricing), Stages 6–7, and the memory-planning addendum are preserved by the constitution and are read directly into the Intended design.
 >
+> **The rebuild toward the Intended model is its own program:** see [`plan-is-graph-rebuild.md`](plan-is-graph-rebuild.md), which supersedes this prompt's Stage 4+ shape and carries forward Stages 1–3 + the memory-planning addendum unchanged.
+>
 > Status against git: Stage 1 `70018b9c`, Stage 2 `30e35c26`, Stage 3 `0a786821`, Stage 4a `240af759`/`99e26dea` landed; Stage 4b WIP at `303ae8ca` (UNVERIFIED); Stages 5–7 + memory planning unbuilt.
 
 Decision (2026-06-11, Fuel author): **planning moves out of
