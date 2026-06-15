@@ -1,6 +1,6 @@
 # Layers and crate boundaries
 
-**Status**: v0.3 (draft, 2026-06-08). v0.3 changes: the IO and Models layers gain explicit crate tiers for model interchange (per [13-interchange](13-interchange.md)) — a format tier (`fuel-formats` core + IR-free `fuel-format-*` leaves), an interchange tier (`fuel-interchange-weights` + `fuel-interchange-graph` cores + per-format `fuel-format-interchange-*` binding leaves), and a model tier (`fuel-model-core` registry + `fuel-model-*` leaves). v0.2 changes: fuel-loaders explicitly supports remote sources (HuggingFace Hub, GitHub, HTTPS) with sibling-cache and tolerance-recipe auto-discovery alongside the loaded model file.
+**Status**: v0.4 (draft, 2026-06-14). **v0.4 updates Foundation crate boundaries for the executor-unification + "plan IS the graph" redirection**: `fuel-storage` is renamed **`fuel-memory`** (the in-memory storage substrate only — `Storage` + `BackendStorage`); dispatch / the executor / the ranker / `PlanStore` live in **`fuel-dispatch`** (`PipelinedExecutor`), and the former `fuel-graph-router` and `fuel-graph-executor` are retired; the always-available correctness floor is the **CPU backend** (the Reference backend was retired, [05](05-backend-contract.md) v0.4); and load (`map_from_file`, native `.fuel`) is distinguished from import. v0.3 changes: the IO and Models layers gain explicit crate tiers for model interchange (per [13-interchange](13-interchange.md)) — a format tier (`fuel-formats` core + IR-free `fuel-format-*` leaves), an interchange tier (`fuel-interchange-weights` + `fuel-interchange-graph` cores + per-format `fuel-format-interchange-*` binding leaves), and a model tier (`fuel-model-core` registry + `fuel-model-*` leaves). v0.2 changes: fuel-loaders explicitly supports remote sources (HuggingFace Hub, GitHub, HTTPS) with sibling-cache and tolerance-recipe auto-discovery alongside the loaded model file.
 
 How fuel is decomposed into crates, what each crate owns, and which way dependencies flow. Anchored in the existing ROADMAP layer model; this section pins the architectural intent so phase work doesn't drift.
 
@@ -31,13 +31,13 @@ Fuel is seven conceptual layers stacked downward. Dependencies flow only downwar
 │  fuel-nn (layers, losses, optimizers, parameter utilities, initialization) │
 ├────────────────────────────────────────────────────────────────────────────┤
 │  Foundation                                                                │
-│  fuel-tensor, fuel-autograd, fuel-graph, fuel-graph-router,               │
-│  fuel-graph-executor, fuel-storage, fuel-core-types                        │
+│  fuel-tensor, fuel-autograd, fuel-graph, fuel-dispatch, fuel-memory,        │
+│  fuel-core-types   (PipelinedExecutor + ranker + PlanStore in fuel-dispatch) │
 ├────────────────────────────────────────────────────────────────────────────┤
 │  Backends / Kernels                                                        │
 │  fuel-cpu-backend, fuel-cuda-backend, fuel-vulkan-backend,                  │
 │  fuel-metal-backend, fuel-aocl-cpu-backend, fuel-mkl-cpu-backend,         │
-│  fuel-cuda-kernels, fuel-flash-attn-cuda, fuel-conv, fuel-quantized       │
+│  fuel-vulkan-kernels, fuel-flash-attn-cuda, fuel-conv, fuel-quantized      │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -49,7 +49,7 @@ The Foundation layer is where most of this architecture-doc set lives. The IR (0
 
 **Rule 2: Foundation is the substrate; backends are extensions.** The Foundation layer defines the architecture's commitments (the IR, the optimizer's surface, the binding-table catalog, the cost-model interface). Backends implement the contract the Foundation specifies. Adding a backend doesn't require Foundation changes; adding a primitive Op or a foundational concept may require backend updates to honor it.
 
-This is what makes "compile fuel without CUDA" or "ship fuel-cpu-only-binary" work cleanly: backends are Cargo features; the Foundation works without any of them (the reference backend is always available).
+This is what makes "compile fuel without CUDA" or "ship a fuel-cpu-only binary" work cleanly: backends are Cargo features; the Foundation works without any GPU backend. The always-available correctness floor is the **CPU backend** — it ships a `bit_stable_on_same_hardware` kernel for every primitive op (the Reference backend was retired in [05](05-backend-contract.md) v0.4; the CPU backend's always-built coverage commitment replaces it).
 
 ## Crate boundaries inside Foundation
 
@@ -57,9 +57,8 @@ Foundation has more crates than the diagram shows; the boundaries inside it are 
 
 - **fuel-core-types**: dtypes, shapes, layouts, errors, the dispatch-key types, the `BackendCapabilities` shape. Zero backend dependencies. Re-exported through fuel-core for ergonomics.
 - **fuel-graph**: the `Op` enum (primitive variants + `Op::Fused` arm), `Node`, `Graph`, `FusedOpRegistry` metadata types, `OptimizationMap` rules, the rule engine. Depends on fuel-core-types only.
-- **fuel-storage**: the binding-table catalog, `KernelRef` ABI, `OpParams`, dispatch wrappers that bridge dispatch-erased `Storage` to backend-typed kernels. Depends on fuel-graph + fuel-core-types + per-backend crates.
-- **fuel-graph-executor**: walks the optimized form, dispatches pre-resolved KernelRefs, manages slot assignment from current backend telemetry. Where 06-runtime's commitments live.
-- **fuel-graph-router**: multi-backend dispatch surface; reads BackendCapabilities and current telemetry to pick devices for ops the optimizer hasn't placed yet.
+- **fuel-memory** (renamed from `fuel-storage`): the in-memory storage substrate only — the `Storage` struct, the `BackendStorage` enum, and allocators. No dispatch, no binding table (those moved to fuel-dispatch). Depends on fuel-core-types + per-backend crates.
+- **fuel-dispatch**: the binding-table catalog, `KernelRef` ABI, `OpParams`, dispatch wrappers, the ranker/selector chain (Picker 1 cost ranking + Picker 2 runtime selection), `PlanStore`, and the **`PipelinedExecutor`** — the single executor on every realize entry (the work-item producer + the executor loop). Where 04-optimization's ranking and 06-runtime's dispatch commitments live in code. (Supersedes the retired `fuel-graph-router` and `fuel-graph-executor`.)
 - **fuel-tensor** + **fuel-autograd** (post-fission per Phase 7.5 work item E): the user-facing handle + autograd story. fuel-tensor wraps fuel-graph; fuel-autograd does graph-rewrite-as-backward.
 - **fuel-conv**, **fuel-quantized**: ops that warrant their own crates because they have substantial standalone value (conv has its own kernel ecosystem; quantization has its own dtype family). Both are Foundation-layer despite being "ops" because they define types that Foundation-layer consumers use.
 
@@ -104,7 +103,7 @@ This is how fuel can support CUDA, Vulkan, Metal, AOCL, MKL as independent compi
 
 Three concerns that span layers rather than fitting into one:
 
-- **The optimization-cache and tolerance-recipe artifacts ([11-persistence](11-persistence.md))**: produced by Foundation, consumed by Foundation, but their format is a Foundation/Backend concern (cache embeds backend kernel hashes, hardware fingerprints). They're cross-cutting; the persistence section treats them holistically.
+- **The persisted `.fuel` graph and tolerance-recipe artifacts ([11-persistence](11-persistence.md))**: produced by Foundation, consumed by Foundation, but their format is a Foundation/Backend concern (the optimized paths embed backend kernel hashes + hardware fingerprints). Cross-cutting; the persistence section treats them holistically.
 - **Empirical Judge profile data**: produced by Foundation (the Judge), consumed by Foundation (the optimizer + route picker), measured against Backends. Cross-cutting.
 - **Pattern-harvest telemetry ([08-pattern-harvest](08-pattern-harvest.md))**: produced by Foundation (the optimizer reads the base map for harvest); consumed by the project's server (outside the layer model entirely).
 
