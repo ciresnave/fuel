@@ -48,9 +48,35 @@ use fuel_graph::{Graph, Node, NodeId, Op};
 use crate::compiled::{compile_node, execute_compiled, CompiledNode};
 use crate::dispatch::global_bindings;
 use crate::kernel::{KernelBindingTable, KernelDTypes, OpParams};
+use crate::optimize::OptimizedGraph;
 use crate::plan::ExecutionPlan;
 use crate::ranker::RuntimeSelector;
 use fuel_memory::Storage;
+
+/// How the executor derives its dispatch order + topology-generation
+/// stamp for the `TopologyChanged` chunk-boundary check.
+///
+/// PR-A3b-1 of the "plan IS the graph" rebuild: the realize bridge can
+/// now drive the executor from `optimize_graph`'s in-place form via
+/// [`OptimizedGraph::dispatch_order`] (`extract_runs`/`lower_run`)
+/// instead of the legacy `ExecutionPlan`-supplied order. Both arms
+/// compute the *same* `NodeId` sequence on a branchless graph (the
+/// A3a equivalence gate proved `dispatch_order == compile_plan(...).order`);
+/// the only difference is the source of truth.
+///
+/// - [`OrderSource::Default`] — recompute via `execution_plan` inside
+///   the executor (the pre-A3b-1 behavior; the legacy `ExecutionPlan`
+///   path and the plain `realize`/`realize_many` entries use this).
+/// - [`OrderSource::Optimized`] — derive from the `OptimizedGraph`'s
+///   run lowering, computed AFTER `insert_safety_copies` so the order
+///   covers any safety-copy nodes the executor just inserted. Carries
+///   the optimize-time `generation` so the chunk-boundary
+///   `TopologyChanged` check still fires (the new path dispatches with
+///   `plan: None`, so the generation must come from here instead).
+enum OrderSource<'a> {
+    Default,
+    Optimized(&'a OptimizedGraph),
+}
 
 /// Map from NodeId to a realized Storage Arc. Used both as the
 /// input cache (passed in by the caller for pre-realized leaves)
@@ -408,7 +434,29 @@ impl PipelinedExecutor {
         target: NodeId,
         inputs: StorageCache,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        Self::realize_inner(graph, target, inputs, None, None)
+        Self::realize_inner(graph, target, inputs, None, None, OrderSource::Default)
+    }
+
+    /// PR-A3b-1 entry: realize `target` driven from `optimized`'s
+    /// in-place "plan IS the graph" form. The dispatch order is the
+    /// `OptimizedGraph`'s `extract_runs`/`lower_run` lowering (computed
+    /// after safety-copy insertion); per-node kernel resolution uses
+    /// the binding-table-lookup path (no `ExecutionPlan`, so no
+    /// route-picking — A3b-1 is branchless). The optimize-time
+    /// `generation` drives the `TopologyChanged` chunk-boundary check.
+    ///
+    /// Pre-conditions match [`realize`]: every reachable kernel-bearing
+    /// node must have `target_backend` set (the bridge's
+    /// `stamp_plan_backends` does this) and a registered binding.
+    pub fn realize_with_optimized(
+        graph: Arc<RwLock<Graph>>,
+        target: NodeId,
+        inputs: StorageCache,
+        optimized: &OptimizedGraph,
+    ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
+        Self::realize_inner(
+            graph, target, inputs, None, None, OrderSource::Optimized(optimized),
+        )
     }
 
     /// Plan-aware sibling of [`realize`]. The compiler thread
@@ -427,7 +475,7 @@ impl PipelinedExecutor {
         inputs: StorageCache,
         plan: Arc<ExecutionPlan>,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        Self::realize_inner(graph, target, inputs, Some(plan), None)
+        Self::realize_inner(graph, target, inputs, Some(plan), None, OrderSource::Default)
     }
 
     /// Plan- and selector-aware sibling of [`realize`]. Phase 5.1 of
@@ -448,7 +496,9 @@ impl PipelinedExecutor {
         plan: Arc<ExecutionPlan>,
         selector: Arc<dyn RuntimeSelector>,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        Self::realize_inner(graph, target, inputs, Some(plan), Some(selector))
+        Self::realize_inner(
+            graph, target, inputs, Some(plan), Some(selector), OrderSource::Default,
+        )
     }
 
     fn realize_inner(
@@ -457,6 +507,7 @@ impl PipelinedExecutor {
         inputs: StorageCache,
         plan: Option<Arc<ExecutionPlan>>,
         selector: Option<Arc<dyn RuntimeSelector>>,
+        order_source: OrderSource<'_>,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
         // Auto-insert safety copies for in-place ops whose target
         // has additional readers in this realize set (residual-
@@ -480,7 +531,13 @@ impl PipelinedExecutor {
         let (order, mut layout_cache): (Vec<NodeId>, HashMap<NodeId, Layout>) = {
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, &[target]);
-            let order = execution_plan(&g, &effective_roots);
+            // PR-A3b-1: the OptimizedGraph path lowers via
+            // `extract_runs`/`lower_run` (computed here, AFTER
+            // `insert_safety_copies`, so the order covers freshly
+            // inserted safety-copy nodes). The default path keeps the
+            // pre-A3b-1 `execution_plan` walk. On a branchless graph the
+            // two sequences are identical (A3a equivalence gate).
+            let order = order_for(&g, &effective_roots, &order_source);
             let mut layouts = HashMap::with_capacity(inputs.len());
             for &id in inputs.keys() {
                 layouts.insert(id, g.layout(id));
@@ -515,7 +572,7 @@ impl PipelinedExecutor {
         // `Error::TopologyChanged`; the realize layer
         // (`pipelined_bridge`) catches it, rebuilds the plan against
         // the fresh topology, and retries.
-        let plan_generation: Option<u64> = plan.as_ref().map(|p| p.generation);
+        let plan_generation: Option<u64> = generation_for(&plan, &order_source);
         let mut current_chunk_backend: Option<BackendId> = None;
         let mut cache: StorageCache = inputs;
         for item in rx {
@@ -584,7 +641,23 @@ impl PipelinedExecutor {
         targets: &[NodeId],
         inputs: StorageCache,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
-        Self::realize_many_inner(graph, targets, inputs, None, None)
+        Self::realize_many_inner(graph, targets, inputs, None, None, OrderSource::Default)
+    }
+
+    /// Multi-target PR-A3b-1 entry — the `realize_many` sibling of
+    /// [`realize_with_optimized`]. Drives the executor from the
+    /// `OptimizedGraph`'s run lowering via the binding-table-lookup
+    /// path, with the optimize-time `generation` keying the
+    /// `TopologyChanged` chunk-boundary check.
+    pub fn realize_many_with_optimized(
+        graph: Arc<RwLock<Graph>>,
+        targets: &[NodeId],
+        inputs: StorageCache,
+        optimized: &OptimizedGraph,
+    ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
+        Self::realize_many_inner(
+            graph, targets, inputs, None, None, OrderSource::Optimized(optimized),
+        )
     }
 
     /// Plan- and selector-aware sibling of [`realize_many`]. Phase
@@ -597,7 +670,9 @@ impl PipelinedExecutor {
         plan: Arc<ExecutionPlan>,
         selector: Arc<dyn RuntimeSelector>,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
-        Self::realize_many_inner(graph, targets, inputs, Some(plan), Some(selector))
+        Self::realize_many_inner(
+            graph, targets, inputs, Some(plan), Some(selector), OrderSource::Default,
+        )
     }
 
     /// Plan-aware sibling of [`realize_many`]. The compiler
@@ -609,7 +684,7 @@ impl PipelinedExecutor {
         inputs: StorageCache,
         plan: Arc<ExecutionPlan>,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
-        Self::realize_many_inner(graph, targets, inputs, Some(plan), None)
+        Self::realize_many_inner(graph, targets, inputs, Some(plan), None, OrderSource::Default)
     }
 
     fn realize_many_inner(
@@ -618,6 +693,7 @@ impl PipelinedExecutor {
         inputs: StorageCache,
         plan: Option<Arc<ExecutionPlan>>,
         selector: Option<Arc<dyn RuntimeSelector>>,
+        order_source: OrderSource<'_>,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
         if targets.is_empty() {
             return Ok(Vec::new());
@@ -642,7 +718,10 @@ impl PipelinedExecutor {
         let (order, mut layout_cache): (Vec<NodeId>, HashMap<NodeId, Layout>) = {
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, targets);
-            let order = execution_plan(&g, &effective_roots);
+            // PR-A3b-1: derive from the OptimizedGraph's run lowering
+            // when present (post-safety-copies); else the legacy
+            // `execution_plan` walk. Identical on branchless graphs.
+            let order = order_for(&g, &effective_roots, &order_source);
             let mut layouts = HashMap::with_capacity(inputs.len());
             for &id in inputs.keys() {
                 layouts.insert(id, g.layout(id));
@@ -668,8 +747,9 @@ impl PipelinedExecutor {
         });
 
         // Phase 4.3: per-chunk SystemTopology generation check (see
-        // realize_inner for the rationale).
-        let plan_generation: Option<u64> = plan.as_ref().map(|p| p.generation);
+        // realize_inner for the rationale). PR-A3b-1: the OptimizedGraph
+        // path supplies its own optimize-time generation (plan is None).
+        let plan_generation: Option<u64> = generation_for(&plan, &order_source);
         let mut current_chunk_backend: Option<BackendId> = None;
         let mut cache: StorageCache = inputs;
         for item in rx {
@@ -725,6 +805,53 @@ impl PipelinedExecutor {
             out.push((storage, layout));
         }
         Ok(out)
+    }
+}
+
+/// Resolve the executor's dispatch order from the configured
+/// [`OrderSource`]. PR-A3b-1: `Optimized` lowers the in-place
+/// "plan IS the graph" form via `extract_runs`/`lower_run`; `Default`
+/// keeps the pre-A3b-1 `execution_plan` walk. Both produce the same
+/// `NodeId` sequence on a branchless graph (A3a equivalence gate),
+/// computed here AFTER safety-copy insertion so either path covers
+/// any freshly inserted copies.
+fn order_for(
+    graph: &Graph,
+    effective_roots: &[NodeId],
+    order_source: &OrderSource<'_>,
+) -> Vec<NodeId> {
+    match order_source {
+        OrderSource::Default => execution_plan(graph, effective_roots),
+        OrderSource::Optimized(optimized) => {
+            // Lower the runs over the *effective* roots (user targets +
+            // any spliced/side-effect roots) so the order matches the
+            // walk's reachable set rather than only the optimize-time
+            // roots. On a branchless graph this is the same concatenated
+            // `lower_run` sequence the OptimizedGraph reports.
+            let view = OptimizedGraph {
+                roots: effective_roots.to_vec(),
+                generation: optimized.generation,
+            };
+            view.dispatch_order(graph)
+        }
+    }
+}
+
+/// The topology generation that keys the executor's `TopologyChanged`
+/// chunk-boundary check. Prefer the plan's stamped generation (legacy
+/// path); fall back to the `OptimizedGraph`'s optimize-time generation
+/// (PR-A3b-1 path, where `plan` is `None`). `None` ⇒ no check (the
+/// plain `realize`/`realize_many` entries).
+fn generation_for(
+    plan: &Option<Arc<ExecutionPlan>>,
+    order_source: &OrderSource<'_>,
+) -> Option<u64> {
+    if let Some(p) = plan.as_ref() {
+        return Some(p.generation);
+    }
+    match order_source {
+        OrderSource::Optimized(optimized) => Some(optimized.generation),
+        OrderSource::Default => None,
     }
 }
 
