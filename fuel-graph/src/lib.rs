@@ -44,6 +44,13 @@
 pub mod grad;
 pub mod opt;
 pub mod registry;
+pub mod run;
+
+#[doc(inline)]
+pub use run::{
+    branch_density, branch_density_multi, extract_runs, extract_runs_multi, lower_run,
+    passes_fewness_gate, Run, FEWNESS_THRESHOLD,
+};
 
 use crate::registry::{FusedOpId, FusedOpParams};
 use fuel_core_types::{DeviceLocation, DType, Layout, Scalar, Shape, Storage, probe::BackendId};
