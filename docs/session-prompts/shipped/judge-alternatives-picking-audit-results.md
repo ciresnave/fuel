@@ -8,6 +8,8 @@ status: shipped — no implementation in this session
 
 # Judge / picker alternatives audit — results
 
+> **Archived 2026-06-15 — superseded design record.** This documents the v1-picker design (three pick surfaces, `resolve_kernel` / `TolerancePolicy`, a separate `ExecutionPlan`) that was **not** the path taken: the live design is the `ranker/` + Picker 2 (runtime selector) subsystem, and the 2026-06-14 "plan is the graph" redirection ([`../../architecture/10-decisions-log.md`](../../architecture/10-decisions-log.md), [`../../architecture/04-optimization.md`](../../architecture/04-optimization.md)) retired the per-node / top-N model entirely. Read as history; do not treat Sessions A–E or the decision-point recommendations as a live plan.
+
 ## Status updates since this audit shipped
 
 - **2026-05-30 SystemTopology service shipped** as Session 0

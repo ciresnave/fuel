@@ -1,5 +1,7 @@
 # Session prompt — Phase 1.1: `AlternativeSet` + filter-chain infrastructure
 
+> **Archived 2026-06-15 — shipped** (commit `5b4c6249`; the live `fuel-dispatch/src/ranker/` substrate). Accurate as a record of what shipped. The model it builds toward — per-node `AlternativeSet`, default top-N = 3, a separate `ExecutionPlan` — **predates the 2026-06-14 "plan is the graph" redirection** ([`../../architecture/10-decisions-log.md`](../../architecture/10-decisions-log.md), [`../../architecture/04-optimization.md`](../../architecture/04-optimization.md)); the forward design is now a bounded per-device Pareto frontier with decisions at branch points, not a fixed N. Do not treat this as a live forward spec.
+
 ## What this session is for
 
 Build the **types and filter-application machinery** the

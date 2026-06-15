@@ -328,7 +328,7 @@ plan:
 13. **Phase 6c.4 — MOSTLY SHIPPED (2026-05-27):**
     - **alpha.49 → alpha.54** bump in one chore commit;
       baracuda landed all six original asks from
-      `docs/session-prompts/baracuda-phase-6c4-gaps.md`.
+      `docs/session-prompts/shipped/baracuda-phase-6c4-gaps.md`.
     - **Softmax / log_softmax / rms_norm / layer_norm — SHIPPED**
       (storage helpers + fuel-nn delegation).
     - **Rope (non-interleaved) — SHIPPED.** Both
@@ -365,13 +365,13 @@ plan:
       fuel-nn::`RotaryEmbI` (interleaved `rope_i`) and
       `RotaryEmbThd` (`rope_thd`). Those baracuda variants
       aren't shipped yet; the two remaining asks are filed at
-      `docs/session-prompts/baracuda-phase-6c4-gaps.md` as
+      `docs/session-prompts/shipped/baracuda-phase-6c4-gaps.md` as
       **#7 (rope_apply_interleaved)** and
       **#8 (rope_apply_thd)**.
 14. **Phase 6c.5 (2026-05-28) — SHIPPED.** Baracuda alpha.55
     landed `rope_apply_interleaved_<dt>_run` and
     `rope_apply_thd_<dt>_run` (asks #7 + #8 from
-    `docs/session-prompts/baracuda-phase-6c4-gaps.md`).
+    `docs/session-prompts/shipped/baracuda-phase-6c4-gaps.md`).
     `fuel-nn::RotaryEmbI` + `RotaryEmbThd` now delegate through
     new `CudaStorage::rope_interleaved` / `::rope_thd` helpers.
     Last PTX caller eliminated.

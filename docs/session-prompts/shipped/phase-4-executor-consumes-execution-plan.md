@@ -1,5 +1,7 @@
 # Session prompt — Phase 4: PipelinedExecutor consumes ExecutionPlan
 
+> **Archived 2026-06-15 — shipped** (commits `6ac8e065` / `a033f1dd` / `8d849fa2`, 2026-06-07; the as-built `ExecutionPlan` / `compile_plan` / `resolve_compiled` path). Accurate as a record. Its per-node `ExecutionPlan` model is the **staging post superseded by the 2026-06-14 "plan is the graph" redirection** ([`../../architecture/10-decisions-log.md`](../../architecture/10-decisions-log.md), [`../../architecture/14-lifecycle.md`](../../architecture/14-lifecycle.md)). The staged migration will rewrite this — useful here as provenance, not as a live queue item.
+
 ## What this session is for
 
 Migrate `fuel_dispatch::pipelined::PipelinedExecutor` from the

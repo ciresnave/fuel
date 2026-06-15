@@ -1,5 +1,7 @@
 # Session prompt — Picker alternatives audit
 
+> **Archived 2026-06-15 — the audit it commissioned is done.** Its follow-up Sessions A–E, and the results doc's top-N / `ExecutionPlan` / `Router` framing, **predate the 2026-06-14 "plan is the graph" redirection** and must be re-scoped against [`../../architecture/04-optimization.md`](../../architecture/04-optimization.md) + [`../../architecture/14-lifecycle.md`](../../architecture/14-lifecycle.md) before any execution. Historical scoping record only.
+
 ## What this session is for
 
 **Scoping session, NOT implementation.** Phase 6b's promise —
@@ -177,7 +179,7 @@ ENUMERATES them; later sessions DECIDE.
 
 ## Deliverables
 
-1. **`docs/session-prompts/judge-alternatives-picking-audit-results.md`**
+1. **`docs/session-prompts/shipped/judge-alternatives-picking-audit-results.md`**
    (or similar) containing:
    - Multi-backend coverage table (from step 1)
    - Picker flow diagram (from step 2)

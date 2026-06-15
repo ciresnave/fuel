@@ -219,7 +219,7 @@ machine died. **Neither lane completed.**
 - `docs/session-prompts/eager-tail-session-8-surgical-plan.md` —
   Session 8 blueprint.
 - `docs/session-prompts/eager-tensor-retirement-master-plan.md` +
-  `eager-retirement-phase-h-plan.md` — the umbrella.
+  `shipped/eager-retirement-phase-h-plan.md` — the umbrella.
 - `docs/baracuda-ask-*.md` — sibling-project coordination history.
 
 ## Sibling projects (separate repos, coordinate with the user)

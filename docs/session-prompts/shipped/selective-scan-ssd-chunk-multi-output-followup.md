@@ -40,7 +40,7 @@ outputs; consumers View whichever slots they want.
    any of those is missing, stop and finish that work first.
 2. **Mamba eager-to-lazy migration state.** Check the active state of
    `docs/session-prompts/eager-tensor-retirement-master-plan.md` and
-   `docs/session-prompts/mamba-eager-to-lazy-migration.md`. If Mamba
+   `docs/session-prompts/shipped/mamba-eager-to-lazy-migration.md`. If Mamba
    has migrated to LazyTensor, this session can both add the
    capability AND wire it into the consumer. If Mamba is still on
    eager `fuel-core::Tensor`, this session ships the capability with

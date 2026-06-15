@@ -1,5 +1,7 @@
 # Session prompt — Mimi xn-parity (StreamingModule mask extension)
 
+> **Archived 2026-06-15 — superseded as written; salvage the spec, not the steps.** The prescribed Step 1 trait change was superseded by the **additive `step_with_mask`** that actually shipped (the proposed `fn step(…, mask)` signature is now incorrect — the real trait keeps `step` and adds a defaulted `step_with_mask`), and Steps 2–4 target the pre-Phase-H eager Mimi files that have since been retired. The design problem it captures — per-batch-element state gating for batched streaming decode — remains a valid spec for the **eventual lazy Mimi re-port**; re-scope onto that before reusing.
+
 ## What this session is for
 
 Fuel already has a Mimi implementation
