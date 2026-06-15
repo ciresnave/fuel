@@ -12,8 +12,6 @@
     fuel-conv              = { workspace = true }
     fuel-core-types        = { workspace = true }
     fuel-graph             = { workspace = true }
-    fuel-graph-executor    = { workspace = true }
-    fuel-reference-backend = { workspace = true }
     # Precompiled SPIR-V kernels. Sources live in fuel-kernels-source
     # and are compiled ahead of time (see
     # `fuel-kernels-source/kernels/compile.sh`) — vulkane does NOT
@@ -32,7 +30,6 @@
 
 [dev-dependencies]
     fuel-conv      = { workspace = true }
-    fuel-graph-cpu = { workspace = true }
     fuel-core      = { path = "../fuel-core", features = ["vulkan"] }
     # Phase 7.5 G2: tests need a CpuBackendDevice handle for
     # slot-populating constructors (cpu_dev() helper).

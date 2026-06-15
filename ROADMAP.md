@@ -2335,9 +2335,9 @@ This phase should not run concurrently with Phase 8 (FlashAttention) or Phase 8.
 - ✅ Vulkan runtime `Device` wiring shipped 2026-05-22 (this session): `VulkanBackendDevice` + bridge module + parity test against CPU through `forward_with_kv_context`.
 - ⏳ Phase E.3 remainder: pre-allocated buffers + `Op::WriteSlice` (E.3.2), `forward_with_cache_on` migration (E.3.3), `generate_*` + spec decoding (E.3.4).
 - ⏳ Phase E.4: train.rs + factories.rs migration.
-- ⏳ Phase F: backend-crate cleanup (remove `GraphExecutor::new` from backend crates' tests + examples).
-- ⏳ Phase G: `fuel-graph-router` migration. `GraphBackend` retain-vs-retire decision.
-- ⏳ Phase H: retire `fuel-graph-executor` crate (or keep as thin shim for Judge profiling).
+- ✅ Phase F + H — **executor-unification Session 7 (2026-06-15)**: the `GraphBackend` trait + all surviving impls (Cpu/Cuda/Vulkan/Mkl/Aocl), the `fuel-graph-executor` crate (`GraphExecutor<B>`), and the whole `fuel-graph-cpu` crate (`realize_any`, the typed third evaluator) are deleted. `PipelinedExecutor` (`fuel-dispatch`) is now the sole executor on every realize path. MKL/AOCL retain only their binding-table registration surface; the CUDA FA2 launcher (`fuel-cuda-backend::flash_attn::launch`) is preserved (`#[allow(dead_code)]`) for the queued FA2 eager-wrapper session; legacy-executor diff/oracle tests (`cpu_vulkan_diff.rs`, `conv2d_oracle.rs`, `flash_attn_cuda.rs`, `flash_attn_vulkan.rs`) retired with the trait. `fuel-reference-backend::exec::realize_f32` stays as the correctness oracle.
+- ✅ Phase G — `GraphBackend` retain-vs-retire decision: **retired** (above). `fuel-graph-router`'s own crate disposition tracked with Session 6.
+- ⏳ Remaining: executor-unification Session 8 (eager `Tensor` + `BackpropOp` tail).
 
 #### Bridge-retirement trajectory post-9c
 

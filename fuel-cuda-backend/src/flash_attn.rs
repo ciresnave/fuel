@@ -73,9 +73,16 @@ fn translate_window(
     (wsl, wsr, is_causal)
 }
 
-/// Dispatch entry called from `CudaBackend::flash_attn`. Returns a
-/// fresh `CudaStorage` of shape `[B, Hq, Sq, D]` matching `q`.
+/// Dispatch entry for the baracuda FA2 launcher. Returns a fresh
+/// `CudaStorage` of shape `[B, Hq, Sq, D]` matching `q`.
+///
+/// The legacy `CudaBackend::flash_attn` trait method that called this
+/// was retired with the `GraphBackend` trait (executor-unification
+/// Session 7). The launcher itself is preserved for the queued FA2
+/// eager-wrapper retirement session, which will re-wire it onto the
+/// pipelined `Op::Fused(FLASH_ATTN, _)` dispatch path; hence `dead_code`.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub(crate) fn launch(
     q: &CudaStorage,
     k: &CudaStorage,

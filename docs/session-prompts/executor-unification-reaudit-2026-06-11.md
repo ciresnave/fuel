@@ -1,6 +1,6 @@
 # Executor unification — re-audit 2026-06-11
 
-> **STATUS — Sessions 1-6 SHIPPED (do not treat the gap table or the
+> **STATUS — Sessions 1-7 SHIPPED (do not treat the gap table or the
 > Section 3/4 censuses below as a live queue).** This document is a
 > **live anchor** — referenced by `docs/claude-handoff-2026-06-12.md`
 > and by gap-numbered comments in `fuel-core/src/lazy.rs` — so it is
@@ -14,16 +14,26 @@
 > (Session 5 — Trainer off the legacy executor / eager Phase G),
 > `aff08f81` + `b0200e80` (Session 6 — residency/Move-based eviction
 > onto the pipelined executor + `fuel-graph-router` retirement).
-> **Remaining ACTIVE plan: Sessions 7-8.** Session 7 (the 5 surviving
-> `GraphBackend` impls + the ~2147-LOC `fuel-graph-executor` crate +
-> `fuel-graph-cpu::realize_any`) is genuinely UNSTARTED. Session 8
-> (eager tail) now points to `eager-tail-session-8-surgical-plan.md`.
 >
-> Reconciled 2026-06-15 against the 2026-06-14 redirection + current
-> git: Sessions 1-6 shipped; the optimized form is now the same graph
-> transformed in place (no separate ExecutionPlan artifact), so the
-> remaining trait/crate retirement (Session 7) and the eager tail
-> (Session 8) are the only live work this anchor still tracks.
+> **Session 7 SHIPPED (2026-06-15).** The `GraphBackend` trait
+> and all of its surviving impls (CpuBackend, CudaBackend, VulkanBackend,
+> MklBackend, AoclBackend), the `fuel-graph-executor` crate
+> (`GraphExecutor<B>`), and `fuel-graph-cpu` (the `realize_any` third
+> evaluator + the whole crate) are **deleted**. PipelinedExecutor in
+> `fuel-dispatch` is now the only executor on every realize path. The
+> MKL/AOCL crates retain only their binding-table registration surface
+> (`register_*_cpu_kernels` + `probe_*_loadable`); the CUDA FA2 launcher
+> (`fuel-cuda-backend/src/flash_attn.rs::launch`) is preserved
+> (`#[allow(dead_code)]`) for the queued FA2 eager-wrapper retirement
+> session, and the two FA2 trait-launcher oracle tests
+> (`flash_attn_cuda.rs`, `flash_attn_vulkan.rs`) plus the legacy Vulkan
+> diff/oracle tests (`cpu_vulkan_diff.rs`, `conv2d_oracle.rs`) were
+> retired with the trait — porting them to the pipelined path is a tracked
+> follow-up. The optimized form is now the same graph transformed in place
+> (no separate ExecutionPlan artifact).
+>
+> **Remaining ACTIVE plan: Session 8 (eager tail)**, per
+> `eager-tail-session-8-surgical-plan.md`.
 
 Refresh of the **Phase 7.6 step 9c parity audit** (2026-05-19, memory:
 `project_phase_7_6_step_9c_parity_audit.md`; ROADMAP §"Phase 7.6 step
@@ -122,9 +132,9 @@ smaller set, clustered below.
 
 | Surface | LOC | Role today | End state |
 |---|---|---|---|
-| `fuel-dispatch::PipelinedExecutor` | (in fuel-dispatch) | Production: all f32/u32 realize, KvCache, Op::Copy/Alloc/ZeroFill, picker, in-place, multi-output | **THE executor** |
-| `fuel-graph-executor::GraphExecutor<B>` | 2147 | Judge profiling; `judge::cached()` Router branch; `*_gpu_on` generate family; train.rs; tests/examples | retire (Phase H) |
-| `fuel-graph-cpu::realize_any` | 2798 | `realize_f64/_bf16/_f16`; backs CpuBackend's GraphBackend impl | retire with CpuBackend impl; `fuel-reference-backend::exec::realize_f32` stays as the test oracle |
+| `fuel-dispatch::PipelinedExecutor` | (in fuel-dispatch) | Production: all f32/u32 realize, KvCache, Op::Copy/Alloc/ZeroFill, picker, in-place, multi-output | **THE executor** (sole survivor) |
+| `fuel-graph-executor::GraphExecutor<B>` | 2147 | ~~Judge profiling; `judge::cached()` Router branch; `*_gpu_on` generate family; train.rs; tests/examples~~ | **RETIRED (Session 7, 2026-06-15)** — crate deleted |
+| `fuel-graph-cpu::realize_any` | 2798 | ~~`realize_f64/_bf16/_f16`; backs CpuBackend's GraphBackend impl~~ | **RETIRED (Session 7, 2026-06-15)** — whole `fuel-graph-cpu` crate deleted; `fuel-reference-backend::exec::realize_f32` stays as the test oracle |
 
 ---
 
@@ -194,9 +204,13 @@ mutation, BatchNorm EMA) — the last consumer of the eager
 - `fuel-graph-router` (lib 1 + impl): Router-as-GraphBackend +
   residency eviction (`Op::Move` — gap 13).
 
-**Tier 5 — the trait + impls + crate:** 6 GraphBackend impls
-(§2 gap 11), the `fuel-graph-executor` crate (2147 LOC incl. legacy
-const-pool LRU + `validate_placements`), `fuel-graph-cpu::realize_any`.
+**Tier 5 — the trait + impls + crate:** ✅ **RETIRED (Session 7,
+2026-06-15).** All surviving GraphBackend impls (Cpu/Cuda/Vulkan/Mkl/
+Aocl), the `fuel-graph-executor` crate (`GraphExecutor<B>` + legacy
+const-pool LRU + `validate_placements`), and the `fuel-graph-cpu` crate
+(`realize_any`) are deleted. (The Router GraphBackend impl + residency
+eviction were already off the production path per Session 6; the Router
+crate's own disposition is tracked there.)
 
 ---
 
@@ -279,12 +293,17 @@ Vulkan oracle tests, FA2 tests).
    retire-vs-rewire-to-picker; port `cross_device.rs` +
    `residency_eviction.rs` tests; const-pool byte-budget decision
    lands here or in the load-time planner (gap 7).
-7. **Session 7 — Phase F + H.** Delete the 6 `GraphBackend` impls
-   (incl. the big eager Vulkan wrapper block), retire the
-   `fuel-graph-executor` crate, retire `fuel-graph-cpu::realize_any`
-   (keep `fuel-reference-backend` as the oracle), migrate-or-retire
-   `cpu_vulkan_diff.rs`/`conv2d_oracle.rs`. FA2 eager wrapper
-   retirement can ride here or its own queued session.
+7. **Session 7 — Phase F + H. ✅ SHIPPED 2026-06-15.** Deleted the
+   surviving `GraphBackend` impls (Cpu/Cuda/Vulkan/Mkl/Aocl, incl. the
+   big Vulkan wrapper block), retired the `fuel-graph-executor` crate,
+   deleted the whole `fuel-graph-cpu` crate (`realize_any`), keeping
+   `fuel-reference-backend` as the oracle. Retired
+   `cpu_vulkan_diff.rs`/`conv2d_oracle.rs` (legacy-executor diff
+   tests). The FA2 launcher (`fuel-cuda-backend::flash_attn::launch`)
+   was preserved (`#[allow(dead_code)]`) and its two trait-launcher
+   oracle tests (`flash_attn_cuda.rs`/`flash_attn_vulkan.rs`) retired —
+   the FA2 eager-wrapper session will re-cover FA2 on the pipelined
+   path. MKL/AOCL kept only their binding-table registration surface.
 8. **Session 8 — eager tail.** Delete eager `Tensor` + `BackpropOp`
    (the 7 fuel-core files), drop `_retired` trees after a final
    audit, master-plan Phase H step 7 cleanup.
