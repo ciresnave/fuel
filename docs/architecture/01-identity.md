@@ -32,7 +32,7 @@ A backend that fuses internally cannot decide "this fused matmul+bias+relu costs
 
 ### 3. Top-N route preservation for runtime adaptation
 
-Most frameworks commit to a single optimal plan at compile time. Fuel's optimizer expands the DAG to keep multiple competitive routes (default N=3, configurable) ranked by cost. The runtime route picker reads current backend telemetry — memory pressure, queue depth, currently-loaded weights, request priority — and picks among preserved routes per-request. The same model serves a fast path under low load and a memory-conserving path under contention, without recompilation.
+Most frameworks commit to a single optimal plan at compile time. Fuel's optimizer expands the DAG to keep multiple competitive routes — a **bounded per-device Pareto frontier** (capped by crowding distance, not a fixed global N) ranked by a cost vector. The runtime route picker reads current backend telemetry — memory pressure, queue depth, currently-loaded weights, request priority — and picks among preserved routes per-request. The same model serves a fast path under low load and a memory-conserving path under contention, without recompilation.
 
 ### 4. Pattern-harvest-driven fused-op development
 
