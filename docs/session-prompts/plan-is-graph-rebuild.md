@@ -110,6 +110,47 @@ but D-[10] waits on D-[8]/[9], and E is last.
 
 ### Phase A — In-graph multi-path substrate *(foundation; nothing else is honest without it)*
 
+> **Representation — DECIDED 2026-06-15 (design panel + architect ruling).** The multi-path
+> structure is an **arena fact, not an overlay**: a new `Op::Branch` (phi/merge) node whose
+> inputs *are* the divergent routes, carrying an explicit `reconverge_at`. Chosen for
+> persistence, compaction, graph-walking, path-filtering, and readability — the overlay's only
+> real edge was avoiding the closed-enum edit, with **no inference-time benefit** (once a route
+> is picked and lowered to runs, the representation is invisible to the hot path).
+> **Accepted, manageable costs:** (a) a new arm in the exhaustively-matched `Op` enum — one-time,
+> mechanical (short_name/describe, shape-inference, autograd, optimizer, executor match sites);
+> (b) *"immutable nodes"* is read as *immutable once finalized* — pathfinders add `Op::Branch`
+> arms during the `optimize_graph` phase (the arena is already append-with-compaction there), and
+> a Branch is emitted with its arms known; (c) *"one concrete dtype"* is preserved by
+> **cast-to-uniform at `reconverge_at`** — dtype-lowered alternatives live *inside* an arm whose
+> exit casts back, so the merge has one dtype. A graph with **zero `Op::Branch` nodes is exactly
+> today's single-route graph**, which keeps the suite green across every phase boundary.
+>
+> **Phase A build order (each born-red-test-first; PR-A3 retargets the post-Session-7 executor):**
+>
+> - **PR-A0** (fuel-graph): add the `Op::Branch { reconverge_at, … }` arm, handled as an inert
+>   passthrough at every exhaustive `Op` match site. Test: full suite green; a zero-Branch graph
+>   is unchanged.
+> - **PR-A1** (fuel-graph): `open_branch`/`add_arm`/`finalize_branches` builders with build-time
+>   validation returning `Result` (reconverge must be a descendant of diverge; arms internally
+>   disjoint; cast-to-uniform at reconverge; single-arm branches dropped). Test: a 2-arm diamond
+>   round-trips; a non-descendant reconverge and a non-disjoint arm each return a typed `Error` —
+>   never panic.
+> - **PR-A2** (fuel-graph): run extraction + the transient `lower_run` view (runs delimited by
+>   Branch boundaries + residency seams; each run a single-device contiguous chain). Test:
+>   straight-line → one run; a 2-arm branch → {pre, arm0, arm1, post}; a residency change starts a
+>   new run; **plus the fewness gate** — a per-layer-branch graph passes branches/nodes < ~5%, a
+>   synthetic per-op-branch graph fails it (locks the granularity crux before Phase B).
+> - **PR-A3** (fuel-dispatch): `compile_plan` → `optimize_graph(&mut Graph)` writing Branch nodes
+>   in place; `ExecutionPlan` demoted to the transient `lower_run` view; **delete `PlanStore` +
+>   the dead `303ae8ca` revision surface**. Equivalence gate: a no-competing-routes graph
+>   optimizes to zero Branch nodes and `lower_run` reproduces today's exact dispatch order against
+>   the executor.
+> - **PR-A4** (fuel-dispatch): the first real pathfinder emits a Branch via the `PlacementDp`
+>   (CPU vs CUDA matmul) — **deliberate-fork seed** (not per-device-multiplicity; Phase B's Pareto
+>   bound introduces device-multiplicity arms later). Test: exactly one 2-arm Branch; an ordinary
+>   DAG fan-out in the same graph is *not* flagged; the graph realizes on arm 0; no `DEFAULT_MAX_N`
+>   anywhere.
+
 - **[1] In-place multi-path graph — retire the separate `ExecutionPlan`.** The optimized form
   lives **in the graph** as alternative routes that diverge and reconverge: a path/branch
   representation on the arena, a convergence merge that fuses only forward-identical paths, and
@@ -279,10 +320,13 @@ the in-place transform that should be centralized into `optimize_graph` ([1]/[5]
   token's *sampled* output (a genuine host decision). The input-independent decode-step graph
   ([10]) is reused across tokens, but the host-side sample/argmax is the legitimate boundary; data-
   dependent output shapes use the capacity-shape + valid-count pattern. Phase D must respect this.
-- **Branch-point granularity is the design crux of Phase A.** Too many branch points and the model
-  drifts back toward per-node; too few and real alternatives get stranded inside a run. The
-  frontier prototype validated the *retention* math, not the branch-point *detection* — that is
-  the first thing to prototype against a real decode graph.
+- **Branch-point granularity (was the Phase A crux) — RESOLVED 2026-06-15.** The risk: too many
+  branch points and the model drifts back toward per-node; too few and real alternatives get
+  stranded inside a run. Resolved by (a) the **deliberate-fork seed** — Phase A emits a branch only
+  where a pathfinder deliberately forks, not wherever the DP sees ≥2 viable devices — and (b) the
+  **fewness-gate born-red test** (PR-A2: branches/nodes < ~5% on a real decode graph) that locks
+  the invariant before Phase B builds on it. The frontier prototype validated the *retention* math;
+  the fewness gate guards the *detection* side.
 
 ---
 
