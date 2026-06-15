@@ -1,6 +1,6 @@
 # Non-goals
 
-**Status**: v0.1 (draft, 2026-05-09).
+**Status**: v0.2 (2026-06-14). Reconciled to the "plan is the graph" redirection ([10-decisions-log](10-decisions-log.md)): the e-graph non-goal is narrowed to the per-realize hot path (offline `optimize_graph` path-search is in-bounds), and the bundled-cache non-goal is distinguished from the in-bounds bundled Judge baseline.
 
 What fuel deliberately doesn't try to be. Each rejection is a real architectural decision — not a "we didn't get to it yet" but a "we examined this direction and chose against it because of how it would change fuel's center of gravity."
 
@@ -65,15 +65,16 @@ Fuel is Rust-native. The user-facing API, the IR, the optimizer, the backends �
 
 The architecture documents in this set don't anticipate Python. If `fuel-py` ships, it'll wrap fuel's Rust API; the wrapping happens at the orchestration layer (per [02-layers](02-layers.md)), not at the Foundation layer.
 
-## Not e-graph saturation as the primary optimizer engine
+## Not e-graph saturation *on the per-realize hot path*
 
-E-graphs (egg, equality saturation) are appealing for algebraic rewrites — they discover equivalence classes of expressions and pick the cheapest. But their performance characteristics make them unsuitable for the per-realize hot path fuel needs:
+The boundary here moved with the 2026-06-14 "plan is the graph" redirection ([10-decisions-log](10-decisions-log.md)), so state it precisely. What is **out**: e-graph saturation (egg-style equality saturation) **on the per-realize hot path** — exponential in pathological cases, building redundant representations a hot-path optimizer can't afford.
 
-- Saturation is exponential in pattern complexity in pathological cases.
-- E-graphs build redundant representations that fuel's bounded-cost optimizer can't afford.
-- Fuel's per-decision-point alternatives are a more constrained shape than e-class membership.
+What is **in-bounds** (and was sharpened by the redirection):
 
-E-graphs may show up in fuel as an *offline rule-discovery tool* — fed harvested workload data (per [08-pattern-harvest](08-pattern-harvest.md)), find new algebraic equivalences, surface them as suggested OptimizationMap rules. That's a separable use case from the optimizer's per-realize work, and it doesn't require e-graphs to live on the hot path.
+- **`optimize_graph` is offline multi-path path-search, which is e-graph-*adjacent***: it explores alternative paths (algebraic rewrites, fusions, placements) and keeps a bounded Pareto frontier. This is fine because it runs **at load/import, not per realize**, and is bounded by construction (per-device Pareto + crowding cap, [04-optimization](04-optimization.md)). It may legitimately use e-graph techniques internally.
+- **E-graphs as an offline rule-discovery tool** — fed harvested workload data ([08-pattern-harvest](08-pattern-harvest.md)) to find new algebraic equivalences and surface them as suggested OptimizationMap rules.
+
+So the rejection is narrow: not "no equality-saturation-style search anywhere" (the offline optimizer is exactly that), but "no e-graph saturation in the per-realize dispatch loop." The runtime picks among already-pruned paths; it does not saturate.
 
 ## Not autotuning-search-style optimization
 
@@ -143,6 +144,8 @@ The optimization cache (per [11-persistence](11-persistence.md)) is hardware-fin
 - Maintain a fleet-of-fingerprints cache that ships compiled artifacts for many target environments in one bundle.
 
 Each of these would require either dropping the strict-fingerprint-match invariant (risky) or building substantial cross-target translation infrastructure (out of scope). Production deployments that need hardware diversity build per-target caches separately.
+
+This non-goal is about the *hardware-keyed optimization cache* — **not** the bundled Judge baseline that ships in-package ([06-runtime](06-runtime.md), [10-decisions-log](10-decisions-log.md) 2026-06-13). The baseline is workload-agnostic statistical *priors* the local Judge falls back to before any local measurement exists, not a compiled-for-specific-hardware plan. It degrades gracefully on mismatched hardware (a wrong prior is corrected by the first local measurement), whereas a fingerprint-mismatched cache would be silently wrong. Shipping priors is in-bounds; shipping locked plans is what this rejects.
 
 ## Not training-orchestration-flavored architecture decisions
 
