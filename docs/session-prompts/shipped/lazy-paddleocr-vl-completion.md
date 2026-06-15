@@ -566,7 +566,7 @@ the new binary differs in:
   - The original PaddleOCR-VL landing: `255ade6f` (lazy module
     landings) and the prior eager binary in `f526033d`.
 - Session prompts:
-  - `docs/session-prompts/eager-retirement-phase-h-plan.md` — the
+  - `docs/session-prompts/shipped/eager-retirement-phase-h-plan.md` — the
     plan that documented this binary's deferral.
   - `docs/session-prompts/remaining-eager-ports-tracker.md` —
     where this work item is queued.

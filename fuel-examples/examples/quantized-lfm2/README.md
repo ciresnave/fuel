@@ -36,7 +36,7 @@ custom tokenizer that varies per model size).
   not maintain — `forward(&[next_token], pos)` rebuilds the conv from
   zero state each call. Output quality may drift on long generations
   until the multi-output infrastructure lands (see
-  `docs/session-prompts/multi-output-nodes-option-c.md`).
+  `docs/session-prompts/shipped/multi-output-nodes-option-c.md`).
 - **Q4_K_M.** Tensors stay Q4_0 in the lazy matmul; any non-Q4_0
   Linear tensor in the GGUF dequantizes to F32 at load time.
 

@@ -1,5 +1,7 @@
 # Session prompt — Phase 7.6 step 9b: ExecutionPlan + lazy KernelRef pre-resolution
 
+> **Superseded 2026-06-14 + picker types retired (annotated 2026-06-15).** This prompt's model — a separate `ExecutionPlan` + `compile_plan()` + a per-node `NodeKernelBinding` resolved one node at a time — is exactly the drift the 2026-06-14 "plan is the graph" redirection calls out as *the thing to undo* ([`../../architecture/10-decisions-log.md`](../../architecture/10-decisions-log.md), [`../../architecture/14-lifecycle.md`](../../architecture/14-lifecycle.md)). Separately, its named types `NodeKernelBinding`, `TolerancePolicy`, and `resolve_kernel` were **retired in Phase 1.5** (zero callers; see the tombstone comments in `fuel-dispatch/src/plan.rs` and `lib.rs`) — they survive only as doc-comments, not live code. The name-level `ExecutionPlan` + `compile_plan` do still exist (now in `fuel-dispatch/src/plan.rs`). Read as history of a twice-reversed design; do not trust its picker-types or per-node-resolve details.
+
 ## What this session is for
 
 Step 9a (commit pending review, 2026-05-12) shipped `KernelBindingTable` multi-impl alternatives per `(OpKind, dtypes, BackendId)` decision point — siblings now coexist where previously `HashMap::insert` overwrote. That unblocks baracuda-cutlass B3/B4 (CUTLASS bf16/f16 matmul as cuBLAS siblings).
