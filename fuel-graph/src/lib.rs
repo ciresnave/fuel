@@ -1712,6 +1712,324 @@ impl Graph {
     pub fn placement(&self, id: NodeId) -> Option<DeviceLocation> {
         self.placements.get(&id).copied()
     }
+
+    /// Open a [`BranchBuilder`] rooted at a shared `diverge` point — the
+    /// first half of the `open_branch` / `add_arm` / `finalize_branches`
+    /// trio that constructs an [`Op::Branch`] (phi/merge) node with
+    /// build-time validation (Phase A PR-A1 of the "plan IS the graph"
+    /// rebuild).
+    ///
+    /// `diverge` names the single node from which every candidate route
+    /// (arm) departs; each arm's *exit* (added via
+    /// [`BranchBuilder::add_arm`]) becomes one `inputs[i]` of the emitted
+    /// `Op::Branch`. The builder borrows nothing — it is a pure
+    /// accumulator of `NodeId`s — so the graph stays free to keep building
+    /// arms between `open_branch` and `finalize_branches`. All validation
+    /// (descendant `reconverge_at`, internally-disjoint arms,
+    /// cast-to-uniform shape/dtype, arm-0 runnability) happens in
+    /// [`BranchBuilder::finalize_branches`], which returns a typed
+    /// [`Error::InvalidBranch`] rather than panicking.
+    pub fn open_branch(&self, diverge: NodeId) -> BranchBuilder {
+        BranchBuilder { diverge, arms: Vec::new() }
+    }
+
+    /// Forward-reachable set (the node and all its transitive *consumers*)
+    /// from `from`, computed against a precomputed consumer adjacency.
+    /// Used by branch validation to test descendant-hood and arm
+    /// containment without re-scanning the whole arena per query.
+    fn forward_reachable(
+        consumers: &HashMap<NodeId, Vec<NodeId>>,
+        from: NodeId,
+    ) -> HashSet<NodeId> {
+        let mut seen: HashSet<NodeId> = HashSet::new();
+        let mut stack = vec![from];
+        while let Some(n) = stack.pop() {
+            if !seen.insert(n) {
+                continue;
+            }
+            if let Some(cs) = consumers.get(&n) {
+                for &c in cs {
+                    if !seen.contains(&c) {
+                        stack.push(c);
+                    }
+                }
+            }
+        }
+        seen
+    }
+
+    /// Backward-reachable set (the node and all its transitive *inputs*)
+    /// from `from`. Used to bound an arm to the nodes that actually lie
+    /// on a path `diverge → exit`.
+    fn backward_reachable(&self, from: NodeId) -> HashSet<NodeId> {
+        let mut seen: HashSet<NodeId> = HashSet::new();
+        let mut stack = vec![from];
+        while let Some(n) = stack.pop() {
+            if !seen.insert(n) {
+                continue;
+            }
+            for &inp in &self.nodes[n.0].inputs {
+                if !seen.contains(&inp) {
+                    stack.push(inp);
+                }
+            }
+        }
+        seen
+    }
+}
+
+/// Accumulates the arms of an in-construction [`Op::Branch`] (phi/merge)
+/// node before [`finalize_branches`](Self::finalize_branches) validates
+/// them and emits the node. Created by [`Graph::open_branch`].
+///
+/// The multi-path structure is an **arena fact, not an overlay**: a
+/// `Branch` node's divergent arms are its `inputs` (each input is one
+/// route's *exit*), and the op carries an explicit `reconverge_at`. The
+/// builder is a pure `NodeId` accumulator — it holds no graph reference —
+/// so the graph remains free to keep appending nodes (further arms) while
+/// the builder is open. Nothing mutates the arena until
+/// `finalize_branches`, which is the single validation gate.
+#[derive(Debug, Clone)]
+pub struct BranchBuilder {
+    /// The shared node every arm departs from.
+    diverge: NodeId,
+    /// Each arm's *exit* node, in priority order. `arms[0]` is the
+    /// runnability fallback (arm 0): the route a finalized-but-unpicked
+    /// graph realizes on.
+    arms: Vec<NodeId>,
+}
+
+impl BranchBuilder {
+    /// Append one arm by its *exit* node — the node whose value the merge
+    /// reads for this route. The first arm added is **arm 0**, the
+    /// runnability fallback: `reconverge_at` must read arm 0's exit so a
+    /// finalized-but-not-yet-route-picked graph still realizes (validated
+    /// in [`finalize_branches`](Self::finalize_branches)).
+    ///
+    /// Returns `&mut Self` for chaining. Validation is deferred to
+    /// finalize — `add_arm` never inspects the graph and never fails.
+    pub fn add_arm(&mut self, exit: NodeId) -> &mut Self {
+        self.arms.push(exit);
+        self
+    }
+
+    /// The shared diverge point this branch departs from.
+    pub fn diverge(&self) -> NodeId {
+        self.diverge
+    }
+
+    /// The arm exits accumulated so far, in add order (arm 0 first).
+    pub fn arms(&self) -> &[NodeId] {
+        &self.arms
+    }
+
+    /// Validate and emit the [`Op::Branch`] node, returning its fresh
+    /// `NodeId`. This is the single build-time gate; it **never panics**,
+    /// surfacing every rejection as [`Error::InvalidBranch`].
+    ///
+    /// Returns:
+    /// - `Ok(Some(branch_id))` — a multi-arm branch was emitted.
+    /// - `Ok(None)` — a **single-arm branch collapsed** to that arm (no
+    ///   real decision point), leaving the arena untouched.
+    /// - `Err(Error::InvalidBranch { .. })` — a validation rule failed.
+    ///
+    /// Validation rules (all checked before any mutation):
+    /// 1. At least one arm; `diverge`, `reconverge_at`, and every arm
+    ///    exit are in-bounds.
+    /// 2. **Descendant `reconverge_at`** — the merge must be a forward
+    ///    descendant of (and distinct from) `diverge`.
+    /// 3. **Internally-disjoint arms** — each arm's interior nodes (the
+    ///    nodes on paths `diverge → exit`, excluding the shared `diverge`)
+    ///    must neither be shared with another arm nor read by any node
+    ///    outside the branch (`reconverge_at` reading an arm exit is the
+    ///    one allowed external consumer).
+    /// 4. **Cast-to-uniform** — all arm exits agree on shape & dtype.
+    ///    PR-A1 *validates* uniformity and errors on mismatch (it does not
+    ///    insert `Cast` nodes); dtype-lowered alternatives must therefore
+    ///    cast back to the merge dtype *inside* their arm before the exit.
+    /// 5. **Arm-0 runnability** — `reconverge_at` must read arm 0's exit,
+    ///    so a finalized-but-unpicked graph still realizes on arm 0.
+    pub fn finalize_branches(
+        self,
+        graph: &mut Graph,
+        reconverge_at: NodeId,
+    ) -> std::result::Result<Option<NodeId>, fuel_core_types::Error> {
+        let n = graph.nodes.len();
+        let invalid = |reason: String| fuel_core_types::Error::InvalidBranch { reason };
+
+        // (1a) At least one arm.
+        if self.arms.is_empty() {
+            return Err(invalid(
+                "branch has no arms; at least one route is required".to_string(),
+            ));
+        }
+        // (1b) Bounds-check every referenced node up front so later
+        // arena indexing cannot panic.
+        let in_bounds = |id: NodeId| id.0 < n;
+        if !in_bounds(self.diverge) {
+            return Err(invalid(format!(
+                "diverge Node#{} is out of bounds (graph has {n} nodes)",
+                self.diverge.0,
+            )));
+        }
+        if !in_bounds(reconverge_at) {
+            return Err(invalid(format!(
+                "reconverge_at Node#{} is out of bounds (graph has {n} nodes)",
+                reconverge_at.0,
+            )));
+        }
+        for &arm in &self.arms {
+            if !in_bounds(arm) {
+                return Err(invalid(format!(
+                    "arm exit Node#{} is out of bounds (graph has {n} nodes)",
+                    arm.0,
+                )));
+            }
+        }
+
+        // (d) Single-arm branches collapse back to that arm — no real
+        // decision point, so no Op::Branch is emitted and the arena is
+        // left untouched.
+        if self.arms.len() == 1 {
+            return Ok(None);
+        }
+
+        // Build a consumer (reverse) adjacency once for the reachability
+        // queries below.
+        let mut consumers: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        for (idx, node) in graph.nodes.iter().enumerate() {
+            let consumer = NodeId(idx);
+            for &inp in &node.inputs {
+                consumers.entry(inp).or_default().push(consumer);
+            }
+        }
+
+        // (2) reconverge_at must be a forward descendant of diverge and
+        // distinct from it.
+        if reconverge_at == self.diverge {
+            return Err(invalid(format!(
+                "reconverge_at Node#{} must be a strict descendant of the \
+                 diverge point, not the diverge point itself",
+                reconverge_at.0,
+            )));
+        }
+        let fwd_from_diverge = Graph::forward_reachable(&consumers, self.diverge);
+        if !fwd_from_diverge.contains(&reconverge_at) {
+            return Err(invalid(format!(
+                "reconverge_at Node#{} is not a descendant of diverge Node#{}",
+                reconverge_at.0, self.diverge.0,
+            )));
+        }
+
+        // (4) Cast-to-uniform: every arm exit must agree on shape & dtype
+        // with arm 0 (PR-A1 validates uniformity rather than inserting
+        // Cast nodes).
+        let arm0 = self.arms[0];
+        let (want_shape, want_dtype) = {
+            let a0 = &graph.nodes[arm0.0];
+            (a0.shape.clone(), a0.dtype)
+        };
+        for &arm in &self.arms[1..] {
+            let node = &graph.nodes[arm.0];
+            if node.shape != want_shape || node.dtype != want_dtype {
+                return Err(invalid(format!(
+                    "arm exit Node#{} ({:?} {:?}) disagrees with arm 0 Node#{} \
+                     ({:?} {:?}); arms must cast to a uniform shape & dtype at \
+                     reconverge",
+                    arm.0, node.shape, node.dtype, arm0.0, want_shape, want_dtype,
+                )));
+            }
+        }
+
+        // (5) Arm-0 runnability: reconverge_at must read arm 0's exit, so
+        // an unpicked graph realizes on arm 0.
+        if !graph.nodes[reconverge_at.0].inputs.contains(&arm0) {
+            return Err(invalid(format!(
+                "reconverge_at Node#{} does not read arm-0 exit Node#{}; the \
+                 arm-0 runnability invariant requires the merge to read arm 0 \
+                 so a not-yet-route-picked graph still realizes",
+                reconverge_at.0, arm0.0,
+            )));
+        }
+
+        // (3) Internal disjointness. Each arm's node set is the nodes on
+        // paths diverge → exit: backward-reachable from the exit AND
+        // forward-reachable from diverge. The arm *interior* excludes the
+        // shared diverge point.
+        let mut arm_interiors: Vec<HashSet<NodeId>> = Vec::with_capacity(self.arms.len());
+        for &exit in &self.arms {
+            let back = graph.backward_reachable(exit);
+            let mut interior: HashSet<NodeId> = back
+                .intersection(&fwd_from_diverge)
+                .copied()
+                .collect();
+            interior.remove(&self.diverge);
+            // The exit itself is always part of the arm even if (for a
+            // degenerate arm) it equals the diverge point — but a
+            // diverge-equals-exit arm has an empty interior, which would
+            // make the arm indistinguishable from "no route", so reject.
+            if interior.is_empty() {
+                return Err(invalid(format!(
+                    "arm exit Node#{} has no interior strictly after diverge \
+                     Node#{}; an arm must add at least one node between the \
+                     diverge point and its exit",
+                    exit.0, self.diverge.0,
+                )));
+            }
+            arm_interiors.push(interior);
+        }
+
+        // (3a) Arms must not share interior nodes.
+        for i in 0..arm_interiors.len() {
+            for j in (i + 1)..arm_interiors.len() {
+                if let Some(shared) = arm_interiors[i].intersection(&arm_interiors[j]).next() {
+                    return Err(invalid(format!(
+                        "arms {i} and {j} share interior Node#{}; arms must be \
+                         internally disjoint",
+                        shared.0,
+                    )));
+                }
+            }
+        }
+
+        // (3b) No arm-interior node may be read from outside the branch.
+        // The branch's universe is the union of all arm interiors plus
+        // the merge node; reconverge_at reading an arm exit is the one
+        // legitimate "external" consumer.
+        let mut branch_universe: HashSet<NodeId> = HashSet::new();
+        for interior in &arm_interiors {
+            branch_universe.extend(interior.iter().copied());
+        }
+        branch_universe.insert(reconverge_at);
+        for (i, interior) in arm_interiors.iter().enumerate() {
+            for &m in interior {
+                if let Some(cs) = consumers.get(&m) {
+                    for &c in cs {
+                        if !branch_universe.contains(&c) {
+                            return Err(invalid(format!(
+                                "arm {i} interior Node#{} is read from outside \
+                                 the branch by Node#{}; arm interiors must not be \
+                                 reachable from outside the branch",
+                                m.0, c.0,
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        // All validation passed — emit the Branch node. Its inputs ARE the
+        // arm exits, in priority order (arm 0 first); reconverge_at is
+        // carried on the op. Shape/dtype mirror arm 0 (the uniform merge
+        // type validated above).
+        let branch = graph.push(Node {
+            op: Op::Branch { reconverge_at },
+            inputs: self.arms.clone(),
+            shape: want_shape,
+            dtype: want_dtype,
+        });
+        Ok(Some(branch))
+    }
 }
 
 /// A shared, mutable graph. Builders clone this cheaply and hand it to
@@ -11691,5 +12009,211 @@ mod tests {
             Op::Branch { reconverge_at } => assert_eq!(reconverge_at, merged),
             ref other => panic!("expected Op::Branch, got {other:?}"),
         }
+    }
+
+    // ----- Op::Branch builders + build-time validation
+    // (Phase A PR-A1 of the "plan IS the graph" rebuild) -----
+
+    /// Hand-build a 2-arm diamond directly on the arena and return the
+    /// pieces the branch builders will stitch together:
+    /// `diverge` → {`arm0`, `arm1`} → `reconverge`. The reconverge node
+    /// already reads arm0 as input 0, which is exactly the runnability
+    /// invariant the builders must preserve (a finalized-but-unpicked
+    /// branch still realizes on arm 0). Every node is `[2] f32` so the
+    /// cast-to-uniform check has agreeing shape/dtype across arms.
+    fn diamond_2arm() -> (Graph, NodeId, NodeId, NodeId, NodeId) {
+        let mut g = Graph::new();
+        let diverge = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        // arm0 = relu(diverge), arm1 = silu(diverge): two interior nodes,
+        // each reachable only through its own arm from the diverge point.
+        let arm0 = g.push(Node {
+            op: Op::Relu,
+            inputs: vec![diverge],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        let arm1 = g.push(Node {
+            op: Op::Silu,
+            inputs: vec![diverge],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        // reconverge reads arm0 (runnability: arm 0 is always input 0).
+        let reconverge = g.push(Node {
+            op: Op::Relu,
+            inputs: vec![arm0],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+        (g, diverge, arm0, arm1, reconverge)
+    }
+
+    /// (a) A 2-arm diamond round-trips through
+    /// `open_branch`/`add_arm`/`finalize_branches`: it produces exactly
+    /// one valid `Op::Branch` node whose `inputs` are the arm exits in
+    /// order and whose `reconverge_at` is the named merge node.
+    #[test]
+    fn two_arm_diamond_round_trips_to_branch_node() {
+        let (mut g, diverge, arm0, arm1, reconverge) = diamond_2arm();
+        let before = g.len();
+
+        let mut b = g.open_branch(diverge);
+        b.add_arm(arm0);
+        b.add_arm(arm1);
+        let branch = b
+            .finalize_branches(&mut g, reconverge)
+            .expect("well-formed 2-arm branch must finalize")
+            .expect("2 arms survive — not collapsed to a single arm");
+
+        // Exactly one node was appended (the Branch); no orphan debris.
+        assert_eq!(g.len(), before + 1);
+
+        let node = g.node(branch);
+        assert!(matches!(node.op, Op::Branch { .. }));
+        // Arms are the node's inputs, in add order: arm0 first.
+        assert_eq!(node.inputs, vec![arm0, arm1]);
+        match node.op {
+            Op::Branch { reconverge_at } => assert_eq!(reconverge_at, reconverge),
+            ref other => panic!("expected Op::Branch, got {other:?}"),
+        }
+        // The merge node still carries arm0's shape/dtype (cast-to-uniform
+        // validated, not rewritten).
+        assert_eq!(node.shape, g.node(arm0).shape);
+        assert_eq!(node.dtype, g.node(arm0).dtype);
+    }
+
+    /// (b) A `reconverge_at` that is NOT a descendant of the diverge
+    /// point returns `Error::InvalidBranch` — never a panic.
+    #[test]
+    fn reconverge_not_descendant_of_diverge_is_typed_err() {
+        let (mut g, diverge, arm0, arm1, _reconverge) = diamond_2arm();
+        // A sibling node that does NOT descend from `diverge`.
+        let unrelated = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+
+        let mut b = g.open_branch(diverge);
+        b.add_arm(arm0);
+        b.add_arm(arm1);
+        let err = b
+            .finalize_branches(&mut g, unrelated)
+            .expect_err("reconverge that doesn't descend from diverge must be rejected");
+        assert!(
+            matches!(err, fuel_core_types::Error::InvalidBranch { .. }),
+            "expected InvalidBranch, got {err:?}",
+        );
+    }
+
+    /// (c) A non-disjoint arm — an arm interior node reachable from
+    /// outside that arm (shared with the rest of the graph) — returns
+    /// `Error::InvalidBranch`.
+    #[test]
+    fn non_disjoint_arm_is_typed_err() {
+        let (mut g, diverge, arm0, arm1, reconverge) = diamond_2arm();
+        // Add a reader OUTSIDE the branch that consumes arm0's interior.
+        // arm0 is now reachable from a node that isn't part of the merge,
+        // so the arm is not internally disjoint.
+        let _external_reader = g.push(Node {
+            op: Op::Relu,
+            inputs: vec![arm0],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+
+        let mut b = g.open_branch(diverge);
+        b.add_arm(arm0);
+        b.add_arm(arm1);
+        let err = b
+            .finalize_branches(&mut g, reconverge)
+            .expect_err("an arm interior read from outside the branch must be rejected");
+        assert!(
+            matches!(err, fuel_core_types::Error::InvalidBranch { .. }),
+            "expected InvalidBranch, got {err:?}",
+        );
+    }
+
+    /// (c') Arms that disagree on shape/dtype at their exits violate
+    /// cast-to-uniform and return `Error::InvalidBranch` (validate-and-Err
+    /// — no implicit Cast insertion in PR-A1).
+    #[test]
+    fn arms_disagreeing_on_dtype_is_typed_err() {
+        let (mut g, diverge, arm0, _arm1, reconverge) = diamond_2arm();
+        // A second arm with a DIFFERENT dtype than arm0.
+        let arm1_f16 = g.push(Node {
+            op: Op::Silu,
+            inputs: vec![diverge],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F16,
+        });
+
+        let mut b = g.open_branch(diverge);
+        b.add_arm(arm0);
+        b.add_arm(arm1_f16);
+        let err = b
+            .finalize_branches(&mut g, reconverge)
+            .expect_err("arms with mismatched dtype must be rejected (cast-to-uniform)");
+        assert!(
+            matches!(err, fuel_core_types::Error::InvalidBranch { .. }),
+            "expected InvalidBranch, got {err:?}",
+        );
+    }
+
+    /// (d) `finalize_branches` drops a single-arm branch: with only one
+    /// surviving arm there is no real decision point, so no `Op::Branch`
+    /// node is emitted (`Ok(None)`), the arena is left untouched, and the
+    /// graph collapses back to that arm.
+    #[test]
+    fn single_arm_branch_is_dropped() {
+        let (mut g, diverge, arm0, _arm1, reconverge) = diamond_2arm();
+        let before = g.len();
+
+        let mut b = g.open_branch(diverge);
+        b.add_arm(arm0);
+        let result = b
+            .finalize_branches(&mut g, reconverge)
+            .expect("a single-arm branch is valid — it just collapses");
+        assert!(result.is_none(), "single-arm branch must NOT emit an Op::Branch");
+        // No node appended: the lone arm is the graph, unchanged.
+        assert_eq!(g.len(), before, "dropping a single-arm branch leaves the arena untouched");
+        let branch_count = (0..g.len())
+            .filter(|&i| matches!(g.node(NodeId(i)).op, Op::Branch { .. }))
+            .count();
+        assert_eq!(branch_count, 0);
+    }
+
+    /// (e) The runnability invariant: the emitted `Op::Branch`'s inputs
+    /// always include arm-0's exit as input 0, so a finalized-but-not-yet-
+    /// route-picked graph still realizes on arm 0 (a graph with a
+    /// finalized branch must still be executable). The named reconverge
+    /// node reads arm-0's exit, so realizing on arm 0 alone produces a
+    /// defined value at the merge.
+    #[test]
+    fn finalized_branch_preserves_arm0_runnability() {
+        let (mut g, diverge, arm0, arm1, reconverge) = diamond_2arm();
+
+        let mut b = g.open_branch(diverge);
+        b.add_arm(arm0);
+        b.add_arm(arm1);
+        let branch = b
+            .finalize_branches(&mut g, reconverge)
+            .expect("well-formed branch finalizes")
+            .expect("2 arms survive");
+
+        // arm 0 is input 0 of the Branch — the always-realizable route.
+        assert_eq!(g.node(branch).inputs.first().copied(), Some(arm0));
+        // And the named reconverge node reads arm0, so realizing on
+        // arm 0 alone produces a defined value at the merge.
+        assert!(
+            g.node(reconverge).inputs.contains(&arm0),
+            "reconverge must read arm-0's exit so the unpicked graph runs on arm 0",
+        );
     }
 }
