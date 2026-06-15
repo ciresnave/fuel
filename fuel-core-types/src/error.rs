@@ -350,6 +350,23 @@ pub enum Error {
         /// produced an empty set).
         available_alternatives: usize,
     },
+
+    /// Build-time rejection from the `Op::Branch` builders
+    /// (`Graph::open_branch` / `BranchBuilder::add_arm` /
+    /// `BranchBuilder::finalize_branches`). Phase A PR-A1 of the
+    /// "plan IS the graph" rebuild. The multi-path structure is an
+    /// arena fact validated at graph-build time — never a realize-time
+    /// panic — so an ill-formed branch (a `reconverge_at` that is not a
+    /// descendant of the diverge point, arms that are not internally
+    /// disjoint, arm exits that disagree on shape/dtype at reconverge)
+    /// surfaces here with a human-readable reason rather than corrupting
+    /// the arena.
+    #[error("invalid branch: {reason}")]
+    InvalidBranch {
+        /// Why the branch was rejected — names the violated invariant
+        /// and the offending node ids for localization.
+        reason: String,
+    },
 }
 
 /// A specialized [`Result`](std::result::Result) type for fuel operations.
