@@ -93,8 +93,8 @@ The model tier is `fuel-model-core` + `fuel-model-*` leaves, with `fuel-transfor
 
 Each backend is its own crate, each gated by a Cargo feature on whichever consumer wants it. The pattern:
 
-- **Backend crate** (e.g., `fuel-cuda-backend`): typed kernels operating on the backend's concrete storage type. No fuel-storage dependency.
-- **Backend-side wrapper module in fuel-storage** (e.g., `fuel_storage::dispatch::cuda`): dispatch wrappers that pattern-match `BackendStorage::Cuda(...)`, extract the typed storage, call the backend's typed kernel. fuel-storage depends on the backend crate; backend doesn't depend on fuel-storage. Cycle avoided.
+- **Backend crate** (e.g., `fuel-cuda-backend`): typed kernels operating on the backend's concrete storage type. No dependency on fuel-dispatch (the crate that dispatches *into* it).
+- **Backend-side wrapper module in fuel-dispatch** (e.g., `fuel_dispatch::dispatch::cuda`): dispatch wrappers that pattern-match `BackendStorage::Cuda(...)`, extract the typed storage, and call the backend's typed kernel. fuel-dispatch depends on the backend crate; the backend doesn't depend on fuel-dispatch. Cycle avoided. *(Before the executor-unification rename these wrappers lived in `fuel-storage`/`fuel_storage::dispatch::*`; the storage substrate is now `fuel-memory` and carries no dispatch.)*
 - **Hardware FFI wrappers** (e.g., `baracuda` for CUDA, `vulkane` for Vulkan, `aocl-blas-rs` for AOCL): live outside fuel entirely. Backend crates depend on these via crates.io. Fuel itself never names raw FFI.
 
 This is how fuel can support CUDA, Vulkan, Metal, AOCL, MKL as independent compile-time-optional backends without coupling them to each other or to the Foundation layer's identity.
