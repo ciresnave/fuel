@@ -83,7 +83,7 @@ A decision point is any location in the optimized DAG where the optimizer found 
 
 ### Storage and structural-distinctness
 
-- Alternatives within a decision point are stored as a small set attached to that point in the DAG. Storage scales as N × M (per-decision-point sets), not as N complete graph copies. For typical inference graphs this is well within budget.
+- Alternatives are paths in the multi-path graph, not copies of whole graphs; shared regions are shared. Total storage scales with the bounded per-device frontier (order 10² paths), not with N complete graph copies — well within budget for typical inference graphs.
 - Subgraphs not at decision points are shared — they're regions where the optimizer found exactly one viable alternative.
 - Alternatives within a decision point are **structurally distinct by construction** — the optimizer deduplicates during search. Two technically-different rule applications producing the same subgraph collapse to one alternative.
 - What is *not* enforced is meaningful diversity beyond structural distinctness: two distinct alternatives might differ only trivially (same kernel choices, same placements, slightly different intermediate node ordering) and so present the runtime picker with redundant options. Future refinement could enforce explicit diversity (e.g., "the N alternatives at a decision point must differ on at least one placement or one tolerance trade-off") if shallow distinctness turns out to be common in practice.
@@ -110,21 +110,19 @@ Decision point C — join's kernel choice:
 
 The runtime picker reads alternatives + couplings + current telemetry, then resolves to a coherent plan. Locally-greedy resolution (pick each decision point's locally-best alternative independently, ignoring couplings) is usually fine; rare adversarial cases where greedy is bad get caught by a small lookahead in the picker.
 
-### What makes an alternative admissible at a decision point
+### What makes an alternative admissible
 
-- It must satisfy all hard constraints at its location: tolerance budget not exceeded along any path through this decision point, viable backend assignment, all transfers feasible, all layouts reachable via fixup ops.
-- Among alternatives that satisfy hard constraints, the top N by local cost (with conditional adjustments treated as worst-case for ranking) are retained.
-- N is per-decision-point, not global. A decision point with only one viable alternative stores one; a decision point with twelve stores up to N (default 3).
+- It must satisfy all hard constraints: tolerance budget not exceeded along any path through it, viable backend assignment, all transfers feasible, all layouts reachable via fixup ops.
+- Among admissible alternatives, survival is decided **globally** by the per-device Pareto frontier + crowding cap (see [Bounding the frontier](#bounding-the-frontier-pareto-per-device--crowding-cap)), not by a fixed per-branch count. How many alternatives a single branch shows is *emergent* — whatever the surviving paths imply there — not a separately-tuned N.
 
-### Default N and configurability
+### The tunable: `keep` per device (not a per-decision-point N)
 
-Default N=3 per decision point gives the runtime picker meaningful flexibility (typically a strict-fast alternative, a strict-memory-conserving alternative, and a tolerance-aware fast alternative) without exploding storage or search cost. Configurable up to roughly 10 in practice; beyond that diminishing returns set in (alternatives differ only marginally; runtime picker rarely picks the lower-ranked ones).
+The real knob is **`keep` — the crowding-cap size per ending device** (≈32 in the prototype). It bounds the whole surviving frontier (≤ `keep` × devices), so cost scales with the *bounded frontier*, not an unbounded N × M:
 
-The cost of N>1 per decision point:
+- **Search + storage** scale with the bounded per-device frontier (order 10² paths total with the right axes — single central time, tiered memory, discrete precision/accuracy), because lock-step pruning keeps the working set bounded throughout, not just at the end.
+- **Runtime picker cost per realize** scales with the number of decision points actually hit, mitigated by caching (decisions are stable while telemetry is stable; re-decide only on a meaningful shift).
 
-- **Optimizer search cost** scales with N per decision point — more search per location to find more competitive alternatives.
-- **Storage cost** scales as N × M (alternatives per decision point × number of decision points). Linear in both factors; manageable for typical inference graphs.
-- **Runtime picker cost per realize** scales with M (a decision per location). Mitigated by caching: decisions stable across realizes if telemetry is stable; only re-decide when telemetry shifts meaningfully.
+(A *single* small N "across all devices" — the old "default N=3" framing — is explicitly **not** the model: it would strand slow devices, the scalar-top-N failure the per-device frontier avoids. See 03-ir [Bounding the frontier](03-ir.md#bounding-the-frontier-pareto-per-device--crowding-cap).)
 
 ## The sliding window: optimization and execution overlap
 
