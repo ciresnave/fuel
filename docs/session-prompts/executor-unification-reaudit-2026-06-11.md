@@ -1,10 +1,35 @@
 # Executor unification — re-audit 2026-06-11
 
+> **STATUS — Sessions 1-6 SHIPPED (do not treat the gap table or the
+> Section 3/4 censuses below as a live queue).** This document is a
+> **live anchor** — referenced by `docs/claude-handoff-2026-06-12.md`
+> and by gap-numbered comments in `fuel-core/src/lazy.rs` — so it is
+> preserved verbatim except for this banner and the
+> reconciliation note. Sessions 1-6 (and original gaps 1-6, 8, 10-13)
+> have landed: `8eefe4d1` (Session 1 — `realize_f64/_bf16/_f16` onto
+> the pipelined bridge, gap 8/13), `8146d75a` (Session 2 — LazyRealizer
+> onto the bridge, gap 11), `aa156cd6` (Session 3 — delete the
+> `judge::cached()` Router branch, gap 12a), `0587aab5` (Session 4 —
+> retire the `*_gpu_on` generate family + `KVCache<B>`), `7d4e5e8c`
+> (Session 5 — Trainer off the legacy executor / eager Phase G),
+> `aff08f81` + `b0200e80` (Session 6 — residency/Move-based eviction
+> onto the pipelined executor + `fuel-graph-router` retirement).
+> **Remaining ACTIVE plan: Sessions 7-8.** Session 7 (the 5 surviving
+> `GraphBackend` impls + the ~2147-LOC `fuel-graph-executor` crate +
+> `fuel-graph-cpu::realize_any`) is genuinely UNSTARTED. Session 8
+> (eager tail) now points to `eager-tail-session-8-surgical-plan.md`.
+>
+> Reconciled 2026-06-15 against the 2026-06-14 redirection + current
+> git: Sessions 1-6 shipped; the optimized form is now the same graph
+> transformed in place (no separate ExecutionPlan artifact), so the
+> remaining trait/crate retirement (Session 7) and the eager tail
+> (Session 8) are the only live work this anchor still tracks.
+
 Refresh of the **Phase 7.6 step 9c parity audit** (2026-05-19, memory:
 `project_phase_7_6_step_9c_parity_audit.md`; ROADMAP §"Phase 7.6 step
 9c — typed-storage retirement"), merged with the **eager-Tensor
 retirement** state (`eager-tensor-retirement-master-plan.md` +
-`eager-retirement-phase-h-plan.md`). Read-only audit against
+`shipped/eager-retirement-phase-h-plan.md`). Read-only audit against
 `main` @ `91c0afd5` (2026-06-11); all evidence is file:line or commit
 hash in this tree.
 

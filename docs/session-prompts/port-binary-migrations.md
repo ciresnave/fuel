@@ -1,11 +1,31 @@
 # Port: fuel-examples binaries from eager to lazy
 
-## Eager source
+> Reconciled 2026-06-15 against the 2026-06-14 redirection +
+> current git: the bulk eager-binary port already landed (Phase H,
+> `cfcb35cf`, retired the eager `fuel-transformers/models`); this
+> spec now narrows to the actual *remaining* work — `custom-ops`
+> (needs a `LazyCustomOp1` surface) and the two training bins
+> (`mnist-training`, `reinforcement-learning` → `lazy_nn_optim` /
+> `LazyVar`). `llama_multiprocess` was *deleted* in `cfcb35cf`, not
+> quarantined, so it carries no port obligation.
 
-`fuel-examples/examples/*/main.rs` — 108 runner binaries
-demonstrating each shipped model. All use eager
-`fuel::Tensor` + `fuel_nn::{VarBuilder, Module}` to load
-weights, construct the model, and run forward.
+## Remaining eager source
+
+The wholesale runner port has shipped; what is left is the
+genuinely unfinished tail:
+
+- **`custom-ops`** — eager `CustomOp1` demo with no lazy
+  equivalent yet (needs a `LazyCustomOp1` surface; see Special
+  categories below).
+- **Training bins** (`mnist-training`,
+  `reinforcement-learning`) — still need the lazy training
+  surface (`lazy_nn_optim`, `LazyVar`).
+
+The historical framing of this doc was "108 eager
+`fuel-examples/examples/*/main.rs` runner binaries on eager
+`fuel::Tensor` + `fuel_nn::{VarBuilder, Module}`"; that count is
+no longer the unit of work — the families below are kept for
+reference, but only the bins above remain to be ported.
 
 ## Migration target
 
@@ -18,8 +38,14 @@ in-place to:
    eager `VarBuilder::from_mmaped_safetensors`.
 3. Construct the lazy model
    (`lazy_llama_full::Llama3Model::new`,
-   `lazy_qwen3_vl::Qwen3VlModel`, etc.).
-4. Forward with `LazyTensor` token / pixel inputs.
+   `lazy_qwen3_vl::Qwen3VlModel`, etc.). Under the 2026-06-14
+   model the graph is **input-independent and built at load**
+   (`map_from_file` / native `.fuel`), not inside `forward()`;
+   the runner wires the graph once, then feeds inputs.
+4. Drive the (already-built) graph with `LazyTensor` token /
+   pixel inputs — runtime dispatches op-sequence runs between
+   decision points; the route picker chooses only at branch
+   points.
 5. Realize outputs with `.realize_f32()` for printing /
    sampling.
 
@@ -40,9 +66,6 @@ the lazy modules have already shipped from Rounds 1-4.
   Most likely landing: a `LazyCustomOp1` trait analogous to
   eager `CustomOp1` that injects an `Op::Fused(USER_DEFINED, ...)`
   node.
-- **`llama_multiprocess`** (NCCL multi-GPU): port to the lazy
-  multi-GPU path if shipped, otherwise split the foundational
-  multi-GPU support out as its own port first.
 - **Quantized binaries** (`quantized`, `quantized-gemma`,
   `quantized-glm4`, `quantized-lfm2`, `quantized-phi`,
   `quantized-qwen2-instruct`, `quantized-qwen3`,
@@ -54,6 +77,17 @@ the lazy modules have already shipped from Rounds 1-4.
   unsupported-op errors for ops not yet covered by sub-ports
   1+2+3 — list those in the per-binary commit and ship the
   needed sub-port.
+
+## Accepted residual (not a blocking port)
+
+The image-output bins (`z_image`, `stable-diffusion`,
+`stable-diffusion-3`, `onnx`, `depth_anything_v2` — ~5
+diffusion/onnx/vision runners) still assemble a host-side `u8`
+buffer with `fuel::Tensor::from_vec(..., &Device::cpu())` *after*
+the model forward, purely to feed `save_image`. This is a
+host-side `u8` conversion at the boundary, not part of the model
+graph, so it does **not** count as an eager-forward and is left
+as an accepted residual rather than a blocking port.
 
 ## Lazy module mapping (representative subset)
 
@@ -107,7 +141,7 @@ Migrate by family in parallel batches:
    quantized-t5.
 6. **Batch F** — Special (~5 binaries): custom-ops,
    mnist-training, reinforcement-learning, onnx, onnx-llm,
-   onnx_basics, gguf-tokenizer, llama_multiprocess, silero-vad.
+   onnx_basics, gguf-tokenizer, silero-vad.
 
 Each batch ships as its own commit.
 

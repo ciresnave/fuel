@@ -1,5 +1,7 @@
 # Eager `fuel_core::Tensor` retirement — master plan
 
+> Reconciled 2026-06-15 against the 2026-06-14 redirection + current git: live master index for this program (do NOT retire) — Phase C shipped, D/E/F substantially shipped, Phase H in progress; mamba inbound link repointed to `shipped/`.
+
 ## Context
 
 Fuel's Phase 7.5 direction is "drop eager." The eager `fuel_core::Tensor` type
@@ -83,12 +85,12 @@ hand-decomposition in Whisper.
 |-------|------|----------|------------|--------|
 | **A** | Close API gap on LazyTensor / `fuel_graph::Tensor` | 8–12 | First; blocks all consumer ports | **A.1–A.5 shipped 2026-05-30** + most A.x deferred items |
 | **B** | LazyKvCache option (b) | 1–2 | Parallel with A | **Shipped 2026-05-30** (commit `37ea082a`) |
-| **C** | Rotating-window KV cache (new Op) | 1 | Parallel with A+B if attention allows | Awake review (new Op variant) |
-| **D** | LLM lazy ports (~14 models) | 7–10 | After A+B complete | Pending |
-| **E** | Vision/multimodal lazy ports (~25 models) | 8–12 | After A (pooling), parallel with D | Pending |
-| **F** | Diffusion lazy ports (~34 files) | 8–12 | After A + any new attention ops | Pending |
-| **G** | Training-path migration (BatchNorm EMA, optimizer) | 2–4 | After at least one model trains end-to-end | Pending |
-| **H** | Delete eager Tensor + retire fuel-nn | 2–3 | Last; only after every consumer migrated | Pending |
+| **C** | Rotating-window KV cache (new Op) | 1 | Parallel with A+B if attention allows | **SHIPPED** (`94fa2e47`/`95491c89` — `Op::WriteSliceRotating` + `append_rotating`) |
+| **D** | LLM lazy ports (~14 models) | 7–10 | After A+B complete | **SUBSTANTIALLY SHIPPED** (155 `lazy_*.rs` ports; models tree retired to `_models_retired`) |
+| **E** | Vision/multimodal lazy ports (~25 models) | 8–12 | After A (pooling), parallel with D | **SUBSTANTIALLY SHIPPED** (155 `lazy_*.rs` ports; models tree retired to `_models_retired`) |
+| **F** | Diffusion lazy ports (~34 files) | 8–12 | After A + any new attention ops | **SUBSTANTIALLY SHIPPED** (155 `lazy_*.rs` ports; models tree retired to `_models_retired`) |
+| **G** | Training-path migration (BatchNorm EMA, optimizer) | 2–4 | After at least one model trains end-to-end | Status needs verification |
+| **H** | Delete eager Tensor + retire fuel-nn | 2–3 | Last; only after every consumer migrated | **In progress** — models/fuel-nn retired; eager `Tensor` struct + type-alias flip + 4 residual consumers still pending (see `shipped/eager-retirement-phase-h-plan.md` and `eager-tail-session-8-surgical-plan.md`) |
 
 **Total: 35–55 focused sessions.** Multi-month effort, parallelizable per
 phase.
@@ -422,5 +424,5 @@ affects how much of fuel-nn's training path can collapse.
   — Phase 4-5 in-place infrastructure (basis for Phase A.9)
 - [fuel-core/src/lazy.rs:6-24](../../fuel-core/src/lazy.rs#L6-L24) —
   bridge-file design rationale
-- [mamba-eager-to-lazy-migration.md](./mamba-eager-to-lazy-migration.md) —
+- [mamba-eager-to-lazy-migration.md](./shipped/mamba-eager-to-lazy-migration.md) —
   Mamba-specific port prompt (now subsumed by this master plan)

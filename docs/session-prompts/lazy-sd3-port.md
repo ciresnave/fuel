@@ -1,5 +1,11 @@
 # Port: Stable Diffusion 3 / 3.5 (lazy_sd3 family) — revive `_stable-diffusion-3_retired`
 
+> **Status (reconciled 2026-06-15 against the 2026-06-14 redirection + current git).** Round 1 **shipped** in commit `7c50b221` (`feat(lazy): Phase 7 — finish remaining retirement`): `Sd3TripleClip` (`lazy_sd3_text_encoder`), `SdVae3Decoder` (`lazy_sd3_vae`), `flow_match_euler_sample` + SLG (`lazy_sd_samplers_sd3`), and `MmDitFullModel` with a `skip_layers` parameter (`lazy_mmdit`). This covers SD3-medium and SD 3.5-large / large-turbo (standard joint blocks).
+>
+> **§1.3.3 (MMDiT-X joint block for SD 3.5-medium with skip-layer guidance) is still TODO** — explicit code markers live at `fuel-core/src/lazy_mmdit.rs:746`, `:825-826`, and `:1437-1445`. A repo grep shows **this prompt is the only record of that plan**, so this doc remains the live design home for the MMDiT-X follow-up; do not retire it.
+>
+> Note: `MmDitFullConfig::sd3_5_medium()` + the binary's `--use-slg` path is **wired-but-incorrect** — it currently runs the non-X joint-block path (see the `:825-826` comment) and will not produce correct SD 3.5-medium output until MMDiT-X lands.
+
 ## Why this is needed
 
 Phase H of the eager-retirement program ([commit `cfcb35cf`](../../fuel-examples/examples/_stable-diffusion-3_retired/README.md)) moved every `fuel-transformers/src/models/*` source tree out of the workspace build and into `fuel-transformers/src/_models_retired/`. Binaries whose lazy port was structurally incomplete were quarantined by renaming their example directory `_<name>_retired/` so Cargo auto-discovery skips them.
