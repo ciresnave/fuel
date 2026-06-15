@@ -1,6 +1,6 @@
 # Model interchange: import and export
 
-**Status**: v0.2 (draft, 2026-06-08). v0.2 changes: StableHLO promoted from export-only to **import + export** (it is the JAX/TF/XLA convergence point); the op-map model reframed around per-op *dispositions* and the *representation ≠ op* principle (control flow / dynamic shape / collectives are lowered to graph structure or handled at another layer, not rejected); links the worked StableHLO op map. v0.1: first statement of the import/export architecture. Design pass — no code. Anchors to [02-layers](02-layers.md) (crate tiers), [03-ir](03-ir.md) (the base map is the hub), and [11-persistence](11-persistence.md) (the native format reuses the base-map serialization).
+**Status**: v0.3 (draft, 2026-06-14). **v0.3 aligns with the 2026-06-14 "plan IS the graph" redirection**: clarifies **load vs import** (`map_from_file` *loads* the native `.fuel` whole-graph with no conversion; `from_gguf` / `from_safetensors` / ONNX etc. *import*, converting a foreign format → base map), and updates the native-format section — the `.fuel` serializes the **whole graph** (base map + storage + optimized paths), not just the base map, with storage mmap-backed in-file ([11-persistence](11-persistence.md), [03-ir](03-ir.md)). v0.2 changes: StableHLO promoted from export-only to **import + export** (it is the JAX/TF/XLA convergence point); the op-map model reframed around per-op *dispositions* and the *representation ≠ op* principle (control flow / dynamic shape / collectives are lowered to graph structure or handled at another layer, not rejected); links the worked StableHLO op map. v0.1: first statement of the import/export architecture. Design pass — no code. Anchors to [02-layers](02-layers.md) (crate tiers), [03-ir](03-ir.md) (the base map is the hub), and [11-persistence](11-persistence.md) (the native format reuses the base-map serialization).
 
 How a model defined elsewhere becomes a fuel graph, and how a fuel graph becomes a model another engine can run. The IR — specifically the base map ([03-ir §The base map](03-ir.md#the-base-map-fully-decomposed-primitive-dag-permanently-retained)) — is the hub; every external format is an importer spoke, an exporter spoke, or both.
 
@@ -55,16 +55,16 @@ Weight-decode and graph-op-map are separately reusable, but they meet at the **b
 
 Hoisting the binding into a core produces a leaky abstraction that special-cases every format anyway. It stays format-local; that is the right and only job of a `fuel-format-interchange-*` leaf, because the two cores do the heavy lifting.
 
-## The native format is the base-map serialization (not a new format)
+## Load vs import; the native format is the whole-graph serialization
 
-Fuel's own on-disk graph format is **not introduced here** — it already exists. [11-persistence](11-persistence.md) serializes the base map as part of the optimization cache, in a mmap-friendly, schema-versioned, DAG-format-versioned encoding, and explicitly treats the base map as a *hardware-independent, shippable* artifact ([11-persistence §Distribution](11-persistence.md#distribution-cache-as-a-deployment-artifact)). The model-interchange layer **reuses that encoding**: the native `.fuel` model artifact is the base-map section of the persistence format, shipped as a standalone sibling artifact with weights external (safetensors by convention).
+**Load and import are different operations.** `map_from_file` **loads** the native `.fuel` — fuel's own on-disk graph — with no conversion: it mmaps the whole graph (base map + storage + any optimized paths) straight into memory. The `from_*` importers in this section **convert** a foreign format (safetensors+tag, GGUF, ONNX, `.pt2`, StableHLO) into a base map. Loading is the fast, lossless, no-conversion path; importing is the lossy, conversion path this document governs.
 
-Consequences:
+The native format is **not introduced here** — it is the persistence serialization ([11-persistence](11-persistence.md)): mmap-friendly, schema-versioned, DAG-format-versioned. Under "plan is the graph" the `.fuel` serializes the **whole graph** — base map + storage + (after optimization) the optimized multi-path paths — with the base map as the portable *portion*. The interchange layer relates to it thus:
 
-- No second DAG serialization. The DAG-format-version machinery and the "read the previous N versions" policy ([decision #18](10-decisions-log.md)) cover the native interchange format for free.
-- A `.fuel` export is hardware-independent (base map, not optimized form); an importing process re-optimizes locally, optionally skipping decomposition.
-- Weights ride alongside as safetensors, mirroring how every other format externalizes large tensors.
-- This native artifact is **L1** (model: base map + weights) of the three-layer persistence stack — L2 adds the optimization plan (hot-load), L3 adds a runtime snapshot (resume). "Save with/without the plan or runtime state" is which sibling artifacts a caller writes; see [11-persistence §Runtime snapshots](11-persistence.md#runtime-snapshots-resuming-designated-durable-state-l3).
+- **No second DAG serialization.** The DAG-format-version machinery and "read the previous N versions" policy ([decision #18](10-decisions-log.md)) cover the native format for free.
+- **Export ≈ ship the portable portion.** A `.fuel` exported for *distribution* is stripped to the base map (hardware-independent); a receiving process validates-and-scoped-re-optimizes any included optimized paths, or re-optimizes from the base map on different hardware ([06-runtime §Scoped re-optimization](06-runtime.md#scoped-re-optimization)).
+- **Storage is in the file, mmap-backed.** Weights live in the `.fuel` as mmap-backed views (the larger-than-RAM prerequisite), not necessarily an external sidecar; an external-safetensors layout remains possible but is no longer the only option.
+- **Three-layer stack, unified locally.** L1 model (base map + weights = the portable portion), L2 + plan (optimized paths — in the unified `.fuel` locally, or a per-target cache for shipping), L3 + snapshot (resume). See [11-persistence §Artifacts and their lifecycles](11-persistence.md#artifacts-and-their-lifecycles).
 
 ## Where interchange reconnects with the model zoo
 
