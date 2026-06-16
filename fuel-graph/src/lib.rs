@@ -1783,6 +1783,364 @@ impl Graph {
         }
         seen
     }
+
+    // -------------------------------------------------------------------
+    // Compaction of the append-only arena (PR-B4)
+    // -------------------------------------------------------------------
+
+    /// The set of nodes that constitute the **live structure** of the
+    /// graph relative to `roots`: everything reachable, following node
+    /// `inputs`, from the union of
+    ///
+    /// - the caller's `roots`,
+    /// - the `side_effect_roots` (nodes the executor must schedule even
+    ///   when no output reads them — e.g. `Op::Release` eviction), and
+    /// - the full multi-path structure: for every reachable `Op::Branch`,
+    ///   its `reconverge_at` and **all its arms** (the arm exits, which
+    ///   are the Branch node's `inputs`, and transitively their interiors).
+    ///   Phase C's route picker needs every arm, so the alternative arms
+    ///   must survive even though nothing downstream reads them directly
+    ///   (the `reconverge_at` node reads only arm 0).
+    ///
+    /// A finalized `Op::Branch` is itself typically orphaned — nothing
+    /// downstream reads it (PR-A1's runnability invariant has the merge
+    /// read arm 0 directly, not the Branch). So a plain forward walk from
+    /// `roots` would miss it. We therefore mirror [`run::extract_runs_multi`]'s
+    /// `effective_roots` discipline: scan the arena and seed any Branch
+    /// whose `reconverge_at` (or any arm exit) is already reachable, to a
+    /// fixpoint, then take the input-closure of all seeds. The result is
+    /// the exact set compaction must keep.
+    fn live_set(&self, roots: &[NodeId]) -> HashSet<NodeId> {
+        // Seeds: roots + side-effect roots. We grow this set with the
+        // Branch nodes that participate in the reachable computation, then
+        // take its full input-closure.
+        let mut seeds: Vec<NodeId> = Vec::new();
+        let mut seed_set: HashSet<NodeId> = HashSet::new();
+        let push_seed = |id: NodeId, seeds: &mut Vec<NodeId>, seed_set: &mut HashSet<NodeId>| {
+            if id.0 < self.nodes.len() && seed_set.insert(id) {
+                seeds.push(id);
+            }
+        };
+        for &r in roots {
+            push_seed(r, &mut seeds, &mut seed_set);
+        }
+        for &r in &self.side_effect_roots {
+            push_seed(r, &mut seeds, &mut seed_set);
+        }
+
+        // Grow the seed set with participating Branch nodes to a fixpoint.
+        // A Branch "participates" when its merge target or any arm exit is
+        // already reachable from the current seeds (following inputs). Each
+        // newly-seeded Branch may pull in further arms whose interiors then
+        // make another Branch participate, hence the fixpoint.
+        loop {
+            let reachable = self.input_closure(&seeds);
+            let mut added = false;
+            for idx in 0..self.nodes.len() {
+                let id = NodeId(idx);
+                if seed_set.contains(&id) {
+                    continue;
+                }
+                let Op::Branch { reconverge_at } = self.nodes[idx].op else {
+                    continue;
+                };
+                let participates = reachable.contains(&reconverge_at)
+                    || self.nodes[idx].inputs.iter().any(|a| reachable.contains(a));
+                if participates {
+                    seed_set.insert(id);
+                    seeds.push(id);
+                    added = true;
+                }
+            }
+            if !added {
+                break;
+            }
+        }
+
+        // The live set is the full input-closure of the (roots + side-effect
+        // + participating-Branch) seeds, plus each reachable Branch's
+        // explicit `reconverge_at` (which is downstream of the arms, so it
+        // is not pulled in by following inputs from the Branch). The merge
+        // node is normally reachable from `roots` already, but seeding it
+        // explicitly makes the live set self-consistent — a Branch never
+        // outlives its merge target.
+        let mut live = self.input_closure(&seeds);
+        let recon_seeds: Vec<NodeId> = live
+            .iter()
+            .filter_map(|&id| match self.nodes[id.0].op {
+                Op::Branch { reconverge_at } => Some(reconverge_at),
+                _ => None,
+            })
+            .collect();
+        if !recon_seeds.is_empty() {
+            for n in self.input_closure(&recon_seeds) {
+                live.insert(n);
+            }
+        }
+        live
+    }
+
+    /// Every node reachable from any of `from`, following node `inputs`
+    /// transitively (the backward / input cone). Mirrors
+    /// [`topo_order_multi`] but returns just the set.
+    fn input_closure(&self, from: &[NodeId]) -> HashSet<NodeId> {
+        let mut seen: HashSet<NodeId> = HashSet::new();
+        let mut stack: Vec<NodeId> = from.to_vec();
+        while let Some(n) = stack.pop() {
+            if n.0 >= self.nodes.len() || !seen.insert(n) {
+                continue;
+            }
+            for &inp in &self.nodes[n.0].inputs {
+                if !seen.contains(&inp) {
+                    stack.push(inp);
+                }
+            }
+        }
+        seen
+    }
+
+    /// **Required compaction of the append-only arena** (PR-B4).
+    ///
+    /// Drops every node *not* in the live structure relative to `roots`
+    /// (the exploration debris that pathfinders leave) and rebuilds the
+    /// arena with contiguous, renumbered [`NodeId`]s, remapping **every**
+    /// `NodeId` reference in the graph. Returns the [`NodeRemap`] from old
+    /// to new ids so callers can fix up their own `Tensor` handles / roots.
+    ///
+    /// The live set follows node `inputs` from: `roots`, the
+    /// `side_effect_roots`, and the full multi-path structure — for every
+    /// reachable [`Op::Branch`], its `reconverge_at` **and all its arms**
+    /// (so the route picker's alternatives survive). See [`Graph::live_set`].
+    ///
+    /// What is remapped (the correctness crux — a missed remap is silent
+    /// corruption). Every NodeId-bearing structure in the graph:
+    /// - each surviving [`Node`]'s `inputs`;
+    /// - the `NodeId` carried *inside* an op variant — [`Op::Branch`]'s
+    ///   `reconverge_at` (the only `Op` variant carrying a `NodeId`);
+    /// - every NodeId-keyed side-table on [`Graph`]: `placements`,
+    ///   `target_backends`, `layouts`, `storage_map`, `node_output_views`;
+    /// - the `side_effect_roots` vector.
+    ///
+    /// # Not in the per-realize hot path
+    ///
+    /// Compaction renumbers `NodeId`s, which would invalidate a realize
+    /// already built around the current ids (the dispatch order and the
+    /// `StorageCache` key are `NodeId`). It is therefore a **standalone
+    /// pass**, deliberately **not** registered as an `Optimizer` in the
+    /// per-realize driver / `optimize_graph` loop. It runs at load-time
+    /// **between optimization rounds** (Phase D) and is **required before
+    /// finalize-to-disk** (Phase E) so the persisted `.fuel` holds the lean
+    /// result, not exploration debris. Neither caller exists yet.
+    ///
+    /// Orphans never change results, so this is a *size* pass, not a
+    /// *correctness* one — but the remap it performs must be exhaustive or
+    /// it would itself introduce corruption, which is the property the
+    /// born-red tests + [`Graph::verify_no_dangling`] guard.
+    ///
+    /// This is the implementation behind the free function [`compact`];
+    /// call that.
+    fn compact_in_place(&mut self, roots: &[NodeId]) -> NodeRemap {
+        let live = self.live_set(roots);
+        let n = self.nodes.len();
+
+        // Assign new contiguous ids in ascending old-id order, so the
+        // relative order of surviving nodes (and hence any topological
+        // property over them) is preserved.
+        let mut old_to_new: Vec<Option<NodeId>> = vec![None; n];
+        let mut next = 0usize;
+        for idx in 0..n {
+            if live.contains(&NodeId(idx)) {
+                old_to_new[idx] = Some(NodeId(next));
+                next += 1;
+            }
+        }
+        let remap = NodeRemap { old_to_new };
+
+        // Rebuild the node arena, remapping each surviving node's inputs and
+        // any op-carried NodeId. Surviving nodes' inputs are themselves
+        // always live (the live set is input-closed), so every `map` here
+        // resolves.
+        let mut new_nodes: Vec<Node> = Vec::with_capacity(next);
+        for idx in 0..n {
+            if remap.old_to_new[idx].is_none() {
+                continue;
+            }
+            let mut node = self.nodes[idx].clone();
+            for inp in node.inputs.iter_mut() {
+                *inp = remap.expect(*inp);
+            }
+            if let Op::Branch { reconverge_at } = &mut node.op {
+                *reconverge_at = remap.expect(*reconverge_at);
+            }
+            new_nodes.push(node);
+        }
+        self.nodes = new_nodes;
+
+        // Remap every NodeId-keyed side-table. Drop entries for dropped
+        // nodes; rekey survivors to their new id.
+        self.placements = remap.rekey(std::mem::take(&mut self.placements));
+        self.target_backends = remap.rekey(std::mem::take(&mut self.target_backends));
+        self.layouts = remap.rekey(std::mem::take(&mut self.layouts));
+        self.storage_map = remap.rekey(std::mem::take(&mut self.storage_map));
+        self.node_output_views = remap.rekey(std::mem::take(&mut self.node_output_views));
+
+        // Remap the side-effect-roots vector (every entry is live — they
+        // were reachability seeds — so each maps).
+        self.side_effect_roots = self
+            .side_effect_roots
+            .iter()
+            .map(|&id| remap.expect(id))
+            .collect();
+
+        debug_assert!(
+            self.verify_no_dangling().is_ok(),
+            "compact left a dangling NodeId reference: {:?}",
+            self.verify_no_dangling().err(),
+        );
+        remap
+    }
+
+    /// Verify that **no** `NodeId` reference in the graph points outside
+    /// the arena — the post-compaction safety net for a missed remap.
+    /// Checks every node's `inputs`, the op-carried `Op::Branch`
+    /// `reconverge_at`, every NodeId-keyed side-table, and the
+    /// `side_effect_roots` vector. Returns the first offending reference as
+    /// a typed error (never panics); used by [`Graph::compact`]'s
+    /// `debug_assert` and by tests.
+    pub fn verify_no_dangling(&self) -> std::result::Result<(), fuel_core_types::Error> {
+        let n = self.nodes.len();
+        let bad = |what: String| {
+            Err(fuel_core_types::Error::Msg(format!(
+                "dangling NodeId reference: {what} (arena has {n} nodes)",
+            )))
+        };
+        for (idx, node) in self.nodes.iter().enumerate() {
+            for &inp in &node.inputs {
+                if inp.0 >= n {
+                    return bad(format!("Node#{idx} input Node#{}", inp.0));
+                }
+            }
+            if let Op::Branch { reconverge_at } = node.op {
+                if reconverge_at.0 >= n {
+                    return bad(format!("Node#{idx} Branch.reconverge_at Node#{}", reconverge_at.0));
+                }
+            }
+        }
+        for id in self.placements.keys() {
+            if id.0 >= n {
+                return bad(format!("placements key Node#{}", id.0));
+            }
+        }
+        for id in self.target_backends.keys() {
+            if id.0 >= n {
+                return bad(format!("target_backends key Node#{}", id.0));
+            }
+        }
+        for id in self.layouts.keys() {
+            if id.0 >= n {
+                return bad(format!("layouts key Node#{}", id.0));
+            }
+        }
+        for id in self.storage_map.keys() {
+            if id.0 >= n {
+                return bad(format!("storage_map key Node#{}", id.0));
+            }
+        }
+        for id in self.node_output_views.keys() {
+            if id.0 >= n {
+                return bad(format!("node_output_views key Node#{}", id.0));
+            }
+        }
+        for &id in &self.side_effect_roots {
+            if id.0 >= n {
+                return bad(format!("side_effect_root Node#{}", id.0));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// **Required compaction of the append-only arena** (PR-B4).
+///
+/// Drops every node *not* in the live structure relative to `roots` (the
+/// exploration debris that pathfinders leave) and rebuilds the arena with
+/// contiguous, renumbered [`NodeId`]s, remapping **every** `NodeId`
+/// reference in the graph. Returns the [`NodeRemap`] from old → new ids so
+/// callers can fix up their own roots / `Tensor` handles.
+///
+/// The live set follows node `inputs` from `roots`, the
+/// `side_effect_roots`, and the full multi-path structure — for every
+/// reachable [`Op::Branch`], its `reconverge_at` **and all its arms** (so
+/// Phase C's route picker keeps its alternatives). Everything else is
+/// dropped.
+///
+/// **Not in the per-realize hot path.** Compaction renumbers `NodeId`s,
+/// which would invalidate a realize built around the current ids (the
+/// dispatch order + the `StorageCache` key are `NodeId`). It is a
+/// standalone pass — deliberately **not** registered as an `Optimizer` in
+/// the per-realize driver / `optimize_graph` loop — run at load-time
+/// **between optimization rounds** (Phase D) and **required before
+/// finalize-to-disk** (Phase E). Neither caller exists yet.
+///
+/// See [`Graph::verify_no_dangling`] for the post-condition the
+/// `debug_assert` checks: no `NodeId` reference (node inputs, the
+/// op-carried `Op::Branch.reconverge_at`, any side-table, or
+/// `side_effect_roots`) points outside the new arena.
+pub fn compact(graph: &mut Graph, roots: &[NodeId]) -> NodeRemap {
+    graph.compact_in_place(roots)
+}
+
+/// The old → new `NodeId` mapping produced by [`compact`].
+///
+/// Indexed by the *old* `NodeId`: `old_to_new[old.0]` is `Some(new)` if the
+/// node survived compaction, or `None` if it was dropped as unreachable
+/// debris. Callers use [`NodeRemap::get`] to translate roots / `Tensor`
+/// ids they still hold; passes that know a node must have survived use
+/// [`NodeRemap::expect`].
+#[derive(Debug, Clone)]
+pub struct NodeRemap {
+    old_to_new: Vec<Option<NodeId>>,
+}
+
+impl NodeRemap {
+    /// The new id for `old`, or `None` if `old` was dropped (or is out of
+    /// range of the pre-compaction arena).
+    pub fn get(&self, old: NodeId) -> Option<NodeId> {
+        self.old_to_new.get(old.0).copied().flatten()
+    }
+
+    /// Whether `old` survived compaction.
+    pub fn survived(&self, old: NodeId) -> bool {
+        self.get(old).is_some()
+    }
+
+    /// The new id for `old`, asserting it survived. Used internally when
+    /// remapping a reference that is known-live (a surviving node's input,
+    /// a reachable Branch's `reconverge_at`, a side-effect root) — a `None`
+    /// here would mean the live-set computation was unsound.
+    fn expect(&self, old: NodeId) -> NodeId {
+        self.get(old).unwrap_or_else(|| {
+            panic!(
+                "NodeRemap::expect: Node#{} was expected to survive compaction \
+                 but was dropped — the live set is unsound (a referenced node \
+                 was not kept)",
+                old.0,
+            )
+        })
+    }
+
+    /// Rekey a `NodeId`-keyed side-table: drop entries whose key was
+    /// dropped, rewrite surviving keys to their new id. Values are moved,
+    /// not cloned.
+    fn rekey<V>(&self, table: HashMap<NodeId, V>) -> HashMap<NodeId, V> {
+        let mut out = HashMap::with_capacity(table.len());
+        for (old, v) in table {
+            if let Some(new) = self.get(old) {
+                out.insert(new, v);
+            }
+        }
+        out
+    }
 }
 
 /// Accumulates the arms of an in-construction [`Op::Branch`] (phi/merge)
@@ -12221,6 +12579,234 @@ mod tests {
         assert!(
             g.node(reconverge).inputs.contains(&arm0),
             "reconverge must read arm-0's exit so the unpicked graph runs on arm 0",
+        );
+    }
+
+    // ===================================================================
+    // PR-B4: required compaction of the append-only arena.
+    // ===================================================================
+
+    use crate::run::{extract_runs, lower_runs_arm0};
+
+    /// Build the same 2-arm diamond the run.rs tests use, finalized into a
+    /// real `Op::Branch`. Returns `(g, diverge, arm0, arm1, reconverge,
+    /// branch, post)`. `post` reads `reconverge`, so the post-merge region
+    /// is a non-empty run and `post` is a stable root.
+    fn diamond_with_branch_b4() -> (Graph, NodeId, NodeId, NodeId, NodeId, NodeId, NodeId) {
+        let mk = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
+            g.push(Node { op, inputs, shape: Shape::from_dims(&[2]), dtype: DType::F32 })
+        };
+        let mut g = Graph::new();
+        let pre = mk(&mut g, Op::Const, vec![]);
+        let diverge = mk(&mut g, Op::Relu, vec![pre]);
+        let arm0 = mk(&mut g, Op::Silu, vec![diverge]);
+        let arm1 = mk(&mut g, Op::Gelu, vec![diverge]);
+        let reconverge = mk(&mut g, Op::Relu, vec![arm0]);
+        let mut b = g.open_branch(diverge);
+        b.add_arm(arm0);
+        b.add_arm(arm1);
+        let branch = b
+            .finalize_branches(&mut g, reconverge)
+            .expect("well-formed 2-arm branch finalizes")
+            .expect("2 arms survive");
+        let post = mk(&mut g, Op::Tanh, vec![reconverge]);
+        (g, diverge, arm0, arm1, reconverge, branch, post)
+    }
+
+    /// (a) A deliberately-orphaned node (pushed, referenced by nothing) is
+    /// dropped by `compact`; the node count shrinks by exactly the orphan
+    /// count, and every still-reachable node survives.
+    #[test]
+    fn compact_drops_orphan_debris() {
+        let mut g = Graph::new();
+        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let b = g.push(Node { op: Op::Relu, inputs: vec![a], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let c = g.push(Node { op: Op::Silu, inputs: vec![b], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        // Two pieces of exploration debris: reachable from nothing in the
+        // live structure (no root, no side-effect, no branch references them).
+        let _orphan0 = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let _orphan1 = g.push(Node { op: Op::Tanh, inputs: vec![_orphan0], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+
+        let before = g.len();
+        let remap = compact(&mut g, &[c]);
+
+        assert_eq!(
+            g.len(),
+            before - 2,
+            "compaction drops exactly the two orphan-debris nodes",
+        );
+        // The three reachable nodes all survived (have new ids).
+        assert!(remap.get(a).is_some());
+        assert!(remap.get(b).is_some());
+        assert!(remap.get(c).is_some());
+        // The orphans are gone.
+        assert!(remap.get(_orphan0).is_none());
+        assert!(remap.get(_orphan1).is_none());
+        // The surviving chain still resolves: c' reads b' reads a'.
+        let (na, nb, nc) = (remap.get(a).unwrap(), remap.get(b).unwrap(), remap.get(c).unwrap());
+        assert_eq!(g.node(nc).inputs, vec![nb]);
+        assert_eq!(g.node(nb).inputs, vec![na]);
+        assert_eq!(g.node(na).inputs, Vec::<NodeId>::new());
+        assert_no_dangling(&g);
+    }
+
+    /// (b) Branches preserved: a graph with a finalized `Op::Branch` keeps
+    /// every arm + `reconverge_at` after compaction (remapped), and the
+    /// arm-0 lowering yields the same logical route.
+    #[test]
+    fn compact_preserves_branch_arms_and_reconverge() {
+        let (mut g, _diverge, arm0, arm1, reconverge, branch, post) = diamond_with_branch_b4();
+
+        // Inject orphan debris so compaction has something to drop and the
+        // surviving-branch claim is non-trivial.
+        let _debris = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+
+        // Baseline arm-0 route over old ids, mapped to the op sequence.
+        let before_ops: Vec<&'static str> = lower_runs_arm0(&g, &[post])
+            .iter()
+            .map(|&id| g.node(id).op.short_name())
+            .collect();
+
+        let remap = compact(&mut g, &[post]);
+
+        // Every branch participant survived.
+        let narm0 = remap.get(arm0).expect("arm0 survives");
+        let narm1 = remap.get(arm1).expect("arm1 (the non-fallback arm) survives");
+        let nrecon = remap.get(reconverge).expect("reconverge survives");
+        let nbranch = remap.get(branch).expect("the Branch node itself survives");
+        let npost = remap.get(post).expect("post survives");
+
+        // The Branch's inputs are the remapped arm exits (arm0 first), and
+        // its reconverge_at is the remapped reconverge — it still resolves.
+        let bn = g.node(nbranch);
+        assert!(matches!(bn.op, Op::Branch { .. }));
+        assert_eq!(bn.inputs, vec![narm0, narm1], "arm exits remapped, arm0 first");
+        match bn.op {
+            Op::Branch { reconverge_at } => assert_eq!(reconverge_at, nrecon),
+            ref other => panic!("expected Op::Branch, got {other:?}"),
+        }
+        // reconverge still reads arm0 (runnability preserved through remap).
+        assert!(g.node(nrecon).inputs.contains(&narm0));
+        // The arm-0 route is logically identical (same op sequence).
+        let after_ops: Vec<&'static str> = lower_runs_arm0(&g, &[npost])
+            .iter()
+            .map(|&id| g.node(id).op.short_name())
+            .collect();
+        assert_eq!(before_ops, after_ops, "arm-0 route is logically unchanged");
+        assert_no_dangling(&g);
+    }
+
+    /// (c) Base map preserved: a branchless, fully-reachable graph compacts
+    /// to itself — no node dropped; ids may renumber but the structure is
+    /// identical.
+    #[test]
+    fn compact_branchless_reachable_is_identity_in_structure() {
+        let mut g = Graph::new();
+        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let b = g.push(Node { op: Op::Relu, inputs: vec![a], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let c = g.push(Node { op: Op::Silu, inputs: vec![b], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let d = g.push(Node { op: Op::Tanh, inputs: vec![c], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+
+        let before_ops: Vec<&'static str> =
+            extract_runs(&g, d).iter().flat_map(|r| r.members.iter().map(|&id| g.node(id).op.short_name()).collect::<Vec<_>>()).collect();
+        let before_len = g.len();
+
+        let remap = compact(&mut g, &[d]);
+
+        assert_eq!(g.len(), before_len, "a fully-reachable graph drops nothing");
+        for n in [a, b, c, d] {
+            assert!(remap.get(n).is_some(), "every node survives");
+        }
+        // Structure identical: same op sequence over the compacted graph.
+        let nd = remap.get(d).unwrap();
+        let after_ops: Vec<&'static str> =
+            extract_runs(&g, nd).iter().flat_map(|r| r.members.iter().map(|&id| g.node(id).op.short_name()).collect::<Vec<_>>()).collect();
+        assert_eq!(before_ops, after_ops);
+        assert_no_dangling(&g);
+    }
+
+    /// (d) No dangling + round-trip: after `compact`, NO NodeId reference
+    /// (node inputs, op-carried `reconverge_at`, or any side-table) points
+    /// outside the new arena, AND `extract_runs` / arm-0 lowering on the
+    /// compacted graph yields the identical logical result, including for
+    /// graphs carrying every side-table (placements, target_backends,
+    /// layouts, storage_map, node_output_views, side_effect_roots).
+    #[test]
+    fn compact_no_dangling_and_round_trip_with_side_tables() {
+        let (mut g, diverge, arm0, _arm1, reconverge, _branch, post) = diamond_with_branch_b4();
+
+        // Populate side-tables on surviving nodes so the remap must carry
+        // them. (target_backend on a couple nodes; placement on one.)
+        g.set_target_backend(arm0, BackendId::Cpu);
+        g.set_target_backend(reconverge, BackendId::Cpu);
+        g.set_placement(diverge, DeviceLocation::Cpu);
+        // A side-effect root that is itself orphan-from-roots: a Release-like
+        // op the executor must keep even though no output reads it.
+        let se = g.push(Node { op: Op::Const, inputs: vec![post], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        g.add_side_effect_root(se);
+
+        // Orphan debris (referenced by nothing live) to force a real drop.
+        let _debris = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+
+        let before_run_ops: Vec<&'static str> = lower_runs_arm0(&g, &[post])
+            .iter()
+            .map(|&id| g.node(id).op.short_name())
+            .collect();
+
+        let remap = compact(&mut g, &[post]);
+
+        // No dangling references anywhere.
+        assert_no_dangling(&g);
+
+        // The side-effect root survived (a side-effect-only node is a
+        // reachability seed) and its side-table entry was remapped.
+        let nse = remap.get(se).expect("side-effect root survives compaction");
+        assert!(
+            g.side_effect_roots().contains(&nse),
+            "the remapped side-effect root is registered post-compaction",
+        );
+        // The surviving target_backend side-table is keyed by the new ids.
+        assert_eq!(g.target_backend(remap.get(arm0).unwrap()), Some(BackendId::Cpu));
+        assert_eq!(g.target_backend(remap.get(reconverge).unwrap()), Some(BackendId::Cpu));
+        assert_eq!(g.placement(remap.get(diverge).unwrap()), Some(DeviceLocation::Cpu));
+
+        // Round-trip: the arm-0 route is logically identical.
+        let npost = remap.get(post).unwrap();
+        let after_run_ops: Vec<&'static str> = lower_runs_arm0(&g, &[npost])
+            .iter()
+            .map(|&id| g.node(id).op.short_name())
+            .collect();
+        assert_eq!(
+            before_run_ops, after_run_ops,
+            "compaction preserves the realized arm-0 route exactly",
+        );
+    }
+
+    /// Helper: assert NO NodeId reference in the graph points outside the
+    /// arena. Covers node `inputs`, the op-carried `Op::Branch.reconverge_at`,
+    /// every NodeId-keyed side-table, and the `side_effect_roots` vec — the
+    /// exhaustive no-dangling safety net for a missed remap.
+    fn assert_no_dangling(g: &Graph) {
+        let n = g.len();
+        let ok = |id: NodeId| id.0 < n;
+        for i in 0..n {
+            let node = g.node(NodeId(i));
+            for &inp in &node.inputs {
+                assert!(ok(inp), "Node#{i} input {:?} dangles (len={n})", inp);
+            }
+            if let Op::Branch { reconverge_at } = node.op {
+                assert!(ok(reconverge_at), "Node#{i} Branch.reconverge_at {:?} dangles (len={n})", reconverge_at);
+            }
+        }
+        for &r in g.side_effect_roots() {
+            assert!(ok(r), "side_effect_root {:?} dangles (len={n})", r);
+        }
+        // Use the graph's own verification entry point as the load-bearing
+        // assert (it covers every side-table by reading the private fields).
+        assert!(
+            g.verify_no_dangling().is_ok(),
+            "Graph::verify_no_dangling found a dangling reference: {:?}",
+            g.verify_no_dangling().err(),
         );
     }
 }
