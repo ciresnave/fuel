@@ -77,10 +77,12 @@
 //! equality exactly (same `NodeId`s, same order) — see
 //! [`tests::equivalence_gate_branchless_order_matches_compile_plan`].
 
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::Result;
-use fuel_graph::{extract_runs_multi, Graph, Node, NodeId, Op};
+use std::collections::HashSet;
 
+use fuel_core_types::Result;
+use fuel_graph::{extract_runs_multi, Graph, NodeId, Op};
+
+use crate::driver::{OptimizationContext, PassRegistry};
 use crate::kernel::KernelBindingTable;
 use crate::plan::{compile_plan, ExecutionPlan, PlanOptions};
 
@@ -211,17 +213,32 @@ pub fn optimize_graph(
     let plan = compile_plan(graph, &order, bindings_table, opts)?;
     let generation = plan.generation;
 
-    // (3) PR-A4: the FIRST real pathfinder. Where the placement DP found
-    //     a kernel-bearing node with ≥2 viable `(device, backend)`
-    //     placements diverging from a shared producer and reconverging at
-    //     a forward-identical node, record ONE `Op::Branch` whose arm-0 is
-    //     the DP's winner (the route realize uses today) and arm-1 the
-    //     runner-up. This is the deliberate-fork SEED — branches are
-    //     emitted only at genuine placement choices, never at ordinary
-    //     DAG fan-out, so `branch_density` stays well under the fewness
-    //     gate. A CPU-only build has one placement per node ⇒ zero forks
-    //     ⇒ zero branches ⇒ today's single-route graph (unchanged).
-    seed_placement_fork_branches(graph, &order, &plan)?;
+    // (3) PR-B3: the lock-step pass driver. The pre-B3 hardcoded
+    //     `seed_placement_fork_branches(...)` call is replaced by a
+    //     registry of pathfinders + optimizers run lock-step
+    //     (prune-as-you-go): for each registered pathfinder, ADD its
+    //     candidate paths, then immediately run every registered
+    //     optimizer to MERGE/DISCARD over the region just touched. The
+    //     shipped configuration ([`PassRegistry::default_passes`]) is the
+    //     PR-A4 `PlacementForkPathfinder` (the deliberate-fork seed) +
+    //     the `FrontierConvergenceOptimizer` (duplicate-path convergence
+    //     + the never-strand / no-active-cycle invariant guards) — which
+    //     is exactly the pre-B3 sequence, re-expressed. A CPU-only build
+    //     has one placement per node ⇒ the pathfinder proposes zero
+    //     branches ⇒ today's single-route graph (unchanged).
+    //
+    //     The *ranker* + the PR-B2 per-device Pareto frontier are applied
+    //     per kernel-bearing node *inside* `compile_plan` (the MEASURE +
+    //     per-node PRUNE), and the ranked, frontier-pruned result is the
+    //     `plan` the driver reads via `OptimizationContext::plan`. Batch
+    //     optimize has no executing region, so the cycle guard is empty.
+    let cycle_guard: HashSet<NodeId> = HashSet::new();
+    let ctx = OptimizationContext {
+        order: &order,
+        plan: &plan,
+        cycle_guard: &cycle_guard,
+    };
+    PassRegistry::default_passes().run_lockstep(graph, &ctx)?;
 
     Ok((
         OptimizedGraph {
@@ -232,149 +249,16 @@ pub fn optimize_graph(
     ))
 }
 
-/// PR-A4 deliberate-fork pathfinder. Scans the just-computed `plan` for
-/// nodes where the placement DP / ranker admitted **≥2 distinct
-/// `(backend, device)` placements** — a genuine placement choice — and
-/// records each as ONE `Op::Branch` via the A1 builders.
-///
-/// ## What makes a node forkable (the deliberate-fork gate)
-///
-/// A node `fork` seeds a branch only when ALL hold:
-///
-/// 1. **Real ≥2-placement choice.** Its `AlternativeSet` spans two or
-///    more distinct `(backend, device)` pairs. One placement (CPU-only
-///    build) ⇒ no fork ⇒ no branch. This is the "deliberate fork only at
-///    a real choice" rule — NOT per-node, NOT per-device-multiplicity
-///    (Phase B's Pareto frontier introduces device-multiplicity arms).
-/// 2. **It has a producer.** `fork` reads at least one input — that
-///    input is the shared `diverge` point both arms depart from. (A
-///    nullary `Op::Const` cannot diverge.)
-/// 3. **It has exactly ONE consumer.** That single consumer becomes the
-///    `reconverge_at` node (it already reads `fork` = arm-0's exit, so
-///    the A1 arm-0-runnability invariant holds without a graph rewrite).
-///    A node with ≥2 consumers is **ordinary DAG fan-out**, not a
-///    decision point — a tensor feeding two different consumers is NOT a
-///    branch, and the single-consumer gate also keeps arm-0's interior
-///    from being read outside the branch (A1 disjointness rule 3b).
-///
-/// ## Arm ordering + the recording shape
-///
-/// - **arm-0 = the DP winner** = `fork` itself (candidate 0 after the
-///   rank — the placement realize uses today). It stays exactly where it
-///   is in the data flow; nothing is rewired.
-/// - **arm-1 = the runner-up** = a freshly-appended clone of `fork`'s op
-///   reading the same inputs, stamped onto the runner-up placement's
-///   backend. It is read ONLY by the `Op::Branch` node (an orphaned
-///   candidate route), so the live graph is untouched and the realize
-///   result is identical (behavior-preserving).
-///
-/// The emitted `Op::Branch` is the in-graph *record* of the alternative;
-/// the arm-0 single-route lowering ([`OptimizedGraph::dispatch_order`])
-/// follows arm-0 and skips arm-1's run, so a branched graph realizes to
-/// the same result as before. The Phase-C runtime picker is what will
-/// later choose arm-1.
-///
-/// **No `DEFAULT_MAX_N` / fixed top-N anywhere here** — the bound is the
-/// per-device frontier the DP already produced; this pass reads the
-/// winner + the first distinct-placement runner-up off that set.
-fn seed_placement_fork_branches(
-    graph: &mut Graph,
-    order: &[NodeId],
-    plan: &ExecutionPlan,
-) -> Result<()> {
-    use std::collections::HashMap;
-
-    // Consumer count over the realize-reachable set: a fork must have
-    // exactly one consumer (its reconverge); ≥2 is plain fan-out.
-    let mut consumer_count: HashMap<NodeId, usize> = HashMap::new();
-    let mut sole_consumer: HashMap<NodeId, NodeId> = HashMap::new();
-    for &id in order {
-        for &input in &graph.node(id).inputs {
-            *consumer_count.entry(input).or_insert(0) += 1;
-            sole_consumer.insert(input, id);
-        }
-    }
-
-    // Collect the fork specs first (immutable borrow of the plan), then
-    // mutate the graph — `open_branch`/`finalize_branches` need `&mut`.
-    struct ForkSpec {
-        fork: NodeId,
-        diverge: NodeId,
-        reconverge: NodeId,
-        runner_up_backend: BackendId,
-    }
-    let mut specs: Vec<ForkSpec> = Vec::new();
-
-    for &id in order {
-        let Some(set) = plan.alternatives(id) else { continue };
-        // (1) A genuine ≥2-placement choice: two or more distinct
-        //     (backend, device) pairs admitted by the DP/ranker.
-        let winner = match set.winner() {
-            Some(w) => (w.backend, w.device),
-            None => continue,
-        };
-        let runner_up = set
-            .alternatives()
-            .iter()
-            .map(|c| (c.backend, c.device))
-            .find(|&p| p != winner);
-        let Some((ru_backend, _ru_device)) = runner_up else { continue };
-
-        // (2) A producer to serve as the shared diverge point.
-        let Some(&diverge) = graph.node(id).inputs.first() else { continue };
-
-        // (3) Exactly one consumer ⇒ deliberate fork (becomes the
-        //     reconverge); ≥2 ⇒ ordinary fan-out, skip.
-        if consumer_count.get(&id).copied().unwrap_or(0) != 1 {
-            continue;
-        }
-        let reconverge = sole_consumer[&id];
-
-        specs.push(ForkSpec {
-            fork: id,
-            diverge,
-            reconverge,
-            runner_up_backend: ru_backend,
-        });
-    }
-
-    for spec in specs {
-        // arm-1: a runner-up-placement clone of the fork's op reading the
-        // same inputs. Orphaned (read only by the Branch) so the live
-        // data flow is untouched and arm-0 = the original winner.
-        let (op, inputs, shape, dtype) = {
-            let n = graph.node(spec.fork);
-            (n.op.clone(), n.inputs.clone(), n.shape.clone(), n.dtype)
-        };
-        let arm1 = graph.push(Node { op, inputs, shape, dtype });
-        graph.set_target_backend(arm1, spec.runner_up_backend);
-
-        // Record the fork as a 2-arm Branch: arm-0 = the DP winner
-        // (`fork`), arm-1 = the runner-up clone. A1 validates descendant
-        // reconverge, internal disjointness, uniform dtype, and arm-0
-        // runnability; it never panics — a rejection surfaces as a typed
-        // `Error::InvalidBranch`.
-        //
-        // A rejection is **non-fatal**: the branch is only a *recording*
-        // of an alternative placement, so a candidate fork whose surrounding
-        // graph shape happens to violate an A1 invariant (e.g. the diverge
-        // reaches the reconverge by a second path, breaking disjointness) is
-        // simply NOT recorded — realize proceeds on the unchanged single
-        // route. The orphaned `arm1` clone left behind is unreachable from
-        // any realize root, so it never dispatches and never affects the
-        // result. (Build-time *correctness* diagnostics — missing binding,
-        // no device — already fired inside `compile_plan` above; this gate
-        // is about whether a sound branch can be *expressed*, not about
-        // whether the graph is realizable.)
-        let mut builder = graph.open_branch(spec.diverge);
-        builder.add_arm(spec.fork); // arm-0 = winner
-        builder.add_arm(arm1); // arm-1 = runner-up
-        let _ = builder.finalize_branches(graph, spec.reconverge);
-    }
-
-    Ok(())
-}
-
+/// The PR-A4 deliberate-fork pathfinder + the PR-B2 frontier
+/// convergence optimizer now live in [`crate::driver`] as registered
+/// [`crate::driver::Pathfinder`] / [`crate::driver::Optimizer`] impls
+/// ([`crate::driver::PlacementForkPathfinder`] /
+/// [`crate::driver::FrontierConvergenceOptimizer`]). PR-B3 replaced the
+/// hardcoded `seed_placement_fork_branches(...)` call in
+/// [`optimize_graph`] with a lock-step
+/// [`crate::driver::PassRegistry::run_lockstep`] drive over those
+/// registered passes (see the module docs). The pathfinder body is
+/// unchanged — it moved verbatim behind the trait.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -827,5 +711,212 @@ mod tests {
             }
             other => panic!("expected NoBackendForOp, got {other:?}"),
         }
+    }
+
+    // ===== Phase B PR-B3: the lock-step pathfinder/ranker/optimizer
+    //        driver. =====
+
+    use crate::driver::{
+        FrontierConvergenceOptimizer, OptimizationContext, Optimizer, PassRegistry,
+        Pathfinder, PlacementForkPathfinder,
+    };
+    use std::collections::HashSet;
+
+    /// Snapshot of a graph's `Op::Branch` decision points, keyed by
+    /// arena order: `(branch_id, reconverge_at, arm NodeIds)`. Two
+    /// optimization paths that produce the same snapshot produced the
+    /// same multi-path graph (behavior-preservation).
+    fn branch_snapshot(g: &Graph) -> Vec<(NodeId, NodeId, Vec<NodeId>)> {
+        (0..g.len())
+            .map(NodeId)
+            .filter_map(|id| match g.node(id).op {
+                Op::Branch { reconverge_at } => {
+                    Some((id, reconverge_at, g.node(id).inputs.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// THE LOAD-BEARING BEHAVIOR-PRESERVATION GATE (born-red until
+    /// `optimize_graph` routes through the lock-step driver).
+    ///
+    /// On a representative multi-placement graph, the driver
+    /// (`PassRegistry::default_passes().run_lockstep`) produces the
+    /// **identical** multi-path graph as the old hardcoded sequence
+    /// (pathfinder then optimizer, in that order): same branch count,
+    /// same arm-0 winner, same arms, same reconverge points, and the
+    /// same arm-0 dispatch order. B3 is a structural refactor — the
+    /// optimized result must not change.
+    #[test]
+    fn driver_matches_legacy_sequence() {
+        // (A) The reference: drive the registered passes BY HAND in the
+        //     legacy order (propose, then prune) onto a freshly compiled
+        //     plan — exactly what the pre-B3 hardcoded sequence did.
+        let mut ref_table = KernelBindingTable::new();
+        let (mut ref_g, _prod, ref_fork, _tail, ref_root) =
+            build_single_fork_graph(&mut ref_table);
+        let opts = two_backend_opts();
+        let ref_order = execution_plan(&ref_g, &[ref_root]);
+        let ref_plan = compile_plan(&ref_g, &ref_order, &ref_table, &opts)
+            .expect("reference compile_plan succeeds");
+        {
+            let guard: HashSet<NodeId> = HashSet::new();
+            let ctx = OptimizationContext {
+                order: &ref_order,
+                plan: &ref_plan,
+                cycle_guard: &guard,
+            };
+            // Legacy order: the pathfinder ADDs, then the optimizer
+            // prunes — the same two operations the hardcoded sequence ran.
+            PlacementForkPathfinder
+                .propose(&mut ref_g, &ctx)
+                .expect("pathfinder proposes");
+            FrontierConvergenceOptimizer
+                .prune(&mut ref_g, &ctx)
+                .expect("optimizer prunes");
+        }
+        let ref_snapshot = branch_snapshot(&ref_g);
+        let ref_dispatch = fuel_graph::lower_runs_arm0(&ref_g, &[ref_root]);
+
+        // (B) The driver path: optimize_graph routes through
+        //     PassRegistry::default_passes().run_lockstep.
+        let mut table = KernelBindingTable::new();
+        let (mut g, _p, fork, _t, root) = build_single_fork_graph(&mut table);
+        let (optimized, _plan) = optimize_graph(&mut g, &[root], &table, &opts)
+            .expect("optimize_graph succeeds");
+        let got_snapshot = branch_snapshot(&g);
+        let got_dispatch = optimized.dispatch_order(&g);
+
+        // Identical multi-path graph: same branches, arms, reconverge.
+        assert_eq!(
+            got_snapshot, ref_snapshot,
+            "driver produces the identical Op::Branch structure as the legacy \
+             pathfinder→optimizer sequence",
+        );
+        assert_eq!(
+            got_snapshot.len(),
+            1,
+            "the representative multi-placement graph produces exactly one branch",
+        );
+        assert_eq!(
+            got_snapshot[0].2[0], fork,
+            "arm-0 is the DP winner (the route realize uses)",
+        );
+        // Identical dispatch order (arm-0 single-route lowering).
+        assert_eq!(
+            got_dispatch, ref_dispatch,
+            "driver yields the identical arm-0 dispatch order as the legacy sequence",
+        );
+        let _ = ref_fork;
+    }
+
+    /// A no-op registry (no registered pathfinders) leaves a branchless
+    /// graph unchanged: no nodes added, zero branches, identical
+    /// dispatch order. Proves the driver itself introduces no structure.
+    #[test]
+    fn noop_registry_leaves_branchless_graph_unchanged() {
+        let mut table = KernelBindingTable::new();
+        let (mut g, root) = build_branchless_graph(&mut table);
+        let opts = cpu_opts();
+
+        let order = execution_plan(&g, &[root]);
+        let plan = compile_plan(&g, &order, &table, &opts)
+            .expect("compile_plan succeeds");
+
+        let dispatch_before = fuel_graph::lower_runs_arm0(&g, &[root]);
+        let nodes_before = g.len();
+
+        let registry = PassRegistry::new(); // empty — no passes.
+        assert_eq!(registry.pathfinder_count(), 0);
+        assert_eq!(registry.optimizer_count(), 0);
+
+        let guard: HashSet<NodeId> = HashSet::new();
+        let ctx = OptimizationContext {
+            order: &order,
+            plan: &plan,
+            cycle_guard: &guard,
+        };
+        registry
+            .run_lockstep(&mut g, &ctx)
+            .expect("empty registry runs cleanly");
+
+        assert_eq!(g.len(), nodes_before, "no-op registry adds no nodes");
+        let branches = (0..g.len())
+            .map(NodeId)
+            .filter(|&id| matches!(g.node(id).op, Op::Branch { .. }))
+            .count();
+        assert_eq!(branches, 0, "no-op registry adds no branches");
+        let dispatch_after = fuel_graph::lower_runs_arm0(&g, &[root]);
+        assert_eq!(
+            dispatch_before, dispatch_after,
+            "no-op registry leaves the dispatch order unchanged",
+        );
+    }
+
+    /// Lock-step ordering: a pathfinder ADDs before its dependent
+    /// optimizer PRUNEs. We register a recording pathfinder and a
+    /// recording optimizer that each stamp a shared log when invoked;
+    /// `run_lockstep` must invoke the pathfinder strictly before the
+    /// optimizer (prune-as-you-go, never optimizer-first).
+    #[test]
+    fn lockstep_runs_pathfinder_before_dependent_optimizer() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct RecordPathfinder(Arc<Mutex<Vec<&'static str>>>);
+        impl Pathfinder for RecordPathfinder {
+            fn name(&self) -> &'static str {
+                "RecordPathfinder"
+            }
+            fn propose(
+                &self,
+                _g: &mut Graph,
+                _ctx: &OptimizationContext<'_>,
+            ) -> fuel_core_types::Result<()> {
+                self.0.lock().unwrap().push("propose");
+                Ok(())
+            }
+        }
+        #[derive(Clone)]
+        struct RecordOptimizer(Arc<Mutex<Vec<&'static str>>>);
+        impl Optimizer for RecordOptimizer {
+            fn name(&self) -> &'static str {
+                "RecordOptimizer"
+            }
+            fn prune(
+                &self,
+                _g: &mut Graph,
+                _ctx: &OptimizationContext<'_>,
+            ) -> fuel_core_types::Result<()> {
+                self.0.lock().unwrap().push("prune");
+                Ok(())
+            }
+        }
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let registry = PassRegistry::new()
+            .with_pathfinder(Box::new(RecordPathfinder(log.clone())))
+            .with_optimizer(Box::new(RecordOptimizer(log.clone())));
+
+        let mut g = Graph::new();
+        let _a = f32_node(&mut g, Op::Const, vec![]);
+        let plan = ExecutionPlan::empty();
+        let order: Vec<NodeId> = Vec::new();
+        let guard: HashSet<NodeId> = HashSet::new();
+        let ctx = OptimizationContext {
+            order: &order,
+            plan: &plan,
+            cycle_guard: &guard,
+        };
+        registry.run_lockstep(&mut g, &ctx).expect("drive runs");
+
+        let seq = log.lock().unwrap().clone();
+        assert_eq!(
+            seq,
+            vec!["propose", "prune"],
+            "lock-step drive runs the pathfinder ADD strictly before its \
+             dependent optimizer PRUNE (prune-as-you-go)",
+        );
     }
 }
