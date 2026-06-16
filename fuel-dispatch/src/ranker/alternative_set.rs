@@ -190,14 +190,52 @@ impl AlternativeSet {
         self.candidates.truncate(self.max_n);
     }
 
+    /// Rank candidates by the per-path **cost vector**
+    /// ([`super::cost_vector::CostVector`]) — Phase B PR-B1.
+    ///
+    /// The vector's axes are one central `time` metric, per-tier
+    /// memory, and discrete precision/accuracy (see the cost_vector
+    /// module docs). Ranking uses
+    /// [`CostVector::total_order_key`], which keeps the **winner
+    /// time-first**: the lowest-central-`time` candidate sorts to
+    /// index 0 (arm-0), exactly preserving the old `composite_ns`
+    /// winner, with ties broken **precision → accuracy → memory**
+    /// (the constitution's order).
+    ///
+    /// Why time-first for the winner while [`CostVector::dominates`]
+    /// exists: realize follows arm-0, so the *winner* must stay the
+    /// lowest-time candidate to preserve realize behavior. Pareto
+    /// dominance is the relation the *frontier retention* will use —
+    /// that's PR-B2, which retires the top-N truncation for a
+    /// per-device Pareto frontier + crowding cap. B1 keeps
+    /// [`DEFAULT_MAX_N`] / [`Self::truncate_to_top_n`] untouched.
+    ///
+    /// Stable sort — equal-key candidates keep their relative order,
+    /// which matters when registration order is the residual
+    /// tie-breaker (and, post-Stage-2, when decision-device
+    /// candidates are enumerated ahead of off-device ones).
+    ///
+    /// [`CostVector::total_order_key`]: super::cost_vector::CostVector::total_order_key
+    /// [`CostVector::dominates`]: super::cost_vector::CostVector::dominates
+    pub fn rank_by_cost(&mut self) {
+        use super::cost_vector::CostVector;
+        self.candidates
+            .sort_by_key(|c| CostVector::from_candidate(c).total_order_key());
+    }
+
     /// Sort candidates ascending by their composite static cost
     /// (Layer-1 score; see [`super::cost::composite_ns`]) plus the
     /// Stage-2 inbound-transfer term
-    /// ([`Candidate::inbound_transfer_ns`]). Stable sort —
-    /// candidates with identical costs keep their relative order,
-    /// which matters when registration order is the tie-breaker
-    /// (and, post-Stage-2, when decision-device candidates are
-    /// enumerated ahead of off-device ones).
+    /// ([`Candidate::inbound_transfer_ns`]).
+    ///
+    /// As of Phase B PR-B1 this delegates to [`Self::rank_by_cost`]:
+    /// the cost VECTOR is now the ranking primitive, and its
+    /// `total_order_key` is time-first, so for a single-device,
+    /// single-precision candidate set (the common case + the entire
+    /// CPU `--lib` suite) the winner is unchanged — lowest central
+    /// `time` is exactly the old `composite_ns` winner. Retained as a
+    /// named alias so existing callers (`compile_plan`,
+    /// `compile_run_view`) and tests don't churn.
     ///
     /// Phase 1.4 of the picker-work arc. Composite cost is
     /// `max(compute_ns, memory_ns) + overhead_ns`, treating
@@ -206,10 +244,7 @@ impl AlternativeSet {
     /// (`compute_static_costs`); the transfer term is added
     /// serially — the bytes must land before the kernel can run.
     pub fn rank_by_composite_cost(&mut self) {
-        use super::cost::composite_ns;
-        self.candidates.sort_by_key(|c| {
-            composite_ns(&c.static_cost).saturating_add(c.inbound_transfer_ns)
-        });
+        self.rank_by_cost();
     }
 
     /// Set the `static_cost` field of the candidate at `index`.
@@ -279,6 +314,52 @@ mod tests {
             coupling: Vec::new(),
             kernel_source: "",
         }
+    }
+
+    /// Phase B PR-B1 behavior preservation: `rank_by_cost` on a
+    /// single-precision, multi-candidate set yields the SAME winner
+    /// (and full order) as ranking by the old `composite_ns +
+    /// inbound_transfer` scalar. This is the safety contract — the
+    /// CPU `--lib` suite is exactly this case.
+    #[test]
+    fn rank_by_cost_preserves_single_precision_winner() {
+        use super::super::cost::composite_ns;
+
+        let mk = |flops: u64, bytes: u64, overhead: u32, inbound: u64| Candidate {
+            inbound_transfer_ns: inbound,
+            static_cost: CostEstimate {
+                flops,
+                bytes_moved: bytes,
+                kernel_overhead_ns: overhead,
+            },
+            ..dummy_candidate(0)
+        };
+        let cands = vec![
+            mk(300, 0, 0, 0),
+            mk(100, 0, 0, 50),   // 150 total
+            mk(200, 800, 0, 0),  // max(200,200)=200
+            mk(0, 4000, 10, 90), // 1000+10+90=1100
+            mk(120, 0, 0, 0),
+        ];
+
+        // Expected order from the OLD scalar key.
+        let mut expected = cands.clone();
+        expected.sort_by_key(|c| {
+            composite_ns(&c.static_cost).saturating_add(c.inbound_transfer_ns)
+        });
+        let expected_flops: Vec<u64> =
+            expected.iter().map(|c| c.static_cost.flops).collect();
+
+        // Order from the NEW cost-vector rank.
+        let mut set = AlternativeSet::from_candidates(cands, DEFAULT_MAX_N);
+        set.rank_by_cost();
+        let got_flops: Vec<u64> =
+            set.alternatives().iter().map(|c| c.static_cost.flops).collect();
+
+        assert_eq!(
+            got_flops, expected_flops,
+            "single-precision cost-vector rank matches the old composite scalar order",
+        );
     }
 
     /// Rank composes the inbound-transfer term serially with the

@@ -39,6 +39,7 @@ pub mod candidate;
 pub mod chain;
 pub mod chained_selector;
 pub mod cost;
+pub mod cost_vector;
 pub mod enumerate;
 pub mod filter;
 pub mod filters;
@@ -56,6 +57,7 @@ pub use cost::{
     apply_inbound_transfer_costs, composite_ns, compute_static_costs, CapabilitiesLookup,
     TransferEstimator,
 };
+pub use cost_vector::{AccuracyClass, CostVector, MemoryTiers, PrecisionDigits};
 pub use enumerate::{enumerate_candidates, enumerate_candidates_default};
 pub use filter::{AlternativeFilter, FilterClass, FilterContext};
 pub use filters::{
