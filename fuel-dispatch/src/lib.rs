@@ -46,6 +46,7 @@ pub mod cast_fusion;
 pub mod compiled;
 pub mod cost;
 pub mod dispatch;
+pub mod driver;
 pub mod fused;
 pub mod kernel;
 pub mod optimize;
@@ -56,6 +57,10 @@ pub mod residency;
 pub mod vulkan_dispatch;
 
 pub use compiled::{compile_node, execute_compiled, CompiledNode};
+pub use driver::{
+    FrontierConvergenceOptimizer, OptimizationContext, Optimizer, PassRegistry,
+    Pathfinder, PlacementForkPathfinder,
+};
 pub use kernel::{KernelBindingTable, KernelDTypes, KernelRef, OpParams};
 pub use pipelined::PipelinedExecutor;
 pub use optimize::{optimize_graph, OptimizedGraph};
