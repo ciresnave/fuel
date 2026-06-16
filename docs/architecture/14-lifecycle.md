@@ -1,6 +1,6 @@
 # Lifecycle: from model file to finished inference/training
 
-**Status**: v0.3 (2026-06-16).
+**Status**: v0.4 (2026-06-16).
 
 This is the one document that walks the **whole path**, in order: from "load a model
 from disk" to "inference or training has finished." Every other architecture section
@@ -22,11 +22,13 @@ Two reading rules:
   (`Op::Branch`), and `optimize_graph` is the **sole** realize-path optimizer — the separate
   `ExecutionPlan`/`PlanStore` dispatch path is deleted. What still predates the redirection,
   and stays in the **Intended** column below, is: **load-time build** (the graph is still built
-  inside `forward` and planned at realize time, a fresh graph per decode token); the full
-  **Pareto-frontier cost-*vector*** optimizer (Phase A's pathfinder is a deliberate-fork *seed*,
-  not the bounded multi-axis frontier); the **runtime route picker** at branch points (realize
-  follows **arm-0** statically — Phase C); **storage classes / sessions** (Phase B/D); and
-  **mmap persistence** (Phase E). Each remaining gap is called out where it lands.
+  inside `forward` and planned at realize time, a fresh graph per decode token — Phase D); the
+  **runtime route picker** at branch points (realize follows **arm-0** statically — Phase C);
+  **storage classes / sessions** (Phase D); and **mmap persistence** (Phase E). **Phase B has
+  also landed**: the optimizer now ranks on a per-path cost **vector**, retains a per-ending-device
+  **Pareto frontier + crowding cap**, runs as a lock-step pathfinder/ranker/optimizer driver, and
+  **compacts** the arena — so the bounded-frontier optimizer is now **Today**, not a gap. Each
+  remaining gap is called out where it lands.
 
 ---
 
@@ -98,19 +100,19 @@ the source of truth, and the dispatch order is read back from it by run extracti
 (`lower_runs_arm0`, `fuel-graph/src/run.rs:328`). The `ExecutionPlan` (`fuel-dispatch/src/plan.rs:56`)
 still exists but is **demoted** to a transient view `optimize_graph` returns — used only for
 backend-stamping / residency / layout, never as the dispatch authority; `PlanStore` (its old
-identity-keyed memoization) is **deleted**. *(Intended remainder: the retained paths per device
-are bounded by a **Pareto frontier + crowding cap** over a per-path cost **vector** — Phase A
-emits branches via a deliberate-fork seed, not yet the full frontier;
-[04-optimization §Bounding the frontier](04-optimization.md).)*
+identity-keyed memoization) is **deleted**. *(**Today (Phase B):** the retained paths per device
+are bounded by a **Pareto frontier + crowding cap** over a per-path cost **vector**
+([04-optimization §Bounding the frontier](04-optimization.md)). The deliberate-fork pathfinder
+(Phase A) is still the only path*finder*, so the frontier's breadth grows as more pathfinders land.)*
 
 **Alternative set** — for one node, the ranked list of viable `(kernel, backend, device)`
 choices. (`AlternativeSet`, `fuel-dispatch/src/ranker/alternative_set.rs`.) **Today** this is an
 **internal placement detail** of `compile_plan` (which `optimize_graph` drives for per-node
 cost/placement); it is no longer the realize-dispatch model. Realize dispatches the in-graph
 `Op::Branch` decision points via the **arm-0 single-route lowering** (`lower_runs_arm0`), not a
-per-node top-N set. *(Intended: the deliberate-fork pathfinder that turns a multi-placement
-choice into a branch landed in Phase A; bounding those branches by the per-device Pareto
-frontier + a crowding cap is Phase B.)*
+per-node top-N set. *(The deliberate-fork pathfinder that turns a multi-placement choice into a
+branch landed in Phase A; the per-device Pareto frontier + crowding cap that bounds the retained
+candidates landed in Phase B — both are now Today.)*
 
 **`compile_plan` / plan-time ranker ("Picker 1")** — per node it enumerates candidates, runs
 the filter chain, computes cost, runs placement, and ranks. (`fuel-dispatch/src/plan.rs:488`.)
@@ -220,7 +222,10 @@ the sole realize-path optimizer (Phase A). It transforms the graph **in place**:
    internally: for each kernel-bearing node, enumerate `(kernel, backend, device)` candidates →
    filter chain (`PrecisionFloor` hard, then `StridedInputPref` / `BitStablePref` soft) → cost
    (Layer-1 static `CostFn`, refined by Layer-2 **Judge** data, `cost.rs:155`) → carry-forward
-   placement DP, ranked by `composite_ns`.
+   placement DP, ranked on the per-path **cost vector** (Pareto dominance, winner time-first),
+   and retained per ending device by a **Pareto frontier + crowding cap** (`KEEP_PER_DEVICE`),
+   not a fixed top-N. `optimize_graph` itself runs as a lock-step pathfinder/ranker/optimizer
+   driver, and a standalone **compaction** pass can drop orphaned arena debris (Phase B).
 2. **Emit branches** — where a node has ≥2 viable placements *and a single consumer*, the
    deliberate-fork pathfinder (`seed_placement_fork_branches`) records the choice as an
    `Op::Branch` decision point: arm-0 = the DP winner (the live route), arm-1 = the runner-up
@@ -237,12 +242,14 @@ path are **deleted**; `optimize_graph` runs once per realize.
 - **Load-time planning is not wired.** `optimize_graph` runs *at realize time, inside the
   forward* (the graph is still built in `forward` — stage 2), not at model-load. Moving the
   build + optimize to load is the Phase D planner program ([06-runtime](06-runtime.md) intends it).
-- **Not yet the full frontier.** Phase A's pathfinder is a **deliberate-fork seed** (one branch
-  per genuine multi-placement node). The intended optimizer ranks each path on a per-path cost
-  **vector** (a single central time metric + per-tier memory + discrete precision/accuracy) and
-  bounds retained paths per device by a **Pareto frontier + crowding cap**
-  ([04-optimization §Bounding the frontier](04-optimization.md); the prototype confirmed ~10²
-  paths, lossless at keep ≈ 32/device). That multi-axis frontier is Phase B.
+- **The bounded frontier is in (Phase B).** The optimizer ranks each path on a per-path cost
+  **vector** (one central time metric + per-tier memory + discrete precision/accuracy, Pareto
+  dominance), bounds retained paths per device by a **Pareto frontier + crowding cap**
+  (`KEEP_PER_DEVICE`, retiring the fixed top-N), runs as a lock-step pathfinder/ranker/optimizer
+  driver, and has a **compaction** pass ([04-optimization §Bounding the frontier](04-optimization.md);
+  the prototype confirmed ~10² paths, lossless at keep ≈ 32/device). The remaining gap is
+  *breadth* — Phase A's deliberate-fork seed is still the only path*finder*; fusion, algebraic,
+  and dtype-lowering pathfinders come later.
 - **Realize follows arm-0 statically.** The runtime **route picker** that chooses a *non-arm-0*
   arm at a branch using live telemetry is Phase C; today realize always takes arm-0.
 - **"Pre-resolved at plan time"** is only partly true — see stage 4: the binding-table lookup
