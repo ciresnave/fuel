@@ -110,6 +110,10 @@ but D-[10] waits on D-[8]/[9], and E is last.
 
 ### Phase A — In-graph multi-path substrate *(foundation; nothing else is honest without it)*
 
+> **STATUS: LANDED 2026-06-15/16 (PR-A0…A4).** `Op::Branch` is an arena fact; `optimize_graph`
+> is the sole realize-path optimizer; `ExecutionPlan` demoted to a transient view, `PlanStore`
+> deleted. See [14-lifecycle](../architecture/14-lifecycle.md) Stage 2/3.
+>
 > **Representation — DECIDED 2026-06-15 (design panel + architect ruling).** The multi-path
 > structure is an **arena fact, not an overlay**: a new `Op::Branch` (phi/merge) node whose
 > inputs *are* the divergent routes, carrying an explicit `reconverge_at`. Chosen for
@@ -169,6 +173,10 @@ but D-[10] waits on D-[8]/[9], and E is last.
 
 ### Phase B — A correct, bounded frontier *(turns the substrate into a real optimizer)*
 
+> **STATUS: LANDED 2026-06-16 (PR-B1…B4).** Cost **vector** + Pareto dominance, per-ending-device
+> Pareto frontier + crowding cap (`KEEP_PER_DEVICE`, fixed top-N retired), lock-step
+> pathfinder/ranker/optimizer driver, and arena compaction — all Today.
+
 - **[4] Per-path cost VECTOR, one central time metric.** Rankers produce a vector: **one** central
   time metric (median/avg for throughput, p99 for latency-SLA — `t_min` is explicitly **dropped**
   as a selection axis), memory as a per-tier vector (disk/host/device), precision (digits),
@@ -199,6 +207,16 @@ but D-[10] waits on D-[8]/[9], and E is last.
   property 3.*
 
 ### Phase C — Runtime catches up to the new shape
+
+> **STATUS: LANDED 2026-06-16 (PR-C1, C2a, C2b).** [7] route picker (Picker 2) is wired into
+> realize — `pick_route` chooses arms at branch points by live per-tier free memory, consulted
+> per branch not per node (PR-C1). For [6]: the **picking** half is done (the picker fires only at
+> branch points; realize lowers the picked route), and a **run-capture capability** is built +
+> GPU-proven on both GPU backends — CUDA graphs (PR-C2a, `fuel-cuda-backend/src/capture.rs`) and
+> reusable Vulkan command buffers (PR-C2b, `fuel-vulkan-backend/src/capture.rs`) — for
+> capture/replay/rebind of a run's launches. **Deferred to Phase D:** *wiring* run-capture into
+> the executor (it still dispatches per `WorkItem`); a captured run amortizes only over repeated
+> replay of the same run, which needs Phase D's persistent cross-realize graph.
 
 - **[6] Run-as-dispatch-unit.** Define a **run** = the fixed op-sequence between two decision
   points and dispatch it as a UNIT (ideally a pre-recorded CUDA Graph / Vulkan command buffer

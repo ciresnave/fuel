@@ -1,6 +1,6 @@
 # Lifecycle: from model file to finished inference/training
 
-**Status**: v0.4 (2026-06-16).
+**Status**: v0.5 (2026-06-16).
 
 This is the one document that walks the **whole path**, in order: from "load a model
 from disk" to "inference or training has finished." Every other architecture section
@@ -20,15 +20,23 @@ Two reading rules:
   the graph"* redirection ([10-decisions-log](10-decisions-log.md)). **Phase A of that rebuild
   has now landed** (2026-06-15/16): the optimized form is an in-graph multi-path structure
   (`Op::Branch`), and `optimize_graph` is the **sole** realize-path optimizer — the separate
-  `ExecutionPlan`/`PlanStore` dispatch path is deleted. What still predates the redirection,
-  and stays in the **Intended** column below, is: **load-time build** (the graph is still built
-  inside `forward` and planned at realize time, a fresh graph per decode token — Phase D); the
-  **runtime route picker** at branch points (realize follows **arm-0** statically — Phase C);
-  **storage classes / sessions** (Phase D); and **mmap persistence** (Phase E). **Phase B has
-  also landed**: the optimizer now ranks on a per-path cost **vector**, retains a per-ending-device
-  **Pareto frontier + crowding cap**, runs as a lock-step pathfinder/ranker/optimizer driver, and
-  **compacts** the arena — so the bounded-frontier optimizer is now **Today**, not a gap. Each
-  remaining gap is called out where it lands.
+  `ExecutionPlan`/`PlanStore` dispatch path is deleted. **Phase B has also landed**: the
+  optimizer now ranks on a per-path cost **vector**, retains a per-ending-device **Pareto
+  frontier + crowding cap**, runs as a lock-step pathfinder/ranker/optimizer driver, and
+  **compacts** the arena — so the bounded-frontier optimizer is now **Today**, not a gap.
+  **Phase C has also landed**: the **runtime route picker** ("Picker 2") now chooses arms at
+  `Op::Branch` points from live per-tier free memory (`pick_route`,
+  `fuel-dispatch/src/ranker/route_picker.rs`) and realize follows the picked route (arm-0 when
+  no branch is steered) — consulted per-branch, not per-node; and a **run-capture capability**
+  exists on both GPU backends (CUDA graphs — `fuel-cuda-backend/src/capture.rs`; Vulkan
+  reusable command buffers — `fuel-vulkan-backend/src/capture.rs`) for capture/replay/rebind of
+  a run's launches. What still predates the redirection, and stays in the **Intended** column
+  below, is: **load-time build** (the graph is still built inside `forward` and planned at
+  realize time, a fresh graph per decode token — Phase D); **wiring run-capture into the
+  executor** (the capability is built but not yet driven by dispatch — it amortizes only over
+  repeated replay of the same run, which arrives with Phase D's persistent graph); **storage
+  classes / sessions** (Phase D); and **mmap persistence** (Phase E). Each remaining gap is
+  called out where it lands.
 
 ---
 
@@ -87,9 +95,10 @@ sessions](03-ir.md).)*
 
 **realize** — the call that crosses from graph-building to execution: `.realize_f32()` and
 friends. **Today** it runs `optimize_graph` over the graph (via the bridge's
-`build_optimized_graph`) and dispatches the resulting **arm-0 route** through
-`PipelinedExecutor::realize_with_optimized` (`fuel-dispatch/src/pipelined.rs:451`). Returns host
-data (or leaves results device-resident). *(Intended: once the graph + plan are built at load,
+`build_optimized_graph`), picks a route over the branches with the runtime selector (Phase C —
+`pick_route`), and dispatches the **picked route** through
+`PipelinedExecutor::realize_with_optimized_route` (arm-0 fallback for unsteered branches). Returns
+host data (or leaves results device-resident). *(Intended: once the graph + plan are built at load,
 realize reduces to "wait until the plan covers the requested roots, then dispatch"; today it
 optimizes per realize.)*
 
@@ -97,7 +106,8 @@ optimizes per realize.)*
 the graph.** `optimize_graph` (`fuel-dispatch/src/optimize.rs:192`) transforms the graph in place
 into a multi-path structure whose decision points are `Op::Branch` nodes; that in-graph form is
 the source of truth, and the dispatch order is read back from it by run extraction
-(`lower_runs_arm0`, `fuel-graph/src/run.rs:328`). The `ExecutionPlan` (`fuel-dispatch/src/plan.rs:56`)
+(`lower_picked_route` for the runtime-picked route, `lower_runs_arm0` for the arm-0 fallback,
+`fuel-graph/src/run.rs:328`). The `ExecutionPlan` (`fuel-dispatch/src/plan.rs:56`)
 still exists but is **demoted** to a transient view `optimize_graph` returns — used only for
 backend-stamping / residency / layout, never as the dispatch authority; `PlanStore` (its old
 identity-keyed memoization) is **deleted**. *(**Today (Phase B):** the retained paths per device
@@ -109,8 +119,9 @@ are bounded by a **Pareto frontier + crowding cap** over a per-path cost **vecto
 choices. (`AlternativeSet`, `fuel-dispatch/src/ranker/alternative_set.rs`.) **Today** this is an
 **internal placement detail** of `compile_plan` (which `optimize_graph` drives for per-node
 cost/placement); it is no longer the realize-dispatch model. Realize dispatches the in-graph
-`Op::Branch` decision points via the **arm-0 single-route lowering** (`lower_runs_arm0`), not a
-per-node top-N set. *(The deliberate-fork pathfinder that turns a multi-placement choice into a
+`Op::Branch` decision points via the **picked-route lowering** (`lower_picked_route`; arm-0 for
+any branch the runtime selector left unsteered), not a per-node top-N set. *(The deliberate-fork
+pathfinder that turns a multi-placement choice into a
 branch landed in Phase A; the per-device Pareto frontier + crowding cap that bounds the retained
 candidates landed in Phase B — both are now Today.)*
 
@@ -121,12 +132,15 @@ per-node placement/cost, then emits `Op::Branch` decision points and returns the
 as the transient stamping view.
 
 **Runtime selector ("Picker 2", a.k.a. *route picker* in 06, *Router* in older
-code/README)** — chooses among a branch's surviving paths using live telemetry. The
-implementations exist (`ChainedSelector` = VramPressure → JudgeAware → Winner,
-`fuel-dispatch/src/ranker/chained_selector.rs`), but **Today they are NOT wired into the realize
-path** — A3b-2 removed the per-node selector from the bridge, and Phase A's realize follows
-**arm-0** statically. *(Intended: Phase C re-wires Picker 2 to choose among arms at the few
-branch points.)* *"route picker," "selector," and "Router" all name this one surface.*
+code/README)** — chooses among a branch's surviving paths using live telemetry. **Today (Phase
+C) it is wired into the realize path**: `pick_route` (`fuel-dispatch/src/ranker/route_picker.rs`)
+walks the `Op::Branch` points in topological order and, at each, builds an `AlternativeSet` over
+the arms and consults the `ChainedSelector` (VramPressure → JudgeAware → Winner,
+`fuel-dispatch/src/ranker/chained_selector.rs`) against live per-tier free memory, recording the
+chosen arm. It is consulted **per branch** (a handful of times), not per node; realize lowers the
+**picked route** (`lower_picked_route`) and falls back to **arm-0** for any branch left unsteered
+(empty pick ⇒ the Phase B behavior). *"route picker," "selector," and "Router" all name this one
+surface.*
 
 **Judge** — an **offline** profiler that measures `(op, dtype, size_class, backend, device)`
 latency/error and writes a profile the plan-time ranker reads. It does **not** measure ops
@@ -134,7 +148,8 @@ during normal dispatch. (`fuel-core/src/judge/`.)
 
 **Work-item producer** *(today named the "compiler thread" in code —
 `compiler_thread_body`, slated for rename)* — a worker thread *inside realize* that walks
-the **arm-0 dispatch order** (from `optimize_graph` / `lower_runs_arm0`) and, for each node,
+the **picked-route dispatch order** (from `optimize_graph` + `pick_route` / `lower_picked_route`;
+arm-0 where unsteered) and, for each node,
 resolves the concrete kernel and binds its operands into a **WorkItem**, pushing them down a
 channel. It does **not** compile machine code, and it is **not** a pipeline stage.
 (`fuel-dispatch/src/pipelined.rs:861`.)
@@ -250,8 +265,10 @@ path are **deleted**; `optimize_graph` runs once per realize.
   the prototype confirmed ~10² paths, lossless at keep ≈ 32/device). The remaining gap is
   *breadth* — Phase A's deliberate-fork seed is still the only path*finder*; fusion, algebraic,
   and dtype-lowering pathfinders come later.
-- **Realize follows arm-0 statically.** The runtime **route picker** that chooses a *non-arm-0*
-  arm at a branch using live telemetry is Phase C; today realize always takes arm-0.
+- **Realize follows the runtime-picked route (Phase C, landed).** The route picker
+  ("Picker 2") now chooses a *non-arm-0* arm at each branch from live per-tier free memory
+  (`pick_route`); realize lowers the **picked route** (`lower_picked_route`) and falls back to
+  **arm-0** for any branch left unsteered. (Through Phase B realize was arm-0-static.)
 - **"Pre-resolved at plan time"** is only partly true — see stage 4: the binding-table lookup
   still happens during realize, in the work-item producer.
 
@@ -274,17 +291,19 @@ box that contains the work-item producer and the executor.
    `ExecutionPlan`; write each winner's backend into the graph's `target_backend` side-table from
    it, and stitch residency/contiguity fixups. (No `PlanStore`, no coverage-wait latch — Phase A
    deleted them; `optimize_graph` runs once per realize.)
-3. Call `PipelinedExecutor::realize_with_optimized` (`pipelined.rs:451`), which dispatches the
-   **arm-0 route** (`lower_runs_arm0`).
+3. **Pick the route + dispatch:** resolve the runtime route over the optimized graph
+   (`pick_route` consulting the production selector against live per-tier free memory), then call
+   `PipelinedExecutor::realize_with_optimized_route` with the picked route (or
+   `realize_with_optimized` / arm-0 when nothing is steered, e.g. `FUEL_DISABLE_RUNTIME_SELECTOR=1`).
 
 **The two threads** (`realize_inner`, `pipelined.rs:504`):
 
 - **Work-item producer** (`compiler_thread_body`, `pipelined.rs:861`): holds one read lock
-  on the graph, walks the **arm-0 dispatch order** (`lower_runs_arm0`), and for each node calls
-  `resolve_compiled`, which resolves the kernel via the **binding-table lookup** (`compile_node`).
-  Phase A's realize takes **no `AlternativeSet` and no runtime selector** — arm-0 is the static
-  single route (the per-node Picker-2 selector was removed with the legacy path; Phase C rewires
-  it at branch points). The resolved kernel + operands become a **WorkItem** pushed down a
+  on the graph, walks the **picked-route dispatch order** (`lower_picked_route`; arm-0 where no
+  branch was steered), and for each node calls `resolve_compiled`, which resolves the kernel via
+  the **binding-table lookup** (`compile_node`). The runtime selector (Picker 2) was consulted
+  **once per branch** when the route was picked (stage 3, Phase C), not per node here. The
+  resolved kernel + operands become a **WorkItem** pushed down a
   channel. (This is "compile" only in the sense of *lowering one node to a runnable unit* — hence
   the clearer name, work-item producer.)
 - **Executor** (the `for item in rx` loop, `pipelined.rs:521`, on the *calling* thread):
@@ -310,12 +329,20 @@ over all targets' dependency sets; shared subgraphs computed once).
 work-item producer** (`compile_node`), not at plan-build time — the consultation lives on the
 producer thread, not the executor thread, but not all the way back to a load-time plan.
 
-Runs now **exist** in the graph (run extraction delimits them), but the executor still dispatches
-**per WorkItem** (per node) along the arm-0 order. The intended end state — handing each **run**
-(the fixed op-sequence between two decision points) to the executor as a *unit* (a pre-recorded
-CUDA Graph / Vulkan command buffer), with the **route picker** choosing a path only at the few
-**branch points** between runs — is Phase C. Phase A built the run *structure*; Phase C makes the
-runtime dispatch and pick over it.
+Runs **exist** in the graph (run extraction delimits them), and the **route picker** (Phase C)
+already chooses a path only at the few **branch points** between runs (`pick_route`, consulted
+per branch — not per node). Two pieces of the run-as-unit end state differ in status:
+
+- **Picking over runs: done (Phase C).** Realize lowers the picked route and the selector fires
+  once per branch, exactly the "pick only at branch points" intent.
+- **Dispatching a run as a captured unit: capability built, wiring Intended (Phase D).** A
+  run's launches can be captured into a *pre-recorded CUDA Graph* (`fuel-cuda-backend/src/capture.rs`)
+  or a *reusable Vulkan command buffer* (`fuel-vulkan-backend/src/capture.rs`) and replayed /
+  rebased onto new operands. But the executor still dispatches **per WorkItem** (per node): a
+  captured graph only pays off when the *same* run is replayed many times, and the sole
+  repeated-replay point (the decode loop) builds a fresh graph per token until Phase D gives runs
+  a stable cross-realize identity. So Phase D wires capture into dispatch; the primitive is
+  proven now.
 
 ---
 
