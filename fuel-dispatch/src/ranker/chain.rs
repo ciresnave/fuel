@@ -112,7 +112,6 @@ mod tests {
     fn three_candidates() -> AlternativeSet {
         AlternativeSet::from_candidates(
             vec![dummy_candidate(1), dummy_candidate(2), dummy_candidate(3)],
-            super::super::alternative_set::DEFAULT_MAX_N,
         )
     }
 

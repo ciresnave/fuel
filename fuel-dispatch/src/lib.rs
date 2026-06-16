@@ -63,11 +63,11 @@ pub use plan::{compile_plan, ExecutionPlan, PlanOptions};
 pub use ranker::{
     apply_filter_chain, apply_inbound_transfer_costs, composite_ns,
     compute_static_costs, default_chain, enumerate_candidates,
-    enumerate_candidates_default, AlternativeFilter, AlternativeSet,
+    AlternativeFilter, AlternativeSet,
     BitStablePreferenceFilter, CapabilitiesLookup, Candidate,
     CouplingAdjustment, FilterClass, FilterContext, HashMapJudge, JudgeOracle,
     PrecisionFloorFilter, PrecisionRequirement, StridedInputPreferenceFilter,
-    TransferEstimator, DEFAULT_MAX_N,
+    TransferEstimator, KEEP_PER_DEVICE,
 };
 pub use residency::{
     insert_residency_evictions, EvictReload, LiveRange, ResidencyPlanner,

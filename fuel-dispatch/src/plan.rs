@@ -41,7 +41,7 @@ use crate::ranker::{
     apply_filter_chain, apply_inbound_transfer_costs, composite_ns,
     compute_static_costs, default_chain, enumerate_candidates, AlternativeSet,
     CapabilitiesLookup, ChainInput, DecisionContext, FilterContext, JudgeOracle,
-    PlacementDp, PrecisionRequirement, TransferEstimator, DEFAULT_MAX_N,
+    PlacementDp, PrecisionRequirement, TransferEstimator, KEEP_PER_DEVICE,
 };
 
 /// Per-realize execution plan. Built by [`compile_plan`].
@@ -202,9 +202,6 @@ pub struct PlanOptions<'env> {
     /// Hard precision floor the picker enforces. Default: empty
     /// (unconstrained — every candidate passes the precision filter).
     pub precision_requirement: PrecisionRequirement,
-    /// Top-N retention per decision point. Default:
-    /// [`DEFAULT_MAX_N`] (3) per architecture v1.0 §04.
-    pub max_alternatives_per_node: usize,
     /// Whether to invoke [`compute_static_costs`] + rank after
     /// filtering. Default: true. Disable for tests that just want
     /// to verify enumeration + filtering without cost machinery.
@@ -286,7 +283,6 @@ impl Default for PlanOptions<'_> {
     fn default() -> Self {
         Self {
             precision_requirement: PrecisionRequirement::default(),
-            max_alternatives_per_node: DEFAULT_MAX_N,
             populate_costs: true,
             placements_for_device: None,
             pinned_device: None,
@@ -309,12 +305,6 @@ impl<'env> PlanOptions<'env> {
     /// Set the precision requirement hard filter.
     pub fn with_precision_requirement(mut self, req: PrecisionRequirement) -> Self {
         self.precision_requirement = req;
-        self
-    }
-
-    /// Set the top-N alternative retention bound.
-    pub fn with_max_alternatives(mut self, n: usize) -> Self {
-        self.max_alternatives_per_node = n;
         self
     }
 
@@ -436,7 +426,9 @@ impl<'env> PlanOptions<'env> {
 ///      [`PlanOptions::transfer_estimator`] is configured, the
 ///      Stage-2 inbound-transfer term per candidate — and rank
 ///      ascending by composite cost.
-///   6. Truncate to `max_alternatives_per_node`.
+///   6. Retain the per-ending-device Pareto frontier + crowding cap
+///      ([`AlternativeSet::retain_per_device_frontier`], `keep =
+///      KEEP_PER_DEVICE`).
 ///   7. If the set is empty after filtering, return
 ///      [`Error::NoBackendForOp`] (fail-fast at plan time, not
 ///      deep in executor dispatch).
@@ -728,7 +720,12 @@ pub fn compile_plan(
             if keep.len() < set.len() {
                 set.retain_indices(&keep);
             }
-            set.truncate_to_top_n();
+            // PR-B2: retire the fixed top-N. The set is now pruned to
+            // the DP-committed single device, so the per-ending-device
+            // Pareto frontier keeps that device's non-dominated paths
+            // (crowding-capped at KEEP_PER_DEVICE); the arm-0 winner —
+            // the realize pick — is preserved at index 0.
+            set.retain_per_device_frontier(KEEP_PER_DEVICE);
             if set.is_empty() {
                 // Defensive — the committed device came from the
                 // row's own candidates, so this shouldn't fire.
@@ -1069,7 +1066,6 @@ fn build_node_draft(
             &merged,
             &op_params,
             bindings_table,
-            options.max_alternatives_per_node,
         );
     } else {
         set = enumerate_candidates(
@@ -1078,7 +1074,6 @@ fn build_node_draft(
             &placements,
             &op_params,
             bindings_table,
-            options.max_alternatives_per_node,
         );
 
         // Picker-arc step 4b (legacy, unpriced path): when the
@@ -1098,7 +1093,6 @@ fn build_node_draft(
                         &fb_placements,
                         &op_params,
                         bindings_table,
-                        options.max_alternatives_per_node,
                     );
                     from_fallback = !set.is_empty();
                 }
@@ -1152,7 +1146,6 @@ fn build_node_draft(
             &fb_placements,
             &op_params,
             bindings_table,
-            options.max_alternatives_per_node,
         );
         if fb_set.is_empty() {
             return Err(err);
@@ -1285,7 +1278,14 @@ fn finalize_node_greedy(
         }
     }
 
-    set.truncate_to_top_n();
+    // PR-B2: retire the fixed top-N. Retain the per-ending-device
+    // Pareto frontier (crowding-capped at KEEP_PER_DEVICE) instead of
+    // a global top-N. The arm-0 winner — the realize pick — stays at
+    // index 0. In the `relaxed` path the set was just pruned to the
+    // winner's single device, so this reduces to that device's Pareto
+    // front; in the legacy multi-backend-at-one-device path it keeps
+    // the non-dominated kernels at the decision device.
+    set.retain_per_device_frontier(KEEP_PER_DEVICE);
 
     // Step 4b: off-device fallback sets freeze to their single
     // ranked winner. The bridge's residency stitch (Op::Copy
@@ -1297,7 +1297,7 @@ fn finalize_node_greedy(
         set.retain_indices(&[0]);
     }
 
-    // After truncation an empty set is the surfaceable error
+    // After retention an empty set is the surfaceable error
     // (the filter chain or rank dropped everything). The chain
     // would have raised FilterRejected on hard-empty, so this
     // path is only reachable when populate_costs + ranking
@@ -1375,6 +1375,15 @@ mod tests {
     }
 
     fn noop_kernel_b(
+        _i: &[Arc<RwLock<Storage>>],
+        _o: &mut [Arc<RwLock<Storage>>],
+        _l: &[Layout],
+        _p: &OpParams,
+    ) -> FuelResult<()> {
+        Ok(())
+    }
+
+    fn noop_kernel_c(
         _i: &[Arc<RwLock<Storage>>],
         _o: &mut [Arc<RwLock<Storage>>],
         _l: &[Layout],
@@ -1802,19 +1811,37 @@ mod tests {
         assert_eq!(ctx.size_class, SizeClass::from_elem_count(3));
     }
 
+    /// PR-B2: the fixed top-N is retired. Three distinct backends
+    /// co-located at one ending device, all equally-costed (no cost
+    /// population → equal cost vectors → mutually non-dominated), all
+    /// survive the per-ending-device Pareto frontier — the
+    /// never-strand-last-`(device, backend)` rule keeps each distinct
+    /// backend, and the crowding cap (KEEP_PER_DEVICE = 32) is far
+    /// above 3. The old `truncate_to_top_n` would have stranded one;
+    /// this is the behavior change B2 introduces.
     #[test]
-    fn compile_plan_truncates_to_max_n() {
+    fn compile_plan_retains_per_device_frontier_no_top_n() {
         let mut table = KernelBindingTable::new();
-        // Three CPU-substrate backends competing at one decision
-        // point — `truncate_to_top_n` should keep only the top 2.
-        for backend in [BackendId::Cpu, BackendId::Cuda, BackendId::Vulkan] {
-            register_add_f32(
-                &mut table,
-                backend,
-                if backend == BackendId::Cpu { noop_kernel } else { noop_kernel_b },
-                PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            );
-        }
+        // Three CPU-substrate backends competing at one decision point.
+        // Distinct kernel fn items so the binding table accepts them.
+        register_add_f32(
+            &mut table,
+            BackendId::Cpu,
+            noop_kernel,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+        register_add_f32(
+            &mut table,
+            BackendId::Cuda,
+            noop_kernel_b,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
+        register_add_f32(
+            &mut table,
+            BackendId::Vulkan,
+            noop_kernel_c,
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+        );
 
         let (g, add_id) = build_add_graph();
         let order = topo_order(&g, add_id);
@@ -1831,11 +1858,14 @@ mod tests {
         };
         let opts = PlanOptions::new()
             .without_cost_population()
-            .with_max_alternatives(2)
             .with_placements_for_device(&placements_fn);
         let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
         let alts = plan.alternatives(add_id).unwrap();
-        assert_eq!(alts.len(), 2, "truncated to max_alternatives_per_node");
+        assert_eq!(
+            alts.len(),
+            3,
+            "all three co-located (device, backend) paths survive — no top-N truncation",
+        );
     }
 
     /// Step 4a parity: an UNSTAMPED graph planned with

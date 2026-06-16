@@ -123,11 +123,10 @@ mod tests {
         // candidates (only one bit-stable) and min_remaining=2, the
         // filter returns [1] which is below the threshold → pipeline
         // skips.
-        use crate::ranker::alternative_set::{AlternativeSet, DEFAULT_MAX_N};
+        use crate::ranker::alternative_set::AlternativeSet;
         use crate::ranker::chain::apply_filter_chain;
         let mut set = AlternativeSet::from_candidates(
             vec![candidate(false), candidate(true)],
-            DEFAULT_MAX_N,
         );
         let filters: Vec<Box<dyn AlternativeFilter>> = vec![Box::new(
             BitStablePreferenceFilter { min_remaining: 2 },
@@ -138,11 +137,10 @@ mod tests {
 
     #[test]
     fn applies_when_at_or_above_min_remaining() {
-        use crate::ranker::alternative_set::{AlternativeSet, DEFAULT_MAX_N};
+        use crate::ranker::alternative_set::AlternativeSet;
         use crate::ranker::chain::apply_filter_chain;
         let mut set = AlternativeSet::from_candidates(
             vec![candidate(true), candidate(false), candidate(true)],
-            DEFAULT_MAX_N,
         );
         let filters: Vec<Box<dyn AlternativeFilter>> =
             vec![Box::new(BitStablePreferenceFilter { min_remaining: 2 })];

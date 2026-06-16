@@ -130,12 +130,11 @@ mod tests {
         // empty — the chain pipeline soft-skips because
         // min_remaining=1 means "leave at least one" and zero <
         // one.
-        use crate::ranker::alternative_set::{AlternativeSet, DEFAULT_MAX_N};
+        use crate::ranker::alternative_set::AlternativeSet;
         use crate::ranker::chain::apply_filter_chain;
         let f = StridedInputPreferenceFilter::default();
         let mut set = AlternativeSet::from_candidates(
             vec![candidate(false), candidate(false)],
-            DEFAULT_MAX_N,
         );
         let filters: Vec<Box<dyn AlternativeFilter>> = vec![Box::new(f)];
         apply_filter_chain(&mut set, &filters, &non_contig_ctx()).expect("soft skip");

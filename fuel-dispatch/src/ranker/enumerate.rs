@@ -45,7 +45,7 @@ use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, DeviceLocation};
 
-use super::alternative_set::{AlternativeSet, DEFAULT_MAX_N};
+use super::alternative_set::AlternativeSet;
 use super::candidate::Candidate;
 use crate::kernel::{KernelBindingTable, OpParams};
 
@@ -69,17 +69,18 @@ use crate::kernel::{KernelBindingTable, OpParams};
 /// similar param-heavy variants pay one clone per candidate, which
 /// at plan time is well below the noise floor.
 ///
-/// `max_n` controls the resulting set's truncation bound. Use
-/// [`DEFAULT_MAX_N`] (3) unless a caller has a specific reason.
+/// Retention (the per-ending-device Pareto frontier + crowding cap)
+/// is applied later by
+/// [`AlternativeSet::retain_per_device_frontier`], not at
+/// enumeration — the enumerator collects every admissible candidate.
 pub fn enumerate_candidates(
     op_kind: OpKind,
     dtypes: &[DType],
     placements: &[(BackendId, DeviceLocation)],
     op_params: &OpParams,
     bindings: &KernelBindingTable,
-    max_n: usize,
 ) -> AlternativeSet {
-    let mut set = AlternativeSet::with_max_n(max_n);
+    let mut set = AlternativeSet::empty();
     for &(backend, device) in placements {
         for entry in bindings.lookup_alternatives(op_kind, dtypes, backend) {
             set.push(Candidate {
@@ -104,18 +105,6 @@ pub fn enumerate_candidates(
         }
     }
     set
-}
-
-/// Convenience wrapper around [`enumerate_candidates`] with
-/// [`DEFAULT_MAX_N`].
-pub fn enumerate_candidates_default(
-    op_kind: OpKind,
-    dtypes: &[DType],
-    placements: &[(BackendId, DeviceLocation)],
-    op_params: &OpParams,
-    bindings: &KernelBindingTable,
-) -> AlternativeSet {
-    enumerate_candidates(op_kind, dtypes, placements, op_params, bindings, DEFAULT_MAX_N)
 }
 
 #[cfg(test)]
@@ -181,7 +170,7 @@ mod tests {
     #[test]
     fn empty_placements_yields_empty_set() {
         let bindings = table_with(&[(BackendId::Cpu, noop_a)]);
-        let set = enumerate_candidates_default(
+        let set = enumerate_candidates(
             OpKind::AddElementwise,
             &one_dtype_key(),
             &[],
@@ -194,7 +183,7 @@ mod tests {
     #[test]
     fn empty_binding_table_yields_empty_set() {
         let bindings = empty_table();
-        let set = enumerate_candidates_default(
+        let set = enumerate_candidates(
             OpKind::AddElementwise,
             &one_dtype_key(),
             &[(BackendId::Cpu, DeviceLocation::Cpu)],
@@ -207,7 +196,7 @@ mod tests {
     #[test]
     fn single_placement_single_alternative() {
         let bindings = table_with(&[(BackendId::Cpu, noop_a)]);
-        let set = enumerate_candidates_default(
+        let set = enumerate_candidates(
             OpKind::AddElementwise,
             &one_dtype_key(),
             &[(BackendId::Cpu, DeviceLocation::Cpu)],
@@ -230,7 +219,7 @@ mod tests {
             (BackendId::Cuda, noop_b),
             (BackendId::Vulkan, noop_c),
         ]);
-        let set = enumerate_candidates_default(
+        let set = enumerate_candidates(
             OpKind::AddElementwise,
             &one_dtype_key(),
             &[
@@ -277,7 +266,7 @@ mod tests {
             PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
             unknown_cost,
         );
-        let set = enumerate_candidates_default(
+        let set = enumerate_candidates(
             OpKind::AddElementwise,
             &one_dtype_key(),
             &[(BackendId::Cpu, DeviceLocation::Cpu)],
@@ -293,7 +282,7 @@ mod tests {
         // registered. CPU has one. Result is a 1-candidate set with
         // the CPU one only.
         let bindings = table_with(&[(BackendId::Cpu, noop_a)]);
-        let set = enumerate_candidates_default(
+        let set = enumerate_candidates(
             OpKind::AddElementwise,
             &one_dtype_key(),
             &[
@@ -307,18 +296,32 @@ mod tests {
         assert_eq!(set.winner().unwrap().backend, BackendId::Cpu);
     }
 
+    /// The enumerator collects EVERY admissible candidate — there is
+    /// no truncation here (retention is the later per-device frontier
+    /// pass). Three distinct kernels at one CPU key ⇒ three candidates
+    /// survive enumeration, none dropped by any N.
     #[test]
-    fn max_n_propagates_into_set() {
-        let bindings = table_with(&[(BackendId::Cpu, noop_a)]);
+    fn enumerator_does_not_truncate() {
+        let mut bindings = KernelBindingTable::new();
+        for k in [noop_a, noop_b, noop_c] {
+            bindings.register_full(
+                OpKind::AddElementwise,
+                &one_dtype_key(),
+                BackendId::Cpu,
+                k,
+                KernelCaps::empty(),
+                PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+                unknown_cost,
+            );
+        }
         let set = enumerate_candidates(
             OpKind::AddElementwise,
             &one_dtype_key(),
             &[(BackendId::Cpu, DeviceLocation::Cpu)],
             &OpParams::None,
             &bindings,
-            5,
         );
-        assert_eq!(set.max_n(), 5);
+        assert_eq!(set.len(), 3, "enumerator keeps every candidate; no top-N");
     }
 
     #[test]
@@ -331,7 +334,7 @@ mod tests {
         // happening rather than every candidate getting the trivial
         // default.
         let params = OpParams::Reduce { dims: vec![0, 2], keepdim: false };
-        let set = enumerate_candidates_default(
+        let set = enumerate_candidates(
             OpKind::AddElementwise,
             &one_dtype_key(),
             &[
