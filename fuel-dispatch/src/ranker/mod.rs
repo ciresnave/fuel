@@ -49,7 +49,7 @@ pub mod placement_dp;
 pub mod runtime_selector;
 pub mod vram_pressure_selector;
 
-pub use alternative_set::{AlternativeSet, DecisionContext, DEFAULT_MAX_N};
+pub use alternative_set::{AlternativeSet, DecisionContext, KEEP_PER_DEVICE};
 pub use candidate::{Candidate, CouplingAdjustment};
 pub use chain::apply_filter_chain;
 pub use chained_selector::ChainedSelector;
@@ -58,7 +58,7 @@ pub use cost::{
     TransferEstimator,
 };
 pub use cost_vector::{AccuracyClass, CostVector, MemoryTiers, PrecisionDigits};
-pub use enumerate::{enumerate_candidates, enumerate_candidates_default};
+pub use enumerate::enumerate_candidates;
 pub use filter::{AlternativeFilter, FilterClass, FilterContext};
 pub use filters::{
     default_chain, BitStablePreferenceFilter, PrecisionFloorFilter, PrecisionRequirement,

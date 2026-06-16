@@ -51,7 +51,7 @@ mod tests {
     use super::*;
     use crate::fused::PrecisionGuarantee;
     use crate::kernel::{KernelCaps, OpParams};
-    use crate::ranker::alternative_set::{AlternativeSet, DEFAULT_MAX_N};
+    use crate::ranker::alternative_set::AlternativeSet;
     use crate::ranker::candidate::Candidate;
     use crate::ranker::chain::apply_filter_chain;
     use crate::ranker::filter::FilterContext;
@@ -109,7 +109,6 @@ mod tests {
                 candidate(true, false),
                 candidate(false, true),
             ],
-            DEFAULT_MAX_N,
         );
         apply_filter_chain(&mut set, &chain, &ctx()).expect("chain");
         // Precision floor unconstrained → all pass.
@@ -125,7 +124,6 @@ mod tests {
         let chain = default_chain(PrecisionRequirement::BIT_STABLE);
         let mut set = AlternativeSet::from_candidates(
             vec![candidate(false, false), candidate(true, false)],
-            DEFAULT_MAX_N,
         );
         apply_filter_chain(&mut set, &chain, &ctx()).expect("chain");
         assert_eq!(set.len(), 1);
@@ -140,7 +138,6 @@ mod tests {
         let chain = default_chain(PrecisionRequirement::BIT_STABLE);
         let mut set = AlternativeSet::from_candidates(
             vec![candidate(false, false), candidate(false, true)],
-            DEFAULT_MAX_N,
         );
         let err = apply_filter_chain(&mut set, &chain, &ctx()).unwrap_err();
         match err {
@@ -158,7 +155,6 @@ mod tests {
         let chain = default_chain(PrecisionRequirement::default());
         let mut set = AlternativeSet::from_candidates(
             vec![candidate(false, false), candidate(false, true)],
-            DEFAULT_MAX_N,
         );
         apply_filter_chain(&mut set, &chain, &ctx()).expect("chain");
         assert_eq!(set.len(), 2, "no bit-stable + soft pref → no narrowing");

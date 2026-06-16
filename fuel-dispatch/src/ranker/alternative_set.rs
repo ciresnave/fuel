@@ -2,19 +2,55 @@
 //! graph decision point.
 //!
 //! Phase 1.1 of the picker-work arc. The set is what
-//! [`apply_filter_chain`] mutates and what (in later phases)
-//! `rank_by_cost` orders and `truncate_to_top_n` bounds. The newtype
-//! exists so we have somewhere to hang the per-decision-point
-//! invariants — top-N preservation, filter application, eventual
-//! coupling resolution — without exposing a bare `Vec`.
+//! [`apply_filter_chain`] mutates and what `rank_by_cost` orders.
+//! The newtype exists so we have somewhere to hang the
+//! per-decision-point invariants — retention, filter application,
+//! eventual coupling resolution — without exposing a bare `Vec`.
+//!
+//! # Retention: per-ending-device Pareto frontier + crowding cap
+//!
+//! Phase B PR-B2 of the "plan IS the graph" rebuild **retires the
+//! fixed top-N** retention (`DEFAULT_MAX_N` / `truncate_to_top_n`) and
+//! replaces it with [`AlternativeSet::retain_per_device_frontier`],
+//! per `docs/architecture/04-optimization.md` §"Bounding the frontier:
+//! Pareto per device + crowding cap" and decisions-log #8.
+//!
+//! The bound is **not** a single small N across all devices (the old
+//! "default N=3" framing strands slow devices — the scalar-top-N
+//! failure). Instead, retention:
+//!
+//! 1. buckets candidates by **ending device** ([`Candidate::device`]);
+//! 2. within each device bucket keeps the **Pareto-optimal**
+//!    candidates (non-dominated under [`CostVector::dominates`]),
+//!    dropping dominated ones — lossless because a path dominated on
+//!    the same ending device can never beat its dominator downstream;
+//! 3. **never strands the last `(device, backend)`** path — a
+//!    `(device, backend)` pair always keeps at least one candidate,
+//!    even if globally dominated (the constitution forbids stranding a
+//!    device);
+//! 4. backstops each device bucket with an **NSGA-II crowding-distance
+//!    cap** of `keep`/device ([`KEEP_PER_DEVICE`] ≈ 32 from the
+//!    frontier prototype) — when a bucket's frontier exceeds `keep`,
+//!    the most-crowded entries are dropped (boundary points get
+//!    infinity, interior points the sum of normalized neighbor gaps
+//!    per [`CostVector`] axis) until the bucket is ≤ `keep`.
+//!
+//! Invariants (asserted + tested): **≥1 path per device** survives,
+//! the total retained is **≤ `keep` × (#devices)**, the last
+//! `(device, backend)` is never stranded, and the **arm-0 winner**
+//! (the time-first candidate `rank_by_cost` puts at index 0) is always
+//! retained — so realize behavior is preserved.
 //!
 //! [`apply_filter_chain`]: super::apply_filter_chain
+//! [`CostVector::dominates`]: super::cost_vector::CostVector::dominates
 
 use fuel_core_types::dispatch::{OpKind, SizeClass};
-use fuel_core_types::DType;
+use fuel_core_types::probe::BackendId;
+use fuel_core_types::{DType, DeviceLocation};
 use smallvec::SmallVec;
 
 use super::candidate::Candidate;
+use super::cost_vector::CostVector;
 
 /// Plan-time identity of the decision point an [`AlternativeSet`]
 /// belongs to — the `(op, principal dtype, size class)` triple the
@@ -45,17 +81,27 @@ pub struct DecisionContext {
     pub size_class: SizeClass,
 }
 
-/// Default top-N preservation per architecture v1.0 §04
-/// ("Default N=3 per decision point gives the runtime picker
-/// meaningful flexibility ... without exploding storage or search
-/// cost"). Configurable per-`AlternativeSet` via
-/// [`AlternativeSet::with_max_n`].
-pub const DEFAULT_MAX_N: usize = 3;
+/// Crowding-distance cap **per ending device** — the real retention
+/// knob (Phase B PR-B2), per `docs/architecture/04-optimization.md`
+/// §"The tunable: `keep` per device". The whole surviving frontier is
+/// bounded by `keep × devices`, so cost scales with the bounded
+/// frontier, not an unbounded N × M.
+///
+/// `32` matches the frontier prototype (`C:/Projects/frontier-prototype`),
+/// which found `keep ≈ 32`/device reproduces the no-cap optimum on
+/// every runtime query (fastest / most-precise / least-memory /
+/// balanced) and bounds even adversarial continuous-axis cases. It is
+/// emphatically **not** the old "default N=3 across all devices": that
+/// stranded slow devices (the scalar-top-N failure the per-device
+/// frontier exists to avoid).
+pub const KEEP_PER_DEVICE: usize = 32;
 
 /// Bounded collection of [`Candidate`]s at one decision point. The
 /// optimizer ranker constructs one of these per kernel-bearing graph
 /// node, runs the filter chain, ranks survivors by composite cost,
-/// and truncates to `max_n` for storage on the optimized graph.
+/// and retains the **per-ending-device Pareto frontier** (capped at
+/// [`KEEP_PER_DEVICE`]/device by crowding distance) for storage on the
+/// optimized graph — see [`Self::retain_per_device_frontier`].
 ///
 /// Stored as a `SmallVec` because:
 ///
@@ -68,7 +114,6 @@ pub const DEFAULT_MAX_N: usize = 3;
 #[derive(Clone, Debug)]
 pub struct AlternativeSet {
     candidates: SmallVec<[Candidate; 4]>,
-    max_n: usize,
     /// Decision-point identity for dispatch-time Judge re-queries.
     /// `None` until `compile_plan` stamps it (or for hand-built
     /// test sets) — context-aware selectors then skip the Judge leg.
@@ -76,35 +121,24 @@ pub struct AlternativeSet {
 }
 
 impl AlternativeSet {
-    /// Build an empty set with [`DEFAULT_MAX_N`] (`= 3`). Tests + the
-    /// candidate enumerator both use this; consumers needing a
-    /// different `max_n` go through [`Self::with_max_n`].
+    /// Build an empty set. Tests + the candidate enumerator both use
+    /// this. Retention (the per-device Pareto frontier + crowding cap)
+    /// is applied later via [`Self::retain_per_device_frontier`], not
+    /// at construction.
     pub fn empty() -> Self {
         Self {
             candidates: SmallVec::new(),
-            max_n: DEFAULT_MAX_N,
-            context: None,
-        }
-    }
-
-    /// Empty set with an explicit `max_n`. Useful for tests + future
-    /// callers that want a per-node N (e.g. memory-constrained
-    /// realizes that want top-1 only).
-    pub fn with_max_n(max_n: usize) -> Self {
-        Self {
-            candidates: SmallVec::new(),
-            max_n,
             context: None,
         }
     }
 
     /// Build a set from a pre-collected list of candidates. The
-    /// enumerator path; truncation to `max_n` happens after the
-    /// filter chain + cost rank, not here.
-    pub fn from_candidates(candidates: Vec<Candidate>, max_n: usize) -> Self {
+    /// enumerator path; retention (per-device Pareto frontier +
+    /// crowding cap) happens after the filter chain + cost rank via
+    /// [`Self::retain_per_device_frontier`], not here.
+    pub fn from_candidates(candidates: Vec<Candidate>) -> Self {
         Self {
             candidates: SmallVec::from_vec(candidates),
-            max_n,
             context: None,
         }
     }
@@ -139,11 +173,6 @@ impl AlternativeSet {
     /// Is the set empty? (i.e., no admissible alternative).
     pub fn is_empty(&self) -> bool {
         self.candidates.is_empty()
-    }
-
-    /// The configured top-N bound.
-    pub fn max_n(&self) -> usize {
-        self.max_n
     }
 
     /// Borrow the full candidate list. Read-only — the filter chain
@@ -183,11 +212,170 @@ impl AlternativeSet {
         });
     }
 
-    /// Truncate to top-`max_n`. Caller is expected to have called
-    /// [`Self::rank_by_composite_cost`] first; this is a pure
-    /// suffix-drop.
-    pub fn truncate_to_top_n(&mut self) {
-        self.candidates.truncate(self.max_n);
+    /// Retain the **per-ending-device Pareto frontier**, backstopped by
+    /// an NSGA-II crowding-distance cap of `keep`/device — Phase B
+    /// PR-B2's retention policy, replacing the retired fixed top-N
+    /// truncation.
+    ///
+    /// Production callers pass [`KEEP_PER_DEVICE`]. The set is expected
+    /// to have been ranked ([`Self::rank_by_cost`]) so the arm-0 winner
+    /// (lowest central `time`) is at index 0; this method preserves
+    /// that winner and re-ranks the survivors so the winner stays at
+    /// index 0 (realize follows arm-0, so its identity must not change).
+    ///
+    /// # Algorithm
+    ///
+    /// 1. **Bucket by ending device** ([`Candidate::device`]).
+    /// 2. **Per-device Pareto frontier:** within each bucket keep the
+    ///    candidates not [`dominated`](CostVector::dominates) by any
+    ///    other candidate in the *same* bucket; drop the dominated.
+    /// 3. **Never strand the last `(device, backend)`:** for every
+    ///    distinct `(device, backend)` present in the input, if the
+    ///    Pareto filter dropped all of its candidates, re-admit its
+    ///    time-best one. A `(device, backend)` with a single candidate
+    ///    therefore always survives, even if globally dominated.
+    /// 4. **Crowding cap:** if a device bucket still exceeds `keep`,
+    ///    drop the lowest-crowding-distance entries (NSGA-II: boundary
+    ///    points per axis get `f64::INFINITY`, interior points the sum
+    ///    of normalized neighbor gaps over the [`CostVector`] axes)
+    ///    until the bucket is `≤ keep` — but never drop a candidate
+    ///    that is the *sole* survivor of its `(device, backend)`, and
+    ///    never drop the global arm-0 winner.
+    ///
+    /// # Invariants (asserted)
+    ///
+    /// - **≥1 path per device** survives (each device bucket is
+    ///   non-empty after retention).
+    /// - **Total ≤ `keep × devices`.**
+    /// - The arm-0 winner is retained.
+    ///
+    /// A `keep` of 0 is treated as 1 (a device bucket can never be
+    /// emptied — that would strand the device).
+    pub fn retain_per_device_frontier(&mut self, keep: usize) {
+        let keep = keep.max(1);
+        let n = self.candidates.len();
+        if n == 0 {
+            return;
+        }
+
+        // Index 0 is the arm-0 winner (caller ranked); it must survive.
+        let winner_device = self.candidates[0].device;
+
+        // Precompute each candidate's cost vector once.
+        let vectors: Vec<CostVector> = self
+            .candidates
+            .iter()
+            .map(CostVector::from_candidate)
+            .collect();
+
+        // (1) Bucket candidate indices by ending device. Use a Vec of
+        //     (device, indices) to keep deterministic ordering (devices
+        //     appear in first-seen order, which keeps the winner's
+        //     device first since index 0 is the winner).
+        let mut device_buckets: Vec<(DeviceLocation, Vec<usize>)> = Vec::new();
+        for i in 0..n {
+            let dev = self.candidates[i].device;
+            if let Some(entry) = device_buckets.iter_mut().find(|(d, _)| *d == dev) {
+                entry.1.push(i);
+            } else {
+                device_buckets.push((dev, vec![i]));
+            }
+        }
+
+        // The final keep-set of original indices.
+        let mut keep_set: Vec<usize> = Vec::with_capacity(n);
+
+        for (_dev, bucket) in &device_buckets {
+            // (2) Per-device Pareto frontier: keep indices not dominated
+            //     by any other index in the SAME bucket.
+            let mut frontier: Vec<usize> = bucket
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    !bucket
+                        .iter()
+                        .any(|&j| j != i && vectors[j].dominates(&vectors[i]))
+                })
+                .collect();
+
+            // (3) Never strand the last (device, backend): for each
+            //     distinct backend in this bucket, ensure ≥1 of its
+            //     candidates is on the frontier; otherwise re-admit its
+            //     time-best (lowest total_order_key) candidate.
+            let mut backends_in_bucket: Vec<BackendId> = Vec::new();
+            for &i in bucket {
+                let b = self.candidates[i].backend;
+                if !backends_in_bucket.contains(&b) {
+                    backends_in_bucket.push(b);
+                }
+            }
+            for &b in &backends_in_bucket {
+                let on_frontier = frontier
+                    .iter()
+                    .any(|&i| self.candidates[i].backend == b);
+                if !on_frontier {
+                    if let Some(&best) = bucket
+                        .iter()
+                        .filter(|&&i| self.candidates[i].backend == b)
+                        .min_by_key(|&&i| vectors[i].total_order_key())
+                    {
+                        frontier.push(best);
+                    }
+                }
+            }
+
+            // The global winner must never be dropped from its bucket.
+            if self.candidates.first().is_some()
+                && _dev == &winner_device
+                && !frontier.contains(&0)
+            {
+                frontier.push(0);
+            }
+
+            // (4) Crowding cap: reduce this bucket's frontier to `keep`
+            //     by NSGA-II crowding distance, protecting the sole
+            //     survivor of each (device, backend) and the arm-0
+            //     winner.
+            if frontier.len() > keep {
+                crowding_cap(
+                    &mut frontier,
+                    &vectors,
+                    &self.candidates,
+                    keep,
+                    winner_device,
+                );
+            }
+
+            keep_set.extend(frontier);
+        }
+
+        // Sort the keep-set ascending so `retain_indices`' contract
+        // (sorted, distinct) holds; the subsequent re-rank restores the
+        // winner-first order.
+        keep_set.sort_unstable();
+        keep_set.dedup();
+
+        // Invariants — assert before we mutate (the producer is
+        // internal, so a violation is a bug, not a user error).
+        debug_assert!(
+            keep_set.contains(&0),
+            "retain_per_device_frontier: arm-0 winner must be retained",
+        );
+        debug_assert!(
+            keep_set.len() <= keep.saturating_mul(device_buckets.len()),
+            "retain_per_device_frontier: total {} exceeds keep×devices = {}×{}",
+            keep_set.len(),
+            keep,
+            device_buckets.len(),
+        );
+
+        self.retain_indices(&keep_set);
+
+        // Re-rank so the arm-0 winner is back at index 0 (retention may
+        // have reordered nothing, but `retain_indices` preserves the
+        // pre-existing order, which for a ranked set already had the
+        // winner first; re-rank is defensive + cheap).
+        self.rank_by_cost();
     }
 
     /// Rank candidates by the per-path **cost vector**
@@ -205,10 +393,10 @@ impl AlternativeSet {
     /// Why time-first for the winner while [`CostVector::dominates`]
     /// exists: realize follows arm-0, so the *winner* must stay the
     /// lowest-time candidate to preserve realize behavior. Pareto
-    /// dominance is the relation the *frontier retention* will use —
-    /// that's PR-B2, which retires the top-N truncation for a
-    /// per-device Pareto frontier + crowding cap. B1 keeps
-    /// [`DEFAULT_MAX_N`] / [`Self::truncate_to_top_n`] untouched.
+    /// dominance is the relation the *frontier retention*
+    /// ([`Self::retain_per_device_frontier`], PR-B2) uses — that
+    /// retired the top-N truncation for a per-device Pareto frontier +
+    /// crowding cap.
     ///
     /// Stable sort — equal-key candidates keep their relative order,
     /// which matters when registration order is the residual
@@ -218,7 +406,6 @@ impl AlternativeSet {
     /// [`CostVector::total_order_key`]: super::cost_vector::CostVector::total_order_key
     /// [`CostVector::dominates`]: super::cost_vector::CostVector::dominates
     pub fn rank_by_cost(&mut self) {
-        use super::cost_vector::CostVector;
         self.candidates
             .sort_by_key(|c| CostVector::from_candidate(c).total_order_key());
     }
@@ -274,12 +461,136 @@ impl AlternativeSet {
     }
 
     /// The current top candidate (first entry). After the full
-    /// pipeline — filter → rank → truncate — this is the runtime
+    /// pipeline — filter → rank → retain — this is the runtime
     /// selector's (Picker 2) default pick. `None` if the set is
     /// empty.
     pub fn winner(&self) -> Option<&Candidate> {
         self.candidates.first()
     }
+}
+
+/// Reduce `frontier` (original-index references into `candidates`) to
+/// `keep` entries by **NSGA-II crowding distance** over the
+/// [`CostVector`] axes, dropping the most-crowded first.
+///
+/// Crowding distance per axis: candidates are sorted on that axis, the
+/// two boundary points get `f64::INFINITY` (so per-axis extremes — the
+/// spread — always survive), and each interior point accrues the
+/// normalized gap between its two neighbors. A candidate's total
+/// crowding distance is the sum over all axes. Lowest distance =
+/// most-crowded = dropped first.
+///
+/// Two entries are protected from being dropped: (a) the global arm-0
+/// winner (index 0, when this is the winner's device bucket), and
+/// (b) the sole survivor of any `(device, backend)` in this bucket —
+/// dropping it would strand that backend (never-strand-last invariant).
+fn crowding_cap(
+    frontier: &mut Vec<usize>,
+    vectors: &[CostVector],
+    candidates: &[Candidate],
+    keep: usize,
+    winner_device: DeviceLocation,
+) {
+    // The crowding distance is computed over the CURRENT frontier
+    // membership and recomputed as we drop, so the surviving spread is
+    // re-measured each time (standard NSGA-II truncation).
+    while frontier.len() > keep {
+        let dist = crowding_distances(frontier, vectors);
+
+        // Find the protected set: arm-0 winner (in its own device
+        // bucket) + any backend with exactly one representative left.
+        let winner_present = frontier.contains(&0);
+        let mut backend_counts: std::collections::HashMap<BackendId, usize> =
+            std::collections::HashMap::new();
+        for &i in frontier.iter() {
+            *backend_counts.entry(candidates[i].backend).or_insert(0) += 1;
+        }
+
+        // Drop the droppable entry with the lowest crowding distance.
+        let mut victim: Option<(usize, f64)> = None; // (position in frontier, distance)
+        for (pos, &i) in frontier.iter().enumerate() {
+            let is_winner =
+                i == 0 && winner_present && candidates[i].device == winner_device;
+            let is_sole_backend =
+                backend_counts.get(&candidates[i].backend).copied().unwrap_or(0) <= 1;
+            if is_winner || is_sole_backend {
+                continue;
+            }
+            let d = dist[pos];
+            match victim {
+                Some((_, best)) if best <= d => {}
+                _ => victim = Some((pos, d)),
+            }
+        }
+
+        match victim {
+            Some((pos, _)) => {
+                frontier.remove(pos);
+            }
+            // Everything remaining is protected (all distinct backends,
+            // and the winner) — can't cap below the protected floor
+            // without stranding a backend. Stop.
+            None => break,
+        }
+    }
+}
+
+/// Per-entry NSGA-II crowding distance over the [`CostVector`] axes,
+/// indexed parallel to `frontier`. Boundary points per axis get
+/// `f64::INFINITY`; interior points accrue normalized neighbor gaps.
+///
+/// Axes (all treated as numeric for spread purposes): central `time`,
+/// host-RAM bytes, device-VRAM bytes, `precision` digits, `accuracy`
+/// rank. Orientation doesn't matter for crowding — only the spread
+/// along each axis does.
+fn crowding_distances(frontier: &[usize], vectors: &[CostVector]) -> Vec<f64> {
+    let m = frontier.len();
+    let mut dist = vec![0.0f64; m];
+    if m <= 2 {
+        // Every point is a boundary point — all maximally spread.
+        return vec![f64::INFINITY; m];
+    }
+
+    // Each axis as an f64 extractor.
+    let axes: [fn(&CostVector) -> f64; 5] = [
+        |v| v.time as f64,
+        |v| v.memory.host_ram_bytes as f64,
+        |v| v.memory.device_vram_bytes as f64,
+        |v| v.precision as f64,
+        |v| v.accuracy.rank() as f64,
+    ];
+
+    for axis in axes {
+        // Sort frontier positions by this axis value.
+        let mut order: Vec<usize> = (0..m).collect();
+        order.sort_by(|&a, &b| {
+            let va = axis(&vectors[frontier[a]]);
+            let vb = axis(&vectors[frontier[b]]);
+            va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let min = axis(&vectors[frontier[order[0]]]);
+        let max = axis(&vectors[frontier[order[m - 1]]]);
+        let range = max - min;
+
+        // Boundary points get infinity (preserve per-axis extremes).
+        dist[order[0]] = f64::INFINITY;
+        dist[order[m - 1]] = f64::INFINITY;
+
+        if range <= 0.0 {
+            // Degenerate axis (all equal) contributes nothing to the
+            // interior; boundaries already pinned to infinity.
+            continue;
+        }
+
+        for k in 1..(m - 1) {
+            let prev = axis(&vectors[frontier[order[k - 1]]]);
+            let next = axis(&vectors[frontier[order[k + 1]]]);
+            dist[order[k]] += (next - prev) / range;
+        }
+    }
+
+    dist
 }
 
 #[cfg(test)]
@@ -314,6 +625,29 @@ mod tests {
             coupling: Vec::new(),
             kernel_source: "",
         }
+    }
+
+    /// A candidate with explicit device + backend + cost knobs, for the
+    /// PR-B2 per-device-frontier tests. `time` is set via `flops`
+    /// (composite_ns ≈ flops here since bytes/overhead are 0).
+    fn cand(
+        device: DeviceLocation,
+        backend: BackendId,
+        flops: u64,
+        bytes: u64,
+        precision: PrecisionGuarantee,
+    ) -> Candidate {
+        Candidate {
+            backend,
+            device,
+            precision,
+            static_cost: CostEstimate { flops, bytes_moved: bytes, kernel_overhead_ns: 0 },
+            ..dummy_candidate(0)
+        }
+    }
+
+    fn cuda(id: usize) -> DeviceLocation {
+        DeviceLocation::Cuda { gpu_id: id }
     }
 
     /// Phase B PR-B1 behavior preservation: `rank_by_cost` on a
@@ -351,7 +685,7 @@ mod tests {
             expected.iter().map(|c| c.static_cost.flops).collect();
 
         // Order from the NEW cost-vector rank.
-        let mut set = AlternativeSet::from_candidates(cands, DEFAULT_MAX_N);
+        let mut set = AlternativeSet::from_candidates(cands);
         set.rank_by_cost();
         let got_flops: Vec<u64> =
             set.alternatives().iter().map(|c| c.static_cost.flops).collect();
@@ -366,13 +700,10 @@ mod tests {
     /// composite kernel cost.
     #[test]
     fn rank_includes_inbound_transfer_term() {
-        let mut s = AlternativeSet::from_candidates(
-            vec![
-                Candidate { inbound_transfer_ns: 5_000, ..dummy_candidate(100) },
-                dummy_candidate(200),
-            ],
-            DEFAULT_MAX_N,
-        );
+        let mut s = AlternativeSet::from_candidates(vec![
+            Candidate { inbound_transfer_ns: 5_000, ..dummy_candidate(100) },
+            dummy_candidate(200),
+        ]);
         s.rank_by_composite_cost();
         assert_eq!(
             s.winner().unwrap().static_cost.flops,
@@ -387,7 +718,6 @@ mod tests {
         assert!(s.is_empty());
         assert_eq!(s.len(), 0);
         assert!(s.winner().is_none());
-        assert_eq!(s.max_n(), DEFAULT_MAX_N);
     }
 
     #[test]
@@ -401,43 +731,20 @@ mod tests {
 
     #[test]
     fn from_candidates_seeds_and_preserves_order() {
-        let s = AlternativeSet::from_candidates(
-            vec![dummy_candidate(1), dummy_candidate(2), dummy_candidate(3)],
-            5,
-        );
+        let s = AlternativeSet::from_candidates(vec![
+            dummy_candidate(1),
+            dummy_candidate(2),
+            dummy_candidate(3),
+        ]);
         assert_eq!(s.len(), 3);
-        assert_eq!(s.max_n(), 5);
         let flops: Vec<u64> = s.alternatives().iter().map(|c| c.static_cost.flops).collect();
         assert_eq!(flops, vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn truncate_respects_max_n() {
-        let mut s = AlternativeSet::with_max_n(2);
-        s.push(dummy_candidate(1));
-        s.push(dummy_candidate(2));
-        s.push(dummy_candidate(3));
-        s.push(dummy_candidate(4));
-        assert_eq!(s.len(), 4);
-        s.truncate_to_top_n();
-        assert_eq!(s.len(), 2);
-        let flops: Vec<u64> = s.alternatives().iter().map(|c| c.static_cost.flops).collect();
-        assert_eq!(flops, vec![1, 2]);
-    }
-
-    #[test]
-    fn truncate_no_op_when_under_max_n() {
-        let mut s = AlternativeSet::empty();
-        s.push(dummy_candidate(1));
-        s.truncate_to_top_n();
-        assert_eq!(s.len(), 1);
     }
 
     #[test]
     fn retain_indices_keeps_selected_entries() {
         let mut s = AlternativeSet::from_candidates(
             (0..5).map(|i| dummy_candidate(i)).collect(),
-            DEFAULT_MAX_N,
         );
         s.retain_indices(&[0, 2, 4]);
         let flops: Vec<u64> = s.alternatives().iter().map(|c| c.static_cost.flops).collect();
@@ -446,20 +753,21 @@ mod tests {
 
     #[test]
     fn retain_indices_empty_clears_set() {
-        let mut s = AlternativeSet::from_candidates(
-            vec![dummy_candidate(1), dummy_candidate(2)],
-            DEFAULT_MAX_N,
-        );
+        let mut s = AlternativeSet::from_candidates(vec![
+            dummy_candidate(1),
+            dummy_candidate(2),
+        ]);
         s.retain_indices(&[]);
         assert!(s.is_empty());
     }
 
     #[test]
     fn retain_indices_keep_all_is_identity() {
-        let mut s = AlternativeSet::from_candidates(
-            vec![dummy_candidate(1), dummy_candidate(2), dummy_candidate(3)],
-            DEFAULT_MAX_N,
-        );
+        let mut s = AlternativeSet::from_candidates(vec![
+            dummy_candidate(1),
+            dummy_candidate(2),
+            dummy_candidate(3),
+        ]);
         s.retain_indices(&[0, 1, 2]);
         assert_eq!(s.len(), 3);
     }
@@ -467,35 +775,33 @@ mod tests {
     #[test]
     #[should_panic(expected = "sorted strictly ascending")]
     fn retain_indices_unsorted_panics_in_debug() {
-        let mut s = AlternativeSet::from_candidates(
-            vec![dummy_candidate(1), dummy_candidate(2)],
-            DEFAULT_MAX_N,
-        );
+        let mut s = AlternativeSet::from_candidates(vec![
+            dummy_candidate(1),
+            dummy_candidate(2),
+        ]);
         s.retain_indices(&[1, 0]);
     }
 
     #[test]
     #[should_panic(expected = "out-of-range")]
     fn retain_indices_out_of_range_panics_in_debug() {
-        let mut s = AlternativeSet::from_candidates(
-            vec![dummy_candidate(1)],
-            DEFAULT_MAX_N,
-        );
+        let mut s = AlternativeSet::from_candidates(vec![dummy_candidate(1)]);
         s.retain_indices(&[5]);
     }
 
     /// Context defaults to None, round-trips through `set_context`,
-    /// and survives retain + truncate (it describes the decision
-    /// point, not the candidates).
+    /// and survives retain (it describes the decision point, not the
+    /// candidates).
     #[test]
     fn context_round_trips_and_survives_mutation() {
         use fuel_core_types::dispatch::{OpKind, SizeClass};
         use fuel_core_types::DType;
 
-        let mut s = AlternativeSet::from_candidates(
-            vec![dummy_candidate(1), dummy_candidate(2), dummy_candidate(3)],
-            2,
-        );
+        let mut s = AlternativeSet::from_candidates(vec![
+            dummy_candidate(1),
+            dummy_candidate(2),
+            dummy_candidate(3),
+        ]);
         assert!(s.context().is_none(), "fresh sets carry no context");
 
         let ctx = DecisionContext {
@@ -507,11 +813,258 @@ mod tests {
         assert_eq!(s.context(), Some(&ctx));
 
         s.retain_indices(&[0, 2]);
-        s.truncate_to_top_n();
         assert_eq!(
             s.context(),
             Some(&ctx),
-            "context survives retain + truncate",
+            "context survives retain",
         );
+    }
+
+    // ===== Phase B PR-B2: per-ending-device Pareto frontier +
+    //        crowding cap (retiring the fixed top-N). =====
+
+    /// (a) A multi-device set retains the **per-device Pareto
+    /// frontier**, NOT the global top-3: a slow-but-only-CUDA candidate
+    /// survives even when several CPU candidates are all faster. The
+    /// old `DEFAULT_MAX_N = 3` truncation on a global time sort would
+    /// have stranded the CUDA device entirely.
+    #[test]
+    fn retains_per_device_frontier_not_global_top_n() {
+        // 3 fast CPU candidates + 1 slow CUDA candidate. A global
+        // top-3 keeps only the 3 CPU ones (CUDA stranded). The
+        // per-device frontier must keep ≥1 CPU and the 1 CUDA.
+        let cands = vec![
+            cand(DeviceLocation::Cpu, BackendId::Cpu, 100, 0, PrecisionGuarantee::REFERENCE),
+            cand(DeviceLocation::Cpu, BackendId::Cpu, 200, 0, PrecisionGuarantee::REFERENCE),
+            cand(DeviceLocation::Cpu, BackendId::Cpu, 300, 0, PrecisionGuarantee::REFERENCE),
+            cand(cuda(0), BackendId::Cuda, 10_000, 0, PrecisionGuarantee::REFERENCE),
+        ];
+        let mut set = AlternativeSet::from_candidates(cands);
+        set.rank_by_cost();
+        set.retain_per_device_frontier(KEEP_PER_DEVICE);
+
+        let has_cuda = set
+            .alternatives()
+            .iter()
+            .any(|c| matches!(c.device, DeviceLocation::Cuda { .. }));
+        let has_cpu = set
+            .alternatives()
+            .iter()
+            .any(|c| c.device == DeviceLocation::Cpu);
+        assert!(has_cuda, "slow CUDA path must NOT be stranded by a global top-N");
+        assert!(has_cpu, "CPU path survives");
+
+        // Arm-0 winner is the fastest overall (CPU flops=100).
+        assert_eq!(set.winner().unwrap().static_cost.flops, 100);
+    }
+
+    /// (b) Within a device, a dominated candidate is dropped. Two CPU
+    /// candidates where one is strictly worse on every axis → only the
+    /// dominator survives on that device.
+    #[test]
+    fn drops_within_device_dominated_candidate() {
+        // dominator: fast + reference precision.
+        // dominated: slower + lower precision (UNAUDITED) — strictly
+        //            worse on time AND precision AND accuracy.
+        let cands = vec![
+            cand(DeviceLocation::Cpu, BackendId::Cpu, 100, 0, PrecisionGuarantee::REFERENCE),
+            cand(DeviceLocation::Cpu, BackendId::Cpu, 500, 0, PrecisionGuarantee::UNAUDITED),
+        ];
+        let mut set = AlternativeSet::from_candidates(cands);
+        set.rank_by_cost();
+        set.retain_per_device_frontier(KEEP_PER_DEVICE);
+
+        // Both are the SAME (device, backend), so never-strand doesn't
+        // force the dominated one back — the dominator alone survives.
+        assert_eq!(set.len(), 1, "dominated same-backend candidate dropped");
+        assert_eq!(set.winner().unwrap().static_cost.flops, 100);
+    }
+
+    /// (c) A device frontier larger than `keep` is crowding-capped to
+    /// exactly `keep`, keeping the spread (the per-axis boundary points
+    /// — fastest + slowest along the time axis — survive).
+    #[test]
+    fn crowding_caps_oversized_frontier_keeping_spread() {
+        // Build a single-device, single-backend Pareto front along the
+        // time↔precision tradeoff: faster ⇒ lower precision, so every
+        // candidate is mutually non-dominated (a genuine frontier).
+        let keep = 4usize;
+        let mut cands = Vec::new();
+        let n = 10u64;
+        for k in 0..n {
+            // time INcreases with k AND precision INcreases with k (a
+            // genuine speed↔precision tradeoff) → every pair is
+            // mutually non-dominated, so the Pareto frontier == all 10.
+            let rel = 10f64.powi(-(2 + k as i32)); // higher k → tighter
+            let p = PrecisionGuarantee {
+                bit_stable_on_same_hardware: true,
+                max_ulp: None,
+                max_relative: Some(rel),
+                max_absolute: None,
+                notes: "frontier",
+            };
+            cands.push(cand(DeviceLocation::Cpu, BackendId::Cpu, 100 + k * 100, 0, p));
+        }
+        let fastest_time_flops = 100; // k=0
+        let slowest_time_flops = 100 + (n - 1) * 100; // k=9 → 1000
+
+        let mut set = AlternativeSet::from_candidates(cands);
+        set.rank_by_cost();
+        // Sanity: all mutually non-dominated → frontier == all 10.
+        set.retain_per_device_frontier(keep);
+
+        assert_eq!(set.len(), keep, "capped to exactly keep");
+
+        // Spread preserved: the time-axis extremes survive.
+        let times: Vec<u64> =
+            set.alternatives().iter().map(|c| c.static_cost.flops).collect();
+        assert!(
+            times.contains(&fastest_time_flops),
+            "fastest (time-axis min) boundary survives crowding; got {times:?}",
+        );
+        assert!(
+            times.contains(&slowest_time_flops),
+            "slowest (time-axis max) boundary survives crowding; got {times:?}",
+        );
+    }
+
+    /// (d) ≥1 per device survives + total ≤ keep × devices.
+    #[test]
+    fn at_least_one_per_device_and_total_bounded() {
+        let keep = 3usize;
+        // 3 devices, each with several candidates.
+        let mut cands = Vec::new();
+        for d in 0..3usize {
+            let dev = if d == 0 { DeviceLocation::Cpu } else { cuda(d) };
+            let backend = if d == 0 { BackendId::Cpu } else { BackendId::Cuda };
+            for k in 0..6u64 {
+                // mutually non-dominated within a device (time↔precision)
+                let rel = 10f64.powi(-(2 + (6 - k) as i32));
+                let p = PrecisionGuarantee {
+                    bit_stable_on_same_hardware: true,
+                    max_ulp: None,
+                    max_relative: Some(rel),
+                    max_absolute: None,
+                    notes: "x",
+                };
+                cands.push(cand(dev, backend, 100 + k * 50 + d as u64, 0, p));
+            }
+        }
+        let n_devices = 3;
+        let mut set = AlternativeSet::from_candidates(cands);
+        set.rank_by_cost();
+        set.retain_per_device_frontier(keep);
+
+        // ≥1 per device.
+        for d in 0..3usize {
+            let dev = if d == 0 { DeviceLocation::Cpu } else { cuda(d) };
+            let count = set.alternatives().iter().filter(|c| c.device == dev).count();
+            assert!(count >= 1, "device {dev:?} must keep ≥1 path");
+        }
+        // total ≤ keep × devices.
+        assert!(
+            set.len() <= keep * n_devices,
+            "total {} ≤ keep×devices = {}",
+            set.len(),
+            keep * n_devices,
+        );
+    }
+
+    /// Never-strand-last `(device, backend)`: a globally-dominated
+    /// candidate that is the SOLE representative of its (device,
+    /// backend) is retained anyway. Here a Vulkan candidate dominated
+    /// on every axis by a CPU one survives because it is Vulkan's only
+    /// path (and Vulkan is its own device bucket — the per-device
+    /// frontier already keeps it; this also exercises a same-device
+    /// distinct-backend case).
+    #[test]
+    fn never_strands_last_device_backend() {
+        // CPU dominator (fast, reference) vs a Vulkan candidate that is
+        // slower + unaudited. Different device ⇒ different bucket ⇒
+        // Vulkan's bucket keeps it by the per-device frontier.
+        let cands = vec![
+            cand(DeviceLocation::Cpu, BackendId::Cpu, 100, 0, PrecisionGuarantee::REFERENCE),
+            cand(
+                DeviceLocation::Vulkan { gpu_id: 0 },
+                BackendId::Vulkan,
+                9_999,
+                0,
+                PrecisionGuarantee::UNAUDITED,
+            ),
+        ];
+        let mut set = AlternativeSet::from_candidates(cands);
+        set.rank_by_cost();
+        set.retain_per_device_frontier(KEEP_PER_DEVICE);
+
+        let has_vulkan = set
+            .alternatives()
+            .iter()
+            .any(|c| matches!(c.device, DeviceLocation::Vulkan { .. }));
+        assert!(has_vulkan, "last Vulkan (device, backend) must never be stranded");
+    }
+
+    /// A fully-dominated device bucket whose sole candidate is globally
+    /// dominated on every axis is still retained — the per-device
+    /// frontier never empties a device, and the `(device, backend)`
+    /// re-admission backstops it. Here the Metal candidate is worse on
+    /// every axis than the CPU one but is its (device, backend)'s only
+    /// path.
+    #[test]
+    fn never_strands_globally_dominated_sole_path() {
+        let cands = vec![
+            cand(DeviceLocation::Cpu, BackendId::Cpu, 100, 0, PrecisionGuarantee::REFERENCE),
+            cand(
+                DeviceLocation::Metal { gpu_id: 0 },
+                BackendId::Metal,
+                9_999,
+                999_999,
+                PrecisionGuarantee::UNAUDITED,
+            ),
+        ];
+        let mut set = AlternativeSet::from_candidates(cands);
+        set.rank_by_cost();
+        set.retain_per_device_frontier(KEEP_PER_DEVICE);
+
+        let backends: Vec<BackendId> =
+            set.alternatives().iter().map(|c| c.backend).collect();
+        assert!(backends.contains(&BackendId::Cpu), "CPU dominator kept");
+        assert!(
+            backends.contains(&BackendId::Metal),
+            "dominated-but-sole Metal (device, backend) never stranded; got {backends:?}",
+        );
+    }
+
+    /// (e) The arm-0 winner is unchanged vs a plain B1 rank: retention
+    /// keeps the same index-0 candidate the rank produced.
+    #[test]
+    fn arm0_winner_unchanged_by_retention() {
+        let cands = vec![
+            cand(DeviceLocation::Cpu, BackendId::Cpu, 300, 0, PrecisionGuarantee::REFERENCE),
+            cand(cuda(0), BackendId::Cuda, 100, 0, PrecisionGuarantee::REFERENCE),
+            cand(DeviceLocation::Cpu, BackendId::Cpu, 200, 0, PrecisionGuarantee::REFERENCE),
+        ];
+        // B1 winner: lowest time (flops=100 on CUDA).
+        let mut b1 = AlternativeSet::from_candidates(cands.clone());
+        b1.rank_by_cost();
+        let b1_winner = (b1.winner().unwrap().backend, b1.winner().unwrap().device);
+
+        let mut set = AlternativeSet::from_candidates(cands);
+        set.rank_by_cost();
+        set.retain_per_device_frontier(KEEP_PER_DEVICE);
+        let b2_winner = (set.winner().unwrap().backend, set.winner().unwrap().device);
+
+        assert_eq!(b1_winner, b2_winner, "arm-0 winner unchanged by B2 retention");
+        assert_eq!(set.winner().unwrap().static_cost.flops, 100);
+    }
+
+    /// A single-device, single-candidate set is unchanged (the common
+    /// CPU `--lib` case): retention keeps the one candidate.
+    #[test]
+    fn single_candidate_passthrough() {
+        let mut set = AlternativeSet::from_candidates(vec![dummy_candidate(42)]);
+        set.rank_by_cost();
+        set.retain_per_device_frontier(KEEP_PER_DEVICE);
+        assert_eq!(set.len(), 1);
+        assert_eq!(set.winner().unwrap().static_cost.flops, 42);
     }
 }

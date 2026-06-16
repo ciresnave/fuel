@@ -229,7 +229,7 @@ mod tests {
     use super::*;
     use crate::fused::PrecisionGuarantee;
     use crate::kernel::{unknown_cost, KernelBindingTable, KernelCaps};
-    use crate::ranker::alternative_set::{AlternativeSet, DEFAULT_MAX_N};
+    use crate::ranker::alternative_set::AlternativeSet;
     use crate::ranker::candidate::Candidate;
     use fuel_core_types::backend::{BackendCapabilities, SubstrateClass, TransferPath};
     use fuel_core_types::dispatch::OpKind;
@@ -361,15 +361,19 @@ mod tests {
                 candidate_with_cost(noop_b, CostEstimate { flops: 100, bytes_moved: 0, kernel_overhead_ns: 0 }),
                 candidate_with_cost(noop_a, CostEstimate { flops: 200, bytes_moved: 0, kernel_overhead_ns: 0 }),
             ],
-            DEFAULT_MAX_N,
         );
         set.rank_by_composite_cost();
         let costs: Vec<u64> = set.alternatives().iter().map(|c| c.static_cost.flops).collect();
         assert_eq!(costs, vec![100, 200, 300]);
     }
 
+    /// PR-B2: the per-ending-device Pareto frontier replaces the fixed
+    /// top-N. Five same-(device, backend) candidates that differ ONLY
+    /// in time are all dominated by the cheapest (equal on every other
+    /// axis, strictly worse on time), so retention keeps exactly the
+    /// fastest — the arm-0 winner — and drops the rest.
     #[test]
-    fn rank_then_truncate_yields_top_n() {
+    fn rank_then_retain_keeps_undominated_only() {
         let mut set = AlternativeSet::from_candidates(
             (0..5)
                 .map(|i| candidate_with_cost(noop_a, CostEstimate {
@@ -378,13 +382,12 @@ mod tests {
                     kernel_overhead_ns: 0,
                 }))
                 .collect(),
-            2,
         );
         set.rank_by_composite_cost();
-        set.truncate_to_top_n();
-        assert_eq!(set.len(), 2);
+        set.retain_per_device_frontier(crate::ranker::KEEP_PER_DEVICE);
+        assert_eq!(set.len(), 1, "all but the time-best are dominated on one device");
         let costs: Vec<u64> = set.alternatives().iter().map(|c| c.static_cost.flops).collect();
-        assert_eq!(costs, vec![100, 200], "top-2 cheapest survive");
+        assert_eq!(costs, vec![100], "the fastest (arm-0 winner) survives");
     }
 
     fn make_cost_fn(flops: u64, bytes: u64, overhead: u32) -> crate::kernel::CostFn {
@@ -415,7 +418,6 @@ mod tests {
 
         let mut set = AlternativeSet::from_candidates(
             vec![candidate_with_cost(noop_a, CostEstimate::default())],
-            DEFAULT_MAX_N,
         );
 
         let cpu_caps = caps_for_test(BackendId::Cpu);
@@ -452,7 +454,6 @@ mod tests {
         );
         let mut set = AlternativeSet::from_candidates(
             vec![candidate_with_cost(noop_a, CostEstimate::default())],
-            DEFAULT_MAX_N,
         );
         // Empty lookup → no caps → cost not computed.
         let empty_lookup = |_: BackendId| -> Option<&BackendCapabilities> { None };
@@ -486,7 +487,6 @@ mod tests {
         let mut set = AlternativeSet::from_candidates(
             // noop_b isn't registered.
             vec![candidate_with_cost(noop_b, CostEstimate::default())],
-            DEFAULT_MAX_N,
         );
         let cpu_caps = caps_for_test(BackendId::Cpu);
         let lookup: HashMap<BackendId, BackendCapabilities> =
@@ -528,7 +528,6 @@ mod tests {
 
         let mut set = AlternativeSet::from_candidates(
             vec![candidate_with_cost(noop_a, CostEstimate::default())],
-            DEFAULT_MAX_N,
         );
         let cpu_caps = caps_for_test(BackendId::Cpu);
         let lookup: HashMap<BackendId, BackendCapabilities> =
@@ -575,7 +574,6 @@ mod tests {
         );
         let mut set = AlternativeSet::from_candidates(
             vec![candidate_with_cost(noop_a, CostEstimate::default())],
-            DEFAULT_MAX_N,
         );
         let cpu_caps = caps_for_test(BackendId::Cpu);
         let lookup: HashMap<BackendId, BackendCapabilities> =
@@ -624,7 +622,6 @@ mod tests {
                 Candidate { backend: BackendId::Cpu, ..candidate_with_cost(noop_a, CostEstimate::default()) },
                 Candidate { backend: BackendId::Cuda, ..candidate_with_cost(noop_b, CostEstimate::default()) },
             ],
-            DEFAULT_MAX_N,
         );
         let lookup: HashMap<BackendId, BackendCapabilities> = [
             (BackendId::Cpu, caps_for_test(BackendId::Cpu)),
@@ -672,7 +669,6 @@ mod tests {
                 Candidate { backend: BackendId::Cpu, ..candidate_with_cost(noop_a, CostEstimate::default()) },
                 Candidate { backend: BackendId::Cuda, ..candidate_with_cost(noop_b, CostEstimate::default()) },
             ],
-            DEFAULT_MAX_N,
         );
         let lookup: HashMap<BackendId, BackendCapabilities> = [
             (BackendId::Cpu, caps_for_test(BackendId::Cpu)),
@@ -709,7 +705,6 @@ mod tests {
         );
         let mut set = AlternativeSet::from_candidates(
             vec![candidate_with_cost(noop_a, CostEstimate::default())],
-            DEFAULT_MAX_N,
         );
         let lookup: HashMap<BackendId, BackendCapabilities> =
             [(BackendId::Cpu, caps_for_test(BackendId::Cpu))].into_iter().collect();
@@ -749,7 +744,6 @@ mod tests {
                     ..candidate_with_cost(noop_b, CostEstimate::default())
                 },
             ],
-            DEFAULT_MAX_N,
         );
         let est = FlatEstimator { ns_per_byte: 1, latency_ns: 100 };
         // Two inputs resident on CPU: 12 bytes and 8 bytes.
@@ -772,7 +766,6 @@ mod tests {
     fn inbound_transfer_empty_inputs_prices_zero() {
         let mut set = AlternativeSet::from_candidates(
             vec![candidate_with_cost(noop_a, CostEstimate::default())],
-            DEFAULT_MAX_N,
         );
         let est = FlatEstimator { ns_per_byte: 1_000_000, latency_ns: u64::MAX };
         apply_inbound_transfer_costs(&mut set, &[], &est);
@@ -790,7 +783,6 @@ mod tests {
                 device: cuda0,
                 ..candidate_with_cost(noop_a, CostEstimate::default())
             }],
-            DEFAULT_MAX_N,
         );
         let est = FlatEstimator { ns_per_byte: 0, latency_ns: u64::MAX };
         let inputs = [(DeviceLocation::Cpu, 1_u64), (DeviceLocation::Cpu, 1_u64)];
@@ -824,7 +816,6 @@ mod tests {
         // crossing dominates → local wins.
         let mut tiny = AlternativeSet::from_candidates(
             vec![remote(500), local(600)],
-            DEFAULT_MAX_N,
         );
         apply_inbound_transfer_costs(&mut tiny, &inputs, &est);
         tiny.rank_by_composite_cost();
@@ -834,7 +825,6 @@ mod tests {
         // wins despite paying the transfer.
         let mut huge = AlternativeSet::from_candidates(
             vec![local(20_000), remote(10_000)],
-            DEFAULT_MAX_N,
         );
         apply_inbound_transfer_costs(&mut huge, &inputs, &est);
         huge.rank_by_composite_cost();
