@@ -1384,16 +1384,24 @@ impl LazyTensor {
             .expect("realize_f32_cuda via PipelinedExecutor")
     }
 
-    // `realize_f32_vulkan` (legacy-executor signature) deleted in
-    // executor-unification Session 2 (2026-06-11). Its Judge-parity
-    // rationale expired when the Judge re-pointed onto the pipelined
-    // bridge — Vulkan profiling now realizes through
-    // `pipelined_bridge::realize_one_as` on a Vulkan `Device`, the
-    // same path production `realize_f32` uses. The one external
-    // caller (`fuel-core/tests/flash_attn_vulkan.rs`, which
-    // deliberately pins the legacy FA2 trait launcher until the
-    // queued FA2 eager-wrapper retirement session) constructs its
-    // executor locally and realizes `tensor.graph_tensor()` directly.
+    // The legacy-executor-signature `realize_f32_vulkan` was deleted in
+    // executor-unification Session 2 (2026-06-11). This bridge-based
+    // wrapper restores Vulkan/CUDA realize parity (2026-06-15): it goes
+    // through `pipelined_bridge::realize_one_as` on a Vulkan `Device`,
+    // the same production path `realize_f32` / `realize_f32_cuda` use —
+    // so it exercises the A3b-1 optimize_graph default (and the
+    // `FUEL_BRIDGE_LEGACY_PLAN` fallback) on the Vulkan backend.
+    #[cfg(feature = "vulkan")]
+    pub fn realize_f32_vulkan(
+        &self,
+        backend: &std::sync::Arc<fuel_vulkan_backend::VulkanBackend>,
+    ) -> Vec<f32> {
+        let graph = self.inner.graph().clone();
+        let target = self.inner.id();
+        let fc_device: crate::Device = backend.clone().into();
+        crate::pipelined_bridge::realize_one_as::<f32>(&graph, target, &fc_device)
+            .expect("realize_f32_vulkan via PipelinedExecutor")
+    }
 }
 
 /// Realize many tensors in a single CPU topo-walk. Phase 7.6 step 9c E.2.
