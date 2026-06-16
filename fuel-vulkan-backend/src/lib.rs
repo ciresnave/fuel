@@ -7,6 +7,7 @@
 //! executor-unification Session 7.
 
 pub mod byte_storage;
+pub mod capture;
 pub mod dyn_impl;
 pub mod pipelines;
 pub mod probe;
@@ -14,6 +15,7 @@ mod recorder;
 pub mod residency;
 
 pub use byte_storage::VulkanStorageBytes;
+pub use capture::CapturedRun;
 pub use dyn_impl::VulkanBackendDevice;
 
 use fuel_core_types::{DType, Layout, Shape};
@@ -3631,14 +3633,26 @@ impl VulkanBackend {
         Ok(())
     }
 
-    pub fn affine_f32_bytes(
+    /// Build the descriptor set + params UBO for an `affine_f32` dispatch
+    /// (`out = mul*in + add`) over `layout`, ready to bind + dispatch.
+    ///
+    /// Shared by [`affine_f32_bytes`](Self::affine_f32_bytes) (one-shot,
+    /// batched) and the command-buffer-capture path (a reusable command
+    /// buffer — Phase C PR-C2b). Extracting it keeps the private
+    /// `AffParams` UBO layout in exactly one place, so the capture test
+    /// records the *real* affine dispatch rather than a duplicated,
+    /// drift-prone copy of the param struct.
+    ///
+    /// The returned transient params buffer `(pbuf, pmem)` must stay alive
+    /// until the dispatch has executed; `wg` is the 1-D workgroup count.
+    pub(crate) fn build_affine_f32_dispatch(
         &self,
         input: &VulkanStorageBytes,
-        out: &mut VulkanStorageBytes,
+        out: &VulkanStorageBytes,
         mul: f64,
         add: f64,
         layout: &Layout,
-    ) -> fuel_core_types::Result<()> {
+    ) -> fuel_core_types::Result<(DescriptorSet, Buffer, Allocation, u32)> {
         let out_dims = layout.shape().dims();
         let out_elem = layout.shape().elem_count();
         let rank = out_dims.len();
@@ -3691,6 +3705,27 @@ impl VulkanBackend {
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, input.len_bytes() as u64);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out.len_bytes() as u64);
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
+        Ok((desc, pbuf, pmem, Self::workgroups(out_elem)))
+    }
+
+    pub fn affine_f32_bytes(
+        &self,
+        input: &VulkanStorageBytes,
+        out: &mut VulkanStorageBytes,
+        mul: f64,
+        add: f64,
+        layout: &Layout,
+    ) -> fuel_core_types::Result<()> {
+        let (desc, pbuf, pmem, wg) =
+            self.build_affine_f32_dispatch(input, out, mul, add, layout)?;
+        // Re-fetch the raw buffer handles for the recorder's read/write
+        // dependency tracking (the helper just validated they are resident).
+        let in_buf = input.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "affine_f32_bytes: input is host-evicted; fault back first".into(),
+        ))?;
+        let out_buf = out.buffer_opt().ok_or_else(|| fuel_core_types::Error::Msg(
+            "affine_f32_bytes: out is host-evicted; fault back first".into(),
+        ))?;
         let rb = [in_buf.raw() as u64];
         let wb = [out_buf.raw() as u64];
         self.record_dispatch_batched(
@@ -3698,7 +3733,7 @@ impl VulkanBackend {
             &self.pipelines.affine_pipeline,
             &self.pipelines.affine_layout,
             desc,
-            (Self::workgroups(out_elem), 1, 1),
+            (wg, 1, 1),
             vec![(pbuf, pmem)],
             &rb, &wb,
         )?;
