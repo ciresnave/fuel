@@ -43,7 +43,7 @@ use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result};
 use fuel_graph::opt::{execution_plan, insert_safety_copies};
-use fuel_graph::{Graph, Node, NodeId, Op};
+use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute};
 
 use crate::compiled::{compile_node, execute_compiled, CompiledNode};
 use crate::dispatch::global_bindings;
@@ -73,9 +73,20 @@ use fuel_memory::Storage;
 ///   the optimize-time `generation` so the chunk-boundary
 ///   `TopologyChanged` check still fires (the new path dispatches with
 ///   `plan: None`, so the generation must come from here instead).
+///
+///   PR-C1: it also carries an optional **route** ([`PickedRoute`]) — the
+///   runtime route picker (Picker 2) chose one arm per `Op::Branch`. When
+///   `Some`, the order is the route-aware lowering
+///   ([`fuel_graph::lower_picked_route`]); when `None` (or empty) it is
+///   the arm-0 lowering (`lower_runs_arm0`), byte-identical to Phase B.
 enum OrderSource<'a> {
     Default,
-    Optimized(&'a OptimizedGraph),
+    Optimized {
+        optimized: &'a OptimizedGraph,
+        /// The route the picker resolved (one arm per branch). `None` ⇒
+        /// arm-0 everywhere (no picker / no pressure ⇒ Phase B behavior).
+        route: Option<&'a PickedRoute>,
+    },
 }
 
 /// Map from NodeId to a realized Storage Arc. Used both as the
@@ -455,7 +466,38 @@ impl PipelinedExecutor {
         optimized: &OptimizedGraph,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
         Self::realize_inner(
-            graph, target, inputs, None, None, OrderSource::Optimized(optimized),
+            graph,
+            target,
+            inputs,
+            None,
+            None,
+            OrderSource::Optimized { optimized, route: None },
+        )
+    }
+
+    /// PR-C1 entry: realize `target` driven from `optimized`'s in-place
+    /// form **following the runtime route picker's chosen arms**. The
+    /// dispatch order is the route-aware lowering
+    /// ([`fuel_graph::lower_picked_route`]) over `route` — the per-branch
+    /// arm the picker (Picker 2) selected by live telemetry. A branch
+    /// absent from `route` defaults to arm 0, so an **empty** route is
+    /// byte-identical to [`realize_with_optimized`] (the no-pressure /
+    /// no-telemetry contract). A branchless graph has no branches ⇒ the
+    /// route is empty ⇒ this is exactly the arm-0 path.
+    pub fn realize_with_optimized_route(
+        graph: Arc<RwLock<Graph>>,
+        target: NodeId,
+        inputs: StorageCache,
+        optimized: &OptimizedGraph,
+        route: &PickedRoute,
+    ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
+        Self::realize_inner(
+            graph,
+            target,
+            inputs,
+            None,
+            None,
+            OrderSource::Optimized { optimized, route: Some(route) },
         )
     }
 
@@ -656,7 +698,33 @@ impl PipelinedExecutor {
         optimized: &OptimizedGraph,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
         Self::realize_many_inner(
-            graph, targets, inputs, None, None, OrderSource::Optimized(optimized),
+            graph,
+            targets,
+            inputs,
+            None,
+            None,
+            OrderSource::Optimized { optimized, route: None },
+        )
+    }
+
+    /// Multi-target PR-C1 entry — the `realize_many` sibling of
+    /// [`realize_with_optimized_route`]. Lowers each target's runs
+    /// following the picker's chosen arms via
+    /// [`fuel_graph::lower_picked_route`].
+    pub fn realize_many_with_optimized_route(
+        graph: Arc<RwLock<Graph>>,
+        targets: &[NodeId],
+        inputs: StorageCache,
+        optimized: &OptimizedGraph,
+        route: &PickedRoute,
+    ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
+        Self::realize_many_inner(
+            graph,
+            targets,
+            inputs,
+            None,
+            None,
+            OrderSource::Optimized { optimized, route: Some(route) },
         )
     }
 
@@ -822,17 +890,30 @@ fn order_for(
 ) -> Vec<NodeId> {
     match order_source {
         OrderSource::Default => execution_plan(graph, effective_roots),
-        OrderSource::Optimized(optimized) => {
+        OrderSource::Optimized { optimized, route } => {
             // Lower the runs over the *effective* roots (user targets +
             // any spliced/side-effect roots) so the order matches the
             // walk's reachable set rather than only the optimize-time
             // roots. On a branchless graph this is the same concatenated
             // `lower_run` sequence the OptimizedGraph reports.
-            let view = OptimizedGraph {
-                roots: effective_roots.to_vec(),
-                generation: optimized.generation,
-            };
-            view.dispatch_order(graph)
+            //
+            // PR-C1: when the picker supplied a route, follow the chosen
+            // arms (`lower_picked_route`); otherwise the arm-0 lowering
+            // (`OptimizedGraph::dispatch_order`). An empty route is
+            // byte-identical to arm-0, so the two paths agree whenever
+            // the picker chose arm-0 everywhere (the no-pressure case).
+            match route {
+                Some(route) => {
+                    fuel_graph::lower_picked_route(graph, effective_roots, route)
+                }
+                None => {
+                    let view = OptimizedGraph {
+                        roots: effective_roots.to_vec(),
+                        generation: optimized.generation,
+                    };
+                    view.dispatch_order(graph)
+                }
+            }
         }
     }
 }
@@ -850,7 +931,7 @@ fn generation_for(
         return Some(p.generation);
     }
     match order_source {
-        OrderSource::Optimized(optimized) => Some(optimized.generation),
+        OrderSource::Optimized { optimized, .. } => Some(optimized.generation),
         OrderSource::Default => None,
     }
 }
@@ -4564,6 +4645,87 @@ mod tests {
         } else {
             panic!("expected CPU output");
         }
+    }
+
+    /// PR-C1 behavior contract: `realize_with_optimized_route` with an
+    /// **empty** route (the no-pressure / no-telemetry case) is
+    /// byte-identical to `realize_with_optimized` (arm-0). On a branchless
+    /// graph the route has no branches to resolve, so both must produce
+    /// the same bytes — realize is unchanged from Phase B.
+    #[test]
+    fn realize_with_optimized_route_empty_equals_arm0() {
+        use crate::optimize::OptimizedGraph;
+
+        let build = || {
+            let graph = Arc::new(RwLock::new(Graph::new()));
+            let (lhs_id, rhs_id, add_id) = {
+                let mut g = graph.write().unwrap();
+                let lhs_id = g.push(Node {
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[3]),
+                    dtype: DType::F32,
+                });
+                let rhs_id = g.push(Node {
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[3]),
+                    dtype: DType::F32,
+                });
+                let add_id = g.push(Node {
+                    op: Op::Add,
+                    inputs: vec![lhs_id, rhs_id],
+                    shape: Shape::from_dims(&[3]),
+                    dtype: DType::F32,
+                });
+                g.set_target_backend(add_id, BackendId::Cpu);
+                (lhs_id, rhs_id, add_id)
+            };
+            let mut inputs = StorageCache::new();
+            inputs.insert(
+                lhs_id,
+                Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[1.0_f32, 2.0, 3.0]))),
+            );
+            inputs.insert(
+                rhs_id,
+                Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[10.0_f32, 20.0, 30.0]))),
+            );
+            (graph, add_id, inputs)
+        };
+
+        let read_bytes = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
+            let guard = arc.read().unwrap();
+            match &guard.inner {
+                fuel_memory::BackendStorage::Cpu(c) => {
+                    c.as_slice::<f32>().expect("f32 cast").to_vec()
+                }
+                _ => panic!("expected CPU output"),
+            }
+        };
+
+        // Arm-0 path.
+        let (g_a, add_a, in_a) = build();
+        let opt_a = OptimizedGraph { roots: vec![add_a], generation: 0 };
+        let (arm0_arc, _) =
+            PipelinedExecutor::realize_with_optimized(g_a, add_a, in_a, &opt_a)
+                .expect("arm-0 realize");
+        let arm0 = read_bytes(&arm0_arc);
+
+        // Empty-route path — must match arm-0 exactly.
+        let (g_r, add_r, in_r) = build();
+        let opt_r = OptimizedGraph { roots: vec![add_r], generation: 0 };
+        let empty_route = PickedRoute::new();
+        let (route_arc, _) = PipelinedExecutor::realize_with_optimized_route(
+            g_r, add_r, in_r, &opt_r, &empty_route,
+        )
+        .expect("empty-route realize");
+        let routed = read_bytes(&route_arc);
+
+        assert_eq!(arm0, vec![11.0, 22.0, 33.0]);
+        assert_eq!(
+            routed, arm0,
+            "an empty route realizes byte-identically to arm-0 (Phase B contract)",
+        );
     }
 
     /// Realizing a node whose target_backend isn't set surfaces a

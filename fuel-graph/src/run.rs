@@ -33,6 +33,20 @@ use crate::{Graph, NodeId, Op, topo_order_multi};
 use fuel_core_types::probe::BackendId;
 use std::collections::{HashMap, HashSet};
 
+/// A resolved route through the multi-path graph: for each `Op::Branch`
+/// decision point (keyed by the Branch node's [`NodeId`]) the **arm
+/// index** the runtime route picker (Picker 2) chose. Arm `i` is the
+/// branch's `inputs[i]` (arm-0 = `inputs[0]` = the cost-vector winner).
+///
+/// A branch **absent** from the map defaults to **arm 0** — so the empty
+/// route is exactly the arm-0-everywhere lowering ([`lower_runs_arm0`]),
+/// which keeps the no-pressure / no-telemetry behavior identical to
+/// Phase B. The picker in `fuel-dispatch` produces one of these by
+/// walking the branches in topological order and consulting a runtime
+/// selector over each branch's arms; `fuel-graph` only *consumes* it to
+/// lower the chosen route (it has no selector / telemetry knowledge).
+pub type PickedRoute = HashMap<NodeId, usize>;
+
 /// A maximal straight-line, single-device op-sequence between two
 /// decision points — the dispatch / command-buffer-capture unit.
 ///
@@ -214,6 +228,40 @@ fn effective_roots(graph: &Graph, roots: &[NodeId]) -> Vec<NodeId> {
     seeds
 }
 
+/// The reachable [`Op::Branch`] decision points over `roots`, in
+/// **topological order** of their `reconverge_at` merge points — the
+/// order the runtime route picker (Picker 2) resolves them in, so that
+/// coupled upstream decisions are committed before a downstream branch
+/// is reached (06-runtime §"Resolution order matters when decisions are
+/// coupled").
+///
+/// A finalized `Op::Branch` is typically orphaned (the `reconverge_at`
+/// node reads arm 0 directly, per PR-A1), so a plain forward walk would
+/// miss it; we therefore order by each branch's `reconverge_at` position
+/// in the [`effective_roots`] walk — the merge point is downstream of the
+/// arms, so its topo position is a faithful "where this decision sits"
+/// key. Branches whose merge point is unreachable are dropped.
+pub fn branches_in_topo_order(graph: &Graph, roots: &[NodeId]) -> Vec<NodeId> {
+    let eff_roots = effective_roots(graph, roots);
+    let order = topo_order_multi(graph, &eff_roots);
+    let position: HashMap<NodeId, usize> =
+        order.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+
+    let mut branches: Vec<(usize, NodeId)> = Vec::new();
+    for idx in 0..graph.len() {
+        let id = NodeId(idx);
+        let Op::Branch { reconverge_at } = graph.node(id).op else {
+            continue;
+        };
+        // Only branches whose merge point participates in this realize.
+        if let Some(&pos) = position.get(&reconverge_at) {
+            branches.push((pos, id));
+        }
+    }
+    branches.sort_by_key(|&(pos, _)| pos);
+    branches.into_iter().map(|(_, id)| id).collect()
+}
+
 fn finish_run(members: &[NodeId], device: Option<BackendId>) -> Run {
     Run {
         entry: members[0],
@@ -326,13 +374,44 @@ pub fn lower_run(run: &Run) -> &[NodeId] {
 /// is byte-identical to concatenating [`lower_run`] over
 /// [`extract_runs_multi`] — today's single-route order.
 pub fn lower_runs_arm0(graph: &Graph, roots: &[NodeId]) -> Vec<NodeId> {
+    // Arm-0 everywhere is the empty-route special case of the general
+    // route-aware lowering (an unmentioned branch defaults to arm 0).
+    lower_picked_route(graph, roots, &PickedRoute::new())
+}
+
+/// **Route-aware lowering** (Phase C PR-C1) — the generalization of
+/// [`lower_runs_arm0`]. The flat executable dispatch order that follows
+/// the **chosen arm at each [`Op::Branch`]** (per `picked`, defaulting to
+/// arm 0 for any branch the picker did not resolve) and **skips every
+/// non-chosen arm's run**.
+///
+/// This is exactly [`lower_runs_arm0`] generalized from "arm 0 always"
+/// to "the picked arm per branch": it reuses the same run partition
+/// ([`extract_runs_multi`]) and the same single-contiguous-region
+/// property of a run (extract never spans a branch boundary, so a run is
+/// either wholly inside a non-chosen arm or wholly outside). The skip set
+/// is [`non_chosen_arm_nodes`] — `non_arm0_arm_nodes` generalized to "any
+/// arm but the chosen one."
+///
+/// Value-preserving contract: every arm is a valid kernel for the same
+/// op (cast-to-uniform at `reconverge_at` per PR-A1), so following any
+/// arm yields the same result within tolerance. With `picked` empty
+/// (no-pressure / no-telemetry route) this is byte-identical to
+/// [`lower_runs_arm0`], and a graph with **zero `Op::Branch` nodes** has
+/// no arm to skip, so it equals concatenating [`lower_run`] over
+/// [`extract_runs_multi`] — today's single-route order.
+pub fn lower_picked_route(
+    graph: &Graph,
+    roots: &[NodeId],
+    picked: &PickedRoute,
+) -> Vec<NodeId> {
     let runs = extract_runs_multi(graph, roots);
-    let skip = non_arm0_arm_nodes(graph, roots);
+    let skip = non_chosen_arm_nodes(graph, roots, picked);
     let mut order = Vec::new();
     for run in &runs {
         // A run is a single contiguous arm/region (extract never spans a
-        // branch boundary), so it is either wholly inside a non-arm-0 arm
-        // or wholly outside. Skip iff its entry is a skipped node.
+        // branch boundary), so it is either wholly inside a non-chosen
+        // arm or wholly outside. Skip iff its entry is a skipped node.
         if skip.contains(&run.entry) {
             continue;
         }
@@ -341,19 +420,27 @@ pub fn lower_runs_arm0(graph: &Graph, roots: &[NodeId]) -> Vec<NodeId> {
     order
 }
 
-/// The set of nodes that belong to a **non-arm-0 arm** of some reachable
-/// [`Op::Branch`] — the nodes the arm-0 lowering skips.
+/// The set of nodes that belong to a **non-chosen arm** of some reachable
+/// [`Op::Branch`] — the nodes the route-aware lowering skips. The arm-0
+/// generalization: when `picked` is empty (or a branch is absent from
+/// it), the chosen arm defaults to arm 0, so this reduces to the former
+/// `non_arm0_arm_nodes`.
 ///
-/// For each reachable branch, arm 0 is `inputs[0]` and the alternative
-/// arms are `inputs[1..]`. The shared prefix (the diverge region) is the
-/// intersection of every arm exit's backward cone (PR-A2's `compute_
-/// arm_entries` recovers the diverge the same way — the op carries
-/// `reconverge_at`, not the diverge). A node is skipped when it lies in
-/// an alternative arm's cone but is neither shared nor part of arm 0's
-/// cone — i.e. it is interior to a route arm 0 does not take. Arms are
-/// internally disjoint by the PR-A1 build-time validation, so these sets
-/// don't overlap arm 0.
-fn non_arm0_arm_nodes(graph: &Graph, roots: &[NodeId]) -> HashSet<NodeId> {
+/// For each reachable branch, the chosen arm is `inputs[chosen]`
+/// (`chosen = picked[branch]`, default 0) and the non-chosen arms are
+/// every other input. The shared prefix (the diverge region) is the
+/// intersection of every arm exit's backward cone (PR-A2's
+/// `compute_arm_entries` recovers the diverge the same way — the op
+/// carries `reconverge_at`, not the diverge). A node is skipped when it
+/// lies in a non-chosen arm's cone but is neither shared nor part of the
+/// chosen arm's cone — i.e. it is interior to a route the picker did not
+/// take. Arms are internally disjoint by the PR-A1 build-time
+/// validation, so these sets don't overlap the chosen arm.
+fn non_chosen_arm_nodes(
+    graph: &Graph,
+    roots: &[NodeId],
+    picked: &PickedRoute,
+) -> HashSet<NodeId> {
     let eff_roots = effective_roots(graph, roots);
     let order = topo_order_multi(graph, &eff_roots);
     let reachable: HashSet<NodeId> = order.iter().copied().collect();
@@ -365,6 +452,16 @@ fn non_arm0_arm_nodes(graph: &Graph, roots: &[NodeId]) -> HashSet<NodeId> {
         if arm_exits.len() < 2 {
             continue;
         }
+        // The chosen arm index — default arm 0 (the winner) for any
+        // branch the picker did not resolve. Clamp to a valid arm so a
+        // stale/out-of-range pick degrades to arm 0 rather than panicking
+        // (never panic on a production path).
+        let chosen = picked
+            .get(&id)
+            .copied()
+            .filter(|&c| c < arm_exits.len())
+            .unwrap_or(0);
+
         let cones: Vec<HashSet<NodeId>> = arm_exits
             .iter()
             .map(|&e| backward_cone(graph, e, &reachable))
@@ -375,12 +472,15 @@ fn non_arm0_arm_nodes(graph: &Graph, roots: &[NodeId]) -> HashSet<NodeId> {
         for c in &cones[1..] {
             shared = shared.intersection(c).copied().collect();
         }
-        // Skip every alternative arm's interior: its cone minus the
-        // shared prefix minus arm 0's cone.
-        let arm0_cone = &cones[0];
-        for cone in &cones[1..] {
+        // Skip every non-chosen arm's interior: its cone minus the shared
+        // prefix minus the chosen arm's cone.
+        let chosen_cone = &cones[chosen];
+        for (i, cone) in cones.iter().enumerate() {
+            if i == chosen {
+                continue;
+            }
             for &n in cone {
-                if !shared.contains(&n) && !arm0_cone.contains(&n) {
+                if !shared.contains(&n) && !chosen_cone.contains(&n) {
                     skip.insert(n);
                 }
             }
@@ -583,6 +683,74 @@ mod tests {
             lower_runs_arm0(&g2, &[d]),
             flat,
             "on a branchless graph the arm-0 lowering equals the flat concatenation",
+        );
+    }
+
+    /// PR-C1 (e) route-aware lowering: [`lower_picked_route`] follows the
+    /// **chosen** arm and skips the non-chosen arms' runs, and equals
+    /// [`lower_runs_arm0`] when every pick is arm 0 (the empty route).
+    ///
+    /// On the 2-arm diamond:
+    /// - empty route (== arm 0 everywhere): arm 0 in, arm 1 out, and
+    ///   byte-identical to `lower_runs_arm0`.
+    /// - pick arm 1 for the branch: arm 1 in, arm 0's interior out — the
+    ///   mirror image, proving the lowering follows the picked arm rather
+    ///   than hard-coding arm 0.
+    #[test]
+    fn lower_picked_route_follows_chosen_arm_and_skips_others() {
+        let (g, _diverge, arm0, arm1, _reconverge, branch, post) =
+            diamond_with_branch();
+
+        // (1) Empty route == arm-0 everywhere == lower_runs_arm0.
+        let empty = PickedRoute::new();
+        let route_order = lower_picked_route(&g, &[post], &empty);
+        let arm0_order = lower_runs_arm0(&g, &[post]);
+        assert_eq!(
+            route_order, arm0_order,
+            "the empty route lowers byte-identically to lower_runs_arm0",
+        );
+        assert!(route_order.contains(&arm0), "empty route follows arm 0");
+        assert!(
+            !route_order.contains(&arm1),
+            "empty route skips arm 1's run; order={route_order:?}",
+        );
+
+        // (2) Pick arm 1 for the branch — now arm 1 is followed, arm 0's
+        // interior is skipped.
+        let mut picked = PickedRoute::new();
+        picked.insert(branch, 1);
+        let order = lower_picked_route(&g, &[post], &picked);
+        assert!(
+            order.contains(&arm1),
+            "picking arm 1 follows arm 1's run; order={order:?}",
+        );
+        assert!(
+            !order.contains(&arm0),
+            "picking arm 1 skips arm 0's interior run; order={order:?}",
+        );
+        // The Branch node is never an executable member regardless of pick.
+        for &id in &order {
+            assert!(
+                !matches!(g.node(id).op, Op::Branch { .. }),
+                "the Branch node is never an executable member",
+            );
+        }
+
+        // (3) A branch absent from the route still defaults to arm 0.
+        let absent = PickedRoute::new();
+        let absent_order = lower_picked_route(&g, &[post], &absent);
+        assert_eq!(
+            absent_order, arm0_order,
+            "a branch the picker did not resolve defaults to arm 0",
+        );
+
+        // (4) An out-of-range pick degrades to arm 0 (never panic).
+        let mut bad = PickedRoute::new();
+        bad.insert(branch, 99);
+        let bad_order = lower_picked_route(&g, &[post], &bad);
+        assert_eq!(
+            bad_order, arm0_order,
+            "an out-of-range arm index clamps to arm 0 rather than panicking",
         );
     }
 

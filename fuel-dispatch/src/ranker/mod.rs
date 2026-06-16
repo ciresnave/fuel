@@ -46,6 +46,7 @@ pub mod filters;
 pub mod judge;
 pub mod judge_aware_selector;
 pub mod placement_dp;
+pub mod route_picker;
 pub mod runtime_selector;
 pub mod vram_pressure_selector;
 
@@ -67,6 +68,9 @@ pub use filters::{
 pub use judge::{HashMapJudge, JudgeOracle};
 pub use judge_aware_selector::JudgeAwareSelector;
 pub use placement_dp::{ChainInput, PlacementDp};
+pub use route_picker::{
+    pick_route, RouteCache, TelemetryFingerprint, LOOKAHEAD_K,
+};
 pub use runtime_selector::{RuntimeSelector, WinnerSelector};
 pub use vram_pressure_selector::{
     default_estimate_output_bytes, BackendRuntimeHandle, BackendRuntimeLookup,
