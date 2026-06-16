@@ -1,16 +1,15 @@
-//! Live-Vulkan bridge realize — proves the Phase A PR-A3b-1
-//! `optimize_graph` default path realizes correctly on the Vulkan
-//! backend through `pipelined_bridge`
+//! Live-Vulkan bridge realize — proves the `optimize_graph` realize
+//! path (the single path after Phase A PR-A3b-2) realizes correctly on
+//! the Vulkan backend through `pipelined_bridge`
 //! (`LazyTensor::realize_f32_vulkan` → `pipelined_bridge::realize_one_as`
-//! → `PipelinedExecutor`), matching the host oracle. The bridge swap is
+//! → `PipelinedExecutor`), matching the host oracle. The path is
 //! backend-agnostic (it lives in the generic `realize_one_as`), so this
 //! is the Vulkan counterpart of the CPU `--lib` suite and the live-CUDA
 //! `recip_abs_realize_live` / `phase_c_rotating_kv_cuda` smokes.
 //!
-//! Run new-vs-legacy by toggling `FUEL_BRIDGE_LEGACY_PLAN`:
+//! Run:
 //!
 //!   cargo test -p fuel-core --features vulkan --test vulkan_bridge_realize_live -- --ignored --test-threads=1
-//!   FUEL_BRIDGE_LEGACY_PLAN=1 cargo test -p fuel-core --features vulkan --test vulkan_bridge_realize_live -- --ignored --test-threads=1
 //!
 //! Gated `#[ignore]`; requires a live Vulkan device (RTX 4070 on the dev box).
 
@@ -33,10 +32,9 @@ fn backend_or_skip() -> Option<Arc<VulkanBackend>> {
 }
 
 /// `(a + b) * a` realized on Vulkan through the bridge matches the host
-/// oracle — the exact `[11, 44, 99, 176]` the A3a CPU both-paths test
-/// and the CUDA smoke assert, so the new `optimize_graph` default (and
-/// the `FUEL_BRIDGE_LEGACY_PLAN` fallback, when set) is order-equivalent
-/// on the Vulkan backend too.
+/// oracle — the exact `[11, 44, 99, 176]` the CPU suite and the CUDA
+/// smoke assert, so the `optimize_graph` realize path is correct on the
+/// Vulkan backend too.
 #[test]
 #[ignore = "requires a live Vulkan device"]
 fn mul_add_realize_on_vulkan_matches_reference() {

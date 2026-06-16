@@ -1389,8 +1389,8 @@ impl LazyTensor {
     // wrapper restores Vulkan/CUDA realize parity (2026-06-15): it goes
     // through `pipelined_bridge::realize_one_as` on a Vulkan `Device`,
     // the same production path `realize_f32` / `realize_f32_cuda` use —
-    // so it exercises the A3b-1 optimize_graph default (and the
-    // `FUEL_BRIDGE_LEGACY_PLAN` fallback) on the Vulkan backend.
+    // so it exercises the `optimize_graph` realize path on the Vulkan
+    // backend.
     #[cfg(feature = "vulkan")]
     pub fn realize_f32_vulkan(
         &self,

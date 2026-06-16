@@ -574,7 +574,7 @@ impl SystemTopology {
 /// `fuel-core` (dependency direction), so `compile_plan` consumes
 /// transfer pricing through the trait — threaded via
 /// `PlanOptions::with_transfer_estimator` in
-/// `pipelined_bridge::build_execution_plan` — while the numbers
+/// `pipelined_bridge::build_optimized_graph` — while the numbers
 /// come from the Stage-1 [`TransferCalibration`] behind
 /// [`SystemTopology::estimate_transfer_ns`] (probed lazily once per
 /// generation; conservative per-path-class fallbacks otherwise).
