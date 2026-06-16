@@ -46,6 +46,7 @@ pub mod baracuda;
 /// `baracuda-kernels-sys` in as a direct dep.
 pub use baracuda_kernels_sys;
 pub mod byte_storage;
+pub mod capture;
 pub mod cutlass;
 pub mod device;
 pub mod dyn_impl;
@@ -59,6 +60,7 @@ pub mod ug;
 pub mod utils;
 
 pub use byte_storage::CudaStorageBytes;
+pub use capture::CapturedRun;
 pub use device::{CublasHandle, CudaDevice, CudaFunc, DeviceId, LaunchArgs, LaunchConfig};
 pub use dyn_impl::{CudaBackendDevice, CudaBackendStorage};
 pub use error::{CudaError, WrapErr};
