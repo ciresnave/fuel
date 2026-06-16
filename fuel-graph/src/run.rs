@@ -308,6 +308,87 @@ pub fn lower_run(run: &Run) -> &[NodeId] {
     &run.members
 }
 
+/// The **arm-0 single-route lowering** (Phase A PR-A4, architect-
+/// approved temporary fix). The flat executable dispatch order that
+/// **follows arm 0 through every [`Op::Branch`]** — the pre-run, arm 0's
+/// run, then the post-run — and **skips every non-arm-0 arm's run**.
+///
+/// Why this is needed: [`extract_runs_multi`] partitions *every* arm
+/// into its own run (so the future runtime picker can choose among
+/// them). A naive concatenation of all runs would execute every arm.
+/// Until the Phase-C route picker lands, realize must default to arm 0
+/// — the route a finalized-but-unpicked graph runs on (the A1 arm-0
+/// runnability invariant). This walk drops the runs that lie entirely
+/// inside a non-arm-0 arm and keeps the rest (pre / arm-0 / post), so a
+/// branched graph realizes to the same result as its arm-0 route.
+///
+/// A graph with **zero `Op::Branch` nodes** has no arm to skip, so this
+/// is byte-identical to concatenating [`lower_run`] over
+/// [`extract_runs_multi`] — today's single-route order.
+pub fn lower_runs_arm0(graph: &Graph, roots: &[NodeId]) -> Vec<NodeId> {
+    let runs = extract_runs_multi(graph, roots);
+    let skip = non_arm0_arm_nodes(graph, roots);
+    let mut order = Vec::new();
+    for run in &runs {
+        // A run is a single contiguous arm/region (extract never spans a
+        // branch boundary), so it is either wholly inside a non-arm-0 arm
+        // or wholly outside. Skip iff its entry is a skipped node.
+        if skip.contains(&run.entry) {
+            continue;
+        }
+        order.extend_from_slice(lower_run(run));
+    }
+    order
+}
+
+/// The set of nodes that belong to a **non-arm-0 arm** of some reachable
+/// [`Op::Branch`] — the nodes the arm-0 lowering skips.
+///
+/// For each reachable branch, arm 0 is `inputs[0]` and the alternative
+/// arms are `inputs[1..]`. The shared prefix (the diverge region) is the
+/// intersection of every arm exit's backward cone (PR-A2's `compute_
+/// arm_entries` recovers the diverge the same way — the op carries
+/// `reconverge_at`, not the diverge). A node is skipped when it lies in
+/// an alternative arm's cone but is neither shared nor part of arm 0's
+/// cone — i.e. it is interior to a route arm 0 does not take. Arms are
+/// internally disjoint by the PR-A1 build-time validation, so these sets
+/// don't overlap arm 0.
+fn non_arm0_arm_nodes(graph: &Graph, roots: &[NodeId]) -> HashSet<NodeId> {
+    let eff_roots = effective_roots(graph, roots);
+    let order = topo_order_multi(graph, &eff_roots);
+    let reachable: HashSet<NodeId> = order.iter().copied().collect();
+
+    let mut skip: HashSet<NodeId> = HashSet::new();
+    for &id in &order {
+        let Op::Branch { .. } = graph.node(id).op else { continue };
+        let arm_exits = &graph.node(id).inputs;
+        if arm_exits.len() < 2 {
+            continue;
+        }
+        let cones: Vec<HashSet<NodeId>> = arm_exits
+            .iter()
+            .map(|&e| backward_cone(graph, e, &reachable))
+            .collect();
+        // Shared prefix = intersection of every arm's cone (the diverge
+        // region the arms depart from).
+        let mut shared: HashSet<NodeId> = cones[0].clone();
+        for c in &cones[1..] {
+            shared = shared.intersection(c).copied().collect();
+        }
+        // Skip every alternative arm's interior: its cone minus the
+        // shared prefix minus arm 0's cone.
+        let arm0_cone = &cones[0];
+        for cone in &cones[1..] {
+            for &n in cone {
+                if !shared.contains(&n) && !arm0_cone.contains(&n) {
+                    skip.insert(n);
+                }
+            }
+        }
+    }
+    skip
+}
+
 /// Branch density: the share of reachable nodes that are decision
 /// points ([`Op::Branch`] nodes), over `root`.
 ///
@@ -458,6 +539,51 @@ mod tests {
         assert_ne!(pre_run, arm1_run);
         // the post region (reconverge + Branch + post) is its own run.
         assert!(runs[post_run].members.contains(&post));
+    }
+
+    /// PR-A4 arm-0 single-route lowering: [`lower_runs_arm0`] follows
+    /// arm 0 through the branch (pre, arm0, post) and SKIPS arm 1's run.
+    /// arm 1's interior node never appears; arm 0's does. On a branchless
+    /// graph it is identical to concatenating [`lower_run`] over the runs.
+    #[test]
+    fn lower_runs_arm0_follows_arm0_and_skips_other_arms() {
+        let (g, diverge, arm0, arm1, reconverge, _branch, post) = diamond_with_branch();
+
+        let order = lower_runs_arm0(&g, &[post]);
+
+        // arm 1's interior is skipped; arm 0 + pre + post execute.
+        assert!(
+            !order.contains(&arm1),
+            "arm-0 lowering skips arm 1's run; order={order:?} arm1={arm1:?}",
+        );
+        assert!(order.contains(&diverge), "the pre-run (diverge) executes");
+        assert!(order.contains(&arm0), "arm 0 executes");
+        assert!(order.contains(&reconverge), "the reconverge executes");
+        assert!(order.contains(&post), "the post-run executes");
+        // The phi/merge Branch node is structural — never an executable
+        // member.
+        for &id in &order {
+            assert!(
+                !matches!(g.node(id).op, Op::Branch { .. }),
+                "the Branch node is never an executable member",
+            );
+        }
+
+        // Branchless: identical to concatenating lower_run over runs.
+        let mut g2 = Graph::new();
+        let a = f32_node(&mut g2, Op::Const, vec![]);
+        let b = f32_node(&mut g2, Op::Relu, vec![a]);
+        let c = f32_node(&mut g2, Op::Silu, vec![b]);
+        let d = f32_node(&mut g2, Op::Tanh, vec![c]);
+        let flat: Vec<NodeId> = extract_runs(&g2, d)
+            .iter()
+            .flat_map(|r| lower_run(r).to_vec())
+            .collect();
+        assert_eq!(
+            lower_runs_arm0(&g2, &[d]),
+            flat,
+            "on a branchless graph the arm-0 lowering equals the flat concatenation",
+        );
     }
 
     /// (c) A `target_backend` change mid-chain (set via the existing
