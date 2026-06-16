@@ -51,7 +51,6 @@ pub mod kernel;
 pub mod optimize;
 pub mod pipelined;
 pub mod plan;
-pub mod plan_store;
 pub mod ranker;
 pub mod residency;
 pub mod vulkan_dispatch;

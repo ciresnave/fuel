@@ -14,12 +14,14 @@
 //! (PR-A2). The optimized form lives **in the graph** — a graph with
 //! zero [`Op::Branch`] nodes is exactly today's single-route graph.
 //!
-//! ## A3a scope (ADDITIVE — proves equivalence, deletes nothing)
+//! ## A3a origin scope (ADDITIVE — proved equivalence, deleted nothing)
 //!
-//! This is the **split** A3a: introduce the new path *alongside* the
-//! old one and prove them equivalent before anything old is removed
-//! (A3b deletes `PlanStore` and swaps the bridge onto this path).
-//! Concretely, in A3a:
+//! This entry point landed in the **split** A3a: introduced *alongside*
+//! the old path and proved equivalent before anything old was removed.
+//! PR-A3b-1 then made it the default realize path, and PR-A3b-2 deleted
+//! `PlanStore` and the legacy `compile_plan` route-picking dispatch
+//! entirely (`optimize_graph` is now the only path). As originally
+//! introduced in A3a:
 //!
 //! - There are **no pathfinders yet** — the first lands in PR-A4. A
 //!   graph with no competing routes is already its own single-route
@@ -32,10 +34,14 @@
 //!   chain, and fail-fast missing-binding diagnostics are *not*
 //!   reinvented. The point of A3a is to establish the new entry point
 //!   + in-place form, not new optimization.
-//! - [`crate::plan::compile_plan`], [`crate::plan::ExecutionPlan`],
-//!   [`crate::plan_store::PlanStore`], and the realize path are left
-//!   **unchanged and green**. `optimize_graph` is **not** yet wired
-//!   into realize.
+//! - [`crate::plan::compile_plan`] + [`crate::plan::ExecutionPlan`]
+//!   are reused (the latter as a transient by-product). PR-A3b-1 wired
+//!   `optimize_graph` in as the default realize path; PR-A3b-2 made it
+//!   the ONLY path — the legacy `compile_plan`/`PlanStore` route-picking
+//!   dispatch and the identity-keyed plan store are deleted, and
+//!   `optimize_graph` now surfaces its internal `ExecutionPlan` so the
+//!   bridge's stamp/residency/layout passes reuse it (one `compile_plan`
+//!   per realize).
 //!
 //! ## The equivalence gate
 //!
@@ -55,7 +61,7 @@ use fuel_core_types::Result;
 use fuel_graph::{extract_runs_multi, lower_run, Graph, NodeId, Op};
 
 use crate::kernel::KernelBindingTable;
-use crate::plan::{compile_plan, PlanOptions};
+use crate::plan::{compile_plan, ExecutionPlan, PlanOptions};
 
 /// The transient *view* [`optimize_graph`] returns — the realize-roots
 /// it optimized for plus the topology generation it ran under. It is
@@ -146,28 +152,38 @@ impl OptimizedGraph {
 /// `extract_runs`/`lower_run`) reproduces `compile_plan(...).order`
 /// for any branchless graph — the equivalence gate.
 ///
-/// **Coexistence invariant:** this neither mutates the graph's
-/// structure in A3a (no nodes added/removed) nor touches `PlanStore`,
-/// `ExecutionPlan`, or the realize path. It is purely additive.
+/// ## Returned `ExecutionPlan` (PR-A3b-2 de-dup)
+///
+/// `optimize_graph` already drives [`compile_plan`] internally for
+/// placement/cost/validation; PR-A3b-2 **surfaces** that transient
+/// `ExecutionPlan` alongside the [`OptimizedGraph`] so the realize
+/// bridge can reuse it for its `stamp_plan_backends` / residency /
+/// layout-fixup passes instead of re-running `compile_plan` a second
+/// time. The plan stays a *transient by-product* — the source of truth
+/// is the graph; the bridge uses the surfaced plan purely to read the
+/// per-node winners it just computed. The executor still recomputes
+/// the dispatch order from the (post-stamping) graph at realize time
+/// (`OptimizedGraph::dispatch_order`), so the surfaced plan never
+/// becomes a dispatch-time authority.
 pub fn optimize_graph(
     graph: &mut Graph,
     roots: &[NodeId],
     bindings_table: &KernelBindingTable,
     opts: &PlanOptions<'_>,
-) -> Result<OptimizedGraph> {
+) -> Result<(OptimizedGraph, ExecutionPlan)> {
     // (1) The dispatch order today: data-flow topo refined by ordering
     //     edges. `compile_plan` copies this verbatim into
     //     `ExecutionPlan::order`, so it IS the executor's walk order.
     let order = fuel_graph::opt::execution_plan(graph, roots);
 
     // (2) Reuse the placement/cost/validation machinery. The plan is a
-    //     transient by-product in A3a — we drive `compile_plan` so the
-    //     same fail-fast diagnostics (missing binding, no device
-    //     context) fire at optimize time, and so the placement DP /
-    //     cost composer run unchanged. We deliberately do NOT keep the
-    //     plan as the source of truth, and (A3a additive scope) we do
-    //     NOT stamp it back onto the graph — the bridge still owns
-    //     that until A3b.
+    //     transient by-product — we drive `compile_plan` so the same
+    //     fail-fast diagnostics (missing binding, no device context)
+    //     fire at optimize time, and so the placement DP / cost composer
+    //     run unchanged. We deliberately do NOT keep the plan as the
+    //     source of truth (the graph is); PR-A3b-2 surfaces it back to
+    //     the bridge so the bridge's stamp/residency/layout passes reuse
+    //     this single `compile_plan` instead of running a second one.
     let plan = compile_plan(graph, &order, bindings_table, opts)?;
     let generation = plan.generation;
 
@@ -185,10 +201,13 @@ pub fn optimize_graph(
         "A3a optimize_graph must not introduce Op::Branch nodes",
     );
 
-    Ok(OptimizedGraph {
-        roots: roots.to_vec(),
-        generation,
-    })
+    Ok((
+        OptimizedGraph {
+            roots: roots.to_vec(),
+            generation,
+        },
+        plan,
+    ))
 }
 
 /// Count of `Op::Branch` nodes reachable in `order` — the pre-optimize
@@ -323,7 +342,7 @@ mod tests {
                 .expect("today's compile_plan succeeds on a placeable graph");
 
             // New path.
-            let optimized = optimize_graph(&mut g, &[root], &table, &opts)
+            let (optimized, _plan) = optimize_graph(&mut g, &[root], &table, &opts)
                 .expect("optimize_graph succeeds on the same graph");
 
             // (a) zero competing routes => zero Branch nodes.
@@ -360,12 +379,12 @@ mod tests {
         let opts = cpu_opts();
 
         let nodes_before = g.len();
-        let first = optimize_graph(&mut g, &[root], &table, &opts)
+        let (first, _first_plan) = optimize_graph(&mut g, &[root], &table, &opts)
             .expect("first optimize succeeds");
         let order_first = first.dispatch_order(&g);
         let nodes_after_first = g.len();
 
-        let second = optimize_graph(&mut g, &[root], &table, &opts)
+        let (second, _second_plan) = optimize_graph(&mut g, &[root], &table, &opts)
             .expect("second optimize succeeds");
         let order_second = second.dispatch_order(&g);
         let nodes_after_second = g.len();
@@ -397,7 +416,9 @@ mod tests {
         let relu = f32_node(&mut g, Op::Relu, vec![a]);
         let opts = cpu_opts();
 
-        let err = optimize_graph(&mut g, &[relu], &table, &opts).unwrap_err();
+        let err = optimize_graph(&mut g, &[relu], &table, &opts)
+            .map(|_| ())
+            .unwrap_err();
         match err {
             fuel_core_types::Error::NoBackendForOp { op, .. } => {
                 assert_eq!(op, OpKind::ReluElementwise);

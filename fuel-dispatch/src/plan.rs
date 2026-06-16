@@ -752,12 +752,11 @@ pub fn compile_plan(
 
 /// Does this op receive an `AlternativeSet` entry from
 /// [`compile_plan`]? The single source of truth for the plan-entry
-/// gate, shared by [`build_node_draft`] and the plan store's
-/// coverage check ([`crate::plan_store`]) so the two can never
-/// drift: `true` exactly when `op_to_op_kind` maps the op AND it is
-/// not a residency-determined transfer (`Op::Copy` / `Op::Move`,
-/// whose kernel backend the executor resolves from the bridge-
-/// maintained source-backend stamp).
+/// gate (used by [`build_node_draft`] and `PlanOptions::reuse_plan`
+/// incremental extension): `true` exactly when `op_to_op_kind` maps
+/// the op AND it is not a residency-determined transfer (`Op::Copy` /
+/// `Op::Move`, whose kernel backend the executor resolves from the
+/// bridge-maintained source-backend stamp).
 pub fn node_needs_plan_entry(op: &fuel_graph::Op) -> bool {
     op_to_op_kind(op).is_some()
         && !matches!(op, fuel_graph::Op::Copy { .. } | fuel_graph::Op::Move { .. })
