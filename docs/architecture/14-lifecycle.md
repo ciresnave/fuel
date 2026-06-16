@@ -1,6 +1,6 @@
 # Lifecycle: from model file to finished inference/training
 
-**Status**: v0.2 (2026-06-14).
+**Status**: v0.3 (2026-06-16).
 
 This is the one document that walks the **whole path**, in order: from "load a model
 from disk" to "inference or training has finished." Every other architecture section
@@ -17,9 +17,16 @@ Two reading rules:
   the code does **Today** versus what the architecture **Intends**. Do not read the
   intended steady-state as if it were all implemented — that mismatch is exactly what this
   document exists to prevent. The **Intended** column reflects the 2026-06-14 *"the plan is
-  the graph"* redirection ([10-decisions-log](10-decisions-log.md)); the as-built code largely
-  predates it — a separate `ExecutionPlan`, per-node top-N alternatives, a fresh graph per
-  token, and planning at realize time — so each such gap is called out where it lands.
+  the graph"* redirection ([10-decisions-log](10-decisions-log.md)). **Phase A of that rebuild
+  has now landed** (2026-06-15/16): the optimized form is an in-graph multi-path structure
+  (`Op::Branch`), and `optimize_graph` is the **sole** realize-path optimizer — the separate
+  `ExecutionPlan`/`PlanStore` dispatch path is deleted. What still predates the redirection,
+  and stays in the **Intended** column below, is: **load-time build** (the graph is still built
+  inside `forward` and planned at realize time, a fresh graph per decode token); the full
+  **Pareto-frontier cost-*vector*** optimizer (Phase A's pathfinder is a deliberate-fork *seed*,
+  not the bounded multi-axis frontier); the **runtime route picker** at branch points (realize
+  follows **arm-0** statically — Phase C); **storage classes / sessions** (Phase B/D); and
+  **mmap persistence** (Phase E). Each remaining gap is called out where it lands.
 
 ---
 
@@ -37,10 +44,12 @@ confusion; see the glossary and stage 4.)
 Where the boundary sits matters. Under the redirection, the first two boxes — **build graph**
 and **plan** — are *load-time and input-independent*: the graph, with its optimized multi-path
 form, is built once when the model loads, not rebuilt per request. **realize** and the loops
-are the per-request work. The as-built code instead builds the graph inside `forward` and plans
-at realize time; that single shift (load-time vs forward-time) is the largest Today-vs-Intended
-gap in this document, and it is what makes the decode-per-token re-planning in stage 5 a gap
-rather than the design.
+are the per-request work. **Today** the **plan** box has caught up — `optimize_graph` writes the
+optimized multi-path form *in place* in the graph (Phase A) — but the **build graph** box has
+not: the as-built code still builds the graph inside `forward` and runs `optimize_graph` at
+realize time, rebuilding per request. That single remaining shift (load-time vs forward-time)
+is now the largest Today-vs-Intended gap in this document, and it is what makes the
+decode-per-token re-planning in stage 5 a gap rather than the design.
 
 ---
 
@@ -55,9 +64,11 @@ particular input; [03-ir](03-ir.md).)* (`fuel-graph`; `Graph` at `fuel-graph/src
 **Node** — one operation: `{ op, inputs: Vec<NodeId>, shape, dtype }`. Identified by a
 `NodeId` (a `usize` newtype). (`fuel-graph/src/lib.rs:1232`.)
 
-**Op enum** — the closed set of ~80–90 primitive operations, plus a single open arm
-`Op::Fused(FusedOpId, params)` that delegates to the **fused-op registry** (frozen at
-startup). (`fuel-graph`; [03-ir](03-ir.md).)
+**Op enum** — the closed set of ~80–90 primitive operations, plus `Op::Fused(FusedOpId, params)`
+(delegates to the **fused-op registry**, frozen at startup) and `Op::Branch { reconverge_at }` —
+the in-graph multi-path phi/merge **decision node**: the optimized form's divergent-then-
+reconvergent routes live as real arena nodes (`fuel-graph/src/lib.rs:1006`, landed Phase A).
+(`fuel-graph`; [03-ir](03-ir.md).)
 
 **LazyTensor / Tensor** — the handle a user (or model code) holds. Calling `.matmul()`,
 `.softmax()`, etc. on it appends nodes to the graph and returns a new handle. It carries
@@ -73,36 +84,47 @@ dead). Today the class is implicit in how each `Arc` is held; [03-ir §Storage c
 sessions](03-ir.md).)*
 
 **realize** — the call that crosses from graph-building to execution: `.realize_f32()` and
-friends. Under the load-time-planning design it is conceptually "wait until the plan covers
-the requested roots, then dispatch." Returns host data (or leaves results device-resident).
-(`PipelinedExecutor::realize*`, `fuel-dispatch/src/pipelined.rs:406+`.)
+friends. **Today** it runs `optimize_graph` over the graph (via the bridge's
+`build_optimized_graph`) and dispatches the resulting **arm-0 route** through
+`PipelinedExecutor::realize_with_optimized` (`fuel-dispatch/src/pipelined.rs:451`). Returns host
+data (or leaves results device-resident). *(Intended: once the graph + plan are built at load,
+realize reduces to "wait until the plan covers the requested roots, then dispatch"; today it
+optimizes per realize.)*
 
-**The plan** (a.k.a. *the optimized form* / *optimized DAG* in 03/04/06) — the
-`ExecutionPlan`: a topological `order`, a sparse map of per-node **alternative sets**, and a
-`generation` stamp. Built by `compile_plan`. (`fuel-dispatch/src/plan.rs:56`.) This document
-uses **"the plan"** as canonical; "optimized form" is the same thing in conceptual prose.
-*(Intended: the optimized paths are not a separate artifact at all — they live **in the
-graph** as a bounded multi-path structure, so "the plan **is** the graph." The standalone
-`ExecutionPlan` is the as-built realization of it; [03-ir §The optimized form](03-ir.md),
-[04-optimization](04-optimization.md).)*
+**The plan** (a.k.a. *the optimized form* / *optimized DAG* in 03/04/06) — **Today: the plan IS
+the graph.** `optimize_graph` (`fuel-dispatch/src/optimize.rs:192`) transforms the graph in place
+into a multi-path structure whose decision points are `Op::Branch` nodes; that in-graph form is
+the source of truth, and the dispatch order is read back from it by run extraction
+(`lower_runs_arm0`, `fuel-graph/src/run.rs:328`). The `ExecutionPlan` (`fuel-dispatch/src/plan.rs:56`)
+still exists but is **demoted** to a transient view `optimize_graph` returns — used only for
+backend-stamping / residency / layout, never as the dispatch authority; `PlanStore` (its old
+identity-keyed memoization) is **deleted**. *(Intended remainder: the retained paths per device
+are bounded by a **Pareto frontier + crowding cap** over a per-path cost **vector** — Phase A
+emits branches via a deliberate-fork seed, not yet the full frontier;
+[04-optimization §Bounding the frontier](04-optimization.md).)*
 
 **Alternative set** — for one node, the ranked list of viable `(kernel, backend, device)`
-choices (default top-N = 3). The plan stores a set per kernel-bearing node, not N whole
-competing graphs. (`AlternativeSet`, `fuel-dispatch/src/ranker/alternative_set.rs`.)
-*(Intended: choices attach to **decision (branch) points**, not to every node, and the set
-of retained paths per device is bounded by a **Pareto frontier + crowding cap** rather than a
-fixed top-N; [04-optimization §Bounding the frontier](04-optimization.md). The fixed default
-top-N = 3 is the as-built shape.)*
+choices. (`AlternativeSet`, `fuel-dispatch/src/ranker/alternative_set.rs`.) **Today** this is an
+**internal placement detail** of `compile_plan` (which `optimize_graph` drives for per-node
+cost/placement); it is no longer the realize-dispatch model. Realize dispatches the in-graph
+`Op::Branch` decision points via the **arm-0 single-route lowering** (`lower_runs_arm0`), not a
+per-node top-N set. *(Intended: the deliberate-fork pathfinder that turns a multi-placement
+choice into a branch landed in Phase A; bounding those branches by the per-device Pareto
+frontier + a crowding cap is Phase B.)*
 
-**`compile_plan` / plan-time ranker ("Picker 1")** — the optimizer pass that builds the
-plan: per node it enumerates candidates, runs the filter chain, computes cost, runs
-placement, and ranks. (`fuel-dispatch/src/plan.rs:488`.)
+**`compile_plan` / plan-time ranker ("Picker 1")** — per node it enumerates candidates, runs
+the filter chain, computes cost, runs placement, and ranks. (`fuel-dispatch/src/plan.rs:488`.)
+**Today** it is no longer the top-level optimizer: `optimize_graph` *drives it internally* for
+per-node placement/cost, then emits `Op::Branch` decision points and returns the `ExecutionPlan`
+as the transient stamping view.
 
 **Runtime selector ("Picker 2", a.k.a. *route picker* in 06, *Router* in older
-code/README)** — at realize time, chooses among a node's stored alternatives using live
-telemetry. The default is `ChainedSelector` (VramPressure → JudgeAware → Winner).
-(`fuel-dispatch/src/ranker/chained_selector.rs`.) *"route picker," "selector," and "Router"
-all name this one surface.*
+code/README)** — chooses among a branch's surviving paths using live telemetry. The
+implementations exist (`ChainedSelector` = VramPressure → JudgeAware → Winner,
+`fuel-dispatch/src/ranker/chained_selector.rs`), but **Today they are NOT wired into the realize
+path** — A3b-2 removed the per-node selector from the bridge, and Phase A's realize follows
+**arm-0** statically. *(Intended: Phase C re-wires Picker 2 to choose among arms at the few
+branch points.)* *"route picker," "selector," and "Router" all name this one surface.*
 
 **Judge** — an **offline** profiler that measures `(op, dtype, size_class, backend, device)`
 latency/error and writes a profile the plan-time ranker reads. It does **not** measure ops
@@ -110,9 +132,10 @@ during normal dispatch. (`fuel-core/src/judge/`.)
 
 **Work-item producer** *(today named the "compiler thread" in code —
 `compiler_thread_body`, slated for rename)* — a worker thread *inside realize* that walks
-the plan's order and, for each node, resolves the concrete kernel and binds its operands
-into a **WorkItem**, pushing them down a channel. It does **not** compile machine code, and
-it is **not** a pipeline stage. (`fuel-dispatch/src/pipelined.rs:734`.)
+the **arm-0 dispatch order** (from `optimize_graph` / `lower_runs_arm0`) and, for each node,
+resolves the concrete kernel and binds its operands into a **WorkItem**, pushing them down a
+channel. It does **not** compile machine code, and it is **not** a pipeline stage.
+(`fuel-dispatch/src/pipelined.rs:861`.)
 
 **Executor** — the *calling* thread's loop that consumes WorkItems and runs them: gather
 inputs, allocate output, invoke the kernel, evict dead buffers. Runs concurrently with the
@@ -169,10 +192,11 @@ layout side-table — zero-copy.
 
 **How this maps to the conceptual model:** [03-ir](03-ir.md) frames three artifacts —
 *user-facing form* → (decomposition) → *base map* (primitive-only, canonical) →
-(optimization) → *optimized form* (the plan). **Today** the code builds the graph and then
-`compile_plan` annotates it; the fully-decomposed "base map" as a separately retained
-artifact is largely conceptual (the fused-op registry and a first lowering rule exist; the
-broader rule engine is in progress per [04-optimization](04-optimization.md):314+).
+(optimization) → *optimized form* (the plan). **Today** the code builds the graph (in `forward`)
+and then `optimize_graph` transforms it in place into the multi-path form (Phase A); the
+fully-decomposed "base map" as a separately retained artifact is largely conceptual (the fused-op
+registry and a first lowering rule exist; the broader rule engine is in progress per
+[04-optimization](04-optimization.md):314+).
 
 **Intended** ([03-ir](03-ir.md), 2026-06-14 redirection): the graph is **input-independent**
 and built **at load**, not inside `forward`. Loading a native `.fuel` via `map_from_file`
@@ -184,44 +208,45 @@ runs" path is the current simplification.
 
 ---
 
-## Stage 3 — Plan (graph → an ExecutionPlan)
+## Stage 3 — Plan (graph → its in-graph multi-path form)
 
 **What it is:** decide *how* to run each node — which kernel, which backend, which device —
 and in what order. The output is **the plan**, not execution.
 
-**Today** (`compile_plan`, `fuel-dispatch/src/plan.rs:488`): for each kernel-bearing node,
-in order:
+**Today** the top-level optimizer is **`optimize_graph`** (`fuel-dispatch/src/optimize.rs:192`),
+the sole realize-path optimizer (Phase A). It transforms the graph **in place**:
 
-1. **Enumerate** candidate `(kernel, backend, device)` choices (`enumerate_candidates`).
-2. **Filter** them through the chain — `PrecisionFloor` (hard: drop choices that violate the
-   node's precision requirement), then soft preferences (`StridedInputPref`, `BitStablePref`).
-3. **Cost** each survivor: Layer-1 static `CostFn` (a pessimistic estimate), refined by
-   Layer-2 **Judge** data where the Judge has profiled that cell (`compute_static_costs`,
-   `cost.rs:155`).
-4. **Place + rank**: the carry-forward placement DP (or a greedy fallback) accounts for
-   cross-device transfer cost, then ranks by `composite_ns` and keeps the top-N as the
-   node's **alternative set**, with a winner.
+1. **Per-node placement/cost** — it drives `compile_plan` (`fuel-dispatch/src/plan.rs:488`)
+   internally: for each kernel-bearing node, enumerate `(kernel, backend, device)` candidates →
+   filter chain (`PrecisionFloor` hard, then `StridedInputPref` / `BitStablePref` soft) → cost
+   (Layer-1 static `CostFn`, refined by Layer-2 **Judge** data, `cost.rs:155`) → carry-forward
+   placement DP, ranked by `composite_ns`.
+2. **Emit branches** — where a node has ≥2 viable placements *and a single consumer*, the
+   deliberate-fork pathfinder (`seed_placement_fork_branches`) records the choice as an
+   `Op::Branch` decision point: arm-0 = the DP winner (the live route), arm-1 = the runner-up
+   placement (an orphaned recording). Ordinary DAG fan-out is **not** flagged (that is the gate).
+3. **Return a transient view** — `optimize_graph` returns the `ExecutionPlan` it built, used
+   only for backend-stamping / residency / layout, never as the dispatch authority. The dispatch
+   order is read back from the graph by **arm-0 run extraction** (`lower_runs_arm0`).
 
-The plan (`order` + per-node alternative sets + `generation`) is memoized in the
-**PlanStore**, keyed by graph identity + device (`plan_store.rs`). This pass is **Picker 1**
-(the plan-time ranker).
+`PlanStore` (the old identity-keyed plan memoization) and the legacy `compile_plan`-drives-dispatch
+path are **deleted**; `optimize_graph` runs once per realize.
 
-**Today vs Intended — three real gaps to know:**
+**Today vs Intended — what Phase A left for later:**
 
-- **Load-time planning is not wired.** The only `Planner::warm` call runs *inside the
-  forward, just before realize* (`lazy.rs:5295`), not at model-load. So planning happens at
-  realize time, per forward. ([06-runtime](06-runtime.md) v1.1 intends planning to start at
-  load; that is the unfinished planner program, Stages 4b–6.)
-- **The intended optimizer is `optimize_graph`, run at load** — pathfinders propose alternative
-  paths, rankers score each on a per-path cost *vector* (a single central time metric + per-tier
-  memory + discrete precision/accuracy), optimizers rewrite, and the retained paths per device
-  are bounded by a **Pareto frontier + crowding cap** ([04-optimization §Bounding the
-  frontier](04-optimization.md)). The as-built `compile_plan` is instead per-node, fixed top-N,
-  synchronous/single-pass, and runs at realize time. The redirection ([10-decisions-log](10-decisions-log.md)
-  2026-06-14) makes "decisions at branch points, paths in the graph" the target; the
-  frontier-pruning prototype confirmed it stays bounded (~10² paths, lossless at keep ≈ 32/device).
-- **"Pre-resolved at plan time"** is only partly true — see stage 4: the binding-table
-  lookup actually happens during realize, in the work-item producer.
+- **Load-time planning is not wired.** `optimize_graph` runs *at realize time, inside the
+  forward* (the graph is still built in `forward` — stage 2), not at model-load. Moving the
+  build + optimize to load is the Phase D planner program ([06-runtime](06-runtime.md) intends it).
+- **Not yet the full frontier.** Phase A's pathfinder is a **deliberate-fork seed** (one branch
+  per genuine multi-placement node). The intended optimizer ranks each path on a per-path cost
+  **vector** (a single central time metric + per-tier memory + discrete precision/accuracy) and
+  bounds retained paths per device by a **Pareto frontier + crowding cap**
+  ([04-optimization §Bounding the frontier](04-optimization.md); the prototype confirmed ~10²
+  paths, lossless at keep ≈ 32/device). That multi-axis frontier is Phase B.
+- **Realize follows arm-0 statically.** The runtime **route picker** that chooses a *non-arm-0*
+  arm at a branch using live telemetry is Phase C; today realize always takes arm-0.
+- **"Pre-resolved at plan time"** is only partly true — see stage 4: the binding-table lookup
+  still happens during realize, in the work-item producer.
 
 ---
 
@@ -237,21 +262,24 @@ box that contains the work-item producer and the executor.
    device→host download is itself a graph node), and upload every reachable `Op::Const` into
    a **StorageCache** (`HashMap<NodeId, Arc<RwLock<Storage>>>`). Long-lived buffers (weights,
    KV-cache) are seeded here so they are never re-uploaded.
-2. **Plan + stamp:** get/extend the plan from the PlanStore (this is the **coverage-wait** —
-   ensure the plan covers every node the roots need; if another thread is planning the same
-   graph/device, wait on its latch), then write each winner's backend into the graph's
-   `target_backend` side-table and stitch residency/contiguity fixups.
-3. Call `PipelinedExecutor::realize_with_plan_and_selector`.
+2. **Optimize + stamp:** run `optimize_graph` (the bridge's `build_optimized_graph`), which
+   transforms the graph in place into its multi-path form and returns the transient
+   `ExecutionPlan`; write each winner's backend into the graph's `target_backend` side-table from
+   it, and stitch residency/contiguity fixups. (No `PlanStore`, no coverage-wait latch — Phase A
+   deleted them; `optimize_graph` runs once per realize.)
+3. Call `PipelinedExecutor::realize_with_optimized` (`pipelined.rs:451`), which dispatches the
+   **arm-0 route** (`lower_runs_arm0`).
 
-**The two threads** (`realize_inner`, `pipelined.rs:454`):
+**The two threads** (`realize_inner`, `pipelined.rs:504`):
 
-- **Work-item producer** (`compiler_thread_body`, `pipelined.rs:734`): holds one read lock
-  on the graph, walks the plan's `order`, and for each node calls `resolve_compiled` — if the
-  plan carries an alternative set, the **runtime selector (Picker 2)** chooses among the
-  top-N using live telemetry; otherwise the static winner is taken; otherwise it falls back
-  to a live **binding-table lookup**. The resolved kernel + operands become a **WorkItem**
-  pushed down a channel. (This is "compile" only in the sense of *lowering one planned node
-  to a runnable unit* — hence the clearer name, work-item producer.)
+- **Work-item producer** (`compiler_thread_body`, `pipelined.rs:861`): holds one read lock
+  on the graph, walks the **arm-0 dispatch order** (`lower_runs_arm0`), and for each node calls
+  `resolve_compiled`, which resolves the kernel via the **binding-table lookup** (`compile_node`).
+  Phase A's realize takes **no `AlternativeSet` and no runtime selector** — arm-0 is the static
+  single route (the per-node Picker-2 selector was removed with the legacy path; Phase C rewires
+  it at branch points). The resolved kernel + operands become a **WorkItem** pushed down a
+  channel. (This is "compile" only in the sense of *lowering one node to a runnable unit* — hence
+  the clearer name, work-item producer.)
 - **Executor** (the `for item in rx` loop, `pipelined.rs:521`, on the *calling* thread):
   for each WorkItem — (a) at a **dispatch-chunk boundary** (target_backend change), re-check
   the topology `generation` against the plan's stamp; a mismatch raises
@@ -271,19 +299,16 @@ read from the cache; because of the spliced `Op::Copy`, the result is CPU-reside
 reinterpreted into a typed `Vec`. `realize_many` is the multi-root sibling (one shared plan
 over all targets' dependency sets; shared subgraphs computed once).
 
-**Today vs Intended:** [03-ir](03-ir.md):129 / the audit docs say "the executor calls
-pre-resolved KernelRefs and never looks up kernels at execution time." In the real code the
-binding-table lookup happens **at realize time inside the work-item producer**, not at
-plan-build time. The plan path is *mostly* pre-resolved (alternative sets carry kernel
-pointers), but plan-absent nodes and the fallback still do a live lookup. The consultation
-moved off the executor thread into the producer thread — not all the way back to plan time.
+**Today vs Intended:** binding-table kernel resolution happens **at realize time inside the
+work-item producer** (`compile_node`), not at plan-build time — the consultation lives on the
+producer thread, not the executor thread, but not all the way back to a load-time plan.
 
-Also intended (redirection): the unit of dispatch is a **run** — a fixed op-sequence between
-two decision points — handed to the executor as a unit, with the **route picker** choosing a
-path only at the **branch points** between runs, not at every op. The as-built executor
-dispatches per WorkItem (per node) and the selector may fire at any kernel-bearing node;
-collapsing straight-line spans into runs (so the picker is consulted a handful of times, not
-once per node) is the intended optimization.
+Runs now **exist** in the graph (run extraction delimits them), but the executor still dispatches
+**per WorkItem** (per node) along the arm-0 order. The intended end state — handing each **run**
+(the fixed op-sequence between two decision points) to the executor as a *unit* (a pre-recorded
+CUDA Graph / Vulkan command buffer), with the **route picker** choosing a path only at the few
+**branch points** between runs — is Phase C. Phase A built the run *structure*; Phase C makes the
+runtime dispatch and pick over it.
 
 ---
 
@@ -308,13 +333,12 @@ step's K/V slab into the pre-allocated buffer via `Op::WriteSlice` at the host-s
 `(cached_len, cached_len + seq)`. It **realizes once** (`lazy.rs:5304`), then the graph is
 dropped; the KV-cache `Arc`s survive because the cache owns them. `cached_len += seq`.
 
-**Why this matters (and a known gap):** because the decode graph is *fresh every token* and
-the PlanStore keys on graph identity, **every decode token currently re-plans from scratch**;
-the per-step `warm` only helps that same step. The decode-step graph is *structurally
-identical* step to step (only the host scalar `cached_len` changes), so the intended fix
-(planner Stage 5, structural-hash plan memoization) is to reuse the plan across steps — *not
-yet built*. The headline "1.8×/token" planning result was measured on a synthetic
-single-growing-graph loop and **does not reach this production decode path** yet.
+**Why this matters (and a known gap):** because the decode graph is *fresh every token*,
+**`optimize_graph` runs from scratch every decode token** — Phase A deleted `PlanStore`, so
+there is no plan memoization at all. The decode-step graph is *structurally identical* step to
+step (only the host scalar `cached_len` changes), so re-optimizing each token is pure waste. The
+"1.8×/token" planning result that originally motivated memoization was measured on a synthetic
+single-growing-graph loop and **does not reach this production decode path**.
 
 Under the redirection this gap closes *by construction*: the decode graph is **not** rebuilt
 per token — the loaded, input-independent graph is reused across steps, and the only thing that
@@ -358,16 +382,18 @@ match.
 1. **"work-item producer"** replaces "compiler thread" (the code symbol `compiler_thread_body`
    should be renamed to match; `compile_plan` keeps its name, leaving exactly one "compile" in
    the vocabulary — the plan build).
-2. **"the plan"** is canonical for the `ExecutionPlan` / "optimized form."
+2. **"the plan"** is canonical for the **optimized form**, which **Today** IS the in-graph
+   multi-path structure (`Op::Branch` decision points); the standalone `ExecutionPlan` is now
+   only a transient stamping view, not "the plan."
 3. **"runtime selector (Picker 2)"** is canonical for what 06-runtime calls the "route
    picker" and older code calls the "Router"; **"plan-time ranker (Picker 1)"** is the
    `compile_plan` ranking pass. Both are "pickers," at different times.
 4. The **work-item producer and executor are inside realize**, not pipeline stages.
-5. **"the plan is the graph"** — the optimized multi-path form lives *in* the graph, not in a
-   separate artifact; "the plan" names that embedded structure in conceptual prose, while the
-   standalone `ExecutionPlan` is the as-built implementation of it (item 2). This is the
-   Intended model the stages above measure Today against ([10-decisions-log](10-decisions-log.md)
-   2026-06-14).
+5. **"the plan is the graph"** — the optimized multi-path form lives *in* the graph as
+   `Op::Branch` decision points, not in a separate artifact. **As of Phase A this is the as-built
+   model**, not just Intended: `optimize_graph` writes it in place and the `ExecutionPlan` is
+   demoted to a transient stamping view ([10-decisions-log](10-decisions-log.md) 2026-06-14;
+   `docs/session-prompts/plan-is-graph-rebuild.md`).
 
 ---
 
