@@ -1270,6 +1270,54 @@ pub struct Node {
     pub dtype:  DType,
 }
 
+/// How a node's storage is shared and how long it lives — its **storage
+/// class** ([03-ir §"Storage classes and sessions"]). A node is a
+/// structural fact and does not need storage to exist; when storage *is*
+/// attached, its class governs sharing and lifetime so one optimized graph
+/// can serve many concurrent sessions (weights shared, session state
+/// `SessionId`-keyed, activations per-realize scratch).
+///
+/// The class is **inferred from the op** ([`infer_storage_class`]) with an
+/// **explicit override** recorded in the graph's `storage_class` side-table
+/// — e.g. KV-cache placeholder `Op::Const`s, which are session state, not
+/// shared weights.
+///
+/// Phase D substrate (PR-D1): the classification is recorded but not yet
+/// consumed by realize. Session keying (D2) and the persistent decode graph
+/// (D3–D5) build on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StorageClass {
+    /// Weights / constants: one storage for the whole model, identical
+    /// across all sessions; keyed by `NodeId`. The op-inferred default for
+    /// `Op::Const`.
+    Shared,
+    /// Per-session durable buffers (KV-caches + explicit cache-write
+    /// targets): one storage per session, keyed by `(NodeId, SessionId)`.
+    /// The op-inferred default for the in-place cache-write ops
+    /// (`Op::WriteSlice` / `Op::WriteSliceRotating`); KV-cache placeholder
+    /// `Op::Const`s take it via an explicit override.
+    SessionState,
+    /// Activations / scratch: ephemeral, allocated per realize and freed
+    /// after use; never persisted. The op-inferred default for everything
+    /// else. A transient value may cross devices mid-realize (a D2D
+    /// `Op::Copy`) but never crosses to disk.
+    Transient,
+}
+
+/// The op-inferred storage class for a node, **before** any explicit
+/// override (see [`StorageClass`] and [`Graph::storage_class`]):
+/// - `Op::Const` → [`StorageClass::Shared`] (weights);
+/// - `Op::WriteSlice` / `Op::WriteSliceRotating` → [`StorageClass::SessionState`]
+///   (they write into a per-session durable buffer);
+/// - everything else → [`StorageClass::Transient`].
+pub fn infer_storage_class(op: &Op) -> StorageClass {
+    match op {
+        Op::Const => StorageClass::Shared,
+        Op::WriteSlice { .. } | Op::WriteSliceRotating { .. } => StorageClass::SessionState,
+        _ => StorageClass::Transient,
+    }
+}
+
 /// The graph arena. Stores every node added during a computation-building
 /// session. Nodes are append-only and indexed by [`NodeId`].
 ///
@@ -1338,6 +1386,14 @@ pub struct Graph {
     /// for back-compat with single-output infrastructure; non-primary
     /// slots may have unrelated shapes and dtypes.
     node_output_views: HashMap<NodeId, Arc<[fuel_core_types::storage::OutputView]>>,
+    /// Per-node **storage-class override** ([`StorageClass`]). Sparse:
+    /// entries are present only where the class differs from the op-inferred
+    /// default ([`infer_storage_class`]) — chiefly KV-cache placeholder
+    /// `Op::Const`s, which are session state, not shared weights.
+    /// [`Graph::storage_class`] returns the override if present, else the
+    /// inferred default, so every node has a well-defined class.
+    /// Phase D substrate (PR-D1); not yet consumed by realize.
+    storage_class: HashMap<NodeId, StorageClass>,
 }
 
 impl Graph {
@@ -1351,6 +1407,7 @@ impl Graph {
             target_backends: HashMap::new(),
             layouts: HashMap::new(),
             node_output_views: HashMap::new(),
+            storage_class: HashMap::new(),
         }
     }
 
@@ -1383,6 +1440,44 @@ impl Graph {
     /// tests and diagnostics.
     pub fn target_backend_count(&self) -> usize {
         self.target_backends.len()
+    }
+
+    /// The storage class of `id`: the explicit override if one was set via
+    /// [`Graph::set_storage_class`], else the op-inferred default
+    /// ([`infer_storage_class`]). Every node has a well-defined class.
+    ///
+    /// Phase D substrate (PR-D1).
+    pub fn storage_class(&self, id: NodeId) -> StorageClass {
+        if let Some(c) = self.storage_class.get(&id).copied() {
+            return c;
+        }
+        infer_storage_class(&self.nodes[id.0].op)
+    }
+
+    /// Record an explicit storage-class override for `id`, replacing the
+    /// op-inferred default. Used for nodes whose op does not determine the
+    /// class — chiefly KV-cache placeholder `Op::Const`s, which are session
+    /// state rather than shared weights.
+    ///
+    /// Phase D substrate (PR-D1).
+    pub fn set_storage_class(&mut self, id: NodeId, class: StorageClass) {
+        assert!(
+            id.0 < self.nodes.len(),
+            "set_storage_class: id out of bounds",
+        );
+        self.storage_class.insert(id, class);
+    }
+
+    /// Whether `id` carries an explicit storage-class override (as opposed
+    /// to relying on the op-inferred default).
+    pub fn has_storage_class_override(&self, id: NodeId) -> bool {
+        self.storage_class.contains_key(&id)
+    }
+
+    /// Number of explicit storage-class overrides. Mostly for tests and
+    /// diagnostics.
+    pub fn storage_class_override_count(&self) -> usize {
+        self.storage_class.len()
     }
 
     /// The [`Layout`] associated with `id`. If the side-table has
@@ -1984,6 +2079,7 @@ impl Graph {
         self.layouts = remap.rekey(std::mem::take(&mut self.layouts));
         self.storage_map = remap.rekey(std::mem::take(&mut self.storage_map));
         self.node_output_views = remap.rekey(std::mem::take(&mut self.node_output_views));
+        self.storage_class = remap.rekey(std::mem::take(&mut self.storage_class));
 
         // Remap the side-effect-roots vector (every entry is live — they
         // were reachability seeds — so each maps).
@@ -2050,6 +2146,11 @@ impl Graph {
         for id in self.node_output_views.keys() {
             if id.0 >= n {
                 return bad(format!("node_output_views key Node#{}", id.0));
+            }
+        }
+        for id in self.storage_class.keys() {
+            if id.0 >= n {
+                return bad(format!("storage_class key Node#{}", id.0));
             }
         }
         for &id in &self.side_effect_roots {
@@ -12612,6 +12713,58 @@ mod tests {
             .expect("2 arms survive");
         let post = mk(&mut g, Op::Tanh, vec![reconverge]);
         (g, diverge, arm0, arm1, reconverge, branch, post)
+    }
+
+    /// PR-D1 storage-class substrate: the op-inferred class is correct
+    /// (`Op::Const` → Shared, `Op::WriteSlice` → SessionState, other →
+    /// Transient), an explicit override beats the inferred default (a
+    /// KV-cache placeholder `Op::Const` marked SessionState), and `compact`
+    /// carries the override to the node's new id while inferred defaults
+    /// still hold. Born-red: fails if classification, override precedence,
+    /// or the compaction remap is wrong.
+    #[test]
+    fn storage_class_inference_override_and_compaction() {
+        let mut g = Graph::new();
+        // A shared weight Const, a session-state KV placeholder Const, a
+        // transient activation, and an in-place cache-write target.
+        let weight = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let kv = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let act = g.push(Node { op: Op::Relu, inputs: vec![weight], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
+        let write = g.push(Node {
+            op: Op::WriteSlice { ranges: vec![(0, 2)] },
+            inputs: vec![kv, act],
+            shape: Shape::from_dims(&[2]),
+            dtype: DType::F32,
+        });
+
+        // Op-inferred defaults.
+        assert_eq!(g.storage_class(weight), StorageClass::Shared, "Const → Shared");
+        assert_eq!(g.storage_class(act), StorageClass::Transient, "activation → Transient");
+        assert_eq!(g.storage_class(write), StorageClass::SessionState, "WriteSlice → SessionState");
+        // No overrides set yet.
+        assert_eq!(g.storage_class(kv), StorageClass::Shared, "KV placeholder Const infers Shared before override");
+        assert!(!g.has_storage_class_override(kv));
+        assert_eq!(g.storage_class_override_count(), 0);
+
+        // Explicit override: the KV placeholder is session state, not a
+        // shared weight.
+        g.set_storage_class(kv, StorageClass::SessionState);
+        assert_eq!(g.storage_class(kv), StorageClass::SessionState, "override beats inferred default");
+        assert!(g.has_storage_class_override(kv));
+        assert_eq!(g.storage_class_override_count(), 1);
+
+        // Compaction carries the override to the new id; inferred defaults
+        // (no side-table entry) still resolve from the op.
+        let remap = compact(&mut g, &[write]);
+        let n_kv = remap.get(kv).expect("kv survives (input of write)");
+        let n_weight = remap.get(weight).expect("weight survives (transitively under act)");
+        let n_write = remap.get(write).expect("write is the root");
+        assert_eq!(g.storage_class(n_kv), StorageClass::SessionState, "override remapped by compact");
+        assert!(g.has_storage_class_override(n_kv));
+        assert_eq!(g.storage_class_override_count(), 1, "exactly the one override survives");
+        assert_eq!(g.storage_class(n_weight), StorageClass::Shared, "inferred Shared still holds post-compact");
+        assert_eq!(g.storage_class(n_write), StorageClass::SessionState, "inferred SessionState still holds post-compact");
+        assert!(g.verify_no_dangling().is_ok());
     }
 
     /// (a) A deliberately-orphaned node (pushed, referenced by nothing) is
