@@ -13,6 +13,86 @@ D1 (the `StorageClass` substrate) already landed; this supersedes the old D2/D3/
 
 ---
 
+## 0. Current status & handoff (2026-06-16) — READ FIRST
+
+This section reflects decisions made *after* the design body below was written. Where they
+conflict, **§0 wins**.
+
+### Landed on `main` (tested, pushed)
+
+- **D1** (`362a3d51`) — `StorageClass {Shared, SessionState, Transient}` + classifier side-table
+  on `Graph` (`fuel-graph/src/lib.rs`).
+- **Spec** (`3811f7f3`) — this document.
+- **Step 1a** (`3ec35fb6`) — `SymId` / `SymGen` / `SymEnv` / `DynScalar` in
+  `fuel-core-types/src/symbol.rs` (re-exported from the crate root). Tested.
+- **Step 1b** (`55a186cb`) — `Extent {Scalar|Range{min,max,sym}}` + `DynAxis` + annotated `Shape`
+  (`dims()` unchanged; new `extent()`/`extents()`/`has_dynamic()`/`with_dynamic_axis()`/`resolve(&env)`;
+  `Eq`/`Debug` include `dynamic`) + `Layout::has_dynamic()`/`resolve(&env)`. Tested
+  (`shape::tests::symbolic_extent_foundation`); fuel-graph downstream-verified.
+
+So **Step 1 (the foundation) is complete.** The design body §3 describes exactly what was built.
+
+### Step 2 — RESOLVED by refinement (do NOT build a mask op)
+
+The dedicated `causal_mask` op in §3.5 / build-order step 2 is **unnecessary**:
+
+- the existing triangular kernel (`fuel-cuda-backend/src/baracuda/triangular.rs`) **zeros** the
+  masked region; attention needs **−∞-fill**, so it isn't directly reusable, and a new op would be
+  3 backend kernels;
+- the decode causal mask is mathematically `keep[q,k] = (k ≤ q + cached_len)` — lower-triangular
+  with **diagonal = `cached_len`** (a runtime offset);
+- **CUDA decode** (production) uses `flash`'s `is_causal` flag → no mask tensor at all;
+- **CPU/Vulkan decode** (the decomposed base-map / reference path) uses a **re-bound host mask**:
+  a fixed-capacity `[seq, max_seq_len]` additive (0/−∞) const, built host-side from `cached_len`
+  each pass and re-bound like the KV `Arc`s. The graph structure stays stable (the mask is an
+  input slot), so this folds into the **persistent-decode wiring** (step 4), not a new op.
+
+### Steps 3 + 4 are coupled — the shared prerequisite is `SymEnv`-through-realize
+
+The runtime `k_len` (flash) and the `WriteSlice` offset are `DynScalar`s, but **the executor has
+no `SymEnv` at dispatch yet**. Threading it changes the **realize → bridge → executor** path
+(`fuel-core/src/pipelined_bridge.rs`, the program's "riskiest surface") and is the gate for
+everything else. Recommended order:
+
+1. **`SymEnv`-through-realize + `WriteSlice` `DynScalar` offset** *(contained, CPU-verifiable —
+   start here)*. Thread the per-pass `SymEnv` into realize (via `InferenceContext`, which already
+   holds per-session state) → the executor dispatch context; make `Op::WriteSlice` accept a
+   `DynScalar` offset resolved via the env. Born-red **CPU** test: write at a runtime-bound offset.
+   Keep it additive (empty `SymEnv` → existing realize unchanged). No GPU needed.
+2. **Decode via flash over a capacity K with a runtime `k_len`** *(live-GPU)*. Extend
+   `Op::FlashAttn` (it is `Op::Fused(FLASH_ATTN, FlashAttnParams{…})`, builder at
+   `fuel-graph/src/lib.rs:~3838`) to take a runtime `k_len` (`DynScalar`) **decoupled from K's
+   shape** — currently it derives `k_len` from `k.dims()[2]`. The kernel already accepts `k_len` +
+   `is_causal` (`fuel-cuda-backend/src/baracuda/attention.rs::flash_sdpa_run`, `k_len` arg at
+   ~line 252). Route decode's `apply_layer_with_kv_writes` (`lazy.rs:~5030`) through `flash_attn`
+   on CUDA with the full-capacity K + `k_len = cached_len + seq`. Verify numerics vs the decomposed
+   base map (the Judge). CPU/Vulkan keep the decomposed arm + the re-bound host mask.
+3. **Persistent decode wiring** *(live-GPU; the payoff)*. Build the decode-step graph **once**
+   (held by `LlamaModel`); the generate loop (`forward_with_kv_context_impl`, `lazy.rs:~5176`)
+   re-binds data (token, KV, mask) + the `SymEnv` (`cached_len`) per pass and re-realizes the
+   **same** graph; the bridge **skips `optimize_graph`** when the graph is already optimized.
+   Session-state storage keyed by `(NodeId, SessionId)` for concurrency (`[9]`). This is where the
+   ~1.8×/token win lands. Largely *falls out* once the graph is input-independent.
+
+### Cadence (unchanged)
+
+Small per-PR, **born-red test first**, GPU-verify after behaviour-touching changes (CUDA + Vulkan
+— see the `environment-discipline` memory for the VS-DevShell + cuDNN + slangc incantation; Vulkan
+needs no DevShell), review (merge-base current, scope contained, no cross-crate dangling refs),
+ff-merge to local `main`, push. Never workspace-wide cargo (`-p <crate>`); one cargo + one
+live-GPU suite at a time.
+
+### Key code anchors
+
+- Decode forward (per-token graph build): `fuel-core/src/lazy.rs::forward_with_kv_context_impl` (~5176).
+- Decode attention + KV write + host mask: `fuel-core/src/lazy.rs::apply_layer_with_kv_writes` (~5030).
+- Per-session persistent storage: `fuel-core/src/inference_context.rs` (`InferenceContext`).
+- Riskiest surface (realize prep/optimize/dispatch): `fuel-core/src/pipelined_bridge.rs`.
+- Flash op builder: `fuel-graph/src/lib.rs:~3838`; flash kernel: `fuel-cuda-backend/src/baracuda/attention.rs`.
+- The foundation just built: `fuel-core-types/src/{symbol.rs, shape.rs, layout.rs}`.
+
+---
+
 ## 1. The problem
 
 Autoregressive decode re-plans every token. The decode-step graph is rebuilt fresh per token
@@ -141,6 +221,11 @@ propagates consistently (no new divergence risk beyond the one already managed f
 
 ### 3.5 Masks are ops, not `Extent`
 
+> **Superseded in part by §0:** the general point holds (`Extent` yields a scalar; a mask is a
+> tensor, not `Extent`'s job), but we do **not** build a `causal_mask` op — CUDA decode uses
+> flash `is_causal`, CPU/Vulkan decode uses a re-bound host mask. Keep this section for the
+> principle, not the "build the op" prescription.
+
 `Extent` exposes the **scalar** (resolve to the live `usize`, plus `min`/`max`/`is_dynamic`). It
 does **not** materialize masks — a mask is a device-side validity *tensor*, an **op's** job. The
 "some kernels want a length, some want a mask" split is a **lowering** decision:
@@ -221,6 +306,10 @@ serialize — the id-in-`Shape` form does it locally and on disk.
 ---
 
 ## 8. Build order
+
+> **Status (see §0, which wins on conflicts):** D1 + step 1 are **done**; step 2 is **resolved by
+> refinement** (no `causal_mask` op — re-bound host mask / flash `is_causal`); steps 3+4 are
+> coupled by `SymEnv`-through-realize. The list below is the original design framing.
 
 D1 (`StorageClass`) — **done.** Then:
 
