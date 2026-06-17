@@ -70,6 +70,25 @@ impl Layout {
         &self.shape
     }
 
+    /// Whether the layout's shape has any bounded-symbolic (`Range`) axis.
+    /// Phase D step 1b.
+    pub fn has_dynamic(&self) -> bool {
+        self.shape.has_dynamic()
+    }
+
+    /// Resolve the layout's shape through `env` (every dynamic axis →
+    /// concrete), keeping **strides and offset unchanged**: the physical walk
+    /// of a fixed-capacity buffer is the same; only the logical live extent
+    /// becomes concrete. Errors if a dynamic axis's symbol is unbound.
+    /// Phase D step 1b.
+    pub fn resolve(&self, env: &crate::SymEnv) -> Result<Layout> {
+        Ok(Layout {
+            shape: self.shape.resolve(env)?,
+            stride: self.stride.clone(),
+            start_offset: self.start_offset,
+        })
+    }
+
     /// Returns the strides as a slice (in elements, not bytes).
     /// Signed — see struct-level docs.
     pub fn stride(&self) -> &[isize] {
