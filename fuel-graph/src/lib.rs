@@ -54,7 +54,7 @@ pub use run::{
 };
 
 use crate::registry::{FusedOpId, FusedOpParams};
-use fuel_core_types::{DeviceLocation, DType, Layout, Scalar, Shape, Storage, probe::BackendId};
+use fuel_core_types::{DeviceLocation, DType, DynScalar, Layout, Scalar, Shape, Storage, probe::BackendId};
 use half::{bf16, f16};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -821,7 +821,26 @@ pub enum Op {
     /// Phase E.3.2: introduced to back persistent KV-cache writes
     /// (`InferenceContext` + `KvCache`). Non-differentiable; backward
     /// panics — KV-cache writes are forward-only.
-    WriteSlice { ranges: Vec<(usize, usize)> },
+    ///
+    /// `dyn_offset` (Phase D symbolic extents): `None` ⇒ fully static
+    /// (`ranges` alone defines the slab — today's behavior). `Some((axis,
+    /// off))` ⇒ the destination start on `axis` is `off.resolve(env)`
+    /// against the per-pass [`fuel_core_types::SymEnv`] at realize,
+    /// overriding `ranges[axis].0`; the slab width on that axis stays
+    /// `ranges[axis].1 - ranges[axis].0`. This is the input-determined
+    /// dynamic-offset path (a [`DynScalar`] over the one `SymEnv`),
+    /// distinct from [`Op::WriteSliceRotating`]'s data-determined
+    /// position (a tensor input). It backs the persistent decode
+    /// KV-cache write, whose append offset (`cached_len`) is a per-token
+    /// runtime value over a fixed-capacity buffer, so the graph
+    /// structure stays identical across tokens and the plan is reused.
+    /// Build a node with this set via [`Tensor::write_slice_dyn`]; the
+    /// resolved `offset + width` is bounds-checked against the
+    /// destination capacity at realize (a typed error, never a panic).
+    WriteSlice {
+        ranges: Vec<(usize, usize)>,
+        dyn_offset: Option<(usize, DynScalar)>,
+    },
 
     /// Like [`Op::WriteSlice`] but the `axis` axis wraps modulo
     /// `modulus`. The dynamic write position comes through `inputs[2]`
@@ -2830,7 +2849,108 @@ impl Tensor {
         }
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::WriteSlice { ranges },
+            op:     Op::WriteSlice { ranges, dyn_offset: None },
+            inputs: vec![self.id, source.id],
+            shape:  dest_shape,
+            dtype,
+        });
+        Ok(Tensor { graph: Arc::clone(&self.graph), id })
+    }
+
+    /// Append an `Op::WriteSlice` whose start on `dyn_axis` is a runtime
+    /// value resolved through the per-pass [`fuel_core_types::SymEnv`] at
+    /// realize, rather than the build-time `ranges[dyn_axis].0`.
+    ///
+    /// This is the **input-determined** dynamic-offset path (a
+    /// [`DynScalar`] over the one `SymEnv`), distinct from
+    /// [`Self::write_slice_rotating`]'s **data-determined** position (a
+    /// tensor input read mid-pass). It backs the persistent decode
+    /// KV-cache write: the append offset is `cached_len`, a per-token
+    /// runtime value over a fixed-capacity buffer, so the graph
+    /// structure (and every shape) stays identical across tokens and the
+    /// plan is reused (Phase D symbolic extents).
+    ///
+    /// On `dyn_axis`, `ranges[dyn_axis].0` is ignored (the start is
+    /// dynamic) and `ranges[dyn_axis].1 - ranges[dyn_axis].0` is the slab
+    /// width, which must equal `source.dims()[dyn_axis]` and not exceed
+    /// the destination capacity on that axis. On every other axis the
+    /// same shape contract as [`Self::write_slice`] applies. The runtime
+    /// `offset + width` is bounds-checked against the destination
+    /// capacity at realize (a typed error, never a panic).
+    ///
+    /// **Returns `Result`**: rank/dtype/axis-bound/width mismatches
+    /// surface as a typed error at build time.
+    pub fn write_slice_dyn(
+        &self,
+        source: &Tensor,
+        ranges: Vec<(usize, usize)>,
+        dyn_axis: usize,
+        offset: DynScalar,
+    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+        let dest_shape = self.shape();
+        let dest_dims = dest_shape.dims();
+        let src_shape = source.shape();
+        let src_dims = src_shape.dims();
+        let rank = dest_dims.len();
+        if ranges.len() != rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "write_slice_dyn: ranges.len() ({}) must equal destination rank ({rank})",
+                ranges.len(),
+            )).bt());
+        }
+        if src_dims.len() != rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "write_slice_dyn: source rank ({}) must equal destination rank ({rank})",
+                src_dims.len(),
+            )).bt());
+        }
+        if dyn_axis >= rank {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "write_slice_dyn: dyn_axis ({dyn_axis}) out of bounds for rank {rank}",
+            )).bt());
+        }
+        for (i, &(start, end)) in ranges.iter().enumerate() {
+            if end < start {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "write_slice_dyn: ranges[{i}] = ({start}, {end}) has end < start"
+                )).bt());
+            }
+            let slab = end - start;
+            if src_dims[i] != slab {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "write_slice_dyn: source dim {i} ({}) must equal slab width ({slab}) \
+                     = ranges[{i}].end - ranges[{i}].start",
+                    src_dims[i],
+                )).bt());
+            }
+            if i == dyn_axis {
+                // The start on `dyn_axis` is dynamic, so `ranges[i].0`/`.1`
+                // are not bounded by `dest_dims[i]` here — only the slab
+                // WIDTH must fit the capacity. The runtime `offset + width`
+                // is bounds-checked against `dest_dims[i]` at realize.
+                if slab > dest_dims[i] {
+                    return Err(fuel_core_types::Error::Msg(format!(
+                        "write_slice_dyn: dynamic-axis slab width ({slab}) > destination capacity \
+                         dim {i} ({})",
+                        dest_dims[i],
+                    )).bt());
+                }
+            } else if end > dest_dims[i] {
+                return Err(fuel_core_types::Error::Msg(format!(
+                    "write_slice_dyn: ranges[{i}].end ({end}) > destination dim {i} ({})",
+                    dest_dims[i],
+                )).bt());
+            }
+        }
+        if self.dtype() != source.dtype() {
+            return Err(fuel_core_types::Error::Msg(format!(
+                "write_slice_dyn: dtype mismatch — destination {:?} vs source {:?}",
+                self.dtype(), source.dtype(),
+            )).bt());
+        }
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::WriteSlice { ranges, dyn_offset: Some((dyn_axis, offset)) },
             inputs: vec![self.id, source.id],
             shape:  dest_shape,
             dtype,
@@ -10707,13 +10827,13 @@ mod tests {
 
     #[test]
     fn write_slice_destructive_input_is_zero() {
-        let op = Op::WriteSlice { ranges: vec![(0, 1), (0, 32), (0, 128)] };
+        let op = Op::WriteSlice { ranges: vec![(0, 1), (0, 32), (0, 128)], dyn_offset: None };
         assert_eq!(op.destructive_input(), Some(0));
     }
 
     #[test]
     fn write_slice_short_name() {
-        let op = Op::WriteSlice { ranges: vec![(0, 1)] };
+        let op = Op::WriteSlice { ranges: vec![(0, 1)], dyn_offset: None };
         assert_eq!(op.short_name(), "WriteSlice");
     }
 
@@ -10728,14 +10848,65 @@ mod tests {
             .expect("write_slice should accept matching shapes");
         let g = out.graph().read().unwrap();
         match &g.node(out.id()).op {
-            Op::WriteSlice { ranges } => {
+            Op::WriteSlice { ranges, dyn_offset } => {
                 assert_eq!(ranges, &vec![(2, 3), (0, 3)]);
+                assert_eq!(dyn_offset, &None);
             }
             other => panic!("expected Op::WriteSlice, got {other:?}"),
         }
         assert_eq!(g.node(out.id()).inputs, vec![dest.id(), src.id()]);
         // Output shape == destination shape; bytes are post-write same buffer.
         assert_eq!(g.node(out.id()).shape.dims(), &[4, 3]);
+    }
+
+    #[test]
+    fn write_slice_dyn_records_dynamic_offset() {
+        use fuel_core_types::{DynScalar, SymId};
+        // dest capacity [8, 3]; source [1, 3]; dynamic start on axis 0.
+        let dest = Tensor::from_f32(
+            vec![0.0_f32; 24], Shape::from_dims(&[8, 3]), cpu_dev(),
+        );
+        let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
+        let sym = SymId(0);
+        // ranges[0].0 is ignored (start is dynamic); width = 1 - 0 = 1
+        // matches source dim 0. Axis 1 is static, full width.
+        let out = dest
+            .write_slice_dyn(&src, vec![(0, 1), (0, 3)], 0, DynScalar::Sym(sym))
+            .expect("write_slice_dyn should accept matching widths");
+        let g = out.graph().read().unwrap();
+        match &g.node(out.id()).op {
+            Op::WriteSlice { ranges, dyn_offset } => {
+                assert_eq!(ranges, &vec![(0, 1), (0, 3)]);
+                assert_eq!(dyn_offset, &Some((0, DynScalar::Sym(sym))));
+            }
+            other => panic!("expected Op::WriteSlice, got {other:?}"),
+        }
+        assert_eq!(g.node(out.id()).inputs, vec![dest.id(), src.id()]);
+        assert_eq!(g.node(out.id()).shape.dims(), &[8, 3]);
+    }
+
+    #[test]
+    fn write_slice_dyn_rejects_slab_wider_than_capacity() {
+        use fuel_core_types::{DynScalar, SymId};
+        // dest capacity on axis 0 is 2, but the dynamic-axis slab is
+        // width 4 — can never fit regardless of the runtime offset.
+        let dest = Tensor::from_f32(
+            vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev(),
+        );
+        let src = dest.const_f32_like(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]));
+        let err = dest.write_slice_dyn(&src, vec![(0, 4), (0, 3)], 0, DynScalar::Sym(SymId(0)));
+        assert!(err.is_err(), "dynamic-axis slab wider than capacity must error at build");
+    }
+
+    #[test]
+    fn write_slice_dyn_rejects_axis_out_of_bounds() {
+        use fuel_core_types::{DynScalar, SymId};
+        let dest = Tensor::from_f32(
+            vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev(),
+        );
+        let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
+        let err = dest.write_slice_dyn(&src, vec![(0, 1), (0, 3)], 5, DynScalar::Sym(SymId(0)));
+        assert!(err.is_err(), "dyn_axis past rank must error");
     }
 
     #[test]
@@ -12731,7 +12902,7 @@ mod tests {
         let kv = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
         let act = g.push(Node { op: Op::Relu, inputs: vec![weight], shape: Shape::from_dims(&[2]), dtype: DType::F32 });
         let write = g.push(Node {
-            op: Op::WriteSlice { ranges: vec![(0, 2)] },
+            op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
             inputs: vec![kv, act],
             shape: Shape::from_dims(&[2]),
             dtype: DType::F32,

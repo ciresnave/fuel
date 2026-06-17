@@ -41,7 +41,7 @@ use std::thread;
 
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result};
+use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result, SymEnv};
 use fuel_graph::opt::{execution_plan, insert_safety_copies};
 use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute};
 
@@ -445,7 +445,28 @@ impl PipelinedExecutor {
         target: NodeId,
         inputs: StorageCache,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        Self::realize_inner(graph, target, inputs, None, None, OrderSource::Default)
+        Self::realize_inner(graph, target, inputs, None, None, OrderSource::Default, SymEnv::default())
+    }
+
+    /// Env-carrying sibling of [`realize`]: realize `target` with a
+    /// per-pass [`SymEnv`] supplying the runtime bindings for any
+    /// `DynScalar` op params (today: `Op::WriteSlice`'s dynamic start
+    /// offset — Phase D symbolic extents). An **empty** env is
+    /// byte-identical to [`realize`]; the env is consulted only by ops
+    /// that carry a `DynScalar`, so a graph with none ignores it. Uses
+    /// the default (`execution_plan`) dispatch order.
+    ///
+    /// This is the input-determined path for persistent decode (the
+    /// per-token `cached_len` write offset). The `OptimizedGraph`/route
+    /// entry points keep an empty env until the realize bridge threads
+    /// the session env through them (Phase D step 1, fuel-core).
+    pub fn realize_with_env(
+        graph: Arc<RwLock<Graph>>,
+        target: NodeId,
+        inputs: StorageCache,
+        sym_env: SymEnv,
+    ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
+        Self::realize_inner(graph, target, inputs, None, None, OrderSource::Default, sym_env)
     }
 
     /// PR-A3b-1 entry: realize `target` driven from `optimized`'s
@@ -472,6 +493,7 @@ impl PipelinedExecutor {
             None,
             None,
             OrderSource::Optimized { optimized, route: None },
+            SymEnv::default(),
         )
     }
 
@@ -498,6 +520,7 @@ impl PipelinedExecutor {
             None,
             None,
             OrderSource::Optimized { optimized, route: Some(route) },
+            SymEnv::default(),
         )
     }
 
@@ -517,7 +540,7 @@ impl PipelinedExecutor {
         inputs: StorageCache,
         plan: Arc<ExecutionPlan>,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        Self::realize_inner(graph, target, inputs, Some(plan), None, OrderSource::Default)
+        Self::realize_inner(graph, target, inputs, Some(plan), None, OrderSource::Default, SymEnv::default())
     }
 
     /// Plan- and selector-aware sibling of [`realize`]. Phase 5.1 of
@@ -540,6 +563,7 @@ impl PipelinedExecutor {
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
         Self::realize_inner(
             graph, target, inputs, Some(plan), Some(selector), OrderSource::Default,
+            SymEnv::default(),
         )
     }
 
@@ -550,6 +574,7 @@ impl PipelinedExecutor {
         plan: Option<Arc<ExecutionPlan>>,
         selector: Option<Arc<dyn RuntimeSelector>>,
         order_source: OrderSource<'_>,
+        sym_env: SymEnv,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
         // Auto-insert safety copies for in-place ops whose target
         // has additional readers in this realize set (residual-
@@ -598,7 +623,7 @@ impl PipelinedExecutor {
         let compiler = thread::spawn(move || {
             compiler_thread_body(
                 graph_for_compiler, order_for_compiler,
-                plan_for_compiler, selector_for_compiler, tx,
+                plan_for_compiler, selector_for_compiler, sym_env, tx,
             );
         });
 
@@ -683,7 +708,7 @@ impl PipelinedExecutor {
         targets: &[NodeId],
         inputs: StorageCache,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
-        Self::realize_many_inner(graph, targets, inputs, None, None, OrderSource::Default)
+        Self::realize_many_inner(graph, targets, inputs, None, None, OrderSource::Default, SymEnv::default())
     }
 
     /// Multi-target PR-A3b-1 entry — the `realize_many` sibling of
@@ -704,6 +729,7 @@ impl PipelinedExecutor {
             None,
             None,
             OrderSource::Optimized { optimized, route: None },
+            SymEnv::default(),
         )
     }
 
@@ -725,6 +751,7 @@ impl PipelinedExecutor {
             None,
             None,
             OrderSource::Optimized { optimized, route: Some(route) },
+            SymEnv::default(),
         )
     }
 
@@ -740,6 +767,7 @@ impl PipelinedExecutor {
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
         Self::realize_many_inner(
             graph, targets, inputs, Some(plan), Some(selector), OrderSource::Default,
+            SymEnv::default(),
         )
     }
 
@@ -752,7 +780,7 @@ impl PipelinedExecutor {
         inputs: StorageCache,
         plan: Arc<ExecutionPlan>,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
-        Self::realize_many_inner(graph, targets, inputs, Some(plan), None, OrderSource::Default)
+        Self::realize_many_inner(graph, targets, inputs, Some(plan), None, OrderSource::Default, SymEnv::default())
     }
 
     fn realize_many_inner(
@@ -762,6 +790,7 @@ impl PipelinedExecutor {
         plan: Option<Arc<ExecutionPlan>>,
         selector: Option<Arc<dyn RuntimeSelector>>,
         order_source: OrderSource<'_>,
+        sym_env: SymEnv,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
         if targets.is_empty() {
             return Ok(Vec::new());
@@ -810,7 +839,7 @@ impl PipelinedExecutor {
         let compiler = thread::spawn(move || {
             compiler_thread_body(
                 graph_for_compiler, order_for_compiler,
-                plan_for_compiler, selector_for_compiler, tx,
+                plan_for_compiler, selector_for_compiler, sym_env, tx,
             );
         });
 
@@ -944,6 +973,7 @@ fn compiler_thread_body(
     order: Vec<NodeId>,
     plan: Option<Arc<ExecutionPlan>>,
     selector: Option<Arc<dyn RuntimeSelector>>,
+    sym_env: SymEnv,
     tx: Sender<Result<WorkItem>>,
 ) {
     let bindings = global_bindings();
@@ -966,7 +996,7 @@ fn compiler_thread_body(
     let plan_ref: Option<&ExecutionPlan> = plan.as_deref();
     let selector_ref: Option<&dyn RuntimeSelector> = selector.as_deref();
     for id in order {
-        let item = compile_one(&g, id, &mut layout_cache, &bindings, plan_ref, selector_ref);
+        let item = compile_one(&g, id, &mut layout_cache, &bindings, plan_ref, selector_ref, &sym_env);
         let stop_on_err = item.is_err();
         if tx.send(item).is_err() {
             return;
@@ -988,14 +1018,14 @@ fn compiler_thread_body(
 /// pre-4.1 first-registered path.
 ///
 /// `op_params` always comes from the executor's
-/// `op_to_op_params(graph, node, layout_cache)`. The candidate's
+/// `op_to_op_params(graph, node, layout_cache, sym_env)`. The candidate's
 /// `Candidate::op_params` is a plan-time placeholder
 /// (`OpParams::None`; see `candidate_default_op_params` in
 /// `crate::plan`) because the live OpParams shape — reduce dims,
-/// conv geometry, etc. — derives from the graph node + its
-/// resolved input layouts at execute time. The plan owns
-/// `(kernel, caps, backend)`; the executor owns op-params
-/// derivation.
+/// conv geometry, the per-pass `SymEnv`-resolved `WriteSlice` offset,
+/// etc. — derives from the graph node + its resolved input layouts at
+/// execute time. The plan owns `(kernel, caps, backend)`; the executor
+/// owns op-params derivation.
 fn resolve_compiled(
     id: NodeId,
     op_kind: OpKind,
@@ -1053,6 +1083,7 @@ fn compile_one(
     bindings: &KernelBindingTable,
     plan: Option<&ExecutionPlan>,
     selector: Option<&dyn RuntimeSelector>,
+    sym_env: &SymEnv,
 ) -> Result<WorkItem> {
     let node = graph.node(id);
     let elem_count = node.shape.elem_count();
@@ -1250,7 +1281,7 @@ fn compile_one(
                 ))
                 .bt()
             })?;
-            let op_params = op_to_op_params(graph, node, layout_cache)?;
+            let op_params = op_to_op_params(graph, node, layout_cache, sym_env)?;
             let dtypes = build_lookup_dtypes(graph, node);
             let compiled = resolve_compiled(
                 id, op_kind, &dtypes, target_backend, op_params, bindings, plan, selector,
@@ -1293,7 +1324,7 @@ fn compile_one(
             ))
             .bt()
         })?;
-        let op_params = op_to_op_params(graph, node, layout_cache)?;
+        let op_params = op_to_op_params(graph, node, layout_cache, sym_env)?;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
             id, OpKind::WriteSlice, &dtypes, target_backend, op_params, bindings, plan, selector,
@@ -1338,7 +1369,7 @@ fn compile_one(
             ))
             .bt()
         })?;
-        let op_params = op_to_op_params(graph, node, layout_cache)?;
+        let op_params = op_to_op_params(graph, node, layout_cache, sym_env)?;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
             id, OpKind::WriteSliceRotating, &dtypes, target_backend, op_params, bindings, plan, selector,
@@ -1632,7 +1663,7 @@ fn compile_one(
         .bt()
     })?;
 
-    let op_params = op_to_op_params(graph, node, layout_cache)?;
+    let op_params = op_to_op_params(graph, node, layout_cache, sym_env)?;
     // Build the per-operand dtype list for the binding-table lookup —
     // inputs in order, then outputs. Variadic uniform-dtype ops
     // (Concat) collapse to the canonical `[T_in, T_out]` shorthand to
@@ -2017,6 +2048,7 @@ fn op_to_op_params(
     graph: &Graph,
     node: &Node,
     layout_cache: &HashMap<NodeId, Layout>,
+    sym_env: &SymEnv,
 ) -> Result<OpParams> {
     // Helper: read an input's layout from the compiler-thread-local
     // cache (which is current within the realize call), falling back
@@ -3235,7 +3267,7 @@ fn op_to_op_params(
                 groups: *groups,
             }
         }
-        Op::WriteSlice { ranges } => {
+        Op::WriteSlice { ranges, dyn_offset } => {
             // inputs[0] = destination (its shape == this node's shape
             // since WriteSlice's output adopts the destination's
             // Layout). inputs[1] = source slab; its shape is implied
@@ -3256,6 +3288,34 @@ fn op_to_op_params(
                 ))
                 .bt());
             }
+            // Phase D symbolic extents: when present, resolve the runtime
+            // start offset against the per-pass SymEnv, overriding
+            // `ranges[axis].0`. The slab WIDTH on that axis stays
+            // `ranges[axis].1 - ranges[axis].0`, so the effective range
+            // becomes `(base, base + width)`. `None` ⇒ fully static, and
+            // the SymEnv is never consulted (empty-env realize unchanged).
+            // The bounds loop below runs on the RESOLVED ranges, so an
+            // out-of-capacity runtime offset surfaces as a typed error.
+            let mut ranges = ranges.clone();
+            if let Some((axis, off)) = dyn_offset {
+                if *axis >= ranges.len() {
+                    return Err(Error::Msg(format!(
+                        "Op::WriteSlice: dyn_offset axis ({axis}) out of bounds for rank {}",
+                        ranges.len(),
+                    ))
+                    .bt());
+                }
+                let base = off.resolve(sym_env).ok_or_else(|| {
+                    Error::Msg(format!(
+                        "Op::WriteSlice: dynamic offset {off:?} on axis {axis} is unbound \
+                         in the SymEnv at realize",
+                    ))
+                    .bt()
+                })?;
+                let (start, end) = ranges[*axis];
+                let width = end - start;
+                ranges[*axis] = (base, base + width);
+            }
             for (i, &(start, end)) in ranges.iter().enumerate() {
                 if end < start || end > dest_dims[i] {
                     return Err(Error::Msg(format!(
@@ -3268,7 +3328,7 @@ fn op_to_op_params(
             }
             OpParams::WriteSlice {
                 dest_shape: dest_dims,
-                ranges: ranges.clone(),
+                ranges,
             }
         }
         Op::WriteSliceRotating { axis, modulus, ranges } => {
@@ -8759,7 +8819,7 @@ mod tests {
         let g = graph_rc.read().unwrap();
         let bindings = crate::dispatch::global_bindings();
         let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-        let item = compile_one(&g, release_id, &mut layout_cache, &bindings, None, None)
+        let item = compile_one(&g, release_id, &mut layout_cache, &bindings, None, None, &SymEnv::default())
             .expect("compile_one Op::Release");
         assert!(matches!(item.kind, WorkItemKind::ReleaseMarker));
         assert_eq!(item.destructive_input, Some(0));
@@ -8792,7 +8852,7 @@ mod tests {
         let g = graph_rc.read().unwrap();
         let bindings = crate::dispatch::global_bindings();
         let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-        let item = compile_one(&g, move_id, &mut layout_cache, &bindings, None, None)
+        let item = compile_one(&g, move_id, &mut layout_cache, &bindings, None, None, &SymEnv::default())
             .expect("compile_one Op::Move");
         assert!(matches!(
             item.kind,
@@ -9154,7 +9214,7 @@ mod tests {
                 shape: Shape::from_dims(&[1, 3, 2]), dtype: DType::F32,
             });
             let ws = g.push(Node {
-                op: Op::WriteSlice { ranges: vec![(2, 3), (0, 3), (0, 2)] },
+                op: Op::WriteSlice { ranges: vec![(2, 3), (0, 3), (0, 2)], dyn_offset: None },
                 inputs: vec![dest, src],
                 shape: Shape::from_dims(&[4, 3, 2]),  // adopts dest shape
                 dtype: DType::F32,
@@ -9201,7 +9261,7 @@ mod tests {
                 shape: Shape::from_dims(&[1, 2]), dtype: DType::F32,
             });
             let ws = g.push(Node {
-                op: Op::WriteSlice { ranges: vec![(1, 2), (0, 2)] },
+                op: Op::WriteSlice { ranges: vec![(1, 2), (0, 2)], dyn_offset: None },
                 inputs: vec![dest, src],
                 shape: Shape::from_dims(&[3, 2]),
                 dtype: DType::F32,
@@ -9228,6 +9288,152 @@ mod tests {
         };
         let out: &[f32] = c.as_slice().unwrap();
         assert_eq!(out, &[0.0, 0.0, 10.0, 20.0, 0.0, 0.0]);
+    }
+
+    // ---- WriteSlice dynamic offset (Phase D symbolic extents) ---------------
+
+    /// E2E: pipelined realize of `Op::WriteSlice` with a runtime start
+    /// offset (`dyn_offset`) resolved through a per-pass `SymEnv`. The
+    /// width-2 source slab lands at the bound offset (3), not the static
+    /// `ranges[0].0` placeholder (0) — the persistent-decode KV-cache
+    /// write at a per-token `cached_len`.
+    #[test]
+    fn pipelined_realize_write_slice_dynamic_offset() {
+        use fuel_core_types::{DynScalar, SymId};
+        let dest_storage = fuel_memory::from_slice_cpu(&[0.0_f32; 6]);
+        let src_storage = fuel_memory::from_slice_cpu(&[7.0_f32, 8.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let sym = SymId(0);
+        let (dest_id, src_id, ws_id) = {
+            let mut g = graph.write().unwrap();
+            let dest = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[6]), dtype: DType::F32,
+            });
+            let src = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let ws = g.push(Node {
+                // ranges[0] = (0, 2): the start is a placeholder (ignored —
+                // overridden by dyn_offset); only the width (2) is read.
+                op: Op::WriteSlice {
+                    ranges: vec![(0, 2)],
+                    dyn_offset: Some((0, DynScalar::Sym(sym))),
+                },
+                inputs: vec![dest, src],
+                shape: Shape::from_dims(&[6]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(ws, BackendId::Cpu);
+            (dest, src, ws)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(dest_id, Arc::new(RwLock::new(dest_storage)));
+        inputs.insert(src_id, Arc::new(RwLock::new(src_storage)));
+
+        // Bind cached_len = 3: the slab must land at indices [3, 4].
+        let mut env = SymEnv::new();
+        env.bind(sym, 3).unwrap();
+
+        let (result_arc, _) =
+            PipelinedExecutor::realize_with_env(graph, ws_id, inputs, env)
+                .expect("realize_with_env");
+        let guard = result_arc.read().unwrap();
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
+        let out: &[f32] = c.as_slice().unwrap();
+        assert_eq!(
+            out, &[0.0, 0.0, 0.0, 7.0, 8.0, 0.0],
+            "slab must land at the SymEnv-bound offset 3, not the static placeholder 0",
+        );
+    }
+
+    /// A `dyn_offset` whose symbol is unbound in the `SymEnv` surfaces a
+    /// typed error at realize (never a panic).
+    #[test]
+    fn pipelined_realize_write_slice_dynamic_offset_unbound_errors() {
+        use fuel_core_types::{DynScalar, SymId};
+        let dest_storage = fuel_memory::from_slice_cpu(&[0.0_f32; 6]);
+        let src_storage = fuel_memory::from_slice_cpu(&[7.0_f32, 8.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (dest_id, src_id, ws_id) = {
+            let mut g = graph.write().unwrap();
+            let dest = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[6]), dtype: DType::F32,
+            });
+            let src = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let ws = g.push(Node {
+                op: Op::WriteSlice {
+                    ranges: vec![(0, 2)],
+                    dyn_offset: Some((0, DynScalar::Sym(SymId(0)))),
+                },
+                inputs: vec![dest, src],
+                shape: Shape::from_dims(&[6]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(ws, BackendId::Cpu);
+            (dest, src, ws)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(dest_id, Arc::new(RwLock::new(dest_storage)));
+        inputs.insert(src_id, Arc::new(RwLock::new(src_storage)));
+        // Empty env — the symbol is unbound.
+        let result =
+            PipelinedExecutor::realize_with_env(graph, ws_id, inputs, SymEnv::new());
+        assert!(
+            result.is_err(),
+            "unbound dyn_offset symbol must surface a typed error, not a panic",
+        );
+    }
+
+    /// A runtime offset whose resolved slab runs past the destination
+    /// capacity errors at realize (never an out-of-bounds write).
+    #[test]
+    fn pipelined_realize_write_slice_dynamic_offset_out_of_capacity_errors() {
+        use fuel_core_types::{DynScalar, SymId};
+        let dest_storage = fuel_memory::from_slice_cpu(&[0.0_f32; 6]);
+        let src_storage = fuel_memory::from_slice_cpu(&[7.0_f32, 8.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let sym = SymId(0);
+        let (dest_id, src_id, ws_id) = {
+            let mut g = graph.write().unwrap();
+            let dest = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[6]), dtype: DType::F32,
+            });
+            let src = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let ws = g.push(Node {
+                op: Op::WriteSlice {
+                    ranges: vec![(0, 2)],
+                    dyn_offset: Some((0, DynScalar::Sym(sym))),
+                },
+                inputs: vec![dest, src],
+                shape: Shape::from_dims(&[6]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(ws, BackendId::Cpu);
+            (dest, src, ws)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(dest_id, Arc::new(RwLock::new(dest_storage)));
+        inputs.insert(src_id, Arc::new(RwLock::new(src_storage)));
+        // offset 5 + width 2 = 7 > capacity 6.
+        let mut env = SymEnv::new();
+        env.bind(sym, 5).unwrap();
+        let result = PipelinedExecutor::realize_with_env(graph, ws_id, inputs, env);
+        assert!(
+            result.is_err(),
+            "resolved slab past destination capacity must surface a typed error",
+        );
     }
 
     /// Regression for the PipelinedExecutor ordering-integration session.
