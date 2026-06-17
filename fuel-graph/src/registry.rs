@@ -28,7 +28,7 @@
 
 use crate::{Graph, NodeId};
 use fuel_core_types::storage::OutputViewSpec;
-use fuel_core_types::{DType, Shape};
+use fuel_core_types::{DType, DynScalar, Shape};
 use std::collections::HashMap;
 
 pub mod causal_conv1d;
@@ -217,12 +217,24 @@ pub enum FusedOpParams {
     /// FlashAttn — multi-head scaled-dot-product attention with
     /// FlashAttention-shaped kernel hooks. 4-5 inputs (q, k, v,
     /// optional alibi).
+    ///
+    /// `k_len` (Phase D symbolic extents): `None` ⇒ the attended K/V
+    /// length is the full K extent `k.dims()[2]` (today's behavior).
+    /// `Some(dyn)` ⇒ the K/V buffers are a fixed **capacity**
+    /// `[B, Hkv, max_seq, D]` and only the first `dyn.resolve(env)` rows
+    /// are attended (the live prefix), with the causal mask
+    /// bottom-right-aligned at offset `k_len - Sq` (the standard FA2
+    /// convention, = `cached_len` in decode). This is the runtime
+    /// `k_len` decoupled from K's allocated shape that backs flash
+    /// decode over a persistent capacity KV-cache. Build via
+    /// [`Tensor::flash_attn_dyn`].
     FlashAttn {
         softmax_scale:     f32,
         causal:            bool,
         window_size_left:  Option<usize>,
         window_size_right: Option<usize>,
         softcap:           Option<f32>,
+        k_len:             Option<DynScalar>,
     },
     /// PagedAttn — paged-cache attention. 5-6 inputs (q, k_cache,
     /// v_cache, block_table, context_lens, optional alibi).
@@ -477,25 +489,38 @@ impl FusedOpParams {
             },
             FusedOpParams::FlashAttn {
                 softmax_scale, causal, window_size_left,
-                window_size_right, softcap,
-            } => FusedOpParamsKey {
-                tag: 12,
-                // softmax_scale f32 → u64 bit pattern; softcap
-                // f32 → u64 bit pattern (NaN sentinel for None so
-                // two FlashAttn nodes with no softcap still hash
-                // equal).
-                bits: vec![
-                    softmax_scale.to_bits() as u64,
-                    softcap.map(|s| s.to_bits() as u64).unwrap_or(u64::MAX),
-                ],
-                // causal as i64; window sizes carry MIN as the
-                // "None" sentinel so a real Some(0) still distinguishes.
-                ints: vec![
-                    if *causal { 1 } else { 0 },
-                    window_size_left.map(|w| w as i64).unwrap_or(i64::MIN),
-                    window_size_right.map(|w| w as i64).unwrap_or(i64::MIN),
-                ],
-            },
+                window_size_right, softcap, k_len,
+            } => {
+                // Encode the optional dynamic k_len as (tag, value) so
+                // two flash nodes whose attended-length symbol differs
+                // are NOT CSE-merged. None → (0,0); Concrete(v) → (1,v);
+                // Sym(s) → (2, s.0).
+                let (k_tag, k_val): (i64, i64) = match k_len {
+                    None => (0, 0),
+                    Some(DynScalar::Concrete(v)) => (1, *v as i64),
+                    Some(DynScalar::Sym(s)) => (2, s.0 as i64),
+                };
+                FusedOpParamsKey {
+                    tag: 12,
+                    // softmax_scale f32 → u64 bit pattern; softcap
+                    // f32 → u64 bit pattern (NaN sentinel for None so
+                    // two FlashAttn nodes with no softcap still hash
+                    // equal).
+                    bits: vec![
+                        softmax_scale.to_bits() as u64,
+                        softcap.map(|s| s.to_bits() as u64).unwrap_or(u64::MAX),
+                    ],
+                    // causal as i64; window sizes carry MIN as the
+                    // "None" sentinel so a real Some(0) still distinguishes.
+                    ints: vec![
+                        if *causal { 1 } else { 0 },
+                        window_size_left.map(|w| w as i64).unwrap_or(i64::MIN),
+                        window_size_right.map(|w| w as i64).unwrap_or(i64::MIN),
+                        k_tag,
+                        k_val,
+                    ],
+                }
+            }
             FusedOpParams::PagedAttn {
                 softmax_scale, block_size, softcap,
             } => FusedOpParamsKey {

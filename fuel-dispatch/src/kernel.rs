@@ -286,6 +286,16 @@ pub enum OpParams {
     /// `q` is `[B, Hq, Sq, D]`, `k` and `v` are `[B, Hkv, Sk, D]`
     /// (Hkv ≤ Hq, GQA-divisible). Optional 4th input `alibi_slopes`
     /// has shape `[Hq]` (presence is implicit in `inputs.len() == 4`).
+    ///
+    /// `sk` is the **physical** K/V length axis (the allocated extent —
+    /// used for strides + byte-length checks). `k_len` is the
+    /// **logical** attended length (`k_len <= sk`): a kernel attends only
+    /// the first `k_len` rows of the K/V buffers and bottom-right-aligns
+    /// the causal mask at offset `k_len - sq` (Phase D symbolic extents:
+    /// flash over a fixed-capacity KV-cache with a runtime live prefix).
+    /// For the static path the lowering sets `k_len == sk`, so a kernel
+    /// that loops `0..k_len` with the `k_len - sq` causal offset is
+    /// byte-identical to the old `0..sk` / `kj > qi` form.
     FlashAttn {
         b: usize,
         hq: usize,
@@ -293,6 +303,7 @@ pub enum OpParams {
         sq: usize,
         sk: usize,
         d: usize,
+        k_len: usize,
         softmax_scale: f32,
         causal: bool,
         window_size_left: Option<usize>,

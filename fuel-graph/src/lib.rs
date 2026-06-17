@@ -4006,6 +4006,94 @@ impl Tensor {
                 crate::registry::FusedOps::FLASH_ATTN,
                 crate::registry::FusedOpParams::FlashAttn {
                     softmax_scale, causal, window_size_left, window_size_right, softcap,
+                    k_len: None,
+                },
+            ),
+            inputs,
+            shape: Shape::from_dims(&[b, hq, sq, d]),
+            dtype,
+        });
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
+    /// Append a [`Op::FlashAttn`] over a fixed-**capacity** K/V whose
+    /// attended length is a **runtime** value (`k_len`) resolved through
+    /// the per-pass [`fuel_core_types::SymEnv`] at realize, decoupled
+    /// from K's allocated shape.
+    ///
+    /// `self` is `q` of shape `[B, Hq, Sq, D]`; `k`/`v` are the capacity
+    /// buffers `[B, Hkv, max_seq, D]` (GQA: `Hq % Hkv == 0`). Only the
+    /// first `k_len.resolve(env)` rows along the K/V length axis are
+    /// attended; the causal mask (when `causal`) is bottom-right-aligned
+    /// at offset `k_len - Sq` — the standard FlashAttention-2 convention,
+    /// equal to `cached_len` in autoregressive decode. Returns a tensor
+    /// with `q`'s shape.
+    ///
+    /// This is the flash counterpart of [`Self::write_slice_dyn`]: the
+    /// decode KV-cache write appends at the runtime offset and flash
+    /// attends the runtime prefix, so the graph structure stays
+    /// identical across tokens (Phase D symbolic extents).
+    #[allow(clippy::too_many_arguments)]
+    pub fn flash_attn_dyn(
+        &self,
+        k: &Tensor,
+        v: &Tensor,
+        alibi_slopes: Option<&Tensor>,
+        softmax_scale: f32,
+        causal: bool,
+        window_size_left: Option<usize>,
+        window_size_right: Option<usize>,
+        softcap: Option<f32>,
+        k_len: fuel_core_types::DynScalar,
+    ) -> Tensor {
+        assert!(Arc::ptr_eq(&self.graph, &k.graph), "flash_attn_dyn: q + k must live on the same graph");
+        assert!(Arc::ptr_eq(&self.graph, &v.graph), "flash_attn_dyn: q + v must live on the same graph");
+        if let Some(a) = alibi_slopes {
+            assert!(Arc::ptr_eq(&self.graph, &a.graph), "flash_attn_dyn: alibi_slopes must live on the same graph");
+        }
+        let q_dims = self.shape();
+        let q_dims = q_dims.dims();
+        let k_dims = k.shape();
+        let k_dims = k_dims.dims();
+        let v_dims = v.shape();
+        let v_dims = v_dims.dims();
+        assert_eq!(q_dims.len(), 4, "flash_attn_dyn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}");
+        assert_eq!(k_dims.len(), 4, "flash_attn_dyn: k must be rank 4 [B, Hkv, max_seq, D], got {k_dims:?}");
+        assert_eq!(v_dims.len(), 4, "flash_attn_dyn: v must be rank 4 [B, Hkv, max_seq, D], got {v_dims:?}");
+        let (b, hq, sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
+        let (bk, hkv, sk, dk) = (k_dims[0], k_dims[1], k_dims[2], k_dims[3]);
+        let (bv, hkv_v, sk_v, dv) = (v_dims[0], v_dims[1], v_dims[2], v_dims[3]);
+        assert_eq!(b, bk, "flash_attn_dyn: B mismatch q vs k ({b} vs {bk})");
+        assert_eq!(b, bv, "flash_attn_dyn: B mismatch q vs v");
+        assert_eq!(hkv, hkv_v, "flash_attn_dyn: Hkv mismatch k vs v");
+        assert_eq!(sk, sk_v, "flash_attn_dyn: capacity (max_seq) mismatch k vs v ({sk} vs {sk_v})");
+        assert_eq!(d, dk, "flash_attn_dyn: head_dim mismatch q vs k");
+        assert_eq!(d, dv, "flash_attn_dyn: head_dim mismatch q vs v");
+        assert_eq!(hq % hkv, 0, "flash_attn_dyn: Hq={hq} must be a multiple of Hkv={hkv}");
+        // A build-time constant k_len must fit the capacity and cover Sq.
+        if let fuel_core_types::DynScalar::Concrete(kl) = k_len {
+            assert!(kl <= sk, "flash_attn_dyn: k_len ({kl}) exceeds K capacity ({sk})");
+            assert!(kl >= sq, "flash_attn_dyn: k_len ({kl}) must be >= Sq ({sq}) for a valid causal prefix");
+        }
+        if let Some(a) = alibi_slopes {
+            let ad = a.shape();
+            let ad = ad.dims();
+            assert_eq!(ad, &[hq], "flash_attn_dyn: alibi_slopes must be [Hq={hq}], got {ad:?}");
+        }
+        let dtype = self.dtype();
+        let mut inputs = vec![self.id, k.id, v.id];
+        if let Some(a) = alibi_slopes {
+            inputs.push(a.id);
+        }
+        let id = self.graph.write().unwrap().push(Node {
+            op: Op::Fused(
+                crate::registry::FusedOps::FLASH_ATTN,
+                crate::registry::FusedOpParams::FlashAttn {
+                    softmax_scale, causal, window_size_left, window_size_right, softcap,
+                    k_len: Some(k_len),
                 },
             ),
             inputs,
@@ -8732,6 +8820,11 @@ impl Tensor {
                             crate::registry::FusedOpParams::FlashAttn {
                                 softmax_scale, causal,
                                 window_size_left, window_size_right, softcap,
+                                // Backward over the static (full-K) flash
+                                // only; the runtime-k_len capacity form is
+                                // forward-only (decode). k_len is ignored
+                                // here.
+                                k_len: _,
                             } => (
                                 softmax_scale, causal,
                                 window_size_left, window_size_right, softcap,
@@ -10907,6 +11000,48 @@ mod tests {
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         let err = dest.write_slice_dyn(&src, vec![(0, 1), (0, 3)], 5, DynScalar::Sym(SymId(0)));
         assert!(err.is_err(), "dyn_axis past rank must error");
+    }
+
+    #[test]
+    fn flash_attn_dyn_records_runtime_k_len() {
+        use fuel_core_types::{DynScalar, SymId};
+        // q [1, 2, 3, 4]; K/V capacity [1, 1, 8, 4] (GQA Hq=2, Hkv=1).
+        let q = Tensor::from_f32(
+            vec![0.0_f32; 1 * 2 * 3 * 4], Shape::from_dims(&[1, 2, 3, 4]), cpu_dev(),
+        );
+        let k = q.const_f32_like(vec![0.0_f32; 1 * 1 * 8 * 4], Shape::from_dims(&[1, 1, 8, 4]));
+        let v = q.const_f32_like(vec![0.0_f32; 1 * 1 * 8 * 4], Shape::from_dims(&[1, 1, 8, 4]));
+        let sym = SymId(0);
+        let out = q.flash_attn_dyn(
+            &k, &v, None, /*scale*/ 0.5, /*causal*/ true,
+            None, None, None, DynScalar::Sym(sym),
+        );
+        // Output adopts q's shape, not the capacity.
+        assert_eq!(out.shape().dims(), &[1, 2, 3, 4]);
+        let g = out.graph().read().unwrap();
+        match &g.node(out.id()).op {
+            Op::Fused(fid, crate::registry::FusedOpParams::FlashAttn { causal, k_len, .. })
+                if *fid == crate::registry::FusedOps::FLASH_ATTN =>
+            {
+                assert!(*causal);
+                assert_eq!(k_len, &Some(DynScalar::Sym(sym)));
+            }
+            other => panic!("expected Op::Fused(FLASH_ATTN, FlashAttn), got {other:?}"),
+        }
+        assert_eq!(g.node(out.id()).inputs, vec![q.id(), k.id(), v.id()]);
+    }
+
+    #[test]
+    #[should_panic(expected = "k_len")]
+    fn flash_attn_dyn_concrete_k_len_exceeding_capacity_panics() {
+        use fuel_core_types::DynScalar;
+        let q = Tensor::from_f32(
+            vec![0.0_f32; 1 * 1 * 2 * 4], Shape::from_dims(&[1, 1, 2, 4]), cpu_dev(),
+        );
+        let k = q.const_f32_like(vec![0.0_f32; 1 * 1 * 4 * 4], Shape::from_dims(&[1, 1, 4, 4]));
+        let v = q.const_f32_like(vec![0.0_f32; 1 * 1 * 4 * 4], Shape::from_dims(&[1, 1, 4, 4]));
+        // Concrete k_len=5 > capacity 4 → build-time panic.
+        let _ = q.flash_attn_dyn(&k, &v, None, 1.0, true, None, None, None, DynScalar::Concrete(5));
     }
 
     #[test]
