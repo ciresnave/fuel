@@ -8985,6 +8985,7 @@ fn vulkan_dispatch_flash_attn_f32_causal() {
         &[q_layout, k_layout, v_layout, out_layout],
         &OpParams::FlashAttn {
             b, hq, hkv, sq, sk, d,
+            k_len: sk,
             softmax_scale: scale,
             causal: true,
             window_size_left: None, window_size_right: None,
@@ -9069,6 +9070,7 @@ fn vulkan_dispatch_flash_attn_backward_f32_causal() {
     let do_layout = q_layout.clone();
     let op_params = OpParams::FlashAttn {
         b, hq, hkv, sq, sk, d,
+        k_len: sk,
         softmax_scale: scale,
         causal: true,
         window_size_left: None, window_size_right: None,

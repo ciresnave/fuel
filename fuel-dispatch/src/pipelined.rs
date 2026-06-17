@@ -3234,10 +3234,12 @@ fn op_to_op_params(
         }
         // Phase 7.6 step 5 (final): legacy `Op::FlashAttn` arm dropped.
         Op::Fused(_, fuel_graph::registry::FusedOpParams::FlashAttn {
-            softmax_scale, causal, window_size_left, window_size_right, softcap,
+            softmax_scale, causal, window_size_left, window_size_right, softcap, k_len,
         }) => {
             // Inputs[0]=q [B,Hq,Sq,D], inputs[1]=k [B,Hkv,Sk,D],
             // inputs[2]=v [B,Hkv,Sk,D], inputs[3]=alibi_slopes [Hq] (optional).
+            // `sk` is the PHYSICAL K extent (capacity, for strides/bytes);
+            // `k_len` (resolved below) is the LOGICAL attended length.
             if node.inputs.len() != 3 && node.inputs.len() != 4 {
                 return Err(Error::Msg(format!(
                     "Op::FlashAttn expects 3 or 4 inputs, got {}",
@@ -3269,13 +3271,44 @@ fn op_to_op_params(
                 ))
                 .bt());
             }
+            let sk = k_dims[2];
+            // Resolve the logical attended length. `None` ⇒ attend the
+            // full K extent (today's behavior). `Some(dyn)` ⇒ resolve
+            // against the per-pass SymEnv; the resolved length must fit
+            // the capacity and cover Sq (a valid causal prefix).
+            let attended_k_len = match k_len {
+                None => sk,
+                Some(dyn_k) => {
+                    let kl = dyn_k.resolve(sym_env).ok_or_else(|| {
+                        Error::Msg(format!(
+                            "Op::FlashAttn: dynamic k_len {dyn_k:?} is unbound in the SymEnv at realize",
+                        ))
+                        .bt()
+                    })?;
+                    if kl > sk {
+                        return Err(Error::Msg(format!(
+                            "Op::FlashAttn: resolved k_len ({kl}) exceeds K capacity ({sk})",
+                        ))
+                        .bt());
+                    }
+                    if kl < q_dims[2] {
+                        return Err(Error::Msg(format!(
+                            "Op::FlashAttn: resolved k_len ({kl}) < Sq ({}) — not a valid causal prefix",
+                            q_dims[2],
+                        ))
+                        .bt());
+                    }
+                    kl
+                }
+            };
             OpParams::FlashAttn {
                 b: q_dims[0],
                 hq: q_dims[1],
                 hkv: k_dims[1],
                 sq: q_dims[2],
-                sk: k_dims[2],
+                sk,
                 d: q_dims[3],
+                k_len: attended_k_len,
                 softmax_scale: *softmax_scale,
                 causal: *causal,
                 window_size_left: *window_size_left,
@@ -7494,6 +7527,7 @@ mod tests {
                         window_size_left: None,
                         window_size_right: None,
                         softcap: None,
+                        k_len: None,
                     },
                 ),
                 inputs: vec![q, k, v],
@@ -7559,6 +7593,7 @@ mod tests {
                         softmax_scale: 1.0, causal: true,
                         window_size_left: None, window_size_right: None,
                         softcap: None,
+                        k_len: None,
                     },
                 ),
                 inputs: vec![q, k, v],
@@ -7586,6 +7621,135 @@ mod tests {
         let expected_b = 6.0 / denom + 8.0 * (1.0_f32).exp() / denom;
         assert!((r[2] - expected_a).abs() < 1e-5, "row1[0]: got {} expected {}", r[2], expected_a);
         assert!((r[3] - expected_b).abs() < 1e-5, "row1[1]: got {} expected {}", r[3], expected_b);
+    }
+
+    /// E2E: FlashAttn over a fixed-**capacity** K/V with a runtime
+    /// `k_len` resolved through a `SymEnv` (Phase D symbolic extents).
+    /// Only the first `k_len` rows are attended; trailing "poison" rows
+    /// in the capacity buffer are ignored, and the causal mask is
+    /// bottom-right-aligned at offset `k_len - Sq`. This is flash decode
+    /// over a persistent KV-cache: K/V are `[.., max_seq, ..]` capacity
+    /// and the live prefix grows per token.
+    #[test]
+    fn pipelined_realize_flash_attn_dynamic_k_len() {
+        use fuel_core_types::{DynScalar, SymId};
+        // q [1,1,2,2]; K/V capacity [1,1,4,2]; bind k_len = 3 so row 3
+        // (the "poison" row) is never attended.
+        let q = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0,  0.0, 1.0]);
+        let k = fuel_memory::from_slice_cpu(&[
+            1.0_f32, 0.0,
+            0.0,     1.0,
+            1.0,     1.0,
+            100.0,   100.0,   // poison row 3 — must be ignored (k_len=3)
+        ]);
+        let v = fuel_memory::from_slice_cpu(&[
+            5.0_f32, 6.0,
+            7.0,     8.0,
+            9.0,     10.0,
+            999.0,   999.0,   // poison row 3 — must be ignored
+        ]);
+        let sym = SymId(0);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (q_id, k_id, v_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let q = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+            });
+            let k = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 4, 2]), dtype: DType::F32,
+            });
+            let v = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[1, 1, 4, 2]), dtype: DType::F32,
+            });
+            let op = g.push(Node {
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::FLASH_ATTN,
+                    fuel_graph::registry::FusedOpParams::FlashAttn {
+                        softmax_scale: 1.0, causal: true,
+                        window_size_left: None, window_size_right: None,
+                        softcap: None,
+                        k_len: Some(DynScalar::Sym(sym)),
+                    },
+                ),
+                inputs: vec![q, k, v],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+            });
+            g.set_target_backend(op, BackendId::Cpu);
+            (q, k, v, op)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(q_id, Arc::new(RwLock::new(q)));
+        inputs.insert(k_id, Arc::new(RwLock::new(k)));
+        inputs.insert(v_id, Arc::new(RwLock::new(v)));
+        let mut env = SymEnv::new();
+        env.bind(sym, 3).unwrap();
+        let (result_arc, _) =
+            PipelinedExecutor::realize_with_env(graph, op_id, inputs, env)
+                .expect("realize_with_env");
+        let guard = result_arc.read().unwrap();
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
+        let r = c.as_slice::<f32>().unwrap();
+        let e = 1.0_f32.exp();
+        // causal_offset = k_len - Sq = 3 - 2 = 1.
+        // Query 0 (abs pos 1): keys {0,1}. scores [1,0] → softmax [e,1]/(e+1).
+        let d0 = e + 1.0;
+        let e0x = (5.0 * e + 7.0) / d0;
+        let e0y = (6.0 * e + 8.0) / d0;
+        // Query 1 (abs pos 2): keys {0,1,2}. scores [0,1,1] → [1,e,e]/(1+2e).
+        let d1 = 1.0 + 2.0 * e;
+        let e1x = (5.0 + 7.0 * e + 9.0 * e) / d1;
+        let e1y = (6.0 + 8.0 * e + 10.0 * e) / d1;
+        for (got, want) in r.iter().zip([e0x, e0y, e1x, e1y].iter()) {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "flash dyn k_len: got {got}, want {want} (full output {r:?}); \
+                 a poison-contaminated value means the capacity rows past k_len leaked in",
+            );
+        }
+    }
+
+    /// A flash `k_len` symbol unbound in the `SymEnv` surfaces a typed
+    /// error at realize (never a panic).
+    #[test]
+    fn pipelined_realize_flash_attn_dynamic_k_len_unbound_errors() {
+        use fuel_core_types::{DynScalar, SymId};
+        let q = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
+        let k = fuel_memory::from_slice_cpu(&[0.0_f32; 16]);
+        let v = fuel_memory::from_slice_cpu(&[0.0_f32; 16]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (q_id, k_id, v_id, op_id) = {
+            let mut g = graph.write().unwrap();
+            let q = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32 });
+            let k = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1, 1, 4, 2]), dtype: DType::F32 });
+            let v = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1, 1, 4, 2]), dtype: DType::F32 });
+            let op = g.push(Node {
+                op: Op::Fused(
+                    fuel_graph::registry::FusedOps::FLASH_ATTN,
+                    fuel_graph::registry::FusedOpParams::FlashAttn {
+                        softmax_scale: 1.0, causal: true,
+                        window_size_left: None, window_size_right: None,
+                        softcap: None,
+                        k_len: Some(DynScalar::Sym(SymId(0))),
+                    },
+                ),
+                inputs: vec![q, k, v],
+                shape: Shape::from_dims(&[1, 1, 2, 2]), dtype: DType::F32,
+            });
+            g.set_target_backend(op, BackendId::Cpu);
+            (q, k, v, op)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(q_id, Arc::new(RwLock::new(q)));
+        inputs.insert(k_id, Arc::new(RwLock::new(k)));
+        inputs.insert(v_id, Arc::new(RwLock::new(v)));
+        // Empty env — the k_len symbol is unbound.
+        let result = PipelinedExecutor::realize_with_env(graph, op_id, inputs, SymEnv::new());
+        assert!(result.is_err(), "unbound flash k_len symbol must surface a typed error");
     }
 
     /// E2E: FlashAttn BF16 — same single-row test as f32, tolerant.
@@ -7622,6 +7786,7 @@ mod tests {
                         softmax_scale: 1.0, causal: false,
                         window_size_left: None, window_size_right: None,
                         softcap: None,
+                        k_len: None,
                     },
                 ),
                 inputs: vec![q, k, v],

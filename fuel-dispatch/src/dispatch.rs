@@ -3353,13 +3353,13 @@ macro_rules! cpu_flash_attn_wrapper {
                 ))
                 .bt());
             }
-            let (b, hq, hkv, sq, sk, d, scale, causal, wl, wr, softcap) = match params {
+            let (b, hq, hkv, sq, sk, d, k_len, scale, causal, wl, wr, softcap) = match params {
                 OpParams::FlashAttn {
-                    b, hq, hkv, sq, sk, d,
+                    b, hq, hkv, sq, sk, d, k_len,
                     softmax_scale, causal,
                     window_size_left, window_size_right, softcap,
                 } => (
-                    *b, *hq, *hkv, *sq, *sk, *d,
+                    *b, *hq, *hkv, *sq, *sk, *d, *k_len,
                     *softmax_scale, *causal,
                     *window_size_left, *window_size_right, *softcap,
                 ),
@@ -3388,7 +3388,7 @@ macro_rules! cpu_flash_attn_wrapper {
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
                 q_cpu, k_cpu, v_cpu, alibi_cpu, out_cpu,
-                b, hq, hkv, sq, sk, d,
+                b, hq, hkv, sq, sk, d, k_len,
                 scale, causal, wl, wr, softcap,
             )
         }
@@ -3431,6 +3431,9 @@ macro_rules! cpu_flash_attn_backward_wrapper {
                     b, hq, hkv, sq, sk, d,
                     softmax_scale, causal,
                     window_size_left, window_size_right, softcap,
+                    // Backward is the static (full-K) training path; the
+                    // recompute attends the full K extent. k_len ignored.
+                    k_len: _,
                 } => (
                     *b, *hq, *hkv, *sq, *sk, *d,
                     *softmax_scale, *causal,

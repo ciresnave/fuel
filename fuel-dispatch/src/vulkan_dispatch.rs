@@ -3590,14 +3590,26 @@ pub mod flash_attn {
         }
         let (b, hq, hkv, sq, sk, d, scale, causal, wl, wr, softcap) = match params {
             OpParams::FlashAttn {
-                b, hq, hkv, sq, sk, d,
+                b, hq, hkv, sq, sk, d, k_len,
                 softmax_scale, causal,
                 window_size_left, window_size_right, softcap,
-            } => (
-                *b, *hq, *hkv, *sq, *sk, *d,
-                *softmax_scale, *causal,
-                *window_size_left, *window_size_right, *softcap,
-            ),
+            } => {
+                // Vulkan flash v1 reads the full K extent; a runtime
+                // k_len (capacity-K, Phase D) isn't supported here. The
+                // route picker keeps decode's capacity-K flash on CUDA.
+                if *k_len != *sk {
+                    return Err(Error::Msg(format!(
+                        "vulkan_dispatch::flash_attn: runtime k_len ({}) != K capacity ({}) \
+                         not supported on Vulkan v1; route picker should fall back to CPU/CUDA",
+                        *k_len, *sk,
+                    )).bt());
+                }
+                (
+                    *b, *hq, *hkv, *sq, *sk, *d,
+                    *softmax_scale, *causal,
+                    *window_size_left, *window_size_right, *softcap,
+                )
+            },
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::flash_attn::flash_attn_f32: expected OpParams::FlashAttn, got {other:?}",
@@ -3695,14 +3707,26 @@ pub mod flash_attn {
         }
         let (b, hq, hkv, sq, sk, d, scale, causal, wl, wr, softcap) = match params {
             OpParams::FlashAttn {
-                b, hq, hkv, sq, sk, d,
+                b, hq, hkv, sq, sk, d, k_len,
                 softmax_scale, causal,
                 window_size_left, window_size_right, softcap,
-            } => (
-                *b, *hq, *hkv, *sq, *sk, *d,
-                *softmax_scale, *causal,
-                *window_size_left, *window_size_right, *softcap,
-            ),
+            } => {
+                // Vulkan flash v1 reads the full K extent; a runtime
+                // k_len (capacity-K, Phase D) isn't supported here. The
+                // route picker keeps decode's capacity-K flash on CUDA.
+                if *k_len != *sk {
+                    return Err(Error::Msg(format!(
+                        "vulkan_dispatch::flash_attn: runtime k_len ({}) != K capacity ({}) \
+                         not supported on Vulkan v1; route picker should fall back to CPU/CUDA",
+                        *k_len, *sk,
+                    )).bt());
+                }
+                (
+                    *b, *hq, *hkv, *sq, *sk, *d,
+                    *softmax_scale, *causal,
+                    *window_size_left, *window_size_right, *softcap,
+                )
+            },
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::flash_attn::{debug_name}: expected OpParams::FlashAttn, got {other:?}",
@@ -3829,14 +3853,26 @@ pub mod flash_attn {
         }
         let (b, hq, hkv, sq, sk, d, scale, causal, wl, wr, softcap) = match params {
             OpParams::FlashAttn {
-                b, hq, hkv, sq, sk, d,
+                b, hq, hkv, sq, sk, d, k_len,
                 softmax_scale, causal,
                 window_size_left, window_size_right, softcap,
-            } => (
-                *b, *hq, *hkv, *sq, *sk, *d,
-                *softmax_scale, *causal,
-                *window_size_left, *window_size_right, *softcap,
-            ),
+            } => {
+                // Vulkan flash v1 reads the full K extent; a runtime
+                // k_len (capacity-K, Phase D) isn't supported here. The
+                // route picker keeps decode's capacity-K flash on CUDA.
+                if *k_len != *sk {
+                    return Err(Error::Msg(format!(
+                        "vulkan_dispatch::flash_attn: runtime k_len ({}) != K capacity ({}) \
+                         not supported on Vulkan v1; route picker should fall back to CPU/CUDA",
+                        *k_len, *sk,
+                    )).bt());
+                }
+                (
+                    *b, *hq, *hkv, *sq, *sk, *d,
+                    *softmax_scale, *causal,
+                    *window_size_left, *window_size_right, *softcap,
+                )
+            },
             other => {
                 return Err(Error::Msg(format!(
                     "vulkan_dispatch::flash_attn::{debug_name}: expected OpParams::FlashAttn, got {other:?}",

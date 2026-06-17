@@ -581,6 +581,13 @@ pub fn eval_node_with_op(
             let (softmax_scale, causal, window_size_left, window_size_right, softcap) = match params {
                 fuel_graph::registry::FusedOpParams::FlashAttn {
                     softmax_scale, causal, window_size_left, window_size_right, softcap,
+                    // The reference oracle has no SymEnv: a dynamic
+                    // (capacity-K) k_len can't be resolved here, so it
+                    // attends the full K extent. The flash-decode Judge
+                    // compares the executor flash arm against the
+                    // executor decomposed arm (both SymEnv-resolved),
+                    // not against this reference path.
+                    k_len: _,
                 } => (*softmax_scale, *causal, *window_size_left, *window_size_right, *softcap),
                 _ => panic!(
                     "Op::Fused(FLASH_ATTN, _) expected FusedOpParams::FlashAttn, got {params:?}",

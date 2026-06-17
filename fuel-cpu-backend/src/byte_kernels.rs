@@ -6028,7 +6028,7 @@ macro_rules! flash_attn_native_kernel {
             alibi_slopes: Option<&CpuStorageBytes>,
             out: &mut CpuStorageBytes,
             b: usize, hq: usize, hkv: usize,
-            sq: usize, sk: usize, d: usize,
+            sq: usize, sk: usize, d: usize, k_len: usize,
             softmax_scale: f32,
             causal: bool,
             window_left: Option<usize>,
@@ -6077,6 +6077,17 @@ macro_rules! flash_attn_native_kernel {
             let k_b_stride = hkv * k_h_stride;
             let o_h_stride = sq * d;
             let o_b_stride = hq * o_h_stride;
+            // `k_len` (logical attended length) must fit the physical K
+            // extent `sk` (capacity): the strides above use `sk`, the
+            // attention loops below use `k_len`. Bottom-right causal
+            // alignment: query row `qi` is at absolute position
+            // `qi + causal_offset` (= `qi + cached_len` in decode).
+            if k_len > sk {
+                return Err(Error::Msg(format!(
+                    "{}: k_len ({k_len}) exceeds K extent sk ({sk})", stringify!($name),
+                )).bt());
+            }
+            let causal_offset = k_len.saturating_sub(sq);
             let scale = softmax_scale as $T;
             // Zero output up front so masked rows stay zero.
             for slot in out_view.iter_mut() { *slot = $T_zero; }
@@ -6089,12 +6100,15 @@ macro_rules! flash_attn_native_kernel {
                     let o_off = bi * o_b_stride + hi * o_h_stride;
                     let alibi_h: Option<$T> = alibi_view.map(|a| a[hi]);
                     for qi in 0..sq {
-                        // Build admissible scores; track running max.
-                        let mut scores = vec![$T_zero; sk];
-                        let mut admissible = vec![false; sk];
+                        // Absolute query position (bottom-right causal).
+                        let aq = qi + causal_offset;
+                        // Build admissible scores over the LOGICAL prefix
+                        // `0..k_len` of the (capacity) K/V buffers.
+                        let mut scores = vec![$T_zero; k_len];
+                        let mut admissible = vec![false; k_len];
                         let mut max_score: $T = <$T>::NEG_INFINITY;
-                        for kj in 0..sk {
-                            if !flash_attn_admissible(qi, kj, causal, window_left, window_right) {
+                        for kj in 0..k_len {
+                            if !flash_attn_admissible(aq, kj, causal, window_left, window_right) {
                                 continue;
                             }
                             admissible[kj] = true;
@@ -6110,7 +6124,7 @@ macro_rules! flash_attn_native_kernel {
                                 s = (s / cc).tanh() * cc;
                             }
                             if let Some(slope) = alibi_h {
-                                let delta = (kj as f32 - qi as f32) as $T;
+                                let delta = (kj as f32 - aq as f32) as $T;
                                 s += slope * delta;
                             }
                             scores[kj] = s;
@@ -6128,7 +6142,7 @@ macro_rules! flash_attn_native_kernel {
                         }
                         if sum == $T_zero { continue; }
                         let inv_sum = (1.0 as $T) / sum;
-                        for kj in 0..sk {
+                        for kj in 0..k_len {
                             if !admissible[kj] { continue; }
                             let p_ij = scores[kj] * inv_sum;
                             if p_ij == $T_zero { continue; }
@@ -6164,7 +6178,7 @@ macro_rules! flash_attn_half_kernel {
             alibi_slopes: Option<&CpuStorageBytes>,
             out: &mut CpuStorageBytes,
             b: usize, hq: usize, hkv: usize,
-            sq: usize, sk: usize, d: usize,
+            sq: usize, sk: usize, d: usize, k_len: usize,
             softmax_scale: f32,
             causal: bool,
             window_left: Option<usize>,
@@ -6212,6 +6226,15 @@ macro_rules! flash_attn_half_kernel {
             let k_b_stride = hkv * k_h_stride;
             let o_h_stride = sq * d;
             let o_b_stride = hq * o_h_stride;
+            // `k_len` ≤ physical extent `sk`; strides use `sk`, the
+            // attention loops use `k_len`. Bottom-right causal: query
+            // row `qi` sits at absolute position `qi + causal_offset`.
+            if k_len > sk {
+                return Err(Error::Msg(format!(
+                    "{}: k_len ({k_len}) exceeds K extent sk ({sk})", stringify!($name),
+                )).bt());
+            }
+            let causal_offset = k_len.saturating_sub(sq);
             for slot in out_view.iter_mut() { *slot = <$T>::from_f32(0.0); }
             for bi in 0..b {
                 for hi in 0..hq {
@@ -6222,11 +6245,12 @@ macro_rules! flash_attn_half_kernel {
                     let o_off = bi * o_b_stride + hi * o_h_stride;
                     let alibi_h: Option<f32> = alibi_view.map(|a| a[hi].to_f32());
                     for qi in 0..sq {
-                        let mut scores = vec![0.0_f32; sk];
-                        let mut admissible = vec![false; sk];
+                        let aq = qi + causal_offset;
+                        let mut scores = vec![0.0_f32; k_len];
+                        let mut admissible = vec![false; k_len];
                         let mut max_score = f32::NEG_INFINITY;
-                        for kj in 0..sk {
-                            if !flash_attn_admissible(qi, kj, causal, window_left, window_right) {
+                        for kj in 0..k_len {
+                            if !flash_attn_admissible(aq, kj, causal, window_left, window_right) {
                                 continue;
                             }
                             admissible[kj] = true;
@@ -6241,7 +6265,7 @@ macro_rules! flash_attn_half_kernel {
                                 s = (s / c).tanh() * c;
                             }
                             if let Some(slope) = alibi_h {
-                                let delta = kj as f32 - qi as f32;
+                                let delta = kj as f32 - aq as f32;
                                 s += slope * delta;
                             }
                             scores[kj] = s;
@@ -6260,7 +6284,7 @@ macro_rules! flash_attn_half_kernel {
                         if sum == 0.0 { continue; }
                         let inv_sum = 1.0_f32 / sum;
                         let mut row_acc = vec![0.0_f32; d];
-                        for kj in 0..sk {
+                        for kj in 0..k_len {
                             if !admissible[kj] { continue; }
                             let p_ij = scores[kj] * inv_sum;
                             if p_ij == 0.0 { continue; }
