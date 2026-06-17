@@ -3,8 +3,85 @@
 //! A [`Shape`] holds an ordered list of dimension sizes. It is used to create tensors,
 //! verify operation compatibility, and query tensor structure.
 #![allow(clippy::redundant_closure_call)]
+use crate::symbol::{SymEnv, SymId};
 use crate::{DimVec, Error, Result};
 use smallvec::smallvec;
+
+/// A single dimension's **extent**: a build-time constant, or a bounded
+/// runtime symbol.
+///
+/// `Shape::dims()` reports the *bound* (a `Scalar`'s value, or a `Range`'s
+/// `max`/capacity) — which is what sizing/striding/iteration want. The *live*
+/// value of a `Range` is resolved per forward pass through a [`SymEnv`].
+/// `Scalar` carries no symbol: two build-time constants that must match
+/// already match by being equal, and a *runtime* dimension always has a
+/// capacity bound, so it is a `Range`, never a `Scalar`.
+///
+/// Phase D step 1b. See
+/// `docs/session-prompts/symbolic-extents-and-persistent-decode.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Extent {
+    /// A dimension fixed at graph-construction time.
+    Scalar(usize),
+    /// A bounded runtime dimension: live value in `[min, max]`, resolved via
+    /// the `SymEnv` under `sym`. `max` is the capacity (what `dims()` reports).
+    Range { min: usize, max: usize, sym: SymId },
+}
+
+impl Extent {
+    /// The capacity bound: a `Scalar`'s value, or a `Range`'s `max`. This is
+    /// what `Shape::dims()` reports for the axis.
+    pub fn bound(&self) -> usize {
+        match self {
+            Extent::Scalar(v) => *v,
+            Extent::Range { max, .. } => *max,
+        }
+    }
+
+    /// The lower bound: a `Scalar`'s value, or a `Range`'s `min`.
+    pub fn min(&self) -> usize {
+        match self {
+            Extent::Scalar(v) => *v,
+            Extent::Range { min, .. } => *min,
+        }
+    }
+
+    /// Whether this is a runtime (`Range`) extent rather than a constant.
+    pub fn is_dynamic(&self) -> bool {
+        matches!(self, Extent::Range { .. })
+    }
+
+    /// The symbol of a `Range`, or `None` for a `Scalar`.
+    pub fn sym(&self) -> Option<SymId> {
+        match self {
+            Extent::Scalar(_) => None,
+            Extent::Range { sym, .. } => Some(*sym),
+        }
+    }
+
+    /// The live value this pass: a `Scalar`'s value, or the `Range`'s `sym`
+    /// resolved through `env`. `None` if a `Range`'s symbol is unbound.
+    pub fn resolve(&self, env: &SymEnv) -> Option<usize> {
+        match self {
+            Extent::Scalar(v) => Some(*v),
+            Extent::Range { sym, .. } => env.get(*sym),
+        }
+    }
+}
+
+/// A sparse record marking one axis of a [`Shape`] as a bounded-symbolic
+/// `Range`. `max` is the corresponding `Shape::dims()` bound, so only `min`
+/// and `sym` are stored here. Phase D step 1b.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DynAxis {
+    pub axis: usize,
+    pub min: usize,
+    pub sym: SymId,
+}
+
+/// Sparse list of a shape's dynamic axes, kept sorted by `axis` so equality is
+/// structural. Empty/`None` for the common all-concrete shape.
+type DynAxisVec = smallvec::SmallVec<[DynAxis; 2]>;
 
 /// A shape represents the dimensions of a tensor.
 ///
@@ -14,45 +91,63 @@ use smallvec::smallvec;
 ///
 /// `Shape` can be created from tuples, slices, `Vec<usize>`, or the [`Shape::from_dims`]
 /// constructor.
+/// `dims` holds the per-axis **bounds** (a `Scalar`'s value, or a `Range`'s
+/// `max`/capacity); `dynamic` sparsely marks which axes are bounded-symbolic.
+/// `dims()` borrows `dims` unchanged; the symbolic view is `extent()`. The
+/// common all-concrete shape has `dynamic: None`. Equality includes `dynamic`
+/// (a symbolic shape is distinct from a concrete one with the same bounds), so
+/// `DynAxis` entries are kept sorted by axis.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Shape(DimVec);
+pub struct Shape {
+    dims: DimVec,
+    dynamic: Option<DynAxisVec>,
+}
 
 /// A constant representing a scalar shape (rank 0, no dimensions).
-pub const SCALAR: Shape = Shape(smallvec::SmallVec::new_const());
+pub const SCALAR: Shape = Shape {
+    dims: smallvec::SmallVec::new_const(),
+    dynamic: None,
+};
 
 impl std::fmt::Debug for Shape {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", &self.dims())
+        write!(f, "{:?}", &self.dims())?;
+        if let Some(dyn_axes) = &self.dynamic {
+            if !dyn_axes.is_empty() {
+                write!(f, "{{dyn: {dyn_axes:?}}}")?;
+            }
+        }
+        Ok(())
     }
 }
 
 impl<const C: usize> From<&[usize; C]> for Shape {
     fn from(dims: &[usize; C]) -> Self {
-        Self(DimVec::from_slice(dims))
+        Self { dims: DimVec::from_slice(dims), dynamic: None }
     }
 }
 
 impl From<&[usize]> for Shape {
     fn from(dims: &[usize]) -> Self {
-        Self(DimVec::from_slice(dims))
+        Self { dims: DimVec::from_slice(dims), dynamic: None }
     }
 }
 
 impl From<&Shape> for Shape {
     fn from(shape: &Shape) -> Self {
-        Self(shape.0.clone())
+        Self { dims: shape.dims.clone(), dynamic: shape.dynamic.clone() }
     }
 }
 
 impl From<()> for Shape {
     fn from(_: ()) -> Self {
-        Self(smallvec![])
+        Self { dims: smallvec![], dynamic: None }
     }
 }
 
 impl From<usize> for Shape {
     fn from(d1: usize) -> Self {
-        Self(smallvec![d1])
+        Self { dims: smallvec![d1], dynamic: None }
     }
 }
 
@@ -60,7 +155,7 @@ macro_rules! impl_from_tuple {
     ($tuple:ty, $($index:tt),+) => {
         impl From<$tuple> for Shape {
             fn from(d: $tuple) -> Self {
-                Self(smallvec![$(d.$index,)+])
+                Self { dims: smallvec![$(d.$index,)+], dynamic: None }
             }
         }
     }
@@ -75,13 +170,13 @@ impl_from_tuple!((usize, usize, usize, usize, usize, usize), 0, 1, 2, 3, 4, 5);
 
 impl From<Vec<usize>> for Shape {
     fn from(dims: Vec<usize>) -> Self {
-        Self(DimVec::from(dims))
+        Self { dims: DimVec::from(dims), dynamic: None }
     }
 }
 
 impl From<DimVec> for Shape {
     fn from(dims: DimVec) -> Self {
-        Self(dims)
+        Self { dims, dynamic: None }
     }
 }
 
@@ -128,22 +223,93 @@ macro_rules! extract_dims {
 impl Shape {
     /// Creates a shape from a slice of dimension sizes.
     pub fn from_dims(dims: &[usize]) -> Self {
-        Self(DimVec::from_slice(dims))
+        Self { dims: DimVec::from_slice(dims), dynamic: None }
     }
 
     /// The rank is the number of dimensions, 0 for a scalar value, 1 for a vector, etc.
     pub fn rank(&self) -> usize {
-        self.0.len()
+        self.dims.len()
     }
 
     /// Consumes the shape and returns its dimensions as a `Vec<usize>`.
     pub fn into_dims(self) -> Vec<usize> {
-        self.0.into_vec()
+        self.dims.into_vec()
     }
 
-    /// The dimensions as a slice of `usize`.
+    /// The dimensions as a slice of `usize` — the per-axis **bounds** (a
+    /// scalar's value, or a dynamic axis's capacity/`max`). Unchanged contract:
+    /// this is what sizing, striding, and iteration want. The live value of a
+    /// dynamic axis is obtained separately via [`Shape::extent`] +
+    /// [`Extent::resolve`] (or [`Shape::resolve`]); it is never folded in here.
     pub fn dims(&self) -> &[usize] {
-        &self.0
+        &self.dims
+    }
+
+    /// The [`Extent`] of `axis`: a `Range` if the axis is dynamic (carrying its
+    /// `min`, the `dims()` bound as `max`, and its `sym`), else a `Scalar` of
+    /// the bound. The symbolic *view* over `dims()`. Phase D step 1b.
+    pub fn extent(&self, axis: usize) -> Extent {
+        if let Some(dyn_axes) = &self.dynamic {
+            if let Some(da) = dyn_axes.iter().find(|d| d.axis == axis) {
+                return Extent::Range { min: da.min, max: self.dims[axis], sym: da.sym };
+            }
+        }
+        Extent::Scalar(self.dims[axis])
+    }
+
+    /// The [`Extent`] of every axis, in order.
+    pub fn extents(&self) -> impl Iterator<Item = Extent> + '_ {
+        (0..self.dims.len()).map(move |i| self.extent(i))
+    }
+
+    /// Whether any axis is a bounded-symbolic `Range`.
+    pub fn has_dynamic(&self) -> bool {
+        self.dynamic.as_ref().is_some_and(|v| !v.is_empty())
+    }
+
+    /// Mark `axis` as a bounded-symbolic `Range` `[min, dims[axis]]` resolved
+    /// via `sym`. `dims()[axis]` stays the capacity bound; `extent(axis)` now
+    /// reports the `Range`. Replaces any prior dynamic mark on `axis`. The
+    /// KV-cache length axis uses this; K-length and V-length pass the *same*
+    /// `sym` to unify.
+    pub fn with_dynamic_axis(mut self, axis: usize, min: usize, sym: SymId) -> Self {
+        assert!(
+            axis < self.dims.len(),
+            "with_dynamic_axis: axis {axis} out of range for rank {}",
+            self.dims.len(),
+        );
+        let da = DynAxis { axis, min, sym };
+        let v = self.dynamic.get_or_insert_with(DynAxisVec::new);
+        // Keep sorted by axis so equality is structural.
+        match v.binary_search_by_key(&axis, |d| d.axis) {
+            Ok(i) => v[i] = da,
+            Err(i) => v.insert(i, da),
+        }
+        self
+    }
+
+    /// Resolve every dynamic axis through `env`, returning a fully-concrete
+    /// `Shape` (all `Scalar`). Reads `env` at call time, so it always reflects
+    /// the current bindings; never caches. Errors if a dynamic axis's symbol
+    /// is unbound. A shape with no dynamic axes resolves to a clone.
+    pub fn resolve(&self, env: &SymEnv) -> Result<Shape> {
+        let Some(dyn_axes) = &self.dynamic else {
+            return Ok(self.clone());
+        };
+        let mut dims = self.dims.clone();
+        for da in dyn_axes {
+            match env.get(da.sym) {
+                Some(v) => dims[da.axis] = v,
+                None => {
+                    return Err(Error::Msg(format!(
+                        "Shape::resolve: dynamic axis {} symbol {:?} is unbound",
+                        da.axis, da.sym,
+                    ))
+                    .bt());
+                }
+            }
+        }
+        Ok(Shape { dims, dynamic: None })
     }
 
     /// The dimension size for a specified dimension index.
@@ -158,7 +324,7 @@ impl Shape {
     ///
     /// For a scalar (rank 0), the element count is 1.
     pub fn elem_count(&self) -> usize {
-        self.0.iter().product()
+        self.dims.iter().product()
     }
 
     /// The strides given in number of elements for a contiguous n-dimensional
@@ -168,7 +334,7 @@ impl Shape {
     /// uniformly handle negative-stride view ops (Flip, etc.).
     pub fn stride_contiguous(&self) -> crate::StrideVec {
         let mut stride: crate::StrideVec = self
-            .0
+            .dims
             .iter()
             .rev()
             .scan(1_isize, |prod, &u| {
@@ -183,11 +349,11 @@ impl Shape {
 
     /// Returns true if the strides are C contiguous (aka row major).
     pub fn is_contiguous(&self, stride: &[isize]) -> bool {
-        if self.0.len() != stride.len() {
+        if self.dims.len() != stride.len() {
             return false;
         }
         let mut acc: isize = 1;
-        for (&stride, &dim) in stride.iter().zip(self.0.iter()).rev() {
+        for (&stride, &dim) in stride.iter().zip(self.dims.iter()).rev() {
             if dim > 1 && stride != acc {
                 return false;
             }
@@ -198,11 +364,11 @@ impl Shape {
 
     /// Returns true if the strides are Fortran contiguous (aka column major).
     pub fn is_fortran_contiguous(&self, stride: &[isize]) -> bool {
-        if self.0.len() != stride.len() {
+        if self.dims.len() != stride.len() {
             return false;
         }
         let mut acc: isize = 1;
-        for (&stride, &dim) in stride.iter().zip(self.0.iter()) {
+        for (&stride, &dim) in stride.iter().zip(self.dims.iter()) {
             if dim > 1 && stride != acc {
                 return false;
             }
@@ -214,7 +380,9 @@ impl Shape {
     /// Modifies the shape by adding a list of additional dimensions at the end of the existing
     /// dimensions.
     pub fn extend(mut self, additional_dims: &[usize]) -> Self {
-        self.0.extend_from_slice(additional_dims);
+        // Appending axes leaves existing axis indices (and thus `dynamic`)
+        // valid; the new trailing axes are concrete.
+        self.dims.extend_from_slice(additional_dims);
         self
     }
 
@@ -752,5 +920,64 @@ mod tests {
         assert_eq!(shape.dims(), &[2, 3, 4, 5, 6]);
         let shape = Shape::from((2, 3, 4, 5, 6, 7));
         assert_eq!(shape.dims(), &[2, 3, 4, 5, 6, 7]);
+    }
+
+    /// PR step-1b: the symbolic-extent foundation. `dims()` returns the
+    /// capacity bounds unchanged; `extent()` is the symbolic view;
+    /// `resolve()` substitutes live values (erroring when unbound); two shapes
+    /// sharing a `sym` resolve together; equality includes `dynamic`; `Layout`
+    /// inherits `Extent` and resolves while keeping capacity strides. Born-red:
+    /// fails if any of those contracts is wrong.
+    #[test]
+    fn symbolic_extent_foundation() {
+        use crate::{Layout, SymEnv, SymId};
+
+        // A capacity-shaped KV buffer with a dynamic length axis (axis 2).
+        let sym = SymId(0);
+        let shape = Shape::from_dims(&[1, 32, 4096, 128]).with_dynamic_axis(2, 0, sym);
+
+        // dims() returns the BOUNDS (axis 2 = capacity 4096), contract unchanged.
+        assert_eq!(shape.dims(), &[1, 32, 4096, 128]);
+        assert!(shape.has_dynamic());
+
+        // extent() is the symbolic view.
+        assert_eq!(shape.extent(0), Extent::Scalar(1));
+        assert_eq!(shape.extent(2), Extent::Range { min: 0, max: 4096, sym });
+        assert_eq!(shape.extent(2).bound(), 4096);
+        assert!(shape.extent(2).is_dynamic());
+        assert_eq!(shape.extent(2).sym(), Some(sym));
+        assert_eq!(shape.extent(0).sym(), None);
+        assert_eq!(shape.extents().count(), 4);
+
+        // resolve() substitutes the live value; unbound is an error.
+        let mut env = SymEnv::new();
+        assert!(shape.resolve(&env).is_err(), "unbound symbol must error");
+        env.bind(sym, 53).unwrap();
+        let concrete = shape.resolve(&env).unwrap();
+        assert_eq!(concrete.dims(), &[1, 32, 53, 128]);
+        assert!(!concrete.has_dynamic());
+        assert_eq!(shape.extent(2).resolve(&env), Some(53));
+
+        // Two shapes sharing a sym resolve together (unification via id).
+        let other = Shape::from_dims(&[1, 32, 4096, 128]).with_dynamic_axis(2, 0, sym);
+        assert_eq!(other.resolve(&env).unwrap().dims(), &[1, 32, 53, 128]);
+
+        // Equality includes `dynamic`: symbolic != concrete-with-same-bounds.
+        let concrete_caps = Shape::from_dims(&[1, 32, 4096, 128]);
+        assert_ne!(shape, concrete_caps);
+        assert_eq!(shape, other);
+        assert!(!concrete_caps.has_dynamic());
+        // from_dims stays the all-Scalar constructor.
+        assert_eq!(concrete_caps.extent(2), Extent::Scalar(4096));
+
+        // elem_count() is the capacity product (bound), not the live count.
+        assert_eq!(shape.elem_count(), 32 * 4096 * 128);
+
+        // Layout inherits Extent via its embedded Shape; resolve keeps strides.
+        let layout = Layout::contiguous_with_offset(shape.clone(), 0);
+        assert!(layout.has_dynamic());
+        let rlayout = layout.resolve(&env).unwrap();
+        assert_eq!(rlayout.dims(), &[1, 32, 53, 128]);
+        assert_eq!(rlayout.stride(), layout.stride(), "strides stay capacity-based");
     }
 }
