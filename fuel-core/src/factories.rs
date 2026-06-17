@@ -136,6 +136,7 @@ impl LazyRealizer for BridgeRealizer {
                 target,
                 &self.device,
                 self.cache.clone(),
+                &fuel_core_types::SymEnv::default(),
             )?;
         self.last_kernel_source = root_kernel_source;
         Ok(bytes)

@@ -497,6 +497,30 @@ impl PipelinedExecutor {
         )
     }
 
+    /// Env-carrying sibling of [`realize_with_optimized`]: same
+    /// optimized-graph dispatch, but with a per-pass [`SymEnv`] supplying
+    /// the runtime bindings for `DynScalar` op params (Phase D symbolic
+    /// extents). An empty env is byte-identical to
+    /// [`realize_with_optimized`]. The realize bridge threads its session
+    /// env through here for persistent decode.
+    pub fn realize_with_optimized_env(
+        graph: Arc<RwLock<Graph>>,
+        target: NodeId,
+        inputs: StorageCache,
+        optimized: &OptimizedGraph,
+        sym_env: SymEnv,
+    ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
+        Self::realize_inner(
+            graph,
+            target,
+            inputs,
+            None,
+            None,
+            OrderSource::Optimized { optimized, route: None },
+            sym_env,
+        )
+    }
+
     /// PR-C1 entry: realize `target` driven from `optimized`'s in-place
     /// form **following the runtime route picker's chosen arms**. The
     /// dispatch order is the route-aware lowering
@@ -521,6 +545,28 @@ impl PipelinedExecutor {
             None,
             OrderSource::Optimized { optimized, route: Some(route) },
             SymEnv::default(),
+        )
+    }
+
+    /// Env-carrying sibling of [`realize_with_optimized_route`] — the
+    /// route-aware lowering with a per-pass [`SymEnv`]. An empty env is
+    /// byte-identical to [`realize_with_optimized_route`].
+    pub fn realize_with_optimized_route_env(
+        graph: Arc<RwLock<Graph>>,
+        target: NodeId,
+        inputs: StorageCache,
+        optimized: &OptimizedGraph,
+        route: &PickedRoute,
+        sym_env: SymEnv,
+    ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
+        Self::realize_inner(
+            graph,
+            target,
+            inputs,
+            None,
+            None,
+            OrderSource::Optimized { optimized, route: Some(route) },
+            sym_env,
         )
     }
 
@@ -733,6 +779,26 @@ impl PipelinedExecutor {
         )
     }
 
+    /// Env-carrying sibling of [`realize_many_with_optimized`] (Phase D
+    /// symbolic extents). An empty env is byte-identical to it.
+    pub fn realize_many_with_optimized_env(
+        graph: Arc<RwLock<Graph>>,
+        targets: &[NodeId],
+        inputs: StorageCache,
+        optimized: &OptimizedGraph,
+        sym_env: SymEnv,
+    ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
+        Self::realize_many_inner(
+            graph,
+            targets,
+            inputs,
+            None,
+            None,
+            OrderSource::Optimized { optimized, route: None },
+            sym_env,
+        )
+    }
+
     /// Multi-target PR-C1 entry — the `realize_many` sibling of
     /// [`realize_with_optimized_route`]. Lowers each target's runs
     /// following the picker's chosen arms via
@@ -752,6 +818,27 @@ impl PipelinedExecutor {
             None,
             OrderSource::Optimized { optimized, route: Some(route) },
             SymEnv::default(),
+        )
+    }
+
+    /// Env-carrying sibling of [`realize_many_with_optimized_route`]
+    /// (Phase D symbolic extents). An empty env is byte-identical to it.
+    pub fn realize_many_with_optimized_route_env(
+        graph: Arc<RwLock<Graph>>,
+        targets: &[NodeId],
+        inputs: StorageCache,
+        optimized: &OptimizedGraph,
+        route: &PickedRoute,
+        sym_env: SymEnv,
+    ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
+        Self::realize_many_inner(
+            graph,
+            targets,
+            inputs,
+            None,
+            None,
+            OrderSource::Optimized { optimized, route: Some(route) },
+            sym_env,
         )
     }
 

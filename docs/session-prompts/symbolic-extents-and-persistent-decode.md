@@ -29,8 +29,21 @@ conflict, **§0 wins**.
   (`dims()` unchanged; new `extent()`/`extents()`/`has_dynamic()`/`with_dynamic_axis()`/`resolve(&env)`;
   `Eq`/`Debug` include `dynamic`) + `Layout::has_dynamic()`/`resolve(&env)`. Tested
   (`shape::tests::symbolic_extent_foundation`); fuel-graph downstream-verified.
+- **Step 1c** (`f0679d97`) — `Op::WriteSlice` gains `dyn_offset: Option<(usize, DynScalar)>` +
+  `Tensor::write_slice_dyn` builder; `SymEnv` threaded through the executor
+  (`realize_inner`/`realize_many_inner` → `compiler_thread_body` → `compile_one` →
+  `op_to_op_params`, which resolves the offset into concrete `ranges`) + new
+  `PipelinedExecutor::realize_with_env`. Empty env ⇒ byte-identical realize. Born-red CPU test
+  observed (slab at placeholder 0 vs bound offset 3). 369 fuel-dispatch lib tests pass.
+- **Step 1d** — `SymEnv` threaded through the **production** realize path: `realize_with_optimized{,_route}_env`
+  + `realize_many_*_env` (fuel-dispatch); `pipelined_bridge` `dispatch_{,_many}_with_plan_retry` +
+  `realize_{one,many}_as_with_initial_env`; `InferenceContext::realize_{one,many}_as_with_env`.
+  Decode-shaped born-red CPU test (KV write at runtime `cached_len` via `InferenceContext`).
+  Full fuel-core lib suite 1322 pass.
 
-So **Step 1 (the foundation) is complete.** The design body §3 describes exactly what was built.
+So **Step 1 (the foundation + the SymEnv-through-realize prerequisite + the WriteSlice runtime
+offset) is complete.** The design body §3 describes the foundation; §0's step-1 item below is done.
+The remaining work is the **GPU** steps 2 + 3 (flash decode + persistent-graph wiring).
 
 ### Step 2 — RESOLVED by refinement (do NOT build a mask op)
 
@@ -54,11 +67,15 @@ no `SymEnv` at dispatch yet**. Threading it changes the **realize → bridge →
 (`fuel-core/src/pipelined_bridge.rs`, the program's "riskiest surface") and is the gate for
 everything else. Recommended order:
 
-1. **`SymEnv`-through-realize + `WriteSlice` `DynScalar` offset** *(contained, CPU-verifiable —
-   start here)*. Thread the per-pass `SymEnv` into realize (via `InferenceContext`, which already
-   holds per-session state) → the executor dispatch context; make `Op::WriteSlice` accept a
-   `DynScalar` offset resolved via the env. Born-red **CPU** test: write at a runtime-bound offset.
-   Keep it additive (empty `SymEnv` → existing realize unchanged). No GPU needed.
+1. **`SymEnv`-through-realize + `WriteSlice` `DynScalar` offset** ✅ **DONE** (steps 1c + 1d,
+   `f0679d97` + follow-up). The per-pass `SymEnv` threads through the executor
+   (`realize_inner` → `compiler_thread_body` → `compile_one` → `op_to_op_params`) AND the production
+   bridge (`InferenceContext::realize_*_with_env` → `pipelined_bridge` → `realize_*_with_optimized_env`);
+   `Op::WriteSlice` carries `dyn_offset: Option<(usize, DynScalar)>`, resolved into concrete `ranges`
+   at realize (`Tensor::write_slice_dyn` builder). Additive: empty `SymEnv` ⇒ byte-identical realize.
+   Born-red CPU tests at both the executor and the `InferenceContext` level. **No production consumer
+   re-points decode's KV write at the symbolic offset yet** — that lands with step 3's wiring (the
+   builder + resolution are ready for it).
 2. **Decode via flash over a capacity K with a runtime `k_len`** *(live-GPU)*. Extend
    `Op::FlashAttn` (it is `Op::Fused(FLASH_ATTN, FlashAttnParams{…})`, builder at
    `fuel-graph/src/lib.rs:~3838`) to take a runtime `k_len` (`DynScalar`) **decoupled from K's
