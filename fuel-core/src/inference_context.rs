@@ -41,7 +41,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result, Shape};
+use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result, Shape, SymEnv};
 use fuel_graph::{Graph, Node, NodeId, Op};
 use fuel_dispatch::{pipelined::{PipelinedExecutor, StorageCache}};
 use fuel_memory::{BackendStorage, Storage};
@@ -485,11 +485,27 @@ impl InferenceContext {
         graph: &Arc<RwLock<Graph>>,
         target: NodeId,
     ) -> Result<Vec<T>> {
-        crate::pipelined_bridge::realize_one_as_with_initial::<T>(
+        self.realize_one_as_with_env::<T>(graph, target, &SymEnv::default())
+    }
+
+    /// Env-carrying counterpart of [`Self::realize_one_as`]: supplies a
+    /// per-pass [`SymEnv`] binding the runtime values of any `DynScalar`
+    /// op params (Phase D symbolic extents — e.g. the decode KV-cache
+    /// write offset `cached_len`). The env is **per-pass** (re-supplied
+    /// every forward step) while the persistent map is **per-session**;
+    /// an empty env is byte-identical to [`Self::realize_one_as`].
+    pub fn realize_one_as_with_env<T: bytemuck::Pod>(
+        &self,
+        graph: &Arc<RwLock<Graph>>,
+        target: NodeId,
+        env: &SymEnv,
+    ) -> Result<Vec<T>> {
+        crate::pipelined_bridge::realize_one_as_with_initial_env::<T>(
             graph,
             target,
             &self.device,
             self.cloned_persistent(),
+            env,
         )
     }
 
@@ -499,11 +515,24 @@ impl InferenceContext {
         graph: &Arc<RwLock<Graph>>,
         targets: &[NodeId],
     ) -> Result<Vec<Vec<T>>> {
-        crate::pipelined_bridge::realize_many_as_with_initial::<T>(
+        self.realize_many_as_with_env::<T>(graph, targets, &SymEnv::default())
+    }
+
+    /// Env-carrying counterpart of [`Self::realize_many_as`] (Phase D
+    /// symbolic extents). An empty env is byte-identical to
+    /// [`Self::realize_many_as`].
+    pub fn realize_many_as_with_env<T: bytemuck::Pod>(
+        &self,
+        graph: &Arc<RwLock<Graph>>,
+        targets: &[NodeId],
+        env: &SymEnv,
+    ) -> Result<Vec<Vec<T>>> {
+        crate::pipelined_bridge::realize_many_as_with_initial_env::<T>(
             graph,
             targets,
             &self.device,
             self.cloned_persistent(),
+            env,
         )
     }
 
@@ -632,6 +661,64 @@ mod tests {
         assert_eq!(out2, vec![11.0, 22.0, 33.0]);
         assert_eq!(Arc::strong_count(&lhs_arc), 2);
         assert_eq!(Arc::strong_count(&rhs_arc), 2);
+    }
+
+    /// Phase D symbolic extents — the decode-shaped path: a persistent
+    /// fixed-capacity buffer + an `Op::WriteSlice` whose start offset is
+    /// a per-pass `SymEnv` binding (the KV-cache append at `cached_len`).
+    /// `realize_one_as_with_env` threads the env from the session through
+    /// the bridge to the executor; the width-2 slab lands at the bound
+    /// offset (3), not the static placeholder (0). Re-realizing the SAME
+    /// graph with a different binding lands the slab at the new offset —
+    /// the input-independent-graph property persistent decode relies on.
+    #[test]
+    fn realize_one_as_with_env_resolves_write_slice_offset() {
+        use fuel_core_types::{DynScalar, SymId};
+        let dest_arc = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[0.0_f32; 6])));
+        let src_arc = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[7.0_f32, 8.0])));
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let sym = SymId(0);
+        let (dest_id, src_id, ws_id) = {
+            let mut g = graph.write().unwrap();
+            let dest = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[6]), dtype: DType::F32,
+            });
+            let src = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let ws = g.push(Node {
+                op: Op::WriteSlice {
+                    ranges: vec![(0, 2)],
+                    dyn_offset: Some((0, DynScalar::Sym(sym))),
+                },
+                inputs: vec![dest, src],
+                shape: Shape::from_dims(&[6]),
+                dtype: DType::F32,
+            });
+            (dest, src, ws)
+        };
+        let mut ctx = InferenceContext::new(Device::cpu());
+        ctx.insert(dest_id, Arc::clone(&dest_arc));
+        ctx.insert(src_id, Arc::clone(&src_arc));
+
+        // Bind cached_len = 3: the slab must append at indices [3, 4].
+        let mut env = SymEnv::new();
+        env.bind(sym, 3).unwrap();
+        let out = ctx
+            .realize_one_as_with_env::<f32>(&graph, ws_id, &env)
+            .expect("realize_one_as_with_env");
+        assert_eq!(
+            out, vec![0.0, 0.0, 0.0, 7.0, 8.0, 0.0],
+            "KV slab must land at the SymEnv-bound cached_len=3, not the placeholder 0",
+        );
+
+        // An empty env on a graph with an unbound dyn_offset surfaces a
+        // typed error (never a panic) — the write-once contract's
+        // "presence ⇒ produced" read at realize.
+        let err = ctx.realize_one_as_with_env::<f32>(&graph, ws_id, &SymEnv::new());
+        assert!(err.is_err(), "unbound cached_len must surface a typed error");
     }
 
     /// `KvCache::with_dims` produces a fresh cache of the right

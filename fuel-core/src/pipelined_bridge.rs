@@ -70,7 +70,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use fuel_core_types::{
-    probe::BackendId, DeviceLocation, Error, HostBuffer, Layout, Result,
+    probe::BackendId, DeviceLocation, Error, HostBuffer, Layout, Result, SymEnv,
 };
 use fuel_core_types::backend::{BackendRuntime, FitStatus};
 use fuel_core_types::dyn_backend::DynBackendDevice;
@@ -142,7 +142,25 @@ pub fn realize_one_as_with_initial<T: bytemuck::Pod>(
     device: &Device,
     initial: StorageCache,
 ) -> Result<Vec<T>> {
-    realize_one_as_with_initial_reporting::<T>(graph, target, device, initial)
+    realize_one_as_with_initial_reporting::<T>(graph, target, device, initial, &SymEnv::default())
+        .map(|(bytes, _root_kernel_source)| bytes)
+}
+
+/// Env-carrying sibling of [`realize_one_as_with_initial`]: threads a
+/// per-pass [`SymEnv`] supplying the runtime bindings for `DynScalar`
+/// op params (Phase D symbolic extents — e.g. the persistent-decode
+/// KV-cache write offset). An **empty** env is byte-identical to
+/// [`realize_one_as_with_initial`]. Used by
+/// [`crate::inference_context::InferenceContext`] to carry the
+/// session's per-token `cached_len` binding into realize.
+pub fn realize_one_as_with_initial_env<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    target: NodeId,
+    device: &Device,
+    initial: StorageCache,
+    sym_env: &SymEnv,
+) -> Result<Vec<T>> {
+    realize_one_as_with_initial_reporting::<T>(graph, target, device, initial, sym_env)
         .map(|(bytes, _root_kernel_source)| bytes)
 }
 
@@ -166,6 +184,7 @@ pub fn realize_one_as_with_initial_reporting<T: bytemuck::Pod>(
     target: NodeId,
     device: &Device,
     initial: StorageCache,
+    sym_env: &SymEnv,
 ) -> Result<(Vec<T>, Option<&'static str>)> {
     let (cache, _backend_id, mut effective_targets) =
         prepare(graph, &[target], device, initial)?;
@@ -191,7 +210,7 @@ pub fn realize_one_as_with_initial_reporting<T: bytemuck::Pod>(
     // `MAX_PLAN_REBUILDS` to prevent infinite spin under genuinely
     // persistent churn.
     let (storage, root_kernel_source) = dispatch_with_plan_retry(
-        graph, cpu_target, cache, device, target,
+        graph, cpu_target, cache, device, target, sym_env,
     )?;
     Ok((extract_cpu_bytes_typed::<T>(&storage)?, root_kernel_source))
 }
@@ -359,6 +378,7 @@ fn dispatch_with_plan_retry(
     cache: StorageCache,
     device: &Device,
     report_node: NodeId,
+    sym_env: &SymEnv,
 ) -> Result<(Arc<RwLock<Storage>>, Option<&'static str>)> {
     let pinned_loc = device.location();
     let mut retry = TopologyRetryState::new();
@@ -402,11 +422,13 @@ fn dispatch_with_plan_retry(
         // is no route), and resolves each node's kernel via the
         // binding-table lookup.
         let result = match &route {
-            Some(route) => PipelinedExecutor::realize_with_optimized_route(
+            Some(route) => PipelinedExecutor::realize_with_optimized_route_env(
                 graph.clone(), cpu_target, cache_for_attempt, &optimized, route,
+                sym_env.clone(),
             ),
-            None => PipelinedExecutor::realize_with_optimized(
+            None => PipelinedExecutor::realize_with_optimized_env(
                 graph.clone(), cpu_target, cache_for_attempt, &optimized,
+                sym_env.clone(),
             ),
         };
         match result {
@@ -481,12 +503,26 @@ pub fn realize_many_as_with_initial<T: bytemuck::Pod>(
     device: &Device,
     initial: StorageCache,
 ) -> Result<Vec<Vec<T>>> {
+    realize_many_as_with_initial_env::<T>(graph, targets, device, initial, &SymEnv::default())
+}
+
+/// Env-carrying sibling of [`realize_many_as_with_initial`]: threads a
+/// per-pass [`SymEnv`] for `DynScalar` op params (Phase D symbolic
+/// extents). An **empty** env is byte-identical to
+/// [`realize_many_as_with_initial`].
+pub fn realize_many_as_with_initial_env<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    targets: &[NodeId],
+    device: &Device,
+    initial: StorageCache,
+    sym_env: &SymEnv,
+) -> Result<Vec<Vec<T>>> {
     if targets.is_empty() {
         return Ok(Vec::new());
     }
     let (cache, _, effective_targets) = prepare(graph, targets, device, initial)?;
     let results = dispatch_many_with_plan_retry(
-        graph, &effective_targets, cache, device,
+        graph, &effective_targets, cache, device, sym_env,
     )?;
     let mut out = Vec::with_capacity(results.len());
     for (storage, _layout) in results {
@@ -531,7 +567,7 @@ pub fn realize_split_as_with_initial<T: bytemuck::Pod>(
     let (cache, _, effective_targets) =
         prepare_split(graph, targets, n_host, device, initial)?;
     let results = dispatch_many_with_plan_retry(
-        graph, &effective_targets, cache, device,
+        graph, &effective_targets, cache, device, &SymEnv::default(),
     )?;
     let mut host_out = Vec::with_capacity(n_host);
     let mut resident_out = Vec::with_capacity(results.len().saturating_sub(n_host));
@@ -556,6 +592,7 @@ fn dispatch_many_with_plan_retry(
     effective_targets: &[NodeId],
     cache: StorageCache,
     device: &Device,
+    sym_env: &SymEnv,
 ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
     let pinned_loc = device.location();
     let mut retry = TopologyRetryState::new();
@@ -577,12 +614,13 @@ fn dispatch_many_with_plan_retry(
             resolve_runtime_route(graph, effective_targets, &plan, device)?;
         let cache_for_attempt = cache.clone();
         let result = match &route {
-            Some(route) => PipelinedExecutor::realize_many_with_optimized_route(
+            Some(route) => PipelinedExecutor::realize_many_with_optimized_route_env(
                 graph.clone(), effective_targets, cache_for_attempt, &optimized,
-                route,
+                route, sym_env.clone(),
             ),
-            None => PipelinedExecutor::realize_many_with_optimized(
+            None => PipelinedExecutor::realize_many_with_optimized_env(
                 graph.clone(), effective_targets, cache_for_attempt, &optimized,
+                sym_env.clone(),
             ),
         };
         match result {
@@ -1961,7 +1999,7 @@ mod tests {
 
         let device = crate::Device::cpu();
         let (out, root_kernel_source) =
-            realize_one_as_with_initial_reporting::<f32>(&graph, add, &device, initial)
+            realize_one_as_with_initial_reporting::<f32>(&graph, add, &device, initial, &SymEnv::default())
                 .expect("reporting realize");
         assert_eq!(out, vec![11.0, 22.0, 33.0, 44.0]);
 
