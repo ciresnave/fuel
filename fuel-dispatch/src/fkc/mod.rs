@@ -30,12 +30,23 @@
 //! - Adoption plan: `docs/session-prompts/kernel-contract-adoption-plan.md`.
 //! - Authored corpus (valid instances): `docs/kernel-contracts/**/*.fkc.md`.
 
+mod caps_map;
+mod cost_expr;
 mod error;
+mod lower;
 mod parse;
+mod precision;
+mod revhash;
 mod schema;
 
+pub use caps_map::{ResolvedLayout, Tri};
+pub use cost_expr::{eval as eval_cost, CompiledCostExpr, CostEvalError, CostNode};
 pub use error::FkcError;
+pub use lower::{
+    lower_file, LinkRegistry, Resolved, ResolvedFused, ResolvedPrimitive,
+};
 pub use parse::{parse_file, parse_path};
+pub use revhash::compute_revision;
 pub use schema::{
     AcceptBlock, CapsBlock, CostBlock, CostMemory, FdxSpec, FkcFile, FkcFrontMatter, FkcKernel,
     FkcProvider, GatherSpec, LayoutSpec, OpParamFieldSpec, OpParamsSchema, OutputDesc,

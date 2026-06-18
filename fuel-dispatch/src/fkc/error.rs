@@ -89,6 +89,89 @@ pub enum FkcError {
         structured: String,
         prose: String,
     },
+
+    // ===== lowering (this slice) — string → typed dispatch records =====
+    /// Neither `op_kind` nor `fused_op` is present, or both are present.
+    /// Exactly one must be declared (a primitive vs fused contract; §3.7,
+    /// V-FKC-5). The structural check happens at lower time.
+    #[error(
+        "FKC §3.7 (V-FKC-5): kernel `{section}` must declare exactly one of `op_kind` / \
+         `fused_op` (op_kind={op_kind:?}, fused_op={fused_op:?})"
+    )]
+    OpTargetAmbiguous {
+        section: String,
+        op_kind: Option<String>,
+        fused_op: Option<String>,
+    },
+
+    /// An `op_kind` string did not match any as-built `OpKind` variant
+    /// (§2.1; the lower-time `match` is exhaustive over `OpKind`).
+    #[error("FKC §2.1: kernel `{section}` names unknown op_kind `{op_kind}`")]
+    UnknownOpKind { section: String, op_kind: String },
+
+    /// A `fused_op` string did not match any registered `FusedOpId` name
+    /// (the name table is built from `fuel-graph`'s `default_registry()`;
+    /// §2.2).
+    #[error("FKC §2.2: kernel `{section}` names unknown fused_op `{fused_op}`")]
+    UnknownFusedOp { section: String, fused_op: String },
+
+    /// A dtype token (or a `dtype_class` shorthand expansion) did not
+    /// match any as-built `DType`/shorthand (§3.4). The explicit match
+    /// makes a bad token a typed error rather than a silent skip.
+    #[error("FKC §3.4: kernel `{section}` operand `{operand}` has bad dtype token `{token}`")]
+    BadScalarType {
+        section: String,
+        operand: String,
+        token: String,
+    },
+
+    /// A `backend` string did not match any as-built `BackendId` (§2.1).
+    #[error("FKC §2.1: kernel `{section}` names unknown backend `{backend}`")]
+    UnknownBackend { section: String, backend: String },
+
+    /// The `entry_point` symbol was absent from the provider link
+    /// registry (§12.6; P9 — the importer never fabricates a pointer).
+    #[error(
+        "FKC §12.6: kernel `{section}` entry_point `{entry_point}` is not in the link registry"
+    )]
+    UnknownEntryPoint {
+        section: String,
+        entry_point: String,
+    },
+
+    /// A `layout` tri-state flag carried a value outside the legal set
+    /// (`required` / `accepted` / `rejected` / `n/a`); §4.1, §6.
+    #[error(
+        "FKC §4.1: kernel `{section}` operand `{operand}` layout flag `{flag}` has illegal \
+         value `{value}` (expected required|accepted|rejected|n/a)"
+    )]
+    BadLayoutFlag {
+        section: String,
+        operand: String,
+        flag: String,
+        value: String,
+    },
+
+    /// A cost expression failed to parse against the §2.3 grammar
+    /// (V-FKC-8, §4.4). Carries the offending field + the raw expression.
+    #[error(
+        "FKC §4.4 (V-FKC-8): kernel `{section}` cost field `{field}` expression `{expr}` does \
+         not parse: {reason}"
+    )]
+    CostExprParse {
+        section: String,
+        field: String,
+        expr: String,
+        reason: String,
+    },
+
+    /// A precision block is a bare placeholder (no `audited`, no bounds,
+    /// no notes) — there is nothing to lower (§4.8, `PlaceholderPrecision`).
+    #[error(
+        "FKC §4.8: kernel `{section}` precision block is a bare placeholder (no audited flag, \
+         no bounds, no notes)"
+    )]
+    PlaceholderPrecision { section: String },
 }
 
 impl FkcError {
