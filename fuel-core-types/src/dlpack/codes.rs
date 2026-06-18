@@ -92,6 +92,45 @@ pub const FDX_SCALE_GRAN_PER_CHANNEL: u8 = 2;
 /// `PerBlock` is MX-family only (§6.2).
 pub const FDX_SCALE_GRAN_PER_BLOCK: u8 = 3;
 
+// --- FDXScalePlacement (§6.2) ---
+/// Scales interleaved in the data block (GGML family).
+pub const FDX_SCALE_PLACEMENT_INLINE: u8 = 0;
+/// `scale_buffer` is a real buffer-table index (MX / AFFINE_*).
+pub const FDX_SCALE_PLACEMENT_SEPARATE_BUFFER: u8 = 1;
+/// Scale tensor shape per granularity (broadcast per axis).
+pub const FDX_SCALE_PLACEMENT_BROADCAST_PER_AXIS: u8 = 2;
+
+// --- FDXBufferRef.role (§7.2, §6.9.3) ---
+pub const FDX_BUFFER_ROLE_DATA: u8 = 0;
+pub const FDX_BUFFER_ROLE_SCALE: u8 = 1;
+pub const FDX_BUFFER_ROLE_ZERO_POINT: u8 = 2;
+pub const FDX_BUFFER_ROLE_BUNDLE_BACKING: u8 = 3;
+pub const FDX_BUFFER_ROLE_AUX: u8 = 4;
+/// Gather: the physical block pool (§6.9.3).
+pub const FDX_BUFFER_ROLE_POOL: u8 = 5;
+/// Gather: the `[num_sequences, max_blocks_per_seq]` block-id table (§6.9.3).
+pub const FDX_BUFFER_ROLE_BLOCK_TABLE: u8 = 6;
+/// Gather: the `[num_sequences]` per-sequence live-length buffer (§6.9.3).
+pub const FDX_BUFFER_ROLE_CONTEXT_LENS: u8 = 7;
+
+// --- FDX logical dtype codes (§6.1 table) — the subset the validators name.
+// FDX-owned stable table; values match the §6.1 declaration order. ---
+pub const FDX_DTYPE_U8: u16 = 0;
+pub const FDX_DTYPE_I8: u16 = 1;
+pub const FDX_DTYPE_U32: u16 = 2;
+pub const FDX_DTYPE_I16: u16 = 3;
+pub const FDX_DTYPE_I32: u16 = 4;
+pub const FDX_DTYPE_I64: u16 = 5;
+pub const FDX_DTYPE_BF16: u16 = 6;
+pub const FDX_DTYPE_F16: u16 = 7;
+pub const FDX_DTYPE_F32: u16 = 8;
+pub const FDX_DTYPE_F64: u16 = 9;
+pub const FDX_DTYPE_F8E4M3: u16 = 10;
+pub const FDX_DTYPE_F6E2M3: u16 = 11;
+pub const FDX_DTYPE_F6E3M2: u16 = 12;
+pub const FDX_DTYPE_F4: u16 = 13;
+pub const FDX_DTYPE_F8E8M0: u16 = 14;
+
 #[cfg(test)]
 mod tests {
     use super::*;

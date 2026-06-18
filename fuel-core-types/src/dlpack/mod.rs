@@ -17,3 +17,4 @@
 pub mod abi;
 pub mod codes;
 pub mod sidecar;
+pub mod validate;
