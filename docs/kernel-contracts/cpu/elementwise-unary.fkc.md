@@ -69,6 +69,7 @@ executor contiguizes first.
 
 ```fkc
 kernel: unary
+registrable: false           # §3.10 describe-only: shared chassis umbrella, NOT a dispatch target
 op_kind: ~                   # the chassis itself binds no OpKind; each named op below pins one
 fused_op: ~
 blurb: "Shared elementwise-unary chassis walker out[i]=op(in[i]); contiguous; half via f32; not separately dispatchable."

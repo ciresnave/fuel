@@ -704,6 +704,12 @@ fn lower_fused(
 /// Lower every kernel section of a parsed file into [`Resolved`] records,
 /// using the file's front-matter for the backend / kernel_source /
 /// revision_base defaults and resolving entry points through `link`.
+///
+/// **Describe-only sections (`registrable: false`, §3.10) are excluded** from
+/// the lowered set: they are documentation, carry no dispatch target, and are
+/// never registered — so they never become a [`Resolved`] record, never
+/// resolve an `entry_point`, and never reach the binding table / fused
+/// registry (§9.3, §12.5).
 pub fn lower_file(
     file: &crate::fkc::schema::FkcFile,
     link: &dyn LinkRegistry,
@@ -716,6 +722,7 @@ pub fn lower_file(
     };
     file.kernels
         .iter()
+        .filter(|k| k.registrable) // §3.10: skip describe-only documentation sections
         .map(|k| lower_kernel(k, &defaults, link))
         .collect()
 }

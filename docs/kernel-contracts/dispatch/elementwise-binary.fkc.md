@@ -78,9 +78,9 @@ audits.
 
 ---
 
-## add_elementwise  (AddElementwise — out = lhs + rhs, broadcast)
+## add_elementwise_cpu  (AddElementwise — out = lhs + rhs, broadcast)
 
-Elementwise addition `out = lhs + rhs` with broadcasting; one block per backend (CPU contiguous,
+Elementwise addition `out = lhs + rhs` with broadcasting; one section per backend (CPU contiguous,
 CUDA/Vulkan strided).
 
 `AddElementwise` is registered on CPU (`add_elementwise_f32_cpu_wrapper` and the f64/bf16/f16
@@ -149,6 +149,12 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
+---
+
+## add_elementwise_cuda  (AddElementwise — CUDA/baracuda strided sibling)
+
+CUDA (baracuda) registration of `AddElementwise` — stride-driven, broadcast via stride-0.
+
 ```fkc
 kernel: add_elementwise_cuda
 op_kind: AddElementwise
@@ -207,6 +213,12 @@ precision:
 
 determinism: same_hardware_bitwise
 ```
+
+---
+
+## add_elementwise_vulkan  (AddElementwise — Vulkan strided sibling)
+
+Vulkan registration of `AddElementwise` — `binary.slang` stride-aware; pointwise-float precision.
 
 ```fkc
 kernel: add_elementwise_vulkan
@@ -269,9 +281,9 @@ determinism: same_hardware_bitwise
 
 ---
 
-## sub_elementwise  (SubElementwise — out = lhs - rhs, broadcast)
+## sub_elementwise_cpu  (SubElementwise — out = lhs - rhs, broadcast)
 
-Elementwise subtraction `out = lhs - rhs` with broadcasting; one block per backend.
+Elementwise subtraction `out = lhs - rhs` with broadcasting; one section per backend.
 
 `SubElementwise` is registered on CPU (`sub_elementwise_f32_cpu_wrapper` …, `dispatch.rs:3914`),
 CUDA via baracuda (`binary::sub_f32` …, strided, `baracuda_dispatch.rs:2373`), and Vulkan
@@ -335,6 +347,12 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
+---
+
+## sub_elementwise_cuda  (SubElementwise — CUDA/baracuda strided sibling)
+
+CUDA (baracuda) registration of `SubElementwise` — stride-driven, broadcast via stride-0.
+
 ```fkc
 kernel: sub_elementwise_cuda
 op_kind: SubElementwise
@@ -393,6 +411,12 @@ precision:
 
 determinism: same_hardware_bitwise
 ```
+
+---
+
+## sub_elementwise_vulkan  (SubElementwise — Vulkan strided sibling)
+
+Vulkan registration of `SubElementwise` — `binary.slang` stride-aware; pointwise-float precision.
 
 ```fkc
 kernel: sub_elementwise_vulkan
@@ -455,9 +479,9 @@ determinism: same_hardware_bitwise
 
 ---
 
-## mul_elementwise  (MulElementwise — out = lhs * rhs, broadcast)
+## mul_elementwise_cpu  (MulElementwise — out = lhs * rhs, broadcast)
 
-Elementwise multiplication `out = lhs * rhs` with broadcasting; one block per backend.
+Elementwise multiplication `out = lhs * rhs` with broadcasting; one section per backend.
 
 `MulElementwise` is registered on CPU (`mul_elementwise_f32_cpu_wrapper` …, `dispatch.rs:3915`),
 CUDA via baracuda (`binary::mul_f32` …, strided, `baracuda_dispatch.rs:2374`), and Vulkan
@@ -522,6 +546,12 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
+---
+
+## mul_elementwise_cuda  (MulElementwise — CUDA/baracuda strided sibling)
+
+CUDA (baracuda) registration of `MulElementwise` — stride-driven, broadcast via stride-0.
+
 ```fkc
 kernel: mul_elementwise_cuda
 op_kind: MulElementwise
@@ -580,6 +610,12 @@ precision:
 
 determinism: same_hardware_bitwise
 ```
+
+---
+
+## mul_elementwise_vulkan  (MulElementwise — Vulkan strided sibling)
+
+Vulkan registration of `MulElementwise` — `binary.slang` stride-aware; pointwise-float precision.
 
 ```fkc
 kernel: mul_elementwise_vulkan
@@ -642,9 +678,9 @@ determinism: same_hardware_bitwise
 
 ---
 
-## div_elementwise  (DivElementwise — out = lhs / rhs, broadcast, IEEE inf/NaN)
+## div_elementwise_cpu  (DivElementwise — out = lhs / rhs, broadcast, IEEE inf/NaN)
 
-Elementwise division `out = lhs / rhs` with broadcasting and IEEE inf/NaN semantics; one block per
+Elementwise division `out = lhs / rhs` with broadcasting and IEEE inf/NaN semantics; one section per
 backend.
 
 `DivElementwise` is registered on CPU (`div_elementwise_f32_cpu_wrapper` …, `dispatch.rs:3916`),
@@ -709,6 +745,12 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
+---
+
+## div_elementwise_cuda  (DivElementwise — CUDA/baracuda strided sibling)
+
+CUDA (baracuda) registration of `DivElementwise` — stride-driven, broadcast via stride-0.
+
 ```fkc
 kernel: div_elementwise_cuda
 op_kind: DivElementwise
@@ -767,6 +809,12 @@ precision:
 
 determinism: same_hardware_bitwise
 ```
+
+---
+
+## div_elementwise_vulkan  (DivElementwise — Vulkan strided sibling)
+
+Vulkan registration of `DivElementwise` — `binary.slang` stride-aware; pointwise-float precision.
 
 ```fkc
 kernel: div_elementwise_vulkan
@@ -829,10 +877,10 @@ determinism: same_hardware_bitwise
 
 ---
 
-## maximum_elementwise  (MaximumElementwise — out = max(lhs, rhs), NaN-as-missing, broadcast)
+## maximum_elementwise_cpu  (MaximumElementwise — out = max(lhs, rhs), NaN-as-missing, broadcast)
 
 Elementwise maximum `out = max(lhs, rhs)` with NaN-as-missing semantics and broadcasting; one
-block per backend.
+section per backend.
 
 `MaximumElementwise` is registered on CPU (`maximum_elementwise_f32_cpu_wrapper` and f64/bf16/f16
 siblings, `dispatch.rs:4264/4481/4503`), CUDA via baracuda (`binary::maximum_f32` …, strided,
@@ -897,6 +945,12 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
+---
+
+## maximum_elementwise_cuda  (MaximumElementwise — CUDA/baracuda strided sibling)
+
+CUDA (baracuda) registration of `MaximumElementwise` — stride-driven, broadcast via stride-0.
+
 ```fkc
 kernel: maximum_elementwise_cuda
 op_kind: MaximumElementwise
@@ -955,6 +1009,12 @@ precision:
 
 determinism: same_hardware_bitwise
 ```
+
+---
+
+## maximum_elementwise_vulkan  (MaximumElementwise — Vulkan strided sibling)
+
+Vulkan registration of `MaximumElementwise` — `binary.slang` stride-aware; pointwise-float precision.
 
 ```fkc
 kernel: maximum_elementwise_vulkan
@@ -1017,10 +1077,10 @@ determinism: same_hardware_bitwise
 
 ---
 
-## minimum_elementwise  (MinimumElementwise — out = min(lhs, rhs), NaN-as-missing, broadcast)
+## minimum_elementwise_cpu  (MinimumElementwise — out = min(lhs, rhs), NaN-as-missing, broadcast)
 
 Elementwise minimum `out = min(lhs, rhs)` with NaN-as-missing semantics and broadcasting; one
-block per backend.
+section per backend.
 
 `MinimumElementwise` is registered on CPU (`minimum_elementwise_f32_cpu_wrapper` and f64/bf16/f16
 siblings, `dispatch.rs:4265/4481/4503`), CUDA via baracuda (`binary::minimum_f32` …, strided,
@@ -1085,6 +1145,12 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
+---
+
+## minimum_elementwise_cuda  (MinimumElementwise — CUDA/baracuda strided sibling)
+
+CUDA (baracuda) registration of `MinimumElementwise` — stride-driven, broadcast via stride-0.
+
 ```fkc
 kernel: minimum_elementwise_cuda
 op_kind: MinimumElementwise
@@ -1143,6 +1209,12 @@ precision:
 
 determinism: same_hardware_bitwise
 ```
+
+---
+
+## minimum_elementwise_vulkan  (MinimumElementwise — Vulkan strided sibling)
+
+Vulkan registration of `MinimumElementwise` — `binary.slang` stride-aware; pointwise-float precision.
 
 ```fkc
 kernel: minimum_elementwise_vulkan
@@ -1205,10 +1277,10 @@ determinism: same_hardware_bitwise
 
 ---
 
-## pow_elementwise  (PowElementwise — out = lhs ^ rhs, tensor^tensor, broadcast)
+## pow_elementwise_cpu  (PowElementwise — out = lhs ^ rhs, tensor^tensor, broadcast)
 
 Elementwise power `out = lhs ^ rhs` (tensor base, tensor exponent) with broadcasting; CPU + CUDA
-only (no Vulkan wrapper in this crate).
+only (no Vulkan wrapper in this crate). One section per backend.
 
 `PowElementwise` is registered on CPU (`pow_elementwise_f32_cpu_wrapper` and f64/bf16/f16 siblings,
 `dispatch.rs:4340`) and CUDA via baracuda (`binary::pow_f32` …, strided,
@@ -1274,6 +1346,12 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
+---
+
+## pow_elementwise_cuda  (PowElementwise — CUDA/baracuda strided sibling)
+
+CUDA (baracuda) registration of `PowElementwise` — stride-driven, broadcast via stride-0.
+
 ```fkc
 kernel: pow_elementwise_cuda
 op_kind: PowElementwise
@@ -1335,10 +1413,10 @@ determinism: same_hardware_bitwise
 
 ---
 
-## rem_elementwise  (RemElementwise — out = lhs mod rhs, PyTorch/Python sign-of-divisor, broadcast)
+## rem_elementwise_cpu  (RemElementwise — out = lhs mod rhs, PyTorch/Python sign-of-divisor, broadcast)
 
 Elementwise remainder `out = lhs mod rhs` with the PyTorch/Python convention (result takes the sign
-of the divisor); CPU + CUDA only (no Vulkan wrapper in this crate).
+of the divisor); CPU + CUDA only (no Vulkan wrapper in this crate). One section per backend.
 
 `RemElementwise` is registered on CPU (`rem_elementwise_f32_cpu_wrapper` and f64/bf16/f16 siblings,
 `dispatch.rs:4350`) and CUDA via baracuda (`binary::rem_f32` …, strided,
@@ -1403,6 +1481,12 @@ precision:
 
 determinism: same_hardware_bitwise
 ```
+
+---
+
+## rem_elementwise_cuda  (RemElementwise — CUDA/baracuda strided sibling)
+
+CUDA (baracuda) registration of `RemElementwise` — stride-driven (baracuda `binary_mod_*`), broadcast via stride-0.
 
 ```fkc
 kernel: rem_elementwise_cuda

@@ -307,7 +307,7 @@ accept:
       out_shape: { kind: "Vec<usize>", constraint: "out_shape[i] == in_shape[i] + padding[i].0 + padding[i].1" }
       padding:   { kind: "Vec<(usize,usize)>", constraint: "padding.len() == in_shape.len()" }
       mode_tag:  { kind: u8, constraint: "== 0", note: "0 = Constant" }
-      fill_bytes:{ kind: "Vec<u8>", note: "one element's worth, pre-encoded in the output dtype" }
+      fill_bytes: { kind: "Vec<u8>", note: "one element's worth, pre-encoded in the output dtype" }
 
 return:
   outputs:
@@ -379,7 +379,7 @@ accept:
       out_shape: { kind: "Vec<usize>", constraint: "out_shape[i] == in_shape[i] + padding[i].0 + padding[i].1" }
       padding:   { kind: "Vec<(usize,usize)>", constraint: "padding[i].0 <= in_shape[i]-1 && padding[i].1 <= in_shape[i]-1" }
       mode_tag:  { kind: u8, constraint: "== 1", note: "1 = Reflect" }
-      fill_bytes:{ kind: "Vec<u8>", note: "unused for Reflect" }
+      fill_bytes: { kind: "Vec<u8>", note: "unused for Reflect" }
 
 return:
   outputs:
@@ -450,7 +450,7 @@ accept:
       out_shape: { kind: "Vec<usize>", constraint: "out_shape[i] == in_shape[i] + padding[i].0 + padding[i].1" }
       padding:   { kind: "Vec<(usize,usize)>", constraint: "padding.len() == in_shape.len()" }
       mode_tag:  { kind: u8, constraint: "== 2", note: "2 = Replicate" }
-      fill_bytes:{ kind: "Vec<u8>", note: "unused for Replicate" }
+      fill_bytes: { kind: "Vec<u8>", note: "unused for Replicate" }
 
 return:
   outputs:
@@ -584,7 +584,8 @@ Source: `fuel-reference-backend/src/ops.rs:829`; exec `eval_reshape` `src/exec.r
 
 ```fkc
 kernel: reshape
-op_kind: Reshape                     # graph-level Op::Reshape(Shape); metadata-only, no dispatch OpKind
+op_kind: Reshape                     # forward marker only; graph-level Op::Reshape(Shape), metadata-only view — NO dispatch OpKind — describe-only (§3.10)
+registrable: false                   # §3.10 — documentation-only; not registered, op_kind not required to resolve
 blurb: "Metadata-only shape change; same element count; shares input Arc (zero-copy, output aliases input)."
 backend: Cpu
 kernel_source: "reference-oracle"
@@ -957,7 +958,8 @@ Source: `fuel-reference-backend/src/ops.rs:1453`; exec arm `src/exec.rs:740` (`e
 
 ```fkc
 kernel: slice
-op_kind: Slice                       # graph-level Op::Slice{dim,start,len}; oracle materializes (no dispatch OpKind)
+op_kind: Slice                       # forward marker only; graph-level Op::Slice{dim,start,len}, oracle materializes — NO dispatch OpKind (OpParams::Slice exists, but no OpKind::Slice) — describe-only (§3.10)
+registrable: false                   # §3.10 — documentation-only; not registered, op_kind not required to resolve
 blurb: "Narrow along one dim to [start, start+len); materializing slab copy (oracle) vs zero-copy view (graph)."
 backend: Cpu
 kernel_source: "reference-oracle"
@@ -1055,7 +1057,8 @@ Source: `fuel-reference-backend/src/ops.rs:1045`; exec arm `src/exec.rs:1071` (`
 
 ```fkc
 kernel: broadcast_to
-op_kind: BroadcastTo                  # graph-level Op::BroadcastTo(Shape); metadata-only view, NO dispatch OpKind/OpParams (note above)
+op_kind: BroadcastTo                  # forward marker only; graph-level Op::BroadcastTo(Shape), metadata-only view — NO dispatch OpKind/OpParams — describe-only (§3.10)
+registrable: false                   # §3.10 — documentation-only; not registered, op_kind not required to resolve
 blurb: "NumPy broadcast to target shape; zero-copy pure-pad fast path shares input Arc, else fresh buffer; U32 rejected."
 backend: Cpu
 kernel_source: "reference-oracle"

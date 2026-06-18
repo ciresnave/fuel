@@ -75,15 +75,33 @@ pub struct FkcFile {
 // Per-kernel structured block (§3.3)
 // ===========================================================================
 
+/// The serde default for [`FkcKernel::registrable`] — `true` so a section
+/// that omits the field registers exactly as before (§3.10, additive §11).
+fn default_registrable() -> bool {
+    true
+}
+
 /// The per-kernel ` ```fkc ` structured contract (§3.3).
 ///
 /// Exactly one of `op_kind` / `fused_op` is present (a primitive vs fused
-/// contract); the structural check is a validation step, not a parse step.
+/// contract) **unless** the section is describe-only (`registrable: false`,
+/// §3.10), in which case `op_kind`/`fused_op` need not resolve to a real
+/// dispatch target; the structural check is a validation step, not a parse
+/// step.
 #[derive(Debug, Clone, Deserialize)]
 pub struct FkcKernel {
     // ----- identity -----
     /// Unique-within-file diagnostic kernel name.
     pub kernel: String,
+    /// Describe-only marker (§3.10). When `false` this section is
+    /// **documentation-only**: it is NOT registered and is NOT required to
+    /// name a real dispatch `op_kind`/`fused_op` (the op may be `~` or a
+    /// descriptive non-dispatch token). Its descriptive fields (dtypes,
+    /// layout, quant) are STILL validated as docs. Defaults to `true` so
+    /// every existing contract registers exactly as before (additive
+    /// versioning, §11).
+    #[serde(default = "default_registrable")]
+    pub registrable: bool,
     /// The Fuel `OpKind` this kernel implements (primitive contract).
     #[serde(default)]
     pub op_kind: Option<String>,

@@ -72,7 +72,7 @@ accept:
       out_shape: { kind: "Vec<usize>", constraint: "out_shape[i] == in_shape[i] + padding[i].0 + padding[i].1" }
       padding:   { kind: "Vec<(usize,usize)>", constraint: "len == in_shape.len()" }
       mode_tag:  { kind: u8, constraint: "== 0  (Constant)" }
-      fill_bytes:{ kind: "Vec<u8>", constraint: "len == dtype_size (one element pre-encoded)" }
+      fill_bytes: { kind: "Vec<u8>", constraint: "len == dtype_size (one element pre-encoded)" }
 
 return:
   outputs:
@@ -146,7 +146,7 @@ accept:
       out_shape: { kind: "Vec<usize>", constraint: "out_shape[i] == in_shape[i] + padding[i].0 + padding[i].1" }
       padding:   { kind: "Vec<(usize,usize)>", constraint: "len == in_shape.len(); before <= in_shape[i]-1 AND after <= in_shape[i]-1 (reflect validity)" }
       mode_tag:  { kind: u8, constraint: "== 1  (Reflect)" }
-      fill_bytes:{ kind: "Vec<u8>", constraint: "ignored for Reflect (no constant fill)" }
+      fill_bytes: { kind: "Vec<u8>", constraint: "ignored for Reflect (no constant fill)" }
 
 return:
   outputs:
@@ -217,7 +217,7 @@ accept:
       out_shape: { kind: "Vec<usize>", constraint: "out_shape[i] == in_shape[i] + padding[i].0 + padding[i].1" }
       padding:   { kind: "Vec<(usize,usize)>", constraint: "len == in_shape.len()" }
       mode_tag:  { kind: u8, constraint: "== 2  (Replicate)" }
-      fill_bytes:{ kind: "Vec<u8>", constraint: "ignored for Replicate (no constant fill)" }
+      fill_bytes: { kind: "Vec<u8>", constraint: "ignored for Replicate (no constant fill)" }
 
 return:
   outputs:
@@ -298,7 +298,7 @@ accept:
       out_shape: { kind: "Vec<usize>", constraint: "out_shape[i] == in_shape[i] + padding[i].0 + padding[i].1" }
       padding:   { kind: "Vec<(usize,usize)>", constraint: "len == in_shape.len()" }
       mode_tag:  { kind: u8, constraint: "in {1 (Reflect), 2 (Replicate)} — selects the bound map_index" }
-      fill_bytes:{ kind: "Vec<u8>", constraint: "ignored by the walker (Reflect/Replicate never fill)" }
+      fill_bytes: { kind: "Vec<u8>", constraint: "ignored by the walker (Reflect/Replicate never fill)" }
 
 return:
   outputs:

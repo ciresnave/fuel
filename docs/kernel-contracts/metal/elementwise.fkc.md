@@ -235,6 +235,7 @@ One-line: Fill a contiguous dst region [0,length) with a scalar value (writes th
 
 ```fkc
 kernel: const_set
+registrable: false             # §3.10 describe-only: NO OpKind/OpParams backs a scalar buffer-fill today (see note above)
 op_kind: ~                     # UNREGISTRABLE: no Fuel OpKind backs a scalar buffer-fill today (see note above)
 blurb: "Fill a contiguous dst region [0,length) with a scalar value (writes through caller dst)."
 backend: Metal
@@ -299,6 +300,7 @@ One-line: Scatter a scalar into a strided dst via get_strided_index (writes thro
 
 ```fkc
 kernel: const_set_strided
+registrable: false             # §3.10 describe-only: NO OpKind/OpParams backs a scalar buffer-fill today
 op_kind: ~                     # UNREGISTRABLE: no Fuel OpKind backs a scalar buffer-fill today
 blurb: "Scatter a scalar into a strided dst via get_strided_index (writes through caller dst)."
 backend: Metal
@@ -370,6 +372,7 @@ One-line: 2-D strided block copy out[x*dst_s+y]=in[x*src_s+y] over a d1×d2 grid
 
 ```fkc
 kernel: copy2d
+registrable: false             # §3.10 describe-only: NO OpKind/OpParams backs a same-device 2-D strided block copy today
 op_kind: ~                     # UNREGISTRABLE: no Fuel OpKind backs a same-device 2-D strided block copy today
 blurb: "2-D strided block copy out[x*dst_s+y]=in[x*src_s+y] over a d1×d2 grid (one stride pair)."
 backend: Metal
@@ -745,6 +748,7 @@ One-line: Elementwise scalar float power out=pow(float(x),mul) contiguous; f32/f
 
 ```fkc
 kernel: powf_kernel
+registrable: false             # §3.10 describe-only: NO OpKind/OpParams for a scalar float power (PowElementwise is tensor-tensor; PowIElementwise is integer)
 op_kind: ~                     # UNREGISTRABLE: no Fuel OpKind for a scalar float power (PowElementwise is tensor-tensor; PowIElementwise is integer)
 blurb: "Elementwise scalar float power out=pow(float(x),mul) contiguous; f32/f16/bf16; f32-internal."
 backend: Metal
@@ -810,6 +814,7 @@ One-line: Elementwise scalar float power over arbitrary/broadcast strides via ge
 
 ```fkc
 kernel: powf_kernel_strided
+registrable: false             # §3.10 describe-only: NO OpKind/OpParams for a scalar float power
 op_kind: ~                     # UNREGISTRABLE: no Fuel OpKind for a scalar float power
 blurb: "Elementwise scalar float power over arbitrary/broadcast strides via get_strided_index, gather-to-dense."
 backend: Metal
@@ -880,6 +885,7 @@ One-line: Elementwise ELU out=(x>0?x:mul*(exp(x)-1)) contiguous; f32/f16/bf16; c
 
 ```fkc
 kernel: elu_kernel
+registrable: false             # §3.10 describe-only: NO OpKind/OpParams for ELU
 op_kind: ~                     # UNREGISTRABLE: no Fuel OpKind / OpParams for ELU
 blurb: "Elementwise ELU out=(x>0?x:mul*(exp(x)-1)) contiguous; f32/f16/bf16; computed in T."
 backend: Metal
@@ -945,6 +951,7 @@ One-line: Elementwise ELU over arbitrary/broadcast strides via get_strided_index
 
 ```fkc
 kernel: elu_kernel_strided
+registrable: false             # §3.10 describe-only: NO OpKind/OpParams for ELU
 op_kind: ~                     # UNREGISTRABLE: no Fuel OpKind / OpParams for ELU
 blurb: "Elementwise ELU over arbitrary/broadcast strides via get_strided_index, gather-to-dense."
 backend: Metal
@@ -1016,6 +1023,7 @@ One-line: Dense scalar fill out[tid]=value over [0,numel); no offset, no strided
 
 ```fkc
 kernel: fill
+registrable: false             # §3.10 describe-only: NO OpKind/OpParams for a scalar buffer-fill (Op::ZeroFill is fixed-zero only)
 op_kind: ~                     # UNREGISTRABLE: no Fuel OpKind for a scalar buffer-fill (Op::ZeroFill is fixed-zero only)
 blurb: "Dense scalar fill out[tid]=value over [0,numel); no offset, no strided variant; in-place on caller buffer."
 backend: Metal

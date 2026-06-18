@@ -66,10 +66,11 @@ Cross-cutting facts for this family (from the inventory's legend + "Cross-cuttin
 
 ---
 
-## SumReduce  (per-axis sum reduction)
+## sum_reduce_cpu  (SumReduce — per-axis sum reduction, CPU)
 
 Sum a tensor over `OpParams::Reduce { dims }`, removing the reduced dims. One fold per input
-element; `bf16`/`f16` accumulate in f32 and narrow on store. Registered by three backends:
+element; `bf16`/`f16` accumulate in f32 and narrow on store. One section per backend; registered by
+three backends:
 
 - **CPU** (`dispatch.rs:3956`): `sum_reduce_{f32,f64,bf16,f16}_cpu_wrapper`, default caps →
   **contiguous-only**, bit-stable (fixed left-to-right fold). `kernel_source: "portable-cpu"`.
@@ -140,6 +141,12 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
+---
+
+## sum_reduce_cuda  (SumReduce — per-axis sum reduction, CUDA/baracuda)
+
+CUDA (baracuda) registration of `SumReduce` — stride-driven; `bf16`/`f16` accumulate in f32.
+
 ```fkc
 kernel: sum_reduce_cuda
 op_kind: SumReduce
@@ -191,11 +198,17 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                # CUDA: family precision bulk-fill applies on import (§12.4)
-  notes: "f32/f64 native; bf16/f16 accumulate in f32 (FFI promotion) then narrow on store; stride-driven."
+  audited: true                 # PrecisionGuarantee::none(reason) — nondeterministic FP fold; no static bound applies (§4.9 / §10.9)
+  notes: "f32/f64 native; bf16/f16 accumulate in f32 (FFI promotion) then narrow on store; stride-driven. baracuda reduction accumulation order is not bit-stable; advertised none(reason) per the family precision bulk-fill (§12.4)."
 
 determinism: nondeterministic
 ```
+
+---
+
+## sum_reduce_vulkan  (SumReduce — per-axis sum reduction, Vulkan)
+
+Vulkan registration of `SumReduce` — contiguous; subgroup tree reduction, `PrecisionGuarantee::none`.
 
 ```fkc
 kernel: sum_reduce_vulkan
@@ -255,9 +268,10 @@ determinism: nondeterministic
 
 ---
 
-## MaxReduce  (per-axis max reduction)
+## max_reduce_cpu  (MaxReduce — per-axis max reduction, CPU)
 
-Max a tensor over `OpParams::Reduce { dims }`, removing the reduced dims. Extremum fold inits to
+Max a tensor over `OpParams::Reduce { dims }`, removing the reduced dims. One section per backend.
+Extremum fold inits to
 `-inf`; `f32::max` semantics (**NaN-as-missing**); `bf16`/`f16` run the extremum in f32 space and
 narrow on store (the kept value is a representable half, so the round-trip is exact). Same backend
 fan-out as `SumReduce`: CPU `max_reduce_{f32,f64,bf16,f16}_cpu_wrapper` (`dispatch.rs:3957`,
@@ -321,6 +335,12 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
+---
+
+## max_reduce_cuda  (MaxReduce — per-axis max reduction, CUDA/baracuda)
+
+CUDA (baracuda) registration of `MaxReduce` — stride-driven; NaN-as-missing extremum.
+
 ```fkc
 kernel: max_reduce_cuda
 op_kind: MaxReduce
@@ -377,6 +397,12 @@ precision:
 
 determinism: same_hardware_bitwise
 ```
+
+---
+
+## max_reduce_vulkan  (MaxReduce — per-axis max reduction, Vulkan)
+
+Vulkan registration of `MaxReduce` — contiguous; subgroup tree reduction, `PrecisionGuarantee::none`.
 
 ```fkc
 kernel: max_reduce_vulkan
@@ -436,9 +462,10 @@ determinism: nondeterministic
 
 ---
 
-## MinReduce  (per-axis min reduction)
+## min_reduce_cpu  (MinReduce — per-axis min reduction, CPU)
 
-Mirror of `MaxReduce`: extremum inits to `+inf`, `f32::min` (NaN-as-missing). Same backend
+Mirror of `MaxReduce`: extremum inits to `+inf`, `f32::min` (NaN-as-missing). One section per
+backend. Same backend
 fan-out and per-block facts as `MaxReduce`: CPU `min_reduce_{f32,f64,bf16,f16}_cpu_wrapper`
 (`dispatch.rs:3958`, contiguous, bit-stable); baracuda `reduce::min_{f32,f16,bf16}` (+f64)
 (`baracuda_dispatch.rs:2418`, strided); Vulkan `reduce::min_f32` (+gated)
@@ -500,6 +527,12 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
+---
+
+## min_reduce_cuda  (MinReduce — per-axis min reduction, CUDA/baracuda)
+
+CUDA (baracuda) registration of `MinReduce` — stride-driven; NaN-as-missing extremum.
+
 ```fkc
 kernel: min_reduce_cuda
 op_kind: MinReduce
@@ -556,6 +589,12 @@ precision:
 
 determinism: same_hardware_bitwise
 ```
+
+---
+
+## min_reduce_vulkan  (MinReduce — per-axis min reduction, Vulkan)
+
+Vulkan registration of `MinReduce` — contiguous; subgroup tree reduction, `PrecisionGuarantee::none`.
 
 ```fkc
 kernel: min_reduce_vulkan
@@ -615,9 +654,9 @@ determinism: nondeterministic
 
 ---
 
-## MeanReduce  (per-axis mean reduction)
+## mean_reduce_cpu  (MeanReduce — per-axis mean reduction, CPU)
 
-Sum a tensor over `OpParams::Reduce { dims }`, then divide each output slot by `count` (= product
+One section per backend. Sum a tensor over `OpParams::Reduce { dims }`, then divide each output slot by `count` (= product
 of reduced-dim sizes). Sum uses the same accumulator as `SumReduce` (f32 for half); finalize is a
 single divide per output slot, so `flops = n_in + n_out`. CPU rejects `count == 0` (divisor zero →
 typed `Error`, not silent NaN). Same backend fan-out as `SumReduce`: CPU
@@ -681,6 +720,12 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
+---
+
+## mean_reduce_cuda  (MeanReduce — per-axis mean reduction, CUDA/baracuda)
+
+CUDA (baracuda) registration of `MeanReduce` — stride-driven; divide by count; half via f32 accumulator.
+
 ```fkc
 kernel: mean_reduce_cuda
 op_kind: MeanReduce
@@ -732,11 +777,17 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f32/f64 native; bf16/f16 accumulate in f32 then divide by count, narrow on store; stride-driven."
+  audited: true                 # PrecisionGuarantee::none(reason) — nondeterministic FP fold; no static bound applies (§4.9 / §10.9)
+  notes: "f32/f64 native; bf16/f16 accumulate in f32 then divide by count, narrow on store; stride-driven. baracuda reduction accumulation order is not bit-stable; advertised none(reason) per the family precision bulk-fill (§12.4)."
 
 determinism: nondeterministic
 ```
+
+---
+
+## mean_reduce_vulkan  (MeanReduce — per-axis mean reduction, Vulkan)
+
+Vulkan registration of `MeanReduce` — contiguous; subgroup tree reduction + scalar divide, `PrecisionGuarantee::none`.
 
 ```fkc
 kernel: mean_reduce_vulkan
@@ -796,9 +847,9 @@ determinism: nondeterministic
 
 ---
 
-## ReduceSumTo  (broadcast-target sum reduction)
+## reduce_sum_to_cpu  (ReduceSumTo — broadcast-target sum reduction, CPU)
 
-The backward of a forward broadcast: fold a tensor down to a smaller, broadcast-compatible
+One section per backend. The backward of a forward broadcast: fold a tensor down to a smaller, broadcast-compatible
 `output_shape` (the `grad` of a broadcast in autograd). `output_shape` is left-padded with 1s to
 `input_shape`'s rank; per padded axis it must equal the input size (axis carries through) or `1`
 (axis summed away). One fold per input element + one finalize (identity) per output slot.
@@ -869,6 +920,12 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
+---
+
+## reduce_sum_to_cuda  (ReduceSumTo — broadcast-target sum reduction, CUDA/baracuda)
+
+CUDA (baracuda) registration of `ReduceSumTo` — stride-driven on input; transposed-view grads skip Contiguize.
+
 ```fkc
 kernel: reduce_sum_to_cuda
 op_kind: ReduceSumTo
@@ -920,17 +977,17 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f32/f64 native; bf16/f16 accumulate in f32 then narrow on store; stride-driven on input."
+  audited: true                 # PrecisionGuarantee::none(reason) — nondeterministic FP fold; no static bound applies (§4.9 / §10.9)
+  notes: "f32/f64 native; bf16/f16 accumulate in f32 then narrow on store; stride-driven on input. baracuda reduction accumulation order is not bit-stable; advertised none(reason) per the family precision bulk-fill (§12.4)."
 
 determinism: nondeterministic
 ```
 
 ---
 
-## ReduceMaxTo  (broadcast-target max reduction)
+## reduce_max_to_cpu  (ReduceMaxTo — broadcast-target max reduction, CPU)
 
-Like `ReduceSumTo` but folds the **maximum** of every input element mapping to an output slot
+One section per backend. Like `ReduceSumTo` but folds the **maximum** of every input element mapping to an output slot
 (`f32::max`, NaN-as-missing, `-inf` init). Registered by two backends: CPU
 `reduce_max_to_{f32,f64,bf16,f16}_cpu_wrapper` (`dispatch.rs:4037`, contiguous, bit-stable);
 baracuda (`baracuda_dispatch.rs:2900`, strided on input). No Vulkan registration. Shape/param
@@ -991,6 +1048,12 @@ precision:
 
 determinism: same_hardware_bitwise
 ```
+
+---
+
+## reduce_max_to_cuda  (ReduceMaxTo — broadcast-target max reduction, CUDA/baracuda)
+
+CUDA (baracuda) registration of `ReduceMaxTo` — stride-driven on input; NaN-as-missing extremum.
 
 ```fkc
 kernel: reduce_max_to_cuda
@@ -1128,9 +1191,9 @@ determinism: same_hardware_bitwise
 
 ---
 
-## ArgMaxDim  (argmax along one dim → U32 index)
+## argmax_dim_cpu  (ArgMaxDim — argmax along one dim → U32 index, CPU)
 
-Index reduction along a single `dim` (`dim = dims[0]` of `OpParams::Reduce`). For each
+One section per backend. Index reduction along a single `dim` (`dim = dims[0]` of `OpParams::Reduce`). For each
 `(outer, inner)` lane, scans the `dim_size` slice and writes the **U32 index** of the maximum.
 The first slice element seeds `best_idx = 0`; subsequent elements replace the best only on a
 **strict** `new > best`, so **ties keep the first (lowest) index**; NaN candidates never displace
@@ -1207,6 +1270,12 @@ precision:
 determinism: bitwise
 ```
 
+---
+
+## argmax_dim_cuda  (ArgMaxDim — argmax along one dim → U32 index, CUDA/baracuda)
+
+CUDA (baracuda) registration of `ArgMaxDim` — stride-driven; first/lowest index wins ties.
+
 ```fkc
 kernel: argmax_dim_cuda
 op_kind: ArgMaxDim
@@ -1263,6 +1332,12 @@ precision:
 
 determinism: bitwise
 ```
+
+---
+
+## argmax_dim_vulkan  (ArgMaxDim — argmax along one dim → U32 index, Vulkan)
+
+Vulkan registration of `ArgMaxDim` — contiguous; tree reduction over (val, idx) pairs, `PrecisionGuarantee::none`.
 
 ```fkc
 kernel: argmax_dim_vulkan
@@ -1322,9 +1397,9 @@ determinism: nondeterministic
 
 ---
 
-## ArgMinDim  (argmin along one dim → U32 index)
+## argmin_dim_cpu  (ArgMinDim — argmin along one dim → U32 index, CPU)
 
-Mirror of `ArgMaxDim`: identical scan with a strict `new < best` comparator and `+inf` init,
+One section per backend. Mirror of `ArgMaxDim`: identical scan with a strict `new < best` comparator and `+inf` init,
 writing the **U32 index** of the minimum along `dim`; ties keep the first (lowest) index; NaN never
 displaces the running best. **Output always U32.** `dim` size 0 rejected; output drops `dim`. Same
 backend fan-out and per-block facts as `ArgMaxDim`: CPU `argmin_dim_f32` (+adapters)
@@ -1388,6 +1463,12 @@ precision:
 determinism: bitwise
 ```
 
+---
+
+## argmin_dim_cuda  (ArgMinDim — argmin along one dim → U32 index, CUDA/baracuda)
+
+CUDA (baracuda) registration of `ArgMinDim` — stride-driven; first/lowest index wins ties.
+
 ```fkc
 kernel: argmin_dim_cuda
 op_kind: ArgMinDim
@@ -1444,6 +1525,12 @@ precision:
 
 determinism: bitwise
 ```
+
+---
+
+## argmin_dim_vulkan  (ArgMinDim — argmin along one dim → U32 index, Vulkan)
+
+Vulkan registration of `ArgMinDim` — contiguous; tree reduction over (val, idx) pairs, `PrecisionGuarantee::none`.
 
 ```fkc
 kernel: argmin_dim_vulkan

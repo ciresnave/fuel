@@ -73,6 +73,7 @@ one 4-byte word per output element (broadcast replays re-read the same source wo
 
 ```fkc
 kernel: strided_copy
+registrable: false                 # §3.10 describe-only: Contiguize has no real OpKind (it is the planner-inserted materialize/contiguize lowering, §4.3) and OpParams::Contiguize is not a real variant; documented + priced as the materialize kernel, not registered. op_kind/op_params below are forward-looking markers.
 op_kind: Contiguize
 blurb: "Materialize a dense row-major 4-byte buffer from a strided/broadcast/offset input via shape_strides + src_offset; word copy."
 backend: Vulkan
@@ -152,6 +153,7 @@ word per output element. (No b1 variant exists.)
 
 ```fkc
 kernel: strided_copy_signed_b2
+registrable: false                 # §3.10 describe-only: Contiguize has no real OpKind (planner-inserted materialize lowering, §4.3) and OpParams::Contiguize is not a real variant; documented, not registered. op_kind/op_params below are forward-looking markers.
 op_kind: Contiguize
 blurb: "Materialize a dense 2-byte buffer from a NEGATIVE-stride view (signed strides + signed src_offset); word copy."
 backend: Vulkan
@@ -228,6 +230,7 @@ element. (No b1 variant exists.)
 
 ```fkc
 kernel: strided_copy_signed_b4
+registrable: false                 # §3.10 describe-only: Contiguize has no real OpKind (planner-inserted materialize lowering, §4.3) and OpParams::Contiguize is not a real variant; documented, not registered. op_kind/op_params below are forward-looking markers.
 op_kind: Contiguize
 blurb: "Materialize a dense 4-byte buffer from a NEGATIVE-stride view (signed strides + signed src_offset); word copy."
 backend: Vulkan
@@ -301,6 +304,7 @@ The 8-byte strided→contiguous materializer for **negative-stride** views (Flip
 
 ```fkc
 kernel: strided_copy_signed_b8
+registrable: false                 # §3.10 describe-only: Contiguize has no real OpKind (planner-inserted materialize lowering, §4.3) and OpParams::Contiguize is not a real variant; documented, not registered. op_kind/op_params below are forward-looking markers.
 op_kind: Contiguize
 blurb: "Materialize a dense 8-byte buffer from a NEGATIVE-stride view (signed strides + signed src_offset); word copy."
 backend: Vulkan
@@ -803,7 +807,7 @@ hardware-independent. Perf: bandwidth-bound, output fully written once. (No b1 v
 
 ```fkc
 kernel: triu_b2
-op_kind: Triangular
+op_kind: Triu
 blurb: "Upper-triangular mask (keep j>=i+diagonal, else zero) on a contiguous 2-byte tensor; dtype-agnostic."
 backend: Vulkan
 kernel_source: "vulkan-slang"
@@ -873,7 +877,7 @@ No arithmetic; bit-exact, hardware-independent. Perf: bandwidth-bound. (No b1 va
 
 ```fkc
 kernel: triu_b4
-op_kind: Triangular
+op_kind: Triu
 blurb: "Upper-triangular mask (keep j>=i+diagonal, else zero) on a contiguous 4-byte tensor; dtype-agnostic."
 backend: Vulkan
 kernel_source: "vulkan-slang"
@@ -942,7 +946,7 @@ bandwidth-bound. (No b1 variant exists.)
 
 ```fkc
 kernel: triu_b8
-op_kind: Triangular
+op_kind: Triu
 blurb: "Upper-triangular mask (keep j>=i+diagonal, else zero) on a contiguous 8-byte tensor; dtype-agnostic."
 backend: Vulkan
 kernel_source: "vulkan-slang"
@@ -1012,7 +1016,7 @@ No arithmetic; bit-exact, hardware-independent. Perf: bandwidth-bound. (No b1 va
 
 ```fkc
 kernel: tril_b2
-op_kind: Triangular
+op_kind: Tril
 blurb: "Lower-triangular mask (keep j<=i+diagonal, else zero) on a contiguous 2-byte tensor; dtype-agnostic."
 backend: Vulkan
 kernel_source: "vulkan-slang"
@@ -1082,7 +1086,7 @@ Perf: bandwidth-bound. (No b1 variant exists.)
 
 ```fkc
 kernel: tril_b4
-op_kind: Triangular
+op_kind: Tril
 blurb: "Lower-triangular mask (keep j<=i+diagonal, else zero) on a contiguous 4-byte tensor; dtype-agnostic."
 backend: Vulkan
 kernel_source: "vulkan-slang"
@@ -1151,7 +1155,7 @@ bandwidth-bound. (No b1 variant exists.)
 
 ```fkc
 kernel: tril_b8
-op_kind: Triangular
+op_kind: Tril
 blurb: "Lower-triangular mask (keep j<=i+diagonal, else zero) on a contiguous 8-byte tensor; dtype-agnostic."
 backend: Vulkan
 kernel_source: "vulkan-slang"
@@ -1249,7 +1253,7 @@ accept:
     fields:
       n_src:    { kind: usize, note: "src element count (slab volume)" }
       rank:     { kind: usize, constraint: "1 <= rank <= 8" }
-      shape_buf:{ kind: "storage<u32>", note: "src_shape[0..rank] + dst_shape[0..rank] + range_start[0..rank]" }
+      shape_buf: { kind: "storage<u32>", note: "src_shape[0..rank] + dst_shape[0..rank] + range_start[0..rank]" }
 
 return:
   outputs:
@@ -1327,7 +1331,7 @@ accept:
     fields:
       n_src:    { kind: usize, note: "src element count (slab volume)" }
       rank:     { kind: usize, constraint: "1 <= rank <= 8" }
-      shape_buf:{ kind: "storage<u32>", note: "src_shape[0..rank] + dst_shape[0..rank] + range_start[0..rank]" }
+      shape_buf: { kind: "storage<u32>", note: "src_shape[0..rank] + dst_shape[0..rank] + range_start[0..rank]" }
 
 return:
   outputs:
@@ -1405,7 +1409,7 @@ accept:
     fields:
       n_src:    { kind: usize, note: "src element count (slab volume)" }
       rank:     { kind: usize, constraint: "1 <= rank <= 8" }
-      shape_buf:{ kind: "storage<u32>", note: "src_shape[0..rank] + dst_shape[0..rank] + range_start[0..rank]" }
+      shape_buf: { kind: "storage<u32>", note: "src_shape[0..rank] + dst_shape[0..rank] + range_start[0..rank]" }
 
 return:
   outputs:
@@ -1480,7 +1484,7 @@ accept:
     fields:
       n_src:    { kind: usize, note: "src element count (slab volume)" }
       rank:     { kind: usize, constraint: "1 <= rank <= 8" }
-      shape_buf:{ kind: "storage<u32>", note: "src_shape[0..rank] + dst_shape[0..rank] + range_start[0..rank]" }
+      shape_buf: { kind: "storage<u32>", note: "src_shape[0..rank] + dst_shape[0..rank] + range_start[0..rank]" }
 
 return:
   outputs:

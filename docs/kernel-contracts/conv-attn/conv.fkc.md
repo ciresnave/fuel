@@ -151,7 +151,8 @@ is a documentation / authoring record of the primitive rather than a registrable
 
 ```fkc
 kernel: im2col
-op_kind: Conv2D               # [consumer-ahead] closest honest tag; no as-built OpKind::Im2Col — see prose note above; param carrier is fuel-conv ConvShape
+registrable: false            # §3.10 describe-only: no as-built OpKind::Im2Col and op_params.variant ConvShape is NOT a real OpParams variant (rule-7); im2col is OpKind::Conv2D's patch-extraction lowering sub-step, not a dispatched op. Skips rule-2 (op_kind/fused_op) + rule-7 (op-param namespace); all descriptive facts still validated.
+op_kind: Conv2D               # [consumer-ahead] forward marker — the carrier is OpKind::Conv2D's im2col lowering; no as-built OpKind::Im2Col (see prose note above); param carrier is fuel-conv ConvShape
 blurb: "Extracts conv patches into the im2col matrix (channel, ky, kx)-ordered with zero-fill padding; pure data movement, lossless, f32/f64 host slices."
 backend: Cpu
 kernel_source: "fuel-conv-reference"

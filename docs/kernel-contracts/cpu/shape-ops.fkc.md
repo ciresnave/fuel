@@ -56,7 +56,10 @@ output element (broadcast replays re-read the same source byte range).
 
 ```fkc
 kernel: contiguize
-op_kind: Contiguize
+registrable: false            # §3.10 describe-only: there is NO OpKind::Contiguize in the as-built
+                             # enum / lower_op_kind table; Fuel inserts contiguize as an executor
+                             # materialize pass, not via a dispatch OpKind. Never invent an OpKind.
+op_kind: Contiguize          # descriptive token; no real dispatch OpKind to key against
 blurb: "Materialize a dense row-major buffer from a strided/broadcast/offset input; dtype-agnostic byte copy."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -147,7 +150,7 @@ accept:
       outer:     { kind: usize }
       dim_size:  { kind: usize }
       inner:     { kind: usize }
-      dtype_size:{ kind: usize, note: "bytes per element; kernel is dtype-agnostic" }
+      dtype_size: { kind: usize, note: "bytes per element; kernel is dtype-agnostic" }
 
 return:
   outputs:
@@ -219,7 +222,7 @@ accept:
       dim_size:  { kind: usize }
       inner:     { kind: usize }
       shift:     { kind: i64, note: "signed; normalized into [0,dim_size) via Python-style modulo" }
-      dtype_size:{ kind: usize }
+      dtype_size: { kind: usize }
 
 return:
   outputs:
@@ -294,7 +297,7 @@ accept:
     variant: Concat                   # OpParams::Concat — flattened (outer,inner) + per-input dim sizes
     fields:
       outer_count:    { kind: usize }
-      input_dim_sizes:{ kind: "Vec<usize>", constraint: "len == inputs.len(); >=1 entry" }
+      input_dim_sizes: { kind: "Vec<usize>", constraint: "len == inputs.len(); >=1 entry" }
       inner_count:    { kind: usize }
       dtype_size:     { kind: usize, constraint: "> 0" }
 
@@ -528,7 +531,11 @@ deterministic. Perf: bandwidth-bound, output fully written once (`batch*rows*col
 
 ```fkc
 kernel: triangular
-op_kind: Triangular
+registrable: false            # §3.10 describe-only: chassis umbrella backing Triu+Tril (keep_upper
+                             # selects); no single OpKind to key against (Triu/Tril are the real
+                             # OpKinds, dispatch.rs:278/280). `Triangular` is the OpParams variant
+                             # (kernel.rs:512), NOT an OpKind. Not a typo for one variant → describe-only.
+op_kind: Triangular          # descriptive umbrella token; the registrable arms are Triu / Tril
 blurb: "Triu/Tril mask: keep one side of a diagonal offset (keep_upper flag), zero elsewhere; dtype-agnostic."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -544,7 +551,7 @@ accept:
   op_params:
     variant: Triangular               # OpParams::Triangular
     fields:
-      batch_count:{ kind: usize }
+      batch_count: { kind: usize }
       rows:       { kind: usize }
       cols:       { kind: usize }
       diagonal:   { kind: i64, note: "diagonal offset; keep boundary is j vs i+diagonal" }
@@ -677,7 +684,7 @@ Perf: bandwidth-bound, `n` reads + `n` writes, one FLOP (add) per element.
 
 ```fkc
 kernel: cumsum_f32
-op_kind: Cumsum
+op_kind: CumSum
 blurb: "Running prefix sum along one dim; native f32 accumulator; bit-stable on same hardware."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -691,7 +698,7 @@ accept:
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any                       # scanned axis folded into outer/dim_size/inner
   op_params:
-    variant: Cumsum                   # OpParams::Cumsum — flattened (outer,dim_size,inner)
+    variant: CumSum                   # OpParams::CumSum — flattened (outer,dim_size,inner)
     fields:
       outer:    { kind: usize }
       dim_size: { kind: usize }
@@ -746,7 +753,7 @@ bytes/element), one add per element.
 
 ```fkc
 kernel: cumsum_f64
-op_kind: Cumsum
+op_kind: CumSum
 blurb: "Running prefix sum along one dim; native f64 accumulator; bit-stable on same hardware."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -760,7 +767,7 @@ accept:
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
   op_params:
-    variant: Cumsum
+    variant: CumSum
     fields:
       outer:    { kind: usize }
       dim_size: { kind: usize }
@@ -817,7 +824,7 @@ widen-add-narrow per element.
 
 ```fkc
 kernel: cumsum_bf16
-op_kind: Cumsum
+op_kind: CumSum
 blurb: "Running prefix sum along one dim; bf16 I/O with f32 accumulator (narrow on store); bit-stable on same hardware."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -831,7 +838,7 @@ accept:
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
   op_params:
-    variant: Cumsum
+    variant: CumSum
     fields:
       outer:    { kind: usize }
       dim_size: { kind: usize }
@@ -887,7 +894,7 @@ one widen-add-narrow per element.
 
 ```fkc
 kernel: cumsum_f16
-op_kind: Cumsum
+op_kind: CumSum
 blurb: "Running prefix sum along one dim; f16 I/O with f32 accumulator (narrow on store); bit-stable on same hardware."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -901,7 +908,7 @@ accept:
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
   op_params:
-    variant: Cumsum
+    variant: CumSum
     fields:
       outer:    { kind: usize }
       dim_size: { kind: usize }

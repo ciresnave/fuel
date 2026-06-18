@@ -359,7 +359,7 @@ contiguous-only.
 
 ```fkc
 kernel: clamp_inplace_f32
-op_kind: Clamp                # OpParams::Clamp signals the op family; in-place dispatch arm
+op_kind: ClampInplace         # OpParams::Clamp signals the op family; in-place dispatch arm
 blurb: "In-place clamp out[i]=clamp(out[i],min,max) over a single contiguous f32 buffer; rejects min>max."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -421,7 +421,7 @@ In-place clamp over a single contiguous f64 buffer: `out[i] = out[i].clamp(min, 
 
 ```fkc
 kernel: clamp_inplace_f64
-op_kind: Clamp
+op_kind: ClampInplace
 blurb: "In-place clamp out[i]=clamp(out[i],min,max) over a single contiguous f64 buffer; rejects min>max."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -484,7 +484,7 @@ store. **Rejects `min > max`** with a `Result` error. Contiguous-only.
 
 ```fkc
 kernel: clamp_inplace_bf16
-op_kind: Clamp
+op_kind: ClampInplace
 blurb: "In-place clamp over a single contiguous bf16 buffer; params f64→f32, clamp in f32, narrow on store; rejects min>max."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -547,7 +547,7 @@ max_f32))` (`clamp_inplace_f16`, `byte_kernels.rs:3024`). Identical structure to
 
 ```fkc
 kernel: clamp_inplace_f16
-op_kind: Clamp
+op_kind: ClampInplace
 blurb: "In-place clamp over a single contiguous f16 buffer; params f64→f32, clamp in f32, narrow on store; rejects min>max."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -610,7 +610,7 @@ Full positional overwrite; contiguous-only.
 
 ```fkc
 kernel: powi_inplace_f32
-op_kind: PowI                 # OpParams::PowI signals the op family; in-place dispatch arm
+op_kind: PowIInplace          # OpParams::PowI signals the op family; in-place dispatch arm
 blurb: "In-place integer power out[i]=out[i].powi(exp) over a single contiguous f32 buffer; native f32."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -673,7 +673,7 @@ In-place integer power over a single contiguous f64 buffer: `out[i] = out[i].pow
 
 ```fkc
 kernel: powi_inplace_f64
-op_kind: PowI
+op_kind: PowIInplace
 blurb: "In-place integer power out[i]=out[i].powi(exp) over a single contiguous f64 buffer; native f64."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -735,7 +735,7 @@ convention. `exp` from `OpParams::PowI`. Contiguous-only.
 
 ```fkc
 kernel: powi_inplace_bf16
-op_kind: PowI
+op_kind: PowIInplace
 blurb: "In-place integer power over a single contiguous bf16 buffer; widen to f32, powi, narrow on store."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -796,7 +796,7 @@ f16(out[i].to_f32().powi(exp))` (`powi_inplace_f16`, `byte_kernels.rs:3056`). Id
 
 ```fkc
 kernel: powi_inplace_f16
-op_kind: PowI
+op_kind: PowIInplace
 blurb: "In-place integer power over a single contiguous f16 buffer; widen to f32, powi, narrow on store."
 backend: Cpu
 kernel_source: "portable-cpu"

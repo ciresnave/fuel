@@ -25,12 +25,15 @@ zero-offset; the broadcast is a **logical** relation between two differently-sha
 tensors, and the kernel computes the right-align / size-1-collapse / per-output-element unflatten
 *internally* over those contiguous buffers (`broadcast_src_flat`, via `row_major_strides`). It
 allocates a fresh contiguous output of the broadcast shape (`RefTensor::from_vec`) and fills it
-element by element. This is why every operand below declares `contiguous: required` at the data
-layer while the kernel's `awkward_layout_strategy` is `contiguize_internally`: the kernel honestly
-accepts a logically-broadcast operand pair and performs the expansion arithmetic inside its own
-loop, folding that work into its own declared `bytes_moved` (§4.3) — it is **not** a silent
-materialization, and the planner MUST NOT insert a separate `Op::BroadcastTo`/`Op::Contiguize` in
-front of it.
+element by element. This is why every operand below declares `contiguous: required` /
+`broadcast_stride0: rejected` at the data layer and the kernel's `awkward_layout_strategy` is
+`requires_contiguous`: the kernel never reads a stride-0 broadcast axis at the data layer — both
+input buffers are genuinely contiguous and zero-offset, and the broadcast is purely **internal
+index math** (`broadcast_src_flat` unflattens each output position back to a source flat index), not
+a strided walk. There is therefore no operand to contiguize and no stride-0 read to declare; the
+expansion arithmetic is folded into the kernel's own declared `bytes_moved` (§4.3). It is **not** a
+silent materialization, and the planner MUST NOT insert a separate `Op::BroadcastTo`/`Op::Contiguize`
+in front of it.
 
 **Half-precision numerics differ from the CPU byte-kernel family — be precise here.** The
 reference `broadcast_binary` applies the arithmetic closure directly in the element type `T`
@@ -51,11 +54,12 @@ on Fuel's production surface the equivalent shape mismatch is rejected at graph-
 > the *same* `OpKind` as the same-shape binary (`AddElementwise` / `SubElementwise` /
 > `MulElementwise` / `DivElementwise`, `fuel-core-types/src/dispatch.rs:56-62`). What distinguishes
 > a broadcast-binary contract from the same-shape `add`/`sub`/`mul`/`div` contract at that key is
-> the **accept layout/shape**: a broadcast contract admits a `broadcast_to`-related operand pair
-> (`layout.broadcast_stride0: accepted`, `shape_constraint: broadcast_to`) and declares
-> `awkward_layout_strategy: contiguize_internally`, whereas the same-shape contract requires
-> exact-equal dims and `requires_contiguous`. Both are legal sibling alternatives at the key
-> (§12.5); the planner picks by admissibility against the concrete operand shapes.
+> the **accept shape predicate**: a broadcast contract admits a `broadcast_to`-related operand pair
+> (`shape_constraint: broadcast_to`), whereas the same-shape contract requires exact-equal dims.
+> Both declare `awkward_layout_strategy: requires_contiguous` with `broadcast_stride0: rejected` —
+> the broadcast is internal index math over contiguous buffers, not a stride-0 data read. Both are
+> legal sibling alternatives at the key (§12.5); the planner picks by admissibility against the
+> concrete operand shapes.
 
 ## broadcast_add  (out = a + b, NumPy broadcast)
 
@@ -83,12 +87,12 @@ accept:
   inputs:
     - name: a
       dtypes: [F32, F64, BF16, F16]
-      layout: { contiguous: required, strided: rejected, broadcast_stride0: accepted, start_offset: rejected, reverse_strides: rejected }
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: broadcast_to=b      # NumPy-broadcast-compatible with b; output = broadcast(a, b)
     - name: b
       dtypes: [F32, F64, BF16, F16]
-      layout: { contiguous: required, strided: rejected, broadcast_stride0: accepted, start_offset: rejected, reverse_strides: rejected }
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: broadcast_to=a
   op_params: { variant: None }
@@ -102,7 +106,7 @@ return:
       aliasing: none
 
 caps:
-  awkward_layout_strategy: contiguize_internally   # accepts logically-broadcast operands; expands internally; copy folded into bytes_moved (§4.3)
+  awkward_layout_strategy: requires_contiguous   # input buffers are ALWAYS physically contiguous zero-offset; the broadcast is internal index math, not a strided walk — no operand to contiguize (§10.4 coherence)
   fast_paths:
     - { when: "all_inputs_contiguous", note: "input buffers are always contiguous; the broadcast expansion still runs" }
   in_place: false
@@ -150,12 +154,12 @@ accept:
   inputs:
     - name: a
       dtypes: [F32, F64, BF16, F16]
-      layout: { contiguous: required, strided: rejected, broadcast_stride0: accepted, start_offset: rejected, reverse_strides: rejected }
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: broadcast_to=b
     - name: b
       dtypes: [F32, F64, BF16, F16]
-      layout: { contiguous: required, strided: rejected, broadcast_stride0: accepted, start_offset: rejected, reverse_strides: rejected }
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: broadcast_to=a
   op_params: { variant: None }
@@ -169,7 +173,7 @@ return:
       aliasing: none
 
 caps:
-  awkward_layout_strategy: contiguize_internally
+  awkward_layout_strategy: requires_contiguous   # contiguous buffers; broadcast is internal index math, not a strided walk (§10.4 coherence)
   fast_paths:
     - { when: "all_inputs_contiguous", note: "input buffers always contiguous; broadcast expansion still runs" }
   in_place: false
@@ -218,12 +222,12 @@ accept:
   inputs:
     - name: a
       dtypes: [F32, F64, BF16, F16]
-      layout: { contiguous: required, strided: rejected, broadcast_stride0: accepted, start_offset: rejected, reverse_strides: rejected }
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: broadcast_to=b
     - name: b
       dtypes: [F32, F64, BF16, F16]
-      layout: { contiguous: required, strided: rejected, broadcast_stride0: accepted, start_offset: rejected, reverse_strides: rejected }
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: broadcast_to=a
   op_params: { variant: None }
@@ -237,7 +241,7 @@ return:
       aliasing: none
 
 caps:
-  awkward_layout_strategy: contiguize_internally
+  awkward_layout_strategy: requires_contiguous   # contiguous buffers; broadcast is internal index math, not a strided walk (§10.4 coherence)
   fast_paths:
     - { when: "all_inputs_contiguous", note: "input buffers always contiguous; broadcast expansion still runs" }
   in_place: false
@@ -285,12 +289,12 @@ accept:
   inputs:
     - name: a
       dtypes: [F32, F64, BF16, F16]
-      layout: { contiguous: required, strided: rejected, broadcast_stride0: accepted, start_offset: rejected, reverse_strides: rejected }
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: broadcast_to=b
     - name: b
       dtypes: [F32, F64, BF16, F16]
-      layout: { contiguous: required, strided: rejected, broadcast_stride0: accepted, start_offset: rejected, reverse_strides: rejected }
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: broadcast_to=a
   op_params: { variant: None }
@@ -304,7 +308,7 @@ return:
       aliasing: none
 
 caps:
-  awkward_layout_strategy: contiguize_internally
+  awkward_layout_strategy: requires_contiguous   # contiguous buffers; broadcast is internal index math, not a strided walk (§10.4 coherence)
   fast_paths:
     - { when: "all_inputs_contiguous", note: "input buffers always contiguous; broadcast expansion still runs" }
   in_place: false

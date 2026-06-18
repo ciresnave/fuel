@@ -102,8 +102,8 @@ accept:
       rank: 2..=4                  # rank-4 Params block; rank carried in op_params
       shape_constraint: same_as=out
   op_params:
-    variant: Unary               # out_size, op_id, rank, flags, shape0..3, in_s0..3
-    fields:
+    variant: None                # OpParams::None — elementwise per-element params ride the wrapper, not an OpParams variant (§3.7)
+    fields:                      # documentation only; OpParams::None carries no fields. The wrapper packs: out_size, op_id, rank, flags, shape0..3, in_s0..3
       out_size: { kind: usize, note: "= n, the output element count" }
       op_id:    { kind: u32, note: "0..15 selects Neg..Recip" }
       rank:     { kind: u32 }
@@ -170,8 +170,8 @@ accept:
       rank: 2..=4
       shape_constraint: same_as=out
   op_params:
-    variant: Unary               # out_size, op_id, rank, flags, shape0..3, in_s0..3
-    fields:
+    variant: None                # OpParams::None — elementwise per-element params ride the wrapper, not an OpParams variant (§3.7)
+    fields:                      # documentation only; OpParams::None carries no fields. The wrapper packs: out_size, op_id, rank, flags, shape0..3, in_s0..3
       out_size: { kind: usize }
       op_id:    { kind: u32, note: "0..15 selects Neg..Recip" }
       rank:     { kind: u32 }
@@ -237,8 +237,8 @@ accept:
       rank: 2..=4
       shape_constraint: same_as=out
   op_params:
-    variant: Unary               # out_size, op_id, rank, flags, shape0..3, in_s0..3
-    fields:
+    variant: None                # OpParams::None — elementwise per-element params ride the wrapper, not an OpParams variant (§3.7)
+    fields:                      # documentation only; OpParams::None carries no fields. The wrapper packs: out_size, op_id, rank, flags, shape0..3, in_s0..3
       out_size: { kind: usize }
       op_id:    { kind: u32, note: "0..15 selects Neg..Recip" }
       rank:     { kind: u32 }
@@ -309,8 +309,8 @@ accept:
       rank: any
       shape_constraint: same_as=out
   op_params:
-    variant: Unary               # bf16 path: n_pairs, op_id only (NO rank/shape/stride)
-    fields:
+    variant: None                # OpParams::None — elementwise per-element params ride the wrapper, not an OpParams variant (§3.7)
+    fields:                      # documentation only; OpParams::None carries no fields. bf16 path wrapper packs: n_pairs, op_id only (NO rank/shape/stride)
       n_pairs: { kind: usize, note: "= n/2; one thread per packed u32 (two bf16 lanes)" }
       op_id:   { kind: u32, note: "0..15 selects Neg..Recip" }
 
@@ -384,8 +384,8 @@ accept:
       rank: 2..=4
       shape_constraint: broadcast_to=out
   op_params:
-    variant: Binary              # out_size, op_id, rank, flags, shape0..3, a_s0..3, b_s0..3
-    fields:
+    variant: None                # OpParams::None — elementwise per-element params ride the wrapper, not an OpParams variant (§3.7)
+    fields:                      # documentation only; OpParams::None carries no fields. The wrapper packs: out_size, op_id, rank, flags, shape0..3, a_s0..3, b_s0..3
       out_size: { kind: usize, note: "= n, the broadcasted output element count" }
       op_id:    { kind: u32, note: "0..5 selects Add/Sub/Mul/Div/Max/Min" }
       rank:     { kind: u32 }
@@ -457,8 +457,8 @@ accept:
       rank: 2..=4
       shape_constraint: broadcast_to=out
   op_params:
-    variant: Binary              # out_size, op_id, rank, flags, shape0..3, a_s0..3, b_s0..3
-    fields:
+    variant: None                # OpParams::None — elementwise per-element params ride the wrapper, not an OpParams variant (§3.7)
+    fields:                      # documentation only; OpParams::None carries no fields. The wrapper packs: out_size, op_id, rank, flags, shape0..3, a_s0..3, b_s0..3
       out_size: { kind: usize }
       op_id:    { kind: u32, note: "0..5 selects Add/Sub/Mul/Div/Max/Min" }
       rank:     { kind: u32 }
@@ -529,8 +529,8 @@ accept:
       rank: 2..=4
       shape_constraint: broadcast_to=out
   op_params:
-    variant: Binary              # out_size, op_id, rank, flags, shape0..3, a_s0..3, b_s0..3
-    fields:
+    variant: None                # OpParams::None — elementwise per-element params ride the wrapper, not an OpParams variant (§3.7)
+    fields:                      # documentation only; OpParams::None carries no fields. The wrapper packs: out_size, op_id, rank, flags, shape0..3, a_s0..3, b_s0..3
       out_size: { kind: usize }
       op_id:    { kind: u32, note: "0..5 selects Add/Sub/Mul/Div/Max/Min" }
       rank:     { kind: u32 }
@@ -605,8 +605,8 @@ accept:
       rank: 2..=4
       shape_constraint: broadcast_to=out
   op_params:
-    variant: Binary              # out_size, op_id, rank, flags, shape0..3, a_s0..3, b_s0..3
-    fields:
+    variant: None                # OpParams::None — elementwise per-element params ride the wrapper, not an OpParams variant (§3.7)
+    fields:                      # documentation only; OpParams::None carries no fields. The wrapper packs: out_size, op_id, rank, flags, shape0..3, a_s0..3, b_s0..3
       out_size: { kind: usize, note: "must be even; wrapper pads an odd count" }
       op_id:    { kind: u32, note: "0..5 selects Add/Sub/Mul/Div/Max/Min" }
       rank:     { kind: u32 }
@@ -1071,6 +1071,7 @@ is bit-stable on the same hardware. No new output allocation — the buffer is `
 
 ```fkc
 kernel: add_assign_scaled
+registrable: false            # §3.10 describe-only: AddAssignScaled has no real OpKind (graph rewrite / in-place accumulate), and OpParams::AddAssignScaled is not a real variant; documented, not registered. op_kind/op_params below are forward-looking markers.
 op_kind: AddAssignScaled
 blurb: "In-place scaled accumulate dst[i] += src[i]*scale (f32 only); contiguous; dst is RW (output aliases dst)."
 backend: Vulkan

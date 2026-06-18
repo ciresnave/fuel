@@ -417,32 +417,31 @@ determinism: same_hardware_bitwise
 
 ---
 
-## flash_attn_backward_f32  (FlashAttn backward dQ/dK/dV, single-gradient output, f32 native)
+## flash_attn_backward_q_f32  (FlashAttn backward dQ (recompute), native f32 throughout)
 
-Recompute-based FlashAttn backward (matches the reference backend's `attention_flash_backward`
-math, byte-storage flavor). The inner core `flash_attn_backward_f32_inner` (`byte_kernels.rs:6468`)
-computes **all three** gradients (dQ, dK, dV) jointly into pre-allocated `Vec<f32>` buffers from the
-forward inputs `q, k, v`, the upstream gradient `do_grad`, and optional `alibi_slopes`; the byte
-wrapper `flash_attn_backward_f32` (`flash_attn_backward_native_wrapper!`, `:6625`, instantiated
-`:6703`) selects which one to write into its **single** output buffer via the `which: FaBackwardWhich
-{Q,K,V}` selector. Three calls (one per gradient) therefore recompute the same backward state three
-times — acceptable for the math-definition CPU path; GPU kernels can fuse the recompute. The op is
-dispatched as `FusedOpParams::FlashAttnBackward` (`registry.rs:295`), whose three FusedOpId variants
-`FLASH_ATTN_BACKWARD_Q/K/V` carry the same `{softmax_scale, causal, window_size_left,
-window_size_right, softcap}` shape params as the forward `FlashAttn` so the recompute produces
-identical scores — note there is **no `k_len`** in backward (the full `sk` extent is used; byte
-checks `kv_n = B·Hkv·Sk·D`). The output dtype/shape depend on `which`: dQ has q's shape
-`[B, Hq, Sq, D]`; dK/dV have the KV shape `[B, Hkv, Sk, D]` (`:6662-6673`); the wrapper validates
-`out.len_bytes` against the selected gradient's element count. Native f32 throughout. Limitations:
-contiguous zero-offset only; 3× recompute cost on CPU; no in-place.
+Recompute-based FlashAttn backward producing the **dQ** gradient (matches the reference backend's
+`attention_flash_backward` math, byte-storage flavor). The inner core `flash_attn_backward_f32_inner (byte_kernels.rs:6468)` computes **all three**
+gradients (dQ, dK, dV) jointly into pre-allocated buffers from the forward inputs `q, k, v`, the upstream
+gradient `do_grad`, and optional `alibi_slopes`; the byte wrapper `flash_attn_backward_f32`
+(`byte_kernels.rs:6625, instantiated :6703`) selects which gradient to write into its **single** output buffer via the
+`which: FaBackwardWhich {Q,K,V}` selector — this section pins `which = Q` (dQ). On the CPU path
+the Q/K/V variants each recompute the same backward state (3x recompute total; GPU kernels can fuse it).
+The op is dispatched as the fused id **`FLASH_ATTN_BACKWARD_Q`** (`FusedOps::FLASH_ATTN_BACKWARD_Q`,
+`fuel-graph/src/registry.rs`), all three Q/K/V ids sharing the single param carrier
+`FusedOpParams::FlashAttnBackward` (`registry.rs:295`), which carries the same
+`{softmax_scale, causal, window_size_left, window_size_right, softcap}` shape params as the forward
+`FlashAttn` so the recompute produces identical scores — note there is **no `k_len`** in backward (the
+full `sk` extent is used). Output `dQ` has q's shape `[B, Hq, Sq, D]` and q's dtype; the wrapper
+validates `out.len_bytes` against the selected gradient's element count. Native f32 throughout.
+Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
-kernel: flash_attn_backward_f32
-fused_op: FLASH_ATTN_BACKWARD
-blurb: "FlashAttn backward (recompute); writes one of dQ/dK/dV selected by `which`; f32 native; GQA; causal/window/softcap/alibi."
+kernel: flash_attn_backward_q_f32
+fused_op: FLASH_ATTN_BACKWARD_Q
+blurb: "FlashAttn backward dQ from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dQ (= q shape); native f32 throughout; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::flash_attn_backward_f32"
+entry_point: "fuel_dispatch::dispatch::flash_attn_backward_q_f32_cpu_wrapper"
 kernel_revision_hash: auto
 
 accept:
@@ -472,10 +471,10 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward (fused namespace; §3.7)
+    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
     fields:
-      # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; `which` (Q/K/V) is the
-      # FusedOpId distinction (FLASH_ATTN_BACKWARD_Q/K/V), not a variant field. No k_len in backward.
+      # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
+      # FusedOpId (FLASH_ATTN_BACKWARD_Q), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -484,9 +483,9 @@ accept:
 
 return:
   outputs:
-    - name: grad                           # one of dQ/dK/dV per the FusedOpId (which)
+    - name: dq                           # dQ; this id (FLASH_ATTN_BACKWARD_Q) writes exactly this gradient
       dtype_rule: passthrough(q)
-      shape_rule: from_params(which)       # dQ ⇒ same_as(q) [B,Hq,Sq,D]; dK/dV ⇒ same_as(k) [B,Hkv,Sk,D]
+      shape_rule: same_as(q)            # dQ => q shape [B, Hq, Sq, D]
       layout_guarantee: contiguous
       aliasing: none                       # fresh preallocated buffer, full overwrite (copy_from_slice)
 
@@ -501,15 +500,15 @@ caps:
 cost:
   provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
   class: attention
-  # Recompute backward over the full Sk extent; forward scores + dQ/dK/dV all computed (this CPU
-  # path computes all three gradients per call). ~3-4x the forward FLOPs over [B,Hq,Sq,Sk,D].
+  # Recompute backward over the full Sk extent; this CPU path computes all three gradients per call
+  # (3x recompute across the Q/K/V ids). ~3-4x the forward FLOPs over [B,Hq,Sq,Sk,D].
   flops: "12 * b * hq * sq * sk * d"
   bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
   overhead_ns: 4000
-  memory: { device_bytes: 0, host_bytes: "(b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes", disk_bytes: 0 }
+  memory: { device_bytes: 0, host_bytes: "b * hq * sq * d * dtype_bytes", disk_bytes: 0 }
 
 precision:
-  bit_stable_on_same_hardware: true      # deterministic recompute; native f32
+  bit_stable_on_same_hardware: true      # deterministic recompute
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
@@ -519,54 +518,66 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
-## flash_attn_backward_f64  (FlashAttn backward dQ/dK/dV, single-gradient output, f64 native)
+---
 
-Identical recompute algorithm, `which`-selected single-gradient output, GQA grouping, and
-mask/softcap/ALiBi semantics as `flash_attn_backward_f32`, evaluated in native f64 throughout
-(`flash_attn_backward_native_wrapper!` instantiated `byte_kernels.rs:6704`; inner core
-`flash_attn_backward_f64_inner`, 8-byte element). f64 gives the widest precision — no widen/narrow
-round-trip. Same dQ ⇒ q-shape, dK/dV ⇒ KV-shape output rule; same full-overwrite
-`copy_from_slice`. Limitations match `flash_attn_backward_f32`: contiguous zero-offset only, 3×
-recompute on CPU, no in-place.
+## flash_attn_backward_k_f32  (FlashAttn backward dK (recompute), native f32 throughout)
+
+Recompute-based FlashAttn backward producing the **dK** gradient (matches the reference backend's
+`attention_flash_backward` math, byte-storage flavor). The inner core `flash_attn_backward_f32_inner (byte_kernels.rs:6468)` computes **all three**
+gradients (dQ, dK, dV) jointly into pre-allocated buffers from the forward inputs `q, k, v`, the upstream
+gradient `do_grad`, and optional `alibi_slopes`; the byte wrapper `flash_attn_backward_f32`
+(`byte_kernels.rs:6625, instantiated :6703`) selects which gradient to write into its **single** output buffer via the
+`which: FaBackwardWhich {Q,K,V}` selector — this section pins `which = K` (dK). On the CPU path
+the Q/K/V variants each recompute the same backward state (3x recompute total; GPU kernels can fuse it).
+The op is dispatched as the fused id **`FLASH_ATTN_BACKWARD_K`** (`FusedOps::FLASH_ATTN_BACKWARD_K`,
+`fuel-graph/src/registry.rs`), all three Q/K/V ids sharing the single param carrier
+`FusedOpParams::FlashAttnBackward` (`registry.rs:295`), which carries the same
+`{softmax_scale, causal, window_size_left, window_size_right, softcap}` shape params as the forward
+`FlashAttn` so the recompute produces identical scores — note there is **no `k_len`** in backward (the
+full `sk` extent is used). Output `dK` has k's shape `[B, Hkv, Sk, D]` and k's dtype; the wrapper
+validates `out.len_bytes` against the selected gradient's element count. Native f32 throughout.
+Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
-kernel: flash_attn_backward_f64
-fused_op: FLASH_ATTN_BACKWARD
-blurb: "FlashAttn backward (recompute); writes one of dQ/dK/dV selected by `which`; f64 native; GQA; causal/window/softcap/alibi."
+kernel: flash_attn_backward_k_f32
+fused_op: FLASH_ATTN_BACKWARD_K
+blurb: "FlashAttn backward dK from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dK (= k shape); native f32 throughout; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::flash_attn_backward_f64"
+entry_point: "fuel_dispatch::dispatch::flash_attn_backward_k_f32_cpu_wrapper"
 kernel_revision_hash: auto
 
 accept:
   inputs:
     - name: q
-      dtypes: [F64]
+      dtypes: [F32]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 4
+      rank: 4                              # [B, Hq, Sq, D]
     - name: k
-      dtypes: [F64]
+      dtypes: [F32]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 4
-      shape_constraint: "divisible(q.dim[1], k.dim[1])"
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"   # GQA: Hq % Hkv == 0
     - name: v
-      dtypes: [F64]
+      dtypes: [F32]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 4
+      rank: 4                              # [B, Hkv, Sk, D]
       shape_constraint: "same_as=k"
     - name: do_grad
-      dtypes: [F64]
+      dtypes: [F32]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 4
+      rank: 4                              # upstream grad, [B, Hq, Sq, D] (same as q)
       shape_constraint: "same_as=q"
     - name: alibi_slopes
-      dtypes: [F64]
+      dtypes: [F32]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 1
+      rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward
+    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
     fields:
+      # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
+      # FusedOpId (FLASH_ATTN_BACKWARD_K), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -575,11 +586,217 @@ accept:
 
 return:
   outputs:
-    - name: grad
+    - name: dk                           # dK; this id (FLASH_ATTN_BACKWARD_K) writes exactly this gradient
       dtype_rule: passthrough(q)
-      shape_rule: from_params(which)       # dQ ⇒ same_as(q); dK/dV ⇒ same_as(k)
+      shape_rule: same_as(k)            # dK => k shape [B, Hkv, Sk, D]
       layout_guarantee: contiguous
-      aliasing: none
+      aliasing: none                       # fresh preallocated buffer, full overwrite (copy_from_slice)
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "causal == false", note: "no causal mask branch in the recompute" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 32
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  # Recompute backward over the full Sk extent; this CPU path computes all three gradients per call
+  # (3x recompute across the Q/K/V ids). ~3-4x the forward FLOPs over [B,Hq,Sq,Sk,D].
+  flops: "12 * b * hq * sq * sk * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hkv * sk * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic recompute
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "native f32 recompute backward; deterministic; not bit-stable cross-hardware (FMA contraction may differ)."
+
+determinism: same_hardware_bitwise
+```
+
+---
+
+## flash_attn_backward_v_f32  (FlashAttn backward dV (recompute), native f32 throughout)
+
+Recompute-based FlashAttn backward producing the **dV** gradient (matches the reference backend's
+`attention_flash_backward` math, byte-storage flavor). The inner core `flash_attn_backward_f32_inner (byte_kernels.rs:6468)` computes **all three**
+gradients (dQ, dK, dV) jointly into pre-allocated buffers from the forward inputs `q, k, v`, the upstream
+gradient `do_grad`, and optional `alibi_slopes`; the byte wrapper `flash_attn_backward_f32`
+(`byte_kernels.rs:6625, instantiated :6703`) selects which gradient to write into its **single** output buffer via the
+`which: FaBackwardWhich {Q,K,V}` selector — this section pins `which = V` (dV). On the CPU path
+the Q/K/V variants each recompute the same backward state (3x recompute total; GPU kernels can fuse it).
+The op is dispatched as the fused id **`FLASH_ATTN_BACKWARD_V`** (`FusedOps::FLASH_ATTN_BACKWARD_V`,
+`fuel-graph/src/registry.rs`), all three Q/K/V ids sharing the single param carrier
+`FusedOpParams::FlashAttnBackward` (`registry.rs:295`), which carries the same
+`{softmax_scale, causal, window_size_left, window_size_right, softcap}` shape params as the forward
+`FlashAttn` so the recompute produces identical scores — note there is **no `k_len`** in backward (the
+full `sk` extent is used). Output `dV` has v's shape `[B, Hkv, Sk, D]` and v's dtype; the wrapper
+validates `out.len_bytes` against the selected gradient's element count. Native f32 throughout.
+Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
+
+```fkc
+kernel: flash_attn_backward_v_f32
+fused_op: FLASH_ATTN_BACKWARD_V
+blurb: "FlashAttn backward dV from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dV (= v shape); native f32 throughout; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_dispatch::dispatch::flash_attn_backward_v_f32_cpu_wrapper"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hq, Sq, D]
+    - name: k
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"   # GQA: Hq % Hkv == 0
+    - name: v
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "same_as=k"
+    - name: do_grad
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # upstream grad, [B, Hq, Sq, D] (same as q)
+      shape_constraint: "same_as=q"
+    - name: alibi_slopes
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1                              # [Hq]
+      optional: true
+  op_params:
+    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    fields:
+      # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
+      # FusedOpId (FLASH_ATTN_BACKWARD_V), NOT a variant field. No k_len in backward (full sk extent).
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: dv                           # dV; this id (FLASH_ATTN_BACKWARD_V) writes exactly this gradient
+      dtype_rule: passthrough(q)
+      shape_rule: same_as(v)            # dV => v shape [B, Hkv, Sk, D]
+      layout_guarantee: contiguous
+      aliasing: none                       # fresh preallocated buffer, full overwrite (copy_from_slice)
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "causal == false", note: "no causal mask branch in the recompute" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 32
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  # Recompute backward over the full Sk extent; this CPU path computes all three gradients per call
+  # (3x recompute across the Q/K/V ids). ~3-4x the forward FLOPs over [B,Hq,Sq,Sk,D].
+  flops: "12 * b * hq * sq * sk * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hkv * sk * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic recompute
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "native f32 recompute backward; deterministic; not bit-stable cross-hardware (FMA contraction may differ)."
+
+determinism: same_hardware_bitwise
+```
+
+---
+
+## flash_attn_backward_q_f64  (FlashAttn backward dQ (recompute), native f64 throughout)
+
+Recompute-based FlashAttn backward producing the **dQ** gradient (matches the reference backend's
+`attention_flash_backward` math, byte-storage flavor). The inner core `flash_attn_backward_f64_inner` computes **all three**
+gradients (dQ, dK, dV) jointly into pre-allocated buffers from the forward inputs `q, k, v`, the upstream
+gradient `do_grad`, and optional `alibi_slopes`; the byte wrapper `flash_attn_backward_f64`
+(`flash_attn_backward_native_wrapper! instantiated byte_kernels.rs:6704`) selects which gradient to write into its **single** output buffer via the
+`which: FaBackwardWhich {Q,K,V}` selector — this section pins `which = Q` (dQ). On the CPU path
+the Q/K/V variants each recompute the same backward state (3x recompute total; GPU kernels can fuse it).
+The op is dispatched as the fused id **`FLASH_ATTN_BACKWARD_Q`** (`FusedOps::FLASH_ATTN_BACKWARD_Q`,
+`fuel-graph/src/registry.rs`), all three Q/K/V ids sharing the single param carrier
+`FusedOpParams::FlashAttnBackward` (`registry.rs:295`), which carries the same
+`{softmax_scale, causal, window_size_left, window_size_right, softcap}` shape params as the forward
+`FlashAttn` so the recompute produces identical scores — note there is **no `k_len`** in backward (the
+full `sk` extent is used). Output `dQ` has q's shape `[B, Hq, Sq, D]` and q's dtype; the wrapper
+validates `out.len_bytes` against the selected gradient's element count. Native f64 throughout.
+Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
+
+```fkc
+kernel: flash_attn_backward_q_f64
+fused_op: FLASH_ATTN_BACKWARD_Q
+blurb: "FlashAttn backward dQ from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dQ (= q shape); native f64 throughout; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_dispatch::dispatch::flash_attn_backward_q_f64_cpu_wrapper"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hq, Sq, D]
+    - name: k
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"   # GQA: Hq % Hkv == 0
+    - name: v
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "same_as=k"
+    - name: do_grad
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # upstream grad, [B, Hq, Sq, D] (same as q)
+      shape_constraint: "same_as=q"
+    - name: alibi_slopes
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1                              # [Hq]
+      optional: true
+  op_params:
+    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    fields:
+      # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
+      # FusedOpId (FLASH_ATTN_BACKWARD_Q), NOT a variant field. No k_len in backward (full sk extent).
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: dq                           # dQ; this id (FLASH_ATTN_BACKWARD_Q) writes exactly this gradient
+      dtype_rule: passthrough(q)
+      shape_rule: same_as(q)            # dQ => q shape [B, Hq, Sq, D]
+      layout_guarantee: contiguous
+      aliasing: none                       # fresh preallocated buffer, full overwrite (copy_from_slice)
 
 caps:
   awkward_layout_strategy: requires_contiguous
@@ -592,13 +809,15 @@ caps:
 cost:
   provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
   class: attention
+  # Recompute backward over the full Sk extent; this CPU path computes all three gradients per call
+  # (3x recompute across the Q/K/V ids). ~3-4x the forward FLOPs over [B,Hq,Sq,Sk,D].
   flops: "12 * b * hq * sq * sk * d"
   bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
   overhead_ns: 4000
-  memory: { device_bytes: 0, host_bytes: "(b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes", disk_bytes: 0 }
+  memory: { device_bytes: 0, host_bytes: "b * hq * sq * d * dtype_bytes", disk_bytes: 0 }
 
 precision:
-  bit_stable_on_same_hardware: true
+  bit_stable_on_same_hardware: true      # deterministic recompute
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
@@ -608,55 +827,66 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
-## flash_attn_backward_bf16  (FlashAttn backward dQ/dK/dV, single-gradient output, bf16 I/O with f32 compute)
+---
 
-The `flash_attn_backward_half_wrapper!`-instantiated bf16 backward (`byte_kernels.rs:6707`,
-instantiated `:6785`; inner core `flash_attn_backward_bf16_inner`, `:6612`). Same recompute
-algorithm, `which`-selected single-gradient output, GQA grouping, and mask/softcap/ALiBi semantics
-as `flash_attn_backward_f32`, but **bf16 I/O with f32 compute**: the inner core accumulates dQ/dK/dV
-in f32 (`dq_f32`/`dk_f32`/`dv_f32`) and narrows on store (`<bf16>::from_f32(...)`, `:6605-6607`).
-This is the family's precision invariant: compute in f32, only I/O is bf16. 2-byte element; same
-dQ ⇒ q-shape, dK/dV ⇒ KV-shape output rule; same full-overwrite `copy_from_slice`. Limitations
-match the family: contiguous zero-offset only, 3× recompute on CPU, no in-place.
+## flash_attn_backward_k_f64  (FlashAttn backward dK (recompute), native f64 throughout)
+
+Recompute-based FlashAttn backward producing the **dK** gradient (matches the reference backend's
+`attention_flash_backward` math, byte-storage flavor). The inner core `flash_attn_backward_f64_inner` computes **all three**
+gradients (dQ, dK, dV) jointly into pre-allocated buffers from the forward inputs `q, k, v`, the upstream
+gradient `do_grad`, and optional `alibi_slopes`; the byte wrapper `flash_attn_backward_f64`
+(`flash_attn_backward_native_wrapper! instantiated byte_kernels.rs:6704`) selects which gradient to write into its **single** output buffer via the
+`which: FaBackwardWhich {Q,K,V}` selector — this section pins `which = K` (dK). On the CPU path
+the Q/K/V variants each recompute the same backward state (3x recompute total; GPU kernels can fuse it).
+The op is dispatched as the fused id **`FLASH_ATTN_BACKWARD_K`** (`FusedOps::FLASH_ATTN_BACKWARD_K`,
+`fuel-graph/src/registry.rs`), all three Q/K/V ids sharing the single param carrier
+`FusedOpParams::FlashAttnBackward` (`registry.rs:295`), which carries the same
+`{softmax_scale, causal, window_size_left, window_size_right, softcap}` shape params as the forward
+`FlashAttn` so the recompute produces identical scores — note there is **no `k_len`** in backward (the
+full `sk` extent is used). Output `dK` has k's shape `[B, Hkv, Sk, D]` and k's dtype; the wrapper
+validates `out.len_bytes` against the selected gradient's element count. Native f64 throughout.
+Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
-kernel: flash_attn_backward_bf16
-fused_op: FLASH_ATTN_BACKWARD
-blurb: "FlashAttn backward (recompute); writes one of dQ/dK/dV selected by `which`; bf16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
+kernel: flash_attn_backward_k_f64
+fused_op: FLASH_ATTN_BACKWARD_K
+blurb: "FlashAttn backward dK from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dK (= k shape); native f64 throughout; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::flash_attn_backward_bf16"
+entry_point: "fuel_dispatch::dispatch::flash_attn_backward_k_f64_cpu_wrapper"
 kernel_revision_hash: auto
 
 accept:
   inputs:
     - name: q
-      dtypes: [BF16]
+      dtypes: [F64]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 4
+      rank: 4                              # [B, Hq, Sq, D]
     - name: k
-      dtypes: [BF16]
+      dtypes: [F64]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 4
-      shape_constraint: "divisible(q.dim[1], k.dim[1])"
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"   # GQA: Hq % Hkv == 0
     - name: v
-      dtypes: [BF16]
+      dtypes: [F64]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 4
+      rank: 4                              # [B, Hkv, Sk, D]
       shape_constraint: "same_as=k"
     - name: do_grad
-      dtypes: [BF16]
+      dtypes: [F64]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 4
+      rank: 4                              # upstream grad, [B, Hq, Sq, D] (same as q)
       shape_constraint: "same_as=q"
     - name: alibi_slopes
-      dtypes: [BF16]
+      dtypes: [F64]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 1
+      rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward
+    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
     fields:
+      # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
+      # FusedOpId (FLASH_ATTN_BACKWARD_K), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -665,11 +895,217 @@ accept:
 
 return:
   outputs:
-    - name: grad
+    - name: dk                           # dK; this id (FLASH_ATTN_BACKWARD_K) writes exactly this gradient
       dtype_rule: passthrough(q)
-      shape_rule: from_params(which)       # dQ ⇒ same_as(q); dK/dV ⇒ same_as(k)
+      shape_rule: same_as(k)            # dK => k shape [B, Hkv, Sk, D]
       layout_guarantee: contiguous
-      aliasing: none
+      aliasing: none                       # fresh preallocated buffer, full overwrite (copy_from_slice)
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "causal == false", note: "no causal mask branch in the recompute" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 64
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  # Recompute backward over the full Sk extent; this CPU path computes all three gradients per call
+  # (3x recompute across the Q/K/V ids). ~3-4x the forward FLOPs over [B,Hq,Sq,Sk,D].
+  flops: "12 * b * hq * sq * sk * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hkv * sk * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic recompute
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "native f64 recompute backward; widest precision of the family (no widen/narrow round-trip); deterministic; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+---
+
+## flash_attn_backward_v_f64  (FlashAttn backward dV (recompute), native f64 throughout)
+
+Recompute-based FlashAttn backward producing the **dV** gradient (matches the reference backend's
+`attention_flash_backward` math, byte-storage flavor). The inner core `flash_attn_backward_f64_inner` computes **all three**
+gradients (dQ, dK, dV) jointly into pre-allocated buffers from the forward inputs `q, k, v`, the upstream
+gradient `do_grad`, and optional `alibi_slopes`; the byte wrapper `flash_attn_backward_f64`
+(`flash_attn_backward_native_wrapper! instantiated byte_kernels.rs:6704`) selects which gradient to write into its **single** output buffer via the
+`which: FaBackwardWhich {Q,K,V}` selector — this section pins `which = V` (dV). On the CPU path
+the Q/K/V variants each recompute the same backward state (3x recompute total; GPU kernels can fuse it).
+The op is dispatched as the fused id **`FLASH_ATTN_BACKWARD_V`** (`FusedOps::FLASH_ATTN_BACKWARD_V`,
+`fuel-graph/src/registry.rs`), all three Q/K/V ids sharing the single param carrier
+`FusedOpParams::FlashAttnBackward` (`registry.rs:295`), which carries the same
+`{softmax_scale, causal, window_size_left, window_size_right, softcap}` shape params as the forward
+`FlashAttn` so the recompute produces identical scores — note there is **no `k_len`** in backward (the
+full `sk` extent is used). Output `dV` has v's shape `[B, Hkv, Sk, D]` and v's dtype; the wrapper
+validates `out.len_bytes` against the selected gradient's element count. Native f64 throughout.
+Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
+
+```fkc
+kernel: flash_attn_backward_v_f64
+fused_op: FLASH_ATTN_BACKWARD_V
+blurb: "FlashAttn backward dV from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dV (= v shape); native f64 throughout; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_dispatch::dispatch::flash_attn_backward_v_f64_cpu_wrapper"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hq, Sq, D]
+    - name: k
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"   # GQA: Hq % Hkv == 0
+    - name: v
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "same_as=k"
+    - name: do_grad
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # upstream grad, [B, Hq, Sq, D] (same as q)
+      shape_constraint: "same_as=q"
+    - name: alibi_slopes
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1                              # [Hq]
+      optional: true
+  op_params:
+    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    fields:
+      # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
+      # FusedOpId (FLASH_ATTN_BACKWARD_V), NOT a variant field. No k_len in backward (full sk extent).
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: dv                           # dV; this id (FLASH_ATTN_BACKWARD_V) writes exactly this gradient
+      dtype_rule: passthrough(q)
+      shape_rule: same_as(v)            # dV => v shape [B, Hkv, Sk, D]
+      layout_guarantee: contiguous
+      aliasing: none                       # fresh preallocated buffer, full overwrite (copy_from_slice)
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "causal == false", note: "no causal mask branch in the recompute" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 64
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  # Recompute backward over the full Sk extent; this CPU path computes all three gradients per call
+  # (3x recompute across the Q/K/V ids). ~3-4x the forward FLOPs over [B,Hq,Sq,Sk,D].
+  flops: "12 * b * hq * sq * sk * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hkv * sk * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic recompute
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "native f64 recompute backward; widest precision of the family (no widen/narrow round-trip); deterministic; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+---
+
+## flash_attn_backward_q_bf16  (FlashAttn backward dQ (recompute), bf16 I/O with f32 compute)
+
+Recompute-based FlashAttn backward producing the **dQ** gradient (matches the reference backend's
+`attention_flash_backward` math, byte-storage flavor). The inner core `flash_attn_backward_bf16_inner (byte_kernels.rs:6612)` computes **all three**
+gradients (dQ, dK, dV) jointly into pre-allocated buffers from the forward inputs `q, k, v`, the upstream
+gradient `do_grad`, and optional `alibi_slopes`; the byte wrapper `flash_attn_backward_bf16`
+(`flash_attn_backward_half_wrapper! byte_kernels.rs:6707, instantiated :6785`) selects which gradient to write into its **single** output buffer via the
+`which: FaBackwardWhich {Q,K,V}` selector — this section pins `which = Q` (dQ). On the CPU path
+the Q/K/V variants each recompute the same backward state (3x recompute total; GPU kernels can fuse it).
+The op is dispatched as the fused id **`FLASH_ATTN_BACKWARD_Q`** (`FusedOps::FLASH_ATTN_BACKWARD_Q`,
+`fuel-graph/src/registry.rs`), all three Q/K/V ids sharing the single param carrier
+`FusedOpParams::FlashAttnBackward` (`registry.rs:295`), which carries the same
+`{softmax_scale, causal, window_size_left, window_size_right, softcap}` shape params as the forward
+`FlashAttn` so the recompute produces identical scores — note there is **no `k_len`** in backward (the
+full `sk` extent is used). Output `dQ` has q's shape `[B, Hq, Sq, D]` and q's dtype; the wrapper
+validates `out.len_bytes` against the selected gradient's element count. Bf16 I/O with f32 compute.
+Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
+
+```fkc
+kernel: flash_attn_backward_q_bf16
+fused_op: FLASH_ATTN_BACKWARD_Q
+blurb: "FlashAttn backward dQ from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dQ (= q shape); bf16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_dispatch::dispatch::flash_attn_backward_q_bf16_cpu_wrapper"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hq, Sq, D]
+    - name: k
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"   # GQA: Hq % Hkv == 0
+    - name: v
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "same_as=k"
+    - name: do_grad
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # upstream grad, [B, Hq, Sq, D] (same as q)
+      shape_constraint: "same_as=q"
+    - name: alibi_slopes
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1                              # [Hq]
+      optional: true
+  op_params:
+    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    fields:
+      # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
+      # FusedOpId (FLASH_ATTN_BACKWARD_Q), NOT a variant field. No k_len in backward (full sk extent).
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: dq                           # dQ; this id (FLASH_ATTN_BACKWARD_Q) writes exactly this gradient
+      dtype_rule: passthrough(q)
+      shape_rule: same_as(q)            # dQ => q shape [B, Hq, Sq, D]
+      layout_guarantee: contiguous
+      aliasing: none                       # fresh preallocated buffer, full overwrite (copy_from_slice)
 
 caps:
   awkward_layout_strategy: requires_contiguous
@@ -682,13 +1118,15 @@ caps:
 cost:
   provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
   class: attention
+  # Recompute backward over the full Sk extent; this CPU path computes all three gradients per call
+  # (3x recompute across the Q/K/V ids). ~3-4x the forward FLOPs over [B,Hq,Sq,Sk,D].
   flops: "12 * b * hq * sq * sk * d"
   bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
   overhead_ns: 4000
-  memory: { device_bytes: 0, host_bytes: "(b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes", disk_bytes: 0 }
+  memory: { device_bytes: 0, host_bytes: "b * hq * sq * d * dtype_bytes", disk_bytes: 0 }
 
 precision:
-  bit_stable_on_same_hardware: true      # deterministic recompute; f32 compute, bf16 narrow on store
+  bit_stable_on_same_hardware: true      # deterministic recompute
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
@@ -698,54 +1136,66 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
-## flash_attn_backward_f16  (FlashAttn backward dQ/dK/dV, single-gradient output, f16 I/O with f32 compute)
+---
 
-The `flash_attn_backward_half_wrapper!`-instantiated f16 backward (`byte_kernels.rs:6786`; inner
-core `flash_attn_backward_f16_inner`, `:6613`). Byte-for-byte the same code path as
-`flash_attn_backward_bf16` with `half::f16` substituted for `half::bf16`: f32 dQ/dK/dV accumulation,
-`<f16>::from_f32(...)` narrow on store, same recompute / `which`-selected output / GQA /
-mask/softcap/ALiBi semantics. Differs from bf16 only in the IEEE half-precision storage format.
-2-byte element. Limitations match the family: contiguous zero-offset only, 3× recompute on CPU, no
-in-place.
+## flash_attn_backward_k_bf16  (FlashAttn backward dK (recompute), bf16 I/O with f32 compute)
+
+Recompute-based FlashAttn backward producing the **dK** gradient (matches the reference backend's
+`attention_flash_backward` math, byte-storage flavor). The inner core `flash_attn_backward_bf16_inner (byte_kernels.rs:6612)` computes **all three**
+gradients (dQ, dK, dV) jointly into pre-allocated buffers from the forward inputs `q, k, v`, the upstream
+gradient `do_grad`, and optional `alibi_slopes`; the byte wrapper `flash_attn_backward_bf16`
+(`flash_attn_backward_half_wrapper! byte_kernels.rs:6707, instantiated :6785`) selects which gradient to write into its **single** output buffer via the
+`which: FaBackwardWhich {Q,K,V}` selector — this section pins `which = K` (dK). On the CPU path
+the Q/K/V variants each recompute the same backward state (3x recompute total; GPU kernels can fuse it).
+The op is dispatched as the fused id **`FLASH_ATTN_BACKWARD_K`** (`FusedOps::FLASH_ATTN_BACKWARD_K`,
+`fuel-graph/src/registry.rs`), all three Q/K/V ids sharing the single param carrier
+`FusedOpParams::FlashAttnBackward` (`registry.rs:295`), which carries the same
+`{softmax_scale, causal, window_size_left, window_size_right, softcap}` shape params as the forward
+`FlashAttn` so the recompute produces identical scores — note there is **no `k_len`** in backward (the
+full `sk` extent is used). Output `dK` has k's shape `[B, Hkv, Sk, D]` and k's dtype; the wrapper
+validates `out.len_bytes` against the selected gradient's element count. Bf16 I/O with f32 compute.
+Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
-kernel: flash_attn_backward_f16
-fused_op: FLASH_ATTN_BACKWARD
-blurb: "FlashAttn backward (recompute); writes one of dQ/dK/dV selected by `which`; f16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
+kernel: flash_attn_backward_k_bf16
+fused_op: FLASH_ATTN_BACKWARD_K
+blurb: "FlashAttn backward dK from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dK (= k shape); bf16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::flash_attn_backward_f16"
+entry_point: "fuel_dispatch::dispatch::flash_attn_backward_k_bf16_cpu_wrapper"
 kernel_revision_hash: auto
 
 accept:
   inputs:
     - name: q
-      dtypes: [F16]
+      dtypes: [BF16]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 4
+      rank: 4                              # [B, Hq, Sq, D]
     - name: k
-      dtypes: [F16]
+      dtypes: [BF16]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 4
-      shape_constraint: "divisible(q.dim[1], k.dim[1])"
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"   # GQA: Hq % Hkv == 0
     - name: v
-      dtypes: [F16]
+      dtypes: [BF16]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 4
+      rank: 4                              # [B, Hkv, Sk, D]
       shape_constraint: "same_as=k"
     - name: do_grad
-      dtypes: [F16]
+      dtypes: [BF16]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 4
+      rank: 4                              # upstream grad, [B, Hq, Sq, D] (same as q)
       shape_constraint: "same_as=q"
     - name: alibi_slopes
-      dtypes: [F16]
+      dtypes: [BF16]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 1
+      rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward
+    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
     fields:
+      # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
+      # FusedOpId (FLASH_ATTN_BACKWARD_K), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -754,11 +1204,11 @@ accept:
 
 return:
   outputs:
-    - name: grad
+    - name: dk                           # dK; this id (FLASH_ATTN_BACKWARD_K) writes exactly this gradient
       dtype_rule: passthrough(q)
-      shape_rule: from_params(which)       # dQ ⇒ same_as(q); dK/dV ⇒ same_as(k)
+      shape_rule: same_as(k)            # dK => k shape [B, Hkv, Sk, D]
       layout_guarantee: contiguous
-      aliasing: none
+      aliasing: none                       # fresh preallocated buffer, full overwrite (copy_from_slice)
 
 caps:
   awkward_layout_strategy: requires_contiguous
@@ -771,13 +1221,427 @@ caps:
 cost:
   provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
   class: attention
+  # Recompute backward over the full Sk extent; this CPU path computes all three gradients per call
+  # (3x recompute across the Q/K/V ids). ~3-4x the forward FLOPs over [B,Hq,Sq,Sk,D].
   flops: "12 * b * hq * sq * sk * d"
   bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
   overhead_ns: 4000
-  memory: { device_bytes: 0, host_bytes: "(b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes", disk_bytes: 0 }
+  memory: { device_bytes: 0, host_bytes: "b * hkv * sk * d * dtype_bytes", disk_bytes: 0 }
 
 precision:
-  bit_stable_on_same_hardware: true      # deterministic recompute; f32 compute, f16 narrow on store
+  bit_stable_on_same_hardware: true      # deterministic recompute
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "compute in f32 (widen on load, narrow on store); bf16 I/O; deterministic recompute; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+---
+
+## flash_attn_backward_v_bf16  (FlashAttn backward dV (recompute), bf16 I/O with f32 compute)
+
+Recompute-based FlashAttn backward producing the **dV** gradient (matches the reference backend's
+`attention_flash_backward` math, byte-storage flavor). The inner core `flash_attn_backward_bf16_inner (byte_kernels.rs:6612)` computes **all three**
+gradients (dQ, dK, dV) jointly into pre-allocated buffers from the forward inputs `q, k, v`, the upstream
+gradient `do_grad`, and optional `alibi_slopes`; the byte wrapper `flash_attn_backward_bf16`
+(`flash_attn_backward_half_wrapper! byte_kernels.rs:6707, instantiated :6785`) selects which gradient to write into its **single** output buffer via the
+`which: FaBackwardWhich {Q,K,V}` selector — this section pins `which = V` (dV). On the CPU path
+the Q/K/V variants each recompute the same backward state (3x recompute total; GPU kernels can fuse it).
+The op is dispatched as the fused id **`FLASH_ATTN_BACKWARD_V`** (`FusedOps::FLASH_ATTN_BACKWARD_V`,
+`fuel-graph/src/registry.rs`), all three Q/K/V ids sharing the single param carrier
+`FusedOpParams::FlashAttnBackward` (`registry.rs:295`), which carries the same
+`{softmax_scale, causal, window_size_left, window_size_right, softcap}` shape params as the forward
+`FlashAttn` so the recompute produces identical scores — note there is **no `k_len`** in backward (the
+full `sk` extent is used). Output `dV` has v's shape `[B, Hkv, Sk, D]` and v's dtype; the wrapper
+validates `out.len_bytes` against the selected gradient's element count. Bf16 I/O with f32 compute.
+Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
+
+```fkc
+kernel: flash_attn_backward_v_bf16
+fused_op: FLASH_ATTN_BACKWARD_V
+blurb: "FlashAttn backward dV from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dV (= v shape); bf16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_dispatch::dispatch::flash_attn_backward_v_bf16_cpu_wrapper"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hq, Sq, D]
+    - name: k
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"   # GQA: Hq % Hkv == 0
+    - name: v
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "same_as=k"
+    - name: do_grad
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # upstream grad, [B, Hq, Sq, D] (same as q)
+      shape_constraint: "same_as=q"
+    - name: alibi_slopes
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1                              # [Hq]
+      optional: true
+  op_params:
+    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    fields:
+      # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
+      # FusedOpId (FLASH_ATTN_BACKWARD_V), NOT a variant field. No k_len in backward (full sk extent).
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: dv                           # dV; this id (FLASH_ATTN_BACKWARD_V) writes exactly this gradient
+      dtype_rule: passthrough(q)
+      shape_rule: same_as(v)            # dV => v shape [B, Hkv, Sk, D]
+      layout_guarantee: contiguous
+      aliasing: none                       # fresh preallocated buffer, full overwrite (copy_from_slice)
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "causal == false", note: "no causal mask branch in the recompute" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 16
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  # Recompute backward over the full Sk extent; this CPU path computes all three gradients per call
+  # (3x recompute across the Q/K/V ids). ~3-4x the forward FLOPs over [B,Hq,Sq,Sk,D].
+  flops: "12 * b * hq * sq * sk * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hkv * sk * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic recompute
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "compute in f32 (widen on load, narrow on store); bf16 I/O; deterministic recompute; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+---
+
+## flash_attn_backward_q_f16  (FlashAttn backward dQ (recompute), f16 I/O with f32 compute)
+
+Recompute-based FlashAttn backward producing the **dQ** gradient (matches the reference backend's
+`attention_flash_backward` math, byte-storage flavor). The inner core `flash_attn_backward_f16_inner (byte_kernels.rs:6613)` computes **all three**
+gradients (dQ, dK, dV) jointly into pre-allocated buffers from the forward inputs `q, k, v`, the upstream
+gradient `do_grad`, and optional `alibi_slopes`; the byte wrapper `flash_attn_backward_f16`
+(`flash_attn_backward_half_wrapper! byte_kernels.rs:6786`) selects which gradient to write into its **single** output buffer via the
+`which: FaBackwardWhich {Q,K,V}` selector — this section pins `which = Q` (dQ). On the CPU path
+the Q/K/V variants each recompute the same backward state (3x recompute total; GPU kernels can fuse it).
+The op is dispatched as the fused id **`FLASH_ATTN_BACKWARD_Q`** (`FusedOps::FLASH_ATTN_BACKWARD_Q`,
+`fuel-graph/src/registry.rs`), all three Q/K/V ids sharing the single param carrier
+`FusedOpParams::FlashAttnBackward` (`registry.rs:295`), which carries the same
+`{softmax_scale, causal, window_size_left, window_size_right, softcap}` shape params as the forward
+`FlashAttn` so the recompute produces identical scores — note there is **no `k_len`** in backward (the
+full `sk` extent is used). Output `dQ` has q's shape `[B, Hq, Sq, D]` and q's dtype; the wrapper
+validates `out.len_bytes` against the selected gradient's element count. F16 I/O with f32 compute.
+Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
+
+```fkc
+kernel: flash_attn_backward_q_f16
+fused_op: FLASH_ATTN_BACKWARD_Q
+blurb: "FlashAttn backward dQ from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dQ (= q shape); f16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_dispatch::dispatch::flash_attn_backward_q_f16_cpu_wrapper"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hq, Sq, D]
+    - name: k
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"   # GQA: Hq % Hkv == 0
+    - name: v
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "same_as=k"
+    - name: do_grad
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # upstream grad, [B, Hq, Sq, D] (same as q)
+      shape_constraint: "same_as=q"
+    - name: alibi_slopes
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1                              # [Hq]
+      optional: true
+  op_params:
+    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    fields:
+      # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
+      # FusedOpId (FLASH_ATTN_BACKWARD_Q), NOT a variant field. No k_len in backward (full sk extent).
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: dq                           # dQ; this id (FLASH_ATTN_BACKWARD_Q) writes exactly this gradient
+      dtype_rule: passthrough(q)
+      shape_rule: same_as(q)            # dQ => q shape [B, Hq, Sq, D]
+      layout_guarantee: contiguous
+      aliasing: none                       # fresh preallocated buffer, full overwrite (copy_from_slice)
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "causal == false", note: "no causal mask branch in the recompute" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 16
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  # Recompute backward over the full Sk extent; this CPU path computes all three gradients per call
+  # (3x recompute across the Q/K/V ids). ~3-4x the forward FLOPs over [B,Hq,Sq,Sk,D].
+  flops: "12 * b * hq * sq * sk * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hq * sq * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic recompute
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "compute in f32 (widen on load, narrow on store); f16 I/O (IEEE half); deterministic recompute; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+---
+
+## flash_attn_backward_k_f16  (FlashAttn backward dK (recompute), f16 I/O with f32 compute)
+
+Recompute-based FlashAttn backward producing the **dK** gradient (matches the reference backend's
+`attention_flash_backward` math, byte-storage flavor). The inner core `flash_attn_backward_f16_inner (byte_kernels.rs:6613)` computes **all three**
+gradients (dQ, dK, dV) jointly into pre-allocated buffers from the forward inputs `q, k, v`, the upstream
+gradient `do_grad`, and optional `alibi_slopes`; the byte wrapper `flash_attn_backward_f16`
+(`flash_attn_backward_half_wrapper! byte_kernels.rs:6786`) selects which gradient to write into its **single** output buffer via the
+`which: FaBackwardWhich {Q,K,V}` selector — this section pins `which = K` (dK). On the CPU path
+the Q/K/V variants each recompute the same backward state (3x recompute total; GPU kernels can fuse it).
+The op is dispatched as the fused id **`FLASH_ATTN_BACKWARD_K`** (`FusedOps::FLASH_ATTN_BACKWARD_K`,
+`fuel-graph/src/registry.rs`), all three Q/K/V ids sharing the single param carrier
+`FusedOpParams::FlashAttnBackward` (`registry.rs:295`), which carries the same
+`{softmax_scale, causal, window_size_left, window_size_right, softcap}` shape params as the forward
+`FlashAttn` so the recompute produces identical scores — note there is **no `k_len`** in backward (the
+full `sk` extent is used). Output `dK` has k's shape `[B, Hkv, Sk, D]` and k's dtype; the wrapper
+validates `out.len_bytes` against the selected gradient's element count. F16 I/O with f32 compute.
+Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
+
+```fkc
+kernel: flash_attn_backward_k_f16
+fused_op: FLASH_ATTN_BACKWARD_K
+blurb: "FlashAttn backward dK from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dK (= k shape); f16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_dispatch::dispatch::flash_attn_backward_k_f16_cpu_wrapper"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hq, Sq, D]
+    - name: k
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"   # GQA: Hq % Hkv == 0
+    - name: v
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "same_as=k"
+    - name: do_grad
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # upstream grad, [B, Hq, Sq, D] (same as q)
+      shape_constraint: "same_as=q"
+    - name: alibi_slopes
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1                              # [Hq]
+      optional: true
+  op_params:
+    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    fields:
+      # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
+      # FusedOpId (FLASH_ATTN_BACKWARD_K), NOT a variant field. No k_len in backward (full sk extent).
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: dk                           # dK; this id (FLASH_ATTN_BACKWARD_K) writes exactly this gradient
+      dtype_rule: passthrough(q)
+      shape_rule: same_as(k)            # dK => k shape [B, Hkv, Sk, D]
+      layout_guarantee: contiguous
+      aliasing: none                       # fresh preallocated buffer, full overwrite (copy_from_slice)
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "causal == false", note: "no causal mask branch in the recompute" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 16
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  # Recompute backward over the full Sk extent; this CPU path computes all three gradients per call
+  # (3x recompute across the Q/K/V ids). ~3-4x the forward FLOPs over [B,Hq,Sq,Sk,D].
+  flops: "12 * b * hq * sq * sk * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hkv * sk * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic recompute
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "compute in f32 (widen on load, narrow on store); f16 I/O (IEEE half); deterministic recompute; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+---
+
+## flash_attn_backward_v_f16  (FlashAttn backward dV (recompute), f16 I/O with f32 compute)
+
+Recompute-based FlashAttn backward producing the **dV** gradient (matches the reference backend's
+`attention_flash_backward` math, byte-storage flavor). The inner core `flash_attn_backward_f16_inner (byte_kernels.rs:6613)` computes **all three**
+gradients (dQ, dK, dV) jointly into pre-allocated buffers from the forward inputs `q, k, v`, the upstream
+gradient `do_grad`, and optional `alibi_slopes`; the byte wrapper `flash_attn_backward_f16`
+(`flash_attn_backward_half_wrapper! byte_kernels.rs:6786`) selects which gradient to write into its **single** output buffer via the
+`which: FaBackwardWhich {Q,K,V}` selector — this section pins `which = V` (dV). On the CPU path
+the Q/K/V variants each recompute the same backward state (3x recompute total; GPU kernels can fuse it).
+The op is dispatched as the fused id **`FLASH_ATTN_BACKWARD_V`** (`FusedOps::FLASH_ATTN_BACKWARD_V`,
+`fuel-graph/src/registry.rs`), all three Q/K/V ids sharing the single param carrier
+`FusedOpParams::FlashAttnBackward` (`registry.rs:295`), which carries the same
+`{softmax_scale, causal, window_size_left, window_size_right, softcap}` shape params as the forward
+`FlashAttn` so the recompute produces identical scores — note there is **no `k_len`** in backward (the
+full `sk` extent is used). Output `dV` has v's shape `[B, Hkv, Sk, D]` and v's dtype; the wrapper
+validates `out.len_bytes` against the selected gradient's element count. F16 I/O with f32 compute.
+Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
+
+```fkc
+kernel: flash_attn_backward_v_f16
+fused_op: FLASH_ATTN_BACKWARD_V
+blurb: "FlashAttn backward dV from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dV (= v shape); f16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_dispatch::dispatch::flash_attn_backward_v_f16_cpu_wrapper"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hq, Sq, D]
+    - name: k
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"   # GQA: Hq % Hkv == 0
+    - name: v
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "same_as=k"
+    - name: do_grad
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # upstream grad, [B, Hq, Sq, D] (same as q)
+      shape_constraint: "same_as=q"
+    - name: alibi_slopes
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1                              # [Hq]
+      optional: true
+  op_params:
+    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    fields:
+      # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
+      # FusedOpId (FLASH_ATTN_BACKWARD_V), NOT a variant field. No k_len in backward (full sk extent).
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: dv                           # dV; this id (FLASH_ATTN_BACKWARD_V) writes exactly this gradient
+      dtype_rule: passthrough(q)
+      shape_rule: same_as(v)            # dV => v shape [B, Hkv, Sk, D]
+      layout_guarantee: contiguous
+      aliasing: none                       # fresh preallocated buffer, full overwrite (copy_from_slice)
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "causal == false", note: "no causal mask branch in the recompute" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 16
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  # Recompute backward over the full Sk extent; this CPU path computes all three gradients per call
+  # (3x recompute across the Q/K/V ids). ~3-4x the forward FLOPs over [B,Hq,Sq,Sk,D].
+  flops: "12 * b * hq * sq * sk * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hkv * sk * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic recompute
   max_ulp: ~
   max_relative: ~
   max_absolute: ~

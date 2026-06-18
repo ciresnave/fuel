@@ -172,6 +172,13 @@ impl ImportedProvider {
     /// Register every primitive contract into `table` and every fused
     /// contract into `fused`, then run the duplicate-detection gate.
     ///
+    /// **Describe-only sections (`registrable: false`, §3.10) are already
+    /// excluded** before this point: [`lower_file`] (called by the `import_*`
+    /// constructors) filters them out, so `self.primitives` / `self.fused`
+    /// contain only registrable kernels. A documentation-only section therefore
+    /// never reaches the binding table / fused registry or the duplicate-
+    /// `KernelRef` gate — it is honest docs, not a dispatch decision point.
+    ///
     /// Per slice (§2.1 / §2.2): each primitive becomes a
     /// [`KernelBindingTable::register_full_with_source`] insert; each
     /// fused op becomes a [`FusedKernelRegistry::register`] of a
@@ -260,8 +267,12 @@ pub fn import_bundle_str(
     let file = parse_file(src)?;
     // Run the build-time validators (the V-FKC-* battery, §10) AFTER parse so a
     // structurally / coherence-bad contract fails import before any lowering or
-    // registration touches the dispatch surface.
+    // registration touches the dispatch surface. Validation runs over EVERY
+    // section, including describe-only ones (§3.10) — their descriptive checks
+    // still apply; only their dispatch-resolution checks are skipped.
     crate::fkc::validate::validate_file(&file)?;
+    // `lower_file` then EXCLUDES describe-only sections from the registered set
+    // (§3.10): they never become a Resolved* record and are never registered.
     let resolved = lower_file(&file, link)?;
     let provider = &file.front_matter.provider;
     let backend = lower_backend_str(&provider.backend)?;
@@ -820,6 +831,119 @@ determinism: same_hardware_bitwise
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // =====================================================================
+    // DESCRIBE-ONLY (§3.10): a registrable: false section is excluded from
+    // register_into; a sibling registrable section still registers.
+    // =====================================================================
+
+    #[test]
+    fn describe_only_section_is_excluded_from_register_into() {
+        // A bundle with a describe-only chassis umbrella (`## binary`,
+        // op_kind = the DESCRIPTIVE token `binary`, registrable: false) plus
+        // one real registrable thunk (`## add_f32`). Only the thunk lowers +
+        // registers; the umbrella is documentation.
+        let src = "\
+---
+fkc_version: 1
+provider:
+  name: describe-provider
+  backend: Cpu
+  kernel_source: \"describe-cpu\"
+---
+
+# describe bundle
+
+## binary
+
+The shared chassis (documentation umbrella).
+
+```fkc
+kernel: binary
+registrable: false
+op_kind: binary
+blurb: \"shared binary chassis\"
+entry_point: \"x::chassis\"
+accept:
+  inputs:
+    - name: lhs
+      dtypes: [F32, F64, BF16, F16]
+      layout: { contiguous: required, strided: rejected }
+    - name: rhs
+      dtypes: [F32, F64, BF16, F16]
+      layout: { contiguous: required, strided: rejected }
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(lhs)
+cost:
+  provenance: judge_measured
+  class: cheap_elementwise
+precision:
+  bit_stable_on_same_hardware: true
+  audited: true
+determinism: same_hardware_bitwise
+```
+
+## add_f32
+
+The real F32 addition thunk.
+
+```fkc
+kernel: add_f32
+op_kind: AddElementwise
+blurb: \"F32 add\"
+entry_point: \"x::add_f32\"
+accept:
+  inputs:
+    - name: lhs
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+    - name: rhs
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+  op_params: { variant: None }
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(lhs)
+cost:
+  provenance: declared
+  class: cheap_elementwise
+  flops: \"n\"
+precision:
+  bit_stable_on_same_hardware: true
+  audited: true
+determinism: same_hardware_bitwise
+```
+";
+        let link = DistinctLink::new();
+        let provider = import_bundle_str(src, &link)
+            .expect("describe-only + registrable bundle imports (umbrella is valid docs)");
+
+        // Only the registrable thunk lowered — the describe-only umbrella is
+        // excluded from the registered set.
+        assert_eq!(
+            provider.primitives.len(),
+            1,
+            "exactly one registrable primitive (the umbrella is documentation-only)"
+        );
+        assert_eq!(provider.primitives[0].op, OpKind::AddElementwise);
+
+        // It registers end-to-end and the real key is present.
+        let mut table = KernelBindingTable::new();
+        let mut fused = FusedKernelRegistry::new();
+        provider
+            .register_into(&mut table, &mut fused)
+            .expect("register_into succeeds (no describe-only section reaches the table)");
+        assert!(table
+            .lookup(
+                OpKind::AddElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cpu
+            )
+            .is_ok());
     }
 
     // =====================================================================
