@@ -5062,6 +5062,13 @@ pub fn global_bindings() -> std::sync::RwLockReadGuard<'static, KernelBindingTab
             let mut t = KernelBindingTable::new();
             register_cpu_kernels(&mut t);
             register_optional_backends(&mut t);
+            // Single init-boundary fail-fast: a duplicate `KernelRef`
+            // in the hand-written static tables is a programmer error,
+            // surfaced once here after all backends register — the
+            // never-panic replacement for the former inline registration
+            // panic (the dynamic FKC importer will call `finalize()?`).
+            t.finalize()
+                .expect("KernelBindingTable: duplicate kernel registration at init");
             RwLock::new(t)
         })
         .read()
@@ -5093,9 +5100,19 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
         let mut t = KernelBindingTable::new();
         register_cpu_kernels(&mut t);
         register_optional_backends(&mut t);
+        t.finalize()
+            .expect("KernelBindingTable: duplicate kernel registration at init");
         RwLock::new(t)
     });
-    register(&mut lock.write().unwrap());
+    {
+        let mut guard = lock.write().unwrap();
+        register(&mut guard);
+        // Re-validate after the extender adds its wrappers (same
+        // never-panic fail-fast as the init boundary above).
+        guard
+            .finalize()
+            .expect("KernelBindingTable: duplicate kernel registration after extend");
+    }
     bump_topology_generation();
 }
 
