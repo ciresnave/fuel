@@ -113,6 +113,51 @@ pub const FDX_BUFFER_ROLE_BLOCK_TABLE: u8 = 6;
 /// Gather: the `[num_sequences]` per-sequence live-length buffer (§6.9.3).
 pub const FDX_BUFFER_ROLE_CONTEXT_LENS: u8 = 7;
 
+// --- FDXResidency.tier (§6.6) — three-tier residency ---
+pub const FDX_TIER_DEVICE: u8 = 0;
+pub const FDX_TIER_HOST: u8 = 1;
+pub const FDX_TIER_DISK_MMAP: u8 = 2;
+
+// --- FDXResidency.substrate (§6.0/§6.6) — FDX-owned; pins `SubstrateClass`
+// (that source enum is `#[non_exhaustive]`; these codes are NOT its
+// discriminants — the §6.0 conversion fn + build-time test is the binding). ---
+pub const FDX_SUBSTRATE_HOST_BYTES: u8 = 0;
+pub const FDX_SUBSTRATE_CUDA_UNTYPED: u8 = 1;
+pub const FDX_SUBSTRATE_VULKAN_BUFFER: u8 = 2;
+pub const FDX_SUBSTRATE_METAL_BUFFER: u8 = 3;
+
+// --- FDXResidency.backend_id (§6.0/§6.6) — FDX-owned; pins `BackendId`
+// (`Aocl`/`Mkl` already retired from that enum). NOT a `BackendId`
+// discriminant; the §6.0 conversion fn + build-time test is the binding. ---
+pub const FDX_BACKEND_CPU: u8 = 0;
+pub const FDX_BACKEND_CUDA: u8 = 1;
+pub const FDX_BACKEND_VULKAN: u8 = 2;
+pub const FDX_BACKEND_METAL: u8 = 3;
+
+// --- FDXStorage.class (§6.7) ---
+pub const FDX_STORAGE_SHARED: u8 = 0;
+pub const FDX_STORAGE_SESSION: u8 = 1;
+pub const FDX_STORAGE_TRANSIENT: u8 = 2;
+
+// --- FDX ggml_dtype codes (§6.2) — FDX-owned; mirror `GgmlDType::to_u32`.
+// Re-declared here so the conversion fns + mapping test reference FDX symbols,
+// not the source enum's `to_u32` (which the §6.0 binding keeps pinned). ---
+pub const FDX_GGML_F32: u16 = 0;
+pub const FDX_GGML_F16: u16 = 1;
+pub const FDX_GGML_Q4_0: u16 = 2;
+pub const FDX_GGML_Q4_1: u16 = 3;
+pub const FDX_GGML_Q5_0: u16 = 6;
+pub const FDX_GGML_Q5_1: u16 = 7;
+pub const FDX_GGML_Q8_0: u16 = 8;
+pub const FDX_GGML_Q8_1: u16 = 9;
+pub const FDX_GGML_Q2K: u16 = 10;
+pub const FDX_GGML_Q3K: u16 = 11;
+pub const FDX_GGML_Q4K: u16 = 12;
+pub const FDX_GGML_Q5K: u16 = 13;
+pub const FDX_GGML_Q6K: u16 = 14;
+pub const FDX_GGML_Q8K: u16 = 15;
+pub const FDX_GGML_BF16: u16 = 30;
+
 // --- FDX logical dtype codes (§6.1 table) — the subset the validators name.
 // FDX-owned stable table; values match the §6.1 declaration order. ---
 pub const FDX_DTYPE_U8: u16 = 0;
