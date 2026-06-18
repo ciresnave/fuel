@@ -65,7 +65,8 @@ pub enum CostNode {
     /// A numeric literal (integer or float; held as `f64`).
     Lit(f64),
     /// A shape / param symbol resolved at eval time (`m`, `n`, `k`,
-    /// `dtype_bytes`, …).
+    /// `dtype_bytes`, …). A dotted member path (`lhs.dim`, `x.dim`,
+    /// FKC §4.4 "shape dims by role") is carried as one dotted `Sym`.
     Sym(String),
     /// A binary arithmetic operation.
     Bin {
@@ -75,6 +76,20 @@ pub enum CostNode {
     },
     /// Unary negation.
     Neg(Box<CostNode>),
+    /// A shape-axis index: `base[index]` (FKC §3.5 `dim[i]`, §4.4
+    /// `lhs.dim[0]` / `out_shape[2]`). `base` is the symbol path, `index`
+    /// the (usually literal) axis expression.
+    Index {
+        base: Box<CostNode>,
+        index: Box<CostNode>,
+    },
+    /// A function-style term: `f(arg, ...)` (e.g. `block_bytes(quant_type)`
+    /// in the quant-matmul cost hints). Resolved at eval time from the
+    /// bindings by its canonical string spelling.
+    Call {
+        name: String,
+        args: Vec<CostNode>,
+    },
 }
 
 /// The four supported binary operators (§2.3: `+ - * / %`).
@@ -123,6 +138,9 @@ enum Tok {
     Percent,
     LParen,
     RParen,
+    LBracket,
+    RBracket,
+    Comma,
 }
 
 fn tokenize(src: &str) -> Result<Vec<Tok>, CostParseError> {
@@ -163,7 +181,19 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, CostParseError> {
                 toks.push(Tok::RParen);
                 i += 1;
             }
-            c if c.is_ascii_digit() || c == '.' => {
+            '[' => {
+                toks.push(Tok::LBracket);
+                i += 1;
+            }
+            ']' => {
+                toks.push(Tok::RBracket);
+                i += 1;
+            }
+            ',' => {
+                toks.push(Tok::Comma);
+                i += 1;
+            }
+            c if c.is_ascii_digit() => {
                 let start = i;
                 let mut seen_dot = false;
                 while i < bytes.len()
@@ -182,10 +212,25 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, CostParseError> {
             }
             c if c.is_ascii_alphabetic() || c == '_' => {
                 let start = i;
-                while i < bytes.len()
-                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == '_')
-                {
-                    i += 1;
+                // An identifier may be a DOTTED member path (`lhs.dim`,
+                // `x.dim`, `out_shape`) per FKC §4.4 "shape dims by role". A
+                // `.` is consumed into the identifier only when followed by an
+                // alphabetic/underscore (a member name), so it is never
+                // confused with a decimal point.
+                loop {
+                    while i < bytes.len()
+                        && (bytes[i].is_ascii_alphanumeric() || bytes[i] == '_')
+                    {
+                        i += 1;
+                    }
+                    if i + 1 < bytes.len()
+                        && bytes[i] == '.'
+                        && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == '_')
+                    {
+                        i += 1; // consume the '.'
+                        continue;
+                    }
+                    break;
                 }
                 let ident: String = bytes[start..i].iter().collect();
                 toks.push(Tok::Ident(ident));
@@ -262,27 +307,74 @@ impl Parser {
     }
 
     fn parse_factor(&mut self) -> Result<CostNode, CostParseError> {
-        match self.bump() {
-            Some(Tok::Num(v)) => Ok(CostNode::Lit(v)),
-            Some(Tok::Ident(name)) => Ok(CostNode::Sym(name)),
+        let atom = match self.bump() {
+            Some(Tok::Num(v)) => CostNode::Lit(v),
+            Some(Tok::Ident(name)) => {
+                // A `(` immediately after an identifier is a function call
+                // (`block_bytes(quant_type)`, FKC §4.4 cost hints).
+                if matches!(self.peek(), Some(Tok::LParen)) {
+                    self.bump(); // consume '('
+                    let mut args = Vec::new();
+                    if !matches!(self.peek(), Some(Tok::RParen)) {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            match self.peek() {
+                                Some(Tok::Comma) => {
+                                    self.bump();
+                                }
+                                _ => break,
+                            }
+                        }
+                    }
+                    match self.bump() {
+                        Some(Tok::RParen) => {}
+                        _ => return Err(CostParseError(
+                            "unbalanced `(` in function call — expected `)`".into(),
+                        )),
+                    }
+                    CostNode::Call { name, args }
+                } else {
+                    CostNode::Sym(name)
+                }
+            }
             Some(Tok::Minus) => {
                 let inner = self.parse_factor()?;
-                Ok(CostNode::Neg(Box::new(inner)))
+                return Ok(CostNode::Neg(Box::new(inner)));
             }
             Some(Tok::LParen) => {
                 let inner = self.parse_expr()?;
                 match self.bump() {
-                    Some(Tok::RParen) => Ok(inner),
-                    _ => Err(CostParseError("unbalanced `(` — expected `)`".into())),
+                    Some(Tok::RParen) => inner,
+                    _ => return Err(CostParseError("unbalanced `(` — expected `)`".into())),
                 }
             }
-            Some(other) => Err(CostParseError(format!(
-                "unexpected token `{other:?}` where a value was expected"
-            ))),
-            None => Err(CostParseError(
-                "unexpected end of cost expression (expected a value)".into(),
-            )),
+            Some(other) => {
+                return Err(CostParseError(format!(
+                    "unexpected token `{other:?}` where a value was expected"
+                )))
+            }
+            None => {
+                return Err(CostParseError(
+                    "unexpected end of cost expression (expected a value)".into(),
+                ))
+            }
+        };
+        // Postfix `[index]` runs (shape-axis index: `dim[i]`, `out_shape[2]`,
+        // `lhs.dim[0]`; FKC §3.5 / §4.4). Chained indexing is allowed.
+        let mut node = atom;
+        while matches!(self.peek(), Some(Tok::LBracket)) {
+            self.bump(); // consume '['
+            let index = self.parse_expr()?;
+            match self.bump() {
+                Some(Tok::RBracket) => {}
+                _ => return Err(CostParseError("unbalanced `[` — expected `]`".into())),
+            }
+            node = CostNode::Index {
+                base: Box::new(node),
+                index: Box::new(index),
+            };
         }
+        Ok(node)
     }
 }
 
@@ -344,6 +436,28 @@ fn eval_node(node: &CostNode, bindings: &HashMap<String, f64>) -> Result<f64, Co
             .get(name)
             .copied()
             .ok_or_else(|| CostEvalError(format!("undefined cost symbol `{name}`"))),
+        CostNode::Index { base, index } => {
+            // Resolve by the canonical spelling `base[index]` from bindings
+            // (capacity-eval; the importer supplies the resolved axis values).
+            let key = canonical_key(node);
+            if let Some(v) = bindings.get(&key) {
+                return Ok(*v);
+            }
+            // Fall through: a numeric index against a bound `base` symbol is
+            // not statically resolvable here without a shape vector, so an
+            // unbound shape-index is an eval error (capacity-eval supplies the
+            // full key). Touch the children so a malformed index still errors.
+            let _ = eval_node(base, bindings);
+            let _ = eval_node(index, bindings);
+            Err(CostEvalError(format!("undefined cost shape-index `{key}`")))
+        }
+        CostNode::Call { .. } => {
+            let key = canonical_key(node);
+            bindings
+                .get(&key)
+                .copied()
+                .ok_or_else(|| CostEvalError(format!("undefined cost term `{key}`")))
+        }
         CostNode::Neg(inner) => Ok(-eval_node(inner, bindings)?),
         CostNode::Bin { op, lhs, rhs } => {
             let l = eval_node(lhs, bindings)?;
@@ -368,6 +482,31 @@ fn eval_node(node: &CostNode, bindings: &HashMap<String, f64>) -> Result<f64, Co
                 }
             }
         }
+    }
+}
+
+/// Reconstruct a canonical string spelling of a shape-index / call node so it
+/// can be looked up in the `bindings` map (the importer keys resolved
+/// shape-axis / term values by this spelling at capacity-eval time).
+fn canonical_key(node: &CostNode) -> String {
+    match node {
+        CostNode::Lit(v) => {
+            if v.fract() == 0.0 {
+                format!("{}", *v as i64)
+            } else {
+                format!("{v}")
+            }
+        }
+        CostNode::Sym(s) => s.clone(),
+        CostNode::Index { base, index } => {
+            format!("{}[{}]", canonical_key(base), canonical_key(index))
+        }
+        CostNode::Call { name, args } => {
+            let inner: Vec<String> = args.iter().map(canonical_key).collect();
+            format!("{name}({})", inner.join(","))
+        }
+        CostNode::Neg(inner) => format!("-{}", canonical_key(inner)),
+        CostNode::Bin { .. } => "<expr>".to_string(),
     }
 }
 
@@ -450,5 +589,53 @@ mod tests {
     fn undefined_symbol_is_eval_error() {
         let expr = compile_field(Some("n * missing")).unwrap();
         assert!(eval(&expr, &b(&[("n", 4.0)])).is_err());
+    }
+
+    // --- Extended grammar (FKC §3.5 / §4.4): shape-index, member path, call ---
+
+    #[test]
+    fn shape_index_and_member_path_parse() {
+        // The corpus conv cost expressions.
+        compile_field(Some("2 * out_shape[0] * (x_shape[1] / groups) * w_shape[2] * w_shape[3]"))
+            .expect("out_shape[i] parses");
+        compile_field(Some("2 * out_elems * (x.dim[1] / groups) * weight.dim[2] * weight.dim[3]"))
+            .expect("role.dim[i] parses");
+        compile_field(Some("2 * x.dim[0] * x.dim[1] * (x.dim[2] - weight.dim[2] + 1) * weight.dim[2]"))
+            .expect("causal-conv expr parses");
+    }
+
+    #[test]
+    fn function_call_term_parses() {
+        // The quant-matmul cost hint with a function-style term.
+        compile_field(Some(
+            "(batch_count*m*k*4 + n*k*block_bytes(quant_type) + batch_count*m*n*4)",
+        ))
+        .expect("block_bytes(quant_type) parses");
+    }
+
+    #[test]
+    fn shape_index_evaluates_from_canonical_binding() {
+        let expr = compile_field(Some("2 * out_shape[0]")).unwrap();
+        let v = eval(&expr, &b(&[("out_shape[0]", 8.0)])).unwrap();
+        assert_eq!(v, 16.0);
+    }
+
+    #[test]
+    fn member_path_is_one_dotted_symbol() {
+        // `x.dim` is a single dotted symbol, NOT `x` `.` `dim`.
+        let node = parse_expr("x.dim").unwrap();
+        assert_eq!(node, CostNode::Sym("x.dim".to_string()));
+    }
+
+    #[test]
+    fn unbalanced_bracket_is_parse_error() {
+        assert!(compile_field(Some("out_shape[0")).is_err());
+        assert!(compile_field(Some("x.dim 0]")).is_err());
+    }
+
+    #[test]
+    fn lone_dot_is_still_a_parse_error() {
+        // A bare `.` (not inside a number, not a member path) is rejected.
+        assert!(compile_field(Some("2 . 3")).is_err());
     }
 }

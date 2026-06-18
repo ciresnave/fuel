@@ -202,6 +202,170 @@ pub enum FkcError {
     /// underlying error text.
     #[error("FKC: I/O error for `{path}`: {reason}")]
     Io { path: String, reason: String },
+
+    // ===== §10 build-time validators (V-FKC-*) =====
+    /// `fkc_version` exceeds the importer's supported maximum (V-FKC §10.1).
+    #[error("FKC §10.1: fkc_version {found} exceeds supported max {max}")]
+    UnsupportedVersion { found: u32, max: u32 },
+
+    /// Layout flags are mutually incoherent (V-FKC §10.4): neither
+    /// `contiguous` nor `strided` is acceptable; or `broadcast_stride0` /
+    /// `reverse_strides` accepted without `strided: accepted`.
+    #[error(
+        "FKC §10.4 (V-FKC-4): kernel `{section}` operand `{operand}` layout is incoherent: {reason}"
+    )]
+    LayoutIncoherent {
+        section: String,
+        operand: String,
+        reason: String,
+    },
+
+    /// A per-operand (or kernel-wide) `awkward_layout_strategy` contradicts
+    /// the operand's own layout flags, or carries an unknown value
+    /// (V-FKC §10.5; an unknown value is meaning-bearing per §11.1).
+    #[error(
+        "FKC §10.5 (V-FKC-5): kernel `{section}` operand `{operand}` awkward_layout_strategy \
+         `{strategy}` is incoherent: {reason}"
+    )]
+    AwkwardStrategyIncoherent {
+        section: String,
+        operand: String,
+        strategy: String,
+        reason: String,
+    },
+
+    /// A quant block is internally incoherent (V-FKC §10.6): a `GGML_BLOCK`
+    /// with a `ScalePair`/`granularity`, an `MX` without `granularity:
+    /// PerBlock`, an `AFFINE_*` with a bad granularity, an `AFFINE_BLOCK`
+    /// missing its block geometry, a `ggml_dtype` that is not a real
+    /// `GgmlDType` variant, a sub-byte operand with no `fdx.quant`, etc.
+    #[error("FKC §10.6 (V-FKC-6): kernel `{section}` operand `{operand}` quant is incoherent: {reason}")]
+    QuantIncoherent {
+        section: String,
+        operand: String,
+        reason: String,
+    },
+
+    /// A scale was declared in two places at once (V-FKC §10.6): both an
+    /// `fdx.quant.scale_operand` (separate-input scale) and a sidecar-bundled
+    /// scale for the same scale. Each scale lives in exactly one place.
+    #[error(
+        "FKC §10.6 (V-FKC-6): kernel `{section}` operand `{operand}` declares a scale in two \
+         places (scale_operand AND a sidecar scale): {reason}"
+    )]
+    ScaleDoubleDeclared {
+        section: String,
+        operand: String,
+        reason: String,
+    },
+
+    /// A contract is describable but NOT yet registrable on today's types
+    /// (V-FKC §10.6): `MX` (no `ScaleGranularity::PerBlock`) or `AFFINE_BLOCK`
+    /// (no block-quant descriptor target). The contract parse-validates; this
+    /// gates it at registration time (§6).
+    #[error(
+        "FKC §6/§10.6: kernel `{section}` quant family `{family}` parse-validates but is not yet \
+         registrable on today's types ({reason})"
+    )]
+    MxNotYetRegistrable {
+        section: String,
+        family: String,
+        reason: String,
+    },
+
+    /// An op-param `variant` is not a real variant **in the correct
+    /// namespace** (V-FKC §10.7): `OpParams` for an `op_kind` contract,
+    /// `FusedOpParams` for a `fused_op` contract (§3.7).
+    #[error(
+        "FKC §10.7 (V-FKC-7): kernel `{section}` op_params variant `{variant}` is not a real \
+         {namespace} variant"
+    )]
+    BadOpParamsVariant {
+        section: String,
+        variant: String,
+        namespace: String,
+    },
+
+    /// The required `cost.provenance` marker is absent or not one of
+    /// `{declared, judge_measured}` (V-FKC §10.8a; the COST_RULE).
+    #[error(
+        "FKC §10.8a: kernel `{section}` cost.provenance is missing or invalid (got {found:?}; \
+         expected `declared` or `judge_measured`)"
+    )]
+    CostProvenanceMissing { section: String, found: Option<String> },
+
+    /// A cost block is a bare / placeholder / zero-sentinel cost under either
+    /// provenance marker (V-FKC §10.8a) — not the honest `class: free`
+    /// metadata-only case.
+    #[error("FKC §10.8a: kernel `{section}` ships a placeholder/zero cost ({reason})")]
+    PlaceholderCost { section: String, reason: String },
+
+    /// An audited:false + all-null (UNAUDITED) precision on a non-reference
+    /// contract (V-FKC §10.9). (Reserved; the lint treats UNAUDITED as a
+    /// non-fatal note unless a stricter mode is requested.)
+    #[error("FKC §10.9 (V-FKC-9): kernel `{section}` ships UNAUDITED precision")]
+    UnauditedPrecision { section: String },
+
+    /// A bundle slot's shape rule yields rank > 6 (V-FKC §10.13), which the
+    /// serialized `FDXOutputView` (`[u64; 6]`) cannot represent.
+    #[error("FKC §10.13 (V-FKC-7): kernel `{section}` bundle slot `{slot}` has rank {rank} > 6")]
+    BundleSlotRankExceeded {
+        section: String,
+        slot: String,
+        rank: usize,
+    },
+
+    /// A paged/gather operand is incoherent (V-FKC §10.14): `kind:
+    /// paged_blocks` without `requires_ext: true` / `symbolic_extent:
+    /// required`, or `block_table`/`context_lens` naming a non-existent
+    /// `accept.inputs` role.
+    #[error("FKC §10.14 (V-FKC): kernel `{section}` operand `{operand}` gather is incoherent: {reason}")]
+    GatherIncoherent {
+        section: String,
+        operand: String,
+        reason: String,
+    },
+
+    /// A gather-bearing operand reached registration before the FDX gather
+    /// codes / `Capability::DlpackExtGather` landed (V-FKC §10.14; the
+    /// `MxNotYetRegistrable` discipline for gather).
+    #[error("FKC §3.9.1/§10.14: kernel `{section}` operand `{operand}` uses gather, not yet supported")]
+    GatherNotYetSupported { section: String, operand: String },
+
+    /// A dtype / quant family / granularity / ggml_dtype token is not a
+    /// member of FDX's normative code table (V-FKC §10.16 drift-guard) — so
+    /// FKC's token set stays a subset of FDX's.
+    #[error(
+        "FKC §10.16 (rule 16): kernel `{section}` token `{token}` (field `{field}`) is not in the \
+         FDX normative code table"
+    )]
+    FdxTokenNotInTable {
+        section: String,
+        field: String,
+        token: String,
+    },
+
+    /// An admissibility-affecting enum (`extent_kind`, `gather.kind`, quant
+    /// `family`) carried an unknown value (V-FKC §10.5/§10.14/§10.15;
+    /// meaning-bearing per §11.1 — a typed error, never a silent default).
+    #[error(
+        "FKC §11.1: kernel `{section}` field `{field}` has unknown meaning-bearing value `{value}`"
+    )]
+    UnknownAdmissibilityEnum {
+        section: String,
+        field: String,
+        value: String,
+    },
+
+    /// The structured `blurb:` does not match the prose blurb when the prose
+    /// is available (V-FKC §10.11). Distinct from [`Self::BlurbMismatch`]
+    /// (which is reserved for the prose-vs-structured comparison wired with
+    /// the prose-bearing parse).
+    #[error(
+        "FKC §10.11 (V-FKC-2): kernel `{section}` is missing a required blurb (must be a non-empty \
+         one-line string)"
+    )]
+    MissingBlurb { section: String },
 }
 
 impl FkcError {

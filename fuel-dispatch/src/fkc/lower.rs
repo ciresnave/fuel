@@ -18,7 +18,7 @@
 use fuel_core_types::dispatch::OpKind;
 use fuel_core_types::probe::BackendId;
 use fuel_core_types::DType;
-use fuel_graph::registry::FusedOpId;
+use fuel_graph::registry::{FusedOpId, FusedOps};
 use smallvec::SmallVec;
 
 use crate::fkc::caps_map::{self, ResolvedLayout};
@@ -127,7 +127,7 @@ pub enum Resolved {
 /// Map an `op_kind` string to an [`OpKind`]. The `match` is exhaustive
 /// over `OpKind` so adding a new variant forces this table to grow
 /// (a compile error, not a silent miss). `UnknownOpKind` on a bad string.
-fn lower_op_kind(s: &str, section: &str) -> Result<OpKind, FkcError> {
+pub(crate) fn lower_op_kind(s: &str, section: &str) -> Result<OpKind, FkcError> {
     // Helper so the match arms read as `name => Variant`. We round-trip
     // through a known-exhaustive coverage check below.
     let mapped = match s {
@@ -264,19 +264,64 @@ fn lower_op_kind(s: &str, section: &str) -> Result<OpKind, FkcError> {
 }
 
 // ===========================================================================
-// fused_op String → FusedOpId (table from default_registry(); §2.2)
+// fused_op String → FusedOpId (SCREAMING_SNAKE FusedOps constant table; §2.2)
 // ===========================================================================
 
-/// Map a `fused_op` name to a [`FusedOpId`] via `fuel-graph`'s
-/// `default_registry()` name table — so the importer cannot drift from the
-/// graph's single source of truth (§2.2). `UnknownFusedOp` on a miss.
-fn lower_fused_op(s: &str, section: &str) -> Result<FusedOpId, FkcError> {
-    fuel_graph::registry::default_registry()
-        .id_for_name(s)
-        .ok_or_else(|| FkcError::UnknownFusedOp {
-            section: section.to_string(),
-            fused_op: s.to_string(),
-        })
+/// Map a `fused_op` token to its [`FusedOpId`].
+///
+/// **The spec/contracts use the `FusedOps` CONSTANT NAME** — SCREAMING_SNAKE,
+/// e.g. `SOFTMAX_LAST_DIM` / `FLASH_ATTN` / `QMATMUL` (FKC §3.1 token format,
+/// §3.7). This is NOT the registry entry's `name` field, which is PascalCase
+/// (`"SoftmaxLastDim"`). The earlier `default_registry().id_for_name(...)`
+/// resolver matched the PascalCase `name` and therefore always *missed* on a
+/// real contract token.
+///
+/// The mapping is an explicit `match` from each SCREAMING_SNAKE constant name
+/// to its `FusedOps::<NAME>` `FusedOpId` (`UnknownFusedOp` on a miss). It is
+/// kept honest by the [`tests::every_registry_id_is_reachable_through_table`]
+/// drift-guard: every `FusedOpId` present in `default_registry()` must be
+/// reachable through this table, so adding a new `FusedOps` const without a
+/// table entry fails that test.
+pub(crate) fn lower_fused_op(s: &str, section: &str) -> Result<FusedOpId, FkcError> {
+    fused_op_id_for_const_name(s).ok_or_else(|| FkcError::UnknownFusedOp {
+        section: section.to_string(),
+        fused_op: s.to_string(),
+    })
+}
+
+/// The SCREAMING_SNAKE `FusedOps::*` constant-name → [`FusedOpId`] table.
+/// Returns `None` for an unknown token. One arm per `FusedOps` associated
+/// const (`fuel-graph/src/registry.rs`); the drift-guard test asserts this
+/// covers every registered id.
+pub(crate) fn fused_op_id_for_const_name(s: &str) -> Option<FusedOpId> {
+    let id = match s {
+        "SOFTMAX_LAST_DIM" => FusedOps::SOFTMAX_LAST_DIM,
+        "FUSED_LINEAR" => FusedOps::FUSED_LINEAR,
+        "RMS_NORM_LAST_DIM" => FusedOps::RMS_NORM_LAST_DIM,
+        "LAYER_NORM_LAST_DIM" => FusedOps::LAYER_NORM_LAST_DIM,
+        "ROPE" => FusedOps::ROPE,
+        "CONV2D" => FusedOps::CONV2D,
+        "SOFTMAX_LAST_DIM_BACKWARD" => FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
+        "LAYER_NORM_LAST_DIM_BACKWARD" => FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
+        "RMS_NORM_LAST_DIM_BACKWARD" => FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
+        "REDUCE_MAX_TO_BACKWARD" => FusedOps::REDUCE_MAX_TO_BACKWARD,
+        "CONV_TRANSPOSE2D" => FusedOps::CONV_TRANSPOSE2D,
+        "FLASH_ATTN" => FusedOps::FLASH_ATTN,
+        "PAGED_ATTN" => FusedOps::PAGED_ATTN,
+        "QMATMUL" => FusedOps::QMATMUL,
+        "POWI_BACKWARD" => FusedOps::POWI_BACKWARD,
+        "INPLACE_AFFINE" => FusedOps::INPLACE_AFFINE,
+        "FUSED_SOFTMAX_CROSS_ENTROPY" => FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY,
+        "CAUSAL_CONV1D" => FusedOps::CAUSAL_CONV1D,
+        "SELECTIVE_SCAN" => FusedOps::SELECTIVE_SCAN,
+        "SSD_CHUNK_SCAN" => FusedOps::SSD_CHUNK_SCAN,
+        "NF4_MATMUL" => FusedOps::NF4_MATMUL,
+        "FLASH_ATTN_BACKWARD_Q" => FusedOps::FLASH_ATTN_BACKWARD_Q,
+        "FLASH_ATTN_BACKWARD_K" => FusedOps::FLASH_ATTN_BACKWARD_K,
+        "FLASH_ATTN_BACKWARD_V" => FusedOps::FLASH_ATTN_BACKWARD_V,
+        _ => return None,
+    };
+    Some(id)
 }
 
 // ===========================================================================
@@ -286,7 +331,7 @@ fn lower_fused_op(s: &str, section: &str) -> Result<FusedOpId, FkcError> {
 /// Map a single dtype token to a [`DType`]. Explicit exhaustive `match`
 /// (FDX codes are a different axis; this is NOT `FromStr`-by-discriminant).
 /// `BadScalarType` on a bad token.
-fn lower_dtype(token: &str, section: &str, operand: &str) -> Result<DType, FkcError> {
+pub(crate) fn lower_dtype(token: &str, section: &str, operand: &str) -> Result<DType, FkcError> {
     let mapped = match token {
         "U8" => Some(DType::U8),
         "I8" => Some(DType::I8),
@@ -685,6 +730,10 @@ mod tests {
         include_str!("../../../docs/kernel-contracts/cpu/elementwise-binary.fkc.md");
     const QUANT_MATMUL: &str =
         include_str!("../../../docs/kernel-contracts/cpu/quant-matmul.fkc.md");
+    /// A real FUSED contract bundle whose `fused_op: SOFTMAX_LAST_DIM` etc.
+    /// must now resolve through the SCREAMING_SNAKE constant table (Task 1).
+    const FUSED_NORM_SOFTMAX: &str =
+        include_str!("../../../docs/kernel-contracts/fused/norm-softmax.fkc.md");
 
     // ---- A test LinkRegistry stub mapping every entry_point to a dummy ----
 
@@ -805,6 +854,27 @@ mod tests {
         assert_eq!(resolved.len(), file.kernels.len());
     }
 
+    /// Task 1 end-to-end verification: a REAL fused contract from the corpus
+    /// (`fused/norm-softmax.fkc.md`, `fused_op: SOFTMAX_LAST_DIM`) lowers via
+    /// the stub link — proving the SCREAMING_SNAKE token now resolves.
+    #[test]
+    fn lowers_real_fused_softmax_last_dim() {
+        let r = lower_one(FUSED_NORM_SOFTMAX, "softmax_last_dim")
+            .expect("softmax_last_dim (fused) lowers");
+        let Resolved::Fused(f) = r else {
+            panic!("softmax_last_dim is a fused op");
+        };
+        assert_eq!(f.id, FusedOps::SOFTMAX_LAST_DIM);
+        assert_eq!(f.backend, BackendId::Cpu);
+        assert_eq!(f.kernel_source, "portable-cpu");
+
+        // The whole bundle lowers (every fused_op token resolves).
+        let file = parse_file(FUSED_NORM_SOFTMAX).expect("parses");
+        let resolved = lower_file(&file, &StubLink).expect("all fused kernels lower");
+        assert_eq!(resolved.len(), file.kernels.len());
+        assert!(resolved.iter().all(|r| matches!(r, Resolved::Fused(_))));
+    }
+
     // =====================================================================
     // NEGATIVES
     // =====================================================================
@@ -825,6 +895,71 @@ mod tests {
     fn bogus_fused_op_is_unknown_fused_op() {
         let err = lower_fused_op("NotAFusedOp", "k").expect_err("bogus fused");
         assert!(matches!(err, FkcError::UnknownFusedOp { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn screaming_snake_const_name_resolves_not_pascalcase() {
+        // The contract token is the SCREAMING_SNAKE FusedOps constant name.
+        assert_eq!(
+            lower_fused_op("SOFTMAX_LAST_DIM", "k").unwrap(),
+            FusedOps::SOFTMAX_LAST_DIM
+        );
+        assert_eq!(lower_fused_op("FLASH_ATTN", "k").unwrap(), FusedOps::FLASH_ATTN);
+        assert_eq!(lower_fused_op("QMATMUL", "k").unwrap(), FusedOps::QMATMUL);
+        // The PascalCase registry `name` (what the OLD id_for_name resolver
+        // matched) must NOT resolve — that was the bug.
+        assert!(lower_fused_op("SoftmaxLastDim", "k").is_err());
+        assert!(lower_fused_op("FlashAttn", "k").is_err());
+    }
+
+    /// DRIFT GUARD (Task 1): every `FusedOpId` present in `default_registry()`
+    /// must be reachable through the SCREAMING_SNAKE constant-name table — so
+    /// adding a new `FusedOps` const + registry entry without a table arm
+    /// fails this test (it would otherwise be silently unimportable).
+    #[test]
+    fn every_registry_id_is_reachable_through_table() {
+        use std::collections::HashSet;
+        // Every id the constant-name table can produce.
+        let reachable: HashSet<FusedOpId> = [
+            "SOFTMAX_LAST_DIM",
+            "FUSED_LINEAR",
+            "RMS_NORM_LAST_DIM",
+            "LAYER_NORM_LAST_DIM",
+            "ROPE",
+            "CONV2D",
+            "SOFTMAX_LAST_DIM_BACKWARD",
+            "LAYER_NORM_LAST_DIM_BACKWARD",
+            "RMS_NORM_LAST_DIM_BACKWARD",
+            "REDUCE_MAX_TO_BACKWARD",
+            "CONV_TRANSPOSE2D",
+            "FLASH_ATTN",
+            "PAGED_ATTN",
+            "QMATMUL",
+            "POWI_BACKWARD",
+            "INPLACE_AFFINE",
+            "FUSED_SOFTMAX_CROSS_ENTROPY",
+            "CAUSAL_CONV1D",
+            "SELECTIVE_SCAN",
+            "SSD_CHUNK_SCAN",
+            "NF4_MATMUL",
+            "FLASH_ATTN_BACKWARD_Q",
+            "FLASH_ATTN_BACKWARD_K",
+            "FLASH_ATTN_BACKWARD_V",
+        ]
+        .iter()
+        .map(|n| super::fused_op_id_for_const_name(n).expect("table arm exists"))
+        .collect();
+
+        // Every registered id MUST be in `reachable`.
+        for entry in fuel_graph::registry::default_registry().entries_iter() {
+            assert!(
+                reachable.contains(&entry.id),
+                "FusedOpId {:?} (registry name {:?}) is registered but NOT reachable through the \
+                 SCREAMING_SNAKE constant-name table — add a `fused_op_id_for_const_name` arm",
+                entry.id,
+                entry.name,
+            );
+        }
     }
 
     #[test]

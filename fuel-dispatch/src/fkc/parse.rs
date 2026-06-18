@@ -282,9 +282,20 @@ fn enforce_restricted_yaml(chunk: &str, base_line: usize) -> Result<(), FkcError
         // --- Norway tokens in a scalar VALUE position ---
         // Value position = text after the first unquoted `:` (mapping value) or
         // after a `- ` (sequence item). We use the quote-blanked `content`.
-        if let Some(value) = scalar_value_of(&content) {
+        if let Some((key, value)) = scalar_key_value_of(&content) {
             let v = value.trim();
-            if !v.is_empty() && NORWAY_TOKENS.contains(&v.to_ascii_lowercase().as_str()) {
+            // §3.8 exemption: a `name:` operand-ROLE value is explicitly a
+            // diagnostic STRING that "stays the string" even for `n`/`y`
+            // (the spec's own example: "A `name: n` operand role stays the
+            // string `"n"`"). The schema field is `String`, so it cannot
+            // coerce to a bool; do NOT reject it. Every OTHER value-position
+            // Norway token is still flagged so a bool-targeting field cannot
+            // silently coerce.
+            let key_is_role_name = key.as_deref() == Some("name");
+            if !key_is_role_name
+                && !v.is_empty()
+                && NORWAY_TOKENS.contains(&v.to_ascii_lowercase().as_str())
+            {
                 return Err(FkcError::NorwayToken {
                     token: v.to_string(),
                     line,
@@ -343,12 +354,12 @@ fn strip_comment_and_quotes(raw: &str) -> String {
     out
 }
 
-/// Given a quote-blanked, comment-stripped line, return the scalar VALUE part:
-/// the text after the first `:` (mapping value), or after a leading `- `
-/// (sequence scalar). Returns `None` if the line is a bare key, a nested
-/// mapping opener, or a flow collection (`{...}` / `[...]`) we don't unpack
-/// here.
-fn scalar_value_of(content: &str) -> Option<&str> {
+/// Given a quote-blanked, comment-stripped line, return `(key, value)` for the
+/// scalar VALUE part: the text after the first `:` (mapping value), or after a
+/// leading `- ` (sequence scalar; `key` is `None` then). Returns `None` if the
+/// line is a bare key, a nested mapping opener, or a flow collection
+/// (`{...}` / `[...]`) we don't unpack here.
+fn scalar_key_value_of(content: &str) -> Option<(Option<String>, &str)> {
     let trimmed = content.trim_start();
 
     // Flow collections are handled token-wise elsewhere; skip whole-line value
@@ -360,11 +371,14 @@ fn scalar_value_of(content: &str) -> Option<&str> {
         return None;
     }
 
-    // `- scalar` sequence item.
-    let trimmed = trimmed.strip_prefix("- ").unwrap_or(trimmed);
+    // `- scalar` sequence item (no key).
+    let after_dash = trimmed.strip_prefix("- ");
+    let is_seq_item = after_dash.is_some();
+    let trimmed = after_dash.unwrap_or(trimmed);
 
     // `key: value` — split on the first `:`.
     if let Some(colon) = trimmed.find(':') {
+        let key = trimmed[..colon].trim();
         let value = &trimmed[colon + 1..];
         // A value that itself opens a flow collection or nested map is not a
         // bare scalar.
@@ -372,7 +386,13 @@ fn scalar_value_of(content: &str) -> Option<&str> {
         if vt.starts_with('{') || vt.starts_with('[') {
             return None;
         }
-        return Some(value);
+        // A `- name: y` sequence-item-with-key still yields key="name".
+        let key = if key.is_empty() { None } else { Some(key.to_string()) };
+        return Some((key, value));
+    }
+    // A bare `- scalar` sequence item carries no key.
+    if is_seq_item {
+        return Some((None, trimmed));
     }
     None
 }
