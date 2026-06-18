@@ -20,9 +20,18 @@
 //!   merge keys / the Norway problem) BEFORE deserializing, then
 //! - deserializes each block into the schema and assembles an [`FkcFile`].
 //!
-//! NOT yet implemented (later slices of the plan): lowering to dispatch types
-//! (`lower.rs`), caps/cost/precision projection, the `LinkRegistry`, the
-//! `register_into` path, the revision hash, and the full `V-FKC-*` validators.
+//! Also implemented: lowering to dispatch types (`lower.rs`), caps/cost/
+//! precision projection, the `LinkRegistry`, the revision hash, and — this
+//! slice — the END-TO-END registration path (`register.rs`):
+//! [`import_bundle_str`] / [`import_bundle`] / [`import_glob`] →
+//! [`ImportedProvider`] → [`ImportedProvider::register_into`] populating
+//! both the `KernelBindingTable` (primitives) and the
+//! `FusedKernelRegistry` (fused ops), with the duplicate-detection
+//! `finalize` gate surfaced as [`FkcError::DuplicateKernelRef`].
+//!
+//! NOT yet implemented (later slices of the plan): the cost trampoline /
+//! global cost-table (imported costs use the Judge-bootstrapped sentinel
+//! `CostFn` for now), the full `V-FKC-*` validators, and the CI lint.
 //!
 //! ## Authoritative references
 //!
@@ -36,6 +45,7 @@ mod error;
 mod lower;
 mod parse;
 mod precision;
+mod register;
 mod revhash;
 mod schema;
 
@@ -46,6 +56,9 @@ pub use lower::{
     lower_file, LinkRegistry, Resolved, ResolvedFused, ResolvedPrimitive,
 };
 pub use parse::{parse_file, parse_path};
+pub use register::{
+    fused_unknown_cost, import_bundle, import_bundle_str, import_glob, ImportedProvider,
+};
 pub use revhash::compute_revision;
 pub use schema::{
     AcceptBlock, CapsBlock, CostBlock, CostMemory, FdxSpec, FkcFile, FkcFrontMatter, FkcKernel,

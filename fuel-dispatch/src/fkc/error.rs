@@ -172,6 +172,36 @@ pub enum FkcError {
          no bounds, no notes)"
     )]
     PlaceholderPrecision { section: String },
+
+    // ===== registration (this slice) — Resolved* → the two registries =====
+    /// A registration drove the same `KernelRef` function pointer onto one
+    /// `(op, dtypes, backend)` decision point twice (§3 / V-FKC-3). The
+    /// importer never panics on this; it surfaces the
+    /// [`crate::kernel::KernelBindingTable::finalize`] gate as a typed
+    /// error after all inserts. The string carries the dispatch-layer
+    /// message (which names the offending `(op, dtypes, backend)` key).
+    #[error("FKC §10 (V-FKC-3): duplicate KernelRef on a single decision point: {0}")]
+    DuplicateKernelRef(String),
+
+    /// `import_glob` collected files whose front-matter disagrees: the
+    /// `provider.name` / `provider.backend` / `provider.kernel_source`
+    /// must match across every file merged into one provider (§9.2).
+    #[error(
+        "FKC §9.2: provider front-matter mismatch merging globbed files — field `{field}` is \
+         `{found}` in `{file}` but the first file declared `{expected}`"
+    )]
+    ProviderMismatch {
+        field: String,
+        expected: String,
+        found: String,
+        file: String,
+    },
+
+    /// A glob / file-read I/O failure (no readable file, an unreadable
+    /// path, a bad glob pattern). Carries the offending path/pattern + the
+    /// underlying error text.
+    #[error("FKC: I/O error for `{path}`: {reason}")]
+    Io { path: String, reason: String },
 }
 
 impl FkcError {
