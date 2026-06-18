@@ -1,0 +1,1217 @@
+---
+fkc_version: 1
+provider:
+  name: fuel-cpu-backend
+  backend: Cpu                       # maps to BackendId::Cpu
+  kernel_source: "portable-cpu"      # the BindingEntry.kernel_source tag
+  link_registry: fuel_cpu_backend::byte_kernels::ENTRY_POINTS   # §12.6 symbol→KernelRef map
+  revision_base: "git:f41137b4"      # provider build id, folded into kernel_revision_hash
+---
+
+# fuel-cpu-backend — attention kernel contracts
+
+Attention kernels for the portable `CpuStorageBytes` surface: forward FlashAttn (naive math-def
+SDPA over a fixed-capacity KV cache), FlashAttn backward (recompute-based dQ/dK/dV), and PagedAttn
+(naive attention over a paged/blocked KV cache). Each is monomorphized over the four float dtypes
+`{F32, F64, BF16, F16}` — every dtype is a distinct registered kernel (distinct `entry_point` →
+`KernelRef`), sharing one accept/return shape but differing in element width and the
+accumulation/narrowing rule (half floats `bf16`/`f16` widen each operand to **f32**, do the dot
+product / softmax / output accumulation in f32, then narrow on store; `f32`/`f64` are native).
+
+All three families are **fused ops**, not primitives: `FLASH_ATTN = FusedOpId(12)`,
+`PAGED_ATTN = FusedOpId(13)`, and the three FlashAttn-backward variants
+`FLASH_ATTN_BACKWARD_Q/K/V` (`fuel-graph/src/registry.rs:885-887` and the backward block; the
+`OpKind::PagedAttn` / `OpKind::FlashAttn` tags at `fuel-core-types/src/dispatch.rs` exist as op-kind
+labels but are **not** the param carrier). Their param carriers are the
+`fuel_graph::registry::FusedOpParams` variants `FlashAttn` (`registry.rs:231`), `PagedAttn`
+(`registry.rs:241`), and `FlashAttnBackward` (`registry.rs:295`) — the fused namespace (§3.7), so
+each contract declares `fused_op:` and an `op_params.variant` in the `FusedOpParams` namespace and
+its cost compiles to the **fused** cost-fn shape `fn(&[Shape], &FusedOpParams,
+&BackendCapabilities)` — there is **no `&[DType]` arg** (§4.4 / §12.3).
+
+A load-bearing distinction: the **shape geometry** (`b, hq, hkv, sq, sk, d`, block sizes) is carried
+by the operand shapes / `KernelRef` payload, NOT by the `FusedOpParams` variant — the
+`FusedOpParams::FlashAttn` variant carries only `{softmax_scale, causal, window_size_left,
+window_size_right, softcap, k_len}` and `FusedOpParams::PagedAttn` only `{softmax_scale, block_size,
+softcap}` (`registry.rs:231-245`). The cost/shape symbols below name those geometry dims by role for
+the importer to bind from the shapes.
+
+These kernels are the production `CpuStorageBytes` path the dispatch wrapper
+(`fuel_dispatch::dispatch::cpu_wrappers`) extracts and calls; they consume flat contiguous,
+zero-offset, row-major slices plus explicit `usize` geometry, never a `Layout`/strides/offset (the
+executor's auto-Contiguize pass realizes any strided/broadcast/offset input first). Validation is
+byte-length checks returning `Result`, never a panic on the production path.
+
+---
+
+## flash_attn_f32  (multi-head SDPA over a fixed-capacity KV cache, f32 native)
+
+Naive (math-definition, **not tiled**) scaled-dot-product attention. `q [B, Hq, Sq, D]`,
+`k`/`v [B, Hkv, Sk, D]` with GQA grouping (`Hq % Hkv == 0`, `groups = Hq/Hkv`, `kv_h = hi/groups`);
+optional 4th input `alibi_slopes [Hq]`. The K/V `Sk` axis is the **physical capacity** (strides and
+byte-length checks key off it: `k.len_bytes == B·Hkv·Sk·D·4`); the kernel attends only the first
+`k_len ≤ Sk` rows (the live prefix of a fixed-capacity KV cache, `byte_kernels.rs:6085-6089` rejects
+`k_len > sk`) and bottom-right-aligns the causal mask at `causal_offset = k_len − Sq` (so query row
+`qi` sits at absolute position `aq = qi + causal_offset`, `:6090`/`:6104`). `k_len` is a dynamic
+scalar resolved per token via the `SymEnv` (`FusedOpParams::FlashAttn.k_len: Option<DynScalar>`,
+`registry.rs:237`); `None` ⇒ `k_len == Sk` (the static path, byte-identical to a plain `0..Sk`
+loop). Per (batch, head, query) it builds admissible scores over `0..k_len` (`flash_attn_admissible`
+applies causal + sliding-window `(left,right)` masks, `:6011-6017`), subtracts the row max, exps,
+normalizes (`inv_sum = 1/Σ`), and accumulates `Σ p·v` into the output row. Optional `softcap`
+(`s = tanh(s/c)·c`) and ALiBi bias (`s += slope·(kj − aq)`) are applied to raw scores before the
+softmax. Native f32 arithmetic throughout (`flash_attn_native_kernel!`, `byte_kernels.rs:6021`;
+instantiated `:6166`). Output is zeroed up front so masked / fully-inadmissible rows stay zero
+(`:6093`); fully-overwritten otherwise. Numerics: max-subtract softmax (stable). Known limitations:
+contiguous zero-offset only (planner must Contiguize strided/broadcast/offset inputs first); not a
+streaming/tiled flash kernel (allocates per-row `scores`/`admissible` Vecs of length `k_len`); no
+in-place; `k_len ≤ sk` enforced at runtime.
+
+```fkc
+kernel: flash_attn_f32
+fused_op: FLASH_ATTN
+blurb: "Naive multi-head SDPA over a fixed-capacity KV cache, f32 native; attends live prefix k_len <= Sk; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::flash_attn_f32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hq, Sq, D]
+    - name: k
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]  (Sk = CAPACITY; strides key off it)
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"   # GQA: Hq % Hkv == 0
+      fdx:
+        symbolic_extent: required          # reads live k_len from SymEnv; strides keyed to capacity Sk
+        extent_kind: range                 # single bounded SymId: k_len <= Sk (as-built flash path)
+    - name: v
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "same_as=k"        # k_len ≡ v_len ⇒ SAME SymId
+      fdx: { symbolic_extent: required, extent_kind: range }
+    - name: alibi_slopes                   # optional 4th input; presence implicit in inputs.len()==4
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1                              # [Hq]
+      optional: true
+  op_params:
+    variant: FlashAttn                     # FusedOpParams::FlashAttn (fused namespace; §3.7)
+    fields:
+      # geometry (b,hq,hkv,sq,sk,d) is carried by the operand SHAPES / KernelRef, not this variant.
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+      k_len:             { kind: "Option<DynScalar>", note: "live attended length <= sk; None ⇒ k_len==Sk; rides SymEnv" }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(q)
+      shape_rule: from_params(q)           # [B, Hq, Sq, D]; symbolic Sq preserved
+      layout_guarantee: contiguous
+      aliasing: none                       # fresh preallocated buffer, zeroed then accumulated
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # ← planner inserts Op::Contiguize (itself an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "k_len == sk", note: "static path; byte-identical to plain 0..Sk loop" }
+    - { when: "causal == false", note: "no causal mask branch (window may still mask)" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 32
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  # Symbolic over the live k_len; v1 evaluates at CAPACITY (sk). QK^T (2·D MACs/score) + PV (2·D
+  # MACs/score) => 4·B·Hq·Sq·k_len·D FLOPs; live-k_len re-eval is [consumer-ahead] (§4.4).
+  flops: "4 * b * hq * sq * k_len * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hq * sq * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic naive loop; native f32; row-max-subtract softmax
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false                         # CPU primitive-class: family default applies (§4.8/§12.4)
+  notes: "native f32 throughout; max-subtract stable softmax; deterministic; not bit-stable cross-hardware (FMA contraction may differ)."
+
+determinism: same_hardware_bitwise
+```
+
+## flash_attn_f64  (multi-head SDPA over a fixed-capacity KV cache, f64 native)
+
+Identical algorithm, masking, GQA grouping, `k_len ≤ Sk` semantics, and bottom-right causal
+alignment as `flash_attn_f32`, evaluated in native f64 throughout (`flash_attn_native_kernel!`
+instantiated `byte_kernels.rs:6167`; 8-byte element, byte-length checks against `·8`). f64 gives the
+widest precision of the family — no widen/narrow round-trip. Same zero-then-accumulate output,
+same per-row `scores`/`admissible` Vec allocation, same `softcap`/ALiBi raw-score adjustments.
+Limitations match `flash_attn_f32`: contiguous zero-offset only, not tiled, no in-place,
+`k_len ≤ sk` enforced at runtime.
+
+```fkc
+kernel: flash_attn_f64
+fused_op: FLASH_ATTN
+blurb: "Naive multi-head SDPA over a fixed-capacity KV cache, f64 native; attends live prefix k_len <= Sk; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::flash_attn_f64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+    - name: k
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"
+      fdx: { symbolic_extent: required, extent_kind: range }
+    - name: v
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "same_as=k"
+      fdx: { symbolic_extent: required, extent_kind: range }
+    - name: alibi_slopes
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1
+      optional: true
+  op_params:
+    variant: FlashAttn
+    fields:
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+      k_len:             { kind: "Option<DynScalar>", note: "live attended length <= sk; None ⇒ k_len==Sk; rides SymEnv" }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(q)
+      shape_rule: from_params(q)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "k_len == sk", note: "static path; byte-identical to plain 0..Sk loop" }
+    - { when: "causal == false", note: "no causal mask branch" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 64
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  flops: "4 * b * hq * sq * k_len * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hq * sq * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "native f64 throughout; widest precision of the family (no widen/narrow round-trip); deterministic; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## flash_attn_bf16  (multi-head SDPA over a fixed-capacity KV cache, bf16 I/O with f32 compute)
+
+The `flash_attn_half_kernel!`-instantiated bf16 kernel (`byte_kernels.rs:6171`, instantiated
+`:6311`). Same algorithm, masking, GQA grouping, `k_len ≤ Sk` semantics, and bottom-right causal
+alignment as `flash_attn_f32`, but **bf16 in/out with f32 compute**: each `q`/`k`/`v` element is
+widened via `.to_f32()`, the dot product, `softmax_scale`, `softcap`, ALiBi, max-subtract softmax,
+and the `Σ p·v` output accumulation all run in f32 (an explicit per-row f32 `row_acc` buffer,
+`:6286-6295`), then `<bf16>::from_f32(...)` narrows on store (`:6301`). This is the family's
+load-bearing precision invariant: compute is f32, only I/O is bf16. 2-byte element; byte-length
+checks against `·2`. Limitations match the family: contiguous zero-offset only, not tiled, no
+in-place, `k_len ≤ sk` enforced at runtime.
+
+```fkc
+kernel: flash_attn_bf16
+fused_op: FLASH_ATTN
+blurb: "Naive multi-head SDPA over a fixed-capacity KV cache, bf16 I/O with f32 compute; attends live prefix k_len <= Sk; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::flash_attn_bf16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+    - name: k
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"
+      fdx: { symbolic_extent: required, extent_kind: range }
+    - name: v
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "same_as=k"
+      fdx: { symbolic_extent: required, extent_kind: range }
+    - name: alibi_slopes
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1
+      optional: true
+  op_params:
+    variant: FlashAttn
+    fields:
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+      k_len:             { kind: "Option<DynScalar>", note: "live attended length <= sk; None ⇒ k_len==Sk; rides SymEnv" }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(q)
+      shape_rule: from_params(q)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "k_len == sk", note: "static path; byte-identical to plain 0..Sk loop" }
+    - { when: "causal == false", note: "no causal mask branch" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 16
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  flops: "4 * b * hq * sq * k_len * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hq * sq * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic loop; f32 compute, bf16 narrow on store
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "compute in f32 (widen on load, narrow on store); bf16 I/O; max-subtract stable softmax; deterministic; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## flash_attn_f16  (multi-head SDPA over a fixed-capacity KV cache, f16 I/O with f32 compute)
+
+The `flash_attn_half_kernel!`-instantiated f16 kernel (`byte_kernels.rs:6312`). Byte-for-byte the
+same code path as `flash_attn_bf16` with `half::f16` substituted for `half::bf16`: f32-compute
+round-trip (widen on load, `<f16>::from_f32(...)` narrow on store), same masking / GQA /
+`k_len ≤ Sk` / bottom-right causal semantics, same per-row f32 `row_acc`. Differs from bf16 only in
+the IEEE half-precision storage format (10-bit mantissa vs bf16's 7-bit, narrower exponent range).
+2-byte element. Limitations match the family: contiguous zero-offset only, not tiled, no in-place,
+`k_len ≤ sk` enforced at runtime.
+
+```fkc
+kernel: flash_attn_f16
+fused_op: FLASH_ATTN
+blurb: "Naive multi-head SDPA over a fixed-capacity KV cache, f16 I/O with f32 compute; attends live prefix k_len <= Sk; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::flash_attn_f16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+    - name: k
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"
+      fdx: { symbolic_extent: required, extent_kind: range }
+    - name: v
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "same_as=k"
+      fdx: { symbolic_extent: required, extent_kind: range }
+    - name: alibi_slopes
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1
+      optional: true
+  op_params:
+    variant: FlashAttn
+    fields:
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+      k_len:             { kind: "Option<DynScalar>", note: "live attended length <= sk; None ⇒ k_len==Sk; rides SymEnv" }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(q)
+      shape_rule: from_params(q)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "k_len == sk", note: "static path; byte-identical to plain 0..Sk loop" }
+    - { when: "causal == false", note: "no causal mask branch" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 16
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  flops: "4 * b * hq * sq * k_len * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hq * sq * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic loop; f32 compute, f16 narrow on store
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "compute in f32 (widen on load, narrow on store); f16 I/O (IEEE half); max-subtract stable softmax; deterministic; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+---
+
+## flash_attn_backward_f32  (FlashAttn backward dQ/dK/dV, single-gradient output, f32 native)
+
+Recompute-based FlashAttn backward (matches the reference backend's `attention_flash_backward`
+math, byte-storage flavor). The inner core `flash_attn_backward_f32_inner` (`byte_kernels.rs:6468`)
+computes **all three** gradients (dQ, dK, dV) jointly into pre-allocated `Vec<f32>` buffers from the
+forward inputs `q, k, v`, the upstream gradient `do_grad`, and optional `alibi_slopes`; the byte
+wrapper `flash_attn_backward_f32` (`flash_attn_backward_native_wrapper!`, `:6625`, instantiated
+`:6703`) selects which one to write into its **single** output buffer via the `which: FaBackwardWhich
+{Q,K,V}` selector. Three calls (one per gradient) therefore recompute the same backward state three
+times — acceptable for the math-definition CPU path; GPU kernels can fuse the recompute. The op is
+dispatched as `FusedOpParams::FlashAttnBackward` (`registry.rs:295`), whose three FusedOpId variants
+`FLASH_ATTN_BACKWARD_Q/K/V` carry the same `{softmax_scale, causal, window_size_left,
+window_size_right, softcap}` shape params as the forward `FlashAttn` so the recompute produces
+identical scores — note there is **no `k_len`** in backward (the full `sk` extent is used; byte
+checks `kv_n = B·Hkv·Sk·D`). The output dtype/shape depend on `which`: dQ has q's shape
+`[B, Hq, Sq, D]`; dK/dV have the KV shape `[B, Hkv, Sk, D]` (`:6662-6673`); the wrapper validates
+`out.len_bytes` against the selected gradient's element count. Native f32 throughout. Limitations:
+contiguous zero-offset only; 3× recompute cost on CPU; no in-place.
+
+```fkc
+kernel: flash_attn_backward_f32
+fused_op: FLASH_ATTN_BACKWARD
+blurb: "FlashAttn backward (recompute); writes one of dQ/dK/dV selected by `which`; f32 native; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::flash_attn_backward_f32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hq, Sq, D]
+    - name: k
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"   # GQA: Hq % Hkv == 0
+    - name: v
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hkv, Sk, D]
+      shape_constraint: "same_as=k"
+    - name: do_grad
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # upstream grad, [B, Hq, Sq, D] (same as q)
+      shape_constraint: "same_as=q"
+    - name: alibi_slopes
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1                              # [Hq]
+      optional: true
+  op_params:
+    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward (fused namespace; §3.7)
+    fields:
+      # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; `which` (Q/K/V) is the
+      # FusedOpId distinction (FLASH_ATTN_BACKWARD_Q/K/V), not a variant field. No k_len in backward.
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: grad                           # one of dQ/dK/dV per the FusedOpId (which)
+      dtype_rule: passthrough(q)
+      shape_rule: from_params(which)       # dQ ⇒ same_as(q) [B,Hq,Sq,D]; dK/dV ⇒ same_as(k) [B,Hkv,Sk,D]
+      layout_guarantee: contiguous
+      aliasing: none                       # fresh preallocated buffer, full overwrite (copy_from_slice)
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "causal == false", note: "no causal mask branch in the recompute" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 32
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  # Recompute backward over the full Sk extent; forward scores + dQ/dK/dV all computed (this CPU
+  # path computes all three gradients per call). ~3-4x the forward FLOPs over [B,Hq,Sq,Sk,D].
+  flops: "12 * b * hq * sq * sk * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "(b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic recompute; native f32
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "native f32 recompute backward; deterministic; not bit-stable cross-hardware (FMA contraction may differ)."
+
+determinism: same_hardware_bitwise
+```
+
+## flash_attn_backward_f64  (FlashAttn backward dQ/dK/dV, single-gradient output, f64 native)
+
+Identical recompute algorithm, `which`-selected single-gradient output, GQA grouping, and
+mask/softcap/ALiBi semantics as `flash_attn_backward_f32`, evaluated in native f64 throughout
+(`flash_attn_backward_native_wrapper!` instantiated `byte_kernels.rs:6704`; inner core
+`flash_attn_backward_f64_inner`, 8-byte element). f64 gives the widest precision — no widen/narrow
+round-trip. Same dQ ⇒ q-shape, dK/dV ⇒ KV-shape output rule; same full-overwrite
+`copy_from_slice`. Limitations match `flash_attn_backward_f32`: contiguous zero-offset only, 3×
+recompute on CPU, no in-place.
+
+```fkc
+kernel: flash_attn_backward_f64
+fused_op: FLASH_ATTN_BACKWARD
+blurb: "FlashAttn backward (recompute); writes one of dQ/dK/dV selected by `which`; f64 native; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::flash_attn_backward_f64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+    - name: k
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"
+    - name: v
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "same_as=k"
+    - name: do_grad
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "same_as=q"
+    - name: alibi_slopes
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1
+      optional: true
+  op_params:
+    variant: FlashAttnBackward
+    fields:
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: grad
+      dtype_rule: passthrough(q)
+      shape_rule: from_params(which)       # dQ ⇒ same_as(q); dK/dV ⇒ same_as(k)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "causal == false", note: "no causal mask branch in the recompute" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 64
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  flops: "12 * b * hq * sq * sk * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "(b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "native f64 recompute backward; widest precision of the family (no widen/narrow round-trip); deterministic; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## flash_attn_backward_bf16  (FlashAttn backward dQ/dK/dV, single-gradient output, bf16 I/O with f32 compute)
+
+The `flash_attn_backward_half_wrapper!`-instantiated bf16 backward (`byte_kernels.rs:6707`,
+instantiated `:6785`; inner core `flash_attn_backward_bf16_inner`, `:6612`). Same recompute
+algorithm, `which`-selected single-gradient output, GQA grouping, and mask/softcap/ALiBi semantics
+as `flash_attn_backward_f32`, but **bf16 I/O with f32 compute**: the inner core accumulates dQ/dK/dV
+in f32 (`dq_f32`/`dk_f32`/`dv_f32`) and narrows on store (`<bf16>::from_f32(...)`, `:6605-6607`).
+This is the family's precision invariant: compute in f32, only I/O is bf16. 2-byte element; same
+dQ ⇒ q-shape, dK/dV ⇒ KV-shape output rule; same full-overwrite `copy_from_slice`. Limitations
+match the family: contiguous zero-offset only, 3× recompute on CPU, no in-place.
+
+```fkc
+kernel: flash_attn_backward_bf16
+fused_op: FLASH_ATTN_BACKWARD
+blurb: "FlashAttn backward (recompute); writes one of dQ/dK/dV selected by `which`; bf16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::flash_attn_backward_bf16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+    - name: k
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"
+    - name: v
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "same_as=k"
+    - name: do_grad
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "same_as=q"
+    - name: alibi_slopes
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1
+      optional: true
+  op_params:
+    variant: FlashAttnBackward
+    fields:
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: grad
+      dtype_rule: passthrough(q)
+      shape_rule: from_params(which)       # dQ ⇒ same_as(q); dK/dV ⇒ same_as(k)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "causal == false", note: "no causal mask branch in the recompute" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 16
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  flops: "12 * b * hq * sq * sk * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "(b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic recompute; f32 compute, bf16 narrow on store
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "compute in f32 (widen on load, narrow on store); bf16 I/O; deterministic recompute; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## flash_attn_backward_f16  (FlashAttn backward dQ/dK/dV, single-gradient output, f16 I/O with f32 compute)
+
+The `flash_attn_backward_half_wrapper!`-instantiated f16 backward (`byte_kernels.rs:6786`; inner
+core `flash_attn_backward_f16_inner`, `:6613`). Byte-for-byte the same code path as
+`flash_attn_backward_bf16` with `half::f16` substituted for `half::bf16`: f32 dQ/dK/dV accumulation,
+`<f16>::from_f32(...)` narrow on store, same recompute / `which`-selected output / GQA /
+mask/softcap/ALiBi semantics. Differs from bf16 only in the IEEE half-precision storage format.
+2-byte element. Limitations match the family: contiguous zero-offset only, 3× recompute on CPU, no
+in-place.
+
+```fkc
+kernel: flash_attn_backward_f16
+fused_op: FLASH_ATTN_BACKWARD
+blurb: "FlashAttn backward (recompute); writes one of dQ/dK/dV selected by `which`; f16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::flash_attn_backward_f16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+    - name: k
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "divisible(q.dim[1], k.dim[1])"
+    - name: v
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "same_as=k"
+    - name: do_grad
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "same_as=q"
+    - name: alibi_slopes
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1
+      optional: true
+  op_params:
+    variant: FlashAttnBackward
+    fields:
+      softmax_scale:     { kind: f32 }
+      causal:            { kind: bool }
+      window_size_left:  { kind: "Option<usize>" }
+      window_size_right: { kind: "Option<usize>" }
+      softcap:           { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: grad
+      dtype_rule: passthrough(q)
+      shape_rule: from_params(which)       # dQ ⇒ same_as(q); dK/dV ⇒ same_as(k)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "causal == false", note: "no causal mask branch in the recompute" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 16
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  flops: "12 * b * hq * sq * sk * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "(b * hq * sq * d + 2 * b * hkv * sk * d) * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic recompute; f32 compute, f16 narrow on store
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "compute in f32 (widen on load, narrow on store); f16 I/O (IEEE half); deterministic recompute; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+---
+
+## paged_attn_f32  (attention over a paged/blocked KV cache, f32 native)
+
+Naive attention over a vLLM-style **paged (blocked) KV cache**. `q [B, Hq, Sq, D]`; the cache is a
+block pool `k_cache`/`v_cache [num_blocks, block_size, Hkv, D]` indexed per sequence by a
+`block_table [B, max_blocks_per_seq]` (U32, logical→physical block id) and a `context_lens [B]`
+(U32, true context length per sequence); optional `alibi_slopes [Hq]`
+(`paged_attn_native_kernel!`, `byte_kernels.rs:6805`, instantiated `:6975`). GQA grouping is
+`groups = Hq/Hkv`, `kv_h = hi/groups`. Causal masking is **implicit**: query `qi` is at absolute
+position `q_pos_abs = ctx_len + qi − Sq` and admits keys `kj ≤ q_pos_abs` (`:6891`/`:6898`). For
+each admissible `kj` the kernel maps it to `logical_block = kj / block_size`,
+`block_off = kj % block_size`, looks up `physical_block = block_table[bi, logical_block]` (range-
+checked against `num_blocks`, `:6901-6909`), and reads the K/V row at
+`physical_block·(block_size·Hkv·D) + block_off·(Hkv·D) + kv_h·D` (`:6911-6914`). Per (batch, head,
+query) it does the usual max-subtract softmax over `0..ctx_len` and accumulates `Σ p·v`. Runtime
+checks: `block_size != 0`, `Hq % Hkv == 0`, `ctx_len ≤ max_blocks_per_seq·block_size`
+(`:6877-6883`). Optional `softcap` (`tanh(s/c)·c`) and ALiBi (`s += slope·(kj − q_pos_abs)`) on raw
+scores. Output zeroed up front so empty / fully-masked sequences (`ctx_len == 0`) stay zero
+(`:6873-6876`). Dispatched as **`FusedOpParams::PagedAttn`** (`FusedOpId(13)`, `registry.rs:241`,
+carrying `{softmax_scale, block_size, softcap}`); the remaining geometry
+(`b, hq, hkv, sq, d, max_blocks_per_seq, num_blocks`) is carried by the operand shapes /
+`KernelRef::PagedAttn` (operand order `[q, k_cache, v_cache, block_table, context_lens, alibi?]`,
+`fuel-dispatch/src/kernel.rs:314-331`). Native f32 throughout. Limitations: contiguous zero-offset
+only; naive per-row Vec allocation over `ctx_len`; no in-place; `Sq ≤ ctx_len` assumed by
+`q_pos_abs = ctx_len + qi − Sq` (a longer query window would underflow the absolute position).
+
+Per the FDX gather single-place rule (§3.9.1), the paged KV pool is described as an
+`FDX_GATHER_PAGED_BLOCKS` operand and the `block_table` / `context_lens` are **separate
+`accept.inputs`** (the as-built ABI passes them as their own graph inputs); the pool operand's
+`fdx.gather.{block_table,context_lens}` name those input roles rather than duplicating the data.
+Direct admission of the paged operand is gated on `Capability::DlpackExtGather` and is
+**[consumer-ahead]** — the FDX gather codes are the 2026-06-17 addition with no code yet, so an
+importer reaching the `gather` block before they land returns `GatherNotYetSupported` rather than
+fabricating a descriptor.
+
+```fkc
+kernel: paged_attn_f32
+fused_op: PAGED_ATTN
+blurb: "Naive attention over a paged/blocked KV cache, f32 native; per-seq block_table + context_lens; implicit causal; GQA; softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::paged_attn_f32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [B, Hq, Sq, D]
+    - name: k_cache
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # physical pool [num_blocks, block_size, Hkv, D]
+      shape_constraint: "divisible(q.dim[1], k_cache.dim[2])"   # GQA: Hq % Hkv == 0 (Hkv = pool dim[2])
+      fdx:
+        requires_ext: true                 # paged pool meaning needs the FDX gather sidecar (§3.9.1)
+        symbolic_extent: required          # per-seq live length is context_lens (data-determined)
+        gather:
+          kind: paged_blocks               # FDX FDX_GATHER_PAGED_BLOCKS
+          block_table: block_table         # role of the SEPARATE block-table accept.input (below)
+          context_lens: context_lens       # role of the SEPARATE context-lens accept.input (below)
+    - name: v_cache
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4                              # [num_blocks, block_size, Hkv, D]; shares block layout with k_cache
+      shape_constraint: "same_as=k_cache"
+      fdx:
+        requires_ext: true
+        symbolic_extent: required
+        gather: { kind: paged_blocks, block_table: block_table, context_lens: context_lens }
+    - name: block_table
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 2                              # [B, max_blocks_per_seq]; logical→physical block id
+    - name: context_lens
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1                              # [B]; true context length per sequence
+      fdx: { symbolic_extent: required }   # per-seq live lengths (data-determined sym)
+    - name: alibi_slopes                   # optional 6th input
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1                              # [Hq]
+      optional: true
+  op_params:
+    variant: PagedAttn                     # FusedOpParams::PagedAttn (fused namespace; §3.7)
+    fields:
+      # geometry (b,hq,hkv,sq,d,max_blocks_per_seq,num_blocks) carried by operand SHAPES / KernelRef.
+      softmax_scale: { kind: f32 }
+      block_size:    { kind: usize, constraint: "block_size != 0; == k_cache.dim[1]" }
+      softcap:       { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(q)
+      shape_rule: from_params(q)           # [B, Hq, Sq, D]
+      layout_guarantee: contiguous
+      aliasing: none                       # fresh preallocated buffer, zeroed then accumulated
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # ← planner inserts Op::Contiguize (itself an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "any_input_strided", class: attention, note: "no strided fast path; pool is dense+gathered" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 32
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  # ctx = per-seq context length (from context_lens; symbolic, evaluated at capacity
+  # max_blocks_per_seq*block_size in v1). QK^T + PV = 4·D MACs/score over B·Hq·Sq·ctx scores.
+  flops: "4 * b * hq * sq * ctx * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hq * sq * ctx * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hq * sq * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic naive loop; native f32; max-subtract stable softmax
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false                         # CPU primitive-class: family default applies (§4.8/§12.4)
+  notes: "native f32 throughout; implicit causal; max-subtract stable softmax; deterministic; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## paged_attn_f64  (attention over a paged/blocked KV cache, f64 native)
+
+Identical algorithm, paged-cache indexing, implicit-causal masking, GQA grouping, and
+`softcap`/ALiBi semantics as `paged_attn_f32`, evaluated in native f64 throughout
+(`paged_attn_native_kernel!` instantiated `byte_kernels.rs:6976`; 8-byte K/V element, U32
+block_table/context_lens unchanged). f64 gives the widest precision — no widen/narrow round-trip.
+Same zero-then-accumulate output, same `ctx_len ≤ max_blocks_per_seq·block_size` and
+`physical_block < num_blocks` runtime checks. Limitations match `paged_attn_f32`: contiguous
+zero-offset only, naive per-row allocation, no in-place, `Sq ≤ ctx_len`.
+
+```fkc
+kernel: paged_attn_f64
+fused_op: PAGED_ATTN
+blurb: "Naive attention over a paged/blocked KV cache, f64 native; per-seq block_table + context_lens; implicit causal; GQA; softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::paged_attn_f64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+    - name: k_cache
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "divisible(q.dim[1], k_cache.dim[2])"
+      fdx:
+        requires_ext: true
+        symbolic_extent: required
+        gather: { kind: paged_blocks, block_table: block_table, context_lens: context_lens }
+    - name: v_cache
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "same_as=k_cache"
+      fdx:
+        requires_ext: true
+        symbolic_extent: required
+        gather: { kind: paged_blocks, block_table: block_table, context_lens: context_lens }
+    - name: block_table
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 2
+    - name: context_lens
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1
+      fdx: { symbolic_extent: required }
+    - name: alibi_slopes
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1
+      optional: true
+  op_params:
+    variant: PagedAttn
+    fields:
+      softmax_scale: { kind: f32 }
+      block_size:    { kind: usize, constraint: "block_size != 0; == k_cache.dim[1]" }
+      softcap:       { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(q)
+      shape_rule: from_params(q)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "any_input_strided", class: attention, note: "no strided fast path; pool is dense+gathered" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 64
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  flops: "4 * b * hq * sq * ctx * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hq * sq * ctx * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hq * sq * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "native f64 throughout; widest precision of the family (no widen/narrow round-trip); implicit causal; deterministic; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## paged_attn_bf16  (attention over a paged/blocked KV cache, bf16 I/O with f32 compute)
+
+The `paged_attn_half_kernel!`-instantiated bf16 kernel (`byte_kernels.rs:6979`, instantiated
+`:7140`). Same algorithm, paged-cache indexing, implicit-causal masking, GQA grouping, and
+`softcap`/ALiBi semantics as `paged_attn_f32`, but **bf16 K/V/Q I/O with f32 compute**: each element
+is widened via `.to_f32()`, the dot product / softmax / `Σ p·v` accumulation run in f32, then
+`<bf16>::from_f32(...)` narrows on store. This is the family's precision invariant: compute is f32,
+only the K/V/Q/out I/O is bf16 (the `block_table`/`context_lens` stay U32). 2-byte K/V element.
+Limitations match the family: contiguous zero-offset only, naive per-row allocation, no in-place,
+`Sq ≤ ctx_len`.
+
+```fkc
+kernel: paged_attn_bf16
+fused_op: PAGED_ATTN
+blurb: "Naive attention over a paged/blocked KV cache, bf16 I/O with f32 compute; per-seq block_table + context_lens; implicit causal; GQA; softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::paged_attn_bf16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+    - name: k_cache
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "divisible(q.dim[1], k_cache.dim[2])"
+      fdx:
+        requires_ext: true
+        symbolic_extent: required
+        gather: { kind: paged_blocks, block_table: block_table, context_lens: context_lens }
+    - name: v_cache
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "same_as=k_cache"
+      fdx:
+        requires_ext: true
+        symbolic_extent: required
+        gather: { kind: paged_blocks, block_table: block_table, context_lens: context_lens }
+    - name: block_table
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 2
+    - name: context_lens
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1
+      fdx: { symbolic_extent: required }
+    - name: alibi_slopes
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1
+      optional: true
+  op_params:
+    variant: PagedAttn
+    fields:
+      softmax_scale: { kind: f32 }
+      block_size:    { kind: usize, constraint: "block_size != 0; == k_cache.dim[1]" }
+      softcap:       { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(q)
+      shape_rule: from_params(q)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "any_input_strided", class: attention, note: "no strided fast path; pool is dense+gathered" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 16
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  flops: "4 * b * hq * sq * ctx * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hq * sq * ctx * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hq * sq * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic loop; f32 compute, bf16 narrow on store
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "compute in f32 (widen on load, narrow on store); bf16 K/V/Q/out I/O (block_table/context_lens U32); implicit causal; deterministic; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## paged_attn_f16  (attention over a paged/blocked KV cache, f16 I/O with f32 compute)
+
+The `paged_attn_half_kernel!`-instantiated f16 kernel (`byte_kernels.rs:7141`). Byte-for-byte the
+same code path as `paged_attn_bf16` with `half::f16` substituted for `half::bf16`: f32-compute
+round-trip (widen on load, `<f16>::from_f32(...)` narrow on store), same paged-cache indexing,
+implicit-causal masking, GQA grouping, and `softcap`/ALiBi semantics. Differs from bf16 only in the
+IEEE half-precision storage format (10-bit mantissa vs bf16's 7-bit). 2-byte K/V element.
+Limitations match the family: contiguous zero-offset only, naive per-row allocation, no in-place,
+`Sq ≤ ctx_len`.
+
+```fkc
+kernel: paged_attn_f16
+fused_op: PAGED_ATTN
+blurb: "Naive attention over a paged/blocked KV cache, f16 I/O with f32 compute; per-seq block_table + context_lens; implicit causal; GQA; softcap/alibi."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::paged_attn_f16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: q
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+    - name: k_cache
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "divisible(q.dim[1], k_cache.dim[2])"
+      fdx:
+        requires_ext: true
+        symbolic_extent: required
+        gather: { kind: paged_blocks, block_table: block_table, context_lens: context_lens }
+    - name: v_cache
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 4
+      shape_constraint: "same_as=k_cache"
+      fdx:
+        requires_ext: true
+        symbolic_extent: required
+        gather: { kind: paged_blocks, block_table: block_table, context_lens: context_lens }
+    - name: block_table
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 2
+    - name: context_lens
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1
+      fdx: { symbolic_extent: required }
+    - name: alibi_slopes
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1
+      optional: true
+  op_params:
+    variant: PagedAttn
+    fields:
+      softmax_scale: { kind: f32 }
+      block_size:    { kind: usize, constraint: "block_size != 0; == k_cache.dim[1]" }
+      softcap:       { kind: "Option<f32>" }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(q)
+      shape_rule: from_params(q)
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "any_input_strided", class: attention, note: "no strided fast path; pool is dense+gathered" }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 16
+
+cost:
+  provenance: declared                   # author prior (overhead_ns launch cost); Judge refines the formula hints below (§4.4)
+  class: attention
+  flops: "4 * b * hq * sq * ctx * d"
+  bytes_moved: "(2 * b * hq * sq * d + 2 * b * hq * sq * ctx * d) * dtype_bytes"
+  overhead_ns: 4000
+  memory: { device_bytes: 0, host_bytes: "b * hq * sq * d * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true      # deterministic loop; f32 compute, f16 narrow on store
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: false
+  notes: "compute in f32 (widen on load, narrow on store); f16 K/V/Q/out I/O (IEEE half; block_table/context_lens U32); implicit causal; deterministic; not bit-stable cross-hardware."
+
+determinism: same_hardware_bitwise
+```
