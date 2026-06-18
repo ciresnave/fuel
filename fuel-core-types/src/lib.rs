@@ -26,6 +26,8 @@ pub mod cpu;
 mod cpu_storage;
 mod device;
 pub mod dispatch;
+#[cfg(feature = "dlpack")]
+pub mod dlpack;
 pub mod dtype;
 pub mod dummy_dtype;
 pub mod dyn_backend;

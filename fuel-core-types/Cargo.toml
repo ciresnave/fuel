@@ -25,6 +25,10 @@
 
 [features]
     default = []
+    # FDX — the Fuel DLPack eXtension (docs/specs/dlpack-extension.md): a
+    # versioned, optional sidecar over standard DLPack for the kernel boundary.
+    # POD structs + the normative FDX code tables; no extra deps yet.
+    dlpack  = []
     ug      = ["dep:fuel-ug"]
     # Enable `#[derive(Serialize, Deserialize)]` on persistence-shaped types
     # (device probe descriptors, later Judge output). Kept opt-in so downstream
