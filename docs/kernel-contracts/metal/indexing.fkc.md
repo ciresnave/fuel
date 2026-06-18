@@ -212,6 +212,7 @@ BF16} (+ a U32/U32 monomorph; backend match `storage.rs:1501-1517`). Byte-exact 
 
 ```fkc
 kernel: scatter
+registrable: false                # §3.10 describe-only: NO OpKind::Scatter / OpParams::Scatter (dispatch.rs has only ScatterAdd; kernel.rs only OpParams::ScatterAdd)
 op_kind: Scatter                  # [consumer-ahead] intended carrier; no as-built OpKind::Scatter yet (see note)
 blurb: "N-D scatter SET along dim; all-contiguous operands; in-place write into dst; byte-exact."
 backend: Metal
@@ -401,7 +402,7 @@ accept:
     variant: IndexAdd             # OpParams::IndexAdd (kernel.rs:455)
     fields:
       outer_count:  { kind: usize, note: "left_size; dims before `dim`" }
-      base_dim_size:{ kind: usize, note: "destination `dim` extent" }
+      base_dim_size: { kind: usize, note: "destination `dim` extent" }
       n_indices:    { kind: usize, note: "ids_dim_size; src `dim` extent" }
       inner_count:  { kind: usize, note: "right_size; dims after `dim`" }
 

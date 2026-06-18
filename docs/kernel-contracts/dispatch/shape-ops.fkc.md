@@ -103,7 +103,7 @@ accept:
       out_shape: { kind: "Vec<usize>", constraint: "out_shape[i] == in_shape[i] + padding[i].0 + padding[i].1" }
       padding:   { kind: "Vec<(usize,usize)>", constraint: "len == rank; per-axis (before, after)" }
       mode_tag:  { kind: u8, constraint: "0=Constant (CPU+CU), 1=Reflect (CU only), 2=Replicate (CU only)" }
-      fill_bytes:{ kind: "Vec<u8>", note: "one output-dtype element's worth; Constant border fill" }
+      fill_bytes: { kind: "Vec<u8>", note: "one output-dtype element's worth; Constant border fill" }
 
 return:
   outputs:

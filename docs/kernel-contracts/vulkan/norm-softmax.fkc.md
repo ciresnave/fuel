@@ -1532,7 +1532,7 @@ serial per-slice accumulation has a fixed order).
 
 ```fkc
 kernel: cumsum_f32
-op_kind: Cumsum
+op_kind: CumSum
 blurb: "Inclusive prefix sum along one axis (f32); strided-input capable; serial per-slice walk."
 backend: Vulkan
 kernel_source: "vulkan-slang"
@@ -1547,7 +1547,7 @@ accept:
       rank: "1..=4"
       shape_constraint: same_as=out
   op_params:
-    variant: Cumsum                  # OpParams::Cumsum (primitive namespace; §3.7)
+    variant: CumSum                  # OpParams::CumSum (primitive namespace; §3.7)
     fields:
       slice_count: { kind: usize, note: "number of independent slices = product of non-axis dims" }
       axis:        { kind: usize, note: "axis (0..3) along which to scan" }
@@ -1600,7 +1600,7 @@ overwritten. Bit-stable on the same hardware.
 
 ```fkc
 kernel: cumsum_f64
-op_kind: Cumsum
+op_kind: CumSum
 blurb: "Inclusive prefix sum along one axis (f64); strided-input capable; serial per-slice walk."
 backend: Vulkan
 kernel_source: "vulkan-slang"
@@ -1615,7 +1615,7 @@ accept:
       rank: "1..=4"
       shape_constraint: same_as=out
   op_params:
-    variant: Cumsum
+    variant: CumSum
     fields:
       slice_count: { kind: usize }
       axis:        { kind: usize }
@@ -1669,7 +1669,7 @@ contiguous over the input shape, same dtype, overwritten. Bit-stable on the same
 
 ```fkc
 kernel: cumsum_f16
-op_kind: Cumsum
+op_kind: CumSum
 blurb: "Inclusive prefix sum along one axis (f16; f32 accumulator); strided-input capable."
 backend: Vulkan
 kernel_source: "vulkan-slang"
@@ -1684,7 +1684,7 @@ accept:
       rank: "1..=4"
       shape_constraint: same_as=out
   op_params:
-    variant: Cumsum
+    variant: CumSum
     fields:
       slice_count: { kind: usize }
       axis:        { kind: usize }
@@ -1737,7 +1737,7 @@ contiguous over the input shape, same dtype, overwritten. Bit-stable on the same
 
 ```fkc
 kernel: cumsum_bf16
-op_kind: Cumsum
+op_kind: CumSum
 blurb: "Inclusive prefix sum along one axis (bf16; f32 accumulator); strided-input capable."
 backend: Vulkan
 kernel_source: "vulkan-slang"
@@ -1752,7 +1752,7 @@ accept:
       rank: "1..=4"
       shape_constraint: same_as=out
   op_params:
-    variant: Cumsum
+    variant: CumSum
     fields:
       slice_count: { kind: usize }
       axis:        { kind: usize }

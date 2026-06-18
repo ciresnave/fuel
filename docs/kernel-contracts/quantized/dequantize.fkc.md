@@ -88,9 +88,16 @@ Cross-cutting facts for this family (from the quantized inventory, "Crate-wide l
   pre-baked weight quantization, audited at the model level). The float formats `f16`/`bf16` →
   `to_float` are exact widenings (`max_ulp: 0`); `f32` → `to_float` is an exact copy.
 - **`to_float_q8_1` is `unimplemented!()` and PANICS** (`k_quants.rs:759`). Q8_1 exists only as a
-  `VecDotType` (the activation-side block for the Q4_1/Q5_1/Q8_1 dot product); it has no dequant.
-  Its section below is written as a **non-registrable, panicking** kernel and is reported as such —
-  it cannot be faithfully contracted as a working dequant.
+  `VecDotType` (the activation-side block for the Q4_1/Q5_1/Q8_1 dot product, built via `from_float`,
+  never dequantized); it has **no** `to_float` dequant. There is therefore **no `to_float_q8_1`
+  section in this bundle**: a dequant contract claiming an output buffer + precision guarantee would
+  be a fiction, and a describe-only section would still need a working return/precision surface to
+  document — registering or emitting a block for a panicking entry point would put a never-panic /
+  constitutional violation (CLAUDE.md; FKC G9 §1) on the dispatch surface. The fact is recorded here
+  in the bundle intro (not as a `## ` kernel section) for completeness. When/if a real
+  `BlockQ8_1::to_float` lands, it would follow the `to_float_q8_0` shape with `ggml_dtype: Q8_1`
+  (code 9); until then there is no admissible contract. (See also the `from_float_q8_1` quantize
+  contract — the quantize direction *does* exist — and the `vec_dot_q8_1` matmul building block.)
 
 ---
 
@@ -483,27 +490,6 @@ precision:
 
 determinism: same_hardware_bitwise
 ```
-
----
-
-## to_float_q8_1  (Q8_1 — `unimplemented!()`; NOT REGISTRABLE / panics)
-
-One-line: Q8_1 has NO dequantize — `to_float` is `unimplemented!()` and panics; Q8_1 exists only as a VecDotType.
-
-**This kernel cannot be faithfully contracted as a working dequantize.** `GgmlType::to_float` for
-`BlockQ8_1` is `unimplemented!()` (`k_quants.rs:759`) and **panics** if called. Q8_1 exists only as
-the `VecDotType` activation block for the Q4_1/Q5_1/Q8_1 quantized dot product (the matmul builds
-it via `from_float`, never dequantizes it). There is therefore no `to_float_q8_1` numeric kernel to
-advertise: a dequant contract claiming an output buffer + precision guarantee would be a fiction,
-and registering it would put a **panicking** primitive on a production path — a never-panic /
-constitutional violation (CLAUDE.md; FKC G9 §1). It is documented here for completeness and is
-**reported as un-contractable** (see the return summary). When/if a real `BlockQ8_1::to_float`
-lands, it would follow the `to_float_q8_0` shape with `ggml_dtype: Q8_1` (code 9); until then there
-is no admissible contract.
-
-> No ` ```fkc ` block is emitted for `to_float_q8_1`: a registrable contract requires a working
-> kernel with a real return/precision/cost surface, and this entry point only panics. Emitting a
-> block would either lie about the behavior or register a panic on the dispatch surface.
 
 ---
 

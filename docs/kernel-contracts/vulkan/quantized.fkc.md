@@ -72,6 +72,7 @@ family `ggml_dtype: Q4_0` (`GgmlDType` code 2; §3.4).
 
 ```fkc
 kernel: dequant_q4_0
+registrable: false               # §3.10 describe-only: DequantizeQ4_0 is a Capability token, not a real OpKind; documented, not registered. op_kind below is the forward-looking dispatch-tag marker.
 op_kind: DequantizeQ4_0          # as-built Capability tag (no OpKind variant; see header note)
 blurb: "Dequantize a GGML Q4_0 block stream (18B/32-elem; (nibble-8)*d) to dense f32."
 backend: Vulkan
@@ -150,6 +151,7 @@ As-built: dispatched by `Capability::DequantizeQ8_0` (`capability.rs:74`); no
 
 ```fkc
 kernel: dequant_q8_0
+registrable: false               # §3.10 describe-only: DequantizeQ8_0 is a Capability token, not a real OpKind; documented, not registered. op_kind below is the forward-looking dispatch-tag marker.
 op_kind: DequantizeQ8_0          # as-built Capability tag (no OpKind variant; see header note)
 blurb: "Dequantize a GGML Q8_0 block stream (34B/32-elem; qs*d) to dense f32."
 backend: Vulkan
@@ -234,6 +236,7 @@ GGUF `Q4_K_M` weight — `ggml_dtype` MUST be written `Q4K`, never `Q4_K_M` (§3
 
 ```fkc
 kernel: dequant_q4_km
+registrable: false               # §3.10 describe-only: DequantizeQ4KM is a Capability token, not a real OpKind; documented, not registered. op_kind below is the forward-looking dispatch-tag marker.
 op_kind: DequantizeQ4KM          # as-built Capability tag (no OpKind variant; see header note)
 blurb: "Dequantize a GGML Q4_K_M super-block stream (144B/256-elem; 6-bit packed scales+mins) to dense f32."
 backend: Vulkan
@@ -513,6 +516,7 @@ behavior; the resulting tensor is still a GGML_BLOCK baked-scale block stream (s
 
 ```fkc
 kernel: quantize_q8_0
+registrable: false               # §3.10 describe-only: QuantizeQ8_0 is a Capability token, not a real OpKind; documented, not registered. op_kind below is the forward-looking dispatch-tag marker.
 op_kind: QuantizeQ8_0            # as-built Capability tag (no OpKind variant; see header note)
 blurb: "Quantize dense f32 to a GGML Q8_0 block stream (34B/32-elem; d = max|x|/127)."
 backend: Vulkan

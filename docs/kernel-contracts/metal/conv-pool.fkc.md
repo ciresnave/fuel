@@ -94,6 +94,7 @@ intended `Im2Col` marker as a forward-looking lowering tag. An importer returns 
 
 ```fkc
 kernel: im2col
+registrable: false             # §3.10 describe-only: NO OpKind::Im2Col / OpParams::Im2Col; conv2d im2col-lowering building block, not a dispatch target
 op_kind: Im2Col                # [consumer-ahead] NO such OpKind/OpParams in fuel-dispatch; building block of
                                # OpKind::Conv2D's im2col lowering, not a standalone dispatched op (see Status)
 blurb: "2-D im2col gather: (b,h_out,w_out,c_in,h_k,w_k) patches from a strided NCHW source, zero-padded; data-movement only."
@@ -181,6 +182,7 @@ lowering marker. An importer returns the unknown-`OpKind` error until a conv1d d
 
 ```fkc
 kernel: im2col1d
+registrable: false             # §3.10 describe-only: NO OpKind::Im2Col1d / OpKind::Conv1D; conv1d im2col-lowering building block
 op_kind: Im2Col1d              # [consumer-ahead] NO such OpKind in fuel-dispatch; building block of conv1d's
                                # im2col lowering (OpParams::Conv1D exists, kernel.rs:211, but no OpKind::Conv1D) (see Status)
 blurb: "1-D im2col gather: (b,l_out,c_in,l_k) patches from a strided source, zero-padded; data-movement only."
@@ -268,6 +270,7 @@ conv_transpose1d dispatch carrier lands.
 
 ```fkc
 kernel: col2im1d
+registrable: false            # §3.10 describe-only: NO OpKind::Col2Im1d / OpKind::ConvTranspose1D; conv_transpose1d col2im-branch building block
 op_kind: Col2Im1d             # [consumer-ahead] NO such OpKind in fuel-dispatch; building block of
                               # conv_transpose1d's col2im branch (OpParams::ConvTranspose1D exists, kernel.rs:233) (see Status)
 blurb: "1-D col2im scatter-accumulate: dst (b,c_out,l_out) from src (b,l_in,c_out,l_k), zero-init then +=; T-precision accumulate."
@@ -353,6 +356,7 @@ dispatch carrier lands.
 
 ```fkc
 kernel: upsample_nearest2d
+registrable: false            # §3.10 describe-only: NO OpKind::UpsampleNearest2D / OpParams; graph Op only, no dispatch carrier
 op_kind: UpsampleNearest2D    # [consumer-ahead] NO such OpKind/OpParams in fuel-dispatch (graph Op::UpsampleNearest2D
                               # exists, op.rs:103, but no dispatch carrier) (see Status)
 blurb: "Nearest-neighbour 2-D upsample over NCHW; strided + offset-capable source; pure indexed copy (exact)."
@@ -437,6 +441,7 @@ dispatch op-kind. This parse-validates but is **NOT registrable as-is** (§10.7)
 
 ```fkc
 kernel: upsample_bilinear2d
+registrable: false            # §3.10 describe-only: NO OpKind::UpsampleBilinear2D / OpParams; graph Op only, no dispatch carrier
 op_kind: UpsampleBilinear2D   # [consumer-ahead] NO such OpKind/OpParams in fuel-dispatch (graph Op::UpsampleBilinear2D
                               # exists, op.rs:108, but no dispatch carrier) (see Status)
 blurb: "Bilinear 2-D upsample over NCHW (align_corners + scale); strided + offset-capable source; f32 interpolation then cast."
@@ -525,6 +530,7 @@ fields name the intended carrier (tuple `kernel_size`/`stride`, matching the met
 
 ```fkc
 kernel: max_pool2d
+registrable: false           # §3.10 describe-only: NO OpKind::MaxPool2D / OpParams; graph Op only, no dispatch carrier
 op_kind: MaxPool2D            # [consumer-ahead] NO such OpKind/OpParams in fuel-dispatch (graph Op::MaxPool2D
                               # exists, op.rs:93, but no dispatch carrier) (see Status)
 blurb: "2-D max pooling over NCHW; strided source, zero-offset only; per-channel; exact (selection, no accumulation)."
@@ -609,6 +615,7 @@ error until a dispatch carrier lands.
 
 ```fkc
 kernel: avg_pool2d
+registrable: false           # §3.10 describe-only: NO OpKind::AvgPool2D / OpParams; graph Op only, no dispatch carrier
 op_kind: AvgPool2D            # [consumer-ahead] NO such OpKind/OpParams in fuel-dispatch (graph Op::AvgPool2D
                               # exists, op.rs:87, but no dispatch carrier) (see Status)
 blurb: "2-D average pooling over NCHW (sum / w_k*h_k); strided source, zero-offset only; per-channel; f32 accumulator for floats."
@@ -693,6 +700,7 @@ importer returns the unknown-`OpKind` error until a conv_transpose1d dispatch op
 
 ```fkc
 kernel: conv_transpose1d
+registrable: false            # §3.10 describe-only: NO OpKind::ConvTranspose1D (OpParams::ConvTranspose1D exists but no matching OpKind to key against)
 op_kind: ConvTranspose1D      # [consumer-ahead] NO such OpKind in fuel-dispatch (OpParams::ConvTranspose1D exists,
                               # kernel.rs:233, but no OpKind::ConvTranspose1D carrier) (see Status)
 blurb: "Naive 1-D transposed convolution; strided + offset-capable src and kernel; f32 accumulator for floats."

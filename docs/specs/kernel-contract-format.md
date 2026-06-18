@@ -115,6 +115,22 @@ Findings deliberately **not** addressed here (and why) are listed at the end of 
   live slot-count *telemetry* (which is out of scope, §1). It lives on `BackendCapabilities`
   (`slot_capacity`, §4.10), read by the optimizer's scheduler — **not** in a per-kernel contract.
 
+> **2026-06-18 — describe-only (non-registrable) sections (§3.10).** Added a section-level
+> `registrable: false` marker so a `## ` section can be **documentation-only**: it is parsed and
+> its descriptive facts (dtypes, layout, quant) are still validated, but it is **not registered**
+> and is **not required** to name a real dispatch `op_kind`/`fused_op`. This serves two needs the
+> corpus already had: (1) **chassis/family umbrellas** (`## binary`, `## unary`) that document a
+> shared algorithm backing many per-`(op, dtype)` registrable thunks — previously these had to
+> name one op arbitrarily as a "representative"; and (2) **ops with no dispatch `OpKind`**
+> (`Im2Col`/`Im2Col1d`/`Col2Im1d`, pools, `Upsample*`, `Transpose`/`Permute`, `ArgSort`,
+> `Conv2dSimple`, `Dequantize*`/`QuantizeQ8_0`, `AddAssignScaled`, `ConvTranspose1D`, …) that
+> Fuel performs as graph rewrites / views / lowerings. The discipline (§3.10): a token that is a
+> *typo* for a **real** `OpKind` (e.g. `Cumsum→CumSum`, `Clamp→ClampInplace`, `PowI→PowIInplace`,
+> `ConvTranspose2D`) is RENAMED to the exact variant, not marked describe-only; only a token with
+> **no** real `OpKind` becomes describe-only. Never invent an `OpKind`; never relax a validator to
+> hide a defect. Importer landed in `fuel-dispatch/src/fkc/{schema,validate,register}.rs` (the
+> corpus is unchanged this round).
+
 ---
 
 ## 1. Overview & goals
@@ -662,6 +678,75 @@ This is the literal generalization of the gather single-place rule (§3.9.1) and
 scale-buffer discipline (FDX §6.3): a fact lives in one normative place, and the cross-form
 consistency check guarantees the FKC operand and the FDX buffer reference (when both are present
 for *different* scales) never disagree.
+
+### 3.10 Describe-only (non-registrable) sections (ADDED 2026-06-18)
+
+A `## ` section may be marked **describe-only** with a single section-level boolean field in its
+` ```fkc ` block:
+
+```yaml
+registrable: false      # §3.10 — a documentation-only section; NOT registered, op_kind/fused_op
+                        # is NOT required to resolve to a real dispatch target. Default: true.
+```
+
+`registrable:` is a section-level field on the per-kernel block (sibling of `kernel:` / `op_kind:`
+/ `blurb:`), defaulting to **`true`** (every existing contract is registrable; the field is
+additively versioned per §11). When a section sets `registrable: false`:
+
+- **It is NOT registered.** The importer parses + validates it as documentation but does **not**
+  insert it into the `KernelBindingTable` / `FusedKernelRegistry` (it never produces a
+  `ResolvedPrimitive` / `ResolvedFused` and is excluded from `register_into`, §9.3 / §12.5). It
+  carries no dispatch decision point, so it can never collide at a key (§10.10) and never
+  contributes a `KernelRef`.
+- **It does NOT require `op_kind` / `fused_op` to resolve to a real dispatch target.** The
+  exactly-one-of-`op_kind`/`fused_op` structural rule (§10.2) and the "the named op resolves"
+  rule (§10.3) are **skipped**. `op_kind` may be `~` (absent), or a **descriptive non-dispatch
+  token** that names no real `OpKind` (a documentation umbrella name). The op-param namespace
+  check (§10.7) is likewise skipped (a describe-only section may name a params variant for prose,
+  or omit it).
+- **It does NOT require `accept.inputs` (≥1).** The ≥1-input required-field rule (§10.2) is
+  **exempted** for a describe-only section: a documentation-only **zero-operand op** is
+  legitimate — e.g. a `rand_uniform` / `rand_normal` random fill whose only "input" is
+  backend-private RNG seed state (not a graph tensor), so it declares `accept.inputs: []`. A
+  zero-input op has no real dispatch carrier (there is no `OpKind` that consumes zero operands),
+  which is exactly why it is describe-only in the first place; the exemption is therefore
+  describe-only-scoped. **A *registrable* section still requires ≥1 input** — a real dispatch
+  target must consume at least one graph operand, so the ≥1-input rule is NOT relaxed for
+  registrable sections.
+- **Its descriptive fields are STILL validated as documentation.** Everything that is a *fact
+  about the described family* still runs: the FDX-subset drift-guard (§10.16 — every `dtypes:` /
+  `fdx.quant.family` / `granularity` / `ggml_dtype` token must still be a real FDX-table member,
+  so the docs cannot name a dtype that does not exist), layout coherence (§10.4 — the documented
+  five-flag set must still be internally consistent), the awkward-layout coherence (§10.5), and
+  quant coherence where a `fdx.quant` block is present (§10.6, including the MX/AFFINE_BLOCK
+  not-yet-registrable note as a documentation finding). A describe-only section is *honest docs*,
+  not an escape hatch from coherence — it only drops the *dispatch-resolution* checks that
+  presuppose a real registrable kernel.
+
+**When to use it.** Two cases, both about description without a dispatch target:
+
+1. **Chassis / family umbrellas.** A section that documents a *shared algorithm* backing many
+   per-`(op, dtype)` thunks — e.g. `## binary` (Add/Sub/Mul/Div/Max/Min/Pow/Rem) or `## unary` —
+   where each concrete op is its own registrable section. The umbrella is prose + the shared
+   layout/precision/cost description; it should not name one op arbitrarily as a "representative"
+   (which would either double-register that op or mislead the optimizer). Mark it
+   `registrable: false` and let `op_kind` be the descriptive umbrella name (`binary`) or `~`.
+2. **Ops with no dispatch `OpKind`.** A token that documents an operation Fuel performs as a
+   *graph rewrite / view / lowering*, not via a dispatch `OpKind` entry — e.g. `Im2Col` /
+   `Im2Col1d` / `Col2Im1d`, the pooling ops, `Upsample*`, `Transpose` / `Permute` (metadata-only
+   views), `ArgSort`, `Conv2dSimple`, `Dequantize*` / `QuantizeQ8_0`, `AddAssignScaled`, and any
+   other token that has **no real `OpKind`** in the as-built `fuel-core-types::dispatch::OpKind`
+   enum. These have descriptive contracts (dtypes, layout, precision) worth publishing, but there
+   is no dispatch key to register against. Mark them `registrable: false`.
+
+> **Decide describe-only vs RENAME by checking the as-built enum.** A token that is a *typo* for a
+> real `OpKind` (the enum genuinely has the variant) is **renamed to the exact variant name**, not
+> marked describe-only: `Cumsum → CumSum`; `Clamp → ClampInplace` / `ClampElementwise` (the real
+> inplace/elementwise variant); `PowI → PowIInplace` / `PowIElementwise`; `ConvTranspose1D` /
+> `ConvTranspose2D` → the real `OpKind` if one exists (`ConvTranspose2D` does;
+> `ConvTranspose1D` does not — the latter is describe-only). Only a token with **no** real
+> `OpKind` becomes describe-only. **Never invent an `OpKind`, and never relax a validator to hide
+> a defect** — describe-only is a *typed, declared* posture, not a silent skip.
 
 ---
 
@@ -1572,6 +1657,8 @@ glob → for each file:
   for each `## ` section:
     extract the ```fkc block (YAML, restricted subset §3.8) → FkcKernel struct
     validate (§10)                   → Result<(), FkcError>   [no panic]
+    if registrable == false (§3.10): documentation-only — SKIP everything below
+                                     (no lower, no entry_point resolution, not registered)
     resolve entry_point against provider.link_registry → KernelRef
     check resolved-KernelRef-level duplicate at the key (§10.10) → Result, NOT a panic
     compute kernel_revision_hash (auto | literal)
@@ -1603,9 +1690,19 @@ Run at import/registration; the principle is "every check that can run at build 
 2. **Required fields present:** `kernel`, exactly one of `op_kind`/`fused_op`, `blurb`,
    `entry_point`, `accept.inputs` (≥1), `return.outputs` (≥1) or `return.bundle`, a `cost` block
    (including its required `provenance:`, §10.8a), a `precision` block, `determinism`.
+   **Describe-only exception (§3.10):** a section with `registrable: false` SKIPS the
+   exactly-one-of-`op_kind`/`fused_op` requirement — its `op_kind` may be `~` or a descriptive
+   non-dispatch token — AND is EXEMPT from the `accept.inputs` (≥1) requirement (a documentation-
+   only zero-operand op such as a `rand_uniform`/`rand_normal` random fill, whose only "input" is
+   backend-private RNG state rather than a graph tensor, legitimately declares `accept.inputs: []`).
+   All other required fields (`blurb`, `return.outputs`/`bundle`, `cost`, `precision`,
+   `determinism`, etc.) still apply. A **registrable** section is NOT exempted from either rule.
 3. **Dtype validity:** every dtype name is a real `DType`; sub-byte dtypes carry `fdx.sub_byte` +
    `fdx.quant` (no reliance on `size_in_bytes()==0`); every `ggml_dtype` is a real `GgmlDType`
-   **variant name** matched by code (`Q4K`, never `Q4_K_M`; §3.4).
+   **variant name** matched by code (`Q4K`, never `Q4_K_M`; §3.4). The named op
+   (`op_kind`/`fused_op`) must resolve to a real dispatch target **unless** the section is
+   describe-only (§3.10), in which case the resolution check is skipped (the descriptive
+   dtype/layout/quant checks below still run).
 4. **Layout coherence:** at least one of `contiguous`/`strided` is acceptable per operand;
    `broadcast_stride0: accepted` ⇒ `strided: accepted` (broadcast is a stride-0 special case);
    `reverse_strides: accepted` ⇒ `strided: accepted` (a negative stride is still a strided walk —
@@ -1644,6 +1741,8 @@ Run at import/registration; the principle is "every check that can run at build 
 7. **Shape/param coherence:** `shape_constraint` predicates parse; the op-param `variant` is a
    real variant **in the correct namespace** — `OpParams` for an `op_kind` contract,
    `FusedOpParams` for a `fused_op` contract (§3.7); declared fields match the variant's fields.
+   **Describe-only (§3.10) SKIPS the op-param namespace check** (there is no resolved dispatch
+   target to bind a params variant against).
 8. **Cost expressions** parse (FKC's own parser, not YAML — §3.8) and reference only in-scope
    symbols (operand dims by role, op-param fields, `n`, `dtype_bytes`, bound `SymId`s evaluated
    at capacity); no division-by-zero at capacity. The compile target (primitive `CostFn` vs
@@ -1738,6 +1837,21 @@ Run at import/registration; the principle is "every check that can run at build 
     `AFFINE_BLOCK` does NOT use `PerBlock`, its block grain rides `block_shape`) still **passes this
     subset check** — it is a member of FDX's table —
     and is gated separately at registration by §10.6 (`MxNotYetRegistrable`), never by this rule.
+17. **Describe-only sections (§3.10).** A section with `registrable: false` is documentation: the
+    importer **skips the dispatch-resolution checks** — exactly-one-of-`op_kind`/`fused_op` (rule
+    2), the `accept.inputs` (≥1) required-field check (rule 2; a zero-operand documentation op like
+    a `rand_uniform`/`rand_normal` random fill may declare `accept.inputs: []`), the op resolving to
+    a real `OpKind`/`FusedOpId` (rule 3), and the op-param namespace check
+    (rule 7) — and **excludes the section from registration** (§9.3, §12.5): it never becomes a
+    `ResolvedPrimitive`/`ResolvedFused`, never resolves an `entry_point`, and never reaches the
+    binding table / fused registry or the duplicate-`KernelRef` gate (rule 10). All **descriptive**
+    checks still run: the FDX-subset drift-guard (rule 16), layout coherence (rule 4),
+    awkward-layout coherence (rule 5), and quant coherence (rule 6) — a describe-only section is
+    *validated documentation*, not an unchecked skip. `registrable` defaults to `true` (additive,
+    §11); a section that omits it is registered exactly as before. **Never invent an `OpKind` and
+    never relax a validator to make a section "pass": a token with no real `OpKind` is marked
+    describe-only (a declared, typed posture); a token that is a typo for a real `OpKind` is renamed
+    to the exact variant (§3.10).**
 
 `FkcError` variants: `UnsupportedVersion`, `MissingField`, `BadDType`, `BadScalarType`,
 `YamlTabIndent`, `YamlAnchorDisallowed`, `LayoutIncoherent`, `AwkwardStrategyIncoherent`,

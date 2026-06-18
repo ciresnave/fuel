@@ -238,8 +238,9 @@ discipline) until a dispatch carrier lands or the kernel is folded into `OpKind:
 
 ```fkc
 kernel: conv2d_simple
-op_kind: Conv2dSimple          # [consumer-ahead] NO such OpKind/OpParams variant exists in fuel-dispatch;
-                               # test-only oracle, not registrable until a dispatch carrier lands (see Status)
+op_kind: Conv2dSimple          # forward marker only; NO such OpKind/OpParams variant exists in fuel-dispatch
+                               # (test-only oracle, no dispatch carrier) — describe-only (§3.10)
+registrable: false             # §3.10 — documentation-only; not registered, op_kind/op_params not required to resolve
 blurb: "Legacy gather-form NCHW 2-D convolution, no bias/groups, scalar stride/padding; f32/f64; contiguous."
 backend: Cpu
 kernel_source: "reference-oracle"
@@ -326,8 +327,9 @@ a dispatch carrier lands. Contiguous-only; no in-place; fresh output buffer.
 
 ```fkc
 kernel: max_pool2d
-op_kind: MaxPool2D             # [consumer-ahead] NO such OpKind/OpParams in fuel-dispatch (graph Op::MaxPool2D
-                               # exists, op.rs:93, but no dispatch carrier); test-only oracle (see Status)
+op_kind: MaxPool2D             # forward marker only; NO such OpKind/OpParams in fuel-dispatch (graph Op::MaxPool2D
+                               # exists, op.rs:93, but no dispatch carrier; test-only oracle) — describe-only (§3.10)
+registrable: false             # §3.10 — documentation-only; not registered, op_kind/op_params not required to resolve
 blurb: "Per-channel 2-D max pool, square window, no padding, scalar stride; f32/f64/bf16/f16; contiguous; exact (no accumulation)."
 backend: Cpu
 kernel_source: "reference-oracle"

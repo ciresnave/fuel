@@ -210,7 +210,8 @@ zero-offset; output fresh contiguous `[n,m]`, same dtype. Known limitation: rank
 
 ```fkc
 kernel: transpose_2d
-op_kind: Transpose
+op_kind: Transpose                 # forward marker only; NO OpKind::Transpose exists (zero-copy graph view, no dispatch carrier) — describe-only (§3.10)
+registrable: false                 # §3.10 — documentation-only; not registered, op_kind not required to resolve
 blurb: "Rank-2 physical transpose [m,n]→[n,m] into a fresh contiguous buffer (reference materializes; not a zero-copy view)."
 backend: Cpu
 kernel_source: "reference-oracle"
@@ -274,7 +275,8 @@ copies; `T: Float` only (no integer/index dtypes).
 
 ```fkc
 kernel: transpose_last_two
-op_kind: Transpose
+op_kind: Transpose                 # forward marker only; NO OpKind::Transpose exists (zero-copy graph view, no dispatch carrier) — describe-only (§3.10)
+registrable: false                 # §3.10 — documentation-only; not registered, op_kind not required to resolve
 blurb: "Swap the last two dims [..b..,m,n]→[..b..,n,m], leading dims batched; physical reorder to fresh contiguous; F32/F64/BF16/F16."
 backend: Cpu
 kernel_source: "reference-oracle"
@@ -339,7 +341,8 @@ contiguous-only; copies; `axes` must be a valid permutation.
 
 ```fkc
 kernel: permute
-op_kind: Permute
+op_kind: Permute                   # forward marker only; NO OpKind::Permute exists (zero-copy graph view, no dispatch carrier) — describe-only (§3.10)
+registrable: false                 # §3.10 — documentation-only; not registered, op_kind/op_params not required to resolve (op_params.variant Permute is not a real OpParams variant)
 blurb: "N-D axis permutation by `axes` (a permutation of 0..rank); physical reorder to fresh row-major contiguous; F32/F64/BF16/F16/U32."
 backend: Cpu
 kernel_source: "reference-oracle"

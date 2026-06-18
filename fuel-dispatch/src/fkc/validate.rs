@@ -13,7 +13,7 @@
 //! | rule | check | `FkcError` |
 //! |------|-------|------------|
 //! | 1  | `fkc_version <= FKC_VERSION_MAX` | `UnsupportedVersion` |
-//! | 2  | required fields (kernel; EXACTLY ONE of op_kind/fused_op; blurb; entry_point; ≥1 input; ≥1 output/bundle; cost; precision; determinism) | `MissingRequiredField` / `MissingBlurb` / `OpTargetAmbiguous` |
+//! | 2  | required fields (kernel; EXACTLY ONE of op_kind/fused_op; blurb; entry_point; ≥1 input; ≥1 output/bundle; cost; precision; determinism). Describe-only (§3.10) EXEMPTS exactly-one-of-op_kind/fused_op AND the ≥1-input rule (a zero-operand documentation op is legitimate). | `MissingRequiredField` / `MissingBlurb` / `OpTargetAmbiguous` |
 //! | 3  | dtype validity; sub-byte ⇒ fdx.quant; ggml_dtype a real `GgmlDType` | `BadScalarType` / `QuantIncoherent` |
 //! | 4  | layout coherence (≥1 of contiguous/strided OK; broadcast/reverse ⇒ strided) | `LayoutIncoherent` |
 //! | 5  | awkward-layout coherence PER OPERAND | `AwkwardStrategyIncoherent` |
@@ -133,40 +133,57 @@ pub fn validate_file(file: &FkcFile) -> Result<(), FkcError> {
 pub fn validate_kernel(kernel: &FkcKernel) -> Result<(), FkcError> {
     let section = kernel.kernel.as_str();
 
-    // Rule 2: required fields.
-    required_fields(kernel, section)?;
+    // §3.10 (rule 17): a describe-only section is documentation. SKIP the
+    // dispatch-resolution checks (exactly-one-of op_kind/fused_op, op resolves,
+    // op-param namespace) but STILL run every descriptive check below.
+    let describe_only = !kernel.registrable;
 
-    // Determine the op target namespace (primitive vs fused) for rule 7.
-    let is_fused = match (kernel.op_kind.as_deref(), kernel.fused_op.as_deref()) {
-        (Some(op), None) => {
-            // Rule 2/3: op_kind token resolves (reuse the lower table).
-            lower::lower_op_kind(op, section)?;
-            false
-        }
-        (None, Some(fused)) => {
-            // fused_op token resolves through the SCREAMING_SNAKE table.
-            lower::lower_fused_op(fused, section)?;
-            true
-        }
-        (op, fused) => {
-            return Err(FkcError::OpTargetAmbiguous {
-                section: section.to_string(),
-                op_kind: op.map(String::from),
-                fused_op: fused.map(String::from),
-            });
+    // Rule 2: required fields (the describe-only exceptions are applied inside).
+    required_fields(kernel, section, describe_only)?;
+
+    // Determine the op target namespace (primitive vs fused) for rule 7. For a
+    // describe-only section there is no resolved dispatch target, so the
+    // namespace check is skipped (and the op token may be `~` / descriptive).
+    let is_fused = if describe_only {
+        // No dispatch resolution; op_kind/fused_op need not name a real target.
+        // (A descriptive token like `binary`, or `~`, is legal here — §3.10.)
+        false
+    } else {
+        match (kernel.op_kind.as_deref(), kernel.fused_op.as_deref()) {
+            (Some(op), None) => {
+                // Rule 2/3: op_kind token resolves (reuse the lower table).
+                lower::lower_op_kind(op, section)?;
+                false
+            }
+            (None, Some(fused)) => {
+                // fused_op token resolves through the SCREAMING_SNAKE table.
+                lower::lower_fused_op(fused, section)?;
+                true
+            }
+            (op, fused) => {
+                return Err(FkcError::OpTargetAmbiguous {
+                    section: section.to_string(),
+                    op_kind: op.map(String::from),
+                    fused_op: fused.map(String::from),
+                });
+            }
         }
     };
 
-    // Per-operand checks (rules 3, 4, 5, 6, 14, 15, 16).
+    // Per-operand checks (rules 3, 4, 5, 6, 14, 15, 16) — descriptive, run for
+    // describe-only sections too.
     if let Some(accept) = &kernel.accept {
         for d in &accept.inputs {
             let operand = d.name.as_deref().unwrap_or("<input>").to_string();
             validate_operand(section, &operand, d, accept)?;
         }
-        // Rule 7: op-param variant in the correct namespace.
-        if let Some(op_params) = &accept.op_params {
-            if let Some(variant) = op_params.variant.as_deref() {
-                validate_op_params_namespace(section, variant, is_fused)?;
+        // Rule 7: op-param variant in the correct namespace — SKIPPED for a
+        // describe-only section (no resolved dispatch target to bind against).
+        if !describe_only {
+            if let Some(op_params) = &accept.op_params {
+                if let Some(variant) = op_params.variant.as_deref() {
+                    validate_op_params_namespace(section, variant, is_fused)?;
+                }
             }
         }
     }
@@ -200,7 +217,7 @@ pub fn validate_kernel(kernel: &FkcKernel) -> Result<(), FkcError> {
 // Rule 2 — required fields
 // ===========================================================================
 
-fn required_fields(kernel: &FkcKernel, section: &str) -> Result<(), FkcError> {
+fn required_fields(kernel: &FkcKernel, section: &str, describe_only: bool) -> Result<(), FkcError> {
     // kernel name is always present (it is the struct's required field).
     // exactly-one-of op_kind/fused_op is checked in validate_kernel's match.
 
@@ -213,17 +230,24 @@ fn required_fields(kernel: &FkcKernel, section: &str) -> Result<(), FkcError> {
     // entry_point.
     require(kernel.entry_point.as_deref(), section, "entry_point")?;
 
-    // ≥1 accept.inputs.
-    let has_inputs = kernel
-        .accept
-        .as_ref()
-        .map(|a| !a.inputs.is_empty())
-        .unwrap_or(false);
-    if !has_inputs {
-        return Err(FkcError::MissingRequiredField {
-            section: section.to_string(),
-            field: "accept.inputs (≥1)".to_string(),
-        });
+    // ≥1 accept.inputs — EXCEPT a describe-only section (§3.10): a
+    // documentation-only zero-operand op is legitimate (a zero-input random
+    // fill like `rand_uniform`/`rand_normal` whose only "input" is backend-
+    // private RNG state, not a graph tensor). The ≥1-input requirement is
+    // still enforced for every REGISTRABLE section (a real dispatch target
+    // must consume at least one graph operand).
+    if !describe_only {
+        let has_inputs = kernel
+            .accept
+            .as_ref()
+            .map(|a| !a.inputs.is_empty())
+            .unwrap_or(false);
+        if !has_inputs {
+            return Err(FkcError::MissingRequiredField {
+                section: section.to_string(),
+                field: "accept.inputs (≥1)".to_string(),
+            });
+        }
     }
 
     // ≥1 return.outputs OR a bundle.
@@ -1385,6 +1409,173 @@ determinism: same_hardware_bitwise
         assert!(matches!(err, FkcError::UnknownAdmissibilityEnum { .. }), "got {err:?}");
     }
 
+    // ===== Rule 17 / §3.10 — describe-only (non-registrable) sections =====
+
+    /// A describe-only chassis-umbrella bundle whose `op_kind:` is the
+    /// DESCRIPTIVE token `binary` (NOT a real `OpKind`) — legal because
+    /// `registrable: false` skips the dispatch-resolution checks (§3.10).
+    fn describe_only_bundle() -> String {
+        r#"---
+fkc_version: 1
+provider:
+  name: test-provider
+  backend: Cpu
+  kernel_source: "test-cpu"
+---
+
+# describe-only bundle
+
+## binary
+
+A chassis umbrella.
+
+```fkc
+kernel: binary
+registrable: false
+op_kind: binary
+blurb: "shared binary chassis (documentation umbrella)"
+entry_point: "x::chassis"
+accept:
+  inputs:
+    - name: lhs
+      dtypes: [F32, F64, BF16, F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+    - name: rhs
+      dtypes: [F32, F64, BF16, F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(lhs)
+cost:
+  provenance: judge_measured
+  class: cheap_elementwise
+precision:
+  bit_stable_on_same_hardware: true
+  audited: true
+determinism: same_hardware_bitwise
+```
+"#
+        .to_string()
+    }
+
+    #[test]
+    fn describe_only_with_descriptive_op_kind_validates() {
+        // `op_kind: binary` is NOT a real OpKind, but registrable: false skips
+        // the resolution check — the section validates as documentation.
+        validate_str(&describe_only_bundle()).expect("describe-only section validates");
+    }
+
+    #[test]
+    fn describe_only_with_tilde_op_kind_validates() {
+        // `op_kind: ~` (absent) is legal for a describe-only section — neither
+        // op_kind nor fused_op need resolve.
+        let src = describe_only_bundle().replace("op_kind: binary\n", "op_kind: ~\n");
+        validate_str(&src).expect("describe-only with op_kind: ~ validates");
+    }
+
+    #[test]
+    fn non_describe_only_still_requires_real_op_kind_regression() {
+        // REGRESSION: the SAME section WITHOUT registrable: false must still
+        // fail — a descriptive `binary` token is not a real OpKind, so a
+        // registrable section is rejected (no relaxation of the validator).
+        let src = describe_only_bundle().replace("registrable: false\n", "");
+        let err = validate_str(&src).expect_err("registrable section needs a real op_kind");
+        assert!(matches!(err, FkcError::UnknownOpKind { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn describe_only_still_validates_descriptive_dtypes() {
+        // A describe-only section's descriptive checks STILL run: a bogus dtype
+        // token is rejected by the FDX-subset drift-guard even though dispatch
+        // resolution is skipped.
+        let src = describe_only_bundle().replace("dtypes: [F32, F64, BF16, F16]", "dtypes: [F99]");
+        let err = validate_str(&src).expect_err("bad dtype in describe-only docs");
+        assert!(matches!(err, FkcError::FdxTokenNotInTable { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn describe_only_still_validates_layout_coherence() {
+        // Layout coherence (rule 4) still runs for describe-only docs.
+        let src = describe_only_bundle().replace(
+            "layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }",
+            "layout: { contiguous: \"n/a\", strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }",
+        );
+        let err = validate_str(&src).expect_err("incoherent layout in describe-only docs");
+        assert!(matches!(err, FkcError::LayoutIncoherent { .. }), "got {err:?}");
+    }
+
+    /// A describe-only zero-operand op (e.g. a `rand_uniform`/`rand_normal`
+    /// random fill whose only "input" is backend-private RNG state, not a graph
+    /// tensor): `registrable: false` + `accept.inputs: []`. Mirrors the
+    /// `metal/sort-random.fkc.md` random-fill sections.
+    fn describe_only_zero_input_bundle() -> String {
+        r#"---
+fkc_version: 1
+provider:
+  name: test-provider
+  backend: Cpu
+  kernel_source: "test-cpu"
+---
+
+# describe-only zero-input bundle
+
+## rand_fill
+
+A zero-operand random fill.
+
+```fkc
+kernel: rand_fill
+registrable: false
+op_kind: RandUniform
+blurb: "fill a dense buffer with U(min,max); no input tensor (RNG state is backend-private)"
+entry_point: "x::rand_fill"
+accept:
+  inputs: []
+return:
+  outputs:
+    - name: out
+      dtype_rule: cast(out)
+cost:
+  provenance: judge_measured
+  class: cheap_elementwise
+precision:
+  bit_stable_on_same_hardware: false
+  audited: true
+determinism: nondeterministic
+```
+"#
+        .to_string()
+    }
+
+    #[test]
+    fn describe_only_zero_input_fill_validates() {
+        // §3.10 carve-out: a describe-only section with `accept.inputs: []` is a
+        // legitimate zero-operand documentation op (random fill) — the ≥1-input
+        // required-field check is EXEMPTED for describe-only sections.
+        validate_str(&describe_only_zero_input_bundle())
+            .expect("describe-only zero-input fill validates");
+    }
+
+    #[test]
+    fn registrable_zero_input_still_fails_missing_required_field() {
+        // REGRESSION: the SAME zero-input section WITHOUT registrable: false must
+        // still fail the ≥1-input rule — the carve-out applies ONLY to
+        // describe-only sections (a real dispatch target must consume ≥1 graph
+        // operand). No relaxation for registrable sections.
+        let src = describe_only_zero_input_bundle()
+            .replace("registrable: false\n", "")
+            // Use a real OpKind so the missing-input rule (not the op-resolution
+            // rule) is the failure under test. The required-field battery runs
+            // before op resolution, so `accept.inputs (≥1)` fires first regardless.
+            .replace("op_kind: RandUniform\n", "op_kind: ReluElementwise\n");
+        let err = validate_str(&src).expect_err("registrable zero-input section is rejected");
+        assert!(
+            matches!(err, FkcError::MissingRequiredField { ref field, .. } if field == "accept.inputs (≥1)"),
+            "got {err:?}"
+        );
+    }
+
     // =====================================================================
     // TASK 3 — the CI lint over the whole checked-in contract corpus.
     // =====================================================================
@@ -1453,17 +1644,18 @@ determinism: same_hardware_bitwise
     /// behind), so the lint records them separately as "deferred", not as
     /// hard failures.
     ///
-    /// `#[ignore]`d so the unit-test gate (`--lib fkc`) stays green while the
-    /// importer hardening is verified; run it explicitly with
-    /// `cargo test -p fuel-dispatch --features fkc --lib -- --ignored \
-    ///  ci_lint_corpus_parse_lower_validate --nocapture` to get the full
-    /// file/section counts + the list of any failing contracts. (The corpus
-    /// currently carries genuine pre-existing defects — forward-looking op_kinds
-    /// not in the as-built `OpKind` enum, `:{ }` YAML style, §10.4 broadcast
-    /// coherence violations — that this lint surfaces for human triage; it does
-    /// NOT relax a validator or edit the corpus to hide them.)
+    /// This is a **real CI gate**: it runs as a normal unit test (no
+    /// `#[ignore]`) and FAILS the build if any checked-in contract has a hard
+    /// parse/lower/validate failure. The whole corpus is currently clean of hard
+    /// failures; only the `MxNotYetRegistrable` / `GatherNotYetSupported`
+    /// deferred (consumer-ahead) cases remain, which are a CORRECT outcome and
+    /// are NOT counted as failures. Run it verbosely with
+    /// `cargo test -p fuel-dispatch --features fkc --lib -- \
+    ///  ci_lint_corpus_parse_lower_validate --nocapture` to see the full
+    /// file/section/deferred counts. It does NOT relax a validator or edit the
+    /// corpus to hide defects — a new hard failure must be fixed (or the section
+    /// marked describe-only per §3.10) to make this gate green again.
     #[test]
-    #[ignore = "corpus lint: run explicitly; reports pre-existing corpus defects for triage"]
     fn ci_lint_corpus_parse_lower_validate() {
         // Locate the corpus relative to this crate (CARGO_MANIFEST_DIR =
         // .../fuel-dispatch). The corpus lives at ../docs/kernel-contracts.

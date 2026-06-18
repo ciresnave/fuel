@@ -88,6 +88,7 @@ guaranteed).
 
 ```fkc
 kernel: asort_asc
+registrable: false               # §3.10 describe-only: NO OpKind::ArgSort / OpParams::ArgSort in fuel-dispatch
 op_kind: ArgSort                  # [consumer-ahead] no ArgSort OpKind yet (dispatch.rs:52); registers once it lands
 blurb: "Single-block bitonic per-row argsort, ascending; returns U32 index permutation; contiguous rows."
 backend: Metal
@@ -158,6 +159,7 @@ descending order. Keys f32/f16/u8/u32/i64/bf16; output U32 index permutation, de
 
 ```fkc
 kernel: asort_desc
+registrable: false               # §3.10 describe-only: NO OpKind::ArgSort / OpParams::ArgSort in fuel-dispatch
 op_kind: ArgSort                  # [consumer-ahead] no ArgSort OpKind yet (dispatch.rs:52); descending sibling
 blurb: "Single-block bitonic per-row argsort, descending; returns U32 index permutation; contiguous rows."
 backend: Metal
@@ -231,6 +233,7 @@ float32 (the MLX dtype set); output U32 indices, dense, written straight to `dst
 
 ```fkc
 kernel: carg_block_sort
+registrable: false               # §3.10 describe-only: NO OpKind::ArgSort / OpParams::ArgSort in fuel-dispatch
 op_kind: ArgSort                  # [consumer-ahead] no ArgSort OpKind yet (dispatch.rs:52); MLX single-block leg
 blurb: "MLX single-block per-row argsort; returns U32 index permutation; contiguous rows, written direct to dst."
 backend: Metal
@@ -304,6 +307,7 @@ cost memory hint. Keys uint8/uint32/int64/float16/bfloat16/float32; idx U32.
 
 ```fkc
 kernel: sort_mbsort
+registrable: false               # §3.10 describe-only: NO OpKind::ArgSort / OpParams::ArgSort in fuel-dispatch
 op_kind: ArgSort                  # [consumer-ahead] no ArgSort OpKind yet; internal multi-block stage-1 (not independently dispatched)
 blurb: "MLX multi-block argsort stage 1: per-block sort each row slice into scratch (sorted vals + U32 idxs)."
 backend: Metal
@@ -376,6 +380,7 @@ buffer, not a graph tensor. Monomorphized over the MLX key dtype string; partiti
 
 ```fkc
 kernel: partition_mbsort
+registrable: false               # §3.10 describe-only: NO OpKind::ArgSort / OpParams::ArgSort in fuel-dispatch
 op_kind: ArgSort                  # [consumer-ahead] no ArgSort OpKind yet; internal multi-block stage-2 (merge partitioning)
 blurb: "MLX multi-block argsort stage 2: compute per-row merge partition offsets into block_partitions scratch."
 backend: Metal
@@ -455,6 +460,7 @@ index permutation; keys uint8/uint32/int64/float16/bfloat16/float32 (selected up
 
 ```fkc
 kernel: merge_mbsort
+registrable: false               # §3.10 describe-only: NO OpKind::ArgSort / OpParams::ArgSort in fuel-dispatch
 op_kind: ArgSort                  # [consumer-ahead] no ArgSort OpKind yet; multi-block pipeline final merge (result producer)
 blurb: "MLX multi-block argsort stage 3: merge partitioned blocks into the final per-row U32 index permutation (merge tag hardwired float32)."
 backend: Metal
@@ -538,6 +544,7 @@ with the same seed reproduce on the same hardware.
 
 ```fkc
 kernel: rand_uniform
+registrable: false               # §3.10 describe-only: NO OpKind::RandUniform / OpParams::RandUniform in fuel-dispatch
 op_kind: RandUniform              # [consumer-ahead] no RandUniform OpKind yet (dispatch.rs:52); registers once it lands
 blurb: "Fill a dense buffer with U(min,max) via HybridTaus; no input tensor; advances a backend-internal seed."
 backend: Metal
@@ -606,6 +613,7 @@ same hardware, not bit-stable cross-hardware.
 
 ```fkc
 kernel: rand_normal
+registrable: false                # §3.10 describe-only: NO OpKind::RandNormal / OpParams::RandNormal in fuel-dispatch
 op_kind: RandNormal               # [consumer-ahead] no RandNormal OpKind yet (dispatch.rs:52); registers once it lands
 blurb: "Fill a dense buffer with N(mean,stddev) via Box-Muller; no input tensor; advances a backend-internal seed."
 backend: Metal
