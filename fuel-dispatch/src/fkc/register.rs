@@ -258,6 +258,10 @@ pub fn import_bundle_str(
     link: &dyn LinkRegistry,
 ) -> Result<ImportedProvider, FkcError> {
     let file = parse_file(src)?;
+    // Run the build-time validators (the V-FKC-* battery, §10) AFTER parse so a
+    // structurally / coherence-bad contract fails import before any lowering or
+    // registration touches the dispatch surface.
+    crate::fkc::validate::validate_file(&file)?;
     let resolved = lower_file(&file, link)?;
     let provider = &file.front_matter.provider;
     let backend = lower_backend_str(&provider.backend)?;
@@ -616,12 +620,23 @@ accept:
   inputs:
     - name: lhs
       dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
     - name: rhs
       dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+  op_params: { variant: None }
 return:
   outputs:
     - name: out
       dtype_rule: passthrough(lhs)
+cost:
+  provenance: declared
+  class: cheap_elementwise
+  flops: \"n\"
+precision:
+  bit_stable_on_same_hardware: true
+  audited: true
+determinism: same_hardware_bitwise
 ```
 
 ## add_b
@@ -637,12 +652,23 @@ accept:
   inputs:
     - name: lhs
       dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
     - name: rhs
       dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+  op_params: { variant: None }
 return:
   outputs:
     - name: out
       dtype_rule: passthrough(lhs)
+cost:
+  provenance: declared
+  class: cheap_elementwise
+  flops: \"n\"
+precision:
+  bit_stable_on_same_hardware: true
+  audited: true
+determinism: same_hardware_bitwise
 ```
 ";
         let provider =
@@ -694,12 +720,23 @@ accept:
   inputs:
     - name: lhs
       dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
     - name: rhs
       dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+  op_params: { variant: None }
 return:
   outputs:
     - name: out
       dtype_rule: passthrough(lhs)
+cost:
+  provenance: declared
+  class: cheap_elementwise
+  flops: "n"
+precision:
+  bit_stable_on_same_hardware: true
+  audited: true
+determinism: same_hardware_bitwise
 ```
 "#;
         template

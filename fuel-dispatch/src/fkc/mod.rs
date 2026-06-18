@@ -48,6 +48,7 @@ mod precision;
 mod register;
 mod revhash;
 mod schema;
+mod validate;
 
 pub use caps_map::{ResolvedLayout, Tri};
 pub use cost_expr::{eval as eval_cost, CompiledCostExpr, CostEvalError, CostNode};
@@ -65,6 +66,7 @@ pub use schema::{
     FkcProvider, GatherSpec, LayoutSpec, OpParamFieldSpec, OpParamsSchema, OutputDesc,
     PrecisionBlock, QuantSpec, ReturnBlock, TensorDesc,
 };
+pub use validate::{validate_file, validate_kernel, FKC_VERSION_MAX};
 
 #[cfg(test)]
 mod tests {
