@@ -19,3 +19,9 @@ pub mod codes;
 pub mod convert;
 pub mod sidecar;
 pub mod validate;
+
+/// Header↔Rust drift gate: cross-checks `include/fuel_dlpack_ext.h` struct
+/// `sizeof` static-asserts (and a sample of `#define`s) against the Rust
+/// `#[repr(C)]` definitions. No C compiler needed (parses the embedded text).
+#[cfg(test)]
+mod header_check;
