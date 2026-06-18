@@ -20,6 +20,9 @@ half = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# FKC kernel-contract importer (default OFF — gated behind the `fkc` feature).
+serde = { workspace = true, optional = true }
+serde_yml = { workspace = true, optional = true }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 fuel-metal-backend = { workspace = true, optional = true }
@@ -38,3 +41,6 @@ default = []
 cuda = ["dep:fuel-cuda-backend", "fuel-memory/cuda"]
 vulkan = ["dep:fuel-vulkan-backend", "fuel-memory/vulkan"]
 metal = ["dep:fuel-metal-backend", "fuel-memory/metal"]
+# FKC kernel-contract importer (§1 of the kernel-contract adoption plan).
+# Default OFF so plain builds are untouched while the importer is WIP.
+fkc = ["dep:serde", "dep:serde_yml"]
