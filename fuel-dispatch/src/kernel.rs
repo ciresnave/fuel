@@ -776,11 +776,11 @@ impl KernelBindingTable {
     ///
     /// Phase 7.6 step 9a: multiple distinct kernels may register
     /// against the same `(op, dtypes, backend)` key — they become
-    /// sibling alternatives at one decision point. Registering the
-    /// **same** `KernelRef` function pointer twice **panics** at
-    /// registration time as a programmer-error guard (registration
-    /// runs at module init via `Lazy`/`OnceLock`, so a panic there
-    /// fails fast at startup rather than at runtime).
+    /// sibling alternatives at one decision point. Registration is
+    /// **append-only and never panics**; the **same** `KernelRef`
+    /// function pointer registered twice is detected by
+    /// [`Self::finalize`] (run once after bulk registration) and
+    /// returned as a `Result`, not raised as an inline panic.
     ///
     /// PrecisionGuarantee defaults to [`PrecisionGuarantee::UNAUDITED`].
     /// Step-7b convention: the always-built backend
@@ -867,9 +867,9 @@ impl KernelBindingTable {
     ///
     /// Phase 7.6 step 9a: appends to the alternative set for `(op,
     /// dtypes, backend)`. Distinct `KernelRef` function pointers
-    /// compose as siblings. Registering the same `KernelRef` twice
-    /// panics — see [`Self::register`]'s doc-comment for the
-    /// rationale.
+    /// compose as siblings. Append-only — a duplicate `KernelRef` is
+    /// detected by [`Self::finalize`] after bulk registration, not by
+    /// an inline panic (see [`Self::register`]).
     pub fn register_full(
         &mut self,
         op: OpKind,
@@ -905,18 +905,48 @@ impl KernelBindingTable {
     ) {
         let key = (op, SmallVec::from_slice(dtypes), backend);
         let entry = BindingEntry { kernel, caps, precision, cost, kernel_source };
-        let alts = self.bindings.entry(key).or_default();
-        let new_ptr = kernel as *const () as usize;
-        if alts.iter().any(|e| (e.kernel as *const () as usize) == new_ptr) {
-            panic!(
-                "KernelBindingTable: duplicate KernelRef registered for \
-                 (op={op:?}, dtypes={dtypes:?}, backend={backend:?}). \
-                 Same function pointer registered twice is programmer \
-                 error. Distinct alternatives at one decision point \
-                 must be distinct `fn` items.",
-            );
+        // Append-only (never-panic): distinct `KernelRef`s compose as
+        // sibling alternatives at one decision point; the *same*
+        // function pointer registered twice is NOT rejected inline.
+        // [`Self::finalize`] detects duplicates after bulk registration
+        // and returns a `Result`, so the static init boundary can
+        // fail-fast (`.expect()`) while a dynamic importer surfaces the
+        // error — honoring never-panic on the import path.
+        self.bindings.entry(key).or_default().push(entry);
+    }
+
+    /// Validate the fully-assembled table: within the alternative set
+    /// for any one `(op, dtypes, backend)` key, each `KernelRef`
+    /// function pointer must appear **at most once**. Distinct
+    /// alternatives compose as siblings; the same pointer twice is a
+    /// registration bug (a copy-paste in a hand-written table, or a
+    /// contract importer wiring one kernel onto two keys that collapse).
+    ///
+    /// `register*` is append-only and never panics; this single pass —
+    /// run once after bulk registration — surfaces a duplicate as a
+    /// typed `Result`. The static init boundary
+    /// ([`crate::dispatch::global_bindings`]) `.expect()`s it (fail-fast
+    /// at startup for hand-written tables); the FKC contract importer
+    /// will call it with `?`. This is the never-panic replacement for
+    /// the former inline duplicate `panic!`.
+    pub fn finalize(&self) -> Result<()> {
+        for ((op, dtypes, backend), alts) in self.bindings.iter() {
+            for i in 0..alts.len() {
+                let ptr_i = alts[i].kernel as *const () as usize;
+                for entry_j in &alts[i + 1..] {
+                    if entry_j.kernel as *const () as usize == ptr_i {
+                        return Err(Error::Msg(format!(
+                            "KernelBindingTable: duplicate KernelRef registered \
+                             for (op={op:?}, dtypes={dtypes:?}, backend={backend:?}). \
+                             The same function pointer was registered twice; \
+                             distinct alternatives at one decision point must be \
+                             distinct `fn` items."
+                        )));
+                    }
+                }
+            }
         }
-        alts.push(entry);
+        Ok(())
     }
 
     /// Phase 7.6 step 7b: upgrade every UNAUDITED-precision CPU
@@ -1344,18 +1374,37 @@ mod tests {
         assert_eq!(table.len(), 2, "two alternatives total");
     }
 
-    /// Phase 7.6 step 9a: registering the same `KernelRef` function
-    /// pointer twice against one key panics — "Strict — panic on
-    /// exact duplicate" per the user's choice (programmer-error
-    /// guard, registration runs at module init).
+    /// Never-panic (option B): registering the same `KernelRef` twice
+    /// against one key is append-only — it does NOT panic at
+    /// registration. `finalize()` detects the duplicate and returns
+    /// `Err`. (Replaces the former `#[should_panic]` guard.)
     #[test]
-    #[should_panic(expected = "duplicate KernelRef")]
-    fn step_9a_duplicate_kernel_ref_panics() {
+    fn step_9a_duplicate_kernel_ref_detected_by_finalize_not_panic() {
         use fuel_core_types::probe::BackendId;
         let mut table = KernelBindingTable::new();
         let dts = [DType::F32, DType::F32, DType::F32];
         table.register(OpKind::MatMul, &dts, BackendId::Cpu, ok_kernel);
+        table.register(OpKind::MatMul, &dts, BackendId::Cpu, ok_kernel); // dup — must NOT panic
+        let err = table
+            .finalize()
+            .expect_err("finalize must report the duplicate KernelRef");
+        assert!(
+            format!("{err}").contains("duplicate KernelRef"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Distinct sibling kernels under one key finalize cleanly.
+    #[test]
+    fn finalize_ok_for_distinct_sibling_kernels() {
+        use fuel_core_types::probe::BackendId;
+        let mut table = KernelBindingTable::new();
+        let dts = [DType::F32, DType::F32, DType::F32];
         table.register(OpKind::MatMul, &dts, BackendId::Cpu, ok_kernel);
+        table.register(OpKind::MatMul, &dts, BackendId::Cpu, ok_kernel_alt);
+        table
+            .finalize()
+            .expect("distinct sibling kernels must finalize OK");
     }
 
     /// Phase 7.6 step 9a: `fill_unset_cpu_precision` upgrades every
