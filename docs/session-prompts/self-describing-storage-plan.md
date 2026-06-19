@@ -1,7 +1,34 @@
 # Session prompt — Self-describing storage: `SType` / `Encoding`
 
-**Status:** Plan (2026-06-18). Not started. WIP lands on `feat/kernel-contracts-dlpack`
-(the same branch the FDX/FKC specs and the DLPack comm layer live on), **never `main`**.
+**Status:** Steps 1–3 SHIPPED (2026-06-19, branch `feat/kernel-contracts-dlpack`).
+Steps 4–7 remain. WIP lands on `feat/kernel-contracts-dlpack`, **never `main`**.
+
+**Progress (2026-06-19):**
+
+- ✅ **Step 1** — `fuel-core-types/src/stype.rs`: `SType`/`Encoding`/`ScaleSpec`
+  (commit `4bbe566c`). 5 born-red tests. Re-exported from crate root.
+- ✅ **Step 2** — `stype: SType` on BOTH `Storage` structs, default-empty =
+  byte-identical (commit `f241c87c`). `with_stype`/`stype` accessors; `try_clone`
+  (trait-object) preserves `stype`. Born-red incl. a minimal mock backend.
+- ✅ **Step 3** — `SType::to_fdx(scale_buffer)` (dlpack feature) + `view()` reads
+  `storage.stype` and fills the quant sidecar (commit `fb385c4b`). GGML validates
+  end-to-end; AFFINE emits the scheme with `scale_buffer = FDX_BUFFER_NONE`
+  (unbound). fuel-core-types `--features dlpack` 156 passed; fuel-memory 23 passed.
+- ⏭ **Step 4** — consuming-op scale-buffer binding (`view_with_quant`). **Finding
+  (2026-06-19):** the graph-layer "declare the scale sibling operand" half is
+  ALREADY DONE — `fuel-graph/src/registry/nf4_matmul.rs` takes
+  `[activations, w_packed, absmax]` (absmax IS the separate per-block scale
+  operand, model B). The remaining work is purely the FDX boundary:
+  `view_with_quant` binding the absmax operand as `buffers[1]` (role SCALE) and
+  filling `scale_buffer`. **Wrinkle to design:** V6 (`check_v6_scale_shape`)
+  derives the expected block count from the *honest uint8 byte base*
+  (`ceil(len_bytes / block_shape[0])`), which does NOT match NF4's real
+  `[N, K/block_size]` absmax (two codes per byte ⇒ off by the pack factor). Step 4
+  must refine the `block_axes`/`block_shape` projection so it reflects the weight's
+  *logical* `(N, K)` shape (op-supplied), not the packed byte length. Until then
+  `to_fdx` tiles leading axes of the byte buffer (a v1 placeholder, flagged in the
+  code comment).
+- ⏭ **Steps 5–7** — GGML-inline note, loader annotation, test round-up (unchanged).
 
 **Goal.** Make *how a tensor's bytes are encoded* (the SCHEME) self-describing **on the
 tensor** — so any op holding the tensor knows it is e.g. NF4 block-affine without consulting
