@@ -194,7 +194,11 @@ in response to the Baracuda dtype reconciliation (their 2026-06-19 reply):
   offsets are a non-event (the descriptor-offset-alignment constraint vanishes). The sidecar needs
   **no** Vulkane ABI slot — it stays Fuel-side and decomposes into ordinary bindings + push
   constants. Spec-only (the Vulkan device-pointer extraction in the comm-layer is still
-  `[consumer-ahead]`); records the frozen-ABI answer to Vulkane's one open question.
+  `[consumer-ahead]`); records the frozen-ABI answer to Vulkane's one open question. **Vulkane then
+  shipped the device-address allocator** and confirmed the handoff (§3.3.1 "Handoff mechanics"):
+  `data = Buffer::device_address()` (base; `byte_offset` stays separate and the backend folds at
+  dispatch), buffer-table addresses ride push constants in role→index order, >16-entry tables use a
+  root-address indirection, 256-aligned export needs a dedicated allocation.
 
 ### Changelog — 2026-06-18 (AFFINE_BLOCK quant family + GGML_BLOCK regime-contradiction fix)
 
@@ -571,6 +575,38 @@ defrag bookkeeping), Vulkane's per-allocation `user_data: u64` is a zero-interpr
 > identity the Metal compute path binds (DLPack's `id<MTLBuffer>` treatment). The general rule is
 > that FDX pins `data`'s meaning **per substrate** (§6.6), and the Vulkan substrate is pinned to
 > BDA here.
+
+**Handoff mechanics (Vulkane-confirmed, 2026-06-19; Vulkane shipped the device-address allocator).**
+The concrete `fuel-vulkan-backend` ↔ Vulkane contract under BDA:
+
+- **Allocation.** Every buffer-table entry (DATA / SCALE / ZERO_POINT / POOL / BLOCK_TABLE /
+  CONTEXT_LENS / bundle slots) is an ordinary sub-allocated buffer carrying the
+  `SHADER_DEVICE_ADDRESS` usage bit (Vulkane's `AllocatorOptions { buffer_device_address: true }`,
+  which requires the `bufferDeviceAddress` device feature). Pooled buffers are device-address-capable;
+  no special allocation per tensor.
+- **`data` value: base address, `byte_offset` stays separate (FDX is backend-uniform).** The
+  `FDXBufferRef.data` on the wire is `Buffer::device_address()` — the buffer's **base** address —
+  with any intra-buffer / sub-view start in `byte_offset`, **never folded** (§3.3, identical to every
+  other backend, so the description stays honest and uniform). The **fold happens at dispatch, in the
+  backend, not in the description**: `fuel-vulkan-backend` computes the single `VkDeviceAddress` it
+  hands the kernel as `data + byte_offset` (Vulkane's `buf.device_address()? + byte_offset`). A
+  flipped view's logical start is then exactly `data + byte_offset` and the kernel walks it with a
+  negative stride — no fixup.
+- **Dispatch transport.** Tensor data does **not** go through descriptor sets: the buffer-table
+  addresses ride **push constants** in **buffer-table role → index order**, and the Slang kernel
+  declares matching `buffer_reference` params (`struct { data: u64; scale: u64; … }`). The
+  buffer-table order + `role`s ARE the kernel ABI (the one thing both sides agree on; the role→index
+  map is the shader's concern).
+- **Large buffer tables (> ~16 entries).** `maxPushConstantsSize` is only guaranteed ≥ 128 bytes
+  (~16 `u64` addresses). A table that exceeds that (e.g. a large paged-KV bundle) puts the address
+  table in **one** small BDA buffer and passes that single **root** address via push constant. All
+  current tensors stay well under 16 (DATA + SCALE + ZERO_POINT, or POOL + BLOCK_TABLE +
+  CONTEXT_LENS, plus bundle slots), so v1 uses the direct push-constant table; the root-indirection
+  is the documented fallback for the large-table case.
+- **256-byte alignment on export.** The §3.3 256-byte rule governs the **base** of a boundary-(b)
+  **export** only. Vulkane's suballocator honors `memory_requirements().alignment` (often below 256
+  for storage buffers), so a guaranteed-256-aligned exported base is obtained via a **dedicated
+  allocation**. Internal-path tensors are unconstrained (the sub-view offset is pure pointer math).
 
 ### 3.4 Sub-byte dtypes never use the native DLPack sub-byte path
 

@@ -206,9 +206,12 @@ fn dl_device(loc: DeviceLocation) -> DLDevice {
 /// need each backend's device-pointer accessor and are a later slice
 /// (`[consumer-ahead]`). They return a typed error rather than fabricating a
 /// wrong pointer (never-panic, no-silent-fallback). **Vulkan**, when wired, uses
-/// the buffer device address (BDA) — `data` is a `VkDeviceAddress` from a
-/// `SHADER_DEVICE_ADDRESS` buffer (`Buffer::device_address()`), per FDX spec
-/// §3.3.1 (the Vulkane-confirmed decision), NOT a `VkBuffer` handle.
+/// the buffer device address (BDA) — `data` is the **base** `VkDeviceAddress`
+/// from a `SHADER_DEVICE_ADDRESS` buffer (`Buffer::device_address()`), with
+/// `byte_offset` kept separate here (the backend folds `data + byte_offset` into
+/// the kernel's push-constant address at dispatch), per FDX spec §3.3.1 (the
+/// Vulkane-confirmed handoff; Vulkane shipped the device-address allocator). NOT
+/// a `VkBuffer` handle.
 fn base_ptr_and_device(storage: &Storage) -> Result<(*mut c_void, DeviceLocation)> {
     // CPU is always built; the GPU arms are feature-gated. `dispatch_storage!`
     // expands to whichever variants are compiled in. We special-case CPU and
