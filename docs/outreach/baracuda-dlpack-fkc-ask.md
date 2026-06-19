@@ -1,5 +1,9 @@
 # Fuel → Baracuda — the kernel boundary as a two-way contract (FDX + FKC + telemetry)
 
+> **For sending, use [`baracuda-message.md`](baracuda-message.md)** — the single self-contained
+> message that consolidates this proposal + the formal reply and **inlines the full FDX ABI** (so
+> Baracuda needs no access to Fuel's source). This file is retained as internal working notes.
+
 **Status: DRAFT — not sent. PROPOSAL for a cross-project change.**
 This is an *outbound proposal* from Fuel to the Baracuda team, framed per Fuel's working
 agreement: cross-project changes are *proposed before they are made*, never landed as a
