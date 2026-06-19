@@ -22,7 +22,17 @@ pub struct ImplId {
     pub backend: BackendId,
     /// The Fuel op this kernel implements (a fused-op tag for fused contracts).
     pub op: OpKind,
-    /// Operand dtypes, inputs-in-order then outputs (the binding-table key axis).
+    /// Operand dtypes, inputs-in-order then outputs — the as-built binding-table
+    /// key axis (`KernelDTypes = SmallVec<[DType; 8]>`). These are **base/logical
+    /// operand dtypes only**: `DType` has no quant variants, so a packed-quant
+    /// weight appears here as its storage stand-in (`U8` packed bytes, or the
+    /// `F4` sub-byte code) — it does **not** name the 4-bit/quant FORMAT. The
+    /// quant family + block geometry + sub-byte precision ride the operand's FDX
+    /// description (`SType` → `FDXQuant`), which the FKC accept-contract matches
+    /// on for routing and the `StructureKey` encodes for specialization; the
+    /// exact build is pinned by `kernel_revision_hash`. So a packed-4-bit kernel
+    /// is unambiguous via `(dtypes, structure_key, kernel_revision_hash)` even
+    /// though `dtypes` never names the 4-bit weight.
     pub dtypes: Vec<DType>,
     /// The implementation-source discriminant (`"baracuda"`, `"cublas"`,
     /// `"portable-cpu"`, …) — the same tag the Judge keys its timings on.
