@@ -380,6 +380,60 @@ fn affine_block_stype_emits_scheme_scale_unbound() {
     assert!(v.validate().is_err(), "unbound AFFINE scale must fail validation");
 }
 
+/// view_with_quant binds the sibling absmax scale operand into the FDX buffer
+/// table (role SCALE) and fills quant.scale_buffer, so an AFFINE_BLOCK weight
+/// validates END-TO-END (the consuming-op binding the bare view() left unbound).
+#[test]
+fn affine_block_view_with_quant_validates() {
+    use fuel_core_types::{Encoding, ScaleSpec, SType};
+    use fuel_core_types::ScaleGranularity;
+    // 64 packed bytes = 128 logical F4 elements; block 64 ⇒ 2 blocks ⇒ scale [2].
+    let weight = cpu_bytes(DType::F4, 64).with_stype(SType::from_layer(
+        Encoding::AffineBlock {
+            packed: DType::F4,
+            block_shape: smallvec::smallvec![64],
+            scale: ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerChannel },
+            zero_point: None,
+        },
+    ));
+    let wlayout = Layout::contiguous(Shape::from_dims(&[128]));
+    let scale = cpu_f32(2);
+    let slayout = Layout::contiguous(Shape::from_dims(&[2]));
+
+    let v = view_with_quant(&weight, &wlayout, None, (&scale, &slayout)).expect("view_with_quant");
+    let sc = v.sidecar.as_ref().expect("AFFINE_BLOCK sidecar");
+    assert_eq!(sc.quant.family, FDX_QUANT_AFFINE_BLOCK);
+    assert_eq!(sc.quant.scale_buffer, 1, "scale operand bound at buffer index 1");
+    assert_eq!(sc.buffers_count, 2, "data buffer + scale buffer");
+
+    // The scale operand is buffers[1], role SCALE, shape [2].
+    let buffers = v.buffers();
+    assert_eq!(buffers.len(), 2);
+    assert_eq!(buffers[1].role, FDX_BUFFER_ROLE_SCALE);
+    assert_eq!(buffers[1].dtype, fuel_core_types::dlpack::convert::dtype_to_fdx(DType::F32));
+    assert_eq!(buffers[1].shape[0], 2);
+
+    v.validate().expect("bound AFFINE_BLOCK must validate end-to-end");
+}
+
+/// view_with_quant on a non-separate-scale weight (plain or inline GGML) is a
+/// no-op pass-through — there is no sibling scale to bind.
+#[test]
+fn view_with_quant_passthrough_when_no_scale_sibling() {
+    use fuel_core_types::{Encoding, GgmlDType, SType};
+    let weight = cpu_bytes(DType::F32, 18)
+        .with_stype(SType::from_layer(Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4_0 }));
+    let wlayout = Layout::contiguous(Shape::from_dims(&[18]));
+    let scale = cpu_f32(1);
+    let slayout = Layout::contiguous(Shape::from_dims(&[1]));
+    let v = view_with_quant(&weight, &wlayout, None, (&scale, &slayout)).expect("view_with_quant");
+    let sc = v.sidecar.as_ref().expect("GGML sidecar");
+    // GGML is inline/self-contained: no scale buffer bound (still 1 buffer).
+    assert_eq!(sc.buffers_count, 1);
+    assert_eq!(sc.quant.scale_buffer, FDX_BUFFER_INLINE);
+    v.validate().expect("GGML still validates");
+}
+
 /// A plain Storage still emits NO sidecar (byte-identical to pre-SType).
 #[test]
 fn plain_storage_still_no_quant_sidecar() {

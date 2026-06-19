@@ -45,9 +45,10 @@
 //! op-context to know the bytes are GGML-block or NF4 block-affine. GGML is
 //! self-contained (inline scale) and validates end-to-end; a separate-buffer
 //! family (AFFINE_BLOCK) emits the scheme with `scale_buffer = FDX_BUFFER_NONE`
-//! until the consuming op binds the sibling scale operand (the buffer-binding
-//! half stays `[consumer-ahead]`). The **gather** (`FDX_FLAG_HAS_GATHER`) sidecar
-//! still needs the consuming op's paged-pool geometry and remains deferred.
+//! from a bare `view()`, and `view_with_quant()` binds the consuming op's sibling
+//! scale operand into the buffer table so it validates end-to-end. The **gather**
+//! (`FDX_FLAG_HAS_GATHER`) sidecar still needs the consuming op's paged-pool
+//! geometry and remains deferred.
 
 use core::ffi::c_void;
 use core::marker::PhantomData;
@@ -489,15 +490,13 @@ fn dtype_to_fdx_code(d: DType) -> u16 {
 /// The **quant scheme** (`FDX_FLAG_HAS_QUANT` / `FDXQuant`) is read from
 /// `storage.stype` (`SType::to_fdx`): GGML-block projects to a self-contained
 /// inline-scale descriptor that validates here, and AFFINE_BLOCK projects to a
-/// separate-buffer descriptor with `scale_buffer = FDX_BUFFER_NONE` (the scale
-/// operand is bound by the consuming op).
+/// separate-buffer descriptor with `scale_buffer = FDX_BUFFER_NONE` — a bare
+/// `view()` describes the scheme but cannot bind the sibling scale operand, so the
+/// validator flags it as unbound. Use [`view_with_quant`] (the consuming op
+/// supplies the scale operand) to bind it and validate end-to-end.
 ///
 /// # Deferred (`[consumer-ahead]`)
 ///
-/// - **Quant scale binding** — the AFFINE_BLOCK `scale_buffer` index. A bare
-///   `view()` cannot bind the sibling scale operand, so it emits `FDX_BUFFER_NONE`
-///   and the validator flags it until a richer `view_with_quant(...)` (the
-///   consuming-op extension point) supplies the buffer-table index.
 /// - **Gather** (`FDX_FLAG_HAS_GATHER` / `FDXIndexedResidency`) — needs the
 ///   consuming op's paged-pool geometry; a `view_with_gather(...)` is the
 ///   extension point. Do not synthesize that flag here.
@@ -754,6 +753,91 @@ pub fn view<'a>(
     }
 
     Ok(v)
+}
+
+/// Like [`view`], but with the consuming op's **scale operand** supplied so the
+/// separate-buffer quant families (`AFFINE_BLOCK`) can be bound end-to-end. The
+/// weight's `SType` declares only the *requirement* (model B); here the op passes
+/// the actual per-block absmax operand `(scale_storage, scale_layout)`, which is
+/// appended to the FDX buffer table as a `role = SCALE` entry and referenced from
+/// `quant.scale_buffer`. The resulting view validates fully (the unbound
+/// `FDX_BUFFER_NONE` placeholder a bare [`view`] emits is now a real index).
+///
+/// For a weight whose `SType` needs no sibling scale (plain, or inline `GGML`),
+/// this is a pass-through to [`view`] — the scale argument is ignored.
+pub fn view_with_quant<'a>(
+    storage: &'a Storage,
+    layout: &'a Layout,
+    env: Option<&SymEnv>,
+    scale: (&'a Storage, &'a Layout),
+) -> Result<DlpackView<'a>> {
+    let mut v = view(storage, layout, env)?;
+
+    // Only the separate-scale-operand families bind a sibling here; GGML is
+    // inline and a plain tensor has no quant sidecar.
+    if !storage.stype.requires_scale_sibling() {
+        return Ok(v);
+    }
+
+    // Append the scale operand as a buffer-table entry (role SCALE). Its index is
+    // the current buffer count (1 — buffers[0] is the base data buffer).
+    let (scale_storage, scale_layout) = scale;
+    let scale_ref = scale_buffer_ref(scale_storage, scale_layout)?;
+    let scale_index = v._buffers.len() as u32;
+    v._buffers.push(scale_ref);
+    let buffers_ptr = v._buffers.as_ptr();
+    let buffers_count = v._buffers.len() as u32;
+
+    if let Some(sc) = v.sidecar.as_mut() {
+        sc.quant.scale_buffer = scale_index;
+        sc.buffers_count = buffers_count;
+        // The Vec may have reallocated on push — refresh the array pointer (same
+        // discipline as the fixup in `view()`).
+        sc.buffers = buffers_ptr;
+    }
+    Ok(v)
+}
+
+/// Build a faithful `FDXBufferRef` (role SCALE) for a plain scale operand. The
+/// scale is a normal dense tensor (e.g. `f32[n_blocks]`), so this mirrors the
+/// base-buffer assembly in [`view`] but in the faithful typed form (the scale is
+/// not packed/sub-byte). V6 cross-checks the declared `shape`/`ndim` against the
+/// weight's block geometry.
+fn scale_buffer_ref(storage: &Storage, layout: &Layout) -> Result<FDXBufferRef> {
+    let dtype = storage.dtype;
+    let dims = layout.dims();
+    let ndim = dims.len();
+    if ndim > MAX_RANK {
+        return Err(Error::Msg(format!(
+            "view_with_quant: scale rank {ndim} exceeds 6 (RankExceeds6)"
+        ))
+        .bt());
+    }
+    let (data, loc) = base_ptr_and_device(storage)?;
+    let device = dl_device(loc);
+    let st = layout.stride();
+    let mut shape = [0u64; MAX_RANK];
+    let mut strides = [0i64; MAX_RANK];
+    for i in 0..ndim {
+        shape[i] = dims[i] as u64;
+        strides[i] = st[i] as i64;
+    }
+    let byte_offset = (layout.start_offset() as u64).saturating_mul(dtype.size_in_bytes() as u64);
+    Ok(FDXBufferRef {
+        role: FDX_BUFFER_ROLE_SCALE,
+        _pad: [0; 1],
+        dtype: dtype_to_fdx_code(dtype),
+        _pad2: 0,
+        data,
+        device,
+        byte_offset,
+        size_bytes: storage.len_bytes() as u64,
+        ndim: ndim as u32,
+        _pad3: 0,
+        shape,
+        strides,
+        reserved: [0; 4],
+    })
 }
 
 /// Collect the `SymId → value` bindings for every symbolic axis of `layout`'s
