@@ -79,13 +79,14 @@ kernels, Vulkane FFI) are coordinated by **outreach proposals**, never unilatera
 
 ### STILL TO BUILD (each owned by a plan in §4)
 
-- **Self-describing Storage** — steps 1–3 SHIPPED 2026-06-19 (`SType`/`Encoding`/`ScaleSpec` in
+- **Self-describing Storage** — steps 1–4 SHIPPED 2026-06-19 (`SType`/`Encoding`/`ScaleSpec` in
   `fuel-core-types/src/stype.rs`; `Storage.stype` on both structs, default-empty; `SType::to_fdx()`
-  projection + `view()` fills the quant sidecar from `storage.stype`). Commits `4bbe566c` /
-  `f241c87c` / `fb385c4b`. **Remaining:** step 4 `view_with_quant` (bind the AFFINE scale-buffer
-  index — the graph-op already declares the absmax sibling in `nf4_matmul.rs`; the open wrinkle is
-  the V6 block-geometry projection off the logical shape) + steps 5–7 (loader notes, round-up). See
-  `self-describing-storage-plan.md` Progress header.
+  projection + `view()` fills the quant sidecar; `view_with_quant()` binds the AFFINE scale operand
+  so it validates end-to-end; V6 fixed to count blocks over LOGICAL elements). Commits `4bbe566c` /
+  `f241c87c` / `fb385c4b` / `74c45015` / `8e4e90d9`. Steps 5–6 are descriptive/deferred-behind-
+  consumer; step-7 gate green. **The one remaining tie-in (workstream E, NOT step 4):** call
+  `view_with_quant` from the live `nf4_matmul` dispatch — gated on the comm-layer being wired into
+  the executor. See `self-describing-storage-plan.md` Progress header.
 - **Remaining comm-layer** — quant + gather sidecars (quant now unblocked), external `__dlpack__`
   boundary, capability negotiation via `KernelCaps`/`Capability` tokens, `KernelRef` ABI migration.
 - **FKC adoption** — provider `LinkRegistry`s + wire the importer into dispatch init + per-kernel
