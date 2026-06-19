@@ -23,6 +23,8 @@ tracing = { workspace = true }
 # FKC kernel-contract importer (default OFF — gated behind the `fkc` feature).
 serde = { workspace = true, optional = true }
 serde_yml = { workspace = true, optional = true }
+# Baracuda telemetry emission (default OFF — gated behind the `telemetry` feature).
+serde_json = { workspace = true, optional = true }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 fuel-metal-backend = { workspace = true, optional = true }
@@ -44,3 +46,8 @@ metal = ["dep:fuel-metal-backend", "fuel-memory/metal"]
 # FKC kernel-contract importer (§1 of the kernel-contract adoption plan).
 # Default OFF so plain builds are untouched while the importer is WIP.
 fkc = ["dep:serde", "dep:serde_yml"]
+# Baracuda dispatch-telemetry / miss-reporting emission (docs/session-prompts/
+# baracuda-telemetry-plan.md). Reads the already-retained Judge timings; emits
+# DispatchRecord/MissRecord JSONL. Default OFF; pulls fuel-core-types/serde so the
+# ImplId basis tuple (OpKind/DType/BackendId) serializes.
+telemetry = ["dep:serde", "dep:serde_json", "fuel-core-types/serde"]

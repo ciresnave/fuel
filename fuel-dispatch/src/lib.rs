@@ -56,6 +56,8 @@ pub mod pipelined;
 pub mod plan;
 pub mod ranker;
 pub mod residency;
+#[cfg(feature = "telemetry")]
+pub mod telemetry;
 pub mod vulkan_dispatch;
 
 pub use compiled::{compile_node, execute_compiled, CompiledNode};
