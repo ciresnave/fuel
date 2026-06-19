@@ -1,5 +1,5 @@
 use crate::utils::{BufferOffset, EncoderProvider};
-use crate::{set_params, DType, Kernels, MetalKernelError, Source};
+use crate::{set_params, MetalDType, Kernels, MetalKernelError, Source};
 use crate::{Buffer, ComputeCommandEncoder, Device, MTLSize, RESOURCE_OPTIONS};
 use objc2_metal::MTLResourceUsage;
 
@@ -40,14 +40,14 @@ pub fn call_arg_sort(
     Ok(())
 }
 
-fn mlx_dtype_str(dtype: DType) -> &'static str {
+fn mlx_dtype_str(dtype: MetalDType) -> &'static str {
     match dtype {
-        DType::U8 => "uint8",
-        DType::U32 => "uint32",
-        DType::I64 => "int64",
-        DType::F16 => "float16",
-        DType::BF16 => "bfloat16",
-        DType::F32 => "float32",
+        MetalDType::U8 => "uint8",
+        MetalDType::U32 => "uint32",
+        MetalDType::I64 => "int64",
+        MetalDType::F16 => "float16",
+        MetalDType::BF16 => "bfloat16",
+        MetalDType::F32 => "float32",
     }
 }
 
@@ -56,7 +56,7 @@ fn multi_block_sort(
     device: &Device,
     ep: impl EncoderProvider,
     kernels: &Kernels,
-    dtype: DType,
+    dtype: MetalDType,
     bn: usize,
     tn: usize,
     nblocks: usize,
@@ -191,12 +191,12 @@ fn multi_block_sort(
     };
     // Copy output with appropriate strides
     let copy_kernel = match dtype {
-        DType::U8 => crate::copy2d::U8,
-        DType::U32 => crate::copy2d::U32,
-        DType::I64 => crate::copy2d::I64,
-        DType::BF16 => crate::copy2d::BFLOAT,
-        DType::F16 => crate::copy2d::HALF,
-        DType::F32 => crate::copy2d::FLOAT,
+        MetalDType::U8 => crate::copy2d::U8,
+        MetalDType::U32 => crate::copy2d::U32,
+        MetalDType::I64 => crate::copy2d::I64,
+        MetalDType::BF16 => crate::copy2d::BFLOAT,
+        MetalDType::F16 => crate::copy2d::HALF,
+        MetalDType::F32 => crate::copy2d::FLOAT,
     };
     crate::call_copy2d(
         device,
@@ -220,7 +220,7 @@ fn block_sort(
     device: &Device,
     ep: impl EncoderProvider,
     kernels: &Kernels,
-    dtype: DType,
+    dtype: MetalDType,
     bn: usize,
     tn: usize,
     nrows: usize,
@@ -267,7 +267,7 @@ pub fn call_mlx_arg_sort(
     device: &Device,
     ep: impl EncoderProvider,
     kernels: &Kernels,
-    dtype: DType,
+    dtype: MetalDType,
     nrows: usize,
     ncols: usize,
     src: BufferOffset,

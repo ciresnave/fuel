@@ -27,7 +27,7 @@ pub const RESOURCE_OPTIONS: MTLResourceOptions =
 //);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DType {
+pub enum MetalDType {
     BF16,
     F16,
     F32,
@@ -36,7 +36,7 @@ pub enum DType {
     U8,
 }
 
-impl DType {
+impl MetalDType {
     fn size_in_bytes(&self) -> usize {
         match self {
             Self::U8 => 1,
