@@ -22,10 +22,11 @@ coherent two-way contract whose other half is **how a tensor is described to a k
 - `fuel/docs/specs/kernel-contract-format.md` — **FKC**, the kernel-advertisement half.
 
 **Scope note (what is committed vs deferred) is in §6.** The short version: Fuel commits to
-the *boundary shape* (FDX + FKC carry every fact both halves need) now; the *telemetry
-subsystem itself* and Fuel's *formal reply to your ask* are **DEFERRED**, pending a Judge
-timing-retention check — the Judge is mid-rebuild, and the answer to your Open Question 1
-("do you retain per-(shape, impl) timings?") depends on where that rebuild lands.
+the *boundary shape* (FDX + FKC carry every fact both halves need) now. The Judge
+timing-retention check that gated our formal reply is **RESOLVED (2026-06-18): YES, per-(shape,
+impl) timings are retained** — see the formal reply [`baracuda-reply.md`](baracuda-reply.md),
+which answers your Open Question 1. The *telemetry subsystem itself* (the emission layer over the
+already-retained timings) remains **DEFERRED**.
 
 ---
 
@@ -82,7 +83,7 @@ same boundary because **the feed's join tokens are facts the format already carr
 | a stable, pointer-free `ImplId` for `chosen` / `candidates` / `fallback` | **FKC kernel identity** `(BackendId, op, dtypes, kernel_source, kernel_revision_hash)`. FKC §4.11 |
 | the `flipped` axis to ever be non-trivially observed | **Fuel's negative-strides-first-class decision** — the flip survives to the kernel instead of being normalized away. FDX §3.2.1 / FKC §4.1.1 |
 | a "miss" detector | **FKC planner matching** — best admissible match = generic contract. FKC §4.12 |
-| dispatch timings | **Fuel's existing autotuner / route picker** (the Judge — *retention is the deferred question*, §6) |
+| dispatch timings | **Fuel's existing autotuner / route picker** (the Judge — *per-impl retention RESOLVED: YES*, §6 / [`baracuda-reply.md`](baracuda-reply.md) §2) |
 
 The payoff of treating it as one contract: **no new identity surface anywhere.** You don't
 re-derive layout from raw shapes (you canonicalize from the FDX operand description we hand to
@@ -267,12 +268,14 @@ We adopt your staging and your format wholesale where we can:
 
 On your specific Open Questions, our *current* answers (subject to the deferral in §6):
 
-1. **Per-(shape, impl) timings retained, or only the winner?** — **DEFERRED.** This is the
-   crux that gates our reply. The autotuner is the Judge, which is **mid-rebuild**; whether it
-   retains per-candidate timings (making your `candidates[]` free) or only the winner depends
-   on where the rebuild lands. We will not promise `candidates[]` until we know. Per your own
-   note, **winner + time alone is still very useful**, and the **miss-key histogram alone
-   unblocks you** — so the deferral does not block your critical path.
+1. **Per-(shape, impl) timings retained, or only the winner?** — **RESOLVED: YES** (2026-06-18;
+   full answer in [`baracuda-reply.md`](baracuda-reply.md) §2). The Judge retains per-`(op, dtype,
+   size_class, backend, kernel_source)` timings, including losing alternatives, as `u64`
+   nanoseconds (`ProfileReport`/`ProfileEntry`; `ProfileJudgeOracle`/`HashMapJudge`). So
+   `candidates[]` is **feasible** without new retention work. Caveat: populated *coverage* is
+   currently narrow (F32 + a square-matmul size ladder, offline) but actively broadening, so build
+   the feed coverage-agnostic — it densifies automatically. Even where a cell is unmeasured, the
+   **miss-key histogram alone unblocks your critical path** (it does not depend on Judge timings).
 2. **Granularity** — we lean toward your aggregated histograms over per-dispatch records; Fuel
    dispatch rates in decode are high. Confirmable once the Judge retention shape is known.
 3. **`est_speedup`** — likely inferred from the fallback's `DispatchRecord` rather than
@@ -315,24 +318,29 @@ On your specific Open Questions, our *current* answers (subject to the deferral 
 - FDX honesty invariant: standard DLPack for the ecosystem is *guaranteed correct* even when
   the sidecar is ignored (FDX §3).
 
-**DEFERRED (explicitly not promised in this draft):**
+**RESOLVED since this draft:**
+
+- **The Judge timing-retention check** — Your Open Question 1 (per-candidate timings vs
+  winner-only) is **answered YES** (2026-06-18). The Judge already retains per-`(op, dtype,
+  size_class, backend, kernel_source)` timings including losers, as `u64` nanoseconds — so
+  `candidates[]` is feasible with no new retention work. The earlier "Judge is mid-rebuild"
+  framing was stale memory; the code (`ProfileReport`/`ProfileEntry`, `ProfileJudgeOracle`) is
+  ground truth. Full answer + the coverage caveat in [`baracuda-reply.md`](baracuda-reply.md) §2.
+- **Fuel's formal reply to your ask** — now written: [`baracuda-reply.md`](baracuda-reply.md).
+
+**STILL DEFERRED (explicitly not promised in this draft):**
+
 - **The actual telemetry subsystem** — the JSONL emission, the opt-in flag, the
   `DispatchRecord`/`MissRecord` writer. FKC §4.11 marks this **[consumer-ahead: deferred
-  Baracuda telemetry feed]**: the basis tuple and mapping exist, but the *emission* is a
-  separate opt-in Fuel feature with no consumer in the current specs.
-- **Fuel's formal reply to your ask** — this document is a *draft proposal*, not Fuel's
-  answer. The formal reply is gated on:
-- **A Judge timing-retention check.** Your Open Question 1 (per-candidate timings vs
-  winner-only) is answerable only once the **Judge** (Fuel's autotuner / cost-refinement
-  subsystem) settles its rebuild. The Judge is **mid-change**; FKC deliberately stays
-  *agnostic* to the Judge's internals (FKC §4.4, the Judge-agnosticism caveat) and depends only
-  on "the Judge exists and refines/bootstraps cost." Until the rebuild lands, Fuel will not
-  promise `candidates[]`, the aggregation granularity, or the sampling answer.
+  Baracuda telemetry feed]**: the basis tuple and mapping exist, retention is done, but the
+  *emission* layer is a separate opt-in Fuel feature still to build
+  (`docs/session-prompts/baracuda-telemetry-plan.md`).
 
 Per your own doc, **none of this blocks your critical path**: the v1 miss-key histogram alone
 is enough to start ranking your build matrix, and that histogram is exactly the
 best-match-is-generic outcome of FKC matching — which does not depend on the Judge's timing
-retention at all. The Judge dependency is only for the *richer* dispatch records (timings).
+retention at all. The Judge dependency is only for the *richer* dispatch records (timings),
+and that retention now exists.
 
 ---
 
@@ -343,8 +351,9 @@ edit.** Fuel does not modify sibling projects (baracuda, aocl, vulkane, lightbul
 without proposing first. Nothing here has been written into any Baracuda repo, and FDX/FKC
 remain DRAFT on a Fuel branch (`feat/kernel-contracts-dlpack`). The struct shapes, the
 `ImplId` basis, and the `structure_key`-input contract are offered for your review *before* any
-side freezes its half. This document is the proposal; your reply, the joint `ImplId` freeze,
-and Fuel's formal answer (post-Judge-check) are the next steps.
+side freezes its half. This document is the proposal; Fuel's formal answer is now written
+([`baracuda-reply.md`](baracuda-reply.md)), so your reply and the joint `ImplId` freeze are the
+next steps.
 
 ---
 

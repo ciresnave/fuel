@@ -23,9 +23,9 @@ its own (§4).
 - [`docs/specs/dlpack-extension.md`](../specs/dlpack-extension.md) — **FDX**, the
   tensor/storage-description half. *This is the relevant one for Vulkane.*
 - [`docs/specs/storage-encoding.md`](../specs/storage-encoding.md) — **Self-describing storage**
-  (`DType` + `SType`/`Encoding`): the internal type whose `to_fdx()` projection FDX carries. (See
-  the divergence note in §7 — this spec is *referenced by FDX but not yet written*; the locked
-  design lives in the branch's decision record.)
+  (`DType` + `SType`/`Encoding`): the internal type whose `to_fdx()` projection FDX carries. (This
+  spec is written, and the `SType`/`Encoding` types + the `to_fdx()` projection are now implemented
+  on this branch — see §7.)
 
 **Scope note (committed vs deferred) is in §6.** The short version: Fuel commits to the
 *description shape* — FDX as the honest, optional-sidecar description for any tensor/buffer
@@ -120,7 +120,7 @@ kernel through Vulkane without being dropped. Vulkane carries them; it does not 
   packing + bit order described in `FDXDTypeExt` + `FDXPacking`, never via a native DLPack sub-byte
   path (FDX §6.1; dtype-ext code table at §6.1, e.g. `F4` = code 13, `bit_width 4`).
 - **Parametric quant** — three regimes that partition cleanly (FDX §6.2):
-  - **`GGML_BLOCK`** (family code 3): GGUF on-disk block layout, **scale baked INLINE** in the
+  - **`GGML_BLOCK`** (family code 0): GGUF on-disk block layout, **scale baked INLINE** in the
     block struct; `ggml_dtype` IS the format (e.g. `Q4K` = code 12). One self-contained buffer.
   - **`AFFINE_BLOCK`** (family code 4, **the new separate-scale-operand regime**, added 2026-06-18):
     NF4 / QLoRA-style block-grained affine — low-bit data **plus a separate per-block absmax scale
@@ -291,11 +291,12 @@ Narrow, and mostly "preserve what you already have reason to preserve":
   No consumer exists today; the axis is reserved, not built.
 - **The concrete FFI ABI signatures** — the exact parameter shape of "buffer descriptor + nullable
   sidecar pointer" is offered for joint review (§5.5), not unilaterally frozen. FDX itself is DRAFT.
-- **`SType`/`Encoding` as a written spec.** The self-describing-storage design is **locked**
-  (2026-06-18) and is the internal source of the `AFFINE_BLOCK`/`GGML_BLOCK` projections FDX
-  describes, but its canonical spec file `docs/specs/storage-encoding.md` is **not yet written**
-  (see §7). This does not block Vulkane: Vulkane interacts with the *FDX projection*, which is
-  specified in `dlpack-extension.md` today.
+- **Per-slot `SType` on multi-output bundles.** The self-describing-storage design is **locked**
+  (2026-06-18) and now **implemented** on this branch (`SType`/`Encoding` types, the `stype` field
+  on both `Storage` structs, and the `to_fdx()` quant projection — see §7); what remains deferred is
+  per-bundle-slot `SType` (v1 is primary-storage-only) and the consuming-op scale-buffer binding.
+  Neither blocks Vulkane: Vulkane interacts with the *FDX projection*, specified in
+  `dlpack-extension.md` and now produced by `SType::to_fdx()`.
 
 ---
 
@@ -309,26 +310,26 @@ the Vulkane repo**, and FDX/FKC remain DRAFT on a Fuel branch (`feat/kernel-cont
 base-`DLTensor` + sidecar-pointer ABI shape and the stride/offset/alignment preservation contract
 are offered for Vulkane's review *before* any side freezes its half.
 
-**Divergence found while verifying this proposal against ground truth (noted honestly):**
+**Ground-truth status (verified against the live tree, 2026-06-19):**
 
-- **`docs/specs/storage-encoding.md` now exists** (authored 2026-06-18 on this branch) as the
-  canonical home of the `SType`/`Encoding` self-describing-storage type, so the FDX cross-reference
-  (`dlpack-extension.md`:1017) and the read-with link above resolve to a live document. (Either way
-  this does not affect the Vulkane ask, which is FDX-only.)
-- **No `NF4` dtype-ext code; NF4 is the `F4` sub-byte code.** The prompt sketch's `packed:
-  <NF4/F4>` resolves, in the actual FDX dtype-ext vocabulary, to **`F4` (code 13, `bit_width 4`,
-  MX4)** — there is no separate `NF4` code. FDX describes NF4 weights *as* the `F4` sub-byte code
-  plus an `AFFINE_BLOCK` quant family with a separate absmax scale (FDX §6.1 table line ~894; §6.2
-  AFFINE_BLOCK semantics lines ~993–1013). This proposal uses `F4` accordingly.
-- **Ground-truth confirmations (no divergence):** `fuel-memory::Storage` is
-  `{ inner: BackendStorage, dtype: DType, bundle: Option<Arc<[OutputView]>> }`
-  (`fuel-memory/src/lib.rs`:89–101) and `fuel-core-types::Storage` is the type-erased twin
-  (`fuel-core-types/src/storage.rs`:216–224) — both **lack** an `stype` field today, consistent
-  with the design's "add `stype: SType` (default empty)" being unshipped. `GgmlDType` and its block
-  sizes (Q4_0 = 18 bytes/block, block_size 32) are confirmed at
-  `fuel-core-types/src/quantized.rs`:26–113. FDX `AFFINE_BLOCK` = family code 4 with
-  `scale_placement == SEPARATE_BUFFER` is confirmed at `dlpack-extension.md`:982, 1001–1002,
-  1870–1871.
+- **`docs/specs/storage-encoding.md` exists** (authored 2026-06-18 on this branch) as the canonical
+  home of the `SType`/`Encoding` self-describing-storage type, so the FDX cross-reference
+  (`dlpack-extension.md`:1017) and the read-with link above resolve to a live document.
+- **`SType`/`Encoding` are now implemented (steps 1–3 shipped 2026-06-19 on this branch).** Both
+  `fuel-memory::Storage` and `fuel-core-types::Storage` now carry a default-empty `stype: SType`
+  field (`fuel-memory/src/lib.rs`, `fuel-core-types/src/storage.rs`), and `SType::to_fdx()` projects
+  the encoding scheme into the FDX `FDXQuant` sidecar at the view boundary — `GGML_BLOCK` validates
+  end-to-end, `AFFINE_BLOCK` emits the separate-scale-buffer descriptor (the scale-buffer index is
+  bound by the consuming op). This **strengthens** the Vulkane ask: the FDX projection Vulkane is
+  asked to carry is now produced by running code, not just a spec.
+- **No `NF4` dtype-ext code; NF4 is the `F4` sub-byte code.** In the actual FDX dtype-ext vocabulary
+  NF4 resolves to **`F4` (code 13, `bit_width 4`, MX4)** — there is no separate `NF4` code. FDX
+  describes NF4 weights *as* the `F4` sub-byte code plus an `AFFINE_BLOCK` quant family with a
+  separate absmax scale (FDX §6.1; §6.2 AFFINE_BLOCK semantics). This proposal uses `F4` accordingly.
+- **Code confirmations:** `GgmlDType` and its block sizes (Q4_0 = 18 bytes/block, block_size 32) at
+  `fuel-core-types/src/quantized.rs`:26–113. FDX family codes (`GGML_BLOCK` = 0, `AFFINE_BLOCK` = 4
+  with `scale_placement == SEPARATE_BUFFER`) at `fuel-core-types/src/dlpack/codes.rs`:79–99 and
+  `dlpack-extension.md` §6.2.
 
 This document is the proposal; Vulkane's review of the FFI ABI shape and the stride/offset/alignment
 preservation contract is the next step.
@@ -341,8 +342,8 @@ preservation contract is the next step.
   families incl. `AFFINE_BLOCK` code 4, §6.4 symbolic/affine extents, §6.9 gather/paged residency,
   §10 boundaries).
 - Fuel storage-encoding spec (`SType`/`Encoding`):
-  [`docs/specs/storage-encoding.md`](../specs/storage-encoding.md) — *forward reference, not yet
-  written (§7)*; design referenced from `dlpack-extension.md` §6.2.
+  [`docs/specs/storage-encoding.md`](../specs/storage-encoding.md) — written; types + `to_fdx()`
+  projection implemented on this branch (§7); design referenced from `dlpack-extension.md` §6.2.
 - Fuel FKC spec (conditional, §4):
   [`docs/specs/kernel-contract-format.md`](../specs/kernel-contract-format.md).
 - Internal Vulkan kernel contracts (the FKC model if Vulkane ever exposes compute): Fuel's
