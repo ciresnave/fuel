@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "fuel-examples"
 version.workspace = true
 edition.workspace = true
@@ -36,7 +36,7 @@ pyo3 = { version = "0.28", features = [
     "abi3-py313",
 ], optional = true }
 rayon = { workspace = true }
-rubato = { version = "1", optional = true }
+rubato = { version = "3", optional = true }
 safetensors = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
