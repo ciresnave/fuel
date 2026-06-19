@@ -580,6 +580,42 @@ fn v6_pass_affine_block_scale_count() {
 }
 
 #[test]
+fn v6_affine_block_subbyte_logical_count() {
+    // NF4 (spec §6.2 / §13.5a): the honest base is the PACKED uint8 byte buffer
+    // (2 nibbles/byte), but the block count is over the base LOGICAL element shape.
+    // 64 packed bytes @ bit_width 4 ⇒ 128 logical F4 elements; block 64 ⇒ 2 blocks
+    // ⇒ scale shape [2]. V6 must convert the byte extent to logical via bit_width
+    // (a byte-only `ceil(64/64)=1` would wrongly reject the spec's own example).
+    let mut sc = sidecar(FDX_FLAG_HAS_QUANT | FDX_FLAG_HAS_DTYPE_EXT);
+    sc.dtype_ext = FDXDTypeExt {
+        logical_dtype: FDX_DTYPE_F4,
+        bit_width: 4,
+        packing: 1, // DENSE_SUBBYTE
+        lanes: 1,
+        sub_byte_bit_order: 0,
+        _pad: 0,
+        reserved: [0; 2],
+    };
+    let mut q = affine_block_quant();
+    q.block_axes = [0, -1, -1, -1];
+    q.block_shape = [64, 0, 0, 0];
+    sc.quant = q;
+    let mut sh = [64i64; 1]; // 64 PACKED bytes
+    let mut st = [1i64; 1];
+    let base = base_uint8(64, &mut sh, &mut st);
+    let mut scale = data_buffer(8);
+    scale.role = FDX_BUFFER_ROLE_SCALE;
+    scale.dtype = FDX_DTYPE_F32;
+    scale.ndim = 1;
+    scale.shape = [2, 0, 0, 0, 0, 0]; // 128 logical / 64 = 2 blocks
+    let buffers = vec![data_buffer(64), scale];
+    assert!(
+        check_v6_scale_shape(&sc, &base, &buffers).is_ok(),
+        "sub-byte AFFINE_BLOCK block count must be over LOGICAL elements (bytes*8/bit_width)"
+    );
+}
+
+#[test]
 fn v6_fail_block_scale_count_mismatch() {
     let mut sc = sidecar(FDX_FLAG_HAS_QUANT);
     let mut q = affine_block_quant();

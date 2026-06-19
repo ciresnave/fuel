@@ -519,6 +519,19 @@ pub fn check_v6_scale_shape(sidecar: &FDXSidecar, base: &DLTensor, buffers: &[FD
     let scale_count: u128 = shape_product(&scale.shape, scale.ndim);
 
     if block_shaped {
+        // The block count is over the base LOGICAL element shape (§6.2, §13.5a).
+        // For a packed sub-byte payload the honest base carries BYTES (2 nibbles/
+        // byte for F4, etc.), so for the flattened 1-D byte base we convert the
+        // byte extent to logical elements via the dtype-ext bit width before
+        // tiling. Without this, `ceil(byte_len / block_shape)` undercounts by the
+        // pack factor and would reject the spec's own NF4 example (§13.5a).
+        let subbyte_bits: Option<u128> =
+            if flag_set(sidecar.flags, FDX_FLAG_HAS_DTYPE_EXT) {
+                let bw = sidecar.dtype_ext.bit_width as u128;
+                if bw > 0 && bw < 8 { Some(bw) } else { None }
+            } else {
+                None
+            };
         // one scale per block: Π ceil(base_dim_a / block_shape[a]) over tiled axes.
         let mut expected: u128 = 1;
         let bn = q.block_ndim as usize;
@@ -531,9 +544,14 @@ pub fn check_v6_scale_shape(sidecar: &FDXSidecar, base: &DLTensor, buffers: &[FD
                 });
             }
             // For a 1-D flattened weight (block_axes[0] over the whole tensor)
-            // derive the tiled dim from base.shape if available, else the scale
-            // count must be self-consistent (we still require divisibility).
-            let dim = base_axis_len(base, axis);
+            // derive the tiled dim from base.shape; convert packed bytes → logical
+            // elements when the payload is sub-byte (the §13.5a NF4 case).
+            let mut dim = base_axis_len(base, axis);
+            if let Some(bw) = subbyte_bits {
+                if base.ndim == 1 {
+                    dim = dim.saturating_mul(8) / bw;
+                }
+            }
             let blocks = dim.div_ceil(bs);
             expected = expected.saturating_mul(blocks);
         }
