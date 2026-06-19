@@ -41,6 +41,7 @@ pub mod quantized;
 pub mod scalar;
 pub mod shape;
 pub mod storage;
+pub mod stype;
 pub mod symbol;
 pub mod strided_index;
 
@@ -59,5 +60,6 @@ pub use quantized::{DynQuantizedStorage, GgmlDType, QuantizedDeviceKernels};
 pub use scalar::Scalar;
 pub use shape::{D, Dim, Dims, Shape, ShapeWithOneHole};
 pub use storage::Storage;
+pub use stype::{Encoding, SType, ScaleSpec};
 pub use strided_index::{StridedBlocks, StridedIndex};
 pub use symbol::{DynScalar, SymEnv, SymGen, SymId};
