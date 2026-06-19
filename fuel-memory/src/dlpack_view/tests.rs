@@ -317,3 +317,74 @@ fn rank_exceeds_6_is_typed_error() {
     let err = view(&storage, &layout, None).err().expect("rank 7 must error");
     assert!(format!("{err}").contains("exceeds 6"));
 }
+
+// ── Quant sidecar from SType (step 3) ───────────────────────────────────────
+
+/// A GGML-block SType projects to an inline-scale FDX GGML_BLOCK sidecar
+/// (self-contained, no scale sibling) and validates end-to-end. The base
+/// DLTensor is the honest uint8 byte buffer (V3: meaning-bearing ⇒ base uint8).
+#[test]
+fn ggml_block_stype_emits_inline_quant() {
+    use fuel_core_types::{Encoding, GgmlDType, SType};
+    let storage = cpu_bytes(DType::F32, 18) // one Q4_0 block (18 bytes)
+        .with_stype(SType::from_layer(Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4_0 }));
+    let layout = Layout::contiguous(Shape::from_dims(&[18]));
+    let v = view(&storage, &layout, None).expect("view");
+
+    let sc = v.sidecar.as_ref().expect("GGML must emit a sidecar");
+    assert_ne!(sc.flags & FDX_FLAG_HAS_QUANT, 0, "HAS_QUANT must be set");
+    assert_eq!(sc.quant.family, FDX_QUANT_GGML_BLOCK);
+    assert_eq!(sc.quant.scale_present, 0);
+    assert_eq!(sc.quant.scale_placement, FDX_SCALE_PLACEMENT_INLINE);
+    assert_eq!(sc.quant.scale_buffer, FDX_BUFFER_INLINE);
+
+    // Honesty: the base is the {kDLUInt,8,1} byte stand-in (V3).
+    assert_eq!(v.dl.dtype.code, fuel_core_types::dlpack::abi::dtype_code::K_DL_UINT);
+    assert_eq!(v.dl.dtype.bits, 8);
+
+    v.validate().expect("GGML_BLOCK sidecar must pass FDX validators");
+}
+
+/// An AFFINE_BLOCK (NF4) SType projects to FDX AFFINE_BLOCK with
+/// scale_placement=SEPARATE_BUFFER and HAS_QUANT set. A bare `view()` (no op
+/// context) emits the SCHEME with `scale_buffer = FDX_BUFFER_NONE` — the scale
+/// operand is bound by the consuming op (next step), so the validator flags the
+/// unbound scale buffer until then.
+#[test]
+fn affine_block_stype_emits_scheme_scale_unbound() {
+    use fuel_core_types::{Encoding, ScaleSpec, SType};
+    use fuel_core_types::ScaleGranularity;
+    let storage = cpu_bytes(DType::F4, 64).with_stype(SType::from_layer(
+        Encoding::AffineBlock {
+            packed: DType::F4,
+            block_shape: smallvec::smallvec![64],
+            scale: ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerChannel },
+            zero_point: None,
+        },
+    ));
+    let layout = Layout::contiguous(Shape::from_dims(&[64]));
+    let v = view(&storage, &layout, None).expect("view");
+
+    let sc = v.sidecar.as_ref().expect("AFFINE_BLOCK must emit a sidecar");
+    assert_ne!(sc.flags & FDX_FLAG_HAS_QUANT, 0, "HAS_QUANT must be set");
+    assert_eq!(sc.quant.family, FDX_QUANT_AFFINE_BLOCK);
+    assert_eq!(sc.quant.scale_present, 1);
+    assert_eq!(sc.quant.scale_placement, FDX_SCALE_PLACEMENT_SEPARATE_BUFFER);
+    assert_eq!(sc.quant.scale_buffer, FDX_BUFFER_NONE, "scale unbound until op binds it");
+    assert_eq!(sc.quant.block_ndim, 1);
+    assert_eq!(sc.quant.block_shape[0], 64);
+
+    // The SCHEME is described, but the scale operand is not yet bound, so the
+    // validator correctly reports the out-of-range scale buffer (the documented
+    // step-4 boundary: the consuming op binds the sibling via view_with_quant).
+    assert!(v.validate().is_err(), "unbound AFFINE scale must fail validation");
+}
+
+/// A plain Storage still emits NO sidecar (byte-identical to pre-SType).
+#[test]
+fn plain_storage_still_no_quant_sidecar() {
+    let storage = cpu_f32(12);
+    let layout = Layout::contiguous(Shape::from_dims(&[3, 4]));
+    let v = view(&storage, &layout, None).expect("view");
+    assert!(v.sidecar.is_none(), "plain storage must stay sidecar-free");
+}

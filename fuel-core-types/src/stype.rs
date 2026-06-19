@@ -111,6 +111,100 @@ impl SType {
     }
 }
 
+#[cfg(feature = "dlpack")]
+impl SType {
+    /// Project this encoding scheme into an `FDXQuant` for the kernel boundary
+    /// (the `view()` quant sidecar). The scale BUFFER reference (`scale_buffer`)
+    /// is op-context: pass `scale_buffer = Some(idx)` once the consuming op has
+    /// bound the sibling scale operand into the FDX buffer table; `None` ⇒
+    /// `FDX_BUFFER_NONE` ("scheme described, scale buffer not yet bound" — the
+    /// state a bare `view()` emits; binding happens in the consuming-op wiring).
+    ///
+    /// Returns `None` for a plain SType (no quant sidecar) and for the `Mx`
+    /// placeholder (reserved, not wired in v1). v1 reads `self.0.first()` (at
+    /// most one layer); stacked-layer projection is future work.
+    pub fn to_fdx(&self, scale_buffer: Option<u32>) -> Option<crate::dlpack::sidecar::FDXQuant> {
+        use crate::dlpack::codes::*;
+        use crate::dlpack::convert::{dtype_to_fdx, ggml_to_fdx, scale_granularity_to_fdx};
+        use crate::dlpack::sidecar::FDXQuant;
+
+        let layer = self.0.first()?;
+        match layer {
+            // GGML: scale baked INLINE; no separate operand, no granularity.
+            Encoding::GgmlBlock { ggml_dtype } => Some(FDXQuant {
+                family: FDX_QUANT_GGML_BLOCK,
+                ggml_dtype: ggml_to_fdx(*ggml_dtype),
+                block_ndim: 0,
+                _pad0: [0; 3],
+                block_shape: [0; 4],
+                block_axes: [-1; 4],
+                pack_order: 0,
+                _pad1: [0; 3],
+                scale_present: 0,
+                scale_dtype: FDX_DTYPE_NONE,
+                scale_placement: FDX_SCALE_PLACEMENT_INLINE,
+                scale_granularity: 0,
+                _pad2: [0; 3],
+                scale_buffer: FDX_BUFFER_INLINE,
+                zp_present: 0,
+                zp_dtype: FDX_DTYPE_NONE,
+                _pad3: 0,
+                zp_buffer: FDX_BUFFER_NONE,
+                scale_pair_act: 0,
+                scale_pair_weight: 0,
+                role: 0,
+                _pad4: 0,
+                reserved: [0; 6],
+            }),
+            // AFFINE_BLOCK (NF4/QLoRA): low-bit packed data + a SEPARATE per-block
+            // absmax scale operand (model B). `scale_buffer` is bound by the op.
+            Encoding::AffineBlock { packed: _, block_shape, scale, zero_point } => {
+                let mut bshape = [0u32; 4];
+                let mut baxes = [-1i32; 4];
+                let n = block_shape.len().min(4);
+                for i in 0..n {
+                    bshape[i] = block_shape[i];
+                    baxes[i] = i as i32; // v1: blocks tile leading axes; refine when wiring the op.
+                }
+                let (zp_present, zp_dtype) = match zero_point {
+                    Some(zp) => (1u8, dtype_to_fdx(zp.dtype)),
+                    None => (0u8, FDX_DTYPE_NONE),
+                };
+                Some(FDXQuant {
+                    family: FDX_QUANT_AFFINE_BLOCK,
+                    ggml_dtype: FDX_DTYPE_NONE, // not GGML
+                    block_ndim: n as u8,
+                    _pad0: [0; 3],
+                    block_shape: bshape,
+                    block_axes: baxes,
+                    pack_order: 0,
+                    _pad1: [0; 3],
+                    scale_present: 1,
+                    scale_dtype: dtype_to_fdx(scale.dtype),
+                    scale_placement: FDX_SCALE_PLACEMENT_SEPARATE_BUFFER, // never INLINE
+                    // AFFINE_BLOCK grain rides block_shape, NOT a granularity byte
+                    // (spec §6.2); the coarse dispatch-key granularity is kept but
+                    // is never PerBlock.
+                    scale_granularity: scale_granularity_to_fdx(scale.granularity),
+                    _pad2: [0; 3],
+                    scale_buffer: scale_buffer.unwrap_or(FDX_BUFFER_NONE),
+                    zp_present,
+                    zp_dtype,
+                    _pad3: 0,
+                    zp_buffer: FDX_BUFFER_NONE,
+                    scale_pair_act: 0, // stored weight format, not a dynamic matmul pairing
+                    scale_pair_weight: 0,
+                    role: 0,
+                    _pad4: 0,
+                    reserved: [0; 6],
+                })
+            }
+            // RESERVED placeholder — not wired in v1.
+            Encoding::Mx => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,5 +275,83 @@ mod tests {
             zero_point: None,
         });
         assert!(s.requires_scale_sibling());
+    }
+}
+
+#[cfg(all(test, feature = "dlpack"))]
+mod to_fdx_tests {
+    use super::*;
+    use crate::DType;
+    use crate::quantized::GgmlDType;
+    use crate::quant_scale::ScaleGranularity;
+    use crate::dlpack::codes::*;
+
+    /// A plain SType has no quant projection.
+    #[test]
+    fn plain_projects_to_none() {
+        assert!(SType::plain().to_fdx(None).is_none());
+    }
+
+    /// GGML projects to the inline GGML_BLOCK family: scale baked inline, no
+    /// separate operand, ggml_dtype carried through.
+    #[test]
+    fn ggml_projects_inline() {
+        let q = SType::from_layer(Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4_0 })
+            .to_fdx(None)
+            .expect("GGML projects");
+        assert_eq!(q.family, FDX_QUANT_GGML_BLOCK);
+        assert_eq!(q.ggml_dtype, FDX_GGML_Q4_0);
+        assert_eq!(q.scale_present, 0);
+        assert_eq!(q.scale_placement, FDX_SCALE_PLACEMENT_INLINE);
+        assert_eq!(q.scale_buffer, FDX_BUFFER_INLINE);
+    }
+
+    /// AFFINE_BLOCK projects to the separate-buffer family; `scale_buffer`
+    /// reflects the op-bound index (`None` ⇒ FDX_BUFFER_NONE placeholder).
+    #[test]
+    fn affine_block_projects_separate_buffer() {
+        let enc = Encoding::AffineBlock {
+            packed: DType::F4,
+            block_shape: smallvec::smallvec![64],
+            scale: ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerChannel },
+            zero_point: None,
+        };
+        // Unbound (bare view()).
+        let q = SType::from_layer(enc.clone()).to_fdx(None).expect("projects");
+        assert_eq!(q.family, FDX_QUANT_AFFINE_BLOCK);
+        assert_eq!(q.ggml_dtype, FDX_DTYPE_NONE);
+        assert_eq!(q.block_ndim, 1);
+        assert_eq!(q.block_shape[0], 64);
+        assert_eq!(q.block_axes[0], 0);
+        assert_eq!(q.scale_present, 1);
+        assert_eq!(q.scale_placement, FDX_SCALE_PLACEMENT_SEPARATE_BUFFER);
+        assert_eq!(q.scale_dtype, FDX_DTYPE_F32);
+        assert_eq!(q.scale_granularity, FDX_SCALE_GRAN_PER_CHANNEL);
+        assert_eq!(q.scale_buffer, FDX_BUFFER_NONE);
+        assert_eq!(q.zp_present, 0);
+        // Bound (op-context supplies the buffer-table index).
+        let bound = SType::from_layer(enc).to_fdx(Some(3)).expect("projects");
+        assert_eq!(bound.scale_buffer, 3);
+    }
+
+    /// Asymmetric affine carries a zero-point requirement.
+    #[test]
+    fn affine_block_zero_point_projects() {
+        let q = SType::from_layer(Encoding::AffineBlock {
+            packed: DType::F4,
+            block_shape: smallvec::smallvec![32],
+            scale: ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerToken },
+            zero_point: Some(ScaleSpec { dtype: DType::F32, granularity: ScaleGranularity::PerToken }),
+        })
+        .to_fdx(None)
+        .expect("projects");
+        assert_eq!(q.zp_present, 1);
+        assert_eq!(q.zp_dtype, FDX_DTYPE_F32);
+    }
+
+    /// The reserved Mx placeholder is not wired in v1.
+    #[test]
+    fn mx_projects_to_none() {
+        assert!(SType::from_layer(Encoding::Mx).to_fdx(None).is_none());
     }
 }

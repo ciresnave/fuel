@@ -39,11 +39,15 @@
 //! # Scope of this slice
 //!
 //! Sidecar cases derivable from `(storage, layout, env)` alone are built here:
-//! sub-byte dtype-ext, symbolic extents, and multi-output bundles. The **quant**
-//! (`FDX_FLAG_HAS_QUANT`) and **gather** (`FDX_FLAG_HAS_GATHER`) sidecars need
-//! the consuming op's quant params / paged-pool geometry — which `view()` does
-//! not receive — and are deliberately deferred (`[consumer-ahead]`). See
-//! [`view`] for the documented extension point.
+//! sub-byte dtype-ext, symbolic extents, multi-output bundles, and the **quant
+//! scheme** (`FDX_FLAG_HAS_QUANT` / `FDXQuant`) — which now travels on the tensor
+//! itself via `storage.stype` (`SType::to_fdx`), so `view()` no longer needs
+//! op-context to know the bytes are GGML-block or NF4 block-affine. GGML is
+//! self-contained (inline scale) and validates end-to-end; a separate-buffer
+//! family (AFFINE_BLOCK) emits the scheme with `scale_buffer = FDX_BUFFER_NONE`
+//! until the consuming op binds the sibling scale operand (the buffer-binding
+//! half stays `[consumer-ahead]`). The **gather** (`FDX_FLAG_HAS_GATHER`) sidecar
+//! still needs the consuming op's paged-pool geometry and remains deferred.
 
 use core::ffi::c_void;
 use core::marker::PhantomData;
@@ -482,13 +486,21 @@ fn dtype_to_fdx_code(d: DType) -> u16 {
 /// Sidecar (§2.3) is `Some` iff any of: sub-byte dtype, `layout.has_dynamic()`,
 /// or `storage.is_bundled()`; otherwise `None` (a plain faithful tensor).
 ///
+/// The **quant scheme** (`FDX_FLAG_HAS_QUANT` / `FDXQuant`) is read from
+/// `storage.stype` (`SType::to_fdx`): GGML-block projects to a self-contained
+/// inline-scale descriptor that validates here, and AFFINE_BLOCK projects to a
+/// separate-buffer descriptor with `scale_buffer = FDX_BUFFER_NONE` (the scale
+/// operand is bound by the consuming op).
+///
 /// # Deferred (`[consumer-ahead]`)
 ///
-/// The **quant** (`FDX_FLAG_HAS_QUANT` / `FDXQuant`) and **gather**
-/// (`FDX_FLAG_HAS_GATHER` / `FDXIndexedResidency`) sidecars need the consuming
-/// op's quant params / paged-pool geometry, which `view()` does not receive. A
-/// richer `view_with_quant(...)` / `view_with_gather(...)` taking that op
-/// context is the extension point; do not synthesize those flags here.
+/// - **Quant scale binding** — the AFFINE_BLOCK `scale_buffer` index. A bare
+///   `view()` cannot bind the sibling scale operand, so it emits `FDX_BUFFER_NONE`
+///   and the validator flags it until a richer `view_with_quant(...)` (the
+///   consuming-op extension point) supplies the buffer-table index.
+/// - **Gather** (`FDX_FLAG_HAS_GATHER` / `FDXIndexedResidency`) — needs the
+///   consuming op's paged-pool geometry; a `view_with_gather(...)` is the
+///   extension point. Do not synthesize that flag here.
 pub fn view<'a>(
     storage: &'a Storage,
     layout: &'a Layout,
@@ -510,7 +522,14 @@ pub fn view<'a>(
     let sub_byte = is_sub_byte(dtype);
     let bundled = storage.is_bundled();
     let symbolic = layout.has_dynamic();
-    let need_sidecar = sub_byte || symbolic || bundled;
+    // The encoding SCHEME travels on the tensor (`storage.stype`). It unblocks
+    // the quant sidecar — `view()` no longer needs op-context to know the bytes
+    // are e.g. GGML-block or NF4 block-affine. The scale BUFFER binding is still
+    // op-context (the consuming op supplies the buffer-table index via a richer
+    // entry point); a bare `view()` emits `scale_buffer = FDX_BUFFER_NONE`.
+    let quant_proj = storage.stype.to_fdx(None);
+    let has_quant = quant_proj.is_some();
+    let need_sidecar = sub_byte || symbolic || bundled || has_quant;
 
     // The base `DLTensor` honesty form (FDX §3, §3.4):
     //   - sub-byte / bundle  ⇒ the honest 1-D `uint8` PHYSICAL BYTE buffer
@@ -518,7 +537,10 @@ pub fn view<'a>(
     //     logical element capacity rides the sidecar (dtype_ext / extents / views).
     //   - faithful standard (incl. symbolic) ⇒ the typed CAPACITY-shaped tensor
     //     (`shape = layout.dims()`, signed strides, faithful dtype).
-    let physical_byte_base = sub_byte || bundled;
+    // A quantized buffer's base bytes are NOT faithfully the logical dtype, so
+    // (like sub-byte/bundle) it carries the honest uint8 byte base (V3 requires
+    // the {kDLUInt,8,1} stand-in for any meaning-bearing tensor).
+    let physical_byte_base = sub_byte || bundled || has_quant;
 
     let mut shape = [0i64; MAX_RANK];
     let mut strides = [0i64; MAX_RANK];
@@ -582,6 +604,17 @@ pub fn view<'a>(
     let mut dtype_ext = dtype_ext_none();
     let mut extents: Vec<FDXExtent> = Vec::new();
     let mut views: Vec<FDXOutputView> = Vec::new();
+
+    // (0) quant scheme from SType → HAS_QUANT + MEANING_REQUIRES_EXT + FDXQuant.
+    // The SCHEME is fully described from `storage.stype`; the scale-buffer index
+    // is op-context (NONE here for the separate-buffer families until bound).
+    let quant = match quant_proj {
+        Some(q) => {
+            flags |= FDX_FLAG_HAS_QUANT | FDX_FLAG_MEANING_REQUIRES_EXT;
+            q
+        }
+        None => quant_none(),
+    };
 
     // (1) sub-byte dtype → HAS_DTYPE_EXT + FDXDTypeExt.
     if sub_byte {
@@ -654,7 +687,7 @@ pub fn view<'a>(
         struct_bytes: core::mem::size_of::<FDXSidecar>() as u32,
         flags,
         dtype_ext,
-        quant: quant_none(),
+        quant,
         extents_count,
         _pad0: 0,
         extents: core::ptr::null(),
