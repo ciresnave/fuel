@@ -187,6 +187,14 @@ in response to the Baracuda dtype reconciliation (their 2026-06-19 reply):
   no sidecar. A sidecar `FDXDTypeExt` is required only for the *packed* sub-byte cases (base = `uint8`
   stand-in). `COMPLEX64`/`BOOL` (0x0200/0x0201) are documented as reserved placeholders that ride
   the base in practice.
+- **Decision — Vulkan `data` = `VkDeviceAddress` (BDA), in answer to the Vulkane review (§3.3.1).**
+  DLPack leaves `kDLVulkan` `data` opaque; FDX pins it to the buffer-device-address path (not a
+  `VkBuffer` handle), so `void* data` is a real address on every backend, `byte_offset` is pure
+  pointer arithmetic, negative-stride flips survive as raw addressing, and sub-256-aligned sliced
+  offsets are a non-event (the descriptor-offset-alignment constraint vanishes). The sidecar needs
+  **no** Vulkane ABI slot — it stays Fuel-side and decomposes into ordinary bindings + push
+  constants. Spec-only (the Vulkan device-pointer extraction in the comm-layer is still
+  `[consumer-ahead]`); records the frozen-ABI answer to Vulkane's one open question.
 
 ### Changelog — 2026-06-18 (AFFINE_BLOCK quant family + GGML_BLOCK regime-contradiction fix)
 
@@ -515,6 +523,54 @@ should be used to point to the beginning of the data."* FDX obeys this on export
 > Internal boundary (a) launches MAY relax 256-alignment to the backend's
 > `required_alignment` (`FDXTiling.alignment_bytes`), since Fuel owns both ends and no external
 > CUDA-256 assumption is in play; the 256-byte rule is enforced strictly only on boundary (b).
+
+#### 3.3.1 What `data` holds per device — and the Vulkan `VkDeviceAddress` decision
+
+`DLTensor.data` / `FDXBufferRef.data` is `void*`, but DLPack pins its *meaning* only loosely: it
+is a host pointer on `kDLCPU`, a `CUdeviceptr` on `kDLCUDA`, and on `kDLVulkan` (= 7) the upstream
+header says it "may be opaque on some device types" and gives **no** Vulkan-specific definition.
+FDX must therefore pin it, because Vulkan offers two incompatible bindings.
+
+**Decision (2026-06-19, in answer to the Vulkane review):** on a `kDLVulkan` device, FDX `data`
+is a **`VkDeviceAddress`** — the buffer-device-address (BDA) path — **not** a `VkBuffer` handle.
+A Vulkan FDX tensor's `data` is the device address of a buffer created with
+`VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS`, and the kernel addresses it via Slang `buffer_reference`.
+Rationale:
+
+- **Honesty + uniformity.** `void* data = VkDeviceAddress` is a *real address*, so `data` means
+  the same kind of thing on every backend (host pointer / CUdeviceptr / device address), and
+  `byte_offset` is pure pointer arithmetic on all of them. A `VkBuffer` *handle* in `data` would be
+  a handle-masquerading-as-pointer (the treatment DLPack reserves for Metal's `id<MTLBuffer>`) and
+  would force every buffer-table entry to additionally carry a Vulkane buffer handle.
+- **Negative strides / zero-copy flips are most direct under BDA.** Fuel's signed-stride,
+  first-class-flip design (§3.2.1) wants the kernel doing raw signed-offset addressing — exactly
+  what `buffer_reference` over a device address gives. This is the load-bearing reason to prefer
+  BDA: it is the binding where a reversed view survives as pure pointer math.
+- **The descriptor-offset-alignment constraint disappears.** A *descriptor*-bound storage buffer
+  requires `VkDescriptorBufferInfo.offset` be a multiple of the device
+  `min{Storage,Uniform}BufferOffsetAlignment` (whose spec-guaranteed maximum is 256 — so the §3.3
+  256-byte base floor already dominates it). Under BDA, `byte_offset` is not a descriptor offset at
+  all, so a **sub-256-aligned sliced / bundle-slot `byte_offset` is a non-event** — it is just
+  added to the address. (On the descriptor path it would require binding at the aligned floor and
+  passing the residual sub-offset as a push constant; BDA removes that case.) The §3.3 256-byte
+  rule still governs the **base** buffer pointer on a boundary-(b) export; sub-view `byte_offset`s
+  on the internal Vulkan path are unconstrained.
+
+Vulkane supports this today (`Buffer::device_address()`), and confirms every preservation
+guarantee holds by construction: on the compute path a binding is `(VkBuffer, offset, range)` with
+no stride field, so signed strides never reach a binding and cannot be coerced; `byte_offset →`
+descriptor `offset` (or pure arithmetic under BDA) verbatim; the buffer table is natively plural
+(a descriptor set holds N bindings). **The FDX sidecar does not need a Vulkane-side ABI slot:** it
+stays Fuel-side in `fuel-vulkan-backend`, which reads it and decomposes it into ordinary Vulkane
+bindings (data + scale + block-table as N buffers) plus push-constant metadata; nothing in FDX
+requires the sidecar to transit the FFI as a host pointer (consistent with §10 — the sidecar is
+producer-side and the backend/kernel reads it). If a passthrough tag is ever wanted (tooling /
+defrag bookkeeping), Vulkane's per-allocation `user_data: u64` is a zero-interpretation carrier.
+
+> **Metal (`kDLMetal`)** follows the same per-substrate pinning: `data` carries the buffer
+> identity the Metal compute path binds (DLPack's `id<MTLBuffer>` treatment). The general rule is
+> that FDX pins `data`'s meaning **per substrate** (§6.6), and the Vulkan substrate is pinned to
+> BDA here.
 
 ### 3.4 Sub-byte dtypes never use the native DLPack sub-byte path
 
