@@ -169,6 +169,25 @@ gather/affine integration critique sweep:
   externally by its one shipped owner). Marked **[consumer-ahead: deferred Baracuda telemetry
   feed]** — purely additive prose, no struct/validator/flag change.
 
+### Changelog — 2026-06-19 (low-bit sidecar dtype codes + base-passthrough confirmation)
+
+Both changes are **additive** (no struct field added/moved, no flag bit, no `version` bump), made
+in response to the Baracuda dtype reconciliation (their 2026-06-19 reply):
+
+- **Addition — `I4` / `U4` / `B1` sidecar logical-dtype codes (0x0102–0x0104, §6.1).** Names for
+  packed 4-bit signed/unsigned int (2/byte, GPTQ/AWQ-style) and bitpacked binary (8/byte) in the
+  sidecar logical-dtype namespace. They have **no Fuel `DType`** (so `fdx_to_dtype` returns `None`,
+  like the `GENERIC_LOW_BIT_*` escapes); dedicated codes keep the structure-key dtype axis clean
+  (`I4`/`U4`/`U8` distinct, no escape-flag parsing). C header + Rust constants + the no-Fuel-DType
+  test added in lock-step.
+- **Confirmation — base `DLTensor.dtype` honors any standard DLPack v1.3 code (§6.1.1).** The
+  `FDX_DTYPE_*` namespace is **sidecar-only**; it never constrains the base. So `fp8e5m2`
+  (`kDLFloat8_e5m2`), complex (`kDLComplex`; `bits` = total, 64/128), bool (`kDLBool`), and
+  *unpacked* 4-bit int (`kDLInt`/`kDLUInt`, `bits = 4`) ride the base honestly with no FDX code and
+  no sidecar. A sidecar `FDXDTypeExt` is required only for the *packed* sub-byte cases (base = `uint8`
+  stand-in). `COMPLEX64`/`BOOL` (0x0200/0x0201) are documented as reserved placeholders that ride
+  the base in practice.
+
 ### Changelog — 2026-06-18 (AFFINE_BLOCK quant family + GGML_BLOCK regime-contradiction fix)
 
 This dated entry records two changes, both **additive** (no struct field added or moved, no flag
@@ -895,9 +914,39 @@ the discriminant):
 | 14 | F8E8M0 | 8 | MX block-scale dtype (8 exp, 0 mantissa) |
 | 0x0100 | `GENERIC_LOW_BIT_INT` | n | escape: arbitrary `bit_width`, signed flag in `reserved[0]` |
 | 0x0101 | `GENERIC_LOW_BIT_FLOAT` | n | escape: `(exp,mantissa)` packed in `reserved[0]` |
-| 0x0200 | `COMPLEX64` (reserved) | 64 | DLPack `kDLComplex`; no Fuel `DType` yet (§17) |
-| 0x0201 | `BOOL` (reserved) | 8 | DLPack `kDLBool`; no Fuel `DType` yet (§17) |
+| 0x0102 | `I4` | 4 | **sub-byte** packed 4-bit signed int (2/byte, `DENSE_SUBBYTE`); no Fuel `DType` (added 2026-06-19) |
+| 0x0103 | `U4` | 4 | **sub-byte** packed 4-bit unsigned int (2/byte, `DENSE_SUBBYTE`); no Fuel `DType` |
+| 0x0104 | `B1` | 1 | **sub-byte** bitpacked binary (8/byte, `DENSE_SUBBYTE`); no standard DLPack repr; no Fuel `DType` |
+| 0x0200 | `COMPLEX64` (reserved) | 64 | DLPack `kDLComplex`; rides the base honestly (§6.1.1), no sidecar code needed |
+| 0x0201 | `BOOL` (reserved) | 8 | DLPack `kDLBool`; rides the base honestly (§6.1.1) |
 | 0xFFFF | NONE | 0 | dtype_ext absent |
+
+The `I4`/`U4`/`B1` codes (0x0102–0x0104) name sub-byte element types a producer/consumer carries
+through the sidecar when the base is the `uint8` stand-in; they have **no Fuel `DType`**, so the
+§6.0 `fdx_to_dtype` binding returns `None` for them (exactly like the `GENERIC_LOW_BIT_*` escapes).
+They were added (2026-06-19) so a kernel provider's packed `S4`/`U4` (GPTQ/AWQ-style int4) and
+bitpacked binary can be named in the sidecar logical-dtype namespace. A dedicated code (vs. the
+`GENERIC_LOW_BIT_INT` escape) keeps the structure-key dtype axis clean — `I4` vs `U4` vs `U8` are
+distinct codes, not an escape with a flag in `reserved[0]`.
+
+#### 6.1.1 The base `DLTensor.dtype` honors any standard DLPack v1.3 code
+
+The `FDX_DTYPE_*` namespace above governs **only the sidecar** — `FDXDTypeExt.logical_dtype`,
+`FDXBufferRef.dtype`, and the `FDXQuant` scale/zero-point dtype fields. It **never constrains the
+base `DLTensor.dtype`**, which is a plain standard-DLPack `DLDataType {code, bits, lanes}` and may
+carry **any valid DLPack v1.3 code**. So any element type DLPack v1.3 can name **rides the base
+honestly and needs no FDX code**, with **no sidecar at all** when nothing else is non-standard:
+
+- `fp8` variants → `kDLFloat8_*` (e.g. `kDLFloat8_e5m2`); **complex** → `kDLComplex` (`bits` = total:
+  64 for 2×f32, 128 for 2×f64 — DLPack counts total bits, not per-component); **bool** → `kDLBool`;
+  **unpacked** (one-per-byte) 4-bit int → `kDLInt`/`kDLUInt` with `bits = 4`.
+
+A sidecar `FDXDTypeExt` is required only when the base **cannot** faithfully name the type — i.e.
+the *packed* sub-byte cases where the base must be the opaque `uint8` stand-in (P5): packed `F4` /
+`F6*` / `I4` / `U4` / `B1` and the quant block formats. The honesty invariant (§3) guarantees a
+sidecar-blind consumer reads the base correctly in every case. The `COMPLEX64`/`BOOL` rows above are
+**reserved placeholders** for the sidecar namespace (kept for completeness / a future Fuel `DType`);
+in practice complex and bool ride the base and a producer emits no `FDXDTypeExt` for them.
 
 **`FDXPacking`** (`packing`):
 

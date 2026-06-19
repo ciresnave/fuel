@@ -115,4 +115,20 @@ mod tests {
             ImplClass::FuelNative { which: "slang" },
         );
     }
+
+    /// Baracuda item 2: the `ImplId` wire encoding keeps its five fields
+    /// SEPARABLE — never hashed into one opaque id. The JSONL must carry each
+    /// field by name so a consumer can group by `(backend, op, dtypes,
+    /// kernel_source)` for matrix ranking and use the full tuple for exact
+    /// re-resolution.
+    #[test]
+    fn impl_id_serializes_five_separable_fields() {
+        let json = serde_json::to_string(&id("baracuda", BackendId::Cuda)).expect("serialize");
+        for field in ["backend", "op", "dtypes", "kernel_source", "kernel_revision_hash"] {
+            assert!(json.contains(field), "ImplId wire form must carry `{field}` as its own field");
+        }
+        // Round-trips losslessly with every field preserved.
+        let back: ImplId = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, id("baracuda", BackendId::Cuda));
+    }
 }

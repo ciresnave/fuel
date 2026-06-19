@@ -462,6 +462,9 @@ mod tests {
         // §6.1 escape/reserved codes have no Fuel DType.
         assert_eq!(fdx_to_dtype(0x0100), None); // GENERIC_LOW_BIT_INT
         assert_eq!(fdx_to_dtype(0x0101), None); // GENERIC_LOW_BIT_FLOAT
+        assert_eq!(fdx_to_dtype(FDX_DTYPE_I4), None); // packed S4 — sidecar-only, no Fuel DType
+        assert_eq!(fdx_to_dtype(FDX_DTYPE_U4), None); // packed U4 — sidecar-only
+        assert_eq!(fdx_to_dtype(FDX_DTYPE_B1), None); // bitpacked Bin — sidecar-only
         assert_eq!(fdx_to_dtype(0x0200), None); // COMPLEX64 (reserved)
         assert_eq!(fdx_to_dtype(0x0201), None); // BOOL (reserved)
         assert_eq!(fdx_to_dtype(FDX_DTYPE_NONE), None); // 0xFFFF NONE
