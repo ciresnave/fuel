@@ -176,6 +176,20 @@ pub const FDX_DTYPE_F6E3M2: u16 = 12;
 pub const FDX_DTYPE_F4: u16 = 13;
 pub const FDX_DTYPE_F8E8M0: u16 = 14;
 
+// --- Low-bit logical codes with NO Fuel `DType` (the 0x01xx family). These name
+// sub-byte element types a producer/consumer (e.g. Baracuda) carries through the
+// sidecar when the base is the opaque `uint8` stand-in; Fuel does not process
+// them internally, so `fdx_to_dtype` returns `None` for them (like the
+// `GENERIC_LOW_BIT_*` escapes). Added 2026-06-19 per the Baracuda dtype
+// reconciliation (packed S4/U4 two-per-byte; bitpacked Bin). ---
+/// Packed 4-bit SIGNED integer (two per byte; DENSE_SUBBYTE, `bit_width = 4`).
+pub const FDX_DTYPE_I4: u16 = 0x0102;
+/// Packed 4-bit UNSIGNED integer (two per byte; DENSE_SUBBYTE, `bit_width = 4`).
+pub const FDX_DTYPE_U4: u16 = 0x0103;
+/// Bitpacked binary (eight per byte; DENSE_SUBBYTE, `bit_width = 1`). No standard
+/// DLPack representation — the meaning rides the sidecar.
+pub const FDX_DTYPE_B1: u16 = 0x0104;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +233,24 @@ mod tests {
         assert_eq!(FDX_BUFFER_INLINE, 0xFFFF_FFFF);
         // PerBlock is MX-only — record the invariant the validators enforce.
         assert_eq!(FDX_SCALE_GRAN_PER_BLOCK, 3);
+    }
+
+    /// The low-bit logical codes (I4/U4/B1) added for Baracuda's packed S4/U4/Bin
+    /// elements live in the 0x01xx low-bit family (NOT the contiguous 0..=14
+    /// "has-a-Fuel-DType" range), are distinct, and never collide with the
+    /// contiguous Fuel codes or the NONE sentinel.
+    #[test]
+    fn fdx_low_bit_logical_codes_are_distinct_and_out_of_fuel_range() {
+        let low_bit = [FDX_DTYPE_I4, FDX_DTYPE_U4, FDX_DTYPE_B1];
+        // Distinct from each other.
+        for (i, a) in low_bit.iter().enumerate() {
+            for b in &low_bit[i + 1..] {
+                assert_ne!(a, b, "low-bit logical codes must be distinct");
+            }
+            // In the 0x01xx low-bit family, above the contiguous Fuel range (0..=14).
+            assert!(*a > FDX_DTYPE_F8E8M0, "low-bit code {a:#06x} must sit above the Fuel range");
+            assert!(*a < 0x0200, "low-bit code {a:#06x} must sit in the 0x01xx family");
+            assert_ne!(*a, FDX_DTYPE_NONE);
+        }
     }
 }

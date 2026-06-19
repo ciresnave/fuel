@@ -223,6 +223,13 @@ _Static_assert(sizeof(DLManagedTensorVersioned) == 80,
 #define FDX_DTYPE_F6E3M2 12u
 #define FDX_DTYPE_F4     13u
 #define FDX_DTYPE_F8E8M0 14u
+/* Low-bit logical codes with no Fuel DType (0x01xx family): packed S4/U4 (two
+ * per byte, DENSE_SUBBYTE, bit_width 4) and bitpacked Bin (eight per byte,
+ * bit_width 1). Carried through the sidecar when the base is the uint8 stand-in
+ * (added 2026-06-19, Baracuda dtype reconciliation). */
+#define FDX_DTYPE_I4     0x0102u
+#define FDX_DTYPE_U4     0x0103u
+#define FDX_DTYPE_B1     0x0104u
 
 /* ===========================================================================
  * FDX STRUCTS — field-for-field mirror of sidecar.rs. Layout matches the Rust
