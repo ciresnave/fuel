@@ -1,5 +1,9 @@
 # Fuel → Baracuda — formal reply: Judge timing-retention RESOLVED, Open-Q-1 = YES
 
+> **For sending, use [`baracuda-message.md`](baracuda-message.md)** — the single self-contained
+> message that consolidates this reply + the proposal below and **inlines the full FDX ABI** (so
+> Baracuda needs no access to Fuel's source). This file is retained as internal working notes.
+
 **Status: DRAFT — not sent.** This is the **formal reply companion** to
 [`baracuda-dlpack-fkc-ask.md`](baracuda-dlpack-fkc-ask.md), Fuel's outbound two-way-contract
 proposal (FDX + FKC + telemetry). That proposal deferred its formal answer — and Baracuda's

@@ -1,5 +1,9 @@
 # Fuel → Vulkane — the FFI tensor boundary as a shared description (FDX; FKC if/when compute lands)
 
+> **For sending, use [`vulkane-message.md`](vulkane-message.md)** — the single self-contained
+> message that **inlines the FDX ABI structs** Vulkane carries/binds (so Vulkane needs no access
+> to Fuel's source). This file is retained as internal working notes.
+
 **Status: DRAFT — not sent. PROPOSAL for a cross-project change.**
 This is an *outbound proposal* from Fuel to the Vulkane team, framed per Fuel's working
 agreement: cross-project changes are *proposed before they are made*, never landed as a
