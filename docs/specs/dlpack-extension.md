@@ -202,6 +202,30 @@ reference these codes by symbol.
 
 Findings deliberately **not** fully resolved here (with rationale) are listed in §17.
 
+### Changelog — 2026-06-18 (internal source of FDX quant families: Fuel `SType`/`Encoding`)
+
+This dated entry is **purely a cross-spec provenance note** — it adds **no** struct field, flag bit,
+code value, or validator, and does not bump `version`. It records *where the quant families described
+by FDX come from internally*, so the projection direction is unambiguous.
+
+- **The INTERNAL source of the FDX quant families is the Fuel `SType`/`Encoding` type**,
+  canonically specified in [`docs/specs/storage-encoding.md`](storage-encoding.md). `SType` (an
+  ordered stack of `Encoding` layers attached to a `Storage`) is the **internal source of truth** for
+  how a tensor's bytes are encoded; the FDX `FDXQuant` sidecar (§6.2) is its **kernel-boundary
+  projection** (the `SType::to_fdx()` direction). FDX remains the normative owner of the shared
+  numeric *codes* (§6.0); `storage-encoding.md` owns the internal *type* that those codes project
+  from.
+- **Regime mapping (projection of the two block regimes):** the FDX `AFFINE_BLOCK` regime
+  (separate-scale operand: `scale_present == 1`, `scale_placement == SEPARATE_BUFFER`,
+  `scale_buffer` a real buffer-table index — §6.2) is the projection of `Encoding::AffineBlock`
+  (the sibling-operand model **B**: the per-block absmax/scale is a separate first-class operand of
+  the consuming op, not embedded in the weight's storage). The FDX `GGML_BLOCK` regime
+  (`ggml_dtype` only, scales baked INLINE in the block struct — §6.2) is the projection of
+  `Encoding::GgmlBlock` (inline-scale, forced by GGUF's interleaved on-disk struct-packing). This
+  is consistent with FDX's existing regime separation (`AFFINE_BLOCK` = separate operand,
+  `GGML_BLOCK` = inline-baked); the note only records that those two regimes are the boundary
+  image of the two internal `Encoding` layers.
+
 ---
 
 ## 0. Current status / handoff
@@ -988,6 +1012,16 @@ operand** (an absmax / block scale), block-shaped:
 - **`zp_present`** may be set (NF4 is symmetric → `zp_present == 0`; a 4-bit affine-int block format
   with a zero-point sets `zp_present == 1` with `zp_buffer` a separate buffer-table index).
 
+> **Cross-reference — internal source of this family.** The `AFFINE_BLOCK` family (and the
+> `GGML_BLOCK` family above) is the **kernel-boundary projection** of the Fuel `SType`/`Encoding`
+> type, canonically specified in [`docs/specs/storage-encoding.md`](storage-encoding.md):
+> `AFFINE_BLOCK` projects `Encoding::AffineBlock` (sibling-operand model **B** — the per-block
+> scale is a separate first-class operand of the consuming op) and `GGML_BLOCK` projects
+> `Encoding::GgmlBlock` (inline-baked scale). The projection direction is one-way: `SType` is the
+> **internal source of truth** for how a tensor's bytes are encoded; this FDX sidecar is its
+> **kernel-boundary projection** (the `SType::to_fdx()` image). FDX stays the normative owner of the
+> shared numeric codes (§6.0); `storage-encoding.md` owns the internal type those codes project from.
+>
 > **Regime separation (digest §9, do not unify):** the families partition cleanly with **no
 > overlapping fields**:
 >
