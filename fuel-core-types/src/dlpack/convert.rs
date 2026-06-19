@@ -21,6 +21,7 @@
 //! `GENERIC_LOW_BIT_*`, `COMPLEX64`, `BOOL`), and an out-of-range integer is not
 //! a valid code. `None` means "no corresponding Fuel value", never a panic (G6).
 
+use super::abi::{dtype_code, DLDataType};
 use super::codes::*;
 use super::sidecar::{FDXAffine, FDXAffineTerm, FDXExtent};
 use crate::backend::SubstrateClass;
@@ -85,6 +86,50 @@ pub fn fdx_to_dtype(code: u16) -> Option<DType> {
         _ => return None,
     };
     Some(d)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DType → standard DLPack DLDataType (§5.1, §3) — the FAITHFUL {code,bits,lanes}
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Map a Fuel [`DType`] to its **faithful** standard-DLPack [`DLDataType`]
+/// (`{code, bits, lanes}`, `dlpack.h` §5.1). This is the honest descriptor of
+/// the *logical* element type — F32 → `{kDLFloat, 32, 1}`, BF16 →
+/// `{kDLBfloat, 16, 1}`, U8 → `{kDLUInt, 8, 1}`, etc.
+///
+/// **Exhaustive `match`, no wildcard** — a new `DType` variant breaks this
+/// compile (the §6.0 guarantee).
+///
+/// For the sub-byte dtypes whose `DType::size_in_bytes() == 0`
+/// (`F4`/`F6E2M3`/`F6E3M2`) this returns a faithful *low-bit* descriptor
+/// (`bits < 8`). The honesty invariant (§3, §3.4) requires the **base
+/// `DLTensor`** to carry the `{kDLUInt, 8, 1}` stand-in for these — substituting
+/// that stand-in is the *view's* job (it carries the true low-bit width in
+/// `FDXDTypeExt`), NOT this function's: `dl_dtype` is the plain faithful map.
+pub fn dl_dtype(d: DType) -> DLDataType {
+    use dtype_code::*;
+    let (code, bits): (u8, u8) = match d {
+        DType::U8 => (K_DL_UINT, 8),
+        DType::I8 => (K_DL_INT, 8),
+        DType::U32 => (K_DL_UINT, 32),
+        DType::I16 => (K_DL_INT, 16),
+        DType::I32 => (K_DL_INT, 32),
+        DType::I64 => (K_DL_INT, 64),
+        DType::BF16 => (K_DL_BFLOAT, 16),
+        DType::F16 => (K_DL_FLOAT, 16),
+        DType::F32 => (K_DL_FLOAT, 32),
+        DType::F64 => (K_DL_FLOAT, 64),
+        // F8E4M3 / F8E8M0 are 8-bit floats; DLPack has no dedicated fp8 code, so
+        // the faithful descriptor is a kDLFloat of 8 bits (the true bit-width).
+        // The sidecar `FDXDTypeExt` carries the precise fp8 variant.
+        DType::F8E4M3 => (K_DL_FLOAT, 8),
+        DType::F8E8M0 => (K_DL_FLOAT, 8),
+        // Sub-byte (size_in_bytes()==0): faithful low-bit float descriptors.
+        DType::F6E2M3 => (K_DL_FLOAT, 6),
+        DType::F6E3M2 => (K_DL_FLOAT, 6),
+        DType::F4 => (K_DL_FLOAT, 4),
+    };
+    DLDataType { code, bits, lanes: 1 }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -374,6 +419,33 @@ mod tests {
         assert_eq!(dtype_to_fdx(DType::F6E3M2), 12);
         assert_eq!(dtype_to_fdx(DType::F4), 13);
         assert_eq!(dtype_to_fdx(DType::F8E8M0), 14);
+    }
+
+    #[test]
+    fn dl_dtype_faithful_descriptors() {
+        use dtype_code::*;
+        // Standard faithful dtypes — {code, bits, lanes}.
+        assert_eq!(dl_dtype(DType::F32), DLDataType { code: K_DL_FLOAT, bits: 32, lanes: 1 });
+        assert_eq!(dl_dtype(DType::F16), DLDataType { code: K_DL_FLOAT, bits: 16, lanes: 1 });
+        assert_eq!(dl_dtype(DType::BF16), DLDataType { code: K_DL_BFLOAT, bits: 16, lanes: 1 });
+        assert_eq!(dl_dtype(DType::F64), DLDataType { code: K_DL_FLOAT, bits: 64, lanes: 1 });
+        assert_eq!(dl_dtype(DType::I32), DLDataType { code: K_DL_INT, bits: 32, lanes: 1 });
+        assert_eq!(dl_dtype(DType::I64), DLDataType { code: K_DL_INT, bits: 64, lanes: 1 });
+        assert_eq!(dl_dtype(DType::U8), DLDataType { code: K_DL_UINT, bits: 8, lanes: 1 });
+        assert_eq!(dl_dtype(DType::U32), DLDataType { code: K_DL_UINT, bits: 32, lanes: 1 });
+        assert_eq!(dl_dtype(DType::I8), DLDataType { code: K_DL_INT, bits: 8, lanes: 1 });
+        assert_eq!(dl_dtype(DType::I16), DLDataType { code: K_DL_INT, bits: 16, lanes: 1 });
+        // Sub-byte ones get a faithful low-bit width (< 8); the VIEW substitutes
+        // the {kDLUInt,8,1} honesty stand-in for these, not dl_dtype itself.
+        assert_eq!(dl_dtype(DType::F4).bits, 4);
+        assert_eq!(dl_dtype(DType::F6E2M3).bits, 6);
+        assert_eq!(dl_dtype(DType::F6E3M2).bits, 6);
+        assert_eq!(dl_dtype(DType::F8E4M3).bits, 8);
+        assert_eq!(dl_dtype(DType::F8E8M0).bits, 8);
+        // Lanes always 1 for scalar dtypes.
+        for d in ALL_DTYPES {
+            assert_eq!(dl_dtype(d).lanes, 1, "DType {d:?} must be scalar (lanes=1)");
+        }
     }
 
     #[test]
