@@ -52,6 +52,13 @@ use fuel_core_types::storage::OutputView;
 use fuel_cpu_backend::CpuStorageBytes;
 use std::sync::Arc;
 
+/// Borrowed, zero-copy DLPack + FDX-sidecar view over a `(Storage, Layout
+/// [, SymEnv])` triple at the kernel-call boundary. Behind the `dlpack`
+/// feature. See [`dlpack_view::view`] and
+/// `docs/session-prompts/dlpack-comm-layer-plan.md` §2.
+#[cfg(feature = "dlpack")]
+pub mod dlpack_view;
+
 /// Closed enum over backend storage variants. The `Cpu` variant
 /// holds [`CpuStorageBytes`] from `fuel-cpu-backend`. GPU variants
 /// (feature-gated) hold the per-backend `*StorageBytes` types from
