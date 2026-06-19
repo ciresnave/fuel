@@ -72,3 +72,41 @@ fn one_mib_roundtrip_preserves_bytes() {
     let got = b.download_bytes(&storage).expect("d2h");
     assert_eq!(got, src);
 }
+
+/// BDA: a device-resident storage buffer yields a valid non-zero device
+/// address — proving the `bufferDeviceAddress` device feature + the BDA
+/// allocator option + the `SHADER_DEVICE_ADDRESS` buffer usage are all wired.
+/// This is exactly the value the FDX Vulkan path (spec §3.3.1) sources as a
+/// `kDLVulkan` tensor's `data` (the base; `byte_offset` is folded at dispatch).
+#[test]
+#[ignore]
+fn device_storage_has_valid_buffer_device_address() {
+    let Some(b) = backend_or_skip() else { return };
+    let storage = b.alloc_bytes(256).expect("alloc");
+    let buf = storage.buffer_opt().expect("device-resident storage must carry a buffer");
+    let addr = buf
+        .device_address()
+        .expect("device_address must succeed (BDA feature + usage must be enabled)");
+    assert_ne!(addr, 0, "a SHADER_DEVICE_ADDRESS buffer must have a non-zero device address");
+    eprintln!("BDA device_address = {addr:#018x}");
+}
+
+/// Regression: enabling BDA (the device feature + the address usage bit on
+/// every storage buffer) must NOT disturb the existing descriptor/transfer
+/// path. The same storage that exposes a device address still round-trips
+/// H2D/D2H byte-for-byte.
+#[test]
+#[ignore]
+fn bda_does_not_disturb_transfer_path() {
+    let Some(b) = backend_or_skip() else { return };
+    let src: Vec<u8> = (0..=255).collect();
+    let storage = b.upload_bytes(&src).expect("h2d");
+    let addr = storage
+        .buffer_opt()
+        .expect("buffer")
+        .device_address()
+        .expect("bda");
+    assert_ne!(addr, 0);
+    let got = b.download_bytes(&storage).expect("d2h");
+    assert_eq!(got, src, "BDA enablement must not disturb the transfer path");
+}

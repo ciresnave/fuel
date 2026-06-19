@@ -473,7 +473,13 @@ impl VulkanBackend {
             .with_shader_float16()
             .with_storage_buffer16_bit_access()
             .with_shader_float64()
-            .with_shader_int64();
+            .with_shader_int64()
+            // Buffer device address (Vulkan 1.2 core; universally supported on
+            // Turing+/RDNA/Arc). Required for the FDX kernel boundary: a Vulkan
+            // tensor's `data` is a VkDeviceAddress (BDA path, spec §3.3.1), so
+            // Slang kernels address operands via `buffer_reference` and
+            // negative-stride flips survive as raw pointer math.
+            .with_buffer_device_address();
         if has_coop_matrix {
             features_builder = features_builder.with_cooperative_matrix();
         }
@@ -530,7 +536,17 @@ impl VulkanBackend {
 
         let pipelines = Pipelines::new(&device, has_coop_matrix).map_err(vk_err)?;
         let recorder = Mutex::new(Recorder::new(&device, queue_family).map_err(vk_err)?);
-        let allocator = std::sync::Arc::new(Allocator::new(&device, &physical).map_err(vk_err)?);
+        // BDA-capable allocator: every block carries
+        // VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT, so a STORAGE_BUFFER created with
+        // SHADER_DEVICE_ADDRESS usage yields a valid GPU address (FDX §3.3.1).
+        let allocator = std::sync::Arc::new(
+            Allocator::new_with_options(
+                &device,
+                &physical,
+                AllocatorOptions { buffer_device_address: true },
+            )
+            .map_err(vk_err)?,
+        );
 
         // D2H download staging wants HOST_CACHED host memory: CPU
         // reads from the uncached (write-combined) host-visible type
@@ -706,7 +722,8 @@ impl VulkanBackend {
                     size,
                     usage: BufferUsage::STORAGE_BUFFER
                         | BufferUsage::TRANSFER_SRC
-                        | BufferUsage::TRANSFER_DST,
+                        | BufferUsage::TRANSFER_DST
+                        | BufferUsage::SHADER_DEVICE_ADDRESS,
                 },
                 AllocationCreateInfo {
                     usage: AllocationUsage::DeviceLocal,
@@ -804,7 +821,8 @@ impl VulkanBackend {
                     size,
                     usage: BufferUsage::STORAGE_BUFFER
                         | BufferUsage::TRANSFER_SRC
-                        | BufferUsage::TRANSFER_DST,
+                        | BufferUsage::TRANSFER_DST
+                        | BufferUsage::SHADER_DEVICE_ADDRESS,
                 },
                 AllocationCreateInfo {
                     usage: AllocationUsage::DeviceLocal,
@@ -858,7 +876,8 @@ impl VulkanBackend {
                     size,
                     usage: BufferUsage::STORAGE_BUFFER
                         | BufferUsage::TRANSFER_SRC
-                        | BufferUsage::TRANSFER_DST,
+                        | BufferUsage::TRANSFER_DST
+                        | BufferUsage::SHADER_DEVICE_ADDRESS,
                 },
                 AllocationCreateInfo {
                     usage: AllocationUsage::DeviceLocal,
@@ -919,7 +938,8 @@ impl VulkanBackend {
                     size: byte_size.max(1),
                     usage: BufferUsage::STORAGE_BUFFER
                         | BufferUsage::TRANSFER_SRC
-                        | BufferUsage::TRANSFER_DST,
+                        | BufferUsage::TRANSFER_DST
+                        | BufferUsage::SHADER_DEVICE_ADDRESS,
                 },
                 AllocationCreateInfo {
                     usage: AllocationUsage::DeviceLocal,
@@ -1200,7 +1220,8 @@ impl VulkanBackend {
                     size: byte_size.max(1),
                     usage: BufferUsage::STORAGE_BUFFER
                         | BufferUsage::TRANSFER_SRC
-                        | BufferUsage::TRANSFER_DST,
+                        | BufferUsage::TRANSFER_DST
+                        | BufferUsage::SHADER_DEVICE_ADDRESS,
                 },
                 AllocationCreateInfo {
                     usage: AllocationUsage::DeviceLocal,
@@ -1343,7 +1364,8 @@ impl VulkanBackend {
                     size,
                     usage: BufferUsage::STORAGE_BUFFER
                         | BufferUsage::TRANSFER_SRC
-                        | BufferUsage::TRANSFER_DST,
+                        | BufferUsage::TRANSFER_DST
+                        | BufferUsage::SHADER_DEVICE_ADDRESS,
                 },
                 AllocationCreateInfo {
                     usage: AllocationUsage::DeviceLocal,

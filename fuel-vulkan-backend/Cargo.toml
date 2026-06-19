@@ -24,9 +24,12 @@
     # Flipped from the local path dep back to crates.io 2026-06-13: the
     # 0.7 budget/defrag APIs (vram_budget/vram_used, register_pressure_callback,
     # would_fit -> FitStatus, build/apply_defragmentation_plan) are validated
-    # and published; local checkout was 0.8.1 == crates.io 0.8.1. crates.io
-    # version so a clean clone builds without the ../vulkane sibling checkout.
-    vulkane                = "0.8.1"
+    # and published; crates.io version so a clean clone builds without the
+    # ../vulkane sibling checkout. 0.8.2 (2026-06-19) adds the device-address
+    # allocator (AllocatorOptions { buffer_device_address } / new_with_options)
+    # required for the FDX Vulkan BDA path (spec §3.3.1): pooled-buffer device
+    # addresses were invalid on strict drivers before 0.8.2.
+    vulkane                = "0.8.2"
 
 [dev-dependencies]
     fuel-conv      = { workspace = true }
