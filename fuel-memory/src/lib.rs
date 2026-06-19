@@ -47,7 +47,7 @@ pub use fuel_cuda_backend::CudaStorageBytes as CudaStorage;
 #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
 pub use fuel_metal_backend::MetalStorageBytes as MetalStorage;
 
-use fuel_core_types::{DType, Result};
+use fuel_core_types::{DType, Result, SType};
 use fuel_core_types::storage::OutputView;
 use fuel_cpu_backend::CpuStorageBytes;
 use std::sync::Arc;
@@ -98,6 +98,13 @@ pub struct Storage {
     /// nodes share this Arc so the bundle stays alive as long as any
     /// view holds a reference.
     pub bundle: Option<Arc<[OutputView]>>,
+    /// How the bytes are ENCODED (orthogonal to `dtype`, which is the
+    /// logical element type). Empty = plain dense `dtype`, byte-identical
+    /// to pre-SType behaviour. v1: PRIMARY storage only — bundle slots
+    /// keep `dtype` only (per-slot SType is a future addition). See
+    /// [`fuel_core_types::SType`] and
+    /// `docs/specs/storage-encoding.md`.
+    pub stype: SType,
 }
 
 /// Feature-aware match over `BackendStorage` variants. Used wherever
@@ -138,7 +145,7 @@ impl Storage {
     /// [`Self::with_bundle`] / [`Self::new_bundled`] for the
     /// multi-output case.
     pub fn new(inner: BackendStorage, dtype: DType) -> Self {
-        Self { inner, dtype, bundle: None }
+        Self { inner, dtype, bundle: None, stype: SType::default() }
     }
 
     /// Build a Storage from a backend variant + dtype tag + bundle
@@ -152,7 +159,7 @@ impl Storage {
         bundle: Arc<[OutputView]>,
     ) -> Result<Self> {
         Self::validate_bundle(dtype, &bundle)?;
-        Ok(Self { inner, dtype, bundle: Some(bundle) })
+        Ok(Self { inner, dtype, bundle: Some(bundle), stype: SType::default() })
     }
 
     /// Attach a bundle side-table to an existing single-output
@@ -224,6 +231,19 @@ impl Storage {
     pub fn elem_count(&self) -> usize {
         let bps = self.dtype.size_in_bytes();
         if bps == 0 { 0 } else { self.len_bytes() / bps }
+    }
+
+    /// Attach an encoding scheme to this storage (consuming builder).
+    /// Does not touch the bytes or the logical dtype — only describes
+    /// HOW the bytes are encoded. See [`fuel_core_types::SType`].
+    pub fn with_stype(mut self, stype: SType) -> Self {
+        self.stype = stype;
+        self
+    }
+
+    /// The encoding scheme. Empty = plain dense `dtype`.
+    pub fn stype(&self) -> &SType {
+        &self.stype
     }
 }
 
@@ -297,6 +317,26 @@ mod tests {
         assert_eq!(s.dtype(), DType::F32);
         assert_eq!(s.elem_count(), 4);
         assert_eq!(s.len_bytes(), 16);
+    }
+
+    /// Born-red (step 2): a plain Storage has an empty (plain) SType by default.
+    #[test]
+    fn plain_storage_has_empty_stype() {
+        let s = alloc_cpu_zeroed(DType::F32, 4).expect("alloc");
+        assert!(s.stype().is_plain(), "default Storage must carry a plain SType");
+        assert_eq!(s.stype().layers().len(), 0);
+    }
+
+    /// Born-red (step 2): attaching an SType is preserved and does not disturb
+    /// the logical dtype or the byte count.
+    #[test]
+    fn storage_with_stype_round_trips() {
+        use fuel_core_types::{SType, Encoding, GgmlDType};
+        let s = alloc_cpu_zeroed(DType::F32, 8).expect("alloc")
+            .with_stype(SType::from_layer(Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4_0 }));
+        assert!(!s.stype().is_plain());
+        assert_eq!(s.dtype(), DType::F32); // dtype unchanged
+        assert_eq!(s.len_bytes(), 32);     // bytes unchanged
     }
 
     /// A4: alloc symmetry — CpuStorageBytes::alloc and from_zero_bytes

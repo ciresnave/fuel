@@ -27,6 +27,7 @@
 //! metadata lives only on the `Storage` newtype.
 
 use crate::dyn_backend::{DynBackendDevice, DynBackendStorage};
+use crate::stype::SType;
 use crate::op::{self, BinaryOp, CmpOp, ReduceOp};
 use crate::scalar::Scalar;
 use crate::{
@@ -221,6 +222,12 @@ pub struct Storage {
     /// nodes share this Arc so the bundle stays alive as long as any
     /// view holds a reference.
     pub(crate) bundle: Option<Arc<[OutputView]>>,
+    /// How the bytes are ENCODED (orthogonal to the logical element type
+    /// reported by `inner.dtype_dyn()`). Empty = plain dense dtype,
+    /// byte-identical to pre-SType behaviour. v1: PRIMARY storage only —
+    /// bundle slots keep `dtype` only (per-slot SType is a future
+    /// addition). See [`crate::SType`] and `docs/specs/storage-encoding.md`.
+    pub(crate) stype: SType,
 }
 
 impl Storage {
@@ -232,7 +239,7 @@ impl Storage {
     /// [`Storage::new_bundled`] / [`Storage::with_bundle`] for the
     /// multi-output case.
     pub fn new<B: DynBackendStorage + 'static>(b: B) -> Self {
-        Storage { inner: Box::new(b), bundle: None }
+        Storage { inner: Box::new(b), bundle: None, stype: SType::default() }
     }
 
     /// Wrap an already-boxed `dyn DynBackendStorage`. Used by callers
@@ -240,7 +247,7 @@ impl Storage {
     /// directly from trait dispatch. Single-output; use
     /// [`Storage::from_dyn_bundled`] for the multi-output case.
     pub fn from_dyn(b: Box<dyn DynBackendStorage>) -> Self {
-        Storage { inner: b, bundle: None }
+        Storage { inner: b, bundle: None, stype: SType::default() }
     }
 
     /// Wrap an already-boxed `dyn DynBackendStorage` together with a
@@ -273,7 +280,7 @@ impl Storage {
             ))
             .bt());
         }
-        Ok(Storage { inner: b, bundle: Some(bundle) })
+        Ok(Storage { inner: b, bundle: Some(bundle), stype: SType::default() })
     }
 
     /// Attach a bundle side-table to an existing single-output
@@ -383,7 +390,10 @@ impl Storage {
     }
 
     pub fn try_clone(&self, layout: &Layout) -> Result<Self> {
-        Ok(Storage::from_dyn(self.inner.try_clone_dyn(layout)?))
+        // Preserve the encoding scheme across a clone (v1: cloning a plain
+        // storage stays plain since `from_dyn` defaults empty; cloning an
+        // *encoded* storage must carry its `stype` forward).
+        Ok(Storage::from_dyn(self.inner.try_clone_dyn(layout)?).with_stype(self.stype.clone()))
     }
 
     /// Return an `Arc` to the owning device as a trait object.
@@ -395,6 +405,19 @@ impl Storage {
 
     pub fn dtype(&self) -> DType {
         self.inner.dtype_dyn()
+    }
+
+    /// Attach an encoding scheme to this storage (consuming builder).
+    /// Does not touch the bytes or the logical dtype — only describes HOW
+    /// the bytes are encoded. See [`crate::SType`].
+    pub fn with_stype(mut self, stype: SType) -> Self {
+        self.stype = stype;
+        self
+    }
+
+    /// The encoding scheme. Empty = plain dense dtype.
+    pub fn stype(&self) -> &SType {
+        &self.stype
     }
 
     /// Pre-G this method consulted `Device::same_device` for the Metal
@@ -832,5 +855,86 @@ mod multi_output_specs {
         assert_eq!(s.elem_count(), 20);
         assert_eq!(s.len_bytes(), 80);
         assert!(s.name.is_none());
+    }
+}
+
+#[cfg(test)]
+mod stype_attach {
+    //! Step 2 born-red coverage for the trait-object `Storage`'s `stype`
+    //! field. There is no concrete `DynBackendStorage` impl in this crate
+    //! (backends live downstream and would cycle as a dev-dep), so the test
+    //! uses a minimal mock whose only real method is `try_clone_dyn`.
+    use super::*;
+    use crate::op::UnaryOp;
+    use std::any::Any;
+
+    /// Minimal `DynBackendStorage`: an empty unit struct. Only
+    /// `try_clone_dyn` / `dtype_dyn` / `as_any*` are exercised; every other
+    /// method panics (never called by these tests).
+    #[derive(Debug)]
+    struct MockStorage;
+
+    #[allow(unused_variables)]
+    impl DynBackendStorage for MockStorage {
+        fn try_clone_dyn(&self, _layout: &Layout) -> Result<Box<dyn DynBackendStorage>> {
+            Ok(Box::new(MockStorage))
+        }
+        fn dtype_dyn(&self) -> DType { DType::F32 }
+        fn as_any(&self) -> &dyn Any { self }
+        fn as_any_mut(&mut self) -> &mut dyn Any { self }
+
+        fn device_dyn(&self) -> &dyn DynBackendDevice { unimplemented!() }
+        fn device_arc_dyn(&self) -> Arc<dyn DynBackendDevice> { unimplemented!() }
+        fn to_host_buffer_dyn(&self) -> Result<HostBuffer> { unimplemented!() }
+        fn affine_dyn(&self, l: &Layout, mul: f64, add: f64) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn powf_dyn(&self, l: &Layout, e: f64) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn elu_dyn(&self, l: &Layout, alpha: f64) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn reduce_op_dyn(&self, op: ReduceOp, l: &Layout, axes: &[usize]) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn cmp_dyn(&self, op: CmpOp, rhs: &dyn DynBackendStorage, ll: &Layout, rl: &Layout) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn to_dtype_dyn(&self, l: &Layout, dtype: DType) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn unary_op_dyn(&self, l: &Layout, op: UnaryOp) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn binary_op_dyn(&self, rhs: &dyn DynBackendStorage, ll: &Layout, rl: &Layout, op: BinaryOp) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn where_cond_dyn(&self, cl: &Layout, t: &dyn DynBackendStorage, tl: &Layout, f: &dyn DynBackendStorage, fl: &Layout) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn conv1d_dyn(&self, l: &Layout, k: &dyn DynBackendStorage, kl: &Layout, p: &conv::ParamsConv1D) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn conv_transpose1d_dyn(&self, l: &Layout, k: &dyn DynBackendStorage, kl: &Layout, p: &conv::ParamsConvTranspose1D) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn conv2d_dyn(&self, l: &Layout, k: &dyn DynBackendStorage, kl: &Layout, p: &conv::ParamsConv2D) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn conv_transpose2d_dyn(&self, l: &Layout, k: &dyn DynBackendStorage, kl: &Layout, p: &conv::ParamsConvTranspose2D) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn avg_pool2d_dyn(&self, l: &Layout, k: (usize, usize), s: (usize, usize)) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn max_pool2d_dyn(&self, l: &Layout, k: (usize, usize), s: (usize, usize)) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn upsample_nearest1d_dyn(&self, l: &Layout, t: usize) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn upsample_nearest2d_dyn(&self, l: &Layout, h: usize, w: usize) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn upsample_bilinear2d_dyn(&self, l: &Layout, h: usize, w: usize, ac: bool, sh: Option<f64>, sw: Option<f64>) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn gather_dyn(&self, sl: &Layout, ids: &dyn DynBackendStorage, il: &Layout, dim: usize) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn scatter_set_dyn(&mut self, sl: &Layout, src: &dyn DynBackendStorage, srl: &Layout, ids: &dyn DynBackendStorage, il: &Layout, dim: usize) -> Result<()> { unimplemented!() }
+        fn scatter_add_set_dyn(&mut self, sl: &Layout, src: &dyn DynBackendStorage, srl: &Layout, ids: &dyn DynBackendStorage, il: &Layout, dim: usize) -> Result<()> { unimplemented!() }
+        fn index_select_dyn(&self, ids: &dyn DynBackendStorage, sl: &Layout, il: &Layout, dim: usize) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn index_add_dyn(&self, sl: &Layout, ids: &dyn DynBackendStorage, il: &Layout, src: &dyn DynBackendStorage, srl: &Layout, dim: usize) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn matmul_dyn(&self, rhs: &dyn DynBackendStorage, bmnk: (usize, usize, usize, usize), ll: &Layout, rl: &Layout) -> Result<Box<dyn DynBackendStorage>> { unimplemented!() }
+        fn copy_strided_src_dyn(&self, dst: &mut dyn DynBackendStorage, off: usize, sl: &Layout) -> Result<()> { unimplemented!() }
+        fn copy2d_dyn(&self, dst: &mut dyn DynBackendStorage, d1: usize, d2: usize, ss1: usize, ds1: usize, so: usize, dofs: usize) -> Result<()> { unimplemented!() }
+        fn const_set_dyn(&mut self, value: Scalar, l: &Layout) -> Result<()> { unimplemented!() }
+    }
+
+    /// Born-red: a freshly constructed trait-object Storage carries a plain
+    /// (empty) SType by default.
+    #[test]
+    fn trait_object_storage_defaults_plain() {
+        let s = Storage::new(MockStorage);
+        assert!(s.stype().is_plain(), "default Storage must carry a plain SType");
+        assert_eq!(s.stype().layers().len(), 0);
+    }
+
+    /// Born-red: `try_clone` carries an attached `stype` forward (the cheap,
+    /// correct v1 choice — cloning an encoded storage preserves its scheme).
+    #[test]
+    fn try_clone_preserves_stype() {
+        use crate::stype::Encoding;
+        use crate::quantized::GgmlDType;
+        let s = Storage::new(MockStorage)
+            .with_stype(SType::from_layer(Encoding::GgmlBlock { ggml_dtype: GgmlDType::Q4_0 }));
+        let layout = Layout::contiguous(Shape::from_dims(&[4]));
+        let cloned = s.try_clone(&layout).expect("clone");
+        assert_eq!(cloned.stype(), s.stype(), "try_clone must preserve stype");
+        assert!(!cloned.stype().is_plain());
     }
 }
