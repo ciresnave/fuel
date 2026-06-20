@@ -1,9 +1,13 @@
 # FKC Fusion Patterns — declarative subgraph patterns so a backend's fused kernel auto-wires on import
 
-**Status: DRAFT for review (2026-06-19, rev 2), branch `feat/kernel-contracts-dlpack`.** Extension to
-the Fuel Kernel Contract Format (FKC). Reviewed adversarially against Fuel's real fusion matchers;
-rev 2 corrects the op vocabulary (graph `Op`, not `OpKind`), scopes patterns to *decomposable*
-fusions, and adds node-identity guards + the guard/extract expression grammars.
+**Status: DRAFT for review (2026-06-19, rev 3), branch `feat/kernel-contracts-dlpack`.** Extension to
+the Fuel Kernel Contract Format (FKC). Reviewed adversarially against Fuel's real fusion matchers
+(rev 2) and against Baracuda's auto-generating-provider review (rev 3). Rev 2 corrected the op
+vocabulary (graph `Op`, not `OpKind`) and added node-identity guards. **Rev 3** fixes the two §8
+type-check bugs, makes **commutative-operand canonicalization normative** (§3a.2a — the one blocking
+review item), unifies guard/extract auto-skip, adds the `input()` phasing rule, extends the dtype
+list + resolves `Bool`→`U8`, pins the `Gelu`/`GeluErf` flavors, and re-sequences multi-output + an
+import-time never-match lint ahead of cosmetic deferrals. Per-point resolutions: §11.
 
 **Audience:** kernel providers who ship **fused** kernels and want Fuel to use them automatically on
 contract import. This document specifies the new `pattern:` block; it references the base FKC spec
@@ -30,17 +34,66 @@ declaratively**, so the fused kernel auto-wires on import.
 
 ---
 
-## 1. Two kinds of fused op — and which needs a `pattern:`
+## 1. When a fused op needs a `pattern:` — and the recipe principle (every fused op should be decomposable)
 
 | Kind | How it enters the graph | Auto-pickup on offer? | Needs `pattern:`? |
 |---|---|---|---|
-| **Builder-only / coarse op** — e.g. `FlashAttn`, `PagedAttn`, `Rope`, `Conv2D`, `CausalConv1d`, `SelectiveScan`, `SsdChunkScan`, `FusedSoftmaxCrossEntropy` | A model author calls the builder directly (`tensor.flash_attn(…)`); the node is a single coarse op from birth — there is **no primitive subgraph** to recognize (these ops' `canonical_pattern` is literally `None`). | **YES, already** — dispatched as a single `OpKind`, keyed `(op_kind, dtypes, backend, kernel_source)`. A backend's kernel for it auto-wires via the *primitive* path (§0). | **No.** A `pattern:` is neither needed nor possible (no subgraph exists). |
+| **Builder-only / coarse op** — e.g. `FlashAttn`, `PagedAttn`, `Rope`, `Conv2D`, `CausalConv1d`, `SelectiveScan`, `SsdChunkScan`, `FusedSoftmaxCrossEntropy` | A model author calls the builder directly (`tensor.flash_attn(…)`); the node is a single coarse op from birth, so there is **no primitive subgraph in the graph** to recognize (these ops' `canonical_pattern` is `None` today). | **YES, already** — dispatched as a single `OpKind`, keyed `(op_kind, dtypes, backend, kernel_source)`. A backend's kernel for it auto-wires via the *primitive* path (§0). | **No** — not needed (the op is already in the graph), and for data-dependent ops not possible. *See the note below — this is a practical default, not a hard rule.* |
 | **Pattern-recognized fusion** — e.g. `FusedLinear` (`matmul+bias`), `SoftmaxLastDim`, `RmsNormLastDim`, `LayerNormLastDim`, `LogSoftmaxLastDim` | The model is written with **primitive ops**; Fuel's optimizer **recognizes the subgraph** and rewrites it to the fused op. | Only if Fuel has the pattern to recognize the subgraph. | **Yes** — the `pattern:` block is exactly this. |
 
 **So `pattern:` is for pattern-recognized fusions only.** If your fused kernel is a coarse op a caller
 invokes directly (most attention/conv/scan kernels), ship it as an ordinary FKC contract — it
 auto-wires already, no pattern. Author a `pattern:` only when you want Fuel to *discover* your fused
 kernel inside graphs the user wrote with primitives.
+
+> **Why two kinds — and a correction: a coarse-written op is NOT a dead end for fusion.** An earlier
+> draft claimed that if a model is written with the coarse builder (`flash_attn(q,k,v)`) the op is "in
+> the graph from birth, so a pattern is moot." **That is wrong.** Fuel already has the machinery to go
+> the other way: **`LoweringRule`** (`fuel-graph/src/opt.rs:338`) matches `Op::Fused(id, _)` and
+> **decomposes it to its primitive subgraph** via the entry's `decompose` fn, and the **`FusionRule`**
+> then **re-fuses** that primitive graph — lowering runs *before* fusion in the pass order. So Fuel
+> can take coarse model code, **lower it to primitives, and re-fuse to the best available kernels —
+> including a provider's specialization the model author never wrote** (a larger fusion that absorbs
+> an adjacent op, a tighter variant, a backend-specific cell). This is exactly the
+> canonicalize-to-primitives-then-search-for-the-best-covering optimization (an e-graph already does
+> the operand reordering this relies on). **So a `pattern:` is valuable for *any* op with a
+> decomposition** — not only ops users happen to write with primitives — because it is what makes a
+> fused kernel *discoverable* in that re-fusion.
+>
+> **The governing principle (stronger than "two kinds"): every fused op SHOULD have a primitive
+> recipe.** A fused op is, by definition, a faster way to compute some composition of primitives —
+> so it has a recipe, expressed in **two directions of the same thing**: a **`decompose`** (the
+> *break-down* — fused op → its primitive subgraph, which *lowers* it onto the **base map**, the
+> primitive-level form of the model) and a **`pattern:`** (the *build-up* — recognize that primitive
+> subgraph and re-fuse to the op). **Both are required for the base-map optimization** the whole
+> telemetry/specialization story rests on: you *generate* the base map by lowering every op to
+> primitives, and you *optimize* by re-fusing the base map to the best available kernels. An op with
+> no recipe is an **opaque island** — invisible to base-map analysis (the co-occurrence /
+> missing-fusion telemetry can't see across or inside it) and impossible to re-fuse.
+>
+> So "can't be decomposed" is **not a fundamental category** — it is a gap, of one of two kinds:
+> - **The primitive basis is incomplete.** Paged-attention *does* decompose — to `Gather` (the
+>   block-table indexing is a normal data-dependent *value*, not a structural unknown) `→` attention;
+>   selective-scan/SSM decomposes once Fuel has a higher-order **`Scan`** primitive (today it lacks
+>   one), MoE once the control-flow primitives (`Branch`, which Fuel *has*) are used. The fix is to
+>   grow the basis, not to declare the op un-recipe-able. (The recipe is the *math* definition; the
+>   kernel is a faster numerically-close implementation, governed by the FKC `precision` tolerance —
+>   e.g. flash-attn's online softmax vs its materialized `softmax(QKᵀ)·V` recipe.)
+> - **The `decompose` is deliberately withheld.** Some builder-only ops `panic!` in `decompose`
+>   today (`nf4_matmul.rs`: "no registry-layer decomposition… exposing that round-trip would defeat
+>   the point") — because *unconditional* lowering can produce a worse graph. But **cost-guided**
+>   lowering removes that objection: Fuel lowers an op to the base map only when re-fusion finds
+>   something at least as good (else it keeps the coarse op), so *having* the recipe is always safe
+>   and never strands a model on a slow primitive form.
+>
+> **Conclusion:** every fused op should carry both halves of its recipe; an op that can't be
+> decomposed marks a basis gap to fill or a withheld decompose to wire, not a permanent class. This
+> spec specifies the **build-up** half (`pattern:`); the **break-down** half (`decompose`) is its
+> inverse and equally load-bearing. **For Baracuda:** authoring `pattern:` + `decompose` for your
+> fused kernels is what lets Fuel lower a model's `flash_attn`/`softmax`/`conv` calls onto the base
+> map and re-fuse them into your specialized kernels — the highest-leverage use of the feature, and
+> why the base map (which your `structure_key` / co-occurrence / missing-fusion telemetry operates
+> over) needs every op to carry a recipe.
 
 ---
 
@@ -106,7 +159,7 @@ every index in `[0,N)` appears **≥1** time; repeats are identity constraints.)
 ```yaml
 see_through: [ <Op>, … ]   # value-preserving movement ops to skip (the §4.3 set)
 then: <PatternNode>        # match this after skipping zero-or-more wrappers
-consumers: <1 | any>       # OPTIONAL; default 1 (a skipped wrapper is subject to the same
+consumers: <1 | N | any>   # OPTIONAL; default 1 (a skipped wrapper is subject to the same
                            #   sole-consumer rule as an interior node — §3a.4).
 ```
 
@@ -135,7 +188,23 @@ any: true             # matches any single node; does NOT bind it and does NOT i
 2. **Positional, exact arity.** `operands[i]` matches the producer of tensor-input `i`; the node's
    tensor-input arity must equal `len(operands)`. **Scalar/attribute params are NOT operands** — e.g.
    `AddScalar` has tensor-arity 1 (the scalar is an attribute, read via `extract`, §6).
-3. **Conjunctive, first-fail.** All op/arity/`consumers`/`guard`/identity checks must hold or the
+2a. **Commutative ops match operands order-independently (NORMATIVE — rev 3, resolving the blocking
+   review question).** Before matching, **Fuel canonicalizes the operands of commutative ops
+   (`Add`, `Mul`, `Maximum`, `Minimum`) into a deterministic order** — the same structural
+   canonicalization `structure_key` uses: operands are sorted by a stable key
+   `(producer.op rank, then the producer's own canonical key, recursively; ties by producer
+   node-id)`. A pattern's `operands:` for a commutative op is matched against that canonical order, so
+   **a provider emits operands in any one ordering and it matches regardless of the order the user's
+   graph presents** (an e-graph / operand-reordering optimizer cannot desync the two — both sides
+   canonicalize identically). Non-commutative ops (`Sub`, `Div`, `MatMul`, …) stay strictly
+   positional. This removes the §9 "emit both orderings" escape hatch for v1.
+3. **Auto-skip is symmetric across guards and extract.** Both `operand(j)` in a `guard:` (§5) and in
+   an `extract:` (§6) resolve to the **first non-transparent producer** — they skip `see_through`-set
+   wrappers (§4.3) identically. (`input(i)` resolves directly to the bound node.)
+3b. **Bind phasing.** All `bind` leaves are resolved (and their node-identity constraints checked)
+   **before** any `guard:` that references `input(i)` is evaluated; an `input(i)` that is unresolved
+   when its guard runs makes the guard `false` (mirroring the out-of-range rule).
+3c. **Conjunctive, first-fail.** All op/arity/`consumers`/`guard`/identity checks must hold or the
    match is `None` — never partial/greedy-on-failure.
 4. **The consumer-count guard is the load-bearing safety rule.** An **interior** node (any matched
    Op or see_through node that is neither the `root` nor a `bind` leaf) defaults to `consumers: 1` —
@@ -168,7 +237,8 @@ dispatch-key names. (Note: the coarse ops `SoftmaxLastDim`/`RmsNormLastDim`/`Lay
 `Maximum`, `Minimum`.
 
 **Elementwise unary (math):** `Neg`, `Sqr`, `Sqrt`, `Rsqrt`, `Recip`, `Abs`, `Exp`, `Log`, `Sin`,
-`Cos`, `Tanh`, `Sigmoid`, `Silu`, `Gelu`, `GeluErf`, `Erf`, `Relu`, `Step`, `Floor`, `Ceil`,
+`Cos`, `Tanh`, `Sigmoid`, `Silu`, `Gelu` (**tanh approximation**), `GeluErf` (**exact erf**),
+`Erf`, `Relu`, `Step`, `Floor`, `Ceil`,
 `Round`, `Sign`.
 
 **Scalar-parameter ops** (carry an immediate read via `extract`, §6): `AddScalar` (`.value: f64`),
@@ -232,15 +302,20 @@ guard:
 
 **Grammar.** Atoms: integer literals; `rank` (the node's output rank); `dim[i]` (the node's **output**
 shape at axis `i`, negative indices from the end; out-of-range axis ⇒ the guard is `false`, never an
-error); `self.<attr>` (an op attribute — `self.axis` for reduction ops, `self.target_shape.dim[i]`
-for `Reshape`/`BroadcastTo`, `self.min`/`self.max` for `Clamp`); `operand(j).<…>` where `operand(j)`
-is the **j-th operand node of the node carrying the guard** (node-relative; nestable:
-`operand(0).operand(1).dim[-1]`), exposing the same `rank`/`dim[i]`/`self.<attr>` accessors on that
-node; and `input(i).<…>` — the node bound at `bind: i` (the i-th fused-op input) — so a guard on one
-branch can **cross-reference a bound input on another branch** (e.g. a keepdim `Reshape` vs the
-original `x`), exposing the same accessors. Dtypes: `F16`, `BF16`, `F32`, `F64`, `U8`, … (the FKC
-dtype names). Operators, by **precedence,
-loosest to tightest**: `or` < `and` < {`==`,`!=`,`<`,`<=`,`>`,`>=`} < `%`. So
+error); `self.<attr>` (an op attribute — `self.axis` for reduction ops; `self.target_shape.dim[i]`
+for `Reshape`/`BroadcastTo`; `self.min`/`self.max` for `Clamp`; `self.start`/`self.len`/`self.dim`
+for `Slice`); `operand(j).<…>` where `operand(j)` is the **j-th operand node of the node carrying the
+guard** (node-relative; nestable: `operand(0).operand(1).dim[-1]`), exposing the same
+`rank`/`dim[i]`/`self.<attr>` accessors on that node; and `input(i).<…>` — the node bound at `bind: i`
+(the i-th fused-op input) — so a guard on one branch can **cross-reference a bound input on another
+branch** (e.g. a keepdim `Reshape` vs the original `x`), exposing the same accessors. **Axis
+attributes (`self.axis`) and `dim[i]` indices are compared in normalized negative-from-end form** —
+`self.axis == -1` means the last axis at any rank, so no `rank - k` arithmetic is needed (rev-3 fix).
+**Dtypes** name the logical Fuel `DType`: `U8, I8, U32, I16, I32, I64, BF16, F16, F32, F64, F8E4M3,
+F6E2M3, F6E3M2, F4, F8E8M0` (packed sub-byte / quant payloads — `F4`/`I4`/`U4`/`B1` — appear on the
+tensor via the FDX sidecar, not as a distinct base dtype). Fuel has **no `Bool` dtype**: comparison
+ops produce a **`U8`** mask (`1`/`0`), so a provider's `Bool` maps to `U8` here. Operators, by
+**precedence, loosest to tightest**: `or` < `and` < {`==`,`!=`,`<`,`<=`,`>`,`>=`} < `%`. So
 `rank == 1 and dim[0] == operand(0).dim[-1]` parses as `(rank == 1) and (dim[0] == operand(0).dim[-1])`,
 and `dim[i] % k == 0` parses as `(dim[i] % k) == 0`. RHS of `%` and `dim[]` indices are integer
 literals or `operand(j).dim[i]`/`self.<attr>` (no general arithmetic in v1).
@@ -312,7 +387,7 @@ pattern:
       - see_through: [BroadcastTo, Reshape]
         then:
           bind: 2                 # input[2] = bias …
-          guard: { shape: "rank == 1 and dim[0] == operand(0).dim[-1]" }   # operand(0)=the MatMul
+          guard: { shape: "rank == 1 and dim[0] == input(1).dim[-1]" }   # input(1)=b; bias len == b's last dim
 ```
 
 ### 8.2 `RmsNormLastDim` — parameterized + identity + attribute guards (grounds to `rms_norm_last_dim.rs`)
@@ -340,7 +415,7 @@ pattern:
                   guard: { shape: "rank == input(0).rank and dim[-1] == 1" }
                   operands:
                     - op: MeanDim
-                      guard: { shape: "self.axis == input(0).rank - 1" }   # reduce x's last axis
+                      guard: { shape: "self.axis == -1" }   # reduce the LAST axis (axes normalize negative-from-end, §5)
                       operands:
                         - op: Sqr
                           operands:
@@ -362,11 +437,29 @@ makes it real); node-identity, consumer-count, guard, and extract evaluation; th
 **A provider supplies:** the `pattern:` tree, the fused `kernel` (`entry_point`), the `op_params`
 variant + `return` rules + `decompose` + `cost`/`precision` (base FKC).
 
-**Deferred (flagged, not v1):** commutative-operand matching (v1 is positional — emit both orderings
-or rely on Fuel canonicalization); variadic operands (fixed arity in v1); symbolic/`DynScalar`/`bool`/
-`Option` param extraction (belongs to builder-only coarse ops, §1, which need no pattern); a
-fully-declarative `decompose` (rebuild the subgraph from the pattern, retiring the provider fn);
-multi-output fused ops (single-sink in v1); a typed match-failure reason surfaced to telemetry.
+**Near-term (sequenced ahead of cosmetic deferrals, per the rev-2 review):**
+- **Multi-output fused ops** — v1 roots at one sink and replaces with one `Fused` node, so a
+  save-stats norm/softmax (LayerNorm/RMSNorm emitting `mean`+`rstd`, softmax emitting
+  `max`+`logsumexp`) is **inference-only** as a pattern; the training form must ship coarse (§1) for
+  now. This is the inference-vs-training line for fused norms, so it is prioritized above the
+  cosmetic items below (it rides the multi-output bundle infrastructure).
+- **An import-time "structurally-can-never-match" lint** — the worst failure mode for an
+  "auto-wires on import" feature is a *valid* pattern that silently never fires (recreating §0's
+  "registered but unused"). A static lint that rejects a pattern whose op-chain can never occur, plus
+  a **typed match-failure reason** surfaced to the fusion-miss telemetry, are pulled ahead of the
+  rest. (Structurally *malformed* patterns already error at import.)
+
+**Deferred (not v1):** variadic operands (fixed arity in v1 — fits 100% of a fixed-`n_inputs`
+provider); `chunk`/`split` → `Slice` canonicalization + a `Split`/`Chunk` op (gated activations —
+SwiGLU/GeGLU — ship coarse until then, expressible later via `Slice` start/len guards, §5);
+symbolic/`DynScalar`/`bool`/`Option` param extraction (belongs to builder-only coarse ops, §1);
+**interior** node-identity (repeated `bind` pins shared *leaf* inputs in v1; pinning a shared
+*interior* subtree as one node — needed once an e-graph does interior CSE — is deferred); composite/
+parameterized activations with no §4.1 anchor (Mish/Softplus/Hardswish, runtime `LeakyRelu(α)`/`ELU(α)`
+— ship coarse; a `Softplus` unary + a runtime scalar-param form would unblock auto-discovery later);
+a fully-declarative `decompose` (rebuild the subgraph from the pattern, retiring the provider fn).
+**Resolved in rev 3 (no longer deferred):** commutative-operand matching → §3a.2a (Fuel canonicalizes;
+provider emits one ordering).
 
 ---
 
@@ -379,3 +472,65 @@ auto-recognize and dispatch your kernel on import, with no Fuel-side glue — th
 used" property primitives already have. Your **coarse/builder-only** kernels (attention, conv, scan)
 need **no** pattern — they auto-wire as ordinary FKC contracts (§1). Review the grammar (§3, §5, §6)
 and the vocabulary (§4); flag anything a pattern-recognized fused kernel of yours can't express.
+
+---
+
+## 11. Rev 3 — resolutions to Baracuda's rev-2 review
+
+**A. Spec self-consistency (must-fix) — all fixed:**
+
+- **A1** (`self.axis == input(0).rank - 1` used `-`, which §5 forbids) → §8.2 now `self.axis == -1`;
+  §5 states axes/`dim[]` compare in **negative-from-end** form, so no `rank - k` arithmetic.
+- **A2** (FusedLinear bias guard read `operand(0)` from a `bind` leaf, which has no operands) → §8.1
+  now `dim[0] == input(1).dim[-1]` (`b` is `bind: 1`). Both §8 examples type-check.
+- **A3** (auto-skip asymmetric: extract skipped `see_through`, guards didn't) → §3a.3: **both**
+  `operand(j)` in guards and extract auto-skip the transparent set.
+- **A4** (`see_through` `consumers` lacked the `N` form) → §3.3 now `<1 | N | any>`.
+
+**B. Expressiveness asks:**
+
+- **B1 — commutativity (BLOCKING) — RESOLVED normatively (§3a.2a).** Fuel canonicalizes the operands
+  of `Add`/`Mul`/`Maximum`/`Minimum` by a deterministic structural key (the same one `structure_key`
+  uses) before matching; emit **one** ordering and it matches regardless of how the user's graph (or
+  your e-graph) orders them. No 2ᵏ blow-up.
+- **B2 — multi-output** → §9 re-sequenced **ahead** of cosmetic deferrals; it is the inference-vs-
+  training line for fused norms. v1 patterns are inference-only single-sink; save-stats forms ship
+  coarse until multi-output lands.
+- **B3 — interior node-identity** → added to §9 deferred (v1 pins shared *leaf* inputs via repeated
+  `bind`; shared *interior* subtree identity is deferred, needed once you do interior CSE).
+  **Confirmed:** repeated `bind: i` IS the shared-*input* mechanism (your reading is right).
+- **B4 — `input(i)` phasing** → §3a.3b: all binds resolve before any `input()`-referencing guard;
+  unresolved `input()` ⇒ guard `false`.
+- **B5 — dtypes / `Bool`** → §5 now lists the full logical `DType` set; **Fuel has no `Bool` dtype —
+  masks are `U8`**, so your `Bool` maps to `U8`. Packed sub-byte (`F4`/`I4`/`U4`/`B1`) ride the FDX
+  sidecar, not a base dtype.
+- **B6 — Gelu flavor** → §4.1: bare **`Gelu` = tanh approximation**, **`GeluErf` = exact erf**.
+- **B7 — gated activations / Slice offsets** → §5 adds `self.start`/`self.len`/`self.dim` for `Slice`;
+  `chunk`/`split`→`Slice` canonicalization + a `Split`/`Chunk` op is §9-deferred. **Ship SwiGLU/GeGLU
+  coarse until then** (you noted this is fine).
+- **B8 — composite activations (Mish/Softplus/…)** → no spec change; §9 records they ship coarse, and
+  a `Softplus` unary + runtime scalar-param form would enable auto-discovery later if wanted.
+- **B9 — silent non-firing** → §9: an **import-time "structurally-can-never-match" lint** + a typed
+  match-failure reason are pulled ahead of cosmetic deferrals.
+
+**E. Open questions — answers:**
+
+1. **(blocking) Commutative canonicalization?** **Yes**, normatively — §3a.2a, with the canonical
+   order stated (structural-key sort; ties by producer node-id).
+2. **`Gelu` flavor?** `Gelu` = tanh-approx, `GeluErf` = exact erf (B6).
+3. **`extract` for eps-like static scalars?** **Yes** — that is exactly its purpose (§6); build the
+   body-scalar → `AddScalar`-attribute → `op_params` bridge once.
+4. **`chunk`/`split` → `Slice` canonicalization / `Split` op?** Deferred (B7); gated activations
+   coarse until then.
+5. **dtype `…` open + spellings + `Bool`?** Full list now in §5; `Bool` ⇒ `U8` (B5).
+6. **Unify `operand(j)` auto-skip across guard + extract?** **Yes** (§3a.3 / A3).
+7. **`input(i)` phasing rule?** **Yes** (§3a.3b / B4).
+8. **Multi-output ahead of cosmetic deferrals?** **Yes** (B2).
+9. **Match-failure / never-match lint earlier?** **Yes** (B9).
+
+**Confirmed on Baracuda's side (no action from Fuel):** the `derive_pattern(body)` elementwise-epilogue
+emitter (zero new IR), the `(*Plan, *Kind, axis) → §4.1 op-name` mapping table, the per-contract
+pattern-equivalence certification gate (Fuel verifies nothing, §3a.6 — so a separate pattern-divergence
+precision bound, not a naive `PrecisionGuarantee` projection, is correct), and the IR-growth sequence
+(`ScalarExpr::Const` → `Unary` → reductions/DAG/layout/`MatMul`) that unlocks the §8 targets on
+Baracuda's roadmap.
