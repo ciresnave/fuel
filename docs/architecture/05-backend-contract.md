@@ -1,6 +1,6 @@
 # Backend contract
 
-**Status**: v0.4 (draft, 2026-06-08). v0.4 changes: Reference backend retired from the dispatch system. No `BackendId::Reference` enum variant, no `ReferenceFactory`, no `LazyTensor::realize_f32_reference()`, no `fuel_reference_backend::probe` module. Judge correctness comparison now uses pairwise consensus across whatever backends are present at each profiling cell — no privileged oracle. The `fuel-reference-backend` crate remains as a test-oracle utility (`exec::realize_f32` + `attention` + `ops`) for callers that explicitly want textbook scalar math, but it is no longer architecturally privileged. AOCL and MKL are collapsed into `BackendId::Cpu`: they no longer have their own `BackendId` variants (no `BackendId::Aocl`, no `BackendId::Mkl`) and are distinguished from the portable CPU kernels by a `kernel_source` tag on each binding-table entry / `ProfileEntry` / `Pick`. They share the singleton `CpuBackendDevice` and therefore inherit its `BackendRuntime` impl. v0.3 changes (preserved): concrete trait surface, Tier 1/2/3 mandatory/optional framing, per-backend compliance snapshot, inference-vs-training capability split, `Option<u64>` honest returns for runtime state. v0.2 changes (preserved): `PrecisionGuarantee` structure replacing binary OracleGrade; Reference's architectural privilege replaced by the "always-built coverage commitment" on fuel-cpu-backend; opt-in kernel-stat telemetry upload.
+**Status**: v0.5 (draft, 2026-06-20). **v0.5 is a MAJOR core-claim change** — the adaptive-runtime-fusion decision ([10-decisions-log §2026-06-20](10-decisions-log.md)). It corrects the over-broad "frozen for the process lifetime / re-compiling fuel to add a kernel" framing (the kernel binding table is already runtime-extensible via `extend_global_bindings` — Tier 1; recompiling is only needed for new *primitives*), names the **Fuel-strategist / backend-synthesizer** split for the JIT-on-request fusion path (Fuel chooses the region, a backend synthesizes the kernel — never backend-side opportunity-finding), names a backend offering a kernel for a known fused op that currently lacks one as the **`FusionMissRecord` `NoBackendKernel`** signal source, and updates stale Reference-backend trait examples to live backends. v0.4 changes: Reference backend retired from the dispatch system. No `BackendId::Reference` enum variant, no `ReferenceFactory`, no `LazyTensor::realize_f32_reference()`, no `fuel_reference_backend::probe` module. Judge correctness comparison now uses pairwise consensus across whatever backends are present at each profiling cell — no privileged oracle. The `fuel-reference-backend` crate remains as a test-oracle utility (`exec::realize_f32` + `attention` + `ops`) for callers that explicitly want textbook scalar math, but it is no longer architecturally privileged. AOCL and MKL are collapsed into `BackendId::Cpu`: they no longer have their own `BackendId` variants (no `BackendId::Aocl`, no `BackendId::Mkl`) and are distinguished from the portable CPU kernels by a `kernel_source` tag on each binding-table entry / `ProfileEntry` / `Pick`. They share the singleton `CpuBackendDevice` and therefore inherit its `BackendRuntime` impl. v0.3 changes (preserved): concrete trait surface, Tier 1/2/3 mandatory/optional framing, per-backend compliance snapshot, inference-vs-training capability split, `Option<u64>` honest returns for runtime state. v0.2 changes (preserved): `PrecisionGuarantee` structure replacing binary OracleGrade; Reference's architectural privilege replaced by the "always-built coverage commitment" on fuel-cpu-backend; opt-in kernel-stat telemetry upload.
 
 What backends provide to the Foundation layer, what they don't decide, and how the boundary is enforced. Anchored in the architectural principle from [01-identity](01-identity.md): **backends advertise; they don't decide.** Every strategic choice (placement, fusion, kernel selection, slot assignment, tolerance trade-off) lives at the DAG level. Backends provide the substrate the optimizer reasons about.
 
@@ -41,7 +41,7 @@ The architectural commitment: **all the information the optimizer or route picke
 The line is sharp:
 
 - **Placement**: which (backend, device) runs which op. Decided by the optimizer (static cost) and the runtime route picker (telemetry). Backends accept what they're handed.
-- **Fusion**: which subgraphs collapse to a fused op. Decided by the OptimizationMap; backends register fused-op kernels but don't choose when those kernels apply.
+- **Fusion**: which subgraphs collapse to a fused op. Decided by the OptimizationMap; backends register fused-op kernels but don't choose when those kernels apply. This holds for the **JIT-on-request** path too (the 2026-06-20 adaptive-fusion loop, [10-decisions-log §2026-06-20](10-decisions-log.md) G7): **Fuel is the strategist** — it chooses *which* sub-base-map region to fuse and sends that **partial base map** to a backend; **the backend (Baracuda first) is the synthesizer** — it builds the best kernel for the Fuel-*chosen* region. Fuel choosing the region **is** the fusion decision; there is **no backend-side opportunity-finding**. This is not backend-internal fusion (see §What this rules out).
 - **Kernel-variant selection** (across alternatives): if the optimizer kept multiple kernel-variant alternatives for an op at a decision point (cuBLAS vs custom matmul vs tensor-cores), the route picker chooses which one runs based on telemetry. Backends don't pick.
 - **Slot assignment** (which stream/queue/thread runs a given dispatched op): the runtime allocates work to the backend's advertised slots based on current availability. Backends accept work on the named slot; they don't redirect.
 - **Tolerance budget allocation**: backends advertise per-kernel error characteristics; the optimizer decides which kernels are admissible under the route's cumulative tolerance budget.
@@ -87,7 +87,9 @@ Each kernel a backend ships is registered against the binding-table catalog. Reg
 - The kernel's error characteristics (strict / approximate-with-bound / calibrated).
 - The kernel's revision hash (for cache-invalidation detection by the persistence layer).
 
-Registration is at backend init; the catalog is frozen for the process lifetime thereafter. Adding a kernel to a backend means re-compiling fuel (registration happens in the backend crate's setup code).
+Registration is at backend init for the kernels a backend crate ships. But the kernel binding table is **not** frozen for the process lifetime — it is **already runtime-extensible** (Tier 1 of the 2026-06-20 two-tier extensibility model, [10-decisions-log §2026-06-20](10-decisions-log.md) G4): `extend_global_bindings` (`fuel-dispatch/src/dispatch.rs`) write-locks the global binding table, appends new entries (append-only, multi-sibling), re-finalizes, and bumps the topology generation to invalidate cached routes. Adding a *kernel* — including a JIT-synthesized kernel for an **existing op identity** — does **not** require recompiling fuel; it lands through this path at runtime. Recompiling fuel is required only to add a new **primitive** to the closed `Op` enum (per [03-ir](03-ir.md) and [09-non-goals](09-non-goals.md) — the build-time-closed primitive basis), never to add a kernel. (Trusted, Fuel-orchestrated registration of a *new fused-op identity* is Tier 2 — the declarative form — also runtime; see [03-ir §the fused-op registry](03-ir.md) and [09-non-goals](09-non-goals.md).)
+
+This append path is also the **consumer of the missing-fusion telemetry**: a known fused op (a `FusedOpId` Fuel recognized in the base map) that was realized as N primitives because **no backend currently ships a kernel for it** is exactly the closed-world `FusionMissRecord` with reason `NoBackendKernel` ([10-decisions-log §2026-06-20](10-decisions-log.md) G5; canonical in [08-pattern-harvest](08-pattern-harvest.md) and `docs/session-prompts/baracuda-telemetry-plan.md` §9). When a backend later offers a kernel for that op identity, `extend_global_bindings` ingests it and the miss closes — the binding-table-append path is the `FusionMissRecord` consumer that already exists (Tier 1).
 
 ## Backend implementation guidelines
 
@@ -102,7 +104,7 @@ Three commitments backend implementers must honor:
 ## What this rules out
 
 - **No backend-internal placement decisions.** A backend that internally redirects work between its own devices ("CUDA backend with 4 GPUs, automatically load-balances") violates the contract. The Router decides which (backend, device) handles each op; backends accept their placement.
-- **No backend-side fusion.** A backend that internally fuses adjacent kernel calls violates the contract — the fused-form should be a registered fused-op kernel that the optimizer chose. Otherwise the optimizer's cost model is wrong (it priced two ops; backend ran one).
+- **No backend-side fusion.** A backend that internally fuses adjacent kernel calls violates the contract — the fused-form should be a registered fused-op kernel that the optimizer chose. Otherwise the optimizer's cost model is wrong (it priced two ops; backend ran one). The JIT-on-request loop does **not** breach this: the backend never *finds* the fusion — Fuel chooses the region and asks for a kernel; the backend synthesizes within that Fuel-chosen boundary and returns it with its FKC contract, and the optimizer cost-gates adoption (G7, [10-decisions-log §2026-06-20](10-decisions-log.md)).
 - **No silent kernel-variant substitution.** A backend that internally swaps one kernel for a "better" variant violates the contract. Variant selection happens at the optimizer's decision points.
 - **No backend-internal cache.** A backend that caches results between calls violates the contract — caching is the executor's concern (and currently not in scope; the architecture is purely re-execute-from-scratch).
 
@@ -195,6 +197,7 @@ Cross-backend correctness tests have to use bounded-error comparison, not bit-eq
 - [06-runtime](06-runtime.md) — how the runtime consumes telemetry to dispatch.
 - [07-tolerance](07-tolerance.md) — per-kernel error characteristics and how they gate admissibility.
 - [11-persistence](11-persistence.md) — kernel-revision hashes used for cache invalidation.
+- [10-decisions-log §2026-06-20](10-decisions-log.md) — the adaptive-runtime-fusion decision v0.5 implements: kernel binding table runtime-extensibility (G4 Tier 1), the Fuel-strategist / backend-synthesizer JIT loop (G7), the `FusionMissRecord` `NoBackendKernel` signal (G5).
 - ROADMAP §"Phase 7" — backend-modularity and pluggable-dispatch decisions.
 
 ---
@@ -213,7 +216,9 @@ Naming and layout convention:
   implementations.
 - Trait impls live in the per-backend crate (`fuel-cpu-backend`,
   `fuel-cuda-backend`, `fuel-vulkan-backend`, `fuel-aocl-cpu-backend`,
-  `fuel-mkl-cpu-backend`, `fuel-reference-backend`).
+  `fuel-mkl-cpu-backend`). `fuel-reference-backend` was retired from
+  the dispatch system in v0.4 and implements none of these traits — it
+  remains a test-oracle utility only (see §Current compliance).
 - The picker / optimizer / planner consume only the trait — never
   inherent methods on a specific backend type.
 
@@ -231,9 +236,9 @@ pub trait BackendIdentity {
     fn backend_id(&self) -> BackendId;
 
     /// Specific device within the backend's family. Stateless
-    /// backends (CPU, Reference, AOCL, MKL) return
-    /// `DeviceLocation::Cpu`; multi-device backends return their
-    /// concrete location.
+    /// backends (CPU, and the AOCL/MKL vendor kernels under
+    /// `BackendId::Cpu`) return `DeviceLocation::Cpu`; multi-device
+    /// backends (CUDA, Vulkan) return their concrete location.
     fn device_location(&self) -> DeviceLocation;
 
     /// Identity comparison — same backend AND same device. Used by
@@ -251,10 +256,16 @@ allocator surface) doesn't break consumers.
 
 ```rust
 pub trait BackendCapabilityProvider {
-    /// Snapshot of the backend's capabilities. Capabilities are
-    /// static at backend instantiation — no runtime mutation, no
-    /// versioning. Adding a new dtype or op to a backend requires
-    /// recompiling Fuel.
+    /// Snapshot of the backend's *capability advertisement* (op-dtype
+    /// support set, alignment, transfer paths, slot capacity). This
+    /// snapshot is static at backend instantiation — no runtime
+    /// mutation, no versioning. NOTE: the *kernel binding table* (the
+    /// implementations) is a separate, runtime-extensible structure
+    /// (`extend_global_bindings`, Tier 1 — see §Per-backend kernel
+    /// registration); a JIT-synthesized kernel for an existing op
+    /// identity lands there at runtime without recompiling. Only a new
+    /// *primitive* `Op` variant requires recompiling Fuel (the
+    /// build-time-closed basis, [03-ir](03-ir.md)).
     fn capabilities(&self) -> BackendCapabilities;
 }
 ```
@@ -278,9 +289,9 @@ pub trait BackendRuntime {
     fn available_bytes(&self) -> Option<u64>;
 
     /// Total memory on this backend's device. Static after first
-    /// call; cached unconditionally. `None` for backends with
-    /// unbounded notional capacity (e.g. Reference — synthetic
-    /// "infinite memory").
+    /// call; cached unconditionally. `None` for backends that
+    /// genuinely cannot measure total capacity (no OS query, no
+    /// vendor API exposes it).
     fn total_bytes(&self) -> Option<u64>;
 
     /// Predictive fit-check: would an allocation of `size` bytes
@@ -355,9 +366,9 @@ pub trait BackendStreams: BackendRuntime {
 ```
 
 Implemented by: CUDA (streams), Vulkan (queues / command buffers).
-Not implemented by: CPU (synchronous dispatch), Reference (synchronous).
-Future backends with stream-like primitives (Metal command queues, ROCm streams)
-implement when added.
+Not implemented by: CPU (synchronous dispatch — including the AOCL/MKL
+vendor kernels under `BackendId::Cpu`). Future backends with stream-like
+primitives (Metal command queues, ROCm streams) implement when added.
 
 #### `BackendPressureSignals`
 

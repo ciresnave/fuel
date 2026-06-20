@@ -1,6 +1,8 @@
 # Session prompt — Fill the `Op` primitive set + seed `FusedOpRegistry`
 
 > **Status (reconciled 2026-06-15 against the 2026-06-14 redirection + current git):** Batches A, B, C **SHIPPED** (commits `9838cc78`..`4d1d7a88` — comparison family + `Where`, the Tier-1 unary fanout, and the Tier-2 irreducible primitives, all landed with cpu+reference kernels). **Only Batch D is live**: the `FusedOpRegistry` seeding (~30+ Tier-3 entries) is **not done** and the plan below for it remains accurate. The kernel-side registry crate placement is now an **open question** (commit `a9efb9f4`): `fuel-memory` vs `fuel-dispatch`, **not** necessarily `fuel-storage/src/dispatch.rs`. Skip the Batch A/B/C work items below as already-built precedent; execute Batch D.
+>
+> **Reconciled 2026-06-20 (adaptive-fusion decision, [`../architecture/10-decisions-log.md`](../architecture/10-decisions-log.md) G1/G2):** Batch D now mandates the **full recipe both directions** for every Tier-3 entry — a `decompose` **and** a `pattern`, both required (a `decompose`-only entry is an opaque island). The `decompose` MUST be **total + never-panic + primitive→self**; "flag if difficult" deferrals defer the *whole entry*, never register a panicking or absent `decompose`. See the revised Batch D intro and PR D3/D6 notes below.
 
 ## What this session is for
 
@@ -160,7 +162,11 @@ These have varied shapes. Order by leverage.
 
 ### Batch D: `FusedOpRegistry` seeding (Tier 3)
 
-Each entry is one `FusedOpEntry` registration in `fuel-graph/src/registry.rs` with: canonical decomposition (mandatory; backends without a fused kernel use this), backward identity, shape + dtype rules, optional per-backend kernel implementations. **This session ships ZERO native kernels for Tier-3** — that's follow-up work. Decomposition is the deliverable.
+Each entry is one `FusedOpEntry` registration in `fuel-graph/src/registry.rs` with: **both halves of the recipe** (see below), backward identity, shape + dtype rules, optional per-backend kernel implementations. **This session ships ZERO native kernels for Tier-3** — that's follow-up work. The recipe is the deliverable.
+
+**The recipe principle (mandatory both directions; per the 2026-06-20 adaptive-fusion decision, [`../architecture/10-decisions-log.md`](../architecture/10-decisions-log.md) G1/G2, and [04-optimization §`decompose` is total](../architecture/04-optimization.md)):** every fused op carries the recipe in **two inverse directions, both required** — a `decompose` (fused → primitive subgraph; *lowers* it onto the base map) **and** a `pattern` (recognize that primitive subgraph and re-fuse). A fused op that ships only the `decompose` half is an **opaque island**: invisible to base-map analysis (missing-fusion / co-occurrence telemetry can't see across or inside it) and impossible to re-fuse. Register **both halves for every Tier-3 entry**; the two are the same data viewed in opposite directions, and the DecompositionMap / OptimizationMap derive one-to-one from them.
+
+**`decompose` is total + never-panic + primitive→self (G2).** `decompose` MUST be a total function that never `panic!`s (the never-panic constitution rule) — the base map is the fixpoint of `decompose` over every node, so this is **load-bearing for the optimizer itself** (optimization = lower-to-base-map + find-best-cover; an op that won't decompose breaks optimization, not just a downstream feature). A primitive decomposes to itself (the identity fixpoint at `fuel-graph/src/registry.rs:823`); a non-primitive whose recipe is absent is a **surfaced opaque-op gap** (a base-map flag fed to telemetry), **never a crash and never a deferred "flag if difficult"**. Do **not** ship a Tier-3 entry whose `decompose` panics or is absent: if a decomposition is genuinely hard (the `flag if difficult` cases called out below — adaptive pooling, `Asin`/`Acos`/`Atan` polynomials), the resolution is to land the recipe (both halves) or hold the entry back, not to register a panicking/absent `decompose`. A `decompose` that would panic is a bug, not an acceptable placeholder.
 
 Group by family. Each PR registers ~5 entries, exercises the decomposition through cpu+reference, asserts numerical correctness.
 
@@ -174,7 +180,7 @@ Group by family. Each PR registers ~5 entries, exercises the decomposition throu
 
 #### PR D3 — Trig & hyperbolic compositions
 
-`Tan` (= `Sin/Cos`), `Asin`, `Acos`, `Atan`, `Atan2(y, x)` (binary), `Sinh`, `Cosh`, `Asinh`, `Acosh`, `Atanh`. Most decompose with primitives the agent will already have, but `Asin`/`Acos`/`Atan` may need approximation polynomials — defer to follow-up if no exact decomposition exists.
+`Tan` (= `Sin/Cos`), `Asin`, `Acos`, `Atan`, `Atan2(y, x)` (binary), `Sinh`, `Cosh`, `Asinh`, `Acosh`, `Atanh`. Most decompose with primitives the agent will already have, but `Asin`/`Acos`/`Atan` may need approximation polynomials. Per the recipe principle (G2): an entry only ships once **both** halves of its recipe are ready — so if no exact-or-poly decomposition is in hand, **defer the whole entry to follow-up**; do **not** register it with a panicking or absent `decompose` (that strands an opaque island). Deferring the op is correct; deferring only its recipe is not.
 
 #### PR D4 — Boolean reductions and predicates
 
@@ -186,7 +192,7 @@ Now that Batch A landed: `Any { dim }`, `All { dim }`, `IsNaN`, `IsInf`, `IsFini
 
 #### PR D6 — Pooling family (vision)
 
-`MaxPool2D`, `AvgPool2D`, `AdaptiveAvgPool2D`, `AdaptiveMaxPool2D`, `Upsample` (nearest + bilinear). Decomposition via reshape + reduce works for fixed kernel sizes; adaptive pooling has dynamic kernel size, so its decomposition is more involved — flag if difficult.
+`MaxPool2D`, `AvgPool2D`, `AdaptiveAvgPool2D`, `AdaptiveMaxPool2D`, `Upsample` (nearest + bilinear). Decomposition via reshape + reduce works for fixed kernel sizes; adaptive pooling has dynamic kernel size, so its decomposition is more involved. Per the recipe principle (G2), "flag if difficult" means **defer the entry**, not register an opaque/panicking `decompose`: if adaptive pooling's recipe (both `decompose` and `pattern`) can't be expressed yet, hold the entry back and surface the gap as a basis/recipe note rather than shipping a fused op that won't lower onto the base map.
 
 #### PR D7 — Normalization variants
 
@@ -252,8 +258,8 @@ cargo test -p fuel-graph -p fuel-graph-cpu -p fuel-reference-backend -p fuel-cor
 
 **This session's deliverable (Batch D):**
 
-- **`FusedOpRegistry`** seeded with ~30+ entries across activations, stable-math, trig, boolean reductions, shape compositions, pooling, normalizations, sampling, masking (PRs D1–D9). This session ships ZERO native Tier-3 kernels — the canonical decomposition (validated through cpu+reference) is the deliverable.
-- **Every new fused op** decomposes correctly with a numerical-correctness test exercising the decomposition.
+- **`FusedOpRegistry`** seeded with ~30+ entries across activations, stable-math, trig, boolean reductions, shape compositions, pooling, normalizations, sampling, masking (PRs D1–D9). This session ships ZERO native Tier-3 kernels — the **recipe (both `decompose` and `pattern`), validated through cpu+reference**, is the deliverable. Per G1/G2 ([`../architecture/10-decisions-log.md`](../architecture/10-decisions-log.md)), no entry ships with only the `decompose` half (that strands an opaque island) and no entry ships with a panicking/absent `decompose`.
+- **Every new fused op** carries a total, never-panic `decompose` that lowers correctly onto the base map (numerical-correctness test exercising the decomposition) **and** a `pattern` that re-recognizes that subgraph.
 - **`LazyTensor`** gains builder methods for every Tier-3 fused op.
 - **Judge `PROFILED_OPS`** extends only as new elementwise primitives appear inside decompositions (the unary/binary fanout coverage already shipped with Batches A/B).
 - **Memory** has a fresh entry summarizing the Batch D commits.

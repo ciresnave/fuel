@@ -69,6 +69,33 @@ one of the four [identity-enforcement checks](docs/architecture/01-identity.md#h
 *more* true. Bridge retirement moves checks 1 + 2; PrecisionGuarantee work
 moves checks 2 + 4; E.3 caller migration moves check 1.
 
+### Adaptive runtime fusion (2026-06-20)
+
+A locked architectural decision set the destination for an **adaptive
+runtime-fusion loop** — Fuel detects fusion opportunities a model author
+never wrote, asks a trusted backend (Baracuda first) to JIT-synthesize a
+kernel during idle time, and adopts the result cost-gated, **without**
+surrendering the constitution (the optimizer that reads the DAG holds the
+strategy; backends synthesize a Fuel-chosen region but never find
+opportunities). The eight decisions — the recipe principle (every fused op
+ships a total `decompose` + a `pattern`), the build-time-closed primitive
+basis, two-tier runtime extensibility (binding table already extensible;
+trusted declarative fused-op registration is the new goal), missing-fusion
+telemetry (closed-world `FusionMissRecord` first, open-world co-occurrence
+deferred), the narrow/non-monotonic megakernel, the Fuel-strategist /
+backend-synthesizer closed loop, and loses-everywhere kernel-cache pruning —
+are canonical in the [2026-06-20 decisions-log entry](docs/architecture/10-decisions-log.md).
+The FKC declarative-fusion spec
+([`docs/specs/fkc-fusion-patterns.md`](docs/specs/fkc-fusion-patterns.md))
+and the telemetry plan
+([`docs/session-prompts/baracuda-telemetry-plan.md`](docs/session-prompts/baracuda-telemetry-plan.md)
+§9) implement it. The ROADMAP touch-points are flagged in place: Phase 7.5
+optimizer (recipe principle + total `decompose`), Phase 7.6 (two-tier
+extensibility + the declarative engine as the Tier-2 prerequisite), the
+"Online Judge cost feedback" addendum (missing-fusion telemetry), the
+"Opportunities baracuda unblocks" list (megakernel ordering + kernel-cache
+pruning), and Phase 10 (10a as the closed-loop seed).
+
 ---
 
 ## Post-wipe resume addendum (2026-06-13)
@@ -226,6 +253,24 @@ sweep, recorded so they aren't lost.
   unspecified costs to 0 stays wrong — keep the pessimistic-upper-bound prior (the
   asymmetry: over-estimate = recoverable missed opportunity; under-estimate = misallocation
   only Judge data fixes, which never arrives for unprofiled ops).
+
+- **Missing-fusion telemetry (none today; build closed-world first).** The Judge feedback
+  above measures fusions Fuel *performed*; it says nothing about fusions Fuel
+  *wanted-but-lacked*. There is **no missing-fusion signal at all** today — "no rule fired" is
+  identical across every primitive node, so Fuel can't tell a deliberate primitive from a
+  fusion it would have wanted but had no kernel for. Closing this needs a **new graph-layer
+  hook** plus the base-emission seam (`structure_key` is still a stub; no `DispatchRecord` is
+  emitted yet). Sequencing per the 2026-06-20 decision ([G5 in
+  10-decisions-log](docs/architecture/10-decisions-log.md); canonical in
+  [`docs/session-prompts/baracuda-telemetry-plan.md`](docs/session-prompts/baracuda-telemetry-plan.md)
+  §9): the **closed-world `FusionMissRecord`** — a recognized fusion-eligible chain realized as
+  N primitives because the kernel was absent (reason `NoBackendKernel`, against **known**
+  `FusedOpId`s) — is the v1 **headline**, built **first**, because its consumer already exists
+  (append a `BindingEntry`, Tier 1). The **open-world co-occurrence `SequenceRecord{fused_as:
+  None}`** (a frequent realized chain matching *no* known identity, found by observation not
+  subgraph enumeration) is **deferred**, because its consumer is the Tier-2 trusted declarative
+  registration. Fuel never enumerates the subgraph space and never searches for a whole-model
+  fusion.
 
 ---
 
@@ -1430,7 +1475,20 @@ that cudarc didn't, pitched for later roadmap consideration.
       prime territory for `cuGraphCapture`. Expected payoff: cuts
       per-token kernel launch overhead. Non-trivial to integrate
       because it changes the executor hot path; needs its own
-      design pass.
+      design pass. **This is the cheaper step *below* whole-model
+      fusion** (captured-run replay captures most of the
+      launch-overhead win without fusing compute, per [G6 in
+      10-decisions-log](docs/architecture/10-decisions-log.md) and
+      [11-persistence](docs/architecture/11-persistence.md)).
+      Whole-model / **megakernel** fusion is a real technique above
+      it but **narrow, last, and the highest-risk target — never the
+      default**: it wins *something* even over an ideal CUDA Graph
+      (inter-kernel scheduling bubbles + cross-boundary pipelining),
+      but the benefit curve **turns over** (fixed launch geometry;
+      kernel-global register allocation imposes the worst region's
+      footprint everywhere — internal sub-kernels do **not** fix
+      this; per-shape JIT combinatorics). "Bigger fusion = better"
+      is **not monotonic** — do CUDA-Graph replay first.
 - [ ] **Stream-ordered mempool allocation**
       ([`baracuda-driver/src/mempool.rs`]). Fuel today allocates
       a fresh `DeviceBuffer` per op output. A `CUmemoryPool` with
@@ -1450,7 +1508,22 @@ that cudarc didn't, pitched for later roadmap consideration.
 - [ ] **nvJitLink** for runtime kernel specialization. Matters when
       Fuel starts doing LoRA fusion, per-shape attention kernels,
       or other "generate a kernel for this exact problem" flows.
-      Speculative.
+      Speculative. This is the same surface the adaptive runtime-fusion
+      loop ([G7 in 10-decisions-log](docs/architecture/10-decisions-log.md))
+      uses when a trusted backend JIT-synthesizes a Fuel-chosen region.
+- [ ] **Kernel-cache pruning policy** (gates the JIT loop's disk
+      growth; [G8 in 10-decisions-log](docs/architecture/10-decisions-log.md),
+      canonical home [11-persistence](docs/architecture/11-persistence.md)).
+      Once Fuel starts persisting JIT-synthesized kernels, the cache
+      grows. The policy: **prune rarely** — likely not at all at first.
+      Evict only kernels that **lose across *every* model** (a
+      "never-useful no matter which model considers it" proof), and
+      only **under space pressure**, gated behind a **developer-set
+      max-kernel-drive-space cap** — so a currently-*shadowed* kernel
+      that might win under a different cover or in a different model
+      **stays** while there is room. **Never prune on a single model's
+      loss** ("winning" is relative to the current kernel set, i.e.
+      shadowing). Speculative; lands with the JIT loop, not before.
 
 #### Post-Phase-6 dead-op audit
 
@@ -1634,18 +1707,42 @@ Lowering and fusion are two halves of one machine. Rules ship as
 intermediate IR, not an execution form — runs see the
 post-optimization graph.
 
-*When unpaired lowering rules are OK.* A lowering rule may ship
-before its fusion partner only if the lowered form's intermediates
-fit in memory at typical input sizes:
+*The recipe principle — both directions are mandatory, the recipe
+always ships.* Per the 2026-06-20 adaptive-runtime-fusion decision
+([G1/G2 in 10-decisions-log](docs/architecture/10-decisions-log.md)),
+every fused op carries a primitive recipe in **both** inverse
+directions — a `decompose` (fused → primitive subgraph) **and** a
+`pattern` (recognize that subgraph, re-fuse) — and **both are
+mandatory**. A fused op with no recipe is an **opaque island**:
+invisible to base-map analysis (the missing-fusion / co-occurrence
+telemetry can't see across or inside it) and impossible to re-fuse.
+So the recipe **always ships with the op** — it is never deferred
+"until intermediates fit." That earlier framing (a lowering rule may
+ship before its fusion partner, withholding `decompose` for the
+memory-blowup ops below) is **withdrawn**: `decompose` is **total**
+and **never-panic** (a primitive decomposes to itself — the
+recursion's fixpoint), the **base map is the fixpoint of `decompose`
+over every node**, and optimization itself = *lower-to-base-map +
+find-best-cover*. An op that won't decompose therefore **breaks the
+optimizer** (it leaves a blind island in the base map the cover
+search can't enter), not merely a downstream JIT feature. The three
+current panicking decomposes (`nf4_matmul`, `flash_attn`,
+`selective_scan`) are **bugs to fix**, not a permanent "wait for
+fusion partner" category.
 
-- *Lower now*, primitive intermediates linear in input:
+- *Recipe ships now*, primitive intermediates linear in input:
   SoftmaxLastDim, RmsNorm, LayerNorm, NormLastDim, RoPE,
   FusedLinear, Affine, Clamp, PowI.
-- *Wait for fusion partner*, intermediates blow up: MatMul →
+- *Recipe still ships now even though intermediates blow up* (the
+  base map prefers the fused form via cost, but `decompose` must
+  exist and be total so the op is on the base map at all): MatMul →
   outer-product-then-reduce (×K), Conv2D → im2col+matmul
   (×Kh×Kw), FlashAttn → softmax(QKᵀ)V (materializes [N,N]
   attention matrix), QMatMul → dequant+matmul (eats the
-  quantization memory win).
+  quantization memory win). The lowered form being memory-expensive
+  is a *cost-ranking* fact (the optimizer keeps the fused path), not
+  a license to omit `decompose` — omitting it is what produces an
+  opaque island.
 
 *Transaction model.*
 
@@ -1724,7 +1821,12 @@ pass) become rule families on this framework once it exists.
 (SoftmaxLastDim's lower/fuse pair) will become *auto-generated*
 once Phase 7.6 (FusedOpRegistry) lands. Each FusedOpEntry's
 `decompose` + `pattern` produce a lowering rule and a fusion rule
-declaratively. The hand-written form remains as an escape hatch.
+declaratively — the same data viewed in opposite directions (the
+recipe principle, [G1 in 10-decisions-log](docs/architecture/10-decisions-log.md)).
+Because both directions are mandatory and `decompose` is total, the
+registry can derive the lowering/fusion pair for *every* fused op
+one-to-one; an entry that supplied only one direction would be an
+opaque island. The hand-written form remains as an escape hatch.
 See [Phase 7.6](#phase-76--fusedopregistry-open-registry-for-fused-ops-closed-enum-for-primitives)
 for the registry refactor that consumes this framework.
 
@@ -2263,9 +2365,44 @@ fused op multiplies the plumbing cost; the Op enum becomes the bottleneck.
 
 The architectural answer (per [03-ir](docs/architecture/03-ir.md)): the `Op` enum has primitive variants
 plus exactly one `Op::Fused(id, params)` arm. The `id` indexes a registry of
-fused ops; the registry is open at build-time, frozen at startup. Adding a new
+fused ops; the registry is open at build-time. Adding a new
 fused op is a registry entry + a kernel function — no `Op` enum edit, no
 autograd edit, no per-backend executor arm.
+
+**Two-tier runtime extensibility (re-scoped 2026-06-20, [G4 in
+10-decisions-log](docs/architecture/10-decisions-log.md)).** The earlier
+"frozen at startup, no runtime extensibility" framing conflated two
+distinct surfaces and one security boundary; it is re-scoped, not
+deleted:
+
+- **Build-time-closed (stays frozen):** the primitive `Op` enum
+  (per [G3](docs/architecture/10-decisions-log.md) — no generic
+  opaque / `Custom` node; an external op must decompose into the
+  existing basis or prompt a build-time `Op`-enum extension) **and**
+  untrusted user-installable rules/ops (the [09-non-goals](docs/architecture/09-non-goals.md)
+  rejection of untrusted code in the optimizer holds).
+- **Tier 1 — already runtime-extensible today:** the **kernel
+  binding table** (implementations). `extend_global_bindings`
+  (`fuel-dispatch/src/dispatch.rs:5098`) write-locks the table,
+  appends (append-only, multi-sibling), re-`finalize()`s, and calls
+  `bump_topology_generation()` to invalidate cached routes.
+  JIT-ing a kernel for an **existing** op identity lands here — this
+  was never the frozen part.
+- **Tier 2 — the new goal:** trusted, **Fuel-orchestrated,
+  cost-gated** runtime registration of a **new fused-op identity**
+  (the metadata registry becomes append-only with **stable,
+  never-reused** `FusedOpId`s). Its **mechanism is the declarative
+  form** — a runtime fusion can *only* be declarative (pattern +
+  recipe + shape/dtype/cost carried as **data**), because Rust `fn`
+  pointers and enum variants can't be added at runtime — so the
+  stubbed declarative pattern engine (`PatternKind::Declarative =>
+  false` at `fuel-graph/src/opt.rs:434`) is the **prerequisite** for
+  Tier 2. This is the trusted/untrusted reconciliation: *Fuel*
+  chooses the region to fuse (strategy stays in the optimizer), a
+  *trusted* backend synthesizes the kernel, the result arrives as a
+  declarative recipe (`decompose` + `pattern` over existing
+  primitives, per the recipe principle above), and the route picker
+  cost-gates adoption — no untrusted code, no new primitive.
 
 The cross-backend payoff: the cost-aware scheduler (downstream phase work)
 needs every backend's fusion catalog visible *before* placement decisions to
@@ -2278,11 +2415,11 @@ registry is the natural shape for that visibility; backend-internal fusion
 These decisions live in the architecture set; this phase implements them.
 
 - **Op-shape A**: closed `Op` enum with primitive variants + one `Op::Fused(id, params)` arm. No separate `NodeKind` discriminator. Per [03-ir §How nodes carry their op identity](docs/architecture/03-ir.md#how-nodes-carry-their-op-identity).
-- **Pre-resolved `KernelRef` per node** at planning time. The binding table is a planning-time catalog; the executor calls function pointers directly. Resolves audit Q-A. Per [03-ir §The optimized form](docs/architecture/03-ir.md#the-optimized-form-top-n-routes-with-pre-resolved-kernels).
+- **Pre-resolved `KernelRef` per node** at planning time. The binding table is a planning-time catalog; the executor calls function pointers directly. Resolves audit Q-A. Per [03-ir §The optimized form](docs/architecture/03-ir.md#the-optimized-form-the-multi-path-graph-the-plan-is-the-graph).
 - **Lazy KernelRef resolution** at decision-point pick time + mmap'd cache. Per [11-persistence §Re-resolution on use](docs/architecture/11-persistence.md#re-resolution-on-use-lazy-not-at-load).
 - **Fused-op registry crate location**: metadata in fuel-graph; `BackendImpl` payload (which carries `KernelRef`) in fuel-storage. Avoids a circular dependency.
 - **Per-kernel `PrecisionGuarantee` structure** on the registration surface, replacing the OracleGrade flag concept. Per [05-backend-contract §Per-kernel precision guarantees](docs/architecture/05-backend-contract.md#per-kernel-precision-guarantees).
-- **PR 3's hand-written rules become auto-generated** from `FusedOpEntry.decompose` + `FusedOpEntry.pattern`. Hand-written remains an escape hatch.
+- **PR 3's hand-written rules become auto-generated** from `FusedOpEntry.decompose` + `FusedOpEntry.pattern`. Hand-written remains an escape hatch. **Both directions are mandatory and `decompose` is total** (the recipe principle, [G1/G2 in 10-decisions-log](docs/architecture/10-decisions-log.md)): an entry that ships only one direction is an opaque island, and a `decompose` that panics is a bug (a primitive returns self; a non-basis op that fails to decompose is a surfaced opaque-op gap, not a crash) — this is load-bearing for the optimizer, which is *lower-to-base-map + find-best-cover*.
 
 #### Sub-tasks (revised against architecture v1.0)
 
@@ -2666,13 +2803,21 @@ including survival-through-optimizer testing.
 plan time on the static graph. Add a sibling `RuntimeHook` trait
 that fires after each node's realize:
 
+> **Stale signature (flag, low):** the `output: &dyn DynBackendStorage`
+> parameter below predates Phase 7.6 step 9c's bridge-retirement,
+> which retires `DynBackendStorage` entirely (see [Bridge-retirement
+> trajectory post-9c](#bridge-retirement-trajectory-post-9c), step 6).
+> When 9b is actually built, this surface should be re-typed against
+> the byte-storage substrate the executor uses by then, not the
+> retired trait.
+
 ```rust
 pub trait RuntimeHook: Send + Sync {
     fn on_node_realized(
         &self,
         id: NodeId,
         op: &Op,
-        output: &dyn DynBackendStorage,
+        output: &dyn DynBackendStorage, // STALE: DynBackendStorage retires in 7.6 step 9c
     ) -> HookAction;
 }
 
@@ -2769,8 +2914,35 @@ PET (OSDI '21), Tensat (MLSys '21; equality saturation via the Rust
 `egg` crate), and Unity (OSDI '22; joint rewrite + placement, the
 closest analogue to Fuel's topology-aware version). Published wins:
 1.3-3× on real models. Discovery of *new* equivalence rules is an
-offline tool (TASO-style enumeration + verification), never a
-realize-time activity.
+offline / out-of-the-hot-path tool (TASO-style enumeration +
+verification), never part of the per-realize dispatch loop. (This
+does **not** rule out the **idle-time** Fuel-strategist JIT loop of
+[G7 in 10-decisions-log](docs/architecture/10-decisions-log.md):
+that loop also runs *off the realize hot path*, whole-machine
+resource-aware, and feeds results back through background
+re-optimization at safe boundaries — it is a non-realize-time
+discovery activity, exactly the category this line permits.)
+
+**Relationship to the closed-loop adaptive optimizer ([G7](docs/architecture/10-decisions-log.md)).**
+Phase 10 is the *static / offline* face of the same machine the
+2026-06-20 adaptive-fusion decision describes; 10a (fuse-vs-lower as
+a cost-gated picker decision) is the **seed** of the closed loop.
+The shared substrate is the **base map** (total per the recipe
+principle): both Phase 10's rewrite search and the JIT loop read it
+and look for a better cover. The loop adds **explore/exploit**:
+**co-occurrence telemetry** (frequency-counted realized chains, the
+missing-fusion signal above) is the **exploration prior** ordering
+which regions to JIT first; empirical **winning** (a kernel/path
+entering an optimized plan under cost-gated selection) is the
+**exploit posterior** — ground-truth fitness — and **win-rate
+flattening is the STOP signal**. And it keeps the constitution
+intact via the **Fuel-strategist / backend-synthesizer** split:
+**Fuel** chooses *which* sub-base-map region to fuse and *when*
+(idle-time, resource-aware), sending **partial** base maps and
+making the cost-gated adopt/reject call; a **trusted backend**
+(Baracuda) synthesizes the best kernel for that Fuel-chosen region —
+**no backend-side opportunity-finding** (this is not backend-internal
+fusion, [09-non-goals](docs/architecture/09-non-goals.md)).
 
 #### Phase 10 building blocks (status today)
 
@@ -2788,12 +2960,19 @@ realize-time activity.
 #### Work items (in delivery order)
 
 - [ ] **10a — fuse-vs-lower as a picker decision.** The minimal
-      version of the whole idea. Instead of fusion firing
-      unconditionally, the fused form and the lowered composition
-      become per-subgraph alternatives ranked by Judge data (it
-      already profiles fused kernels against composed primitives).
-      Reuses everything; no new theory. This alone captures the
-      "backend lacks a good fused kernel" case.
+      version of the whole idea, **and the seed of the closed-loop
+      adaptive optimizer** ([G7 in 10-decisions-log](docs/architecture/10-decisions-log.md)).
+      Instead of fusion firing unconditionally, the fused form and the
+      lowered composition become per-subgraph alternatives ranked by
+      Judge data (it already profiles fused kernels against composed
+      primitives). Reuses everything; no new theory. This alone
+      captures the "backend lacks a good fused kernel" case — and that
+      case is exactly the closed-world missing-fusion signal
+      (`FusionMissRecord`, reason `NoBackendKernel`) whose consumer is
+      a binding-table append; the JIT loop extends the same
+      cost-gated fuse-vs-lower choice to *synthesize* the missing
+      kernel for a Fuel-chosen region rather than only fall back to the
+      lowered form.
 - [ ] **10b — curated algebraic equivalence library.** Grow
       `RuleFamily::Algebraic` from 1 rule to dozens (hand-curated;
       this covers most of the published win). Every rule carries a

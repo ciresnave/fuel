@@ -1,5 +1,7 @@
 # Session prompt — Quantize-as-graph-op (`Op::Quantize`)
 
+> **Reconciled 2026-06-20 (adaptive-fusion decision, [`../architecture/10-decisions-log.md`](../architecture/10-decisions-log.md) G1/G2 + constitution build-time-validation rule):** two corrections to the design below. (1) **Recipe principle (G1/G2):** `Op::Quantize` / `Op::Dequantize` must ship a **total, never-panic `decompose`** plus a `pattern` (see §Recipe below) — they cannot be opaque islands the way the nf4-class fused ops currently are (`nf4_matmul.rs:120` panicking `decompose` is the anti-pattern to avoid, not copy). (2) **Validate at build time:** the consumer-format-mismatch check below was specified to error *at dispatch time*; per the constitution's build-time-validation rule it is **build-time-checkable** (operand dtype/granularity and consumer op are known when the graph is built) and **must move to graph-build time**. Both corrections are folded into the sections below.
+
 ## What this session is for
 
 xn idea #4 from the 2026-05-29 architectural review: make
@@ -59,6 +61,28 @@ Dequantize {
 },
 ```
 
+### Recipe (mandatory both directions — G1/G2)
+
+Per the recipe principle ([`../architecture/10-decisions-log.md`](../architecture/10-decisions-log.md) G1/G2;
+[04-optimization §`decompose` is total](../architecture/04-optimization.md)), both `Op::Quantize` and
+`Op::Dequantize` ship a recipe in **two inverse directions, both required**:
+
+- **`decompose` (total + never-panic + primitive→self).** Each lowers onto the existing primitive basis:
+  `Quantize` = compute the scale per `ScaleGranularity` (a reduce-max / divide over the chosen axis) →
+  scale → round → clamp → cast-to-narrow; `Dequantize` = cast-to-wide → multiply by the broadcast scale.
+  These are exact primitive sequences (the *math* definition); the native FP8 kernel is the faster
+  numerically-close *implementation* governed by the FKC `precision` tolerance, not a substitute for the
+  recipe. The `decompose` **never `panic!`s** — the base map is the fixpoint of `decompose`, so a panicking
+  or absent `decompose` here would break the optimizer (optimization = lower-to-base-map + find-best-cover),
+  not just a downstream feature. **Do not copy the nf4-class panicking `decompose`** (`nf4_matmul.rs:120`);
+  that is a known bug to fix, not the pattern.
+- **`pattern`.** Recognize the primitive scale→round→clamp→cast (resp. cast→mul) subgraph and re-fuse it back
+  to `Op::Quantize` / `Op::Dequantize`, so an imported or hand-written quant chain collapses to the fused op
+  and the missing-fusion telemetry can see across it. A `decompose`-only entry would be an opaque island.
+
+The recipe is what lets the optimizer reason about the quant chain (e.g. the "fuse the dequantize away when
+the next consumer is also quant-aware" rewrite in §Test scope) instead of treating these ops as black boxes.
+
 ### Storage representation
 
 For F8E4M3 dynamic quant, the output of `Op::Quantize` is a tuple
@@ -91,8 +115,15 @@ xn-pattern named-wrapper types already in `baracuda/
 quant_w4a16.rs`. The graph machinery treats the quantize op as
 producing TWO output tensors (data + scales); consumers that
 understand the quant format read both. Generic ops that don't
-understand the format error at dispatch time (no fallback path
-should silently dequantize).
+understand the format **error at graph-build time** (no fallback
+path should silently dequantize). Per the constitution's
+build-time-validation rule, this consumer-format-mismatch check is
+**not** deferred to dispatch — the operand's quant dtype +
+granularity and the consuming op are both known when the edge is
+added to the graph, so the check that "this consumer has a
+quant-aware dispatch path for this `(dtype, granularity)`" runs as
+a `Result`-returning build-time validation, surfacing the mismatch
+before any kernel is scheduled.
 
 ### Backend execution
 
@@ -121,7 +152,10 @@ Consumers of quantized tensors (e.g. `Op::MatMul` with an
 sidecar scale shape, then call the right `fp8_matmul_*` kernel.
 The dispatch lookup is keyed on `(op, lhs_dtype, lhs_granularity,
 rhs_dtype, rhs_granularity)` — the `ScalePair` type from
-`fuel-core-types` is the natural key.
+`fuel-core-types` is the natural key. The *existence* of a
+quant-aware path for that key is validated at **graph-build time**
+(per the build-time-validation rule above); dispatch only *selects*
+among paths already known to exist, never discovers a missing one.
 
 ## What this session unlocks
 
@@ -142,7 +176,10 @@ rhs_dtype, rhs_granularity)` — the `ScalePair` type from
   the latter.
 - Don't expose a "dequantize on read" fallback path. If a consumer
   doesn't understand the quant format, it should error at
-  dispatch time, not silently materialize a wide-dtype copy.
+  **graph-build time** (the operand dtype/granularity and the
+  consumer op are known then — validate at build time, per the
+  constitution), not silently materialize a wide-dtype copy. Don't
+  defer this build-time-checkable mismatch to dispatch.
 
 ## Test scope
 
@@ -154,7 +191,16 @@ rhs_dtype, rhs_granularity)` — the `ScalePair` type from
   (within tolerance) as the BF16 reference.
 - Graph rewrite: emitting `quantize → matmul → dequantize`
   produces correct output; optimizer can fuse the dequantize away
-  when the next consumer is also quant-aware.
+  when the next consumer is also quant-aware (this rewrite reads the
+  `pattern` half of the recipe — see §Recipe).
+- Recipe round-trip: `Op::Quantize`'s `decompose` (scale → round →
+  clamp → cast) lowers to primitives and matches the native kernel
+  within the FKC tolerance; the `pattern` re-fuses that primitive
+  subgraph back to `Op::Quantize`. Assert neither `decompose`
+  panics (G2: total + never-panic).
+- Build-time validation: wiring an `Fp8Tensor` into a consumer with
+  no quant-aware path for its `(dtype, granularity)` returns a
+  `Result` error at graph-build time, not at dispatch.
 
 ## Scope realism
 

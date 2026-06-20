@@ -1,6 +1,8 @@
 # Session prompt — Baracuda CUTLASS alpha.13 integration
 
 > **Reconciled 2026-06-15 against the 2026-06-14 redirection + current git:** Track A (alpha.7 → .13 version bump) shipped and was superseded by alpha.67; B1–B4 (bf16/f16 CUTLASS Rrr matmul) shipped (`dc282be1`, `a2d4bcc3`); this doc is now the backlog for the still-pending B5–B8, re-anchored on the branch-point + Pareto-frontier model and the `register_fused!` / `default_kernel_registry` surface.
+>
+> **Reconciled 2026-06-20 against the adaptive-runtime-fusion decision ([10-decisions-log](../architecture/10-decisions-log.md)):** B8's `FusedLinearActivation` recipe is framed as the **two mandatory inverse halves** (`decompose` + `pattern`) of one recipe, not a decomposition plus an optional fusion rule (G1); option (b) is corrected — the new IR arm is a **fused-op identity**, not a new primitive (G3, the primitive basis is build-time-closed); the Pareto-frontier prune language is corrected so a cuBLAS-losing CUTLASS sibling is **shadowed, not evicted** on a single-model loss (G8); and the manual per-branch-point sibling registration is named as the precursor to the **closed-loop adaptive optimizer** (G7, Fuel-strategist / backend-synthesizer).
 
 ## What this session is for
 
@@ -108,7 +110,7 @@ Commit: `feat(cuda): CUTLASS f16 matmul mirror of bf16 Rrr path`.
 
 ### Step B5: CUTLASS TF32 matmul (f32 input → tensor cores) — PENDING (next up)
 
-`(MatMul, [F32, F32, F32], Cuda)` currently has one impl (cuBLAS with `Compute32FFastTF32`). Add a CUTLASS sibling using `GemmPlan::<f32>::select` (routes f32 input through TF32 tensor cores in Rcr layout). **Note**: Rrr × F32 is *not* shipped; use Rcr. This means an RHS transpose pass is needed for f32 — measure whether the perf gain still beats cuBLAS Fast-TF32 after the transpose tax. If it doesn't, register it anyway (it survives or is pruned on the per-device Pareto frontier by empirical cost — the route picker won't choose it if cuBLAS dominates) and let the data settle.
+`(MatMul, [F32, F32, F32], Cuda)` currently has one impl (cuBLAS with `Compute32FFastTF32`). Add a CUTLASS sibling using `GemmPlan::<f32>::select` (routes f32 input through TF32 tensor cores in Rcr layout). **Note**: Rrr × F32 is *not* shipped; use Rcr. This means an RHS transpose pass is needed for f32 — measure whether the perf gain still beats cuBLAS Fast-TF32 after the transpose tax. If it doesn't, register it anyway and let the data settle: a kernel that loses to cuBLAS on *this* model is **shadowed, not evicted** — the route picker simply won't choose it here, but it stays in the kernel set because it may win on a different shape class or model (per 2026-06-20 decision G8, [10-decisions-log](../architecture/10-decisions-log.md): never prune on a single-model loss; eviction is drive-space-gated and reserved for kernels that *lose across every model*).
 
 **API note (alpha.67):** the trait the B1–B4 generic is written against, `CutlassElement`, was renamed to `Element` in alpha.26, gaining a `Scalar` associated type for the epilogue's α/β compute precision (f16/bf16/f32-input kernels all use `Scalar = f32`; only f64 uses `Scalar = f64`). The shipped bridge already pins this via `T: CutlassElement<Scalar = f32>` — see `fuel-cuda-backend/src/cutlass.rs:53-58`. New f32 code follows the same `Scalar = f32` constraint.
 
@@ -151,17 +153,18 @@ CUTLASS ships `EpilogueKind::{BiasRelu, BiasGelu, BiasSilu}`. This collapses thr
 
 **Option (a)**: Extend `Op::FusedLinear` to carry an `Option<ActivationKind>` field. Pro: one variant, minimum IR churn. Con: changes Op::FusedLinear's shape, which is widely consumed.
 
-**Option (b)**: Add `Op::FusedLinearActivation { activation: ActivationKind }` as a new primitive. Pro: orthogonal to existing `Op::FusedLinear`. Con: new IR variant, every exhaustive consumer updates, decomposes through the same chain so it's redundant at the graph level.
+**Option (b)**: Add `Op::FusedLinearActivation { activation: ActivationKind }` as a new **fused-op identity** (an `Op::Fused(id, params)` arm / registry entry — *not* a new primitive: a fused op is a composition of existing primitives, never a member of the build-time-closed primitive basis, per 2026-06-20 decision G3, [10-decisions-log](../architecture/10-decisions-log.md)). Pro: orthogonal to existing `Op::FusedLinear`. Con: new IR variant, every exhaustive consumer updates, decomposes through the same chain so it's redundant at the graph level.
 
 **Option (c)**: Register a fused composition via `register_fused!` into `default_kernel_registry()` (`fuel-dispatch/src/fused.rs`) — the home for compositions. Pro: cross-backend visibility (Vulkan/CPU decompose; CUDA fires the fused kernel); aligned with what the registry exists to do, and matches how the bf16/f16 fused entries already register. Con: needs the rule that fuses `MatMul → Add → activation` into the registry entry.
 
 **Recommendation**: option (c). The registry was built precisely for this. Steps:
 
-1. Add a `FusedLinearActivation` entry to the registry with:
-   - Decomposition: `MatMul → AddBias → activation` (each is an existing primitive).
-   - Per-backend kernels: CUDA via CUTLASS Bias+activation epilogue; CPU + reference use the decomposition (no fused kernel needed).
+1. Add a `FusedLinearActivation` entry to the registry. Per the **recipe principle** (2026-06-20 decision G1, [10-decisions-log](../architecture/10-decisions-log.md)), a fused op carries **both inverse halves of one recipe, both mandatory** — they are not a decomposition *plus* an optional fusion rule, they are the same data viewed in opposite directions:
+   - **`decompose` (the break-down):** `MatMul → AddBias → activation` (each is an existing primitive). This *lowers* the fused node onto the base map and is what makes it visible to the optimizer; it must be authored, not deferred (a fused op missing it is an opaque island).
+   - **`pattern` (the build-up):** recognize that same `MatMul → Add → activation` primitive subgraph and re-fuse it. This is the matcher `fuse_linear_activation` below installs; it is the inverse of `decompose`, derived one-to-one from it.
+   - Per-backend kernels: CUDA via CUTLASS Bias+activation epilogue; CPU + reference use the `decompose` output (no fused kernel needed — they run the primitive subgraph).
    - Backward identity: same as `Op::FusedLinear`'s backward + activation backward, chained.
-2. Extend `fuse_linear` (or add a parallel `fuse_linear_activation` rule) to detect `MatMul → Add → activation` and emit the registry entry's `Op::Fused(id, params)` form.
+2. Install the `pattern` half: extend `fuse_linear` (or add a parallel `fuse_linear_activation` rule) to detect `MatMul → Add → activation` and emit the registry entry's `Op::Fused(id, params)` form. This is the build-up direction of the one recipe whose break-down is the `decompose` in step 1.
 3. Live-CUDA test: decomposed (matmul + bias + activation as three separate ops) vs fused (one CUTLASS kernel). Parity within tolerance.
 
 Activations: ReLU, GELU (alpha.11 ships exact erf-based GELU matching PyTorch default), SiLU. Three FusedLinear* permutations; ship as three commits or one if the registry shape factors them.
@@ -217,12 +220,14 @@ cargo test --workspace --lib
 
 Already shipped (B1–B4): CUTLASS bf16/f16 Rrr matmul registered as siblings to cuBLAS at the MatMul branch points (`dc282be1`, `a2d4bcc3`). The first exercise of the branch-point alternatives framing on CUDA.
 
-If through step B8: full CUTLASS surface integrated — Rrr matmul (bf16/f16, done), TF32 matmul (f32), BatchedGemmPlan (uniform batch), FusedLinear bias, FusedLinearActivation (3 activations). ~8–11 more commits. The CUDA matmul + Linear surface then carries several alternatives per branch point, which survive or are pruned on the per-device Pareto frontier and are chosen by the route picker empirically.
+If through step B8: full CUTLASS surface integrated — Rrr matmul (bf16/f16, done), TF32 matmul (f32), BatchedGemmPlan (uniform batch), FusedLinear bias, FusedLinearActivation (3 activations). ~8–11 more commits. The CUDA matmul + Linear surface then carries several alternatives per branch point; the optimizer keeps the per-device Pareto frontier of them and the route picker chooses among the survivors empirically. A CUTLASS sibling that loses to cuBLAS on a given shape is **shadowed**, not removed — it stays available for shape classes / models where it wins (per 2026-06-20 decision G8, [10-decisions-log](../architecture/10-decisions-log.md)).
+
+This per-branch-point sibling registration is the *manual* precursor to the **closed-loop adaptive optimizer** (2026-06-20 decision G7, [10-decisions-log](../architecture/10-decisions-log.md)): there Fuel-the-strategist chooses which base-map regions to JIT (and when, resource-aware) and a backend-the-synthesizer (Baracuda) builds a kernel for the Fuel-chosen region, which the route picker cost-gates into the same frontier. Here the regions are hand-chosen (the CUTLASS SKUs) rather than telemetry-driven, but the adoption mechanism — register as a sibling, let the cost-gated picker decide — is the same.
 
 ## Coordination notes
 
 - **`Op` enum** — only step B8 *might* extend it (option b in the design decision). Default to option c (registry) — no Op enum changes.
 - **`baracuda-cutlass`** — already a dependency of `fuel-cuda-backend` (the B1 bridge); the pin rides the workspace `baracuda 0.0.1-alpha.67`.
-- **`fuel-cublaslt`** — separate crate, exposes cuBLASLt-backed bias+activation already. Out of scope for this session; both will eventually compete at the FusedLinear branch points and survive/prune on the same per-device Pareto frontier.
+- **`fuel-cublaslt`** — separate crate, exposes cuBLASLt-backed bias+activation already. Out of scope for this session; both will eventually compete at the FusedLinear branch points on the same per-device Pareto frontier. Whichever loses on a given shape is shadowed (kept), not evicted (per G8, [10-decisions-log](../architecture/10-decisions-log.md)).
 - **Fused-kernel registration surface** — register CUTLASS siblings through `register_fused!` into `default_kernel_registry()` (`fuel-dispatch/src/fused.rs`), the append-on-register path the shipped bf16/f16 fused entries already use.
 - **Memory entry to write at the end**: `project_cutlass_integration_session_<date>.md` summarizing which steps landed. Mention the CUTLASS capability matrix ("Kernel SKU coverage") so a future session knows exactly what's available without re-deriving it.

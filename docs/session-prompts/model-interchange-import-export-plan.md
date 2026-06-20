@@ -3,6 +3,8 @@
 > **[2026-06-15 banner]** [`docs/architecture/13-interchange.md` v0.3](../architecture/13-interchange.md) is now **AUTHORITATIVE** for interchange; the sections below predate the 2026-06-14 "plan IS the graph" reconciliation and are retained as the **active migration plan** (crate moves, format dossiers, phased roadmap, caller fixes — 13-interchange.md cites this file by path). The concrete stale claims have been reconciled in place (StableHLO is now import+export; the native `.fuel` is the whole-graph serialization; load-vs-import distinction added; primitive count ~80–90); where this file and 13-interchange.md v0.3 still differ in framing, **v0.3 wins.**
 >
 > **Reconciled 2026-06-15** against the 2026-06-14 redirection + current git: StableHLO promoted to import+export, native `.fuel` = whole graph (base map + storage + optimized paths) mmap-backed via 11-persistence, load-vs-import distinction added, primitive count set to ~80–90.
+>
+> **Reconciled 2026-06-20** (adaptive-fusion decision, [`../architecture/10-decisions-log.md`](../architecture/10-decisions-log.md) G3 — *the primitive basis is build-time-closed*): the op-mapper's disposition model gains the outcome it omitted. **Import = decompose each foreign op into the existing primitive basis** (or recognize a fused-op pattern). A foreign op that genuinely needs a primitive Fuel lacks does **not** become a runtime opaque/`Custom` node (there is none — the `Op` enum is compile-time-closed) and does **not** hard-reject by default; it prompts a **build-time `Op`-enum extension request** (a Fuel-side basis addition, e.g. a higher-order `Scan`), after which the importer decomposes into the extended basis. Hard `Result` rejection is reserved for constructs with no graph representation at all. See §5.
 
 **Status:** Research + plan (2026-06-04). Not yet started.
 **Goal:** Let Fuel *read* a model architecture (the operation sequence, not just weights) from
@@ -220,14 +222,27 @@ Fuel-IR (~80–90 prims + 23 fused) ≠ ONNX (~187) ≠ Core ATen (~180) ≠ Sta
   `Fused(...)` directly when one exists, e.g. ONNX `LayerNormalization` → `Fused(LAYER_NORM_LAST_DIM)`).
 - **Export** = the inverse, plus **re-fusion**: a Fuel `Fused(RMS_NORM…)` must lower to the target's
   primitive sequence (most targets lack a native RMSNorm op).
+- **Import = decompose into the existing primitive basis (G3).** The basis is **build-time-closed** (the
+  `Op` enum is a compile-time Rust enum; there is **no runtime opaque / `Custom` node**), so importing a
+  foreign op means lowering it into the *existing* primitives or recognizing a fused-op pattern over them —
+  an importer can never mint a new runtime primitive. When a source op genuinely needs a primitive Fuel
+  lacks (e.g. a higher-order `Scan` for SSM/recurrent loops), the correct outcome is **not** a hard reject
+  and **not** an opaque node: it is a **build-time `Op`-enum extension request** — a Fuel-side basis addition
+  (which the importer cannot make at runtime), after which the op decomposes into the extended basis. This is
+  a genuine basis gap surfaced for a Fuel-side fix, not an import failure. (Per [`../architecture/10-decisions-log.md`](../architecture/10-decisions-log.md)
+  G3 + [09-non-goals §Not framework-agnostic dispatch](../architecture/09-non-goals.md).)
 - **Round-trips are lossy.** Define a conformance matrix per format giving every source op a *disposition*:
   1:1 primitive, decomposition, fused-op recognition, **import-time lowering** (control flow / dynamic shapes
-  / collectives → graph structure, per *representation ≠ op*), or *another Fuel layer*; only a construct with
-  no graph representation at all is a hard `Result` error at build time, naming the offending op — never a
+  / collectives → graph structure, per *representation ≠ op*), *another Fuel layer*, or a **build-time
+  basis-extension request** (the missing-primitive case above — a Fuel-side `Op`-enum addition, never a
+  runtime primitive); only a construct with **no graph representation at all** (and no basis extension that
+  could give it one) is a hard `Result` error at build time, naming the offending op — never a
   silent drop. The worked example is the **StableHLO op map**
   ([docs/interchange/stablehlo-to-fuel-op-map.md](../interchange/stablehlo-to-fuel-op-map.md)): of 119 spec
   ops, ≈100 are covered or handled, the hard-reject set is nearly empty, and it names the genuine vocabulary
-  gaps (sort/top-k, pooling, FFT, inverse-trig, product-reduce).
+  gaps (sort/top-k, pooling, FFT, inverse-trig, product-reduce). Per G3, those named gaps are **build-time
+  basis-extension candidates** (add the primitive Fuel-side, or — for compositions — a fused-op recipe over
+  existing primitives), not runtime opaque nodes and not automatic hard rejects.
 - **Strategy:** build a declarative **op-mapping table** crate-side, table-driven both directions, with a
   differential-test harness (run Fuel vs `tract`/`onnxruntime` on the same ONNX, assert tensor parity).
   Quantized weights: preserve the scheme through import (store as const blocks / `Fused(QMATMUL)`), don't
