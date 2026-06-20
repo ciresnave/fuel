@@ -612,3 +612,74 @@ When step 7 is green, in the **same** branch:
 `-p fuel-dispatch --features telemetry`; step 7 is `-p fuel-core --features telemetry`. Steps
 3 and 5 are independent of each other and could swap, but keep the listed order so each
 `DispatchRecord` field has its producer before the sink assembles it.
+
+---
+
+## 9. Sequence + missing-fusion + inventory extension (grounded 2026-06-19)
+
+Baracuda also needs: (a) our **existing-kernel** findings, (b) which kernel **sequences we use
+together** (co-occurrence), and (c) which sequences we **look for but most often don't have a fused
+kernel for** (missing fusions, ranked). A parallel-explore workflow mapped the fusion matcher,
+executor/optimizer, dispatch/ranker, and graph/op vocab; an adversarial critique then corrected the
+synthesis. **The load-bearing finding (do not lose it):**
+
+> **Fuel can see fusions it PERFORMED, not fusions it WANTED-but-lacked.** `RuleRegistry::run_pass`
+> (`fuel-graph/src/opt.rs:256-273`) only computes `firing_rule_idx = position(|r| r.matches())`;
+> when `matches()` returns false there is **zero** information about which rule almost-matched or
+> why — the matcher (`registry/softmax_last_dim.rs:145`, `fused_linear.rs:122`) returns a bare
+> `Option<PatternMatch>` whose `None` is identical for "op wasn't a Div", "shape mismatch", and
+> "consumer-count guard failed". "No rule fired" is true of **every** primitive node. So the
+> missing-fusion signal — the highest-value one for Baracuda — **is NOT instrumented today and
+> requires a NEW Fuel-side hook.** Neither side has this data; Baracuda cannot derive it.
+
+**The minimal new hooks the missing-fusion signal needs (pick in v1, do not "infer"):**
+1. **Graph layer:** change the Callable matcher return from `Option<PatternMatch>` to
+   `Result<PatternMatch, MatchFailureReason>` (a `fuel-graph` signature change) OR register a
+   per-`FusedOpEntry` structural-prefix probe — so a structurally-eligible-but-unfused node is
+   distinguishable from an ordinary primitive, with a *reason* (`GuardRejected` vs
+   `StructuralMismatch` vs `DeclarativeUnwired`). The "re-run the prefix check ignoring the guard"
+   inference the synthesis proposed is a **second source of truth that will drift** — rejected.
+2. **Dispatch layer:** `enumerate_candidates` (`fuel-dispatch/src/ranker/enumerate.rs:76-108`) is
+   op-agnostic — an empty alternative set for a fused `OpKind` is byte-identical to one for any
+   unregistered primitive. To get `FusionMissReason::NoBackendKernel` (the **highest-ROI** miss:
+   pattern recognized + fused, only the CUDA kernel absent) the caller must flag "this `op_kind`
+   came from an `Op::Fused` node." Small, but real.
+
+**Record types (existing reused, new added) — only the GROUNDED ones:**
+- *Reuse unchanged:* `DispatchRecord`, `Candidate`, `MissRecord` (single-kernel operand-shape miss),
+  `ImplId`, `StructureKeyToken`.
+- **`SequenceKey`** (new) — multi-kernel analog of `ImplId`, **separable parallel fields, never a
+  hash**: `backend: BackendId` (a `Run` is single-device by construction, `fuel-graph/src/run.rs:69`),
+  `ops: Vec<OpKind>`, `ops_dtypes: Vec<Vec<DType>>`, `kernel_sources: Vec<String>` (per-member — a
+  chain mixes sources), `kernel_revision_hashes: Vec<u64>`, `fused_as: Option<FusedTag>`. Co-occurrence
+  count cell = `(backend, ops, ops_dtypes, kernel_sources)` (revision hashes retained for re-resolution
+  but not in the count cell while untracked/0).
+- **`SequenceRecord`** (new, co-occurrence) — a chain that ran together (`Run` from
+  `run.rs:92 extract_runs_multi`, walked at `pipelined.rs:1085`), keyed by `SequenceKey` + `count`.
+  `fused_as` via a **generic** `match op { Op::Fused(id,_) => … }` (`FusedOpRegistry::entry`,
+  `registry.rs:766`), NOT per-op predicates (those silently mislabel).
+- **`FusionMissRecord`** (new — the headline) — a recognized fusion-eligible chain realized as N
+  primitives, with `wanted_fused: FusedTag`, `fallback_sequence`, `reason: FusionMissReason`
+  (`NoBackendKernel` | `GuardRejected` | `DeclarativeUnwired`), `count`. Baracuda ranks by `count`
+  DESC filtered to `NoBackendKernel`, grouped by `wanted_fused.family`. No `est_speedup` (inferable).
+- **`KernelInventoryRecord` / `FusedKernelInventoryRecord`** (new) — one-shot **full** census
+  (no sampling): primitives from `KernelBindingTable::iter_keys()`+`lookup_alternatives()`
+  (`kernel.rs:1125,1195`), fused from `FusedOpRegistry::entries_iter()` (`registry.rs:788`) with
+  `pattern_wired = matches!(entry.pattern, Callable(_))`. The `pattern_wired=false` /
+  `has_backend_kernel=false` rows ARE a demand surface. `impl_id` reuses `DispatchRecord.chosen`
+  identity so inventory diffs against winners.
+
+**Corrected groundings (the critique caught these — do NOT build on the synthesis's wrong hooks):**
+- **Per-member latency is the plan-time Judge oracle** (`ranker/cost.rs:206`, same provenance as
+  `DispatchRecord.candidates[].latency_ns`), `None` on miss — NOT realized executor timing
+  (`pipelined.rs:4228` has **no** clock/timing instrumentation).
+- **`structure_key` threading is a PREREQUISITE that does not exist yet** (`structure_key.rs` is a
+  13-line stub; no `DispatchRecord` is emitted anywhere today). So `SequenceMember.structure_key`,
+  `FusionMissRecord` operand context, and `DispatchRecord.structure_key` are all `None` until the
+  base seam (steps 2b/3) lands. **Everything in this §9 depends on the base emission (§1–7) first.**
+
+**Recommended sequencing (lean):** build the **base emission (§1–7) first** — it is the prerequisite
+seam. Then a **lean increment**: `KernelInventoryRecord` (trivial census) + the `FusionMissRecord`
+histogram (with the one matcher hook + the `from-Op::Fused` flag). **Co-occurrence `SequenceRecord`
+is the most optional / most wiring — defer unless Baracuda explicitly wants it.** The missing-fusion
+histogram is the irreducible, highest-value piece and the only one needing a new graph-layer hook.
