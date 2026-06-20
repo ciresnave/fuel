@@ -89,7 +89,22 @@ kernel inside graphs the user wrote with primitives.
 > **Conclusion:** every fused op should carry both halves of its recipe; an op that can't be
 > decomposed marks a basis gap to fill or a withheld decompose to wire, not a permanent class. This
 > spec specifies the **build-up** half (`pattern:`); the **break-down** half (`decompose`) is its
-> inverse and equally load-bearing. **For Baracuda:** authoring `pattern:` + `decompose` for your
+> inverse and equally load-bearing.
+>
+> **The `decompose` contract is TOTAL and never `panic!`s** (Fuel's never-panic rule): a **primitive
+> decomposes to *itself*** — the recursion's fixpoint, already the identity form
+> `decompose = |_g, id, _p| id` used at `fuel-graph/src/registry.rs:823` — a fused op decomposes to
+> its recipe subgraph, and the base map is the **fixpoint of `decompose` over every node** (lower
+> until `decompose(x) == x` everywhere; this is exactly Fuel's `optimize_to_fixpoint` rewrite model,
+> where a primitive is simply a node no lowering rule fires on). A `panic!` in `decompose` (today:
+> `nf4_matmul`/`flash_attn`/`selective_scan`) is therefore always wrong — it is **either** a true
+> primitive that should return itself **or** a non-primitive whose recipe is missing (a bug / basis
+> gap). The two are distinguished by **basis membership**, never by the return value: a node in the
+> declared primitive basis returning itself is correct; a *non-basis* op that fails to decompose is a
+> **surfaced opaque-op gap** (a base-map flag, → the missing-fusion/inventory telemetry), not a crash
+> and not silently masquerading as primitive.
+>
+> **For Baracuda:** authoring `pattern:` + `decompose` for your
 > fused kernels is what lets Fuel lower a model's `flash_attn`/`softmax`/`conv` calls onto the base
 > map and re-fuse them into your specialized kernels — the highest-leverage use of the feature, and
 > why the base map (which your `structure_key` / co-occurrence / missing-fusion telemetry operates
