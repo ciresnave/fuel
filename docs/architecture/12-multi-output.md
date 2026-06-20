@@ -1,6 +1,6 @@
 # Multi-output nodes
 
-**Status**: v1.0 (2026-06-01). Captures the Option-C design that lets a single graph node produce N logically independent outputs without growing the `DynBackendStorage` trait surface or forcing backends to learn "multi-output kernel" semantics. Landed across 6 sessions; the consumer migrations and the autograd scatter kernel light up downstream.
+**Status**: v1.1 (2026-06-20). Captures the Option-C design that lets a single graph node produce N logically independent outputs without growing the `DynBackendStorage` trait surface or forcing backends to learn "multi-output kernel" semantics. Landed across 6 sessions; the consumer migrations and the autograd scatter kernel light up downstream. v1.1 (minor) adds the **recipe obligation** to the multi-output authoring contract — every multi-output fused op MUST also ship a total, never-panic `decompose` + a re-fusion `pattern` (2026-06-20, G1/G2, [10-decisions-log](10-decisions-log.md)); the current `selective_scan` panic-in-`decompose` is exactly the bug this rules out.
 
 A multi-output node produces a bundled `Storage` — one allocation, one Arc, but a side-table describing how the byte buffer is partitioned into per-slot windows. Downstream `Op::View` (zero-copy projection) and `Op::ViewOwned` (independent slot copy) ops resolve those windows back into ordinary tensors. The bundle metadata lives on the `Storage` newtype; backends remain single-output at the trait level.
 
@@ -92,6 +92,17 @@ Autograd assembler. Takes `[bundle_target, slot_grad]` and produces a copy of `b
 
 - `None` for single-output ops (the default).
 - `Some(fn)` for multi-output ops. Slot 0's spec MUST equal `shape_rule(...)` / `dtype_rule(...)` — slot 0 is the primary, and the producer's `Node::shape` / `Node::dtype` reflects it. The `default_registry_multi_output_entries` + `multi_output_entries_slot_0_matches_primary_rules` tests enforce this for every registered multi-output entry.
+
+### The recipe obligation (mandatory)
+
+The output-view / bundle obligations above describe how a multi-output op's *result* is partitioned. They are necessary but **not sufficient**. Like every fused op, a multi-output fused op MUST also carry a **recipe** (2026-06-20, G1/G2, [10-decisions-log](10-decisions-log.md)):
+
+- A **`decompose`** (fused → primitive subgraph) that *lowers* the op onto the base map. It MUST be **total and never-panic**: a primitive decomposes to itself (the fixpoint), and a non-primitive that cannot decompose is a *surfaced* opaque-op gap (a telemetry flag), never a `panic!`. Because a multi-output op's `decompose` must reproduce the bundle's per-slot results, its primitive expansion produces the same slots (via the same `Op::View` / `Op::ViewOwned` projections) — it is not exempt from totality.
+- A **`pattern`** (recognize the primitive subgraph) so the op can be **re-fused** after lowering.
+
+Both are mandatory. A multi-output fused op with no recipe is an **opaque island**: invisible to base-map analysis (the co-occurrence / missing-fusion telemetry cannot see across or inside it) and impossible to re-fuse. The recipe **always ships with the op** — it is never deferred "until the intermediates fit," because deferring it *is* what produces the island. This is load-bearing for the optimizer itself, not only for downstream JIT: optimization is lower-to-base-map + find-best-cover, so an op that will not decompose breaks the optimizer.
+
+The current `selective_scan` (and `ssd_chunk_scan`) `decompose` panics — exactly the bug this obligation rules out. Each is either a true primitive (then `decompose` must return self) or a non-primitive missing its recipe (then it must be supplied), distinguished by **basis membership, never by the panic**. See [03-ir](03-ir.md) and [04-optimization](04-optimization.md) for the recipe principle, the DecompositionMap/OptimizationMap derivation, and the total-`decompose` contract.
 
 The `Tensor::*` builder for a multi-output op (`Tensor::selective_scan`, etc.) calls `entry.output_views(...)`, runs it through `compose_bundle`, and registers the result via `Graph::set_output_views(producer_id, views)` at build time.
 

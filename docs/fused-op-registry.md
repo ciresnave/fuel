@@ -1,6 +1,8 @@
 # Phase 7.6 — FusedOpRegistry implementation design (v3)
 
-**Status**: design v3, 2026-05-09. Anchored to architecture v1.0 (see [`docs/architecture/`](architecture/00-index.md)). Steps 1-3 shipped on `feature/storage-unification` (commits `408ff57a`, `e15f0ce9`, `10f04b87`); step 4+ pending.
+**Status**: design v3, 2026-05-09. Anchored to architecture v1.0 (see [`docs/architecture/`](architecture/00-index.md)). Steps 1-3 shipped on `feature/storage-unification` (commits `408ff57a`, `e15f0ce9`, `10f04b87`); step 4+ pending. **Reconciliation note (2026-06-20)**: the "registry frozen at startup / runtime-immutable / no hot-add" language below predates the adaptive-runtime-fusion decision; it is re-scoped per [10-decisions-log §2026-06-20](architecture/10-decisions-log.md) (G4) — the freeze stays for the primitive `Op` enum and untrusted user ops/rules, but trusted, Fuel-orchestrated, cost-gated runtime registration of new fused-op *identities* (via the declarative pattern+recipe form, append-only with stable never-reused `FusedOpId`s) is now a goal. See the inline notes at the TL;DR, Non-goals, and Out-of-scope sections, and the "Recipe principle" subsection below.
+
+> **2026-06-20 reconciliation banner.** Three claims in this doc — "build-time-frozen, runtime-immutable registry" (TL;DR), "Runtime-extensible registry … No hot-add" (Non-goals), and "User-extensible fused ops at runtime … hot-add isn't a goal" (Out of scope) — are NOT deleted but RE-SCOPED by the adaptive-runtime-fusion decision ([10-decisions-log §2026-06-20](architecture/10-decisions-log.md), G4). The freeze stays for (i) the primitive `Op` enum (build-time-closed basis, G3) and (ii) **untrusted** user-installable rules/ops (the [09-non-goals](architecture/09-non-goals.md) rejection holds). What is now a **goal**: **Tier 2** — trusted, Fuel-orchestrated, cost-gated runtime registration of a **new fused-op identity**, implemented via the **declarative** form (pattern + recipe + cost as *data*, append-only registry, stable never-reused `FusedOpId`s). The stubbed `PatternKind::Declarative` engine (`fuel-graph/src/opt.rs:434`) is its prerequisite. The **Tier 1** kernel binding table (implementations for an existing op identity) is *already* runtime-extensible (`extend_global_bindings`, `fuel-dispatch/src/dispatch.rs:5098`; append-only, multi-sibling, `bump_topology_generation`) — that was never the frozen part.
 
 This document is the implementation-side design for Phase 7.6. Architectural commitments live in the architecture set; this document carries the *how* — type shapes, file layouts, migration steps, code-shape examples, open implementation questions.
 
@@ -22,7 +24,7 @@ The v1 design's ROADMAP entry has been rewritten to match v2; this document is t
 
 Today's `Op` enum is a hybrid: ~60 variants mixing primitives (Add, Mul, Exp, MatMul) with fused abstractions (SoftmaxLastDim, RmsNormLastDim, FlashAttn). Adding a new fused op multiplies plumbing across every backend, every autograd path, every dispatch wrapper.
 
-**The split**: `Op` becomes primitive variants + one `Op::Fused(id, params)` arm. The arm indexes a build-time-frozen, runtime-immutable `FusedOpRegistry` of fused-op entries. Each entry encodes its primitive subgraph signature (for fusion pattern recognition), its decomposition (for lowering), per-backend kernel implementations with cost estimates and `PrecisionGuarantee` metadata (for placement and tolerance reasoning), and its backward op (anchored as another `FusedOpId` or as a primitive subgraph).
+**The split**: `Op` becomes primitive variants + one `Op::Fused(id, params)` arm. The arm indexes a `FusedOpRegistry` of fused-op entries that is **build-time-populated and frozen for `fn`-pointer / enum-variant entries** (you cannot ship Rust `fn` pointers or add enum variants at runtime), but — per [10-decisions-log §2026-06-20](architecture/10-decisions-log.md) (G4) — **runtime-extensible for trusted, Fuel-orchestrated, cost-gated declarative entries** (append-only, stable never-reused `FusedOpId`s, the recipe carried as *data*). Each entry encodes its primitive subgraph signature (for fusion pattern recognition), its decomposition (for lowering), per-backend kernel implementations with cost estimates and `PrecisionGuarantee` metadata (for placement and tolerance reasoning), and its backward op (anchored as another `FusedOpId` or as a primitive subgraph).
 
 Adding a new fused op: one registry entry + one kernel function per backend that supports it. No `Op` enum edit beyond the existing `Fused` arm; no autograd edit; no per-backend executor arm; no `op_short_name`/`op_key` edit.
 
@@ -44,7 +46,19 @@ Adding a new fused op: one registry entry + one kernel function per backend that
 - **e-graph / equality-saturation pattern matching.** PR 3's anchored structural matching + declarative-pattern engine (per architecture's OptimizationMap rule shape) is sufficient for v1.
 - **Multi-level dialect IR (MLIR-style).** Two layers — primitive `Op` variants + fused-op registry behind `Op::Fused` — covers fuel's needs.
 - **Backend-specific autotuning.** Cost estimates come from per-backend `BackendImpl.cost` functions; how a backend computes them (static, profile-driven, autotuner) is a backend concern.
-- **Runtime-extensible registry.** The registry is populated at process startup, frozen thereafter. No hot-add.
+- **Untrusted user-installable fused ops / rules at runtime.** Arbitrary user code in the optimizer stays out (the [09-non-goals](architecture/09-non-goals.md) rejection holds). *Re-scoped 2026-06-20 ([10-decisions-log §2026-06-20](architecture/10-decisions-log.md), G4): the blanket "populated at startup, frozen thereafter, no hot-add" no longer holds for the **trusted, Fuel-orchestrated, cost-gated** path. The `fn`-pointer / enum-variant entries are still build-time-frozen, but trusted runtime registration of a new fused-op **identity** via the **declarative** form (pattern + recipe + cost as data; append-only; stable never-reused `FusedOpId`s) is now a goal — Tier 2, gated on the `PatternKind::Declarative` engine. Runtime extension of the kernel **binding table** for an existing identity is Tier 1 and already shipped (`extend_global_bindings`).*
+
+---
+
+## The recipe principle (decompose + pattern are both mandatory)
+
+Per [10-decisions-log §2026-06-20](architecture/10-decisions-log.md) (G1-G3). The `FusedOpEntry` already carries `pattern` and `decompose` as fields, but the doc never stated their joint contract. It is load-bearing — for optimization *itself*, not just for fusion:
+
+- **Both directions are mandatory (G1).** Every fused op carries a primitive **recipe** in two inverse directions: `decompose` (fused → primitive subgraph; *lowers* it onto the base map) and `pattern` (recognize that primitive subgraph; *re-fuse*). A fused op with **no recipe is an opaque island** — invisible to base-map analysis (the co-occurrence / missing-fusion telemetry cannot see across or inside it) and impossible to re-fuse or to refuse in favor of its decomposition. The recipe **always ships with the fused op**; it is never deferred "until intermediates fit" (deferring it produces exactly the opaque island).
+
+- **`decompose` is TOTAL + never-panic + primitive→self (G2).** `decompose` never `panic!`s (the never-panic constitution rule). A **primitive decomposes to itself** — the recursion's fixpoint, the identity form `decompose = |_g, id, _p| id` at `fuel-graph/src/registry.rs:823`. The **base map is the fixpoint of `decompose` over every node** (lower until `decompose(x) == x`; a primitive is just a node no lowering rule fires on). Whether a panicking/failing `decompose` is "primitive" or "missing its recipe" is decided by **basis membership, never by the return value**: a non-basis op that fails to decompose is a **surfaced opaque-op gap** (a base-map flag feeding the missing-fusion / inventory telemetry), never a crash and never silently masquerading as a primitive. This is load-bearing for **optimization itself**: optimization = lower-to-base-map + find-best-cover, so an op that will not decompose *breaks the optimizer*, not merely a downstream JIT feature. The three current panicking decomposes (`nf4_matmul.rs:120`, `flash_attn`, `selective_scan`) are **bugs to fix**, not a permanent category.
+
+- **The primitive basis is build-time-closed; the contract is shared (G3).** The primitive `Op` set is a compile-time Rust enum (`fuel-graph/src/lib.rs`) with **no generic opaque / `Custom` node** in the lazy graph (see [Goals](#goals) — "Closed primitive set"). An externally-supplied (provider / JIT-synthesized) op therefore **cannot become a new primitive at runtime**; it must either decompose into the existing basis (and carry a `pattern` to re-fuse that sequence) or — if it needs a primitive Fuel lacks (e.g. a higher-order `Scan` for SSMs) — prompt a **Fuel-side, build-time `Op`-enum extension** the provider cannot make itself. The primitive vocabulary is a **hard shared contract** with providers; runtime extensibility (G4 / Tier 2) adds kernels and recipes *over* the existing primitives, never new primitives. This makes the previously-implicit "no opaque node" point explicit.
 
 ---
 
@@ -145,8 +159,19 @@ pub enum FusedOpParams {
 pub enum BackwardKind {
     Fused(FusedOpId),         // emit this fused op for backward
     Decompose,                 // autograd derives backward from primitive decomposition
-    NotDifferentiable,         // panics in backward (like ArgMaxDim)
+    NotDifferentiable,         // backward is undefined — return Result::Err, NOT panic (see note)
 }
+
+// NEVER-PANIC NOTE (standing violation to fix): the original sketch documented
+// `NotDifferentiable` as "panics in backward (like ArgMaxDim)" and matched the
+// then-current QMatMul / ArgMaxDim behavior. That normalizes a panic on a
+// production path, which the constitution forbids (never panic on production
+// paths; `Result` from day one). The non-differentiable backward path MUST
+// return `Result::Err` with a clear message, not `panic!`. The ArgMaxDim /
+// QMatMul precedent is itself a standing never-panic violation to fix, not a
+// pattern to copy. See docs/architecture/10-decisions-log.md §2026-06-20 (G2:
+// decompose is total + never-panic) and CLAUDE.md "Never panic on production
+// paths."
 
 pub enum SubgraphPattern {
     Declarative(PatternTree),                                       // step 4 wires the engine
@@ -294,6 +319,15 @@ fn execute_node(node: &Node, alt: &NodeKernelBinding, inputs: &[Storage], output
 }
 ```
 
+> **NEVER-PANIC NOTE (standing violation to fix).** This sketch's two `.expect()`
+> calls are illustrative only — they are *not* the shipping contract. The
+> constitution forbids panicking on production paths (`Result` from day one;
+> validate at graph-build time). `execute_node` must return a `Result` and
+> propagate the unresolved-kernel and kernel-`Err` cases (`?`), not `.expect()`.
+> An unresolved `KernelRef` is a planning bug that should surface as a typed
+> error at the route-picker / plan-build seam, not an executor panic. See
+> [10-decisions-log §2026-06-20](architecture/10-decisions-log.md) (G2, never-panic) and CLAUDE.md.
+
 Compare to today's binding-table lookup at execution time:
 
 ```rust
@@ -436,7 +470,7 @@ This resolves audit Q-A and is the foundation for [11-persistence §Re-resolutio
 
 ### Step 10: comparison family added as primitive variants
 
-Add Equal/NotEqual/Less/LessEqual/Greater/GreaterEqual to `Op` as primitive variants. Bit-exact equality on floats; non-differentiable backward (panic stub, ArgMaxDim precedent). Lands in this phase because primitive-set completion belongs with this architectural cleanup.
+Add Equal/NotEqual/Less/LessEqual/Greater/GreaterEqual to `Op` as primitive variants. Bit-exact equality on floats; non-differentiable backward returns `Result::Err`, **not** `panic!` (the ArgMaxDim panic precedent is a standing never-panic violation to fix, not a pattern to copy — see the [`BackwardKind` NEVER-PANIC NOTE](#registry-types--split-across-two-crates-joined-by-fusedopid) and [10-decisions-log §2026-06-20](architecture/10-decisions-log.md) (G2)). Lands in this phase because primitive-set completion belongs with this architectural cleanup.
 
 ### Step 11: update memory + ROADMAP
 
@@ -464,9 +498,9 @@ Today autograd has an inline match-on-Op (`Tensor::backward`'s ~600-line match).
 - For `Op::Fused(id, _)`: look up `registry.entry(id).backward`; dispatch per `BackwardKind`:
   - `Fused(backward_id)`: emit an `Op::Fused(backward_id, ...)` node.
   - `Decompose`: invoke `entry.decompose(...)` to expand the primitives, then run autograd over the primitive subgraph (graph-rewrite-as-backward).
-  - `NotDifferentiable`: panic with a clear message (matches today's QMatMul / ArgMaxDim treatment).
+  - `NotDifferentiable`: return `Result::Err` with a clear message — **not** `panic!`. (Today's QMatMul / ArgMaxDim treatment panics; per the [NEVER-PANIC NOTE](#registry-types--split-across-two-crates-joined-by-fusedopid) on `BackwardKind` above and [10-decisions-log §2026-06-20](architecture/10-decisions-log.md) (G2, never-panic), that precedent is a standing violation to fix, not a pattern to copy.)
 
-The 3 already-migrated `GradientRule` impls (Add, Mul, Relu — primitives) are unaffected. The 4 fused-backward-helper ops (SoftmaxLastDimBackward, LayerNormLastDimBackward, RmsNormLastDimBackward, ReduceMaxToBackward) become registry entries with `BackwardKind::NotDifferentiable` (matching today's higher-order-gradient panic).
+The 3 already-migrated `GradientRule` impls (Add, Mul, Relu — primitives) are unaffected. The 4 fused-backward-helper ops (SoftmaxLastDimBackward, LayerNormLastDimBackward, RmsNormLastDimBackward, ReduceMaxToBackward) become registry entries with `BackwardKind::NotDifferentiable` (today's higher-order-gradient path panics; under the never-panic contract it returns `Result::Err` instead — see the `BackwardKind` note above).
 
 ### Per-decision-point alternatives integration
 
@@ -527,7 +561,9 @@ The macro spans both crates (it consumes registry-side metadata + binding-table-
 
 ### Q5: How do CUDA-only (or backend-specific) fused ops work?
 
-A fused op may have only one backend with a kernel for it. Architecturally fine: the registry entry has one `BackendImpl` populated; other backends fall back to the entry's `decompose` function (executing the primitive subgraph on a backend that doesn't have the fused kernel). Cost reflects this: the optimizer compares fused-on-CUDA vs decomposed-on-Vulkan honestly.
+A fused op may have only one backend with a kernel for it. Architecturally fine: the registry entry has one `BackendImpl` populated; other backends fall back to the entry's `decompose` function (executing the primitive subgraph on a backend that doesn't have the fused kernel). Cost reflects this: the optimizer compares fused-on-CUDA vs decomposed-on-Vulkan honestly. (This relies on `decompose` being total per the [recipe principle](#the-recipe-principle-decompose--pattern-are-both-mandatory) — a backend without the fused kernel can *always* fall back because every fused op lowers to the base map.)
+
+**This is exactly the closed-world missing-fusion scenario (G5 / G7).** When a recognized fusion-eligible chain is realized as N primitives on a backend that lacks the kernel, that is a closed-world **`FusionMissRecord`** (reason `NoBackendKernel`, against a **known** `FusedOpId`) — the v1 **headline** missing-fusion signal (canonical: [08-pattern-harvest](architecture/08-pattern-harvest.md) + `docs/session-prompts/baracuda-telemetry-plan.md` §9). Its consumer already exists and is Tier 1: append a `BindingEntry` (`extend_global_bindings`) once a kernel for that identity is available, or — in the **closed-loop adaptive optimizer** ([10-decisions-log §2026-06-20](architecture/10-decisions-log.md), G7) — have Fuel (the strategist) hand the partial base map for that region to a backend synthesizer (Baracuda) to JIT a kernel during idle time, cost-gating adoption. Note the boundary: this Q5 case is **closed-world** (a *known* `FusedOpId` lacking a kernel). The **open-world** case (a frequent realized chain matching *no* known identity, discovered by observation not enumeration) is the deferred `SequenceRecord{fused_as: None}` signal whose consumer is Tier-2 runtime declarative registration (G4) — see the 2026-06-20 reconciliation banner above.
 
 The registry doesn't need a "scope" concept (private vs shared FusedOpIds) until 50+ backend-specific fusions exist. Defer.
 
@@ -538,7 +574,7 @@ The registry doesn't need a "scope" concept (private vs shared FusedOpIds) until
 - **Cost-based scheduler implementation.** This refactor produces the substrate; the scheduler is downstream.
 - **Multi-level dialect IR (MLIR-style).** Two layers — primitive Op variants + fused-op registry behind `Op::Fused` — is enough.
 - **Pattern-match autotuning / e-graph equality saturation.** Anchored structural matching (PR 3 + declarative patterns) is sufficient. e-graphs as offline rule-discovery tool is future work.
-- **User-extensible fused ops at runtime.** Registry frozen at startup; hot-add isn't a goal.
+- **Untrusted user-extensible fused ops at runtime.** Arbitrary user code in the optimizer is out (the [09-non-goals](architecture/09-non-goals.md) rejection holds for *untrusted* extension). *Re-scoped 2026-06-20 ([10-decisions-log §2026-06-20](architecture/10-decisions-log.md), G4): "registry frozen at startup; hot-add isn't a goal" is no longer the whole story. Trusted, Fuel-orchestrated, cost-gated hot-add of a new fused-op **identity** via the **declarative** pattern+recipe form (append-only, stable never-reused `FusedOpId`s) **is** now a goal (Tier 2). The freeze stays only for the primitive `Op` enum (G3) and for untrusted user ops/rules.*
 - **Bool dtype.** Comparison-op output is float (1.0/0.0) per the comparison-family decision in step 10. Bool dtype is independent and orthogonal.
 
 ---
@@ -575,5 +611,5 @@ End-state criteria for the full Phase 7.6 (steps 1-11). Steps 1-3 met the subset
 
 - **Architecture v1.0**: [`docs/architecture/`](architecture/00-index.md). Sections 03 (IR), 04 (optimization), 05 (backend contract), 11 (persistence) are the most relevant.
 - **PR 3 rule registry**: `fuel-graph/src/opt.rs` (`Rule`, `RuleFamily`, `RuleRegistry`) — substrate this refactor builds on.
-- **Architecture audit**: `docs/architecture-audit.md` — the cross-thread audit that triggered architecture v1.0 drafting; surfaced Q-A (binding-table layer) which v1.0 resolved as planning-time pre-resolution.
+- **Architecture audit** (the cross-thread audit that triggered architecture v1.0 drafting; surfaced Q-A — binding-table layer — which v1.0 resolved as planning-time pre-resolution): the doc has been removed as superseded; its resolutions live in the [decisions log](architecture/10-decisions-log.md) (2026-05-09 entry) and the sections.
 - **Stablehlo op set**: `https://github.com/openxla/stablehlo` — reference for primitive-op-set sizing.

@@ -9,6 +9,17 @@
 > [`load-time-incremental-planner.md`](load-time-incremental-planner.md) (the planner-as-producer
 > / Arc-keyed PlanStore / coverage-wait staging post) while **carrying forward that prompt's
 > landed numeric substrate** (Stages 1–3) and memory-planning addendum unchanged.
+>
+> **Reconciled 2026-06-20** (adaptive-fusion decision,
+> [`../architecture/10-decisions-log.md`](../architecture/10-decisions-log.md) §2026-06-20): three ties
+> into this spine. **(G4)** the dispatch spine is **two-tier runtime-extensible** — the kernel binding
+> table (`extend_global_bindings`) is Tier 1 (already append-only / `bump_topology_generation`), and the
+> declarative-pattern engine this program builds in Phase B is the **Tier 2 prerequisite** for
+> trusted, Fuel-orchestrated runtime fused-op registration (see Phase B [5] and Open questions). **(G4c)**
+> wire that declarative engine so a recipe can be registered *at runtime*, not only compiled in. **(G5)**
+> the base-emission seams this program owns (`structure_key` / `DispatchRecord` in the dispatch spine) are
+> where **missing-fusion telemetry** lands — build the closed-world `FusionMissRecord` hook here (see
+> Phase C and Open questions).
 
 ---
 
@@ -200,6 +211,17 @@ but D-[10] waits on D-[8]/[9], and E is last.
   driver, extended to multi-alternative tracking + a declarative-pattern engine. *04-optimization
   §"The two-stage transformation", §"Relationship to PR 3"; decision #7.* *Today:* no
   `optimize_graph` symbol exists; `compile_plan` is per-node, single-pass, first-match-wins.
+  **The declarative-pattern engine is the Tier-2 prerequisite (G4c).** Per the 2026-06-20
+  adaptive-fusion decision ([`../architecture/10-decisions-log.md`](../architecture/10-decisions-log.md)
+  G4), the stubbed declarative engine (`PatternKind::Declarative => false` at
+  `fuel-graph/src/opt.rs:434`) is not just a Phase-7.6 convenience — it is the **mechanism for
+  trusted, Fuel-orchestrated, cost-gated runtime registration of new fused-op identities (Tier 2)**:
+  a runtime fusion can *only* be declarative (pattern + recipe + shape/dtype/cost carried as **data**,
+  run by generic interpreter fns — you cannot ship Rust `fn` pointers or add `Op`-enum variants at
+  runtime), via one generic `FusedOpParams::Declarative(Arc<Recipe>)` variant + generic interpreters
+  + the append-only fused-op metadata registry (stable, never-reused `FusedOpId`s). Building the
+  declarative engine here therefore unblocks the JIT-fusion loop downstream; design the engine so a
+  declarative recipe can be registered at runtime, not only compiled in.
 - **[11] Required compaction of the append-only arena.** A pass that drops unreachable nodes (the
   orphan debris pathfinders leave), keeping only the base map + surviving multi-path graph.
   **Required** before finalize-to-disk; optionally between optimization rounds to bound the
@@ -231,6 +253,19 @@ but D-[10] waits on D-[8]/[9], and E is last.
   a meaningful telemetry delta; bounded lookahead K=3 for adversarial coupling. *06-runtime
   §"Route picker"; decision #9.* *Today:* `ChainedSelector` fires per kernel-bearing node over a
   top-N set; no per-tier-free-memory axis, no run boundary to decide at.
+- **[G5] Missing-fusion telemetry seam (closed-world `FusionMissRecord`).** Per the 2026-06-20
+  adaptive-fusion decision ([`../architecture/10-decisions-log.md`](../architecture/10-decisions-log.md)
+  G5 + [08-pattern-harvest](../architecture/08-pattern-harvest.md) + `baracuda-telemetry-plan.md` §9),
+  Fuel today sees fusions it *performed*, not ones it *wanted-but-lacked* ("no rule fired" is identical
+  across every primitive node, `opt.rs:256-273`). The dispatch spine this program owns is exactly where
+  the signal originates: it needs a **new graph-layer hook** plus the **base-emission seam** (`structure_key`
+  is a 13-line stub; no `DispatchRecord` is emitted yet). Build the **closed-world `FusionMissRecord`
+  FIRST** — a recognized fusion-eligible chain realized as N primitives because the kernel was absent
+  (reason `NoBackendKernel`, against **known** `FusedOpId`s); its consumer already exists (append a
+  `BindingEntry` via Tier 1). **Defer** the open-world `SequenceRecord{fused_as: None}` (a frequent realized
+  chain matching *no* known identity, by observation not enumeration) — its consumer is Tier-2 declarative
+  registration. Never enumerate the subgraph space; never seek a whole-model fusion. Land the seam when
+  the run-lowering / base-emission code (Phase A [2] run extraction, Phase C [6] run dispatch) is touched.
 
 ### Phase D — Move the build earlier + add sessions *(the largest single Today→Intended shift)*
 
@@ -328,11 +363,34 @@ the in-place transform that should be centralized into `optimize_graph` ([1]/[5]
 
 ## Open questions / caveats
 
+- **Two-tier runtime extensibility (G4) — keep both tiers in view while rewriting the spine.** Per
+  the 2026-06-20 adaptive-fusion decision
+  ([`../architecture/10-decisions-log.md`](../architecture/10-decisions-log.md) G4 +
+  [09-non-goals](../architecture/09-non-goals.md) + [04-optimization §What this rules out](../architecture/04-optimization.md)),
+  the dispatch spine has two runtime-extensible tiers and one frozen line. **Tier 1** — the kernel
+  binding table — is **already** runtime-extensible (`extend_global_bindings` at
+  `fuel-dispatch/src/dispatch.rs:5098`: write-lock, append-only multi-sibling, `finalize()`,
+  `bump_topology_generation()` to invalidate cached routes); JIT-ing a kernel for an *existing* op
+  identity lands here. **Tier 2** (new goal) — trusted, Fuel-orchestrated, cost-gated runtime
+  registration of a *new fused-op identity* — rides the **declarative-pattern engine** Phase B [5]
+  builds (the only runtime-registrable form: pattern + recipe + cost as data). **Frozen (stays):**
+  the primitive `Op` enum and *untrusted* user-installable rules/ops. When this rebuild touches
+  `compile_plan` / the binding table / the fused-op registry, preserve Tier-1's append-only +
+  `bump_topology_generation` discipline and don't bake in "registry frozen after startup" assumptions
+  that would block Tier 2 — re-scope per G4, don't re-freeze.
+- **Missing-fusion telemetry seam (G5) — owned here.** The base-emission seam (`structure_key` stub;
+  no `DispatchRecord` yet) and the new graph-layer "fusion-eligible chain realized as N primitives"
+  hook live in this spine (Phase C [G5]). Build the **closed-world `FusionMissRecord` first**
+  (consumer = Tier-1 `BindingEntry` append); **defer** the open-world `SequenceRecord{fused_as: None}`
+  (consumer = Tier-2 declarative registration). Canonical sequencing:
+  [08-pattern-harvest](../architecture/08-pattern-harvest.md) + `baracuda-telemetry-plan.md` §9.
 - **Fused-op kernel-side registry placement** (`BackendImpl` payloads / `FusedKernelRegistry`):
   `fuel-memory` vs `fuel-dispatch` is an explicit **open** question
   ([`../architecture/02-layers.md`](../architecture/02-layers.md)); moving it to `fuel-dispatch`
   is acceptable if it fits better. Phase B's `optimize_graph` selects over this surface — settle
-  the placement when you touch it.
+  the placement when you touch it. Note (G4): the **metadata** registry (`OnceLock<FusedOpRegistry>`)
+  becomes runtime-updatable for Tier 2 (append-only, stable never-reused `FusedOpId`s) — keep that
+  property reachable wherever the kernel-side payloads land.
 - **The autoregressive barrier** ([`data-dependent-shapes-design.md`](data-dependent-shapes-design.md)):
   "one DAG built once at load" cannot cover everything — each decode token depends on the previous
   token's *sampled* output (a genuine host decision). The input-independent decode-step graph

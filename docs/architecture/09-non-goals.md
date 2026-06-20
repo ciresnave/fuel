@@ -1,6 +1,6 @@
 # Non-goals
 
-**Status**: v0.2 (2026-06-14). Reconciled to the "plan is the graph" redirection ([10-decisions-log](10-decisions-log.md)): the e-graph non-goal is narrowed to the per-realize hot path (offline `optimize_graph` path-search is in-bounds), and the bundled-cache non-goal is distinguished from the in-bounds bundled Judge baseline.
+**Status**: v0.3 (2026-06-20). Reconciled to the 2026-06-20 adaptive-runtime-fusion decision ([10-decisions-log](10-decisions-log.md)): two blanket-freeze non-goals ("Not framework-agnostic dispatch", "Not user-installable optimization rules at runtime") are re-scoped — the rejection of *untrusted-user* hot-loaded ops/rules and of new *primitives* at runtime **stands**, but **trusted, Fuel-orchestrated, cost-gated runtime registration of new fused-op identities** (Tier 2) is now an architectural goal, and the kernel binding table is already runtime-extensible (Tier 1). v0.2 (2026-06-14) reconciled to the "plan is the graph" redirection: the e-graph non-goal is narrowed to the per-realize hot path (offline `optimize_graph` path-search is in-bounds), and the bundled-cache non-goal is distinguished from the in-bounds bundled Judge baseline.
 
 What fuel deliberately doesn't try to be. Each rejection is a real architectural decision — not a "we didn't get to it yet" but a "we examined this direction and chose against it because of how it would change fuel's center of gravity."
 
@@ -36,13 +36,12 @@ The architecture commits to the FusedOpRegistry being the single source of truth
 
 Fuel doesn't try to be a generic DAG executor that works with arbitrary user-defined ops at runtime. Specifically:
 
-- The `Op` enum is closed (primitive variants are exhaustively defined; the `Op::Fused` arm delegates to a registry frozen at startup).
-- The fused-op registry is populated at backend init and immutable thereafter.
-- New op kinds require recompiling fuel.
+- The **primitive `Op` enum is build-time-closed** — primitive variants are exhaustively defined in a compile-time Rust enum, and there is **no generic opaque / `Custom` node**. New *primitives* require recompiling fuel. (This is the hard, language-level line; per the 2026-06-20 decision G3, an externally-supplied op cannot become a new primitive at runtime — it must decompose into the existing basis, or prompt a build-time `Op`-enum extension.)
+- **Untrusted, arbitrary user-defined ops are not hot-loadable at runtime** (TVM-style / ONNX-runtime-style "register any op the user hands us"). This is what fuel gives up; the benefit it gets is a closed, analyzable, statically-checked *primitive* vocabulary the optimizer reasons about exhaustively.
 
-The benefit fuel gives up: hot-loading new ops at runtime (TVM-style, ONNX-runtime-style). The benefit fuel gets: a closed, analyzable, statically-checked op vocabulary the optimizer can reason about exhaustively.
+What this non-goal does **not** rule out (reconciled 2026-06-20, [10-decisions-log](10-decisions-log.md)): **trusted, Fuel-orchestrated, cost-gated registration of new *fused-op* identities at runtime** (Tier 2). A fused op is a *composition of existing primitives* (a recipe — `decompose` + `pattern`, per [§Recipe principle in 04-optimization](04-optimization.md)), not a new primitive; registering one as a declarative entry, on Fuel's own schedule, under cost-gated adoption, adds no untrusted code and no new primitive. The **kernel binding table** (implementations) is already runtime-extensible this way (`extend_global_bindings`); the **fused-op metadata registry** becomes runtime-updatable via the declarative form (append-only, stable ids). See "Not user-installable optimization rules at runtime" below for the trusted/untrusted boundary.
 
-If a downstream consumer needs runtime-extensible ops, fuel may not be the right framework. The architecture optimizes for the ML-deployment use case, not the ML-research-experimentation use case.
+If a downstream consumer needs *untrusted* runtime-extensible ops, fuel may not be the right framework. The architecture optimizes for the ML-deployment use case, not the ML-research-experimentation use case.
 
 ## Not multi-dialect IR (MLIR-style)
 
@@ -88,15 +87,17 @@ Fuel's optimizer is heuristic + cost-driven, not search-driven. The empirical Ju
 
 If a use case really needs full autotuning, fuel's persistence layer (per [11-persistence](11-persistence.md)) provides the substrate for it: an external tuner could populate the cache with extreme-effort plans. But it's not in fuel's box.
 
-## Not user-installable optimization rules at runtime
+## Not *untrusted* user-installable optimization rules at runtime
 
-The OptimizationMap is populated at startup, frozen thereafter. Runtime rule extension would let users hot-load optimizations but introduces:
+**Untrusted** user-installable rules are out. Letting an end user hot-load arbitrary optimization code introduces:
 
 - Security surface (untrusted code in the optimizer).
 - Stability surface (a rule that misbehaves can corrupt the optimization output).
 - Debugging surface (every optimization failure now requires "did a user-rule cause this?").
 
-Users who want custom optimizations contribute them via the open-source rule library, with code review and community testing. The architecture supports custom rules at compile time; not at runtime.
+Users who want custom optimizations contribute them via the open-source rule library, with code review and community testing. The architecture supports user custom rules at compile time; not as untrusted runtime injection.
+
+**The boundary that this non-goal draws is trust + provenance, not "runtime" per se** (reconciled 2026-06-20, [10-decisions-log](10-decisions-log.md)). Each of the three surfaces above is an *untrusted-user* concern. They do **not** apply to **Fuel-orchestrated, trusted, cost-gated runtime fusion registration** (Tier 2 of the [adaptive-fusion decision](10-decisions-log.md)): there, *Fuel* decides which sub-base-map region to fuse (the strategy stays in the optimizer), a *trusted* backend (e.g. Baracuda) synthesizes a kernel for that region, the result arrives as a **declarative recipe** (`decompose` + `pattern` over existing primitives, plus an FKC `PrecisionGuarantee`), and the route picker **cost-gates adoption** — a kernel that doesn't win is never used. No untrusted code enters the optimizer; no new primitive is introduced; the registration is append-only with stable ids. So the rejection is specifically of *untrusted user-injected* rules; the trusted, Fuel-driven JIT-fusion loop is an architectural goal, not a violation of this non-goal.
 
 ## Not global-optimization-passes-that-aren't-rule-based
 

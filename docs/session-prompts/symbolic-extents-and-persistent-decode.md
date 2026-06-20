@@ -2,7 +2,10 @@
 
 **Status**: design, agreed 2026-06-16 (converged through architect discussion). This is the
 concrete mechanism for runtime-dependent dimension extents and the path to the persistent
-decode graph. It **refines the Phase D section** of
+decode graph. **Reconciled 2026-06-20** (light): §2 now names the `matmul → mask → softmax →
+matmul` chain as FlashAttn's `decompose` and the fusion pathfinder as its `pattern` (the two
+mandatory recipe halves), and flags the current panicking `flash_attn` `decompose` as a G2 bug
+to fix ([10-decisions-log](../architecture/10-decisions-log.md)). It **refines the Phase D section** of
 [`plan-is-graph-rebuild.md`](plan-is-graph-rebuild.md) (`[8]` load-time build, `[9]` sessions,
 `[10]` persistent decode) and is the concrete realization of
 [`data-dependent-shapes-design.md`](data-dependent-shapes-design.md) for the *input-determined*
@@ -141,6 +144,16 @@ This maps onto fuel's existing **base-map ↔ optimized-graph** split (03-ir):
   symbol as its `k_len`. The ranker/route-picker prefers the flash arm where a flash kernel exists
   (CUDA) and falls back to the decomposed arm elsewhere (CPU/Vulkan until they have a fused
   kernel). **Fusion is a speed lowering, never a correctness prerequisite.**
+
+  The `matmul → mask → softmax → matmul` chain here is precisely `Op::FlashAttn`'s **`decompose`**
+  (the break-down half of its recipe), and the pathfinder above is its **`pattern`** (the build-up
+  half) — the two mandatory inverse halves of one recipe (2026-06-20 decision G1/G2,
+  [10-decisions-log](../architecture/10-decisions-log.md)). For that to hold, `FlashAttn`'s
+  `decompose` must actually *return* this subgraph: the current `flash_attn` `decompose` **panics**,
+  which G2 marks as a bug (a fused op with no `decompose` is an opaque island — invisible to the
+  base map, so the very base-map arm this design relies on would not exist). Authoring FlashAttn's
+  `decompose` to emit `matmul → mask → softmax → matmul` is therefore a prerequisite of the
+  fused arm being a *speed* lowering over a correct, total base map — not a separate cleanup task.
 
 Consequences: cross-backend is never a blocker (decomposed base map runs everywhere; flash is
 additive per backend); the flash arm is validated *against* the base map (the Judge), so we never

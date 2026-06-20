@@ -1,6 +1,12 @@
 # Fuel Kernel Contract Format (FKC) — how a kernel provider advertises to Fuel
 
-**Status:** DRAFT v0.1 (2026-06-17). Design pass — no code yet.
+**Status:** DRAFT v0.1 (2026-06-17; reconciled 2026-06-20). Design pass — no code yet. **Reconciled
+2026-06-20** to the adaptive-runtime-fusion decision
+([10-decisions-log](../../architecture/10-decisions-log.md), G1/G4): the §1 / §9.4 "frozen registry"
+non-goals are re-scoped (Tier-2 trusted, Fuel-orchestrated, cost-gated runtime fused-op registration
+is now a goal; the kernel binding table is already Tier-1 runtime-extensible) and a `fused_op` contract
+must carry its recipe (`decompose` + `pattern`) or it is an opaque island. (The published spec carries
+the full set of touches; this draft mirrors the two freeze re-scopes + the recipe requirement.)
 **Scope:** a versioned, **markdown + structured-block hybrid** file format in which a kernel
 provider declares, *per kernel*, everything Fuel's optimizer needs to choose, cost, admit, and
 dispatch that kernel: dispatch key, accept-contract (dtypes / layouts / shape / DLPack-extension
@@ -107,8 +113,15 @@ reviewable, diff-able, doc-publishable, and machine-importable**, so that:
   map; 13-interchange).
 - Not a place to encode within-kernel concurrency (the backend's business — the principled
   exception to "backends don't decide") or device placement (the planner's).
-- Not a runtime-extensible registry: the registry is built at process startup and frozen
-  (architecture v1.0). FKC is read at import/registration time.
+- Not an *untrusted* runtime-extensible registry: arbitrary user-hot-loaded ops/rules and new
+  *primitives* stay out (the build-time-closed `Op` enum; [09-non-goals](../../architecture/09-non-goals.md)).
+  But the blanket "built at startup and frozen thereafter" claim is **re-scoped** by the 2026-06-20
+  adaptive-fusion decision ([10-decisions-log](../../architecture/10-decisions-log.md), G4): the
+  **kernel binding table** (implementations) is **already runtime-extensible** (`extend_global_bindings`,
+  Tier 1), and **trusted, Fuel-orchestrated, cost-gated runtime registration of a new *fused-op
+  identity*** (Tier 2, via the declarative recipe form — append-only, stable `FusedOpId`s) is now an
+  architectural goal. FKC is read at import/registration time, but registration time is no longer only
+  "process startup."
 
 ---
 
@@ -875,9 +888,14 @@ registration code**. A new backend (ROCm, TPU) ships an `.fkc.md` bundle and is 
 
 A workspace lists its contract sources in a manifest (e.g. a `[fkc]` table in a crate's metadata,
 or a `contracts.toml`): each entry is `{ provider, path-or-glob }`. The Fuel build/startup reads
-the manifest, imports every source, and freezes the registry (architecture v1.0: no runtime
-extensibility). Providers in sibling crates (Baracuda, vulkane) expose their `link_registry`
-symbol; the manifest binds the contract files to it.
+the manifest and imports every source. **This is the bulk, up-front registration path, but it is no
+longer the *only* one** (re-scoped 2026-06-20, [10-decisions-log](../../architecture/10-decisions-log.md),
+G4): the kernel binding table is append-only and **runtime-extensible** (`extend_global_bindings`,
+Tier 1), and a new **fused-op identity** may be registered at runtime through the trusted,
+Fuel-orchestrated, cost-gated declarative path (Tier 2, append-only with stable `FusedOpId`s). What
+stays frozen is the **primitive `Op` enum** and any *untrusted* user-injected ops/rules
+([09-non-goals](../../architecture/09-non-goals.md)). Providers in sibling crates (Baracuda, vulkane)
+expose their `link_registry` symbol; the manifest binds the contract files to it.
 
 ---
 
@@ -999,6 +1017,15 @@ the exact as-built signature, including the sibling-alternative append semantics
 them). For a `fused_op` contract: `FusedKernelRegistry::register(fused_id, backend, BackendImpl {
 kernel, dtypes: &'static [DType], cost, precision, caps, revision })`, joined to the graph-side
 `FusedOp { shape_rule, dtype_rule, output_views, … }` by `FusedOpId`.
+
+**A `fused_op` contract MUST carry its recipe** (the G1 recipe principle,
+[10-decisions-log](../../architecture/10-decisions-log.md)): the graph-side `FusedOp` half is required
+to supply **both** a `decompose` (fused → primitive subgraph; lowers onto the base map) and a `pattern`
+(recognize that subgraph; re-fuse) — see the [FKC fusion-patterns spec](../fkc-fusion-patterns.md).
+**Both are mandatory.** A fused op with no recipe is an **opaque island**: invisible to the
+missing-fusion telemetry, un-re-fusable, and un-lowerable by the optimizer (optimization *is*
+lower-to-base-map + find-best-cover). `decompose` is **total + never-`panic!`s + primitive→self**, and
+the recipe **always ships with the op**, never deferred.
 
 ### 12.6 `entry_point` → `KernelRef` (the no-pointer indirection)
 

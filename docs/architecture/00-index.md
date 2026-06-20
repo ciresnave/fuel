@@ -1,6 +1,6 @@
 # Fuel architecture: index
 
-**Status**: v1.0 (2026-05-09). The architecture set is the durable description of what fuel is and how it's structured. Code, ROADMAP, and per-phase design documents anchor to this set. When this set and any phase document conflict, this set is authoritative; the phase document is updated to match.
+**Status**: v1.1 (2026-06-20). The architecture set is the durable description of what fuel is and how it's structured. Code, ROADMAP, and per-phase design documents anchor to this set. When this set and any phase document conflict, this set is authoritative; the phase document is updated to match. v1.1 (minor) refreshes the section summaries for the 2026-06-20 adaptive-runtime-fusion decision (recipe principle, two-tier runtime extensibility, missing-fusion telemetry, the Fuel-strategist / backend-synthesizer JIT loop); see [10-decisions-log](10-decisions-log.md).
 
 **Audience**: future-you, future-me, contributors (human or model) trying to understand "what is fuel trying to be?" Not new users. Not API reference. Not tutorials.
 
@@ -14,18 +14,18 @@
 | --- | --- | --- |
 | 01 | [identity](01-identity.md) | What fuel is, what it isn't, what makes it competitive |
 | 02 | [layers](02-layers.md) | Crate boundaries, layer model, dependency direction |
-| 03 | [ir](03-ir.md) | DAG, base map, primitive Op enum, fused-op registry, layouts |
-| 04 | [optimization](04-optimization.md) | DecompositionMap, OptimizationMap, per-decision-point alternatives, sliding window |
-| 05 | [backend-contract](05-backend-contract.md) | What backends provide (kernels, capabilities, telemetry, slot capacity); what they don't decide |
+| 03 | [ir](03-ir.md) | DAG, base map (the total-`decompose` fixpoint), build-time-closed primitive Op enum, fused-op registry + the mandatory recipe (decompose + pattern), layouts |
+| 04 | [optimization](04-optimization.md) | DecompositionMap, OptimizationMap (Tier-2 runtime-updatable via the declarative form), the recipe principle, per-decision-point alternatives, sliding window |
+| 05 | [backend-contract](05-backend-contract.md) | What backends provide (kernels, capabilities, telemetry, slot capacity) including JIT-on-request synthesis of a Fuel-chosen region; what they don't decide |
 | 06 | [runtime](06-runtime.md) | Route picker, dispatch lookahead, data parallelism, telemetry-driven decisions |
 | 07 | [tolerance](07-tolerance.md) | Per-op error budgets, hierarchical specification, approximate optimizations, calibration |
-| 08 | [pattern-harvest](08-pattern-harvest.md) | Opt-in telemetry to guide fused-op development |
-| 09 | [non-goals](09-non-goals.md) | What fuel deliberately doesn't try to be |
+| 08 | [pattern-harvest](08-pattern-harvest.md) | Opt-in telemetry to guide fused-op development; missing-fusion telemetry (closed-world `FusionMissRecord` first, open-world co-occurrence deferred) feeding the adaptive-fusion loop |
+| 09 | [non-goals](09-non-goals.md) | What fuel deliberately doesn't try to be; the trusted/untrusted + two-tier runtime-extensibility reconciliation (build-time-closed primitives + untrusted rules stay out; trusted Fuel-orchestrated fused-op registration is in-bounds) |
 | 10 | [decisions-log](10-decisions-log.md) | Material architectural changes over time |
 | 11 | [persistence](11-persistence.md) | Optimization-cache and tolerance-recipe sibling artifacts; format, invalidation, mmap |
 | 12 | [multi-output](12-multi-output.md) | Option-C bundled storage + `Op::View`/`Op::ViewOwned`/`Op::ScatterIntoSlot`; multi-output authoring contract |
 | 13 | [interchange](13-interchange.md) | Model import/export; weight⊥graph axes; base map as hub; per-format binding seam; native format reuses base-map serialization; scaffolder |
-| 14 | [lifecycle](14-lifecycle.md) | End-to-end flow (load → graph → plan → realize → inference/training) + the canonical glossary; the orientation/spine doc — start here |
+| 14 | [lifecycle](14-lifecycle.md) | End-to-end flow (load → graph → plan → realize → inference/training) + the canonical glossary; the closed-loop adaptive optimizer (Fuel-strategist / backend-synthesizer JIT loop, explore/exploit); the orientation/spine doc — start here |
 
 ---
 
@@ -118,7 +118,7 @@ The decisions log (10) records every MAJOR bump with one paragraph of context (w
 
 ## How phase docs relate to this set
 
-This set defines the steady-state architecture. Phase documents (currently in `docs/`: `storage-unification.md`, `fused-op-registry.md`, `architecture-audit.md`) describe in-flight work that moves the codebase toward this steady state.
+This set defines the steady-state architecture. Phase documents (currently in `docs/`: `storage-unification.md`, `fused-op-registry.md`) describe in-flight work that moves the codebase toward this steady state.
 
 The relationship is:
 

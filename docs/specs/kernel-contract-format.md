@@ -1,8 +1,15 @@
 # Fuel Kernel Contract Format (FKC) — how a kernel provider advertises to Fuel
 
-**Status:** DRAFT FOR REVIEW (2026-06-17), on branch `feat/kernel-contracts-dlpack`. Design pass —
-no code yet. This is the final-after-critique revision of the `_drafts/` v0.1; the "Resolved
-critique" note below records what changed and why.
+**Status:** DRAFT FOR REVIEW (2026-06-17; reconciled 2026-06-20), on branch
+`feat/kernel-contracts-dlpack`. Design pass — no code yet. This is the final-after-critique revision
+of the `_drafts/` v0.1; the "Resolved critique" note below records what changed and why. **Reconciled
+2026-06-20** to the adaptive-runtime-fusion decision ([10-decisions-log](../architecture/10-decisions-log.md),
+G1/G4/G5): the §1 / §9.4 "not a runtime-extensible registry / freezes the registry" claims are
+re-scoped (Tier-2 trusted, Fuel-orchestrated, cost-gated runtime fused-op registration is now a goal;
+the kernel binding table is already Tier-1 runtime-extensible); a `fused_op` contract is required to
+carry its **recipe** (`decompose` + `pattern`) or it is an opaque island; and §4.11/§4.12's structural
+miss is distinguished from the closed-world `FusionMissRecord` (the v1 telemetry headline) — see the
+dated 2026-06-20 note at the end.
 **Scope:** a versioned, **markdown + structured-block hybrid** file format in which a kernel
 provider declares, *per kernel*, everything Fuel's optimizer needs to choose, cost, admit, and
 dispatch that kernel: dispatch key, accept-contract (dtypes / layouts / shape / DLPack-extension
@@ -197,8 +204,15 @@ reviewable, diff-able, doc-publishable, and machine-importable**, so that:
   map; 13-interchange).
 - Not a place to encode within-kernel concurrency (the backend's business — the principled
   exception to "backends don't decide") or device placement (the planner's).
-- Not a runtime-extensible registry: the registry is built at process startup and frozen
-  (architecture v1.0). FKC is read at import/registration time.
+- Not an *untrusted* runtime-extensible registry: arbitrary user-hot-loaded ops/rules and new
+  *primitives* stay out (the build-time-closed `Op` enum; [09-non-goals](../architecture/09-non-goals.md)).
+  But the blanket "built at startup and frozen thereafter" claim is **re-scoped** by the 2026-06-20
+  adaptive-fusion decision ([10-decisions-log](../architecture/10-decisions-log.md), G4): the **kernel
+  binding table** (implementations) is **already runtime-extensible** (`extend_global_bindings`,
+  Tier 1), and **trusted, Fuel-orchestrated, cost-gated runtime registration of a new *fused-op
+  identity*** (Tier 2, via the declarative recipe form — append-only, stable `FusedOpId`s) is now an
+  architectural goal. FKC is read at import/registration time, but registration time is no longer
+  only "process startup."
 
 ---
 
@@ -996,6 +1010,13 @@ either marker. (A genuinely free metadata-only op declares `class: free` with ze
 > only coupling, and it is stated in terms of "the Judge refines cost," never a particular
 > algorithm. Precision is governed the same way: author-declared and Judge-audited (§4.8).
 
+This `declared` → `judge_measured` provenance is the correct substrate for the adaptive optimizer's
+ground-truth fitness signal (G7, [10-decisions-log](../architecture/10-decisions-log.md)): a JIT-
+synthesized kernel arrives with a `declared` cost prior, and its empirical *winning* — entering an
+optimized plan under cost-gated selection, the route picker's adopt/reject call — is exactly the
+measured posterior the Judge records by flipping the binding to `judge_measured`. FKC supplies the
+honest cost surface; Fuel-the-strategist makes the adoption decision.
+
 The cost block yields the per-node contribution to the optimizer's **cost vector** (digest §5):
 
 - **time axis:** `flops`, `bytes_moved`, `overhead_ns` — these three map onto today's
@@ -1264,6 +1285,18 @@ Consequence for the planner (this is the whole point):
   tightest admissible contract is the generic one. No separate miss-detection mechanism is needed;
   the miss is observable as "best admissible match = generic contract" and is exactly the
   `MissRecord.wanted` demand signal a future telemetry feed (§4.11) would emit.
+
+> **The structural miss above is distinct from the missing-*fusion* miss (G5,
+> [10-decisions-log](../architecture/10-decisions-log.md)).** §4.11/§4.12 cover only the *structural
+> specialization* miss — a *specialized* cell unregistered, best match a generic contract at the same
+> op identity. The 2026-06-20 decision pins a separate sequencing for *fusion* misses: the **v1
+> headline is the closed-world `FusionMissRecord`** — a recognized fusion-eligible chain realized as
+> N primitives because the fused kernel was absent (reason `NoBackendKernel`, against a **known**
+> `FusedOpId`); its consumer (append a `BindingEntry`, Tier 1) already exists, so it is built **first**.
+> The **open-world** co-occurrence signal — a frequent realized op chain matching **no** known fused-op
+> identity (`SequenceRecord{fused_as: None}`, by *observation*, not subgraph *enumeration*) — is
+> **deferred**, because its consumer is the Tier-2 runtime declarative registration (§9.4). Fuel never
+> enumerates the subgraph space. Canonical: `docs/session-prompts/baracuda-telemetry-plan.md` §9.
 
 **[consumer-ahead].** The alignment with Baracuda's `StructureKey` / `OperandKey` is recorded so
 the FKC predicate vocabulary and Baracuda's key stay byte-compatible in spirit — but the canonical
@@ -1674,9 +1707,15 @@ registration code**. A new backend (ROCm, TPU) ships an `.fkc.md` bundle and is 
 
 A workspace lists its contract sources in a manifest (e.g. a `[fkc]` table in a crate's metadata,
 or a `contracts.toml`): each entry is `{ provider, path-or-glob }`. The Fuel build/startup reads
-the manifest, imports every source, and freezes the registry (architecture v1.0: no runtime
-extensibility). Providers in sibling crates (Baracuda, vulkane) expose their `link_registry`
-symbol; the manifest binds the contract files to it.
+the manifest and imports every source. **This is the bulk, up-front registration path, but it is no
+longer the *only* one** (re-scoped 2026-06-20, [10-decisions-log](../architecture/10-decisions-log.md),
+G4): the kernel binding table is append-only and **runtime-extensible** (`extend_global_bindings`,
+Tier 1 — JIT-ing a kernel for an existing op identity lands here), and a new **fused-op identity** may
+be registered at runtime through the trusted, Fuel-orchestrated, cost-gated declarative path (Tier 2,
+append-only with stable `FusedOpId`s). What stays frozen is the **primitive `Op` enum** and any
+*untrusted* user-injected ops/rules ([09-non-goals](../architecture/09-non-goals.md)). Providers in
+sibling crates (Baracuda, vulkane) expose their `link_registry` symbol; the manifest binds the
+contract files to it.
 
 ---
 
@@ -1990,6 +2029,20 @@ tracks changing that primitive to `Result`. For a `fused_op` contract:
 cost, precision, caps, revision })`, joined to the graph-side `FusedOp { shape_rule, dtype_rule,
 output_views, … }` by `FusedOpId`.
 
+**A `fused_op` contract MUST carry its recipe (the G1 recipe principle,
+[10-decisions-log](../architecture/10-decisions-log.md)).** The graph-side `FusedOp` half is required
+to supply **both** inverse directions: a `decompose` (fused → primitive subgraph; *lowers* it onto the
+base map) and a `pattern` (recognize that subgraph; *re-fuse*) — see the
+[FKC fusion-patterns spec](fkc-fusion-patterns.md) for the declarative `pattern:` block and the
+`decompose` contract. **Both are mandatory.** A `fused_op` registered with no recipe is an **opaque
+island**: invisible to base-map analysis (the missing-fusion / co-occurrence telemetry, §4.11/§4.12,
+cannot see across or inside it), impossible to re-fuse, and — because optimization *is*
+lower-to-base-map + find-best-cover — un-lowerable by the optimizer at all. `decompose` is **total and
+never-`panic!`s** (a primitive decomposes to itself; a non-basis op that fails to decompose is a
+*surfaced opaque-op gap*, never a crash); the recipe **always ships with the op**, never deferred
+"until intermediates fit." (The recipe is the *math* definition; the kernel this contract registers is
+a faster, numerically-close implementation governed by the FKC `precision` tolerance, §4.8.)
+
 ### 12.6 `entry_point` → `KernelRef` (the no-pointer indirection)
 
 A provider exposes a **link registry**: a static `&[(symbol_id: &str, KernelRef)]` (or a
@@ -2298,3 +2351,48 @@ existing field or code, and keep FDX the single normative code owner (§0); FKC 
    `SEPARATE_BUFFER` form), and — like `MX` — it **parse-validates but returns `MxNotYetRegistrable`
    at registration** (no as-built block-quant descriptor target type yet). It is a member of FDX's
    normative table, so it **passes** the §10 rule 16 subset check and is gated only at registration.
+
+---
+
+## Note (2026-06-20) — reconciliation to the adaptive-runtime-fusion decision (G1/G4/G5/G7)
+
+This dated note records the reconciliation of FKC to the 2026-06-20 adaptive-runtime-fusion decision
+([10-decisions-log](../architecture/10-decisions-log.md) — recipe principle, two-tier extensibility,
+the Fuel-strategist / backend-synthesizer JIT loop). All four touches are **corrective re-scopings or
+clarifications** of existing text; no field is renumbered and FDX stays the single normative code owner.
+
+1. **Two "frozen registry" non-goals re-scoped (§1 Non-goals, §9.4) — G4.** The blanket "Not a
+   runtime-extensible registry: built at process startup and frozen thereafter" (§1) and "imports
+   every source and freezes the registry" (§9.4) conflated *trusted/untrusted* and
+   *primitive/fused-metadata*. They are re-scoped into the three-way split: the **primitive `Op` enum**
+   and **untrusted user-injected ops/rules** stay closed
+   ([09-non-goals](../architecture/09-non-goals.md)); the **kernel binding table** (implementations)
+   is **already runtime-extensible** (`extend_global_bindings`, Tier 1); and **trusted,
+   Fuel-orchestrated, cost-gated registration of a new *fused-op identity*** is now an architectural
+   goal (Tier 2, via the declarative recipe form — append-only, stable never-reused `FusedOpId`s).
+   "Registration time" is therefore no longer only "process startup."
+
+2. **A `fused_op` contract MUST carry its recipe (§12.5) — G1.** Made explicit that the graph-side
+   `FusedOp` half of a `fused_op` contract is required to supply **both** `decompose` (break-down →
+   base map) and `pattern` (build-up → re-fuse); a fused op with no recipe is an **opaque island**
+   (invisible to the missing-fusion telemetry, un-re-fusable, and un-lowerable by the optimizer, since
+   optimization *is* lower-to-base-map + find-best-cover). `decompose` is **total + never-`panic!`s +
+   primitive→self**, and the recipe **always ships with the op**. See the
+   [FKC fusion-patterns spec](fkc-fusion-patterns.md) for the declarative form.
+
+3. **The §4.11/§4.12 structural miss distinguished from the closed-world `FusionMissRecord` (§4.12) —
+   G5.** §4.11/§4.12 cover only the *structural specialization* miss (a specialized cell unregistered,
+   best match a generic contract). Added that the *fusion* miss has its own sequencing: the
+   **closed-world `FusionMissRecord`** (recognized fusion-eligible chain, kernel absent, reason
+   `NoBackendKernel`, against a known `FusedOpId`) is the **v1 headline**, built first (consumer = a
+   `BindingEntry`, Tier 1); the **open-world** co-occurrence signal (`SequenceRecord{fused_as: None}`,
+   by observation) is **deferred** (consumer = Tier-2 declarative registration). Canonical:
+   `docs/session-prompts/baracuda-telemetry-plan.md` §9.
+
+4. **Cost-provenance framed as the JIT-adoption substrate (§4.4) — G7, light cross-ref.** The existing
+   `declared` → `judge_measured` provenance machinery (§4.4) is the correct substrate for the adaptive
+   optimizer's explore/exploit loop: a JIT-synthesized kernel arrives with a `declared` cost prior, and
+   its empirical *winning* under cost-gated selection (the route picker's adopt/reject call) is the
+   measured posterior the Judge records by flipping to `judge_measured`. FKC supplies the honest cost
+   surface; Fuel-the-strategist makes the adoption decision (the constitution holds — no backend-side
+   opportunity-finding).

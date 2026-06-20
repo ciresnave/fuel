@@ -1,6 +1,10 @@
 # Kernel-Boundary Program — MASTER fresh-instance handoff
 
-**Status:** Living index + sequencer (2026-06-18). Branch **`feat/kernel-contracts-dlpack`**
+**Status:** Living index + sequencer (2026-06-18; **reconciled 2026-06-20** to the adaptive-runtime-fusion
+decision, [10-decisions-log](../architecture/10-decisions-log.md) — §2 gains locked items 9 (G3/G4:
+primitive basis build-time-closed + two-tier extensibility, declarative engine = Tier-2 prerequisite)
+and 10 (G5/G7: Fuel is the telemetry strategist *and* consumer, not Baracuda-only; closed-world
+`FusionMissRecord` built first)). Branch **`feat/kernel-contracts-dlpack`**
 (unmerged; `main` untouched). This is the single entry point for a new Claude instance picking up
 the kernel-boundary program with no prior context beyond `CLAUDE.md` + memory.
 
@@ -152,6 +156,39 @@ These were settled by verified investigation. A fresh instance must build *on* t
    `ScaleGranularity` (`quant_scale.rs:38`) — `AffineBlock` block grain rides `block_shape`. There is
    **no `NF4` dtype** — NF4 reuses `DType::F4` (`dtype.rs:44` → FDX code 13). `Encoding::Mx` +
    `AffineInt`/`AffineFloat`/`Compressed` are reserved, not v1.
+
+9. **The primitive basis is build-time-closed; extensibility is two-tier** (locked 2026-06-20, G3+G4,
+   [10-decisions-log](../architecture/10-decisions-log.md)). The primitive `Op` enum is a compile-time
+   Rust enum with **no opaque / `Custom` node** — a provider/JIT op can **never become a runtime
+   primitive**; it must `decompose` into the existing basis (carrying a `pattern` to re-fuse), or
+   prompt a Fuel-side *build-time* `Op`-enum extension. Runtime extensibility splits three ways:
+   **build-time-closed stays** for the primitive enum and *untrusted* user rules/ops (the
+   [09-non-goals](../architecture/09-non-goals.md) rejection holds); **Tier 1** — the kernel binding
+   table — is *already* runtime-extensible (`extend_global_bindings`,
+   `fuel-dispatch/src/dispatch.rs:5098`; append-only, multi-sibling, `bump_topology_generation`), so
+   JIT-ing a kernel for an *existing* op identity lands there today; **Tier 2 (new goal)** — trusted,
+   Fuel-orchestrated, cost-gated runtime registration of a *new fused-op identity* — makes the
+   `FusedKernelRegistry` metadata runtime-updatable (append-only, stable never-reused `FusedOpId`s)
+   **via the declarative form only**. So the **stubbed declarative pattern engine**
+   (`PatternKind::Declarative => false`, `fuel-graph/src/opt.rs:434`) is **the Tier-2 prerequisite**,
+   promoted from a Phase 7.6 convenience to the gate for the adaptive JIT loop. The recipe principle
+   (every fused op carries `decompose` **and** `pattern`, both mandatory; a panicking `decompose` is a
+   bug, not a primitive) makes the base map total, which the JIT loop reads — see the conversion plan's
+   §7 and the FKC fusion spec.
+
+10. **Fuel itself is the missing-fusion telemetry strategist *and* consumer** (locked 2026-06-20,
+    G5+G7, [10-decisions-log](../architecture/10-decisions-log.md)) — the telemetry feed (§4 track P)
+    is **not Baracuda-only**. Fuel is the **strategist**: it owns the closed-loop adaptive optimizer,
+    chooses *which* sub-base-map regions to JIT (sending **partial** base maps, never the whole map),
+    controls *when* (idle-time, whole-machine resource-aware), and makes the cost-gated adopt/reject
+    call; a backend (Baracuda) is only the **synthesizer** of a Fuel-chosen region (no backend-side
+    opportunity-finding — the constitution holds). The telemetry it builds is the loop's input: the
+    **closed-world `FusionMissRecord`** (`NoBackendKernel` against *known* `FusedOpId`s; consumer =
+    append a `BindingEntry`, Tier 1) is the **v1 headline, built first**; the **open-world
+    `SequenceRecord{fused_as: None}`** (co-occurrence by observation, no known id) is **deferred**
+    because its consumer is the Tier-2 declarative registration. Explore (co-occurrence prior) +
+    exploit (empirical winning posterior; win-rate flattening = STOP) compose. Canonical sequencing:
+    [`baracuda-telemetry-plan.md`](baracuda-telemetry-plan.md) §9 + [08-pattern-harvest](../architecture/08-pattern-harvest.md).
 
 ---
 

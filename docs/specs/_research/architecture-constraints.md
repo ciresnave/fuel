@@ -23,6 +23,13 @@ load-time build, sessions, and mmap persistence are still Intended. Both specs a
 designed *ahead of* the steady state, so they should target the Intended architecture
 while staying loadable by today's code.
 
+**Reconciled 2026-06-20** to the adaptive-runtime-fusion decision
+([10-decisions-log](../../architecture/10-decisions-log.md), G5/G6/G7): §1 names the
+Fuel-strategist / backend-synthesizer split for the JIT-on-request path, and §11 adds two
+forward constraints the digest had omitted — **whole-model/megakernel is real-but-narrow,
+highest-risk, non-default (bigger fusion is not monotonic)** and **no "wanted-but-lacked"
+missing-fusion signal exists today (it needs a new graph-layer hook + the base-emission seam)**.
+
 ---
 
 ## 1. The governing principle: backends advertise; the planner decides
@@ -51,6 +58,15 @@ Direct consequences for both formats:
   the kernel contract references (dtype incl. sub-byte + quant, layout incl. strided/
   symbolic, device/substrate, multi-output bundles) so the optimizer's pre-priced decisions
   survive the handoff intact.
+- **The JIT-on-request path obeys the same principle (G7, 2026-06-20,
+  [10-decisions-log](../../architecture/10-decisions-log.md)).** When a backend JIT-synthesizes a
+  kernel, **Fuel is the STRATEGIST** (chooses *which* sub-base-map region to request — sending a
+  *partial* base map, never the whole map — controls *when* on a whole-machine resource-aware
+  schedule, and makes the cost-gated adopt/reject call) and **the backend is the SYNTHESIZER**
+  (builds the best kernel for the Fuel-chosen region; **no backend-side opportunity-finding**).
+  Fuel choosing the region *is* the fusion decision, so this is **not** backend-internal fusion and
+  the constitution holds. A JIT contract surface (partial base map + budget in; kernel + its FKC
+  contract incl. `PrecisionGuarantee` out) must therefore keep strategy on Fuel's side.
 
 ---
 
@@ -455,6 +471,30 @@ offset. Backends stay single-output at the trait level.
 - **Future KernelCaps** (strided_input today; layout/quant/symbolic flags coming) and **future
   capability tokens** (the `Capability` enum is `#[non_exhaustive]`). The contract's capability
   set must be open.
+- **Whole-model / megakernel is a real but NARROW technique — bigger fusion is NOT monotonic**
+  (G6, 2026-06-20, [10-decisions-log](../../architecture/10-decisions-log.md)). It is supported when
+  profiling justifies, but the **last / highest-risk target, never the default**. It wins *something*
+  over even an ideal CUDA Graph (inter-kernel scheduling bubbles + cross-boundary software
+  pipelining), but the benefit curve **turns over** because of **fixed launch geometry** (one
+  grid/block per launch), **kernel-global register allocation** (the worst region's register
+  footprint is imposed on every region → bandwidth-bound regions forced to the compute region's low
+  occupancy; internal sub-kernels do **not** fix this — the register file is partitioned at launch by
+  the kernel's static max), and **per-shape JIT/specialization combinatorics**. → A kernel-contract
+  format must **not assume "largest fusion that fits" is the goal**: it must keep per-region cost
+  honest (so the optimizer can see the curve turn over) and treat captured-run *replay* (CUDA Graphs /
+  pre-recorded command buffers, §11 above) — the cheaper step below megakernels that captures most of
+  the launch-overhead win without fusing compute — as the default, megakernels as a profiled exception.
+- **No "wanted-but-lacked" (missing-fusion) signal exists today — it is a forward gap to design for**
+  (G5, 2026-06-20, [10-decisions-log](../../architecture/10-decisions-log.md)). Fuel can see fusions
+  it *performed*, not fusions it *wanted but lacked* ("no rule fired" is identical across every
+  primitive node). Surfacing it needs a **new graph-layer hook** plus the **base-emission seam**
+  (`structure_key` is a stub; no `DispatchRecord` is emitted yet). The closed-world `FusionMissRecord`
+  (a recognized fusion-eligible chain realized as N primitives because the kernel was absent — reason
+  `NoBackendKernel`, against a known `FusedOpId`) is the v1 headline (consumer: append a
+  `BindingEntry`); the open-world co-occurrence signal is deferred (consumer: Tier-2 declarative
+  registration). → The contract/telemetry boundary must carry the stable `ImplId` + `structure_key`
+  join token (the digest's §4.11/§4.12 alignment) so this miss record can be emitted without a new
+  identifier, and must **not** foreclose the new graph-layer emission hook.
 
 ---
 

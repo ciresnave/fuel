@@ -1,6 +1,6 @@
 # FKC Fusion Patterns — declarative subgraph patterns so a backend's fused kernel auto-wires on import
 
-**Status: DRAFT for review (2026-06-19, rev 3), branch `feat/kernel-contracts-dlpack`.** Extension to
+**Status: DRAFT for review (2026-06-20, rev 4), branch `feat/kernel-contracts-dlpack`.** Extension to
 the Fuel Kernel Contract Format (FKC). Reviewed adversarially against Fuel's real fusion matchers
 (rev 2) and against Baracuda's auto-generating-provider review (rev 3). Rev 2 corrected the op
 vocabulary (graph `Op`, not `OpKind`) and added node-identity guards. **Rev 3** fixes the two §8
@@ -8,6 +8,15 @@ type-check bugs, makes **commutative-operand canonicalization normative** (§3a.
 review item), unifies guard/extract auto-skip, adds the `input()` phasing rule, extends the dtype
 list + resolves `Bool`→`U8`, pins the `Gelu`/`GeluErf` flavors, and re-sequences multi-output + an
 import-time never-match lint ahead of cosmetic deferrals. Per-point resolutions: §11.
+**Rev 4 (2026-06-20)** reconciles to the 2026-06-20 adaptive-runtime-fusion decision
+([10-decisions-log](../architecture/10-decisions-log.md), G4/G4c/G5): the `FusedOpRegistry`
+"frozen thereafter" quote in §1 is re-scoped — registering a *new fused-op identity* at runtime is
+now an architectural goal (Tier 2), and **implementing this spec's declarative pattern engine
+(`PatternKind::Declarative`) IS its prerequisite/mechanism**; and the §0/§9 missing-fusion telemetry
+is pinned to its v1 (closed-world `FusionMissRecord`) vs deferred (open-world co-occurrence)
+sequencing. The recipe principle (§1, every fused op carries `decompose` + `pattern`, both mandatory;
+`decompose` total + never-panic + primitive→self; build-time-closed primitive basis) is unchanged —
+it is the canonical G1/G2/G3 statement.
 
 **Audience:** kernel providers who ship **fused** kernels and want Fuel to use them automatically on
 contract import. This document specifies the new `pattern:` block; it references the base FKC spec
@@ -106,18 +115,36 @@ kernel inside graphs the user wrote with primitives.
 >
 > **The primitive basis is closed at build time — so an externally-supplied op MUST decompose into it.**
 > Fuel's primitives are the `Op` enum (`fuel-graph/src/lib.rs:210`), a Rust enum fixed at compile
-> time; there is **no generic opaque/`Custom` node** in the lazy graph and the `FusedOpRegistry` is
-> *"built at process startup, frozen thereafter (architecture v1.0: no runtime extensibility)"*
-> (`registry.rs:695`). A provider therefore **cannot introduce a new primitive at runtime**, and "trust
-> me, this op is atomic" is not a representable state — a node that is neither a known primitive nor a
-> recipe over known primitives cannot live in the graph *and* would be invisible to the base map. So an
-> op a provider ships has exactly two valid fates: **(1)** it **decomposes into Fuel's existing
-> primitive basis** (§4) and a `pattern:` lets it *replace* that primitive sequence — mandatory, the
-> only form that both runs and participates in re-fusion; or **(2)** it needs a primitive Fuel does not
-> have, which is a **Fuel-side, build-time `Op`-enum extension** — a coordination request the provider
-> cannot satisfy themselves (e.g. a higher-order `Scan` for SSM). The shared **primitive vocabulary in
-> §4 is thus a hard contract**: everything a provider offers must be expressible over it, and a genuine
-> gap is a request for Fuel to grow the basis in a release, never a runtime "new primitive."
+> time; there is **no generic opaque/`Custom` node** in the lazy graph. A provider therefore **cannot
+> introduce a new primitive at runtime**, and "trust me, this op is atomic" is not a representable
+> state — a node that is neither a known primitive nor a recipe over known primitives cannot live in
+> the graph *and* would be invisible to the base map. So an op a provider ships has exactly two valid
+> fates: **(1)** it **decomposes into Fuel's existing primitive basis** (§4) and a `pattern:` lets it
+> *replace* that primitive sequence — mandatory, the only form that both runs and participates in
+> re-fusion; or **(2)** it needs a primitive Fuel does not have, which is a **Fuel-side, build-time
+> `Op`-enum extension** — a coordination request the provider cannot satisfy themselves (e.g. a
+> higher-order `Scan` for SSM). The shared **primitive vocabulary in §4 is thus a hard contract**:
+> everything a provider offers must be expressible over it, and a genuine gap is a request for Fuel to
+> grow the basis in a release, never a runtime "new primitive."
+>
+> **The fused-op *identity* registry, in contrast, is now runtime-extensible — and this spec is the
+> mechanism (re-scoped 2026-06-20, [10-decisions-log](../architecture/10-decisions-log.md) G4/G4c).**
+> The `FusedOpRegistry` source carries the blanket comment *"built at process startup, frozen
+> thereafter (architecture v1.0: no runtime extensibility)"* (`registry.rs:695`). That blanket freeze
+> is re-scoped by the 2026-06-20 adaptive-fusion decision into a three-way split: the **primitive `Op`
+> enum** stays build-time-closed (above); **untrusted user-installable rules/ops** stay rejected
+> ([09-non-goals](../architecture/09-non-goals.md)); but **trusted, Fuel-orchestrated, cost-gated
+> registration of a *new fused-op identity* at runtime (Tier 2) is now an architectural goal** —
+> append-only, with **stable, never-reused `FusedOpId`s**. A new fused op is a *composition of existing
+> primitives* (a recipe — `decompose` + `pattern`), not a new primitive, so it adds no untrusted code
+> and no new primitive. Because you cannot ship Rust `fn` pointers or add enum variants at runtime, a
+> runtime fusion can *only* be **declarative** — pattern + recipe + shape/dtype/cost carried as data,
+> run by generic interpreter fns. **So implementing this spec's declarative pattern engine (the
+> `PatternKind::Declarative` stub, §0/§9) IS the prerequisite for that Tier-2 runtime fused-op
+> registration**: the same `pattern:`-as-data machinery a provider's import uses is what a Fuel-driven
+> JIT loop uses to register a synthesized fusion on Fuel's own schedule. The kernel *binding table*
+> (implementations for an existing identity) is already runtime-extensible today (`extend_global_bindings`,
+> Tier 1); this spec unlocks the fused-op *metadata* side (Tier 2).
 >
 > **For Baracuda:** authoring `pattern:` + `decompose` for your
 > fused kernels is what lets Fuel lower a model's `flash_attn`/`softmax`/`conv` calls onto the base
@@ -478,6 +505,17 @@ variant + `return` rules + `decompose` + `cost`/`precision` (base FKC).
   "registered but unused"). A static lint that rejects a pattern whose op-chain can never occur, plus
   a **typed match-failure reason** surfaced to the fusion-miss telemetry, are pulled ahead of the
   rest. (Structurally *malformed* patterns already error at import.)
+
+  **Missing-fusion telemetry sequencing (G5, [10-decisions-log](../architecture/10-decisions-log.md)).**
+  This typed match-failure reason feeds the **closed-world `FusionMissRecord`** — a recognized
+  fusion-eligible chain realized as N primitives because the kernel was absent (reason
+  `NoBackendKernel`, against a **known** `FusedOpId`). That is the **v1 headline**, built **first**,
+  because its consumer already exists (Tier 1: append a `BindingEntry`). The **open-world**
+  co-occurrence signal — a frequent realized op chain matching **no** known fused-op identity
+  (`SequenceRecord{fused_as: None}`, discovered by *observation*, not subgraph *enumeration*) — is
+  **deferred**, because its consumer is exactly the Tier-2 runtime declarative registration this spec
+  enables. Fuel never enumerates the subgraph space and never searches for a whole-model fusion.
+  Canonical sequencing: `docs/session-prompts/baracuda-telemetry-plan.md` §9.
 
 **Deferred (not v1):** variadic operands (fixed arity in v1 — fits 100% of a fixed-`n_inputs`
 provider); `chunk`/`split` → `Slice` canonicalization + a `Split`/`Chunk` op (gated activations —

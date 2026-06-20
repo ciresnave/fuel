@@ -1,6 +1,6 @@
 # Pattern harvest and shared community telemetry
 
-**Status**: v0.2 (draft, 2026-05-09). v0.2 changes: (1) the section now covers the four-flow community-telemetry infrastructure (patterns, tolerance recipes, hardware fingerprints, kernel-stat summaries) — pattern harvest is one of four; (2) the primary opt-in mechanism is a first-use prompt (capturing the "people who don't care" segment without going to silent opt-out); (3) per-flow privacy commitments pinned for each data type.
+**Status**: v0.3 (draft, 2026-06-20). v0.3 implements the 2026-06-20 adaptive-runtime-fusion decision ([10-decisions-log](10-decisions-log.md) G5/G7): the v1 **headline** is now the closed-world **missing-fusion telemetry** (`FusionMissRecord` — a recognized fusion-eligible chain realized as N primitives because the kernel was absent, against **known** `FusedOpId`s; consumer = append a `BindingEntry`, Tier 1), distinct from the pre-existing open-world unfused-sequence harvest, which is re-framed as the **on-device exploration prior** feeding the closed-loop adaptive optimizer (Fuel strategist / backend synthesizer) and **deferred** to Tier 2 registration. It also notes that **no** missing-fusion signal exists today (the enabling graph-layer hook + base-emission seam are unbuilt stubs), and that the "every model decomposes to the same primitive form" claim depends on the recipe principle + total `decompose` (a non-decomposing op is itself a surfaced harvest signal, not a silent hole). v0.2 changes: (1) the section now covers the four-flow community-telemetry infrastructure (patterns, tolerance recipes, hardware fingerprints, kernel-stat summaries) — pattern harvest is one of four; (2) the primary opt-in mechanism is a first-use prompt (capturing the "people who don't care" segment without going to silent opt-out); (3) per-flow privacy commitments pinned for each data type.
 
 Opt-in telemetry that tells the project's maintainers which op sequences fuel users actually run, so the fused-op catalog can grow toward what real workloads need fused — not what's familiar from prior frameworks.
 
@@ -19,6 +19,15 @@ The "top 10 longest" + "top 10 most repeated at their longest length" framing ke
 
 The data is sequence-shaped (op kinds + per-op feature constraints + structural input bindings), not value-shaped. Test inputs and intermediate activations are never harvested — only the *structure* of the computation.
 
+### Two signals: closed-world miss (v1 headline) vs open-world sequence (deferred)
+
+Per the 2026-06-20 adaptive-runtime-fusion decision ([10-decisions-log](10-decisions-log.md) G5), the missing-fusion telemetry splits into two distinct signals, and the **closed-world miss is the v1 headline, built first**:
+
+- **`FusionMissRecord` (closed-world, v1 headline).** A chain that *is* a recognized fusion-eligible pattern — it matches a **known** `FusedOpId` in the registry — but was realized as N separate primitives because **no backend kernel was bound** for that op on the target device (reason `NoBackendKernel`). This is the difference between fusions Fuel *wanted* and fusions it could *perform*. It is built first because **its consumer already exists**: the fix is to append a `BindingEntry` to the runtime-extensible kernel binding table (Tier 1, per [§How harvested data is used](#how-harvested-data-is-used) and [09-non-goals](09-non-goals.md)). A `FusionMissRecord` names an *existing* identity, so it requires no new fused-op registration.
+- **`SequenceRecord{fused_as: None}` (open-world, deferred).** A frequently-realized op chain that matches **no** known fused-op identity — discovered by *observation* of the realized base map, not by enumerating the subgraph space, and not a whole-model fusion. This is the open-world unfused-sequence harvest above, re-framed: it is the **exploration prior** (see [§Co-occurrence as the exploration prior](#co-occurrence-as-the-on-device-exploration-prior) below). It is **deferred** because its consumer is the **Tier-2** trusted, Fuel-orchestrated runtime registration of a *new* fused-op identity, which depends on the declarative-pattern engine ([09-non-goals](09-non-goals.md), [10-decisions-log](10-decisions-log.md) G4). We never enumerate the subgraph space and never search for a whole-model fusion.
+
+**No missing-fusion signal exists today.** Fuel can see fusions it *performed*, not fusions it *wanted-but-lacked* — "no rule fired" is identical across every primitive node. Both signals above depend on a **new graph-layer hook** and on the base-emission seam (`structure_key` is a stub; no `DispatchRecord` is emitted yet); they are unbuilt stubs, not shipping behavior. The canonical sequencing is `docs/session-prompts/baracuda-telemetry-plan.md` §9.
+
 ## Why the base map
 
 Harvest reads the base map specifically, not the user-facing form or the optimized form:
@@ -28,6 +37,8 @@ Harvest reads the base map specifically, not the user-facing form or the optimiz
 - **Base map** is canonical: every model, regardless of how the user built it, decomposes to the same primitive form. Sequences detected at the base map's level are real opportunities the optimizer couldn't exploit because no fused-op kernel exists for them.
 
 This is the structural reason base map retention (per 03-ir) matters for harvest: without it, harvest would systematically miss the patterns that *should* be fused.
+
+**"Decomposes to the same primitive form" depends on the recipe principle and a total `decompose`** (per the 2026-06-20 decision, [10-decisions-log](10-decisions-log.md) G1/G2; canonical in [04-optimization §The recipe principle](04-optimization.md)). The base map is the fixpoint of `decompose` over every node, which is only well-formed if `decompose` is **total** (every fused op carries a recipe — `decompose` + `pattern` — and never `panic!`s, with a primitive decomposing to itself). An op that has no recipe and refuses to decompose is an **opaque island**: it never lowers to primitives, so harvest cannot see across or inside it. That is itself a **surfaced harvest signal** — a flagged opaque-op gap fed to the missing-fusion / inventory telemetry — **not a silent hole**. So a missing recipe degrades harvest visibly rather than corrupting the "same primitive form" guarantee silently.
 
 ## What's not harvested
 
@@ -69,6 +80,17 @@ The harvest server aggregates submissions across opted-in users and produces:
 
 The architectural payoff: **fuel's fused-op catalog grows toward what users actually need, ranked by aggregate impact.** Each fused op shipped is justified by data; competitors decide what to fuse based on intuition or what was easy.
 
+The closed-world `FusionMissRecord` signal (above) has a **second, lower-latency consumer than the maintainer loop**: because it names an *existing* `FusedOpId` whose only gap is an absent kernel, its fix is to **append a `BindingEntry`** to the runtime-extensible kernel binding table (Tier 1, per [09-non-goals](09-non-goals.md) and [10-decisions-log](10-decisions-log.md) G4) — no new identity, no maintainer review of a novel pattern. That is why it is the v1 headline: the loop from "miss observed" to "kernel bound" is short and trusted.
+
+### Co-occurrence as the on-device exploration prior
+
+The open-world unfused-sequence harvest is not only feedstock for a manual maintainer loop. Per the 2026-06-20 decision ([10-decisions-log](10-decisions-log.md) G7), the same **co-occurrence** signal — frequency-counted realized op chains — is the **on-device exploration prior** that feeds the **closed-loop adaptive optimizer**, where **Fuel is the strategist** (it chooses which sub-base-map regions to JIT, and controls when — idle-time, whole-machine resource-aware) and **a backend (Baracuda first) is the synthesizer** (it builds the best kernel for the Fuel-chosen region; no backend-side opportunity-finding, so the constitution holds). The loop is **explore/exploit**:
+
+- **Explore — co-occurrence prior.** Frequent realized chains order *which* regions to ask the backend to synthesize first (small repeated motifs before large rare ones).
+- **Exploit — empirical winning posterior.** A synthesized kernel that actually **wins** (enters an optimized plan under cost-guided selection) is the ground-truth fitness signal; **win-rate flattening is the STOP signal** that bounds how many JIT requests are worth making. This is the local, automatic counterpart to the manual maintainer loop — empirical winning, not maintainer intuition, re-prioritizes.
+
+Neither replaces the other: the community-aggregated maintainer loop decides what to add to the shipped catalog; the on-device explore/exploit loop adapts to *this* user's *this* hardware in idle time. The open-world signal's runtime consumer is the **Tier-2** declarative registration, which is why the open-world harvest is deferred behind it ([§What's harvested](#two-signals-closed-world-miss-v1-headline-vs-open-world-sequence-deferred)).
+
 ## Shared infrastructure with tolerance recipes
 
 The community-telemetry infrastructure carries four data flows, each with the same opt-in story but different payload schemas and aggregation logic on the server side:
@@ -101,7 +123,7 @@ Aggregated data has provenance:
 
 Suggested fused-op candidates from harvest data are *suggestions*, not auto-implementations. Maintainers review the data, decide what to prioritize, write the fused kernel. The architecture supports this loop; it doesn't automate kernel writing.
 
-Future direction: as the OptimizationMap rule infrastructure matures, harvested data could feed an *automated* fused-op-candidate pipeline (offline e-graph saturation over harvested patterns, surfacing equivalence classes that warrant new rules). v1 keeps the loop manual; the data substrate supports automation when it's ready.
+Future direction: as the OptimizationMap rule infrastructure matures, harvested data could feed an *automated* fused-op-candidate pipeline (offline e-graph saturation over harvested patterns, surfacing equivalence classes that warrant new rules). v1 keeps the *community* loop manual; the data substrate supports automation when it's ready. The on-device counterpart — the closed-loop explore/exploit optimizer that JITs and cost-gates fused ops for *this* user's hardware (per [§Co-occurrence as the on-device exploration prior](#co-occurrence-as-the-on-device-exploration-prior)) — is the automated form of this loop scoped to one machine; it is gated on Tier-2 declarative registration, not on community aggregation.
 
 ## What this rules out
 
@@ -127,6 +149,8 @@ These aren't reasons to skip the feature — they're reasons to do it carefully.
 
 - [01-identity §The five competitive edges](01-identity.md#the-five-competitive-edges) — pattern harvest as competitive edge #4.
 - [03-ir §The base map](03-ir.md#the-base-map-fully-decomposed-primitive-dag-permanently-retained) — the canonical form harvest reads from.
-- [04-optimization](04-optimization.md) — the optimizer that consumes registered fused ops once new ones land.
+- [04-optimization §The recipe principle](04-optimization.md) — the optimizer that consumes registered fused ops once new ones land; the recipe principle + total `decompose` the base-map harvest depends on.
 - [07-tolerance §Community sharing](07-tolerance.md#community-sharing) — sibling feature using the same server infrastructure.
+- [09-non-goals](09-non-goals.md) — the trusted/untrusted boundary: Tier-1 binding-table extension (the `FusionMissRecord` consumer) vs Tier-2 declarative fused-op registration (the open-world signal's consumer).
 - [11-persistence](11-persistence.md) — sibling artifacts (cache, tolerance recipe) that harvest is *not* but shares plumbing with.
+- [10-decisions-log](10-decisions-log.md) — the 2026-06-20 adaptive-runtime-fusion decision (G5 missing-fusion telemetry, G7 closed-loop optimizer) this section implements; `docs/session-prompts/baracuda-telemetry-plan.md` §9 is the canonical sequencing.

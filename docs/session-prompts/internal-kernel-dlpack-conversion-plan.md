@@ -2,6 +2,12 @@
 
 **Status:** PLAN FOR REVIEW (2026-06-17), to be executed on a branch
 (`feat/kernel-contracts-dlpack` or a child). Design/sequencing pass — no code yet.
+**Reconciled 2026-06-20** against the adaptive-runtime-fusion decision (G4,
+[10-decisions-log](../architecture/10-decisions-log.md)): §7's "frozen at startup" end-state
+claim is re-scoped — the `KernelBindingTable` is already Tier-1 runtime-extensible
+(`extend_global_bindings`) and the `FusedKernelRegistry` metadata freeze is the Tier-2 gap
+the JIT loop lifts via the declarative form. "Populated at startup" is this conversion's v1
+target, not the architectural end-state.
 **Scope:** the ordered, test-gated migration of **all ~390 inventoried internal Fuel
 kernels** so that (a) every kernel is described by an **FKC** contract
 (`docs/specs/kernel-contract-format.md`) that auto-registers it onto Fuel's dispatch
@@ -773,8 +779,24 @@ When this program completes:
   `register_vulkan_kernels` / `register_baracuda_cuda_kernels` / the MKL/AOCL/Metal
   registration fns and the `register_default_fused_kernels` path are replaced by "import the
   provider's FKC bundle file(s)" (FKC §G5: import = registration, zero hand-written glue).
-  The `KernelBindingTable` and `FusedKernelRegistry` are populated by the importer, frozen
-  at startup as today.
+  The `KernelBindingTable` and `FusedKernelRegistry` are populated by the importer at
+  startup. **This is a *load-time* import, not a permanent freeze** — re-scoped 2026-06-20
+  per the two-tier extensibility decision (G4, [10-decisions-log](../architecture/10-decisions-log.md)):
+  + The **`KernelBindingTable` is already Tier-1 runtime-extensible** today
+    (`extend_global_bindings`, `fuel-dispatch/src/dispatch.rs:5098` — append-only,
+    multi-sibling, `bump_topology_generation`). A JIT-synthesized kernel for an *existing*
+    op identity lands here at runtime; this was never the frozen part. This conversion just
+    populates that same append-only table from contracts.
+  + The **`FusedKernelRegistry` (fused-op *metadata*) freeze is exactly the Tier-2 gap the
+    adaptive JIT loop lifts.** Trusted, Fuel-orchestrated, cost-gated runtime registration
+    of a *new fused-op identity* makes this registry runtime-updatable (append-only, stable
+    never-reused `FusedOpId`s) via the **declarative** form — the prerequisite being the
+    stubbed declarative pattern engine (`PatternKind::Declarative => false` at
+    `fuel-graph/src/opt.rs:434`). This conversion authors the static (bare-`fn`-pointer)
+    entries; the declarative-engine work is out of scope here but is what unfreezes the
+    metadata registry. So read "populated at startup" as *the v1 state this conversion
+    targets*, not the architectural end-state — the fused-op metadata registry is destined
+    to be runtime-extensible, the binding table already is.
 - **Every tensor crossing the kernel boundary is FDX-describable** — an honest standard
   `DLTensor` base (faithful for standard dtypes; `uint8` honesty stand-in for quant/sub-byte)
   plus the optional sidecar for the non-standard facts. Internal boundary (a) passes the

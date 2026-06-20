@@ -1,6 +1,6 @@
 # Lifecycle: from model file to finished inference/training
 
-**Status**: v0.5 (2026-06-16).
+**Status**: v0.6 (2026-06-20). v0.6 reconciles the glossary + narrative to the 2026-06-20 adaptive-runtime-fusion decision ([10-decisions-log](10-decisions-log.md)): the fused-op registry is **no longer "frozen"** but two-tier runtime-extensible (G4 — Tier-1 binding table already extensible, Tier-2 trusted Fuel-orchestrated fused-op registration the new goal; untrusted user ops/rules + new primitives stay closed); the base-map/`decompose` narrative gains the **total + never-panic + primitive→self** invariant (G2); **missing-fusion telemetry** is named as distinct from the Judge (G5); the run-capture/replay passage positions the **megakernel** as the narrow, highest-risk, non-default step above captured-run replay (G6); and the optimizer narrative references the **closed-loop adaptive optimizer** with its Fuel-strategist / backend-synthesizer division (G7).
 
 This is the one document that walks the **whole path**, in order: from "load a model
 from disk" to "inference or training has finished." Every other architecture section
@@ -74,11 +74,27 @@ particular input; [03-ir](03-ir.md).)* (`fuel-graph`; `Graph` at `fuel-graph/src
 **Node** — one operation: `{ op, inputs: Vec<NodeId>, shape, dtype }`. Identified by a
 `NodeId` (a `usize` newtype). (`fuel-graph/src/lib.rs:1232`.)
 
-**Op enum** — the closed set of ~80–90 primitive operations, plus `Op::Fused(FusedOpId, params)`
-(delegates to the **fused-op registry**, frozen at startup) and `Op::Branch { reconverge_at }` —
+**Op enum** — the **build-time-closed** set of ~80–90 primitive operations (a compile-time Rust
+enum; no opaque / `Custom` node — an external op must *decompose into* this basis, never become a
+new primitive at runtime; [10-decisions-log](10-decisions-log.md) G3), plus `Op::Fused(FusedOpId, params)`
+(delegates to the **fused-op registry**) and `Op::Branch { reconverge_at }` —
 the in-graph multi-path phi/merge **decision node**: the optimized form's divergent-then-
 reconvergent routes live as real arena nodes (`fuel-graph/src/lib.rs:1006`, landed Phase A).
 (`fuel-graph`; [03-ir](03-ir.md).)
+
+> **The fused-op registry is two-tier runtime-extensible, not "frozen"** (re-scoped per the
+> 2026-06-20 decision, [10-decisions-log](10-decisions-log.md) G4; canonical in
+> [09-non-goals](09-non-goals.md)). What stays **build-time-closed**: the primitive `Op` enum
+> above (G3) and **untrusted user-installable** ops/rules. What is **runtime-extensible**:
+> **Tier 1** — the kernel **binding table** (implementations) is *already* extensible
+> (`extend_global_bindings`, `fuel-dispatch/src/dispatch.rs:5098`; append-only, multi-sibling,
+> `bump_topology_generation()` invalidates cached routes); JIT-ing a kernel for an *existing* op
+> identity lands here. **Tier 2** (the new goal) — trusted, **Fuel-orchestrated, cost-gated**
+> runtime registration of a *new fused-op identity* (the fused-op *metadata* registry, append-only
+> with **stable, never-reused** `FusedOpId`s), implemented via the **declarative** form
+> (pattern + recipe + cost as data; the stubbed `PatternKind::Declarative` engine at
+> `fuel-graph/src/opt.rs:434` is its prerequisite). "Frozen at startup" applied to untrusted ops
+> and to new primitives — not to this trusted Fuel-driven fused-op path.
 
 **LazyTensor / Tensor** — the handle a user (or model code) holds. Calling `.matmul()`,
 `.softmax()`, etc. on it appends nodes to the graph and returns a new handle. It carries
@@ -146,6 +162,17 @@ surface.*
 latency/error and writes a profile the plan-time ranker reads. It does **not** measure ops
 during normal dispatch. (`fuel-core/src/judge/`.)
 
+**Missing-fusion telemetry** *(distinct from the Judge)* — a base-map signal that records fusions
+Fuel *wanted but lacked*, where the Judge records the *timing/error* of kernels Fuel *ran*. Per the
+2026-06-20 decision ([10-decisions-log](10-decisions-log.md) G5; canonical in
+[08-pattern-harvest](08-pattern-harvest.md)), the v1 **headline** is the **closed-world
+`FusionMissRecord`** — a recognized fusion-eligible chain realized as N primitives because *no
+backend kernel was bound* for a **known** `FusedOpId` (reason `NoBackendKernel`); its consumer is
+appending a `BindingEntry` (Tier 1). The **open-world** signal (a frequent chain matching no known
+identity, the exploration prior) is **deferred** behind Tier-2 registration. **None of this exists
+today**: it needs a new graph-layer hook and the base-emission seam (`structure_key` is a stub; no
+`DispatchRecord` is emitted). It is not the Judge, and the Judge is not it.
+
 **Work-item producer** *(today named the "compiler thread" in code —
 `compiler_thread_body`, slated for rename)* — a worker thread *inside realize* that walks
 the **picked-route dispatch order** (from `optimize_graph` + `pick_route` / `lower_picked_route`;
@@ -167,7 +194,10 @@ invoked synchronously. (`fuel-dispatch/src/kernel.rs:152`.)
 
 **Backend / device** — a backend (CPU, CUDA, Vulkan, Metal) *advertises* its kernels,
 capabilities, and telemetry; it never decides placement or fusion. A `DeviceLocation` names
-a concrete device. (`fuel-core-types`, [05-backend-contract](05-backend-contract.md).)
+a concrete device. (`fuel-core-types`, [05-backend-contract](05-backend-contract.md).) *(Under the
+adaptive-fusion loop, [10-decisions-log](10-decisions-log.md) G7, a backend may also **synthesize**
+a JIT kernel — but only for a region **Fuel chose**; choosing the region is the strategy and stays
+with the optimizer, so the backend still never finds the opportunity itself.)*
 
 **dispatch-chunk boundary** — the point between two consecutive WorkItems whose
 `target_backend` differs; the unit at which the runtime re-checks the topology generation.
@@ -214,6 +244,21 @@ and then `optimize_graph` transforms it in place into the multi-path form (Phase
 fully-decomposed "base map" as a separately retained artifact is largely conceptual (the fused-op
 registry and a first lowering rule exist; the broader rule engine is in progress per
 [04-optimization](04-optimization.md):314+).
+
+The decomposition arrow rests on the **recipe principle** and a **total `decompose`** (per the
+2026-06-20 decision, [10-decisions-log](10-decisions-log.md) G1/G2; canonical in
+[04-optimization §The recipe principle](04-optimization.md)). Every fused op carries a recipe in
+two inverse directions — a `decompose` (fused → primitive subgraph) and a `pattern` (re-fuse) —
+and the **base map is the fixpoint of `decompose`** over every node (lower until
+`decompose(x) == x`). `decompose` is **total + never-panic + primitive→self**: it never `panic!`s
+(the never-panic constitution rule), and a **primitive decomposes to itself** (the recursion's
+identity fixpoint, `fuel-graph/src/registry.rs:823`). Primitive-vs-not is decided by **basis
+membership, never by the return value**; a non-basis op that fails to decompose is a **surfaced
+opaque-op gap** (a base-map flag → the missing-fusion telemetry below), never a crash and never
+silently masquerading as a primitive. This is load-bearing for optimization *itself* — optimization
+*is* lower-to-base-map + find-best-cover, so an op that won't decompose breaks the optimizer. The
+three current panicking decomposes (`nf4_matmul.rs:120`, `flash_attn`, `selective_scan`) are **bugs
+to fix**, not a permanent category.
 
 **Intended** ([03-ir](03-ir.md), 2026-06-14 redirection): the graph is **input-independent**
 and built **at load**, not inside `forward`. Loading a native `.fuel` via `map_from_file`
@@ -265,6 +310,17 @@ path are **deleted**; `optimize_graph` runs once per realize.
   the prototype confirmed ~10² paths, lossless at keep ≈ 32/device). The remaining gap is
   *breadth* — Phase A's deliberate-fork seed is still the only path*finder*; fusion, algebraic,
   and dtype-lowering pathfinders come later.
+- **Adaptive runtime fusion is Intended, not built.** Beyond the offline pathfinders, the
+  2026-06-20 decision ([10-decisions-log](10-decisions-log.md) G7) adds a **closed-loop adaptive
+  optimizer**: at idle time Fuel asks a backend to JIT-synthesize a kernel for a fusion opportunity
+  no model author wrote, then cost-gates adoption. The division of labor keeps the constitution
+  intact — **Fuel is the strategist** (it chooses *which* sub-base-map regions to JIT, sending
+  *partial* base maps, and controls *when*, resource-aware across the whole machine) and **a backend
+  (Baracuda first) is the synthesizer** (it builds the best kernel for the Fuel-chosen region; *no
+  backend-side opportunity-finding*). It is **explore/exploit**: co-occurrence telemetry is the
+  exploration prior (order regions to try), empirical winning is the exploit posterior (a kernel
+  entering an optimized plan under cost-guided selection), and **win-rate flattening is the STOP
+  signal**. The prerequisite is the Tier-2 declarative registration (glossary, Op enum note above).
 - **Realize follows the runtime-picked route (Phase C, landed).** The route picker
   ("Picker 2") now chooses a *non-arm-0* arm at each branch from live per-tier free memory
   (`pick_route`); realize lowers the **picked route** (`lower_picked_route`) and falls back to
@@ -343,6 +399,17 @@ per branch — not per node). Two pieces of the run-as-unit end state differ in 
   repeated-replay point (the decode loop) builds a fresh graph per token until Phase D gives runs
   a stable cross-realize identity. So Phase D wires capture into dispatch; the primitive is
   proven now.
+
+Captured-run replay is the **cheaper, lower-risk** way to recover launch overhead: it pre-records
+the launch *sequence* without fusing the compute. Above it sits the **megakernel / whole-model
+fusion** — a real technique but the **narrow, highest-risk, never-default** one (per the
+2026-06-20 decision, [10-decisions-log](10-decisions-log.md) G6). It wins *something* even an ideal
+captured graph can't (inter-kernel scheduling bubbles + cross-boundary software pipelining), but the
+benefit curve **turns over**: fixed launch geometry, and kernel-global register allocation that
+imposes the worst region's register footprint on every region (internal sub-kernels do **not** fix
+this), plus per-shape JIT combinatorics. "Bigger fusion = better" is **not monotonic**, so the
+megakernel is the last target profiling justifies — never the default — and captured-run replay is
+the step below it that already captures most of the launch-overhead win.
 
 ---
 
@@ -434,8 +501,10 @@ match.
 ## See also
 
 - [03-ir](03-ir.md) — the graph, Op enum, fused-op registry, the three-artifact model.
-- [04-optimization](04-optimization.md) — decomposition, the plan, placement, load-time planning.
-- [05-backend-contract](05-backend-contract.md) — what backends advertise; the KernelRef ABI.
+- [04-optimization](04-optimization.md) — decomposition, the recipe principle + total `decompose`, the plan, placement, load-time planning.
+- [05-backend-contract](05-backend-contract.md) — what backends advertise; the KernelRef ABI; the JIT-synthesizer surface (G7).
 - [06-runtime](06-runtime.md) — the runtime selector, dispatch, the executor.
-- [10-decisions-log](10-decisions-log.md) — the 2026-06-14 "plan is the graph" redirection that the **Intended** column above tracks.
+- [08-pattern-harvest](08-pattern-harvest.md) — the missing-fusion telemetry (closed-world `FusionMissRecord` v1 headline) and the co-occurrence exploration prior the closed-loop optimizer reads.
+- [09-non-goals](09-non-goals.md) — the trusted/untrusted boundary the two-tier runtime extensibility (G4) re-scopes; build-time-closed primitives + untrusted user ops stay closed.
+- [10-decisions-log](10-decisions-log.md) — the 2026-06-14 "plan is the graph" redirection that the **Intended** column tracks, and the 2026-06-20 adaptive-runtime-fusion decision (G1–G8) that v0.6 reconciles to.
 - ROADMAP §"Post-wipe resume addendum" — the planner-program gaps (Stages 4b–6) referenced above.
