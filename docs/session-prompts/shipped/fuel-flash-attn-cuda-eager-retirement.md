@@ -1,5 +1,18 @@
 # Retire the eager `fuel-flash-attn-cuda{,-sys}` crates
 
+> **SHIPPED 2026-06-20 (Option C).** Both crates deleted along with their
+> workspace members, `workspace.dependencies` entries, the now-dead
+> `cudaforge` workspace dep, and every `flash-attn` Cargo feature /
+> optional dep across fuel-cuda-backend / fuel-core / fuel-transformers /
+> fuel-examples / fuel-book. The baracuda FA2 launcher
+> (`fuel-cuda-backend::flash_attn::launch`) was **preserved** — it was
+> only feature-gated to reach the eager `-sys` crate; it now compiles
+> unconditionally (still `#[allow(dead_code)]`, staged for the dispatch
+> wiring it never had). The retired transformer models under
+> `_models_retired/` keep their `#[cfg(feature = "flash-attn")]` arms,
+> which are now permanently false (feature gone) so the
+> `unimplemented!()` arm wins — harmless, they aren't compiled.
+>
 > Reconciled 2026-06-15 against the 2026-06-14 redirection + current git:
 > still ACTIVE (the crates + `flash-attn` feature are not yet deleted), but
 > Phase H (commit `cfcb35cf`) retired the ~14 transformer consumers under

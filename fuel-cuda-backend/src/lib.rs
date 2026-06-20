@@ -38,7 +38,12 @@ pub use fuel_core_types::{DType, Error, Layout, Result, Shape};
 // `cudnn` Cargo feature is now a near-no-op (only used to gate the
 // transitive `baracuda-cudnn{,-sys}` deps that don't have other users
 // in Fuel).
-#[cfg(feature = "flash-attn")]
+// The baracuda FA2 launcher (`flash_attn::launch`). Staged but not yet
+// wired into `Op::FlashAttn` dispatch — see the module docs. Formerly
+// gated behind the `flash-attn` Cargo feature, which existed only to
+// reach the now-deleted eager `fuel-flash-attn-cuda{,-sys}` crates; the
+// launcher itself depends only on `baracuda-kernels-sys` (always present)
+// so it compiles unconditionally now.
 pub mod flash_attn;
 pub mod baracuda;
 /// Re-export of `baracuda_kernels_sys` so downstream crates (like

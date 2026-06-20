@@ -291,8 +291,8 @@ pub use variable::Var;
 // New user code should use [`lazy::LazyTensor`] — the graph builder — and
 // realize it via `realize_f32` etc. The eager `Tensor` re-export below is
 // kept for backend-adjacent crates (fuel-onnx, fuel-pyo3, fuel-parallel,
-// fuel-flash-attn-cuda, fuel-datasets, fuel-examples helpers) that still
-// shuttle device-resident buffers around. Marked `#[doc(hidden)]` so it
+// fuel-datasets, fuel-examples helpers) that still shuttle
+// device-resident buffers around. Marked `#[doc(hidden)]` so it
 // does not appear in generated rustdoc; the canonical path
 // `fuel_core::tensor::Tensor` remains accessible for the same callers.
 #[doc(hidden)]
