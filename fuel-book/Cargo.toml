@@ -14,7 +14,6 @@ accelerate-src = { workspace = true, optional = true }
 fuel = { workspace = true }
 fuel-datasets = { workspace = true }
 fuel-transformers = { workspace = true }
-fuel-flash-attn-cuda = { workspace = true, optional = true }
 safetensors = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

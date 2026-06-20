@@ -26,9 +26,14 @@
 //! - head_dim must be in the supported set (no d40 / d80 rounding
 //!   — those callers fall back to standard attention in model code).
 //! - All inputs must be contiguous (executor handles materialization).
+//!
+//! Staged module: `launch` is not yet wired into `Op::FlashAttn`
+//! dispatch (the executor currently routes FlashAttn elsewhere), so
+//! the whole module is dead today — hence the module-level allow.
+
+#![allow(dead_code)]
 
 use crate::storage::{CudaStorage, CudaStorageSlice};
-use baracuda_driver::DevicePtr;
 use baracuda_kernels_sys as sys;
 use fuel_core_types::{DType, Layout};
 

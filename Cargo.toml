@@ -16,8 +16,6 @@ members = [
     "fuel-cuda-vmm",
     "fuel-datasets",
     "fuel-examples",
-    "fuel-flash-attn-cuda",
-    "fuel-flash-attn-cuda-sys",
     "fuel-formats",
     "fuel-graph",
     "fuel-cuda-backend",
@@ -120,8 +118,6 @@ fuel-vulkan-backend = { path = "./fuel-vulkan-backend", version = "0.10.2" }
 fuel-kernels-source = { path = "./fuel-kernels-source", version = "0.10.2" }
 fuel-vulkan-kernels = { path = "./fuel-vulkan-kernels", version = "0.10.2" }
 fuel-datasets = { path = "./fuel-datasets", version = "0.10.2" }
-fuel-flash-attn-cuda = { path = "./fuel-flash-attn-cuda", version = "0.10.2" }
-fuel-flash-attn-cuda-sys = { path = "./fuel-flash-attn-cuda-sys", version = "0.10.2" }
 fuel-formats = { path = "./fuel-formats", version = "0.10.2" }
 fuel-inference = { path = "./fuel-inference", version = "0.10.2" }
 fuel-metal-backend = { path = "./fuel-metal-backend", version = "0.10.2" }
@@ -279,7 +275,6 @@ zip = { version = "8.5.0", default-features = false }
 objc2 = { version = "0.6" }
 objc2-metal = { version = "0.3.1" }
 objc2-foundation = { version = "0.3.1" }
-cudaforge = "0.1"
 prost = "0.13"
 prost-build = "0.13"
 rstest = "0.23"

@@ -91,13 +91,6 @@ cuda = [
 # Enables cuda + cuDNN accelerated convolution and normalization.
 cudnn = ["cuda", "dep:baracuda-cudnn", "fuel-cuda-backend?/cudnn"]
 
-# Transitional: enables the lazy `Op::FlashAttn` launcher on CUDA.
-# baracuda alpha.60+ provides `fa2_sdpa_*_run_v2` directly so this no
-# longer pulls in the old fuel-flash-attn-cuda-sys nvcc build. The
-# feature gate stays until the eager `fuel-flash-attn-cuda` wrapper
-# (used by transformers) is migrated or retired.
-flash-attn = ["cuda", "fuel-cuda-backend?/flash-attn"]
-
 # Multi-GPU communication via NVIDIA NCCL.
 nccl = ["cuda", "dep:baracuda-nccl", "fuel-cuda-backend?/nccl"]
 

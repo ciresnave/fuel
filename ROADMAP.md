@@ -1416,8 +1416,7 @@ fuel-core vulkan_backend (future — same delegation shape)
 ```
 
 Narrow-purpose crates kept separate (match the kernels crate
-precedent): `fuel-cuda-vmm`, `fuel-cublaslt`, `fuel-flash-attn`,
-`fuel-flash-attn-v3`.
+precedent): `fuel-cuda-vmm`, `fuel-cublaslt`.
 
 #### Opportunities baracuda now unblocks (future work items)
 
