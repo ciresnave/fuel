@@ -104,6 +104,21 @@ kernel inside graphs the user wrote with primitives.
 > **surfaced opaque-op gap** (a base-map flag, → the missing-fusion/inventory telemetry), not a crash
 > and not silently masquerading as primitive.
 >
+> **The primitive basis is closed at build time — so an externally-supplied op MUST decompose into it.**
+> Fuel's primitives are the `Op` enum (`fuel-graph/src/lib.rs:210`), a Rust enum fixed at compile
+> time; there is **no generic opaque/`Custom` node** in the lazy graph and the `FusedOpRegistry` is
+> *"built at process startup, frozen thereafter (architecture v1.0: no runtime extensibility)"*
+> (`registry.rs:695`). A provider therefore **cannot introduce a new primitive at runtime**, and "trust
+> me, this op is atomic" is not a representable state — a node that is neither a known primitive nor a
+> recipe over known primitives cannot live in the graph *and* would be invisible to the base map. So an
+> op a provider ships has exactly two valid fates: **(1)** it **decomposes into Fuel's existing
+> primitive basis** (§4) and a `pattern:` lets it *replace* that primitive sequence — mandatory, the
+> only form that both runs and participates in re-fusion; or **(2)** it needs a primitive Fuel does not
+> have, which is a **Fuel-side, build-time `Op`-enum extension** — a coordination request the provider
+> cannot satisfy themselves (e.g. a higher-order `Scan` for SSM). The shared **primitive vocabulary in
+> §4 is thus a hard contract**: everything a provider offers must be expressible over it, and a genuine
+> gap is a request for Fuel to grow the basis in a release, never a runtime "new primitive."
+>
 > **For Baracuda:** authoring `pattern:` + `decompose` for your
 > fused kernels is what lets Fuel lower a model's `flash_attn`/`softmax`/`conv` calls onto the base
 > map and re-fuse them into your specialized kernels — the highest-leverage use of the feature, and
