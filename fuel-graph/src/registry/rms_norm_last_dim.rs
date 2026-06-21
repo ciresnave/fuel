@@ -83,11 +83,10 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
     };
     let eps = match params {
         FusedOpParams::RmsNormLastDim { eps } => *eps,
-        _ => panic!(
-            "rms_norm_last_dim::decompose called with non-RmsNorm \
-             params {params:?}; node op = {:?}",
-            graph.node(id).op
-        ),
+        // G2: decompose is total + never-panic. A non-RmsNorm params payload
+        // is an impossible registry-dispatch invariant violation; return self
+        // rather than crash.
+        _ => return id,
     };
     let dims = x_shape.dims().to_vec();
     let rank = dims.len();

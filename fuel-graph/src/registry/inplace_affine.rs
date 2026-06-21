@@ -50,13 +50,22 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-pub fn decompose(_graph: &mut Graph, _id: NodeId, _params: &FusedOpParams) -> NodeId {
-    panic!(
-        "inplace_affine::decompose: in-place ops have no non-destructive \
-         decomposition. Callers that want the functional `mul·x + add` should \
-         use `Tensor::affine` (which composes MulScalar + AddScalar) instead. \
-         See docs/session-prompts/in-place-ops-infrastructure.md.",
-    );
+/// InplaceAffine is a genuine **basis gap** of a different kind (G2,
+/// 2026-06-20). Its *value* `mul·x + add` is trivially expressible
+/// (`MulScalar(mul) → AddScalar(add)`), but this op is *defined by* its
+/// in-place / destructive-aliasing semantics: `destructive_input() -> Some(0)`,
+/// the output aliases input 0's storage, and `opt::derive_ordering` pins it
+/// after every non-destructive reader of that input. Fuel has no primitive that
+/// expresses an in-place affine update (the in-place family is unary, with no
+/// parameterized affine member), so decomposing to the *functional*
+/// `MulScalar → AddScalar` subgraph would silently drop the destructive
+/// contract the optimizer reasons about — not a faithful recipe. Per G2
+/// `decompose` is total + never-panic: with no semantics-preserving recipe it
+/// returns **self**, decomposing once an in-place affine primitive
+/// (`Op::AffineInplace { mul, add }`) lands. Callers wanting the functional
+/// form should use `Tensor::affine` directly.
+pub fn decompose(_graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
+    id
 }
 
 pub fn canonical_pattern(_graph: &Graph, _root: NodeId) -> Option<PatternMatch> {

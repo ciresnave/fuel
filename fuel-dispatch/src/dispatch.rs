@@ -272,7 +272,9 @@ pub fn write_storage(
 /// in the binding table.
 macro_rules! cpu_binary_wrapper {
     ($wrapper:ident, $kernel:path, $op_name:literal) => {
-        fn $wrapper(
+        // pub(crate) so the FKC vertical-slice test (fkc::register) can name
+        // the real production wrapper and assert an imported binding IS it.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -3570,15 +3572,25 @@ cpu_paged_attn_wrapper!(paged_attn_f64_cpu_wrapper,  fuel_cpu_backend::byte_kern
 cpu_paged_attn_wrapper!(paged_attn_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::paged_attn_bf16);
 cpu_paged_attn_wrapper!(paged_attn_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::paged_attn_f16);
 
+// Cast wrappers — one per TARGET dtype, each matching every other source
+// dtype. Together they cover the full 11×10 = 110 directed pair matrix
+// (identity pairs excluded; the optimizer elides them). Every real numeric
+// dtype is a complete closed cast basis.
 cpu_cast_wrapper!(
     cast_to_f32_cpu_wrapper,
     DType::F32,
     "f32",
     {
-        DType::F64    => fuel_cpu_backend::byte_kernels::cast_f64_to_f32,
-        DType::BF16   => fuel_cpu_backend::byte_kernels::cast_bf16_to_f32,
-        DType::F16    => fuel_cpu_backend::byte_kernels::cast_f16_to_f32,
-        DType::F8E4M3 => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_f32,
+        DType::F64     => fuel_cpu_backend::byte_kernels::cast_f64_to_f32,
+        DType::F16     => fuel_cpu_backend::byte_kernels::cast_f16_to_f32,
+        DType::BF16    => fuel_cpu_backend::byte_kernels::cast_bf16_to_f32,
+        DType::F8E4M3  => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_f32,
+        DType::U8      => fuel_cpu_backend::byte_kernels::cast_u8_to_f32,
+        DType::I8      => fuel_cpu_backend::byte_kernels::cast_i8_to_f32,
+        DType::U32     => fuel_cpu_backend::byte_kernels::cast_u32_to_f32,
+        DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_f32,
+        DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_f32,
+        DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_f32,
     },
 );
 cpu_cast_wrapper!(
@@ -3586,7 +3598,16 @@ cpu_cast_wrapper!(
     DType::F64,
     "f64",
     {
-        DType::F32 => fuel_cpu_backend::byte_kernels::cast_f32_to_f64,
+        DType::F32     => fuel_cpu_backend::byte_kernels::cast_f32_to_f64,
+        DType::F16     => fuel_cpu_backend::byte_kernels::cast_f16_to_f64,
+        DType::BF16    => fuel_cpu_backend::byte_kernels::cast_bf16_to_f64,
+        DType::F8E4M3  => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_f64,
+        DType::U8      => fuel_cpu_backend::byte_kernels::cast_u8_to_f64,
+        DType::I8      => fuel_cpu_backend::byte_kernels::cast_i8_to_f64,
+        DType::U32     => fuel_cpu_backend::byte_kernels::cast_u32_to_f64,
+        DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_f64,
+        DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_f64,
+        DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_f64,
     },
 );
 cpu_cast_wrapper!(
@@ -3594,8 +3615,16 @@ cpu_cast_wrapper!(
     DType::BF16,
     "bf16",
     {
-        DType::F32    => fuel_cpu_backend::byte_kernels::cast_f32_to_bf16,
-        DType::F8E4M3 => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_bf16,
+        DType::F32     => fuel_cpu_backend::byte_kernels::cast_f32_to_bf16,
+        DType::F64     => fuel_cpu_backend::byte_kernels::cast_f64_to_bf16,
+        DType::F16     => fuel_cpu_backend::byte_kernels::cast_f16_to_bf16,
+        DType::F8E4M3  => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_bf16,
+        DType::U8      => fuel_cpu_backend::byte_kernels::cast_u8_to_bf16,
+        DType::I8      => fuel_cpu_backend::byte_kernels::cast_i8_to_bf16,
+        DType::U32     => fuel_cpu_backend::byte_kernels::cast_u32_to_bf16,
+        DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_bf16,
+        DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_bf16,
+        DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_bf16,
     },
 );
 cpu_cast_wrapper!(
@@ -3603,8 +3632,16 @@ cpu_cast_wrapper!(
     DType::F16,
     "f16",
     {
-        DType::F32    => fuel_cpu_backend::byte_kernels::cast_f32_to_f16,
-        DType::F8E4M3 => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_f16,
+        DType::F32     => fuel_cpu_backend::byte_kernels::cast_f32_to_f16,
+        DType::F64     => fuel_cpu_backend::byte_kernels::cast_f64_to_f16,
+        DType::BF16    => fuel_cpu_backend::byte_kernels::cast_bf16_to_f16,
+        DType::F8E4M3  => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_f16,
+        DType::U8      => fuel_cpu_backend::byte_kernels::cast_u8_to_f16,
+        DType::I8      => fuel_cpu_backend::byte_kernels::cast_i8_to_f16,
+        DType::U32     => fuel_cpu_backend::byte_kernels::cast_u32_to_f16,
+        DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_f16,
+        DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_f16,
+        DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_f16,
     },
 );
 cpu_cast_wrapper!(
@@ -3612,9 +3649,118 @@ cpu_cast_wrapper!(
     DType::F8E4M3,
     "f8e4m3",
     {
-        DType::F32  => fuel_cpu_backend::byte_kernels::cast_f32_to_f8e4m3,
-        DType::F16  => fuel_cpu_backend::byte_kernels::cast_f16_to_f8e4m3,
-        DType::BF16 => fuel_cpu_backend::byte_kernels::cast_bf16_to_f8e4m3,
+        DType::F32     => fuel_cpu_backend::byte_kernels::cast_f32_to_f8e4m3,
+        DType::F64     => fuel_cpu_backend::byte_kernels::cast_f64_to_f8e4m3,
+        DType::F16     => fuel_cpu_backend::byte_kernels::cast_f16_to_f8e4m3,
+        DType::BF16    => fuel_cpu_backend::byte_kernels::cast_bf16_to_f8e4m3,
+        DType::U8      => fuel_cpu_backend::byte_kernels::cast_u8_to_f8e4m3,
+        DType::I8      => fuel_cpu_backend::byte_kernels::cast_i8_to_f8e4m3,
+        DType::U32     => fuel_cpu_backend::byte_kernels::cast_u32_to_f8e4m3,
+        DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_f8e4m3,
+        DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_f8e4m3,
+        DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_f8e4m3,
+    },
+);
+cpu_cast_wrapper!(
+    cast_to_u8_cpu_wrapper,
+    DType::U8,
+    "u8",
+    {
+        DType::F32     => fuel_cpu_backend::byte_kernels::cast_f32_to_u8,
+        DType::F64     => fuel_cpu_backend::byte_kernels::cast_f64_to_u8,
+        DType::F16     => fuel_cpu_backend::byte_kernels::cast_f16_to_u8,
+        DType::BF16    => fuel_cpu_backend::byte_kernels::cast_bf16_to_u8,
+        DType::F8E4M3  => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_u8,
+        DType::I8      => fuel_cpu_backend::byte_kernels::cast_i8_to_u8,
+        DType::U32     => fuel_cpu_backend::byte_kernels::cast_u32_to_u8,
+        DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_u8,
+        DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_u8,
+        DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_u8,
+    },
+);
+cpu_cast_wrapper!(
+    cast_to_i8_cpu_wrapper,
+    DType::I8,
+    "i8",
+    {
+        DType::F32     => fuel_cpu_backend::byte_kernels::cast_f32_to_i8,
+        DType::F64     => fuel_cpu_backend::byte_kernels::cast_f64_to_i8,
+        DType::F16     => fuel_cpu_backend::byte_kernels::cast_f16_to_i8,
+        DType::BF16    => fuel_cpu_backend::byte_kernels::cast_bf16_to_i8,
+        DType::F8E4M3  => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_i8,
+        DType::U8      => fuel_cpu_backend::byte_kernels::cast_u8_to_i8,
+        DType::U32     => fuel_cpu_backend::byte_kernels::cast_u32_to_i8,
+        DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_i8,
+        DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_i8,
+        DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_i8,
+    },
+);
+cpu_cast_wrapper!(
+    cast_to_u32_cpu_wrapper,
+    DType::U32,
+    "u32",
+    {
+        DType::F32     => fuel_cpu_backend::byte_kernels::cast_f32_to_u32,
+        DType::F64     => fuel_cpu_backend::byte_kernels::cast_f64_to_u32,
+        DType::F16     => fuel_cpu_backend::byte_kernels::cast_f16_to_u32,
+        DType::BF16    => fuel_cpu_backend::byte_kernels::cast_bf16_to_u32,
+        DType::F8E4M3  => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_u32,
+        DType::U8      => fuel_cpu_backend::byte_kernels::cast_u8_to_u32,
+        DType::I8      => fuel_cpu_backend::byte_kernels::cast_i8_to_u32,
+        DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_u32,
+        DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_u32,
+        DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_u32,
+    },
+);
+cpu_cast_wrapper!(
+    cast_to_i16_cpu_wrapper,
+    DType::I16,
+    "i16",
+    {
+        DType::F32     => fuel_cpu_backend::byte_kernels::cast_f32_to_i16,
+        DType::F64     => fuel_cpu_backend::byte_kernels::cast_f64_to_i16,
+        DType::F16     => fuel_cpu_backend::byte_kernels::cast_f16_to_i16,
+        DType::BF16    => fuel_cpu_backend::byte_kernels::cast_bf16_to_i16,
+        DType::F8E4M3  => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_i16,
+        DType::U8      => fuel_cpu_backend::byte_kernels::cast_u8_to_i16,
+        DType::I8      => fuel_cpu_backend::byte_kernels::cast_i8_to_i16,
+        DType::U32     => fuel_cpu_backend::byte_kernels::cast_u32_to_i16,
+        DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_i16,
+        DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_i16,
+    },
+);
+cpu_cast_wrapper!(
+    cast_to_i32_cpu_wrapper,
+    DType::I32,
+    "i32",
+    {
+        DType::F32     => fuel_cpu_backend::byte_kernels::cast_f32_to_i32,
+        DType::F64     => fuel_cpu_backend::byte_kernels::cast_f64_to_i32,
+        DType::F16     => fuel_cpu_backend::byte_kernels::cast_f16_to_i32,
+        DType::BF16    => fuel_cpu_backend::byte_kernels::cast_bf16_to_i32,
+        DType::F8E4M3  => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_i32,
+        DType::U8      => fuel_cpu_backend::byte_kernels::cast_u8_to_i32,
+        DType::I8      => fuel_cpu_backend::byte_kernels::cast_i8_to_i32,
+        DType::U32     => fuel_cpu_backend::byte_kernels::cast_u32_to_i32,
+        DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_i32,
+        DType::I64     => fuel_cpu_backend::byte_kernels::cast_i64_to_i32,
+    },
+);
+cpu_cast_wrapper!(
+    cast_to_i64_cpu_wrapper,
+    DType::I64,
+    "i64",
+    {
+        DType::F32     => fuel_cpu_backend::byte_kernels::cast_f32_to_i64,
+        DType::F64     => fuel_cpu_backend::byte_kernels::cast_f64_to_i64,
+        DType::F16     => fuel_cpu_backend::byte_kernels::cast_f16_to_i64,
+        DType::BF16    => fuel_cpu_backend::byte_kernels::cast_bf16_to_i64,
+        DType::F8E4M3  => fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_i64,
+        DType::U8      => fuel_cpu_backend::byte_kernels::cast_u8_to_i64,
+        DType::I8      => fuel_cpu_backend::byte_kernels::cast_i8_to_i64,
+        DType::U32     => fuel_cpu_backend::byte_kernels::cast_u32_to_i64,
+        DType::I16     => fuel_cpu_backend::byte_kernels::cast_i16_to_i64,
+        DType::I32     => fuel_cpu_backend::byte_kernels::cast_i32_to_i64,
     },
 );
 
@@ -3981,32 +4127,138 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(MinReduce,          &unary(f16_dt),  cpu, min_reduce_f16_cpu_wrapper);
     table.register(MeanReduce,         &unary(f16_dt),  cpu, mean_reduce_f16_cpu_wrapper);
 
-    // Cast — register every (src, dst) pair the per-target wrapper
-    // handles internally. The wrapper dispatches by source dtype via
-    // a `match`; the binding-table key needs to match the actual
-    // dtypes the executor produces (`[src_dt, dst_dt]`).
+    // Cast — the complete closed cast basis. Every ordered pair of the 11
+    // real numeric dtypes {F32,F64,F16,BF16,F8E4M3,U8,I8,U32,I16,I32,I64}
+    // has a registered CPU kernel: 11×10 = 110 directed pairs. The MX dummy
+    // dtypes (F6E2M3,F6E3M2,F4,F8E8M0) have no Rust scalar type and are
+    // excluded. Each per-target wrapper dispatches by source dtype via a
+    // `match`; the binding-table key is keyed on the actual dtypes the
+    // executor produces (`[src_dt, dst_dt]`).
     //
     // Identity pairs (`[T, T]`) are not registered here because the
     // wrappers' internal match doesn't include the identity arm —
     // Fuel's graph optimizer elides identity Cast before dispatch.
-    let cast_to_f32 = cast_to_f32_cpu_wrapper as KernelRef;
-    table.register(Cast, &[DType::F64,  DType::F32], cpu, cast_to_f32);
-    table.register(Cast, &[DType::BF16, DType::F32], cpu, cast_to_f32);
-    table.register(Cast, &[DType::F16,  DType::F32], cpu, cast_to_f32);
-    table.register(Cast, &[DType::F32,  DType::F64], cpu, cast_to_f64_cpu_wrapper);
-    table.register(Cast, &[DType::F32,  DType::BF16], cpu, cast_to_bf16_cpu_wrapper);
-    table.register(Cast, &[DType::F32,  DType::F16], cpu, cast_to_f16_cpu_wrapper);
-
-    // F8E4M3 ↔ {F32, F16, BF16} — mirrors baracuda alpha.29's
-    // CastSubBytePlan surface. CPU side pivots F16/BF16 through f32
-    // (see byte_kernels.rs cast section).
-    let cast_to_f8 = cast_to_f8e4m3_cpu_wrapper as KernelRef;
-    table.register(Cast, &[DType::F8E4M3, DType::F32],    cpu, cast_to_f32);
-    table.register(Cast, &[DType::F8E4M3, DType::BF16],   cpu, cast_to_bf16_cpu_wrapper);
-    table.register(Cast, &[DType::F8E4M3, DType::F16],    cpu, cast_to_f16_cpu_wrapper);
-    table.register(Cast, &[DType::F32,    DType::F8E4M3], cpu, cast_to_f8);
-    table.register(Cast, &[DType::BF16,   DType::F8E4M3], cpu, cast_to_f8);
-    table.register(Cast, &[DType::F16,    DType::F8E4M3], cpu, cast_to_f8);
+    // -> F32
+    table.register(Cast, &[DType::F64, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F16, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::BF16, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F8E4M3, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U8, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I8, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U32, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I16, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I32, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I64, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
+    // -> F64
+    table.register(Cast, &[DType::F32, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F16, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::BF16, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F8E4M3, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U8, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I8, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U32, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I16, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I32, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I64, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
+    // -> F16
+    table.register(Cast, &[DType::F32, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F64, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::BF16, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F8E4M3, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U8, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I8, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U32, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I16, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I32, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I64, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
+    // -> BF16
+    table.register(Cast, &[DType::F32, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F64, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F16, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F8E4M3, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U8, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I8, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U32, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I16, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I32, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I64, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
+    // -> F8E4M3
+    table.register(Cast, &[DType::F32, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F64, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F16, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::BF16, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U8, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I8, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U32, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I16, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I32, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I64, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
+    // -> U8
+    table.register(Cast, &[DType::F32, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F64, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F16, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::BF16, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F8E4M3, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I8, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U32, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I16, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I32, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I64, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
+    // -> I8
+    table.register(Cast, &[DType::F32, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F64, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F16, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::BF16, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F8E4M3, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U8, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U32, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I16, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I32, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I64, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
+    // -> U32
+    table.register(Cast, &[DType::F32, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F64, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F16, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::BF16, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F8E4M3, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U8, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I8, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I16, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I32, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I64, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
+    // -> I16
+    table.register(Cast, &[DType::F32, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F64, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F16, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::BF16, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F8E4M3, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U8, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I8, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U32, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I32, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I64, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
+    // -> I32
+    table.register(Cast, &[DType::F32, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F64, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F16, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::BF16, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F8E4M3, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U8, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I8, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U32, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I16, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I64, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
+    // -> I64
+    table.register(Cast, &[DType::F32, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F64, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F16, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::BF16, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::F8E4M3, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U8, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I8, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::U32, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I16, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
+    table.register(Cast, &[DType::I32, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
 
     // Conv2D — register both no-bias (3 operands) and with-bias
     // (4 operands) shapes per dtype; the wrapper handles both.

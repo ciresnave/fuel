@@ -146,9 +146,10 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
         FusedOpParams::FusedSoftmaxCrossEntropy { reduction, ignore_index } => {
             (*reduction, *ignore_index)
         }
-        other => panic!(
-            "fused_softmax_cross_entropy::decompose got non-FSCE params: {other:?}"
-        ),
+        // G2: decompose is total + never-panic. Non-FSCE params here are an
+        // impossible registry-dispatch invariant violation; degrade to
+        // identity (return self) rather than crash.
+        _ => return id,
     };
     let (logits_id, targets_id, logits_shape, targets_shape, _logits_dtype, targets_dtype) = {
         let n = graph.node(id);

@@ -598,6 +598,100 @@ mod tests {
     }
 
     // =====================================================================
+    // VERTICAL SLICE: import through a REAL LinkRegistry → the real kernel
+    // =====================================================================
+
+    /// A REAL (non-stub) [`LinkRegistry`]: resolves the authored contract's
+    /// `add_f32` entry-point symbol to the ACTUAL production CPU kernel
+    /// wrapper (`dispatch::add_elementwise_f32_cpu_wrapper`). Every other
+    /// section's symbol gets a distinct dummy so the multi-section bundle
+    /// still imports without a spurious finalize collision. This is the first
+    /// non-stub LinkRegistry — it proves the FKC import path resolves a
+    /// contract symbol to a real, executable kernel, not a placeholder.
+    struct EntryPointLink {
+        seen: Mutex<std::collections::HashMap<String, KernelRef>>,
+    }
+    impl EntryPointLink {
+        fn new() -> Self {
+            Self {
+                seen: Mutex::new(std::collections::HashMap::new()),
+            }
+        }
+        fn resolve(&self, symbol: &str) -> Option<KernelRef> {
+            if symbol == "fuel_cpu_backend::byte_kernels::add_f32" {
+                // THE point of the slice: the real production kernel.
+                return Some(crate::dispatch::add_elementwise_f32_cpu_wrapper as KernelRef);
+            }
+            let mut g = self.seen.lock().unwrap();
+            if let Some(k) = g.get(symbol) {
+                return Some(*k);
+            }
+            let k: KernelRef = if g.len() % 2 == 0 { dummy_a } else { dummy_b };
+            g.insert(symbol.to_string(), k);
+            Some(k)
+        }
+    }
+    impl LinkRegistry for EntryPointLink {
+        fn resolve_primitive(&self, symbol: &str) -> Option<KernelRef> {
+            self.resolve(symbol)
+        }
+        fn resolve_fused(&self, symbol: &str) -> Option<KernelRef> {
+            self.resolve(symbol)
+        }
+    }
+
+    #[test]
+    fn import_add_f32_through_real_link_registry_binds_the_real_kernel() {
+        // The vertical slice: import the authored CPU elementwise-binary
+        // contract through a REAL LinkRegistry that resolves add_f32's
+        // entry-point symbol to the production kernel wrapper, register it,
+        // and prove the registered binding IS that real kernel — by pointer
+        // identity AND by executing it on real F32 storage.
+        let link = EntryPointLink::new();
+        let provider = import_bundle_str(ELEMENTWISE_BINARY, &link)
+            .expect("authored elementwise-binary.fkc.md imports through the real link");
+
+        let mut table = KernelBindingTable::new();
+        let mut fused = FusedKernelRegistry::new();
+        provider
+            .register_into(&mut table, &mut fused)
+            .expect("register_into a fresh table succeeds");
+
+        let key = [DType::F32, DType::F32, DType::F32];
+        // The contract registers TWO alternatives at this key: the shared
+        // `binary` chassis representative and the concrete `add_f32` — so
+        // `lookup` (first alternative) returns the chassis. We assert the real
+        // add_f32 wrapper is present *among the alternatives* and invoke it.
+        let expected: KernelRef = crate::dispatch::add_elementwise_f32_cpu_wrapper;
+        let alts = table.lookup_alternatives(OpKind::AddElementwise, &key, BackendId::Cpu);
+        assert!(!alts.is_empty(), "AddElementwise/[F32,F32,F32]/Cpu present after FKC import");
+
+        // (1) The FKC-imported binding IS the real production kernel — not a
+        // stub, not a different fn — proven by pointer identity.
+        let resolved: KernelRef = alts
+            .iter()
+            .map(|e| e.kernel)
+            .find(|k| *k as usize == expected as usize)
+            .expect("FKC import must bind the real add_f32 wrapper among the alternatives");
+
+        // (2) It actually runs end-to-end on real F32 storage: [1,2,3]+[4,5,6].
+        let a = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[1.0f32, 2.0, 3.0])));
+        let b = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[4.0f32, 5.0, 6.0])));
+        let out = Arc::new(RwLock::new(
+            fuel_memory::alloc_cpu_zeroed(DType::F32, 3).expect("alloc out"),
+        ));
+        let inputs = [a, b];
+        let mut outputs = [out];
+        let shape = fuel_core_types::Shape::from_dims(&[3]);
+        let layouts = [
+            fuel_core_types::Layout::contiguous(shape.clone()),
+            fuel_core_types::Layout::contiguous(shape),
+        ];
+        resolved(&inputs, &mut outputs, &layouts, &crate::kernel::OpParams::None)
+            .expect("the FKC-resolved add_f32 kernel executes on real storage");
+    }
+
+    // =====================================================================
     // DUPLICATE: two sections at the same key+pointer → DuplicateKernelRef
     // =====================================================================
 

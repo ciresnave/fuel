@@ -118,6 +118,12 @@ enum WorkItemKind {
     /// Computational kernel: allocate output, run the compiled
     /// kernel, store the result. `compiled` is `Some(...)`.
     Kernel,
+    /// `Op::Iota { len }` — 0-input F32 position generator
+    /// `[0.0, 1.0, …, (len-1)]`. Direct executor dispatch (no kernel /
+    /// binding-table lookup), like `WorkItemKind::Alloc`: a leaf has no
+    /// `inputs[0]` to inherit a backend from, so it can't take the normal
+    /// kernel path. The executor fills the sequence on CPU.
+    Iota { len: usize },
     /// `Op::Release` — metadata-only "this storage is no longer
     /// needed" directive. Per `Op::Release`'s contract: the output
     /// is a zero-element marker (NodeId placeholder for graph
@@ -1511,6 +1517,38 @@ fn compile_one(
             dtype: node.dtype,
             target_backend,
             kind: WorkItemKind::Alloc { target_location: target },
+            compiled: None,
+            output_layout,
+            destructive_input,
+            output_bundle: None,
+        });
+    }
+
+    if let Op::Iota { len } = node.op {
+        // Op::Iota { len }: 0-input F32 position generator
+        // [0.0, 1.0, …, (len-1)]. Direct executor dispatch via
+        // WorkItemKind::Iota — no binding-table lookup (a leaf has no
+        // inputs[0] to inherit a backend from). Modeled on Op::Alloc.
+        if !inputs.is_empty() {
+            return Err(Error::Msg(format!(
+                "Op::Iota expects 0 inputs, got {}",
+                inputs.len(),
+            ))
+            .bt());
+        }
+        let output_layout = Layout::contiguous(node.shape.clone());
+        layout_cache.insert(id, output_layout.clone());
+        // Leaf: the planner may not place a 0-input node, so fall back to
+        // CPU. Iota is a tiny host-side generator; its only consumer today
+        // is the CPU flash-attn decomposition's alibi bias.
+        let target_backend = graph.target_backend(id).unwrap_or(BackendId::Cpu);
+        return Ok(WorkItem {
+            node_id: id,
+            inputs,
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::Iota { len },
             compiled: None,
             output_layout,
             destructive_input,
@@ -3929,6 +3967,25 @@ fn execute_work_item(
                 }
             };
             cache.insert(item.node_id, Arc::new(RwLock::new(alloced)));
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(())
+        }
+        WorkItemKind::Iota { len } => {
+            // Op::Iota { len }: 0-input F32 position generator
+            // [0.0, 1.0, …, (len-1)]. Direct executor dispatch (no kernel /
+            // binding-table lookup), like WorkItemKind::Alloc. CPU-only
+            // today — GPU flash-attn keeps its fused kernel, so the alibi
+            // decomposition (the sole Iota consumer) realizes on CPU.
+            if item.target_backend != BackendId::Cpu {
+                return Err(Error::Msg(format!(
+                    "WorkItemKind::Iota: only CPU is wired today, got {:?}",
+                    item.target_backend,
+                ))
+                .bt());
+            }
+            let v: Vec<f32> = (0..*len).map(|i| i as f32).collect();
+            let iota = fuel_memory::from_slice_cpu(&v);
+            cache.insert(item.node_id, Arc::new(RwLock::new(iota)));
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(())
         }

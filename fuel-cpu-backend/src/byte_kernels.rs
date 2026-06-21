@@ -3569,6 +3569,601 @@ cast_kernel_from_fp8!(
     "Convert `F8E4M3` → `f16` via f32. Lossless within F8E4M3's range."
 );
 
+// Cast matrix completion: every ordered pair of the 11 real numeric
+// dtypes {F32,F64,F16,BF16,F8E4M3,U8,I8,U32,I16,I32,I64} now has a
+// registered CPU Cast kernel (identity pairs excluded — the optimizer
+// elides them). Conversions follow the standard idioms: int/f64<->f32
+// via `as`; ->half via `from_f32`; half/f8->int via `to_f32() as`;
+// half<->half and anything touching F8E4M3 pivot through f32.
+cast_kernel!(
+    cast_f32_to_u8,
+    f32, u8,
+    |x: f32| x as u8,
+    "Convert `f32` -> `u8`."
+);
+cast_kernel!(
+    cast_f32_to_i8,
+    f32, i8,
+    |x: f32| x as i8,
+    "Convert `f32` -> `i8`."
+);
+cast_kernel!(
+    cast_f32_to_u32,
+    f32, u32,
+    |x: f32| x as u32,
+    "Convert `f32` -> `u32`."
+);
+cast_kernel!(
+    cast_f32_to_i16,
+    f32, i16,
+    |x: f32| x as i16,
+    "Convert `f32` -> `i16`."
+);
+cast_kernel!(
+    cast_f32_to_i32,
+    f32, i32,
+    |x: f32| x as i32,
+    "Convert `f32` -> `i32`."
+);
+cast_kernel!(
+    cast_f32_to_i64,
+    f32, i64,
+    |x: f32| x as i64,
+    "Convert `f32` -> `i64`."
+);
+cast_kernel!(
+    cast_f64_to_f16,
+    f64, half::f16,
+    |x: f64| half::f16::from_f32(x as f32),
+    "Convert `f64` -> `f16`."
+);
+cast_kernel!(
+    cast_f64_to_bf16,
+    f64, half::bf16,
+    |x: f64| half::bf16::from_f32(x as f32),
+    "Convert `f64` -> `bf16`."
+);
+cast_kernel_to_fp8!(
+    cast_f64_to_f8e4m3,
+    f64,
+    |x: f64| float8::F8E4M3::from_f32(x as f32),
+    "Convert `f64` -> `f8e4m3`."
+);
+cast_kernel!(
+    cast_f64_to_u8,
+    f64, u8,
+    |x: f64| x as u8,
+    "Convert `f64` -> `u8`."
+);
+cast_kernel!(
+    cast_f64_to_i8,
+    f64, i8,
+    |x: f64| x as i8,
+    "Convert `f64` -> `i8`."
+);
+cast_kernel!(
+    cast_f64_to_u32,
+    f64, u32,
+    |x: f64| x as u32,
+    "Convert `f64` -> `u32`."
+);
+cast_kernel!(
+    cast_f64_to_i16,
+    f64, i16,
+    |x: f64| x as i16,
+    "Convert `f64` -> `i16`."
+);
+cast_kernel!(
+    cast_f64_to_i32,
+    f64, i32,
+    |x: f64| x as i32,
+    "Convert `f64` -> `i32`."
+);
+cast_kernel!(
+    cast_f64_to_i64,
+    f64, i64,
+    |x: f64| x as i64,
+    "Convert `f64` -> `i64`."
+);
+cast_kernel!(
+    cast_f16_to_f64,
+    half::f16, f64,
+    |x: half::f16| x.to_f32() as f64,
+    "Convert `f16` -> `f64`."
+);
+cast_kernel!(
+    cast_f16_to_bf16,
+    half::f16, half::bf16,
+    |x: half::f16| half::bf16::from_f32(x.to_f32()),
+    "Convert `f16` -> `bf16`."
+);
+cast_kernel!(
+    cast_f16_to_u8,
+    half::f16, u8,
+    |x: half::f16| x.to_f32() as u8,
+    "Convert `f16` -> `u8`."
+);
+cast_kernel!(
+    cast_f16_to_i8,
+    half::f16, i8,
+    |x: half::f16| x.to_f32() as i8,
+    "Convert `f16` -> `i8`."
+);
+cast_kernel!(
+    cast_f16_to_u32,
+    half::f16, u32,
+    |x: half::f16| x.to_f32() as u32,
+    "Convert `f16` -> `u32`."
+);
+cast_kernel!(
+    cast_f16_to_i16,
+    half::f16, i16,
+    |x: half::f16| x.to_f32() as i16,
+    "Convert `f16` -> `i16`."
+);
+cast_kernel!(
+    cast_f16_to_i32,
+    half::f16, i32,
+    |x: half::f16| x.to_f32() as i32,
+    "Convert `f16` -> `i32`."
+);
+cast_kernel!(
+    cast_f16_to_i64,
+    half::f16, i64,
+    |x: half::f16| x.to_f32() as i64,
+    "Convert `f16` -> `i64`."
+);
+cast_kernel!(
+    cast_bf16_to_f64,
+    half::bf16, f64,
+    |x: half::bf16| x.to_f32() as f64,
+    "Convert `bf16` -> `f64`."
+);
+cast_kernel!(
+    cast_bf16_to_f16,
+    half::bf16, half::f16,
+    |x: half::bf16| half::f16::from_f32(x.to_f32()),
+    "Convert `bf16` -> `f16`."
+);
+cast_kernel!(
+    cast_bf16_to_u8,
+    half::bf16, u8,
+    |x: half::bf16| x.to_f32() as u8,
+    "Convert `bf16` -> `u8`."
+);
+cast_kernel!(
+    cast_bf16_to_i8,
+    half::bf16, i8,
+    |x: half::bf16| x.to_f32() as i8,
+    "Convert `bf16` -> `i8`."
+);
+cast_kernel!(
+    cast_bf16_to_u32,
+    half::bf16, u32,
+    |x: half::bf16| x.to_f32() as u32,
+    "Convert `bf16` -> `u32`."
+);
+cast_kernel!(
+    cast_bf16_to_i16,
+    half::bf16, i16,
+    |x: half::bf16| x.to_f32() as i16,
+    "Convert `bf16` -> `i16`."
+);
+cast_kernel!(
+    cast_bf16_to_i32,
+    half::bf16, i32,
+    |x: half::bf16| x.to_f32() as i32,
+    "Convert `bf16` -> `i32`."
+);
+cast_kernel!(
+    cast_bf16_to_i64,
+    half::bf16, i64,
+    |x: half::bf16| x.to_f32() as i64,
+    "Convert `bf16` -> `i64`."
+);
+cast_kernel_from_fp8!(
+    cast_f8e4m3_to_f64,
+    f64,
+    |x: float8::F8E4M3| x.to_f32() as f64,
+    "Convert `f8e4m3` -> `f64`."
+);
+cast_kernel_from_fp8!(
+    cast_f8e4m3_to_u8,
+    u8,
+    |x: float8::F8E4M3| x.to_f32() as u8,
+    "Convert `f8e4m3` -> `u8`."
+);
+cast_kernel_from_fp8!(
+    cast_f8e4m3_to_i8,
+    i8,
+    |x: float8::F8E4M3| x.to_f32() as i8,
+    "Convert `f8e4m3` -> `i8`."
+);
+cast_kernel_from_fp8!(
+    cast_f8e4m3_to_u32,
+    u32,
+    |x: float8::F8E4M3| x.to_f32() as u32,
+    "Convert `f8e4m3` -> `u32`."
+);
+cast_kernel_from_fp8!(
+    cast_f8e4m3_to_i16,
+    i16,
+    |x: float8::F8E4M3| x.to_f32() as i16,
+    "Convert `f8e4m3` -> `i16`."
+);
+cast_kernel_from_fp8!(
+    cast_f8e4m3_to_i32,
+    i32,
+    |x: float8::F8E4M3| x.to_f32() as i32,
+    "Convert `f8e4m3` -> `i32`."
+);
+cast_kernel_from_fp8!(
+    cast_f8e4m3_to_i64,
+    i64,
+    |x: float8::F8E4M3| x.to_f32() as i64,
+    "Convert `f8e4m3` -> `i64`."
+);
+cast_kernel!(
+    cast_u8_to_f32,
+    u8, f32,
+    |x: u8| x as f32,
+    "Convert `u8` -> `f32`."
+);
+cast_kernel!(
+    cast_u8_to_f64,
+    u8, f64,
+    |x: u8| x as f64,
+    "Convert `u8` -> `f64`."
+);
+cast_kernel!(
+    cast_u8_to_f16,
+    u8, half::f16,
+    |x: u8| half::f16::from_f32(x as f32),
+    "Convert `u8` -> `f16`."
+);
+cast_kernel!(
+    cast_u8_to_bf16,
+    u8, half::bf16,
+    |x: u8| half::bf16::from_f32(x as f32),
+    "Convert `u8` -> `bf16`."
+);
+cast_kernel_to_fp8!(
+    cast_u8_to_f8e4m3,
+    u8,
+    |x: u8| float8::F8E4M3::from_f32(x as f32),
+    "Convert `u8` -> `f8e4m3`."
+);
+cast_kernel!(
+    cast_u8_to_i8,
+    u8, i8,
+    |x: u8| x as i8,
+    "Convert `u8` -> `i8`."
+);
+cast_kernel!(
+    cast_u8_to_u32,
+    u8, u32,
+    |x: u8| x as u32,
+    "Convert `u8` -> `u32`."
+);
+cast_kernel!(
+    cast_u8_to_i16,
+    u8, i16,
+    |x: u8| x as i16,
+    "Convert `u8` -> `i16`."
+);
+cast_kernel!(
+    cast_u8_to_i32,
+    u8, i32,
+    |x: u8| x as i32,
+    "Convert `u8` -> `i32`."
+);
+cast_kernel!(
+    cast_u8_to_i64,
+    u8, i64,
+    |x: u8| x as i64,
+    "Convert `u8` -> `i64`."
+);
+cast_kernel!(
+    cast_i8_to_f32,
+    i8, f32,
+    |x: i8| x as f32,
+    "Convert `i8` -> `f32`."
+);
+cast_kernel!(
+    cast_i8_to_f64,
+    i8, f64,
+    |x: i8| x as f64,
+    "Convert `i8` -> `f64`."
+);
+cast_kernel!(
+    cast_i8_to_f16,
+    i8, half::f16,
+    |x: i8| half::f16::from_f32(x as f32),
+    "Convert `i8` -> `f16`."
+);
+cast_kernel!(
+    cast_i8_to_bf16,
+    i8, half::bf16,
+    |x: i8| half::bf16::from_f32(x as f32),
+    "Convert `i8` -> `bf16`."
+);
+cast_kernel_to_fp8!(
+    cast_i8_to_f8e4m3,
+    i8,
+    |x: i8| float8::F8E4M3::from_f32(x as f32),
+    "Convert `i8` -> `f8e4m3`."
+);
+cast_kernel!(
+    cast_i8_to_u8,
+    i8, u8,
+    |x: i8| x as u8,
+    "Convert `i8` -> `u8`."
+);
+cast_kernel!(
+    cast_i8_to_u32,
+    i8, u32,
+    |x: i8| x as u32,
+    "Convert `i8` -> `u32`."
+);
+cast_kernel!(
+    cast_i8_to_i16,
+    i8, i16,
+    |x: i8| x as i16,
+    "Convert `i8` -> `i16`."
+);
+cast_kernel!(
+    cast_i8_to_i32,
+    i8, i32,
+    |x: i8| x as i32,
+    "Convert `i8` -> `i32`."
+);
+cast_kernel!(
+    cast_i8_to_i64,
+    i8, i64,
+    |x: i8| x as i64,
+    "Convert `i8` -> `i64`."
+);
+cast_kernel!(
+    cast_u32_to_f32,
+    u32, f32,
+    |x: u32| x as f32,
+    "Convert `u32` -> `f32`."
+);
+cast_kernel!(
+    cast_u32_to_f64,
+    u32, f64,
+    |x: u32| x as f64,
+    "Convert `u32` -> `f64`."
+);
+cast_kernel!(
+    cast_u32_to_f16,
+    u32, half::f16,
+    |x: u32| half::f16::from_f32(x as f32),
+    "Convert `u32` -> `f16`."
+);
+cast_kernel!(
+    cast_u32_to_bf16,
+    u32, half::bf16,
+    |x: u32| half::bf16::from_f32(x as f32),
+    "Convert `u32` -> `bf16`."
+);
+cast_kernel_to_fp8!(
+    cast_u32_to_f8e4m3,
+    u32,
+    |x: u32| float8::F8E4M3::from_f32(x as f32),
+    "Convert `u32` -> `f8e4m3`."
+);
+cast_kernel!(
+    cast_u32_to_u8,
+    u32, u8,
+    |x: u32| x as u8,
+    "Convert `u32` -> `u8`."
+);
+cast_kernel!(
+    cast_u32_to_i8,
+    u32, i8,
+    |x: u32| x as i8,
+    "Convert `u32` -> `i8`."
+);
+cast_kernel!(
+    cast_u32_to_i16,
+    u32, i16,
+    |x: u32| x as i16,
+    "Convert `u32` -> `i16`."
+);
+cast_kernel!(
+    cast_u32_to_i32,
+    u32, i32,
+    |x: u32| x as i32,
+    "Convert `u32` -> `i32`."
+);
+cast_kernel!(
+    cast_u32_to_i64,
+    u32, i64,
+    |x: u32| x as i64,
+    "Convert `u32` -> `i64`."
+);
+cast_kernel!(
+    cast_i16_to_f32,
+    i16, f32,
+    |x: i16| x as f32,
+    "Convert `i16` -> `f32`."
+);
+cast_kernel!(
+    cast_i16_to_f64,
+    i16, f64,
+    |x: i16| x as f64,
+    "Convert `i16` -> `f64`."
+);
+cast_kernel!(
+    cast_i16_to_f16,
+    i16, half::f16,
+    |x: i16| half::f16::from_f32(x as f32),
+    "Convert `i16` -> `f16`."
+);
+cast_kernel!(
+    cast_i16_to_bf16,
+    i16, half::bf16,
+    |x: i16| half::bf16::from_f32(x as f32),
+    "Convert `i16` -> `bf16`."
+);
+cast_kernel_to_fp8!(
+    cast_i16_to_f8e4m3,
+    i16,
+    |x: i16| float8::F8E4M3::from_f32(x as f32),
+    "Convert `i16` -> `f8e4m3`."
+);
+cast_kernel!(
+    cast_i16_to_u8,
+    i16, u8,
+    |x: i16| x as u8,
+    "Convert `i16` -> `u8`."
+);
+cast_kernel!(
+    cast_i16_to_i8,
+    i16, i8,
+    |x: i16| x as i8,
+    "Convert `i16` -> `i8`."
+);
+cast_kernel!(
+    cast_i16_to_u32,
+    i16, u32,
+    |x: i16| x as u32,
+    "Convert `i16` -> `u32`."
+);
+cast_kernel!(
+    cast_i16_to_i32,
+    i16, i32,
+    |x: i16| x as i32,
+    "Convert `i16` -> `i32`."
+);
+cast_kernel!(
+    cast_i16_to_i64,
+    i16, i64,
+    |x: i16| x as i64,
+    "Convert `i16` -> `i64`."
+);
+cast_kernel!(
+    cast_i32_to_f32,
+    i32, f32,
+    |x: i32| x as f32,
+    "Convert `i32` -> `f32`."
+);
+cast_kernel!(
+    cast_i32_to_f64,
+    i32, f64,
+    |x: i32| x as f64,
+    "Convert `i32` -> `f64`."
+);
+cast_kernel!(
+    cast_i32_to_f16,
+    i32, half::f16,
+    |x: i32| half::f16::from_f32(x as f32),
+    "Convert `i32` -> `f16`."
+);
+cast_kernel!(
+    cast_i32_to_bf16,
+    i32, half::bf16,
+    |x: i32| half::bf16::from_f32(x as f32),
+    "Convert `i32` -> `bf16`."
+);
+cast_kernel_to_fp8!(
+    cast_i32_to_f8e4m3,
+    i32,
+    |x: i32| float8::F8E4M3::from_f32(x as f32),
+    "Convert `i32` -> `f8e4m3`."
+);
+cast_kernel!(
+    cast_i32_to_u8,
+    i32, u8,
+    |x: i32| x as u8,
+    "Convert `i32` -> `u8`."
+);
+cast_kernel!(
+    cast_i32_to_i8,
+    i32, i8,
+    |x: i32| x as i8,
+    "Convert `i32` -> `i8`."
+);
+cast_kernel!(
+    cast_i32_to_u32,
+    i32, u32,
+    |x: i32| x as u32,
+    "Convert `i32` -> `u32`."
+);
+cast_kernel!(
+    cast_i32_to_i16,
+    i32, i16,
+    |x: i32| x as i16,
+    "Convert `i32` -> `i16`."
+);
+cast_kernel!(
+    cast_i32_to_i64,
+    i32, i64,
+    |x: i32| x as i64,
+    "Convert `i32` -> `i64`."
+);
+cast_kernel!(
+    cast_i64_to_f32,
+    i64, f32,
+    |x: i64| x as f32,
+    "Convert `i64` -> `f32`."
+);
+cast_kernel!(
+    cast_i64_to_f64,
+    i64, f64,
+    |x: i64| x as f64,
+    "Convert `i64` -> `f64`."
+);
+cast_kernel!(
+    cast_i64_to_f16,
+    i64, half::f16,
+    |x: i64| half::f16::from_f32(x as f32),
+    "Convert `i64` -> `f16`."
+);
+cast_kernel!(
+    cast_i64_to_bf16,
+    i64, half::bf16,
+    |x: i64| half::bf16::from_f32(x as f32),
+    "Convert `i64` -> `bf16`."
+);
+cast_kernel_to_fp8!(
+    cast_i64_to_f8e4m3,
+    i64,
+    |x: i64| float8::F8E4M3::from_f32(x as f32),
+    "Convert `i64` -> `f8e4m3`."
+);
+cast_kernel!(
+    cast_i64_to_u8,
+    i64, u8,
+    |x: i64| x as u8,
+    "Convert `i64` -> `u8`."
+);
+cast_kernel!(
+    cast_i64_to_i8,
+    i64, i8,
+    |x: i64| x as i8,
+    "Convert `i64` -> `i8`."
+);
+cast_kernel!(
+    cast_i64_to_u32,
+    i64, u32,
+    |x: i64| x as u32,
+    "Convert `i64` -> `u32`."
+);
+cast_kernel!(
+    cast_i64_to_i16,
+    i64, i16,
+    |x: i64| x as i16,
+    "Convert `i64` -> `i16`."
+);
+cast_kernel!(
+    cast_i64_to_i32,
+    i64, i32,
+    |x: i64| x as i32,
+    "Convert `i64` -> `i32`."
+);
+
 // =============================================================================
 // Matrix multiplication (f32)
 // =============================================================================
@@ -10672,6 +11267,70 @@ mod tests {
         let fp8 = CpuStorageBytes::from_zero_bytes(3);
         let mut wrong_out = CpuStorageBytes::from_zero_bytes(7); // want 12
         assert!(cast_f8e4m3_to_f32(&fp8, &mut wrong_out).is_err());
+    }
+
+    /// End-to-end exercise of representative pairs from the newly-completed
+    /// cast matrix (int↔float, float→int truncation, int→half, int↔int, and
+    /// the F8E4M3 integer edges). Each pair runs through its byte kernel and
+    /// the output bytes are asserted directly.
+    #[test]
+    fn cast_matrix_new_pairs_end_to_end() {
+        // U32 → F32: 5u32 → 5.0f32 (widening, exact).
+        {
+            let src = CpuStorageBytes::from_slice(&[5_u32, 0, 4_294_967_295]);
+            let mut out = CpuStorageBytes::from_zero_bytes(3 * 4);
+            cast_u32_to_f32(&src, &mut out).expect("u32 → f32");
+            let got: &[f32] = out.as_slice().unwrap();
+            assert_eq!(got, &[5.0_f32, 0.0, 4_294_967_295.0]);
+        }
+        // F32 → I64: 3.9 truncates toward zero to 3; -3.9 → -3.
+        {
+            let src = CpuStorageBytes::from_slice(&[3.9_f32, -3.9, 0.0, 7.0]);
+            let mut out = CpuStorageBytes::from_zero_bytes(4 * 8);
+            cast_f32_to_i64(&src, &mut out).expect("f32 → i64");
+            assert_eq!(out.as_slice::<i64>().unwrap(), &[3_i64, -3, 0, 7]);
+        }
+        // I64 → F16: small integers are exact in f16; round-trip via to_f32.
+        {
+            let src = CpuStorageBytes::from_slice(&[0_i64, 1, -2, 256]);
+            let mut out = CpuStorageBytes::from_zero_bytes(4 * 2);
+            cast_i64_to_f16(&src, &mut out).expect("i64 → f16");
+            let got: &[half::f16] = out.as_slice().unwrap();
+            let as_f32: Vec<f32> = got.iter().map(|h| h.to_f32()).collect();
+            assert_eq!(as_f32, vec![0.0_f32, 1.0, -2.0, 256.0]);
+        }
+        // U8 → F32: 255u8 → 255.0f32.
+        {
+            let src = CpuStorageBytes::from_slice(&[0_u8, 1, 128, 255]);
+            let mut out = CpuStorageBytes::from_zero_bytes(4 * 4);
+            cast_u8_to_f32(&src, &mut out).expect("u8 → f32");
+            assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0_f32, 1.0, 128.0, 255.0]);
+        }
+        // I32 → I16: narrowing truncates the high bits (wrapping `as`).
+        {
+            let src = CpuStorageBytes::from_slice(&[1_i32, -1, 32767, 70000]);
+            let mut out = CpuStorageBytes::from_zero_bytes(4 * 2);
+            cast_i32_to_i16(&src, &mut out).expect("i32 → i16");
+            assert_eq!(out.as_slice::<i16>().unwrap(), &[1_i16, -1, 32767, 70000_i32 as i16]);
+        }
+        // I16 → F8E4M3 → I16: 4 is exactly representable in F8E4M3 (mant=0).
+        {
+            let src = CpuStorageBytes::from_slice(&[0_i16, 1, 2, 4]);
+            let mut fp8 = CpuStorageBytes::from_zero_bytes(4);
+            cast_i16_to_f8e4m3(&src, &mut fp8).expect("i16 → f8e4m3");
+            let mut back = CpuStorageBytes::from_zero_bytes(4 * 2);
+            cast_f8e4m3_to_i16(&fp8, &mut back).expect("f8e4m3 → i16");
+            assert_eq!(back.as_slice::<i16>().unwrap(), &[0_i16, 1, 2, 4]);
+        }
+        // BF16 → I32 via f32: 6.75 truncates to 6.
+        {
+            let f32_src = CpuStorageBytes::from_slice(&[6.75_f32, -1.5, 100.0]);
+            let mut bf = CpuStorageBytes::from_zero_bytes(3 * 2);
+            cast_f32_to_bf16(&f32_src, &mut bf).expect("f32 → bf16");
+            let mut out = CpuStorageBytes::from_zero_bytes(3 * 4);
+            cast_bf16_to_i32(&bf, &mut out).expect("bf16 → i32");
+            assert_eq!(out.as_slice::<i32>().unwrap(), &[6_i32, -1, 100]);
+        }
     }
 
     // ---- Integer MatMul (i8 / u8) -------------------------------------------

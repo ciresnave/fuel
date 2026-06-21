@@ -1573,6 +1573,580 @@ mod tests {
         }
     }
 
+    /// Reference attention (B=1, multi-head, GQA-aware) in plain Rust:
+    /// `out = softmax( softcap(scale·QKᵀ) [+ causal -inf] ) · V`. q
+    /// `[hq,sq,d]`, k/v `[hkv,sk,d]` (GQA: q-head `h` attends kv-head
+    /// `h / (hq/hkv)`), out `[hq,sq,d]`.
+    #[allow(clippy::too_many_arguments)]
+    fn ref_attention(
+        q: &[f32], k: &[f32], v: &[f32],
+        hq: usize, hkv: usize, sq: usize, sk: usize, d: usize,
+        scale: f32, causal: bool, softcap: Option<f32>, alibi: Option<&[f32]>,
+    ) -> Vec<f32> {
+        let g = hq / hkv;
+        let mut out = vec![0.0f32; hq * sq * d];
+        for h in 0..hq {
+            let hk = h / g;
+            let qh = &q[h * sq * d..(h + 1) * sq * d];
+            let kh = &k[hk * sk * d..(hk + 1) * sk * d];
+            let vh = &v[hk * sk * d..(hk + 1) * sk * d];
+            for i in 0..sq {
+                let mut scores = vec![0.0f32; sk];
+                for j in 0..sk {
+                    let mut s = 0.0f32;
+                    for l in 0..d {
+                        s += qh[i * d + l] * kh[j * d + l];
+                    }
+                    let mut sc = scale * s;
+                    if let Some(cap) = softcap {
+                        sc = cap * (sc / cap).tanh();
+                    }
+                    if let Some(slopes) = alibi {
+                        // alibi bias = slope[h] · (key_pos - query_pos).
+                        sc += slopes[h] * (j as f32 - i as f32);
+                    }
+                    scores[j] = if causal && j > i { f32::NEG_INFINITY } else { sc };
+                }
+                let m = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let mut sum = 0.0f32;
+                let exps: Vec<f32> = scores
+                    .iter()
+                    .map(|&s| {
+                        let e = (s - m).exp();
+                        sum += e;
+                        e
+                    })
+                    .collect();
+                for l in 0..d {
+                    let mut o = 0.0f32;
+                    for j in 0..sk {
+                        o += (exps[j] / sum) * vh[j * d + l];
+                    }
+                    out[(h * sq + i) * d + l] = o;
+                }
+            }
+        }
+        out
+    }
+
+    /// Numerical parity: lower a FlashAttn node to its primitive
+    /// decomposition, realize it on CPU, and assert it matches the plain-Rust
+    /// reference — verifying the recipe's *math* (scale·QKᵀ → softmax → ·V),
+    /// the `Triu` `-inf` causal mask, GQA head-repeat, the `tanh` softcap, and
+    /// the alibi bias (which is the sole config that lowers to `Op::Iota`).
+    fn flash_decompose_vs_reference(
+        hq: usize, hkv: usize, causal: bool, softcap: Option<f32>, alibi: bool,
+    ) {
+        let dev = Device::cpu();
+        let (sq, sk, d) = (2usize, 2usize, 2usize);
+        // deterministic, varied inputs so the comparison is meaningful.
+        let q_data: Vec<f32> = (0..hq * sq * d).map(|i| (i as f32 * 0.1).sin()).collect();
+        let k_data: Vec<f32> = (0..hkv * sk * d).map(|i| (i as f32 * 0.13).cos()).collect();
+        let v_data: Vec<f32> = (0..hkv * sk * d).map(|i| i as f32 * 0.07 + 1.0).collect();
+        let scale = 0.7071f32;
+        let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev);
+        let k = q.const_f32_like(k_data.clone(), Shape::from_dims(&[1, hkv, sk, d]));
+        let v = q.const_f32_like(v_data.clone(), Shape::from_dims(&[1, hkv, sk, d]));
+        // Distinct positive slope per head (powers of 1/2 — the alibi default).
+        let alibi_slopes: Option<Vec<f32>> = if alibi {
+            Some((0..hq).map(|h| 0.5f32.powi(h as i32 + 1)).collect())
+        } else {
+            None
+        };
+        let alibi_t = alibi_slopes
+            .as_ref()
+            .map(|s| q.const_f32_like(s.clone(), Shape::from_dims(&[hq])));
+        let attn = q
+            .flash_attn(&k, &v, alibi_t.as_ref(), scale, causal, None, None, softcap)
+            .unwrap();
+
+        // Decompose explicitly, then realize the primitive subgraph.
+        let graph = attn.inner.graph().clone();
+        let id = attn.inner.id();
+        let roots = fuel_graph::opt::RuleRegistry::lowering_only()
+            .optimize_to_fixpoint(&graph, &[id]);
+        assert_eq!(roots.len(), 1, "lowering should keep a single root");
+        let got = crate::pipelined_bridge::realize_one_as::<f32>(&graph, roots[0], &dev)
+            .expect("realize decomposed FlashAttn on CPU");
+
+        let expected = ref_attention(
+            &q_data, &k_data, &v_data, hq, hkv, sq, sk, d, scale, causal, softcap,
+            alibi_slopes.as_deref(),
+        );
+        assert_eq!(got.len(), expected.len());
+        for (i, (&g, &e)) in got.iter().zip(&expected).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-4,
+                "FlashAttn decompose mismatch (hq={hq} hkv={hkv} causal={causal} \
+                 softcap={softcap:?} alibi={alibi}) at {i}: got {g}, expected {e}",
+            );
+        }
+    }
+
+    #[test]
+    fn flash_attn_decompose_vanilla() {
+        flash_decompose_vs_reference(1, 1, false, None, false);
+    }
+
+    #[test]
+    fn flash_attn_decompose_causal() {
+        flash_decompose_vs_reference(1, 1, true, None, false);
+    }
+
+    #[test]
+    fn flash_attn_decompose_gqa_causal() {
+        flash_decompose_vs_reference(2, 1, true, None, false); // Hq=2, Hkv=1 (head-repeat)
+    }
+
+    #[test]
+    fn flash_attn_decompose_softcap() {
+        flash_decompose_vs_reference(1, 1, false, Some(0.5), false); // small cap → tanh saturates
+    }
+
+    #[test]
+    fn flash_attn_decompose_alibi() {
+        // alibi is the only config that lowers to Op::Iota (relative-position
+        // values) — this exercises the new 0-input Iota execution path.
+        flash_decompose_vs_reference(2, 2, false, None, true);
+    }
+
+    #[test]
+    fn flash_attn_decompose_alibi_causal() {
+        flash_decompose_vs_reference(2, 2, true, None, true);
+    }
+
+    /// Build a one-output fused-op node directly on `anchor`'s graph, lower it
+    /// to primitives, realize on CPU, and return the F32 values. The decompose
+    /// parity tests for backward helpers use this — those ops have no public
+    /// builder (autograd creates them), so the test constructs the
+    /// `Op::Fused` node by hand.
+    fn lower_realize_fused(
+        anchor: &LazyTensor,
+        op: fuel_graph::Op,
+        inputs: Vec<fuel_graph::NodeId>,
+        shape: Shape,
+    ) -> Vec<f32> {
+        let graph = anchor.inner.graph().clone();
+        let fused_id = {
+            let mut g = graph.write().unwrap();
+            g.push(fuel_graph::Node {
+                op,
+                inputs,
+                shape,
+                dtype: DType::F32,
+            })
+        };
+        let roots = fuel_graph::opt::RuleRegistry::lowering_only()
+            .optimize_to_fixpoint(&graph, &[fused_id]);
+        assert_eq!(roots.len(), 1, "lowering keeps a single root");
+        crate::pipelined_bridge::realize_one_as::<f32>(&graph, roots[0], &Device::cpu())
+            .expect("realize decomposed fused op on CPU")
+    }
+
+    #[test]
+    fn powi_backward_decompose_matches_reference() {
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        let dev = Device::cpu();
+        let exp = 3i32;
+        let x_data = vec![1.5f32, -2.0, 0.5, 3.0];
+        let up_data = vec![1.0f32, 0.5, 2.0, -1.0];
+        let shape = Shape::from_dims(&[4]);
+        let x = LazyTensor::from_f32(x_data.clone(), shape.clone(), &dev);
+        let up = x.const_f32_like(up_data.clone(), shape.clone());
+        let got = lower_realize_fused(
+            &x,
+            fuel_graph::Op::Fused(
+                FusedOps::POWI_BACKWARD,
+                FusedOpParams::PowIBackward { exp },
+            ),
+            vec![x.inner.id(), up.inner.id()],
+            shape,
+        );
+        // grad_x = exp · x^(exp-1) · upstream
+        let expected: Vec<f32> = x_data
+            .iter()
+            .zip(&up_data)
+            .map(|(&x, &u)| exp as f32 * x.powi(exp - 1) * u)
+            .collect();
+        assert_eq!(got.len(), expected.len());
+        for (i, (&g, &e)) in got.iter().zip(&expected).enumerate() {
+            assert!((g - e).abs() < 1e-4, "powi_backward at {i}: got {g}, expected {e}");
+        }
+    }
+
+    #[test]
+    fn softmax_last_dim_backward_decompose_matches_reference() {
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        let dev = Device::cpu();
+        let (rows, cols) = (2usize, 3usize);
+        // s = a real softmax over the last dim; g = arbitrary upstream.
+        let logits = [[0.5f32, -1.0, 2.0], [1.0, 0.0, -0.5]];
+        let mut s_data = Vec::new();
+        for row in &logits {
+            let m = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let exps: Vec<f32> = row.iter().map(|&v| (v - m).exp()).collect();
+            let sum: f32 = exps.iter().sum();
+            s_data.extend(exps.iter().map(|&e| e / sum));
+        }
+        let g_data = vec![1.0f32, -0.5, 0.3, 0.2, 1.5, -1.0];
+        let shape = Shape::from_dims(&[rows, cols]);
+        let s = LazyTensor::from_f32(s_data.clone(), shape.clone(), &dev);
+        let g = s.const_f32_like(g_data.clone(), shape.clone());
+        let got = lower_realize_fused(
+            &s,
+            fuel_graph::Op::Fused(
+                FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
+                FusedOpParams::SoftmaxLastDimBackward,
+            ),
+            vec![s.inner.id(), g.inner.id()],
+            shape,
+        );
+        // grad_x = s · (g − sum(g·s, last))
+        let mut expected = vec![0.0f32; rows * cols];
+        for r in 0..rows {
+            let dot: f32 = (0..cols).map(|c| g_data[r * cols + c] * s_data[r * cols + c]).sum();
+            for c in 0..cols {
+                expected[r * cols + c] = s_data[r * cols + c] * (g_data[r * cols + c] - dot);
+            }
+        }
+        for (i, (&gv, &ev)) in got.iter().zip(&expected).enumerate() {
+            assert!((gv - ev).abs() < 1e-5, "softmax_bwd at {i}: got {gv}, expected {ev}");
+        }
+    }
+
+    #[test]
+    fn rms_norm_last_dim_backward_decompose_matches_reference() {
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        let dev = Device::cpu();
+        let (rows, cols) = (2usize, 3usize);
+        let eps = 1e-5f64;
+        let x_data = vec![1.0f32, -2.0, 0.5, 3.0, 0.25, -1.5];
+        let g_data = vec![0.5f32, 1.0, -0.3, 0.2, -1.0, 0.7];
+        let shape = Shape::from_dims(&[rows, cols]);
+        let x = LazyTensor::from_f32(x_data.clone(), shape.clone(), &dev);
+        let g = x.const_f32_like(g_data.clone(), shape.clone());
+        let got = lower_realize_fused(
+            &x,
+            fuel_graph::Op::Fused(
+                FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
+                FusedOpParams::RmsNormLastDimBackward { eps },
+            ),
+            vec![x.inner.id(), g.inner.id()],
+            shape,
+        );
+        // grad_x = r_rms · (g − x·s / (n·(mean_sq + eps)))
+        let n = cols as f32;
+        let mut expected = vec![0.0f32; rows * cols];
+        for r in 0..rows {
+            let meansq: f32 = (0..cols).map(|c| x_data[r * cols + c].powi(2)).sum::<f32>() / n;
+            let denom = meansq + eps as f32;
+            let rrms = 1.0 / denom.sqrt();
+            let s: f32 = (0..cols).map(|c| g_data[r * cols + c] * x_data[r * cols + c]).sum();
+            for c in 0..cols {
+                let term = x_data[r * cols + c] * s / (n * denom);
+                expected[r * cols + c] = rrms * (g_data[r * cols + c] - term);
+            }
+        }
+        for (i, (&gv, &ev)) in got.iter().zip(&expected).enumerate() {
+            assert!((gv - ev).abs() < 1e-4, "rms_norm_bwd at {i}: got {gv}, expected {ev}");
+        }
+    }
+
+    #[test]
+    fn layer_norm_last_dim_backward_decompose_matches_reference() {
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        let dev = Device::cpu();
+        let (rows, cols) = (2usize, 3usize);
+        let eps = 1e-5f64;
+        let x_data = vec![1.0f32, -2.0, 0.5, 3.0, 0.25, -1.5];
+        let g_data = vec![0.5f32, 1.0, -0.3, 0.2, -1.0, 0.7];
+        let shape = Shape::from_dims(&[rows, cols]);
+        let x = LazyTensor::from_f32(x_data.clone(), shape.clone(), &dev);
+        let g = x.const_f32_like(g_data.clone(), shape.clone());
+        let got = lower_realize_fused(
+            &x,
+            fuel_graph::Op::Fused(
+                FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
+                FusedOpParams::LayerNormLastDimBackward { eps },
+            ),
+            vec![x.inner.id(), g.inner.id()],
+            shape,
+        );
+        // grad_x = istd · (g − mean(g) − xhat·mean(g·xhat))
+        let n = cols as f32;
+        let mut expected = vec![0.0f32; rows * cols];
+        for r in 0..rows {
+            let mean_x: f32 = (0..cols).map(|c| x_data[r * cols + c]).sum::<f32>() / n;
+            let var: f32 =
+                (0..cols).map(|c| (x_data[r * cols + c] - mean_x).powi(2)).sum::<f32>() / n;
+            let istd = 1.0 / (var + eps as f32).sqrt();
+            let xhat: Vec<f32> = (0..cols).map(|c| (x_data[r * cols + c] - mean_x) * istd).collect();
+            let mean_g: f32 = (0..cols).map(|c| g_data[r * cols + c]).sum::<f32>() / n;
+            let mean_gxh: f32 = (0..cols).map(|c| g_data[r * cols + c] * xhat[c]).sum::<f32>() / n;
+            for c in 0..cols {
+                expected[r * cols + c] =
+                    istd * (g_data[r * cols + c] - mean_g - xhat[c] * mean_gxh);
+            }
+        }
+        for (i, (&gv, &ev)) in got.iter().zip(&expected).enumerate() {
+            assert!((gv - ev).abs() < 1e-4, "layer_norm_bwd at {i}: got {gv}, expected {ev}");
+        }
+    }
+
+    #[test]
+    fn reduce_max_to_backward_decompose_matches_reference() {
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        let dev = Device::cpu();
+        // row0 has a tie at the max (two 3.0s → share 10/2); row1 unique max.
+        let x_data = vec![1.0f32, 3.0, 3.0, 2.0, 0.0, 1.0]; // [2,3]
+        let up_data = vec![10.0f32, 5.0]; // [2,1] — one per reduced row.
+        let x_shape = Shape::from_dims(&[2, 3]);
+        let up_shape = Shape::from_dims(&[2, 1]);
+        let x = LazyTensor::from_f32(x_data.clone(), x_shape.clone(), &dev);
+        let up = x.const_f32_like(up_data.clone(), up_shape);
+        let got = lower_realize_fused(
+            &x,
+            fuel_graph::Op::Fused(
+                FusedOps::REDUCE_MAX_TO_BACKWARD,
+                FusedOpParams::ReduceMaxToBackward,
+            ),
+            vec![x.inner.id(), up.inner.id()],
+            x_shape,
+        );
+        // row0: max 3.0 tied 2× → 10/2 each; row1: max 2.0 unique → full 5.0.
+        let expected = vec![0.0f32, 5.0, 5.0, 5.0, 0.0, 0.0];
+        for (i, (&gv, &ev)) in got.iter().zip(&expected).enumerate() {
+            assert!((gv - ev).abs() < 1e-5, "reduce_max_bwd at {i}: got {gv}, expected {ev}");
+        }
+    }
+
+    fn causal_conv1d_check(use_silu: bool) {
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        let dev = Device::cpu();
+        let (b, c, k, seq) = (1usize, 2usize, 3usize, 2usize);
+        let x_seq = seq + (k - 1); // caller pre-pads by K-1.
+        // x [B,C,x_seq], weight [C,1,K], bias [C] — all row-major.
+        let x_data = vec![0.0f32, 1.0, 2.0, 3.0, 1.0, 0.0, -1.0, -2.0];
+        let w_data = vec![0.5f32, 1.0, -0.5, 1.0, 0.0, 2.0];
+        let bias_data = vec![0.1f32, -0.2];
+        let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[b, c, x_seq]), &dev);
+        let w = x.const_f32_like(w_data.clone(), Shape::from_dims(&[c, 1, k]));
+        let bias = x.const_f32_like(bias_data.clone(), Shape::from_dims(&[c]));
+        let got = lower_realize_fused(
+            &x,
+            fuel_graph::Op::Fused(
+                FusedOps::CAUSAL_CONV1D,
+                FusedOpParams::CausalConv1d { use_silu },
+            ),
+            vec![x.inner.id(), w.inner.id(), bias.inner.id()],
+            Shape::from_dims(&[b, c, seq]),
+        );
+        // out[c,t] = Σ_k w[c,k]·x[c,t+k] + bias[c], optional SiLU.
+        let mut expected = vec![0.0f32; b * c * seq];
+        for ch in 0..c {
+            for t in 0..seq {
+                let mut acc = 0.0f32;
+                for kk in 0..k {
+                    acc += w_data[ch * k + kk] * x_data[ch * x_seq + t + kk];
+                }
+                acc += bias_data[ch];
+                if use_silu {
+                    acc *= 1.0 / (1.0 + (-acc).exp());
+                }
+                expected[ch * seq + t] = acc;
+            }
+        }
+        for (i, (&gv, &ev)) in got.iter().zip(&expected).enumerate() {
+            assert!(
+                (gv - ev).abs() < 1e-4,
+                "causal_conv1d (silu={use_silu}) at {i}: got {gv}, expected {ev}",
+            );
+        }
+    }
+
+    #[test]
+    fn causal_conv1d_decompose_matches_reference() {
+        causal_conv1d_check(false);
+        causal_conv1d_check(true);
+    }
+
+    #[test]
+    fn flash_attn_backward_decompose_matches_reference() {
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        let dev = Device::cpu();
+        let (sq, sk, d) = (2usize, 2usize, 2usize);
+        let scale = 0.7071f32;
+        let q_data = vec![0.1f32, -0.2, 0.3, 0.5]; // [Sq,D]
+        let k_data = vec![0.4f32, 0.1, -0.3, 0.2]; // [Sk,D]
+        let v_data = vec![1.0f32, 2.0, -1.0, 0.5]; // [Sk,D]
+        let do_data = vec![0.5f32, -1.0, 0.2, 0.3]; // [Sq,D]
+        let qshape = Shape::from_dims(&[1, 1, sq, d]);
+        let kshape = Shape::from_dims(&[1, 1, sk, d]);
+        let q = LazyTensor::from_f32(q_data.clone(), qshape.clone(), &dev);
+        let k = q.const_f32_like(k_data.clone(), kshape.clone());
+        let v = q.const_f32_like(v_data.clone(), kshape.clone());
+        let dout = q.const_f32_like(do_data.clone(), qshape.clone());
+        let params = FusedOpParams::FlashAttnBackward {
+            softmax_scale: scale,
+            causal: false,
+            window_size_left: None,
+            window_size_right: None,
+            softcap: None,
+        };
+        let inputs = vec![q.inner.id(), k.inner.id(), v.inner.id(), dout.inner.id()];
+        let dq = lower_realize_fused(
+            &q,
+            fuel_graph::Op::Fused(FusedOps::FLASH_ATTN_BACKWARD_Q, params.clone()),
+            inputs.clone(),
+            qshape.clone(),
+        );
+        let dk = lower_realize_fused(
+            &q,
+            fuel_graph::Op::Fused(FusedOps::FLASH_ATTN_BACKWARD_K, params.clone()),
+            inputs.clone(),
+            kshape.clone(),
+        );
+        let dv = lower_realize_fused(
+            &q,
+            fuel_graph::Op::Fused(FusedOps::FLASH_ATTN_BACKWARD_V, params),
+            inputs,
+            kshape,
+        );
+
+        // --- reference SDPA backward (B=1, H=1) ---
+        let mut p = vec![0.0f32; sq * sk];
+        for i in 0..sq {
+            let mut scores = vec![0.0f32; sk];
+            for j in 0..sk {
+                let mut s = 0.0f32;
+                for l in 0..d {
+                    s += q_data[i * d + l] * k_data[j * d + l];
+                }
+                scores[j] = scale * s;
+            }
+            let m = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum = 0.0f32;
+            let e: Vec<f32> = scores.iter().map(|&s| { let x = (s - m).exp(); sum += x; x }).collect();
+            for j in 0..sk {
+                p[i * sk + j] = e[j] / sum;
+            }
+        }
+        // dV[j,l] = Σ_i P[i,j]·dO[i,l]
+        let mut ref_dv = vec![0.0f32; sk * d];
+        for j in 0..sk {
+            for l in 0..d {
+                ref_dv[j * d + l] = (0..sq).map(|i| p[i * sk + j] * do_data[i * d + l]).sum();
+            }
+        }
+        // dP[i,j] = Σ_l dO[i,l]·v[j,l]
+        let mut dp = vec![0.0f32; sq * sk];
+        for i in 0..sq {
+            for j in 0..sk {
+                dp[i * sk + j] = (0..d).map(|l| do_data[i * d + l] * v_data[j * d + l]).sum();
+            }
+        }
+        // dScores_raw[i,j] = scale · P[i,j]·(dP[i,j] − Σ_j' dP·P)
+        let mut dsr = vec![0.0f32; sq * sk];
+        for i in 0..sq {
+            let rowdot: f32 = (0..sk).map(|j| dp[i * sk + j] * p[i * sk + j]).sum();
+            for j in 0..sk {
+                dsr[i * sk + j] = scale * p[i * sk + j] * (dp[i * sk + j] - rowdot);
+            }
+        }
+        // dQ[i,l] = Σ_j dsr[i,j]·k[j,l] ; dK[j,l] = Σ_i dsr[i,j]·q[i,l]
+        let mut ref_dq = vec![0.0f32; sq * d];
+        for i in 0..sq {
+            for l in 0..d {
+                ref_dq[i * d + l] = (0..sk).map(|j| dsr[i * sk + j] * k_data[j * d + l]).sum();
+            }
+        }
+        let mut ref_dk = vec![0.0f32; sk * d];
+        for j in 0..sk {
+            for l in 0..d {
+                ref_dk[j * d + l] = (0..sq).map(|i| dsr[i * sk + j] * q_data[i * d + l]).sum();
+            }
+        }
+        let check = |name: &str, got: &[f32], exp: &[f32]| {
+            assert_eq!(got.len(), exp.len(), "{name} length");
+            for (i, (&gv, &ev)) in got.iter().zip(exp).enumerate() {
+                assert!((gv - ev).abs() < 1e-4, "{name} at {i}: got {gv}, expected {ev}");
+            }
+        };
+        check("dQ", &dq, &ref_dq);
+        check("dK", &dk, &ref_dk);
+        check("dV", &dv, &ref_dv);
+    }
+
+    #[test]
+    fn paged_attn_decompose_matches_reference() {
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        let dev = Device::cpu();
+        // B=1, Hq=Hkv=1, Sq=1 (decode), D=2; block_size=2, max_blk=2 → kv_len=4.
+        let block_size = 2usize;
+        let scale = 1.0f32;
+        // k_cache / v_cache: [num_blocks=3, block_size=2, Hkv=1, D=2]. Block 1
+        // is unused (not in the block table) and holds sentinel 9s.
+        let kc = vec![1.0f32, 0.0, 0.0, 1.0, 9.0, 9.0, 9.0, 9.0, 1.0, 1.0, 2.0, 0.0];
+        let vc = vec![1.0f32, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 5.0, 6.0, 7.0, 8.0];
+        let q_data = vec![0.5f32, 0.5]; // [1,1,1,2]
+        let bt = vec![0u32, 2u32]; // block_table [1,2]: sequence uses blocks 0 and 2
+        let cl = vec![3u32]; // context_lens [1]: only the first 3 keys are valid
+
+        let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, 1, 1, 2]), &dev);
+        let kcache = q.const_f32_like(kc.clone(), Shape::from_dims(&[3, 2, 1, 2]));
+        let vcache = q.const_f32_like(vc.clone(), Shape::from_dims(&[3, 2, 1, 2]));
+        let block_table = q.const_u32_like(bt, Shape::from_dims(&[1, 2]));
+        let context_lens = q.const_u32_like(cl, Shape::from_dims(&[1]));
+        let params = FusedOpParams::PagedAttn {
+            softmax_scale: scale,
+            block_size,
+            softcap: None,
+        };
+        let inputs = vec![
+            q.inner.id(),
+            kcache.inner.id(),
+            vcache.inner.id(),
+            block_table.inner.id(),
+            context_lens.inner.id(),
+        ];
+        let got = lower_realize_fused(
+            &q,
+            fuel_graph::Op::Fused(FusedOps::PAGED_ATTN, params),
+            inputs,
+            Shape::from_dims(&[1, 1, 1, 2]),
+        );
+
+        // reference: gather blocks [0, 2] → k_seq/v_seq[4][2]; mask j ≥ 3;
+        // softmax; weighted sum of v.
+        let (kv_len, ctx) = (4usize, 3usize);
+        let mut k_seq = vec![];
+        let mut v_seq = vec![];
+        for &blk in &[0usize, 2usize] {
+            for p in 0..block_size {
+                let base = (blk * block_size + p) * 2; // Hkv=1, D=2
+                k_seq.push([kc[base], kc[base + 1]]);
+                v_seq.push([vc[base], vc[base + 1]]);
+            }
+        }
+        let mut scores = vec![0.0f32; kv_len];
+        for j in 0..kv_len {
+            let s = q_data[0] * k_seq[j][0] + q_data[1] * k_seq[j][1];
+            scores[j] = if j >= ctx { f32::NEG_INFINITY } else { scale * s };
+        }
+        let m = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let mut sum = 0.0f32;
+        let e: Vec<f32> = scores.iter().map(|&s| { let x = (s - m).exp(); sum += x; x }).collect();
+        let mut expected = vec![0.0f32; 2];
+        for j in 0..kv_len {
+            for l in 0..2 {
+                expected[l] += (e[j] / sum) * v_seq[j][l];
+            }
+        }
+        for (i, (&gv, &ev)) in got.iter().zip(&expected).enumerate() {
+            assert!((gv - ev).abs() < 1e-4, "paged_attn at {i}: got {gv}, expected {ev}");
+        }
+    }
+
     #[test]
     #[cfg(feature = "cuda")]
     fn cuda_executor_matches_cpu_on_add_mul() {

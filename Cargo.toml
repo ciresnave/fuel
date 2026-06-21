@@ -174,29 +174,35 @@ criterion = { version = "0.8", default-features = false }
 # nvcc's host compiler so CUDA 13.3's CCCL headers stop hard-erroring on
 # cl.exe's traditional preprocessor (the wall that blocked the A3b-1 live
 # smoke). No Fuel-facing API change vs alpha.67.
-baracuda-types         = { version = "0.0.1-alpha.68", features = ["half-crate", "f8-crate"] }
-baracuda-core          = { version = "0.0.1-alpha.68" }
-baracuda-cuda-sys      = { version = "0.0.1-alpha.68" }
-baracuda-driver        = { version = "0.0.1-alpha.68" }
-baracuda-runtime       = { version = "0.0.1-alpha.68" }
-baracuda-cublas-sys    = { version = "0.0.1-alpha.68" }
-baracuda-cublas        = { version = "0.0.1-alpha.68" }
-baracuda-cudnn-sys     = { version = "0.0.1-alpha.68" }
-baracuda-cudnn         = { version = "0.0.1-alpha.68", features = ["half-crate"] }
-baracuda-curand-sys    = { version = "0.0.1-alpha.68" }
-baracuda-curand        = { version = "0.0.1-alpha.68" }
-baracuda-nvrtc-sys     = { version = "0.0.1-alpha.68" }
-baracuda-nvrtc         = { version = "0.0.1-alpha.68" }
-baracuda-nccl-sys      = { version = "0.0.1-alpha.68" }
-baracuda-nccl          = { version = "0.0.1-alpha.68", features = ["half-crate"] }
-baracuda-cutlass       = { version = "0.0.1-alpha.68" }
+#
+# alpha.69 (2026-06-20) adds Baracuda's support for the ratified Kernel-Seam
+# Interop Contract (Profile v1 — FDX sidecar + FKC accept/return contract):
+# the `baracuda_seam_hello` handshake + JIT-on-request surface, so Baracuda
+# can announce/contract kernels through the same seam Fuel speaks. The whole
+# baracuda-* set is bumped together to keep the workspace on one version.
+baracuda-types         = { version = "0.0.1-alpha.69", features = ["half-crate", "f8-crate"] }
+baracuda-core          = { version = "0.0.1-alpha.69" }
+baracuda-cuda-sys      = { version = "0.0.1-alpha.69" }
+baracuda-driver        = { version = "0.0.1-alpha.69" }
+baracuda-runtime       = { version = "0.0.1-alpha.69" }
+baracuda-cublas-sys    = { version = "0.0.1-alpha.69" }
+baracuda-cublas        = { version = "0.0.1-alpha.69" }
+baracuda-cudnn-sys     = { version = "0.0.1-alpha.69" }
+baracuda-cudnn         = { version = "0.0.1-alpha.69", features = ["half-crate"] }
+baracuda-curand-sys    = { version = "0.0.1-alpha.69" }
+baracuda-curand        = { version = "0.0.1-alpha.69" }
+baracuda-nvrtc-sys     = { version = "0.0.1-alpha.69" }
+baracuda-nvrtc         = { version = "0.0.1-alpha.69" }
+baracuda-nccl-sys      = { version = "0.0.1-alpha.69" }
+baracuda-nccl          = { version = "0.0.1-alpha.69", features = ["half-crate"] }
+baracuda-cutlass       = { version = "0.0.1-alpha.69" }
 # baracuda alpha.26 — new ML kernel facade. Fuel uses `baracuda-kernels-sys`
 # (raw extern "C") rather than the safe `baracuda-kernels` Plan-based wrapper
 # so each kernel becomes its own KernelRef in Fuel's binding table — the
 # safe layer's Plan-cached dispatch isn't compatible with Fuel's
 # per-decision-point alternatives composition.
-baracuda-kernels-types = { version = "0.0.1-alpha.68" }
-baracuda-kernels-sys   = { version = "0.0.1-alpha.68", features = [
+baracuda-kernels-types = { version = "0.0.1-alpha.69" }
+baracuda-kernels-sys   = { version = "0.0.1-alpha.69", features = [
     "cudnn",
     "sm89",
     # Phase 48 (Consolidation B) 4-bit weight-only GEMM families.

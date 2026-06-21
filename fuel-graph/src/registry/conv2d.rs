@@ -107,23 +107,25 @@ fn dtype_passthrough(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// Lowering panics with a clear architectural message — see the module
-/// preamble for the full rationale. In practice this is unreachable
-/// because no current code path enables `RuleRegistry::default_rules`
-/// or `lowering_only` on a Conv2D-bearing graph; if a future caller
-/// does, this panic surfaces the architectural gap rather than silently
-/// emitting nonsense or returning the same id.
-pub fn decompose(_graph: &mut Graph, _id: NodeId, _params: &FusedOpParams) -> NodeId {
-    panic!(
-        "conv2d::decompose: Conv2D has no primitive decomposition in \
-         the current Op set. The textbook im2col + matmul lowering \
-         needs an Op::Im2Col primitive that isn't part of the closed \
-         primitive set yet; the slice-soup alternative is \
-         astronomically expensive. Backends without a native Conv2D \
-         kernel route through `GraphExecutor::cpu_fallback` to the \
-         always-built CPU kernel. See `fuel-graph/src/registry/conv2d.rs` \
-         module docs for the full picture.",
-    );
+/// Conv2D is a genuine primitive-basis gap (G2, 2026-06-20). The clean
+/// lowering is im2col + matmul: `Op::Pad` the input, extract sliding `Kh×Kw`
+/// windows into a `[N, Cin·Kh·Kw, Hout·Wout]` patch matrix, `Op::MatMul`
+/// against the reshaped weight `[Cout, Cin·Kh·Kw]`, then `Op::Reshape`/
+/// `Op::Permute` to `[N, Cout, Hout, Wout]` (groups via per-group
+/// `Slice`+`Concat`, bias via a broadcast `Add`). Every step *except* the
+/// window extraction is already in the closed `Op` basis — the missing
+/// primitive is a sliding-window op: **`Op::Im2Col`** (equivalently
+/// `Op::Unfold` / `Op::AsStrided`). The only existing-primitive alternative
+/// is a `Slice`+`Concat`+`MatMul` soup of `N·Hout·Wout` slice nodes, whose
+/// node count is astronomical and would actively harm any pass consuming it —
+/// so it is not a valid decomposition.
+///
+/// Per G2 (`decompose` is total + never-panic) this returns **self** until an
+/// `Op::Im2Col` primitive lands; the opaque Conv2D node is then a surfaced
+/// basis-gap (telemetry), never a crash. Backends without a native Conv2D
+/// kernel route through `GraphExecutor::cpu_fallback`.
+pub fn decompose(_graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
+    id
 }
 
 /// Matcher stub — Conv2D is always produced by the `Tensor::conv2d`

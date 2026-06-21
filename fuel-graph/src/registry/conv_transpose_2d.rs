@@ -97,16 +97,19 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// See module preamble — ConvTranspose2D has no primitive
-/// decomposition exposed at the registry layer until an
-/// `Op::Im2Col` / `Op::Col2Im` primitive lands.
-pub fn decompose(_graph: &mut Graph, _id: NodeId, _params: &FusedOpParams) -> NodeId {
-    panic!(
-        "conv_transpose_2d::decompose: ConvTranspose2D has no \
-         primitive decomposition in the current Op set. See \
-         `fuel-graph/src/registry/{{conv2d,conv_transpose_2d}}.rs` \
-         module docs for the shared im2col-primitive gap.",
-    );
+/// Genuine primitive-basis gap (G2, 2026-06-20). Both textbook lowerings need
+/// a primitive Fuel's closed `Op` basis lacks: (1) col2im / overlap-add —
+/// `matmul(weightᵀ, x)` then fold the overlapping `[Cout·Kh·Kw]` columns back
+/// into `[Cout, Hout, Wout]`, needing an **`Op::Col2Im`**; (2) dilation-as-
+/// stride — scatter `x` into a zero-dilated buffer then run a flipped-kernel
+/// Conv2D, needing **`Op::Im2Col`** (the same gap Conv2D is blocked on). The
+/// `Slice`+`ScatterAdd` synthesis explodes to an `N·Hout·Wout·Kh·Kw` node soup,
+/// so it is not a valid recipe. Per G2 `decompose` is total + never-panic, so
+/// it returns **self** until one of those primitives lands (a surfaced
+/// opaque-op gap, never a crash); backends without a native kernel use
+/// `GraphExecutor::cpu_fallback`.
+pub fn decompose(_graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
+    id
 }
 
 /// Matcher stub — see module preamble.

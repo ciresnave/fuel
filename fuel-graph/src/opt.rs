@@ -267,8 +267,16 @@ impl RuleRegistry {
             };
             if let Some(idx) = firing_rule_idx {
                 let mut g = graph.write().unwrap();
+                let before = remap.len();
                 family_rules[idx].rewrite(&mut g, id, &mut remap);
-                any_fired = true;
+                // A rule that matched but recorded no remap entry made no
+                // progress — e.g. a `decompose` that returned self (G2's
+                // fixpoint signal: this op can't decompose further). Only
+                // count real rewrites, so the fixpoint loop terminates
+                // instead of spinning on a no-op match.
+                if remap.len() != before {
+                    any_fired = true;
+                }
             }
         }
 
@@ -383,7 +391,17 @@ impl Rule for LoweringRule {
             ),
         };
         let new_id = (self.decompose)(graph, id, &params);
-        remap.insert(id, new_id);
+        // G2 (2026-06-20): a `decompose` that returns the SAME node is at
+        // its fixpoint — the op can't decompose further (a primitive, or a
+        // coarse op whose recipe/primitives don't exist yet, which returns
+        // self). That is not a rewrite, so we record no remap entry; the
+        // driver (`run_pass`) then sees the unchanged remap and does not
+        // count it as progress, so the lowering fixpoint terminates instead
+        // of oscillating. The node is left as `Op::Fused` — a surfaced
+        // opaque-op gap that an inventory pass can find.
+        if new_id != id {
+            remap.insert(id, new_id);
+        }
     }
 }
 
@@ -921,6 +939,19 @@ pub fn optimize(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
         // 1. Algebraic simplifications that produce an alias (no new
         //    node). If a rule fires, we remap this id to an existing
         //    node and skip CSE for it entirely.
+        //
+        //    Identity Cast(d) on a dtype-d input is a no-op: dispatch keys
+        //    casts on [src, dst] and intentionally registers no [d, d]
+        //    kernel, so this elision (not a kernel) is what makes a same-dtype
+        //    cast disappear before realize. Needs the input node's dtype, so
+        //    it lives here rather than in `try_simplify` (which sees only
+        //    op + inputs).
+        if let Op::Cast(target) = &op {
+            if g.node(mapped_inputs[0]).dtype == *target {
+                remap.insert(id, mapped_inputs[0]);
+                continue;
+            }
+        }
         if let Some(aliased) = try_simplify(&op, &mapped_inputs) {
             remap.insert(id, aliased);
             continue;
@@ -2631,6 +2662,30 @@ mod tests {
     }
 
     #[test]
+    fn simplifies_identity_cast() {
+        let (graph, a) = make_scalar_graph();
+        // Cast to the same dtype is a no-op; the optimizer aliases it away.
+        // (Dispatch keys casts on [src, dst] and registers no [d, d] kernel,
+        // so this elision is what removes a same-dtype cast before realize.)
+        let same = a.cast(a.dtype());
+        let new_roots = optimize(&graph, &[same.id()]);
+        assert_eq!(
+            new_roots[0],
+            a.id(),
+            "Cast(d) on a dtype-d input should alias to input",
+        );
+    }
+
+    #[test]
+    fn keeps_real_cast() {
+        let (graph, a) = make_scalar_graph();
+        // A genuine dtype change (F32→F64) is NOT elided.
+        let cast = a.cast(fuel_core_types::DType::F64);
+        let new_roots = optimize(&graph, &[cast.id()]);
+        assert_ne!(new_roots[0], a.id(), "a real Cast must survive optimization");
+    }
+
+    #[test]
     fn cse_does_not_fold_distinct_ops() {
         // Add and Mul on the same inputs are not equivalent.
         let (graph, a) = make_scalar_graph();
@@ -3470,6 +3525,60 @@ mod tests {
         let new_roots = RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[y.id()]);
         assert_eq!(new_roots, vec![y.id()]);
         assert_eq!(graph.read().unwrap().len(), pre_len);
+    }
+
+    /// G2 (2026-06-20): FlashAttn IS decomposable — the vanilla (non-causal,
+    /// MHA) case lowers to its materialized scaled-dot-product-attention
+    /// subgraph. Born-red before the fix (`flash_attn::decompose` panicked).
+    #[test]
+    fn flash_attn_vanilla_decomposes_to_sdpa() {
+        let s = Shape::from_dims(&[1, 1, 1, 1]);
+        let q = Tensor::from_f32(vec![0.0_f32; 1], s.clone(), cpu_dev());
+        let k = q.const_f32_like(vec![0.0_f32; 1], s.clone());
+        let v = q.const_f32_like(vec![0.0_f32; 1], s.clone());
+        // Vanilla: non-causal, Hq==Hkv==1, no alibi/window/softcap.
+        let attn = q.flash_attn(&k, &v, None, 1.0_f32, false, None, None, None);
+        let graph = attn.graph().clone();
+
+        let new_roots =
+            RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[attn.id()]);
+        assert_eq!(new_roots.len(), 1);
+        let root = new_roots[0];
+        let g = graph.read().unwrap();
+        // The fused FlashAttn is gone from the root, replaced by the SDPA
+        // subgraph — which contains MatMul nodes.
+        assert!(
+            !matches!(g.node(root).op, Op::Fused(fid, _) if fid == crate::registry::FusedOps::FLASH_ATTN),
+            "vanilla FlashAttn must decompose, not stay fused",
+        );
+        let has_matmul = (0..g.len()).any(|i| matches!(g.node(NodeId(i)).op, Op::MatMul));
+        assert!(has_matmul, "decomposed FlashAttn must contain a MatMul");
+    }
+
+    /// G2: causal FlashAttn decomposes too — the causal mask is an additive
+    /// `-inf` `Triu` band (no new primitive needed), so the node lowers
+    /// rather than staying fused. (The decomposed *numerics* are verified
+    /// separately by a parity test vs. the reference attention.)
+    #[test]
+    fn flash_attn_causal_decomposes_with_triu_mask() {
+        let s = Shape::from_dims(&[1, 1, 2, 1]); // Sq=Sk=2 so the mask is non-trivial
+        let q = Tensor::from_f32(vec![0.0_f32; 2], s.clone(), cpu_dev());
+        let k = q.const_f32_like(vec![0.0_f32; 2], s.clone());
+        let v = q.const_f32_like(vec![0.0_f32; 2], s.clone());
+        let attn = q.flash_attn(&k, &v, None, 1.0_f32, true, None, None, None); // causal
+        let graph = attn.graph().clone();
+
+        let new_roots =
+            RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[attn.id()]);
+        assert_eq!(new_roots.len(), 1);
+        let root = new_roots[0];
+        let g = graph.read().unwrap();
+        assert!(
+            !matches!(g.node(root).op, Op::Fused(fid, _) if fid == crate::registry::FusedOps::FLASH_ATTN),
+            "causal FlashAttn must decompose (Triu mask), not stay fused",
+        );
+        let has_triu = (0..g.len()).any(|i| matches!(g.node(NodeId(i)).op, Op::Triu { .. }));
+        assert!(has_triu, "causal decomposition must contain a Triu mask band");
     }
 
     /// Fuse rule does not fire on a non-canonical Div pattern (e.g.,

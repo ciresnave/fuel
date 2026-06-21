@@ -35,16 +35,17 @@
 //! this fusion — they need in-place state mutation, which a pure
 //! forward fused op can't express.
 //!
-//! ## Architectural note — no primitive decomposition
+//! ## Architectural note — depthwise, so it DOES decompose
 //!
-//! Mirrors [`super::conv2d`]'s precedent: `fuel-graph` has no
-//! `Op::Conv1D` primitive (only `Op::Conv2D`), so a primitive
-//! decomposition would require either (a) Reshape→Conv2D→Reshape
-//! gymnastics around a unit spatial dim, or (b) Slice + Mul + Sum
-//! chains with `kernel * seq` node count. Both are antipatterns. The
-//! fused kernel IS the implementation; backends without one fall
-//! through to the executor's `cpu_fallback` path. [`decompose`]
-//! panics with a clear pointer to this gap, same as Conv2D.
+//! Unlike [`super::conv2d`] (which mixes channels and is a genuine
+//! `Op::Im2Col` basis gap), CausalConv1d is **depthwise**: each output
+//! channel convolves only its own input channel, so it lowers to an
+//! `O(kernel)` per-channel shift-multiply-accumulate tap sum (`Slice → Mul →
+//! Add`), NOT the `O(kernel·seq)` node explosion an earlier note claimed
+//! (that confused element count with node count). [`decompose`] emits this
+//! real primitive subgraph per G2; the fused kernel is the *fast* path the
+//! cost-guided optimizer prefers when present (and `cpu_fallback` covers
+//! backends without one), but the decomposition is always available.
 //!
 //! ## Why `BackwardKind::NotDifferentiable` for v1
 //!
@@ -59,7 +60,7 @@ use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
     PatternMatch, SubgraphPattern,
 };
-use crate::{Graph, NodeId};
+use crate::{Graph, Node, NodeId, Op};
 use fuel_core_types::{DType, Shape};
 
 /// Metadata-side registry entry for CausalConv1d.
@@ -112,18 +113,119 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// See module preamble — CausalConv1d deliberately has no primitive
-/// decomposition. The cpu_fallback path handles backends without a
-/// native kernel.
-pub fn decompose(_graph: &mut Graph, _id: NodeId, _params: &FusedOpParams) -> NodeId {
-    panic!(
-        "causal_conv1d::decompose: CausalConv1d has no registry-layer \
-         decomposition. fuel-graph doesn't carry an Op::Conv1D primitive, \
-         and synthesizing the depthwise conv from Slice + Mul + Sum chains \
-         would create kernel*seq nodes — an antipattern for any optimizer. \
-         Backends without a native CausalConv1d kernel use the executor's \
-         cpu_fallback path. See conv2d::decompose for the same precedent.",
-    );
+/// Decompose the depthwise causal conv into an `O(kernel)` shift-multiply-
+/// accumulate tap sum (NOT `O(kernel·seq)` — the old module note confused
+/// element count with node count). Because the conv is **depthwise**
+/// (`weight [C,1,K]`, one filter per channel, no channel mixing), there is no
+/// `Im2Col`/`MatMul` basis gap like `conv2d` — every tap is a per-channel
+/// `Slice → Mul → Add`. Inputs `[x, weight, bias]` with `x` pre-padded to
+/// `[B, C, seq+(K-1)]`; output `[B, C, seq]`:
+///
+/// `out[t] = Σ_{k<K} weight[:,0,k] · x[:, :, t+k] + bias`, then optional SiLU.
+///
+/// Every primitive exists (`Slice`, `Reshape`, `BroadcastTo`, `Mul`, `Add`,
+/// `Silu`), so per G2 this is a real decomposition (~`5K+3` nodes; Mamba's
+/// `K=4` → ~23), not a basis-gap self-return.
+pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
+    let (x_id, w_id, b_id, out_shape, dtype) = {
+        let n = graph.node(id);
+        (n.inputs[0], n.inputs[1], n.inputs[2], n.shape.clone(), n.dtype)
+    };
+    let use_silu = match params {
+        FusedOpParams::CausalConv1d { use_silu } => *use_silu,
+        // G2: total + never-panic — impossible params; return self.
+        _ => return id,
+    };
+    let out_dims = out_shape.dims().to_vec(); // [B, C, out_seq]
+    let channels = out_dims[1];
+    let out_seq = out_dims[2];
+    let kernel = graph.node(w_id).shape.dims()[2]; // weight is [C, 1, K]
+    let per_channel = Shape::from_dims(&[1, channels, 1]);
+    let full = out_shape.clone();
+
+    // acc = Σ_k weight[:,0,k] · x[:, :, k : k+out_seq]
+    let mut acc: Option<NodeId> = None;
+    for tap in 0..kernel {
+        let x_k = graph.push(Node {
+            op: Op::Slice {
+                dim: 2,
+                start: tap,
+                len: out_seq,
+            },
+            inputs: vec![x_id],
+            shape: full.clone(),
+            dtype,
+        });
+        let w_k = graph.push(Node {
+            op: Op::Slice {
+                dim: 2,
+                start: tap,
+                len: 1,
+            },
+            inputs: vec![w_id],
+            shape: Shape::from_dims(&[channels, 1, 1]),
+            dtype,
+        });
+        let w_re = graph.push(Node {
+            op: Op::Reshape(per_channel.clone()),
+            inputs: vec![w_k],
+            shape: per_channel.clone(),
+            dtype,
+        });
+        let w_b = graph.push(Node {
+            op: Op::BroadcastTo(full.clone()),
+            inputs: vec![w_re],
+            shape: full.clone(),
+            dtype,
+        });
+        let term = graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![x_k, w_b],
+            shape: full.clone(),
+            dtype,
+        });
+        acc = Some(match acc {
+            None => term,
+            Some(a) => graph.push(Node {
+                op: Op::Add,
+                inputs: vec![a, term],
+                shape: full.clone(),
+                dtype,
+            }),
+        });
+    }
+    let acc = acc.expect("CausalConv1d kernel size is ≥ 1");
+
+    // + bias  (broadcast [C] → [1, C, 1] → full)
+    let b_re = graph.push(Node {
+        op: Op::Reshape(per_channel.clone()),
+        inputs: vec![b_id],
+        shape: per_channel,
+        dtype,
+    });
+    let b_b = graph.push(Node {
+        op: Op::BroadcastTo(full.clone()),
+        inputs: vec![b_re],
+        shape: full.clone(),
+        dtype,
+    });
+    let biased = graph.push(Node {
+        op: Op::Add,
+        inputs: vec![acc, b_b],
+        shape: full.clone(),
+        dtype,
+    });
+
+    if use_silu {
+        graph.push(Node {
+            op: Op::Silu,
+            inputs: vec![biased],
+            shape: full,
+            dtype,
+        })
+    } else {
+        biased
+    }
 }
 
 /// Matcher stub — CausalConv1d nodes originate from the explicit

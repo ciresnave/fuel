@@ -3,8 +3,9 @@
 //! plan (after FusedSoftmaxCrossEntropy + CausalConv1d).
 //!
 //! Provides:
-//! - [`entry`] — the metadata-side `FusedOpEntry` (shape/dtype rules,
-//!   panicking `decompose`, stubbed pattern).
+//! - [`entry`] — the metadata-side `FusedOpEntry` (shape/dtype rules, a
+//!   self-returning `decompose` — a basis gap (needs a higher-order `Scan`
+//!   primitive), per G2 — and a stubbed pattern).
 //!
 //! Inputs: `[u, delta, a, b, c]` (5 required; the optional `d_skip`,
 //! `z`, `delta_bias` from baracuda's full signature are deferred to a
@@ -174,19 +175,16 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// See module preamble — SelectiveScan deliberately has no primitive
-/// decomposition. The `cpu_fallback` path handles backends without a
-/// native kernel.
-pub fn decompose(_graph: &mut Graph, _id: NodeId, _params: &FusedOpParams) -> NodeId {
-    panic!(
-        "selective_scan::decompose: SelectiveScan has no registry-layer \
-         decomposition. The textbook scan is a sequential recurrence; \
-         synthesizing it from primitives would yield O(seqlen) nodes \
-         and defeat any optimization pass. Backends without a native \
-         SelectiveScan kernel use the executor's cpu_fallback path. \
-         See conv2d::decompose and causal_conv1d::decompose for the \
-         same precedent.",
-    );
+/// SelectiveScan is a genuine **basis gap**: the textbook scan is a
+/// sequential recurrence, and Fuel lacks the higher-order `Scan` primitive
+/// needed to express it without unrolling to `O(seqlen)` nodes. Per G2
+/// (2026-06-20) `decompose` is total and never panics: with no expressible
+/// recipe it returns **self**, the driver's fixpoint signal ("can't
+/// decompose further"), leaving the node `Op::Fused` — a surfaced opaque-op
+/// gap. It decomposes once a `Scan` primitive lands. Backends without a
+/// native kernel use the executor's `cpu_fallback`.
+pub fn decompose(_graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
+    id
 }
 
 /// Matcher stub — SelectiveScan nodes originate from the explicit
