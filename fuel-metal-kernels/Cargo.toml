@@ -4,7 +4,7 @@ version = "0.10.2"
 edition = "2021"
 
 description = "Metal kernels for Fuel"
-repository = "https://github.com/huggingface/fuel"
+repository = "https://github.com/ciresnave/fuel"
 keywords = ["blas", "tensor", "machine-learning"]
 categories = ["science"]
 license = "MIT OR Apache-2.0"

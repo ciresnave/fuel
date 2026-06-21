@@ -13,8 +13,8 @@ dynamic = [
 ]
 
 [project.urls]
-Homepage = 'https://github.com/huggingface/fuel'
-Source = 'https://github.com/huggingface/fuel'
+Homepage = 'https://github.com/ciresnave/fuel'
+Source = 'https://github.com/ciresnave/fuel'
 
 [build-system]
 requires = ["maturin>=1.0,<2.0"]
