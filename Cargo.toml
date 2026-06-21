@@ -20,6 +20,7 @@ members = [
     "fuel-flash-attn-cuda-sys",
     "fuel-formats",
     "fuel-graph",
+    "fuel-kernel-seam-types",
     "fuel-cuda-backend",
     "fuel-dispatch",
     "fuel-vulkan-backend",
@@ -55,6 +56,7 @@ default-members = [
     "fuel-dispatch",
     "fuel-formats",
     "fuel-graph",
+    "fuel-kernel-seam-types",
     "fuel-cuda-backend",
     "fuel-vulkan-backend",
     "fuel-kernels-source",
@@ -114,6 +116,7 @@ fuel-correctness-fixtures = { path = "./fuel-correctness-fixtures", version = "0
 fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.10.2" }
 fuel-mkl-cpu-backend = { path = "./fuel-mkl-cpu-backend", version = "0.10.2" }
 fuel-graph = { path = "./fuel-graph", version = "0.10.2" }
+fuel-kernel-seam-types = { path = "./fuel-kernel-seam-types", version = "0.10.2" }
 fuel-cuda-backend = { path = "./fuel-cuda-backend", version = "0.10.2" }
 fuel-dispatch = { path = "./fuel-dispatch", version = "0.10.2" }
 fuel-vulkan-backend = { path = "./fuel-vulkan-backend", version = "0.10.2" }
