@@ -5,7 +5,10 @@
     keywords.workspace   = true
     license.workspace    = true
     name                 = "fuel-kernel-seam-types"
-    repository.workspace = true
+    # Explicit (not inherited): the workspace `repository` still points at the
+    # upstream Candle fork (huggingface/fuel); this crate publishes to the real
+    # repo. The workspace-wide field wants the same fix separately.
+    repository           = "https://github.com/ciresnave/fuel"
     version.workspace    = true
 
 # Intentionally dependency-free: these are std-only POD grammar types so any
