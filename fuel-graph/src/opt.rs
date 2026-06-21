@@ -162,28 +162,53 @@ impl RuleRegistry {
     /// their entries to the same registry; `default_rules` picks them
     /// up automatically.
     pub fn default_rules() -> Self {
+        Self::capability_gated_rules(|_| true).0
+    }
+
+    /// Build lower + fuse rules, but **fuse** a fused op only when
+    /// `has_kernel(id)` holds — the capability gate
+    /// (`runtime-fused-op-registration.md` §6). Every fused op (static +
+    /// runtime) still gets a *lowering* rule (so any already-fused node
+    /// decomposes); an op WITHOUT a kernel gets **no fusion rule**, so a
+    /// kernel-absent fused node never forms in the first place — the miss is
+    /// caught at the pattern-match step, not repaired afterward.
+    ///
+    /// Returns the rule set plus the ids that were **gated out of fusion** — the
+    /// miss candidates feeding the JIT work-order signal. The dispatch layer
+    /// supplies `has_kernel` from its `FusedKernelRegistry` + the target
+    /// backend; [`Self::default_rules`] is the all-available case.
+    pub fn capability_gated_rules(
+        has_kernel: impl Fn(FusedOpId) -> bool,
+    ) -> (Self, Vec<FusedOpId>) {
         let registry = default_registry();
         let mut r = Self::new();
+        let mut gated_out = Vec::new();
         for entry in registry.entries_iter() {
-            r = r
-                .with_rule(Box::new(LoweringRule::from_entry(entry)))
-                .with_rule(Box::new(FusionRule::from_entry(entry)));
+            r = r.with_rule(Box::new(LoweringRule::from_entry(entry)));
+            if has_kernel(entry.id) {
+                r = r.with_rule(Box::new(FusionRule::from_entry(entry)));
+            } else {
+                gated_out.push(entry.id);
+            }
         }
-        // Runtime-registered fused ops (Tier-2): a fusion rule (declarative,
-        // from the region) + a lowering rule (region re-emit) per runtime op,
-        // so a synthesized/imported op fuses + round-trips like a static one.
+        // Runtime-registered fused ops (Tier-2), same gate. A runtime op with no
+        // kernel yet (JIT cold start) is gated out + reported as a miss — the
+        // synthesize work-order — and its region stays primitive this pass.
         for e in crate::runtime_fused::runtime_entries() {
-            r = r
-                .with_rule(Box::new(LoweringRule::runtime(e.id)))
-                .with_rule(Box::new(FusionRule::declarative(
+            r = r.with_rule(Box::new(LoweringRule::runtime(e.id)));
+            if has_kernel(e.id) {
+                r = r.with_rule(Box::new(FusionRule::declarative(
                     e.id,
                     crate::registry::PatternTree {
                         root:   e.region,
                         params: FusedOpParams::Runtime { scalars: Vec::new() },
                     },
                 )));
+            } else {
+                gated_out.push(e.id);
+            }
         }
-        r
+        (r, gated_out)
     }
 
     /// Lowering rules only — no fusion. Use this when the test or
@@ -2854,6 +2879,50 @@ mod tests {
         let sub_id = g.node(lowered[0]).inputs[0];
         assert!(matches!(g.node(sub_id).op, Op::Sub), "Tanh's input is Sub");
         assert_eq!(g.node(sub_id).inputs.len(), 2, "Sub over the two bound inputs");
+    }
+
+    #[test]
+    fn capability_gate_blocks_fusion_without_a_kernel() {
+        use crate::jit::{OpAttrs, OpTag, PatternNode};
+        use crate::runtime_fused::register_runtime_fused;
+        // Unique region — sigmoid(div(a, b)) — so the gate decision is ours alone.
+        let region = PatternNode::Op {
+            op: OpTag::Sigmoid,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Op {
+                op: OpTag::Div,
+                attrs: OpAttrs::default(),
+                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            }],
+        };
+        let rid = register_runtime_fused("test::sigmoid_div", region).unwrap();
+
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
+        let b = a.const_f32_like(vec![2.0, 2.0, 2.0, 2.0], Shape::from_dims(&[4]));
+        let y = a.div(&b).sigmoid();
+        let graph = y.graph().clone();
+
+        // No kernel for our op → it is gated out of fusion (reported) and its
+        // region stays primitive — the miss is caught at match time, not after.
+        let (rules, gated_out) = RuleRegistry::capability_gated_rules(|id| id != rid);
+        assert!(gated_out.contains(&rid), "kernel-absent op is reported as a miss candidate");
+        let roots = rules.optimize_to_fixpoint(&graph, &[y.id()]);
+        {
+            let g = graph.read().unwrap();
+            assert!(
+                matches!(g.node(roots[0]).op, Op::Sigmoid),
+                "kernel-absent runtime op stays primitive (Sigmoid sink), never fuses",
+            );
+        }
+
+        // With a kernel available, the same op fuses.
+        let (rules2, _) = RuleRegistry::capability_gated_rules(|_| true);
+        let roots2 = rules2.optimize_to_fixpoint(&graph, &[roots[0]]);
+        let g = graph.read().unwrap();
+        assert!(
+            matches!(g.node(roots2[0]).op, Op::Fused(fid, _) if fid == rid),
+            "with a kernel, the runtime op fuses",
+        );
     }
 
     #[test]
