@@ -1,0 +1,17 @@
+[package]
+    categories.workspace = true
+    description          = "Kernel-seam JIT-on-request envelope: JitRequest / JitResponse + the Synthesizer trait — the live-call protocol between Fuel and a JIT kernel backend"
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-kernel-seam"
+    repository.workspace = true
+    version.workspace    = true
+
+# The envelope bridges the two halves of the seam: Fuel's region grammar
+# (fuel-kernel-seam-types) and the synthesizer's operand projection
+# (baracuda-kernels-types::OperandDesc, the structure_key input). Light by
+# design — no fuel-graph — so a synthesizer backend depends on it cheaply.
+[dependencies]
+    baracuda-kernels-types = { workspace = true }
+    fuel-kernel-seam-types = { workspace = true }

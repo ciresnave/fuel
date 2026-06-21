@@ -21,6 +21,7 @@ members = [
     "fuel-formats",
     "fuel-graph",
     "fuel-kernel-seam-types",
+    "fuel-kernel-seam",
     "fuel-cuda-backend",
     "fuel-dispatch",
     "fuel-vulkan-backend",
@@ -117,6 +118,7 @@ fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.10.2" }
 fuel-mkl-cpu-backend = { path = "./fuel-mkl-cpu-backend", version = "0.10.2" }
 fuel-graph = { path = "./fuel-graph", version = "0.10.2" }
 fuel-kernel-seam-types = { path = "./fuel-kernel-seam-types", version = "0.10.2" }
+fuel-kernel-seam = { path = "./fuel-kernel-seam", version = "0.10.2" }
 fuel-cuda-backend = { path = "./fuel-cuda-backend", version = "0.10.2" }
 fuel-dispatch = { path = "./fuel-dispatch", version = "0.10.2" }
 fuel-vulkan-backend = { path = "./fuel-vulkan-backend", version = "0.10.2" }
