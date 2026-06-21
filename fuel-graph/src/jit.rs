@@ -9,8 +9,9 @@
 //! and a synthesized op's **`decompose`** (the region re-emitted). The byte
 //! form is Fuel's; the synthesizer maps its native records onto these.
 
-use crate::Op;
+use crate::{Graph, NodeId, Op};
 use fuel_core_types::DType;
+use std::collections::BTreeMap;
 
 // ===========================================================================
 // OperandDesc — the raw structure_key projection (Baracuda reconcile §1)
@@ -258,6 +259,102 @@ impl PatternNode {
     }
 }
 
+/// The §4.1 commutative ops, whose operands match order-independently (§3a.2a).
+fn is_commutative(op: OpTag) -> bool {
+    matches!(op, OpTag::Add | OpTag::Mul | OpTag::Maximum | OpTag::Minimum)
+}
+
+/// Match a declarative region [`PatternNode`] against the graph rooted at
+/// `root` (the subgraph **sink**, §3a.1). Returns the region's external inputs
+/// in `bind`-index order on a match, or `None`. This is the structural core of
+/// the declarative matcher (`PatternKind::Declarative`); the §5 `guard:`/`extract:`
+/// layers and the `see_through`-set wrappers compose on top.
+///
+/// Implements: positional exact tensor-arity (scalar params are attributes, not
+/// operands — §3a.2); commutative-op order-independence (§3a.2a, by trying both
+/// orderings); the **interior sole-consumer guard** (§3a.4 — a matched Op that is
+/// neither the root nor a `bind` leaf must feed *only* the fusion, else fusing
+/// duplicates its computation and we decline); and the repeated-`bind`
+/// node-identity guard (§3.2). `consumers(n)` returns node `n`'s consumer count.
+pub fn match_region(
+    graph: &Graph,
+    root: NodeId,
+    pattern: &PatternNode,
+    consumers: &dyn Fn(NodeId) -> usize,
+) -> Option<Vec<NodeId>> {
+    let mut binds: BTreeMap<u8, NodeId> = BTreeMap::new();
+    match_node(graph, root, pattern, true, consumers, &mut binds)?;
+    // Bind indices must form a contiguous [0, n) — exactly the region's inputs.
+    let n = binds.len() as u8;
+    if (0..n).all(|i| binds.contains_key(&i)) {
+        Some((0..n).map(|i| binds[&i]).collect())
+    } else {
+        None
+    }
+}
+
+fn match_node(
+    graph: &Graph,
+    node_id: NodeId,
+    pattern: &PatternNode,
+    is_root: bool,
+    consumers: &dyn Fn(NodeId) -> usize,
+    binds: &mut BTreeMap<u8, NodeId>,
+) -> Option<()> {
+    match pattern {
+        PatternNode::Any => Some(()),
+        PatternNode::Bind { index } => {
+            // Node-identity guard: a repeated index must bind the SAME node.
+            match binds.get(index) {
+                Some(&existing) if existing != node_id => None,
+                _ => {
+                    binds.insert(*index, node_id);
+                    Some(())
+                }
+            }
+        }
+        PatternNode::SeeThrough { then } => {
+            // The see_through-set skip is a follow-up; for now match `then`
+            // against this node directly.
+            match_node(graph, node_id, then, is_root, consumers, binds)
+        }
+        PatternNode::Op { op, operands, .. } => {
+            let node = graph.node(node_id);
+            if OpTag::from_op(&node.op) != Some(*op) {
+                return None;
+            }
+            // Interior nodes (not the root, not a bind leaf) must be sole-consumer.
+            if !is_root && consumers(node_id) != 1 {
+                return None;
+            }
+            // Exact tensor-input arity (scalar/attribute params are not operands).
+            let inputs = &node.inputs;
+            if inputs.len() != operands.len() {
+                return None;
+            }
+            if is_commutative(*op) && operands.len() == 2 {
+                // Try both orderings; commit the first that fully matches.
+                for (a, b) in [(0usize, 1usize), (1, 0)] {
+                    let mut trial = binds.clone();
+                    if match_node(graph, inputs[a], &operands[0], false, consumers, &mut trial)
+                        .is_some()
+                        && match_node(graph, inputs[b], &operands[1], false, consumers, &mut trial)
+                            .is_some()
+                    {
+                        *binds = trial;
+                        return Some(());
+                    }
+                }
+                return None;
+            }
+            for (child_pat, &child_id) in operands.iter().zip(inputs.iter()) {
+                match_node(graph, child_id, child_pat, false, consumers, binds)?;
+            }
+            Some(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,5 +402,112 @@ mod tests {
             operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 0 }],
         };
         assert_eq!(region.bind_indices(), vec![0]);
+    }
+
+    // ---- the structural matcher (match_region) -------------------------------
+
+    fn consumer_counts(g: &Graph) -> std::collections::HashMap<NodeId, usize> {
+        let mut c = std::collections::HashMap::new();
+        for i in 0..g.len() {
+            for &inp in &g.node(NodeId(i)).inputs {
+                *c.entry(inp).or_insert(0) += 1;
+            }
+        }
+        c
+    }
+
+    fn leaf(g: &mut Graph, s: &fuel_core_types::Shape) -> NodeId {
+        g.push(crate::Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 })
+    }
+    fn op1(g: &mut Graph, op: Op, x: NodeId, s: &fuel_core_types::Shape) -> NodeId {
+        g.push(crate::Node { op, inputs: vec![x], shape: s.clone(), dtype: DType::F32 })
+    }
+    fn op2(g: &mut Graph, op: Op, x: NodeId, y: NodeId, s: &fuel_core_types::Shape) -> NodeId {
+        g.push(crate::Node { op, inputs: vec![x, y], shape: s.clone(), dtype: DType::F32 })
+    }
+
+    fn relu_add_pattern() -> PatternNode {
+        PatternNode::Op {
+            op: OpTag::Relu,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Op {
+                op: OpTag::Add,
+                attrs: OpAttrs::default(),
+                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            }],
+        }
+    }
+
+    #[test]
+    fn match_region_binds_relu_add() {
+        let mut g = Graph::new();
+        let s = fuel_core_types::Shape::from_dims(&[2]);
+        let a = leaf(&mut g, &s);
+        let b = leaf(&mut g, &s);
+        let sum = op2(&mut g, Op::Add, a, b, &s);
+        let r = op1(&mut g, Op::Relu, sum, &s);
+        let counts = consumer_counts(&g);
+        let got = match_region(&g, r, &relu_add_pattern(), &|n| *counts.get(&n).unwrap_or(&0));
+        assert_eq!(got, Some(vec![a, b]));
+    }
+
+    #[test]
+    fn match_region_commutative_order_independent() {
+        // mul(c, relu(d)); the pattern puts relu on operand[0] — matches via
+        // commutativity (§3a.2a).
+        let mut g = Graph::new();
+        let s = fuel_core_types::Shape::from_dims(&[2]);
+        let c = leaf(&mut g, &s);
+        let d = leaf(&mut g, &s);
+        let rd = op1(&mut g, Op::Relu, d, &s);
+        let prod = op2(&mut g, Op::Mul, c, rd, &s);
+        let pat = PatternNode::Op {
+            op: OpTag::Mul,
+            attrs: OpAttrs::default(),
+            operands: vec![
+                PatternNode::Op {
+                    op: OpTag::Relu,
+                    attrs: OpAttrs::default(),
+                    operands: vec![PatternNode::Bind { index: 0 }],
+                },
+                PatternNode::Bind { index: 1 },
+            ],
+        };
+        let counts = consumer_counts(&g);
+        let got = match_region(&g, prod, &pat, &|n| *counts.get(&n).unwrap_or(&0));
+        assert_eq!(got, Some(vec![d, c]), "bind 0 = d (under relu), bind 1 = c");
+    }
+
+    #[test]
+    fn match_region_rejects_wrong_interior_op() {
+        // relu(mul(a, b)) does not match the relu(add(...)) pattern.
+        let mut g = Graph::new();
+        let s = fuel_core_types::Shape::from_dims(&[2]);
+        let a = leaf(&mut g, &s);
+        let b = leaf(&mut g, &s);
+        let prod = op2(&mut g, Op::Mul, a, b, &s);
+        let r = op1(&mut g, Op::Relu, prod, &s);
+        let counts = consumer_counts(&g);
+        assert_eq!(
+            match_region(&g, r, &relu_add_pattern(), &|n| *counts.get(&n).unwrap_or(&0)),
+            None
+        );
+    }
+
+    #[test]
+    fn match_region_declines_shared_interior() {
+        // sum feeds two consumers → fusing duplicates it → decline (§3a.4).
+        let mut g = Graph::new();
+        let s = fuel_core_types::Shape::from_dims(&[2]);
+        let a = leaf(&mut g, &s);
+        let b = leaf(&mut g, &s);
+        let sum = op2(&mut g, Op::Add, a, b, &s);
+        let r1 = op1(&mut g, Op::Relu, sum, &s);
+        let _r2 = op1(&mut g, Op::Neg, sum, &s); // second consumer of `sum`
+        let counts = consumer_counts(&g);
+        assert_eq!(
+            match_region(&g, r1, &relu_add_pattern(), &|n| *counts.get(&n).unwrap_or(&0)),
+            None
+        );
     }
 }
