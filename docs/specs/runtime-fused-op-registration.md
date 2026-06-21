@@ -205,12 +205,22 @@ refuses a kernel that doesn't pay). Baracuda synthesizes; Fuel decides.
 4. ✅ **Region-re-emit `decompose`** (§5) + `tag_to_op` + wired into `default_rules`/`lowering_only`.
    Tests: direct re-emit + pass-level round-trip (register `tanh(sub)` → fuse → decompose). *(46745dd3)*
 5. **Capability-gated match** (§6) — at the optimizer's pattern-lookup step, fuse only when an
-   admissible kernel exists for the target backend; otherwise emit a JIT work-order and stay
-   primitive. **Not** a post-fusion "lower a kernel-absent op". Of this: the kernel-*present*
-   dispatch already works (`FusedKernelRegistry` is `FusedOpId`-keyed, so a runtime id binds +
-   looks up like a static one), and the kernel-*absent* decompose is built (`lowering_only`). The
-   remaining piece — the capability-gated match + work-order emission — is a dispatch-layer
-   optimize concern that co-lands with the live seam (6–7).
+   admissible kernel exists for the target backend; otherwise it's a JIT work-order candidate and
+   the region stays primitive. **Not** a post-fusion "lower a kernel-absent op".
+   - ✅ **The gate** — `RuleRegistry::capability_gated_rules(has_kernel) -> (rules, gated_out)`:
+     a fused op gets a fusion rule only when `has_kernel(id)`; without one it gets a lowering rule
+     but no fusion rule, so a kernel-absent node never forms. `gated_out` is the closed-world miss
+     set. `default_rules` is the all-available case. *(dc054434)*
+   - Kernel-*present* dispatch already works (`FusedKernelRegistry` is `FusedOpId`-keyed, so a
+     runtime id binds + looks up like a static one); the dispatch layer supplies `has_kernel` from
+     `lookup(id, backend).is_some()`.
+   - **Remaining (co-lands with the live seam):** the **work-order emission** — turning a
+     gated-out match into a synthesize request. NB the existing `MissRecord` is the *structure-
+     specialization* miss (one op + operands → generic fallback), a **different** signal from the
+     *fusion* miss (a fusable *sequence* with no kernel). The fusion work-order is a new
+     `FusionMissRecord` carrying the region + operands — essentially the `JitRequest` body — so it
+     builds with the §5 wire types (increment 7). The **open-world** miss (a novel sequence with
+     *no* pattern key) needs co-occurrence mining and is deferred per the constitution.
 6. **Adoption entry point** (§7 steps 1–4) + **cost gate** (§8) — `adopt_synthesized(region,
    contract, kernel) -> Option<FusedOpId>`, gated on the cost-trampoline comparison.
 7. **`JitRequest`/`JitResponse` wire types** + the live `synthesize` call (FKC §5 transport),
