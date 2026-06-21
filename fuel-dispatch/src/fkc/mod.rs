@@ -41,6 +41,7 @@
 
 mod caps_map;
 mod cost_expr;
+mod cpu_link;
 mod error;
 mod lower;
 mod parse;
@@ -51,7 +52,10 @@ mod schema;
 mod validate;
 
 pub use caps_map::{ResolvedLayout, Tri};
-pub use cost_expr::{eval as eval_cost, CompiledCostExpr, CostEvalError, CostNode};
+pub use cost_expr::{
+    bind_cost_symbols, cost_estimate, eval as eval_cost, CompiledCostExpr, CostEvalError, CostNode,
+};
+pub use cpu_link::{CpuLinkRegistry, CPU_BINARY_ENTRY_POINTS};
 pub use error::FkcError;
 pub use lower::{
     lower_file, LinkRegistry, Resolved, ResolvedFused, ResolvedPrimitive,

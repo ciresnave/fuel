@@ -76,6 +76,7 @@ contiguized by the planner first (`requires_contiguous`).
 ```fkc
 kernel: binary
 op_kind: AddElementwise        # representative; the shared chassis backs Add/Sub/Mul/Div/Maximum/Minimum/Pow/Rem
+registrable: false             # §3.10 describe-only: shared chassis umbrella (a generic binary<T,U>), NOT a dispatch target — the per-(op,dtype) sections below are the registrable contracts
 blurb: "Elementwise binary arithmetic/extremum; contiguous same-shape; half via f32."
 backend: Cpu
 kernel_source: "portable-cpu"

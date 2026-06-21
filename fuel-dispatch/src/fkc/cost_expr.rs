@@ -45,6 +45,11 @@
 
 use std::collections::HashMap;
 
+use crate::fused::CostEstimate;
+use crate::kernel::OpParams;
+use fuel_core_types::dispatch::OpKind;
+use fuel_core_types::{DType, Shape};
+
 /// A compiled cost-expression AST (FKC §4.4 / §2.3 strategy A).
 ///
 /// Cloneable + comparable so it can ride on a resolved record and be
@@ -483,6 +488,62 @@ fn eval_node(node: &CostNode, bindings: &HashMap<String, f64>) -> Result<f64, Co
             }
         }
     }
+}
+
+/// Bind the §2.3 cost-expression symbol vocabulary (`m`/`n`/`k`/`batch`/
+/// `dtype_bytes`, plus a generic element count) from a dispatch context, so a
+/// contract's *declared* cost expression can be evaluated to a concrete FLOP
+/// count. Op-specific symbols come from [`OpParams`]; the vocabulary extends as
+/// declared-cost contracts for more op families land.
+pub fn bind_cost_symbols(
+    _op: OpKind,
+    shapes: &[Shape],
+    dtypes: &[DType],
+    params: &OpParams,
+) -> HashMap<String, f64> {
+    let mut b = HashMap::new();
+    if let Some(out) = dtypes.last() {
+        b.insert("dtype_bytes".to_string(), out.size_in_bytes() as f64);
+    }
+    match params {
+        OpParams::Matmul {
+            lhs_batch_dims, m, n, k, ..
+        } => {
+            let batch = lhs_batch_dims.iter().copied().product::<usize>().max(1);
+            b.insert("batch".to_string(), batch as f64);
+            b.insert("m".to_string(), *m as f64);
+            b.insert("n".to_string(), *n as f64);
+            b.insert("k".to_string(), *k as f64);
+        }
+        _ => {
+            // Generic fallback: the total output element count as `n`.
+            if let Some(out_shape) = shapes.last() {
+                b.insert("n".to_string(), out_shape.elem_count() as f64);
+            }
+        }
+    }
+    b
+}
+
+/// The cost trampoline: evaluate a contract's *declared* cost expression against
+/// a dispatch context, turning a parsed [`CompiledCostExpr`] into a concrete
+/// [`CostEstimate`] — the value FKC import previously dropped in favor of the
+/// `unknown_cost` sentinel. An undefined symbol is a typed [`CostEvalError`]
+/// (never a panic, never a silent zero). `bytes_moved` stays 0 until contracts
+/// carry a separate `bytes:` expression.
+pub fn cost_estimate(
+    expr: &CompiledCostExpr,
+    op: OpKind,
+    shapes: &[Shape],
+    dtypes: &[DType],
+    params: &OpParams,
+) -> Result<CostEstimate, CostEvalError> {
+    let symbols = bind_cost_symbols(op, shapes, dtypes, params);
+    let flops = eval(expr, &symbols)?;
+    Ok(CostEstimate {
+        flops: flops.max(0.0) as u64,
+        ..CostEstimate::default()
+    })
 }
 
 /// Reconstruct a canonical string spelling of a shape-index / call node so it

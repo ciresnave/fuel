@@ -175,11 +175,16 @@ criterion = { version = "0.8", default-features = false }
 # cl.exe's traditional preprocessor (the wall that blocked the A3b-1 live
 # smoke). No Fuel-facing API change vs alpha.67.
 #
-# alpha.69 (2026-06-20) adds Baracuda's support for the ratified Kernel-Seam
-# Interop Contract (Profile v1 — FDX sidecar + FKC accept/return contract):
-# the `baracuda_seam_hello` handshake + JIT-on-request surface, so Baracuda
-# can announce/contract kernels through the same seam Fuel speaks. The whole
-# baracuda-* set is bumped together to keep the workspace on one version.
+# alpha.69 (2026-06-20) — stay-current bump (alpha.68 → alpha.69), whole
+# baracuda-* set together to keep the workspace on one version. NOTE: a grep of
+# the published alpha.69 FFI surface (baracuda-kernels-sys + all baracuda-*
+# crates, 2026-06-21) found NO `baracuda_seam_hello`, NO DLPack/DLTensor
+# consumption, and NO JIT-on-request / runtime-fused-op-registration endpoint —
+# i.e. the ratified Kernel-Seam (Profile v1) is NOT yet exposed by Baracuda.
+# alpha.69 ships the building blocks (baracuda-nvrtc runtime PTX compile,
+# baracuda-forge build-time nvcc), but the seam surface (seam_hello + a
+# DLPack-consuming kernel + the §5 JIT endpoint) must land in a later Baracuda
+# version before the cross-FFI seam can be tested. Tracked in docs/specs/kernel-seam-interop.md §7.1.
 baracuda-types         = { version = "0.0.1-alpha.69", features = ["half-crate", "f8-crate"] }
 baracuda-core          = { version = "0.0.1-alpha.69" }
 baracuda-cuda-sys      = { version = "0.0.1-alpha.69" }
