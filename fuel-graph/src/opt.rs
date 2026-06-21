@@ -169,6 +169,20 @@ impl RuleRegistry {
                 .with_rule(Box::new(LoweringRule::from_entry(entry)))
                 .with_rule(Box::new(FusionRule::from_entry(entry)));
         }
+        // Runtime-registered fused ops (Tier-2): a fusion rule (declarative,
+        // from the region) + a lowering rule (region re-emit) per runtime op,
+        // so a synthesized/imported op fuses + round-trips like a static one.
+        for e in crate::runtime_fused::runtime_entries() {
+            r = r
+                .with_rule(Box::new(LoweringRule::runtime(e.id)))
+                .with_rule(Box::new(FusionRule::declarative(
+                    e.id,
+                    crate::registry::PatternTree {
+                        root:   e.region,
+                        params: FusedOpParams::Runtime { scalars: Vec::new() },
+                    },
+                )));
+        }
         r
     }
 
@@ -181,6 +195,12 @@ impl RuleRegistry {
         let mut r = Self::new();
         for entry in registry.entries_iter() {
             r = r.with_rule(Box::new(LoweringRule::from_entry(entry)));
+        }
+        // Runtime ops decompose to their region here too — this is the
+        // kernel-absent path (a backend without the synthesized kernel runs the
+        // primitive recipe).
+        for e in crate::runtime_fused::runtime_entries() {
+            r = r.with_rule(Box::new(LoweringRule::runtime(e.id)));
         }
         r
     }
@@ -352,6 +372,12 @@ impl LoweringRule {
     pub fn from_entry(entry: &FusedOpEntry) -> Self {
         Self { id: entry.id, decompose: entry.decompose }
     }
+
+    /// Lowering rule for a runtime-registered fused op: decompose by re-emitting
+    /// its `runtime_fused` sidecar region as primitives. One per runtime id.
+    pub fn runtime(id: FusedOpId) -> Self {
+        Self { id, decompose: crate::runtime_fused::runtime_lowering_decompose }
+    }
 }
 
 impl Rule for LoweringRule {
@@ -439,6 +465,12 @@ impl FusionRule {
             SubgraphPattern::Declarative(tree) => PatternKind::Declarative(tree.clone()),
         };
         Self { id: entry.id, pattern }
+    }
+
+    /// Fusion rule from a declarative pattern (the runtime path): match the
+    /// region and stamp `tree.params` on the emitted `Op::Fused(id, _)`.
+    pub fn declarative(id: FusedOpId, tree: crate::registry::PatternTree) -> Self {
+        Self { id, pattern: PatternKind::Declarative(tree) }
     }
 }
 
@@ -2774,6 +2806,54 @@ mod tests {
             vec![a, b],
             "fused inputs = the region's bound external inputs",
         );
+    }
+
+    #[test]
+    fn runtime_op_fuses_and_round_trips_through_the_pass() {
+        use crate::jit::{OpAttrs, OpTag, PatternNode};
+        use crate::runtime_fused::register_runtime_fused;
+        // A region no other test registers — tanh(sub(a, b)) — so the fuse is
+        // deterministic (only our runtime rule matches it; sub is non-commutative).
+        let region = PatternNode::Op {
+            op: OpTag::Tanh,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Op {
+                op: OpTag::Sub,
+                attrs: OpAttrs::default(),
+                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            }],
+        };
+        let rid = register_runtime_fused("test::tanh_sub", region).unwrap();
+
+        // Build tanh(sub(a, b)) on primitives (b shares a's graph).
+        let a = Tensor::from_f32(vec![0.5, -0.5, 1.0, -1.0], Shape::from_dims(&[4]), cpu_dev());
+        let b = a.const_f32_like(vec![0.1, 0.2, 0.3, 0.4], Shape::from_dims(&[4]));
+        let y = a.sub(&b).tanh();
+        let graph = y.graph().clone();
+
+        // default_rules: lower (no-op here) then fuse — the runtime declarative
+        // FusionRule folds tanh(sub) → Op::Fused(rid, Runtime).
+        let fused = RuleRegistry::default_rules().optimize_to_fixpoint(&graph, &[y.id()]);
+        {
+            let g = graph.read().unwrap();
+            match &g.node(fused[0]).op {
+                Op::Fused(fid, FusedOpParams::Runtime { scalars }) => {
+                    assert_eq!(*fid, rid, "fused to our runtime op");
+                    assert!(fid.is_runtime());
+                    assert!(scalars.is_empty(), "parameterless region");
+                }
+                other => panic!("expected runtime Op::Fused, got {other:?}"),
+            }
+        }
+
+        // lowering_only: the kernel-absent path — decompose the runtime op back
+        // to its region on primitives (tanh(sub(a, b))).
+        let lowered = RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &fused);
+        let g = graph.read().unwrap();
+        assert!(matches!(g.node(lowered[0]).op, Op::Tanh), "re-emitted sink is Tanh");
+        let sub_id = g.node(lowered[0]).inputs[0];
+        assert!(matches!(g.node(sub_id).op, Op::Sub), "Tanh's input is Sub");
+        assert_eq!(g.node(sub_id).inputs.len(), 2, "Sub over the two bound inputs");
     }
 
     #[test]
