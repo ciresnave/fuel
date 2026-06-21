@@ -12,6 +12,10 @@
 //! re-emitted). The operand-side projection (`OperandDesc`) is the synthesizer's
 //! `structure_key` input and lives in its types crate — not here.
 
+/// The Kernel-Seam handshake envelope + profile negotiation (§3) — the frozen
+/// `SeamHello` C-ABI envelope, capability bits, and `negotiate`.
+pub mod seam;
+
 // ===========================================================================
 // OpTag — the frozen functional-Op vocabulary (kernel-seam-interop §4.1)
 // ===========================================================================
