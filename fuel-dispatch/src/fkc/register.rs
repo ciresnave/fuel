@@ -691,6 +691,62 @@ mod tests {
             .expect("the FKC-resolved add_f32 kernel executes on real storage");
     }
 
+    #[test]
+    fn cpu_link_registry_binds_elementwise_binary_to_live_kernels() {
+        // The CPU backend is the first FKC conformance reference: import its
+        // authored elementwise-binary contract through the PRODUCTION
+        // CpuLinkRegistry (not a stub) and verify every (op, dtype) section
+        // resolves to the real production wrapper — proving an imported
+        // contract describes, and binds to, the live CPU kernels.
+        let provider = import_bundle_str(ELEMENTWISE_BINARY, &crate::fkc::CpuLinkRegistry)
+            .expect("elementwise-binary imports through the production CpuLinkRegistry");
+        let mut table = KernelBindingTable::new();
+        let mut fused = FusedKernelRegistry::new();
+        provider
+            .register_into(&mut table, &mut fused)
+            .expect("register_into a fresh table succeeds");
+
+        // All 8 ops × 4 dtypes are bound from the contract.
+        let ops = [
+            OpKind::AddElementwise,
+            OpKind::SubElementwise,
+            OpKind::MulElementwise,
+            OpKind::DivElementwise,
+            OpKind::MaximumElementwise,
+            OpKind::MinimumElementwise,
+            OpKind::PowElementwise,
+            OpKind::RemElementwise,
+        ];
+        let dts = [DType::F32, DType::F64, DType::F16, DType::BF16];
+        for op in ops {
+            for dt in dts {
+                assert!(
+                    table.lookup(op, &[dt, dt, dt], BackendId::Cpu).is_ok(),
+                    "{op:?}/{dt:?} must be bound from the imported contract",
+                );
+            }
+        }
+
+        // Spot-check two distinct (op, dtype) resolve to the EXACT production
+        // wrappers — the link registry bound real symbols, not stubs.
+        let add_f32 = table
+            .lookup(OpKind::AddElementwise, &[DType::F32; 3], BackendId::Cpu)
+            .unwrap();
+        assert_eq!(
+            add_f32 as usize,
+            crate::dispatch::add_elementwise_f32_cpu_wrapper as usize,
+        );
+        let pow_bf16 = table
+            .lookup(OpKind::PowElementwise, &[DType::BF16; 3], BackendId::Cpu)
+            .unwrap();
+        assert_eq!(
+            pow_bf16 as usize,
+            crate::dispatch::pow_elementwise_bf16_cpu_wrapper as usize,
+        );
+
+        assert!(table.finalize().is_ok(), "finalize is Ok after a real-link import");
+    }
+
     // =====================================================================
     // DUPLICATE: two sections at the same key+pointer → DuplicateKernelRef
     // =====================================================================

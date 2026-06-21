@@ -858,7 +858,45 @@ mod tests {
     fn lower_file_lowers_every_kernel() {
         let file = parse_file(ELEMENTWISE_BINARY).expect("parses");
         let resolved = lower_file(&file, &StubLink).expect("all lower");
-        assert_eq!(resolved.len(), file.kernels.len());
+        // Every *registrable* section lowers; describe-only sections (§3.10,
+        // e.g. the shared `binary` chassis umbrella) are filtered out first.
+        let registrable = file.kernels.iter().filter(|k| k.registrable).count();
+        assert_eq!(resolved.len(), registrable);
+    }
+
+    #[test]
+    fn cost_trampoline_evaluates_matmul_declared_flops() {
+        // The matmul contract declares `flops: "2 * batch * m * n * k"`. Lower it
+        // (StubLink resolves entry_points to dummies — we only need the parsed
+        // cost AST), then run that AST through the cost trampoline for a
+        // 2×(3×4×5) batched matmul → 2·2·3·4·5 = 240 flops. This is what FKC
+        // import previously dropped in favor of the `unknown_cost` sentinel.
+        const MATMUL: &str = include_str!("../../../docs/kernel-contracts/cpu/matmul.fkc.md");
+        let file = parse_file(MATMUL).expect("matmul contract parses");
+        let resolved = lower_file(&file, &StubLink).expect("matmul contract lowers");
+        let prim = resolved
+            .iter()
+            .find_map(|r| match r {
+                Resolved::Primitive(p) if p.op == OpKind::MatMul => Some(p),
+                _ => None,
+            })
+            .expect("a MatMul primitive in the matmul contract");
+        let params = crate::kernel::OpParams::Matmul {
+            lhs_batch_dims: vec![2],
+            rhs_batch_dims: vec![2],
+            m: 3,
+            n: 4,
+            k: 5,
+        };
+        let est = crate::fkc::cost_estimate(
+            &prim.cost,
+            OpKind::MatMul,
+            &[],
+            &[DType::F32, DType::F32, DType::F32],
+            &params,
+        )
+        .expect("declared matmul cost evaluates");
+        assert_eq!(est.flops, 240, "2 * batch(2) * m(3) * n(4) * k(5) = 240");
     }
 
     /// Task 1 end-to-end verification: a REAL fused contract from the corpus
