@@ -45,6 +45,7 @@ pub mod grad;
 pub mod jit;
 pub mod opt;
 pub mod registry;
+pub mod runtime_fused;
 pub mod run;
 
 #[doc(inline)]

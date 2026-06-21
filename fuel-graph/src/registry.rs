@@ -69,6 +69,20 @@ pub struct FusedOpId(pub u16);
 /// own id is assigned.
 impl FusedOpId {
     pub const UNASSIGNED: FusedOpId = FusedOpId(0);
+
+    /// The first id reserved for **runtime-registered** (e.g. JIT-synthesized
+    /// or import-time) fused ops. Static build-time ids are dense
+    /// `1..RUNTIME_FUSED_BASE`; runtime ids are allocated from
+    /// `RUNTIME_FUSED_BASE..` so the two spaces never collide and
+    /// [`Self::is_runtime`] is the routing bit. See
+    /// `docs/specs/runtime-fused-op-registration.md`.
+    pub const RUNTIME_FUSED_BASE: u16 = 0x8000;
+
+    /// Whether this id names a runtime-registered fused op — its metadata lives
+    /// in the `runtime_fused` sidecar, not the static [`default_registry`].
+    pub fn is_runtime(self) -> bool {
+        self.0 >= Self::RUNTIME_FUSED_BASE
+    }
 }
 
 /// Per-fused-op metadata. Identity, pattern, decomposition, backward,
@@ -356,6 +370,13 @@ pub enum FusedOpParams {
         reduction:    Reduction,
         ignore_index: i64,
     },
+    /// A **runtime-registered** fused op (JIT-synthesized or import-time). The
+    /// op's identity is the runtime [`FusedOpId`] in `Op::Fused`; its recipe is
+    /// the region in the `runtime_fused` sidecar. This variant carries only the
+    /// extracted scalar args (the `extract:` slots, in slot order) — a
+    /// parameterless runtime op carries `scalars: []`. See
+    /// `docs/specs/runtime-fused-op-registration.md`.
+    Runtime { scalars: Vec<f64> },
 }
 
 /// Reduction mode for losses with per-sample outputs. Matches PyTorch's
@@ -589,6 +610,14 @@ impl FusedOpParams {
                     window_size_left.map(|w| w as i64).unwrap_or(i64::MIN),
                     window_size_right.map(|w| w as i64).unwrap_or(i64::MIN),
                 ],
+            },
+            // Runtime-registered fused ops share one tag (0xF000); the runtime
+            // FusedOpId in `Op::Fused` disambiguates distinct ops, and the
+            // scalar bits disambiguate instances of the same op.
+            FusedOpParams::Runtime { scalars } => FusedOpParamsKey {
+                tag: 0xF000,
+                bits: scalars.iter().map(|s| s.to_bits()).collect(),
+                ints: Vec::new(),
             },
         }
     }
