@@ -221,10 +221,19 @@ refuses a kernel that doesn't pay). Baracuda synthesizes; Fuel decides.
      `FusionMissRecord` carrying the region + operands — essentially the `JitRequest` body — so it
      builds with the §5 wire types (increment 7). The **open-world** miss (a novel sequence with
      *no* pattern key) needs co-occurrence mining and is deferred per the constitution.
-6. **Adoption entry point** (§7 steps 1–4) + **cost gate** (§8) — `adopt_synthesized(region,
-   contract, kernel) -> Option<FusedOpId>`, gated on the cost-trampoline comparison.
-7. **`JitRequest`/`JitResponse` wire types** + the live `synthesize` call (FKC §5 transport),
-   then advertise `SeamCapJitOnRequest`.
+6. **Adoption entry point** (§7 steps 1–4) + **cost gate** (§8) — `adopt(JitResponse) ->
+   Option<FusedOpId>`: register the runtime op (`register_runtime_fused`) + bind its kernel +
+   cost-gate. **NB (2026-06-21): binding the kernel needs a Tier-2 *kernel* sidecar.**
+   `FusedKernelRegistry` is a frozen `OnceLock` (like the metadata `FusedOpRegistry` was), so a
+   runtime kernel cannot register into it — it needs a parallel `RwLock` runtime-kernel registry
+   the dispatch lookup consults alongside the static one, mirroring `runtime_fused`'s metadata
+   sidecar. `BackendImpl` is `Copy` / `&'static [DType]`, so a runtime kernel's dtypes leak to
+   `'static` (a process-lifetime op). This is the next increment.
+7. ✅ **`fuel-kernel-seam` envelope crate** — `JitRequest` / `JitResponse` / `SynthesizedKernel`
+   / the `Synthesizer` trait — cut and building against the **published**
+   `baracuda-kernels-types::OperandDesc`/`ArchSku` *(02fb962f)*. Remaining: the live `synthesize`
+   call (Baracuda's `Synthesizer` impl, their side) + adoption (6) wired to it, then both sides
+   advertise `SeamCapJitOnRequest` once the loop is callable end-to-end.
 
 Increments 1–5 are pure Fuel-internal and independently testable against a hand-built region
 (no Baracuda dependency). 6–7 are the live seam. None of 1–7 blocks Baracuda's reconcile — the
