@@ -1,0 +1,15 @@
+[package]
+    categories.workspace = true
+    description          = "Frozen kernel-seam wire types: the JIT region / declarative-pattern grammar (OpTag, OpAttrs, PatternNode) shared across the Fuel <-> backend-synthesizer seam"
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-kernel-seam-types"
+    repository.workspace = true
+    version.workspace    = true
+
+# Intentionally dependency-free: these are std-only POD grammar types so any
+# synthesizer backend can depend on this crate without pulling Fuel's graph
+# layer. The `Op -> OpTag` projection and the structural matcher stay Fuel-side
+# (they need the graph) in `fuel-graph::jit`.
+[dependencies]
