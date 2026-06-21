@@ -2,11 +2,11 @@
     categories  = ["science"]
     description = "CUBLASLt fused GEMM with activation/bias for the Fuel ML framework."
     edition     = "2024"
-    homepage    = "https://github.com/huggingface/fuel"
+    homepage    = "https://github.com/ciresnave/fuel"
     keywords    = ["blas", "machine-learning", "tensor"]
     license     = "MIT OR Apache-2.0"
     name        = "fuel-cublaslt"
-    repository  = "https://github.com/huggingface/fuel"
+    repository  = "https://github.com/ciresnave/fuel"
     version     = "0.10.2"
 
 [dependencies]
