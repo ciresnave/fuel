@@ -42,6 +42,7 @@
 //!   Borrow access goes through `read().unwrap()` / `write().unwrap()`.
 
 pub mod grad;
+pub mod jit;
 pub mod opt;
 pub mod registry;
 pub mod run;
