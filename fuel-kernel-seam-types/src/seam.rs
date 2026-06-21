@@ -10,10 +10,12 @@
 //! cross-checked by the size/offset asserts in the tests below — the same
 //! discipline FDX uses for its `#[repr(C)]` structs.
 //!
-//! This module is the Fuel side of the handshake: it advertises Fuel's profile
-//! set, validates a remote envelope, and negotiates. The FFI call that obtains
-//! a provider's envelope (`int baracuda_seam_hello(SeamHello* out)`) lives in
-//! the backend glue that links the provider; this module is pure + portable.
+//! These are the frozen wire types + their pure negotiation helpers, so they
+//! live in the dependency-free seam-types crate (both halves of the seam depend
+//! on it). The FFI call that obtains a provider's envelope
+//! (`int baracuda_seam_hello(SeamHello* out)`) and the live handshake driver
+//! live in the protocol crate / the backend glue that links the provider; this
+//! module is pure + portable.
 
 /// `"SEAM"` — the envelope magic; never changes (§3.1).
 pub const SEAM_MAGIC: u32 = 0x5345_414D;

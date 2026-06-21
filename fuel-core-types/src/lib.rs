@@ -39,7 +39,6 @@ pub mod probe;
 pub mod quant_scale;
 pub mod quantized;
 pub mod scalar;
-pub mod seam;
 pub mod shape;
 pub mod storage;
 pub mod stype;
