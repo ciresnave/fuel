@@ -81,18 +81,24 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// See module preamble — QMatMul deliberately has no primitive
-/// decomposition; the cpu_fallback path handles backends without a
-/// native kernel.
-pub fn decompose(_graph: &mut Graph, _id: NodeId, _params: &FusedOpParams) -> NodeId {
-    panic!(
-        "qmatmul::decompose: QMatMul has no registry-layer \
-         decomposition. The fused dequant-in-kernel design exists \
-         specifically to avoid the dequant + matmul DRAM round-trip; \
-         exposing that round-trip as a registry-layer lowering would \
-         defeat the point. cpu_fallback handles backends without a \
-         native kernel.",
-    );
+/// QMatMul is a genuine **basis gap** (G2, 2026-06-20). Its primitive recipe
+/// is `dequantize(w_q_bytes, quant_type) → matmul(a, ·)`, but the dequant needs
+/// primitives Fuel lacks. The U32 `w_q_bytes` is an opaque GGUF/GGML `BlockQ*`
+/// stream interleaving, per block: sub-byte-packed quants (4/5/2/3/6 bits) plus
+/// f16 scale(s)/min(s) embedded as raw bytes (and, for the Q*_K super-blocks,
+/// 6-bit-packed sub-block scales + high-bit masks). Expressing the dequant
+/// needs (1) a **sub-byte bit-unpack** primitive (no BitShift/BitAnd/Unpack
+/// exists; `Cast` converts whole dtypes only), (2) a **byte-reinterpret of an
+/// offset slice** to recover the embedded f16 scales (`Cast` is value-
+/// converting, not a bit-cast; `Slice` indexes logical typed elements, not byte
+/// offsets), and (3) a GGML block/super-block layout op. `Gather`/`IndexSelect`
+/// don't close the gap. Per G2 `decompose` is total + never-panic: with no
+/// expressible recipe it returns **self** (a surfaced opaque-op gap), and
+/// decomposes once those primitives land. `cpu_fallback` handles backends
+/// without a native kernel. (The DRAM-round-trip-avoidance note is a kernel-
+/// selection rationale — performance, not a totality argument.)
+pub fn decompose(_graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
+    id
 }
 
 /// Matcher stub — QMatMul nodes originate from explicit quantized

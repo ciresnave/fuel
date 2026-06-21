@@ -217,6 +217,16 @@ pub enum Op {
     /// payload — the slot is the sole source of bytes.)
     Const,
 
+    /// Position-index generator — a leaf (no inputs) producing the 1-D
+    /// `F32` sequence `[0.0, 1.0, …, (len-1) as f32]` of shape `[len]`.
+    /// The integer-valued positions are exact in `f32` for any realistic
+    /// sequence length (`< 2^24`). Reshaped + broadcast, it builds the
+    /// row/column indices that express causal / sliding-window masks and
+    /// alibi position biases (e.g. in FlashAttn's decomposition), so those
+    /// ops can lower to primitives instead of being opaque. Non-differentiable
+    /// (a constant generator; backward drops gradient like `Op::Const`).
+    Iota { len: usize },
+
     // --- element-wise binary ---
     /// Element-wise addition.
     Add,
@@ -1136,6 +1146,7 @@ pub fn derive_view_output_layout(
 fn op_short_name(op: &Op) -> &'static str {
     match op {
         Op::Const             => "Const",
+        Op::Iota { .. }       => "Iota",
         Op::Add                  => "Add",
         Op::Sub                  => "Sub",
         Op::Mul                  => "Mul",
@@ -4919,7 +4930,11 @@ impl Tensor {
     // --- dtype and broadcasting ---
 
     /// Append a `Cast` node converting this tensor's element type to
-    /// `target`. Shape is preserved.
+    /// `target`. Shape is preserved. An identity cast (`target` equals the
+    /// current dtype) is a no-op that the optimizer elides (see
+    /// `opt::optimize`'s identity-`Cast` rule) — kept here rather than
+    /// special-cased at construction so every identity cast, however it
+    /// arises (decompose, autograd, user), is removed in one place.
     pub fn cast(&self, target: DType) -> Tensor {
         let shape = self.shape();
         let id = self.graph.write().unwrap().push(Node {
@@ -6682,6 +6697,10 @@ impl Tensor {
                 Op::Const => {
                     // Leaf. The upstream value has already been stored and
                     // is what `GradMap::get` will return for this input.
+                }
+                Op::Iota { .. } => {
+                    // Leaf, non-differentiable: a constant position
+                    // generator with no inputs — no gradient to propagate.
                 }
                 Op::Add => {
                     // d(a + b)/da = 1, d(a + b)/db = 1.

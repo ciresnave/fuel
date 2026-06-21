@@ -5,8 +5,9 @@
 //! 3-input fused-matmul shape).
 //!
 //! Provides:
-//! - [`entry`] — the metadata-side `FusedOpEntry` (shape/dtype rules,
-//!   panicking `decompose`, stubbed pattern).
+//! - [`entry`] — the metadata-side `FusedOpEntry` (shape/dtype rules, a
+//!   self-returning `decompose` — a basis gap (needs 4-bit-unpack + NF4
+//!   codebook + block-scale primitives), per G2 — and a stubbed pattern).
 //!
 //! Inputs: `[activations, w_packed, absmax]`.
 //!   - `activations`: `[..., M, K]` — caller's dtype (F32/F16/BF16
@@ -113,18 +114,16 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// See module preamble — Nf4Matmul deliberately has no primitive
-/// decomposition (mirrors QMatMul's precedent). `cpu_fallback`
-/// handles backends without a native kernel.
-pub fn decompose(_graph: &mut Graph, _id: NodeId, _params: &FusedOpParams) -> NodeId {
-    panic!(
-        "nf4_matmul::decompose: Nf4Matmul has no registry-layer \
-         decomposition. The fused dequant-in-kernel design exists \
-         specifically to avoid the dequant + matmul DRAM round-trip; \
-         exposing that round-trip as a registry-layer lowering would \
-         defeat the point. cpu_fallback handles backends without a \
-         native kernel. See qmatmul::decompose for the same precedent.",
-    );
+/// Nf4Matmul is a genuine **basis gap**: its primitive recipe is
+/// `dequantize(w_packed, absmax) → matmul`, but the dequant needs primitives
+/// Fuel lacks today — 4-bit nibble-unpack + a 16-entry NF4-codebook gather +
+/// a per-block-absmax scale. Per G2 (2026-06-20) `decompose` is total and
+/// never panics: with no expressible recipe it returns **self**, the
+/// driver's fixpoint signal ("can't decompose further"), leaving the node
+/// `Op::Fused` — a surfaced opaque-op gap. It decomposes once those
+/// primitives land. `cpu_fallback` handles backends without a native kernel.
+pub fn decompose(_graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
+    id
 }
 
 /// Matcher stub — Nf4Matmul nodes originate from the explicit

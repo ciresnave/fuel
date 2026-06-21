@@ -352,6 +352,12 @@ pub fn eval_node_with_op(
              eval_node",
         ),
 
+        // Iota — 0-input position generator: [0.0, 1.0, …, (len-1)].
+        Op::Iota { len } => {
+            let v: Vec<f32> = (0..*len).map(|i| i as f32).collect();
+            AnyRefTensor::F32(RefTensor::from_vec(v, shape.clone()))
+        }
+
         // --- element-wise binary ---
         Op::Add => binary!(inputs, cache, ops::add),
         Op::Sub => binary!(inputs, cache, ops::sub),

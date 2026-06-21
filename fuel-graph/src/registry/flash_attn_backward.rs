@@ -20,7 +20,7 @@ use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
     PatternMatch, SubgraphPattern,
 };
-use crate::{Graph, NodeId};
+use crate::{Graph, Node, NodeId, Op};
 use fuel_core_types::{DType, Shape};
 
 /// Metadata-side registry entry for FlashAttnBackwardQ.
@@ -30,7 +30,7 @@ pub fn entry_q() -> FusedOpEntry {
         name:       "FlashAttnBackwardQ",
         family:     FusedOpFamily::Attention,
         pattern:    SubgraphPattern::Callable(no_pattern),
-        decompose:  no_decompose,
+        decompose:  decompose,
         backward:   BackwardKind::NotDifferentiable,
         shape_rule: shape_rule_q,
         dtype_rule,
@@ -45,7 +45,7 @@ pub fn entry_k() -> FusedOpEntry {
         name:       "FlashAttnBackwardK",
         family:     FusedOpFamily::Attention,
         pattern:    SubgraphPattern::Callable(no_pattern),
-        decompose:  no_decompose,
+        decompose:  decompose,
         backward:   BackwardKind::NotDifferentiable,
         shape_rule: shape_rule_k,
         dtype_rule,
@@ -60,7 +60,7 @@ pub fn entry_v() -> FusedOpEntry {
         name:       "FlashAttnBackwardV",
         family:     FusedOpFamily::Attention,
         pattern:    SubgraphPattern::Callable(no_pattern),
-        decompose:  no_decompose,
+        decompose:  decompose,
         backward:   BackwardKind::NotDifferentiable,
         shape_rule: shape_rule_v,
         dtype_rule,
@@ -110,12 +110,181 @@ fn no_pattern(_g: &Graph, _root: NodeId) -> Option<PatternMatch> {
     None
 }
 
-/// No primitive decomposition. FlashAttn backward as a sum of
-/// primitive ops would re-materialize the [Sq, Sk] score matrix the
-/// fused form exists to avoid.
-fn no_decompose(_g: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
-    panic!(
-        "FlashAttnBackward* has no primitive decomposition (node {id:?}); \
-         every backend must register a kernel for these ops.",
+/// Decompose to the standard SDPA backward. Re-materializing the `[Sq, Sk]`
+/// score matrix is exactly what `decompose` is allowed to do (the cost-guided
+/// optimizer keeps the fused kernel when present; this is the always-correct
+/// primitive form). The single `FusedOpId` (Q/K/V) selects which gradient to
+/// return; the recompute of `P` (softmax probs) reuses the forward's shared
+/// [`super::flash_attn::recompute_probs`] so it is byte-identical.
+///
+/// With `P` (probs), `K_rep`, `V_rep` and `dO` (input 3):
+///   dV = Pᵀ·dO ; dP = dO·V_repᵀ ; dScaled = softmax_bwd(P, dP)
+///   [softcap: dScaled·(1−tanh²)] ; dScores = scale·dScaled
+///   dQ = dScores·K_rep ; dK = dScoresᵀ·Q
+/// GQA folds dK/dV back from `Hq` to `Hkv` heads (the inverse of the forward's
+/// head-repeat). Masked positions need no special-casing: there `P = 0`, so
+/// `softmax_bwd` already yields 0.
+fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
+    // The FusedOpId distinguishes which gradient (Q/K/V); params are shared.
+    let variant = if let Op::Fused(fid, _) = &graph.node(id).op {
+        *fid
+    } else {
+        return id;
+    };
+    let (q_id, k_id, v_id, do_id, alibi_id, q_shape, k_shape, dtype) = {
+        let n = graph.node(id);
+        let q_shape = graph.node(n.inputs[0]).shape.clone();
+        let k_shape = graph.node(n.inputs[1]).shape.clone();
+        let alibi = if n.inputs.len() == 5 { Some(n.inputs[4]) } else { None };
+        (
+            n.inputs[0], n.inputs[1], n.inputs[2], n.inputs[3], alibi, q_shape, k_shape, n.dtype,
+        )
+    };
+    let (scale, causal, window_l, window_r, softcap) = match params {
+        FusedOpParams::FlashAttnBackward {
+            softmax_scale,
+            causal,
+            window_size_left,
+            window_size_right,
+            softcap,
+        } => (
+            *softmax_scale,
+            *causal,
+            *window_size_left,
+            *window_size_right,
+            *softcap,
+        ),
+        // Wrong params for this id — can't decompose; return self.
+        _ => return id,
+    };
+
+    let q_dims = q_shape.dims();
+    let k_dims = k_shape.dims();
+    let (b, hq, sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
+    let (hkv, sk) = (k_dims[1], k_dims[2]);
+    let g = hq / hkv;
+
+    let rc = super::flash_attn::recompute_probs(
+        graph, q_id, k_id, v_id, alibi_id, b, hq, sq, sk, d, hkv, scale, causal, window_l,
+        window_r, softcap, dtype,
     );
+    let scores_shape = rc.scores_shape.clone();
+
+    // GQA fold: [b, hq, s, d] → [b, hkv, s, d] by summing the `g` repeated
+    // heads (the inverse of `repeat_kv_heads`, which is hkv-major / g-minor).
+    let fold = |graph: &mut Graph, x: NodeId, s: usize| -> NodeId {
+        if hq == hkv {
+            return x;
+        }
+        let r5 = graph.push(Node {
+            op: Op::Reshape(Shape::from_dims(&[b, hkv, g, s, d])),
+            inputs: vec![x],
+            shape: Shape::from_dims(&[b, hkv, g, s, d]),
+            dtype,
+        });
+        graph.push(Node {
+            op: Op::SumDim(2),
+            inputs: vec![r5],
+            shape: Shape::from_dims(&[b, hkv, s, d]),
+            dtype,
+        })
+    };
+
+    if variant == FusedOps::FLASH_ATTN_BACKWARD_V {
+        // dV = Pᵀ · dO  →  [b, hq, sk, d]  →  fold → [b, hkv, sk, d]
+        let pt = graph.push(Node {
+            op: Op::Permute(vec![0, 1, 3, 2]),
+            inputs: vec![rc.probs],
+            shape: Shape::from_dims(&[b, hq, sk, sq]),
+            dtype,
+        });
+        let dv_rep = graph.push(Node {
+            op: Op::MatMul,
+            inputs: vec![pt, do_id],
+            shape: Shape::from_dims(&[b, hq, sk, d]),
+            dtype,
+        });
+        return fold(graph, dv_rep, sk);
+    }
+
+    // Q and K both need dScores (= scale · softcap'( softmax_bwd(P, dO·Vᵀ) )).
+    let vt = graph.push(Node {
+        op: Op::Permute(vec![0, 1, 3, 2]),
+        inputs: vec![rc.v_rep],
+        shape: Shape::from_dims(&[b, hq, d, sk]),
+        dtype,
+    });
+    let dp = graph.push(Node {
+        op: Op::MatMul,
+        inputs: vec![do_id, vt],
+        shape: scores_shape.clone(),
+        dtype,
+    });
+    let mut dscaled = graph.push(Node {
+        op: Op::Fused(
+            FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
+            FusedOpParams::SoftmaxLastDimBackward,
+        ),
+        inputs: vec![rc.probs, dp],
+        shape: scores_shape.clone(),
+        dtype,
+    });
+    // softcap backprop: d/ds[cap·tanh(s/cap)] = 1 − tanh²(s/cap).
+    if let Some(t) = rc.softcap_tanh {
+        let t2 = graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![t, t],
+            shape: scores_shape.clone(),
+            dtype,
+        });
+        let neg = graph.push(Node {
+            op: Op::MulScalar(-1.0),
+            inputs: vec![t2],
+            shape: scores_shape.clone(),
+            dtype,
+        });
+        let omt2 = graph.push(Node {
+            op: Op::AddScalar(1.0),
+            inputs: vec![neg],
+            shape: scores_shape.clone(),
+            dtype,
+        });
+        dscaled = graph.push(Node {
+            op: Op::Mul,
+            inputs: vec![dscaled, omt2],
+            shape: scores_shape.clone(),
+            dtype,
+        });
+    }
+    let dscores = graph.push(Node {
+        op: Op::MulScalar(scale as f64),
+        inputs: vec![dscaled],
+        shape: scores_shape,
+        dtype,
+    });
+
+    if variant == FusedOps::FLASH_ATTN_BACKWARD_Q {
+        // dQ = dScores · K_rep  →  [b, hq, sq, d]
+        return graph.push(Node {
+            op: Op::MatMul,
+            inputs: vec![dscores, rc.k_rep],
+            shape: q_shape,
+            dtype,
+        });
+    }
+
+    // K variant: dK = dScoresᵀ · Q  →  [b, hq, sk, d]  →  fold → [b, hkv, sk, d]
+    let dst = graph.push(Node {
+        op: Op::Permute(vec![0, 1, 3, 2]),
+        inputs: vec![dscores],
+        shape: Shape::from_dims(&[b, hq, sk, sq]),
+        dtype,
+    });
+    let dk_rep = graph.push(Node {
+        op: Op::MatMul,
+        inputs: vec![dst, q_id],
+        shape: Shape::from_dims(&[b, hq, sk, d]),
+        dtype,
+    });
+    fold(graph, dk_rep, sk)
 }

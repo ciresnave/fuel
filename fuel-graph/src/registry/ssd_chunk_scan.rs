@@ -154,19 +154,20 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// See module preamble — SsdChunkScan deliberately has no primitive
-/// decomposition. The `cpu_fallback` path handles backends without
-/// a native kernel.
-pub fn decompose(_graph: &mut Graph, _id: NodeId, _params: &FusedOpParams) -> NodeId {
-    panic!(
-        "ssd_chunk_scan::decompose: SsdChunkScan has no registry-layer \
-         decomposition. The chunked SSD recurrence is sequential at the \
-         per-token level (and inter-chunk state passing adds another \
-         sequential layer); synthesizing it from primitives would yield \
-         O(seqlen) nodes minimum. Backends without a native SsdChunkScan \
-         kernel use the executor's cpu_fallback path. See \
-         selective_scan::decompose for the same precedent.",
-    );
+/// SsdChunkScan is a genuine **basis gap** (G2, 2026-06-20). Mamba-2's
+/// State-Space-Duality scan is a sequential state-space recurrence (per-token
+/// decay `exp(dt·a)` threaded through a hidden state, plus the chunked
+/// algorithm's inter-chunk state propagation — a second sequential layer).
+/// Fuel lacks the higher-order **`Scan`** primitive (a parameterized linear/
+/// associative recurrence over the sequence dim) needed to express it without
+/// unrolling to `O(seqlen)` nodes; `CumSum` is only an *unweighted* cumulative
+/// sum and cannot carry the per-step gating coefficient. Per G2 `decompose` is
+/// total + never-panic: with no expressible recipe it returns **self** (a
+/// surfaced opaque-op gap), decomposing once a `Scan` primitive lands — the
+/// identical gap as `selective_scan::decompose`. Backends without a native
+/// kernel use the executor's `cpu_fallback`.
+pub fn decompose(_graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
+    id
 }
 
 /// Matcher stub — SsdChunkScan nodes originate from the explicit

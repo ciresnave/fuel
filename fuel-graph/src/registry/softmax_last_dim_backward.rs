@@ -38,7 +38,7 @@ use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
     PatternMatch, SubgraphPattern,
 };
-use crate::{Graph, NodeId};
+use crate::{Graph, Node, NodeId, Op};
 use fuel_core_types::{DType, Shape};
 
 /// Metadata-side registry entry for SoftmaxLastDimBackward.
@@ -74,18 +74,54 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// See module preamble — backward helpers don't have a meaningful
-/// primitive decomposition that's worth materializing. Panics with
-/// a clear message if the LoweringRule ever fires on this id.
-pub fn decompose(_graph: &mut Graph, _id: NodeId, _params: &FusedOpParams) -> NodeId {
-    panic!(
-        "softmax_last_dim_backward::decompose: backward helpers \
-         have no primitive decomposition exposed at the registry \
-         layer. The fused kernel is the canonical form; backends \
-         without one fall through to GraphExecutor::cpu_fallback. \
-         See fuel-graph/src/registry/softmax_last_dim_backward.rs \
-         module docs.",
-    );
+/// Decompose to the closed-form softmax backward
+/// `grad_x = s · (g − sum(g·s, last_dim, keepdim=true))`, where `s` (input 0)
+/// is the forward output and `g` (input 1) is the upstream gradient. Every
+/// primitive exists (`Mul`, `ReduceSumTo` to a keepdim shape, `BroadcastTo`,
+/// `Sub`) — the same `ReduceSumTo([…,1]) + BroadcastTo` idiom the forward
+/// `softmax_last_dim::decompose` uses — so per G2 this is a real 5-node
+/// decomposition, not a basis-gap self-return.
+pub fn decompose(graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
+    let (s_id, g_id, x_shape, dtype) = {
+        let n = graph.node(id);
+        (n.inputs[0], n.inputs[1], n.shape.clone(), n.dtype)
+    };
+    // keepdim shape: last dim → 1.
+    let mut kd = x_shape.dims().to_vec();
+    let last = kd.len() - 1;
+    kd[last] = 1;
+    let keepdim = Shape::from_dims(&kd);
+
+    let gs = graph.push(Node {
+        op: Op::Mul,
+        inputs: vec![g_id, s_id],
+        shape: x_shape.clone(),
+        dtype,
+    });
+    let summed = graph.push(Node {
+        op: Op::ReduceSumTo(keepdim.clone()),
+        inputs: vec![gs],
+        shape: keepdim,
+        dtype,
+    });
+    let summed_b = graph.push(Node {
+        op: Op::BroadcastTo(x_shape.clone()),
+        inputs: vec![summed],
+        shape: x_shape.clone(),
+        dtype,
+    });
+    let sub = graph.push(Node {
+        op: Op::Sub,
+        inputs: vec![g_id, summed_b],
+        shape: x_shape.clone(),
+        dtype,
+    });
+    graph.push(Node {
+        op: Op::Mul,
+        inputs: vec![s_id, sub],
+        shape: x_shape,
+        dtype,
+    })
 }
 
 /// Matcher stub — backward-helper nodes originate from autograd

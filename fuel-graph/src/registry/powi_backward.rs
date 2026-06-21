@@ -19,7 +19,7 @@ use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
     PatternMatch, SubgraphPattern,
 };
-use crate::{Graph, NodeId};
+use crate::{Graph, Node, NodeId, Op};
 use fuel_core_types::{DType, Shape};
 
 /// Metadata-side registry entry for PowIBackward.
@@ -54,15 +54,41 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-pub fn decompose(_graph: &mut Graph, _id: NodeId, _params: &FusedOpParams) -> NodeId {
-    panic!(
-        "powi_backward::decompose: backward helpers have no primitive \
-         decomposition exposed at the registry layer. (The pre-PowIBackward \
-         autograd path emitted PowI(n-1) → MulScalar → Mul directly; that \
-         decomposition lives in Tensor::backward and is the fallback when \
-         the fused kernel isn't registered for the target backend.) See \
-         module docs.",
-    );
+/// Decompose to the closed-form gradient `grad_x = exp · x^(exp-1) · upstream`,
+/// the same recipe the pre-PowIBackward autograd path emitted inline. Inputs
+/// are `[x, upstream]`; `exp` rides on the params. Every primitive exists
+/// (`Op::PowI`, `Op::MulScalar`, `Op::Mul`), so per G2 this is a real
+/// decomposition, not a basis-gap self-return. Edge cases fall out: `exp==1` →
+/// `PowI(0)·1·upstream = upstream`; `exp==0` → `MulScalar(0) = 0`.
+pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
+    let (x_id, up_id, shape, dtype) = {
+        let n = graph.node(id);
+        (n.inputs[0], n.inputs[1], n.shape.clone(), n.dtype)
+    };
+    let exp = match params {
+        FusedOpParams::PowIBackward { exp } => *exp,
+        // G2: total + never-panic — non-PowIBackward params are an impossible
+        // registry-dispatch invariant violation; return self.
+        _ => return id,
+    };
+    let pow = graph.push(Node {
+        op: Op::PowI(exp - 1),
+        inputs: vec![x_id],
+        shape: shape.clone(),
+        dtype,
+    });
+    let scaled = graph.push(Node {
+        op: Op::MulScalar(exp as f64),
+        inputs: vec![pow],
+        shape: shape.clone(),
+        dtype,
+    });
+    graph.push(Node {
+        op: Op::Mul,
+        inputs: vec![scaled, up_id],
+        shape,
+        dtype,
+    })
 }
 
 pub fn canonical_pattern(_graph: &Graph, _root: NodeId) -> Option<PatternMatch> {
