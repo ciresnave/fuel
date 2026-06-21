@@ -426,17 +426,17 @@ pub struct FusionRule {
 /// into the (process-wide) registry so the rule is `'static`.
 enum PatternKind {
     Callable(fn(&Graph, NodeId) -> Option<crate::registry::PatternMatch>),
-    /// Step 4 wires the declarative form. Until then, declarative
-    /// patterns from the registry don't fuse — the fusion rule is
-    /// constructed but `matches` always returns false.
-    Declarative,
+    /// The declarative form (fkc-fusion-patterns §3): carries the owned
+    /// `PatternTree` (the §3 grammar root + the params to stamp) so the rule is
+    /// `'static`. `matches`/`rewrite` walk it via [`crate::jit::match_region`].
+    Declarative(crate::registry::PatternTree),
 }
 
 impl FusionRule {
     pub fn from_entry(entry: &FusedOpEntry) -> Self {
         let pattern = match &entry.pattern {
             SubgraphPattern::Callable(f) => PatternKind::Callable(*f),
-            SubgraphPattern::Declarative(_) => PatternKind::Declarative,
+            SubgraphPattern::Declarative(tree) => PatternKind::Declarative(tree.clone()),
         };
         Self { id: entry.id, pattern }
     }
@@ -447,19 +447,39 @@ impl Rule for FusionRule {
     fn family(&self) -> RuleFamily { RuleFamily::Fusion }
 
     fn matches(&self, graph: &Graph, id: NodeId) -> bool {
-        match self.pattern {
-            PatternKind::Callable(f) => f(graph, id).is_some(),
-            PatternKind::Declarative => false,
+        match &self.pattern {
+            PatternKind::Callable(f) => (*f)(graph, id).is_some(),
+            PatternKind::Declarative(tree) => {
+                let consumers = |n: NodeId| {
+                    (0..graph.len())
+                        .filter(|&i| graph.node(NodeId(i)).inputs.contains(&n))
+                        .count()
+                };
+                crate::jit::match_region(graph, id, &tree.root, &consumers).is_some()
+            }
         }
     }
 
     fn rewrite(&self, graph: &mut Graph, id: NodeId, remap: &mut HashMap<NodeId, NodeId>) {
-        let pattern_match = match self.pattern {
-            PatternKind::Callable(f) => f(graph, id)
+        let pattern_match = match &self.pattern {
+            PatternKind::Callable(f) => (*f)(graph, id)
                 .expect("rewrite called with non-matching id — matcher contract violated"),
-            PatternKind::Declarative => unreachable!(
-                "Declarative fusion patterns aren't fired in step 3"
-            ),
+            PatternKind::Declarative(tree) => {
+                // match_region returns the region's external inputs in
+                // bind-index order; wrap them (+ the params template) as a
+                // PatternMatch so the shared reconstruction path below applies.
+                let consumers = |n: NodeId| {
+                    (0..graph.len())
+                        .filter(|&i| graph.node(NodeId(i)).inputs.contains(&n))
+                        .count()
+                };
+                let inputs = crate::jit::match_region(graph, id, &tree.root, &consumers)
+                    .expect("rewrite called with non-matching declarative pattern");
+                crate::registry::PatternMatch {
+                    bindings: inputs.iter().enumerate().map(|(i, n)| (i, *n)).collect(),
+                    params: tree.params.clone(),
+                }
+            }
         };
         // General-arity input reconstruction: bindings are (index, NodeId)
         // pairs; sorting by index yields the emitted node's inputs in
@@ -2683,6 +2703,77 @@ mod tests {
         let cast = a.cast(fuel_core_types::DType::F64);
         let new_roots = optimize(&graph, &[cast.id()]);
         assert_ne!(new_roots[0], a.id(), "a real Cast must survive optimization");
+    }
+
+    #[test]
+    fn declarative_pattern_matches_and_fuses_relu_add() {
+        use crate::jit::{OpAttrs, OpTag, PatternNode};
+        use crate::registry::{
+            BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternTree,
+            SubgraphPattern,
+        };
+        fn shape_rule(s: &[Shape], _: &FusedOpParams) -> Shape {
+            s[0].clone()
+        }
+        fn dtype_rule(d: &[DType], _: &FusedOpParams) -> DType {
+            d[0]
+        }
+        fn no_decompose(_: &mut Graph, id: NodeId, _: &FusedOpParams) -> NodeId {
+            id
+        }
+        // A declaratively-registered fused op for relu(add(a, b)).
+        let entry = FusedOpEntry {
+            id: FusedOps::SOFTMAX_LAST_DIM, // a real parameterless id (plumbing test)
+            name: "test_declarative_relu_add",
+            family: FusedOpFamily::Forward,
+            pattern: SubgraphPattern::Declarative(PatternTree {
+                root: PatternNode::Op {
+                    op: OpTag::Relu,
+                    attrs: OpAttrs::default(),
+                    operands: vec![PatternNode::Op {
+                        op: OpTag::Add,
+                        attrs: OpAttrs::default(),
+                        operands: vec![
+                            PatternNode::Bind { index: 0 },
+                            PatternNode::Bind { index: 1 },
+                        ],
+                    }],
+                },
+                params: FusedOpParams::SoftmaxLastDim,
+            }),
+            decompose: no_decompose,
+            backward: BackwardKind::NotDifferentiable,
+            shape_rule,
+            dtype_rule,
+            output_views: None,
+        };
+        let rule = FusionRule::from_entry(&entry);
+
+        // Build relu(add(a, b)).
+        let mut g = Graph::new();
+        let s = Shape::from_dims(&[2]);
+        let f32 = DType::F32;
+        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: f32 });
+        let b = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: f32 });
+        let sum = g.push(Node { op: Op::Add, inputs: vec![a, b], shape: s.clone(), dtype: f32 });
+        let r = g.push(Node { op: Op::Relu, inputs: vec![sum], shape: s.clone(), dtype: f32 });
+
+        // The declarative rule fires at the relu sink and fuses to Op::Fused.
+        assert!(rule.matches(&g, r), "declarative pattern matches relu(add)");
+        let mut remap = HashMap::new();
+        rule.rewrite(&mut g, r, &mut remap);
+        let fused_id = remap[&r];
+        match &g.node(fused_id).op {
+            Op::Fused(id, FusedOpParams::SoftmaxLastDim) => {
+                assert_eq!(*id, FusedOps::SOFTMAX_LAST_DIM)
+            }
+            other => panic!("expected Op::Fused(SOFTMAX_LAST_DIM, _), got {other:?}"),
+        }
+        assert_eq!(
+            g.node(fused_id).inputs,
+            vec![a, b],
+            "fused inputs = the region's bound external inputs",
+        );
     }
 
     #[test]

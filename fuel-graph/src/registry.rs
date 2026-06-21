@@ -651,17 +651,20 @@ pub enum SubgraphPattern {
     Callable(fn(&Graph, NodeId) -> Option<PatternMatch>),
 }
 
-/// Placeholder for the declarative pattern tree (Q1 of the design doc).
-/// Step 1 ships the type so the `SubgraphPattern::Declarative` arm
-/// compiles; the actual recursive shape (`Op + Vec<Pattern>` with
-/// variables) is filled in alongside the second op's migration in
-/// step 4.
-#[derive(Debug, Clone, Default)]
+/// A declarative subgraph pattern: the §3 grammar root plus the
+/// [`FusedOpParams`] to stamp on the matched fused node. The rule engine
+/// ([`crate::opt::FusionRule`] / `PatternKind::Declarative`) walks `root`
+/// against the graph (via [`crate::jit::match_region`]) and emits
+/// `Op::Fused(id, params)`.
+#[derive(Debug, Clone)]
 pub struct PatternTree {
-    /// Reserved for future expansion. The empty placeholder type keeps
-    /// this enum variant valid in step 1 without locking in a shape
-    /// before a second op forces the design.
-    _reserved: (),
+    /// The region/pattern root (the subgraph SINK, fkc-fusion-patterns §3a.1).
+    pub root: crate::jit::PatternNode,
+    /// The per-instance params stamped on the emitted fused node. A
+    /// parameterless declarative op carries its unit variant; scalar-param ops
+    /// recover their payload via the `extract:` layer (a follow-up) — for now
+    /// the template lives here.
+    pub params: FusedOpParams,
 }
 
 /// Result of a successful pattern match. Carries the bindings — the
