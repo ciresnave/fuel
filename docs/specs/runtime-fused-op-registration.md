@@ -135,6 +135,27 @@ for free, with no per-op authoring. A synthesized op can never be an opaque-op g
   exists. This is the FDX/FKC honesty discipline applied to identity: a fused op never asserts
   a capability it can't deliver, because the primitive floor is always reachable.
 
+**Where the miss is caught — the pattern-lookup step, not a post-fusion repair (CireSnave,
+2026-06-21).** The kernel-absence check belongs at the optimizer's base-map → pattern-key probe,
+*before* a fused node is ever committed. When the optimizer matches a base-map subgraph against
+the fused-op pattern keys (`FusedOpRegistry.by_pattern_hash`), there are three outcomes:
+
+- **no pattern key matches** → an open-world fusion gap → JIT work-order (synthesize a *new*
+  fused-op identity + kernel);
+- **pattern matches, no admissible kernel for *this target backend*** across the JIT-capable
+  providers → JIT work-order (synthesize the kernel for the *existing* identity);
+- **pattern matches with an admissible kernel** → fuse + dispatch (today's path).
+
+So **fusion is capability-gated at match time**: a fused op without a kernel never enters a
+realizable graph, and *"lower a fused op that has no kernel" is not a step that exists*. The
+decompose-to-primitives fallback above is only for residual edge cases (a serialized graph
+reloaded where the kernel is gone), never the fusion path. The work-order is **non-blocking**:
+this pass realizes on primitives; the synthesized kernel adopts on a *later* pass (the
+explore/exploit loop). The gating predicate is *"is there an admissible kernel for (pattern,
+this backend)?"* — a kernel on CUDA but absent on the active Vulkan device is still a miss for
+this realize. This is the `FusionMissRecord` signal (the constitution's v1 telemetry headline)
+doubling as the JIT work-order feed.
+
 ## 7. End-to-end flow
 
 ```
@@ -159,9 +180,10 @@ Next optimize(): match_region folds every matching R-subgraph → Op::Fused(id, 
 realize: dispatch → sidecar → synthesized kernel   (absent ⇒ decompose → primitives, §6)
 ```
 
-Step 4 is the piece that **just landed** (`1ed5713c`): the declarative engine fuses a
-registered `PatternNode`. Steps 1–3 + the dispatch/decompose routing (§3–§6) are the remaining
-implementation.
+Steps 2 + 4 + the region-re-emit `decompose` **landed** (`46745dd3`, increments 1–4 below; the
+matcher itself, `1ed5713c`): the runtime sidecar, `FusedOpParams::Runtime`, and the declarative
+fuse + lowering round-trip are live. Steps 1 + 3 (the live `synthesize` call + the link-registry
+kernel binding) and the capability-gated match (§6) are the live-seam remainder.
 
 ## 8. Cost-gated adoption (Fuel stays the strategist)
 
@@ -175,16 +197,20 @@ refuses a kernel that doesn't pay). Baracuda synthesizes; Fuel decides.
 
 ## 9. Implementation increments (sequenced)
 
-1. **`FusedOpId::is_runtime` + `RUNTIME_FUSED_BASE`** — the routing predicate (no behavior yet).
-2. **`FusedOpParams::Runtime { scalars }`** + the two exhaustive-match arms (§3). Lands with the
-   sidecar (§4) so the variant has a constructor + consumer — not before (no orphan capability).
-3. **`RuntimeFusedOpEntry` + `RUNTIME_FUSED_OPS` sidecar + register/lookup** (§4), `is_runtime`
-   routing in `op_short_name`/telemetry.
-4. **Region-re-emit `decompose`** (§5) — the generic `PatternNode → primitive subgraph`
-   walker; test: register a region, fuse, decompose, assert numeric identity vs the un-fused
-   graph (the totality/never-panic gate).
-5. **Dispatch routing** (§6) — `Op::Fused(runtime_id, _)` → sidecar kernel, kernel-absent ⇒
-   force decompose. Test the absent-kernel fallback explicitly.
+1. ✅ **`FusedOpId::is_runtime` + `RUNTIME_FUSED_BASE`** — the routing predicate. *(46745dd3)*
+2. ✅ **`FusedOpParams::Runtime { scalars }`** + the exhaustive-match arm (one `FusedOpParamsKey`
+   arm). Landed with the sidecar so the variant has a constructor + consumer (no orphan). *(46745dd3)*
+3. ✅ **`RuntimeFusedOpEntry` + `RUNTIME_FUSED_OPS` sidecar + register/lookup** (§4) — register
+   validates totality + bind-contiguity before allocating; `runtime_name` for telemetry. *(46745dd3)*
+4. ✅ **Region-re-emit `decompose`** (§5) + `tag_to_op` + wired into `default_rules`/`lowering_only`.
+   Tests: direct re-emit + pass-level round-trip (register `tanh(sub)` → fuse → decompose). *(46745dd3)*
+5. **Capability-gated match** (§6) — at the optimizer's pattern-lookup step, fuse only when an
+   admissible kernel exists for the target backend; otherwise emit a JIT work-order and stay
+   primitive. **Not** a post-fusion "lower a kernel-absent op". Of this: the kernel-*present*
+   dispatch already works (`FusedKernelRegistry` is `FusedOpId`-keyed, so a runtime id binds +
+   looks up like a static one), and the kernel-*absent* decompose is built (`lowering_only`). The
+   remaining piece — the capability-gated match + work-order emission — is a dispatch-layer
+   optimize concern that co-lands with the live seam (6–7).
 6. **Adoption entry point** (§7 steps 1–4) + **cost gate** (§8) — `adopt_synthesized(region,
    contract, kernel) -> Option<FusedOpId>`, gated on the cost-trampoline comparison.
 7. **`JitRequest`/`JitResponse` wire types** + the live `synthesize` call (FKC §5 transport),
