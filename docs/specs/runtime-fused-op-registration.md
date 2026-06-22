@@ -238,3 +238,50 @@ refuses a kernel that doesn't pay). Baracuda synthesizes; Fuel decides.
 Increments 1–5 are pure Fuel-internal and independently testable against a hand-built region
 (no Baracuda dependency). 6–7 are the live seam. None of 1–7 blocks Baracuda's reconcile — the
 two frozen types they wait on (`OperandDesc`, `PatternNode`) are already cut (`2d31443d`).
+
+## 10. Integration into "plan IS the graph" (CireSnave, 2026-06-22)
+
+**This section supersedes the realize-side framing in §6 / §9-increment-5** (the
+"executor consults the runtime sidecar" / "attach the kernel to the `ExecutionPlan`"
+ideas — both wrong). The runtime/JIT *foundation* (matcher, gate, sidecar, `adopt`,
+envelope — increments 1–4 + the kernel sidecar) stands; only its *integration into the
+optimize/execute path* is restated here, to match the ratified "plan IS the graph"
+model ([03-ir §v0.4](../architecture/03-ir.md), [04-optimization §v0.5](../architecture/04-optimization.md)).
+
+The model, as stated:
+
+- **One kernel per node.** A node carries its single resolved kernel — no per-node
+  alternative *set*. `ExecutionPlan { order, alternatives }` is being **deleted**;
+  `order` + the per-node kernel migrate onto the graph (the graph already carries
+  `target_backend` / `placement`).
+- **The optimizer emits parallel *sequences* (path segments) joined at *decision
+  points* (splits).** Alternatives are whole paths, not per-node choices.
+- **Realize schedules, it does not decide structure.** At a split, the executor picks
+  a path by *live device resource / queue depth / speed delta* (optimize for wall-clock
+  even under over-allocation). Choosing fused ops + kernels is the optimizer's job;
+  picking a pre-built path by live load is not "a fused-op decision in realize".
+
+**How the runtime/JIT pieces map onto it (the satisfying part):**
+
+- A synthesized op is **one node, one kernel** (the synthesized `KernelRef`) on a
+  **fused segment**; its `decompose` (the primitive sequence) is the **parallel
+  segment**; they join at a **decision point**. **The recipe principle *is* a split** —
+  fused-vs-primitive, chosen at runtime by device load. No `lowering_only` fallback as a
+  separate path: the decompose segment is just always present.
+- The **capability gate** decides whether the *fused* segment exists (kernel present);
+  the primitive segment always exists.
+- **`adopt` ⇒ re-run the optimizer** over the graph so it regenerates segments,
+  now including the fused runtime path. (No realize-time adoption.)
+- The runtime op's kernel comes from the **`FusedOpId`-keyed sidecar** (not the
+  `OpKind` binding table); the optimizer resolves it onto the node during path
+  generation.
+
+**Sequencing + coordination.** This integration lands on `optimize_graph`
+(path-segment generation), `fuel-graph` `Node` (the one-kernel-per-node carrier), and
+the executor's segment consumption — all of which the **symbolic-extents / plan-IS-the-
+graph session is actively rebuilding**. So the integration is **paused pending
+coordination** with that session; open questions (their design): the node's kernel
+carrier, the segment/decision-point representation, the pathfinder hook for introducing
+a fused segment, an incremental re-optimize entry for `adopt`, and where per-node kernel
+resolution happens so the sidecar plugs in for `is_runtime` ids. The foundation does not
+touch those files and stands independently.
