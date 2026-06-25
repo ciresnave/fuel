@@ -387,17 +387,14 @@ fn dispatch_with_plan_retry(
     // structurally-empty layer for the executor to consume.
     loop {
         // Optimize the graph in place — `optimize_graph` runs the ONE
-        // `compile_plan` per realize and surfaces its `ExecutionPlan`
-        // (PR-A3b-2 de-dup). The plan drives the correctness machinery:
-        // `stamp_plan_backends` (the executor needs `target_backend` on
-        // every kernel node), `insert_resident_input_copies` (residency
-        // stitch), and `apply_layout_fixups`. Build-time validation
-        // (missing binding / no device) fires inside `optimize_graph`.
+        // `compile_plan` per realize, **stamps each node's winning backend
+        // onto the graph** (cleanup A1: the executor needs `target_backend`
+        // on every kernel node, and that's an optimizer concern), and
+        // surfaces its `ExecutionPlan` (PR-A3b-2 de-dup) for the residency
+        // + layout passes below. Build-time validation (missing binding /
+        // no device) fires inside `optimize_graph`.
         let (optimized, plan) =
             build_optimized_graph(graph, &[cpu_target], pinned_loc, &cache)?;
-        // Commit the picker's winners to the graph BEFORE residency
-        // stitching + the executor's order derivation read them.
-        stamp_plan_backends(graph, &[cpu_target], &plan, pinned_loc)?;
         // Materialize Op::Copy on cross-device edges now that final
         // placements are stamped. Idempotent on retry.
         insert_resident_input_copies(
@@ -598,12 +595,12 @@ fn dispatch_many_with_plan_retry(
     let mut retry = TopologyRetryState::new();
     loop {
         // See `dispatch_with_plan_retry`: one `optimize_graph` runs the
-        // single `compile_plan` and surfaces the plan that drives
-        // stamping / residency / layout fixups; the executor recomputes
-        // its run/`lower_run` order from the stamped graph.
+        // single `compile_plan`, **stamps the winning backends onto the
+        // graph** (cleanup A1), and surfaces the plan for residency +
+        // layout fixups; the executor recomputes its run/`lower_run` order
+        // from the stamped graph.
         let (optimized, plan) =
             build_optimized_graph(graph, effective_targets, pinned_loc, &cache)?;
-        stamp_plan_backends(graph, effective_targets, &plan, pinned_loc)?;
         insert_resident_input_copies(
             graph, effective_targets, &cache, pinned_loc, &plan,
         )?;
@@ -678,8 +675,8 @@ fn extract_cpu_bytes_typed<T: bytemuck::Pod>(
 /// produces a CPU storage at the returned `effective_targets`.
 ///
 /// Picker-arc step 4a: per-node `target_backend` pinning moved OUT
-/// of this function — the dispatch loops stamp each node's plan
-/// winner via [`stamp_plan_backends`] after `compile_plan` runs.
+/// of this function — `optimize_graph` stamps each node's plan winner
+/// onto the graph (cleanup A1; the optimizer owns placement).
 ///
 /// Returns `(cache, backend_id, effective_targets)`:
 /// - `effective_targets[i]` mirrors `targets[i]`'s order. For CPU
@@ -798,32 +795,23 @@ fn prepare_split(
     Ok((cache, backend_id, effective_targets))
 }
 
-/// Picker-arc step 4a: commit the plan's per-node winners to the
-/// graph's `target_backend` side-table. Runs AFTER `compile_plan`
-/// (the winners exist) and BEFORE [`insert_resident_input_copies`]
-/// + the executor's ordering derivation (both read the stamps).
+/// **Test-only helper** (cleanup A2). Production backend-stamping now
+/// lives in `fuel_dispatch::optimize::optimize_graph` (the optimizer
+/// writes its placement decision into the graph — "plan IS the graph");
+/// the realize bridge no longer stamps. This replica is retained as a
+/// unit-test fixture for the residency / layout / re-stamp tests below,
+/// which build a plan by hand and need the graph stamped in isolation
+/// without running the full optimizer.
 ///
-/// Per computational node (the same skip-set the pre-4a monolithic
-/// loop used — `Op::Const` / `Op::Release` / `Op::Contiguize` /
-/// view ops / `Op::Reshape` inherit or don't need a stamp):
-///
-/// - **Plan winner present** → stamp `winner.backend`. Under the
-///   locality policy every winner sits on the pinned device, so on
-///   a single-backend system this is byte-identical to the old
-///   monolithic pin; off-device fallback winners (step 4b) stamp
-///   their owning backend so the executor allocates output on the
-///   backend that actually runs the kernel.
-/// - **No plan entry** (structural ops the planner skips —
-///   `Op::Copy` / `Op::Move` / `Op::Alloc` / `Op::ZeroFill` — plus
-///   ops without an OpKind mapping) → stamp the pinned device's
-///   backend, exactly like the old loop. `Op::Copy` / `Op::Move`
-///   stamps are subsequently corrected to the SOURCE backend by
-///   [`insert_resident_input_copies`]'s re-stamp sweep where the
-///   source's placement resolves.
-///
-/// Always overwrites (see `prepare()` doc) — re-planning after a
-/// `TopologyChanged` retry re-stamps consistently from the fresh
-/// plan.
+/// Commits the plan's per-node winner to the graph's `target_backend`
+/// side-table. Per computational node (skip `Op::Const` / `Op::Release` /
+/// `Op::Contiguize` / view ops / `Op::Reshape`): stamp `winner.backend`
+/// if the plan has an entry, else the pinned device's backend (structural
+/// ops — `Op::Copy` / `Op::Move` / `Op::Alloc` / `Op::ZeroFill` — whose
+/// `Op::Copy` / `Op::Move` stamps `insert_resident_input_copies` later
+/// corrects to the source backend). Mirror of
+/// `fuel_dispatch::optimize`'s `stamp_plan_backends`.
+#[cfg(test)]
 fn stamp_plan_backends(
     graph: &Arc<RwLock<Graph>>,
     roots: &[NodeId],
@@ -1292,7 +1280,7 @@ fn cached_storage_location(storage: &Storage) -> Option<DeviceLocation> {
 ///    this pass stitches the crossing.
 /// 5. **Backend stamp** — a node with `target_backend` set but no
 ///    plan entry (structural ops, plus stamps left by
-///    [`stamp_plan_backends`]'s no-entry arm) follows the realize
+///    `optimize_graph`'s no-entry stamping arm) follows the realize
 ///    device.
 /// 6. **Residency-inheriting pass-throughs** — view ops, `Reshape`,
 ///    and `Contiguize` carry no pin and produce no new residency;
@@ -1385,9 +1373,9 @@ fn effective_placements(
 ///   these (the executor dispatched the consumer's kernel against a
 ///   foreign-device input).
 ///
-/// ## Re-stamping on repeat realizes (and after `stamp_plan_backends`)
+/// ## Re-stamping on repeat realizes (and after the optimizer re-stamps)
 ///
-/// Graph rewrites are sticky and [`stamp_plan_backends`] overwrites
+/// Graph rewrites are sticky and `optimize_graph` overwrites
 /// `target_backend` on every computational node — including copies
 /// this pass inserted on a PREVIOUS realize call (whose correct
 /// stamp is the source backend, not the realize backend). This
