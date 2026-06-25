@@ -79,8 +79,9 @@
 
 use std::collections::HashSet;
 
-use fuel_core_types::Result;
-use fuel_graph::{extract_runs_multi, Graph, NodeId, Op};
+use fuel_core_types::probe::BackendId;
+use fuel_core_types::{DeviceLocation, Result};
+use fuel_graph::{extract_runs_multi, topo_order_multi, Graph, NodeId, Op};
 
 use crate::driver::{OptimizationContext, PassRegistry};
 use crate::kernel::KernelBindingTable;
@@ -240,6 +241,18 @@ pub fn optimize_graph(
     };
     PassRegistry::default_passes().run_lockstep(graph, &ctx)?;
 
+    // "Plan IS the graph": commit the placement decision INTO the graph's
+    // `target_backend` side-table here, so a fully-optimized graph carries
+    // its own backend stamps and downstream consumers read the graph, not a
+    // threaded plan. Guarded on a pinned device — the production realize
+    // path always sets one (`PlanOptions::with_pinned_device`); bare-graph
+    // test callers that don't are unaffected. (Cleanup Step A: this is
+    // idempotent with the bridge's transitional `stamp_plan_backends`, which
+    // re-stamps the identical result; Step A2 removes the bridge copy.)
+    if let Some(pinned) = opts.pinned_device {
+        stamp_plan_backends(graph, roots, &plan, pinned);
+    }
+
     Ok((
         OptimizedGraph {
             roots: roots.to_vec(),
@@ -247,6 +260,51 @@ pub fn optimize_graph(
         },
         plan,
     ))
+}
+
+/// Commit the plan's per-node winner backend to the graph's
+/// `target_backend` side-table — the optimizer writing its placement
+/// decision into the graph.
+///
+/// Per kernel-bearing node: stamp `winner.backend` if the plan has an
+/// `AlternativeSet` for it, else the pinned device's backend (structural
+/// ops the planner skips — `Op::Copy`/`Op::Move`/`Op::Alloc`/`Op::ZeroFill`
+/// — plus any op without an `OpKind` mapping). `Op::Const`/`Op::Release`/
+/// `Op::Contiguize`/view ops/`Op::Reshape` inherit or don't need a stamp
+/// and are skipped. Always overwrites, so re-optimizing after a
+/// `TopologyChanged` retry re-stamps consistently from the fresh plan.
+fn stamp_plan_backends(
+    graph: &mut Graph,
+    roots: &[NodeId],
+    plan: &ExecutionPlan,
+    pinned_loc: DeviceLocation,
+) {
+    let pinned_backend = location_to_backend_id(pinned_loc);
+    let order = topo_order_multi(graph, roots);
+    for &id in &order {
+        let node = graph.node(id);
+        if matches!(node.op, Op::Const | Op::Release | Op::Contiguize)
+            || node.op.is_view_op()
+            || matches!(node.op, Op::Reshape(_))
+        {
+            continue;
+        }
+        let stamp = plan
+            .alternatives(id)
+            .and_then(|set| set.winner())
+            .map(|c| c.backend)
+            .unwrap_or(pinned_backend);
+        graph.set_target_backend(id, stamp);
+    }
+}
+
+fn location_to_backend_id(loc: DeviceLocation) -> BackendId {
+    match loc {
+        DeviceLocation::Cpu => BackendId::Cpu,
+        DeviceLocation::Cuda { .. } => BackendId::Cuda,
+        DeviceLocation::Vulkan { .. } => BackendId::Vulkan,
+        DeviceLocation::Metal { .. } => BackendId::Metal,
+    }
 }
 
 /// The PR-A4 deliberate-fork pathfinder + the PR-B2 frontier
@@ -353,6 +411,44 @@ mod tests {
         PlanOptions::new()
             .without_cost_population()
             .with_pinned_device(DeviceLocation::Cpu)
+    }
+
+    /// Cleanup Step A: `optimize_graph` stamps each computational node's
+    /// chosen backend onto the graph (the optimizer writes its placement
+    /// decision INTO the graph). On a pinned-CPU straight-line graph every
+    /// kernel-bearing node is stamped `Cpu`; the leaf `Op::Const` is
+    /// skipped (it inherits / needs no stamp). When `pinned_device` is
+    /// unset, no stamping occurs (the bare-graph test contract).
+    #[test]
+    fn optimize_graph_stamps_backends_onto_the_graph() {
+        let mut table = KernelBindingTable::new();
+        let (mut g, root) = build_straight_line_graph(&mut table);
+        // a=Const(0), b=Relu(1), c=Silu(2), d=Tanh(3) by construction.
+        let (a, b, c, d) = (NodeId(0), NodeId(1), NodeId(2), NodeId(3));
+        assert!(g.target_backend(b).is_none(), "unstamped before optimize");
+
+        let (_optimized, _plan) = optimize_graph(&mut g, &[root], &table, &cpu_opts())
+            .expect("optimize_graph on a straight-line CPU graph");
+
+        assert_eq!(g.target_backend(b), Some(BackendId::Cpu), "Relu stamped Cpu");
+        assert_eq!(g.target_backend(c), Some(BackendId::Cpu), "Silu stamped Cpu");
+        assert_eq!(g.target_backend(d), Some(BackendId::Cpu), "Tanh stamped Cpu");
+        assert!(g.target_backend(a).is_none(), "Op::Const leaf is not stamped");
+    }
+
+    /// The stamping is guarded on a pinned device — an `optimize_graph`
+    /// with no `pinned_device` leaves the graph unstamped (so the bare
+    /// optimize.rs test callers below are unaffected by Step A).
+    #[test]
+    fn optimize_graph_without_pinned_device_does_not_stamp() {
+        let mut table = KernelBindingTable::new();
+        let (mut g, root) = build_straight_line_graph(&mut table);
+        let opts = PlanOptions::new().without_cost_population(); // no pinned device
+        let _ = optimize_graph(&mut g, &[root], &table, &opts).expect("optimize_graph");
+        assert!(
+            g.target_backend(NodeId(1)).is_none(),
+            "no pinned device ⇒ no stamping",
+        );
     }
 
     // ---- PR-A4 deliberate-fork-seed test substrate ----
