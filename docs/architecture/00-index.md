@@ -42,6 +42,8 @@
 
 That's the spine. The remaining sections are there when you need them.
 
+**Companion (concrete types, not in the constitution):** → [`docs/foundational-types.md`](../foundational-types.md) — "the atoms": `Node = (Op, inputs, Shape, DType)`, the layered types with file:line, the runtime-value primitives (`SymId`/`SymEnv`/`DynScalar`/`Extent`), and *why* a node carries no kernel/backend/plan. The architecture set says what/why and is type-signature-free by design; this is its code-map companion. Read it alongside 03.
+
 **For someone designing a new phase**:
 
 1. Read 01 to ground purpose.
