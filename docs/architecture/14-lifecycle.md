@@ -1,6 +1,6 @@
 # Lifecycle: from model file to finished inference/training
 
-**Status**: v0.5 (2026-06-16).
+**Status**: v0.6 (2026-06-25). v0.6 refines Stage 5's autoregressive-barrier story: the per-pass re-bind substrate (realize binds the runtime KV append offset / `cached_len` into one stable graph instead of baking it into a fresh per-token graph) has landed at the executor/session level, framed honestly as the Intended mechanism whose substrate has shipped but is not yet wired into production decode. Core claim unchanged.
 
 This is the one document that walks the **whole path**, in order: from "load a model
 from disk" to "inference or training has finished." Every other architecture section
@@ -374,11 +374,7 @@ step (only the host scalar `cached_len` changes), so re-optimizing each token is
 "1.8×/token" planning result that originally motivated memoization was measured on a synthetic
 single-growing-graph loop and **does not reach this production decode path**.
 
-Under the redirection this gap closes *by construction*: the decode graph is **not** rebuilt
-per token — the loaded, input-independent graph is reused across steps, and the only thing that
-advances is **session-class** storage (the KV-cache, keyed by `SessionId`). Plan reuse then
-falls out of the graph being the same object, instead of needing a structural-hash plan cache
-bolted onto fresh-every-step graphs.
+Under the redirection this gap closes *by construction*: the decode graph is **not** rebuilt per token — the loaded, input-independent graph is reused across steps, and the only thing that advances is **session-class** storage (the KV-cache, keyed by `SessionId`) together with the runtime values (the write offset `cached_len`) **re-bound per pass** rather than baked into a fresh graph. The substrate for that re-bind has landed at the executor/session level: realize accepts a per-pass environment that binds the runtime value of each symbolic scalar (the KV append offset) into one stable graph, so a step *re-binds and re-runs* instead of re-building and re-planning. Production decode does not yet use it — it still bakes the host scalar and mints a fresh graph each token — so this is the **Intended** mechanism with its substrate proven, not the as-built decode path. Plan reuse then falls out of the graph being the same object, instead of needing a structural-hash plan cache bolted onto fresh-every-step graphs.
 
 ---
 
