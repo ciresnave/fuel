@@ -247,7 +247,9 @@ pub mod pipelined_bridge;
 pub mod planner;
 pub mod judge;
 pub mod npy;
-pub mod probe;
+/// Hardware discovery moved to the `fuel-hardware` crate (retirement B0.2);
+/// re-exported here so `fuel_core::probe` / `crate::probe` callers are unchanged.
+pub use fuel_hardware::probe;
 pub mod scheduling;
 pub mod topology;
 pub mod transfer_cost;
