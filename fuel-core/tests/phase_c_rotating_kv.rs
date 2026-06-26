@@ -7,7 +7,7 @@
 //! kernel's two-chunk ring-boundary split.
 
 use fuel_core::lazy::LazyTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 /// Within-window write: position 1, slab 1 row, modulus 4. No
 /// boundary split — writes to row 1 only.

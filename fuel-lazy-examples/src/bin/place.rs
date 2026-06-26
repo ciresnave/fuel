@@ -15,14 +15,14 @@ use fuel::judge::Criterion;
 use fuel::scheduling::{
     auto_place_and_route, prepare_dispatch_table, recommend_placement, ScheduleOptions,
 };
-use fuel_core_types::{DeviceLocation, Shape};
+use fuel_ir::{DeviceLocation, Shape};
 use fuel_graph::{Op, Tensor};
 use std::sync::Arc;
 
 /// Phase 7.5 G2: example needs a real device for slot-populating
 /// constructors. Singleton CpuBackendDevice via OnceLock.
-fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_core_types::DynBackendDevice> {
-    static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_core_types::DynBackendDevice>>
+fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_ir::DynBackendDevice> {
+    static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_ir::DynBackendDevice>>
         = std::sync::OnceLock::new();
     D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
 }

@@ -29,9 +29,9 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, Layout, Result};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, Layout, Result};
 
 use crate::kernel::{KernelBindingTable, KernelCaps, KernelDTypes, KernelRef, OpParams};
 use fuel_memory::Storage;
@@ -154,7 +154,7 @@ mod tests {
         let inputs = vec![Arc::new(RwLock::new(lhs)), Arc::new(RwLock::new(rhs))];
         let mut outputs = vec![Arc::new(RwLock::new(out))];
 
-        let layout_3 = Layout::contiguous(fuel_core_types::Shape::from(vec![3]));
+        let layout_3 = Layout::contiguous(fuel_ir::Shape::from(vec![3]));
         let layouts = vec![layout_3.clone(), layout_3.clone(), layout_3];
         execute_compiled(&compiled, &inputs, &mut outputs, &layouts).expect("execute");
 

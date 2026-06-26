@@ -1,6 +1,6 @@
-﻿use fuel_core_types::HostBufferRef;
-use fuel_core_types::dtype::WithDType;
-use fuel_core_types::{HostBuffer, DType, Layout, Result, Shape};
+﻿use fuel_ir::HostBufferRef;
+use fuel_ir::dtype::WithDType;
+use fuel_ir::{HostBuffer, DType, Layout, Result, Shape};
 use baracuda_curand::RngKind;
 use baracuda_driver::{DeviceBuffer, Dim3, Function, LaunchBuilder};
 use float8::F8E4M3;
@@ -475,8 +475,8 @@ impl CudaDevice {
         Ok(*self.seed_value.read().unwrap())
     }
 
-    pub fn location(&self) -> fuel_core_types::DeviceLocation {
-        fuel_core_types::DeviceLocation::Cuda {
+    pub fn location(&self) -> fuel_ir::DeviceLocation {
+        fuel_ir::DeviceLocation::Cuda {
             gpu_id: self.context.device().ordinal() as usize,
         }
     }
@@ -894,7 +894,7 @@ impl CudaDevice {
     }
 
     pub fn synchronize(&self) -> Result<()> {
-        self.stream.synchronize().map_err(fuel_core_types::Error::wrap)?;
+        self.stream.synchronize().map_err(fuel_ir::Error::wrap)?;
         Ok(())
     }
 

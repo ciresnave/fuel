@@ -37,7 +37,7 @@ use crate::lazy::{load_tensor_as_f32, LazyTensor, WeightStorage};
 use crate::lazy_dac::expand_conv1d_weight_for_dilation_if_needed;
 use crate::lazy_lstm::{LstmCellWeights, LstmStack};
 use crate::Result;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,7 +291,7 @@ impl EncodecModel {
     /// half (some published checkpoints are decoder-only).
     pub fn encode(&self, waveform: &LazyTensor) -> Result<Vec<LazyTensor>> {
         let enc = self.weights.encoder.as_ref().ok_or_else(|| {
-            fuel_core_types::Error::Msg(
+            fuel_ir::Error::Msg(
                 "EncodecModel::encode: encoder weights not loaded \
                  — the checkpoint is decoder-only. Call \
                  EncodecWeights::load_from_mmapped with an encoder-bearing \
@@ -393,7 +393,7 @@ fn rvq_decode_stacked(
         });
     }
     sum.ok_or_else(|| {
-        fuel_core_types::Error::Msg("EnCodec RVQ: no codebooks".into()).bt()
+        fuel_ir::Error::Msg("EnCodec RVQ: no codebooks".into()).bt()
     })
 }
 
@@ -441,7 +441,7 @@ fn rvq_decode_per_codebook(
         });
     }
     sum.ok_or_else(|| {
-        fuel_core_types::Error::Msg("EnCodec RVQ: no codebooks".into()).bt()
+        fuel_ir::Error::Msg("EnCodec RVQ: no codebooks".into()).bt()
     })
 }
 

@@ -44,7 +44,7 @@
 //! [`CostEstimate`]: crate::fused::CostEstimate
 //! [`PrecisionGuarantee`]: crate::fused::PrecisionGuarantee
 
-use fuel_core_types::DeviceLocation;
+use fuel_ir::DeviceLocation;
 
 use crate::fused::{CostEstimate, PrecisionGuarantee};
 
@@ -308,8 +308,8 @@ mod tests {
     use super::*;
     use crate::fused::{CostEstimate, PrecisionGuarantee};
     use crate::kernel::{KernelCaps, OpParams};
-    use fuel_core_types::probe::BackendId;
-    use fuel_core_types::{DeviceLocation, Layout, Result};
+    use fuel_ir::probe::BackendId;
+    use fuel_ir::{DeviceLocation, Layout, Result};
     use fuel_memory::Storage;
     use std::sync::{Arc, RwLock};
 

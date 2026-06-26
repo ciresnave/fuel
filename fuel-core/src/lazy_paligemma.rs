@@ -37,7 +37,7 @@ use crate::lazy_siglip::{
     SiglipEncoderLayerWeights, SiglipVisionConfig, SiglipVisionModel, SiglipVisionWeights,
 };
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]

@@ -20,7 +20,7 @@
 //! minimum:
 //!
 //! 1. **Pressure tier (the guard).** Query the candidate backend's
-//!    [`fuel_core_types::backend::BackendRuntime::would_fit`] for
+//!    [`fuel_ir::backend::BackendRuntime::would_fit`] for
 //!    the estimated output bytes:
 //!    - [`FitStatus::WontFit`] → the candidate is SKIPPED — never
 //!      picked while any alternative survives.
@@ -61,7 +61,7 @@
 
 use std::sync::Arc;
 
-use fuel_core_types::backend::FitStatus;
+use fuel_ir::backend::FitStatus;
 
 use super::{
     composite_ns, default_estimate_output_bytes, AlternativeSet, BackendRuntimeLookup,
@@ -213,10 +213,10 @@ mod tests {
     use crate::fused::{CostEstimate, PrecisionGuarantee};
     use crate::kernel::{KernelCaps, OpParams};
     use crate::ranker::{HashMapJudge, WinnerSelector};
-    use fuel_core_types::backend::BackendRuntime;
-    use fuel_core_types::dispatch::{OpKind, SizeClass};
-    use fuel_core_types::probe::BackendId;
-    use fuel_core_types::{DType, DeviceLocation, Layout, Result};
+    use fuel_ir::backend::BackendRuntime;
+    use fuel_ir::dispatch::{OpKind, SizeClass};
+    use fuel_ir::probe::BackendId;
+    use fuel_ir::{DType, DeviceLocation, Layout, Result};
     use fuel_memory::Storage;
     use std::sync::{Arc, RwLock};
 

@@ -52,7 +52,7 @@ pub mod ops;
 // + `attention` + `ops` surface, available as a test-oracle utility
 // for callers that explicitly want textbook scalar math.
 
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// A reference tensor: contiguous data on the heap, explicit shape, no

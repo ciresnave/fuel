@@ -54,7 +54,7 @@ pub use run::{
 };
 
 use crate::registry::{FusedOpId, FusedOpParams};
-use fuel_core_types::{DeviceLocation, DType, DynScalar, Layout, Scalar, Shape, Storage, probe::BackendId};
+use fuel_ir::{DeviceLocation, DType, DynScalar, Layout, Scalar, Shape, Storage, probe::BackendId};
 use half::{bf16, f16};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -767,7 +767,7 @@ pub enum Op {
     ///
     /// **Multi-output bundles** (Option C, Session 3): when
     /// `inputs[0]` is a multi-output producer (its Storage carries a
-    /// [`fuel_core_types::storage::OutputView`] bundle), the bundle
+    /// [`fuel_ir::storage::OutputView`] bundle), the bundle
     /// is the single eviction unit — the Release evicts the whole
     /// bundle, not a single slot. [`opt::collect_alias_set`] treats
     /// every `Op::View` of the producer as part of the producer's
@@ -825,7 +825,7 @@ pub enum Op {
     /// `dyn_offset` (Phase D symbolic extents): `None` ⇒ fully static
     /// (`ranges` alone defines the slab — today's behavior). `Some((axis,
     /// off))` ⇒ the destination start on `axis` is `off.resolve(env)`
-    /// against the per-pass [`fuel_core_types::SymEnv`] at realize,
+    /// against the per-pass [`fuel_ir::SymEnv`] at realize,
     /// overriding `ranges[axis].0`; the slab width on that axis stays
     /// `ranges[axis].1 - ranges[axis].0`. This is the input-determined
     /// dynamic-offset path (a [`DynScalar`] over the one `SymEnv`),
@@ -932,7 +932,7 @@ pub enum Op {
 
     /// Project one logical output out of a multi-output producer node.
     /// The producer's realized [`Storage`] carries a
-    /// [`fuel_core_types::storage::OutputView`] side-table; this op
+    /// [`fuel_ir::storage::OutputView`] side-table; this op
     /// reads slot `slot` of that side-table and exposes its
     /// dtype/shape/layout as the View node's output.
     ///
@@ -1108,12 +1108,12 @@ impl Op {
 pub fn derive_view_output_layout(
     op: &Op,
     input_layout: &Layout,
-) -> Result<Layout, fuel_core_types::Error> {
+) -> Result<Layout, fuel_ir::Error> {
     match op {
         Op::Transpose => {
             let rank = input_layout.shape().rank();
             if rank < 2 {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "Op::Transpose requires rank >= 2, input rank is {rank}",
                 ))
                 .bt());
@@ -1126,7 +1126,7 @@ pub fn derive_view_output_layout(
         Op::Unsqueeze { dim } => input_layout.unsqueeze(*dim),
         Op::Squeeze { dim } => input_layout.squeeze(*dim),
         Op::Flip { dim } => input_layout.flip(*dim),
-        other => Err(fuel_core_types::Error::Msg(format!(
+        other => Err(fuel_ir::Error::Msg(format!(
             "derive_view_output_layout called with non-view op {other:?}",
         ))
         .bt()),
@@ -1261,8 +1261,8 @@ fn op_short_name(op: &Op) -> &'static str {
 /// G2 helper: element count of a `HostBuffer`. Used by Tensor's
 /// constructors to validate that the supplied data matches the
 /// declared shape's `elem_count` before allocating Storage.
-fn host_buffer_elem_count(buf: &fuel_core_types::HostBuffer) -> usize {
-    use fuel_core_types::HostBuffer;
+fn host_buffer_elem_count(buf: &fuel_ir::HostBuffer) -> usize {
+    use fuel_ir::HostBuffer;
     match buf {
         HostBuffer::F32(v) => v.len(),
         HostBuffer::F64(v) => v.len(),
@@ -1393,7 +1393,7 @@ pub struct Graph {
     /// Per-node multi-output side-table. Populated only for nodes
     /// whose op produces a bundled [`Storage`] with N>1 logical
     /// outputs (Session 1 of the multi-output-nodes design — see
-    /// [`OutputView`](fuel_core_types::storage::OutputView)). `Op::View`
+    /// [`OutputView`](fuel_ir::storage::OutputView)). `Op::View`
     /// and `Op::ViewOwned` builders read this side-table to derive
     /// their own output shape/dtype/layout from the producer's
     /// declared slot specs.
@@ -1404,7 +1404,7 @@ pub struct Graph {
     /// The producer's `Node::shape` reflects slot 0's logical shape
     /// for back-compat with single-output infrastructure; non-primary
     /// slots may have unrelated shapes and dtypes.
-    node_output_views: HashMap<NodeId, Arc<[fuel_core_types::storage::OutputView]>>,
+    node_output_views: HashMap<NodeId, Arc<[fuel_ir::storage::OutputView]>>,
     /// Per-node **storage-class override** ([`StorageClass`]). Sparse:
     /// entries are present only where the class differs from the op-inferred
     /// default ([`infer_storage_class`]) — chiefly KV-cache placeholder
@@ -1567,7 +1567,7 @@ impl Graph {
     pub fn output_views(
         &self,
         id: NodeId,
-    ) -> Option<&[fuel_core_types::storage::OutputView]> {
+    ) -> Option<&[fuel_ir::storage::OutputView]> {
         self.node_output_views.get(&id).map(|a| a.as_ref())
     }
 
@@ -1577,7 +1577,7 @@ impl Graph {
     pub fn output_views_arc(
         &self,
         id: NodeId,
-    ) -> Option<Arc<[fuel_core_types::storage::OutputView]>> {
+    ) -> Option<Arc<[fuel_ir::storage::OutputView]>> {
         self.node_output_views.get(&id).cloned()
     }
 
@@ -1602,16 +1602,16 @@ impl Graph {
     pub fn set_output_views(
         &mut self,
         id:    NodeId,
-        views: Arc<[fuel_core_types::storage::OutputView]>,
-    ) -> Result<(), fuel_core_types::Error> {
+        views: Arc<[fuel_ir::storage::OutputView]>,
+    ) -> Result<(), fuel_ir::Error> {
         if id.0 >= self.nodes.len() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "set_output_views: NodeId({}) out of bounds (len={})",
                 id.0, self.nodes.len(),
             )).bt());
         }
         if views.is_empty() {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "set_output_views: slot list must be non-empty"
                     .into(),
             ).bt());
@@ -1619,7 +1619,7 @@ impl Graph {
         let node = &self.nodes[id.0];
         let slot0 = &views[0];
         if slot0.dtype != node.dtype {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "set_output_views: slot 0 dtype {:?} disagrees with \
                  Node::dtype {:?} on Node#{} (slot 0 is the primary; \
                  dtypes must match)",
@@ -1627,7 +1627,7 @@ impl Graph {
             )).bt());
         }
         if slot0.shape != node.shape {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "set_output_views: slot 0 shape {:?} disagrees with \
                  Node::shape {:?} on Node#{} (slot 0 is the primary)",
                 slot0.shape, node.shape, id.0,
@@ -1635,7 +1635,7 @@ impl Graph {
         }
         for (i, v) in views.iter().enumerate() {
             if v.layout.shape() != &v.shape {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "set_output_views: slot {i} layout.shape() = {:?} \
                      disagrees with declared slot shape {:?}",
                     v.layout.shape(), v.shape,
@@ -2123,10 +2123,10 @@ impl Graph {
     /// `side_effect_roots` vector. Returns the first offending reference as
     /// a typed error (never panics); used by [`Graph::compact`]'s
     /// `debug_assert` and by tests.
-    pub fn verify_no_dangling(&self) -> std::result::Result<(), fuel_core_types::Error> {
+    pub fn verify_no_dangling(&self) -> std::result::Result<(), fuel_ir::Error> {
         let n = self.nodes.len();
         let bad = |what: String| {
-            Err(fuel_core_types::Error::Msg(format!(
+            Err(fuel_ir::Error::Msg(format!(
                 "dangling NodeId reference: {what} (arena has {n} nodes)",
             )))
         };
@@ -2339,9 +2339,9 @@ impl BranchBuilder {
         self,
         graph: &mut Graph,
         reconverge_at: NodeId,
-    ) -> std::result::Result<Option<NodeId>, fuel_core_types::Error> {
+    ) -> std::result::Result<Option<NodeId>, fuel_ir::Error> {
         let n = graph.nodes.len();
-        let invalid = |reason: String| fuel_core_types::Error::InvalidBranch { reason };
+        let invalid = |reason: String| fuel_ir::Error::InvalidBranch { reason };
 
         // (1a) At least one arm.
         if self.arms.is_empty() {
@@ -2685,11 +2685,11 @@ impl Tensor {
     pub fn view(
         &self,
         slot: u32,
-    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
         let mut graph_w = self.graph.write().unwrap();
         let (slot_shape, slot_dtype, slot_byte_offset, slot_layout) = {
             let views = graph_w.output_views(self.id).ok_or_else(|| {
-                fuel_core_types::Error::Msg(format!(
+                fuel_ir::Error::Msg(format!(
                     "Tensor::view: Node#{} is not a multi-output \
                      producer (no output_views registered)",
                     self.id.0,
@@ -2697,7 +2697,7 @@ impl Tensor {
             })?;
             let idx = slot as usize;
             let v = views.get(idx).ok_or_else(|| {
-                fuel_core_types::Error::Msg(format!(
+                fuel_ir::Error::Msg(format!(
                     "Tensor::view: slot {idx} out of range \
                      (producer has {} slots)",
                     views.len(),
@@ -2751,11 +2751,11 @@ impl Tensor {
     pub fn view_owned(
         &self,
         slot: u32,
-    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
         let mut graph_w = self.graph.write().unwrap();
         let (slot_shape, slot_dtype) = {
             let views = graph_w.output_views(self.id).ok_or_else(|| {
-                fuel_core_types::Error::Msg(format!(
+                fuel_ir::Error::Msg(format!(
                     "Tensor::view_owned: Node#{} is not a multi-output \
                      producer (no output_views registered)",
                     self.id.0,
@@ -2763,7 +2763,7 @@ impl Tensor {
             })?;
             let idx = slot as usize;
             let v = views.get(idx).ok_or_else(|| {
-                fuel_core_types::Error::Msg(format!(
+                fuel_ir::Error::Msg(format!(
                     "Tensor::view_owned: slot {idx} out of range \
                      (producer has {} slots)",
                     views.len(),
@@ -2802,39 +2802,39 @@ impl Tensor {
         &self,
         source: &Tensor,
         ranges: Vec<(usize, usize)>,
-    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
         let dest_shape = self.shape();
         let dest_dims = dest_shape.dims();
         let src_shape = source.shape();
         let src_dims = src_shape.dims();
         let rank = dest_dims.len();
         if ranges.len() != rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "write_slice: ranges.len() ({}) must equal destination rank ({rank})",
                 ranges.len(),
             )).bt());
         }
         if src_dims.len() != rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "write_slice: source rank ({}) must equal destination rank ({rank})",
                 src_dims.len(),
             )).bt());
         }
         for (i, &(start, end)) in ranges.iter().enumerate() {
             if end < start {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "write_slice: ranges[{i}] = ({start}, {end}) has end < start"
                 )).bt());
             }
             if end > dest_dims[i] {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "write_slice: ranges[{i}].end ({end}) > destination dim {i} ({})",
                     dest_dims[i],
                 )).bt());
             }
             let slab = end - start;
             if src_dims[i] != slab {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "write_slice: source dim {i} ({}) must equal slab width ({slab}) \
                      = ranges[{i}].end - ranges[{i}].start",
                     src_dims[i],
@@ -2842,7 +2842,7 @@ impl Tensor {
             }
         }
         if self.dtype() != source.dtype() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "write_slice: dtype mismatch — destination {:?} vs source {:?}",
                 self.dtype(), source.dtype(),
             )).bt());
@@ -2858,7 +2858,7 @@ impl Tensor {
     }
 
     /// Append an `Op::WriteSlice` whose start on `dyn_axis` is a runtime
-    /// value resolved through the per-pass [`fuel_core_types::SymEnv`] at
+    /// value resolved through the per-pass [`fuel_ir::SymEnv`] at
     /// realize, rather than the build-time `ranges[dyn_axis].0`.
     ///
     /// This is the **input-determined** dynamic-offset path (a
@@ -2886,38 +2886,38 @@ impl Tensor {
         ranges: Vec<(usize, usize)>,
         dyn_axis: usize,
         offset: DynScalar,
-    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
         let dest_shape = self.shape();
         let dest_dims = dest_shape.dims();
         let src_shape = source.shape();
         let src_dims = src_shape.dims();
         let rank = dest_dims.len();
         if ranges.len() != rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_dyn: ranges.len() ({}) must equal destination rank ({rank})",
                 ranges.len(),
             )).bt());
         }
         if src_dims.len() != rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_dyn: source rank ({}) must equal destination rank ({rank})",
                 src_dims.len(),
             )).bt());
         }
         if dyn_axis >= rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_dyn: dyn_axis ({dyn_axis}) out of bounds for rank {rank}",
             )).bt());
         }
         for (i, &(start, end)) in ranges.iter().enumerate() {
             if end < start {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "write_slice_dyn: ranges[{i}] = ({start}, {end}) has end < start"
                 )).bt());
             }
             let slab = end - start;
             if src_dims[i] != slab {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "write_slice_dyn: source dim {i} ({}) must equal slab width ({slab}) \
                      = ranges[{i}].end - ranges[{i}].start",
                     src_dims[i],
@@ -2929,21 +2929,21 @@ impl Tensor {
                 // WIDTH must fit the capacity. The runtime `offset + width`
                 // is bounds-checked against `dest_dims[i]` at realize.
                 if slab > dest_dims[i] {
-                    return Err(fuel_core_types::Error::Msg(format!(
+                    return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_dyn: dynamic-axis slab width ({slab}) > destination capacity \
                          dim {i} ({})",
                         dest_dims[i],
                     )).bt());
                 }
             } else if end > dest_dims[i] {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "write_slice_dyn: ranges[{i}].end ({end}) > destination dim {i} ({})",
                     dest_dims[i],
                 )).bt());
             }
         }
         if self.dtype() != source.dtype() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_dyn: dtype mismatch — destination {:?} vs source {:?}",
                 self.dtype(), source.dtype(),
             )).bt());
@@ -2983,60 +2983,60 @@ impl Tensor {
         axis: usize,
         modulus: usize,
         ranges: Vec<(usize, usize)>,
-    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
         let dest_shape = self.shape();
         let dest_dims = dest_shape.dims();
         let src_shape = source.shape();
         let src_dims = src_shape.dims();
         let rank = dest_dims.len();
         if ranges.len() != rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_rotating: ranges.len() ({}) must equal destination rank ({rank})",
                 ranges.len(),
             )).bt());
         }
         if src_dims.len() != rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_rotating: source rank ({}) must equal destination rank ({rank})",
                 src_dims.len(),
             )).bt());
         }
         if axis >= rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_rotating: axis {axis} out of bounds for rank {rank}",
             )).bt());
         }
         if modulus == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "write_slice_rotating: modulus must be >= 1".into(),
             ).bt());
         }
         if modulus > dest_dims[axis] {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_rotating: modulus ({modulus}) must not exceed destination dim {axis} ({})",
                 dest_dims[axis],
             )).bt());
         }
         for (i, &(start, end)) in ranges.iter().enumerate() {
             if end < start {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "write_slice_rotating: ranges[{i}] = ({start}, {end}) has end < start"
                 )).bt());
             }
             let slab = end - start;
             if i == axis {
                 if slab == 0 {
-                    return Err(fuel_core_types::Error::Msg(format!(
+                    return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_rotating: ranges[axis={axis}] slab is 0",
                     )).bt());
                 }
                 if slab > modulus {
-                    return Err(fuel_core_types::Error::Msg(format!(
+                    return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_rotating: rotating-axis write length ({slab}) > modulus ({modulus})",
                     )).bt());
                 }
                 if src_dims[i] != slab {
-                    return Err(fuel_core_types::Error::Msg(format!(
+                    return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_rotating: source dim {i} ({}) must equal slab width ({slab})",
                         src_dims[i],
                     )).bt());
@@ -3046,19 +3046,19 @@ impl Tensor {
                 // We still require .1 <= modulus to make the slab description
                 // self-consistent inside the window.
                 if end > modulus {
-                    return Err(fuel_core_types::Error::Msg(format!(
+                    return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_rotating: ranges[axis={axis}].end ({end}) > modulus ({modulus})",
                     )).bt());
                 }
             } else {
                 if end > dest_dims[i] {
-                    return Err(fuel_core_types::Error::Msg(format!(
+                    return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_rotating: ranges[{i}].end ({end}) > destination dim {i} ({})",
                         dest_dims[i],
                     )).bt());
                 }
                 if src_dims[i] != slab {
-                    return Err(fuel_core_types::Error::Msg(format!(
+                    return Err(fuel_ir::Error::Msg(format!(
                         "write_slice_rotating: source dim {i} ({}) must equal slab width ({slab})",
                         src_dims[i],
                     )).bt());
@@ -3066,19 +3066,19 @@ impl Tensor {
             }
         }
         if self.dtype() != source.dtype() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_rotating: dtype mismatch — destination {:?} vs source {:?}",
                 self.dtype(), source.dtype(),
             )).bt());
         }
         if position.dtype() != DType::U32 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_rotating: position must be U32, got {:?}",
                 position.dtype(),
             )).bt());
         }
         if !position.shape().dims().is_empty() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "write_slice_rotating: position must be rank-0 scalar, got {:?}",
                 position.shape().dims(),
             )).bt());
@@ -3107,10 +3107,10 @@ impl Tensor {
     pub fn from_f32(
         data: impl Into<Arc<[f32]>>,
         shape: impl Into<Shape>,
-        device: &Arc<dyn fuel_core_types::DynBackendDevice>,
+        device: &Arc<dyn fuel_ir::DynBackendDevice>,
     ) -> Self {
         let v: Arc<[f32]> = data.into();
-        let buf = fuel_core_types::HostBuffer::F32(v.to_vec());
+        let buf = fuel_ir::HostBuffer::F32(v.to_vec());
         Self::from_host_buffer(buf, DType::F32, shape, device)
     }
 
@@ -3119,10 +3119,10 @@ impl Tensor {
     pub fn from_f64(
         data: impl Into<Arc<[f64]>>,
         shape: impl Into<Shape>,
-        device: &Arc<dyn fuel_core_types::DynBackendDevice>,
+        device: &Arc<dyn fuel_ir::DynBackendDevice>,
     ) -> Self {
         let v: Arc<[f64]> = data.into();
-        let buf = fuel_core_types::HostBuffer::F64(v.to_vec());
+        let buf = fuel_ir::HostBuffer::F64(v.to_vec());
         Self::from_host_buffer(buf, DType::F64, shape, device)
     }
 
@@ -3131,10 +3131,10 @@ impl Tensor {
     pub fn from_bf16(
         data: impl Into<Arc<[bf16]>>,
         shape: impl Into<Shape>,
-        device: &Arc<dyn fuel_core_types::DynBackendDevice>,
+        device: &Arc<dyn fuel_ir::DynBackendDevice>,
     ) -> Self {
         let v: Arc<[bf16]> = data.into();
-        let buf = fuel_core_types::HostBuffer::BF16(v.to_vec());
+        let buf = fuel_ir::HostBuffer::BF16(v.to_vec());
         Self::from_host_buffer(buf, DType::BF16, shape, device)
     }
 
@@ -3143,10 +3143,10 @@ impl Tensor {
     pub fn from_f16(
         data: impl Into<Arc<[f16]>>,
         shape: impl Into<Shape>,
-        device: &Arc<dyn fuel_core_types::DynBackendDevice>,
+        device: &Arc<dyn fuel_ir::DynBackendDevice>,
     ) -> Self {
         let v: Arc<[f16]> = data.into();
-        let buf = fuel_core_types::HostBuffer::F16(v.to_vec());
+        let buf = fuel_ir::HostBuffer::F16(v.to_vec());
         Self::from_host_buffer(buf, DType::F16, shape, device)
     }
 
@@ -3160,10 +3160,10 @@ impl Tensor {
     pub fn from_u32(
         data: impl Into<Arc<[u32]>>,
         shape: impl Into<Shape>,
-        device: &Arc<dyn fuel_core_types::DynBackendDevice>,
+        device: &Arc<dyn fuel_ir::DynBackendDevice>,
     ) -> Self {
         let v: Arc<[u32]> = data.into();
-        let buf = fuel_core_types::HostBuffer::U32(v.to_vec());
+        let buf = fuel_ir::HostBuffer::U32(v.to_vec());
         Self::from_host_buffer(buf, DType::U32, shape, device)
     }
 
@@ -3171,10 +3171,10 @@ impl Tensor {
     /// register the slot, emit `Op::Const`. Per-dtype `from_*` methods
     /// delegate here.
     fn from_host_buffer(
-        buf: fuel_core_types::HostBuffer,
+        buf: fuel_ir::HostBuffer,
         dtype: DType,
         shape: impl Into<Shape>,
-        device: &Arc<dyn fuel_core_types::DynBackendDevice>,
+        device: &Arc<dyn fuel_ir::DynBackendDevice>,
     ) -> Self {
         let shape = shape.into();
         let n = host_buffer_elem_count(&buf);
@@ -3255,7 +3255,7 @@ impl Tensor {
     ) -> Self {
         let v: Arc<[f32]> = data.into();
         self.const_like_host_buffer(
-            fuel_core_types::HostBuffer::F32(v.to_vec()), DType::F32, shape,
+            fuel_ir::HostBuffer::F32(v.to_vec()), DType::F32, shape,
         )
     }
 
@@ -3267,7 +3267,7 @@ impl Tensor {
     ) -> Self {
         let v: Arc<[f64]> = data.into();
         self.const_like_host_buffer(
-            fuel_core_types::HostBuffer::F64(v.to_vec()), DType::F64, shape,
+            fuel_ir::HostBuffer::F64(v.to_vec()), DType::F64, shape,
         )
     }
 
@@ -3279,7 +3279,7 @@ impl Tensor {
     ) -> Self {
         let v: Arc<[bf16]> = data.into();
         self.const_like_host_buffer(
-            fuel_core_types::HostBuffer::BF16(v.to_vec()), DType::BF16, shape,
+            fuel_ir::HostBuffer::BF16(v.to_vec()), DType::BF16, shape,
         )
     }
 
@@ -3291,7 +3291,7 @@ impl Tensor {
     ) -> Self {
         let v: Arc<[f16]> = data.into();
         self.const_like_host_buffer(
-            fuel_core_types::HostBuffer::F16(v.to_vec()), DType::F16, shape,
+            fuel_ir::HostBuffer::F16(v.to_vec()), DType::F16, shape,
         )
     }
 
@@ -3303,7 +3303,7 @@ impl Tensor {
     ) -> Self {
         let v: Arc<[u32]> = data.into();
         self.const_like_host_buffer(
-            fuel_core_types::HostBuffer::U32(v.to_vec()), DType::U32, shape,
+            fuel_ir::HostBuffer::U32(v.to_vec()), DType::U32, shape,
         )
     }
 
@@ -3317,7 +3317,7 @@ impl Tensor {
     ) -> Self {
         let v: Arc<[u8]> = data.into();
         self.const_like_host_buffer(
-            fuel_core_types::HostBuffer::U8(v.to_vec()), DType::U8, shape,
+            fuel_ir::HostBuffer::U8(v.to_vec()), DType::U8, shape,
         )
     }
 
@@ -3331,7 +3331,7 @@ impl Tensor {
     ) -> Self {
         let v: Arc<[i64]> = data.into();
         self.const_like_host_buffer(
-            fuel_core_types::HostBuffer::I64(v.to_vec()), DType::I64, shape,
+            fuel_ir::HostBuffer::I64(v.to_vec()), DType::I64, shape,
         )
     }
 
@@ -3342,7 +3342,7 @@ impl Tensor {
     /// goes on the same device as the graph it joins.
     fn const_like_host_buffer(
         &self,
-        buf: fuel_core_types::HostBuffer,
+        buf: fuel_ir::HostBuffer,
         dtype: DType,
         shape: impl Into<Shape>,
     ) -> Self {
@@ -3385,7 +3385,7 @@ impl Tensor {
     /// Used by the Phase 7.6 step 9c E.3.3 forward path to bind
     /// pre-allocated KV-cache storage Arcs (held as the new
     /// `Arc<RwLock<fuel_memory::Storage>>` type, not the legacy
-    /// `fuel_core_types::Storage` that `const_like_from_storage` takes)
+    /// `fuel_ir::Storage` that `const_like_from_storage` takes)
     /// into a per-step graph without re-uploading or type-converting.
     ///
     /// **Caller contract**: the same NodeId must appear in the
@@ -4021,7 +4021,7 @@ impl Tensor {
 
     /// Append a [`Op::FlashAttn`] over a fixed-**capacity** K/V whose
     /// attended length is a **runtime** value (`k_len`) resolved through
-    /// the per-pass [`fuel_core_types::SymEnv`] at realize, decoupled
+    /// the per-pass [`fuel_ir::SymEnv`] at realize, decoupled
     /// from K's allocated shape.
     ///
     /// `self` is `q` of shape `[B, Hq, Sq, D]`; `k`/`v` are the capacity
@@ -4047,7 +4047,7 @@ impl Tensor {
         window_size_left: Option<usize>,
         window_size_right: Option<usize>,
         softcap: Option<f32>,
-        k_len: fuel_core_types::DynScalar,
+        k_len: fuel_ir::DynScalar,
     ) -> Tensor {
         assert!(Arc::ptr_eq(&self.graph, &k.graph), "flash_attn_dyn: q + k must live on the same graph");
         assert!(Arc::ptr_eq(&self.graph, &v.graph), "flash_attn_dyn: q + v must live on the same graph");
@@ -4074,7 +4074,7 @@ impl Tensor {
         assert_eq!(d, dv, "flash_attn_dyn: head_dim mismatch q vs v");
         assert_eq!(hq % hkv, 0, "flash_attn_dyn: Hq={hq} must be a multiple of Hkv={hkv}");
         // A build-time constant k_len must fit the capacity and cover Sq.
-        if let fuel_core_types::DynScalar::Concrete(kl) = k_len {
+        if let fuel_ir::DynScalar::Concrete(kl) = k_len {
             assert!(kl <= sk, "flash_attn_dyn: k_len ({kl}) exceeds K capacity ({sk})");
             assert!(kl >= sq, "flash_attn_dyn: k_len ({kl}) must be >= Sq ({sq}) for a valid causal prefix");
         }
@@ -4160,12 +4160,12 @@ impl Tensor {
     /// Result-returning sibling of [`Self::permute`]. Surfaces bad
     /// axes (wrong length, out-of-bounds entry, or duplicate) as a
     /// typed error rather than panicking.
-    pub fn try_permute(&self, axes: &[usize]) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    pub fn try_permute(&self, axes: &[usize]) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_shape = self.shape();
         let in_dims = in_shape.dims();
         let rank = in_dims.len();
         if axes.len() != rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "permute: axes length {} must equal tensor rank {}",
                 axes.len(), rank,
             )).bt());
@@ -4173,12 +4173,12 @@ impl Tensor {
         let mut seen = vec![false; rank];
         for &ax in axes {
             if ax >= rank {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "permute: axis {ax} out of bounds for rank {rank}",
                 )).bt());
             }
             if seen[ax] {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "permute: duplicate axis {ax} in axes",
                 )).bt());
             }
@@ -4225,11 +4225,11 @@ impl Tensor {
 
     /// Result-returning sibling of [`Self::transpose`]. Surfaces
     /// rank < 2 as a typed error rather than panicking.
-    pub fn try_transpose(&self) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    pub fn try_transpose(&self) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_dims = self.shape();
         let d = in_dims.dims();
         if d.len() < 2 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "transpose: input must be rank ≥ 2, got shape {d:?}",
             )).bt());
         }
@@ -4551,7 +4551,7 @@ impl Tensor {
     ///
     /// **Returns `Result`**: dtype/shape mismatch surfaces as a
     /// typed error, not a panic.
-    pub fn pow(&self, other: &Tensor) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    pub fn pow(&self, other: &Tensor) -> std::result::Result<Tensor, fuel_ir::Error> {
         let out_shape = self.shape();
         self.try_binary_op("pow", Op::Pow, other, out_shape)
     }
@@ -4571,7 +4571,7 @@ impl Tensor {
     ///
     /// **Returns `Result`**: dtype/shape mismatch surfaces as a
     /// typed error, not a panic.
-    pub fn rem(&self, other: &Tensor) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    pub fn rem(&self, other: &Tensor) -> std::result::Result<Tensor, fuel_ir::Error> {
         let out_shape = self.shape();
         self.try_binary_op("rem", Op::Rem, other, out_shape)
     }
@@ -4582,11 +4582,11 @@ impl Tensor {
     /// (involutive: backward is another Flip on the same dim).
     ///
     /// **Returns `Result`**: bad `dim` surfaces as a typed error.
-    pub fn flip(&self, dim: usize) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    pub fn flip(&self, dim: usize) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         if dim >= rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "flip: dim {dim} out of bounds for rank {rank}",
             )).bt());
         }
@@ -4609,11 +4609,11 @@ impl Tensor {
     /// shape. Differentiable (backward is `Roll { dim, -shift }`).
     ///
     /// **Returns `Result`**: bad `dim` surfaces as a typed error.
-    pub fn roll(&self, dim: usize, shift: i64) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    pub fn roll(&self, dim: usize, shift: i64) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         if dim >= rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "roll: dim {dim} out of bounds for rank {rank}",
             )).bt());
         }
@@ -4635,11 +4635,11 @@ impl Tensor {
     /// reverse-cumsum (`Flip → CumSum → Flip`).
     ///
     /// **Returns `Result`**: bad `dim` surfaces as a typed error.
-    pub fn cumsum(&self, dim: usize) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    pub fn cumsum(&self, dim: usize) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         if dim >= rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "cumsum: dim {dim} out of bounds for rank {rank}",
             )).bt());
         }
@@ -4662,11 +4662,11 @@ impl Tensor {
     /// (keeping more, including subdiagonals).
     ///
     /// **Returns `Result`**: rank < 2 surfaces as a typed error.
-    pub fn triu(&self, diagonal: i64) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    pub fn triu(&self, diagonal: i64) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         if rank < 2 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "triu: input must have rank >= 2, got {rank}",
             )).bt());
         }
@@ -4688,11 +4688,11 @@ impl Tensor {
     /// `tril(diagonal = 0)` is the canonical causal-attention mask.
     ///
     /// **Returns `Result`**: rank < 2 surfaces as a typed error.
-    pub fn tril(&self, diagonal: i64) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    pub fn tril(&self, diagonal: i64) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         if rank < 2 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "tril: input must have rank >= 2, got {rank}",
             )).bt());
         }
@@ -4714,10 +4714,10 @@ impl Tensor {
     /// `log(softmax(x))` for NLL / cross-entropy loss.
     ///
     /// **Returns `Result`**: rank < 1 surfaces as a typed error.
-    pub fn log_softmax_last_dim(&self) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    pub fn log_softmax_last_dim(&self) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_shape = self.shape();
         if in_shape.dims().is_empty() {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "log_softmax_last_dim: input must have rank >= 1".to_string(),
             ).bt());
         }
@@ -4745,21 +4745,21 @@ impl Tensor {
         &self,
         mask: &Tensor,
         value: Scalar,
-    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
         if self.shape().dims() != mask.shape().dims() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "masked_fill: x.shape={:?} != mask.shape={:?}",
                 self.shape().dims(), mask.shape().dims(),
             )).bt());
         }
         if mask.dtype() != DType::U8 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "masked_fill: mask dtype must be U8, got {:?}",
                 mask.dtype(),
             )).bt());
         }
         if value.dtype() != self.dtype() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "masked_fill: value dtype {:?} != x dtype {:?}",
                 value.dtype(), self.dtype(),
             )).bt());
@@ -4795,12 +4795,12 @@ impl Tensor {
         padding: Vec<(usize, usize)>,
         mode: PadMode,
         value: f64,
-    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_shape = self.shape();
         let in_dims = in_shape.dims();
         let rank = in_dims.len();
         if padding.len() != rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "pad: padding.len() ({}) must equal tensor rank ({rank})",
                 padding.len(),
             )).bt());
@@ -4959,7 +4959,7 @@ impl Tensor {
 
     /// Result-returning sibling of [`Self::broadcast_to`]. Surfaces
     /// shape incompatibility as a typed error rather than panicking.
-    pub fn try_broadcast_to(&self, target: impl Into<Shape>) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    pub fn try_broadcast_to(&self, target: impl Into<Shape>) -> std::result::Result<Tensor, fuel_ir::Error> {
         let target = target.into();
         let src_dims = self.shape();
         try_check_broadcast_compatible(src_dims.dims(), target.dims())?;
@@ -5005,12 +5005,12 @@ impl Tensor {
 
     /// Result-returning sibling of [`Self::unsqueeze`]. Surfaces
     /// `dim > rank` as a typed error rather than panicking.
-    pub fn try_unsqueeze(&self, dim: usize) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    pub fn try_unsqueeze(&self, dim: usize) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_shape = self.shape();
         let in_dims = in_shape.dims();
         let rank = in_dims.len();
         if dim > rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "unsqueeze: dim {dim} out of bounds for rank {rank} (must be <= rank)",
             )).bt());
         }
@@ -5034,17 +5034,17 @@ impl Tensor {
     /// **Returns `Result`** rather than panicking — production paths
     /// can recover from a bad `dim` instead of crashing. Bad `dim`
     /// (out of bounds OR `shape[dim] != 1`) surfaces as a typed error.
-    pub fn squeeze(&self, dim: usize) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    pub fn squeeze(&self, dim: usize) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_shape = self.shape();
         let in_dims = in_shape.dims();
         let rank = in_dims.len();
         if dim >= rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "squeeze: dim {dim} out of bounds for rank {rank} (must be < rank)",
             )).bt());
         }
         if in_dims[dim] != 1 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "squeeze: dim {dim} has size {}, expected 1",
                 in_dims[dim],
             )).bt());
@@ -5117,12 +5117,12 @@ impl Tensor {
 
     /// Result-returning sibling of [`Self::reshape`]. Surfaces
     /// element-count mismatch as a typed error rather than panicking.
-    pub fn try_reshape(&self, target: impl Into<Shape>) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    pub fn try_reshape(&self, target: impl Into<Shape>) -> std::result::Result<Tensor, fuel_ir::Error> {
         let target = target.into();
         let from = self.shape().elem_count();
         let to = target.elem_count();
         if from != to {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "reshape: element count mismatch: from {from} to {to}",
             )).bt());
         }
@@ -5590,7 +5590,7 @@ impl Tensor {
         let specs = (entry.output_views.expect("multi-output"))(
             &input_shapes, &input_dtypes, &params,
         );
-        let (_total_bytes, views) = fuel_core_types::storage::compose_bundle(&specs)
+        let (_total_bytes, views) = fuel_ir::storage::compose_bundle(&specs)
             .expect("SsdChunkScan compose_bundle");
         let mut g = self.graph.write().unwrap();
         let id = g.push(Node {
@@ -5732,7 +5732,7 @@ impl Tensor {
         let specs = (entry.output_views.expect("multi-output"))(
             &input_shapes, &input_dtypes, &params,
         );
-        let (_total_bytes, views) = fuel_core_types::storage::compose_bundle(&specs)
+        let (_total_bytes, views) = fuel_ir::storage::compose_bundle(&specs)
             .expect("SelectiveScan compose_bundle");
         let mut g = self.graph.write().unwrap();
         let id = g.push(Node {
@@ -5784,7 +5784,7 @@ impl Tensor {
         b: &Tensor,
         c: &Tensor,
         delta_softplus: bool,
-    ) -> std::result::Result<(Tensor, Tensor), fuel_core_types::Error> {
+    ) -> std::result::Result<(Tensor, Tensor), fuel_ir::Error> {
         let producer = self.selective_scan_producer(delta, a, b, c, delta_softplus);
         let y = producer.view(0)?;
         let last_state = producer.view(1)?;
@@ -5800,7 +5800,7 @@ impl Tensor {
         b: &Tensor,
         c: &Tensor,
         chunk_size: usize,
-    ) -> std::result::Result<(Tensor, Tensor), fuel_core_types::Error> {
+    ) -> std::result::Result<(Tensor, Tensor), fuel_ir::Error> {
         let producer = self.ssd_chunk_scan_producer(dt, a, b, c, chunk_size);
         let y = producer.view(0)?;
         let last_state = producer.view(1)?;
@@ -6510,21 +6510,21 @@ impl Tensor {
         op: Op,
         other: &Tensor,
         out_shape: Shape,
-    ) -> std::result::Result<Tensor, fuel_core_types::Error> {
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
         if !Arc::ptr_eq(&self.graph, &other.graph) {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "{name}: tensors must live on the same graph",
             )).bt());
         }
         if self.dtype() != other.dtype() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "{name}: dtype mismatch: lhs={:?}, rhs={:?}",
                 self.dtype(),
                 other.dtype(),
             )).bt());
         }
         if self.shape().dims() != other.shape().dims() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "{name}: shape mismatch: lhs={:?}, rhs={:?}",
                 self.shape().dims(),
                 other.shape().dims(),
@@ -7406,7 +7406,7 @@ impl Tensor {
                     let mask = inputs[1];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
-                    let zero = fuel_core_types::Scalar::zero(dtype);
+                    let zero = fuel_ir::Scalar::zero(dtype);
                     let grad_x = push_node(
                         &graph_handle, Op::MaskedFill { value: zero },
                         vec![up_id, mask], x_shape, dtype,
@@ -9361,9 +9361,9 @@ fn check_broadcast_compatible(src: &[usize], dst: &[usize]) {
 /// Result-returning sibling of [`check_broadcast_compatible`].
 fn try_check_broadcast_compatible(
     src: &[usize], dst: &[usize],
-) -> std::result::Result<(), fuel_core_types::Error> {
+) -> std::result::Result<(), fuel_ir::Error> {
     if src.len() > dst.len() {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "broadcast_to: source rank {} exceeds target rank {}",
             src.len(), dst.len(),
         )).bt());
@@ -9372,7 +9372,7 @@ fn try_check_broadcast_compatible(
     for (i, &s) in src.iter().enumerate() {
         let d = dst[pad + i];
         if s != d && s != 1 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "broadcast_to: dim {i} of source ({s}) is incompatible with dim {} of target ({d})",
                 pad + i,
             )).bt());
@@ -9492,10 +9492,10 @@ pub fn build_rope_tables(
 fn build_filled_const(graph: &SharedGraph, shape: Shape, dtype: DType, value: f64) -> NodeId {
     let n = shape.elem_count();
     let buf = match dtype {
-        DType::F32 => fuel_core_types::HostBuffer::F32(vec![value as f32; n]),
-        DType::F64 => fuel_core_types::HostBuffer::F64(vec![value; n]),
-        DType::BF16 => fuel_core_types::HostBuffer::BF16(vec![bf16::from_f64(value); n]),
-        DType::F16 => fuel_core_types::HostBuffer::F16(vec![f16::from_f64(value); n]),
+        DType::F32 => fuel_ir::HostBuffer::F32(vec![value as f32; n]),
+        DType::F64 => fuel_ir::HostBuffer::F64(vec![value; n]),
+        DType::BF16 => fuel_ir::HostBuffer::BF16(vec![bf16::from_f64(value); n]),
+        DType::F16 => fuel_ir::HostBuffer::F16(vec![f16::from_f64(value); n]),
         other => panic!(
             "backward: build_filled_const: unsupported dtype {other:?} \
              (gradients are always floats — this would indicate a bug in \
@@ -9518,7 +9518,7 @@ fn build_filled_const(graph: &SharedGraph, shape: Shape, dtype: DType, value: f6
 /// device parameter — the graph always has at least one slot-bearing
 /// Const leaf by the time backward() runs (the forward pass's inputs
 /// are slot-rooted Const leaves), so this can be relied on.
-fn pick_device_from_graph(graph: &SharedGraph) -> Arc<dyn fuel_core_types::DynBackendDevice> {
+fn pick_device_from_graph(graph: &SharedGraph) -> Arc<dyn fuel_ir::DynBackendDevice> {
     let g = graph.read().unwrap();
     for i in 0..g.len() {
         if let Some(slot_arc) = g.storage_for(NodeId(i)) {
@@ -9573,8 +9573,8 @@ mod tests {
     /// storage through the new constructor API. `cpu_dev()` returns a
     /// stable singleton CpuBackendDevice handle so every call site can
     /// just pass `cpu_dev()` without per-test boilerplate.
-    fn cpu_dev() -> &'static Arc<dyn fuel_core_types::DynBackendDevice> {
-        static D: std::sync::OnceLock<Arc<dyn fuel_core_types::DynBackendDevice>>
+    fn cpu_dev() -> &'static Arc<dyn fuel_ir::DynBackendDevice> {
+        static D: std::sync::OnceLock<Arc<dyn fuel_ir::DynBackendDevice>>
             = std::sync::OnceLock::new();
         D.get_or_init(|| Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
     }
@@ -9654,7 +9654,7 @@ mod tests {
     /// view). Subsequent reads return the explicit entry.
     #[test]
     fn layout_explicit_strided_is_remembered() {
-        use fuel_core_types::DimVec;
+        use fuel_ir::DimVec;
         let mut g = Graph::new();
         let id = g.push(Node {
             op: Op::Transpose,
@@ -9666,7 +9666,7 @@ mod tests {
         // strides are [1, 3] (row-of-output is column-of-source).
         let l = Layout::new(
             Shape::from_dims(&[3, 2]),
-            fuel_core_types::StrideVec::from_slice(&[1_isize, 3]),
+            fuel_ir::StrideVec::from_slice(&[1_isize, 3]),
             0,
         );
         g.set_layout(id, l);
@@ -9679,7 +9679,7 @@ mod tests {
     /// set_layout twice with different layouts overwrites.
     #[test]
     fn layout_set_overwrites() {
-        use fuel_core_types::StrideVec;
+        use fuel_ir::StrideVec;
         let mut g = Graph::new();
         let id = g.push(Node {
             op: Op::Transpose,
@@ -10954,7 +10954,7 @@ mod tests {
 
     #[test]
     fn write_slice_dyn_records_dynamic_offset() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         // dest capacity [8, 3]; source [1, 3]; dynamic start on axis 0.
         let dest = Tensor::from_f32(
             vec![0.0_f32; 24], Shape::from_dims(&[8, 3]), cpu_dev(),
@@ -10980,7 +10980,7 @@ mod tests {
 
     #[test]
     fn write_slice_dyn_rejects_slab_wider_than_capacity() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         // dest capacity on axis 0 is 2, but the dynamic-axis slab is
         // width 4 — can never fit regardless of the runtime offset.
         let dest = Tensor::from_f32(
@@ -10993,7 +10993,7 @@ mod tests {
 
     #[test]
     fn write_slice_dyn_rejects_axis_out_of_bounds() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         let dest = Tensor::from_f32(
             vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev(),
         );
@@ -11004,7 +11004,7 @@ mod tests {
 
     #[test]
     fn flash_attn_dyn_records_runtime_k_len() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         // q [1, 2, 3, 4]; K/V capacity [1, 1, 8, 4] (GQA Hq=2, Hkv=1).
         let q = Tensor::from_f32(
             vec![0.0_f32; 1 * 2 * 3 * 4], Shape::from_dims(&[1, 2, 3, 4]), cpu_dev(),
@@ -11034,7 +11034,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "k_len")]
     fn flash_attn_dyn_concrete_k_len_exceeding_capacity_panics() {
-        use fuel_core_types::DynScalar;
+        use fuel_ir::DynScalar;
         let q = Tensor::from_f32(
             vec![0.0_f32; 1 * 1 * 2 * 4], Shape::from_dims(&[1, 1, 2, 4]), cpu_dev(),
         );
@@ -11441,7 +11441,7 @@ mod tests {
     // Multi-output nodes (Option C, Session 1)
     // ------------------------------------------------------------------
 
-    use fuel_core_types::storage::{OutputView, Storage as CoreStorage};
+    use fuel_ir::storage::{OutputView, Storage as CoreStorage};
 
     /// Build a real CPU `Storage` of `n` F32 zeros so `Storage`-level
     /// tests can attach + read bundle metadata against a live backend
@@ -11450,7 +11450,7 @@ mod tests {
     /// validated at `with_bundle` time against this primary dtype.
     fn cpu_f32_storage(n: usize) -> CoreStorage {
         let dev = cpu_dev();
-        let buf = fuel_core_types::HostBuffer::F32(vec![0.0_f32; n]);
+        let buf = fuel_ir::HostBuffer::F32(vec![0.0_f32; n]);
         let inner = dev
             .storage_from_host_buffer_owned_dyn(buf)
             .expect("test fixture: F32 storage_from_host_buffer_owned_dyn failed");
@@ -11836,7 +11836,7 @@ mod tests {
     // up the first real consumer.
     // ------------------------------------------------------------------
 
-    use fuel_core_types::storage::{
+    use fuel_ir::storage::{
         allocate_bundled_storage, OutputViewSpec,
     };
 
@@ -12880,7 +12880,7 @@ mod tests {
             .finalize_branches(&mut g, unrelated)
             .expect_err("reconverge that doesn't descend from diverge must be rejected");
         assert!(
-            matches!(err, fuel_core_types::Error::InvalidBranch { .. }),
+            matches!(err, fuel_ir::Error::InvalidBranch { .. }),
             "expected InvalidBranch, got {err:?}",
         );
     }
@@ -12908,7 +12908,7 @@ mod tests {
             .finalize_branches(&mut g, reconverge)
             .expect_err("an arm interior read from outside the branch must be rejected");
         assert!(
-            matches!(err, fuel_core_types::Error::InvalidBranch { .. }),
+            matches!(err, fuel_ir::Error::InvalidBranch { .. }),
             "expected InvalidBranch, got {err:?}",
         );
     }
@@ -12934,7 +12934,7 @@ mod tests {
             .finalize_branches(&mut g, reconverge)
             .expect_err("arms with mismatched dtype must be rejected (cast-to-uniform)");
         assert!(
-            matches!(err, fuel_core_types::Error::InvalidBranch { .. }),
+            matches!(err, fuel_ir::Error::InvalidBranch { .. }),
             "expected InvalidBranch, got {err:?}",
         );
     }

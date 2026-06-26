@@ -16,7 +16,7 @@
 use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_nn::{LazyBatchNorm2d, LazyModule};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// Configuration for [`LazyConv1d`].

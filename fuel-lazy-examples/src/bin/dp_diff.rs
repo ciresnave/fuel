@@ -22,7 +22,7 @@
 use fuel::judge::{Criterion, DispatchTable};
 use fuel::lazy::LazyTensor;
 use fuel::scheduling::{dp_plan, prepare_dp_inputs, recommend_placement, ScheduleOptions};
-use fuel_core_types::{probe::BackendId, DeviceLocation};
+use fuel_ir::{probe::BackendId, DeviceLocation};
 use fuel_graph::{NodeId, Op};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;

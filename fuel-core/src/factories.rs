@@ -38,8 +38,8 @@
 //! No edits to judge.rs or probe.rs.
 
 use crate::lazy::LazyTensor;
-use fuel_core_types::probe::{BackendId, DeviceDescriptor};
-use fuel_core_types::{Error, Result};
+use fuel_ir::probe::{BackendId, DeviceDescriptor};
+use fuel_ir::{Error, Result};
 use fuel_dispatch::pipelined::StorageCache;
 
 /// Object-safe realize seam used by judge.rs. Realizes the tensor's
@@ -136,7 +136,7 @@ impl LazyRealizer for BridgeRealizer {
                 target,
                 &self.device,
                 self.cache.clone(),
-                &fuel_core_types::SymEnv::default(),
+                &fuel_ir::SymEnv::default(),
             )?;
         self.last_kernel_source = root_kernel_source;
         Ok(bytes)
@@ -223,7 +223,7 @@ impl BackendFactory for CudaFactory {
     }
     fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn LazyRealizer>> {
         let dev = fuel_cuda_backend::CudaDevice::new(device_index as usize)
-            .map_err(|e| fuel_core_types::Error::Msg(
+            .map_err(|e| fuel_ir::Error::Msg(
                 format!("CudaDevice::new({device_index}) failed: {e}")
             ))?;
         Ok(Box::new(BridgeRealizer::new(dev.into())))
@@ -246,7 +246,7 @@ impl BackendFactory for VulkanFactory {
     fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn LazyRealizer>> {
         let backend = fuel_vulkan_backend::VulkanBackend::with_selection(
             fuel_vulkan_backend::DeviceSelection::Index(device_index as usize),
-        ).map_err(|e| fuel_core_types::Error::Msg(
+        ).map_err(|e| fuel_ir::Error::Msg(
             format!("VulkanBackend init failed: {e}")
         ))?;
         Ok(Box::new(BridgeRealizer::new(backend.into())))

@@ -5,7 +5,7 @@
 
 // Scalar enum, its methods, and `impl<T: WithDType> From<T> for Scalar` are all
 // provided by fuel-core-types.
-pub use fuel_core_types::scalar::*;
+pub use fuel_ir::scalar::*;
 
 use crate::tensor::Tensor;
 use crate::{Result, WithDType};

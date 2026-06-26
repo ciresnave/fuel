@@ -51,7 +51,7 @@
 
 use crate::lazy::LazyTensor;
 use crate::Device;
-use fuel_core_types::{Result, Shape};
+use fuel_ir::{Result, Shape};
 
 /// A bitsandbytes-style NF4-quantized weight, materialized as the two
 /// `LazyTensor` inputs that [`fuel_graph::Tensor::nf4_matmul`]
@@ -104,25 +104,25 @@ pub fn nf4_from_bytes(
     let w_packed: Vec<u8> = w_packed.into();
     let absmax: Vec<f32> = absmax.into();
     if k == 0 || k % 2 != 0 {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "nf4_from_bytes: k={k} must be even and non-zero",
         )).bt());
     }
     if block_size == 0 || k % block_size != 0 {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "nf4_from_bytes: k={k} must be a positive multiple of block_size={block_size}",
         )).bt());
     }
     let w_expected = n.saturating_mul(k / 2);
     if w_packed.len() != w_expected {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "nf4_from_bytes: w_packed has {} bytes, expected {w_expected} (n={n} × k/2={})",
             w_packed.len(), k / 2,
         )).bt());
     }
     let abs_expected = n.saturating_mul(k / block_size);
     if absmax.len() != abs_expected {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "nf4_from_bytes: absmax has {} f32 elements, expected {abs_expected} \
              (n={n} × k/block_size={})",
             absmax.len(), k / block_size,
@@ -210,15 +210,15 @@ pub struct BnbQuantState {
 /// **Ignored fields:** `dtype` (original pre-quantization dtype —
 /// the loader uses the activations' dtype at matmul time, not the
 /// original weight dtype), `device`, and any future bnb additions.
-pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_core_types::Result<BnbQuantState> {
+pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_ir::Result<BnbQuantState> {
     let v: serde_json::Value = serde_json::from_slice(json_bytes).map_err(|e| {
-        fuel_core_types::Error::Msg(format!(
+        fuel_ir::Error::Msg(format!(
             "parse_bnb_quant_state: failed to parse JSON: {e}",
         ))
         .bt()
     })?;
     let obj = v.as_object().ok_or_else(|| {
-        fuel_core_types::Error::Msg(
+        fuel_ir::Error::Msg(
             "parse_bnb_quant_state: expected a JSON object at the top level".to_string(),
         )
         .bt()
@@ -226,13 +226,13 @@ pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_core_types::Result<BnbQu
     // Discriminator: must be "nf4". bnb also has "fp4" + variants;
     // we explicitly reject those so the caller knows v1 scope.
     let quant_type = obj.get("quant_type").and_then(|v| v.as_str()).ok_or_else(|| {
-        fuel_core_types::Error::Msg(
+        fuel_ir::Error::Msg(
             "parse_bnb_quant_state: missing or non-string 'quant_type' field".to_string(),
         )
         .bt()
     })?;
     if quant_type != "nf4" {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "parse_bnb_quant_state: only quant_type=\"nf4\" is supported, \
              got {quant_type:?}. Other bnb formats (fp4, etc.) need their \
              own loader path.",
@@ -242,7 +242,7 @@ pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_core_types::Result<BnbQu
     // Reject nested-absmax (double-quantization). Caller must
     // dequantize first.
     if obj.contains_key("nested_absmax") || obj.contains_key("nested_quant_map") {
-        return Err(fuel_core_types::Error::Msg(
+        return Err(fuel_ir::Error::Msg(
             "parse_bnb_quant_state: this weight uses double-quantization \
              (nested_absmax / nested_quant_map present). v1 only handles \
              single-level absmax. Workaround: dequantize the absmax to F32 \
@@ -254,39 +254,39 @@ pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_core_types::Result<BnbQu
     }
     // shape: [N, K]
     let shape = obj.get("shape").and_then(|v| v.as_array()).ok_or_else(|| {
-        fuel_core_types::Error::Msg(
+        fuel_ir::Error::Msg(
             "parse_bnb_quant_state: missing or non-array 'shape' field".to_string(),
         )
         .bt()
     })?;
     if shape.len() != 2 {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "parse_bnb_quant_state: 'shape' must be 2-element [N, K], got len={}",
             shape.len(),
         ))
         .bt());
     }
     let n = shape[0].as_u64().ok_or_else(|| {
-        fuel_core_types::Error::Msg("parse_bnb_quant_state: shape[0] (N) must be a non-negative integer".to_string()).bt()
+        fuel_ir::Error::Msg("parse_bnb_quant_state: shape[0] (N) must be a non-negative integer".to_string()).bt()
     })? as usize;
     let k = shape[1].as_u64().ok_or_else(|| {
-        fuel_core_types::Error::Msg("parse_bnb_quant_state: shape[1] (K) must be a non-negative integer".to_string()).bt()
+        fuel_ir::Error::Msg("parse_bnb_quant_state: shape[1] (K) must be a non-negative integer".to_string()).bt()
     })? as usize;
     // blocksize
     let block_size = obj.get("blocksize").and_then(|v| v.as_u64()).ok_or_else(|| {
-        fuel_core_types::Error::Msg(
+        fuel_ir::Error::Msg(
             "parse_bnb_quant_state: missing or non-integer 'blocksize' field".to_string(),
         )
         .bt()
     })? as usize;
     if block_size == 0 {
-        return Err(fuel_core_types::Error::Msg(
+        return Err(fuel_ir::Error::Msg(
             "parse_bnb_quant_state: blocksize must be positive".to_string(),
         )
         .bt());
     }
     if k % block_size != 0 {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "parse_bnb_quant_state: blocksize={block_size} doesn't divide K={k} \
              (this would leave a partial block at the end of each row, which \
              bnb's standard format doesn't produce — your checkpoint may be \
@@ -295,7 +295,7 @@ pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_core_types::Result<BnbQu
         .bt());
     }
     if k % 2 != 0 {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "parse_bnb_quant_state: K={k} must be even (NF4 packs 2 codes per byte)",
         ))
         .bt());
@@ -328,25 +328,25 @@ pub fn load_nf4_layer(
     st: &safetensors::SafeTensors,
     prefix: &str,
     device: &Device,
-) -> fuel_core_types::Result<Nf4Weight> {
+) -> fuel_ir::Result<Nf4Weight> {
     let weight_key = format!("{prefix}.weight");
     let absmax_key = format!("{prefix}.weight.absmax");
     let quant_state_key = format!("{prefix}.weight.quant_state.bitsandbytes__nf4");
 
     let weight_view = st.tensor(&weight_key).map_err(|e| {
-        fuel_core_types::Error::Msg(format!(
+        fuel_ir::Error::Msg(format!(
             "load_nf4_layer: tensor {weight_key:?} not found in safetensors: {e}",
         ))
         .bt()
     })?;
     let absmax_view = st.tensor(&absmax_key).map_err(|e| {
-        fuel_core_types::Error::Msg(format!(
+        fuel_ir::Error::Msg(format!(
             "load_nf4_layer: tensor {absmax_key:?} not found in safetensors: {e}",
         ))
         .bt()
     })?;
     let quant_state_view = st.tensor(&quant_state_key).map_err(|e| {
-        fuel_core_types::Error::Msg(format!(
+        fuel_ir::Error::Msg(format!(
             "load_nf4_layer: tensor {quant_state_key:?} not found in safetensors: {e}",
         ))
         .bt()
@@ -359,7 +359,7 @@ pub fn load_nf4_layer(
 
     // weight: U8, flat [N*K/2].
     if weight_view.dtype() != safetensors::Dtype::U8 {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "load_nf4_layer: {weight_key:?} dtype={:?}, expected U8",
             weight_view.dtype(),
         ))
@@ -371,7 +371,7 @@ pub fn load_nf4_layer(
     // bytemuck-cast to f32s (the safetensors crate exposes the
     // bytes as &[u8] regardless of dtype).
     if absmax_view.dtype() != safetensors::Dtype::F32 {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "load_nf4_layer: {absmax_key:?} dtype={:?}, expected F32. \
              If this is a double-quantized absmax stored as U8 with its own \
              quant_state, dequantize it before calling this loader.",
@@ -381,7 +381,7 @@ pub fn load_nf4_layer(
     }
     let absmax_bytes = absmax_view.data();
     if absmax_bytes.len() % 4 != 0 {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "load_nf4_layer: {absmax_key:?} has {} bytes (not a multiple of 4 — corrupt F32 data)",
             absmax_bytes.len(),
         ))

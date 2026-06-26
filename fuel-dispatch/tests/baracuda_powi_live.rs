@@ -9,7 +9,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType};
+use fuel_ir::{dispatch::OpKind, probe::BackendId, DType};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
 use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
 use fuel_memory::{BackendStorage, Storage};
@@ -183,8 +183,8 @@ fn baracuda_powi_backward_f32_exp_3() {
         &[DType::F32, DType::F32, DType::F32],
         fuel_dispatch::baracuda_dispatch::powi_backward::powi_backward_f32,
     );
-    let layout = fuel_core_types::Layout::contiguous(
-        fuel_core_types::Shape::from_dims(&[x.len()]),
+    let layout = fuel_ir::Layout::contiguous(
+        fuel_ir::Shape::from_dims(&[x.len()]),
     );
     kernel(
         &[x_arc, up_arc],

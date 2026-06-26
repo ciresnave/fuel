@@ -7,7 +7,7 @@
 //! and a backend memory region (closed enum over CPU/CUDA/Vulkan/Metal).
 //! Backends provide *kernels* that operate on these types — backend
 //! storage types live in their own crates and implement the
-//! [`fuel_core_types::backend::BackendStorage`] trait.
+//! [`fuel_ir::backend::BackendStorage`] trait.
 //!
 //! This crate now owns ONLY the closed-enum dispatch wrapper + the
 //! public `Storage` API. Dispatch infrastructure (KernelBindingTable,
@@ -20,7 +20,7 @@
 //!
 //! ## Where things live
 //!
-//! - [`fuel_core_types::backend::BackendStorage`] — the abstract trait
+//! - [`fuel_ir::backend::BackendStorage`] — the abstract trait
 //!   (just `len_bytes()` today; alloc/copy_from land in A4).
 //! - [`fuel_cpu_backend::CpuStorageBytes`] — CPU storage (Phase A3.0).
 //!   Bytes-based, 64-byte aligned, `Arc`-clonable, CoW on mutation.
@@ -47,8 +47,8 @@ pub use fuel_cuda_backend::CudaStorageBytes as CudaStorage;
 #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
 pub use fuel_metal_backend::MetalStorageBytes as MetalStorage;
 
-use fuel_core_types::{DType, Result};
-use fuel_core_types::storage::OutputView;
+use fuel_ir::{DType, Result};
+use fuel_ir::storage::OutputView;
 use fuel_cpu_backend::CpuStorageBytes;
 use std::sync::Arc;
 
@@ -77,7 +77,7 @@ pub enum BackendStorage {
 /// outputs. Set by multi-output op authors via
 /// [`Storage::with_bundle`] / [`Storage::new_bundled`]; consumed by
 /// `Op::View` / `Op::ViewOwned` at realize time. See
-/// [`OutputView`](fuel_core_types::storage::OutputView).
+/// [`OutputView`](fuel_ir::storage::OutputView).
 #[derive(Debug)]
 pub struct Storage {
     /// Backend variant + the bytes themselves.
@@ -167,13 +167,13 @@ impl Storage {
         bundle:        &Arc<[OutputView]>,
     ) -> Result<()> {
         if bundle.is_empty() {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "Storage::with_bundle: bundle slice must be non-empty".into(),
             ).bt());
         }
         let slot0 = &bundle[0];
         if slot0.dtype != primary_dtype {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "Storage::with_bundle: slot 0 dtype {:?} must match \
                  Storage's primary dtype {:?}",
                 slot0.dtype, primary_dtype,
@@ -233,7 +233,7 @@ pub fn alloc_cpu_zeroed(dtype: DType, elem_count: usize) -> Result<Storage> {
 
 /// Build a CPU `Storage` from a typed slice, copying the bytes. The
 /// result has the dtype matching `T` and is 64-byte aligned.
-pub fn from_slice_cpu<T: bytemuck::Pod + fuel_core_types::WithDType>(
+pub fn from_slice_cpu<T: bytemuck::Pod + fuel_ir::WithDType>(
     data: &[T],
 ) -> Storage {
     Storage::new(

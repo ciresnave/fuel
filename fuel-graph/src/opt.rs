@@ -40,7 +40,7 @@ use crate::registry::{
     default_registry, FusedOpEntry, FusedOpId, FusedOpParams, FusedOps, SubgraphPattern,
 };
 use crate::{topo_order_multi, Graph, Node, NodeId, Op, SharedGraph};
-use fuel_core_types::{DeviceLocation, DType, Shape};
+use fuel_ir::{DeviceLocation, DType, Shape};
 use std::collections::HashMap;
 
 // ---- Rule registry framework ----------------------------------------------
@@ -578,7 +578,7 @@ impl CastFusionRule {
         &self,
         graph: &Graph,
         id: NodeId,
-    ) -> Option<(usize, NodeId, Vec<fuel_core_types::DType>)> {
+    ) -> Option<(usize, NodeId, Vec<fuel_ir::DType>)> {
         let node = graph.node(id);
         // Don't fire on a Cast node itself — fire on the consumer.
         if matches!(node.op, Op::Cast(_)) { return None; }
@@ -630,7 +630,7 @@ impl CastFusionRule {
             // Type-preserving filter above guarantees output dtype
             // tracks the cast-fed input, so the new output dtype is
             // `final_src_dtype` (not the original `node.dtype`).
-            let mut dtypes: Vec<fuel_core_types::DType> = node
+            let mut dtypes: Vec<fuel_ir::DType> = node
                 .inputs
                 .iter()
                 .map(|&iid| if iid == input_id {
@@ -1459,7 +1459,7 @@ pub fn derive_ordering(graph: &crate::Graph, roots: &[NodeId]) -> OrderingEdges 
 ///    exposes one slot's window — bytes are shared, the bundle's Arc
 ///    refcount tracks the consumer's lifetime (Session 1 of the
 ///    multi-output Option C design — see
-///    [`fuel_core_types::storage::OutputView`]).
+///    [`fuel_ir::storage::OutputView`]).
 ///
 /// `Op::ViewOwned` is explicitly NOT alias-extending: at execution
 /// time it allocates a fresh standalone Storage and memcpys the
@@ -2379,13 +2379,13 @@ where
 mod tests {
     use super::*;
     use crate::Tensor;
-    use fuel_core_types::{DeviceLocation, Shape};
+    use fuel_ir::{DeviceLocation, Shape};
     use std::sync::Arc;
 
     /// Phase 7.5 G2: tests need a real device for slot-populating
     /// constructors. Singleton CpuBackendDevice via OnceLock.
-    fn cpu_dev() -> &'static Arc<dyn fuel_core_types::DynBackendDevice> {
-        static D: std::sync::OnceLock<Arc<dyn fuel_core_types::DynBackendDevice>>
+    fn cpu_dev() -> &'static Arc<dyn fuel_ir::DynBackendDevice> {
+        static D: std::sync::OnceLock<Arc<dyn fuel_ir::DynBackendDevice>>
             = std::sync::OnceLock::new();
         D.get_or_init(|| Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
     }
@@ -3496,13 +3496,13 @@ mod tests {
     /// the test wants to confirm the matcher/rewriter mechanics work;
     /// orthogonal tests cover the predicate-says-no path.
     fn allow_all_predicate() -> CapabilityPredicate {
-        Arc::new(|_op: &Op, _dtypes: &[fuel_core_types::DType]| true)
+        Arc::new(|_op: &Op, _dtypes: &[fuel_ir::DType]| true)
     }
 
     /// Predicate that says no for everything. Useful for confirming
     /// the rule respects the capability gate.
     fn deny_all_predicate() -> CapabilityPredicate {
-        Arc::new(|_op: &Op, _dtypes: &[fuel_core_types::DType]| false)
+        Arc::new(|_op: &Op, _dtypes: &[fuel_ir::DType]| false)
     }
 
     /// Happy path: `x:f32 → Cast(BF16) → Neg(BF16)` collapses to
@@ -3510,7 +3510,7 @@ mod tests {
     #[test]
     fn cast_fusion_drops_cast_when_consumer_supports_source_dtype() {
         let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let xc = x.cast(fuel_core_types::DType::BF16);
+        let xc = x.cast(fuel_ir::DType::BF16);
         let y = xc.neg();
         let graph = y.graph().clone();
         let pre_len = graph.read().unwrap().len();
@@ -3541,7 +3541,7 @@ mod tests {
     #[test]
     fn cast_fusion_no_fire_when_predicate_denies() {
         let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let xc = x.cast(fuel_core_types::DType::BF16);
+        let xc = x.cast(fuel_ir::DType::BF16);
         let y = xc.neg();
         let graph = y.graph().clone();
         let pre_len = graph.read().unwrap().len();
@@ -3565,7 +3565,7 @@ mod tests {
     #[test]
     fn cast_fusion_no_fire_when_cast_has_multiple_consumers() {
         let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let xc = x.cast(fuel_core_types::DType::BF16);
+        let xc = x.cast(fuel_ir::DType::BF16);
         // Two consumers of the same Cast.
         let y1 = xc.neg();
         let y2 = xc.relu();
@@ -3591,10 +3591,10 @@ mod tests {
     #[test]
     fn cast_fusion_rewrites_output_dtype_to_source_dtype() {
         let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let xc = x.cast(fuel_core_types::DType::BF16);
+        let xc = x.cast(fuel_ir::DType::BF16);
         let y = xc.neg();
         // Pre-fusion the original Neg produces BF16.
-        assert_eq!(y.dtype(), fuel_core_types::DType::BF16);
+        assert_eq!(y.dtype(), fuel_ir::DType::BF16);
 
         let graph = y.graph().clone();
         let registry = RuleRegistry::new()
@@ -3606,7 +3606,7 @@ mod tests {
         // The rewritten Neg consumes the F32 source directly and
         // produces F32. This differs from the original BF16
         // output; the rule's aggressive semantics commit to this.
-        assert_eq!(g.node(new_root).dtype, fuel_core_types::DType::F32);
+        assert_eq!(g.node(new_root).dtype, fuel_ir::DType::F32);
     }
 
     /// Multi-input op: only the qualifying input fuses; the others
@@ -3615,7 +3615,7 @@ mod tests {
     fn cast_fusion_multi_input_op_fuses_only_qualifying_edge() {
         let a = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
         // a:f32 → Cast(BF16) → Add(bf16, b:bf16) where b is already bf16.
-        let ac = a.cast(fuel_core_types::DType::BF16);
+        let ac = a.cast(fuel_ir::DType::BF16);
         let b = a.const_bf16_like(
             vec![half::bf16::from_f32(2.0); 4],
             Shape::from_dims(&[4]),
@@ -3628,7 +3628,7 @@ mod tests {
         // this isolates the matcher's per-input behavior. If the
         // predicate said no, the rule wouldn't fire and `b` would
         // stay paired with the Cast.)
-        let predicate: CapabilityPredicate = Arc::new(|op: &Op, _dtypes: &[fuel_core_types::DType]| {
+        let predicate: CapabilityPredicate = Arc::new(|op: &Op, _dtypes: &[fuel_ir::DType]| {
             matches!(op, Op::Add)
         });
 
@@ -3650,8 +3650,8 @@ mod tests {
     #[test]
     fn cast_fusion_handles_chained_casts_via_fixpoint() {
         let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let x_bf16 = x.cast(fuel_core_types::DType::BF16);
-        let x_f32 = x_bf16.cast(fuel_core_types::DType::F32);
+        let x_bf16 = x.cast(fuel_ir::DType::BF16);
+        let x_f32 = x_bf16.cast(fuel_ir::DType::F32);
         let y = x_f32.neg();
         let graph = y.graph().clone();
 
@@ -3679,7 +3679,7 @@ mod tests {
     #[test]
     fn cast_fusion_does_not_fire_on_cast_node_itself() {
         let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let xc = x.cast(fuel_core_types::DType::BF16);
+        let xc = x.cast(fuel_ir::DType::BF16);
         let graph = xc.graph().clone();
         let pre_len = graph.read().unwrap().len();
 

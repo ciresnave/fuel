@@ -7,15 +7,15 @@
 //! 5e-3 — tight enough to catch a wrong-sign / wrong-axis bug, loose
 //! enough to absorb f32 finite-difference roundoff at h = 1e-3.
 
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use fuel_graph::Tensor;
 use fuel_reference_backend::exec;
 
 
 /// Phase 7.5 G2: tests need a real device for slot-populating
 /// constructors. Singleton CpuBackendDevice via OnceLock.
-fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_core_types::DynBackendDevice> {
-    static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_core_types::DynBackendDevice>>
+fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_ir::DynBackendDevice> {
+    static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_ir::DynBackendDevice>>
         = std::sync::OnceLock::new();
     D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
 }

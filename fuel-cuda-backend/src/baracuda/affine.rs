@@ -32,7 +32,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{Layout, Result, Shape};
+use fuel_ir::{Layout, Result, Shape};
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -70,14 +70,14 @@ fn build_strided_args(
     let dims = layout.shape().dims();
     let rank = dims.len();
     if rank == 0 {
-        return Err(fuel_core_types::Error::Msg(
+        return Err(fuel_ir::Error::Msg(
             format!("{op_label}: rank-0 input not supported"),
         ).bt());
     }
     let mut shape_i32: Vec<i32> = Vec::with_capacity(rank);
     for (i, &d) in dims.iter().enumerate() {
         shape_i32.push(i32::try_from(d).map_err(|_| {
-            fuel_core_types::Error::cuda(
+            fuel_ir::Error::cuda(
                 crate::error::CudaError::BaracudaShapeOverflow {
                     op: op_label, dim_index: i, dim_value: d,
                 },

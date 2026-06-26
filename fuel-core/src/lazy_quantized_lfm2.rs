@@ -24,7 +24,7 @@ use crate::lazy_lfm2::{
     LFM2LayerWeights, LFM2MixerWeights, LFM2Model, LFM2Weights,
 };
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// GGUF-quantized LFM2 causal language model. Wraps a plain

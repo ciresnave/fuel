@@ -791,7 +791,7 @@ impl SdScheduler for UniPcScheduler {
 mod tests {
     use super::*;
     use crate::Device;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
 
     fn lazy_from(values: &[f32], shape: &[usize]) -> LazyTensor {
         LazyTensor::from_f32(values.to_vec(), Shape::from_dims(shape), &Device::cpu())

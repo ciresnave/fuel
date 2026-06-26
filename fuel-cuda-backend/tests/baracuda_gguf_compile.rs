@@ -19,7 +19,7 @@ fn gguf_function_signatures_compile() {
     let _dequants: [fn(
         &fuel_cuda_backend::CudaStorageBytes,
         usize,
-    ) -> fuel_core_types::Result<fuel_cuda_backend::CudaStorageBytes>; 11] = [
+    ) -> fuel_ir::Result<fuel_cuda_backend::CudaStorageBytes>; 11] = [
         gguf::dequant_q4_0,
         gguf::dequant_q4_1,
         gguf::dequant_q5_0,
@@ -35,11 +35,11 @@ fn gguf_function_signatures_compile() {
     let _mmvqs: [fn(
         &fuel_cuda_backend::CudaStorageBytes,
         &fuel_cuda_backend::CudaStorageBytes,
-        Option<&fuel_core_types::Layout>,
+        Option<&fuel_ir::Layout>,
         i64,
         usize,
         usize,
-    ) -> fuel_core_types::Result<fuel_cuda_backend::CudaStorageBytes>; 11] = [
+    ) -> fuel_ir::Result<fuel_cuda_backend::CudaStorageBytes>; 11] = [
         gguf::mmvq_q4_0,
         gguf::mmvq_q4_1,
         gguf::mmvq_q5_0,

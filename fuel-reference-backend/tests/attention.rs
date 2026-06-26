@@ -5,7 +5,7 @@
 //! Backward parity is checked separately by finite-difference
 //! gradcheck.
 
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use fuel_reference_backend::attention::{
     attention_flash, attention_flash_backward, attention_naive, AttentionParams,
 };

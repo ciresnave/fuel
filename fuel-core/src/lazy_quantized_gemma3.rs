@@ -477,7 +477,7 @@ mod tests {
     use super::*;
     use crate::lazy_gemma3::GemmaActivation;
     use crate::Device;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
 
     fn test_cfg() -> Gemma3Config {
         // Pick num_heads * head_dim != hidden_size to exercise

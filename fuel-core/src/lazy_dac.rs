@@ -29,7 +29,7 @@
 
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::Result;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// DAC config. The standard preset (`Config::default_preset`)
@@ -192,7 +192,7 @@ impl DacModel {
             });
         }
         sum.ok_or_else(|| {
-            fuel_core_types::Error::Msg("DAC RVQ: no codebooks".into()).bt()
+            fuel_ir::Error::Msg("DAC RVQ: no codebooks".into()).bt()
         })
     }
 

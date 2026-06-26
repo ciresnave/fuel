@@ -24,7 +24,7 @@
 //! Filters operate over surviving candidates only — a hard filter at
 //! position 3 sees what positions 1 and 2 left behind.
 
-use fuel_core_types::{Error, Result};
+use fuel_ir::{Error, Result};
 
 use super::alternative_set::AlternativeSet;
 use super::filter::{AlternativeFilter, FilterClass, FilterContext};
@@ -79,9 +79,9 @@ mod tests {
     use crate::kernel::{KernelCaps, OpParams};
     use crate::ranker::candidate::Candidate;
 
-    use fuel_core_types::dispatch::OpKind;
-    use fuel_core_types::probe::BackendId;
-    use fuel_core_types::{DType, DeviceLocation, Layout, Result as FuelResult, Shape};
+    use fuel_ir::dispatch::OpKind;
+    use fuel_ir::probe::BackendId;
+    use fuel_ir::{DType, DeviceLocation, Layout, Result as FuelResult, Shape};
     use fuel_memory::Storage;
     use std::sync::{Arc, RwLock};
 

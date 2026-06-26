@@ -29,7 +29,7 @@
 use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
 use crate::lazy_phi3::{Phi3Config, Phi3Model, Phi3Weights};
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// GGUF-quantized Phi-3 causal language model. Wraps a plain

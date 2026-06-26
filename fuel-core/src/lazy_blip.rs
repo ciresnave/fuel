@@ -149,7 +149,7 @@ mod tests {
         BlipVisionLayerWeights,
     };
     use crate::Device;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
     use std::sync::Arc;
 
     fn rng(seed: u32) -> impl FnMut() -> f32 {

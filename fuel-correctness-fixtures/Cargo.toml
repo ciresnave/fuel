@@ -9,14 +9,14 @@
     version.workspace    = true
 
 [dependencies]
-    fuel-core-types = { workspace = true }
+    fuel-ir = { workspace = true }
     bytemuck        = { workspace = true }
     serde           = { version = "1", features = ["derive"], optional = true }
     serde_json      = { version = "1", optional = true }
 
 [features]
     default = []
-    serde   = ["dep:serde", "dep:serde_json", "fuel-core-types/serde"]
+    serde   = ["dep:serde", "dep:serde_json", "fuel-ir/serde"]
     # Capture-pipeline helpers + the `fuel-capture-fixtures` binary.
     # Deterministic input generation mirrors Judge's sin/cos formulas
     # (no `rand` needed); JSON file emission goes through serde_json.

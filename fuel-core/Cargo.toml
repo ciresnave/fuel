@@ -14,7 +14,7 @@ accelerate-src = { workspace = true, optional = true }
 byteorder = { workspace = true }
 fuel-aocl-cpu-backend = { workspace = true, optional = true }
 fuel-mkl-cpu-backend = { workspace = true, optional = true }
-fuel-core-types = { workspace = true, features = ["serde"] }
+fuel-ir = { workspace = true, features = ["serde"] }
 fuel-correctness-fixtures = { workspace = true, features = ["serde", "capture"] }
 fuel-cpu-backend = { workspace = true }
 fuel-dispatch = { workspace = true }
@@ -137,7 +137,7 @@ vulkan = ["dep:fuel-vulkan-backend", "fuel-dispatch/vulkan", "fuel-memory/vulkan
 # Pipes the `ug` feature through to fuel-cuda-backend and fuel-metal-backend so the
 # per-backend `XxxUgIOp1::new(..., device)` constructors are available
 # whenever `cuda`/`metal` is also enabled.
-ug = ["dep:fuel-ug", "fuel-core-types/ug", "fuel-cuda-backend?/ug", "fuel-metal-backend?/ug"]
+ug = ["dep:fuel-ug", "fuel-ir/ug", "fuel-cuda-backend?/ug", "fuel-metal-backend?/ug"]
 
 [[bench]]
 name = "bench_main"

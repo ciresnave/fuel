@@ -12,12 +12,12 @@
 //! `UnaryOp`/`BinaryOp` enum variants to kernel name strings and reuse the
 //! exact same CUDA kernel launch infrastructure.
 
-use fuel_core_types::conv::{
+use fuel_ir::conv::{
     ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,
 };
-use fuel_core_types::dyn_backend::{DynBackendDevice, DynBackendStorage};
-use fuel_core_types::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
-use fuel_core_types::{HostBuffer, DType, DeviceLocation, Error, Layout, Result, Scalar, Shape};
+use fuel_ir::dyn_backend::{DynBackendDevice, DynBackendStorage};
+use fuel_ir::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
+use fuel_ir::{HostBuffer, DType, DeviceLocation, Error, Layout, Result, Scalar, Shape};
 use baracuda_driver::DeviceBuffer as CudaSlice;
 use baracuda_types::{DeviceRepr, KernelArg as PushKernelArg, ValidAsZeroBits};
 use crate::device::LaunchConfig;
@@ -127,7 +127,7 @@ impl Map1 for UnaryKernel {
     /// Runtime-name unary dispatch — Phase 6c.2 migration to
     /// baracuda alpha.50 via the same `unary_baracuda` helper used
     /// by the generic `impl<U: UnaryOpT> Map1 for U`.
-    fn f<T: DeviceRepr + fuel_core_types::WithDType + ValidAsZeroBits>(
+    fn f<T: DeviceRepr + fuel_ir::WithDType + ValidAsZeroBits>(
         &self,
         src: &CudaSlice<T>,
         dev: &CudaDevice,
@@ -146,7 +146,7 @@ impl Map2 for BinaryKernel {
     /// Runtime-name binary dispatch — Phase 6c.2 migration to
     /// baracuda alpha.50 via the same `binary_baracuda` helper used
     /// by the generic `impl<U: BinaryOpT> Map2 for U`.
-    fn f<T: DeviceRepr + fuel_core_types::WithDType + ValidAsZeroBits>(
+    fn f<T: DeviceRepr + fuel_ir::WithDType + ValidAsZeroBits>(
         &self,
         lhs: &CudaSlice<T>,
         lhs_l: &Layout,
@@ -551,11 +551,11 @@ impl DynBackendDevice for CudaDevice {
 
     fn as_quantized_kernels(
         &self,
-    ) -> Option<&dyn fuel_core_types::quantized::QuantizedDeviceKernels> {
+    ) -> Option<&dyn fuel_ir::quantized::QuantizedDeviceKernels> {
         Some(self)
     }
 
-    fn as_backend_runtime(&self) -> Option<&dyn fuel_core_types::backend::BackendRuntime> {
+    fn as_backend_runtime(&self) -> Option<&dyn fuel_ir::backend::BackendRuntime> {
         Some(self)
     }
 }
@@ -575,7 +575,7 @@ impl DynBackendDevice for CudaDevice {
 // treat `None` as "no signal — fall back to static cost," exactly as they
 // did before this signal existed.
 
-impl fuel_core_types::backend::BackendRuntime for CudaDevice {
+impl fuel_ir::backend::BackendRuntime for CudaDevice {
     /// Device-local free VRAM via `cuMemGetInfo` (driver estimate —
     /// includes this process, other processes, and driver internals).
     /// `None` if the driver query fails.

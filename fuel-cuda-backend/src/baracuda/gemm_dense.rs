@@ -29,7 +29,7 @@
 
 use std::sync::Arc;
 
-use fuel_core_types::Result;
+use fuel_ir::Result;
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -63,7 +63,7 @@ fn validate_dims(
     k: usize,
     elem: usize,
 ) -> Result<MatmulDims> {
-    let err = |msg: String| fuel_core_types::Error::Msg(msg).bt();
+    let err = |msg: String| fuel_ir::Error::Msg(msg).bt();
     if lhs_batch_dims.len() != rhs_batch_dims.len() {
         return Err(err(format!(
             "{label}: batch ranks must match (lhs={}, rhs={}); fuel-graph's \

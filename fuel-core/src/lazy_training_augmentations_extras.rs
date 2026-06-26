@@ -27,7 +27,7 @@
 
 use crate::lazy::LazyTensor;
 use crate::Result;
-use fuel_core_types::DType;
+use fuel_ir::DType;
 use std::collections::HashMap;
 
 // ---------- Gradient accumulation ----------
@@ -213,7 +213,7 @@ pub fn apply_inplace_sgd_step(
 mod tests {
     use super::*;
     use crate::Device;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
 
     fn cpu_f32(values: Vec<f32>, shape: &[usize]) -> LazyTensor {
         LazyTensor::from_f32(values, Shape::from_dims(shape), &Device::cpu())

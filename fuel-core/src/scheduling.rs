@@ -37,8 +37,8 @@ use crate::judge::{Criterion, DispatchOptions, DispatchTable, Pick};
 use crate::judge::{Judge, OpKind, ProfileEntry, ProfileReport, SizeClass};
 use crate::probe::{HardwareChange, ProbeReport};
 use crate::transfer_cost::BandwidthMatrix;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, DeviceLocation, Result};
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, DeviceLocation, Result};
 use fuel_graph::{Graph, NodeId, Op};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -780,7 +780,7 @@ mod tests {
     use crate::judge::Criterion;
     use crate::judge::{ProfileEntry, ProfileReport, PROFILE_REPORT_VERSION};
     use fuel_graph::Tensor;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
     use std::sync::Arc;
 
     /// Hand-build a tiny dispatch table where CUDA wins MatMul at

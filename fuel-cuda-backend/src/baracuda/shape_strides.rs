@@ -9,7 +9,7 @@
 //! than letting a silent `as i32` cast wrap to a negative number that
 //! baracuda's kernel would then reject as "invalid problem."
 
-use fuel_core_types::{Error, Layout, Result};
+use fuel_ir::{Error, Layout, Result};
 
 use crate::error::CudaError;
 

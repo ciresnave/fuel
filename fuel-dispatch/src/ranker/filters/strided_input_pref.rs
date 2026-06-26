@@ -62,9 +62,9 @@ mod tests {
     use super::*;
     use crate::fused::PrecisionGuarantee;
     use crate::kernel::{KernelCaps, OpParams};
-    use fuel_core_types::dispatch::OpKind;
-    use fuel_core_types::probe::BackendId;
-    use fuel_core_types::{DType, DeviceLocation, Layout, Result, Shape, StrideVec};
+    use fuel_ir::dispatch::OpKind;
+    use fuel_ir::probe::BackendId;
+    use fuel_ir::{DType, DeviceLocation, Layout, Result, Shape, StrideVec};
     use fuel_memory::Storage;
     use smallvec::smallvec;
     use std::sync::{Arc, RwLock};

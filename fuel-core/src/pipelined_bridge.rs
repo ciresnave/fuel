@@ -69,11 +69,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{
+use fuel_ir::{
     probe::BackendId, DeviceLocation, Error, HostBuffer, Layout, Result, SymEnv,
 };
-use fuel_core_types::backend::{BackendRuntime, FitStatus};
-use fuel_core_types::dyn_backend::DynBackendDevice;
+use fuel_ir::backend::{BackendRuntime, FitStatus};
+use fuel_ir::dyn_backend::DynBackendDevice;
 use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute, topo_order_multi};
 use fuel_graph::opt::{insert_cross_device_copies, insert_layout_fixups};
 use fuel_dispatch::dispatch::global_bindings;
@@ -331,7 +331,7 @@ fn build_optimized_graph(
         topology.backends_for(dev).to_vec()
     };
     let capabilities_for = |b: BackendId|
-        -> Option<&fuel_core_types::backend::BackendCapabilities>
+        -> Option<&fuel_ir::backend::BackendCapabilities>
     { topology.capabilities(b) };
     let fallback_for = |dev: DeviceLocation|
         -> Vec<(BackendId, DeviceLocation)>
@@ -880,11 +880,11 @@ pub(crate) fn build_const_cache(
     // Pass 1: collect (user_const_id, host_bytes, dtype, need_bytes)
     // for every reachable Op::Const that isn't already in the cache
     // (persistent slots from InferenceContext take precedence).
-    let consts_to_upload: Vec<(NodeId, Vec<u8>, fuel_core_types::DType)> = {
+    let consts_to_upload: Vec<(NodeId, Vec<u8>, fuel_ir::DType)> = {
         let g = graph
             .read()
             .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
-        let mut out: Vec<(NodeId, Vec<u8>, fuel_core_types::DType)> =
+        let mut out: Vec<(NodeId, Vec<u8>, fuel_ir::DType)> =
             Vec::with_capacity(order.len() / 4);
         for &id in order {
             if cache.contains_key(&id) {
@@ -967,8 +967,8 @@ pub(crate) fn build_const_cache(
             g.push(Node {
                 op: Op::Const,
                 inputs: vec![],
-                shape: fuel_core_types::Shape::from_dims(&[4]),
-                dtype: fuel_core_types::DType::U8,
+                shape: fuel_ir::Shape::from_dims(&[4]),
+                dtype: fuel_ir::DType::U8,
             })
         };
         transient_cache.insert(anchor_id, Arc::new(RwLock::new(seed)));
@@ -997,7 +997,7 @@ pub(crate) fn build_const_cache(
             } else {
                 bytes.len() / dtype.size_in_bytes()
             };
-            let shape = fuel_core_types::Shape::from_dims(&[n_elem]);
+            let shape = fuel_ir::Shape::from_dims(&[n_elem]);
             let trans_const_id = g.push(Node {
                 op: Op::Const,
                 inputs: vec![],
@@ -1502,7 +1502,7 @@ pub fn device_seed_storage(device: &Device) -> Result<Option<Storage>> {
             let cuda_dev = crate::cuda_backend::as_device(device)?;
             let cuda_bytes =
                 fuel_cuda_backend::CudaStorageBytes::alloc(cuda_dev, SEED_BYTES)?;
-            Ok(Some(Storage::new(BackendStorage::Cuda(cuda_bytes), fuel_core_types::DType::U8)))
+            Ok(Some(Storage::new(BackendStorage::Cuda(cuda_bytes), fuel_ir::DType::U8)))
         }
         #[cfg(not(feature = "cuda"))]
         DeviceLocation::Cuda { .. } => Err(Error::Msg(
@@ -1515,7 +1515,7 @@ pub fn device_seed_storage(device: &Device) -> Result<Option<Storage>> {
             let backend = crate::vulkan_backend::as_device(device)?;
             let zeros = vec![0_u8; SEED_BYTES];
             let vk_bytes = backend.upload_bytes_handle(&zeros)?;
-            Ok(Some(Storage::new(BackendStorage::Vulkan(vk_bytes), fuel_core_types::DType::U8)))
+            Ok(Some(Storage::new(BackendStorage::Vulkan(vk_bytes), fuel_ir::DType::U8)))
         }
         #[cfg(not(feature = "vulkan"))]
         DeviceLocation::Vulkan { .. } => Err(Error::Msg(
@@ -1534,7 +1534,7 @@ pub fn device_seed_storage(device: &Device) -> Result<Option<Storage>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::{DType, Shape};
+    use fuel_ir::{DType, Shape};
     use fuel_dispatch::plan::compile_plan;
 
     fn push_node(g: &mut Graph, op: Op, inputs: Vec<NodeId>) -> NodeId {
@@ -1702,7 +1702,7 @@ mod tests {
     fn noop_kernel_for_tests(
         _i: &[Arc<RwLock<Storage>>],
         _o: &mut [Arc<RwLock<Storage>>],
-        _l: &[fuel_core_types::Layout],
+        _l: &[fuel_ir::Layout],
         _p: &fuel_dispatch::kernel::OpParams,
     ) -> Result<()> {
         Ok(())
@@ -1823,7 +1823,7 @@ mod tests {
     /// keeps every candidate and residency on CPU anyway.)
     #[test]
     fn stage2_cpu_only_estimator_leaves_plan_unchanged() {
-        use fuel_core_types::dispatch::OpKind;
+        use fuel_ir::dispatch::OpKind;
         use fuel_dispatch::kernel::{unknown_cost, KernelBindingTable, KernelCaps};
 
         let mut table = KernelBindingTable::new();
@@ -1852,7 +1852,7 @@ mod tests {
             topology.backends_for(dev).to_vec()
         };
         let capabilities_for = |b: BackendId|
-            -> Option<&fuel_core_types::backend::BackendCapabilities>
+            -> Option<&fuel_ir::backend::BackendCapabilities>
         { topology.capabilities(b) };
         // Same closure shape build_optimized_graph wires.
         let input_residency = |id: NodeId| -> Option<DeviceLocation> {
@@ -1971,7 +1971,7 @@ mod tests {
     /// first — membership, not position, is the contract).
     #[test]
     fn reporting_realize_returns_root_kernel_source() {
-        use fuel_core_types::dispatch::OpKind;
+        use fuel_ir::dispatch::OpKind;
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (c1, c2, add) = {
@@ -2012,7 +2012,7 @@ mod tests {
     fn neg_kernel_cpu_f32(
         inputs: &[Arc<RwLock<Storage>>],
         outputs: &mut [Arc<RwLock<Storage>>],
-        _layouts: &[fuel_core_types::Layout],
+        _layouts: &[fuel_ir::Layout],
         _params: &fuel_dispatch::kernel::OpParams,
     ) -> Result<()> {
         let negated: Vec<f32> = {
@@ -2044,7 +2044,7 @@ mod tests {
     /// correctly on CPU.
     #[test]
     fn fallback_off_device_node_realizes_on_cpu_end_to_end() {
-        use fuel_core_types::dispatch::OpKind;
+        use fuel_ir::dispatch::OpKind;
         use fuel_dispatch::kernel::{unknown_cost, KernelBindingTable, KernelCaps};
 
         let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };

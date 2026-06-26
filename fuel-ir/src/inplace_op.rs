@@ -22,9 +22,9 @@ use crate::{Layout, Result};
 /// # Example
 ///
 /// ```no_run
-/// use fuel_core_types::{Layout, Result};
-/// use fuel_core_types::dyn_backend::DynBackendStorage;
-/// use fuel_core_types::inplace_op::InplaceOp1;
+/// use fuel_ir::{Layout, Result};
+/// use fuel_ir::dyn_backend::DynBackendStorage;
+/// use fuel_ir::inplace_op::InplaceOp1;
 /// struct ZeroOut;
 /// impl InplaceOp1 for ZeroOut {
 ///     fn name(&self) -> &'static str { "zero_out" }

@@ -14,7 +14,7 @@
 //!   `global_registry()` (fuel-storage), `DeviceLocation` /
 //!   `BackendId` / `SubstrateClass` (fuel-core-types).
 //! - **TDP-2** Substrate is encoded as a new
-//!   [`fuel_core_types::backend::SubstrateClass`] field on
+//!   [`fuel_ir::backend::SubstrateClass`] field on
 //!   `BackendCapabilities`. Backends self-declare. SystemTopology
 //!   falls back to a sensible per-`BackendId` default for backends
 //!   that haven't registered capabilities yet (CUDA/Vulkan today),
@@ -47,10 +47,10 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use fuel_core_types::backend::{BackendCapabilities, SubstrateClass, TransferPath};
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, DeviceLocation};
+use fuel_ir::backend::{BackendCapabilities, SubstrateClass, TransferPath};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, DeviceLocation};
 use fuel_dispatch::dispatch::{global_bindings, global_registry, topology_generation};
 
 use crate::probe::ProbeReport;

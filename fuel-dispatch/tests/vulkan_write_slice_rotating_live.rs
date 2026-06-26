@@ -14,7 +14,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Layout, Shape};
+use fuel_ir::{dispatch::OpKind, probe::BackendId, DType, Layout, Shape};
 use fuel_dispatch::{kernel::{KernelBindingTable, OpParams}, vulkan_dispatch::register_vulkan_kernels};
 use fuel_memory::{BackendStorage, Storage};
 use fuel_vulkan_backend::VulkanBackend;

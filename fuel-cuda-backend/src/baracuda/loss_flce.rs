@@ -31,7 +31,7 @@
 //! per_row to support strided `logits`. `target` is `i64` indices.
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::Result;
+use fuel_ir::Result;
 
 use crate::byte_storage::CudaStorageBytes;
 

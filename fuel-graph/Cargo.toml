@@ -10,7 +10,7 @@
 
 [dependencies]
     float8          = { workspace = true }
-    fuel-core-types = { workspace = true }
+    fuel-ir = { workspace = true }
     half            = { workspace = true }
 
 [dev-dependencies]

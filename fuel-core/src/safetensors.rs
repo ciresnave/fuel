@@ -280,7 +280,7 @@ fn convert(view: &st::TensorView<'_>, device: &Device) -> Result<Tensor> {
 /// CUDA/Metal backends reject these types through the normal `storage_from_cpu_storage` path,
 /// so we handle them with device-specific raw-byte uploads.
 fn dummy_storage_for_device(data: &[u8], dtype: DType, device: &Device) -> Result<Storage> {
-    use fuel_core_types::DeviceLocation;
+    use fuel_ir::DeviceLocation;
 
     let make_cpu = || -> HostBuffer {
         match dtype {

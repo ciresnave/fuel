@@ -40,7 +40,7 @@
 
 use crate::inference_context::{InferenceContext, KvCache, KvSlot};
 use crate::{DType, Device, Shape};
-use fuel_core_types::shape::{Dim, Dims};
+use fuel_ir::shape::{Dim, Dims};
 use std::sync::Arc;
 
 /// A lazy tensor that builds a `fuel_graph::Graph` as its methods are
@@ -218,7 +218,7 @@ impl LazyTensor {
     /// Size of the tensor along dimension `dim`. Returns a typed error
     /// rather than panicking on out-of-range — matches eager's
     /// [`crate::Tensor::dim`] signature.
-    pub fn dim<D: Dim>(&self, dim: D) -> std::result::Result<usize, fuel_core_types::Error> {
+    pub fn dim<D: Dim>(&self, dim: D) -> std::result::Result<usize, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "dim")?;
         Ok(shape.dims()[dim])
@@ -228,37 +228,37 @@ impl LazyTensor {
 
     /// Element-wise addition. Shapes and dtypes must match — mismatches
     /// surface as typed errors at build time.
-    pub fn add(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn add(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("add", other)?;
         Ok(Self { inner: self.inner.add(&other.inner) })
     }
 
     /// Element-wise subtraction.
-    pub fn sub(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn sub(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("sub", other)?;
         Ok(Self { inner: self.inner.sub(&other.inner) })
     }
 
     /// Element-wise multiplication.
-    pub fn mul(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn mul(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("mul", other)?;
         Ok(Self { inner: self.inner.mul(&other.inner) })
     }
 
     /// Element-wise division.
-    pub fn div(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn div(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("div", other)?;
         Ok(Self { inner: self.inner.div(&other.inner) })
     }
 
     /// Element-wise maximum.
-    pub fn maximum(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn maximum(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("maximum", other)?;
         Ok(Self { inner: self.inner.maximum(&other.inner) })
     }
 
     /// Element-wise minimum.
-    pub fn minimum(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn minimum(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("minimum", other)?;
         Ok(Self { inner: self.inner.minimum(&other.inner) })
     }
@@ -267,7 +267,7 @@ impl LazyTensor {
     /// `1` where equal, `0` otherwise. Both operands must share dtype
     /// and shape. NaN follows IEEE-754 (`NaN == NaN` is false). The
     /// resulting tensor's dtype is `DType::U8`. Non-differentiable.
-    pub fn eq(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn eq(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("eq", other)?;
         Ok(Self { inner: self.inner.eq(&other.inner) })
     }
@@ -275,7 +275,7 @@ impl LazyTensor {
     /// Element-wise inequality (`self != other`) producing a `U8`
     /// mask. NaN follows IEEE-754 (`NaN != NaN` is true → `1`).
     /// Non-differentiable.
-    pub fn ne(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn ne(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("ne", other)?;
         Ok(Self { inner: self.inner.ne(&other.inner) })
     }
@@ -283,21 +283,21 @@ impl LazyTensor {
     /// Element-wise strictly-less (`self < other`) producing a `U8`
     /// mask. NaN-on-either-side is `0` (IEEE-754 unordered).
     /// Non-differentiable.
-    pub fn lt(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn lt(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("lt", other)?;
         Ok(Self { inner: self.inner.lt(&other.inner) })
     }
 
     /// Element-wise less-or-equal (`self <= other`) producing a `U8`
     /// mask. NaN-on-either-side is `0`. Non-differentiable.
-    pub fn le(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn le(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("le", other)?;
         Ok(Self { inner: self.inner.le(&other.inner) })
     }
 
     /// Element-wise strictly-greater (`self > other`) producing a
     /// `U8` mask. NaN-on-either-side is `0`. Non-differentiable.
-    pub fn gt(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn gt(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("gt", other)?;
         Ok(Self { inner: self.inner.gt(&other.inner) })
     }
@@ -306,7 +306,7 @@ impl LazyTensor {
     /// `U8` mask. NaN-on-either-side is `0`. Non-differentiable.
     /// Final variant of the comparison family (`eq` / `ne` / `lt` /
     /// `le` / `gt` / `ge`).
-    pub fn ge(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn ge(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("ge", other)?;
         Ok(Self { inner: self.inner.ge(&other.inner) })
     }
@@ -318,14 +318,14 @@ impl LazyTensor {
     /// shape matches `self`.
     ///
     /// Differentiable through `a` and `b` only.
-    pub fn where_cond(&self, a: &Self, b: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
-        if self.inner.dtype() != fuel_core_types::DType::U8 {
-            return Err(fuel_core_types::Error::Msg(format!(
+    pub fn where_cond(&self, a: &Self, b: &Self) -> std::result::Result<Self, fuel_ir::Error> {
+        if self.inner.dtype() != fuel_ir::DType::U8 {
+            return Err(fuel_ir::Error::Msg(format!(
                 "where_cond: cond mask must be U8, got {:?}", self.inner.dtype(),
             )).bt());
         }
         if a.inner.dtype() != b.inner.dtype() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "where_cond: branches must share dtype, got a={:?} b={:?}",
                 a.inner.dtype(), b.inner.dtype(),
             )).bt());
@@ -334,7 +334,7 @@ impl LazyTensor {
         let a_dims = a.inner.shape();
         let b_dims = b.inner.shape();
         if a_dims.dims() != cond_dims.dims() || b_dims.dims() != cond_dims.dims() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "where_cond: shapes must match cond, got cond={:?} a={:?} b={:?}",
                 cond_dims.dims(), a_dims.dims(), b_dims.dims(),
             )).bt());
@@ -347,32 +347,32 @@ impl LazyTensor {
     // ---- broadcast-aware arithmetic ----
 
     /// Element-wise addition with auto-broadcasting.
-    pub fn broadcast_add(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn broadcast_add(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_broadcast_binary("broadcast_add", other)?;
         Ok(Self { inner: self.inner.broadcast_add(&other.inner) })
     }
 
     /// Element-wise subtraction with auto-broadcasting.
-    pub fn broadcast_sub(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn broadcast_sub(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_broadcast_binary("broadcast_sub", other)?;
         Ok(Self { inner: self.inner.broadcast_sub(&other.inner) })
     }
 
     /// Element-wise multiplication with auto-broadcasting.
-    pub fn broadcast_mul(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn broadcast_mul(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_broadcast_binary("broadcast_mul", other)?;
         Ok(Self { inner: self.inner.broadcast_mul(&other.inner) })
     }
 
     /// Element-wise division with auto-broadcasting.
-    pub fn broadcast_div(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn broadcast_div(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_broadcast_binary("broadcast_div", other)?;
         Ok(Self { inner: self.inner.broadcast_div(&other.inner) })
     }
 
-    fn check_strict_binary(&self, name: &'static str, other: &Self) -> std::result::Result<(), fuel_core_types::Error> {
+    fn check_strict_binary(&self, name: &'static str, other: &Self) -> std::result::Result<(), fuel_ir::Error> {
         if self.inner.dtype() != other.inner.dtype() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "{name}: dtype mismatch lhs={:?} rhs={:?}",
                 self.inner.dtype(), other.inner.dtype(),
             )).bt());
@@ -380,7 +380,7 @@ impl LazyTensor {
         let a_shape = self.inner.shape();
         let b_shape = other.inner.shape();
         if a_shape.dims() != b_shape.dims() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "{name}: shape mismatch lhs={:?} rhs={:?}",
                 a_shape.dims(), b_shape.dims(),
             )).bt());
@@ -388,9 +388,9 @@ impl LazyTensor {
         Ok(())
     }
 
-    fn check_broadcast_binary(&self, name: &'static str, other: &Self) -> std::result::Result<(), fuel_core_types::Error> {
+    fn check_broadcast_binary(&self, name: &'static str, other: &Self) -> std::result::Result<(), fuel_ir::Error> {
         if self.inner.dtype() != other.inner.dtype() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "{name}: dtype mismatch lhs={:?} rhs={:?}",
                 self.inner.dtype(), other.inner.dtype(),
             )).bt());
@@ -406,7 +406,7 @@ impl LazyTensor {
             let ad = a_dims.get(a_dims.len().wrapping_sub(1 + i)).copied().unwrap_or(1);
             let bd = b_dims.get(b_dims.len().wrapping_sub(1 + i)).copied().unwrap_or(1);
             if ad != bd && ad != 1 && bd != 1 {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "{name}: shapes {:?} and {:?} are not broadcast-compatible",
                     a_dims, b_dims,
                 )).bt());
@@ -538,7 +538,7 @@ impl LazyTensor {
     /// [`Self::powi`] (scalar `i32` exponent). Differentiable.
     /// **Returns `Result`**: dtype/shape mismatch surfaces as a
     /// typed error.
-    pub fn pow(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn pow(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         Ok(Self {
             inner: self.inner.pow(&other.inner)?,
         })
@@ -556,7 +556,7 @@ impl LazyTensor {
     /// `torch.remainder`, not C99 fmod). Differentiable through `a`
     /// and `b`. **Returns `Result`**: dtype/shape mismatch surfaces
     /// as a typed error.
-    pub fn rem(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn rem(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         Ok(Self {
             inner: self.inner.rem(&other.inner)?,
         })
@@ -565,7 +565,7 @@ impl LazyTensor {
     /// Reverse element order along `dim`. Materializing op (real
     /// byte shuffle). Differentiable; backward is itself.
     /// Accepts any [`Dim`] (`usize`, `D::Minus1`, etc.).
-    pub fn flip<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn flip<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "flip")?;
         Ok(Self { inner: self.inner.flip(dim)? })
@@ -574,7 +574,7 @@ impl LazyTensor {
     /// Cyclic shift along `dim` by `shift` positions (positive →
     /// higher indices, wrapping). Differentiable; backward is
     /// `roll(dim, -shift)`.
-    pub fn roll<D: Dim>(&self, dim: D, shift: i64) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn roll<D: Dim>(&self, dim: D, shift: i64) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "roll")?;
         Ok(Self { inner: self.inner.roll(dim, shift)? })
@@ -583,7 +583,7 @@ impl LazyTensor {
     /// Running cumulative sum along `dim`. Same shape as input.
     /// Differentiable; backward is reverse cumsum (`flip → cumsum
     /// → flip`).
-    pub fn cumsum<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn cumsum<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "cumsum")?;
         Ok(Self { inner: self.inner.cumsum(dim)? })
@@ -595,7 +595,7 @@ impl LazyTensor {
     /// mode is implemented; Reflect / Replicate exist as enum stubs
     /// that error at realize time. Differentiable for Constant.
     /// **Returns `Result`**: rank mismatch surfaces as a typed error.
-    pub fn pad(&self, padding: Vec<(usize, usize)>, mode: fuel_graph::PadMode, value: f64) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn pad(&self, padding: Vec<(usize, usize)>, mode: fuel_graph::PadMode, value: f64) -> std::result::Result<Self, fuel_ir::Error> {
         Ok(Self {
             inner: self.inner.pad(padding, mode, value)?,
         })
@@ -611,18 +611,18 @@ impl LazyTensor {
     /// N-D batched matrix multiply with automatic rank-2 broadcasting.
     /// Shape incompatibility (rank < 2 or contracting-dim mismatch)
     /// surfaces as a typed error at build time.
-    pub fn matmul(&self, other: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn matmul(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         let a_dims = self.inner.shape().dims().to_vec();
         let b_dims = other.inner.shape().dims().to_vec();
         if a_dims.len() < 2 || b_dims.len() < 2 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "matmul: both operands must be rank >= 2, got lhs={a_dims:?} rhs={b_dims:?}",
             )).bt());
         }
         let a_k = a_dims[a_dims.len() - 1];
         let b_k = b_dims[b_dims.len() - 2];
         if a_k != b_k {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "matmul: contracting dim mismatch lhs[..., M, {a_k}] vs rhs[..., {b_k}, N]",
             )).bt());
         }
@@ -643,14 +643,14 @@ impl LazyTensor {
         quant_type: fuel_graph::QuantType,
         k: usize,
         n: usize,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
-        if self.inner.dtype() != fuel_core_types::DType::F32 {
-            return Err(fuel_core_types::Error::Msg(format!(
+    ) -> std::result::Result<Self, fuel_ir::Error> {
+        if self.inner.dtype() != fuel_ir::DType::F32 {
+            return Err(fuel_ir::Error::Msg(format!(
                 "qmatmul: activations must be F32, got {:?}", self.inner.dtype(),
             )).bt());
         }
-        if weight_bytes.inner.dtype() != fuel_core_types::DType::U32 {
-            return Err(fuel_core_types::Error::Msg(format!(
+        if weight_bytes.inner.dtype() != fuel_ir::DType::U32 {
+            return Err(fuel_ir::Error::Msg(format!(
                 "qmatmul: weight_bytes must be U32 (raw block bytes reinterpreted), got {:?}",
                 weight_bytes.inner.dtype(),
             )).bt());
@@ -658,19 +658,19 @@ impl LazyTensor {
         let a_shape = self.inner.shape();
         let a_dims = a_shape.dims();
         if a_dims.len() < 2 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "qmatmul: activations must be rank >= 2, got {a_dims:?}",
             )).bt());
         }
         if a_dims[a_dims.len() - 1] != k {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "qmatmul: last dim of activations ({}) must equal k ({k})",
                 a_dims[a_dims.len() - 1],
             )).bt());
         }
         let block_size = quant_type.elements_per_block();
         if k % block_size != 0 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "qmatmul: k={k} must be a multiple of {quant_type:?}'s block size ({block_size})",
             )).bt());
         }
@@ -678,7 +678,7 @@ impl LazyTensor {
         let expected_u32_elems = expected_bytes / 4;
         let actual_elems = weight_bytes.inner.shape().elem_count();
         if actual_elems != expected_u32_elems {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "qmatmul: weight_bytes has {actual_elems} u32 elements, expected {expected_u32_elems} for N={n}, K={k}, {quant_type:?}",
             )).bt());
         }
@@ -690,14 +690,14 @@ impl LazyTensor {
     /// Transpose the last two dims. Returns a typed error on rank < 2
     /// rather than panicking — build-time validation surfaces a useful
     /// diagnostic.
-    pub fn transpose(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn transpose(&self) -> std::result::Result<Self, fuel_ir::Error> {
         Ok(Self { inner: self.inner.try_transpose()? })
     }
 
     /// Permute axes by the given ordering. Accepts any [`Dims`]
     /// implementer — `(0, 2, 1)`, `[0, 2, 1]`, `&[0, 2, 1]`, etc.
     /// Validates rank match + dim bounds + duplicate check at build time.
-    pub fn permute<D: Dims>(&self, axes: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn permute<D: Dims>(&self, axes: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let axes = axes.to_indexes(&shape, "permute")?;
         Ok(Self { inner: self.inner.try_permute(&axes)? })
@@ -705,7 +705,7 @@ impl LazyTensor {
 
     /// Reshape to a new shape with matching element count.
     /// Element-count mismatch surfaces as a typed error at build time.
-    pub fn reshape(&self, shape: impl Into<Shape>) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn reshape(&self, shape: impl Into<Shape>) -> std::result::Result<Self, fuel_ir::Error> {
         Ok(Self { inner: self.inner.try_reshape(shape)? })
     }
 
@@ -716,7 +716,7 @@ impl LazyTensor {
     ///
     /// Accepts any [`Dim`] implementer — `usize`, `D::Minus1`, `D::Minus2`,
     /// `D::Minus(n)`.
-    pub fn squeeze<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn squeeze<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "squeeze")?;
         Ok(Self { inner: self.inner.squeeze(dim)? })
@@ -724,7 +724,7 @@ impl LazyTensor {
 
     /// Broadcast to a larger shape. Shape-incompatibility surfaces as a
     /// typed error at build time.
-    pub fn broadcast_to(&self, shape: impl Into<Shape>) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn broadcast_to(&self, shape: impl Into<Shape>) -> std::result::Result<Self, fuel_ir::Error> {
         Ok(Self { inner: self.inner.try_broadcast_to(shape)? })
     }
 
@@ -739,7 +739,7 @@ impl LazyTensor {
     /// the call sites stop drifting.
     pub fn layer_norm_affine(
         &self, gain: std::sync::Arc<[f32]>, bias: std::sync::Arc<[f32]>, eps: f64,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let hidden = gain.len();
         debug_assert_eq!(bias.len(), hidden,
             "layer_norm_affine: gain ({}) and bias ({}) must have the same length",
@@ -769,7 +769,7 @@ impl LazyTensor {
     /// guarantees no all-zero rows).
     pub fn l2_normalize<D: Dim>(
         &self, dim: D, eps: f64,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let sq = self.sqr();
         let summed = sq.sum_keepdim(dim)?;
         let with_eps = if eps == 0.0 { summed } else { summed.add_scalar(eps) };
@@ -788,11 +788,11 @@ impl LazyTensor {
     /// error at build time.
     pub fn repeat_interleave<D: Dim>(
         &self, dim: D, repeats: usize,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "repeat_interleave")?;
         if repeats == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "repeat_interleave: repeats must be ≥ 1".into(),
             ).bt());
         }
@@ -814,12 +814,12 @@ impl LazyTensor {
     /// Slice (narrow) along `dim`: take elements `[start, start+len)`.
     /// Bad `dim` / out-of-range slice surfaces as a typed error at build
     /// time. Accepts any [`Dim`].
-    pub fn slice<D: Dim>(&self, dim: D, start: usize, len: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn slice<D: Dim>(&self, dim: D, start: usize, len: usize) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "slice")?;
         let dim_size = shape.dims()[dim];
         if start.saturating_add(len) > dim_size {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "slice: start={start} + len={len} exceeds dim {dim} size {dim_size}",
             )).bt());
         }
@@ -828,19 +828,19 @@ impl LazyTensor {
 
     /// Concatenate two tensors along `dim`. Shape mismatch or bad `dim`
     /// surfaces as a typed error at build time. Accepts any [`Dim`].
-    pub fn concat<D: Dim>(&self, other: &Self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn concat<D: Dim>(&self, other: &Self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "concat")?;
         let self_dims = shape.dims().to_vec();
         let other_dims = other.inner.shape().dims().to_vec();
         if self_dims.len() != other_dims.len() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "concat: rank mismatch lhs={self_dims:?} rhs={other_dims:?}",
             )).bt());
         }
         for (i, (&a, &b)) in self_dims.iter().zip(other_dims.iter()).enumerate() {
             if i != dim && a != b {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "concat: dim {i} mismatch lhs={a} rhs={b} (concat dim is {dim})",
                 )).bt());
             }
@@ -865,7 +865,7 @@ impl LazyTensor {
     /// Argmax along a dim, returning a U32 tensor with the reduced
     /// dim removed. Non-differentiable. Bad `dim` surfaces as a typed
     /// error at build time. Accepts any [`Dim`].
-    pub fn argmax_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn argmax_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "argmax_dim")?;
         Ok(Self { inner: self.inner.argmax_dim(dim) })
@@ -908,21 +908,21 @@ impl LazyTensor {
 
     /// Sum along a single dimension (dim removed from output). Bad
     /// `dim` surfaces as a typed error at build time. Accepts any [`Dim`].
-    pub fn sum_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn sum_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "sum_dim")?;
         Ok(Self { inner: self.inner.sum_dim(dim) })
     }
 
     /// Max along a single dimension (dim removed from output).
-    pub fn max_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn max_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "max_dim")?;
         Ok(Self { inner: self.inner.max_dim(dim) })
     }
 
     /// Min along a single dimension (dim removed from output).
-    pub fn min_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn min_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "min_dim")?;
         Ok(Self { inner: self.inner.min_dim(dim) })
@@ -934,7 +934,7 @@ impl LazyTensor {
     }
 
     /// Mean along a single dimension.
-    pub fn mean_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn mean_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "mean_dim")?;
         Ok(Self { inner: self.inner.mean_dim(dim) })
@@ -957,11 +957,11 @@ impl LazyTensor {
 
     /// Softmax along the last dim. Rank-0 input surfaces as a typed
     /// error at build time rather than panicking inside `fuel_graph`.
-    pub fn softmax_last_dim(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn softmax_last_dim(&self) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dims = shape.dims();
         if dims.is_empty() {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "softmax_last_dim: input must be rank >= 1, got scalar".into(),
             ).bt());
         }
@@ -1037,7 +1037,7 @@ impl LazyTensor {
         b: &Self,
         c: &Self,
         delta_softplus: bool,
-    ) -> std::result::Result<(Self, Self), fuel_core_types::Error> {
+    ) -> std::result::Result<(Self, Self), fuel_ir::Error> {
         let (y, last_state) = self.inner.selective_scan_bundled(
             &delta.inner, &a.inner, &b.inner, &c.inner, delta_softplus,
         )?;
@@ -1054,7 +1054,7 @@ impl LazyTensor {
         b: &Self,
         c: &Self,
         chunk_size: usize,
-    ) -> std::result::Result<(Self, Self), fuel_core_types::Error> {
+    ) -> std::result::Result<(Self, Self), fuel_ir::Error> {
         let (y, last_state) = self.inner.ssd_chunk_scan_bundled(
             &dt.inner, &a.inner, &b.inner, &c.inner, chunk_size,
         )?;
@@ -1095,11 +1095,11 @@ impl LazyTensor {
 
     /// LayerNorm along the last dim with the given epsilon. Rank-0
     /// or zero-last-dim input surfaces as a typed error at build time.
-    pub fn layer_norm_last_dim(&self, eps: f64) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn layer_norm_last_dim(&self, eps: f64) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dims = shape.dims();
         if dims.is_empty() || *dims.last().unwrap() == 0 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "layer_norm_last_dim: input must have non-zero last dim, got {dims:?}",
             )).bt());
         }
@@ -1110,11 +1110,11 @@ impl LazyTensor {
 
     /// RmsNorm along the last dim (LLaMA's normalization). Rank-0 or
     /// zero-last-dim input surfaces as a typed error at build time.
-    pub fn rms_norm_last_dim(&self, eps: f64) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn rms_norm_last_dim(&self, eps: f64) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dims = shape.dims();
         if dims.is_empty() || *dims.last().unwrap() == 0 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "rms_norm_last_dim: input must have non-zero last dim, got {dims:?}",
             )).bt());
         }
@@ -1125,11 +1125,11 @@ impl LazyTensor {
 
     /// Apply rotary position embeddings. See [`fuel_graph::Tensor::rope`].
     /// Rank < 2 surfaces as a typed error at build time.
-    pub fn rope(&self, base: f64, start_pos: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn rope(&self, base: f64, start_pos: usize) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dims = shape.dims();
         if dims.len() < 2 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "rope: input must have rank >= 2, got {dims:?}",
             )).bt());
         }
@@ -1144,9 +1144,9 @@ impl LazyTensor {
     ///
     /// Rank / dtype / table-shape mismatches surface as typed errors
     /// at build time rather than panicking inside `fuel_graph`.
-    pub fn rope_with_tables(&self, cos: &Self, sin: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
-        if self.inner.dtype() != fuel_core_types::DType::F32 {
-            return Err(fuel_core_types::Error::Msg(format!(
+    pub fn rope_with_tables(&self, cos: &Self, sin: &Self) -> std::result::Result<Self, fuel_ir::Error> {
+        if self.inner.dtype() != fuel_ir::DType::F32 {
+            return Err(fuel_ir::Error::Msg(format!(
                 "rope: only f32 is supported today, got {:?} (cast explicitly for other dtypes)",
                 self.inner.dtype(),
             )).bt());
@@ -1155,28 +1155,28 @@ impl LazyTensor {
         let dims = in_shape.dims();
         let rank = dims.len();
         if rank < 2 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "rope: input must have rank >= 2, got {dims:?}",
             )).bt());
         }
         let seq = dims[rank - 2];
         let d = dims[rank - 1];
         if !d.is_multiple_of(2) {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "rope: feature dim {d} must be even",
             )).bt());
         }
         let cos_shape = cos.inner.shape();
         let cos_dims = cos_shape.dims();
         if cos_dims != [seq, d] {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "rope_with_tables: cos shape {cos_dims:?} does not match [seq, d] = [{seq}, {d}]",
             )).bt());
         }
         let sin_shape = sin.inner.shape();
         let sin_dims = sin_shape.dims();
         if sin_dims != [seq, d] {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "rope_with_tables: sin shape {sin_dims:?} does not match [seq, d] = [{seq}, {d}]",
             )).bt());
         }
@@ -1190,11 +1190,11 @@ impl LazyTensor {
     /// Pick slices along `dim` using a 1-D U32 index tensor. Accepts
     /// any [`Dim`]. Dim bounds / index dtype / index rank mismatches
     /// surface as typed errors at build time.
-    pub fn index_select<D: Dim>(&self, dim: D, indices: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn index_select<D: Dim>(&self, dim: D, indices: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "index_select")?;
-        if indices.inner.dtype() != fuel_core_types::DType::U32 {
-            return Err(fuel_core_types::Error::Msg(format!(
+        if indices.inner.dtype() != fuel_ir::DType::U32 {
+            return Err(fuel_ir::Error::Msg(format!(
                 "index_select: index tensor must be U32, got {:?}",
                 indices.inner.dtype(),
             )).bt());
@@ -1202,7 +1202,7 @@ impl LazyTensor {
         let idx_shape = indices.inner.shape();
         let idx_dims = idx_shape.dims();
         if idx_dims.len() != 1 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "index_select: index tensor must be rank 1, got {idx_dims:?}",
             )).bt());
         }
@@ -1215,11 +1215,11 @@ impl LazyTensor {
     /// rank as `self`; output shape equals the index shape. Accepts
     /// any [`Dim`]. Dim bounds / index dtype / rank mismatches surface
     /// as typed errors at build time.
-    pub fn gather<D: Dim>(&self, dim: D, indices: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn gather<D: Dim>(&self, dim: D, indices: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "gather")?;
-        if indices.inner.dtype() != fuel_core_types::DType::U32 {
-            return Err(fuel_core_types::Error::Msg(format!(
+        if indices.inner.dtype() != fuel_ir::DType::U32 {
+            return Err(fuel_ir::Error::Msg(format!(
                 "gather: index tensor must be U32, got {:?}",
                 indices.inner.dtype(),
             )).bt());
@@ -1228,7 +1228,7 @@ impl LazyTensor {
         let idx_shape = indices.inner.shape();
         let idx_rank = idx_shape.dims().len();
         if data_rank != idx_rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "gather: data and index must have the same rank, got {data_rank} vs {idx_rank}",
             )).bt());
         }
@@ -1248,7 +1248,7 @@ impl LazyTensor {
     /// validation is currently minimal — Cast itself is unfailing in
     /// `fuel_graph`; the Result return is reserved for future
     /// kernel-registry checks (Phase A.8c-extension).
-    pub fn to_dtype(&self, dtype: DType) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn to_dtype(&self, dtype: DType) -> std::result::Result<Self, fuel_ir::Error> {
         if self.inner.dtype() == dtype {
             return Ok(self.clone());
         }
@@ -1873,12 +1873,12 @@ impl LazyTensor {
     /// Used by the Phase E.3.3 forward path to bind pre-allocated
     /// KV-cache storage Arcs (`Arc<RwLock<fuel_memory::Storage>>`)
     /// into a per-step graph — the graph's legacy storage_map only
-    /// holds `fuel_core_types::Storage`, so direct binding isn't
+    /// holds `fuel_ir::Storage`, so direct binding isn't
     /// possible without a type conversion.
     pub fn const_placeholder_like(
         &self,
         shape: impl Into<Shape>,
-        dtype: fuel_core_types::DType,
+        dtype: fuel_ir::DType,
     ) -> Self {
         Self {
             inner: self.inner.const_placeholder_like(shape, dtype),
@@ -1950,9 +1950,9 @@ impl LazyTensor {
         stride: (usize, usize),
         padding: (usize, usize),
         groups: usize,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         if groups < 1 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv2d: groups must be >= 1, got {groups}",
             )).bt());
         }
@@ -1961,25 +1961,25 @@ impl LazyTensor {
         let w_shape = weight.inner.shape();
         let w_dims = w_shape.dims();
         if x_dims.len() != 4 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv2d: x must be rank 4 [N, Cin, H, W], got {x_dims:?}",
             )).bt());
         }
         if w_dims.len() != 4 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv2d: weight must be rank 4 [Cout, Cin/groups, Kh, Kw], got {w_dims:?}",
             )).bt());
         }
         let (cin, h_in, w_in) = (x_dims[1], x_dims[2], x_dims[3]);
         let (cout, cin_per_g, kh, kw) = (w_dims[0], w_dims[1], w_dims[2], w_dims[3]);
         if cin != cin_per_g * groups {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv2d: x has {cin} in-channels but weight expects {} ({cin_per_g}*{groups})",
                 cin_per_g * groups,
             )).bt());
         }
         if cout % groups != 0 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv2d: Cout={cout} must be divisible by groups={groups}",
             )).bt());
         }
@@ -1987,7 +1987,7 @@ impl LazyTensor {
             let b_shape = b.inner.shape();
             let b_dims = b_shape.dims();
             if b_dims != [cout] {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "conv2d: bias shape {b_dims:?} must match [Cout={cout}]",
                 )).bt());
             }
@@ -1995,14 +1995,14 @@ impl LazyTensor {
         let (stride_h, stride_w) = stride;
         let (pad_h, pad_w) = padding;
         if stride_h < 1 || stride_w < 1 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv2d: stride must be >= 1, got ({stride_h}, {stride_w})",
             )).bt());
         }
         let h_padded = h_in + 2 * pad_h;
         let w_padded = w_in + 2 * pad_w;
         if h_padded < kh || w_padded < kw {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv2d: padded input ({h_padded}x{w_padded}) smaller than kernel ({kh}x{kw})",
             )).bt());
         }
@@ -2036,7 +2036,7 @@ impl LazyTensor {
         window_size_left: Option<usize>,
         window_size_right: Option<usize>,
         softcap: Option<f32>,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let q_shape = self.inner.shape();
         let q_dims = q_shape.dims();
         let k_shape = k.inner.shape();
@@ -2044,17 +2044,17 @@ impl LazyTensor {
         let v_shape = v.inner.shape();
         let v_dims = v_shape.dims();
         if q_dims.len() != 4 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "flash_attn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}",
             )).bt());
         }
         if k_dims.len() != 4 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "flash_attn: k must be rank 4 [B, Hkv, Sk, D], got {k_dims:?}",
             )).bt());
         }
         if v_dims.len() != 4 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "flash_attn: v must be rank 4 [B, Hkv, Sk, D], got {v_dims:?}",
             )).bt());
         }
@@ -2062,27 +2062,27 @@ impl LazyTensor {
         let (bk, hkv, sk, dk) = (k_dims[0], k_dims[1], k_dims[2], k_dims[3]);
         let (bv, hkv_v, sk_v, dv) = (v_dims[0], v_dims[1], v_dims[2], v_dims[3]);
         if b != bk || b != bv {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "flash_attn: B mismatch q={b} k={bk} v={bv}",
             )).bt());
         }
         if hkv != hkv_v {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "flash_attn: Hkv mismatch k={hkv} vs v={hkv_v}",
             )).bt());
         }
         if sk != sk_v {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "flash_attn: Sk mismatch k={sk} vs v={sk_v}",
             )).bt());
         }
         if d != dk || d != dv {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "flash_attn: head_dim mismatch q={d} k={dk} v={dv}",
             )).bt());
         }
         if hkv == 0 || hq % hkv != 0 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "flash_attn: Hq={hq} must be a positive multiple of Hkv={hkv}",
             )).bt());
         }
@@ -2090,7 +2090,7 @@ impl LazyTensor {
             let a_shape = a.inner.shape();
             let a_dims = a_shape.dims();
             if a_dims != [hq] {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "flash_attn: alibi_slopes must be [Hq={hq}], got {a_dims:?}",
                 )).bt());
             }
@@ -2123,9 +2123,9 @@ impl LazyTensor {
         softmax_scale: f32,
         block_size: usize,
         softcap: Option<f32>,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         if block_size < 1 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "paged_attn: block_size must be >= 1".into(),
             ).bt());
         }
@@ -2140,74 +2140,74 @@ impl LazyTensor {
         let cl_shape = context_lens.inner.shape();
         let cl_dims = cl_shape.dims();
         if q_dims.len() != 4 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}",
             )).bt());
         }
         if kc_dims.len() != 4 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: k_cache must be rank 4 [num_blocks, block_size, Hkv, D], got {kc_dims:?}",
             )).bt());
         }
         if vc_dims.len() != 4 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: v_cache must be rank 4 [num_blocks, block_size, Hkv, D], got {vc_dims:?}",
             )).bt());
         }
         if bt_dims.len() != 2 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: block_table must be rank 2 [B, max_blocks], got {bt_dims:?}",
             )).bt());
         }
         if cl_dims.len() != 1 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: context_lens must be rank 1 [B], got {cl_dims:?}",
             )).bt());
         }
         let (b, hq, _sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
         if kc_dims[1] != block_size {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: k_cache block dim {} != block_size {block_size}", kc_dims[1],
             )).bt());
         }
         if vc_dims[1] != block_size {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: v_cache block dim {} != block_size {block_size}", vc_dims[1],
             )).bt());
         }
         let hkv = kc_dims[2];
         if vc_dims[2] != hkv {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: Hkv mismatch k_cache={hkv} vs v_cache={}", vc_dims[2],
             )).bt());
         }
         if kc_dims[3] != d || vc_dims[3] != d {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: D mismatch q={d} k={} v={}", kc_dims[3], vc_dims[3],
             )).bt());
         }
         if hkv == 0 || hq % hkv != 0 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: Hq={hq} must be a positive multiple of Hkv={hkv}",
             )).bt());
         }
         if bt_dims[0] != b {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: block_table batch dim {} != B={b}", bt_dims[0],
             )).bt());
         }
         if cl_dims[0] != b {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: context_lens len {} != B={b}", cl_dims[0],
             )).bt());
         }
-        if block_table.inner.dtype() != fuel_core_types::DType::U32 {
-            return Err(fuel_core_types::Error::Msg(format!(
+        if block_table.inner.dtype() != fuel_ir::DType::U32 {
+            return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: block_table must be U32, got {:?}", block_table.inner.dtype(),
             )).bt());
         }
-        if context_lens.inner.dtype() != fuel_core_types::DType::U32 {
-            return Err(fuel_core_types::Error::Msg(format!(
+        if context_lens.inner.dtype() != fuel_ir::DType::U32 {
+            return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: context_lens must be U32, got {:?}", context_lens.inner.dtype(),
             )).bt());
         }
@@ -2215,7 +2215,7 @@ impl LazyTensor {
             let a_shape = a.inner.shape();
             let a_dims = a_shape.dims();
             if a_dims != [hq] {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "paged_attn: alibi_slopes must be [Hq={hq}], got {a_dims:?}",
                 )).bt());
             }
@@ -2246,9 +2246,9 @@ impl LazyTensor {
         output_padding: (usize, usize),
         dilation: (usize, usize),
         groups: usize,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         if groups < 1 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose2d: groups must be >= 1, got {groups}",
             )).bt());
         }
@@ -2257,24 +2257,24 @@ impl LazyTensor {
         let w_shape = weight.inner.shape();
         let w_dims = w_shape.dims();
         if x_dims.len() != 4 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose2d: x must be rank 4 [N, Cin, H, W], got {x_dims:?}",
             )).bt());
         }
         if w_dims.len() != 4 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose2d: weight must be rank 4 [Cin, Cout/groups, Kh, Kw], got {w_dims:?}",
             )).bt());
         }
         let (cin, h_in, w_in) = (x_dims[1], x_dims[2], x_dims[3]);
         let (cin_w, cout_per_g, kh, kw) = (w_dims[0], w_dims[1], w_dims[2], w_dims[3]);
         if cin != cin_w {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose2d: x has {cin} in-channels but weight has {cin_w}",
             )).bt());
         }
         if cin % groups != 0 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose2d: Cin={cin} must be divisible by groups={groups}",
             )).bt());
         }
@@ -2283,19 +2283,19 @@ impl LazyTensor {
         let (out_pad_h, out_pad_w) = output_padding;
         let (dil_h, dil_w) = dilation;
         if stride_h < 1 || stride_w < 1 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose2d: stride must be >= 1, got ({stride_h}, {stride_w})",
             )).bt());
         }
         if dil_h < 1 || dil_w < 1 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose2d: dilation must be >= 1, got ({dil_h}, {dil_w})",
             )).bt());
         }
         let h_out = h_in.saturating_sub(1) * stride_h + dil_h * (kh - 1) + out_pad_h + 1;
         let w_out = w_in.saturating_sub(1) * stride_w + dil_w * (kw - 1) + out_pad_w + 1;
         if h_out <= 2 * pad_h || w_out <= 2 * pad_w {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose2d: padding ({pad_h}x{pad_w}) is larger than the produced output dims ({h_out}x{w_out})",
             )).bt());
         }
@@ -2329,9 +2329,9 @@ impl LazyTensor {
         output_padding: usize,
         dilation: usize,
         groups: usize,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         if groups < 1 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: groups must be >= 1, got {groups}",
             )).bt());
         }
@@ -2340,34 +2340,34 @@ impl LazyTensor {
         let w_shape = weight.inner.shape();
         let w_dims = w_shape.dims();
         if x_dims.len() != 3 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: x must be rank 3 [N, Cin, Lin], got {x_dims:?}",
             )).bt());
         }
         if w_dims.len() != 3 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: weight must be rank 3 [Cin, Cout/groups, K], got {w_dims:?}",
             )).bt());
         }
         if stride < 1 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: stride must be >= 1, got {stride}",
             )).bt());
         }
         if dilation < 1 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: dilation must be >= 1, got {dilation}",
             )).bt());
         }
         let cin = x_dims[1];
         let cin_w = w_dims[0];
         if cin != cin_w {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: x has {cin} in-channels but weight has {cin_w}",
             )).bt());
         }
         if cin % groups != 0 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: Cin={cin} must be divisible by groups={groups}",
             )).bt());
         }
@@ -2393,7 +2393,7 @@ impl LazyTensor {
     /// Append a size-1 dimension at position `dim`. Inverse of
     /// [`Self::squeeze`]. Accepts any [`Dim`] (`usize`, `D::Minus1`,
     /// etc.). Bad `dim` surfaces as a typed error at build time.
-    pub fn unsqueeze<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn unsqueeze<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index_plus_one(&shape, "unsqueeze")?;
         Ok(Self { inner: self.inner.try_unsqueeze(dim)? })
@@ -2403,20 +2403,20 @@ impl LazyTensor {
 
     /// Upper-triangular mask along the last two dims. `diagonal = 0`
     /// keeps the main diagonal and above; positive shifts higher.
-    pub fn triu(&self, diagonal: i64) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn triu(&self, diagonal: i64) -> std::result::Result<Self, fuel_ir::Error> {
         Ok(Self { inner: self.inner.triu(diagonal)? })
     }
 
     /// Lower-triangular mask along the last two dims. `tril(0)` is the
     /// canonical causal-attention mask.
-    pub fn tril(&self, diagonal: i64) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn tril(&self, diagonal: i64) -> std::result::Result<Self, fuel_ir::Error> {
         Ok(Self { inner: self.inner.tril(diagonal)? })
     }
 
     // ---- additional reductions / activations ----
 
     /// `log(softmax(self))` along the last dim, fused into one op.
-    pub fn log_softmax_last_dim(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn log_softmax_last_dim(&self) -> std::result::Result<Self, fuel_ir::Error> {
         Ok(Self { inner: self.inner.log_softmax_last_dim()? })
     }
 
@@ -2428,7 +2428,7 @@ impl LazyTensor {
     /// When `dim` resolves to the last axis, prefer
     /// [`Self::softmax_last_dim`], which dispatches to the fused
     /// `SoftmaxLastDim` op (single kernel rather than five graph nodes).
-    pub fn softmax<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn softmax<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         // Resolve once to a concrete `usize` so we can pass it to each
         // composed call (the `Dim` trait doesn't require `Copy`, so we
@@ -2450,7 +2450,7 @@ impl LazyTensor {
     /// When `dim` resolves to the last axis, prefer
     /// [`Self::log_softmax_last_dim`], which dispatches to the fused
     /// `LogSoftmaxLastDim` op.
-    pub fn log_softmax<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn log_softmax<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let axis: usize = dim.to_index(&shape, "log_softmax")?;
         let m = self.max_keepdim(axis)?;
@@ -2462,7 +2462,7 @@ impl LazyTensor {
     /// Argmin along `dim`, returning a U32 tensor with the reduced dim
     /// removed. Non-differentiable. Bad `dim` surfaces as a typed
     /// error at build time. Accepts any [`Dim`].
-    pub fn argmin_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn argmin_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "argmin_dim")?;
         Ok(Self { inner: self.inner.argmin_dim(dim) })
@@ -2476,8 +2476,8 @@ impl LazyTensor {
     pub fn masked_fill(
         &self,
         mask: &Self,
-        value: fuel_core_types::Scalar,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+        value: fuel_ir::Scalar,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         Ok(Self { inner: self.inner.masked_fill(&mask.inner, value)? })
     }
 
@@ -2486,16 +2486,16 @@ impl LazyTensor {
     /// U32 with length equal to `src.dims()[dim]`. Accepts any [`Dim`].
     /// Dim bounds / index dtype / shape / dtype-parity mismatches
     /// surface as typed errors at build time.
-    pub fn index_add<D: Dim>(&self, dim: D, indices: &Self, src: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn index_add<D: Dim>(&self, dim: D, indices: &Self, src: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "index_add")?;
-        if indices.inner.dtype() != fuel_core_types::DType::U32 {
-            return Err(fuel_core_types::Error::Msg(format!(
+        if indices.inner.dtype() != fuel_ir::DType::U32 {
+            return Err(fuel_ir::Error::Msg(format!(
                 "index_add: index must be U32, got {:?}", indices.inner.dtype(),
             )).bt());
         }
         if self.inner.dtype() != src.inner.dtype() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "index_add: base and src dtypes must match, got {:?} vs {:?}",
                 self.inner.dtype(), src.inner.dtype(),
             )).bt());
@@ -2504,7 +2504,7 @@ impl LazyTensor {
         let src_shape = src.inner.shape();
         let src_dims = src_shape.dims();
         if base_dims.len() != src_dims.len() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "index_add: base and src must have the same rank, got {} vs {}",
                 base_dims.len(), src_dims.len(),
             )).bt());
@@ -2512,12 +2512,12 @@ impl LazyTensor {
         let idx_shape = indices.inner.shape();
         let idx_dims = idx_shape.dims();
         if idx_dims.len() != 1 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "index_add: index must be rank 1, got {idx_dims:?}",
             )).bt());
         }
         if src_dims[dim] != idx_dims[0] {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "index_add: src dim {dim} ({}) must match index length ({})",
                 src_dims[dim], idx_dims[0],
             )).bt());
@@ -2529,16 +2529,16 @@ impl LazyTensor {
     /// `self` at positions given by `indices` (substituted at `dim`).
     /// Accepts any [`Dim`]. Dim bounds / index dtype / shape / dtype-
     /// parity mismatches surface as typed errors at build time.
-    pub fn scatter_add<D: Dim>(&self, dim: D, indices: &Self, src: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn scatter_add<D: Dim>(&self, dim: D, indices: &Self, src: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "scatter_add")?;
-        if indices.inner.dtype() != fuel_core_types::DType::U32 {
-            return Err(fuel_core_types::Error::Msg(format!(
+        if indices.inner.dtype() != fuel_ir::DType::U32 {
+            return Err(fuel_ir::Error::Msg(format!(
                 "scatter_add: index must be U32, got {:?}", indices.inner.dtype(),
             )).bt());
         }
         if self.inner.dtype() != src.inner.dtype() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "scatter_add: base and src dtypes must match, got {:?} vs {:?}",
                 self.inner.dtype(), src.inner.dtype(),
             )).bt());
@@ -2546,7 +2546,7 @@ impl LazyTensor {
         let idx_shape = indices.inner.shape();
         let src_shape = src.inner.shape();
         if idx_shape.dims() != src_shape.dims() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "scatter_add: index and src must have the same shape, got {:?} vs {:?}",
                 idx_shape.dims(), src_shape.dims(),
             )).bt());
@@ -2670,13 +2670,13 @@ impl LazyTensor {
     /// rank < 2 surfaces as an error rather than the panic the
     /// no-arg [`Self::transpose`] would produce. Alias for the eager
     /// `transpose_last_two`.
-    pub fn transpose_last_two(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn transpose_last_two(&self) -> std::result::Result<Self, fuel_ir::Error> {
         self.transpose()
     }
 
     /// Eager-API alias of [`Self::transpose_last_two`]. Matches PyTorch's
     /// `.t()` short form and the existing eager [`Tensor::t`] method.
-    pub fn t(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn t(&self) -> std::result::Result<Self, fuel_ir::Error> {
         self.transpose()
     }
 
@@ -2688,7 +2688,7 @@ impl LazyTensor {
         &self,
         dim1: D1,
         dim2: D2,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let dim1 = dim1.to_index(&shape, "transpose_dims")?;
         let dim2 = dim2.to_index(&shape, "transpose_dims")?;
@@ -2709,7 +2709,7 @@ impl LazyTensor {
         &self,
         start_dim: D1,
         end_dim: D2,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let rank = shape.dims().len();
         if rank == 0 {
@@ -2718,7 +2718,7 @@ impl LazyTensor {
         let start_dim = start_dim.to_index(&shape, "flatten")?;
         let end_dim = end_dim.to_index(&shape, "flatten")?;
         if start_dim > end_dim {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "flatten: start_dim={start_dim} > end_dim={end_dim}",
             )).bt());
         }
@@ -2732,12 +2732,12 @@ impl LazyTensor {
     }
 
     /// Flatten dims `[0, end_dim]` (inclusive) into one.
-    pub fn flatten_to<D: Dim>(&self, end_dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn flatten_to<D: Dim>(&self, end_dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         self.flatten(0_usize, end_dim)
     }
 
     /// Flatten dims `[start_dim, rank-1]` into one.
-    pub fn flatten_from<D: Dim>(&self, start_dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn flatten_from<D: Dim>(&self, start_dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let rank = self.shape().dims().len();
         if rank == 0 {
             return Ok(self.clone());
@@ -2746,7 +2746,7 @@ impl LazyTensor {
     }
 
     /// Flatten the tensor to rank-1 (single dim containing every element).
-    pub fn flatten_all(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn flatten_all(&self) -> std::result::Result<Self, fuel_ir::Error> {
         let rank = self.shape().dims().len();
         if rank == 0 {
             return Ok(self.clone());
@@ -2758,9 +2758,9 @@ impl LazyTensor {
     /// `unsqueeze`d at `dim` then concatenated. All inputs must have
     /// identical shape; `dim` may equal `rank` (append a new trailing
     /// dim). Accepts any [`Dim`].
-    pub fn stack<D: Dim>(args: &[&Self], dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn stack<D: Dim>(args: &[&Self], dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         if args.is_empty() {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "stack: requires at least one tensor".into(),
             ).bt());
         }
@@ -2769,7 +2769,7 @@ impl LazyTensor {
         let dim = dim.to_index_plus_one(&reference_shape, "stack")?;
         for (idx, t) in args.iter().enumerate().skip(1) {
             if t.shape().dims() != reference_dims.as_slice() {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "stack: tensor {idx} shape {:?} != reference shape {:?}",
                     t.shape().dims(), reference_dims,
                 )).bt());
@@ -2795,28 +2795,28 @@ impl LazyTensor {
 
     /// Sum along `dim`, keeping the reduced dim as size 1. Accepts any
     /// [`Dim`]. Returns Result because of the cascade from [`Self::unsqueeze`].
-    pub fn sum_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn sum_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "sum_keepdim")?;
         self.sum_dim(dim).unwrap().unsqueeze(dim)
     }
 
     /// Mean along `dim`, keeping the reduced dim as size 1.
-    pub fn mean_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn mean_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "mean_keepdim")?;
         self.mean_dim(dim).unwrap().unsqueeze(dim)
     }
 
     /// Max along `dim`, keeping the reduced dim as size 1.
-    pub fn max_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn max_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "max_keepdim")?;
         self.max_dim(dim).unwrap().unsqueeze(dim)
     }
 
     /// Min along `dim`, keeping the reduced dim as size 1.
-    pub fn min_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn min_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "min_keepdim")?;
         // sum_dim/mean_dim/max_dim/min_dim return Self today (A.8b.9 will
@@ -2829,7 +2829,7 @@ impl LazyTensor {
     /// size 1. Divides squared deviations by `n - 1` (Bessel's
     /// correction), matching the eager [`Tensor::var_keepdim`] and
     /// PyTorch defaults. `n == 1` produces NaN.
-    pub fn var_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn var_keepdim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "var_keepdim")?;
         let dims = shape.dims();
@@ -2845,7 +2845,7 @@ impl LazyTensor {
 
     /// Unbiased sample variance along `dim`, squeezing the reduced dim.
     /// See [`Self::var_keepdim`]. Accepts any [`Dim`].
-    pub fn var<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn var<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "var")?;
         self.var_keepdim(dim)?.squeeze(dim)
@@ -2882,16 +2882,16 @@ impl LazyTensor {
 
     /// Inner product of two rank-1 tensors. Composite of `mul` +
     /// `sum_all`; matches eager's [`Tensor::dot`].
-    pub fn dot(&self, rhs: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn dot(&self, rhs: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         let a = self.shape().dims().to_vec();
         let b = rhs.shape().dims().to_vec();
         if a.len() != 1 || b.len() != 1 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "dot: requires rank-1 inputs, got lhs={a:?} rhs={b:?}",
             )).bt());
         }
         if a[0] != b[0] {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "dot: length mismatch lhs={} rhs={}", a[0], b[0],
             )).bt());
         }
@@ -2901,11 +2901,11 @@ impl LazyTensor {
     /// Matrix × vector: `[m, n] · [n] -> [m]`. No broadcasting. Composite
     /// of `unsqueeze` + `matmul` + `squeeze`. Matches eager's
     /// [`Tensor::mv`].
-    pub fn mv(&self, rhs: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn mv(&self, rhs: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         let a = self.shape().dims().to_vec();
         let b = rhs.shape().dims().to_vec();
         if a.len() != 2 || b.len() != 1 || a[1] != b[0] {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "mv: shape mismatch lhs={a:?} rhs={b:?} (need [m,n] · [n])",
             )).bt());
         }
@@ -2917,14 +2917,14 @@ impl LazyTensor {
 
     /// Alias of [`Self::mv`] with a more descriptive name. Matches
     /// eager's [`Tensor::matvec`].
-    pub fn matvec(&self, rhs: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn matvec(&self, rhs: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.mv(rhs)
     }
 
     /// Broadcast-aware matmul. Lazy's [`Self::matmul`] already accepts
     /// broadcast-compatible operands; this method is exposed for
     /// signature compatibility with eager's `Tensor::broadcast_matmul`.
-    pub fn broadcast_matmul(&self, rhs: &Self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn broadcast_matmul(&self, rhs: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.matmul(rhs)
     }
 
@@ -2937,7 +2937,7 @@ impl LazyTensor {
     /// New tensor with the same shape, dtype, and graph as `self`, filled
     /// with ones. Returns Err for unsupported dtypes (anything outside
     /// F32/F64/BF16/F16/U32/I64) — matches eager `Tensor::ones_like` parity.
-    pub fn ones_like(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn ones_like(&self) -> std::result::Result<Self, fuel_ir::Error> {
         let n = self.elem_count();
         let shape = self.shape();
         match self.dtype() {
@@ -2947,7 +2947,7 @@ impl LazyTensor {
             DType::F16 => Ok(self.const_f16_like(vec![half::f16::ONE; n], shape)),
             DType::U32 => Ok(self.const_u32_like(vec![1_u32; n], shape)),
             DType::I64 => Ok(self.const_i64_like(vec![1_i64; n], shape)),
-            other => Err(fuel_core_types::Error::Msg(format!(
+            other => Err(fuel_ir::Error::Msg(format!(
                 "ones_like: unsupported dtype {other:?}",
             )).bt()),
         }
@@ -2956,7 +2956,7 @@ impl LazyTensor {
     /// New tensor with the same shape, dtype, and graph as `self`, filled
     /// with zeros. Returns Err for unsupported dtypes (anything outside
     /// F32/F64/BF16/F16/U32/I64) — matches eager `Tensor::zeros_like` parity.
-    pub fn zeros_like(&self) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn zeros_like(&self) -> std::result::Result<Self, fuel_ir::Error> {
         let n = self.elem_count();
         let shape = self.shape();
         match self.dtype() {
@@ -2966,7 +2966,7 @@ impl LazyTensor {
             DType::F16 => Ok(self.const_f16_like(vec![half::f16::ZERO; n], shape)),
             DType::U32 => Ok(self.const_u32_like(vec![0_u32; n], shape)),
             DType::I64 => Ok(self.const_i64_like(vec![0_i64; n], shape)),
-            other => Err(fuel_core_types::Error::Msg(format!(
+            other => Err(fuel_ir::Error::Msg(format!(
                 "zeros_like: unsupported dtype {other:?}",
             )).bt()),
         }
@@ -2977,7 +2977,7 @@ impl LazyTensor {
     /// dtypes outside F32/F64/BF16/F16/U32.
     pub fn ones(
         shape: impl Into<Shape>, dtype: DType, device: &Device,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = shape.into();
         let n = shape.elem_count();
         match dtype {
@@ -2986,7 +2986,7 @@ impl LazyTensor {
             DType::BF16 => Ok(Self::from_bf16(vec![half::bf16::ONE; n], shape, device)),
             DType::F16 => Ok(Self::from_f16(vec![half::f16::ONE; n], shape, device)),
             DType::U32 => Ok(Self::from_u32(vec![1_u32; n], shape, device)),
-            other => Err(fuel_core_types::Error::Msg(format!(
+            other => Err(fuel_ir::Error::Msg(format!(
                 "ones: unsupported dtype {other:?}",
             )).bt()),
         }
@@ -2997,7 +2997,7 @@ impl LazyTensor {
     /// dtypes outside F32/F64/BF16/F16/U32.
     pub fn zeros(
         shape: impl Into<Shape>, dtype: DType, device: &Device,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = shape.into();
         let n = shape.elem_count();
         match dtype {
@@ -3006,7 +3006,7 @@ impl LazyTensor {
             DType::BF16 => Ok(Self::from_bf16(vec![half::bf16::ZERO; n], shape, device)),
             DType::F16 => Ok(Self::from_f16(vec![half::f16::ZERO; n], shape, device)),
             DType::U32 => Ok(Self::from_u32(vec![0_u32; n], shape, device)),
-            other => Err(fuel_core_types::Error::Msg(format!(
+            other => Err(fuel_ir::Error::Msg(format!(
                 "zeros: unsupported dtype {other:?}",
             )).bt()),
         }
@@ -3017,18 +3017,18 @@ impl LazyTensor {
     /// outside F32/F64/BF16/F16/U32.
     pub fn full(
         shape: impl Into<Shape>,
-        value: fuel_core_types::Scalar,
+        value: fuel_ir::Scalar,
         device: &Device,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = shape.into();
         let n = shape.elem_count();
         match value {
-            fuel_core_types::Scalar::F32(v) => Ok(Self::from_f32(vec![v; n], shape, device)),
-            fuel_core_types::Scalar::F64(v) => Ok(Self::from_f64(vec![v; n], shape, device)),
-            fuel_core_types::Scalar::BF16(v) => Ok(Self::from_bf16(vec![v; n], shape, device)),
-            fuel_core_types::Scalar::F16(v) => Ok(Self::from_f16(vec![v; n], shape, device)),
-            fuel_core_types::Scalar::U32(v) => Ok(Self::from_u32(vec![v; n], shape, device)),
-            other => Err(fuel_core_types::Error::Msg(format!(
+            fuel_ir::Scalar::F32(v) => Ok(Self::from_f32(vec![v; n], shape, device)),
+            fuel_ir::Scalar::F64(v) => Ok(Self::from_f64(vec![v; n], shape, device)),
+            fuel_ir::Scalar::BF16(v) => Ok(Self::from_bf16(vec![v; n], shape, device)),
+            fuel_ir::Scalar::F16(v) => Ok(Self::from_f16(vec![v; n], shape, device)),
+            fuel_ir::Scalar::U32(v) => Ok(Self::from_u32(vec![v; n], shape, device)),
+            other => Err(fuel_ir::Error::Msg(format!(
                 "full: unsupported scalar dtype {:?}", other.dtype(),
             )).bt()),
         }
@@ -3052,7 +3052,7 @@ impl LazyTensor {
     /// of this same composite.
     pub fn split_heads(
         &self, num_heads: usize, head_dim: usize,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.inner.shape().dims().to_vec();
         debug_assert_eq!(dims.len(), 3,
             "split_heads: input must be rank 3 (B, N, embed), got {dims:?}");
@@ -3069,7 +3069,7 @@ impl LazyTensor {
     /// Inverse of [`Self::split_heads`].
     pub fn merge_heads(
         &self,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.inner.shape().dims().to_vec();
         debug_assert_eq!(dims.len(), 4,
             "merge_heads: input must be rank 4 (B, heads, N, head_dim), got {dims:?}");
@@ -3090,7 +3090,7 @@ impl LazyTensor {
     /// helper as `bias_add` — promoted here to a method.
     pub fn add_trailing_bias(
         &self, bias: std::sync::Arc<[f32]>,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let n = bias.len();
         let bias_t = self.const_f32_like(bias, Shape::from_dims(&[n]));
         self.broadcast_add(&bias_t)
@@ -3113,10 +3113,10 @@ impl LazyTensor {
         hidden: usize,
         tokens: &[u32],
         device: &crate::Device,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let seq = tokens.len();
         if seq == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "embed_tokens: tokens must be non-empty".into(),
             ).bt());
         }
@@ -3146,10 +3146,10 @@ impl LazyTensor {
         vocab_size: usize,
         hidden: usize,
         tokens: &[u32],
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let seq = tokens.len();
         if seq == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "embed_tokens_anchored: tokens must be non-empty".into(),
             ).bt());
         }
@@ -3205,11 +3205,11 @@ impl LazyTensor {
         rope_cos: &Self,
         rope_sin: &Self,
         rope_dim: usize,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.inner.shape();
         let dims = dims.dims();
         let head_dim = *dims.last().ok_or_else(|| {
-            fuel_core_types::Error::Msg(
+            fuel_ir::Error::Msg(
                 "rope_partial: receiver must have at least one dimension".into(),
             ).bt()
         })?;
@@ -3217,7 +3217,7 @@ impl LazyTensor {
             return self.rope_with_tables(rope_cos, rope_sin);
         }
         if rope_dim > head_dim {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "rope_partial: rope_dim={rope_dim} exceeds head_dim={head_dim}",
             )).bt());
         }
@@ -3235,7 +3235,7 @@ impl LazyTensor {
     /// branch every per-port `optional_bias` / `opt_bias` helper does.
     pub fn add_optional_trailing_bias(
         &self, bias: Option<&std::sync::Arc<[f32]>>,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         match bias {
             None => Ok(self.clone()),
             Some(b) => self.add_trailing_bias(std::sync::Arc::clone(b)),
@@ -3271,7 +3271,7 @@ impl LazyTensor {
     /// allocation per call.
     pub fn rms_norm_affine_with_offset(
         &self, gain: &[f32], offset: f32, eps: f64,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shifted: std::sync::Arc<[f32]> = std::sync::Arc::from(
             gain.iter().map(|g| *g + offset).collect::<Vec<_>>(),
         );
@@ -3284,7 +3284,7 @@ impl LazyTensor {
     /// receiver's graph and broadcast across all leading dims.
     pub fn rms_norm_affine(
         &self, gain: std::sync::Arc<[f32]>, eps: f64,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let hidden = gain.len();
         let normed = self.rms_norm_last_dim(eps)?;
         let gain_t = self.const_f32_like(gain, Shape::from_dims(&[hidden]));
@@ -3302,7 +3302,7 @@ impl LazyTensor {
     /// pre-projection pool inside each squeeze-excite block.
     pub fn global_avg_pool_2d(
         &self,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.inner.shape().dims().to_vec();
         debug_assert_eq!(dims.len(), 4,
             "global_avg_pool_2d: input must be rank 4 (B, C, H, W), got {dims:?}");
@@ -3323,7 +3323,7 @@ impl LazyTensor {
     /// vision ports (ResNet, EfficientNet, FastViT, etc.).
     pub fn channel_affine_4d(
         &self, gain: std::sync::Arc<[f32]>, bias: std::sync::Arc<[f32]>,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.inner.shape().dims().to_vec();
         debug_assert_eq!(dims.len(), 4,
             "channel_affine_4d: input must be rank 4 (B, C, H, W), got {dims:?}");
@@ -3393,7 +3393,7 @@ impl LazyTensor {
     /// `narrow(dim, start, len)` is `slice(dim, start, len)` —
     /// produces a view of `[start, start+len)` along `dim`. Bad input
     /// surfaces as a typed error at build time. Accepts any [`Dim`].
-    pub fn narrow<D: Dim>(&self, dim: D, start: usize, len: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn narrow<D: Dim>(&self, dim: D, start: usize, len: usize) -> std::result::Result<Self, fuel_ir::Error> {
         self.slice(dim, start, len)
     }
 
@@ -3402,11 +3402,11 @@ impl LazyTensor {
     /// chunks so every chunk's size differs by at most 1. If `dim_size
     /// < chunks`, returns `dim_size` singleton chunks instead of
     /// `chunks` chunks (matches eager / PyTorch). Accepts any [`Dim`].
-    pub fn chunk<D: Dim>(&self, chunks: usize, dim: D) -> std::result::Result<Vec<Self>, fuel_core_types::Error> {
+    pub fn chunk<D: Dim>(&self, chunks: usize, dim: D) -> std::result::Result<Vec<Self>, fuel_ir::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "chunk")?;
         if chunks == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "chunk: chunks must be > 0".into(),
             ).bt());
         }
@@ -3429,7 +3429,7 @@ impl LazyTensor {
 
     /// Sub-tensor at index `i` along dim 0. Equivalent to
     /// `self.slice(0, i, 1).unwrap().squeeze(0)`. Matches eager's [`crate::Tensor::get`].
-    pub fn get(&self, i: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn get(&self, i: usize) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.shape().dims().to_vec();
         if dims.is_empty() {
             return Ok(self.clone());
@@ -3440,7 +3440,7 @@ impl LazyTensor {
     /// Sub-tensor at index along an arbitrary dim. Equivalent to
     /// `self.slice(dim, index, 1).unwrap().squeeze(dim)`. Matches eager's
     /// [`crate::Tensor::get_on_dim`]. Accepts any [`Dim`].
-    pub fn get_on_dim<D: Dim>(&self, dim: D, index: usize) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn get_on_dim<D: Dim>(&self, dim: D, index: usize) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "get_on_dim")?;
         self.slice(dim, index, 1).unwrap().squeeze(dim)
@@ -3449,7 +3449,7 @@ impl LazyTensor {
     /// Multi-dim sum: reduce over every dim in `dims`, squeezing each.
     /// Reduces from the highest dim down so the lower dim indices stay
     /// valid throughout the reduction.
-    pub fn sum_dims<D: Dims>(&self, dims: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn sum_dims<D: Dims>(&self, dims: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let mut sorted = dims.to_indexes(&shape, "sum_dims")?;
         sorted.sort_by(|a, b| b.cmp(a));
@@ -3463,7 +3463,7 @@ impl LazyTensor {
 
     /// Multi-dim mean: reduce over every dim in `dims`, squeezing each.
     /// Reduces from the highest dim down. Accepts any [`Dims`].
-    pub fn mean_dims<D: Dims>(&self, dims: D) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn mean_dims<D: Dims>(&self, dims: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let mut sorted = dims.to_indexes(&shape, "mean_dims")?;
         sorted.sort_by(|a, b| b.cmp(a));
@@ -3479,7 +3479,7 @@ impl LazyTensor {
     /// instead of being squeezed out. Reduce-order-invariant (every
     /// keepdim preserves indices). Returns Result because of cascade
     /// from [`Self::sum_keepdim`].
-    pub fn sum_dims_keepdim(&self, dims: &[usize]) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn sum_dims_keepdim(&self, dims: &[usize]) -> std::result::Result<Self, fuel_ir::Error> {
         let mut sorted: Vec<usize> = dims.to_vec();
         sorted.sort();
         sorted.dedup();
@@ -3491,7 +3491,7 @@ impl LazyTensor {
     }
 
     /// Multi-dim mean with keepdim.
-    pub fn mean_dims_keepdim(&self, dims: &[usize]) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn mean_dims_keepdim(&self, dims: &[usize]) -> std::result::Result<Self, fuel_ir::Error> {
         let mut sorted: Vec<usize> = dims.to_vec();
         sorted.sort();
         sorted.dedup();
@@ -3506,7 +3506,7 @@ impl LazyTensor {
     /// Backed by [`rand::thread_rng`]. Returns Err for unsupported dtypes.
     pub fn rand_like(
         &self, lo: f64, up: f64,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         Self::rand(self.shape(), lo, up, self.dtype(), &Device::cpu())
     }
 
@@ -3514,7 +3514,7 @@ impl LazyTensor {
     /// Returns Err for unsupported dtypes or invalid stdev.
     pub fn randn_like(
         &self, mean: f64, stdev: f64,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         Self::randn(self.shape(), mean, stdev, self.dtype(), &Device::cpu())
     }
 
@@ -3527,7 +3527,7 @@ impl LazyTensor {
         up: f64,
         dtype: DType,
         device: &Device,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         use rand::Rng;
         let shape = shape.into();
         let n = shape.elem_count();
@@ -3553,7 +3553,7 @@ impl LazyTensor {
                     .collect();
                 Ok(Self::from_f16(data, shape, device))
             }
-            other => Err(fuel_core_types::Error::Msg(format!(
+            other => Err(fuel_ir::Error::Msg(format!(
                 "LazyTensor::rand: unsupported dtype {other:?}",
             )).bt()),
         }
@@ -3568,12 +3568,12 @@ impl LazyTensor {
         stdev: f64,
         dtype: DType,
         device: &Device,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         use rand_distr::{Distribution, Normal};
         let shape = shape.into();
         let n = shape.elem_count();
         let normal = Normal::new(mean, stdev).map_err(|e| {
-            fuel_core_types::Error::Msg(format!(
+            fuel_ir::Error::Msg(format!(
                 "LazyTensor::randn: invalid stdev={stdev}: {e}",
             )).bt()
         })?;
@@ -3599,7 +3599,7 @@ impl LazyTensor {
                     .collect();
                 Ok(Self::from_f16(data, shape, device))
             }
-            other => Err(fuel_core_types::Error::Msg(format!(
+            other => Err(fuel_ir::Error::Msg(format!(
                 "LazyTensor::randn: unsupported dtype {other:?}",
             )).bt()),
         }
@@ -3672,26 +3672,26 @@ impl LazyTensor {
         stride: usize,
         padding: usize,
         groups: usize,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let x_dims = self.shape().dims().to_vec();
         let w_dims = weight.shape().dims().to_vec();
         if x_dims.len() != 3 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv1d: x must be rank 3 [N, Cin, T], got {x_dims:?}",
             )).bt());
         }
         if w_dims.len() != 3 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "conv1d: weight must be rank 3 [Cout, Cin/groups, K], got {w_dims:?}",
             )).bt());
         }
         if groups < 1 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "conv1d: groups must be ≥ 1".into(),
             ).bt());
         }
         if stride < 1 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "conv1d: stride must be ≥ 1".into(),
             ).bt());
         }
@@ -3714,7 +3714,7 @@ impl LazyTensor {
         padding: usize,
         groups: usize,
         _algo: A,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         self.conv1d(weight, bias, stride, padding, groups)
     }
 
@@ -3732,17 +3732,17 @@ impl LazyTensor {
         kernel: (usize, usize),
         stride: (usize, usize),
         padding: (usize, usize),
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.shape().dims().to_vec();
         if dims.len() != 4 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "avg_pool2d: input must be rank 4 [N, C, H, W], got {dims:?}",
             )).bt());
         }
         let c = dims[1];
         let (kh, kw) = kernel;
         if kh == 0 || kw == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "avg_pool2d: kernel sizes must be positive".into(),
             ).bt());
         }
@@ -3764,7 +3764,7 @@ impl LazyTensor {
         &self,
         kernel: (usize, usize),
         stride: (usize, usize),
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         self.avg_pool2d(kernel, stride, (0, 0))
     }
 
@@ -3787,7 +3787,7 @@ impl LazyTensor {
         kernel: (usize, usize),
         stride: (usize, usize),
         padding: (usize, usize),
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         // Default: zero-padded (legacy behavior). For PyTorch-correct
         // semantics where padded slots must never win the max, use
         // [`Self::max_pool2d_with_pad_value`] with `f32::NEG_INFINITY`.
@@ -3805,10 +3805,10 @@ impl LazyTensor {
         stride: (usize, usize),
         padding: (usize, usize),
         pad_value: f32,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.shape().dims().to_vec();
         if dims.len() != 4 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "max_pool2d: input must be rank 4 [N, C, H, W], got {dims:?}",
             )).bt());
         }
@@ -3817,19 +3817,19 @@ impl LazyTensor {
         let (sh, sw) = stride;
         let (ph, pw) = padding;
         if kh == 0 || kw == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "max_pool2d: kernel sizes must be positive".into(),
             ).bt());
         }
         if sh == 0 || sw == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "max_pool2d: strides must be positive".into(),
             ).bt());
         }
         let h_padded_min = h + 2 * ph;
         let w_padded_min = w + 2 * pw;
         if h_padded_min < kh || w_padded_min < kw {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "max_pool2d: padded input ({h_padded_min}×{w_padded_min}) smaller than kernel ({kh}×{kw})",
             )).bt());
         }
@@ -3865,7 +3865,7 @@ impl LazyTensor {
                 });
             }
         }
-        acc.ok_or_else(|| fuel_core_types::Error::Msg(
+        acc.ok_or_else(|| fuel_ir::Error::Msg(
             "max_pool2d: empty kernel".into(),
         ).bt())
     }
@@ -3875,7 +3875,7 @@ impl LazyTensor {
         &self,
         kernel: (usize, usize),
         stride: (usize, usize),
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         self.max_pool2d(kernel, stride, (0, 0))
     }
 
@@ -3891,15 +3891,15 @@ impl LazyTensor {
     pub fn upsample_nearest2d(
         &self,
         scale: usize,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         if scale == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "upsample_nearest2d: scale must be positive".into(),
             ).bt());
         }
         let dims = self.shape().dims().to_vec();
         if dims.len() != 4 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "upsample_nearest2d: input must be rank 4 [N, C, H, W], got {dims:?}",
             )).bt());
         }
@@ -3931,15 +3931,15 @@ impl LazyTensor {
     pub fn upsample_nearest1d(
         &self,
         scale: usize,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         if scale == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "upsample_nearest1d: scale must be positive".into(),
             ).bt());
         }
         let dims = self.shape().dims().to_vec();
         if dims.len() != 3 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "upsample_nearest1d: input must be rank 3 [N, C, T], got {dims:?}",
             )).bt());
         }
@@ -3970,17 +3970,17 @@ impl LazyTensor {
         &self,
         target_h: usize,
         target_w: usize,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.shape().dims().to_vec();
         if dims.len() != 4 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "interpolate2d: input must be rank 4 [N, C, H, W], got {dims:?}",
             )).bt());
         }
         let h = dims[2];
         let w = dims[3];
         if h == 0 || w == 0 || target_h == 0 || target_w == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "interpolate2d: input + target spatial dims must be positive".into(),
             ).bt());
         }
@@ -4004,10 +4004,10 @@ impl LazyTensor {
             .map(|oj| ((oj * w) / target_w).min(w - 1) as u32)
             .collect();
         let h_idx_tensor = self.const_u32_like(
-            h_idx, fuel_core_types::Shape::from_dims(&[target_h]),
+            h_idx, fuel_ir::Shape::from_dims(&[target_h]),
         );
         let w_idx_tensor = self.const_u32_like(
-            w_idx, fuel_core_types::Shape::from_dims(&[target_w]),
+            w_idx, fuel_ir::Shape::from_dims(&[target_w]),
         );
         let after_h = self.index_select(2_usize, &h_idx_tensor)?;
         after_h.index_select(3_usize, &w_idx_tensor)
@@ -4019,21 +4019,21 @@ impl LazyTensor {
     pub fn interpolate1d(
         &self,
         target_t: usize,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.shape().dims().to_vec();
         if dims.len() != 3 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "interpolate1d: input must be rank 3 [N, C, T], got {dims:?}",
             )).bt());
         }
         let t = dims[2];
         if t == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "interpolate1d: input length must be positive".into(),
             ).bt());
         }
         if target_t % t != 0 {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "interpolate1d: target {target_t} must be integer multiple of input {t}; non-integer ratios are future work",
             )).bt());
         }
@@ -4048,7 +4048,7 @@ impl LazyTensor {
         dim: D,
         left: usize,
         right: usize,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         self.pad_with_value(dim, left, right, 0.0)
     }
 
@@ -4064,7 +4064,7 @@ impl LazyTensor {
         before: usize,
         after: usize,
         value: f32,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "pad_with_value")?;
         let rank = shape.dims().len();
@@ -4091,9 +4091,9 @@ impl LazyTensor {
     pub fn meshgrid(
         args: &[&Self],
         xy_indexing: bool,
-    ) -> std::result::Result<Vec<Self>, fuel_core_types::Error> {
+    ) -> std::result::Result<Vec<Self>, fuel_ir::Error> {
         if args.len() < 2 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "meshgrid: requires at least two rank-1 tensors".into(),
             ).bt());
         }
@@ -4106,7 +4106,7 @@ impl LazyTensor {
         for (i, t) in ordered.iter().enumerate() {
             let dims = t.shape().dims().to_vec();
             if dims.len() != 1 {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "meshgrid: input {i} must be rank 1, got shape {dims:?}",
                 )).bt());
             }
@@ -4131,7 +4131,7 @@ impl LazyTensor {
     /// Repeat the tensor along each dim `repeats[i]` times. If `repeats`
     /// has more dims than `self`, `self` is implicitly left-padded with
     /// size-1 dims to match. Matches PyTorch's `Tensor.repeat`.
-    pub fn repeat(&self, repeats: impl Into<Shape>) -> std::result::Result<Self, fuel_core_types::Error> {
+    pub fn repeat(&self, repeats: impl Into<Shape>) -> std::result::Result<Self, fuel_ir::Error> {
         let repeats = repeats.into();
         let repeats: Vec<usize> = repeats.dims().to_vec();
         let self_rank = self.shape().dims().len();
@@ -4142,7 +4142,7 @@ impl LazyTensor {
             new_shape.extend_from_slice(self.shape().dims());
             self.reshape(new_shape)?
         } else if self_rank > target_rank {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "repeat: repeats rank {target_rank} smaller than tensor rank {self_rank}",
             )).bt());
         } else {
@@ -4150,7 +4150,7 @@ impl LazyTensor {
         };
         for (axis, &n) in repeats.iter().enumerate() {
             if n == 0 {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "repeat: zero repeat count at axis {axis} not supported",
                 )).bt());
             }
@@ -4436,14 +4436,14 @@ impl WeightStorage {
         }
     }
 
-    pub fn dtype(&self) -> fuel_core_types::DType {
+    pub fn dtype(&self) -> fuel_ir::DType {
         match self {
-            Self::F32(_) => fuel_core_types::DType::F32,
-            Self::BF16(_) => fuel_core_types::DType::BF16,
+            Self::F32(_) => fuel_ir::DType::F32,
+            Self::BF16(_) => fuel_ir::DType::BF16,
             // Q4_0 surfaces as U32 at the graph level (raw bytes
             // reinterpreted). Callers that care about the "actual"
             // quantization type should match on the variant directly.
-            Self::Q4_0 { .. } => fuel_core_types::DType::U32,
+            Self::Q4_0 { .. } => fuel_ir::DType::U32,
             // WithLoRA exposes the base's dtype (the LoRA adapter is
             // always F32 but activations are typed by the base weight).
             Self::WithLoRA { base, .. } => base.dtype(),
@@ -4462,7 +4462,7 @@ impl WeightStorage {
     /// applied via `apply_linear` so the right graph structure is built.
     pub fn const_like(
         &self, anchor: &LazyTensor, shape: Shape,
-    ) -> std::result::Result<LazyTensor, fuel_core_types::Error> {
+    ) -> std::result::Result<LazyTensor, fuel_ir::Error> {
         match self {
             Self::F32(a) => Ok(anchor.const_f32_like(a.clone(), shape)),
             Self::BF16(a) => Ok(anchor.const_bf16_like(a.clone(), shape)),
@@ -4471,7 +4471,7 @@ impl WeightStorage {
                 // Arc-clone the precomputed u32 view; no byte copy.
                 Ok(anchor.const_u32_like(Arc::clone(words), Shape::from_dims(&[words.len()])))
             }
-            Self::WithLoRA { .. } => Err(fuel_core_types::Error::Msg(
+            Self::WithLoRA { .. } => Err(fuel_ir::Error::Msg(
                 "WeightStorage::WithLoRA::const_like is not supported \
                  — the base + LoRA update must be applied via \
                  apply_linear to produce the right graph structure.".into(),
@@ -4493,7 +4493,7 @@ impl WeightStorage {
         in_features: usize,
         out_features: usize,
         bias: std::sync::Arc<[f32]>,
-    ) -> std::result::Result<LazyTensor, fuel_core_types::Error> {
+    ) -> std::result::Result<LazyTensor, fuel_ir::Error> {
         debug_assert_eq!(bias.len(), out_features,
             "apply_linear_with_bias: bias len ({}) != out_features ({})",
             bias.len(), out_features);
@@ -5187,32 +5187,32 @@ impl LlamaModel {
         let cached_len = cache.cached_len;
 
         if seq == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "forward_with_kv_context: zero tokens".to_string(),
             ).bt());
         }
         if cache.n_layers() != cfg.n_layers {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "forward_with_kv_context: cache n_layers {} != model n_layers {}",
                 cache.n_layers(), cfg.n_layers,
             )).bt());
         }
         let max_seq_len = cache.max_seq_len.ok_or_else(|| {
-            fuel_core_types::Error::Msg(
+            fuel_ir::Error::Msg(
                 "forward_with_kv_context: cache was constructed via with_dims (no \
                  pre-allocated buffers); call KvCache::with_capacity(...) for the \
                  WriteSlice path".to_string(),
             ).bt()
         })?;
         if cached_len + seq > max_seq_len {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "forward_with_kv_context: cached_len ({cached_len}) + seq ({seq}) > \
                  max_seq_len ({max_seq_len})",
             )).bt());
         }
         let cache_dtype = cache.dtype.unwrap_or(DType::F32);
         if cache.n_kv_heads != cfg.n_kv_heads || cache.head_dim != cfg.head_dim {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "forward_with_kv_context: cache shape (n_kv_heads={}, head_dim={}) \
                  disagrees with model config (n_kv_heads={}, head_dim={})",
                 cache.n_kv_heads, cache.head_dim, cfg.n_kv_heads, cfg.head_dim,
@@ -5247,13 +5247,13 @@ impl LlamaModel {
             Vec::with_capacity(2 * cfg.n_layers);
         for (li, layer_weights) in weights.layers.iter().enumerate() {
             let k_arc = cache.slot_storage(li, KvSlot::K).ok_or_else(|| {
-                fuel_core_types::Error::Msg(format!(
+                fuel_ir::Error::Msg(format!(
                     "forward_with_kv_context: cache layer {li} has no K slot \
                      (with_capacity should have populated all layers)",
                 )).bt()
             })?;
             let v_arc = cache.slot_storage(li, KvSlot::V).ok_or_else(|| {
-                fuel_core_types::Error::Msg(format!(
+                fuel_ir::Error::Msg(format!(
                     "forward_with_kv_context: cache layer {li} has no V slot",
                 )).bt()
             })?;
@@ -5819,7 +5819,7 @@ impl LlamaModel {
     ) -> crate::Result<Vec<u32>> {
         let cfg = &self.config;
         if prompt_tokens.is_empty() {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "generate_streaming_with_kv_context: prompt is empty".to_string(),
             ).bt());
         }
@@ -5941,16 +5941,16 @@ impl LlamaModel {
         mut on_token: impl FnMut(u32),
     ) -> crate::Result<Vec<u32>> {
         if draft.config.vocab_size != self.config.vocab_size {
-            fuel_core_types::bail!(
+            fuel_ir::bail!(
                 "spec-decode: draft vocab {} != target vocab {}",
                 draft.config.vocab_size, self.config.vocab_size,
             );
         }
         if k == 0 {
-            fuel_core_types::bail!("spec-decode: k must be >= 1");
+            fuel_ir::bail!("spec-decode: k must be >= 1");
         }
         if prompt_tokens.is_empty() {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "generate_streaming_spec_with_kv_context: prompt is empty".to_string(),
             ).bt());
         }
@@ -6623,32 +6623,32 @@ impl PhiModel {
         let cached_len = cache.cached_len;
 
         if seq == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "PhiModel::forward_with_kv_context: zero tokens".to_string(),
             ).bt());
         }
         if cache.n_layers() != cfg.n_layers {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "PhiModel::forward_with_kv_context: cache n_layers {} != model n_layers {}",
                 cache.n_layers(), cfg.n_layers,
             )).bt());
         }
         let max_seq_len = cache.max_seq_len.ok_or_else(|| {
-            fuel_core_types::Error::Msg(
+            fuel_ir::Error::Msg(
                 "PhiModel::forward_with_kv_context: cache was constructed via with_dims \
                  (no pre-allocated buffers); call KvCache::with_capacity(...) for the \
                  WriteSlice path".to_string(),
             ).bt()
         })?;
         if cached_len + seq > max_seq_len {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "PhiModel::forward_with_kv_context: cached_len ({cached_len}) + seq \
                  ({seq}) > max_seq_len ({max_seq_len})",
             )).bt());
         }
         let cache_dtype = cache.dtype.unwrap_or(DType::F32);
         if cache.n_kv_heads != cfg.n_heads || cache.head_dim != cfg.head_dim {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "PhiModel::forward_with_kv_context: cache shape (n_kv_heads={}, \
                  head_dim={}) disagrees with model config (n_heads={}, head_dim={})",
                 cache.n_kv_heads, cache.head_dim, cfg.n_heads, cfg.head_dim,
@@ -6683,13 +6683,13 @@ impl PhiModel {
             Vec::with_capacity(2 * cfg.n_layers);
         for (li, layer_weights) in weights.layers.iter().enumerate() {
             let k_arc = cache.slot_storage(li, KvSlot::K).ok_or_else(|| {
-                fuel_core_types::Error::Msg(format!(
+                fuel_ir::Error::Msg(format!(
                     "PhiModel::forward_with_kv_context: cache layer {li} has no K slot \
                      (with_capacity should have populated all layers)",
                 )).bt()
             })?;
             let v_arc = cache.slot_storage(li, KvSlot::V).ok_or_else(|| {
-                fuel_core_types::Error::Msg(format!(
+                fuel_ir::Error::Msg(format!(
                     "PhiModel::forward_with_kv_context: cache layer {li} has no V slot",
                 )).bt()
             })?;
@@ -6774,7 +6774,7 @@ impl PhiModel {
     ) -> crate::Result<Vec<u32>> {
         let cfg = &self.config;
         if prompt_tokens.is_empty() {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "PhiModel::generate_streaming_with_kv_context: prompt is empty".to_string(),
             ).bt());
         }
@@ -9380,7 +9380,7 @@ mod phase_a1_wrapper_tests {
         let probe = t.const_f32_like(vec![0.0, 1.0, 1.0, 0.0], vec![2, 2]);
         let threshold = t.const_f32_like(vec![0.5; 4], vec![2, 2]);
         let mask = probe.gt(&threshold).unwrap(); // [0, 1, 1, 0] as U8
-        let out = t.masked_fill(&mask, fuel_core_types::Scalar::F32(-9.0)).unwrap();
+        let out = t.masked_fill(&mask, fuel_ir::Scalar::F32(-9.0)).unwrap();
         assert_eq!(out.realize_f32(), vec![1.0, -9.0, -9.0, 4.0]);
     }
 
@@ -10169,7 +10169,7 @@ mod phase_a5_factory_tests {
     #[test]
     fn full_with_f32_scalar() {
         let t = LazyTensor::full(
-            vec![5], fuel_core_types::Scalar::F32(2.5), &Device::cpu(),
+            vec![5], fuel_ir::Scalar::F32(2.5), &Device::cpu(),
         ).unwrap();
         assert_eq!(t.realize_f32(), vec![2.5; 5]);
     }
@@ -10835,7 +10835,7 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn dim_arg_methods_accept_negative_indexing() {
-        use fuel_core_types::D;
+        use fuel_ir::D;
         let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
         // squeeze, sum_dim, mean_dim, etc. all accept D::Minus1 now.
         let sum_last = t.shape().dims().to_vec(); // just demonstrate compile
@@ -10848,7 +10848,7 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn unsqueeze_accepts_dim_trait() {
-        use fuel_core_types::D;
+        use fuel_ir::D;
         let t = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
         // Append a new last dim via D::Minus1 (rank-aware negative indexing).
         let out = t.unsqueeze(D::Minus1).unwrap();

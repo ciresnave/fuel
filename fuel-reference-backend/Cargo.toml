@@ -10,7 +10,7 @@
 
 [dependencies]
     fuel-conv       = { workspace = true }
-    fuel-core-types = { workspace = true }
+    fuel-ir = { workspace = true }
     fuel-graph      = { workspace = true }
     half            = { workspace = true }
     libm            = { workspace = true }

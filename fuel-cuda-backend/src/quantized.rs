@@ -1,7 +1,7 @@
 ﻿use crate::WrapErr;
 use crate::{builder_arg as barg, CudaDevice, CudaStorage, Result};
-use fuel_core_types::dyn_backend::DynBackendStorage;
-use fuel_core_types::quantized::{DynQuantizedStorage, GgmlDType, QuantizedDeviceKernels};
+use fuel_ir::dyn_backend::DynBackendStorage;
+use fuel_ir::quantized::{DynQuantizedStorage, GgmlDType, QuantizedDeviceKernels};
 use fuel_quantized::GgmlType;
 use half::f16;
 use std::any::Any;
@@ -77,7 +77,7 @@ fn pick_dequant(dtype: GgmlDType) -> Result<DequantRun> {
         GgmlDType::Q5K => sys::baracuda_kernels_dequantize_q5_K_run,
         GgmlDType::Q6K => sys::baracuda_kernels_dequantize_q6_K_run,
         GgmlDType::Q8K => sys::baracuda_kernels_dequantize_q8_K_run,
-        other => fuel_core_types::bail!("baracuda dequant: unsupported dtype {other:?}"),
+        other => fuel_ir::bail!("baracuda dequant: unsupported dtype {other:?}"),
     })
 }
 
@@ -155,7 +155,7 @@ fn pick_mmvq_batched(dtype: GgmlDType) -> Result<MmvqBatchedRun> {
         GgmlDType::Q4K => sys::baracuda_kernels_mmvq_q4_K_batched_run,
         GgmlDType::Q5K => sys::baracuda_kernels_mmvq_q5_K_batched_run,
         GgmlDType::Q6K => sys::baracuda_kernels_mmvq_q6_K_batched_run,
-        other => fuel_core_types::bail!("baracuda batched MMVQ: unsupported dtype {other:?}"),
+        other => fuel_ir::bail!("baracuda batched MMVQ: unsupported dtype {other:?}"),
     })
 }
 
@@ -176,7 +176,7 @@ fn baracuda_batched_mmvq(
     dev: &CudaDevice,
 ) -> Result<CudaStorage> {
     if requires_min_ncols_64(dtype) && n_cols < 64 {
-        fuel_core_types::bail!(
+        fuel_ir::bail!(
             "baracuda batched MMVQ: dtype {dtype:?} requires n_cols ≥ 64 (got {n_cols}); type-0/1 quants have implicit ncols min in batched mode"
         )
     }
@@ -245,13 +245,13 @@ fn mul_mat_vec_via_q8_1(
 ) -> Result<CudaStorage> {
     let data_elems = data.len / dtype.type_size() * dtype.block_size();
     if data_elems < ncols * nrows {
-        fuel_core_types::bail!("unexpected data size {}, ncols {ncols} {nrows}", data_elems)
+        fuel_ir::bail!("unexpected data size {}, ncols {ncols} {nrows}", data_elems)
     }
     if y.len() != ncols * b_size {
-        fuel_core_types::bail!("unexpected y size {}, ncols {ncols} {nrows}", y.len())
+        fuel_ir::bail!("unexpected y size {}, ncols {ncols} {nrows}", y.len())
     }
     if b_size == 0 {
-        fuel_core_types::bail!("bsize must be > 0, got {b_size}")
+        fuel_ir::bail!("bsize must be > 0, got {b_size}")
     }
     // Baracuda alpha.37 batched MMVQ: takes fp32 activations directly,
     // no Q8_1 staging quantize. n_experts=1 + identity-permutation token
@@ -273,13 +273,13 @@ fn mul_mat_via_q8_1(
 ) -> Result<CudaStorage> {
     let data_elems = data.len / dtype.type_size() * dtype.block_size();
     if data_elems < x_rows * x_cols {
-        fuel_core_types::bail!("unexpected lhs size {}, {x_rows} {x_cols}", data_elems)
+        fuel_ir::bail!("unexpected lhs size {}, {x_rows} {x_cols}", data_elems)
     }
     if y.len() != y_rows * y_cols {
-        fuel_core_types::bail!("unexpected y size {}, {y_rows} {y_cols}", y.len())
+        fuel_ir::bail!("unexpected y size {}, {y_rows} {y_cols}", y.len())
     }
     if x_cols != y_rows {
-        fuel_core_types::bail!("unexpected x/y size {x_rows} {x_cols} {y_rows} {y_cols}")
+        fuel_ir::bail!("unexpected x/y size {x_rows} {x_cols} {y_rows} {y_cols}")
     }
     // Baracuda alpha.37 batched MMVQ subsumes both the bsize=1..8 vector
     // case (`mul_mat_vec_via_q8_1`) and the matrix-matrix case here. The
@@ -376,7 +376,7 @@ impl QCudaStorage {
         }
 
         self.device
-            .storage_from_cpu_storage(&fuel_core_types::HostBuffer::F32(out))
+            .storage_from_cpu_storage(&fuel_ir::HostBuffer::F32(out))
     }
 
     pub fn dequantize_f16(&self, elem_count: usize) -> Result<CudaStorage> {
@@ -413,7 +413,7 @@ impl QCudaStorage {
     pub fn quantize(&mut self, src: &CudaStorage) -> Result<()> {
         let src_vec = match &src.slice {
             crate::CudaStorageSlice::F32(data) => self.device.clone_dtoh(&data.as_slice())?,
-            _ => fuel_core_types::bail!("only f32 can be quantized"),
+            _ => fuel_ir::bail!("only f32 can be quantized"),
         };
         self.quantize_from_f32(&src_vec, None)
     }
@@ -426,21 +426,21 @@ impl QCudaStorage {
     ) -> Result<()> {
         let src_vec = match &src.slice {
             crate::CudaStorageSlice::F32(data) => self.device.clone_dtoh(&data.as_slice())?,
-            _ => fuel_core_types::bail!("only f32 can be quantized"),
+            _ => fuel_ir::bail!("only f32 can be quantized"),
         };
         self.quantize_from_f32(&src_vec, Some((imatrix_weights, n_per_row)))
     }
 
     pub fn quantize_imatrix_onto(
         &mut self,
-        src: &fuel_core_types::HostBuffer,
+        src: &fuel_ir::HostBuffer,
         imatrix_weights: &[f32],
         n_per_row: usize,
     ) -> Result<()> {
         self.quantize_from_f32(src.as_slice::<f32>()?, Some((imatrix_weights, n_per_row)))
     }
 
-    pub fn quantize_onto(&mut self, src: &fuel_core_types::HostBuffer) -> Result<()> {
+    pub fn quantize_onto(&mut self, src: &fuel_ir::HostBuffer) -> Result<()> {
         self.quantize_from_f32(src.as_slice::<f32>()?, None)
     }
 
@@ -494,10 +494,10 @@ impl QCudaStorage {
         let (b_size, k) = match rhs_l.shape().dims() {
             [b, m, k] => (b * m, *k),
             [b, k] => (*b, *k),
-            _ => fuel_core_types::bail!("unexpected rhs shape in dmmv {:?}", rhs_l.shape()),
+            _ => fuel_ir::bail!("unexpected rhs shape in dmmv {:?}", rhs_l.shape()),
         };
         if ncols != k {
-            fuel_core_types::bail!("mismatch on matmul dim {self_shape:?} {:?}", rhs_l.shape())
+            fuel_ir::bail!("mismatch on matmul dim {self_shape:?} {:?}", rhs_l.shape())
         }
 
         let out = if FORCE_DMMV.load(std::sync::atomic::Ordering::Relaxed) {
@@ -549,10 +549,10 @@ impl QCudaStorage {
         let (b, m, k2) = match layout.shape().dims() {
             &[b, m, k2] => (b, m, k2),
             &[m, k2] => (1, m, k2),
-            s => fuel_core_types::bail!("unexpected shape for input {s:?}"),
+            s => fuel_ir::bail!("unexpected shape for input {s:?}"),
         };
         if k2 != k {
-            fuel_core_types::bail!("mismatch on matmul dim {self_shape:?} {:?}", layout.shape())
+            fuel_ir::bail!("mismatch on matmul dim {self_shape:?} {:?}", layout.shape())
         }
 
         let out = if FORCE_DMMV.load(std::sync::atomic::Ordering::Relaxed) {
@@ -690,7 +690,7 @@ impl DynQuantizedStorage for QCudaStorage {
     fn as_any(&self) -> &dyn Any {
         self
     }
-    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_core_types::dyn_backend::DynBackendDevice> {
+    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_ir::dyn_backend::DynBackendDevice> {
         std::sync::Arc::new(self.device.clone())
     }
 }

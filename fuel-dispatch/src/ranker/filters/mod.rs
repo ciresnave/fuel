@@ -55,9 +55,9 @@ mod tests {
     use crate::ranker::candidate::Candidate;
     use crate::ranker::chain::apply_filter_chain;
     use crate::ranker::filter::FilterContext;
-    use fuel_core_types::dispatch::OpKind;
-    use fuel_core_types::probe::BackendId;
-    use fuel_core_types::{DType, DeviceLocation, Layout, Result, Shape};
+    use fuel_ir::dispatch::OpKind;
+    use fuel_ir::probe::BackendId;
+    use fuel_ir::{DType, DeviceLocation, Layout, Result, Shape};
     use fuel_memory::Storage;
     use std::sync::{Arc, RwLock};
 
@@ -141,7 +141,7 @@ mod tests {
         );
         let err = apply_filter_chain(&mut set, &chain, &ctx()).unwrap_err();
         match err {
-            fuel_core_types::Error::FilterRejected { filter, .. } => {
+            fuel_ir::Error::FilterRejected { filter, .. } => {
                 assert_eq!(filter, "precision-floor");
             }
             other => panic!("expected FilterRejected, got {other:?}"),

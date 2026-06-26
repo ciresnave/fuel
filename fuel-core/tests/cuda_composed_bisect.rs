@@ -10,7 +10,7 @@
 #![cfg(feature = "cuda")]
 
 use fuel_core::lazy::LazyTensor;
-use fuel_core_types::{probe::BackendId, Shape};
+use fuel_ir::{probe::BackendId, Shape};
 use std::sync::Arc;
 
 fn gen_lcg(seed: u32, n: usize) -> Vec<f32> {

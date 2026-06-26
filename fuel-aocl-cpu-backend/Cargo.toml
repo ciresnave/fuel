@@ -12,7 +12,7 @@
     aocl-blas              = { workspace = true }
     aocl-types             = { workspace = true }
     fuel-conv              = { workspace = true }
-    fuel-core-types        = { workspace = true }
+    fuel-ir        = { workspace = true }
     fuel-cpu-backend       = { workspace = true }
     fuel-dispatch          = { workspace = true }
     fuel-memory            = { workspace = true }

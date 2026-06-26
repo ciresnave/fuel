@@ -45,7 +45,7 @@
 
 use crate::lazy::{LlamaConfig, LlamaModel, LlamaWeights, LazyTensor};
 use crate::{Error, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::f64::consts::PI;
 use std::sync::Arc;
 

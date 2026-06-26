@@ -28,9 +28,9 @@
 
 use std::collections::HashMap;
 
-use fuel_core_types::dispatch::{OpKind, SizeClass};
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, DeviceLocation, Error, Result, Shape};
+use fuel_ir::dispatch::{OpKind, SizeClass};
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, DeviceLocation, Error, Result, Shape};
 use fuel_graph::{Graph, NodeId};
 
 use smallvec::SmallVec;
@@ -1114,7 +1114,7 @@ fn build_node_draft(
     }
 
     // Apply the default filter chain.
-    let input_layouts: Vec<fuel_core_types::Layout> = node
+    let input_layouts: Vec<fuel_ir::Layout> = node
         .inputs
         .iter()
         .map(|&input_id| graph.layout(input_id))
@@ -1355,10 +1355,10 @@ mod tests {
     use super::*;
     use crate::fused::PrecisionGuarantee;
     use crate::kernel::{unknown_cost, KernelCaps, OpParams};
-    use fuel_core_types::backend::{
+    use fuel_ir::backend::{
         BackendCapabilities, SubstrateClass, TransferPath,
     };
-    use fuel_core_types::{DType, Layout, Result as FuelResult, Shape, StrideVec};
+    use fuel_ir::{DType, Layout, Result as FuelResult, Shape, StrideVec};
     use fuel_graph::{topo_order, Node, Op};
     use fuel_memory::Storage;
     use smallvec::smallvec;
@@ -1726,7 +1726,7 @@ mod tests {
         // Layer-2 (Judge) measured the opposite: Aocl 20 ns, CPU 5000 ns.
         // After compile_plan's cost composition + rank, Aocl wins.
         use crate::ranker::HashMapJudge;
-        use fuel_core_types::dispatch::SizeClass;
+        use fuel_ir::dispatch::SizeClass;
 
         fn cpu_layer1(
             _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
@@ -1790,7 +1790,7 @@ mod tests {
     /// class = first input's element count.
     #[test]
     fn compile_plan_stamps_decision_context() {
-        use fuel_core_types::dispatch::SizeClass;
+        use fuel_ir::dispatch::SizeClass;
 
         let mut table = KernelBindingTable::new();
         register_add_f32(

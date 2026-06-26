@@ -20,7 +20,7 @@
 
 use crate::byte_storage::CpuStorageBytes;
 use crate::chassis::reduction::{reduce, reduce_to, Max, Mean, Min, Sum};
-use fuel_core_types::{Error, Layout, Result};
+use fuel_ir::{Error, Layout, Result};
 
 /// Verify two byte buffers have matching lengths (used by kernels
 /// outside the unary/binary chassis families — softmax, affine,
@@ -10158,7 +10158,7 @@ mod tests {
     #[test]
     fn contiguize_cpu_no_op_on_contiguous_input() {
         let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]);
-        let layout = Layout::contiguous(fuel_core_types::Shape::from_dims(&[2, 2]));
+        let layout = Layout::contiguous(fuel_ir::Shape::from_dims(&[2, 2]));
         let out = contiguize_cpu(&input, &layout, 4).expect("contiguize");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
     }
@@ -10169,8 +10169,8 @@ mod tests {
         let input = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
         // Transposed view: shape [3, 2], strides [1, 3]
         let layout = Layout::new(
-            fuel_core_types::Shape::from_dims(&[3, 2]),
-            fuel_core_types::StrideVec::from_slice(&[1_isize, 3]),
+            fuel_ir::Shape::from_dims(&[3, 2]),
+            fuel_ir::StrideVec::from_slice(&[1_isize, 3]),
             0,
         );
         let out = contiguize_cpu(&input, &layout, 4).expect("contiguize");
@@ -10183,8 +10183,8 @@ mod tests {
         // shape [3] broadcast to [2, 3] — leading dim has stride 0
         let input = CpuStorageBytes::from_slice(&[10.0_f32, 20.0, 30.0]);
         let layout = Layout::new(
-            fuel_core_types::Shape::from_dims(&[2, 3]),
-            fuel_core_types::StrideVec::from_slice(&[0_isize, 1]),
+            fuel_ir::Shape::from_dims(&[2, 3]),
+            fuel_ir::StrideVec::from_slice(&[0_isize, 1]),
             0,
         );
         let out = contiguize_cpu(&input, &layout, 4).expect("contiguize");
@@ -10199,8 +10199,8 @@ mod tests {
         // input has 5 elements; layout views the last 3 with offset 2
         let input = CpuStorageBytes::from_slice(&[100.0_f32, 200.0, 1.0, 2.0, 3.0]);
         let layout = Layout::new(
-            fuel_core_types::Shape::from_dims(&[3]),
-            fuel_core_types::StrideVec::from_slice(&[1_isize]),
+            fuel_ir::Shape::from_dims(&[3]),
+            fuel_ir::StrideVec::from_slice(&[1_isize]),
             2,
         );
         let out = contiguize_cpu(&input, &layout, 4).expect("contiguize");

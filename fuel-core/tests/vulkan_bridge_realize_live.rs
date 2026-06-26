@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use fuel_core::lazy::LazyTensor;
-use fuel_core_types::{DType, Shape};
+use fuel_ir::{DType, Shape};
 use fuel_vulkan_backend::VulkanBackend;
 
 fn backend_or_skip() -> Option<Arc<VulkanBackend>> {

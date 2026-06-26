@@ -63,7 +63,7 @@
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_whisper::{conv1d_k3_s1_p1, conv1d_k3_s2_p1};
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 // ---- Configs ---------------------------------------------------------------

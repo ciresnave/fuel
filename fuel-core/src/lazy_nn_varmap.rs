@@ -155,7 +155,7 @@ impl LazyVarMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
 
     #[test]
     fn insert_and_get_roundtrips() -> Result<()> {

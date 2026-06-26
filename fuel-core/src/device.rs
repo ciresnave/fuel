@@ -11,7 +11,7 @@ use crate::{HostBuffer, DType, Result, Shape, Storage, WithDType};
 use fuel_cpu_backend::dyn_impl::CpuBackendDevice;
 use std::sync::Arc;
 
-pub use fuel_core_types::DeviceLocation;
+pub use fuel_ir::DeviceLocation;
 
 /// A device on which tensors can be created and computations performed.
 ///
