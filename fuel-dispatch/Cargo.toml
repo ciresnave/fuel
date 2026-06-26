@@ -11,6 +11,7 @@ version.workspace = true
 [dependencies]
 fuel-ir = { workspace = true }
 fuel-cpu-backend = { workspace = true }
+fuel-hardware = { workspace = true }
 fuel-cuda-backend = { workspace = true, optional = true }
 fuel-graph = { workspace = true }
 fuel-memory = { workspace = true }
@@ -35,6 +36,6 @@ default = []
 # Per-backend dispatch wrappers. Feature flags propagate the same shape
 # fuel-memory used: each GPU backend's registration entry-point is
 # gated behind its feature.
-cuda = ["dep:fuel-cuda-backend", "fuel-memory/cuda"]
-vulkan = ["dep:fuel-vulkan-backend", "fuel-memory/vulkan"]
+cuda = ["dep:fuel-cuda-backend", "fuel-memory/cuda", "fuel-hardware/cuda"]
+vulkan = ["dep:fuel-vulkan-backend", "fuel-memory/vulkan", "fuel-hardware/vulkan"]
 metal = ["dep:fuel-metal-backend", "fuel-memory/metal"]

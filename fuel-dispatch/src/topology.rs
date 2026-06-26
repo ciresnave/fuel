@@ -8,11 +8,13 @@
 //!
 //! # Design summary
 //!
-//! - **TDP-1** SystemTopology lives in `fuel-core::topology`. Same
-//!   dependency height as `fuel-core::dispatch` (the Judge consumer) —
-//!   needs `ProbeReport` (fuel-core), `global_bindings()` +
-//!   `global_registry()` (fuel-storage), `DeviceLocation` /
-//!   `BackendId` / `SubstrateClass` (fuel-core-types).
+//! - **TDP-1** SystemTopology lives in `fuel-dispatch::topology` (moved here
+//!   from `fuel-core` in retirement B0.2c — it reads the dispatch overlay
+//!   `global_bindings()` / `global_registry()` / `topology_generation()`, all
+//!   of which are fuel-dispatch's own, and the discovery primitives
+//!   `ProbeReport` / `TransferCalibration` from `fuel-hardware`). It fuses the
+//!   hardware-discovery view with the dispatch overlay; vocabulary
+//!   (`DeviceLocation` / `BackendId` / `SubstrateClass`) comes from `fuel-ir`.
 //! - **TDP-2** Substrate is encoded as a new
 //!   [`fuel_ir::backend::SubstrateClass`] field on
 //!   `BackendCapabilities`. Backends self-declare. SystemTopology
@@ -32,7 +34,7 @@
 //!   [`TransferCalibration`] with conservative per-path-class
 //!   fallbacks for unprobed paths.
 //! - **TDP-5** Lifecycle uses a generation counter
-//!   ([`fuel_dispatch::dispatch::topology_generation`]) plus an
+//!   ([`crate::dispatch::topology_generation`]) plus an
 //!   `RwLock<Option<Arc<…>>>`. `current()` rebuilds atomically when
 //!   the counter advances; otherwise it returns the cached `Arc`.
 //! - **TDP-6** The build re-reads the generation counter *inside*
@@ -51,10 +53,10 @@ use fuel_ir::backend::{BackendCapabilities, SubstrateClass, TransferPath};
 use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, DeviceLocation};
-use fuel_dispatch::dispatch::{global_bindings, global_registry, topology_generation};
+use crate::dispatch::{global_bindings, global_registry, topology_generation};
 
-use crate::probe::ProbeReport;
-use crate::transfer_cost::{TransferCalibration, TransferEstimate};
+use fuel_hardware::probe::ProbeReport;
+use fuel_hardware::transfer_cost::{TransferCalibration, TransferEstimate};
 
 /// Process-wide cached topology. Holds at most one `Arc<SystemTopology>`
 /// at a time; replaced atomically when the generation counter advances.
@@ -123,7 +125,7 @@ impl SystemTopology {
     /// Return a snapshot of the current topology. Cheap when nothing
     /// has changed since the last call (one atomic load + `Arc::clone`);
     /// rebuilds + atomically swaps when the
-    /// [generation counter](fuel_dispatch::dispatch::topology_generation)
+    /// [generation counter](crate::dispatch::topology_generation)
     /// has advanced.
     ///
     /// The returned `Arc` lives independent of the cache lock — a
@@ -165,7 +167,7 @@ impl SystemTopology {
     /// `register_backend_capabilities` / `extend_global_bindings`
     /// helpers in fuel-storage.
     pub fn refresh() {
-        fuel_dispatch::dispatch::bump_topology_generation();
+        crate::dispatch::bump_topology_generation();
     }
 
     /// Generation counter this snapshot was built against. Two
@@ -349,7 +351,7 @@ impl SystemTopology {
     }
 
     /// Per-backend [`BackendCapabilities`] snapshot if the backend has
-    /// registered with [`fuel_dispatch::dispatch::register_backend_capabilities`].
+    /// registered with [`crate::dispatch::register_backend_capabilities`].
     /// Backends that only registered kernels into the binding table
     /// (most production paths today) return `None`. The picker should
     /// not assume capabilities are present; it can fall back to the
@@ -569,18 +571,16 @@ impl SystemTopology {
 }
 
 /// Planner Stage-2 adapter: `SystemTopology` IS the production
-/// [`fuel_dispatch::ranker::TransferEstimator`]. The optimizer
-/// ranker lives in `fuel-dispatch`, which must not depend on
-/// `fuel-core` (dependency direction), so `compile_plan` consumes
-/// transfer pricing through the trait — threaded via
-/// `PlanOptions::with_transfer_estimator` in
-/// `pipelined_bridge::build_optimized_graph` — while the numbers
-/// come from the Stage-1 [`TransferCalibration`] behind
+/// [`crate::ranker::TransferEstimator`]. `compile_plan` consumes transfer
+/// pricing through the trait — threaded via `PlanOptions::with_transfer_estimator`
+/// in `pipelined_bridge::build_optimized_graph` — rather than naming
+/// `SystemTopology` directly, so the ranker stays decoupled from the concrete
+/// topology source; the numbers come from the Stage-1 [`TransferCalibration`] behind
 /// [`SystemTopology::estimate_transfer_ns`] (probed lazily once per
 /// generation; conservative per-path-class fallbacks otherwise).
 /// Same-device queries short-circuit to zero WITHOUT touching the
 /// calibration, so CPU-only plans never trigger a probe.
-impl fuel_dispatch::ranker::TransferEstimator for SystemTopology {
+impl crate::ranker::TransferEstimator for SystemTopology {
     fn estimate_transfer_ns(
         &self,
         src: DeviceLocation,
@@ -714,7 +714,7 @@ mod tests {
         let est = topology.transfer_estimate(DeviceLocation::Cpu, phantom);
         assert_eq!(
             est,
-            crate::transfer_cost::TransferEstimate::fallback_for(TransferPath::HostStaging),
+            fuel_hardware::transfer_cost::TransferEstimate::fallback_for(TransferPath::HostStaging),
             "unprobed path must price via the per-path-class fallback",
         );
         let small = topology.estimate_transfer_ns(DeviceLocation::Cpu, phantom, 64 * 1024);
@@ -843,7 +843,7 @@ mod tests {
     /// advance, then assert Arc identity over that window.
     #[test]
     fn no_change_reuses_arc() {
-        use fuel_dispatch::dispatch::topology_generation;
+        use crate::dispatch::topology_generation;
         for _ in 0..32 {
             let gen_before = topology_generation();
             let a = SystemTopology::current();
