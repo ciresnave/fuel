@@ -54,6 +54,7 @@ pub mod pipelined;
 pub mod plan;
 pub mod ranker;
 pub mod residency;
+pub mod topology;
 pub mod vulkan_dispatch;
 
 pub use compiled::{compile_node, execute_compiled, CompiledNode};

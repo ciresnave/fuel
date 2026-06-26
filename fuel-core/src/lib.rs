@@ -251,7 +251,10 @@ pub mod npy;
 /// re-exported here so `fuel_core::probe` / `crate::probe` callers are unchanged.
 pub use fuel_hardware::probe;
 pub mod scheduling;
-pub mod topology;
+/// `SystemTopology` moved to `fuel-dispatch::topology` (retirement B0.2c — it fuses
+/// the dispatch overlay with fuel-hardware discovery); re-exported so
+/// `crate::topology` / `fuel_core::topology` callers are unchanged.
+pub use fuel_dispatch::topology;
 /// Transfer (bandwidth) calibration moved to `fuel-hardware` (retirement B0.2b);
 /// re-exported so `crate::transfer_cost` / `fuel_core::transfer_cost` is unchanged.
 pub use fuel_hardware::transfer_cost;
