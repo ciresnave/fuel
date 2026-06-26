@@ -84,21 +84,55 @@ This is why B0 is sequenced (below), not one big-bang.
   7. Verify: `cargo check -p fuel-hardware -p fuel-dispatch -p fuel-core`; topology/transfer_cost/
      probe unit tests at the new home; live CUDA/Vulkan calibration tests one suite at a time.
 
-- **B0.3 — Cut a backend-contract crate** (e.g. `fuel-backend-contract`): move `dyn_backend`
-  (DynBackendStorage/DynBackendDevice), `backend.rs` (BackendStorage/BackendRuntime/
-  BackendCapabilities/HostStorage/FitStatus), the quantized `Dyn*` traits, `inplace_op` OUT of
-  fuel-ir into it. Every backend depends on it (so it sits below the backends, above fuel-ir).
-  Break the `error.rs`→`TransferPath` leak first (or keep TransferPath in fuel-ir, which is fine —
-  it's vocabulary). Heaviest verify (every backend).
+### B0.3–B0.5 cycle-free plan (from the 2026-06-26 sequencing investigation)
 
-- **B0.4 — Break the `WithDType` ↔ `cpu/`/`cpu_storage` weld.** Redesign `WithDType` to drop the
-  `VecOps` supertrait bound + the `HostBuffer`/`HostBufferRef` method signatures (move those
-  concerns to a separate trait in fuel-memory or the backend-contract crate). Touches every
-  backend's `WithDType` impl. Prerequisite for B0.5 moving cpu/cpu_storage out of fuel-ir.
+The fuel-ir grab-bag has **two dependency cycles** that must be broken before a clean topological
+split: `{dyn_backend ↔ quantized}` (contract SCC — `dyn_backend::as_quantized_kernels` names
+`quantized`; `quantized` traits are built on `dyn_backend`) and `{dtype ↔ cpu_storage}` (the
+WithDType weld — `WithDType` has `HostBuffer`/`HostBufferRef` method sigs from `cpu_storage`;
+`cpu_storage` needs `WithDType`). `cpu/mod.rs` + `cpu/kernels.rs` (VecOps SIMD) are pure leaves.
+Layering apex→base: `storage` → `inplace_op` → `{dyn_backend↔quantized}` + `backend` → `{dtype↔cpu_storage}` → `cpu/`.
 
-- **B0.5 — Relocate storage-impl → fuel-memory.** `storage.rs` (old `Storage` + `OutputView` —
-  merge with fuel-memory's byte-Storage; this is the Storage-unification, itself a sub-program),
-  `cpu_storage` (HostBuffer), `cpu/` (VecOps SIMD), `quantized` buffer impl. Now feasible after B0.4.
+- **B0.4 — Break the WithDType weld (the safe, contained, UNBLOCKING next step; no crate moves).**
+  Backends *consume* `WithDType`, they don't impl it, so this is small: split `WithDType`
+  (dtype.rs:167-193) into a **pure-vocab core** (keeps `DTYPE`/`from_f64`/`to_f64`/`to_scalar`)
+  + a new **`HostDType: WithDType`** extension carrying the 5 host-buffer methods (`cpu_storage_ref`
+  / `to_cpu_storage_owned` / `to_cpu_storage` / `cpu_storage_as_slice` / `cpu_storage_data`,
+  dtype.rs:184-192) — define `HostDType` in the `HostBuffer`-owning module (cpu_storage.rs for now).
+  DROP the `+ crate::cpu::kernels::VecOps` supertrait (dtype.rs:177); relocate the obligation by
+  adding an explicit `T: VecOps` bound at the ~5 fuel-cpu-backend sites that call `T::vec_dot`/
+  `T::vec_reduce_*` (ops.rs:223/1041/1270/1353, conv2d.rs:348). Split the 2 `impl` macros
+  (`with_dtype!` dtype.rs:197 ×11 types; `dummy_with_dtype!` dummy_dtype.rs:31 ×4) into vocab-half
+  (stays) + host-half (moves with HostBuffer). Add `+ HostDType` at the 2 GPU call sites that use
+  the host methods (fuel-cuda-backend/src/device.rs:708, **fuel-metal-backend/src/storage.rs:2035**).
+  Result: `dtype` becomes a clean vocab leaf. **CAVEAT: the metal site can't be built on Windows —
+  make the edit mechanically (precise site above) and verify cpu + cuda; metal verify needs a mac.**
+
+- **B0.3 — Cut the `fuel-backend-contract` crate (above fuel-ir, below the backends).** Move the
+  **11 contract-traits together** (they cross-reference, can't be split per-file): `DynBackendStorage`,
+  `DynBackendDevice`, `BackendStorage`, `BackendRuntime`, `HostStorage`, `BackendCapabilityProvider`,
+  `DynQuantizedStorage`, `QuantizedDeviceKernels`, `InplaceOp1/2/3`. The `{dyn_backend↔quantized}`
+  cycle becomes *internal* to the new crate (fine). **KEEP these 5 data-vocabulary types in fuel-ir**
+  (split them out of backend.rs into a vocab module): `FitStatus`, `BackendCapabilities`,
+  `SubstrateClass`, `TransferPath`, `GgmlDType` — this resolves the error.rs `TransferPath` leak for
+  free (it stays an intra-fuel-ir ref). Dep direction: backend-contract → fuel-ir; backends →
+  backend-contract; **fuel-dispatch → backend-contract too** (it calls `BackendRuntime::would_fit`
+  on `&dyn BackendRuntime` in chained_selector.rs:129 / vram_pressure_selector.rs:153). Implementers
+  to re-point: every backend's dyn_impl/byte_storage. **COUPLING: `storage.rs` holds
+  `Box<dyn DynBackendStorage>`, so moving the traits out of fuel-ir FORCES `storage.rs` to leave too
+  (else `fuel-ir storage → contract → fuel-ir` cycle) — do B0.3 + the storage half of B0.5 together,
+  or break storage→dyn_backend first.** Touches metal (unverifiable here).
+
+- **B0.5 — Relocate storage-impl → fuel-memory.** `storage.rs` is a clean thin wrapper (only
+  `dyn_backend` + `inplace_op` + op/conv/scalar/HostBuffer vocab; no dispatch/quantized/backend) —
+  retarget `crate::dyn_backend`→`fuel_backend_contract`, op/conv/scalar stay at fuel-ir; merge with
+  fuel-memory's byte-`Storage` (the Storage-unification; fuel-graph already targets
+  `Arc<RwLock<fuel_memory::Storage>>`). Then `cpu_storage` (HostBuffer) + `cpu/` (VecOps SIMD) +
+  `HostDType` + the host-half macro impls → fuel-memory (feasible once B0.4 broke the weld).
+
+**Net partition (16 audited types): 11 traits → backend-contract; 5 data → stay fuel-ir.**
+**A tiny cleanup to fold in: factories.rs's now-dead `BackendFactory::enumerate_devices`** (superseded
+by fuel-hardware's HardwareEnumerator in B0.2a — harmless dead code).
 
 ## Verification crates (never workspace-wide — `tensor-tools` has a standing break)
 `fuel-ir` (+ `--doc`), `fuel-memory`, `fuel-graph`, `fuel-dispatch`, `fuel-core` (+ `--doc` for
