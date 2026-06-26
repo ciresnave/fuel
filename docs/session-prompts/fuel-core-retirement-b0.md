@@ -1,11 +1,12 @@
 # fuel-core / fuel-core-types retirement — B0 program
 
-**Status (2026-06-26):** B0.1 SHIPPED (`f7e7af43`). B0.2a SHIPPED (`a78801e8` — fuel-hardware
-crate + `HardwareEnumerator` registry + probe moved). B0.2b SHIPPED (`ecef5e96` — transfer_cost
-moved). **Remaining: B0.2c (topology split + relocate SystemTopology overlay to fuel-dispatch +
-clean factories.rs's now-dead `enumerate_devices` + rewire the 2 pipelined_bridge.rs sites), then
-B0.3–B0.5.** This doc is the resume artifact — it captures the code-grounded investigation (a
-4-agent sweep) so the remaining steps don't need re-deriving.
+**Status (2026-06-26):** B0.1 SHIPPED (`f7e7af43` — rename). **B0.2 COMPLETE** — 2a (`a78801e8`:
+fuel-hardware crate + `HardwareEnumerator` registry + probe), 2b (`ecef5e96`: transfer_cost), 2c
+(`3a0b1d88`: SystemTopology relocated to fuel-dispatch, the overlay home). fuel-hardware now owns
+hardware discovery; fuel-core owns none. **Remaining: B0.3–B0.5** (below), plus a tiny cleanup of
+factories.rs's now-dead `BackendFactory::enumerate_devices` (superseded by the HardwareEnumerator;
+harmless dead code, fold into B0.3). This doc is the resume artifact — it captures the code-grounded
+investigation (a 4-agent sweep) so the remaining steps don't need re-deriving.
 
 ## Why
 
