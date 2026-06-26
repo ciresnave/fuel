@@ -58,7 +58,7 @@
 //!   weighted sum) that's outside Phase 6a's scope.
 
 use crate::lazy::{load_tensor_as_f32, LazyTensor};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 // ---- Config ----------------------------------------------------------------

@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{DType, Layout, Result};
+use fuel_ir::{DType, Layout, Result};
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -55,7 +55,7 @@ fn softmax_last_dim_run(
     let device = src.device().clone();
     let dims = src_layout.shape().dims();
     let rank = dims.len();
-    let last_dim = *dims.last().ok_or_else(|| fuel_core_types::Error::Msg(
+    let last_dim = *dims.last().ok_or_else(|| fuel_ir::Error::Msg(
         format!("{op_label}: rank-0 input not supported"),
     ).bt())?;
     let numel: i64 = src_layout.shape().elem_count() as i64;
@@ -71,7 +71,7 @@ fn softmax_last_dim_run(
     let mut shape_i32: Vec<i32> = Vec::with_capacity(rank);
     for (i, &d) in dims.iter().enumerate() {
         shape_i32.push(i32::try_from(d).map_err(|_| {
-            fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+            fuel_ir::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
                 op: op_label, dim_index: i, dim_value: d,
             })
         })?);
@@ -86,7 +86,7 @@ fn softmax_last_dim_run(
         s
     };
     let ld_i32 = i32::try_from(last_dim).map_err(|_| {
-        fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+        fuel_ir::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
             op: op_label, dim_index: rank - 1, dim_value: last_dim,
         })
     })?;

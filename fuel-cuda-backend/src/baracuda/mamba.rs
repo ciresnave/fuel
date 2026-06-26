@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::Result;
+use fuel_ir::Result;
 
 use crate::byte_storage::CudaStorageBytes;
 use crate::error::CudaError;
@@ -205,15 +205,15 @@ fn strip_prepad_d2d(
         ..Default::default()
     };
     let d = driver().map_err(|e| {
-        fuel_core_types::Error::Msg(format!("strip_prepad_d2d: driver(): {e:?}")).bt()
+        fuel_ir::Error::Msg(format!("strip_prepad_d2d: driver(): {e:?}")).bt()
     })?;
     let cu = d.cu_memcpy_2d_async().map_err(|e| {
-        fuel_core_types::Error::Msg(format!("strip_prepad_d2d: cu_memcpy_2d_async: {e:?}")).bt()
+        fuel_ir::Error::Msg(format!("strip_prepad_d2d: cu_memcpy_2d_async: {e:?}")).bt()
     })?;
     let stream = device.stream().as_raw();
     let status = unsafe { cu(&p, stream) };
     if status.0 != 0 {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "strip_prepad_d2d: cuMemcpy2DAsync failed: status={status:?}",
         ))
         .bt());
@@ -295,7 +295,7 @@ fn causal_conv1d_fuel_prepad_inner(
     op_label: &'static str,
 ) -> Result<CudaStorageBytes> {
     if seq_in != seq_out + kernel - 1 {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "{op_label}: seq_in={seq_in} must equal seq_out={seq_out} + kernel-1={}",
             kernel - 1,
         ))

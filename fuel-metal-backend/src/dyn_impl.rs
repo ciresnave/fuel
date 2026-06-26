@@ -12,12 +12,12 @@
 //! `UnaryOp`/`BinaryOp` enum variants to kernel name strings and call the
 //! non-generic `MetalStorage::unary()` / `MetalStorage::binary()` methods.
 
-use fuel_core_types::conv::{
+use fuel_ir::conv::{
     ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,
 };
-use fuel_core_types::dyn_backend::{DynBackendDevice, DynBackendStorage};
-use fuel_core_types::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
-use fuel_core_types::{HostBuffer, DType, DeviceLocation, Layout, Result, Scalar, Shape};
+use fuel_ir::dyn_backend::{DynBackendDevice, DynBackendStorage};
+use fuel_ir::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
+use fuel_ir::{HostBuffer, DType, DeviceLocation, Layout, Result, Scalar, Shape};
 use std::any::Any;
 use std::sync::Arc;
 
@@ -46,7 +46,7 @@ fn downcast(s: &dyn DynBackendStorage) -> Result<&MetalStorage> {
     s.as_any()
         .downcast_ref::<MetalStorage>()
         .ok_or_else(|| {
-            fuel_core_types::Error::DeviceMismatchBinaryOp {
+            fuel_ir::Error::DeviceMismatchBinaryOp {
                 lhs: DeviceLocation::Metal { gpu_id: 0 },
                 rhs: s.device_dyn().location_dyn(),
                 op: "metal_dyn_backend",
@@ -60,7 +60,7 @@ fn downcast_mut(s: &mut dyn DynBackendStorage) -> Result<&mut MetalStorage> {
     s.as_any_mut()
         .downcast_mut::<MetalStorage>()
         .ok_or_else(|| {
-            fuel_core_types::Error::DeviceMismatchBinaryOp {
+            fuel_ir::Error::DeviceMismatchBinaryOp {
                 lhs: DeviceLocation::Metal { gpu_id: 0 },
                 rhs: loc,
                 op: "metal_dyn_backend",
@@ -497,7 +497,7 @@ impl DynBackendDevice for MetalDevice {
 
     fn as_quantized_kernels(
         &self,
-    ) -> Option<&dyn fuel_core_types::quantized::QuantizedDeviceKernels> {
+    ) -> Option<&dyn fuel_ir::quantized::QuantizedDeviceKernels> {
         Some(self)
     }
 }

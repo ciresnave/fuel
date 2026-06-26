@@ -26,7 +26,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Error, Layout, Result};
+use fuel_ir::{dispatch::OpKind, probe::BackendId, DType, Error, Layout, Result};
 use fuel_dispatch::{dispatch::{cpu_input, cpu_output, read_storage, write_storage}, fused::PrecisionGuarantee, kernel::OpParams, KernelBindingTable};
 use fuel_memory::{Storage};
 
@@ -439,7 +439,7 @@ fn run_mkl_conv2d_via_gemm(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::probe::BackendId;
+    use fuel_ir::probe::BackendId;
     use fuel_dispatch::dispatch::register_cpu_kernels;
 
     /// Registration smoke: after `register_mkl_cpu_kernels`, the
@@ -492,7 +492,7 @@ mod tests {
     /// isn't loadable (probe_mkl_loadable errors).
     #[test]
     fn mkl_matmul_matches_scalar_when_available() {
-        use fuel_core_types::dispatch::OpKind;
+        use fuel_ir::dispatch::OpKind;
         use fuel_dispatch::{kernel::OpParams};
 use fuel_memory::{BackendStorage, Storage};
 

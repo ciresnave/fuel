@@ -10,8 +10,8 @@
 //! when the loader itself cannot be created (missing runtime, no
 //! compatible driver).
 
-use fuel_core_types::probe::{BackendId, BackendProbe, DeviceDescriptor};
-use fuel_core_types::{DeviceLocation, Error, Result};
+use fuel_ir::probe::{BackendId, BackendProbe, DeviceDescriptor};
+use fuel_ir::{DeviceLocation, Error, Result};
 use vulkane::safe::*;
 
 pub struct VulkanBackendProbe;

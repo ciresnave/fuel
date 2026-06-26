@@ -3,8 +3,8 @@ use crate::utils::{
     make_qkx1_quants, make_qkx3_quants, make_qp_quants, make_qx_quants, nearest_int,
 };
 use byteorder::{ByteOrder, LittleEndian};
-use fuel_core_types::Result;
-use fuel_core_types::quantized::GgmlDType;
+use fuel_ir::Result;
+use fuel_ir::quantized::GgmlDType;
 use half::{bf16, f16, slice::HalfFloatSliceExt};
 use rayon::prelude::*;
 
@@ -2338,7 +2338,7 @@ pub fn matmul_f16<T: GgmlType>(
 ) -> Result<()> {
     let (m, k, n) = mkn;
     if m * k != lhs.len() {
-        fuel_core_types::bail!("unexpected lhs length {} {mkn:?}", lhs.len());
+        fuel_ir::bail!("unexpected lhs length {} {mkn:?}", lhs.len());
     }
 
     let k_in_lhs_blocks = k.div_ceil(T::BLCK_SIZE);
@@ -2387,7 +2387,7 @@ impl GgmlType for f32 {
         debug_assert!(xs.len() >= n, "size mismatch xs {} < {n}", xs.len());
         debug_assert!(ys.len() >= n, "size mismatch ys {} < {n}", ys.len());
         let mut res = 0f32;
-        unsafe { fuel_core_types::cpu::vec_dot_f32(xs.as_ptr(), ys.as_ptr(), &mut res, n) };
+        unsafe { fuel_ir::cpu::vec_dot_f32(xs.as_ptr(), ys.as_ptr(), &mut res, n) };
         res
     }
 
@@ -2432,7 +2432,7 @@ impl GgmlType for f16 {
         debug_assert!(xs.len() >= n, "size mismatch xs {} < {n}", xs.len());
         debug_assert!(ys.len() >= n, "size mismatch ys {} < {n}", ys.len());
         let mut res = 0f32;
-        unsafe { fuel_core_types::cpu::vec_dot_f16(xs.as_ptr(), ys.as_ptr(), &mut res, n) };
+        unsafe { fuel_ir::cpu::vec_dot_f16(xs.as_ptr(), ys.as_ptr(), &mut res, n) };
         res
     }
 
@@ -2477,7 +2477,7 @@ impl GgmlType for bf16 {
         debug_assert!(xs.len() >= n, "size mismatch xs {} < {n}", xs.len());
         debug_assert!(ys.len() >= n, "size mismatch ys {} < {n}", ys.len());
         let mut res = 0f32;
-        unsafe { fuel_core_types::cpu::vec_dot_bf16(xs.as_ptr(), ys.as_ptr(), &mut res, n) };
+        unsafe { fuel_ir::cpu::vec_dot_bf16(xs.as_ptr(), ys.as_ptr(), &mut res, n) };
         res
     }
 

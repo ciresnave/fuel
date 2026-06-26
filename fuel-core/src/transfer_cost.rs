@@ -59,9 +59,9 @@
 //! module owns the probe + fit math + conservative fallbacks.
 
 use crate::probe::ProbeReport;
-use fuel_core_types::backend::TransferPath;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DeviceLocation, Result};
+use fuel_ir::backend::TransferPath;
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DeviceLocation, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -199,14 +199,14 @@ impl BandwidthMatrix {
     /// Atomic JSON write (sibling `.tmp` + rename).
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_vec_pretty(self)
-            .map_err(|e| fuel_core_types::Error::Msg(
+            .map_err(|e| fuel_ir::Error::Msg(
                 format!("transfer_cost: JSON encode failed: {e}")))?;
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, &json)
-            .map_err(|e| fuel_core_types::Error::Msg(
+            .map_err(|e| fuel_ir::Error::Msg(
                 format!("transfer_cost: write {tmp:?} failed: {e}")))?;
         std::fs::rename(&tmp, path)
-            .map_err(|e| fuel_core_types::Error::Msg(
+            .map_err(|e| fuel_ir::Error::Msg(
                 format!("transfer_cost: rename {tmp:?} → {path:?} failed: {e}")))?;
         Ok(())
     }
@@ -217,11 +217,11 @@ impl BandwidthMatrix {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(fuel_core_types::Error::Msg(
+            Err(e) => return Err(fuel_ir::Error::Msg(
                 format!("transfer_cost: read {path:?} failed: {e}"))),
         };
         let report: Self = serde_json::from_slice(&bytes)
-            .map_err(|e| fuel_core_types::Error::Msg(
+            .map_err(|e| fuel_ir::Error::Msg(
                 format!("transfer_cost: parse {path:?} failed: {e}")))?;
         if report.version != BANDWIDTH_REPORT_VERSION {
             return Ok(None);
@@ -268,7 +268,7 @@ fn measure_cpu_memcpy(bytes: usize, iters: u32) -> f64 {
 /// Re-pointed onto the calibration substrate (executor-unification
 /// Session 6); iteration count is the probe's [`CALIBRATION_ITERS`].
 fn measure_h2d_d2h(
-    device: &fuel_core_types::probe::DeviceDescriptor,
+    device: &fuel_ir::probe::DeviceDescriptor,
     bytes: usize,
 ) -> Option<(f64, f64)> {
     let (h2d, d2h) = match device.backend {
@@ -590,10 +590,10 @@ fn probe_vulkan_device(gpu_id: usize) -> Option<(TransferEstimate, TransferEstim
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::DeviceLocation;
+    use fuel_ir::DeviceLocation;
 
     fn cpu_only_probe() -> ProbeReport {
-        use fuel_core_types::probe::DeviceDescriptor;
+        use fuel_ir::probe::DeviceDescriptor;
         ProbeReport {
             version: crate::probe::PROBE_REPORT_VERSION,
             devices: vec![DeviceDescriptor {

@@ -13,7 +13,7 @@
 
 use crate::lazy::LazyTensor;
 use crate::{Error, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 /// Variance schedule shape used during training.
 #[derive(Debug, Clone, Copy)]

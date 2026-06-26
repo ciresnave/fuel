@@ -46,7 +46,7 @@ use crate::lazy_qwen3_moe::{
     Qwen3MoeWeights,
 };
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// GGUF-quantized Qwen3-MoE causal language model. Wraps a plain

@@ -13,7 +13,7 @@
 //!   `DeviceBuffer<u8>` (raw bytes on device) plus `CudaDevice`
 //!   plus `len_bytes`. Dtype lives on the [`fuel_memory::Storage`]
 //!   wrapper, not here. Implements
-//!   [`fuel_core_types::backend::BackendStorage`].
+//!   [`fuel_ir::backend::BackendStorage`].
 //!
 //! Per-op kernels migrate one family at a time during Phase B/C.
 //! When the last kernel migrates, the legacy `CudaStorage` retires
@@ -23,8 +23,8 @@ use std::sync::Arc;
 
 use baracuda_driver::{DeviceBuffer, DeviceSlice};
 use baracuda_types::DeviceRepr;
-use fuel_core_types::backend::BackendStorage;
-use fuel_core_types::Result;
+use fuel_ir::backend::BackendStorage;
+use fuel_ir::Result;
 
 use crate::error::{CudaError, WrapErr};
 use crate::CudaDevice;
@@ -145,14 +145,14 @@ impl CudaStorageBytes {
         len_bytes:   usize,
     ) -> Result<Self> {
         let end = byte_offset.checked_add(len_bytes).ok_or_else(|| {
-            fuel_core_types::Error::Msg(format!(
+            fuel_ir::Error::Msg(format!(
                 "CudaStorageBytes::slot_copy_to_new: byte_offset {byte_offset} \
                  + len_bytes {len_bytes} overflows",
             ))
             .bt()
         })?;
         if end > self.len_bytes {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "CudaStorageBytes::slot_copy_to_new: slot byte range \
                  [{byte_offset}..{end}) exceeds source byte length {}",
                 self.len_bytes,
@@ -213,7 +213,7 @@ impl CudaStorageBytes {
         let dest_total = outer_count
             .checked_mul(chunk_row_bytes)
             .ok_or_else(|| {
-                fuel_core_types::Error::Msg(
+                fuel_ir::Error::Msg(
                     "extract_strided_to_new: outer_count * chunk_row_bytes overflows".into(),
                 ).bt()
             })?;
@@ -227,12 +227,12 @@ impl CudaStorageBytes {
                 .and_then(|x| x.checked_add(offset_in_outer))
                 .and_then(|x| x.checked_add(chunk_row_bytes))
                 .ok_or_else(|| {
-                    fuel_core_types::Error::Msg(
+                    fuel_ir::Error::Msg(
                         "extract_strided_to_new: tile span overflow".into(),
                     ).bt()
                 })?;
             if last_tile_end > self.len_bytes {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "extract_strided_to_new: last tile end {last_tile_end} > src bytes {}",
                     self.len_bytes,
                 )).bt());
@@ -274,7 +274,7 @@ impl CudaStorageBytes {
             return Ok(());
         }
         if src.len() != self.len_bytes {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "CudaStorageBytes::write_from_host: src.len() ({}) != \
                  storage.len_bytes ({})",
                 src.len(), self.len_bytes,

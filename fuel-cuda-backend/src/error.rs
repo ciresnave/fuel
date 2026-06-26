@@ -1,4 +1,4 @@
-﻿use fuel_core_types::{DType, Layout};
+﻿use fuel_ir::{DType, Layout};
 
 /// Errors from the CUDA backend — driver, NVRTC, cuBLAS, and curand
 /// failures, plus Fuel-local variants for missing kernels / dtype
@@ -80,18 +80,18 @@ pub enum CudaError {
     },
 }
 
-impl From<CudaError> for fuel_core_types::Error {
+impl From<CudaError> for fuel_ir::Error {
     fn from(val: CudaError) -> Self {
-        fuel_core_types::Error::cuda(val)
+        fuel_ir::Error::cuda(val)
     }
 }
 
 pub trait WrapErr<O> {
-    fn w(self) -> std::result::Result<O, fuel_core_types::Error>;
+    fn w(self) -> std::result::Result<O, fuel_ir::Error>;
 }
 
 impl<O, E: Into<CudaError>> WrapErr<O> for std::result::Result<O, E> {
-    fn w(self) -> std::result::Result<O, fuel_core_types::Error> {
-        self.map_err(|e| fuel_core_types::Error::cuda(e.into()))
+    fn w(self) -> std::result::Result<O, fuel_ir::Error> {
+        self.map_err(|e| fuel_ir::Error::cuda(e.into()))
     }
 }

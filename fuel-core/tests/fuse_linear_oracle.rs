@@ -3,7 +3,7 @@
 //! both via reference and via the CPU executor.
 
 use fuel_core::lazy::LazyTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use fuel_graph::{opt, Op};
 
 fn rand_f32(shape: &[usize], seed: u32) -> Vec<f32> {

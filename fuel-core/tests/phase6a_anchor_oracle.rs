@@ -20,7 +20,7 @@
 use fuel_core::lazy::{LayerWeights, LazyTensor, LlamaWeights};
 use fuel_core::lazy_llama2c::{Llama2cConfig, Llama2cModel};
 use fuel_core::lazy_convnext::ConvNextModel;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// Compare CPU-executor forward against textbook reference. Tight

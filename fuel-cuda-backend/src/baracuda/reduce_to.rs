@@ -22,7 +22,7 @@
 
 use std::sync::Arc;
 
-use fuel_core_types::{Layout, Result};
+use fuel_ir::{Layout, Result};
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -54,14 +54,14 @@ fn reduce_to(
     label: &'static str,
 ) -> Result<CudaStorageBytes> {
     if src.len_bytes() % elem != 0 {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "{label}: src.len_bytes={} not a multiple of element size {elem}",
             src.len_bytes(),
         ))
         .bt());
     }
     if output_shape.len() > input_shape.len() {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "{label}: output rank {} exceeds input rank {}",
             output_shape.len(),
             input_shape.len(),

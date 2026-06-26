@@ -10,7 +10,7 @@
 
 [dependencies]
     fuel-conv              = { workspace = true }
-    fuel-core-types        = { workspace = true }
+    fuel-ir        = { workspace = true }
     fuel-graph             = { workspace = true }
     # Precompiled SPIR-V kernels. Sources live in fuel-kernels-source
     # and are compiled ahead of time (see

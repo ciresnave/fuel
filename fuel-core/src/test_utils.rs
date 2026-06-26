@@ -105,7 +105,7 @@ pub fn assert_cuda_matches_reference(
     rtol: f32,
 ) {
     let probe = crate::probe::ProbeReport::probe_all();
-    let has_cuda = probe.devices.iter().any(|d| d.backend == fuel_core_types::probe::BackendId::Cuda);
+    let has_cuda = probe.devices.iter().any(|d| d.backend == fuel_ir::probe::BackendId::Cuda);
     if !has_cuda {
         eprintln!("assert_cuda_matches_reference: no CUDA device, skipping");
         return;

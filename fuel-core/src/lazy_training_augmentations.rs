@@ -253,7 +253,7 @@ pub fn clip_grad_value(
 mod tests {
     use super::*;
     use crate::Device;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
 
     // ---------- LR schedule tests ----------
 

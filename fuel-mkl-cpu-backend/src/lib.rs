@@ -37,7 +37,7 @@ mod dll_path;
 
 pub use binding_table::register_mkl_cpu_kernels;
 
-use fuel_core_types::Result;
+use fuel_ir::Result;
 
 // onemkl v0.2 service-module surface re-exported so callers can
 // reach for these without taking a direct `onemkl` dependency.
@@ -63,7 +63,7 @@ pub use onemkl::service::{IsaLevel, ThreadCountGuard};
 pub fn pin_isa(level: IsaLevel) -> Result<()> {
     dll_path::ensure_loadable();
     onemkl::service::enable_instructions(level)
-        .map_err(|e| fuel_core_types::Error::Msg(format!("MKL_Enable_Instructions: {e}")))
+        .map_err(|e| fuel_ir::Error::Msg(format!("MKL_Enable_Instructions: {e}")))
 }
 
 /// Probe `mkl_rt` (or whichever oneMKL runtime resolves) with a 2×2
@@ -88,11 +88,11 @@ pub fn probe_mkl_loadable() -> Result<()> {
     let mut c = [0.0_f32; 4];
 
     let a_ref = MatrixRef::new(&a, 2, 2, MklLayout::RowMajor)
-        .map_err(|e| fuel_core_types::Error::Msg(format!("MKL probe MatrixRef::new(a) failed: {e}")))?;
+        .map_err(|e| fuel_ir::Error::Msg(format!("MKL probe MatrixRef::new(a) failed: {e}")))?;
     let b_ref = MatrixRef::new(&b, 2, 2, MklLayout::RowMajor)
-        .map_err(|e| fuel_core_types::Error::Msg(format!("MKL probe MatrixRef::new(b) failed: {e}")))?;
+        .map_err(|e| fuel_ir::Error::Msg(format!("MKL probe MatrixRef::new(b) failed: {e}")))?;
     let mut c_mut = MatrixMut::new(&mut c, 2, 2, MklLayout::RowMajor)
-        .map_err(|e| fuel_core_types::Error::Msg(format!("MKL probe MatrixMut::new(c) failed: {e}")))?;
+        .map_err(|e| fuel_ir::Error::Msg(format!("MKL probe MatrixMut::new(c) failed: {e}")))?;
 
     onemkl::blas::level3::gemm(
         Transpose::NoTrans,
@@ -102,10 +102,10 @@ pub fn probe_mkl_loadable() -> Result<()> {
         &b_ref,
         0.0_f32,
         &mut c_mut,
-    ).map_err(|e| fuel_core_types::Error::Msg(format!("MKL probe gemm failed: {e}")))?;
+    ).map_err(|e| fuel_ir::Error::Msg(format!("MKL probe gemm failed: {e}")))?;
 
     if c != [1.0, 2.0, 3.0, 4.0] {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "MKL probe gemm produced wrong result: {c:?} != [1, 2, 3, 4]"
         )));
     }

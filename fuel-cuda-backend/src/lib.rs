@@ -29,7 +29,7 @@
 //! at the end of each call.
 
 // --- fuel-cuda primitives (formerly a separate crate) -----------------------
-pub use fuel_core_types::{DType, Error, Layout, Result, Shape};
+pub use fuel_ir::{DType, Error, Layout, Result, Shape};
 
 // `crate::cudnn` retired in Phase 5b of the fuel-cuda-kernels retirement
 // (2026-05-25). Fuel's internal cuDNN wrapper for conv2d/conv1d (252 LOC)
@@ -84,7 +84,7 @@ pub use utils::{Map1, Map1Any, Map2, Map2Any, Map2InPlace, Map3, S};
 // for the queued FA2-wrapper retirement session.
 
 use fuel_graph::{topo_order, topo_order_multi, NodeId, Op, Tensor};
-use fuel_core_types::DimVec;
+use fuel_ir::DimVec;
 use fuel_reference_backend::exec::AnyRefTensor as AnyRef;
 use fuel_reference_backend::RefTensor;
 use std::collections::HashMap;
@@ -135,7 +135,7 @@ impl CudaGraphExecutor {
         }
     }
 
-    pub fn for_device(ordinal: usize) -> fuel_core_types::Result<Self> {
+    pub fn for_device(ordinal: usize) -> fuel_ir::Result<Self> {
         Ok(Self::new(CudaDevice::new(ordinal)?))
     }
 
@@ -452,7 +452,7 @@ impl CudaGraphExecutor {
                 let a = self.get_gt(inputs, 0, cache);
                 let axes: Vec<usize> = (0..a.shape.dims().len()).collect();
                 let mut r = a.storage.reduce_op(
-                    fuel_core_types::op::ReduceOp::Sum, &a.layout(), &axes,
+                    fuel_ir::op::ReduceOp::Sum, &a.layout(), &axes,
                 ).expect("SumAll");
                 if matches!(op, Op::MeanAll) {
                     let n = a.shape.elem_count() as f64;
@@ -464,19 +464,19 @@ impl CudaGraphExecutor {
             Op::MaxAll => {
                 let a = self.get_gt(inputs, 0, cache);
                 let axes: Vec<usize> = (0..a.shape.dims().len()).collect();
-                a.storage.reduce_op(fuel_core_types::op::ReduceOp::Max, &a.layout(), &axes)
+                a.storage.reduce_op(fuel_ir::op::ReduceOp::Max, &a.layout(), &axes)
                     .expect("MaxAll")
             }
             Op::MinAll => {
                 let a = self.get_gt(inputs, 0, cache);
                 let axes: Vec<usize> = (0..a.shape.dims().len()).collect();
-                a.storage.reduce_op(fuel_core_types::op::ReduceOp::Min, &a.layout(), &axes)
+                a.storage.reduce_op(fuel_ir::op::ReduceOp::Min, &a.layout(), &axes)
                     .expect("MinAll")
             }
             Op::SumDim(d) | Op::MeanDim(d) => {
                 let a = self.get_gt(inputs, 0, cache);
                 let mut r = a.storage.reduce_op(
-                    fuel_core_types::op::ReduceOp::Sum, &a.layout(), &[*d],
+                    fuel_ir::op::ReduceOp::Sum, &a.layout(), &[*d],
                 ).expect("SumDim");
                 if matches!(op, Op::MeanDim(_)) {
                     let n = a.shape.dims()[*d] as f64;
@@ -487,12 +487,12 @@ impl CudaGraphExecutor {
             }
             Op::MaxDim(d) => {
                 let a = self.get_gt(inputs, 0, cache);
-                a.storage.reduce_op(fuel_core_types::op::ReduceOp::Max, &a.layout(), &[*d])
+                a.storage.reduce_op(fuel_ir::op::ReduceOp::Max, &a.layout(), &[*d])
                     .expect("MaxDim")
             }
             Op::MinDim(d) => {
                 let a = self.get_gt(inputs, 0, cache);
-                a.storage.reduce_op(fuel_core_types::op::ReduceOp::Min, &a.layout(), &[*d])
+                a.storage.reduce_op(fuel_ir::op::ReduceOp::Min, &a.layout(), &[*d])
                     .expect("MinDim")
             }
 
@@ -593,13 +593,13 @@ impl CudaGraphExecutor {
         let _s = debug_span!("permute", elems = out_shape.elem_count()).entered();
         let in_dims = a.shape.dims();
         let rank = in_dims.len();
-        let mut strides: fuel_core_types::StrideVec = fuel_core_types::StrideVec::from_elem(0_isize, rank);
+        let mut strides: fuel_ir::StrideVec = fuel_ir::StrideVec::from_elem(0_isize, rank);
         let mut s: isize = 1;
         for i in (0..rank).rev() {
             strides[i] = s;
             s *= in_dims[i] as isize;
         }
-        let permuted_strides: fuel_core_types::StrideVec = axes.iter().map(|&ax| strides[ax]).collect();
+        let permuted_strides: fuel_ir::StrideVec = axes.iter().map(|&ax| strides[ax]).collect();
         let permuted_dims: Vec<usize> = axes.iter().map(|&ax| in_dims[ax]).collect();
         let src_layout = Layout::new(
             Shape::from_dims(&permuted_dims),
@@ -635,7 +635,7 @@ impl CudaGraphExecutor {
         }
 
         let _s = debug_span!("broadcast_strided", src_elems = a.shape.elem_count(), dst_elems = target.elem_count()).entered();
-        let mut strides: fuel_core_types::StrideVec = fuel_core_types::StrideVec::from_elem(0_isize, dst_dims.len());
+        let mut strides: fuel_ir::StrideVec = fuel_ir::StrideVec::from_elem(0_isize, dst_dims.len());
         let mut s: isize = 1;
         for i in (0..src_dims.len()).rev() {
             if src_dims[i] == dst_dims[pad + i] {
@@ -705,7 +705,7 @@ impl CudaGraphExecutor {
     ) -> GpuTensor {
         let in_dims = a.shape.dims();
         let rank = in_dims.len();
-        let mut strides: fuel_core_types::StrideVec = fuel_core_types::StrideVec::from_elem(0_isize, rank);
+        let mut strides: fuel_ir::StrideVec = fuel_ir::StrideVec::from_elem(0_isize, rank);
         let mut s: isize = 1;
         for i in (0..rank).rev() {
             strides[i] = s;
@@ -747,7 +747,7 @@ impl CudaGraphExecutor {
 fn gpu_to_ref_f32(gt: GpuTensor) -> RefTensor<f32> {
     let cpu = gt.storage.to_cpu_storage().expect("D2H");
     match cpu {
-        fuel_core_types::HostBuffer::F32(v) => RefTensor::from_vec(v, gt.shape),
+        fuel_ir::HostBuffer::F32(v) => RefTensor::from_vec(v, gt.shape),
         other => panic!("gpu_to_ref_f32: dtype {:?}", other.dtype()),
     }
 }
@@ -755,18 +755,18 @@ fn gpu_to_ref_f32(gt: GpuTensor) -> RefTensor<f32> {
 fn gpu_to_ref_f32_ref(gt: &GpuTensor) -> RefTensor<f32> {
     let cpu = gt.storage.to_cpu_storage().expect("D2H");
     match cpu {
-        fuel_core_types::HostBuffer::F32(v) => RefTensor::from_vec(v, gt.shape.clone()),
+        fuel_ir::HostBuffer::F32(v) => RefTensor::from_vec(v, gt.shape.clone()),
         other => panic!("gpu_to_ref_f32: dtype {:?}", other.dtype()),
     }
 }
 
-fn host_buffer_to_any_ref(buf: fuel_core_types::HostBuffer, shape: &Shape) -> AnyRef {
+fn host_buffer_to_any_ref(buf: fuel_ir::HostBuffer, shape: &Shape) -> AnyRef {
     match buf {
-        fuel_core_types::HostBuffer::F32(v) => AnyRef::F32(RefTensor::from_vec(v, shape.clone())),
-        fuel_core_types::HostBuffer::F64(v) => AnyRef::F64(RefTensor::from_vec(v, shape.clone())),
-        fuel_core_types::HostBuffer::BF16(v) => AnyRef::BF16(RefTensor::from_vec(v, shape.clone())),
-        fuel_core_types::HostBuffer::F16(v) => AnyRef::F16(RefTensor::from_vec(v, shape.clone())),
-        fuel_core_types::HostBuffer::U32(v) => AnyRef::U32(RefTensor::from_vec(v, shape.clone())),
+        fuel_ir::HostBuffer::F32(v) => AnyRef::F32(RefTensor::from_vec(v, shape.clone())),
+        fuel_ir::HostBuffer::F64(v) => AnyRef::F64(RefTensor::from_vec(v, shape.clone())),
+        fuel_ir::HostBuffer::BF16(v) => AnyRef::BF16(RefTensor::from_vec(v, shape.clone())),
+        fuel_ir::HostBuffer::F16(v) => AnyRef::F16(RefTensor::from_vec(v, shape.clone())),
+        fuel_ir::HostBuffer::U32(v) => AnyRef::U32(RefTensor::from_vec(v, shape.clone())),
         _ => panic!("host_buffer_to_any_ref: unsupported dtype"),
     }
 }
@@ -803,8 +803,8 @@ fn op_short_name(op: &Op) -> &'static str {
     }
 }
 
-fn any_ref_to_host_buffer(any: AnyRef) -> fuel_core_types::HostBuffer {
-    use fuel_core_types::HostBuffer;
+fn any_ref_to_host_buffer(any: AnyRef) -> fuel_ir::HostBuffer {
+    use fuel_ir::HostBuffer;
     match any {
         AnyRef::F32(t) => HostBuffer::F32(t.into_vec()),
         AnyRef::F64(t) => HostBuffer::F64(t.into_vec()),

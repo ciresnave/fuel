@@ -27,7 +27,7 @@ use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_gemma::GemmaModel;
 use crate::lazy_paligemma::{PaligemmaConfig, PaligemmaModel, PaligemmaWeights};
 use crate::Result;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// Output embedding dim for ColPali's late-interaction

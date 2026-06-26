@@ -88,7 +88,7 @@
 
 use std::collections::HashMap;
 
-use fuel_core_types::DeviceLocation;
+use fuel_ir::DeviceLocation;
 use fuel_graph::NodeId;
 use smallvec::SmallVec;
 

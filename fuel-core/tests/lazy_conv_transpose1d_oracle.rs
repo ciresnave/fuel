@@ -11,7 +11,7 @@
 //! upsampling on quantized latents to reconstruct waveforms.
 
 use fuel_core::lazy::LazyTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 const T_DATA: [f32; 20] = [
     0.4056, -0.8689, -0.0773, -1.5630, 1.2279, -0.9287, -1.7030, 0.1370, 0.1866, 0.4145,

@@ -24,10 +24,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use fuel_core_types::backend::{BackendCapabilities, SubstrateClass, TransferPath};
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result};
+use fuel_ir::backend::{BackendCapabilities, SubstrateClass, TransferPath};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, DeviceLocation, Error, Layout, Result};
 
 use crate::kernel::{KernelBindingTable, KernelRef, OpParams};
 #[cfg(feature = "cuda")]
@@ -70,7 +70,7 @@ impl CapabilityRegistry {
 
     /// Pick the first registered backend that supports
     /// `(op, dtype)`. Returns
-    /// [`Error::NoBackendForOp`](fuel_core_types::Error::NoBackendForOp)
+    /// [`Error::NoBackendForOp`](fuel_ir::Error::NoBackendForOp)
     /// with diagnostic data if none does. Production-correct: never
     /// panics, always surfaces the gap as a typed error.
     ///
@@ -145,7 +145,7 @@ impl TransferMatrix {
     /// direct advertised path exists. CPU is reachable from every
     /// backend through host-staging, so this never returns an error
     /// for practical use cases — though see
-    /// [`Error::UnsupportedTransfer`](fuel_core_types::Error::UnsupportedTransfer)
+    /// [`Error::UnsupportedTransfer`](fuel_ir::Error::UnsupportedTransfer)
     /// for the case when a backend can't even host-stage.
     pub fn path_or_staging(&self, src: DeviceLocation, dst: DeviceLocation) -> TransferPath {
         self.path(src, dst).unwrap_or(TransferPath::HostStaging)
@@ -5837,8 +5837,8 @@ mod tests {
     /// "all kernels accounted for" reference.
     #[test]
     fn precision_guarantee_lint_bit_stable_cpu_coverage_primitives() {
-        use fuel_core_types::dispatch::OpKind;
-        use fuel_core_types::probe::BackendId;
+        use fuel_ir::dispatch::OpKind;
+        use fuel_ir::probe::BackendId;
 
         // Allowlist for OpKind variants that *can't* have bit-stable
         // CPU coverage. Empty as of step 7b (every variant routes
@@ -6010,8 +6010,8 @@ mod tests {
     /// documented allowlist entry AND a follow-up.
     #[test]
     fn cost_lint_per_op_kind_cpu_coverage() {
-        use fuel_core_types::dispatch::OpKind;
-        use fuel_core_types::probe::BackendId;
+        use fuel_ir::dispatch::OpKind;
+        use fuel_ir::probe::BackendId;
 
         const KNOWN_GAPS: &[(OpKind, &str)] = &[];
 

@@ -41,9 +41,9 @@
 //!   the working set the rest of Phase 1's filter + rank machinery
 //!   operates against.
 
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, DeviceLocation};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, DeviceLocation};
 
 use super::alternative_set::AlternativeSet;
 use super::candidate::Candidate;
@@ -112,7 +112,7 @@ mod tests {
     use super::*;
     use crate::fused::PrecisionGuarantee;
     use crate::kernel::{unknown_cost, KernelCaps};
-    use fuel_core_types::{Layout, Result};
+    use fuel_ir::{Layout, Result};
     use fuel_memory::Storage;
     use std::sync::{Arc, RwLock};
 

@@ -44,9 +44,9 @@
 //! [`apply_filter_chain`]: super::apply_filter_chain
 //! [`CostVector::dominates`]: super::cost_vector::CostVector::dominates
 
-use fuel_core_types::dispatch::{OpKind, SizeClass};
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, DeviceLocation};
+use fuel_ir::dispatch::{OpKind, SizeClass};
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, DeviceLocation};
 use smallvec::SmallVec;
 
 use super::candidate::Candidate;
@@ -598,8 +598,8 @@ mod tests {
     use super::*;
     use crate::fused::{CostEstimate, PrecisionGuarantee};
     use crate::kernel::{KernelCaps, OpParams};
-    use fuel_core_types::probe::BackendId;
-    use fuel_core_types::{DeviceLocation, Layout, Result};
+    use fuel_ir::probe::BackendId;
+    use fuel_ir::{DeviceLocation, Layout, Result};
     use fuel_memory::Storage;
     use std::sync::{Arc, RwLock};
 
@@ -794,8 +794,8 @@ mod tests {
     /// candidates).
     #[test]
     fn context_round_trips_and_survives_mutation() {
-        use fuel_core_types::dispatch::{OpKind, SizeClass};
-        use fuel_core_types::DType;
+        use fuel_ir::dispatch::{OpKind, SizeClass};
+        use fuel_ir::DType;
 
         let mut s = AlternativeSet::from_candidates(vec![
             dummy_candidate(1),

@@ -33,7 +33,7 @@
 //! the other).
 
 use crate::lazy::LazyTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 // ---- Config ----------------------------------------------------------------

@@ -26,7 +26,7 @@
 
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::Result;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

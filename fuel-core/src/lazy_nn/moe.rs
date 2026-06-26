@@ -22,7 +22,7 @@
 use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_nn::{LazyLinear, LazyModule};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 const MASK_NEG: f32 = -1.0e30;

@@ -21,7 +21,7 @@ pub mod storage;
 pub mod ug;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-pub use fuel_core_types::{DType, Error, Layout, Result, Shape};
+pub use fuel_ir::{DType, Error, Layout, Result, Shape};
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use byte_storage::MetalStorageBytes;

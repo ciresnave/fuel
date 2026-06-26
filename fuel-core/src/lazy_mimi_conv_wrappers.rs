@@ -121,7 +121,7 @@ impl ConvTrUpsample1dWeights {
 mod tests {
     use super::*;
     use crate::Device;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
 
     fn const_xs(b: usize, c: usize, t: usize, src: &[f32]) -> LazyTensor {
         assert_eq!(src.len(), b * c * t);

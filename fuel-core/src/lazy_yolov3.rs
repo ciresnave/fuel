@@ -48,7 +48,7 @@
 use crate::lazy::{
     load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype, LazyTensor,
 };
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 // Silence "unused import" warnings for the transposed-matrix helpers

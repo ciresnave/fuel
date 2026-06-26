@@ -19,7 +19,7 @@
 //! ## Storage during the migration
 //!
 //! `fuel_graph::Graph::storage_map` uses the legacy
-//! `fuel_core_types::Storage` (the `Box<dyn DynBackendStorage>`
+//! `fuel_ir::Storage` (the `Box<dyn DynBackendStorage>`
 //! newtype). The pipelined executor uses the new
 //! `fuel_memory::Storage` (BackendStorage enum + dtype). During
 //! the migration the two coexist — neither is converted on the fly.
@@ -39,9 +39,9 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, RwLock};
 use std::thread;
 
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result, SymEnv};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, SymEnv};
 use fuel_graph::opt::{execution_plan, insert_safety_copies};
 use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute};
 
@@ -332,7 +332,7 @@ struct WorkItem {
     /// then attaches the bundle via `Storage::with_bundle` so
     /// downstream `Op::View`/`Op::ViewOwned` nodes resolve
     /// correctly.
-    output_bundle: Option<Arc<[fuel_core_types::storage::OutputView]>>,
+    output_bundle: Option<Arc<[fuel_ir::storage::OutputView]>>,
 }
 
 /// Merge the graph's side-effect roots into the caller's requested
@@ -1846,7 +1846,7 @@ fn op_is_fused_linear(op: &Op) -> bool {
     matches!(op, Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::FUSED_LINEAR)
 }
 
-/// Map a `fuel_graph::Op` to a `fuel_core_types::dispatch::OpKind`.
+/// Map a `fuel_graph::Op` to a `fuel_ir::dispatch::OpKind`.
 /// Returns `None` for ops that haven't been wired into the new
 /// dispatch path yet — Phase C extends this as op families migrate.
 ///
@@ -2114,8 +2114,8 @@ fn encode_value_to_bytes(dtype: DType, value: f64) -> Result<Vec<u8>> {
 /// Encode a typed `Scalar` to its little-endian byte representation.
 /// Used by Op::MaskedFill so the kernel only sees bytes — never has
 /// to know the value's dtype.
-fn scalar_to_bytes(s: fuel_core_types::Scalar) -> Vec<u8> {
-    use fuel_core_types::Scalar;
+fn scalar_to_bytes(s: fuel_ir::Scalar) -> Vec<u8> {
+    use fuel_ir::Scalar;
     match s {
         Scalar::U8(v)  => vec![v],
         Scalar::I8(v)  => vec![v as u8],
@@ -3740,7 +3740,7 @@ fn execute_work_item(
                 }
             };
             let source_layout_kernel =
-                fuel_core_types::Layout::contiguous(source_layout.shape().clone());
+                fuel_ir::Layout::contiguous(source_layout.shape().clone());
             // The kernel sees inputs=[source] and outputs=[dest_arc].
             // The dest input slot is intentionally absent — the kernel
             // doesn't read from dest; it only writes to its bytes
@@ -3835,9 +3835,9 @@ fn execute_work_item(
                 }
             };
             let source_layout_kernel =
-                fuel_core_types::Layout::contiguous(source_layout.shape().clone());
-            let position_layout = fuel_core_types::Layout::contiguous(
-                fuel_core_types::Shape::from_dims(&[]),
+                fuel_ir::Layout::contiguous(source_layout.shape().clone());
+            let position_layout = fuel_ir::Layout::contiguous(
+                fuel_ir::Shape::from_dims(&[]),
             );
             let input_arcs = vec![source_arc_contig, position_arc];
             let mut output_arcs = vec![dest_arc.clone()];
@@ -4107,7 +4107,7 @@ fn execute_work_item(
                 auto_contiguize(&src_arc, &src_layout)?
             };
             let kernel_input_layout =
-                fuel_core_types::Layout::contiguous(src_layout.shape().clone());
+                fuel_ir::Layout::contiguous(src_layout.shape().clone());
             // Allocate the output on `target_location`. Phase 2
             // covered D2H (target=Cpu); Phase 3b extends to H2D
             // (target=Cuda / Vulkan from a CPU source). For non-CPU
@@ -4245,7 +4245,7 @@ fn execute_work_item(
             // the input's shape; for inputs already contiguous we use
             // the cached layout directly. Output layout comes last.
             let mut input_arcs: Vec<Arc<RwLock<Storage>>> = Vec::with_capacity(item.inputs.len());
-            let mut kernel_layouts: Vec<fuel_core_types::Layout> =
+            let mut kernel_layouts: Vec<fuel_ir::Layout> =
                 Vec::with_capacity(item.inputs.len() + 1);
             // The kernel's `strided_input` cap lets non-contiguous
             // inputs (broadcast, transpose, etc.) flow through without
@@ -4309,7 +4309,7 @@ fn execute_work_item(
                 } else {
                     let contig_arc = auto_contiguize(&in_arc, &in_layout)?;
                     input_arcs.push(contig_arc);
-                    kernel_layouts.push(fuel_core_types::Layout::contiguous(
+                    kernel_layouts.push(fuel_ir::Layout::contiguous(
                         in_layout.shape().clone(),
                     ));
                 }
@@ -4676,7 +4676,7 @@ fn auto_contiguize(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
     use fuel_graph::Node;
 
     /// Op::Contiguize on a contiguous-already input is zero-copy:
@@ -7632,7 +7632,7 @@ mod tests {
     /// and the live prefix grows per token.
     #[test]
     fn pipelined_realize_flash_attn_dynamic_k_len() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         // q [1,1,2,2]; K/V capacity [1,1,4,2]; bind k_len = 3 so row 3
         // (the "poison" row) is never attended.
         let q = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0,  0.0, 1.0]);
@@ -7717,7 +7717,7 @@ mod tests {
     /// error at realize (never a panic).
     #[test]
     fn pipelined_realize_flash_attn_dynamic_k_len_unbound_errors() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         let q = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
         let k = fuel_memory::from_slice_cpu(&[0.0_f32; 16]);
         let v = fuel_memory::from_slice_cpu(&[0.0_f32; 16]);
@@ -9421,7 +9421,7 @@ mod tests {
                 shape: Shape::from_dims(&[4]), dtype: DType::U8,
             });
             let out = g.push(Node {
-                op: Op::MaskedFill { value: fuel_core_types::Scalar::F32(-1000.0) },
+                op: Op::MaskedFill { value: fuel_ir::Scalar::F32(-1000.0) },
                 inputs: vec![x, mask],
                 shape: Shape::from_dims(&[4]), dtype: DType::F32,
             });
@@ -9551,7 +9551,7 @@ mod tests {
     /// write at a per-token `cached_len`.
     #[test]
     fn pipelined_realize_write_slice_dynamic_offset() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         let dest_storage = fuel_memory::from_slice_cpu(&[0.0_f32; 6]);
         let src_storage = fuel_memory::from_slice_cpu(&[7.0_f32, 8.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -9606,7 +9606,7 @@ mod tests {
     /// typed error at realize (never a panic).
     #[test]
     fn pipelined_realize_write_slice_dynamic_offset_unbound_errors() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         let dest_storage = fuel_memory::from_slice_cpu(&[0.0_f32; 6]);
         let src_storage = fuel_memory::from_slice_cpu(&[7.0_f32, 8.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -9648,7 +9648,7 @@ mod tests {
     /// capacity errors at realize (never an out-of-bounds write).
     #[test]
     fn pipelined_realize_write_slice_dynamic_offset_out_of_capacity_errors() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         let dest_storage = fuel_memory::from_slice_cpu(&[0.0_f32; 6]);
         let src_storage = fuel_memory::from_slice_cpu(&[7.0_f32, 8.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -9705,7 +9705,7 @@ mod tests {
     /// `step_x` deterministically sees `x` and is `[1, 0, 1, 0]`.
     #[test]
     fn pipelined_inplace_with_multiple_readers_orders_correctly() {
-        use fuel_core_types::Shape;
+        use fuel_ir::Shape;
         let data = [1.0_f32, -2.0, 3.0, -4.0];
         let src_storage = fuel_memory::from_slice_cpu(&data);
 
@@ -9784,7 +9784,7 @@ mod tests {
     /// `x` input to `x_safe`. Result: `z = relu(x) + x = [2, -2, 6, -4]`.
     #[test]
     fn pipelined_residual_connection_inserts_safety_copy() {
-        use fuel_core_types::Shape;
+        use fuel_ir::Shape;
         let data = [1.0_f32, -2.0, 3.0, -4.0];
         let src_storage = fuel_memory::from_slice_cpu(&data);
 

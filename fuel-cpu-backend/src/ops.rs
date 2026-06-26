@@ -6,8 +6,8 @@
 use crate::utils::{
     Map1, Map1Any, Map2, Map2InPlace, Map2U8, binary_map, binary_map_vec, unary_map, unary_map_vec,
 };
-use fuel_core_types::op::{BinaryOpT, CmpOp, UnaryOpT};
-use fuel_core_types::{HostBuffer, DType, Error, IntDType, Layout, Result, Shape, WithDType};
+use fuel_ir::op::{BinaryOpT, CmpOp, UnaryOpT};
+use fuel_ir::{HostBuffer, DType, Error, IntDType, Layout, Result, Shape, WithDType};
 use rayon::prelude::*;
 
 /// Get the number of threads to use for parallelism.
@@ -890,12 +890,12 @@ pub fn copy_strided_src_<T: Copy + Send + Sync>(
     src_l: &Layout,
 ) {
     match src_l.strided_blocks() {
-        fuel_core_types::StridedBlocks::SingleBlock { start_offset, len } => {
+        fuel_ir::StridedBlocks::SingleBlock { start_offset, len } => {
             let to_copy = (dst.len() - dst_offset).min(len);
             dst[dst_offset..dst_offset + to_copy]
                 .copy_from_slice(&src[start_offset..start_offset + to_copy])
         }
-        fuel_core_types::StridedBlocks::MultipleBlocks {
+        fuel_ir::StridedBlocks::MultipleBlocks {
             block_start_index,
             block_len: 1,
         } => {
@@ -924,7 +924,7 @@ pub fn copy_strided_src_<T: Copy + Send + Sync>(
                 }
             }
         }
-        fuel_core_types::StridedBlocks::MultipleBlocks {
+        fuel_ir::StridedBlocks::MultipleBlocks {
             block_start_index,
             block_len,
         } => {
@@ -993,7 +993,7 @@ pub fn copy_strided_src_<T: Copy + Send + Sync>(
     }
 }
 
-pub struct Conv1D<'a>(pub &'a fuel_core_types::conv::ParamsConv1D);
+pub struct Conv1D<'a>(pub &'a fuel_ir::conv::ParamsConv1D);
 
 impl Map2 for Conv1D<'_> {
     const OP: &'static str = "conv1d";
@@ -1001,8 +1001,8 @@ impl Map2 for Conv1D<'_> {
         let p = self.0;
         let inp = &inp[inp_l.start_offset()..];
         let k = &k[k_l.start_offset()..];
-        let (inp_s0, inp_s1, inp_s2) = fuel_core_types::shape::stride_dims3(inp_l.stride())?;
-        let (k_s0, k_s1, k_s2) = fuel_core_types::shape::stride_dims3(k_l.stride())?;
+        let (inp_s0, inp_s1, inp_s2) = fuel_ir::shape::stride_dims3(inp_l.stride())?;
+        let (k_s0, k_s1, k_s2) = fuel_ir::shape::stride_dims3(k_l.stride())?;
         let l_out = p.l_out();
         let dst_elems = p.c_out * l_out * p.b_size;
         // The output shape is [b_size, c_out, l_out]
@@ -1217,7 +1217,7 @@ impl Map1 for Col2Im1D {
     }
 }
 
-pub struct ConvTranspose1D<'a>(pub &'a fuel_core_types::conv::ParamsConvTranspose1D);
+pub struct ConvTranspose1D<'a>(pub &'a fuel_ir::conv::ParamsConvTranspose1D);
 
 impl Map2 for ConvTranspose1D<'_> {
     const OP: &'static str = "conv_transpose1d";
@@ -1225,8 +1225,8 @@ impl Map2 for ConvTranspose1D<'_> {
         let p = self.0;
         let inp = &inp[inp_l.start_offset()..];
         let k = &k[k_l.start_offset()..];
-        let (inp_s0, inp_s1, inp_s2) = fuel_core_types::shape::stride_dims3(inp_l.stride())?;
-        let (k_s0, k_s1, k_s2) = fuel_core_types::shape::stride_dims3(k_l.stride())?;
+        let (inp_s0, inp_s1, inp_s2) = fuel_ir::shape::stride_dims3(inp_l.stride())?;
+        let (k_s0, k_s1, k_s2) = fuel_ir::shape::stride_dims3(k_l.stride())?;
         let l_out = p.l_out();
 
         // Output shape: [b_size, c_out, l_out].
@@ -1286,16 +1286,16 @@ impl Map2 for ConvTranspose1D<'_> {
     }
 }
 
-pub struct ConvTranspose2D<'a>(pub &'a fuel_core_types::conv::ParamsConvTranspose2D);
+pub struct ConvTranspose2D<'a>(pub &'a fuel_ir::conv::ParamsConvTranspose2D);
 
 impl Map2 for ConvTranspose2D<'_> {
     const OP: &'static str = "conv_transpose2d";
     fn f<T: WithDType>(&self, inp: &[T], inp_l: &Layout, k: &[T], k_l: &Layout) -> Result<Vec<T>> {
         let p = self.0;
         let inp = &inp[inp_l.start_offset()..];
-        let (inp_s0, inp_s1, inp_s2, inp_s3) = fuel_core_types::shape::stride_dims4(inp_l.stride())?;
+        let (inp_s0, inp_s1, inp_s2, inp_s3) = fuel_ir::shape::stride_dims4(inp_l.stride())?;
         let k = &k[k_l.start_offset()..];
-        let (k_s0, k_s1, k_s2, k_s3) = fuel_core_types::shape::stride_dims4(k_l.stride())?;
+        let (k_s0, k_s1, k_s2, k_s3) = fuel_ir::shape::stride_dims4(k_l.stride())?;
         let (out_h, out_w) = (p.out_h(), p.out_w());
 
         // Output shape: [b_size, c_out, out_h, out_w].
@@ -1381,7 +1381,7 @@ pub struct MatMul(pub (usize, usize, usize, usize));
 impl MatMul {
     fn striding_error(&self, lhs_l: &Layout, rhs_l: &Layout, msg: &'static str) -> Error {
         Error::MatMulUnexpectedStriding(Box::new(
-            fuel_core_types::error::MatMulUnexpectedStriding {
+            fuel_ir::error::MatMulUnexpectedStriding {
                 lhs_l: lhs_l.clone(),
                 rhs_l: rhs_l.clone(),
                 bmnk: self.0,
@@ -1590,7 +1590,7 @@ impl Map2 for MatMul {
         let mut dst = vec![T::zero(); b * m * n];
         match T::DTYPE {
             DType::F16 => {
-                fuel_core_types::bail!("the accelerate backend does not support f16 matmul")
+                fuel_ir::bail!("the accelerate backend does not support f16 matmul")
             }
             DType::F32 => {
                 for step in 0..b {

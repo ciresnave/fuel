@@ -28,7 +28,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::Result;
+use fuel_ir::Result;
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -551,7 +551,7 @@ impl NF4Weight {
             2 => nf4_gemv_m2_f16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
             4 => nf4_gemv_m4_f16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
             8 => nf4_gemv_m8_f16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
-            other => fuel_core_types::bail!(
+            other => fuel_ir::bail!(
                 "NF4Weight::gemv_f16: M ∈ {{1, 2, 4, 8}} required, got {other}"
             ),
         }
@@ -569,7 +569,7 @@ impl NF4Weight {
             2 => nf4_gemv_m2_bf16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
             4 => nf4_gemv_m4_bf16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
             8 => nf4_gemv_m8_bf16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
-            other => fuel_core_types::bail!(
+            other => fuel_ir::bail!(
                 "NF4Weight::gemv_bf16: M ∈ {{1, 2, 4, 8}} required, got {other}"
             ),
         }

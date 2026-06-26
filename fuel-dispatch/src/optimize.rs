@@ -79,8 +79,8 @@
 
 use std::collections::HashSet;
 
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DeviceLocation, Result};
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DeviceLocation, Result};
 use fuel_graph::{extract_runs_multi, topo_order_multi, Graph, NodeId, Op};
 
 use crate::driver::{OptimizationContext, PassRegistry};
@@ -322,9 +322,9 @@ mod tests {
     use super::*;
     use crate::fused::PrecisionGuarantee;
     use crate::kernel::{unknown_cost, KernelCaps, OpParams};
-    use fuel_core_types::dispatch::OpKind;
-    use fuel_core_types::probe::BackendId;
-    use fuel_core_types::{DType, DeviceLocation, Layout, Result as FuelResult, Shape};
+    use fuel_ir::dispatch::OpKind;
+    use fuel_ir::probe::BackendId;
+    use fuel_ir::{DType, DeviceLocation, Layout, Result as FuelResult, Shape};
     use fuel_graph::opt::execution_plan;
     use fuel_graph::{Node, Op};
     use fuel_memory::Storage;
@@ -802,7 +802,7 @@ mod tests {
             .map(|_| ())
             .unwrap_err();
         match err {
-            fuel_core_types::Error::NoBackendForOp { op, .. } => {
+            fuel_ir::Error::NoBackendForOp { op, .. } => {
                 assert_eq!(op, OpKind::ReluElementwise);
             }
             other => panic!("expected NoBackendForOp, got {other:?}"),
@@ -969,7 +969,7 @@ mod tests {
                 &self,
                 _g: &mut Graph,
                 _ctx: &OptimizationContext<'_>,
-            ) -> fuel_core_types::Result<()> {
+            ) -> fuel_ir::Result<()> {
                 self.0.lock().unwrap().push("propose");
                 Ok(())
             }
@@ -984,7 +984,7 @@ mod tests {
                 &self,
                 _g: &mut Graph,
                 _ctx: &OptimizationContext<'_>,
-            ) -> fuel_core_types::Result<()> {
+            ) -> fuel_ir::Result<()> {
                 self.0.lock().unwrap().push("prune");
                 Ok(())
             }

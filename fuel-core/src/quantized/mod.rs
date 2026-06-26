@@ -7,13 +7,13 @@
 //!
 //! fuel-core holds the polymorphic [`QTensor`] / [`QMatMul`] front-end and
 //! the file-format readers (gguf/ggml/imatrix). All per-backend dispatch
-//! goes through [`fuel_core_types::quantized::DynQuantizedStorage`] and
-//! [`fuel_core_types::quantized::QuantizedDeviceKernels`] — adding a new
+//! goes through [`fuel_ir::quantized::DynQuantizedStorage`] and
+//! [`fuel_ir::quantized::QuantizedDeviceKernels`] — adding a new
 //! backend requires zero edits in this module.
 
 use crate::tensor::Tensor;
 use crate::{DType, Device, Result, Shape, D};
-pub use fuel_core_types::quantized::{
+pub use fuel_ir::quantized::{
     DynQuantizedStorage, GgmlDType, QuantizedDeviceKernels,
 };
 pub use fuel_quantized::{

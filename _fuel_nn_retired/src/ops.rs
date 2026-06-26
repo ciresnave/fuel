@@ -155,7 +155,7 @@ impl Sigmoid {
         use baracuda_types::{DeviceRepr, ValidAsZeroBits};
         use fuel::cuda_backend::Map1;
         use fuel::CudaDevice;
-        use fuel_core_types::dtype::WithDType;
+        use fuel_ir::dtype::WithDType;
 
         // Phase 6c.2 — `usigmoid` PTX dispatch retired; this Map1 now
         // forwards to the shared `unary_baracuda` helper that backs all

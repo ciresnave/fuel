@@ -6,7 +6,7 @@
 //! to ask "given this (op, dtype, size_class), which backend wins
 //! under criterion X?" and get a constant-time answer. This
 //! module hosts the process-wide cache for that table; the table
-//! types themselves live in [`fuel_core_types::dispatch`] so that
+//! types themselves live in [`fuel_ir::dispatch`] so that
 //! `fuel-graph-router`'s `Router` can consume them without
 //! depending on `fuel-core`.
 //!
@@ -45,8 +45,8 @@
 //!    runs successfully.
 
 use crate::judge::oracle::ProfileJudgeOracle;
-use fuel_core_types::Result;
-pub use fuel_core_types::dispatch::{
+use fuel_ir::Result;
+pub use fuel_ir::dispatch::{
     Criterion, DispatchOptions, DispatchTable, OpKind, Pick, ProfileEntry, ProfileReport,
     SizeClass, DEFAULT_ACCURACY_PENALTY,
 };
@@ -164,7 +164,7 @@ pub fn populate_dispatch_table() -> Result<()> {
     let built = CachedJudge::from_report(&report);
     *slot()
         .write()
-        .map_err(|_| fuel_core_types::Error::Msg("judge cache lock poisoned".into()))? =
+        .map_err(|_| fuel_ir::Error::Msg("judge cache lock poisoned".into()))? =
         Some(built);
     Ok(())
 }
@@ -182,7 +182,7 @@ pub fn populate_dispatch_table() -> Result<()> {
 pub fn invalidate() -> Result<()> {
     *slot()
         .write()
-        .map_err(|_| fuel_core_types::Error::Msg("judge cache lock poisoned".into()))? = None;
+        .map_err(|_| fuel_ir::Error::Msg("judge cache lock poisoned".into()))? = None;
     if let Some(p) = crate::probe::default_report_path() {
         let _ = std::fs::remove_file(&p);
     }
@@ -212,8 +212,8 @@ fn try_load_persisted() -> Option<CachedJudge> {
 mod tests {
     use super::*;
     use crate::judge::PROFILE_REPORT_VERSION;
-    use fuel_core_types::probe::BackendId;
-    use fuel_core_types::DType;
+    use fuel_ir::probe::BackendId;
+    use fuel_ir::DType;
 
     fn entry(backend: BackendId, op: OpKind, size: u8, latency: u64, err: f32) -> ProfileEntry {
         ProfileEntry {

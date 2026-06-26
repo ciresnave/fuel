@@ -45,7 +45,7 @@ use crate::lazy::{
     LayerWeights, LazyTensor, WeightStorage,
 };
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// PaddleOCR-VL text-model configuration. Mirrors the HuggingFace

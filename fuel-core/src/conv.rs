@@ -5,7 +5,7 @@
 
 use crate::{op::BackpropOp, op::Op, tensor::Tensor, Error, Result};
 
-pub use fuel_core_types::conv::{
+pub use fuel_ir::conv::{
     CudnnFwdAlgo, ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,
 };
 

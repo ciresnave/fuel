@@ -29,7 +29,7 @@
 //!   per-stream scratch pool is a future optimization — for now the
 //!   simple alloc-per-call model is correct and small enough to be
 //!   bounded.)
-//! - [`shape_strides`] — converts Fuel's [`fuel_core_types::Layout`] to
+//! - [`shape_strides`] — converts Fuel's [`fuel_ir::Layout`] to
 //!   the `(rank: i32, shape: *const i32, stride: *const i64)` triple
 //!   baracuda expects. Validates that dims fit in `i32` (baracuda's
 //!   shape dtype).

@@ -12,7 +12,7 @@
 
 #![cfg(feature = "cuda")]
 
-use fuel_core_types::{DimVec, Layout, Shape, StrideVec};
+use fuel_ir::{DimVec, Layout, Shape, StrideVec};
 use fuel_cuda_backend::{baracuda::contiguize::contiguize_to_fresh, CudaDevice, CudaStorageBytes};
 
 fn dev_or_skip() -> Option<CudaDevice> {

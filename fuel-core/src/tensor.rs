@@ -4339,7 +4339,7 @@ impl Tensor {
         let dim = dim.to_index(self.shape(), "squeeze")?;
         if dims[dim] == 1 {
             let mut dims = DimVec::from_slice(dims);
-            let mut strides = fuel_core_types::StrideVec::from_slice(self.stride());
+            let mut strides = fuel_ir::StrideVec::from_slice(self.stride());
             dims.remove(dim);
             strides.remove(dim);
             let tensor_ = Tensor_ {
@@ -4375,7 +4375,7 @@ impl Tensor {
     /// ```
     pub fn unsqueeze<D: Dim>(&self, dim: D) -> Result<Self> {
         let mut dims = DimVec::from_slice(self.dims());
-        let mut strides = fuel_core_types::StrideVec::from_slice(self.stride());
+        let mut strides = fuel_ir::StrideVec::from_slice(self.stride());
         let dim = dim.to_index_plus_one(self.shape(), "unsqueeze")?;
         // Cannot panic because to_index_plus_one already checks dimensions
         dims.insert(dim, 1);
@@ -4799,7 +4799,7 @@ impl Tensor {
     pub fn unfold<D: Dim>(&self, dim: D, size: usize, step: usize) -> Result<Self> {
         // https://github.com/pytorch/pytorch/blob/75b0720a97ac5d82e8a7a1a6ae7c5f7a87d7183d/aten/src/ATen/native/TensorShape.cpp#L3785-L3804
         let mut sizes = DimVec::from_slice(self.dims());
-        let mut strides = fuel_core_types::StrideVec::from_slice(self.stride());
+        let mut strides = fuel_ir::StrideVec::from_slice(self.stride());
 
         let dim = dim.to_index(self.shape(), "unfold")?;
 

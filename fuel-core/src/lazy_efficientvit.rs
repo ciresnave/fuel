@@ -27,7 +27,7 @@
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_convmixer::BatchNormParams;
 use crate::Result;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// EfficientViT config. Channels, blocks-per-stage, heads-per-stage,

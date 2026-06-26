@@ -70,7 +70,7 @@
 
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 pub use crate::lazy_gemma::GemmaActivation;

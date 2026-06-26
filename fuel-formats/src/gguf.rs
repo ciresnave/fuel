@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::io::{Read, Seek, Write};
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use fuel_core_types::{Context, Error, GgmlDType, Result, Shape, bail};
+use fuel_ir::{Context, Error, GgmlDType, Result, Shape, bail};
 
 pub const DEFAULT_ALIGNMENT: u64 = 32;
 

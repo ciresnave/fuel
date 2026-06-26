@@ -18,7 +18,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{probe::BackendId, DType, DeviceLocation, Shape};
+use fuel_ir::{probe::BackendId, DType, DeviceLocation, Shape};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
 use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
 use fuel_dispatch::residency::insert_residency_evictions;

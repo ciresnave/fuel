@@ -26,7 +26,7 @@ use crate::registry::{
     PatternMatch, SubgraphPattern,
 };
 use crate::{Graph, NodeId};
-use fuel_core_types::{DType, Shape};
+use fuel_ir::{DType, Shape};
 
 /// Metadata-side registry entry for ConvTranspose2D.
 pub fn entry() -> FusedOpEntry {

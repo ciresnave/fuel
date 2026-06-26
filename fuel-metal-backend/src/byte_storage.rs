@@ -10,7 +10,7 @@
 //! - **`MetalStorageBytes`** (this module): wraps a `Buffer` plus
 //!   `len_bytes: usize`. Dtype lives on the `Storage` wrapper
 //!   (fuel-storage), not here. Implements
-//!   [`fuel_core_types::backend::BackendStorage`].
+//!   [`fuel_ir::backend::BackendStorage`].
 //!
 //! Per-op kernels migrate one family at a time during Phase B/C.
 //! When the last kernel migrates, the legacy `MetalStorage` retires
@@ -22,7 +22,7 @@
 
 use std::sync::Arc;
 
-use fuel_core_types::backend::BackendStorage;
+use fuel_ir::backend::BackendStorage;
 use fuel_metal_kernels::metal::Buffer;
 
 use crate::device::MetalDevice;

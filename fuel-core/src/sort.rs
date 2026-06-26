@@ -61,7 +61,7 @@ mod cuda {
     use fuel_cuda_backend::baracuda_kernels_sys as sys;
     use crate::cuda_backend::CudaStorageSlice as S;
     use crate::CudaDevice;
-    use fuel_core_types::dtype::{DType, WithDType};
+    use fuel_ir::dtype::{DType, WithDType};
 
     /// Baracuda `argsort_<dtype>_run` (block-bitonic, row_len ≤ 1024)
     /// and `argsort_<dtype>_big_run` (multi-block radix, row_len > 1024)

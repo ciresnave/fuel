@@ -59,8 +59,8 @@
 //! data model + loader + validator so the consumers can plug in
 //! without rediscovery.
 
-use fuel_core_types::dispatch::{OpKind, SizeClass};
-use fuel_core_types::DType;
+use fuel_ir::dispatch::{OpKind, SizeClass};
+use fuel_ir::DType;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};

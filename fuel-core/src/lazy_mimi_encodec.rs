@@ -35,7 +35,7 @@
 use crate::lazy::LazyTensor;
 use crate::lazy_mimi::{MimiConfig, MimiModel, MimiWeights};
 use crate::Result;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 /// How the codec resamples between the SeaNet encoder frame rate
 /// and the quantizer frame rate. Mimi v0.1 uses [`ResampleMethod::Conv`].

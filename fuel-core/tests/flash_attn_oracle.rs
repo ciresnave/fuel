@@ -14,7 +14,7 @@
 //! fuel-reference-backend's attention.rs tests).
 
 use fuel_core::lazy::LazyTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 fn rand_f32(shape: &[usize], seed: u32) -> Vec<f32> {
     let n: usize = shape.iter().product();

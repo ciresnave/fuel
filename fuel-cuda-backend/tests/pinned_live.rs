@@ -3,8 +3,8 @@
 //! Gated with `#[ignore]` — run with `cargo test -- --ignored` on a
 //! machine with an NVIDIA GPU + CUDA Runtime SDK installed.
 
-use fuel_core_types::backend::HostStorage;
-use fuel_core_types::{DType, HostBufferRef};
+use fuel_ir::backend::HostStorage;
+use fuel_ir::{DType, HostBufferRef};
 use fuel_cuda_backend::{CudaDevice, PinnedHostStorage};
 
 fn dev_or_skip() -> Option<CudaDevice> {

@@ -2,16 +2,16 @@
 //!
 //! `MetalUgIOp1` wraps a compiled Metal `ComputePipeline` produced by
 //! `MetalDevice::compile` and dispatches it as an in-place unary op.
-//! Implements [`fuel_core_types::InplaceOp1`] so it can be applied to a
+//! Implements [`fuel_ir::InplaceOp1`] so it can be applied to a
 //! tensor via `Tensor::inplace_op1` from fuel-core.
 //!
 //! Migrated out of `fuel_core::custom_op::UgIOp1` in step B2 of the
 //! backend extraction; fuel-core no longer mentions
 //! metal-specific dispatch in the custom-op module.
 
-use fuel_core_types::dyn_backend::DynBackendStorage;
-use fuel_core_types::inplace_op::InplaceOp1;
-use fuel_core_types::{DType, Layout, Result};
+use fuel_ir::dyn_backend::DynBackendStorage;
+use fuel_ir::inplace_op::InplaceOp1;
+use fuel_ir::{DType, Layout, Result};
 
 use fuel_metal_kernels::metal::ComputePipeline;
 
@@ -50,7 +50,7 @@ impl InplaceOp1 for MetalUgIOp1 {
             .as_any_mut()
             .downcast_mut::<MetalStorage>()
             .ok_or_else(|| {
-                fuel_core_types::Error::Msg(
+                fuel_ir::Error::Msg(
                     "MetalUgIOp1: storage is not a MetalStorage".to_string(),
                 )
                 .bt()
@@ -59,7 +59,7 @@ impl InplaceOp1 for MetalUgIOp1 {
         let elem_count = layout.shape().elem_count();
         if sto.dtype() != DType::F32 {
             // TODO: support more dtypes.
-            fuel_core_types::bail!("input is not a f32 tensor")
+            fuel_ir::bail!("input is not a f32 tensor")
         }
         let device = sto.device();
         let encoder = device.command_encoder()?;

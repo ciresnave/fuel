@@ -11,7 +11,7 @@
 //! ```no_run
 //! use std::fs::File;
 //! use fuel_cpu_backend::host_storage::MmappedHostStorage;
-//! use fuel_core_types::{backend::HostStorage, DType};
+//! use fuel_ir::{backend::HostStorage, DType};
 //!
 //! let file = File::open("weights.bin").unwrap();
 //! // Reinterpret the entire file as a flat f32 slice.
@@ -37,8 +37,8 @@
 //! values can view different slices of the same file without copying.
 //! Dropping all views releases the mapping.
 
-use fuel_core_types::backend::HostStorage;
-use fuel_core_types::{DType, Error, HostBuffer, HostBufferRef, Result};
+use fuel_ir::backend::HostStorage;
+use fuel_ir::{DType, Error, HostBuffer, HostBufferRef, Result};
 use memmap2::Mmap;
 use std::fs::File;
 use std::sync::Arc;

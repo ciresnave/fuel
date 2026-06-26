@@ -29,10 +29,10 @@
 //! already calibrated against capabilities and reduces it to a
 //! sortable scalar.
 
-use fuel_core_types::backend::BackendCapabilities;
-use fuel_core_types::dispatch::{OpKind, SizeClass};
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, DeviceLocation, Shape};
+use fuel_ir::backend::BackendCapabilities;
+use fuel_ir::dispatch::{OpKind, SizeClass};
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, DeviceLocation, Shape};
 
 use super::alternative_set::AlternativeSet;
 use super::judge::JudgeOracle;
@@ -231,10 +231,10 @@ mod tests {
     use crate::kernel::{unknown_cost, KernelBindingTable, KernelCaps};
     use crate::ranker::alternative_set::AlternativeSet;
     use crate::ranker::candidate::Candidate;
-    use fuel_core_types::backend::{BackendCapabilities, SubstrateClass, TransferPath};
-    use fuel_core_types::dispatch::OpKind;
-    use fuel_core_types::probe::BackendId;
-    use fuel_core_types::{DType, DeviceLocation, Layout, Result, Shape};
+    use fuel_ir::backend::{BackendCapabilities, SubstrateClass, TransferPath};
+    use fuel_ir::dispatch::OpKind;
+    use fuel_ir::probe::BackendId;
+    use fuel_ir::{DType, DeviceLocation, Layout, Result, Shape};
     use fuel_memory::Storage;
     use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, RwLock};

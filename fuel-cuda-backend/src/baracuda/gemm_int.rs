@@ -45,7 +45,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{Error, Result};
+use fuel_ir::{Error, Result};
 
 use crate::byte_storage::CudaStorageBytes;
 

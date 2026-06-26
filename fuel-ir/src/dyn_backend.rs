@@ -15,7 +15,7 @@
 //! # Implementing a custom backend
 //!
 //! ```rust,ignore
-//! use fuel_core_types::dyn_backend::{DynBackendDevice, DynBackendStorage};
+//! use fuel_ir::dyn_backend::{DynBackendDevice, DynBackendStorage};
 //! use std::sync::Arc;
 //!
 //! struct MyDevice { /* ... */ }

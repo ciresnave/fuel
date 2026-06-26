@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::io::BufRead;
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use fuel_core_types::{Context, DType, DimVec, Error as E, Layout, Result, Shape, bail};
+use fuel_ir::{Context, DType, DimVec, Error as E, Layout, Result, Shape, bail};
 
 const VERBOSE: bool = false;
 
@@ -634,7 +634,7 @@ impl From<Object> for E {
 fn rebuild_args(args: Object) -> Result<(Layout, DType, String, usize)> {
     let mut args = args.tuple()?;
     let stride_usize = Vec::<usize>::try_from(args.remove(3))?;
-    let stride: fuel_core_types::StrideVec = stride_usize.iter().map(|&s| s as isize).collect();
+    let stride: fuel_ir::StrideVec = stride_usize.iter().map(|&s| s as isize).collect();
     let size = Vec::<usize>::try_from(args.remove(2))?;
     let offset = args.remove(1).int_or_long()? as usize;
     let storage = args.remove(0).persistent_load()?;

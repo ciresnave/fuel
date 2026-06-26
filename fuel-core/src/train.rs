@@ -53,7 +53,7 @@
 
 use crate::lazy::LazyTensor;
 use crate::Device;
-use fuel_core_types::{DType, Error, Result, Shape};
+use fuel_ir::{DType, Error, Result, Shape};
 use fuel_dispatch::pipelined::StorageCache;
 use fuel_graph::{Graph, Node, NodeId, Op, SharedGraph};
 use fuel_memory::Storage;
@@ -430,7 +430,7 @@ impl TrainState {
         for name in &self.param_order {
             let param = &param_tensors[name];
             let grad = grad_map.get(param.graph_tensor())
-                .ok_or_else(|| fuel_core_types::Error::Msg(
+                .ok_or_else(|| fuel_ir::Error::Msg(
                     format!("parameter '{name}' did not appear in loss graph")))?;
             raw_grads.insert(name.clone(), LazyTensor::from_graph_tensor(grad));
         }
@@ -623,7 +623,7 @@ impl TrainState {
 /// every backend runs them via the primitives it already supports.
 pub mod loss {
     use crate::lazy::LazyTensor;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
 
     /// Mean-squared-error loss: `mean((pred - target)²)`. Returns a
     /// scalar tensor. Works on any numeric shape — the mean is
@@ -727,7 +727,7 @@ pub mod loss {
 mod tests {
     use super::*;
     use crate::lazy::LazyTensor;
-    use fuel_core_types::DType;
+    use fuel_ir::DType;
     use fuel_graph::registry::Reduction;
 
     /// Helper: build an I64 LazyTensor on the same graph as `host`,
@@ -1064,13 +1064,13 @@ mod tests {
         // Dtype rule: F16 activations → F16 output.
         let out_dtype = (e.dtype_rule)(
             &[
-                fuel_core_types::DType::F16,
-                fuel_core_types::DType::U8,
-                fuel_core_types::DType::F32,
+                fuel_ir::DType::F16,
+                fuel_ir::DType::U8,
+                fuel_ir::DType::F32,
             ],
             &fuel_graph::registry::FusedOpParams::Nf4Matmul { block_size: 64 },
         );
-        assert_eq!(out_dtype, fuel_core_types::DType::F16);
+        assert_eq!(out_dtype, fuel_ir::DType::F16);
     }
 
     /// Registry: the FusedSoftmaxCrossEntropy entry is wired into the

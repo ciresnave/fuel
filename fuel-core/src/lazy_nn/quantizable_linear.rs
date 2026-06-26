@@ -14,7 +14,7 @@
 use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_nn::LazyModule;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// Linear layer over `LazyTensor` whose weight may be F32, BF16,

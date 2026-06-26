@@ -25,8 +25,8 @@
 //! itself changes in a way that `#[serde(default)]` can't cover.
 //! Today: version 1.
 
-use fuel_core_types::probe::{BackendId, DeviceDescriptor, EquivalenceKey};
-use fuel_core_types::Result;
+use fuel_ir::probe::{BackendId, DeviceDescriptor, EquivalenceKey};
+use fuel_ir::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -109,16 +109,16 @@ impl ProbeReport {
     /// possible (writes to a sibling `.tmp` file then renames).
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_vec_pretty(self)
-            .map_err(|e| fuel_core_types::Error::Msg(
+            .map_err(|e| fuel_ir::Error::Msg(
                 format!("probe: JSON encode failed: {e}")
             ))?;
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, &json)
-            .map_err(|e| fuel_core_types::Error::Msg(
+            .map_err(|e| fuel_ir::Error::Msg(
                 format!("probe: write {tmp:?} failed: {e}")
             ))?;
         std::fs::rename(&tmp, path)
-            .map_err(|e| fuel_core_types::Error::Msg(
+            .map_err(|e| fuel_ir::Error::Msg(
                 format!("probe: rename {tmp:?} → {path:?} failed: {e}")
             ))?;
         Ok(())
@@ -131,12 +131,12 @@ impl ProbeReport {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(fuel_core_types::Error::Msg(
+            Err(e) => return Err(fuel_ir::Error::Msg(
                 format!("probe: read {path:?} failed: {e}")
             )),
         };
         let report: Self = serde_json::from_slice(&bytes)
-            .map_err(|e| fuel_core_types::Error::Msg(
+            .map_err(|e| fuel_ir::Error::Msg(
                 format!("probe: parse {path:?} failed: {e}")
             ))?;
         if report.version != PROBE_REPORT_VERSION {
@@ -227,7 +227,7 @@ pub fn default_report_path() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::DeviceLocation;
+    use fuel_ir::DeviceLocation;
 
     fn sample_cuda_descriptor(idx: u32) -> DeviceDescriptor {
         DeviceDescriptor {

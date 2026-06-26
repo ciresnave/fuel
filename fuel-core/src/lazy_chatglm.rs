@@ -42,7 +42,7 @@
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_glm4::apply_interleaved_partial_rope;
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

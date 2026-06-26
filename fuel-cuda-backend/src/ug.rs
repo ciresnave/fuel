@@ -2,16 +2,16 @@
 //!
 //! `CudaUgIOp1` wraps a compiled `CudaFunc` produced by
 //! `CudaDevice::compile` and dispatches it as an in-place unary op.
-//! Implements [`fuel_core_types::InplaceOp1`] so it can be applied to a
+//! Implements [`fuel_ir::InplaceOp1`] so it can be applied to a
 //! tensor via `Tensor::inplace_op1` from fuel-core.
 //!
 //! Migrated out of `fuel_core::custom_op::UgIOp1` in step B2 of the
 //! backend extraction; fuel-core no longer mentions
 //! cuda-specific dispatch in the custom-op module.
 
-use fuel_core_types::dyn_backend::DynBackendStorage;
-use fuel_core_types::inplace_op::InplaceOp1;
-use fuel_core_types::{Layout, Result};
+use fuel_ir::dyn_backend::DynBackendStorage;
+use fuel_ir::inplace_op::InplaceOp1;
+use fuel_ir::{Layout, Result};
 
 use crate::device::{CudaDevice, CudaFunc, LaunchConfig};
 use crate::error::WrapErr;
@@ -49,7 +49,7 @@ impl InplaceOp1 for CudaUgIOp1 {
             .as_any_mut()
             .downcast_mut::<CudaStorage>()
             .ok_or_else(|| {
-                fuel_core_types::Error::Msg(
+                fuel_ir::Error::Msg(
                     "CudaUgIOp1: storage is not a CudaStorage".to_string(),
                 )
                 .bt()
@@ -59,7 +59,7 @@ impl InplaceOp1 for CudaUgIOp1 {
         // TODO: support more dtypes.
         let sto = sto.as_cuda_slice::<f32>()?;
         let sto = match layout.contiguous_offsets() {
-            None => fuel_core_types::bail!("input has to be contiguous"),
+            None => fuel_ir::bail!("input has to be contiguous"),
             Some((o1, o2)) => sto.slice(o1..o2),
         };
         let (g, b) = if elem_count.is_multiple_of(32) {

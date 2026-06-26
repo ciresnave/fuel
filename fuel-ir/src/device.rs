@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// # Example
 ///
 /// ```rust
-/// use fuel_core_types::DeviceLocation;
+/// use fuel_ir::DeviceLocation;
 /// let loc = DeviceLocation::Cpu;
 /// assert_eq!(loc, DeviceLocation::Cpu);
 /// ```

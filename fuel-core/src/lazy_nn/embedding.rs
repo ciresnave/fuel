@@ -11,7 +11,7 @@
 use crate::Result;
 use crate::lazy::LazyTensor;
 use crate::lazy_nn::LazyModule;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// Lookup-table embedding over `LazyTensor`.

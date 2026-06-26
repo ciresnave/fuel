@@ -24,7 +24,7 @@
 //!   hot path.
 
 use crate::kernel::{KernelCaps, KernelRef};
-use fuel_core_types::{DType, Shape, backend::BackendCapabilities, probe::BackendId};
+use fuel_ir::{DType, Shape, backend::BackendCapabilities, probe::BackendId};
 use fuel_graph::registry::{FusedOpId, FusedOpParams};
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -1585,7 +1585,7 @@ pub const VULKAN_QMATMUL_PRECISION: PrecisionGuarantee = PrecisionGuarantee {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::{DType, Layout, Result};
+    use fuel_ir::{DType, Layout, Result};
     use std::sync::Arc;
     use std::sync::RwLock;
 
@@ -1984,7 +1984,7 @@ mod tests {
     #[test]
     fn cost_conv2d_cpu_flops_scale() {
         use crate::fused::cost_conv2d_cpu;
-        use fuel_core_types::DeviceLocation;
+        use fuel_ir::DeviceLocation;
         use std::collections::HashSet;
 
         // x: [N=2, Cin=4, H=8, W=8], w: [Cout=6, Cin/g=4, Kh=3, Kw=3],
@@ -2003,7 +2003,7 @@ mod tests {
             required_alignment: 1,
             access_granularity_bits: 8,
             transfer_paths: vec![],
-            storage_substrate: fuel_core_types::backend::SubstrateClass::HostBytes,
+            storage_substrate: fuel_ir::backend::SubstrateClass::HostBytes,
         };
         let params = FusedOpParams::Conv2D {
             stride:  (1, 1),
@@ -2018,7 +2018,7 @@ mod tests {
     /// Cost model — FLOPs scale with 2·M·N·K + M·N, batch multiplies.
     #[test]
     fn cost_fused_linear_cpu_flops_scale() {
-        use fuel_core_types::DeviceLocation;
+        use fuel_ir::DeviceLocation;
         use std::collections::HashSet;
 
         let a = Shape::from_dims(&[2, 4, 8]);  // batch=2, M=4, K=8
@@ -2031,7 +2031,7 @@ mod tests {
             required_alignment: 1,
             access_granularity_bits: 8,
             transfer_paths: vec![],
-            storage_substrate: fuel_core_types::backend::SubstrateClass::HostBytes,
+            storage_substrate: fuel_ir::backend::SubstrateClass::HostBytes,
         };
         let c = cost_fused_linear_cpu(
             &[a, b, bias],

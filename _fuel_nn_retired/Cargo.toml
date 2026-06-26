@@ -14,7 +14,7 @@ accelerate-src = { workspace = true, optional = true }
 fuel = { workspace = true }
 fuel-cpu-backend = { workspace = true }
 fuel-cuda-backend = { workspace = true, optional = true }
-fuel-core-types = { workspace = true, optional = true }
+fuel-ir = { workspace = true, optional = true }
 baracuda-types = { workspace = true, optional = true }
 baracuda-driver = { workspace = true, optional = true }
 baracuda-kernels-sys = { workspace = true, optional = true }
@@ -39,7 +39,7 @@ criterion = { workspace = true }
 [features]
 default = []
 accelerate = ["dep:accelerate-src", "fuel/accelerate"]
-cuda = ["fuel/cuda", "dep:fuel-cuda-backend", "dep:fuel-core-types", "dep:baracuda-types", "dep:baracuda-driver", "dep:baracuda-kernels-sys"]
+cuda = ["fuel/cuda", "dep:fuel-cuda-backend", "dep:fuel-ir", "dep:baracuda-types", "dep:baracuda-driver", "dep:baracuda-kernels-sys"]
 cudnn = ["fuel/cudnn"]
 mkl = ["dep:intel-mkl-src", "fuel/mkl"]
 metal = ["fuel/metal", "dep:fuel-metal-kernels", "dep:objc2-metal"]

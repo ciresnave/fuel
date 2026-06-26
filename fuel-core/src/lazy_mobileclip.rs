@@ -12,7 +12,7 @@ use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_fastvit::{FastVitConfig, FastVitModel, FastVitWeights};
 use crate::lazy_openclip_text::{OpenClipTextConfig, OpenClipTextModel, OpenClipTextWeights};
 use crate::Result;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]

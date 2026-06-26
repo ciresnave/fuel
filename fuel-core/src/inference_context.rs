@@ -41,7 +41,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result, Shape, SymEnv};
+use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, Shape, SymEnv};
 use fuel_graph::{Graph, Node, NodeId, Op};
 use fuel_dispatch::{pipelined::{PipelinedExecutor, StorageCache}};
 use fuel_memory::{BackendStorage, Storage};
@@ -576,7 +576,7 @@ impl InferenceContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::{DType, Shape};
+    use fuel_ir::{DType, Shape};
     use fuel_graph::{Node, Op};
 
     /// `InferenceContext::insert` + immediate retrieval round-trips.
@@ -673,7 +673,7 @@ mod tests {
     /// the input-independent-graph property persistent decode relies on.
     #[test]
     fn realize_one_as_with_env_resolves_write_slice_offset() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         let dest_arc = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[0.0_f32; 6])));
         let src_arc = Arc::new(RwLock::new(fuel_memory::from_slice_cpu(&[7.0_f32, 8.0])));
         let graph = Arc::new(RwLock::new(Graph::new()));

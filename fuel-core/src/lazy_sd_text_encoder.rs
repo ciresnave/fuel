@@ -35,7 +35,7 @@
 //! ```
 
 use crate::lazy::LazyTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use serde::Deserialize;
 use std::sync::Arc;
 

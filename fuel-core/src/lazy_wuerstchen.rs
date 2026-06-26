@@ -19,7 +19,7 @@
 //! across 7 files); see `port-wuerstchen.md` for the full mapping.
 
 use crate::lazy::LazyTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 // ---- Config ----------------------------------------------------------------

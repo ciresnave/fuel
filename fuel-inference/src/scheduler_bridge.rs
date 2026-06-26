@@ -31,7 +31,7 @@
 //! batches to specific backends), speculative-decode draft/target
 //! pairing (co-locate them), and tiered-storage residency hints.
 
-use fuel_core_types::DeviceLocation;
+use fuel_ir::DeviceLocation;
 use fuel_graph::{NodeId, SharedGraph};
 use std::collections::HashMap;
 

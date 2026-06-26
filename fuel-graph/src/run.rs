@@ -30,7 +30,7 @@
 //! nodes — exactly today's single-route graph.
 
 use crate::{Graph, NodeId, Op, topo_order_multi};
-use fuel_core_types::probe::BackendId;
+use fuel_ir::probe::BackendId;
 use std::collections::{HashMap, HashSet};
 
 /// A resolved route through the multi-path graph: for each `Op::Branch`
@@ -529,7 +529,7 @@ pub fn passes_fewness_gate(graph: &Graph, root: NodeId) -> bool {
 mod tests {
     use super::*;
     use crate::Node;
-    use fuel_core_types::{DType, Shape};
+    use fuel_ir::{DType, Shape};
 
     fn f32_node(g: &mut Graph, op: Op, inputs: Vec<NodeId>) -> NodeId {
         g.push(Node {

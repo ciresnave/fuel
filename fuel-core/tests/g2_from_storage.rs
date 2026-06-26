@@ -19,7 +19,7 @@
 //! work item.
 
 use fuel_core::{Device, Tensor};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 /// from_storage produces a fuel_graph::Tensor whose graph contains a
 /// single Op::Const node with its slot pre-populated.
@@ -35,7 +35,7 @@ fn from_storage_builds_single_const_node_with_slot_populated() {
     let storage_arc = legacy.realized_storage().unwrap();
 
     let shape = Shape::from_dims(&[2, 2]);
-    let dtype = fuel_core_types::DType::F32;
+    let dtype = fuel_ir::DType::F32;
     let t = fuel_graph::Tensor::from_storage(
         storage_arc.clone(), shape.clone(), dtype,
     );
@@ -66,7 +66,7 @@ fn from_storage_realizes_through_pipelined_bridge() {
     let storage_arc = legacy.realized_storage().unwrap();
 
     let t = fuel_graph::Tensor::from_storage(
-        storage_arc, Shape::from_dims(&[2, 3]), fuel_core_types::DType::F32,
+        storage_arc, Shape::from_dims(&[2, 3]), fuel_ir::DType::F32,
     );
     assert_eq!(t.shape().dims(), &[2, 3]);
 
@@ -90,10 +90,10 @@ fn const_like_from_storage_shares_graph() {
     let b_arc = b_legacy.realized_storage().unwrap();
 
     let a = fuel_graph::Tensor::from_storage(
-        a_arc, Shape::from_dims(&[3]), fuel_core_types::DType::F32,
+        a_arc, Shape::from_dims(&[3]), fuel_ir::DType::F32,
     );
     let b = a.const_like_from_storage(
-        b_arc, Shape::from_dims(&[3]), fuel_core_types::DType::F32,
+        b_arc, Shape::from_dims(&[3]), fuel_ir::DType::F32,
     );
 
     // Both share the same graph.

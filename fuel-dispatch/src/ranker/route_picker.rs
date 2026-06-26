@@ -55,8 +55,8 @@
 
 use std::sync::Arc;
 
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::DeviceLocation;
+use fuel_ir::probe::BackendId;
+use fuel_ir::DeviceLocation;
 use fuel_graph::{branches_in_topo_order, Graph, NodeId, PickedRoute};
 
 use crate::fused::{CostEstimate, PrecisionGuarantee};
@@ -358,9 +358,9 @@ fn synthetic_candidate(backend: BackendId, device: DeviceLocation) -> Candidate 
 fn noop_kernel(
     _i: &[Arc<std::sync::RwLock<fuel_memory::Storage>>],
     _o: &mut [Arc<std::sync::RwLock<fuel_memory::Storage>>],
-    _l: &[fuel_core_types::Layout],
+    _l: &[fuel_ir::Layout],
     _p: &OpParams,
-) -> fuel_core_types::Result<()> {
+) -> fuel_ir::Result<()> {
     Ok(())
 }
 
@@ -371,9 +371,9 @@ mod tests {
     use crate::ranker::{
         BackendRuntimeHandle, ChainedSelector, WinnerSelector,
     };
-    use fuel_core_types::backend::BackendRuntime;
+    use fuel_ir::backend::BackendRuntime;
     use fuel_graph::{Node, Op};
-    use fuel_core_types::{DType, Shape};
+    use fuel_ir::{DType, Shape};
 
     fn f32_node(g: &mut Graph, op: Op, inputs: Vec<NodeId>) -> NodeId {
         g.push(Node {
