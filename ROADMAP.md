@@ -45,7 +45,7 @@ entry will be updated next time it's actively worked on.
 
 ### Deferred backlog (behind the critical path)
 
-Retained in detail below under Planned Work: Phase 7.5 C–F (graph-rewrite autograd, in-place-as-optimization, crate fission, layout contracts) + B3–B6 op-method sweep; Phase 7.6 steps 4/5/7/8/10 (fused-op migration sweep, Op-variant drops, PrecisionGuarantee/cost population, Comparison family); Phase 8 (FlashAttention tiers), 8.5 (activation sparsity), 9 (agentic extension hooks), 10 (equivalence-rewrite search); the eager-retirement follow-ups (binary re-migrations, test fixups). Sequenced *after* the active frontier; none is on the current critical path.
+Retained in detail below under Planned Work: Phase 7.5 C–F (graph-rewrite autograd, in-place-as-optimization, crate fission, layout contracts) + B3–B6 op-method sweep; Phase 7.6 steps 4/5/7/8/10 (fused-op migration sweep, Op-variant drops, PrecisionGuarantee/cost population, Comparison family); Phase 8 (FlashAttention tiers), 8.5 (activation sparsity), 9 (agentic extension hooks), 10 (equivalence-rewrite search); the eager-retirement follow-ups (binary re-migrations, test fixups). Sequenced *after* the active frontier; none is on the current critical path. One open design gap not yet phased: the **RNG / generator seam** — where a `Generator` lives (per-backend / per-device / per-graph), how it threads through realize and autograd, and how backends participate — which blocks dropout, sampling-as-a-graph-op, and stochastic training ops.
 
 ### Shipped ledger
 
