@@ -17,6 +17,7 @@ fuel-mkl-cpu-backend = { workspace = true, optional = true }
 fuel-ir = { workspace = true, features = ["serde"] }
 fuel-correctness-fixtures = { workspace = true, features = ["serde", "capture"] }
 fuel-cpu-backend = { workspace = true }
+fuel-hardware = { workspace = true }
 fuel-dispatch = { workspace = true }
 fuel-memory = { workspace = true }
 bytemuck = { workspace = true }
@@ -85,6 +86,7 @@ cuda = [
     "dep:baracuda-driver",
     "fuel-dispatch/cuda",
     "fuel-memory/cuda",
+    "fuel-hardware/cuda",
     "fuel-ug?/cuda",
 ]
 
@@ -131,7 +133,7 @@ metal = [
 # Cross-vendor GPU backend via Vulkan (vulkane + precompiled SPIR-V).
 # Use: cargo build --features vulkan. No toolchain required at build
 # time — shaders are precompiled and committed.
-vulkan = ["dep:fuel-vulkan-backend", "fuel-dispatch/vulkan", "fuel-memory/vulkan"]
+vulkan = ["dep:fuel-vulkan-backend", "fuel-dispatch/vulkan", "fuel-memory/vulkan", "fuel-hardware/vulkan"]
 
 # fuel-ug (μGPU) experimental backend.
 # Pipes the `ug` feature through to fuel-cuda-backend and fuel-metal-backend so the

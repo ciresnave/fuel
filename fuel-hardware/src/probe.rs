@@ -57,14 +57,14 @@ impl ProbeReport {
     pub fn probe_all() -> Self {
         let mut devices = Vec::new();
 
-        // Walk the BackendFactory registry — each compiled-in backend
+        // Walk the HardwareEnumerator registry — each compiled-in backend
         // contributes one entry. New backends register themselves in
-        // `crate::factories` and show up here automatically.
-        for factory in crate::factories::registry() {
+        // `crate::enumerate` and show up here automatically.
+        for enumerator in crate::enumerate::registry() {
             Self::collect(
                 &mut devices,
-                factory.id().as_str(),
-                || factory.enumerate_devices(),
+                enumerator.id().as_str(),
+                || enumerator.enumerate_devices(),
             );
         }
 
