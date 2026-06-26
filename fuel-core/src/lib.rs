@@ -252,7 +252,9 @@ pub mod npy;
 pub use fuel_hardware::probe;
 pub mod scheduling;
 pub mod topology;
-pub mod transfer_cost;
+/// Transfer (bandwidth) calibration moved to `fuel-hardware` (retirement B0.2b);
+/// re-exported so `crate::transfer_cost` / `fuel_core::transfer_cost` is unchanged.
+pub use fuel_hardware::transfer_cost;
 pub mod op;
 pub mod pickle;
 pub mod quantized;

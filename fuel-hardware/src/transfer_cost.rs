@@ -54,9 +54,9 @@
 //!   paths the pipelined executor pays — instead of the legacy
 //!   `GraphBackend` upload/download wrappers.
 //!
-//! `SystemTopology` owns the lazy once-per-generation cache (see
-//! `crate::topology::SystemTopology::transfer_calibration`); this
-//! module owns the probe + fit math + conservative fallbacks.
+//! `SystemTopology` owns the lazy once-per-generation cache (its
+//! `transfer_calibration`); this module owns the probe + fit math +
+//! conservative fallbacks.
 
 use crate::probe::ProbeReport;
 use fuel_ir::backend::TransferPath;
@@ -444,8 +444,7 @@ pub fn fit_transfer_estimate(points: &[(u64, u64)]) -> Option<TransferEstimate> 
 /// Probed per-path transfer estimates, keyed by `(src, dst)`
 /// [`DeviceLocation`] pairs. Built once per topology generation by
 /// [`TransferCalibration::calibrate`]; cached lazily on the
-/// `SystemTopology` snapshot (see
-/// `crate::topology::SystemTopology::transfer_calibration`).
+/// `SystemTopology` snapshot (its `transfer_calibration`).
 ///
 /// Only paths the probe could actually exercise appear here (H2D +
 /// D2H per reachable GPU device today). Everything else falls back
