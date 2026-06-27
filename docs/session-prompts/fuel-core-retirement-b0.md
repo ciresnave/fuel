@@ -130,12 +130,29 @@ Layering apex→base: `storage` → `inplace_op` → `{dyn_backend↔quantized}`
   (else `fuel-ir storage → contract → fuel-ir` cycle) — do B0.3 + the storage half of B0.5 together,
   or break storage→dyn_backend first.** Touches metal (unverifiable here).
 
+  **B0.3 grounding (verified 2026-06-27, backend.rs read):** backend.rs splits cleanly — TRAITS
+  → contract crate: `HostStorage` (L30), `BackendStorage` (L68, the `len_bytes` min contract),
+  `BackendCapabilityProvider` (L183), `BackendRuntime` (L233, with the `would_fit` default over
+  `FitStatus`). DATA stays in fuel-ir: `SubstrateClass` (L97), `TransferPath` (L121),
+  `BackendCapabilities` (L147), `FitStatus` (L195) — all field-less/POD, no trait deps. (`GgmlDType`
+  is in quantized.rs, not backend.rs.) **CRITICAL refinement from B0.4: `HostBuffer`/`HostBufferRef`
+  (cpu_storage) must STAY in fuel-ir, NOT move to fuel-memory** — the contract traits (`HostStorage`,
+  `DynBackendStorage::to_host_buffer_dyn`) + every backend reference it, and they sit BELOW fuel-memory,
+  so HostBuffer must be below them too. B0.4 already broke dtype→HostBuffer, so it CAN stay in fuel-ir.
+  The contract crate deps fuel-ir for {HostBuffer, the 5 data types, op/conv/dispatch/DType/DeviceLocation/Result}.
+
 - **B0.5 — Relocate storage-impl → fuel-memory.** `storage.rs` is a clean thin wrapper (only
   `dyn_backend` + `inplace_op` + op/conv/scalar/HostBuffer vocab; no dispatch/quantized/backend) —
   retarget `crate::dyn_backend`→`fuel_backend_contract`, op/conv/scalar stay at fuel-ir; merge with
   fuel-memory's byte-`Storage` (the Storage-unification; fuel-graph already targets
-  `Arc<RwLock<fuel_memory::Storage>>`). Then `cpu_storage` (HostBuffer) + `cpu/` (VecOps SIMD) +
-  `HostDType` + the host-half macro impls → fuel-memory (feasible once B0.4 broke the weld).
+  `Arc<RwLock<fuel_memory::Storage>>`). **CORRECTION (per B0.3 grounding): `cpu_storage` (HostBuffer)
+  + `HostDType` STAY in fuel-ir** — HostBuffer is the bottom host-interchange buffer that the contract
+  traits + every backend reference, so it sits BELOW them, not in fuel-memory. B0.5 moves only
+  `storage.rs` (→ fuel-memory) and `cpu/` (VecOps SIMD), and DROPS the `VecOps` supertrait off
+  `WithDType` (put VecOps on the Map2 trait + impls). **OPEN: where does `cpu/` (VecOps) land?** It's
+  used by fuel-cpu-backend (5 sites) + fuel-quantized, which sit BELOW fuel-memory — so VecOps can't
+  go to fuel-memory (would invert). Candidate homes: a dedicated low `fuel-cpu-kernels` crate, or into
+  fuel-cpu-backend itself (its main user). Resolve when executing B0.5.
 
 **Net partition (16 audited types): 11 traits → backend-contract; 5 data → stay fuel-ir.**
 **A tiny cleanup to fold in: factories.rs's now-dead `BackendFactory::enumerate_devices`** (superseded
