@@ -3,10 +3,17 @@
 **Status (2026-06-26):** B0.1 SHIPPED (`f7e7af43` — rename). **B0.2 COMPLETE** — 2a (`a78801e8`:
 fuel-hardware crate + `HardwareEnumerator` registry + probe), 2b (`ecef5e96`: transfer_cost), 2c
 (`3a0b1d88`: SystemTopology relocated to fuel-dispatch, the overlay home). fuel-hardware now owns
-hardware discovery; fuel-core owns none. **Remaining: B0.3–B0.5** (below), plus a tiny cleanup of
-factories.rs's now-dead `BackendFactory::enumerate_devices` (superseded by the HardwareEnumerator;
-harmless dead code, fold into B0.3). This doc is the resume artifact — it captures the code-grounded
-investigation (a 4-agent sweep) so the remaining steps don't need re-deriving.
+hardware discovery; fuel-core owns none. **B0.4 host-method weld DONE** (`686554fc`: split
+`WithDType` → `WithDType` + `HostDType`; the 5 host-buffer methods moved to `HostDType` in
+cpu_storage.rs; fuel-core marker += HostDType; cuda/metal `storage_from_slice` += HostDType.
+Verified fuel-ir+cpu-backend+fuel-core+cuda; metal untested-marked). The `VecOps` supertrait drop
+was **deferred from B0.4 to B0.5** (it requires Map2-trait churn + is coupled to the cpu/ move).
+**Remaining: B0.3 + B0.5** (below), plus the factories.rs dead-`enumerate_devices` cleanup (fold
+into B0.3). NOTE on verification cost: a `fuel-cuda-backend` build is ~36 min cold (baracuda nvcc);
+metal is unbuildable here — so per-step, verify the CPU path (fuel-ir+cpu-backend+fuel-core, ~40s)
+and batch one cuda build to confirm the cross-backend re-points. This doc is the resume artifact —
+it captures the code-grounded investigation (a 4-agent sweep) so the remaining steps don't need
+re-deriving.
 
 ## Why
 
