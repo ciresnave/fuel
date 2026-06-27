@@ -13,7 +13,7 @@
 //!   `DeviceBuffer<u8>` (raw bytes on device) plus `CudaDevice`
 //!   plus `len_bytes`. Dtype lives on the [`fuel_memory::Storage`]
 //!   wrapper, not here. Implements
-//!   [`fuel_ir::backend::BackendStorage`].
+//!   [`fuel_backend_contract::backend::BackendStorage`].
 //!
 //! Per-op kernels migrate one family at a time during Phase B/C.
 //! When the last kernel migrates, the legacy `CudaStorage` retires
@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use baracuda_driver::{DeviceBuffer, DeviceSlice};
 use baracuda_types::DeviceRepr;
-use fuel_ir::backend::BackendStorage;
+use fuel_backend_contract::backend::BackendStorage;
 use fuel_ir::Result;
 
 use crate::error::{CudaError, WrapErr};

@@ -9,8 +9,9 @@
 
 use crate::CpuStorage;
 use crate::dyn_impl::CpuBackendDevice;
-use fuel_ir::dyn_backend::DynBackendStorage;
-use fuel_ir::quantized::{DynQuantizedStorage, GgmlDType, QuantizedDeviceKernels};
+use fuel_backend_contract::dyn_backend::DynBackendStorage;
+use fuel_backend_contract::quantized::{DynQuantizedStorage, QuantizedDeviceKernels};
+use fuel_ir::quantized::GgmlDType;
 use fuel_ir::{DType, Error, HostBuffer, Layout, Result, Shape};
 use fuel_quantized::{QuantizedType, cpu_from_data, cpu_zeros};
 use half::f16;
@@ -142,7 +143,7 @@ impl DynQuantizedStorage for CpuQStorage {
     fn as_any(&self) -> &dyn Any {
         self
     }
-    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_ir::dyn_backend::DynBackendDevice> {
+    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_backend_contract::dyn_backend::DynBackendDevice> {
         std::sync::Arc::new(CpuBackendDevice)
     }
 }

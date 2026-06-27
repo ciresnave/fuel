@@ -1873,7 +1873,7 @@ impl LazyTensor {
     /// Used by the Phase E.3.3 forward path to bind pre-allocated
     /// KV-cache storage Arcs (`Arc<RwLock<fuel_memory::Storage>>`)
     /// into a per-step graph — the graph's legacy storage_map only
-    /// holds `fuel_ir::Storage`, so direct binding isn't
+    /// holds `fuel_backend_contract::Storage`, so direct binding isn't
     /// possible without a type conversion.
     pub fn const_placeholder_like(
         &self,

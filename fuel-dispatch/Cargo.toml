@@ -10,6 +10,7 @@ version.workspace = true
 
 [dependencies]
 fuel-ir = { workspace = true }
+fuel-backend-contract = { workspace = true }
 fuel-cpu-backend = { workspace = true }
 fuel-hardware = { workspace = true }
 fuel-cuda-backend = { workspace = true, optional = true }

@@ -29,7 +29,7 @@
 //!
 //! ```no_run
 //! # use fuel_cpu_backend::host_storage::shared_mem::SharedMemHostStorage;
-//! # use fuel_ir::{backend::HostStorage, DType};
+//! # use fuel_backend_contract::backend::HostStorage; use fuel_ir::DType;
 //! // Process A: create + fill
 //! let mut prod = SharedMemHostStorage::create("/tmp/fuel_shm_kv", DType::F32, 1024).unwrap();
 //! if let Some(s) = prod.as_mut_slice_f32() { s[0] = 1.5; }
@@ -39,7 +39,7 @@
 //! let view = cons.as_host_buffer_ref().unwrap();
 //! ```
 
-use fuel_ir::backend::HostStorage;
+use fuel_backend_contract::backend::HostStorage;
 use fuel_ir::{DType, Error, HostBuffer, HostBufferRef, Result};
 use half::{bf16, f16};
 use memmap2::{MmapMut, MmapOptions};

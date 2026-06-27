@@ -13,7 +13,7 @@
 //! on the backend crates.
 
 use crate::dyn_backend::DynBackendStorage;
-use crate::{Layout, Result};
+use fuel_ir::{Layout, Result};
 
 /// A custom in-place unary operation that modifies tensor storage directly.
 ///
@@ -23,8 +23,8 @@ use crate::{Layout, Result};
 ///
 /// ```no_run
 /// use fuel_ir::{Layout, Result};
-/// use fuel_ir::dyn_backend::DynBackendStorage;
-/// use fuel_ir::inplace_op::InplaceOp1;
+/// use fuel_backend_contract::dyn_backend::DynBackendStorage;
+/// use fuel_backend_contract::inplace_op::InplaceOp1;
 /// struct ZeroOut;
 /// impl InplaceOp1 for ZeroOut {
 ///     fn name(&self) -> &'static str { "zero_out" }

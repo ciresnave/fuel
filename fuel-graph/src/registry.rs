@@ -111,7 +111,7 @@ pub struct FusedOpEntry {
     /// `None` for single-output ops (the default) — the op produces
     /// one logical output whose shape/dtype come from `shape_rule`
     /// and `dtype_rule`, and the realized storage is a plain
-    /// non-bundled [`fuel_ir::Storage`].
+    /// non-bundled [`fuel_backend_contract::Storage`].
     ///
     /// `Some(fn)` for multi-output ops: returns the per-slot specs
     /// from input shapes + dtypes + params. The Graph and the realized

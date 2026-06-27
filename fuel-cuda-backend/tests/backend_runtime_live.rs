@@ -4,7 +4,8 @@
 //! `cargo test -p fuel-cuda-backend --test backend_runtime_live -- --ignored`
 //! on a host with an NVIDIA GPU + CUDA Runtime SDK installed.
 
-use fuel_ir::backend::{BackendRuntime, FitStatus};
+use fuel_backend_contract::backend::BackendRuntime;
+use fuel_ir::backend::FitStatus;
 use fuel_cuda_backend::CudaDevice;
 
 fn dev_or_skip() -> Option<CudaDevice> {

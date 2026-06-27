@@ -2384,8 +2384,8 @@ mod tests {
 
     /// Phase 7.5 G2: tests need a real device for slot-populating
     /// constructors. Singleton CpuBackendDevice via OnceLock.
-    fn cpu_dev() -> &'static Arc<dyn fuel_ir::DynBackendDevice> {
-        static D: std::sync::OnceLock<Arc<dyn fuel_ir::DynBackendDevice>>
+    fn cpu_dev() -> &'static Arc<dyn fuel_backend_contract::DynBackendDevice> {
+        static D: std::sync::OnceLock<Arc<dyn fuel_backend_contract::DynBackendDevice>>
             = std::sync::OnceLock::new();
         D.get_or_init(|| Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
     }

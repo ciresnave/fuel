@@ -2,7 +2,7 @@
 //!
 //! `DynBackendStorage` is implemented directly on `CudaStorage`, and
 //! `DynBackendDevice` directly on `CudaDevice`. No newtype wrappers are needed:
-//! both the trait (`fuel-core-types`) and the concrete type (`fuel-cuda-backend`)
+//! both the trait (`fuel-backend-contract`) and the concrete type (`fuel-cuda-backend`)
 //! live in crates we own, so the orphan rule is satisfied.
 //!
 //! `CudaBackendStorage` and `CudaBackendDevice` are kept as type aliases so
@@ -15,7 +15,7 @@
 use fuel_ir::conv::{
     ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,
 };
-use fuel_ir::dyn_backend::{DynBackendDevice, DynBackendStorage};
+use fuel_backend_contract::dyn_backend::{DynBackendDevice, DynBackendStorage};
 use fuel_ir::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use fuel_ir::{HostBuffer, DType, DeviceLocation, Error, Layout, Result, Scalar, Shape};
 use baracuda_driver::DeviceBuffer as CudaSlice;
@@ -551,11 +551,11 @@ impl DynBackendDevice for CudaDevice {
 
     fn as_quantized_kernels(
         &self,
-    ) -> Option<&dyn fuel_ir::quantized::QuantizedDeviceKernels> {
+    ) -> Option<&dyn fuel_backend_contract::quantized::QuantizedDeviceKernels> {
         Some(self)
     }
 
-    fn as_backend_runtime(&self) -> Option<&dyn fuel_ir::backend::BackendRuntime> {
+    fn as_backend_runtime(&self) -> Option<&dyn fuel_backend_contract::backend::BackendRuntime> {
         Some(self)
     }
 }
@@ -575,7 +575,7 @@ impl DynBackendDevice for CudaDevice {
 // treat `None` as "no signal — fall back to static cost," exactly as they
 // did before this signal existed.
 
-impl fuel_ir::backend::BackendRuntime for CudaDevice {
+impl fuel_backend_contract::backend::BackendRuntime for CudaDevice {
     /// Device-local free VRAM via `cuMemGetInfo` (driver estimate —
     /// includes this process, other processes, and driver internals).
     /// `None` if the driver query fails.

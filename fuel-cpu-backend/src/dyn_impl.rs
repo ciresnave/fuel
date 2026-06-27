@@ -8,7 +8,7 @@ use fuel_ir::conv::{
     ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,
 };
 use fuel_ir::cpu::erf;
-use fuel_ir::dyn_backend::{DynBackendDevice, DynBackendStorage};
+use fuel_backend_contract::dyn_backend::{DynBackendDevice, DynBackendStorage};
 use fuel_ir::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use fuel_ir::{CpuStorage as HostBuffer, DType, DeviceLocation, Error, Layout, Result,
                          Scalar, Shape};
@@ -59,7 +59,7 @@ impl From<CpuStorage> for HostBuffer {
     }
 }
 
-impl fuel_ir::backend::HostStorage for CpuStorage {
+impl fuel_backend_contract::backend::HostStorage for CpuStorage {
     fn as_host_buffer_ref(
         &self,
     ) -> fuel_ir::Result<fuel_ir::HostBufferRef<'_>> {
@@ -81,7 +81,7 @@ impl fuel_ir::backend::HostStorage for CpuStorage {
 #[derive(Debug, Clone, Copy)]
 pub struct CpuBackendDevice;
 
-impl fuel_ir::backend::BackendRuntime for CpuBackendDevice {
+impl fuel_backend_contract::backend::BackendRuntime for CpuBackendDevice {
     /// System-wide available RAM via the OS query in
     /// [`crate::system_memory`]. `None` on platforms without an
     /// implemented query (macOS + unknown). The signal reflects
@@ -1022,7 +1022,7 @@ impl DynBackendDevice for CpuBackendDevice {
         DeviceLocation::Cpu
     }
 
-    fn as_backend_runtime(&self) -> Option<&dyn fuel_ir::backend::BackendRuntime> {
+    fn as_backend_runtime(&self) -> Option<&dyn fuel_backend_contract::backend::BackendRuntime> {
         Some(self)
     }
 
@@ -1102,7 +1102,7 @@ impl DynBackendDevice for CpuBackendDevice {
 
     fn as_quantized_kernels(
         &self,
-    ) -> Option<&dyn fuel_ir::quantized::QuantizedDeviceKernels> {
+    ) -> Option<&dyn fuel_backend_contract::quantized::QuantizedDeviceKernels> {
         Some(self)
     }
 }
@@ -1389,7 +1389,8 @@ fn cpu_to_dtype(src: &HostBuffer, layout: &Layout, dtype: DType) -> Result<HostB
 #[cfg(test)]
 mod backend_runtime_tests {
     use super::*;
-    use fuel_ir::backend::{BackendRuntime, FitStatus};
+    use fuel_backend_contract::backend::BackendRuntime;
+use fuel_ir::backend::FitStatus;
 
     /// CpuBackendDevice implements BackendRuntime. On a supported
     /// platform (Linux/Windows) reports `Some(_)`; on an unsupported

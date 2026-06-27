@@ -284,7 +284,7 @@ impl Tensor {
 
 // In-place op traits live in fuel-core-types so backend crates can implement
 // them without depending on fuel-core (which would create a cycle).
-pub use fuel_ir::inplace_op::{InplaceOp1, InplaceOp2, InplaceOp3};
+pub use fuel_backend_contract::inplace_op::{InplaceOp1, InplaceOp2, InplaceOp3};
 
 impl Tensor {
     /// Applies a unary custom op in place.

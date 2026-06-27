@@ -140,7 +140,7 @@ use fuel_memory::Storage;
 ///   dispatch info.
 /// - The bundle is pre-allocated by the executor via
 ///   `allocate_bundled_storage(device, &output_views_spec)` (see
-///   `fuel_ir::storage::allocate_bundled_storage`). Kernels
+///   `fuel_backend_contract::storage::allocate_bundled_storage`). Kernels
 ///   never allocate; they only fill bytes.
 ///
 /// Consumers of multi-output producers are NOT multi-output kernels —

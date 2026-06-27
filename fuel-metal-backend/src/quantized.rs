@@ -1,6 +1,7 @@
 ﻿use crate::{DType, MetalDevice, MetalStorage, Result, Shape, D};
-use fuel_ir::dyn_backend::DynBackendStorage;
-use fuel_ir::quantized::{DynQuantizedStorage, GgmlDType, QuantizedDeviceKernels};
+use fuel_backend_contract::dyn_backend::DynBackendStorage;
+use fuel_backend_contract::quantized::{DynQuantizedStorage, QuantizedDeviceKernels};
+use fuel_ir::quantized::GgmlDType;
 use fuel_quantized::GgmlType;
 use fuel_metal_kernels::metal::Buffer;
 use std::any::Any;
@@ -428,7 +429,7 @@ impl DynQuantizedStorage for QMetalStorage {
     fn as_any(&self) -> &dyn Any {
         self
     }
-    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_ir::dyn_backend::DynBackendDevice> {
+    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_backend_contract::dyn_backend::DynBackendDevice> {
         std::sync::Arc::new(self.device.clone())
     }
 }

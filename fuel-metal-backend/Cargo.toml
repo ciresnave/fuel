@@ -10,6 +10,7 @@
 
 [dependencies]
     fuel-ir  = { workspace = true }
+    fuel-backend-contract = { workspace = true }
     fuel-cpu-backend = { workspace = true }
     fuel-quantized   = { workspace = true }
     half              = { workspace = true }

@@ -10,4 +10,4 @@
 //! `fuel_ir`. This module remains as a re-export so existing call
 //! sites such as `use fuel_core::backend::HostStorage` keep compiling.
 
-pub use fuel_ir::backend::HostStorage;
+pub use fuel_backend_contract::backend::HostStorage;

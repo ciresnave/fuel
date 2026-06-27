@@ -21,7 +21,8 @@ pub use aligned::AlignedBytes;
 use std::sync::Arc;
 
 use bytemuck::Pod;
-use fuel_ir::{backend::BackendStorage, Error, Result};
+use fuel_backend_contract::backend::BackendStorage;
+use fuel_ir::{Error, Result};
 
 /// Required alignment for CPU storage allocations. AVX-512-friendly;
 /// also sufficient for AVX2 (32) and NEON (16).

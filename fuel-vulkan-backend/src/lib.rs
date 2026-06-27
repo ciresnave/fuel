@@ -596,7 +596,7 @@ impl VulkanBackend {
 
     /// Drain any pending async-submitted command buffers and wait for
     /// the GPU to finish. Mirrors the trait-level
-    /// [`fuel_ir::dyn_backend::DynBackendDevice::synchronize_dyn`]
+    /// [`fuel_backend_contract::dyn_backend::DynBackendDevice::synchronize_dyn`]
     /// contract: when this returns, every kernel previously dispatched
     /// on `self` is observable to subsequent reads.
     pub fn synchronize_pending(&self) -> fuel_ir::Result<()> {

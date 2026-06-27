@@ -15,7 +15,7 @@
 //! All three are scheduled for removal in Phase 7.5 work item B6
 //! along with the rest of eager dispatch.
 
-pub use fuel_ir::Storage;
+pub use fuel_backend_contract::Storage;
 
 use crate::custom_op::{CustomOp1, CustomOp2, CustomOp3};
 use crate::{Layout, Result, Shape};

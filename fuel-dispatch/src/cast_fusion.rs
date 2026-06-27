@@ -170,9 +170,9 @@ mod tests {
     use fuel_graph::topo_order_multi;
     use std::sync::Arc as StdArc;
 
-    fn cpu_dev() -> &'static StdArc<dyn fuel_ir::DynBackendDevice> {
+    fn cpu_dev() -> &'static StdArc<dyn fuel_backend_contract::DynBackendDevice> {
         use std::sync::OnceLock;
-        static D: OnceLock<StdArc<dyn fuel_ir::DynBackendDevice>> = OnceLock::new();
+        static D: OnceLock<StdArc<dyn fuel_backend_contract::DynBackendDevice>> = OnceLock::new();
         D.get_or_init(|| StdArc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
     }
 
