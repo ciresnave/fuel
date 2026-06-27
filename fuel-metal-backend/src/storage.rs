@@ -2028,7 +2028,12 @@ impl MetalDevice {
         ))
     }
 
-    pub fn storage_from_slice<T: fuel_ir::dtype::WithDType>(
+    // B0.4 (WithDType weld break): `+ fuel_ir::HostDType` added because
+    // `T::cpu_storage_ref` moved off `WithDType` onto `HostDType`. SHOULD WORK BUT
+    // UNTESTED — fuel-metal-backend cannot be built/verified on this dev box (no
+    // macOS access). The edit is mechanical (a trait-bound addition mirroring the
+    // verified fuel-cuda-backend change at device.rs:707) and the body is unchanged.
+    pub fn storage_from_slice<T: fuel_ir::dtype::WithDType + fuel_ir::HostDType>(
         &self,
         s: &[T],
     ) -> Result<MetalStorage> {

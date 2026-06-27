@@ -704,7 +704,7 @@ impl CudaDevice {
         })
     }
 
-    pub fn storage_from_slice<T: WithDType>(&self, s: &[T]) -> Result<CudaStorage> {
+    pub fn storage_from_slice<T: WithDType + fuel_ir::HostDType>(&self, s: &[T]) -> Result<CudaStorage> {
         let slice = match T::cpu_storage_ref(s) {
             HostBufferRef::U8(storage) => {
                 let data = self.clone_htod(storage)?;
