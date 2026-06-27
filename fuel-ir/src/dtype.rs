@@ -174,7 +174,6 @@ pub trait WithDType:
     + Send
     + Sync
     + std::any::Any
-    + crate::cpu::kernels::VecOps
 {
     const DTYPE: DType;
 
@@ -187,11 +186,13 @@ pub trait WithDType:
 // (`cpu_storage_ref`/`to_cpu_storage_owned`/`to_cpu_storage`/
 // `cpu_storage_as_slice`/`cpu_storage_data`) moved off `WithDType` onto the
 // `HostDType: WithDType` extension trait in `cpu_storage.rs` (where `HostBuffer`
-// lives) — this breaks the `dtype <-> cpu_storage` cycle. The remaining
-// `crate::cpu::kernels::VecOps` supertrait (the `dtype -> cpu/` edge) is left in
-// place deliberately: it is coupled to B0.5 (when `cpu/` moves to fuel-memory the
-// `crate::cpu::...` path breaks anyway), and dropping it now would require putting
-// `VecOps` on the `Map2` trait + every impl. Deferred to B0.5 with the cpu/ move.
+// lives) — this breaks the `dtype <-> cpu_storage` cycle.
+//
+// B0.5 (WithDType weld break, part 2): the `VecOps` supertrait (the `dtype -> cpu/`
+// edge) is GONE — `cpu/` moved to the dedicated `fuel-cpu-kernels` crate, and the
+// ~5 fuel-cpu-backend call sites that need `T::vec_dot`/`T::vec_reduce_*` now carry
+// an explicit `T: fuel_cpu_kernels::VecOps` bound. `WithDType` is now pure vocabulary
+// with no impl edges out of fuel-ir.
 
 macro_rules! with_dtype {
     ($ty:ty, $dtype:ident, $from_f64:expr, $to_f64:expr) => {

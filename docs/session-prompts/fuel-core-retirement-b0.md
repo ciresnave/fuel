@@ -22,7 +22,28 @@ quantized/dispatch/graph/core/reference) + fuel-ir 28 lib tests + contract 7 tes
 round-trips + **fuel-core 287 doctests** (only the 3 pre-existing `realize_f32`-on-Result fails) +
 **fuel-cuda-backend built clean (vcvars, 29m)** + **fuel-vulkan-backend clean**; metal re-pointed
 mechanically (unbuildable on Windows, no mac). A 4-agent adversarial diff review found **0 bugs**.
-**Remaining: B0.5.** NOTE on verification cost: a `fuel-cuda-backend` build is ~36 min cold (baracuda nvcc);
+
+**B0.5 DONE (2026-06-27, same branch)** — VecOps/cpu relocation, the last impl out of fuel-ir:
+cut a new dedicated low crate **`fuel-cpu-kernels`** (deps: half/float8/num-traits/libm only — no fuel
+deps) and moved `cpu/` into it (the `VecOps` trait + its dtype impls + the avx/neon/simd128 SIMD + `erf`
++ the raw `vec_dot_f32/f16/bf16`/`vec_sum` free fns). **Dropped the `WithDType: VecOps` supertrait**
+(dtype.rs) — fuel-ir is now a **pure-vocabulary leaf with no compute-impl edges**. The bound was
+re-homed by adding `+ VecOps` to the `Map1`/`Map2` *trait declarations* only (impls stay looser, which
+Rust allows — far smaller than the "Map2 + every impl" the old note feared) + the conv dispatch chain in
+conv2d.rs. Deleted the dummy-type VecOps panic-stubs (no longer needed once the supertrait is gone).
+Re-pointed `fuel_ir::cpu::*` → `fuel_cpu_kernels::*` in fuel-core (erf), fuel-cpu-backend (erf + 5
+`T::vec_dot`/`vec_reduce` sites), fuel-quantized (k_quants raw `vec_dot_*`). **CARVED OUT: the
+Storage-unification** (merge `contract::Storage` Box<dyn> + `fuel_memory::Storage` closed-enum) — it is
+**blocked on eager-dispatch retirement (B6)**: the eager Storage op methods are slated for removal, so
+merging now is merge-then-delete. Verified: full CPU path + fuel-cpu-backend 259 tests + fuel-ir 28
+tests + fuel-quantized tests; cuda/vulkan re-checked (GPU backends have zero VecOps/cpu reliance).
+
+**B0 PROGRAM COMPLETE** (B0.1–B0.5). fuel-core-types is gone (→ fuel-ir); fuel-ir is pure vocabulary;
+hardware discovery, the backend contract, and the CPU SIMD primitives each have their own crate. What
+remains of the broader retirement (fuel-core itself dissolving; the Storage-unification) is downstream
+of other programs (eager-dispatch retirement B6), not B0.
+
+NOTE on verification cost: a `fuel-cuda-backend` build is ~36 min cold (baracuda nvcc);
 metal is unbuildable here — so per-step, verify the CPU path (fuel-ir+cpu-backend+fuel-core, ~40s)
 and batch one cuda build to confirm the cross-backend re-points. This doc is the resume artifact —
 it captures the code-grounded investigation (a 4-agent sweep) so the remaining steps don't need

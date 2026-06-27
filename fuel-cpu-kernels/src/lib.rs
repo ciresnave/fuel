@@ -3,6 +3,8 @@
 pub mod erf;
 pub mod kernels;
 
+pub use kernels::VecOps;
+
 #[allow(unused)]
 trait Cpu<const ARR: usize> {
     type Unit;

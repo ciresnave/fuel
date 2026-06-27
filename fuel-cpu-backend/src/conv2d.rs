@@ -5,6 +5,7 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use crate::ops::{Im2Col, MatMul, copy_strided_src_};
 use crate::utils::{Map1, Map2};
 use fuel_ir::{Layout, Result, WithDType, conv::ParamsConv2D, shape::stride_dims4};
+use fuel_cpu_kernels::VecOps;
 
 pub struct Conv2D<'a>(pub &'a ParamsConv2D);
 
@@ -19,7 +20,7 @@ const DEFAULT_CONV2D_IMPL: Conv2dImpl = Conv2dImpl::TiledIm2Col;
 
 impl Map2 for Conv2D<'_> {
     const OP: &'static str = "conv2d";
-    fn f<T: WithDType + num_traits::Num + Copy + 'static>(
+    fn f<T: WithDType + num_traits::Num + Copy + 'static + VecOps>(
         &self,
         inp: &[T],
         inp_l: &Layout,
@@ -50,7 +51,7 @@ impl Map2 for Conv2D<'_> {
 
 /// Fast kernel for 1x1 convolutions with stride=1, padding=0, dilation=1
 /// These are just matrix multiplications: [c_out, c_in] @ [c_in, b*h*w] -> [c_out, b*h*w].
-fn conv2d_1x1<T: WithDType + num_traits::Num + Copy + 'static>(
+fn conv2d_1x1<T: WithDType + num_traits::Num + Copy + 'static + VecOps>(
     p: &ParamsConv2D,
     inp: &[T],
     inp_l: &Layout,
@@ -118,7 +119,7 @@ fn conv2d_1x1<T: WithDType + num_traits::Num + Copy + 'static>(
 /// General tiled convolution implementation using gemm.
 ///
 /// Similar to full im2col, but instead of materializing the full matrix, we process input/output in tiles, in parallel.
-fn conv2d_tiled<T: WithDType + num_traits::Num + Copy + 'static>(
+fn conv2d_tiled<T: WithDType + num_traits::Num + Copy + 'static + VecOps>(
     p: &ParamsConv2D,
     inp: &[T],
     inp_l: &Layout,
@@ -265,7 +266,7 @@ fn conv2d_tiled<T: WithDType + num_traits::Num + Copy + 'static>(
 }
 
 /// General direct convolution impl. Decently fast for small inputs and kernels, but loses to full/tiled gemm.
-fn conv2d_direct<T: WithDType + num_traits::Num + Copy + 'static>(
+fn conv2d_direct<T: WithDType + num_traits::Num + Copy + 'static + VecOps>(
     p: &ParamsConv2D,
     inp: &[T],
     inp_l: &Layout,
@@ -369,7 +370,7 @@ fn alloc_uninit_vec<T: WithDType + Copy + 'static>(size: usize) -> Vec<T> {
 /// Full im2col + gemm convolution implementation.
 ///
 /// For large inputs im2col and copy_strided_src for output gets expensive.
-fn conv2d_im2col_gemm<T: WithDType + num_traits::Num + Copy + 'static>(
+fn conv2d_im2col_gemm<T: WithDType + num_traits::Num + Copy + 'static + VecOps>(
     p: &ParamsConv2D,
     inp: &[T],
     inp_l: &Layout,
