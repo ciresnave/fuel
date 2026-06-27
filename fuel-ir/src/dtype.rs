@@ -3,7 +3,7 @@
 //! The [`DType`] enum represents the element type of a tensor, and the [`WithDType`] trait
 //! allows Rust native types to be used with tensors.
 #![allow(clippy::redundant_closure_call)]
-use crate::{HostBuffer, HostBufferRef, Error, Result};
+use crate::{Error, Result};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -181,16 +181,17 @@ pub trait WithDType:
     fn from_f64(v: f64) -> Self;
     fn to_f64(self) -> f64;
     fn to_scalar(self) -> crate::scalar::Scalar;
-    fn cpu_storage_ref(data: &[Self]) -> HostBufferRef<'_>;
-    fn to_cpu_storage_owned(data: Vec<Self>) -> HostBuffer;
-
-    fn to_cpu_storage(data: &[Self]) -> HostBuffer {
-        Self::to_cpu_storage_owned(data.to_vec())
-    }
-
-    fn cpu_storage_as_slice(s: &HostBuffer) -> Result<&[Self]>;
-    fn cpu_storage_data(s: HostBuffer) -> Result<Vec<Self>>;
 }
+
+// B0.4 (WithDType weld break, part 1): the host-buffer conversion methods
+// (`cpu_storage_ref`/`to_cpu_storage_owned`/`to_cpu_storage`/
+// `cpu_storage_as_slice`/`cpu_storage_data`) moved off `WithDType` onto the
+// `HostDType: WithDType` extension trait in `cpu_storage.rs` (where `HostBuffer`
+// lives) — this breaks the `dtype <-> cpu_storage` cycle. The remaining
+// `crate::cpu::kernels::VecOps` supertrait (the `dtype -> cpu/` edge) is left in
+// place deliberately: it is coupled to B0.5 (when `cpu/` moves to fuel-memory the
+// `crate::cpu::...` path breaks anyway), and dropping it now would require putting
+// `VecOps` on the `Map2` trait + every impl. Deferred to B0.5 with the cpu/ move.
 
 macro_rules! with_dtype {
     ($ty:ty, $dtype:ident, $from_f64:expr, $to_f64:expr) => {
@@ -207,38 +208,6 @@ macro_rules! with_dtype {
 
             fn to_scalar(self) -> crate::scalar::Scalar {
                 crate::scalar::Scalar::$dtype(self)
-            }
-
-            fn cpu_storage_ref(data: &[Self]) -> HostBufferRef<'_> {
-                HostBufferRef::$dtype(data)
-            }
-
-            fn to_cpu_storage_owned(data: Vec<Self>) -> HostBuffer {
-                HostBuffer::$dtype(data)
-            }
-
-            fn cpu_storage_data(s: HostBuffer) -> Result<Vec<Self>> {
-                match s {
-                    HostBuffer::$dtype(data) => Ok(data),
-                    _ => Err(Error::UnexpectedDType {
-                        expected: DType::$dtype,
-                        got: s.dtype(),
-                        msg: "unexpected dtype",
-                    }
-                    .bt()),
-                }
-            }
-
-            fn cpu_storage_as_slice(s: &HostBuffer) -> Result<&[Self]> {
-                match s {
-                    HostBuffer::$dtype(data) => Ok(data),
-                    _ => Err(Error::UnexpectedDType {
-                        expected: DType::$dtype,
-                        got: s.dtype(),
-                        msg: "unexpected dtype",
-                    }
-                    .bt()),
-                }
             }
         }
     };

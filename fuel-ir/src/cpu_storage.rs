@@ -5,7 +5,7 @@
 //! type alias [`CpuStorage`] = [`HostBuffer`] preserves backwards
 //! compatibility so existing code doesn't need to change.
 
-use crate::{DType, WithDType};
+use crate::{DType, Error, Result, WithDType};
 use float8::F8E4M3;
 use half::{bf16, f16};
 
@@ -91,7 +91,7 @@ impl HostBuffer {
     }
 
     /// Returns a typed slice of the stored data.
-    pub fn as_slice<D: WithDType>(&self) -> crate::Result<&[D]> {
+    pub fn as_slice<D: HostDType>(&self) -> crate::Result<&[D]> {
         D::cpu_storage_as_slice(self)
     }
 
@@ -352,3 +352,98 @@ impl<'a> HostBufferRef<'a> {
         }
     }
 }
+
+/// Host-buffer conversion contract for a tensor element type.
+///
+/// Split off `WithDType` in B0.4 (the weld break): `WithDType` stays pure
+/// vocabulary, while these `HostBuffer`/`HostBufferRef` conversions live here,
+/// next to the buffer types they produce. Generic code that needs to materialize
+/// a `&[T]` / `Vec<T>` into host storage bounds on `T: HostDType` (which implies
+/// `WithDType`). This breaks the old `dtype <-> cpu_storage` dependency cycle.
+pub trait HostDType: WithDType {
+    fn cpu_storage_ref(data: &[Self]) -> HostBufferRef<'_>;
+    fn to_cpu_storage_owned(data: Vec<Self>) -> HostBuffer;
+
+    fn to_cpu_storage(data: &[Self]) -> HostBuffer {
+        Self::to_cpu_storage_owned(data.to_vec())
+    }
+
+    fn cpu_storage_as_slice(s: &HostBuffer) -> Result<&[Self]>;
+    fn cpu_storage_data(s: HostBuffer) -> Result<Vec<Self>>;
+}
+
+macro_rules! host_dtype {
+    ($ty:ty, $dtype:ident) => {
+        impl HostDType for $ty {
+            fn cpu_storage_ref(data: &[Self]) -> HostBufferRef<'_> {
+                HostBufferRef::$dtype(data)
+            }
+
+            fn to_cpu_storage_owned(data: Vec<Self>) -> HostBuffer {
+                HostBuffer::$dtype(data)
+            }
+
+            fn cpu_storage_data(s: HostBuffer) -> Result<Vec<Self>> {
+                match s {
+                    HostBuffer::$dtype(data) => Ok(data),
+                    _ => Err(Error::UnexpectedDType {
+                        expected: DType::$dtype,
+                        got: s.dtype(),
+                        msg: "unexpected dtype",
+                    }
+                    .bt()),
+                }
+            }
+
+            fn cpu_storage_as_slice(s: &HostBuffer) -> Result<&[Self]> {
+                match s {
+                    HostBuffer::$dtype(data) => Ok(data),
+                    _ => Err(Error::UnexpectedDType {
+                        expected: DType::$dtype,
+                        got: s.dtype(),
+                        msg: "unexpected dtype",
+                    }
+                    .bt()),
+                }
+            }
+        }
+    };
+}
+
+host_dtype!(u8, U8);
+host_dtype!(i8, I8);
+host_dtype!(u32, U32);
+host_dtype!(i16, I16);
+host_dtype!(i32, I32);
+host_dtype!(i64, I64);
+host_dtype!(f16, F16);
+host_dtype!(bf16, BF16);
+host_dtype!(f32, F32);
+host_dtype!(f64, F64);
+host_dtype!(F8E4M3, F8E4M3);
+
+/// Dummy sub-byte float markers carry no real host storage — their conversions
+/// panic / error (parity with the pre-B0.4 `WithDType` dummy impls).
+macro_rules! host_dtype_dummy {
+    ($ty:ty, $dtype:ident) => {
+        impl HostDType for $ty {
+            fn cpu_storage_ref(_data: &[Self]) -> HostBufferRef<'_> {
+                panic!("{} is a dummy type and does not support storage", stringify!($ty))
+            }
+            fn to_cpu_storage_owned(_data: Vec<Self>) -> HostBuffer {
+                panic!("{} is a dummy type and does not support storage", stringify!($ty))
+            }
+            fn cpu_storage_data(_s: HostBuffer) -> Result<Vec<Self>> {
+                Err(Error::UnsupportedDTypeForOp(DType::$dtype, "cpu_storage_data").bt())
+            }
+            fn cpu_storage_as_slice(_s: &HostBuffer) -> Result<&[Self]> {
+                Err(Error::UnsupportedDTypeForOp(DType::$dtype, "cpu_storage_as_slice").bt())
+            }
+        }
+    };
+}
+
+host_dtype_dummy!(crate::F6E2M3, F6E2M3);
+host_dtype_dummy!(crate::F6E3M2, F6E3M2);
+host_dtype_dummy!(crate::F4, F4);
+host_dtype_dummy!(crate::F8E8M0, F8E8M0);
