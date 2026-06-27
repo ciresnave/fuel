@@ -29,16 +29,16 @@
 //! # Adding a new backend
 //!
 //! 1. Add a unit struct `MyBackendFactory` here, behind a cfg(feature).
-//! 2. Implement `BackendFactory` — `enumerate_devices` delegates to the
-//!    backend crate's existing `probe::enumerate_devices`, and
-//!    `try_make_realizer` constructs the backend's `crate::Device`
-//!    handle and wraps it in [`BridgeRealizer`].
+//! 2. Implement `BackendFactory` — `try_make_realizer` constructs the
+//!    backend's `crate::Device` handle and wraps it in [`BridgeRealizer`].
+//!    (Device enumeration is `fuel-hardware`'s `HardwareEnumerator`, not
+//!    this factory, as of B0.2.)
 //! 3. Add a cfg-gated entry in [`registry`].
 //!
 //! No edits to judge.rs or probe.rs.
 
 use crate::lazy::LazyTensor;
-use fuel_ir::probe::{BackendId, DeviceDescriptor};
+use fuel_ir::probe::BackendId;
 use fuel_ir::{Error, Result};
 use fuel_dispatch::pipelined::StorageCache;
 
@@ -155,10 +155,6 @@ pub trait BackendFactory: Send + Sync {
     /// Stable identifier — the same one the probe uses.
     fn id(&self) -> BackendId;
 
-    /// Devices this backend currently sees on the host. Wraps each
-    /// backend crate's existing `probe::enumerate_devices`.
-    fn enumerate_devices(&self) -> Result<Vec<DeviceDescriptor>>;
-
     /// Construct a fresh realizer pinned to one device. Errors are
     /// propagated as-is — judge.rs prints and skips that device.
     fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn LazyRealizer>>;
@@ -193,9 +189,6 @@ pub struct CpuFactory;
 
 impl BackendFactory for CpuFactory {
     fn id(&self) -> BackendId { BackendId::Cpu }
-    fn enumerate_devices(&self) -> Result<Vec<DeviceDescriptor>> {
-        fuel_cpu_backend::probe::enumerate_devices()
-    }
     fn try_make_realizer(&self, _device_index: u32) -> Result<Box<dyn LazyRealizer>> {
         Ok(Box::new(BridgeRealizer::new(crate::Device::cpu())))
     }
@@ -218,9 +211,6 @@ pub struct CudaFactory;
 #[cfg(feature = "cuda")]
 impl BackendFactory for CudaFactory {
     fn id(&self) -> BackendId { BackendId::Cuda }
-    fn enumerate_devices(&self) -> Result<Vec<DeviceDescriptor>> {
-        fuel_cuda_backend::probe::enumerate_devices()
-    }
     fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn LazyRealizer>> {
         let dev = fuel_cuda_backend::CudaDevice::new(device_index as usize)
             .map_err(|e| fuel_ir::Error::Msg(
@@ -240,9 +230,6 @@ pub struct VulkanFactory;
 #[cfg(feature = "vulkan")]
 impl BackendFactory for VulkanFactory {
     fn id(&self) -> BackendId { BackendId::Vulkan }
-    fn enumerate_devices(&self) -> Result<Vec<DeviceDescriptor>> {
-        fuel_vulkan_backend::probe::enumerate_devices()
-    }
     fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn LazyRealizer>> {
         let backend = fuel_vulkan_backend::VulkanBackend::with_selection(
             fuel_vulkan_backend::DeviceSelection::Index(device_index as usize),

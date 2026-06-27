@@ -2,15 +2,15 @@
 //!
 //! `CudaUgIOp1` wraps a compiled `CudaFunc` produced by
 //! `CudaDevice::compile` and dispatches it as an in-place unary op.
-//! Implements [`fuel_ir::InplaceOp1`] so it can be applied to a
+//! Implements [`fuel_backend_contract::InplaceOp1`] so it can be applied to a
 //! tensor via `Tensor::inplace_op1` from fuel-core.
 //!
 //! Migrated out of `fuel_core::custom_op::UgIOp1` in step B2 of the
 //! backend extraction; fuel-core no longer mentions
 //! cuda-specific dispatch in the custom-op module.
 
-use fuel_ir::dyn_backend::DynBackendStorage;
-use fuel_ir::inplace_op::InplaceOp1;
+use fuel_backend_contract::dyn_backend::DynBackendStorage;
+use fuel_backend_contract::inplace_op::InplaceOp1;
 use fuel_ir::{Layout, Result};
 
 use crate::device::{CudaDevice, CudaFunc, LaunchConfig};

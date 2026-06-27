@@ -15,7 +15,7 @@
 //! # Implementing a custom backend
 //!
 //! ```rust,ignore
-//! use fuel_ir::dyn_backend::{DynBackendDevice, DynBackendStorage};
+//! use fuel_backend_contract::dyn_backend::{DynBackendDevice, DynBackendStorage};
 //! use std::sync::Arc;
 //!
 //! struct MyDevice { /* ... */ }
@@ -24,9 +24,9 @@
 //! struct MyStorage { /* ... */ }
 //! impl DynBackendStorage for MyStorage { /* ... */ }
 //! ```
-use crate::conv::{ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D};
-use crate::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
-use crate::{HostBuffer, DType, DeviceLocation, Layout, Result, Scalar, Shape};
+use fuel_ir::conv::{ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D};
+use fuel_ir::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
+use fuel_ir::{HostBuffer, DType, DeviceLocation, Layout, Result, Scalar, Shape};
 use std::any::Any;
 use std::sync::Arc;
 
@@ -53,7 +53,7 @@ pub trait DynBackendStorage: Send + Sync + std::fmt::Debug {
     /// Return a cloned `Arc` handle to the owning device.
     fn device_arc_dyn(&self) -> Arc<dyn DynBackendDevice>;
 
-    /// Copy the entire storage to a [`HostBuffer`](crate::HostBuffer).
+    /// Copy the entire storage to a [`HostBuffer`](fuel_ir::HostBuffer).
     fn to_host_buffer_dyn(&self) -> Result<HostBuffer>;
 
     /// Deprecated alias for [`to_host_buffer_dyn`].
@@ -390,7 +390,7 @@ pub trait DynBackendDevice: Send + Sync + std::fmt::Debug {
     /// pressure-aware runtime selectors) can query live memory
     /// signals without naming concrete backend types. Backends
     /// without a runtime impl keep the default `None` — selectors
-    /// treat that as [`crate::backend::FitStatus::Unknown`] (no
+    /// treat that as [`fuel_ir::backend::FitStatus::Unknown`] (no
     /// signal), never as pressure.
     fn as_backend_runtime(&self) -> Option<&dyn crate::backend::BackendRuntime> {
         None

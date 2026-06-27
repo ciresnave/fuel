@@ -54,7 +54,8 @@
 
 use std::sync::Arc;
 
-use fuel_ir::backend::{BackendRuntime, FitStatus};
+use fuel_backend_contract::backend::BackendRuntime;
+use fuel_ir::backend::FitStatus;
 use fuel_ir::probe::BackendId;
 use fuel_ir::DeviceLocation;
 
@@ -233,7 +234,7 @@ mod tests {
     use super::*;
     use crate::fused::{CostEstimate, PrecisionGuarantee};
     use crate::kernel::{KernelCaps, OpParams};
-    use fuel_ir::backend::BackendRuntime;
+    use fuel_backend_contract::backend::BackendRuntime;
     use fuel_ir::probe::BackendId;
     use fuel_ir::{DeviceLocation, Layout, Result};
     use fuel_memory::Storage;

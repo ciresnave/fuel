@@ -12,7 +12,7 @@
 //!
 //! ```no_run
 //! use fuel_cuda_backend::{CudaDevice, PinnedHostStorage};
-//! use fuel_ir::backend::HostStorage;
+//! use fuel_backend_contract::backend::HostStorage;
 //!
 //! let dev = CudaDevice::new(0)?;
 //! let mut buf = PinnedHostStorage::zeros_f32(&dev, 4096)?;
@@ -35,7 +35,7 @@
 
 use crate::{CudaDevice, CudaError, WrapErr};
 use baracuda_driver::pinned::PinnedBuffer;
-use fuel_ir::backend::HostStorage;
+use fuel_backend_contract::backend::HostStorage;
 use fuel_ir::{DType, Error, HostBuffer, HostBufferRef, Result};
 use half::{bf16, f16};
 

@@ -8,8 +8,21 @@ hardware discovery; fuel-core owns none. **B0.4 host-method weld DONE** (`686554
 cpu_storage.rs; fuel-core marker += HostDType; cuda/metal `storage_from_slice` += HostDType.
 Verified fuel-ir+cpu-backend+fuel-core+cuda; metal untested-marked). The `VecOps` supertrait drop
 was **deferred from B0.4 to B0.5** (it requires Map2-trait churn + is coupled to the cpu/ move).
-**Remaining: B0.3 + B0.5** (below), plus the factories.rs dead-`enumerate_devices` cleanup (fold
-into B0.3). NOTE on verification cost: a `fuel-cuda-backend` build is ~36 min cold (baracuda nvcc);
+**B0.3 DONE (2026-06-27, branch `worktree-b0-3-backend-contract` off `main`@`dedc6a22`)** — cut the
+`fuel-backend-contract` crate (above fuel-ir, below the backends): the **11 object-safe traits + the
+type-erased `Storage` handle + `allocate_bundled_storage`** moved out of fuel-ir; the **5 data types**
+(`SubstrateClass`/`TransferPath`/`BackendCapabilities`/`FitStatus`/`GgmlDType`) + the bundle helpers
+(`OutputView`/`OutputViewSpec`/`compose_bundle`) stayed in fuel-ir. **DECISION — changed from this
+doc's original B0.3/B0.5 plan: `Storage` went INTO the contract crate, NOT fuel-memory.** Investigation
+showed `fuel_memory::Storage` is a *different* design (closed-enum byte container) from the moved
+`Box<dyn DynBackendStorage>` eager wrapper, so merging them is a real semantic task — left to B0.5;
+keeping `Storage` in the contract crate kept B0.3 mechanical. The factories.rs dead `enumerate_devices`
+was removed. **Verified:** full CPU-path `cargo check` (fuel-ir/contract/cpu-backend/memory/hardware/
+quantized/dispatch/graph/core/reference) + fuel-ir 28 lib tests + contract 7 tests + fuel-graph bundle
+round-trips + **fuel-core 287 doctests** (only the 3 pre-existing `realize_f32`-on-Result fails) +
+**fuel-cuda-backend built clean (vcvars, 29m)** + **fuel-vulkan-backend clean**; metal re-pointed
+mechanically (unbuildable on Windows, no mac). A 4-agent adversarial diff review found **0 bugs**.
+**Remaining: B0.5.** NOTE on verification cost: a `fuel-cuda-backend` build is ~36 min cold (baracuda nvcc);
 metal is unbuildable here — so per-step, verify the CPU path (fuel-ir+cpu-backend+fuel-core, ~40s)
 and batch one cuda build to confirm the cross-backend re-points. This doc is the resume artifact —
 it captures the code-grounded investigation (a 4-agent sweep) so the remaining steps don't need

@@ -1,7 +1,8 @@
 ﻿use crate::WrapErr;
 use crate::{builder_arg as barg, CudaDevice, CudaStorage, Result};
-use fuel_ir::dyn_backend::DynBackendStorage;
-use fuel_ir::quantized::{DynQuantizedStorage, GgmlDType, QuantizedDeviceKernels};
+use fuel_backend_contract::dyn_backend::DynBackendStorage;
+use fuel_backend_contract::quantized::{DynQuantizedStorage, QuantizedDeviceKernels};
+use fuel_ir::quantized::GgmlDType;
 use fuel_quantized::GgmlType;
 use half::f16;
 use std::any::Any;
@@ -690,7 +691,7 @@ impl DynQuantizedStorage for QCudaStorage {
     fn as_any(&self) -> &dyn Any {
         self
     }
-    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_ir::dyn_backend::DynBackendDevice> {
+    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_backend_contract::dyn_backend::DynBackendDevice> {
         std::sync::Arc::new(self.device.clone())
     }
 }

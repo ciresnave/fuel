@@ -11,6 +11,7 @@
 [dependencies]
     float8          = { workspace = true }
     fuel-ir = { workspace = true }
+    fuel-backend-contract = { workspace = true }
     half            = { workspace = true }
 
 [dev-dependencies]

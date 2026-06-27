@@ -54,7 +54,8 @@ pub use run::{
 };
 
 use crate::registry::{FusedOpId, FusedOpParams};
-use fuel_ir::{DeviceLocation, DType, DynScalar, Layout, Scalar, Shape, Storage, probe::BackendId};
+use fuel_ir::{DeviceLocation, DType, DynScalar, Layout, Scalar, Shape, probe::BackendId};
+use fuel_backend_contract::Storage;
 use half::{bf16, f16};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -3107,7 +3108,7 @@ impl Tensor {
     pub fn from_f32(
         data: impl Into<Arc<[f32]>>,
         shape: impl Into<Shape>,
-        device: &Arc<dyn fuel_ir::DynBackendDevice>,
+        device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
     ) -> Self {
         let v: Arc<[f32]> = data.into();
         let buf = fuel_ir::HostBuffer::F32(v.to_vec());
@@ -3119,7 +3120,7 @@ impl Tensor {
     pub fn from_f64(
         data: impl Into<Arc<[f64]>>,
         shape: impl Into<Shape>,
-        device: &Arc<dyn fuel_ir::DynBackendDevice>,
+        device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
     ) -> Self {
         let v: Arc<[f64]> = data.into();
         let buf = fuel_ir::HostBuffer::F64(v.to_vec());
@@ -3131,7 +3132,7 @@ impl Tensor {
     pub fn from_bf16(
         data: impl Into<Arc<[bf16]>>,
         shape: impl Into<Shape>,
-        device: &Arc<dyn fuel_ir::DynBackendDevice>,
+        device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
     ) -> Self {
         let v: Arc<[bf16]> = data.into();
         let buf = fuel_ir::HostBuffer::BF16(v.to_vec());
@@ -3143,7 +3144,7 @@ impl Tensor {
     pub fn from_f16(
         data: impl Into<Arc<[f16]>>,
         shape: impl Into<Shape>,
-        device: &Arc<dyn fuel_ir::DynBackendDevice>,
+        device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
     ) -> Self {
         let v: Arc<[f16]> = data.into();
         let buf = fuel_ir::HostBuffer::F16(v.to_vec());
@@ -3160,7 +3161,7 @@ impl Tensor {
     pub fn from_u32(
         data: impl Into<Arc<[u32]>>,
         shape: impl Into<Shape>,
-        device: &Arc<dyn fuel_ir::DynBackendDevice>,
+        device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
     ) -> Self {
         let v: Arc<[u32]> = data.into();
         let buf = fuel_ir::HostBuffer::U32(v.to_vec());
@@ -3174,7 +3175,7 @@ impl Tensor {
         buf: fuel_ir::HostBuffer,
         dtype: DType,
         shape: impl Into<Shape>,
-        device: &Arc<dyn fuel_ir::DynBackendDevice>,
+        device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
     ) -> Self {
         let shape = shape.into();
         let n = host_buffer_elem_count(&buf);
@@ -3385,7 +3386,7 @@ impl Tensor {
     /// Used by the Phase 7.6 step 9c E.3.3 forward path to bind
     /// pre-allocated KV-cache storage Arcs (held as the new
     /// `Arc<RwLock<fuel_memory::Storage>>` type, not the legacy
-    /// `fuel_ir::Storage` that `const_like_from_storage` takes)
+    /// `fuel_backend_contract::Storage` that `const_like_from_storage` takes)
     /// into a per-step graph without re-uploading or type-converting.
     ///
     /// **Caller contract**: the same NodeId must appear in the
@@ -9518,7 +9519,7 @@ fn build_filled_const(graph: &SharedGraph, shape: Shape, dtype: DType, value: f6
 /// device parameter — the graph always has at least one slot-bearing
 /// Const leaf by the time backward() runs (the forward pass's inputs
 /// are slot-rooted Const leaves), so this can be relied on.
-fn pick_device_from_graph(graph: &SharedGraph) -> Arc<dyn fuel_ir::DynBackendDevice> {
+fn pick_device_from_graph(graph: &SharedGraph) -> Arc<dyn fuel_backend_contract::DynBackendDevice> {
     let g = graph.read().unwrap();
     for i in 0..g.len() {
         if let Some(slot_arc) = g.storage_for(NodeId(i)) {
@@ -9573,8 +9574,8 @@ mod tests {
     /// storage through the new constructor API. `cpu_dev()` returns a
     /// stable singleton CpuBackendDevice handle so every call site can
     /// just pass `cpu_dev()` without per-test boilerplate.
-    fn cpu_dev() -> &'static Arc<dyn fuel_ir::DynBackendDevice> {
-        static D: std::sync::OnceLock<Arc<dyn fuel_ir::DynBackendDevice>>
+    fn cpu_dev() -> &'static Arc<dyn fuel_backend_contract::DynBackendDevice> {
+        static D: std::sync::OnceLock<Arc<dyn fuel_backend_contract::DynBackendDevice>>
             = std::sync::OnceLock::new();
         D.get_or_init(|| Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
     }
@@ -11441,7 +11442,8 @@ mod tests {
     // Multi-output nodes (Option C, Session 1)
     // ------------------------------------------------------------------
 
-    use fuel_ir::storage::{OutputView, Storage as CoreStorage};
+    use fuel_ir::storage::OutputView;
+    use fuel_backend_contract::storage::Storage as CoreStorage;
 
     /// Build a real CPU `Storage` of `n` F32 zeros so `Storage`-level
     /// tests can attach + read bundle metadata against a live backend
@@ -11836,9 +11838,8 @@ mod tests {
     // up the first real consumer.
     // ------------------------------------------------------------------
 
-    use fuel_ir::storage::{
-        allocate_bundled_storage, OutputViewSpec,
-    };
+    use fuel_backend_contract::storage::allocate_bundled_storage;
+    use fuel_ir::storage::OutputViewSpec;
 
     /// `allocate_bundled_storage` allocates one Storage on the device,
     /// attaches the bundle, and slot lookups report the spec-derived

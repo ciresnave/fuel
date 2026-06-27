@@ -10,6 +10,7 @@ members = [
     "fuel-conv",
     "fuel-core",
     "fuel-ir",
+    "fuel-backend-contract",
     "fuel-hardware",
     "fuel-cpu-backend",
     "fuel-mkl-cpu-backend",
@@ -50,6 +51,7 @@ members = [
 default-members = [
     "fuel-core",
     "fuel-ir",
+    "fuel-backend-contract",
     "fuel-hardware",
     "fuel-cpu-backend",
     "fuel-dispatch",
@@ -110,6 +112,7 @@ fuel = { path = "./fuel-core", package = "fuel-core", version = "0.10.2" }
 fuel-aocl-cpu-backend = { path = "./fuel-aocl-cpu-backend", version = "0.10.2" }
 fuel-conv = { path = "./fuel-conv", version = "0.10.2" }
 fuel-ir = { path = "./fuel-ir", version = "0.10.2" }
+fuel-backend-contract = { path = "./fuel-backend-contract", version = "0.10.2" }
 fuel-hardware = { path = "./fuel-hardware", version = "0.10.2" }
 fuel-correctness-fixtures = { path = "./fuel-correctness-fixtures", version = "0.10.2" }
 fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.10.2" }

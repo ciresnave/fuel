@@ -19,7 +19,7 @@
 //! ## Storage during the migration
 //!
 //! `fuel_graph::Graph::storage_map` uses the legacy
-//! `fuel_ir::Storage` (the `Box<dyn DynBackendStorage>`
+//! `fuel_backend_contract::Storage` (the `Box<dyn DynBackendStorage>`
 //! newtype). The pipelined executor uses the new
 //! `fuel_memory::Storage` (BackendStorage enum + dtype). During
 //! the migration the two coexist — neither is converted on the fly.

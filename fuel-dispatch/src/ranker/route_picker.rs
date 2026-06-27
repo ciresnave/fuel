@@ -371,7 +371,7 @@ mod tests {
     use crate::ranker::{
         BackendRuntimeHandle, ChainedSelector, WinnerSelector,
     };
-    use fuel_ir::backend::BackendRuntime;
+    use fuel_backend_contract::backend::BackendRuntime;
     use fuel_graph::{Node, Op};
     use fuel_ir::{DType, Shape};
 

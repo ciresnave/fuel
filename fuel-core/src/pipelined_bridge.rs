@@ -72,8 +72,9 @@ use std::sync::{Arc, RwLock};
 use fuel_ir::{
     probe::BackendId, DeviceLocation, Error, HostBuffer, Layout, Result, SymEnv,
 };
-use fuel_ir::backend::{BackendRuntime, FitStatus};
-use fuel_ir::dyn_backend::DynBackendDevice;
+use fuel_backend_contract::backend::BackendRuntime;
+use fuel_ir::backend::FitStatus;
+use fuel_backend_contract::dyn_backend::DynBackendDevice;
 use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute, topo_order_multi};
 use fuel_graph::opt::{insert_cross_device_copies, insert_layout_fixups};
 use fuel_dispatch::dispatch::global_bindings;

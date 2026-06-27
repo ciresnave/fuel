@@ -20,7 +20,7 @@
 //! minimum:
 //!
 //! 1. **Pressure tier (the guard).** Query the candidate backend's
-//!    [`fuel_ir::backend::BackendRuntime::would_fit`] for
+//!    [`fuel_backend_contract::backend::BackendRuntime::would_fit`] for
 //!    the estimated output bytes:
 //!    - [`FitStatus::WontFit`] → the candidate is SKIPPED — never
 //!      picked while any alternative survives.
@@ -213,7 +213,7 @@ mod tests {
     use crate::fused::{CostEstimate, PrecisionGuarantee};
     use crate::kernel::{KernelCaps, OpParams};
     use crate::ranker::{HashMapJudge, WinnerSelector};
-    use fuel_ir::backend::BackendRuntime;
+    use fuel_backend_contract::backend::BackendRuntime;
     use fuel_ir::dispatch::{OpKind, SizeClass};
     use fuel_ir::probe::BackendId;
     use fuel_ir::{DType, DeviceLocation, Layout, Result};
