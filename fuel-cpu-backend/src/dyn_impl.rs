@@ -7,7 +7,7 @@
 use fuel_ir::conv::{
     ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,
 };
-use fuel_ir::cpu::erf;
+use fuel_cpu_kernels::erf;
 use fuel_backend_contract::dyn_backend::{DynBackendDevice, DynBackendStorage};
 use fuel_ir::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use fuel_ir::{CpuStorage as HostBuffer, DType, DeviceLocation, Error, Layout, Result,

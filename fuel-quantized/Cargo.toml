@@ -10,6 +10,7 @@
 
 [dependencies]
     fuel-ir  = { workspace = true }
+    fuel-cpu-kernels = { workspace = true }
     fuel-backend-contract = { workspace = true }
     byteorder        = { workspace = true }
     half             = { workspace = true }

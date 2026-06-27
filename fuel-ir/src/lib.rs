@@ -28,7 +28,6 @@ pub type StrideVec = smallvec::SmallVec<[isize; 6]>;
 pub mod backend;
 pub mod capability;
 pub mod conv;
-pub mod cpu;
 mod cpu_storage;
 mod device;
 pub mod dispatch;

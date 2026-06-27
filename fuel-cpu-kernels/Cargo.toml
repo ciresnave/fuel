@@ -1,0 +1,15 @@
+[package]
+    categories.workspace = true
+    description          = "CPU SIMD vector primitives (VecOps, vec_dot, vec_sum, erf) for the fuel ML framework"
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-cpu-kernels"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    float8     = { workspace = true }
+    half       = { workspace = true }
+    libm       = { workspace = true }
+    num-traits = { workspace = true }

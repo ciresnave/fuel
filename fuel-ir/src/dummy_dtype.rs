@@ -197,21 +197,6 @@ macro_rules! dummy_num_assign {
             }
         }
 
-        impl crate::cpu::kernels::VecOps for $ty {
-            fn min(self, _other: Self) -> Self {
-                panic!(
-                    "{} is a dummy type and does not support operations",
-                    stringify!($ty)
-                )
-            }
-
-            fn max(self, _other: Self) -> Self {
-                panic!(
-                    "{} is a dummy type and does not support operations",
-                    stringify!($ty)
-                )
-            }
-        }
     };
 }
 
