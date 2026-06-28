@@ -3683,7 +3683,8 @@ fn execute_work_item(
             let input_arcs = vec![source_arc_contig];
             let mut output_arcs = vec![dest_arc.clone()];
             let kernel_layouts = vec![source_layout_kernel, dest_layout.clone()];
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?
+                .wait()?;
             // Adopt the dest Arc at this WriteSlice node's slot. The
             // realize loop's destructive_input cleanup evicts the
             // dest's own NodeId from the cache afterward — downstream
@@ -3779,7 +3780,8 @@ fn execute_work_item(
             let kernel_layouts = vec![
                 source_layout_kernel, position_layout, dest_layout.clone(),
             ];
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?
+                .wait()?;
             cache.insert(item.node_id, dest_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(())
@@ -4114,7 +4116,8 @@ fn execute_work_item(
             let mut output_arcs = vec![Arc::new(RwLock::new(output))];
             let kernel_layouts =
                 vec![kernel_input_layout, item.output_layout.clone()];
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?
+                .wait()?;
             let arc = output_arcs.into_iter().next().expect("one output");
             cache.insert(item.node_id, arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
@@ -4372,7 +4375,8 @@ fn execute_work_item(
             };
             let mut output_arcs = vec![Arc::new(RwLock::new(output))];
 
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?
+                .wait()?;
 
             let arc = output_arcs.into_iter().next().expect("one output");
             cache.insert(item.node_id, arc);
@@ -4457,7 +4461,8 @@ fn execute_work_item(
             }
             let mut output_arcs = vec![target_arc.clone()];
             kernel_layouts.push(target_layout.clone());
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?
+                .wait()?;
             // Adopt the target Arc at this node's slot. The realize
             // loop's destructive_input cleanup evicts the target's own
             // NodeId from the cache afterward.

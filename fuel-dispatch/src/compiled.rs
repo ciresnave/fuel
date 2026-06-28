@@ -145,8 +145,55 @@ pub fn execute_compiled(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     layouts: &[Layout],
-) -> Result<()> {
-    (compiled.kernel)(inputs, outputs, layouts, &compiled.op_params)
+) -> Result<CompletionHandle> {
+    (compiled.kernel)(inputs, outputs, layouts, &compiled.op_params)?;
+    // Every kernel today is synchronous — CPU computes in-process; CUDA/Vulkan
+    // synchronize inside the kernel (the device/stream is reached via the input
+    // `Storage`, not an executor-held backend). So the work is already complete
+    // when the `KernelRef` returns. Step E Phase A2/A3 will give GPU dispatch an
+    // async path that returns `Pending(handle)` (a CUDA event / Vulkan fence)
+    // instead, which the executor waits on at dependency boundaries.
+    Ok(CompletionHandle::Ready)
+}
+
+/// A node's completion signal, returned by [`execute_compiled`]. Step E
+/// Phase A1 foundation: today every dispatch is synchronous, so this is always
+/// [`CompletionHandle::Ready`] (the work finished before the call returned) and
+/// callers `wait` it immediately — byte-identical to the prior `Result<()>`.
+/// Phases A2/A3 add an async GPU path that returns [`CompletionHandle::Pending`]
+/// carrying a device fence/event the executor defers the wait on.
+///
+/// `#[must_use]`: dropping a `Pending` handle without `wait`ing would leak
+/// un-awaited async work (harmless for today's `Ready`, a correctness bug once
+/// A2/A3 land) — callers must `wait` it or thread it to the executor.
+#[must_use = "a CompletionHandle must be waited on (or threaded to the executor) — dropping a Pending handle leaks async work"]
+pub enum CompletionHandle {
+    /// The work finished synchronously before [`execute_compiled`] returned —
+    /// [`wait`](CompletionHandle::wait) is a no-op.
+    Ready,
+    /// The work was enqueued asynchronously; [`wait`](CompletionHandle::wait)
+    /// blocks until the carried device signal fires. (No producers until A2/A3.)
+    Pending(Box<dyn Completion>),
+}
+
+impl CompletionHandle {
+    /// Block until this node's work has finished. No-op for [`Ready`].
+    ///
+    /// [`Ready`]: CompletionHandle::Ready
+    pub fn wait(self) -> Result<()> {
+        match self {
+            CompletionHandle::Ready => Ok(()),
+            CompletionHandle::Pending(c) => c.wait(),
+        }
+    }
+}
+
+/// An async-dispatch completion signal — a backend's wrapper over a CUDA event
+/// / Vulkan fence so the executor can defer the wait past the submit point
+/// (Step E Phase A2/A3). No implementors today; all dispatch is synchronous.
+pub trait Completion: Send {
+    /// Block until the enqueued work this handle represents has finished.
+    fn wait(self: Box<Self>) -> Result<()>;
 }
 
 #[cfg(test)]
@@ -183,13 +230,42 @@ mod tests {
 
         let layout_3 = Layout::contiguous(fuel_ir::Shape::from(vec![3]));
         let layouts = vec![layout_3.clone(), layout_3.clone(), layout_3];
-        execute_compiled(&compiled, &inputs, &mut outputs, &layouts).expect("execute");
+        execute_compiled(&compiled, &inputs, &mut outputs, &layouts)
+            .expect("execute")
+            .wait()
+            .expect("wait");
 
         let out_guard = outputs[0].read().unwrap();
         if let fuel_memory::BackendStorage::Cpu(c) = &out_guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
             assert_eq!(typed, &[6.0, 8.0, 10.0]);
         }
+    }
+
+    /// Step E A1: the completion-handle contract — `Ready.wait()` is a no-op
+    /// success; `Pending(c).wait()` delegates to the boxed `Completion`.
+    #[test]
+    fn completion_handle_ready_is_noop_pending_delegates() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc as StdArc;
+
+        CompletionHandle::Ready.wait().expect("Ready.wait() is Ok");
+
+        struct Flag(StdArc<AtomicBool>);
+        impl Completion for Flag {
+            fn wait(self: Box<Self>) -> Result<()> {
+                self.0.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        let waited = StdArc::new(AtomicBool::new(false));
+        CompletionHandle::Pending(Box::new(Flag(waited.clone())))
+            .wait()
+            .expect("Pending.wait() is Ok");
+        assert!(
+            waited.load(Ordering::SeqCst),
+            "Pending.wait() must run the boxed Completion",
+        );
     }
 
     /// compile_node surfaces NoBackendForOp on missing binding.
