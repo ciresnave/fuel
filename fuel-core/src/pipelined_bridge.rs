@@ -75,13 +75,13 @@ use fuel_ir::{
 use fuel_backend_contract::backend::BackendRuntime;
 use fuel_ir::backend::FitStatus;
 use fuel_backend_contract::dyn_backend::DynBackendDevice;
-use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute, topo_order_multi};
+use fuel_graph::{Graph, Node, NodeId, Op, topo_order_multi};
 use fuel_dispatch::dispatch::global_bindings;
 use fuel_dispatch::optimize::{optimize_graph, OptimizedGraph};
 use fuel_dispatch::plan::{ExecutionPlan, PlanOptions};
 use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
 use fuel_dispatch::ranker::{
-    pick_route, BackendRuntimeHandle, BackendRuntimeLookup, ChainedSelector, JudgeOracle,
+    BackendRuntimeHandle, BackendRuntimeLookup, ChainedSelector, JudgeOracle,
     RuntimeSelector,
 };
 use fuel_memory::{BackendStorage, Storage};
@@ -402,29 +402,26 @@ fn dispatch_with_plan_retry(
         // provider threaded through `build_optimized_graph`. The graph arrives
         // here already copy-stitched and fixed up; the bridge no longer runs
         // either pass.
-        // PR-C1: resolve the runtime route — Picker 2 chooses one arm per
-        // `Op::Branch` by live telemetry (VRAM-pressure guard + Judge
-        // rank over the production `ChainedSelector`). A branchless graph
-        // (CPU-only build, or no genuine fork) yields an empty route, so
-        // the executor falls back to the arm-0 lowering — realize
-        // unchanged from Phase B.
-        let route = resolve_runtime_route(graph, &[cpu_target], &plan, device)?;
-        let cache_for_attempt = cache.clone();
-        // Dispatch the "plan IS the graph" form: the executor recomputes
-        // its run/`lower_run` dispatch order from the (now fully-stamped)
-        // graph, following the picker's chosen arms (or arm-0 when there
-        // is no route), and resolves each node's kernel via the
-        // binding-table lookup.
-        let result = match &route {
-            Some(route) => PipelinedExecutor::realize_with_optimized_route_env(
-                graph.clone(), cpu_target, cache_for_attempt, &optimized, route,
-                sym_env.clone(),
-            ),
-            None => PipelinedExecutor::realize_with_optimized_env(
-                graph.clone(), cpu_target, cache_for_attempt, &optimized,
-                sym_env.clone(),
-            ),
+        // Cleanup Step C: the EXECUTOR owns `Op::Branch` arm-selection now.
+        // The bridge builds the runtime selector + live device lookup (Device-
+        // and Judge-derived, so they stay here) and hands them to the executor,
+        // which picks one arm per branch at dispatch — or arm-0 when the
+        // selector is disabled / the graph is branchless (realize unchanged
+        // from Phase B). Replaces the bridge's old `resolve_runtime_route`.
+        let sel_lookup = production_selector_for(device);
+        let (selector, lookup) = match &sel_lookup {
+            Some((s, l)) => (Some(s.as_ref()), Some(l)),
+            None => (None, None),
         };
+        let cache_for_attempt = cache.clone();
+        // Dispatch the "plan IS the graph" form: the executor recomputes its
+        // run/`lower_run` dispatch order from the (now fully-stamped) graph,
+        // picks each branch's arm, then resolves each node's kernel via the
+        // binding-table lookup.
+        let result = PipelinedExecutor::realize_with_optimized_picking_env(
+            graph.clone(), cpu_target, cache_for_attempt, &optimized, &plan,
+            selector, lookup, sym_env.clone(),
+        );
         match result {
             Ok((storage, _layout)) => {
                 // Session 3 rider: report which sibling dispatched for
@@ -571,21 +568,19 @@ fn dispatch_many_with_plan_retry(
         // stamped, copy-stitched graph.
         let (optimized, plan) =
             build_optimized_graph(graph, effective_targets, pinned_loc, &cache)?;
-        // PR-C1: resolve the runtime route (Picker 2) over the branches;
-        // empty for a branchless graph ⇒ arm-0 lowering ⇒ Phase B.
-        let route =
-            resolve_runtime_route(graph, effective_targets, &plan, device)?;
-        let cache_for_attempt = cache.clone();
-        let result = match &route {
-            Some(route) => PipelinedExecutor::realize_many_with_optimized_route_env(
-                graph.clone(), effective_targets, cache_for_attempt, &optimized,
-                route, sym_env.clone(),
-            ),
-            None => PipelinedExecutor::realize_many_with_optimized_env(
-                graph.clone(), effective_targets, cache_for_attempt, &optimized,
-                sym_env.clone(),
-            ),
+        // Cleanup Step C: the executor picks each branch's arm at dispatch
+        // (was the bridge's `resolve_runtime_route`); the bridge just builds +
+        // hands over the Device/Judge-derived selector + live lookup.
+        let sel_lookup = production_selector_for(device);
+        let (selector, lookup) = match &sel_lookup {
+            Some((s, l)) => (Some(s.as_ref()), Some(l)),
+            None => (None, None),
         };
+        let cache_for_attempt = cache.clone();
+        let result = PipelinedExecutor::realize_many_with_optimized_picking_env(
+            graph.clone(), effective_targets, cache_for_attempt, &optimized, &plan,
+            selector, lookup, sym_env.clone(),
+        );
         match result {
             Ok(r) => break Ok(r),
             Err(e) if matches!(e, Error::TopologyChanged { .. })
@@ -1059,18 +1054,18 @@ fn location_to_backend_id(loc: DeviceLocation) -> BackendId {
 }
 
 // ---------------------------------------------------------------------------
-// Runtime route picker (Picker 2) — Phase C PR-C1
+// Runtime route picker (Picker 2) — selector construction (cleanup Step C)
 // ---------------------------------------------------------------------------
 //
-// Re-introduces the selector + live-telemetry plumbing PR-A3b-2 removed
-// (`production_selector_for` / `backend_runtime_lookup_for` /
-// `DeviceRuntimeHandle`), now feeding the **branch route picker**
-// (`fuel_dispatch::ranker::pick_route`) rather than a per-node selector.
-// The bridge builds the production `ChainedSelector` (VRAM-pressure guard
-// + Judge-aware rank) and the live per-tier free-memory lookup, then
-// resolves one arm per `Op::Branch` into a `PickedRoute` the executor
-// lowers via `lower_picked_route`. With no branches (CPU-only build) the
-// route is empty and realize is unchanged from Phase B.
+// The selector + live-telemetry plumbing (`production_selector_for` /
+// `backend_runtime_lookup_for` / `DeviceRuntimeHandle`) is built HERE because
+// it needs the realize `Device` + the Judge oracle, both fuel-core. Cleanup
+// Step C moved the *pick itself* into the executor: the bridge builds the
+// production `ChainedSelector` (VRAM-pressure guard + Judge-aware rank) and
+// the live per-tier free-memory lookup, then hands them to the executor's
+// `realize_with_optimized_picking_env`, which runs `pick_route` (one arm per
+// `Op::Branch`) at dispatch and lowers via `lower_picked_route`. With no
+// branches (CPU-only build) the route is empty and realize is unchanged.
 
 /// Opt-out knob for the runtime route picker. Matches the `FUEL_*`
 /// env-var convention (`FUEL_FORCE_F32`, `FUEL_TRACE`, ...): set
@@ -1165,37 +1160,6 @@ fn backend_runtime_lookup_for(device: &Device) -> BackendRuntimeLookup {
         }
         None
     })
-}
-
-/// Resolve the runtime route — one arm per `Op::Branch` chosen by the
-/// production Picker 2 (selector + live telemetry). `None` when the
-/// picker is disabled; otherwise the [`PickedRoute`] the executor lowers
-/// via `lower_picked_route`. A branchless graph yields an empty route
-/// (the picker is a no-op), so realize is byte-identical to Phase B.
-fn resolve_runtime_route(
-    graph: &Arc<RwLock<Graph>>,
-    roots: &[NodeId],
-    plan: &ExecutionPlan,
-    device: &Device,
-) -> Result<Option<PickedRoute>> {
-    let Some((selector, lookup)) = production_selector_for(device) else {
-        return Ok(None);
-    };
-    let g = graph
-        .read()
-        .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
-    // Cheap branchless fast-path: a graph with no `Op::Branch` (every
-    // CPU-only build, every graph with no genuine fork) has no decision
-    // for the picker. Skip the topo walk + selector entirely and take the
-    // arm-0 lowering — realize is byte-identical to Phase B, with no
-    // per-realize picker overhead on the common case.
-    let has_branch = (0..g.len())
-        .any(|i| matches!(g.node(NodeId(i)).op, Op::Branch { .. }));
-    if !has_branch {
-        return Ok(None);
-    }
-    let route = pick_route(&g, roots, plan, selector.as_ref(), Some(&lookup));
-    Ok(Some(route))
 }
 
 // ---------------------------------------------------------------------------
@@ -1515,12 +1479,12 @@ mod tests {
         initial.insert(c2, cpu_storage_f32(&[10.0, 20.0, 30.0, 40.0]));
 
         let device = crate::Device::cpu();
-        // PR-C1: the production runtime route picker (Picker 2) defaults
-        // ON, so this CPU realize goes through `resolve_runtime_route` →
-        // `pick_route`. A CPU-only graph has no `Op::Branch`, so the route
-        // is empty ⇒ the executor uses the arm-0 lowering ⇒ realize is
-        // unchanged. The correct bytes pin that no-branch-no-op contract
-        // at the bridge level.
+        // Step C: the production runtime route picker (Picker 2) defaults
+        // ON, so this CPU realize threads the bridge-built selector into the
+        // executor's `realize_with_optimized_picking_env`, which runs the
+        // pick. A CPU-only graph has no `Op::Branch`, so the route is empty
+        // ⇒ the executor uses the arm-0 lowering ⇒ realize is unchanged. The
+        // correct bytes pin that no-branch-no-op contract at the bridge level.
         assert!(
             production_selector_for(&device).is_some(),
             "the runtime route picker defaults ON (no opt-out env set)",
