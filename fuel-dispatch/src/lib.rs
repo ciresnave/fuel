@@ -57,7 +57,10 @@ pub mod residency;
 pub mod topology;
 pub mod vulkan_dispatch;
 
-pub use compiled::{compile_node, dispatched_kernel_source, execute_compiled, CompiledNode};
+pub use compiled::{
+    compile_node, dispatched_kernel_source, execute_compiled, Completion, CompiledNode,
+    CompletionHandle,
+};
 pub use driver::{
     FrontierConvergenceOptimizer, OptimizationContext, Optimizer, PassRegistry,
     Pathfinder, PlacementForkPathfinder,
