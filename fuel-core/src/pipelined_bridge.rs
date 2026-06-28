@@ -76,7 +76,7 @@ use fuel_backend_contract::backend::BackendRuntime;
 use fuel_ir::backend::FitStatus;
 use fuel_backend_contract::dyn_backend::DynBackendDevice;
 use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute, topo_order_multi};
-use fuel_graph::opt::{insert_cross_device_copies, insert_layout_fixups};
+use fuel_graph::opt::insert_cross_device_copies;
 use fuel_dispatch::dispatch::global_bindings;
 use fuel_dispatch::optimize::{optimize_graph, OptimizedGraph};
 use fuel_dispatch::plan::{ExecutionPlan, PlanOptions};
@@ -103,11 +103,13 @@ use crate::topology::SystemTopology;
 ///    `device`. Per-node backends are NOT pinned here (picker-arc
 ///    step 4a) — the device is the only pin.
 /// 2. `build_optimized_graph` — `optimize_graph` transforms the graph
-///    in place ("plan IS the graph") against the pinned device and
-///    surfaces the `ExecutionPlan` it computed; `stamp_plan_backends`
-///    commits each winner's backend to the graph.
-/// 3. `insert_resident_input_copies` + `apply_layout_fixups` —
-///    residency + layout stitching against the final placements.
+///    in place ("plan IS the graph") against the pinned device: it stamps
+///    each winner's backend onto the graph (cleanup A1) AND inserts the
+///    layout-fixup `Op::Contiguize` nodes (cleanup Step B), then surfaces
+///    the `ExecutionPlan` it computed.
+/// 3. `insert_resident_input_copies` — residency (cross-device `Op::Copy`)
+///    stitching against the final placements. (Layout-fixup moved to
+///    `optimize_graph` in Step B; residency follows in Step B-residency.)
 /// 4. `PipelinedExecutor::realize_with_optimized` — kick the compile +
 ///    execute pipeline over the run/`lower_run` dispatch order; returns
 ///    a `BackendStorage::Cpu` for the spliced root.
@@ -401,11 +403,9 @@ fn dispatch_with_plan_retry(
         insert_resident_input_copies(
             graph, &[cpu_target], &cache, pinned_loc, &plan,
         )?;
-        // Insert Op::Contiguize before any kernel whose chosen winner
-        // doesn't advertise `KernelCaps::strided_input` and whose live
-        // input layout is non-contiguous. CSE-deduped across consumers;
-        // idempotent on retry.
-        apply_layout_fixups(graph, &[cpu_target], &plan)?;
+        // Layout-fixup (`Op::Contiguize` before strided-rejecting kernels) is
+        // now an optimizer pass inside `optimize_graph` (cleanup Step B), so the
+        // bridge no longer runs it — the graph arrives here already fixed up.
         // PR-C1: resolve the runtime route — Picker 2 chooses one arm per
         // `Op::Branch` by live telemetry (VRAM-pressure guard + Judge
         // rank over the production `ChainedSelector`). A branchless graph
@@ -465,33 +465,6 @@ fn dispatched_kernel_source(
     let set = plan.alternatives(node)?;
     let pick = set.winner()?;
     Some(pick.kernel_source)
-}
-
-/// Phase 2.2 wiring: insert `Op::Contiguize` before kernels whose
-/// committed winner rejects strided inputs. The callback queries
-/// the plan's per-node `AlternativeSet::winner()` for its caps.
-/// Idempotent — safe to call on retry.
-///
-/// When a node has no plan entry (the picker skipped it because
-/// `op_to_op_kind` returned `None`, typical for view ops + structural
-/// ops), the callback returns `true` (= no fixup needed); the
-/// executor's auto-Contiguize gate at execute time is the safety net
-/// for these.
-fn apply_layout_fixups(
-    graph: &Arc<RwLock<Graph>>,
-    roots: &[NodeId],
-    plan: &ExecutionPlan,
-) -> Result<()> {
-    let mut g = graph
-        .write()
-        .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
-    insert_layout_fixups(&mut g, roots, |id| {
-        plan.alternatives(id)
-            .and_then(|set| set.winner())
-            .map(|cand| cand.caps.strided_input)
-            .unwrap_or(true)
-    });
-    Ok(())
 }
 
 /// Multi-target counterpart of [`realize_one_as_with_initial`].
@@ -605,7 +578,7 @@ fn dispatch_many_with_plan_retry(
         insert_resident_input_copies(
             graph, effective_targets, &cache, pinned_loc, &plan,
         )?;
-        apply_layout_fixups(graph, effective_targets, &plan)?;
+        // Layout-fixup now runs inside `optimize_graph` (cleanup Step B).
         // PR-C1: resolve the runtime route (Picker 2) over the branches;
         // empty for a branchless graph ⇒ arm-0 lowering ⇒ Phase B.
         let route =
@@ -2353,15 +2326,14 @@ mod tests {
             prepare(&graph, &[out], &device, initial).expect("prepare");
         let cpu_target = eff.pop().expect("one effective target");
 
-        // The bridge's correctness sequence: one optimize_graph surfaces
-        // the plan that drives stamp/residency/layout, then dispatch.
+        // The bridge's correctness sequence: one optimize_graph stamps the
+        // winning backends AND runs layout-fixup internally (cleanup A1 +
+        // Step B); only residency remains a bridge pass, then dispatch.
         let (optimized, plan) =
             build_optimized_graph(&graph, &[cpu_target], pinned, &cache)
                 .expect("optimize_graph");
-        stamp_plan_backends(&graph, &[cpu_target], &plan, pinned).expect("stamp");
         insert_resident_input_copies(&graph, &[cpu_target], &cache, pinned, &plan)
             .expect("residency");
-        apply_layout_fixups(&graph, &[cpu_target], &plan).expect("fixups");
 
         let (storage, _layout) = PipelinedExecutor::realize_with_optimized(
             graph.clone(), cpu_target, cache, &optimized,

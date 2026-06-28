@@ -251,6 +251,20 @@ pub fn optimize_graph(
     // re-stamps the identical result; Step A2 removes the bridge copy.)
     if let Some(pinned) = opts.pinned_device {
         stamp_plan_backends(graph, roots, &plan, pinned);
+        // Cleanup Step B (layout): insert `Op::Contiguize` before any kernel
+        // whose chosen winner rejects strided inputs and whose input layout is
+        // non-contiguous — the optimizer writing the layout-fixup decision INTO
+        // the graph (was the bridge's `apply_layout_fixups`, now retired). No
+        // runtime deps: reads only the in-scope `plan` winner caps + graph
+        // layout. CSE-deduped + idempotent. Gated on `pinned_device` so it runs
+        // on the realize path (which always sets one), matching the prior
+        // bridge behavior; bare-graph test callers without a pin are unaffected.
+        fuel_graph::opt::insert_layout_fixups(graph, roots, |id| {
+            plan.alternatives(id)
+                .and_then(|set| set.winner())
+                .map(|cand| cand.caps.strided_input)
+                .unwrap_or(true)
+        });
     }
 
     Ok((
@@ -358,14 +372,16 @@ mod tests {
     }
 
     fn f32_node(g: &mut Graph, op: Op, inputs: Vec<NodeId>) -> NodeId {
-        let id = g.push(Node {
+        // No pre-stamp: post-Step-A `optimize_graph` writes `target_backend`
+        // itself, so pre-stamping here is redundant for the tests that run the
+        // optimizer — and it would falsify the `*_stamps_backends_*` tests'
+        // "unstamped before optimize" / "Const leaf not stamped" preconditions.
+        g.push(Node {
             op,
             inputs,
             shape: Shape::from_dims(&[4]),
             dtype: DType::F32,
-        });
-        g.set_target_backend(id, BackendId::Cpu);
-        id
+        })
     }
 
     /// A representative branchless CPU graph the optimizer can fully
@@ -443,11 +459,57 @@ mod tests {
     fn optimize_graph_without_pinned_device_does_not_stamp() {
         let mut table = KernelBindingTable::new();
         let (mut g, root) = build_straight_line_graph(&mut table);
+        // Give each node a device context via a graph PLACEMENT (a distinct
+        // side-table from `target_backend`), so `compile_plan` resolves without
+        // a pinned device — then assert `optimize_graph` performs no
+        // `target_backend` stamping (the stamping arm is guarded on
+        // `pinned_device`, so without a pin nothing is stamped).
+        for id in [NodeId(0), NodeId(1), NodeId(2), NodeId(3)] {
+            g.set_placement(id, DeviceLocation::Cpu);
+        }
         let opts = PlanOptions::new().without_cost_population(); // no pinned device
         let _ = optimize_graph(&mut g, &[root], &table, &opts).expect("optimize_graph");
         assert!(
             g.target_backend(NodeId(1)).is_none(),
-            "no pinned device ⇒ no stamping",
+            "no pinned device ⇒ no target_backend stamping",
+        );
+    }
+
+    /// Cleanup Step B (layout): `optimize_graph` inserts an `Op::Contiguize`
+    /// before a kernel whose chosen winner rejects strided inputs
+    /// (`caps.strided_input == false`, e.g. the `KernelCaps::empty()`
+    /// elementwise bindings) and whose input layout is non-contiguous — the
+    /// layout-fixup pass moved from the realize-time bridge into the optimizer.
+    /// The pass itself is exhaustively tested in `fuel-graph::opt`; this guards
+    /// the optimizer-side wiring (callback reads the plan winner's caps, runs
+    /// inside the pinned guard).
+    #[test]
+    fn optimize_graph_inserts_layout_fixup_for_strided_input() {
+        let mut table = KernelBindingTable::new();
+        register_elementwise(&mut table, OpKind::ReluElementwise, 1); // empty caps ⇒ rejects strided
+        let mut g = Graph::new();
+        let a = f32_node(&mut g, Op::Const, vec![]);
+        let r = f32_node(&mut g, Op::Relu, vec![a]);
+        // Make `a`'s effective layout non-contiguous (non-zero start_offset),
+        // so the strided-rejecting Relu needs a Contiguize on its input.
+        g.set_layout(a, Layout::contiguous_with_offset(Shape::from_dims(&[4]), 1));
+
+        let (_optimized, _plan) = optimize_graph(&mut g, &[r], &table, &cpu_opts())
+            .expect("optimize_graph with a strided input");
+
+        // Relu's input was `a`; after the fixup it must read through an inserted
+        // Op::Contiguize wrapping `a`.
+        let relu_input = g.node(r).inputs[0];
+        assert!(
+            matches!(g.node(relu_input).op, Op::Contiguize),
+            "strided input to a strided-rejecting kernel must be fixed up via \
+             Op::Contiguize, got {:?}",
+            g.node(relu_input).op,
+        );
+        assert_eq!(
+            g.node(relu_input).inputs,
+            vec![a],
+            "the inserted Op::Contiguize wraps the original strided input",
         );
     }
 
