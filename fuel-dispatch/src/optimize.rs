@@ -77,15 +77,17 @@
 //! equality exactly (same `NodeId`s, same order) — see
 //! [`tests::equivalence_gate_branchless_order_matches_compile_plan`].
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DeviceLocation, Result};
+use fuel_graph::opt::insert_cross_device_copies;
 use fuel_graph::{extract_runs_multi, topo_order_multi, Graph, NodeId, Op};
 
 use crate::driver::{OptimizationContext, PassRegistry};
 use crate::kernel::KernelBindingTable;
 use crate::plan::{compile_plan, ExecutionPlan, PlanOptions};
+use crate::topology::SystemTopology;
 
 /// The transient *view* [`optimize_graph`] returns — the realize-roots
 /// it optimized for plus the topology generation it ran under. It is
@@ -251,6 +253,14 @@ pub fn optimize_graph(
     // re-stamps the identical result; Step A2 removes the bridge copy.)
     if let Some(pinned) = opts.pinned_device {
         stamp_plan_backends(graph, roots, &plan, pinned);
+        // Cleanup Step B (residency): the optimizer-side cross-device copy pass
+        // (was the bridge's `insert_resident_input_copies`). Runs AFTER stamping
+        // (it reads `target_backend`) and BEFORE layout-fixup, preserving the
+        // prior residency→layout order. Cache residency (where persistent /
+        // const inputs already live) arrives via the `opts.input_residency`
+        // provider the realize path already threads in — the optimizer reads
+        // that fact, it does not touch realize-time storage.
+        insert_residency_copies(graph, roots, &plan, pinned, opts.input_residency);
         // Cleanup Step B (layout): insert `Op::Contiguize` before any kernel
         // whose chosen winner rejects strided inputs and whose input layout is
         // non-contiguous — the optimizer writing the layout-fixup decision INTO
@@ -310,6 +320,143 @@ fn stamp_plan_backends(
             .unwrap_or(pinned_backend);
         graph.set_target_backend(id, stamp);
     }
+}
+
+/// Cleanup Step B (residency): the optimizer-side cross-device copy pass —
+/// insert `Op::Copy { target }` on every edge whose producer's resident
+/// location doesn't share a storage substrate with the consumer's placement,
+/// then stamp each inserted copy's `target_backend` with the SOURCE backend
+/// (the pipelined executor's `Op::Copy` convention: the transfer kernel runs
+/// on the backend the bytes come FROM). Was the bridge's
+/// `insert_resident_input_copies`; moved here so the optimizer — not the
+/// realize-time bridge — owns the residency decision and writes it into the
+/// graph.
+///
+/// Placements come from graph-knowable facts only (no realize-time storage):
+/// residency-declaring ops, explicit `Graph::placement` (the bridge converts
+/// cache residency into placement stamps before optimize — cleanup Step B),
+/// the plan winner's device, the `target_backend` stamp (→ pinned), and view
+/// pass-through. Substrate sharing is queried via the process-global
+/// `SystemTopology` (available pre-realize once backends are registered).
+///
+/// Runs after `stamp_plan_backends` (it reads `target_backend`); the re-stamp
+/// sweep below restores the source-backend stamp on copies/moves that the
+/// stamping pass overwrote with the pinned backend.
+fn insert_residency_copies(
+    graph: &mut Graph,
+    roots: &[NodeId],
+    plan: &ExecutionPlan,
+    pinned_loc: DeviceLocation,
+    input_residency: Option<&dyn Fn(NodeId) -> Option<DeviceLocation>>,
+) {
+    let placements = effective_placements(graph, roots, plan, pinned_loc, input_residency);
+    let topology = SystemTopology::current();
+    // Identical locations short-circuit to `true` BEFORE the topology lookup
+    // (a location trivially shares bytes with itself; `shares_storage` returns
+    // `false` for unknown backends, so without this an unprobed topology would
+    // wrap every same-device edge in a copy).
+    let shares = |a: DeviceLocation, b: DeviceLocation| -> bool {
+        if a == b {
+            return true;
+        }
+        topology.shares_storage(
+            (location_to_backend_id(a), a),
+            (location_to_backend_id(b), b),
+        )
+    };
+    let inserted = insert_cross_device_copies(
+        graph,
+        roots,
+        |id| placements.get(&id).copied(),
+        shares,
+    );
+    // Stamp the new copies: target_backend = SOURCE backend. The pass only
+    // inserts a copy when the producer's placement resolved to Some.
+    for &copy_id in &inserted {
+        if let Some(&src) = graph.node(copy_id).inputs.first() {
+            if let Some(&src_loc) = placements.get(&src) {
+                graph.set_target_backend(copy_id, location_to_backend_id(src_loc));
+            }
+        }
+    }
+    // Re-stamp ALL copies/moves with their SOURCE backend — graph rewrites are
+    // sticky and `stamp_plan_backends` just overwrote pre-existing ones (e.g.
+    // realize-root splices) with the pinned backend; the transfer kernel runs
+    // where the bytes come from. The freshly-inserted copies are visited too,
+    // but their input's placement resolves to the same source location, so the
+    // sweep re-applies the identical stamp (idempotent). Copies whose source
+    // placement is absent keep whatever stamp they already have.
+    let order = topo_order_multi(graph, roots);
+    for &id in &order {
+        if !matches!(graph.node(id).op, Op::Copy { .. } | Op::Move { .. }) {
+            continue;
+        }
+        let Some(&src) = graph.node(id).inputs.first() else { continue };
+        let Some(&src_loc) = placements.get(&src) else { continue };
+        graph.set_target_backend(id, location_to_backend_id(src_loc));
+    }
+}
+
+/// Compute every reachable node's *effective placement* for the residency
+/// pass, mirroring the bridge's old `effective_placements`. Priority per node:
+///
+/// 1. **Residency-declaring ops** — `Op::Copy`/`Op::Move`/`Op::Alloc` carry
+///    their output location in the variant (definitional).
+/// 2. **Explicit `Graph::placement`** — set by inserted copies (and any
+///    caller-provided placement hints).
+/// 3. **Input residency** — where a persistent / const input already lives,
+///    supplied by the realize path via `PlanOptions::input_residency`. This is
+///    the only runtime fact, read through the provider closure — the optimizer
+///    never touches the storage itself.
+/// 4. **Plan winner** — a planned node runs on its winner's device.
+/// 5. **Backend stamp** — a node with `target_backend` but no plan entry
+///    (structural ops) follows the pinned device.
+/// 6. **View pass-throughs** — view ops / `Reshape` / `Contiguize` follow
+///    their data input (already resolved; `order` is topological).
+fn effective_placements(
+    g: &Graph,
+    roots: &[NodeId],
+    plan: &ExecutionPlan,
+    pinned_loc: DeviceLocation,
+    input_residency: Option<&dyn Fn(NodeId) -> Option<DeviceLocation>>,
+) -> HashMap<NodeId, DeviceLocation> {
+    let order = topo_order_multi(g, roots);
+    let mut map: HashMap<NodeId, DeviceLocation> =
+        HashMap::with_capacity(order.len());
+    for &id in &order {
+        let node = g.node(id);
+        match node.op {
+            Op::Copy { target } | Op::Move { target } | Op::Alloc { target } => {
+                map.insert(id, target);
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(loc) = g.placement(id) {
+            map.insert(id, loc);
+            continue;
+        }
+        if let Some(loc) = input_residency.and_then(|f| f(id)) {
+            map.insert(id, loc);
+            continue;
+        }
+        if let Some(winner) = plan.alternatives(id).and_then(|set| set.winner()) {
+            map.insert(id, winner.device);
+            continue;
+        }
+        if g.target_backend(id).is_some() {
+            map.insert(id, pinned_loc);
+            continue;
+        }
+        if node.op.is_view_op()
+            || matches!(node.op, Op::Reshape(_) | Op::Contiguize)
+        {
+            if let Some(&loc) = node.inputs.first().and_then(|i| map.get(i)) {
+                map.insert(id, loc);
+            }
+        }
+    }
+    map
 }
 
 fn location_to_backend_id(loc: DeviceLocation) -> BackendId {
@@ -510,6 +657,103 @@ mod tests {
             g.node(relu_input).inputs,
             vec![a],
             "the inserted Op::Contiguize wraps the original strided input",
+        );
+    }
+
+    // ---- Cleanup Step B (residency) — insert_residency_copies tests ----
+    // (migrated from the bridge's insert_resident_input_copies unit tests;
+    // cache residency is supplied via an `input_residency` closure instead of a
+    // live StorageCache. Placement metadata only — no GPU needed; the unprobed
+    // test `SystemTopology` reports Cpu/Cuda as non-sharing, so a crossing is
+    // detected and a copy inserted.)
+
+    /// Co-located graph ⇒ `insert_residency_copies` is a no-op (no crossings).
+    #[test]
+    fn residency_noop_when_colocated() {
+        let mut g = Graph::new();
+        let c1 = f32_node(&mut g, Op::Const, vec![]);
+        let c2 = f32_node(&mut g, Op::Const, vec![]);
+        let add = f32_node(&mut g, Op::Add, vec![c1, c2]);
+        g.set_target_backend(add, BackendId::Cpu);
+        let residency =
+            |id: NodeId| (id == c1 || id == c2).then_some(DeviceLocation::Cpu);
+        let pre = g.len();
+        insert_residency_copies(
+            &mut g, &[add], &ExecutionPlan::empty(), DeviceLocation::Cpu,
+            Some(&residency),
+        );
+        assert_eq!(g.len(), pre, "co-located graph must be a no-op");
+        assert_eq!(g.node(add).inputs, vec![c1, c2], "edges untouched");
+    }
+
+    /// A CPU-resident input feeding two CUDA-pinned consumers ⇒ exactly ONE
+    /// `Op::Copy` bridges the crossing (CSE-deduped), targeting the consumer
+    /// device, stamped `target_backend = SOURCE` (Cpu, the H2D wrapper) with
+    /// its output placed on the consumer device.
+    #[test]
+    fn residency_one_copy_per_crossing_deduped() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut g = Graph::new();
+        let c1 = f32_node(&mut g, Op::Const, vec![]);
+        let neg = f32_node(&mut g, Op::Neg, vec![c1]);
+        let sqr = f32_node(&mut g, Op::Sqr, vec![c1]);
+        g.set_target_backend(neg, BackendId::Cuda);
+        g.set_target_backend(sqr, BackendId::Cuda);
+        let residency = |id: NodeId| (id == c1).then_some(DeviceLocation::Cpu);
+
+        let pre = g.len();
+        insert_residency_copies(
+            &mut g, &[neg, sqr], &ExecutionPlan::empty(), cuda0, Some(&residency),
+        );
+
+        assert_eq!(g.len(), pre + 1, "one crossing → one copy, CSE-deduped");
+        let neg_in = g.node(neg).inputs[0];
+        let sqr_in = g.node(sqr).inputs[0];
+        assert_eq!(neg_in, sqr_in, "both consumers share the one copy");
+        assert_ne!(neg_in, c1, "consumers rewired off the raw input");
+        let copy = g.node(neg_in);
+        assert!(
+            matches!(copy.op, Op::Copy { target } if target == cuda0),
+            "copy targets the consumer device; got {:?}", copy.op,
+        );
+        assert_eq!(copy.inputs, vec![c1], "copy reads the resident slot");
+        assert_eq!(
+            g.target_backend(neg_in), Some(BackendId::Cpu),
+            "stamped with the SOURCE backend (H2D runs on the CPU wrapper)",
+        );
+        assert_eq!(
+            g.placement(neg_in), Some(cuda0),
+            "copy output placed on the consumer device",
+        );
+    }
+
+    /// Idempotence + re-stamp: a second pass on the rewritten graph inserts
+    /// nothing and restores the source-backend stamp even after a clobber
+    /// (mimicking `stamp_plan_backends` overwriting it with the pinned backend).
+    #[test]
+    fn residency_idempotent_and_restamped_on_second_call() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut g = Graph::new();
+        let c1 = f32_node(&mut g, Op::Const, vec![]);
+        let neg = f32_node(&mut g, Op::Neg, vec![c1]);
+        g.set_target_backend(neg, BackendId::Cuda);
+        let residency = |id: NodeId| (id == c1).then_some(DeviceLocation::Cpu);
+
+        insert_residency_copies(
+            &mut g, &[neg], &ExecutionPlan::empty(), cuda0, Some(&residency),
+        );
+        let copy_id = g.node(neg).inputs[0];
+        // Simulate stamp_plan_backends clobbering the copy with the pinned backend.
+        g.set_target_backend(copy_id, BackendId::Cuda);
+
+        let pre = g.len();
+        insert_residency_copies(
+            &mut g, &[neg], &ExecutionPlan::empty(), cuda0, Some(&residency),
+        );
+        assert_eq!(g.len(), pre, "re-run inserts nothing");
+        assert_eq!(
+            g.target_backend(copy_id), Some(BackendId::Cpu),
+            "re-stamp sweep restores the source-backend stamp",
         );
     }
 
