@@ -181,38 +181,35 @@ impl OptimizedGraph {
 /// single-route lowering; for any branchless graph it reproduces
 /// `compile_plan(...).order` exactly — the equivalence gate.
 ///
-/// ## Returned `ExecutionPlan` (PR-A3b-2 de-dup)
+/// ## The internal `ExecutionPlan` (Step D — no longer returned)
 ///
-/// `optimize_graph` already drives [`compile_plan`] internally for
-/// placement/cost/validation; PR-A3b-2 **surfaces** that transient
-/// `ExecutionPlan` alongside the [`OptimizedGraph`] so the realize
-/// bridge can reuse it for its `stamp_plan_backends` / residency /
-/// layout-fixup passes instead of re-running `compile_plan` a second
-/// time. The plan stays a *transient by-product* — the source of truth
-/// is the graph; the bridge uses the surfaced plan purely to read the
-/// per-node winners it just computed. The executor still recomputes
-/// the dispatch order from the (post-stamping) graph at realize time
-/// (`OptimizedGraph::dispatch_order`), so the surfaced plan never
-/// becomes a dispatch-time authority.
+/// `optimize_graph` drives [`compile_plan`] internally for
+/// placement/cost/validation; the resulting `ExecutionPlan` is a
+/// **transient, optimizer-internal** accumulator the stamp / residency /
+/// layout-fixup passes + the lock-step rankers read below. It is NOT
+/// returned or threaded anywhere — the durable output is the graph's
+/// `target_backend` stamps + `Op::Branch` arms. The executor reads the
+/// graph + re-derives any per-arm candidate from the binding registry at
+/// realize time, so the plan never becomes a dispatch-time authority.
 pub fn optimize_graph(
     graph: &mut Graph,
     roots: &[NodeId],
     bindings_table: &KernelBindingTable,
     opts: &PlanOptions<'_>,
-) -> Result<(OptimizedGraph, ExecutionPlan)> {
+) -> Result<OptimizedGraph> {
     // (1) The dispatch order today: data-flow topo refined by ordering
     //     edges. `compile_plan` copies this verbatim into
     //     `ExecutionPlan::order`, so it IS the executor's walk order.
     let order = fuel_graph::opt::execution_plan(graph, roots);
 
     // (2) Reuse the placement/cost/validation machinery. The plan is a
-    //     transient by-product — we drive `compile_plan` so the same
-    //     fail-fast diagnostics (missing binding, no device context)
-    //     fire at optimize time, and so the placement DP / cost composer
-    //     run unchanged. We deliberately do NOT keep the plan as the
-    //     source of truth (the graph is); PR-A3b-2 surfaces it back to
-    //     the bridge so the bridge's stamp/residency/layout passes reuse
-    //     this single `compile_plan` instead of running a second one.
+    //     transient, optimizer-INTERNAL by-product — we drive `compile_plan`
+    //     so the same fail-fast diagnostics (missing binding, no device
+    //     context) fire at optimize time, and so the placement DP / cost
+    //     composer run unchanged. The plan is the working accumulator the
+    //     stamp / residency / layout-fixup passes + the lock-step rankers
+    //     read below; it is NOT returned or threaded (Step D — the graph
+    //     stamps + arms are the only durable output).
     let plan = compile_plan(graph, &order, bindings_table, opts)?;
     let generation = plan.generation;
 
@@ -277,13 +274,10 @@ pub fn optimize_graph(
         });
     }
 
-    Ok((
-        OptimizedGraph {
-            roots: roots.to_vec(),
-            generation,
-        },
-        plan,
-    ))
+    Ok(OptimizedGraph {
+        roots: roots.to_vec(),
+        generation,
+    })
 }
 
 /// Commit the plan's per-node winner backend to the graph's
@@ -590,7 +584,7 @@ mod tests {
         let (a, b, c, d) = (NodeId(0), NodeId(1), NodeId(2), NodeId(3));
         assert!(g.target_backend(b).is_none(), "unstamped before optimize");
 
-        let (_optimized, _plan) = optimize_graph(&mut g, &[root], &table, &cpu_opts())
+        let _optimized = optimize_graph(&mut g, &[root], &table, &cpu_opts())
             .expect("optimize_graph on a straight-line CPU graph");
 
         assert_eq!(g.target_backend(b), Some(BackendId::Cpu), "Relu stamped Cpu");
@@ -641,7 +635,7 @@ mod tests {
         // so the strided-rejecting Relu needs a Contiguize on its input.
         g.set_layout(a, Layout::contiguous_with_offset(Shape::from_dims(&[4]), 1));
 
-        let (_optimized, _plan) = optimize_graph(&mut g, &[r], &table, &cpu_opts())
+        let _optimized = optimize_graph(&mut g, &[r], &table, &cpu_opts())
             .expect("optimize_graph with a strided input");
 
         // Relu's input was `a`; after the fixup it must read through an inserted
@@ -869,7 +863,7 @@ mod tests {
         let opts = two_backend_opts();
 
         let nodes_before = g.len();
-        let (optimized, _plan) = optimize_graph(&mut g, &[root], &table, &opts)
+        let optimized = optimize_graph(&mut g, &[root], &table, &opts)
             .expect("optimize_graph succeeds on a 2-placement graph");
 
         // Exactly one Op::Branch in the arena.
@@ -929,7 +923,7 @@ mod tests {
         let out = f32_node(&mut g, Op::Add, vec![c0, c1]);
         let opts = two_backend_opts();
 
-        let (optimized, _plan) = optimize_graph(&mut g, &[out], &table, &opts)
+        let optimized = optimize_graph(&mut g, &[out], &table, &opts)
             .expect("optimize_graph succeeds");
         assert_eq!(
             optimized.branch_count(&g),
@@ -951,7 +945,7 @@ mod tests {
         // this is the order realize must reproduce on arm-0.
         let pre_order = execution_plan(&g, &[root]);
 
-        let (optimized, _plan) = optimize_graph(&mut g, &[root], &table, &opts)
+        let optimized = optimize_graph(&mut g, &[root], &table, &opts)
             .expect("optimize_graph succeeds");
         assert_eq!(optimized.branch_count(&g), 1, "exactly one branch");
 
@@ -993,7 +987,7 @@ mod tests {
         let (mut g, _prod, fork, _tail, root) = build_single_fork_graph(&mut table);
         let opts = two_backend_opts();
 
-        let (optimized, _plan) = optimize_graph(&mut g, &[root], &table, &opts)
+        let optimized = optimize_graph(&mut g, &[root], &table, &opts)
             .expect("optimize_graph succeeds");
         assert_eq!(optimized.branch_count(&g), 1);
         let branch_id = (0..g.len())
@@ -1030,7 +1024,7 @@ mod tests {
                 .expect("today's compile_plan succeeds on a placeable graph");
 
             // New path.
-            let (optimized, _plan) = optimize_graph(&mut g, &[root], &table, &opts)
+            let optimized = optimize_graph(&mut g, &[root], &table, &opts)
                 .expect("optimize_graph succeeds on the same graph");
 
             // (a) zero competing routes => zero Branch nodes.
@@ -1067,12 +1061,12 @@ mod tests {
         let opts = cpu_opts();
 
         let nodes_before = g.len();
-        let (first, _first_plan) = optimize_graph(&mut g, &[root], &table, &opts)
+        let first = optimize_graph(&mut g, &[root], &table, &opts)
             .expect("first optimize succeeds");
         let order_first = first.dispatch_order(&g);
         let nodes_after_first = g.len();
 
-        let (second, _second_plan) = optimize_graph(&mut g, &[root], &table, &opts)
+        let second = optimize_graph(&mut g, &[root], &table, &opts)
             .expect("second optimize succeeds");
         let order_second = second.dispatch_order(&g);
         let nodes_after_second = g.len();
@@ -1185,7 +1179,7 @@ mod tests {
         //     PassRegistry::default_passes().run_lockstep.
         let mut table = KernelBindingTable::new();
         let (mut g, _p, fork, _t, root) = build_single_fork_graph(&mut table);
-        let (optimized, _plan) = optimize_graph(&mut g, &[root], &table, &opts)
+        let optimized = optimize_graph(&mut g, &[root], &table, &opts)
             .expect("optimize_graph succeeds");
         let got_snapshot = branch_snapshot(&g);
         let got_dispatch = optimized.dispatch_order(&g);
