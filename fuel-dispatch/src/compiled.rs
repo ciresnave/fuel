@@ -34,6 +34,7 @@ use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, Layout, Result};
 
 use crate::kernel::{KernelBindingTable, KernelCaps, KernelDTypes, KernelRef, OpParams};
+use fuel_graph::{Graph, NodeId};
 use fuel_memory::Storage;
 
 /// A graph node plus its resolved kernel function pointer and
@@ -99,6 +100,32 @@ pub fn compile_node(
         caps,
         op_params,
     })
+}
+
+/// The diagnostic `kernel_source` tag the executor dispatches for `node`,
+/// derived from the SAME graph stamp + registry the executor resolves
+/// through: `op_to_op_kind` + `build_lookup_dtypes` + `graph.target_backend`
+/// → the first-registered binding at `(op, dtypes, backend)` (the entry
+/// [`compile_node`]'s `lookup_with_caps` picks). `None` when the node has no
+/// dispatch mapping (view/structural op) or no registered binding.
+///
+/// This is the post-realize attribution the bridge reports for the Judge
+/// telemetry. Step D moved it off the plan's `AlternativeSet::winner()`: the
+/// production realize path dispatches via the binding-table lookup (no plan),
+/// so the first-registered binding IS the matching attribution.
+pub fn dispatched_kernel_source(
+    graph: &Graph,
+    node: NodeId,
+    bindings: &KernelBindingTable,
+) -> Option<&'static str> {
+    let n = graph.node(node);
+    let op = crate::pipelined::op_to_op_kind(&n.op)?;
+    let dtypes = crate::pipelined::build_lookup_dtypes(graph, n);
+    let backend = graph.target_backend(node)?;
+    bindings
+        .lookup_alternatives(op, &dtypes, backend)
+        .first()
+        .map(|e| e.kernel_source)
 }
 
 /// Run a compiled node against the given inputs/outputs. The output

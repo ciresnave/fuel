@@ -77,6 +77,7 @@ use fuel_ir::backend::FitStatus;
 use fuel_backend_contract::dyn_backend::DynBackendDevice;
 use fuel_graph::{Graph, Node, NodeId, Op, topo_order_multi};
 use fuel_dispatch::dispatch::global_bindings;
+use fuel_dispatch::dispatched_kernel_source;
 use fuel_dispatch::optimize::{optimize_graph, OptimizedGraph};
 use fuel_dispatch::plan::{ExecutionPlan, PlanOptions};
 use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
@@ -425,11 +426,14 @@ fn dispatch_with_plan_retry(
         match result {
             Ok((storage, _layout)) => {
                 // Session 3 rider: report which sibling dispatched for
-                // `report_node`, from the SAME plan the successful
-                // attempt ran with. The executor dispatches via the
-                // first-registered binding-table lookup, so the static
-                // `set.winner()` here is the matching attribution.
-                let dispatched = dispatched_kernel_source(&plan, report_node);
+                // `report_node` — derived from the SAME graph stamp + registry
+                // the executor dispatched through (Step D: was the plan's
+                // `AlternativeSet::winner`). Best-effort telemetry: a
+                // lock/lookup miss yields `None`, not an error.
+                let dispatched = graph
+                    .read()
+                    .ok()
+                    .and_then(|g| dispatched_kernel_source(&g, report_node, &global_bindings()));
                 return Ok((storage, dispatched));
             }
             Err(e) if matches!(e, Error::TopologyChanged { .. })
@@ -440,24 +444,6 @@ fn dispatch_with_plan_retry(
             Err(e) => return Err(e),
         }
     }
-}
-
-/// Replicate the executor's `resolve_compiled` pick for one node
-/// against the plan that just dispatched: the static
-/// `AlternativeSet::winner`. `None` when the plan has no
-/// `AlternativeSet` for the node — the executor then dispatched the
-/// first-registered binding via its `compile_node` fallback.
-///
-/// The optimized realize path dispatches via the binding-table lookup
-/// (no runtime route-picker), so the static winner is the matching
-/// attribution.
-fn dispatched_kernel_source(
-    plan: &ExecutionPlan,
-    node: NodeId,
-) -> Option<&'static str> {
-    let set = plan.alternatives(node)?;
-    let pick = set.winner()?;
-    Some(pick.kernel_source)
 }
 
 /// Multi-target counterpart of [`realize_one_as_with_initial`].
