@@ -47,9 +47,8 @@ use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute};
 
 use crate::compiled::{compile_node, execute_compiled, CompiledNode};
 use crate::dispatch::global_bindings;
-use crate::kernel::{KernelBindingTable, KernelDTypes, OpParams};
+use crate::kernel::{KernelBindingTable, OpParams};
 use crate::optimize::OptimizedGraph;
-use crate::plan::ExecutionPlan;
 use crate::ranker::{pick_route, BackendRuntimeLookup, RuntimeSelector};
 use fuel_memory::Storage;
 
@@ -445,7 +444,7 @@ impl PipelinedExecutor {
         target: NodeId,
         inputs: StorageCache,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        Self::realize_inner(graph, target, inputs, None, None, OrderSource::Default, SymEnv::default())
+        Self::realize_inner(graph, target, inputs, OrderSource::Default, SymEnv::default())
     }
 
     /// Env-carrying sibling of [`realize`]: realize `target` with a
@@ -466,7 +465,7 @@ impl PipelinedExecutor {
         inputs: StorageCache,
         sym_env: SymEnv,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        Self::realize_inner(graph, target, inputs, None, None, OrderSource::Default, sym_env)
+        Self::realize_inner(graph, target, inputs, OrderSource::Default, sym_env)
     }
 
     /// PR-A3b-1 entry: realize `target` driven from `optimized`'s
@@ -490,8 +489,6 @@ impl PipelinedExecutor {
             graph,
             target,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: None },
             SymEnv::default(),
         )
@@ -514,8 +511,6 @@ impl PipelinedExecutor {
             graph,
             target,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: None },
             sym_env,
         )
@@ -541,8 +536,6 @@ impl PipelinedExecutor {
             graph,
             target,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: Some(route) },
             SymEnv::default(),
         )
@@ -563,8 +556,6 @@ impl PipelinedExecutor {
             graph,
             target,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: Some(route) },
             sym_env,
         )
@@ -629,55 +620,10 @@ impl PipelinedExecutor {
         Ok(Some(pick_route(&g, roots, &bindings, sel, lookup)))
     }
 
-    /// Plan-aware sibling of [`realize`]. The compiler thread
-    /// consults `plan.alternatives(node)` for each kernel-bearing
-    /// node first — the picker's committed winner is dispatched.
-    /// Nodes not in the plan's map (view ops, structural ops,
-    /// anything the optimizer left out) fall through to the legacy
-    /// first-registered binding-table lookup.
-    ///
-    /// Phase 4.1 of the picker-work arc. This is the load-bearing
-    /// wire from the optimizer ranker (Phases 1.1–1.5 + 3) to the
-    /// executor.
-    pub fn realize_with_plan(
-        graph: Arc<RwLock<Graph>>,
-        target: NodeId,
-        inputs: StorageCache,
-        plan: Arc<ExecutionPlan>,
-    ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        Self::realize_inner(graph, target, inputs, Some(plan), None, OrderSource::Default, SymEnv::default())
-    }
-
-    /// Plan- and selector-aware sibling of [`realize`]. Phase 5.1 of
-    /// the picker-work arc. Both `plan` and `selector` are required
-    /// here — the selector consults the plan's [`AlternativeSet`]s
-    /// per node to pick at dispatch time. Without a plan there's
-    /// nothing for the selector to pick among; use
-    /// [`realize_with_plan`] when you have a plan but want the
-    /// default static-winner pick (= `WinnerSelector`).
-    ///
-    /// Use this entry point when a Picker 2 implementation has
-    /// runtime signals the plan-time ranker couldn't see (device
-    /// load, recent failures, fresh telemetry).
-    pub fn realize_with_plan_and_selector(
-        graph: Arc<RwLock<Graph>>,
-        target: NodeId,
-        inputs: StorageCache,
-        plan: Arc<ExecutionPlan>,
-        selector: Arc<dyn RuntimeSelector>,
-    ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        Self::realize_inner(
-            graph, target, inputs, Some(plan), Some(selector), OrderSource::Default,
-            SymEnv::default(),
-        )
-    }
-
     fn realize_inner(
         graph: Arc<RwLock<Graph>>,
         target: NodeId,
         inputs: StorageCache,
-        plan: Option<Arc<ExecutionPlan>>,
-        selector: Option<Arc<dyn RuntimeSelector>>,
         order_source: OrderSource<'_>,
         sym_env: SymEnv,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
@@ -723,12 +669,9 @@ impl PipelinedExecutor {
 
         // Compiler thread: read graph nodes, resolve kernels,
         // push WorkItems. On error, push the error and bail.
-        let plan_for_compiler = plan.clone();
-        let selector_for_compiler = selector.clone();
         let compiler = thread::spawn(move || {
             compiler_thread_body(
-                graph_for_compiler, order_for_compiler,
-                plan_for_compiler, selector_for_compiler, sym_env, tx,
+                graph_for_compiler, order_for_compiler, sym_env, tx,
             );
         });
 
@@ -744,7 +687,7 @@ impl PipelinedExecutor {
         // `Error::TopologyChanged`; the realize layer
         // (`pipelined_bridge`) catches it, rebuilds the plan against
         // the fresh topology, and retries.
-        let plan_generation: Option<u64> = generation_for(&plan, &order_source);
+        let plan_generation: Option<u64> = generation_for(&order_source);
         let mut current_chunk_backend: Option<BackendId> = None;
         let mut cache: StorageCache = inputs;
         for item in rx {
@@ -813,7 +756,7 @@ impl PipelinedExecutor {
         targets: &[NodeId],
         inputs: StorageCache,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
-        Self::realize_many_inner(graph, targets, inputs, None, None, OrderSource::Default, SymEnv::default())
+        Self::realize_many_inner(graph, targets, inputs, OrderSource::Default, SymEnv::default())
     }
 
     /// Multi-target PR-A3b-1 entry — the `realize_many` sibling of
@@ -831,8 +774,6 @@ impl PipelinedExecutor {
             graph,
             targets,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: None },
             SymEnv::default(),
         )
@@ -851,8 +792,6 @@ impl PipelinedExecutor {
             graph,
             targets,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: None },
             sym_env,
         )
@@ -873,8 +812,6 @@ impl PipelinedExecutor {
             graph,
             targets,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: Some(route) },
             SymEnv::default(),
         )
@@ -894,8 +831,6 @@ impl PipelinedExecutor {
             graph,
             targets,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: Some(route) },
             sym_env,
         )
@@ -923,40 +858,10 @@ impl PipelinedExecutor {
         }
     }
 
-    /// Plan- and selector-aware sibling of [`realize_many`]. Phase
-    /// 5.1 of the picker-work arc. See [`realize_with_plan_and_selector`]
-    /// for the selector contract.
-    pub fn realize_many_with_plan_and_selector(
-        graph: Arc<RwLock<Graph>>,
-        targets: &[NodeId],
-        inputs: StorageCache,
-        plan: Arc<ExecutionPlan>,
-        selector: Arc<dyn RuntimeSelector>,
-    ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
-        Self::realize_many_inner(
-            graph, targets, inputs, Some(plan), Some(selector), OrderSource::Default,
-            SymEnv::default(),
-        )
-    }
-
-    /// Plan-aware sibling of [`realize_many`]. The compiler
-    /// consults `plan.alternatives(node)` for each kernel-bearing
-    /// node first. Phase 4.1 of the picker-work arc.
-    pub fn realize_many_with_plan(
-        graph: Arc<RwLock<Graph>>,
-        targets: &[NodeId],
-        inputs: StorageCache,
-        plan: Arc<ExecutionPlan>,
-    ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
-        Self::realize_many_inner(graph, targets, inputs, Some(plan), None, OrderSource::Default, SymEnv::default())
-    }
-
     fn realize_many_inner(
         graph: Arc<RwLock<Graph>>,
         targets: &[NodeId],
         inputs: StorageCache,
-        plan: Option<Arc<ExecutionPlan>>,
-        selector: Option<Arc<dyn RuntimeSelector>>,
         order_source: OrderSource<'_>,
         sym_env: SymEnv,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
@@ -1001,20 +906,17 @@ impl PipelinedExecutor {
         let (tx, rx) = channel::<Result<WorkItem>>();
         let graph_for_compiler = Arc::clone(&graph);
         let order_for_compiler = order.clone();
-        let plan_for_compiler = plan.clone();
-        let selector_for_compiler = selector.clone();
 
         let compiler = thread::spawn(move || {
             compiler_thread_body(
-                graph_for_compiler, order_for_compiler,
-                plan_for_compiler, selector_for_compiler, sym_env, tx,
+                graph_for_compiler, order_for_compiler, sym_env, tx,
             );
         });
 
         // Phase 4.3: per-chunk SystemTopology generation check (see
         // realize_inner for the rationale). PR-A3b-1: the OptimizedGraph
-        // path supplies its own optimize-time generation (plan is None).
-        let plan_generation: Option<u64> = generation_for(&plan, &order_source);
+        // path supplies its own optimize-time generation.
+        let plan_generation: Option<u64> = generation_for(&order_source);
         let mut current_chunk_backend: Option<BackendId> = None;
         let mut cache: StorageCache = inputs;
         for item in rx {
@@ -1116,17 +1018,12 @@ fn order_for(
 }
 
 /// The topology generation that keys the executor's `TopologyChanged`
-/// chunk-boundary check. Prefer the plan's stamped generation (legacy
-/// path); fall back to the `OptimizedGraph`'s optimize-time generation
-/// (PR-A3b-1 path, where `plan` is `None`). `None` ⇒ no check (the
-/// plain `realize`/`realize_many` entries).
+/// chunk-boundary check. Uses the `OptimizedGraph`'s optimize-time
+/// generation (PR-A3b-1 path). `None` ⇒ no check (the plain
+/// `realize`/`realize_many` entries).
 fn generation_for(
-    plan: &Option<Arc<ExecutionPlan>>,
     order_source: &OrderSource<'_>,
 ) -> Option<u64> {
-    if let Some(p) = plan.as_ref() {
-        return Some(p.generation);
-    }
     match order_source {
         OrderSource::Optimized { optimized, .. } => Some(optimized.generation),
         OrderSource::Default => None,
@@ -1139,8 +1036,6 @@ fn generation_for(
 fn compiler_thread_body(
     graph: Arc<RwLock<Graph>>,
     order: Vec<NodeId>,
-    plan: Option<Arc<ExecutionPlan>>,
-    selector: Option<Arc<dyn RuntimeSelector>>,
     sym_env: SymEnv,
     tx: Sender<Result<WorkItem>>,
 ) {
@@ -1161,10 +1056,8 @@ fn compiler_thread_body(
     // in the same realize call.
     let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
 
-    let plan_ref: Option<&ExecutionPlan> = plan.as_deref();
-    let selector_ref: Option<&dyn RuntimeSelector> = selector.as_deref();
     for id in order {
-        let item = compile_one(&g, id, &mut layout_cache, &bindings, plan_ref, selector_ref, &sym_env);
+        let item = compile_one(&g, id, &mut layout_cache, &bindings, &sym_env);
         let stop_on_err = item.is_err();
         if tx.send(item).is_err() {
             return;
@@ -1175,58 +1068,21 @@ fn compiler_thread_body(
     }
 }
 
-/// Resolve the [`CompiledNode`] for a kernel-bearing graph node,
-/// preferring the optimizer ranker's pick (if `plan` carries an
-/// `AlternativeSet` whose winner is set) and falling back to the
-/// legacy first-registered [`compile_node`] path otherwise.
-///
-/// Phase 4.1 of the picker-work arc — the wire from
-/// `compile_plan`'s output to the executor's dispatch. Plan absent
-/// or no entry for the node ⇒ behavior is byte-identical to the
-/// pre-4.1 first-registered path.
+/// Resolve the [`CompiledNode`] for a kernel-bearing graph node via
+/// the first-registered [`compile_node`] binding-table lookup.
 ///
 /// `op_params` always comes from the executor's
-/// `op_to_op_params(graph, node, layout_cache, sym_env)`. The candidate's
-/// `Candidate::op_params` is a plan-time placeholder
-/// (`OpParams::None`; see `candidate_default_op_params` in
-/// `crate::plan`) because the live OpParams shape — reduce dims,
-/// conv geometry, the per-pass `SymEnv`-resolved `WriteSlice` offset,
-/// etc. — derives from the graph node + its resolved input layouts at
-/// execute time. The plan owns `(kernel, caps, backend)`; the executor
-/// owns op-params derivation.
+/// `op_to_op_params(graph, node, layout_cache, sym_env)` — the live
+/// OpParams shape (reduce dims, conv geometry, the per-pass
+/// `SymEnv`-resolved `WriteSlice` offset, etc.) derives from the graph
+/// node + its resolved input layouts at execute time.
 fn resolve_compiled(
-    id: NodeId,
     op_kind: OpKind,
     dtypes: &[DType],
     target_backend: BackendId,
     op_params: OpParams,
     bindings: &KernelBindingTable,
-    plan: Option<&ExecutionPlan>,
-    selector: Option<&dyn RuntimeSelector>,
 ) -> Result<CompiledNode> {
-    if let Some(p) = plan {
-        if let Some(set) = p.alternatives(id) {
-            // Phase 5.1: consult the runtime selector (Picker 2) if
-            // one was supplied; otherwise fall back to the static
-            // winner (`set.winner()` = Picker 1's pick after
-            // rank+truncate). The two paths produce identical
-            // results when the selector is `WinnerSelector`.
-            let pick = match selector {
-                Some(s) => s.select(set),
-                None => set.winner(),
-            };
-            if let Some(picked) = pick {
-                return Ok(CompiledNode {
-                    op: op_kind,
-                    dtypes: KernelDTypes::from_slice(dtypes),
-                    backend: picked.backend,
-                    kernel: picked.kernel,
-                    caps: picked.caps,
-                    op_params,
-                });
-            }
-        }
-    }
     compile_node(op_kind, dtypes, target_backend, op_params, bindings)
 }
 
@@ -1249,8 +1105,6 @@ fn compile_one(
     id: NodeId,
     layout_cache: &mut HashMap<NodeId, Layout>,
     bindings: &KernelBindingTable,
-    plan: Option<&ExecutionPlan>,
-    selector: Option<&dyn RuntimeSelector>,
     sym_env: &SymEnv,
 ) -> Result<WorkItem> {
     let node = graph.node(id);
@@ -1452,7 +1306,7 @@ fn compile_one(
             let op_params = op_to_op_params(graph, node, layout_cache, sym_env)?;
             let dtypes = build_lookup_dtypes(graph, node);
             let compiled = resolve_compiled(
-                id, op_kind, &dtypes, target_backend, op_params, bindings, plan, selector,
+                op_kind, &dtypes, target_backend, op_params, bindings,
             )?;
             // Output adopts target's Layout (same Storage Arc, same shape).
             let output_layout = graph.layout(inputs[target_idx]);
@@ -1495,7 +1349,7 @@ fn compile_one(
         let op_params = op_to_op_params(graph, node, layout_cache, sym_env)?;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
-            id, OpKind::WriteSlice, &dtypes, target_backend, op_params, bindings, plan, selector,
+            OpKind::WriteSlice, &dtypes, target_backend, op_params, bindings,
         )?;
         // Output adopts the destination's Layout — same Storage Arc,
         // same shape. Downstream consumers that want a post-write
@@ -1540,7 +1394,7 @@ fn compile_one(
         let op_params = op_to_op_params(graph, node, layout_cache, sym_env)?;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
-            id, OpKind::WriteSliceRotating, &dtypes, target_backend, op_params, bindings, plan, selector,
+            OpKind::WriteSliceRotating, &dtypes, target_backend, op_params, bindings,
         )?;
         let output_layout = graph.layout(inputs[0]);
         layout_cache.insert(id, output_layout.clone());
@@ -1663,7 +1517,7 @@ fn compile_one(
         let op_params = OpParams::None;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
-            id, OpKind::Copy, &dtypes, target_backend, op_params, bindings, plan, selector,
+            OpKind::Copy, &dtypes, target_backend, op_params, bindings,
         )?;
         // Output layout: contiguous in the node's shape (mirrors the
         // source's logical shape). Auto-contiguize on the input side
@@ -1717,7 +1571,7 @@ fn compile_one(
         let op_params = OpParams::None;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
-            id, OpKind::Copy, &dtypes, target_backend, op_params, bindings, plan, selector,
+            OpKind::Copy, &dtypes, target_backend, op_params, bindings,
         )?;
         // Output layout: contiguous in the node's shape, same as
         // Op::Copy (the transfer materializes strided sources via
@@ -1837,7 +1691,7 @@ fn compile_one(
     // (Concat) collapse to the canonical `[T_in, T_out]` shorthand to
     // match how registrations index them.
     let dtypes = build_lookup_dtypes(graph, node);
-    let compiled = resolve_compiled(id, op_kind, &dtypes, target_backend, op_params, bindings, plan, selector)?;
+    let compiled = resolve_compiled(op_kind, &dtypes, target_backend, op_params, bindings)?;
     let output_layout = Layout::contiguous(node.shape.clone());
     layout_cache.insert(id, output_layout.clone());
     // Multi-output: snapshot the producer's bundle metadata. When
@@ -9244,7 +9098,7 @@ mod tests {
         let g = graph_rc.read().unwrap();
         let bindings = crate::dispatch::global_bindings();
         let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-        let item = compile_one(&g, release_id, &mut layout_cache, &bindings, None, None, &SymEnv::default())
+        let item = compile_one(&g, release_id, &mut layout_cache, &bindings, &SymEnv::default())
             .expect("compile_one Op::Release");
         assert!(matches!(item.kind, WorkItemKind::ReleaseMarker));
         assert_eq!(item.destructive_input, Some(0));
@@ -9277,7 +9131,7 @@ mod tests {
         let g = graph_rc.read().unwrap();
         let bindings = crate::dispatch::global_bindings();
         let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-        let item = compile_one(&g, move_id, &mut layout_cache, &bindings, None, None, &SymEnv::default())
+        let item = compile_one(&g, move_id, &mut layout_cache, &bindings, &SymEnv::default())
             .expect("compile_one Op::Move");
         assert!(matches!(
             item.kind,
@@ -10091,606 +9945,5 @@ mod tests {
         );
         let ls_value = typed[last_state_layout.start_offset()];
         assert!((ls_value - 6.0).abs() < 1e-5, "last_state expected 6.0 got {ls_value}");
-    }
-
-    // ===== Phase 4.1 — plan-aware compile_one =====
-    //
-    // These tests construct an `ExecutionPlan` directly (bypassing
-    // `compile_plan`) so we can pin a specific winner kernel per
-    // node and observe that `realize_with_plan` dispatches it. The
-    // four scenarios cover the load-bearing contract:
-    //
-    //   1. Plan-resolved kernel wins (vs first-registered).
-    //   2. Plan present but no entry → legacy fallback.
-    //   3. Existing `realize` (no plan) → byte-identical to pre-4.1.
-    //   4. Plan with cross-backend winner overrides graph
-    //      `target_backend`.
-    //
-    // The trick: register the legacy "Add" kernel through the global
-    // bindings table (standard sum), then build a custom kernel that
-    // doubles the LHS — feed it into the plan's `AlternativeSet`
-    // winner. If the plan path is wired, the output is 2× LHS; if
-    // it falls back to legacy, the output is LHS + RHS.
-
-    use crate::fused::PrecisionGuarantee;
-    use crate::kernel::KernelCaps;
-    use crate::plan::ExecutionPlan;
-    use crate::ranker::{AlternativeSet, Candidate};
-    use std::collections::HashMap as StdHashMap;
-
-    /// Custom kernel for Phase 4.1 tests: writes `2 * inputs[0]`
-    /// into `outputs[0]` (ignoring `inputs[1]`). Distinguishes the
-    /// picker-resolved path from the legacy first-registered Add
-    /// kernel's sum behavior in test 1 and test 4.
-    fn double_lhs_kernel_f32(
-        inputs: &[Arc<RwLock<Storage>>],
-        outputs: &mut [Arc<RwLock<Storage>>],
-        _layouts: &[Layout],
-        _params: &OpParams,
-    ) -> Result<()> {
-        let lhs_guard = inputs[0].read().map_err(|_| poisoned("lhs lock"))?;
-        let doubled: Vec<f32> = if let fuel_memory::BackendStorage::Cpu(c) = &lhs_guard.inner {
-            c.as_slice().expect("f32 cast").iter().map(|x: &f32| x * 2.0).collect()
-        } else {
-            panic!("test kernel: lhs must be CPU storage");
-        };
-        let mut out_guard = outputs[0]
-            .write()
-            .map_err(|_| poisoned("output lock"))?;
-        if let fuel_memory::BackendStorage::Cpu(c) = &mut out_guard.inner {
-            c.as_slice_mut().expect("f32 cast").copy_from_slice(&doubled);
-        } else {
-            panic!("test kernel: output must be CPU storage");
-        }
-        Ok(())
-    }
-
-    /// Build a fresh Add(F32) graph + pre-seeded `inputs` cache.
-    /// Returns `(graph, lhs_id, rhs_id, add_id, inputs)`.
-    fn build_add_graph(
-        lhs: &[f32],
-        rhs: &[f32],
-        target_backend: BackendId,
-    ) -> (Arc<RwLock<Graph>>, NodeId, NodeId, NodeId, StorageCache) {
-        assert_eq!(lhs.len(), rhs.len());
-        let graph = Arc::new(RwLock::new(Graph::new()));
-        let (lhs_id, rhs_id, add_id) = {
-            let mut g = graph.write().unwrap();
-            let lhs_id = g.push(Node {
-                op: Op::Const,
-                inputs: vec![],
-                shape: Shape::from_dims(&[lhs.len()]),
-                dtype: DType::F32,
-            });
-            let rhs_id = g.push(Node {
-                op: Op::Const,
-                inputs: vec![],
-                shape: Shape::from_dims(&[lhs.len()]),
-                dtype: DType::F32,
-            });
-            let add_id = g.push(Node {
-                op: Op::Add,
-                inputs: vec![lhs_id, rhs_id],
-                shape: Shape::from_dims(&[lhs.len()]),
-                dtype: DType::F32,
-            });
-            g.set_target_backend(add_id, target_backend);
-            (lhs_id, rhs_id, add_id)
-        };
-        let mut inputs = StorageCache::new();
-        inputs.insert(lhs_id, Arc::new(RwLock::new(fuel_memory::from_slice_cpu(lhs))));
-        inputs.insert(rhs_id, Arc::new(RwLock::new(fuel_memory::from_slice_cpu(rhs))));
-        (graph, lhs_id, rhs_id, add_id, inputs)
-    }
-
-    /// Phase 4.1, test 1: an `ExecutionPlan` whose `AlternativeSet`
-    /// for the Add node has `double_lhs_kernel_f32` as winner is
-    /// dispatched by `realize_with_plan`. Result is `2 * lhs`, not
-    /// `lhs + rhs` — proves the picker's pick reached the executor.
-    #[test]
-    fn phase4_1_plan_resolved_kernel_wins() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        let winner = Candidate {
-            kernel: double_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        };
-        let mut set = AlternativeSet::empty();
-        set.push(winner);
-        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
-        alternatives.insert(add_id, set);
-        let plan = Arc::new(ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: crate::dispatch::topology_generation(),
-        });
-
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan)
-                .expect("realize_with_plan");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(
-            typed,
-            &[2.0, 4.0, 6.0],
-            "winner kernel must be dispatched (2*lhs), not legacy Add (lhs+rhs)",
-        );
-    }
-
-    /// Phase 4.1, test 2: an `ExecutionPlan` with no entry for the
-    /// Add node falls through to the legacy first-registered binding-
-    /// table Add kernel. Result is the standard sum.
-    #[test]
-    fn phase4_1_fallback_when_plan_has_no_entry() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        // Plan exists but `alternatives` is empty — every node falls
-        // through.
-        let plan = Arc::new(ExecutionPlan::empty());
-
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan)
-                .expect("realize_with_plan");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(
-            typed,
-            &[11.0, 22.0, 33.0],
-            "empty plan must fall through to legacy Add (lhs+rhs)",
-        );
-    }
-
-    /// Phase 4.1, test 3: the existing no-plan `realize` path is
-    /// byte-identical to pre-4.1. The same workload through the
-    /// plan-less call surface must still produce the sum.
-    #[test]
-    fn phase4_1_existing_realize_path_unchanged() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, add_id, inputs).expect("realize");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(
-            typed,
-            &[11.0, 22.0, 33.0],
-            "no-plan realize must remain byte-identical to pre-4.1 (lhs+rhs)",
-        );
-    }
-
-    /// Phase 4.1, test 4: an `AlternativeSet` with multiple
-    /// candidates dispatches the first (the winner — the top
-    /// candidate after rank+truncate). This proves
-    /// [`crate::ranker::AlternativeSet::winner`] is what
-    /// `resolve_compiled` reads, not e.g. the last entry or a
-    /// random pick.
-    ///
-    /// Both candidates use the same backend (Cpu) — full cross-
-    /// backend override depends on Phase 4.2's `prepare()` loosening
-    /// since today's executor consults the graph node's
-    /// `target_backend` for output allocation. Phase 4.1's contract
-    /// is "kernel ref + caps come from the winner"; backend dispatch
-    /// for output allocation is downstream.
-    #[test]
-    fn phase4_1_alternative_set_winner_dispatched() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        // First-pushed candidate is the winner; second is a runner-
-        // up that must NOT be dispatched. Both are Cpu — only the
-        // kernel-ref differs.
-        let winner = Candidate {
-            kernel: double_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        };
-        let runner_up = Candidate {
-            // Loud kernel that would panic if dispatched — proves
-            // the winner is what runs.
-            kernel: |_, _, _, _| {
-                panic!(
-                    "Phase 4.1: runner-up Candidate kernel was dispatched — \
-                     resolve_compiled must read AlternativeSet::winner, NOT a \
-                     non-winner entry",
-                )
-            },
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        };
-        let mut set = AlternativeSet::empty();
-        set.push(winner);
-        set.push(runner_up);
-        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
-        alternatives.insert(add_id, set);
-        let plan = Arc::new(ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: crate::dispatch::topology_generation(),
-        });
-
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan)
-                .expect("realize_with_plan");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(
-            typed,
-            &[2.0, 4.0, 6.0],
-            "AlternativeSet's winner (first-pushed candidate, 2*lhs) must be dispatched",
-        );
-    }
-
-    // ===== Phase 4.3 — dispatch-chunk topology-generation check =====
-
-    /// Phase 4.3, test 1: a plan stamped with a generation that
-    /// doesn't match the live counter surfaces
-    /// `Error::TopologyChanged`. The check fires at the first
-    /// dispatch-chunk boundary (the first kernel-bearing item).
-    ///
-    /// Implementation note: we stamp `live + 1` rather than calling
-    /// `bump_topology_generation()` because the counter is process-
-    /// global and bumping would race with other tests that also
-    /// construct `ExecutionPlan { generation: live, ... }`. The
-    /// executor's `!=` check fires for stamps in either direction.
-    #[test]
-    fn phase4_3_topology_changed_surfaces_error() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        let mut set = AlternativeSet::empty();
-        set.push(Candidate {
-            kernel: double_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        });
-        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
-        alternatives.insert(add_id, set);
-
-        // Stamp a stale generation (live + 1, guaranteed not to
-        // match the current counter without disturbing global state).
-        let live = crate::dispatch::topology_generation();
-        let plan = Arc::new(ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: live + 1,
-        });
-
-        let result = PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan);
-        let err = result.expect_err("stale plan must surface TopologyChanged");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("topology generation"),
-            "error must name topology generation: {msg}",
-        );
-    }
-
-    /// Phase 4.3, test 2: when the plan's stamped generation matches
-    /// the live generation, the dispatch-chunk boundary check passes
-    /// silently and the plan's winner runs as normal.
-    #[test]
-    fn phase4_3_generation_match_passes_through() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        let mut set = AlternativeSet::empty();
-        set.push(Candidate {
-            kernel: double_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        });
-        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
-        alternatives.insert(add_id, set);
-        let plan = Arc::new(ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: crate::dispatch::topology_generation(),
-        });
-
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan)
-                .expect("matching-generation plan must dispatch successfully");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(typed, &[2.0, 4.0, 6.0]);
-    }
-
-    // ===== Phase 5.1 — RuntimeSelector substrate =====
-
-    use crate::ranker::{RuntimeSelector, WinnerSelector};
-
-    /// Phase 5.1, test 1: passing `WinnerSelector` to
-    /// `realize_with_plan_and_selector` is behaviorally identical
-    /// to the no-selector `realize_with_plan` path. Proves the
-    /// default selector is the static baseline.
-    #[test]
-    fn phase5_1_winner_selector_matches_no_selector() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        let mut set = AlternativeSet::empty();
-        set.push(Candidate {
-            kernel: double_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        });
-        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
-        alternatives.insert(add_id, set);
-        let plan = Arc::new(ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: crate::dispatch::topology_generation(),
-        });
-
-        let selector: Arc<dyn RuntimeSelector> = Arc::new(WinnerSelector);
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_plan_and_selector(
-                graph, add_id, inputs, plan, selector,
-            )
-            .expect("realize_with_plan_and_selector");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(
-            typed,
-            &[2.0, 4.0, 6.0],
-            "WinnerSelector picks the same kernel realize_with_plan would",
-        );
-    }
-
-    /// Phase 5.1, test 2: a custom selector that picks the LAST
-    /// entry of the AlternativeSet (instead of the first/winner)
-    /// dispatches that candidate's kernel. Proves the seam is real
-    /// — the selector's choice overrides the static winner.
-    #[test]
-    fn phase5_1_custom_selector_overrides_winner() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        // First candidate: a kernel that doubles LHS. Static winner.
-        // Second candidate: a kernel that triples LHS. The custom
-        // selector will pick this one.
-        fn triple_lhs_kernel_f32(
-            inputs: &[Arc<RwLock<Storage>>],
-            outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
-            _params: &OpParams,
-        ) -> Result<()> {
-            let lhs_guard = inputs[0].read().map_err(|_| poisoned("lhs lock"))?;
-            let tripled: Vec<f32> = if let fuel_memory::BackendStorage::Cpu(c) = &lhs_guard.inner {
-                c.as_slice().expect("f32 cast").iter().map(|x: &f32| x * 3.0).collect()
-            } else {
-                panic!("test kernel: lhs must be CPU storage");
-            };
-            let mut out_guard = outputs[0]
-                .write()
-                .map_err(|_| poisoned("output lock"))?;
-            if let fuel_memory::BackendStorage::Cpu(c) = &mut out_guard.inner {
-                c.as_slice_mut().expect("f32 cast").copy_from_slice(&tripled);
-            } else {
-                panic!("test kernel: output must be CPU storage");
-            }
-            Ok(())
-        }
-
-        let mut set = AlternativeSet::empty();
-        set.push(Candidate {
-            kernel: double_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        });
-        set.push(Candidate {
-            kernel: triple_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        });
-        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
-        alternatives.insert(add_id, set);
-        let plan = Arc::new(ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: crate::dispatch::topology_generation(),
-        });
-
-        /// Custom selector for the test: picks the last entry.
-        /// A real Picker 2 would consult telemetry / runtime
-        /// signals; this picks deterministically by structure to
-        /// keep the test hermetic.
-        #[derive(Debug)]
-        struct LastEntrySelector;
-        impl RuntimeSelector for LastEntrySelector {
-            fn select<'a>(
-                &self, set: &'a crate::ranker::AlternativeSet,
-            ) -> Option<&'a Candidate> {
-                set.alternatives().last()
-            }
-        }
-
-        let selector: Arc<dyn RuntimeSelector> = Arc::new(LastEntrySelector);
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_plan_and_selector(
-                graph, add_id, inputs, plan, selector,
-            )
-            .expect("realize_with_plan_and_selector");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(
-            typed,
-            &[3.0, 6.0, 9.0],
-            "custom selector's pick (3*lhs) must override the static winner (2*lhs)",
-        );
-    }
-
-    /// Phase 5.1, test 3: a selector that returns `None` (e.g. would
-    /// happen if the set is empty) gracefully falls through to the
-    /// legacy `compile_node` path — same as if there were no plan
-    /// entry for the node.
-    ///
-    /// The mechanism: `resolve_compiled` only constructs a
-    /// `CompiledNode` from the picker when `pick.is_some()`;
-    /// otherwise it falls through to `compile_node`. This proves the
-    /// fallback is wired regardless of WHO returned None (no plan
-    /// entry vs selector explicitly opting out).
-    #[test]
-    fn phase5_1_selector_returning_none_falls_through() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        // Plan with a valid alternative, but a selector that
-        // explicitly returns None for it. Executor should fall
-        // through to the legacy Add kernel (lhs + rhs).
-        let mut set = AlternativeSet::empty();
-        set.push(Candidate {
-            kernel: double_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        });
-        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
-        alternatives.insert(add_id, set);
-        let plan = Arc::new(ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: crate::dispatch::topology_generation(),
-        });
-
-        /// Selector that opts out of every pick. Real Picker 2
-        /// implementations would do this when their telemetry can't
-        /// distinguish candidates or has no opinion.
-        #[derive(Debug)]
-        struct OptOutSelector;
-        impl RuntimeSelector for OptOutSelector {
-            fn select<'a>(
-                &self, _set: &'a crate::ranker::AlternativeSet,
-            ) -> Option<&'a Candidate> {
-                None
-            }
-        }
-
-        let selector: Arc<dyn RuntimeSelector> = Arc::new(OptOutSelector);
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_plan_and_selector(
-                graph, add_id, inputs, plan, selector,
-            )
-            .expect("realize_with_plan_and_selector");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(
-            typed,
-            &[11.0, 22.0, 33.0],
-            "selector returning None must fall through to legacy Add (lhs+rhs)",
-        );
     }
 }
