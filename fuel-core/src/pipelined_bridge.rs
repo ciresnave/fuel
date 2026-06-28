@@ -395,7 +395,7 @@ fn dispatch_with_plan_retry(
         // surfaces its `ExecutionPlan` (PR-A3b-2 de-dup) for the residency
         // + layout passes below. Build-time validation (missing binding /
         // no device) fires inside `optimize_graph`.
-        let (optimized, plan) =
+        let (optimized, _plan) =
             build_optimized_graph(graph, &[cpu_target], pinned_loc, &cache)?;
         // Residency (cross-device `Op::Copy`) and layout-fixup
         // (`Op::Contiguize`) are now optimizer passes inside `optimize_graph`
@@ -420,7 +420,7 @@ fn dispatch_with_plan_retry(
         // picks each branch's arm, then resolves each node's kernel via the
         // binding-table lookup.
         let result = PipelinedExecutor::realize_with_optimized_picking_env(
-            graph.clone(), cpu_target, cache_for_attempt, &optimized, &plan,
+            graph.clone(), cpu_target, cache_for_attempt, &optimized,
             selector, lookup, sym_env.clone(),
         );
         match result {
@@ -552,7 +552,7 @@ fn dispatch_many_with_plan_retry(
         // (cleanup A1), AND runs the residency + layout-fixup passes (cleanup
         // Step B); the executor recomputes its run/`lower_run` order from the
         // stamped, copy-stitched graph.
-        let (optimized, plan) =
+        let (optimized, _plan) =
             build_optimized_graph(graph, effective_targets, pinned_loc, &cache)?;
         // Cleanup Step C: the executor picks each branch's arm at dispatch
         // (was the bridge's `resolve_runtime_route`); the bridge just builds +
@@ -564,7 +564,7 @@ fn dispatch_many_with_plan_retry(
         };
         let cache_for_attempt = cache.clone();
         let result = PipelinedExecutor::realize_many_with_optimized_picking_env(
-            graph.clone(), effective_targets, cache_for_attempt, &optimized, &plan,
+            graph.clone(), effective_targets, cache_for_attempt, &optimized,
             selector, lookup, sym_env.clone(),
         );
         match result {

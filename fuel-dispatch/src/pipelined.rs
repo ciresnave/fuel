@@ -570,27 +570,28 @@ impl PipelinedExecutor {
         )
     }
 
-    /// Cleanup Step C entry: the executor OWNS `Op::Branch` arm-selection.
-    /// Given the optimizer's `plan` + the runtime `selector` + the live device
-    /// `lookup` (built bridge-side from the realize `Device` + Judge oracle and
-    /// passed in, exactly like the residency `input_residency` provider), pick
-    /// one arm per branch HERE — at dispatch — then lower the chosen route.
+    /// Cleanup Step C/D entry: the executor OWNS `Op::Branch` arm-selection.
+    /// Given the runtime `selector` + the live device `lookup` (built
+    /// bridge-side from the realize `Device` + Judge oracle and passed in,
+    /// exactly like the residency `input_residency` provider), pick one arm per
+    /// branch HERE — at dispatch — then lower the chosen route. The per-arm
+    /// candidates are re-enumerated from the runtime binding registry + the
+    /// graph (Step D: no threaded `ExecutionPlan`).
     ///
-    /// This relocates the bridge's old `resolve_runtime_route`: no `selector`
-    /// (the `runtime_selector_disabled()` opt-out) or a branchless graph yields
-    /// `None` ⇒ arm-0 lowering, byte-identical to Phase B. Step E later makes
-    /// this re-pick per decision-point by live device queue depth.
+    /// No `selector` (the `runtime_selector_disabled()` opt-out) or a
+    /// branchless graph yields `None` ⇒ arm-0 lowering, byte-identical to Phase
+    /// B. Step E later makes this re-pick per decision-point by live device
+    /// queue depth.
     pub fn realize_with_optimized_picking_env(
         graph: Arc<RwLock<Graph>>,
         target: NodeId,
         inputs: StorageCache,
         optimized: &OptimizedGraph,
-        plan: &ExecutionPlan,
         selector: Option<&dyn RuntimeSelector>,
         lookup: Option<&BackendRuntimeLookup>,
         sym_env: SymEnv,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        match Self::pick_route_for(&graph, &[target], plan, selector, lookup)? {
+        match Self::pick_route_for(&graph, &[target], selector, lookup)? {
             Some(route) => Self::realize_with_optimized_route_env(
                 graph, target, inputs, optimized, &route, sym_env,
             ),
@@ -605,10 +606,11 @@ impl PipelinedExecutor {
     /// `None` (⇒ arm-0 lowering) when there is no `selector` (the disabled
     /// opt-out) or the graph has no `Op::Branch` (the branchless fast-path:
     /// skip the topo walk + selector entirely so the common case is unchanged).
+    /// The per-arm candidates are re-enumerated from the runtime binding
+    /// registry (Step D — was the threaded `ExecutionPlan`).
     fn pick_route_for(
         graph: &Arc<RwLock<Graph>>,
         roots: &[NodeId],
-        plan: &ExecutionPlan,
         selector: Option<&dyn RuntimeSelector>,
         lookup: Option<&BackendRuntimeLookup>,
     ) -> Result<Option<PickedRoute>> {
@@ -623,7 +625,8 @@ impl PipelinedExecutor {
         if !has_branch {
             return Ok(None);
         }
-        Ok(Some(pick_route(&g, roots, plan, sel, lookup)))
+        let bindings = global_bindings();
+        Ok(Some(pick_route(&g, roots, &bindings, sel, lookup)))
     }
 
     /// Plan-aware sibling of [`realize`]. The compiler thread
@@ -899,19 +902,18 @@ impl PipelinedExecutor {
     }
 
     /// Multi-target sibling of [`realize_with_optimized_picking_env`] —
-    /// the executor picks one arm per `Op::Branch` (cleanup Step C) over the
+    /// the executor picks one arm per `Op::Branch` (cleanup Step C/D) over the
     /// effective targets, then lowers the chosen route.
     pub fn realize_many_with_optimized_picking_env(
         graph: Arc<RwLock<Graph>>,
         targets: &[NodeId],
         inputs: StorageCache,
         optimized: &OptimizedGraph,
-        plan: &ExecutionPlan,
         selector: Option<&dyn RuntimeSelector>,
         lookup: Option<&BackendRuntimeLookup>,
         sym_env: SymEnv,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
-        match Self::pick_route_for(&graph, targets, plan, selector, lookup)? {
+        match Self::pick_route_for(&graph, targets, selector, lookup)? {
             Some(route) => Self::realize_many_with_optimized_route_env(
                 graph, targets, inputs, optimized, &route, sym_env,
             ),
@@ -5013,7 +5015,8 @@ mod tests {
 
         // 2-arm diamond (mirrors ranker::route_picker::tests::diamond): the
         // arm exits carry their `target_backend` so the picker reads each
-        // arm's placement; no plan set ⇒ `pick_arm` uses synthetic candidates.
+        // arm's placement. Candidates are re-enumerated from the global
+        // registry (Step D); PickLast selects the last arm regardless.
         let mut g = Graph::new();
         let pre = node(&mut g, Op::Const, vec![]);
         let diverge = node(&mut g, Op::Relu, vec![pre]);
@@ -5030,13 +5033,13 @@ mod tests {
             .expect("well-formed 2-arm branch")
             .expect("2 arms survive");
         let post = node(&mut g, Op::Tanh, vec![reconverge]);
-        let plan = ExecutionPlan::empty();
         let graph = Arc::new(RwLock::new(g));
 
         // (1) selector + branch ⇒ Some(route); PickLast ⇒ arm 1 at the branch,
-        //     and the route is byte-for-byte what `pick_route` produces directly.
+        //     and the route is byte-for-byte what `pick_route` produces directly
+        //     (both re-enumerate from the same global registry).
         let route = PipelinedExecutor::pick_route_for(
-            &graph, &[post], &plan, Some(&PickLast), None,
+            &graph, &[post], Some(&PickLast), None,
         )
         .expect("pick_route_for ok")
         .expect("a branched graph + selector yields a route");
@@ -5047,13 +5050,13 @@ mod tests {
         );
         let direct = {
             let g = graph.read().unwrap();
-            pick_route(&g, &[post], &plan, &PickLast, None)
+            pick_route(&g, &[post], &global_bindings(), &PickLast, None)
         };
         assert_eq!(route, direct, "the executor's pick forwards pick_route verbatim");
 
         // (2) no selector (the runtime-selector-disabled opt-out) ⇒ None.
         assert!(
-            PipelinedExecutor::pick_route_for(&graph, &[post], &plan, None, None)
+            PipelinedExecutor::pick_route_for(&graph, &[post], None, None)
                 .expect("ok")
                 .is_none(),
             "no selector ⇒ no route (arm-0 lowering)",
@@ -5070,7 +5073,7 @@ mod tests {
         };
         assert!(
             PipelinedExecutor::pick_route_for(
-                &bl_graph, &[bl_root], &plan, Some(&PickLast), None,
+                &bl_graph, &[bl_root], Some(&PickLast), None,
             )
             .expect("ok")
             .is_none(),
