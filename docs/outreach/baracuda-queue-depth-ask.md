@@ -1,7 +1,10 @@
-# Baracuda ask — device-load telemetry (Step E, Phase B2) — DRAFT / OPTIONAL
+# Baracuda ask — device-load telemetry (Step E, Phase B2) — RESOLVED
 
-**Status:** draft for CireSnave's review; **not yet sent**. Lower priority than the fuel-internal
-signal (see "Why optional").
+**Status:** sent + **answered (2026-06-28)** — see [`baracuda-queue-depth-response.md`](baracuda-queue-depth-response.md).
+**Outcome:** both halves already exist in baracuda **alpha.69** (`Stream::is_complete()` = cuStreamQuery;
+`baracuda_nvml::Device::utilization()`), with convenience aliases (`is_idle()`, `gpu_utilization_percent()`)
+in alpha.70. NVML is crate-split (`baracuda-nvml`), so Fuel's default build stays clean behind a feature
+gate. Phase B2 is unblocked; Fuel wires it (after A/B1/C) entirely fuel-side. Original ask below for record.
 **From:** fuel dispatch-core cleanup, Step E (live-load `Op::Branch` arm selection).
 **Nature:** read-only telemetry addition — no behavior change, no allocation, no hot-path impact.
 

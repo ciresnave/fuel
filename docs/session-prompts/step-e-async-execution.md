@@ -76,9 +76,15 @@ on another device (or a host read) needs the result. This alone unlocks intra-de
   `BackendRuntime::pending_work() -> Option<u64>` (default `None`) **or** through the existing
   `BackendRuntimeLookup` the selector already consults. Covers single-process inter-run parallelism
   (the runtime's job per `06-runtime` §Data parallelism). No sibling change.
-- **B2 (sibling, optional):** device-native queue depth for *cross-process* GPU sharing — drafted in
-  `docs/outreach/baracuda-queue-depth-ask.md` + `vulkane-queue-depth-ask.md`. Read-only telemetry
-  additions; gated on CireSnave's approval. Not required for the single-process win.
+- **B2 (sibling, optional):** device-native queue depth for *cross-process* GPU sharing.
+  **CUDA: UNBLOCKED (2026-06-28)** — baracuda **alpha.69** already ships `Stream::is_complete()`
+  (cuStreamQuery, this-process stream idle/busy) + `baracuda_nvml::Device::utilization()` /
+  `gpu_utilization_percent() -> Option<u8>` (cross-process, alpha.70 alias); NVML is crate-split
+  (`baracuda-nvml`), gate it behind a Fuel `cuda-telemetry` feature so the default build stays clean.
+  Wire at `fuel-cuda-backend`'s `as_backend_runtime()` → `BackendRuntime::pending_work()`. See
+  [`../outreach/baracuda-queue-depth-response.md`](../outreach/baracuda-queue-depth-response.md).
+  **Vulkan: pending** (`../outreach/vulkane-queue-depth-ask.md` — exploratory; may have no portable
+  cross-process signal, in which case Vulkan rides B1 alone). Neither is required for the single-process win.
 
 ## Phase C — streaming walk + `DeviceLoadSelector` (the actual Step E)
 
