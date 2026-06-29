@@ -122,6 +122,97 @@ pub fn realize_one_as<T: bytemuck::Pod>(
     realize_one_as_with_initial::<T>(graph, target, device, StorageCache::new())
 }
 
+/// Multi-DEVICE realize: like [`realize_one_as`], but additionally seeds
+/// the executor's input cache with a device-handle anchor for each device
+/// in `extra_devices` — the backends that appear in the graph's per-node
+/// placements OTHER than the primary realize `device`.
+///
+/// # Why this exists (the dual-device-seed gap)
+///
+/// A realize pins ONE `device` (the primary). [`build_const_cache`] uploads
+/// the reachable `Op::Const`s to that device, so a primary-device handle
+/// lands in the cache (carried by the uploaded const storages) and the
+/// executor's H2D `Op::Copy`/`Op::Alloc` device-handle search
+/// (`find_cuda_device_in_cache` / `find_vulkan_backend_in_cache`) succeeds
+/// for the primary backend. But a genuinely multi-VENDOR graph (e.g. a
+/// sub-DAG placed on CUDA reconverging with one placed on Vulkan) also has
+/// H2D copies targeting the OTHER backend — and NO storage on that backend
+/// is in the cache, so the handle search fails with "no storage in input
+/// cache to derive the handle".
+///
+/// This entry closes that: for each `extra_devices` handle it pushes a tiny
+/// `Op::Const` anchor node into the graph and inserts that backend's
+/// 0-byte [`device_seed_storage`] at the anchor's NodeId. The anchor is
+/// unreachable from `target`, so it is never dispatched (it does not appear
+/// in the executor's run order) — it exists ONLY so the per-backend handle
+/// search resolves. The anchor IS a cache key, so the executor's
+/// `layout_cache` seeding (`g.layout(id)` over `inputs.keys()`) requires it
+/// to be a real graph node — hence the push rather than a synthetic id.
+///
+/// Single-device realize is unaffected: pass an empty `extra_devices` and
+/// this is byte-identical to [`realize_one_as`] (no anchors pushed, the
+/// same `StorageCache::new()` initial).
+///
+/// CPU appearing among the extra devices is a no-op (CPU's allocation path
+/// is handle-free; [`device_seed_storage`] returns `Ok(None)` for it).
+pub fn realize_one_as_multi_device<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    target: NodeId,
+    device: &Device,
+    extra_devices: &[&Device],
+) -> Result<Vec<T>> {
+    let initial = seed_extra_device_handles(graph, device, extra_devices)?;
+    realize_one_as_with_initial::<T>(graph, target, device, initial)
+}
+
+/// Build the `initial` [`StorageCache`] for a multi-device realize: one
+/// device-handle anchor per `extra_devices` entry whose backend differs
+/// from the primary `device`'s backend (and isn't CPU). See
+/// [`realize_one_as_multi_device`] for the rationale.
+///
+/// Each anchor is a fresh `Op::Const` node pushed into `graph`, paired
+/// with the backend's [`device_seed_storage`] in the returned cache. The
+/// primary backend is skipped — the const upload already seeds it.
+fn seed_extra_device_handles(
+    graph: &Arc<RwLock<Graph>>,
+    primary: &Device,
+    extra_devices: &[&Device],
+) -> Result<StorageCache> {
+    let mut cache = StorageCache::new();
+    if extra_devices.is_empty() {
+        return Ok(cache);
+    }
+    let primary_backend = device_to_backend_id(primary);
+    // De-dup: seed each distinct extra backend once.
+    let mut seeded: Vec<BackendId> = vec![primary_backend];
+    for dev in extra_devices {
+        let backend = device_to_backend_id(dev);
+        if seeded.contains(&backend) {
+            continue;
+        }
+        // device_seed_storage returns Ok(None) for CPU (no handle anchor
+        // needed) and a 0/4-byte device storage for GPU backends.
+        let Some(seed) = device_seed_storage(dev)? else {
+            seeded.push(backend);
+            continue;
+        };
+        let anchor_id = {
+            let mut g = graph
+                .write()
+                .map_err(|_| Error::Msg("graph lock poisoned during device-handle seed".into()).bt())?;
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: fuel_ir::Shape::from_dims(&[4]),
+                dtype: fuel_ir::DType::U8,
+            })
+        };
+        cache.insert(anchor_id, Arc::new(RwLock::new(seed)));
+        seeded.push(backend);
+    }
+    Ok(cache)
+}
+
 /// Multi-target counterpart of [`realize_one_as`]. Returns parallel
 /// `Vec<Vec<T>>` in the order of `targets`.
 pub fn realize_many_as<T: bytemuck::Pod>(
