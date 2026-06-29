@@ -1,8 +1,21 @@
 # Step E A4 — Multi-device realize (concurrent CUDA + Vulkan)
 
-**Status:** design (2026-06-29), for review before code. Chosen over the "validation slice"
-and "pause" options: build the full multi-device realize path. This is the largest remaining
-Step E piece and the foundation **C** (`DeviceLoadSelector`) also requires.
+**Status:** design (2026-06-29). Foundation **C** (`DeviceLoadSelector`) builds on this.
+
+> **UPDATE 2026-06-29 — A4a is ALREADY BUILT (verified live).** A fresh max-effort Opus agent went to
+> implement A4a and, reading the *prune code* (not just the doc comment), found the premise below was
+> wrong: plan.rs:187-192 is NOT a graph-global "one device" constraint — it's a **per-node** prune (each
+> node's *alternative set* prunes to *that node's* winner device), which is exactly the per-node
+> multi-device placement we want, plus a safety invariant `Op::Branch` arm-selection needs. **No code
+> change was required.** A live test (`fuel-core/tests/cuda_multidevice_realize_live.rs`) realizes a
+> mixed CPU+CUDA graph in ONE pass — per-node placement honored, cross-device `Op::Copy` auto-inserted
+> both directions, byte-exact `[22,86,192,340]` — verified green on the RTX 4070 (independently re-run).
+> The only edit was correcting the misleading plan.rs doc comment. So A4a-1 (mechanism) + likely A4a-2
+> (the bridge already does cost-based auto-placement; observed but not yet independently confirmed) are
+> DONE. **Remaining A4 = A4b (does a mixed realize actually OVERLAP the devices — concurrency, not just
+> correctness?) + A4c (dual-GPU benchmark).** The "feature, not a benchmark" framing below was itself
+> half-wrong — the placement *mechanism* existed; only the *concurrency* question (A4b) is open. Lesson:
+> test, don't read — two read-only probes + I all misread the doc comment.
 
 ## Goal
 
@@ -125,9 +138,17 @@ mixed-backend graph, and the executor would error on one lacking bridge copies.
 
 ## Phasing & risk
 
-A4a-1 (entry + explicit placement + residency) → A4b (executor multi-backend audit/fix) → A4c
-(dual-GPU benchmark + correctness) → [A4a-2 auto-placement → C `DeviceLoadSelector`]. Biggest risk is
-A4a's planner change (the "one device" invariant is correctness-critical — relax it carefully, keep
-single-device realize byte-identical) and dual-GPU test flakiness. Nothing is byte-affecting for
-existing single-device realizes (the multi-device path is additive, gated on a device-set entry).
-Each phase ships with its test; A4c needs the AMD iGPU + RTX 4070 both live.
+**A4a-1 (mechanism) — DONE 2026-06-29** (no code change; the mechanism existed — see the UPDATE banner;
+`cuda_multidevice_realize_live.rs` is the live guard). **A4a-2 (auto-placement) — likely DONE** (the
+bridge already wires `transfer_estimator` + `fallback_placements_for` + the priced placement DP; an
+un-pinned probe split CPU/CUDA on its own — confirm with a no-explicit-placement test). Remaining:
+**A4b** — does a mixed realize actually OVERLAP the devices? The A4a test proves *correctness*, not
+*concurrency*; audit whether the CPU sub-DAG (synchronous) and the CUDA sub-DAG (async) actually
+progress in parallel, and whether the `TopologyChanged` chunk-boundary drain (pipelined.rs:690-708)
+serializes at every backend switch. → **A4c** — the dual-GPU concurrency benchmark (RTX 4070 CUDA + AMD
+iGPU Vulkan; assert wall-clock < sum-of-sequential), now that two GPU backends can be mixed in one
+realize. → then **C** (`DeviceLoadSelector`). Risk is low for what shipped (A4a was doc-only + a test;
+single-device realize provably byte-identical — the prune was untouched); the open risk is whether A4b
+needs real executor work to get overlap (TBD by measurement). A pre-existing gap noted by the agent: a
+CPU-*pinned* mixed realize would need a CUDA device-seed anchor the bridge doesn't add today (the A4a
+test pins CUDA, which seeds the device handle the H2D copies need).
