@@ -155,9 +155,16 @@ live-GPU outputs is strong evidence; a failure means a missed flush point.
   multi-device contention.
 
 ## Suggested PR breakdown (each its own plan + verify)
-- **A1** — handle type + the submit/complete trait surface; CPU path (handle = Ready); executor
-  tracks handles but still waits at every node (behavior-identical; pure plumbing).
-- **A2** — Vulkan async (flush→fence handle, dependency-boundary waits); intra-device pipelining.
+- **A1 — SHIPPED (`06cf3fbf`).** `CompletionHandle` type at `execute_compiled`; CPU = `Ready`;
+  behavior-identical. (Refined: handle originates at `execute_compiled`'s return, not an
+  executor-held backend submit; the 390 sync kernels untouched.)
+- **A2 — SHIPPED + live-GPU-verified (2026-06-28).** Vulkan async via the lazy-`flush_pending` +
+  `force_flush` model (NOT a per-op fence handle — the fence is per-batch). Backend: `flush_pending`
+  lazy (BATCH_LIMIT cap), `pub force_flush`, host reads (`download_*`, `synchronize_pending`,
+  auto-flush) → `force_flush`. Executor: `force_flush_vulkan` before destructive eviction +
+  `force_flush_all_vulkan` at realize-end. Verified: CPU 382/1282 (behavior-identical), vulkan+cuda
+  compile, live RTX 4070 (`byte_storage_live` 4; `vulkan_bridge_realize_live` 2 incl. a deep 4-op
+  fan-out chain). Same-queue submission order = execution order carries intra-realize deps.
 - **A3** — CUDA async (stream events, cross-stream waits).
 - **A4** — concurrent multi-device scheduling (independent sub-DAGs progress in parallel).
 - **B1** — in-flight counter + `pending_work()` seam.

@@ -709,6 +709,13 @@ impl PipelinedExecutor {
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
                     if destroyed != target {
+                        // Step E A2: the deferred Vulkan batch may hold a
+                        // recorded-but-unsubmitted command referencing this
+                        // buffer — submit + wait before freeing it (no-op for
+                        // non-Vulkan / empty batch).
+                        if let Some(d_arc) = cache.get(&destroyed) {
+                            force_flush_vulkan(d_arc)?;
+                        }
                         cache.remove(&destroyed);
                         layout_cache.remove(&destroyed);
                     }
@@ -719,6 +726,10 @@ impl PipelinedExecutor {
         compiler
             .join()
             .map_err(|_| Error::Msg("compiler thread panicked".to_string()).bt())?;
+
+        // Step E A2: drain all deferred Vulkan work before reading/returning
+        // the result (and before the cache drops, freeing buffers).
+        force_flush_all_vulkan(&cache)?;
 
         let storage = cache.remove(&target).ok_or_else(|| {
             Error::Msg(format!(
@@ -938,6 +949,11 @@ impl PipelinedExecutor {
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
                     if !target_set.contains(&destroyed) {
+                        // Step E A2: drain the deferred Vulkan batch before
+                        // freeing a buffer it may reference (no-op otherwise).
+                        if let Some(d_arc) = cache.get(&destroyed) {
+                            force_flush_vulkan(d_arc)?;
+                        }
                         cache.remove(&destroyed);
                         layout_cache.remove(&destroyed);
                     }
@@ -948,6 +964,10 @@ impl PipelinedExecutor {
         compiler
             .join()
             .map_err(|_| Error::Msg("compiler thread panicked".to_string()).bt())?;
+
+        // Step E A2: drain all deferred Vulkan work before reading/returning
+        // results (and before the cache drops, freeing buffers).
+        force_flush_all_vulkan(&cache)?;
 
         // Verify every target was realized + collect outputs in
         // target order. We don't `remove` from the cache because the
@@ -4505,6 +4525,40 @@ fn find_cuda_device_in_cache(
         }
     }
     None
+}
+
+/// Step E A2: force the Vulkan backend behind `arc` (if any) to submit + wait
+/// its deferred batch — called before freeing a buffer the batch may reference
+/// (a destructive eviction) so a recorded-but-unsubmitted command never reads
+/// freed memory. No-op for non-Vulkan storage, an empty batch, or a non-Vulkan
+/// build.
+#[cfg(feature = "vulkan")]
+fn force_flush_vulkan(arc: &Arc<RwLock<Storage>>) -> Result<()> {
+    let guard = arc
+        .read()
+        .map_err(|_| poisoned("storage lock during vulkan force_flush"))?;
+    if let fuel_memory::BackendStorage::Vulkan(v) = &guard.inner {
+        if let Some(backend) = v.backend() {
+            backend.force_flush()?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "vulkan"))]
+fn force_flush_vulkan(_arc: &Arc<RwLock<Storage>>) -> Result<()> {
+    Ok(())
+}
+
+/// Step E A2: drain every Vulkan backend referenced by `cache` — the
+/// realize-end barrier so all deferred GPU work completes and buffers are
+/// stable before results return / the cache drops. `force_flush` on an empty
+/// batch is a no-op, so per-arc repeats after the first drain are free.
+fn force_flush_all_vulkan(cache: &StorageCache) -> Result<()> {
+    for arc in cache.values() {
+        force_flush_vulkan(arc)?;
+    }
+    Ok(())
 }
 
 /// Vulkan counterpart of [`find_cuda_device_in_cache`]. Returns an
