@@ -600,7 +600,7 @@ impl VulkanBackend {
     /// contract: when this returns, every kernel previously dispatched
     /// on `self` is observable to subsequent reads.
     pub fn synchronize_pending(&self) -> fuel_ir::Result<()> {
-        self.flush_pending()
+        self.force_flush()
     }
 
     /// List all available Vulkan physical devices.
@@ -1141,7 +1141,7 @@ impl VulkanBackend {
                  fault back via residency machinery before reading".into(),
             )
         })?;
-        self.flush_pending()?;
+        self.force_flush()?;
         let mut staging = self.create_download_staging(byte_size)?;
         self.queue
             .one_shot(&self.device, self.queue_family, |cmd| {
@@ -1247,9 +1247,9 @@ impl VulkanBackend {
         let pending = self.recorder.lock().expect("recorder poisoned").batch_count;
         let _span = info_span!("vk_download", bytes = byte_size, pending).entered();
         // First make sure every previously-submitted async op has
-        // finished on the GPU. flush_pending host-waits on our
-        // timeline semaphore and drops in-flight resources.
-        self.flush_pending()?;
+        // finished on the GPU. force_flush submits + host-waits the
+        // deferred batch and drops in-flight resources.
+        self.force_flush()?;
         // Staging: host-cached when available (see
         // `create_download_staging`), host-visible + mapped otherwise.
         let mut staging = {
@@ -1463,7 +1463,7 @@ impl VulkanBackend {
 
         // Auto-flush if the batch is getting large (TDR safety).
         if self.recorder.lock().expect("recorder poisoned").should_flush() {
-            self.flush_pending()?;
+            self.force_flush()?;
         }
 
         self.recorder
@@ -1485,10 +1485,17 @@ impl VulkanBackend {
         Ok(())
     }
 
-    /// Flush the current batch: end recording, submit the single CB,
-    /// wait for the GPU, drop transient resources, retire descriptor
-    /// pools.
-    fn flush_pending(&self) -> fuel_ir::Result<()> {
+    /// Flush the current batch NOW: end recording, submit the single CB,
+    /// wait for the GPU, drop transient resources, retire descriptor pools.
+    ///
+    /// The FORCED sync point (Step E A2). Called at every place a deferred
+    /// batch must complete before something observes its results or frees its
+    /// buffers: host reads (`download_*`), explicit drains
+    /// (`synchronize_pending`), the batch-full TDR cap, and the executor's
+    /// buffer-lifetime guard (before a destructive eviction / at realize-end).
+    /// `pub` so `fuel-dispatch`'s executor can force a drain via the backend
+    /// handle it pulls from cache (`find_vulkan_backend_in_cache`).
+    pub fn force_flush(&self) -> fuel_ir::Result<()> {
         let batch_count = self.recorder.lock().expect("recorder poisoned").batch_count;
         if batch_count == 0 { return Ok(()); }
         let _span = info_span!("vk_flush_batch", batch_count).entered();
@@ -1498,6 +1505,21 @@ impl VulkanBackend {
             .flush_batch(&self.device, &self.queue, self.queue_family)
             .map_err(vk_err)?;
         self.pipelines.retire_pools_post_drain();
+        Ok(())
+    }
+
+    /// LAZY flush (Step E A2): defer GPU submission so per-op dispatches
+    /// pipeline on the single compute queue (submission order = execution
+    /// order, so same-queue producer→consumer deps need no inline wait). Only
+    /// forces a flush when the batch hits `BATCH_LIMIT` (the TDR cap);
+    /// otherwise the batch keeps accumulating. The per-op compute wrappers call
+    /// this. Host reads + the executor's lifetime guard call [`force_flush`].
+    ///
+    /// [`force_flush`]: VulkanBackend::force_flush
+    fn flush_pending(&self) -> fuel_ir::Result<()> {
+        if self.recorder.lock().expect("recorder poisoned").should_flush() {
+            self.force_flush()?;
+        }
         Ok(())
     }
 

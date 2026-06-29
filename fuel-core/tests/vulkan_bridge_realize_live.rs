@@ -58,3 +58,32 @@ fn mul_add_realize_on_vulkan_matches_reference() {
     let out = c.realize_f32_vulkan(&backend);
     assert_eq!(out, vec![11.0_f32, 44.0, 99.0, 176.0]);
 }
+
+/// Step E A2 (Vulkan async): a DEEPER chain with fan-out, so several Vulkan
+/// ops accumulate in the deferred batch (pipelined on the single queue) and an
+/// intermediate is consumed twice (`t1`) — stressing batch accumulation,
+/// same-queue producer→consumer ordering, and any in-place eviction
+/// (`force_flush` before a destructive `cache.remove`). The host oracle:
+///   t1 = a+b = [11,22,33,44];  t2 = t1*a = [11,44,99,176]
+///   t3 = t2+t1 = [22,66,132,220];  out = t3*a = [22,132,396,880]
+/// Correct bytes under deferred flush ⇒ the A2 sync points are complete.
+#[test]
+#[ignore = "requires a live Vulkan device"]
+fn deep_chain_realize_on_vulkan_matches_reference() {
+    let Some(backend) = backend_or_skip() else { return };
+
+    let a = LazyTensor::from_f32(
+        vec![1.0_f32, 2.0, 3.0, 4.0],
+        Shape::from_dims(&[4]),
+        &fuel_core::Device::cpu(),
+    );
+    let b = a.const_f32_like(vec![10.0_f32, 20.0, 30.0, 40.0], Shape::from_dims(&[4]));
+
+    let t1 = a.add(&b).expect("add");
+    let t2 = t1.mul(&a).expect("mul");
+    let t3 = t2.add(&t1).expect("add2"); // reuses t1 (fan-out)
+    let out_t = t3.mul(&a).expect("mul2");
+
+    let out = out_t.realize_f32_vulkan(&backend);
+    assert_eq!(out, vec![22.0_f32, 132.0, 396.0, 880.0]);
+}
