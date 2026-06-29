@@ -65,10 +65,45 @@ matching the "backends advertise, the executor decides" principle.
   (polled at submit time + drained at realize end). This *is* the queue-depth signal `DeviceLoadSelector`
   reads — no device API needed.
 
-### The Vulkan change
-The recorder already batches (`BATCH_LIMIT` ops/command-buffer). Today it `fence.wait`s per flush.
-Phase A: flush + **return the fence as the handle** instead of waiting; wait only when a dependent op
-on another device (or a host read) needs the result. This alone unlocks intra-device pipelining.
+### The Vulkan change — A2 (turnkey plan from the 2026-06-28 investigation)
+
+**Confirmed:** all Vulkan compute ops go to ONE compute queue (`fuel-vulkan-backend/src/lib.rs:529`),
+so submission order = execution order → same-queue producer→consumer deps need **no** per-op wait.
+`download_bytes` (the D2H host-read) already calls `flush_pending()` (`lib.rs:1144`); the residency pass
+splices `Op::Copy{Cpu}` on every Vulkan→CPU edge (`optimize.rs:319`), so all host reads funnel through it.
+
+**The synchrony today:** every kernel wrapper calls `record_dispatch_batched()` then `flush_pending()`
+(`lib.rs:~1822`), and `flush_batch()` (`recorder.rs:204`) does `queue.submit(Some(&fence))` then
+`fence.wait(u64::MAX)`. The `BATCH_LIMIT=500` batching never accumulates because of the per-op flush.
+
+**⚠️ The hazard (decisive):** `Recorder::record_batch_dispatch` (`recorder.rs:104`) retains only
+`batch_transients` (param/shape uniforms) + `batch_descs` — it tracks the input/output **data** buffers
+as raw `u64` handles (`dirty_buffers`, for barriers), NOT as Arcs. So a naive "defer the flush" =
+**use-after-free**: a destructively-evicted input (`cache.remove`, `pipelined.rs:709`) or the realize-end
+cache drop frees a data buffer while a recorded-but-unsubmitted command still references it.
+
+**Safe shape (avoids touching every wrapper + the recorder's buffer model):**
+1. **Backend (one place):** make `flush_pending()` LAZY — flush only when `should_flush()` (batch full);
+   add `force_flush()` that always submits + waits. The per-op wrapper calls (now `flush_pending`) thus
+   DEFER; the batch accumulates + auto-flushes at `BATCH_LIMIT` (bounds TDR).
+2. **Repoint host reads:** `download_bytes` (+ any other `flush_pending` caller that precedes a host
+   read — AUDIT all callers) → `force_flush()`.
+3. **Executor buffer-lifetime guard (the UAF fix, no recorder change):** in `realize_inner` +
+   `realize_many_inner`, `force_flush` the Vulkan backend (via the existing
+   `find_vulkan_backend_in_cache`, `pipelined.rs:~4491`) **before every destructive eviction**
+   (`cache.remove`) **and at realize-end** (before the cache drops / results return). Same-queue ordering
+   covers all non-evicting, non-host-read deps → real intra-device pipelining for compute runs;
+   destructive/in-place ops flush first (safe, slightly less pipelining).
+4. Leave the `CompletionHandle` (A1) as-is for now — the fence is per-BATCH not per-op, and `KernelRef`
+   can't carry it back, so A2 uses the backend-internal lazy-flush model; A4 (concurrent multi-device)
+   is where the executor tracks per-device completion explicitly.
+
+**Verification (mandatory before commit):** CPU suites unaffected (no Vulkan recorder); `cargo check
+--features vulkan`; then **live-GPU**: run the `#[ignore]`'d Vulkan suites (one suite at a time, 12 GB
+GPU) over BOTH non-destructive (elementwise chains) AND destructive/in-place + Vulkan→CPU graphs, and
+diff outputs against the synchronous baseline. The design is race-free by construction (single-queue
+order + buffers retained until a forced flush at every host-read/eviction/realize-end), so passing
+live-GPU outputs is strong evidence; a failure means a missed flush point.
 
 ## Phase B — the signal
 
