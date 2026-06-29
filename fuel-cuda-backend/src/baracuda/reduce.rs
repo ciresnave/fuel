@@ -161,7 +161,6 @@ fn reduce_multi_axis(
             )
         };
         check(status, op_label)?;
-        device.synchronize()?;
 
         // Output of this round becomes input to the next.
         let bytes = out_bytes;

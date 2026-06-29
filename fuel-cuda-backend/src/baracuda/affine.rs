@@ -146,7 +146,6 @@ macro_rules! affine_kernel {
                 }
             };
             check(status, op_label)?;
-            device.synchronize()?;
             Ok(CudaStorageBytes::from_parts(
                 Arc::new(out_buf), device, out_bytes,
             ))
@@ -238,7 +237,6 @@ macro_rules! affine_inplace_kernel {
                 )
             };
             check(status, op_label)?;
-            device.synchronize()?;
             Ok(())
         }
     };

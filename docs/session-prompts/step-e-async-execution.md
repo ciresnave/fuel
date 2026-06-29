@@ -165,29 +165,25 @@ live-GPU outputs is strong evidence; a failure means a missed flush point.
   `force_flush_all_vulkan` at realize-end. Verified: CPU 382/1282 (behavior-identical), vulkan+cuda
   compile, live RTX 4070 (`byte_storage_live` 4; `vulkan_bridge_realize_live` 2 incl. a deep 4-op
   fan-out chain). Same-queue submission order = execution order carries intra-realize deps.
-- **A3** — CUDA async. **Investigated 2026-06-28; bigger than A2 — needs temp-buffer retention.**
-  Every CUDA compute op (`fuel-cuda-backend/src/baracuda/*.rs`, ~28 files) does `launch(stream) →
-  device.synchronize()? → return`, and allocates a LOCAL `Workspace`/`scratch` (`super::scratch::Workspace::alloc`)
-  consumed by the kernel. The per-op `synchronize` (= `self.stream.synchronize()`, device.rs:896) is
-  what keeps that workspace alive until the kernel finishes — so **naively deferring the sync drops the
-  workspace mid-kernel → use-after-free**. Unlike A2 (the Vulkan recorder already owns transient
-  lifetime via `batch_transients`), CUDA temps are local Rust vars. Options:
-  **CHOSEN (2026-06-29): option 3 — stream-ordered allocation/free (`cudaMallocAsync`/`cudaFreeAsync`),
-  pending a baracuda free-semantics confirmation** (`../outreach/baracuda-stream-ordered-alloc-ask.md`).
-  Rationale: faster + lower peak VRAM + *less* Fuel code than a retention pool — the driver's
-  stream-ordered mem-pool reuses freed blocks (peak VRAM ≈ one workspace, no repeated real
-  `cuMemAlloc`), and a stream-ordered free is safe-by-construction (enqueued after the consuming
-  kernel) → **no Rust retention pool**, and if data buffers free stream-ordered too, **no executor
-  force-sync guards either**. fuel-cuda-backend already allocates via `DeviceBuffer::new_async`
-  (device.rs:163, stream-ordered alloc); the open question is whether `Drop` frees via `cudaFreeAsync`
-  (+ whether `alloc_zeros`/output buffers do). If yes → A3 is small + pure-Fuel: switch `Workspace` +
-  output allocs to the stream-ordered path, defer the per-op `device.synchronize()`, keep the D2H sync
-  in `to_cpu_bytes` (byte_storage.rs:341). If no → small additive baracuda ask (stream-ordered free),
-  and fall back to the retention pool + executor `force_synchronize_cuda` guards meanwhile. Either way:
-  live-CUDA verify on RTX 4070 (multi-op + deep-chain + a workspace op like gemm/attention), diffed vs
-  the sync baseline. **Rejected options:** (a) retention pool — correct but holds every in-flight
-  workspace until a bulk drain (higher peak VRAM) + still does per-op `cuMemAlloc`; (b) temp-free
-  subset — partial + fragile.
+- **A3** — CUDA async. **SHIPPED 2026-06-29 (option 3, stream-ordered alloc/free).** Baracuda
+  **alpha.72** made `new_async`/`zeros_async` buffers free STREAM-ORDERED on `Drop` (`cuMemFreeAsync`
+  on the retained origin stream) — answering `../outreach/baracuda-stream-ordered-alloc-ask.md` (Q1/Q2
+  = yes). So A3 was the small, pure-Fuel path, no retention pool, no executor force-sync guards:
+  1. `device.rs` `alloc_zeros` → `DeviceBuffer::zeros_async(ctx, len, &self.stream)` — all 56 op
+     allocations (kernel outputs + `Workspace`/scratch, all of which route through `alloc_zeros`) now
+     free stream-ordered, so an intermediate dropped while its kernel is in flight frees *after* the
+     kernel. UAF eliminated by construction.
+  2. Removed all 59 per-op `device.synchronize()?` from the 28 `baracuda/*.rs` compute ops → kernels
+     pipeline on the single per-device stream (submission order = execution order carries deps).
+  3. `new_with_stream` raises the default mem-pool release threshold to `u64::MAX` (retain freed blocks
+     for reuse vs trim-to-OS each sync; non-owning handle). Follow-up: optional `trim_to` at realize-end.
+  4. KEPT byte_storage.rs's 5 D2H/H2D syncs — correctness now rests on these host-boundary syncs
+     (`to_cpu_bytes` etc.); audit confirmed no op does a raw (non-self-syncing) host readback.
+  Single-origin-stream precondition (alpha.72) holds trivially (one stream per device).
+  **Verified** RTX 4070 (driver API): `cuda_async_realize_live` 3/3 (mul_add, deep_chain fan-out,
+  long_chain 32-op pool-reuse stress), `recip_abs` 2/2, `phase_c_rotating_kv` 3/3 (in-place
+  WriteSliceRotating) — 8/8, byte-exact vs the CPU/Vulkan references. cuda compile clean (16m, alpha.72
+  rebuild).
 - **A2.1 (optional Vulkan refinement, not done).** A2's data-buffer eviction force-flushes the whole
   batch before a destructive `cache.remove` (a pipeline drain on in-place-heavy graphs). Vulkan has NO
   driver-side stream-ordered free (vkAllocate/FreeMemory are host-side, not queue-ordered), so the

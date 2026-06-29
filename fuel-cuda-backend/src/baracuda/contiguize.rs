@@ -120,7 +120,6 @@ fn contiguize_with(
             )
         };
         check(status, "contiguize_b*_scalar")?;
-        device.synchronize()?;
         return Ok(CudaStorageBytes::from_parts(Arc::new(dest), device, dest_bytes));
     }
     if rank > 8 {
@@ -179,7 +178,6 @@ fn contiguize_with(
         )
     };
     check(status, "contiguize_b*")?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(Arc::new(dest), device, dest_bytes))
 }
 

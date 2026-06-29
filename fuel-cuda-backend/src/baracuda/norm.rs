@@ -185,7 +185,6 @@ fn rms_norm_last_dim_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     drop(rms_buf);
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
@@ -260,7 +259,6 @@ fn layer_norm_last_dim_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     drop(mean_buf);
     drop(inv_std_buf);
     Ok(CudaStorageBytes::from_parts(

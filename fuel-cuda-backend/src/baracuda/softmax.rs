@@ -116,7 +116,6 @@ fn softmax_last_dim_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
         device,

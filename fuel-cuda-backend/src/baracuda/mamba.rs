@@ -140,7 +140,6 @@ fn causal_conv1d_inner(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
 }
 
@@ -218,7 +217,6 @@ fn strip_prepad_d2d(
         ))
         .bt());
     }
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(Arc::new(dst_buf), device, dst_bytes))
 }
 
@@ -436,7 +434,6 @@ fn causal_conv1d_backward_inner(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     let device2 = device.clone();
     let device3 = device.clone();
     Ok(CausalConv1dBackward {
@@ -561,7 +558,6 @@ fn ssd_chunk_scan_inner(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     drop(ws_buf);
     Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
 }
@@ -710,7 +706,6 @@ fn selective_scan_inner(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     drop(ws_buf);
     let device2 = device.clone();
     Ok(SelectiveScanForward {

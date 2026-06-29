@@ -245,7 +245,6 @@ macro_rules! gemm_dense_matmul {
                     crate::baracuda::status::check(status, $label)?;
                 }
             }
-            device.synchronize()?;
             Ok(CudaStorageBytes::from_parts(
                 Arc::new(out),
                 device,

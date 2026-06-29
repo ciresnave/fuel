@@ -166,7 +166,6 @@ fn concat2_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok((
         CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes),
         out_layout,

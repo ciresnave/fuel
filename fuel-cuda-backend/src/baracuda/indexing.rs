@@ -115,7 +115,6 @@ fn index_select_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
         device,
@@ -277,7 +276,6 @@ fn gather_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
         device,
@@ -383,7 +381,6 @@ fn masked_fill_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
         device,
@@ -514,7 +511,6 @@ fn scatter_add_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(out)
 }
 
