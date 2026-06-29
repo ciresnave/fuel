@@ -165,7 +165,26 @@ live-GPU outputs is strong evidence; a failure means a missed flush point.
   `force_flush_all_vulkan` at realize-end. Verified: CPU 382/1282 (behavior-identical), vulkan+cuda
   compile, live RTX 4070 (`byte_storage_live` 4; `vulkan_bridge_realize_live` 2 incl. a deep 4-op
   fan-out chain). Same-queue submission order = execution order carries intra-realize deps.
-- **A3** — CUDA async (stream events, cross-stream waits).
+- **A3** — CUDA async. **Investigated 2026-06-28; bigger than A2 — needs temp-buffer retention.**
+  Every CUDA compute op (`fuel-cuda-backend/src/baracuda/*.rs`, ~28 files) does `launch(stream) →
+  device.synchronize()? → return`, and allocates a LOCAL `Workspace`/`scratch` (`super::scratch::Workspace::alloc`)
+  consumed by the kernel. The per-op `synchronize` (= `self.stream.synchronize()`, device.rs:896) is
+  what keeps that workspace alive until the kernel finishes — so **naively deferring the sync drops the
+  workspace mid-kernel → use-after-free**. Unlike A2 (the Vulkan recorder already owns transient
+  lifetime via `batch_transients`), CUDA temps are local Rust vars. Options:
+  (1) **temp-retention pool** — ops hand `Workspace`/scratch to a per-device pending pool (the A2
+  `batch_transients` analog) that drains on `force_synchronize`; then all ops defer. Touches every
+  temp-allocating op + a pool. Full pipelining.
+  (2) **temp-free subset** — defer only ops whose scratch is 0-byte (elementwise/binary/unary chains;
+  `out_buf`/inputs live in the cache, only `scratch` is the hazard); keep the per-op sync for
+  workspace ops (gemm/attention/reductions). Smaller, captures the common chains, but partial +
+  fragile (new ops must classify).
+  (3) **stream-ordered alloc** — `cudaMallocAsync`/`cudaFreeAsync` for workspaces so frees are
+  stream-ordered (safe under deferred sync) — likely a baracuda ask.
+  Either way: + executor `force_synchronize_cuda` guards (mirror `force_flush_vulkan`, via
+  `find_cuda_device_in_cache` + `CudaDevice::synchronize`) before destructive eviction + at
+  realize-end; D2H `to_cpu_bytes` already syncs (byte_storage.rs:341, keep). Needs live-CUDA verify
+  (RTX 4070). NOT a safe sync-removal one-liner — a focused phase with a design choice.
 - **A4** — concurrent multi-device scheduling (independent sub-DAGs progress in parallel).
 - **B1** — in-flight counter + `pending_work()` seam.
 - **C1** — streaming run-walk; **C2** — `DeviceLoadSelector` + per-decision-point re-pick.
