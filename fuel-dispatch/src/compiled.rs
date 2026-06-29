@@ -31,6 +31,8 @@ use std::sync::{Arc, RwLock};
 
 use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
+#[cfg_attr(not(feature = "cuda"), allow(unused_imports))]
+use fuel_ir::Error;
 use fuel_ir::{DType, Layout, Result};
 
 use crate::kernel::{KernelBindingTable, KernelCaps, KernelDTypes, KernelRef, OpParams};
@@ -147,13 +149,72 @@ pub fn execute_compiled(
     layouts: &[Layout],
 ) -> Result<CompletionHandle> {
     (compiled.kernel)(inputs, outputs, layouts, &compiled.op_params)?;
-    // Every kernel today is synchronous — CPU computes in-process; CUDA/Vulkan
-    // synchronize inside the kernel (the device/stream is reached via the input
-    // `Storage`, not an executor-held backend). So the work is already complete
-    // when the `KernelRef` returns. Step E Phase A2/A3 will give GPU dispatch an
-    // async path that returns `Pending(handle)` (a CUDA event / Vulkan fence)
-    // instead, which the executor waits on at dependency boundaries.
+    // Step E A4b-1: the kernel has *enqueued* its work (CUDA: launched on the
+    // device stream and returned without a per-op sync, per A3; CPU/Vulkan: see
+    // below). Produce a completion handle FROM THE OUTPUT STORAGE — the kernel
+    // reaches the device via the `Storage`, not an executor-held backend, so the
+    // output's `BackendStorage` is where we find the device/stream to record a
+    // signal on. The executor stores this handle and defers the wait to a
+    // dependency / realize-end boundary instead of `wait`ing inline here.
+    produce_pending(compiled.backend, outputs)
+}
+
+/// Step E A4b-1: build the [`CompletionHandle`] for a just-launched kernel by
+/// inspecting `outputs[0]`'s backend storage.
+///
+/// - **CUDA** → [`CompletionHandle::Pending`] wrapping an [`Event`] recorded on
+///   the output's device stream (signals when this kernel + all prior stream
+///   work completes; one stream per device makes a per-node event a sufficient
+///   stream marker — A4b-1 §1.2).
+/// - **CPU** → [`CompletionHandle::Ready`] (the kernel computed in-process; the
+///   work is already done).
+/// - **Vulkan** → [`CompletionHandle::Ready`] for A4b-1. Vulkan's async path
+///   (the per-batch fence produced by submitting) is A4b-2; until then the
+///   backend's lazy-batch + `force_flush` model (A2) carries Vulkan correctness,
+///   and the executor's realize-end `force_flush_all_vulkan` drain is unchanged.
+///
+/// Multi-output kernels share one backing buffer (one `BackendStorage`), so
+/// `outputs[0]` is the device handle for every slot — a single event covers them.
+fn produce_pending(
+    _backend: BackendId,
+    outputs: &[Arc<RwLock<Storage>>],
+) -> Result<CompletionHandle> {
+    // `_backend` (= `compiled.backend`) records the *intent*; we read the
+    // device truth off the output storage's variant instead, which is robust
+    // even where the backend stamp and the realized storage could ever diverge.
+    #[cfg(not(feature = "cuda"))]
+    let _ = outputs;
+    #[cfg(feature = "cuda")]
+    {
+        if let Some(out0) = outputs.first() {
+            let guard = out0
+                .read()
+                .map_err(|_| Error::Msg("output storage lock poisoned recording completion".into()).bt())?;
+            if let fuel_memory::BackendStorage::Cuda(cuda_bytes) = &guard.inner {
+                let ev = cuda_bytes.record_completion_event()?;
+                return Ok(CompletionHandle::Pending(Box::new(CudaCompletion { ev })));
+            }
+        }
+    }
     Ok(CompletionHandle::Ready)
+}
+
+/// Step E A4b-1: a CUDA [`Completion`] over a recorded [`Event`]. `wait` is a
+/// blocking host wait (`cuEventSynchronize`) on the event — which fires after
+/// the producing kernel and every prior op on the (single per-device) stream.
+#[cfg(feature = "cuda")]
+struct CudaCompletion {
+    ev: fuel_cuda_backend::Event,
+}
+
+#[cfg(feature = "cuda")]
+impl Completion for CudaCompletion {
+    fn wait(self: Box<Self>) -> Result<()> {
+        use fuel_cuda_backend::WrapErr;
+        // cuEventSynchronize: blocks the host until the event completes; surfaces
+        // a sticky async kernel fault on this stream as the mapped `Err`.
+        self.ev.synchronize().w()
+    }
 }
 
 /// A node's completion signal, returned by [`execute_compiled`]. Step E
@@ -240,6 +301,40 @@ mod tests {
             let typed: &[f32] = c.as_slice().unwrap();
             assert_eq!(typed, &[6.0, 8.0, 10.0]);
         }
+    }
+
+    /// Step E A4b-1 behavior-preservation: a CPU kernel's `execute_compiled`
+    /// returns `CompletionHandle::Ready` — `produce_pending` must NOT turn the
+    /// (synchronous, in-process) CPU path into a `Pending` handle. The CUDA arm
+    /// (Pending) is covered by the live `cuda_async_realize_live` gate.
+    #[test]
+    fn execute_compiled_cpu_is_ready_not_pending() {
+        let mut bindings = KernelBindingTable::new();
+        register_cpu_kernels(&mut bindings);
+        let compiled = compile_node(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            OpParams::None,
+            &bindings,
+        )
+        .expect("compile");
+
+        let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[3.0_f32, 4.0]);
+        let out = fuel_memory::alloc_cpu_zeroed(DType::F32, 2).unwrap();
+        let inputs = vec![Arc::new(RwLock::new(lhs)), Arc::new(RwLock::new(rhs))];
+        let mut outputs = vec![Arc::new(RwLock::new(out))];
+        let l = Layout::contiguous(fuel_ir::Shape::from(vec![2]));
+        let layouts = vec![l.clone(), l.clone(), l];
+
+        let handle = execute_compiled(&compiled, &inputs, &mut outputs, &layouts)
+            .expect("execute");
+        assert!(
+            matches!(handle, CompletionHandle::Ready),
+            "CPU execute_compiled must return Ready (A4b-1 behavior-preserving)",
+        );
+        handle.wait().expect("wait");
     }
 
     /// Step E A1: the completion-handle contract — `Ready.wait()` is a no-op
