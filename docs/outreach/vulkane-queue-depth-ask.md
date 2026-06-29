@@ -1,7 +1,12 @@
-# Vulkane ask — device-load telemetry (Step E, Phase B2) — DRAFT / OPTIONAL / EXPLORATORY
+# Vulkane ask — device-load telemetry (Step E, Phase B2) — RESOLVED
 
-**Status:** draft for CireSnave's review; **not yet sent**. Exploratory — Vulkan has no standard
-cross-process GPU-load query, so this is "what (if anything) is feasible," not a firm ask.
+**Status:** sent + **answered (2026-06-28)** — see [`vulkane-queue-depth-response.md`](vulkane-queue-depth-response.md).
+**Outcome:** Vulkan has no cross-process (or in-process) compute-load query — confirmed not a Vulkane
+gap but a Vulkan-API boundary; `pending_submissions` declined (no submission state to expose → use the
+fuel-internal in-flight counter B1). Instead Vulkane shipped `PhysicalDevice::device_identity()`
+(device_uuid / driver_uuid / device_luid / pci) — the **join-key** to correlate the device with an
+out-of-band, API-agnostic load source. Pairs with Baracuda's NVML (UUID match). Fuel owns the
+identity-keyed load-lookup crate (B2, after A/B1/C). Original ask below for record.
 **From:** fuel dispatch-core cleanup, Step E (live-load `Op::Branch` arm selection).
 **Nature:** read-only telemetry — no behavior change, no hot-path impact.
 

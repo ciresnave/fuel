@@ -83,8 +83,14 @@ on another device (or a host read) needs the result. This alone unlocks intra-de
   (`baracuda-nvml`), gate it behind a Fuel `cuda-telemetry` feature so the default build stays clean.
   Wire at `fuel-cuda-backend`'s `as_backend_runtime()` → `BackendRuntime::pending_work()`. See
   [`../outreach/baracuda-queue-depth-response.md`](../outreach/baracuda-queue-depth-response.md).
-  **Vulkan: pending** (`../outreach/vulkane-queue-depth-ask.md` — exploratory; may have no portable
-  cross-process signal, in which case Vulkan rides B1 alone). Neither is required for the single-process win.
+  **Vulkan: RESOLVED (2026-06-28)** — Vulkan has no compute-load query (API boundary, not a Vulkane
+  gap); instead Vulkane shipped `PhysicalDevice::device_identity()` (UUID / LUID / PCI), the join-key
+  to an out-of-band telemetry source. See [`../outreach/vulkane-queue-depth-response.md`](../outreach/vulkane-queue-depth-response.md).
+  **Synthesis:** B2 = an **API-agnostic, identity-keyed GPU-load crate (Fuel-side)** that takes a
+  device identity and returns `Option<load>` from the matching vendor/OS backend — NVML (via
+  `baracuda-nvml`, matched by UUID) for NVIDIA (CUDA *or* Vulkan), amdgpu sysfs (PCI) for AMD-Vulkan,
+  PDH/D3DKMT (LUID) for Windows — read through `BackendRuntime`. One load source serves all backends;
+  no per-backend duplication. Neither sibling is required for the single-process win (B1).
 
 ## Phase C — streaming walk + `DeviceLoadSelector` (the actual Step E)
 
