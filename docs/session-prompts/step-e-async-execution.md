@@ -98,6 +98,18 @@ cache drop frees a data buffer while a recorded-but-unsubmitted command still re
    can't carry it back, so A2 uses the backend-internal lazy-flush model; A4 (concurrent multi-device)
    is where the executor tracks per-device completion explicitly.
 
+**Exact edits (audit complete, `fuel-vulkan-backend/src/lib.rs`):** rename the current `flush_pending`
+(`:1491`, always submit+wait) → `pub fn force_flush`; add a new lazy `flush_pending` =
+`if should_flush() { force_flush() }`. The ~35 per-op compute wrappers keep calling `flush_pending`
+(now lazy → defer). **Repoint exactly these GPU→host sync points to `force_flush`** (the complete
+host-read set — a miss = silent stale data): `synchronize_pending` (`:603`), `download_bytes`
+(`:1144`), `download_slice` (`:1252`), `download_raw_bytes` (`:9994` — add a `force_flush` if it has
+none today), and the batch-full auto-flush in `record_dispatch_batched` (`:1466`). `fill_bytes_zero`
+(`:1059`) is a GPU write → stays lazy. **Executor (`pipelined.rs`):** before each destructive eviction
+(`cache.remove`, `:~709`) and at realize-end (`:~717` + realize_many `:~946`), `force_flush` the Vulkan
+backend via `find_vulkan_backend_in_cache` (`:~4491` — confirm it yields a handle on which `force_flush`
+is callable; make `force_flush` reachable, e.g. `pub` + via the storage's `backend()`).
+
 **Verification (mandatory before commit):** CPU suites unaffected (no Vulkan recorder); `cargo check
 --features vulkan`; then **live-GPU**: run the `#[ignore]`'d Vulkan suites (one suite at a time, 12 GB
 GPU) over BOTH non-destructive (elementwise chains) AND destructive/in-place + Vulkan→CPU graphs, and
