@@ -45,7 +45,7 @@ use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, SymEnv};
 use fuel_graph::opt::{execution_plan, insert_safety_copies};
 use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute};
 
-use crate::compiled::{compile_node, execute_compiled, CompiledNode};
+use crate::compiled::{compile_node, execute_compiled, CompiledNode, CompletionHandle};
 use crate::dispatch::global_bindings;
 use crate::kernel::{KernelBindingTable, OpParams};
 use crate::optimize::OptimizedGraph;
@@ -690,6 +690,15 @@ impl PipelinedExecutor {
         let plan_generation: Option<u64> = generation_for(&order_source);
         let mut current_chunk_backend: Option<BackendId> = None;
         let mut cache: StorageCache = inputs;
+        // Step E A4b-1: per-node async-completion handles. Each producing node's
+        // `execute_compiled` now returns a `CompletionHandle` (CUDA → a recorded
+        // `Event`; CPU/Vulkan → `Ready`) instead of being `wait`ed inline. We
+        // store them here and drain at realize-end (the only A4b-1 wait point).
+        // Same/cross-device + eviction waits stay CONSERVATIVE — the existing
+        // `force_flush_vulkan` (eviction) and the `to_cpu_bytes` full-stream sync
+        // (host read) do the real ordering — so this map is ADDITIVE and the
+        // realize stays byte-identical (A4b-1 is behavior-preserving by design).
+        let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
         for item in rx {
             let item = item?;
             if let Some(plan_gen) = plan_generation {
@@ -705,7 +714,8 @@ impl PipelinedExecutor {
                     current_chunk_backend = Some(item.target_backend);
                 }
             }
-            execute_work_item(&item, &mut cache, &mut layout_cache)?;
+            let handle = execute_work_item(&item, &mut cache, &mut layout_cache)?;
+            store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
                     if destroyed != target {
@@ -718,6 +728,13 @@ impl PipelinedExecutor {
                         }
                         cache.remove(&destroyed);
                         layout_cache.remove(&destroyed);
+                        // A4b-1: the evicted node's CUDA completion (if any) is
+                        // covered by A3 stream-ordered free (the free is enqueued
+                        // after the consuming kernel on the same stream), so we do
+                        // NOT host-wait here — that conservative finer wait is
+                        // A4b-3. Drop the handle so the realize-end drain's
+                        // empty-map assert stays meaningful.
+                        handles.remove(&destroyed);
                     }
                 }
             }
@@ -727,6 +744,12 @@ impl PipelinedExecutor {
             .join()
             .map_err(|_| Error::Msg("compiler thread panicked".to_string()).bt())?;
 
+        // Step E A4b-1: drain every outstanding async handle before the result is
+        // read / the cache drops (freeing intermediates). For CUDA this waits the
+        // recorded events (one stream/device ⇒ waiting the latest drains all prior
+        // stream work too; see `drain_handles`). Then the A2 Vulkan realize-end
+        // drain (unchanged).
+        drain_handles(&mut handles)?;
         // Step E A2: drain all deferred Vulkan work before reading/returning
         // the result (and before the cache drops, freeing buffers).
         force_flush_all_vulkan(&cache)?;
@@ -930,6 +953,10 @@ impl PipelinedExecutor {
         let plan_generation: Option<u64> = generation_for(&order_source);
         let mut current_chunk_backend: Option<BackendId> = None;
         let mut cache: StorageCache = inputs;
+        // Step E A4b-1: per-node async-completion handles (see realize_inner for
+        // the rationale + behavior-preservation argument). Additive map drained
+        // at realize-end; same/cross-device + eviction waits stay conservative.
+        let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
         for item in rx {
             let item = item?;
             if let Some(plan_gen) = plan_generation {
@@ -945,7 +972,8 @@ impl PipelinedExecutor {
                     current_chunk_backend = Some(item.target_backend);
                 }
             }
-            execute_work_item(&item, &mut cache, &mut layout_cache)?;
+            let handle = execute_work_item(&item, &mut cache, &mut layout_cache)?;
+            store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
                     if !target_set.contains(&destroyed) {
@@ -956,6 +984,10 @@ impl PipelinedExecutor {
                         }
                         cache.remove(&destroyed);
                         layout_cache.remove(&destroyed);
+                        // A4b-1: CUDA eviction is stream-ordered-safe (A3); no
+                        // host wait here (A4b-3 owns the finer wait). Drop the
+                        // handle so the realize-end empty-map assert stays valid.
+                        handles.remove(&destroyed);
                     }
                 }
             }
@@ -965,6 +997,9 @@ impl PipelinedExecutor {
             .join()
             .map_err(|_| Error::Msg("compiler thread panicked".to_string()).bt())?;
 
+        // Step E A4b-1: drain every outstanding async handle (CUDA events) before
+        // results are read / the cache drops, then the A2 Vulkan drain (unchanged).
+        drain_handles(&mut handles)?;
         // Step E A2: drain all deferred Vulkan work before reading/returning
         // results (and before the cache drops, freeing buffers).
         force_flush_all_vulkan(&cache)?;
@@ -3462,11 +3497,20 @@ fn op_to_op_params(
 /// - `Kernel` — gather input Arcs, allocate the output, run the
 ///   compiled kernel, store the result; record the contiguous
 ///   layout from the WorkItem.
+/// Execute one [`WorkItem`] against the cache, returning the node's
+/// [`CompletionHandle`].
+///
+/// Step E A4b-1: the producing arms (Kernel / WriteSlice / WriteSliceRotating /
+/// in-place / cross-device Copy alloc) return the handle from `execute_compiled`
+/// *without* waiting it inline — the realize loop stores it in its per-node
+/// handle map and drains at realize-end. Non-producing arms (const adopt, view,
+/// slot projection, release marker, contiguize) are pure Arc-clones / host
+/// allocs whose work is already complete → [`CompletionHandle::Ready`].
 fn execute_work_item(
     item: &WorkItem,
     cache: &mut StorageCache,
     layout_cache: &mut HashMap<NodeId, Layout>,
-) -> Result<()> {
+) -> Result<CompletionHandle> {
     match &item.kind {
         WorkItemKind::ConstAdopt => {
             if !cache.contains_key(&item.node_id) {
@@ -3480,7 +3524,7 @@ fn execute_work_item(
             // start; refresh from the WorkItem in case the side-table
             // was set after seeding.
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::ViewOf { input } => {
             let input_arc = cache.get(input).cloned().ok_or_else(|| {
@@ -3492,7 +3536,7 @@ fn execute_work_item(
             })?;
             cache.insert(item.node_id, input_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::SlotView { producer } => {
             // Op::View — multi-output projection. Same realization
@@ -3512,7 +3556,7 @@ fn execute_work_item(
             })?;
             cache.insert(item.node_id, producer_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::SlotOwn { producer, slot } => {
             // Op::ViewOwned — allocate a fresh Storage of the slot's
@@ -3620,7 +3664,10 @@ fn execute_work_item(
             };
             cache.insert(item.node_id, Arc::new(RwLock::new(new_storage)));
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            // A4b-1: Op::ViewOwned's slot copy (CUDA D2D) is same-stream; its
+            // completion is carried by the realize-end full-stream sync in
+            // `to_cpu_bytes` (unchanged) — `Ready` here is behavior-preserving.
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::WriteSlice { dest, source } => {
             let compiled = item.compiled.as_ref().ok_or_else(|| {
@@ -3703,15 +3750,16 @@ fn execute_work_item(
             let input_arcs = vec![source_arc_contig];
             let mut output_arcs = vec![dest_arc.clone()];
             let kernel_layouts = vec![source_layout_kernel, dest_layout.clone()];
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?
-                .wait()?;
+            // A4b-1: defer the wait — return the handle to the realize loop.
+            let handle =
+                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
             // Adopt the dest Arc at this WriteSlice node's slot. The
             // realize loop's destructive_input cleanup evicts the
             // dest's own NodeId from the cache afterward — downstream
             // readers go through this node's NodeId.
             cache.insert(item.node_id, dest_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(handle)
         }
         WorkItemKind::WriteSliceRotating { dest, source, position } => {
             // Same shape as WriteSlice but with a position input.
@@ -3800,11 +3848,12 @@ fn execute_work_item(
             let kernel_layouts = vec![
                 source_layout_kernel, position_layout, dest_layout.clone(),
             ];
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?
-                .wait()?;
+            // A4b-1: defer the wait — return the handle to the realize loop.
+            let handle =
+                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
             cache.insert(item.node_id, dest_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(handle)
         }
         WorkItemKind::Alloc { target_location } => {
             // Op::Alloc { target }: allocate a fresh, zero-init storage
@@ -3887,7 +3936,7 @@ fn execute_work_item(
             };
             cache.insert(item.node_id, Arc::new(RwLock::new(alloced)));
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::ZeroFill => {
             // Op::ZeroFill: in-place zero the input's bytes. Output
@@ -3956,7 +4005,11 @@ fn execute_work_item(
             // realize loop's destructive_input cleanup.
             cache.insert(item.node_id, src_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            // A4b-1: ZeroFill's CUDA memset is same-stream (and Op::Alloc
+            // typically zero-inits, so this is usually elided). Its completion
+            // is carried by the realize-end full-stream sync in `to_cpu_bytes`
+            // (unchanged) and same-stream ordering — `Ready` is behavior-preserving.
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::Copy { target_location }
         | WorkItemKind::Move { target_location } => {
@@ -4136,12 +4189,13 @@ fn execute_work_item(
             let mut output_arcs = vec![Arc::new(RwLock::new(output))];
             let kernel_layouts =
                 vec![kernel_input_layout, item.output_layout.clone()];
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?
-                .wait()?;
+            // A4b-1: defer the wait — return the handle to the realize loop.
+            let handle =
+                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
             let arc = output_arcs.into_iter().next().expect("one output");
             cache.insert(item.node_id, arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(handle)
         }
         WorkItemKind::ReleaseMarker => {
             // Emit a zero-byte CPU storage at the Release node's
@@ -4153,7 +4207,7 @@ fn execute_work_item(
             let marker = fuel_memory::alloc_cpu_zeroed(item.dtype, 0)?;
             cache.insert(item.node_id, Arc::new(RwLock::new(marker)));
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::ContiguizeOf { input } => {
             let input_arc = cache.get(input).cloned().ok_or_else(|| {
@@ -4181,7 +4235,10 @@ fn execute_work_item(
                 };
             cache.insert(item.node_id, out_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            // A4b-1: a materializing contiguize (CUDA) is same-stream; its
+            // completion is carried by the realize-end full-stream sync in
+            // `to_cpu_bytes` (unchanged) — `Ready` here is behavior-preserving.
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::Kernel => {
             let compiled = item.compiled.as_ref().ok_or_else(|| {
@@ -4395,13 +4452,14 @@ fn execute_work_item(
             };
             let mut output_arcs = vec![Arc::new(RwLock::new(output))];
 
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?
-                .wait()?;
+            // A4b-1: defer the wait — return the handle to the realize loop.
+            let handle =
+                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
 
             let arc = output_arcs.into_iter().next().expect("one output");
             cache.insert(item.node_id, arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(handle)
         }
         WorkItemKind::InplaceKernel { target_idx } => {
             let compiled = item.compiled.as_ref().ok_or_else(|| {
@@ -4481,20 +4539,76 @@ fn execute_work_item(
             }
             let mut output_arcs = vec![target_arc.clone()];
             kernel_layouts.push(target_layout.clone());
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?
-                .wait()?;
+            // A4b-1: defer the wait — return the handle to the realize loop.
+            let handle =
+                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
             // Adopt the target Arc at this node's slot. The realize
             // loop's destructive_input cleanup evicts the target's own
             // NodeId from the cache afterward.
             cache.insert(item.node_id, target_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(handle)
         }
     }
 }
 
 fn poisoned(what: &'static str) -> Error {
     Error::Msg(format!("PipelinedExecutor: {} poisoned", what)).bt()
+}
+
+/// Step E A4b-1: record a node's [`CompletionHandle`] in the executor's
+/// per-node handle map.
+///
+/// `Ready` handles (CPU / Vulkan / view-and-alloc arms) carry no async work, so
+/// we DON'T store them — keeping the map to genuinely-pending entries makes the
+/// realize-end empty-after-drain assert (open question #6) meaningful and keeps
+/// the drain O(pending) rather than O(nodes). A re-used NodeId (in-place adopt
+/// re-keys an existing slot) waits the prior handle first so nothing leaks.
+#[inline]
+fn store_handle(
+    handles: &mut HashMap<NodeId, CompletionHandle>,
+    node_id: NodeId,
+    handle: CompletionHandle,
+) {
+    if matches!(handle, CompletionHandle::Ready) {
+        // A prior pending handle at this slot must still be waited (don't drop a
+        // Pending silently). In practice NodeIds are unique per realize, so this
+        // is just defensive.
+        if let Some(prev) = handles.remove(&node_id) {
+            let _ = prev.wait();
+        }
+        return;
+    }
+    if let Some(prev) = handles.insert(node_id, handle) {
+        let _ = prev.wait();
+    }
+}
+
+/// Step E A4b-1: realize-end drain — wait every outstanding async handle, then
+/// clear the map.
+///
+/// **Event-recording / wait strategy (A4b-1 §1.2, open question #4).** CUDA has
+/// one stream per device, and an `Event` recorded after a node's launch signals
+/// when that node *and all prior stream work* have completed. So once the
+/// latest-recorded event on a device has signalled, every earlier event on that
+/// device is already signalled too: waiting them is a non-blocking
+/// `cuEventQuery` fast-path, not N host stalls. We therefore wait every stored
+/// handle (correct + simple); the only per-node cost is the `cuEventRecord` at
+/// production time (a lightweight stream marker — measured negligible on the
+/// long_chain 32-op stress, see the PR notes). We keep a per-node handle (rather
+/// than a single per-device event) because A4b-3's finer cross-device wait needs
+/// to wait a *specific producer's* completion — the per-node handle is that seam.
+fn drain_handles(handles: &mut HashMap<NodeId, CompletionHandle>) -> Result<()> {
+    for (_node, handle) in handles.drain() {
+        handle.wait()?;
+    }
+    // Open question #6: once handles are stored instead of `wait`ed inline, the
+    // `#[must_use]` on `CompletionHandle` can't catch a leaked (never-waited)
+    // handle at the call site. The drain consumes the whole map, so it is empty
+    // here by construction; assert it to catch a future leak (e.g. a new
+    // dispatch path that forgets to thread its handle through `store_handle`).
+    debug_assert!(handles.is_empty(), "A4b-1: handle map must be empty after drain");
+    Ok(())
 }
 
 /// Search the input cache for any `BackendStorage::Cuda(s)` whose
@@ -4672,6 +4786,81 @@ mod tests {
     use super::*;
     use fuel_ir::Shape;
     use fuel_graph::Node;
+
+    /// A4b-1 test double: a `Completion` whose `wait` flips a shared flag, so a
+    /// test can observe whether the drain actually waited it.
+    struct FlagCompletion(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl crate::compiled::Completion for FlagCompletion {
+        fn wait(self: Box<Self>) -> Result<()> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// A4b-1: `store_handle` keeps only `Pending` handles (so the post-drain
+    /// empty-map assert is meaningful and the drain is O(pending)), and
+    /// `drain_handles` waits each pending handle exactly once then empties the map.
+    #[test]
+    fn handle_map_stores_pending_and_drains_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
+
+        // Ready handles are not stored.
+        store_handle(&mut handles, NodeId(1), CompletionHandle::Ready);
+        assert!(handles.is_empty(), "Ready handles must not be stored");
+
+        // Two pending handles are stored and each waited once on drain.
+        let waited = StdArc::new(AtomicUsize::new(0));
+        store_handle(
+            &mut handles,
+            NodeId(2),
+            CompletionHandle::Pending(Box::new(FlagCompletion(waited.clone()))),
+        );
+        store_handle(
+            &mut handles,
+            NodeId(3),
+            CompletionHandle::Pending(Box::new(FlagCompletion(waited.clone()))),
+        );
+        assert_eq!(handles.len(), 2);
+
+        drain_handles(&mut handles).expect("drain");
+        assert_eq!(waited.load(Ordering::SeqCst), 2, "each pending handle waited once");
+        assert!(handles.is_empty(), "map empty after drain");
+    }
+
+    /// A4b-1: re-keying a NodeId with a new Pending handle waits the prior one
+    /// (no leaked async work), and storing `Ready` over a prior Pending also
+    /// waits it. Defensive — NodeIds are unique per realize in practice.
+    #[test]
+    fn handle_map_rekey_waits_previous() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
+        let waited = StdArc::new(AtomicUsize::new(0));
+
+        store_handle(
+            &mut handles,
+            NodeId(7),
+            CompletionHandle::Pending(Box::new(FlagCompletion(waited.clone()))),
+        );
+        // Re-key with another Pending → prior is waited.
+        store_handle(
+            &mut handles,
+            NodeId(7),
+            CompletionHandle::Pending(Box::new(FlagCompletion(waited.clone()))),
+        );
+        assert_eq!(waited.load(Ordering::SeqCst), 1, "rekey waited the prior pending");
+
+        // Store Ready over the live Pending → it is waited too.
+        store_handle(&mut handles, NodeId(7), CompletionHandle::Ready);
+        assert_eq!(waited.load(Ordering::SeqCst), 2, "Ready-over-Pending waited it");
+        assert!(handles.is_empty());
+
+        drain_handles(&mut handles).expect("drain empty");
+    }
 
     /// Op::Contiguize on a contiguous-already input is zero-copy:
     /// the executor adopts the input Storage Arc unchanged.

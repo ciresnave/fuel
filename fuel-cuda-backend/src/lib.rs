@@ -66,6 +66,10 @@ pub mod utils;
 
 pub use byte_storage::CudaStorageBytes;
 pub use capture::CapturedRun;
+/// Step E A4b-1: the async-completion primitive the executor defers waits on.
+/// Re-exported from `baracuda_driver` so `fuel-dispatch`'s `CudaCompletion`
+/// can name the type without depending on baracuda directly.
+pub use baracuda_driver::Event;
 pub use device::{CublasHandle, CudaDevice, CudaFunc, DeviceId, LaunchArgs, LaunchConfig};
 pub use dyn_impl::{CudaBackendDevice, CudaBackendStorage};
 pub use error::{CudaError, WrapErr};

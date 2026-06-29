@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use baracuda_driver::{DeviceBuffer, DeviceSlice};
+use baracuda_driver::{DeviceBuffer, DeviceSlice, Event};
 use baracuda_types::DeviceRepr;
 use fuel_backend_contract::backend::BackendStorage;
 use fuel_ir::Result;
@@ -72,6 +72,28 @@ impl CudaStorageBytes {
     /// Total byte count.
     pub fn len_bytes(&self) -> usize {
         self.len_bytes
+    }
+
+    /// Step E A4b-1: record a synchronization-only [`Event`] on this
+    /// storage's device stream and return it as a completion handle.
+    ///
+    /// Called by the executor *after* a kernel's launch has been enqueued
+    /// on the device stream (A3: kernels enqueue and return without a
+    /// per-op sync). Because there is one stream per device, the recorded
+    /// event signals exactly when this storage's producing kernel — and
+    /// every prior op on the stream — has completed; `Event::synchronize`
+    /// on it is the host wait the executor defers to a dependency / host
+    /// boundary. The event carries `DISABLE_TIMING` (sync-only, cheaper
+    /// than a timing event).
+    ///
+    /// `Event::no_timing` calls `Context::set_current()` internally; the
+    /// executor records from the output storage's *own* device, so the
+    /// context is the one whose stream the kernel just launched on (a
+    /// no-op push on the single-device path).
+    pub fn record_completion_event(&self) -> Result<Event> {
+        let ev = Event::no_timing(self.device.context_ref()).w()?;
+        ev.record(self.device.stream()).w()?;
+        Ok(ev)
     }
 
     /// Reinterpret the byte buffer as a typed `DeviceSlice<T>` view.
