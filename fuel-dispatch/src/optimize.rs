@@ -358,17 +358,49 @@ fn insert_residency_copies(
             (location_to_backend_id(b), b),
         )
     };
+    // Hop-count oracle: an edge whose transfer path is `HostStaging` can't
+    // be done as a single `Op::Copy` (no direct device-to-device copy
+    // kernel between distinct GPU substrates — the cross-VENDOR CUDA↔Vulkan
+    // case), so the residency pass routes it through a CPU intermediate as
+    // TWO hops. `SystemTopology::transfer_path` already returns `HostStaging`
+    // for such pairs and `SameDevice` for `a == b`; CPU↔CUDA / CPU↔Vulkan
+    // resolve to a direct path (or the universal host-staging fallback only
+    // when CPU is NOT one of the endpoints), so any CPU-touching edge stays
+    // single-hop. We additionally guard on neither endpoint being CPU: a CPU
+    // intermediate for a CPU-touching edge would be nonsensical (and the
+    // single-hop CPU↔GPU Copy kernels exist and are byte-identical to
+    // today). Same-vendor GPU pairs that don't share storage (e.g. CUDA gpu0
+    // ↔ gpu1) fall back to `HostStaging` too — correctly two-hop, since
+    // there's no direct cross-gpu_id copy kernel today either.
+    let needs_host_staging = |a: DeviceLocation, b: DeviceLocation| -> bool {
+        if a == DeviceLocation::Cpu || b == DeviceLocation::Cpu {
+            return false;
+        }
+        matches!(topology.transfer_path(a, b), fuel_ir::backend::TransferPath::HostStaging)
+    };
     let inserted = insert_cross_device_copies(
         graph,
         roots,
         |id| placements.get(&id).copied(),
         shares,
+        needs_host_staging,
     );
+    // Source-location resolver for stamping inserted copies. The
+    // `placements` snapshot was computed BEFORE insertion, so it does NOT
+    // contain the freshly-inserted CPU intermediate of a two-hop edge. That
+    // intermediate's placement was written into the graph by the pass
+    // (`set_placement(cpu_id, Cpu)`), so fall back to `graph.placement(src)`
+    // when the snapshot lacks the node — this is what stamps a two-hop's
+    // consumer-side hop with `Cpu` (its bytes come FROM the CPU intermediate,
+    // so its Copy kernel is the CPU `copy_from_cpu_wrapper`).
+    let src_location = |graph: &Graph, src: NodeId| -> Option<DeviceLocation> {
+        placements.get(&src).copied().or_else(|| graph.placement(src))
+    };
     // Stamp the new copies: target_backend = SOURCE backend. The pass only
     // inserts a copy when the producer's placement resolved to Some.
     for &copy_id in &inserted {
         if let Some(&src) = graph.node(copy_id).inputs.first() {
-            if let Some(&src_loc) = placements.get(&src) {
+            if let Some(src_loc) = src_location(graph, src) {
                 graph.set_target_backend(copy_id, location_to_backend_id(src_loc));
             }
         }
@@ -379,14 +411,17 @@ fn insert_residency_copies(
     // where the bytes come from. The freshly-inserted copies are visited too,
     // but their input's placement resolves to the same source location, so the
     // sweep re-applies the identical stamp (idempotent). Copies whose source
-    // placement is absent keep whatever stamp they already have.
+    // placement is absent keep whatever stamp they already have. The two-hop
+    // CPU intermediate's source is the original GPU producer (stamped to that
+    // GPU); the consumer-side hop's source is the CPU intermediate (stamped
+    // Cpu via the `graph.placement` fallback in `src_location`).
     let order = topo_order_multi(graph, roots);
     for &id in &order {
         if !matches!(graph.node(id).op, Op::Copy { .. } | Op::Move { .. }) {
             continue;
         }
         let Some(&src) = graph.node(id).inputs.first() else { continue };
-        let Some(&src_loc) = placements.get(&src) else { continue };
+        let Some(src_loc) = src_location(graph, src) else { continue };
         graph.set_target_backend(id, location_to_backend_id(src_loc));
     }
 }
