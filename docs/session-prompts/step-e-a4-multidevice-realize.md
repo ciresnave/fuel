@@ -139,16 +139,23 @@ mixed-backend graph, and the executor would error on one lacking bridge copies.
 ## Phasing & risk
 
 **A4a-1 (mechanism) — DONE 2026-06-29** (no code change; the mechanism existed — see the UPDATE banner;
-`cuda_multidevice_realize_live.rs` is the live guard). **A4a-2 (auto-placement) — likely DONE** (the
-bridge already wires `transfer_estimator` + `fallback_placements_for` + the priced placement DP; an
-un-pinned probe split CPU/CUDA on its own — confirm with a no-explicit-placement test). Remaining:
-**A4b** — does a mixed realize actually OVERLAP the devices? The A4a test proves *correctness*, not
-*concurrency*; audit whether the CPU sub-DAG (synchronous) and the CUDA sub-DAG (async) actually
-progress in parallel, and whether the `TopologyChanged` chunk-boundary drain (pipelined.rs:690-708)
-serializes at every backend switch. → **A4c** — the dual-GPU concurrency benchmark (RTX 4070 CUDA + AMD
-iGPU Vulkan; assert wall-clock < sum-of-sequential), now that two GPU backends can be mixed in one
-realize. → then **C** (`DeviceLoadSelector`). Risk is low for what shipped (A4a was doc-only + a test;
-single-device realize provably byte-identical — the prune was untouched); the open risk is whether A4b
-needs real executor work to get overlap (TBD by measurement). A pre-existing gap noted by the agent: a
-CPU-*pinned* mixed realize would need a CUDA device-seed anchor the bridge doesn't add today (the A4a
-test pins CUDA, which seeds the device handle the H2D copies need).
+`cuda_multidevice_realize_live.rs` is the live guard). **A4a-2 (auto-placement) — confirmed wired** (the
+bridge wires `transfer_estimator` + `fallback_placements_for` + the priced placement DP). **A4c-prereq
+(multi-vendor CORRECTNESS) — DONE 2026-06-29 (`54e7043b`)**: a CUDA+Vulkan graph realizes correctly in
+one pass — two-hop CUDA↔Vulkan residency (host-staged via `SystemTopology::transfer_path == HostStaging`,
+CSE-shared CPU intermediate) + dual-device-seed (`realize_one_as_multi_device`); live test
+`cuda_vulkan_multidevice_realize_live.rs` (CUDA on RTX 4070 + Vulkan on the AMD iGPU), byte-exact,
+two-hop bridge self-verified; 7/7 live tests green incl. single-device byte-identical. Remaining:
+**A4b** — does a mixed realize actually OVERLAP the devices (CONCURRENCY)? The audit (2026-06-29) found
+it does NOT today: `execute_compiled` always returns `CompletionHandle::Ready` with ZERO `Pending`
+producers, so the executor never holds a fence/event to defer on — independent sub-DAGs overlap only
+*incidentally* via each backend's internal laziness, and a cross-device `Op::Copy` source-drain (D2H)
+serializes inline. The fix (= completing the original "Phase A async foundation"): make CUDA/Vulkan
+dispatch return `CompletionHandle::Pending(event/fence)`, store each node's handle in the executor, and
+defer `wait()` to dependency boundaries (consumer-on-another-device / realize-end) instead of the
+implicit per-call `Ready`. Correctness-critical. → **A4c** — the dual-GPU concurrency benchmark (now
+that multi-vendor realize is correct + the AMD iGPU is selectable; assert wall-clock < sum-of-sequential),
+meaningful only AFTER A4b. → then **C** (`DeviceLoadSelector`). Known follow-ups: (1) the dual-seed
+anchors accumulate on repeated realizes of the same graph (unreachable `Op::Const`; minor graph-growth);
+(2) a CPU-*pinned* mixed realize still needs its non-CPU device-seed (the A4c-prereq seeds extra devices
+explicitly via `realize_one_as_multi_device`).
