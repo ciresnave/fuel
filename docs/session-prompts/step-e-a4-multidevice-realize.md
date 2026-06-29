@@ -52,26 +52,38 @@ mixed-backend graph, and the executor would error on one lacking bridge copies.
 ## The build
 
 ### A4a — multi-device entry + cross-device placement (the bulk; the planner change)
+
 - **Entry**: a realize variant whose target is a **device set**, not one pinned device — e.g.
   `realize_multi(targets, &[Device])` / a `PlanOptions.device_set: Vec<DeviceLocation>` replacing the
   single `pinned_device`. CPU stays the fallback/host.
-- **Placement**: relax the planner's "surviving set lives on ONE device" to a **per-node device
-  assignment across the set**. Two sub-options:
-  - **A4a-1 (first cut, recommended): explicit placement.** The caller stamps independent sub-DAGs to
-    devices (`graph.set_placement`/`set_target_backend`), which already has **priority over
-    `pinned_device`** in resolution (plan.rs:147-159). The planner respects those, the residency pass
-    inserts cross-device copies at boundary edges, the executor dispatches per-node. Deterministic +
-    testable; the smallest change that unlocks a real mixed-backend realize. **Verify** the
-    "one device" prune (plan.rs:187-192) is per-node-set (honors explicit per-node placement) vs
-    global — if global, that prune is the specific code to relax.
-  - **A4a-2 (follow-up): cost-based auto-placement.** Extend the placement DP so per-node candidate
-    sets span the device set; partition independent sub-DAGs across devices by cost/balance. Reuses
-    `PlacementForkPathfinder` (driver.rs:245). Heavier; defer until A4a-1 + A4b prove the path.
+- **Placement (per-node, multi-device — the constitutional design, confirmed by CireSnave 2026-06-29).**
+  Device placement is **per-node**; the surviving graph is **almost never single-device**, and even a
+  path between decision points will *occasionally* span devices. The planner's "the surviving set lives
+  on ONE device" (plan.rs:187-192) is **incorrect/scaffolding and is REMOVED**, not worked around.
+  Build the *mechanism* first, then the *policy*:
+  - **A4a-1 (mechanism): remove the one-device constraint + per-node placement + copies.** Delete/relax
+    plan.rs:187-192 so each node keeps its own device; the residency pass inserts cross-device `Op::Copy`
+    at boundary edges; the executor dispatches per-node. **Validate with EXPLICIT placement** (the caller
+    stamps independent sub-DAGs via `graph.set_placement`/`set_target_backend`, which already has priority
+    over `pinned_device`, plan.rs:147-159) — deterministic + testable, exercises the mechanism without
+    needing the auto-placement policy yet.
+  - **A4a-2 (policy): cost-based auto-placement.** Extend the placement DP so per-node candidate sets span
+    the device set; the DP decides each node's device by cost/balance (and, with B1, live load → this is
+    where **C**'s `DeviceLoadSelector` rides). Reuses `PlacementForkPathfinder` (driver.rs:245). Layered
+    on A4a-1's mechanism once it + A4b are proven.
+  - **`Run` seam (constitution update).** Today `Run` = "maximal straight-line SINGLE-device segment
+    between decision points" with one `device` field (run.rs). Since a path can now span devices, adopt
+    **(a): a cross-device `Op::Copy` is a run boundary** — each `Run` stays a single-device dispatch unit,
+    but an inter-decision-point path may be several device-runs stitched by copies. (`Run.device` stays
+    meaningful; least churn; the copy is already a node.) Alternative (b) — `Run` spans devices, drops
+    `device`, executor dispatches per-node within a run — is feasible but rewrites every `Run.device`
+    consumer; not chosen. Either way `docs/architecture/` Run definition must be updated.
 - **Residency**: `insert_residency_copies` already inserts copies from placement facts — confirm it
   fires for arbitrary cross-device boundaries (not just eviction), and that CUDA↔Vulkan goes via host
   staging (D2H then H2D through CPU) since there's no direct D2D copy kernel between those backends yet.
 
 ### A4b — executor concurrent multi-backend dispatch (likely small; mostly verify + targeted fixes)
+
 - The cache + per-node dispatch + async + per-device guards should already overlap independent
   sub-DAGs. Audit for serialization points: (1) the `TopologyChanged` chunk-boundary check
   (pipelined.rs:690-708) keys on `target_backend` changes — confirm it doesn't force a drain at every
@@ -80,6 +92,7 @@ mixed-backend graph, and the executor would error on one lacking bridge copies.
   the *other* device. Fix only what an audit/benchmark shows serializes.
 
 ### A4c — verification (the original "A4-minimal", now reachable)
+
 - Live dual-GPU: CUDA on RTX 4070 + Vulkan on the AMD iGPU (`DeviceSelection::ByName("AMD")`).
 - **Correctness**: a graph with two independent sub-DAGs (one per device) + a CPU reconverge; assert
   byte-exact vs the CPU oracle (exercises the cross-device copies).
@@ -88,6 +101,7 @@ mixed-backend graph, and the executor would error on one lacking bridge copies.
   NOT overlap, A4b has a serialization point to fix (the benchmark is the measurement that decides).
 
 ## Cross-device correctness
+
 - Cross-device edges self-synchronize via the copy's source-drain (A2 `download_bytes`/`force_flush`,
   A3 `to_cpu_bytes`/sync) — confirmed by the A4 sync probe.
 - Per-device flush/sync granularity (A2/A3) means draining one device never stalls another → preserves
@@ -96,10 +110,13 @@ mixed-backend graph, and the executor would error on one lacking bridge copies.
   the cross-device handoff, so no buffer is used on a foreign stream.
 
 ## Open questions (for review before code)
+
 1. Entry API shape: a dedicated `realize_multi(&[Device])` vs a `PlanOptions.device_set` that the
    existing entries thread? (Prefer the latter — one planner path.)
-2. A4a-1 explicit-placement: is plan.rs:187-192's prune per-node or global? (Determines whether A4a-1
-   is "just use existing explicit placement" or needs a planner relax.)
+2. ~~Is plan.rs:187-192's prune per-node or global?~~ **RESOLVED (CireSnave 2026-06-29):** the
+   one-device constraint is incorrect/scaffolding regardless of its granularity — REMOVE it; placement
+   is per-node and the surviving graph is almost never single-device. `Run` seam = interpretation (a)
+   (cross-device `Op::Copy` is a run boundary) unless changed to (b).
 3. CUDA↔Vulkan transfer: host-staged (D2H→H2D, available now) for the first cut; a direct D2D path is a
    later optimization (likely needs sibling support).
 4. Does **C** (`DeviceLoadSelector`) ride directly on A4a-2's auto-placement (load-aware = the DP
@@ -107,6 +124,7 @@ mixed-backend graph, and the executor would error on one lacking bridge copies.
    convergence the earlier note flagged, now correctly placed AFTER the multi-device path exists.
 
 ## Phasing & risk
+
 A4a-1 (entry + explicit placement + residency) → A4b (executor multi-backend audit/fix) → A4c
 (dual-GPU benchmark + correctness) → [A4a-2 auto-placement → C `DeviceLoadSelector`]. Biggest risk is
 A4a's planner change (the "one device" invariant is correctness-critical — relax it carefully, keep
