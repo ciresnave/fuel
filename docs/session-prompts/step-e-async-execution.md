@@ -196,8 +196,35 @@ live-GPU outputs is strong evidence; a failure means a missed flush point.
   Vulkan graphs pipeline without a per-eviction drain. A2 already uses this retain-until-fence idiom
   for transients; extending it to evicted data buffers is the optional follow-up. Correctness is
   unaffected (A2 is shipped + verified); this is a throughput refinement for in-place-heavy graphs.
-- **A4** — concurrent multi-device scheduling (independent sub-DAGs progress in parallel).
-- **B1** — in-flight counter + `pending_work()` seam.
+- **A4** — concurrent multi-device scheduling. **Investigated 2026-06-29; largely EMERGENT, measure-first.**
+  Key finding: once dispatch is async (A2/A3), the existing serial compiler→executor walk already
+  overlaps devices for free — the single executor thread enqueues device-A's op (non-blocking, returns),
+  enqueues device-B's op (returns), so both streams are in-flight while it does CPU setup for the next
+  op. No parallel executor threads needed. The graph already encodes the units: each `Run`
+  (`fuel-graph/src/run.rs`) is single-device (carries `device`), independent runs on different devices
+  are distinct objects, and (in)dependence is readable from `node.inputs`. The flat topo dispatch order
+  (`topo_order_multi`) interleaves them. Cross-device edges **self-synchronize** via the residency
+  `Op::Copy`/`Move` (it force-drains the source device — A2 `download_bytes`/`force_flush`, A3
+  `to_cpu_bytes`/`synchronize`). Per-device sync granularity is preserved (`force_flush_vulkan`
+  no-ops on non-Vulkan), so draining one device never stalls another.
+  - **A4-minimal (do first):** (a) ensure realize-end + eviction drains cover EVERY device — A3 adds
+    `force_synchronize_cuda` alongside `force_flush_all_vulkan` (this is really A3 scope); (b) a
+    **multi-device concurrency benchmark/test** — a graph with independent CUDA + Vulkan sub-DAGs (no
+    cross-dep), assert wall-clock << sum-of-sequential (or device-utilization overlap), proving the
+    emergent overlap. Accept host-mediated cross-device copies for now.
+  - **A4-escalation (ONLY if the benchmark shows device starvation):** an explicit per-device
+    **ready-set + slot scheduler** (Kahn-style input-ready counter per run; dispatch a run only when
+    inputs ready AND a target-device slot is free; bounded lookahead K per device). NOTE this scheduler's
+    per-device in-flight/slot state **is** B1's in-flight counter and feeds C's `DeviceLoadSelector` —
+    so if A4 escalates, B1 + the C load-signal come with it. Don't build it speculatively; gate on the
+    measurement.
+  - **Future (advanced):** cross-device event chains (CUDA event ↔ Vulkan fence via external
+    semaphores / `VK_KHR_external_semaphore` + CUDA external-semaphore interop) so a consumer waits the
+    producer's device event directly instead of a host-mediated D2H at each cross-device edge. Hard
+    (cross-API interop); a throughput refinement, not needed for correctness or first concurrency.
+- **B1** — in-flight counter + `pending_work()` seam. (Subsumed by A4-escalation's per-device slot
+  state if that path is taken; otherwise a standalone counter incremented on async submit / decremented
+  on drain.)
 - **C1** — streaming run-walk; **C2** — `DeviceLoadSelector` + per-decision-point re-pick.
 - **B2** — sibling telemetry (after their APIs land).
 
