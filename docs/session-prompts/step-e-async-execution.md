@@ -172,19 +172,30 @@ live-GPU outputs is strong evidence; a failure means a missed flush point.
   what keeps that workspace alive until the kernel finishes — so **naively deferring the sync drops the
   workspace mid-kernel → use-after-free**. Unlike A2 (the Vulkan recorder already owns transient
   lifetime via `batch_transients`), CUDA temps are local Rust vars. Options:
-  (1) **temp-retention pool** — ops hand `Workspace`/scratch to a per-device pending pool (the A2
-  `batch_transients` analog) that drains on `force_synchronize`; then all ops defer. Touches every
-  temp-allocating op + a pool. Full pipelining.
-  (2) **temp-free subset** — defer only ops whose scratch is 0-byte (elementwise/binary/unary chains;
-  `out_buf`/inputs live in the cache, only `scratch` is the hazard); keep the per-op sync for
-  workspace ops (gemm/attention/reductions). Smaller, captures the common chains, but partial +
-  fragile (new ops must classify).
-  (3) **stream-ordered alloc** — `cudaMallocAsync`/`cudaFreeAsync` for workspaces so frees are
-  stream-ordered (safe under deferred sync) — likely a baracuda ask.
-  Either way: + executor `force_synchronize_cuda` guards (mirror `force_flush_vulkan`, via
-  `find_cuda_device_in_cache` + `CudaDevice::synchronize`) before destructive eviction + at
-  realize-end; D2H `to_cpu_bytes` already syncs (byte_storage.rs:341, keep). Needs live-CUDA verify
-  (RTX 4070). NOT a safe sync-removal one-liner — a focused phase with a design choice.
+  **CHOSEN (2026-06-29): option 3 — stream-ordered allocation/free (`cudaMallocAsync`/`cudaFreeAsync`),
+  pending a baracuda free-semantics confirmation** (`../outreach/baracuda-stream-ordered-alloc-ask.md`).
+  Rationale: faster + lower peak VRAM + *less* Fuel code than a retention pool — the driver's
+  stream-ordered mem-pool reuses freed blocks (peak VRAM ≈ one workspace, no repeated real
+  `cuMemAlloc`), and a stream-ordered free is safe-by-construction (enqueued after the consuming
+  kernel) → **no Rust retention pool**, and if data buffers free stream-ordered too, **no executor
+  force-sync guards either**. fuel-cuda-backend already allocates via `DeviceBuffer::new_async`
+  (device.rs:163, stream-ordered alloc); the open question is whether `Drop` frees via `cudaFreeAsync`
+  (+ whether `alloc_zeros`/output buffers do). If yes → A3 is small + pure-Fuel: switch `Workspace` +
+  output allocs to the stream-ordered path, defer the per-op `device.synchronize()`, keep the D2H sync
+  in `to_cpu_bytes` (byte_storage.rs:341). If no → small additive baracuda ask (stream-ordered free),
+  and fall back to the retention pool + executor `force_synchronize_cuda` guards meanwhile. Either way:
+  live-CUDA verify on RTX 4070 (multi-op + deep-chain + a workspace op like gemm/attention), diffed vs
+  the sync baseline. **Rejected options:** (a) retention pool — correct but holds every in-flight
+  workspace until a bulk drain (higher peak VRAM) + still does per-op `cuMemAlloc`; (b) temp-free
+  subset — partial + fragile.
+- **A2.1 (optional Vulkan refinement, not done).** A2's data-buffer eviction force-flushes the whole
+  batch before a destructive `cache.remove` (a pipeline drain on in-place-heavy graphs). Vulkan has NO
+  driver-side stream-ordered free (vkAllocate/FreeMemory are host-side, not queue-ordered), so the
+  idiomatic analog of option 3 is **manual deferred-deletion**: move the evicted buffer into the
+  recorder's `batch_transients` (retain-until-fence) instead of force-flushing — letting in-place
+  Vulkan graphs pipeline without a per-eviction drain. A2 already uses this retain-until-fence idiom
+  for transients; extending it to evicted data buffers is the optional follow-up. Correctness is
+  unaffected (A2 is shipped + verified); this is a throughput refinement for in-place-heavy graphs.
 - **A4** — concurrent multi-device scheduling (independent sub-DAGs progress in parallel).
 - **B1** — in-flight counter + `pending_work()` seam.
 - **C1** — streaming run-walk; **C2** — `DeviceLoadSelector` + per-decision-point re-pick.
