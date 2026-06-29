@@ -166,7 +166,6 @@ pub fn write_slice_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(())
 }
 

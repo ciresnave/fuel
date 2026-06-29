@@ -104,7 +104,6 @@ fn reduce_to(
         )
     };
     crate::baracuda::status::check(status, label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
         device,

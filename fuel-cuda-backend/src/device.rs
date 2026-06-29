@@ -163,13 +163,22 @@ impl CudaDevice {
         DeviceBuffer::new_async(&self.context, len, &self.stream).w()
     }
 
-    /// Allocate a new device buffer, zeroed. (Baracuda's `zeros` is
-    /// synchronous; the result is usable on any stream afterward.)
+    /// Allocate a new device buffer, zeroed, on this device's stream. Step E
+    /// A3 (CUDA async dispatch): uses baracuda's `zeros_async`, so the alloc +
+    /// zero are stream-ordered and — crucially — the buffer frees
+    /// STREAM-ORDERED on `Drop` (`cuMemFreeAsync` on the retained origin
+    /// stream). The free is enqueued after the consuming kernel, so dropping a
+    /// buffer whose kernel is still in flight is safe: deferring the per-op
+    /// `synchronize` no longer risks a use-after-free. Both kernel outputs and
+    /// op scratch (`baracuda::scratch::Workspace`) route through here, so every
+    /// op-produced buffer is stream-ordered. Precondition: a buffer is only ever
+    /// used on this device's stream (single-origin-stream — trivially true for
+    /// our one-stream-per-device dispatch).
     pub fn alloc_zeros<T: baracuda_types::DeviceRepr + baracuda_types::ValidAsZeroBits>(
         &self,
         len: usize,
     ) -> Result<DeviceBuffer<T>> {
-        DeviceBuffer::zeros(&self.context, len).w()
+        DeviceBuffer::zeros_async(&self.context, len, &self.stream).w()
     }
 
     /// Host → device copy, async on this device's default stream.
@@ -432,6 +441,18 @@ impl CudaDevice {
         let device = baracuda_driver::Device::get(ordinal as u32).w()?;
         let context = baracuda_driver::Context::new(&device).w()?;
         let stream = baracuda_driver::Stream::new(&context).w()?;
+        // Step E A3: `new_async`/`zeros_async` allocate from (and free into) this
+        // device's stream-ordered mem-pool, whose release threshold defaults to 0
+        // — it trims back to the OS at every sync, so freed blocks aren't retained
+        // for reuse across realizes. Raise it so the pool HOLDS freed blocks and a
+        // producer→consumer chain recycles one footprint instead of re-allocating
+        // from the driver each op. (Frees are stream-ordered regardless; this is
+        // reuse efficiency, not correctness.) The returned handle is non-owning
+        // (driver-owned default pool), so dropping it doesn't destroy the pool.
+        // Follow-up: an optional `trim_to` at realize-end (where we already sync
+        // for the D2H read) would bound inter-realize residency.
+        let pool = baracuda_driver::mempool::default_pool(&context, &device).w()?;
+        pool.set_release_threshold(u64::MAX).w()?;
         Self::new_from(context, stream)
     }
 

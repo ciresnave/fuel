@@ -95,7 +95,6 @@ pub fn marlin_gemm_f16(
         )
     };
     check(status, "int4_marlin_gemm_f16")?;
-    device.synchronize()?;
     drop(ws_buf);
     Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
 }
@@ -179,7 +178,6 @@ pub fn awq_gemm_f16(
         )
     };
     check(status, "int4_awq_gemm_f16")?;
-    device.synchronize()?;
     drop(ws_buf);
     Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
 }
@@ -296,7 +294,6 @@ fn nf4_dequantize_inner(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
 }
 
@@ -350,7 +347,6 @@ fn nf4_gemv_inner(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     drop(m); // silence unused (kept for documentation purposes)
     Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
 }

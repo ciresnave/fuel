@@ -162,7 +162,6 @@ fn powi_run(
         }
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
 }
 
@@ -228,7 +227,6 @@ fn powi_backward_run(
         }
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
 }
 
@@ -316,7 +314,6 @@ fn powi_inplace_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(())
 }
 

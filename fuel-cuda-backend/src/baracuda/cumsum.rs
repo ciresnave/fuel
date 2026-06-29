@@ -159,7 +159,6 @@ fn cumsum_run(
         }
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(Arc::new(out), device, out_bytes))
 }
 

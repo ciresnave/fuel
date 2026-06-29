@@ -185,29 +185,38 @@ criterion = { version = "0.8", default-features = false }
 # `Device::utilization()`/`gpu_utilization_percent()` (NVML, separate crate, not
 # yet a Fuel dep — B2 wires it later). No breaking change to the surfaces Fuel
 # consumes today; bumped for currency + to unblock B2.
-baracuda-types         = { version = "0.0.1-alpha.70", features = ["half-crate", "f8-crate"] }
-baracuda-core          = { version = "0.0.1-alpha.70" }
-baracuda-cuda-sys      = { version = "0.0.1-alpha.70" }
-baracuda-driver        = { version = "0.0.1-alpha.70" }
-baracuda-runtime       = { version = "0.0.1-alpha.70" }
-baracuda-cublas-sys    = { version = "0.0.1-alpha.70" }
-baracuda-cublas        = { version = "0.0.1-alpha.70" }
-baracuda-cudnn-sys     = { version = "0.0.1-alpha.70" }
-baracuda-cudnn         = { version = "0.0.1-alpha.70", features = ["half-crate"] }
-baracuda-curand-sys    = { version = "0.0.1-alpha.70" }
-baracuda-curand        = { version = "0.0.1-alpha.70" }
-baracuda-nvrtc-sys     = { version = "0.0.1-alpha.70" }
-baracuda-nvrtc         = { version = "0.0.1-alpha.70" }
-baracuda-nccl-sys      = { version = "0.0.1-alpha.70" }
-baracuda-nccl          = { version = "0.0.1-alpha.70", features = ["half-crate"] }
-baracuda-cutlass       = { version = "0.0.1-alpha.70" }
+#
+# alpha.72 (2026-06-29) — Step E Phase A3 (CUDA async dispatch): `DeviceBuffer`
+# allocated via `new_async` now frees STREAM-ORDERED on `Drop` (cuMemFreeAsync on
+# the retained origin stream), and NEW `zeros_async(ctx,len,stream)` gives output
+# buffers async alloc+zero+free. Sync constructors (new/zeros/from_slice) stay
+# fully synchronous (no behavior change). Lets A3 drop the per-op
+# `device.synchronize()` and pipeline on the per-device stream with no Fuel-side
+# retention pool or executor lifetime guards. Use alpha.72 (alpha.71 had a Drop
+# fallback hazard, fixed here). Answers docs/outreach/baracuda-stream-ordered-alloc-ask.md.
+baracuda-types         = { version = "0.0.1-alpha.72", features = ["half-crate", "f8-crate"] }
+baracuda-core          = { version = "0.0.1-alpha.72" }
+baracuda-cuda-sys      = { version = "0.0.1-alpha.72" }
+baracuda-driver        = { version = "0.0.1-alpha.72" }
+baracuda-runtime       = { version = "0.0.1-alpha.72" }
+baracuda-cublas-sys    = { version = "0.0.1-alpha.72" }
+baracuda-cublas        = { version = "0.0.1-alpha.72" }
+baracuda-cudnn-sys     = { version = "0.0.1-alpha.72" }
+baracuda-cudnn         = { version = "0.0.1-alpha.72", features = ["half-crate"] }
+baracuda-curand-sys    = { version = "0.0.1-alpha.72" }
+baracuda-curand        = { version = "0.0.1-alpha.72" }
+baracuda-nvrtc-sys     = { version = "0.0.1-alpha.72" }
+baracuda-nvrtc         = { version = "0.0.1-alpha.72" }
+baracuda-nccl-sys      = { version = "0.0.1-alpha.72" }
+baracuda-nccl          = { version = "0.0.1-alpha.72", features = ["half-crate"] }
+baracuda-cutlass       = { version = "0.0.1-alpha.72" }
 # baracuda alpha.26 — new ML kernel facade. Fuel uses `baracuda-kernels-sys`
 # (raw extern "C") rather than the safe `baracuda-kernels` Plan-based wrapper
 # so each kernel becomes its own KernelRef in Fuel's binding table — the
 # safe layer's Plan-cached dispatch isn't compatible with Fuel's
 # per-decision-point alternatives composition.
-baracuda-kernels-types = { version = "0.0.1-alpha.70" }
-baracuda-kernels-sys   = { version = "0.0.1-alpha.70", features = [
+baracuda-kernels-types = { version = "0.0.1-alpha.72" }
+baracuda-kernels-sys   = { version = "0.0.1-alpha.72", features = [
     "cudnn",
     "sm89",
     # Phase 48 (Consolidation B) 4-bit weight-only GEMM families.
