@@ -1,8 +1,22 @@
 # Step E A4b — Executor-orchestrated cross-device concurrency (async completion handles)
 
-**Status:** design (2026-06-29). For review before any executor code. Read-only audit done in the
-`b0-3-backend-contract` worktree against the pinned `baracuda-driver 0.0.1-alpha.72` registry source
-and the live `vulkane` checkout.
+**Status: SHIPPED 2026-06-29.** All 5 PRs landed + verified (byte-exact + live-GPU on RTX 4070 + AMD
+iGPU): A4b-1 CUDA `Pending(Event)` (`51d43e93`) → A4b-2 Vulkan `Pending`/`submit_batch` (`056ca786`) →
+A4b-3 finer cross-device wait (`4150ad7a`) → A4b-4 eager Vulkan submit + A4b-5 overlap benchmark
+(`16aefc28`). **Real concurrency confirmed: ~0.50–0.66 overlap efficiency** (combined ~1.10s vs
+sequential sum ~1.26s on the dual-GPU benchmark). Single-device byte-identical throughout (the
+`multi_backend` gate keeps the eager path unreachable on single-device graphs).
+
+> **IMPORTANT caveat (carry into Phase C):** A4b-4 is the overlap *enabler* + proof; it does NOT yet
+> overlap *arbitrary* independent sub-DAGs automatically. The topo scheduler emits each chunk's D2H
+> copy right after its producer, which serializes them, so the A4b-5 benchmark *constructs* the
+> dispatch order the mechanism overlaps (CUDA-side reconverge, no intermediate cross-device D2H).
+> **General automatic overlap = the Phase C `DeviceLoadSelector`/scheduler frontier** (dispatch
+> independent sub-DAGs adjacently). A4b supplies the mechanism; C makes it automatic. The §6.5
+> "wall-clock < sum" framing below should be read with this in mind.
+
+(Originally: design 2026-06-29 — read-only audit against pinned `baracuda-driver 0.0.1-alpha.72` +
+the live `vulkane` checkout; implemented PR-by-PR via sub-agents with per-PR review + live verify.)
 
 **Builds on:** A1 (`CompletionHandle`/`Completion` seam — shipped), A2 (Vulkan lazy-flush — shipped),
 A3 (CUDA stream-ordered alloc/free — shipped), A4a + A4c-prereq (per-node multi-device placement +
