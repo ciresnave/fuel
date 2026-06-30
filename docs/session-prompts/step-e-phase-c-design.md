@@ -1,9 +1,19 @@
 # Step E Phase C — live-load arm re-pick + automatic cross-device overlap (DESIGN)
 
-**Status:** design / scoping (2026-06-30) — read-only audit against the
-`b0-3-backend-contract` worktree. **No executor code until reviewed.** This is the
-last Step E phase: the culmination of the "dispatch-core cleanup / plan IS the graph"
-program.
+**Status: SHIPPED 2026-06-30.** All PRs landed + verified (CPU + live-GPU on RTX 4070 + AMD
+iGPU): C-0 residency-all-arms fix (`5cf57516`) → B1 in-flight counter + `BackendStreams` trait
+(`d3d21e20`) → C1 streaming run-walk (`aed217d7`) → C2 `DeviceLoadSelector` / live-load arm
+re-pick (`337a4b77`) → C3 auto-overlap reorder (`1ad3c32d`). The **live-load arm re-pick is
+proven** (a 2-device branched graph picks the unloaded arm under load; VRAM still outranks
+load); single-device byte-identical throughout. **One honest follow-on:** C3's reorder produces
+the overlap-enabling dispatch order for arbitrary graphs (deterministic, structurally gated),
+but fully operand-independent wall-clock *overlap* of a reconverge has a residual in the
+executor's async-submit timing below the run-reorder — full auto-overlap needs that made
+operand-insensitive OR the full ready-set Kahn scheduler (the design's deferred option B). This
+is the culmination of the "dispatch-core cleanup / plan IS the graph" program.
+
+(Originally: design / scoping 2026-06-30 — read-only audit; implemented PR-by-PR via sub-agents
+with per-PR review + live verify.)
 
 **Builds on (all SHIPPED + live-verified):** A1 (`CompletionHandle` seam,
 `compiled.rs:235`), A2 (Vulkan lazy-flush), A3 (CUDA stream-ordered alloc/free),
