@@ -199,7 +199,13 @@ pub fn extract_runs_multi(graph: &Graph, roots: &[NodeId]) -> Vec<Run> {
 /// reachable; seeding it pulls its candidate arms into the walk. Run to
 /// a fixpoint so a Branch reached only through another Branch's arm is
 /// also covered.
-fn effective_roots(graph: &Graph, roots: &[NodeId]) -> Vec<NodeId> {
+///
+/// Public so the optimizer's residency pass (`fuel-dispatch`) can stitch
+/// inbound cross-device copies for EVERY surviving arm — a plain
+/// `topo_order_multi(roots)` walk misses orphaned Branch nodes (and thus
+/// their non-arm-0 arms), which would leave a re-pickable arm's device-
+/// inputs un-bridged (Step E Phase C, PR C-0).
+pub fn effective_roots(graph: &Graph, roots: &[NodeId]) -> Vec<NodeId> {
     let mut seeds: Vec<NodeId> = roots.to_vec();
     let mut seen: HashSet<NodeId> = seeds.iter().copied().collect();
     loop {
