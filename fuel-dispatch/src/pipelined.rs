@@ -5897,6 +5897,94 @@ mod tests {
         );
     }
 
+    /// **C3 follow-on — the OPERAND-ORDER-INVARIANCE gate (CPU, runnable —
+    /// the reliable operand-independence proof).** The residual the live
+    /// `cuda_vulkan_overlap_bench_live` benchmark targets is whether the
+    /// reconverge OPERAND order (`xc.add(&xv)` vs `xv.add(&xc)`) changes the
+    /// wall-clock overlap. Wall-clock is thermally noisy on a heterogeneous
+    /// dev box; the DETERMINISTIC root guarantee is this: the C3-reordered
+    /// dispatch order the executor consumes is **byte-identical for both
+    /// operand orders**. If the lowered order is the same, the executor
+    /// processes the SAME WorkItem stream with the SAME cross-device
+    /// submit/wait timing, so overlap cannot depend on the operand order.
+    ///
+    /// This builds the SAME two-device reconverge as
+    /// `c3_reorder_is_a_valid_topo_permutation` but TWICE — once cuda-first
+    /// (`add(cuda_root, copy)`), once vulkan-first (`add(copy, cuda_root)`)
+    /// — over structurally identical graphs (same node ids, only the
+    /// reconverge's two inputs swapped) and asserts `lower_runs_arm0` emits
+    /// the identical op/device run sequence. The live executor trace confirms
+    /// the same: both operand orders produce the identical WorkItem stream
+    /// (the eager-submit/drain/wait sequence at every cross-device copy is the
+    /// same, and the CUDA chunk is enqueued first in both).
+    #[test]
+    fn c3_reorder_is_operand_order_invariant() {
+        // Build the two-device reconverge with the reconverge inputs in the
+        // given order; return (graph, out) over a FRESH graph so node ids line
+        // up 1:1 between the two builds (only the add's input order differs).
+        let build = |cuda_first: bool| -> (Graph, NodeId) {
+            let n = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
+                g.push(Node { op, inputs, shape: Shape::from_dims(&[3]), dtype: DType::F32 })
+            };
+            let mut g = Graph::new();
+            let ca = n(&mut g, Op::Const, vec![]);
+            let cb = n(&mut g, Op::Const, vec![]);
+            let mut cprev = ca;
+            for _ in 0..4 {
+                cprev = n(&mut g, Op::Relu, vec![cprev]);
+                g.set_target_backend(cprev, BackendId::Cuda);
+            }
+            let c2 = cprev;
+            let mut vprev = cb;
+            for _ in 0..2 {
+                vprev = n(&mut g, Op::Relu, vec![vprev]);
+                g.set_target_backend(vprev, BackendId::Vulkan);
+            }
+            let v2 = vprev;
+            let copy = g.push(Node {
+                op: Op::Copy { target: DeviceLocation::Cuda { gpu_id: 0 } },
+                inputs: vec![v2],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(copy, BackendId::Cuda);
+            // The ONE knob: the reconverge's two inputs, swapped.
+            let inputs = if cuda_first { vec![c2, copy] } else { vec![copy, c2] };
+            let out = n(&mut g, Op::Add, inputs);
+            g.set_target_backend(out, BackendId::Cuda);
+            (g, out)
+        };
+
+        let (g_cf, out_cf) = build(true);
+        let (g_vf, out_vf) = build(false);
+
+        // Lower both via the production path (dispatch_order → lower_runs_arm0
+        // → device_alternating_order, the C3 reorder).
+        let order_cf = fuel_graph::lower_runs_arm0(&g_cf, &[out_cf]);
+        let order_vf = fuel_graph::lower_runs_arm0(&g_vf, &[out_vf]);
+
+        // The decisive guarantee: the lowered dispatch order — as an
+        // (op, device) sequence — is IDENTICAL for both operand orders. (Node
+        // ids can differ if the build assigned them differently, but here the
+        // builds are structurally identical so even the ids match; compare the
+        // op/device sequence to be robust + descriptive on failure.)
+        let tag = |g: &Graph, ids: &[NodeId]| -> Vec<(String, Option<BackendId>)> {
+            ids.iter()
+                .map(|&id| (format!("{:?}", g.node(id).op), g.target_backend(id)))
+                .collect()
+        };
+        let seq_cf = tag(&g_cf, &order_cf);
+        let seq_vf = tag(&g_vf, &order_vf);
+        assert_eq!(
+            seq_cf, seq_vf,
+            "the C3-reordered dispatch order MUST be identical for both \
+             reconverge operand orders (operand-order-invariance — the \
+             executor then sees the same WorkItem stream regardless of \
+             operand order, so overlap is operand-insensitive).\n\
+             cuda-first = {seq_cf:?}\nvulkan-first = {seq_vf:?}",
+        );
+    }
+
     /// A selector that always takes the LAST arm (arm 1) so a non-arm-0
     /// pick is observable (a `WinnerSelector` picks arm-0 ⇒ empty route).
     #[cfg(test)]
