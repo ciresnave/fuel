@@ -1906,6 +1906,26 @@ impl LazyTensor {
         Ok(Self { inner })
     }
 
+    /// Append an [`fuel_graph::Op::WriteSlice`] whose start on `dyn_axis`
+    /// is a **runtime** value resolved through the per-pass `SymEnv` at
+    /// realize (Phase D symbolic extents). `ranges[dyn_axis].0` is
+    /// ignored (the start is dynamic); the slab width
+    /// `ranges[dyn_axis].1 - ranges[dyn_axis].0` must equal `source`'s
+    /// `dyn_axis` dim and not exceed the destination capacity. Backs the
+    /// persistent decode KV-cache write at the per-token `cached_len`.
+    pub fn write_slice_dyn(
+        &self,
+        source: &Self,
+        ranges: Vec<(usize, usize)>,
+        dyn_axis: usize,
+        offset: fuel_ir::DynScalar,
+    ) -> crate::Result<Self> {
+        let inner = self.inner
+            .write_slice_dyn(&source.inner, ranges, dyn_axis, offset)
+            .map_err(crate::Error::from)?;
+        Ok(Self { inner })
+    }
+
     /// Append an [`fuel_graph::Op::WriteSliceRotating`] node — like
     /// [`Self::write_slice`] but the `axis` axis wraps modulo
     /// `modulus`. `position` is a rank-0 U32 tensor whose value (read
@@ -5016,10 +5036,24 @@ impl LlamaModel {
     /// Variant of [`apply_layer_with_cache`] that uses pre-allocated
     /// KV-cache buffers + `Op::WriteSlice`. The K/V caches are bound
     /// via `k_cache_const` / `v_cache_const` (Const placeholders that
-    /// the caller has wired into [`InferenceContext`]); the post-
-    /// write tensors are sliced to the `cached_len + seq` extent for
-    /// attention. No fresh K/V is returned — the cache mutation is
-    /// in-graph as a side effect of the WriteSlice nodes.
+    /// the caller has wired into [`InferenceContext`]).
+    ///
+    /// **Phase D (input-independent decode graph):** the KV write lands
+    /// at the runtime offset `cached_len` via `write_slice_dyn`
+    /// (`DynScalar::Sym(cached_len_sym)`, resolved through the per-pass
+    /// `SymEnv` at realize), and attention reads the **full fixed-capacity**
+    /// buffers `[batch, n_kv_heads, max_seq_len, head_dim]` with a fixed
+    /// `[1, 1, seq, max_seq_len]` causal mask (`k > cached_len + q` masks
+    /// future positions AND the zero-init stale tail). Nothing in the
+    /// graph's *shape* or *structure* depends on `cached_len`, so the
+    /// decode-step graph is byte-identical across tokens — the prerequisite
+    /// for plan-once persistent decode. Numerically identical to the prior
+    /// `slice(0..total_seq)` form (masked positions contribute 0).
+    ///
+    /// Tradeoff: attention computes over `max_seq_len` (not the live
+    /// `total_seq`), so early tokens do extra masked work — a documented
+    /// efficiency follow-up (the flash arm with a runtime `k_len`), not a
+    /// correctness issue.
     fn apply_layer_with_kv_writes(
         &self,
         x: &LazyTensor,
@@ -5027,6 +5061,7 @@ impl LlamaModel {
         k_cache_const: &LazyTensor,
         v_cache_const: &LazyTensor,
         cached_len: usize,
+        cached_len_sym: fuel_ir::SymId,
         rope_cos: &LazyTensor,
         rope_sin: &LazyTensor,
     ) -> crate::Result<LazyTensor> {
@@ -5036,7 +5071,9 @@ impl LlamaModel {
         let batch = dims[0];
         let seq = dims[1];
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
-        let total_seq = cached_len + seq;
+        // Fixed capacity (the KV buffers' allocated sequence axis). The
+        // attention shape is keyed to this, NOT to the live `total_seq`.
+        let max_seq_len = k_cache_const.shape().dims()[2];
 
         let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
 
@@ -5059,44 +5096,43 @@ impl LlamaModel {
         let k_r = k_h.rope_with_tables(rope_cos, rope_sin).unwrap();
 
         // Write fresh K/V slabs into the pre-allocated cache buffers
-        // via Op::WriteSlice. Source slab shape is
-        // `[batch, n_kv_heads, seq, head_dim]`; dest range along axis
-        // 2 is `(cached_len, cached_len + seq)`. The returned tensor's
-        // Storage Arc IS the cache const's Arc — post-write reference
-        // to the same underlying buffer (the executor's
-        // WorkItemKind::WriteSlice branch adopts dest's Arc as the
-        // kernel output, mutating in place).
+        // via Op::WriteSlice at the RUNTIME offset `cached_len`. Source
+        // slab shape is `[batch, n_kv_heads, seq, head_dim]`; on axis 2
+        // the start is dynamic (`cached_len_sym`, resolved at realize)
+        // and the slab width is `seq`. The returned tensor's Storage Arc
+        // IS the cache const's Arc — post-write reference to the same
+        // buffer (the executor adopts dest's Arc as the kernel output,
+        // mutating in place). Keeping the offset symbolic makes the write
+        // node structurally identical across tokens.
         let write_ranges = vec![
             (0, batch),
             (0, cfg.n_kv_heads),
-            (cached_len, cached_len + seq),
+            (0, seq),                 // axis-2 start is dynamic; width = seq
             (0, cfg.head_dim),
         ];
-        let k_full_buffer = k_cache_const.write_slice(&k_r, write_ranges.clone())?;
-        let v_full_buffer = v_cache_const.write_slice(&v_h, write_ranges)?;
+        let dyn_off = fuel_ir::DynScalar::Sym(cached_len_sym);
+        let full_k = k_cache_const.write_slice_dyn(&k_r, write_ranges.clone(), 2, dyn_off)?;
+        let full_v = v_cache_const.write_slice_dyn(&v_h, write_ranges, 2, dyn_off)?;
 
-        // Slice the post-write full buffer down to the visible prefix
-        // `[..., 0..total_seq, ...]` along axis 2. This is what
-        // attention reads; bytes past `total_seq` in the cache buffer
-        // are stale / zero and excluded by the slice.
-        let full_k = k_full_buffer.slice(2, 0, total_seq).unwrap();
-        let full_v = v_full_buffer.slice(2, 0, total_seq).unwrap();
-
-        // Attention path — identical to apply_layer_with_cache from here.
+        // Attend over the FULL fixed-capacity buffers (no slice to
+        // `total_seq`) so the attention shape is `max_seq_len` every
+        // token. The fixed-capacity causal mask excludes future positions
+        // AND the stale/unwritten tail (`k > cached_len + q` covers both,
+        // since `cached_len + q < total_seq <= max_seq_len`).
         let k_t = full_k.transpose().unwrap();
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_t).unwrap();
 
-        let mut mask_data = vec![0.0_f32; seq * total_seq];
+        let mut mask_data = vec![0.0_f32; seq * max_seq_len];
         for q_idx in 0..seq {
             let abs_q = cached_len + q_idx;
-            for k_idx in (abs_q + 1)..total_seq {
-                mask_data[q_idx * total_seq + k_idx] = f32::NEG_INFINITY;
+            for k_idx in (abs_q + 1)..max_seq_len {
+                mask_data[q_idx * max_seq_len + k_idx] = f32::NEG_INFINITY;
             }
         }
         let mask = x.const_f32_like(
             mask_data,
-            Shape::from_dims(&[1, 1, seq, total_seq]),
+            Shape::from_dims(&[1, 1, seq, max_seq_len]),
         );
         let scores_scaled = LazyTensor {
             inner: scores.inner.mul_scalar(scale),
@@ -5235,6 +5271,14 @@ impl LlamaModel {
             cfg.rope_base, cached_len, seq, cfg.head_dim,
         );
 
+        // Phase D: the per-token KV-write offset (`cached_len`) is a
+        // runtime symbol bound through the per-pass `SymEnv` at realize,
+        // not baked into the graph. One symbol shared across all layers
+        // (they all append at the same offset). A fixed id (re-bound each
+        // pass) keeps the decode-step graph structurally identical across
+        // tokens — the prerequisite for plan-once persistent decode.
+        let cached_len_sym = fuel_ir::SymId(0);
+
         // Per-layer: bind the cache K + V Arcs to fresh Const NodeIds,
         // dispatch through the WriteSlice variant. Track the NodeIds
         // we insert into ctx so we can clean them up after realize
@@ -5272,6 +5316,7 @@ impl LlamaModel {
                 &k_cache_node,
                 &v_cache_node,
                 cached_len,
+                cached_len_sym,
                 &rope_cos,
                 &rope_sin,
             )?;
@@ -5306,12 +5351,16 @@ impl LlamaModel {
             ctx.device(),
         );
 
-        // Realize through InferenceContext. The WriteSlice nodes
-        // mutate the cache buffers as a side effect; downstream
-        // attention reads through the post-write Slice views.
-        let logits_vec = ctx.realize_one_as::<f32>(
+        // Realize through InferenceContext. The WriteSlice nodes mutate
+        // the cache buffers in place at the runtime offset `cached_len`,
+        // supplied for this pass via the `SymEnv`; downstream attention
+        // reads the post-write full-capacity buffers.
+        let mut sym_env = fuel_ir::SymEnv::new();
+        sym_env.bind(cached_len_sym, cached_len).map_err(crate::Error::from)?;
+        let logits_vec = ctx.realize_one_as_with_env::<f32>(
             logits_root.inner.graph(),
             logits_root.inner.id(),
+            &sym_env,
         )?;
 
         // Clean up per-step bindings from ctx so they don't accumulate
