@@ -691,13 +691,11 @@ impl PipelinedExecutor {
         let mut current_chunk_backend: Option<BackendId> = None;
         let mut cache: StorageCache = inputs;
         // Step E A4b-1: per-node async-completion handles. Each producing node's
-        // `execute_compiled` now returns a `CompletionHandle` (CUDA → a recorded
+        // `execute_compiled` returns a `CompletionHandle` (CUDA → a recorded
         // `Event`; CPU/Vulkan → `Ready`) instead of being `wait`ed inline. We
-        // store them here and drain at realize-end (the only A4b-1 wait point).
-        // Same/cross-device + eviction waits stay CONSERVATIVE — the existing
-        // `force_flush_vulkan` (eviction) and the `to_cpu_bytes` full-stream sync
-        // (host read) do the real ordering — so this map is ADDITIVE and the
-        // realize stays byte-identical (A4b-1 is behavior-preserving by design).
+        // store them here, wait the SOURCE producer's handle before a
+        // cross-device copy (A4b-3, below), and drain whatever remains at
+        // realize-end.
         let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
         for item in rx {
             let item = item?;
@@ -714,26 +712,43 @@ impl PipelinedExecutor {
                     current_chunk_backend = Some(item.target_backend);
                 }
             }
+            // Step E A4b-3: FINER cross-device source-drain. Before a Copy/Move
+            // (the residency boundary), wait ONLY the source producer's handle —
+            // not the whole source device (the old `to_cpu_bytes` full
+            // `synchronize`). This lets the OTHER sub-DAG's independent in-flight
+            // work on that device keep running while we read just this buffer.
+            // No-op for non-Copy items (same-device kernel edges stay
+            // wait-free — the A2/A3 single-stream/queue ordering win).
+            if matches!(item.kind, WorkItemKind::Copy { .. } | WorkItemKind::Move { .. }) {
+                if let Some(&producer) = item.inputs.first() {
+                    wait_producer_handle(&mut handles, producer)?;
+                }
+            }
             let handle = execute_work_item(&item, &mut cache, &mut layout_cache)?;
             store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
                     if destroyed != target {
-                        // Step E A2: the deferred Vulkan batch may hold a
-                        // recorded-but-unsubmitted command referencing this
-                        // buffer — submit + wait before freeing it (no-op for
-                        // non-Vulkan / empty batch).
+                        // Step E A2 / A4b-3 (Vulkan eviction guard): the deferred
+                        // Vulkan batch may hold a recorded-but-unsubmitted command
+                        // referencing this buffer. KEEP the blocking
+                        // `force_flush_vulkan` (submit + wait) here — design §3
+                        // row 4 wants `wait H(evicted)`, but under A4b-2 Vulkan
+                        // does NOT eager-submit during the walk (that is A4b-4), so
+                        // mid-walk there is NO Vulkan handle to wait: the batch is
+                        // still merely recorded. `force_flush` is the only coherent
+                        // drain until A4b-4 lands the eager submit. No-op for
+                        // non-Vulkan / empty batch. (CUDA eviction needs no host
+                        // wait — A3 stream-ordered free enqueues the free after the
+                        // consuming kernel on the same stream.)
                         if let Some(d_arc) = cache.get(&destroyed) {
                             force_flush_vulkan(d_arc)?;
                         }
                         cache.remove(&destroyed);
                         layout_cache.remove(&destroyed);
-                        // A4b-1: the evicted node's CUDA completion (if any) is
-                        // covered by A3 stream-ordered free (the free is enqueued
-                        // after the consuming kernel on the same stream), so we do
-                        // NOT host-wait here — that conservative finer wait is
-                        // A4b-3. Drop the handle so the realize-end drain's
-                        // empty-map assert stays meaningful.
+                        // Drop the evicted node's CUDA handle (if still present)
+                        // so the realize-end drain's empty-map assert stays
+                        // meaningful. The free itself is stream-ordered-safe (A3).
                         handles.remove(&destroyed);
                     }
                 }
@@ -955,9 +970,10 @@ impl PipelinedExecutor {
         let plan_generation: Option<u64> = generation_for(&order_source);
         let mut current_chunk_backend: Option<BackendId> = None;
         let mut cache: StorageCache = inputs;
-        // Step E A4b-1: per-node async-completion handles (see realize_inner for
-        // the rationale + behavior-preservation argument). Additive map drained
-        // at realize-end; same/cross-device + eviction waits stay conservative.
+        // Step E A4b-1/A4b-3: per-node async-completion handles (see realize_inner
+        // for the full rationale). Map drained at realize-end; the cross-device
+        // copy waits the SOURCE producer's handle (A4b-3); the Vulkan eviction
+        // guard stays the blocking `force_flush_vulkan` until A4b-4's eager submit.
         let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
         for item in rx {
             let item = item?;
@@ -974,20 +990,30 @@ impl PipelinedExecutor {
                     current_chunk_backend = Some(item.target_backend);
                 }
             }
+            // Step E A4b-3: finer cross-device source-drain — wait ONLY the source
+            // producer before a Copy/Move (not the whole source device). No-op for
+            // non-Copy items. See realize_inner for the race-safety argument.
+            if matches!(item.kind, WorkItemKind::Copy { .. } | WorkItemKind::Move { .. }) {
+                if let Some(&producer) = item.inputs.first() {
+                    wait_producer_handle(&mut handles, producer)?;
+                }
+            }
             let handle = execute_work_item(&item, &mut cache, &mut layout_cache)?;
             store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
                     if !target_set.contains(&destroyed) {
-                        // Step E A2: drain the deferred Vulkan batch before
-                        // freeing a buffer it may reference (no-op otherwise).
+                        // Step E A2 / A4b-3 (Vulkan eviction guard): KEEP the
+                        // blocking `force_flush_vulkan` (submit + wait) — under
+                        // A4b-2 Vulkan does not eager-submit mid-walk (A4b-4), so
+                        // there is no Vulkan handle to `wait H(evicted)`; the batch
+                        // is still merely recorded. No-op otherwise.
                         if let Some(d_arc) = cache.get(&destroyed) {
                             force_flush_vulkan(d_arc)?;
                         }
                         cache.remove(&destroyed);
                         layout_cache.remove(&destroyed);
-                        // A4b-1: CUDA eviction is stream-ordered-safe (A3); no
-                        // host wait here (A4b-3 owns the finer wait). Drop the
+                        // CUDA eviction is stream-ordered-safe (A3); drop the
                         // handle so the realize-end empty-map assert stays valid.
                         handles.remove(&destroyed);
                     }
@@ -4587,6 +4613,42 @@ fn store_handle(
     }
 }
 
+/// Step E A4b-3: the FINER cross-device producer wait.
+///
+/// Before dispatching a cross-device `Op::Copy` / `Op::Move` WorkItem, the
+/// executor calls this on the copy's single source input. It removes the
+/// source producer's [`CompletionHandle`] from the map and waits it — so the
+/// specific producer P is complete before the D2H reads P's device buffer,
+/// WITHOUT draining the whole source device (the conservative pre-A4b-3
+/// behavior, where `to_cpu_bytes`'s `device.synchronize()` blocked on ALL
+/// in-flight work on that device — including the OTHER sub-DAG's independent
+/// work A4b-4 wants to overlap).
+///
+/// - **CUDA producer** → waits P's recorded `Event` (`cuEventSynchronize`):
+///   fires after P + its already-ordered stream predecessors, nothing else.
+/// - **Absent / `Ready` producer** (CPU producer, or a Vulkan producer — which
+///   under A4b-2 is `Ready` mid-walk because nothing is submitted until
+///   realize-end) → no-op. A Vulkan SOURCE's own ordering is handled inside
+///   `download_bytes` (it `force_flush`es the open batch then reads), so there
+///   is no mid-walk Vulkan handle to wait here; the cross-device Vulkan→CPU hop
+///   stays correct without one.
+///
+/// Removing the handle here (rather than waiting it again at realize-end) keeps
+/// `drain_handles`' post-drain empty-map assert meaningful and avoids a
+/// double-wait. Waiting it twice would be harmless (`cuEventSynchronize` on an
+/// already-signalled event is a fast no-op), but the consume-once contract is
+/// cleaner. The producing node's *storage* stays in the cache for downstream
+/// readers; only its completion handle is consumed.
+fn wait_producer_handle(
+    handles: &mut HashMap<NodeId, CompletionHandle>,
+    producer: NodeId,
+) -> Result<()> {
+    if let Some(handle) = handles.remove(&producer) {
+        handle.wait()?;
+    }
+    Ok(())
+}
+
 /// Step E A4b-1: realize-end drain — wait every outstanding async handle, then
 /// clear the map.
 ///
@@ -4730,9 +4792,14 @@ fn drain_vulkan_pending(_cache: &StorageCache) -> Result<()> {
 /// freed memory. No-op for non-Vulkan storage, an empty batch, or a non-Vulkan
 /// build.
 ///
-/// A4b-2 keeps this as the blocking submit+wait (its conversion to the
-/// async wait-H(evicted) handle is A4b-3); only the realize-end drain
-/// ([`drain_vulkan_pending`]) is split for A4b-2.
+/// A4b-2/A4b-3 KEEP this as the blocking submit+wait. Design §3 row 4 wants
+/// `wait H(evicted)`, but that is not coherent until A4b-4's eager submit
+/// exists: under A4b-2 the Vulkan per-op path only RECORDS into the batch and
+/// returns `Ready` during the walk (no eager submit), so mid-walk a Vulkan
+/// buffer has NO completion handle to wait — its in-flight command is still
+/// unsubmitted. `force_flush` (submit + wait) is the only coherent drain before
+/// freeing such a buffer. The conversion to a handle wait rides A4b-4. Only the
+/// realize-end drain ([`drain_vulkan_pending`]) is split (A4b-2).
 #[cfg(feature = "vulkan")]
 fn force_flush_vulkan(arc: &Arc<RwLock<Storage>>) -> Result<()> {
     let guard = arc
@@ -4936,6 +5003,53 @@ mod tests {
         assert!(handles.is_empty());
 
         drain_handles(&mut handles).expect("drain empty");
+    }
+
+    /// A4b-3: `wait_producer_handle` waits the named producer's handle EXACTLY
+    /// once and removes it from the map (the finer cross-device source-drain
+    /// consumes the producer's completion before the Copy reads its buffer), and
+    /// is a no-op for an absent producer (CPU / Vulkan-`Ready` source, or an
+    /// already-consumed handle). The realize-end drain then waits only what
+    /// remains — no double-wait.
+    #[test]
+    fn wait_producer_handle_consumes_named_handle_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
+        let waited = StdArc::new(AtomicUsize::new(0));
+
+        // Two producers in flight; the Copy's source is NodeId(2).
+        store_handle(
+            &mut handles,
+            NodeId(2),
+            CompletionHandle::Pending(Box::new(FlagCompletion(waited.clone()))),
+        );
+        store_handle(
+            &mut handles,
+            NodeId(5),
+            CompletionHandle::Pending(Box::new(FlagCompletion(waited.clone()))),
+        );
+
+        // Absent producer → no-op (a CPU/Vulkan-Ready source has no handle).
+        wait_producer_handle(&mut handles, NodeId(99)).expect("absent is no-op");
+        assert_eq!(waited.load(Ordering::SeqCst), 0, "absent producer waited nothing");
+        assert_eq!(handles.len(), 2);
+
+        // The cross-device copy's source: waited once, removed from the map.
+        wait_producer_handle(&mut handles, NodeId(2)).expect("wait source");
+        assert_eq!(waited.load(Ordering::SeqCst), 1, "source producer waited once");
+        assert!(!handles.contains_key(&NodeId(2)), "source handle consumed");
+        assert!(handles.contains_key(&NodeId(5)), "unrelated handle untouched");
+
+        // Re-waiting the (now absent) source is a no-op — no double-wait.
+        wait_producer_handle(&mut handles, NodeId(2)).expect("re-wait is no-op");
+        assert_eq!(waited.load(Ordering::SeqCst), 1, "no double-wait");
+
+        // Realize-end drain waits only the remaining unrelated producer.
+        drain_handles(&mut handles).expect("drain");
+        assert_eq!(waited.load(Ordering::SeqCst), 2, "drain waited the remaining one");
+        assert!(handles.is_empty());
     }
 
     /// Op::Contiguize on a contiguous-already input is zero-copy:

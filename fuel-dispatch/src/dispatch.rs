@@ -4731,7 +4731,18 @@ fn copy_from_cuda_wrapper(
     let mut out_guard = write_storage(&outputs[0])?;
     match &mut out_guard.inner {
         BackendStorage::Cpu(_) => {
-            let bytes = cuda_src.to_cpu_bytes()?;
+            // Step E A4b-3: the FINER cross-device D2H. The executor waited the
+            // source node's CompletionHandle before dispatching this Copy/Move
+            // (`pipelined::wait_producer_handle`), so the producer is done; use
+            // `to_cpu_bytes_finer` (no whole-device `synchronize`) so the OTHER
+            // sub-DAG's independent in-flight CUDA work is NOT force-drained.
+            // `cuMemcpyDtoH_v2` is itself host-synchronous + legacy-stream-ordered
+            // (see `CudaStorageBytes::to_cpu_bytes_finer`), so the read stays
+            // byte-exact. This wrapper is reached ONLY via the executor's
+            // Copy/Move WorkItem (it is the kernel registered at
+            // `(OpKind::Copy, [dt,dt], Cuda)`), never standalone — so the finer
+            // contract always holds here.
+            let bytes = cuda_src.to_cpu_bytes_finer()?;
             let dst = cpu_output(&mut out_guard)?;
             let n = bytes.len().min(dst.len_bytes());
             dst.bytes_mut()[..n].copy_from_slice(&bytes[..n]);
