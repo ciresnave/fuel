@@ -162,6 +162,71 @@ pub trait BackendRuntime {
             _ => FitStatus::Unknown,
         }
     }
+
+    /// Tier-2 upcast seam: a runtime handle that also exposes a
+    /// deferred-execution queue model returns `Some(self)` so a
+    /// selector holding only a `&dyn BackendRuntime` (the type the
+    /// route picker's [`BackendRuntimeLookup`] hands out) can reach
+    /// the [`BackendStreams`] live-load surface without naming the
+    /// concrete handle type.
+    ///
+    /// Defaults to `None` — the honesty contract for Tier 2: a backend
+    /// with no queue concept (CPU, Reference) is **not** a
+    /// `BackendStreams` and says so, exactly as `available_bytes`
+    /// returns `None` for "I can't measure this." Returning `Some` is
+    /// a per-handle opt-in (see `DeviceRuntimeHandle` in
+    /// `fuel-core::pipelined_bridge`), never forced on the base trait.
+    ///
+    /// (Step E Phase C / B1: the seam the load-aware selector — C2 —
+    /// reads through. B1 wires the signal; nothing consults it yet.)
+    fn as_backend_streams(&self) -> Option<&dyn BackendStreams> {
+        None
+    }
+}
+
+/// Tier-2 conditional contract — backends with a deferred-execution
+/// (queue / stream / command-buffer) model expose live in-flight load
+/// here. See architecture v0.4
+/// (`docs/architecture/05-backend-contract.md` §Tier 2 → `BackendStreams`).
+///
+/// # Why a separate trait (the honesty contract)
+///
+/// The base [`BackendRuntime`] stays VRAM-only: a backend that
+/// dispatches synchronously (CPU, Reference) has no queue depth to
+/// report, and forcing a `pending_work_count` onto every backend would
+/// fabricate a "0 in flight" that reads as a real signal. `BackendStreams`
+/// is the Tier-2 extension only stream-like backends (CUDA streams,
+/// Vulkan queues / command buffers) implement; selectors reach it via
+/// [`BackendRuntime::as_backend_streams`] and treat its absence as
+/// "no load signal — fall back to static cost," never as "idle."
+///
+/// # Where the count comes from (Step E Phase C / B1)
+///
+/// The in-flight count a selector needs is the **executor's own
+/// submitted-but-not-drained async-op count**, not a driver query
+/// (`cuStreamQuery` is a busy/idle bool, not a depth). Fuel tracks it
+/// in a process-wide per-[`DeviceLocation`] atomic counter
+/// (`fuel-dispatch::dispatch::inflight_count`) incremented when the
+/// executor submits an async op and decremented when the completion
+/// handle retires. A `BackendStreams` impl reads that counter for its
+/// own device — see `DeviceRuntimeHandle` in `fuel-core::pipelined_bridge`.
+pub trait BackendStreams: BackendRuntime {
+    /// Number of slots (streams / queues / command buffers) currently
+    /// busy with submitted-but-not-yet-finished work, for this handle's
+    /// device. `None` when the backend dispatches synchronously and has
+    /// no queue concept (selectors then have no load signal — fall back
+    /// to static cost, never treat `None` as "idle").
+    fn pending_work_count(&self) -> Option<u32>;
+
+    /// Maximum concurrent in-flight work this backend advertises. Used
+    /// by the runtime route picker for load tiering (`count /
+    /// slot_capacity`) and dispatch lookahead sizing.
+    fn slot_capacity(&self) -> u32;
+
+    /// Block until all submitted work on this backend's slots has
+    /// completed. Used at realize boundaries and by training-loop
+    /// barriers (gradient accumulation, optimizer step).
+    fn flush(&self) -> Result<()>;
 }
 
 #[cfg(test)]
@@ -263,5 +328,64 @@ mod tests {
     fn would_fit_zero_byte_alloc() {
         let r = MockRuntime { available: Some(50), total: Some(100) };
         assert_eq!(r.would_fit(0), FitStatus::Comfortable);
+    }
+
+    // ===== Tier-2 BackendStreams + the as_backend_streams seam =====
+
+    /// A base `BackendRuntime` with no queue model is NOT a
+    /// `BackendStreams`: the default `as_backend_streams` returns `None`
+    /// (the honesty contract — a selector must read "no load signal,"
+    /// never a fabricated "idle"). `MockRuntime` does not implement
+    /// `BackendStreams`, so it keeps the default.
+    #[test]
+    fn base_runtime_is_not_streams_by_default() {
+        let r = MockRuntime { available: Some(50), total: Some(100) };
+        assert!(
+            r.as_backend_streams().is_none(),
+            "a backend with no queue concept must report None via as_backend_streams",
+        );
+    }
+
+    /// A handle that DOES implement `BackendStreams` and opts in via
+    /// `as_backend_streams` is reachable through a bare
+    /// `&dyn BackendRuntime` — the exact upcast the load-aware selector
+    /// (C2) performs over the route picker's `BackendRuntimeLookup`
+    /// handle. `pending_work_count` is the carried live-load value.
+    #[test]
+    fn streams_handle_reachable_through_runtime_upcast() {
+        struct StreamingHandle {
+            inflight: u32,
+        }
+        impl BackendRuntime for StreamingHandle {
+            fn available_bytes(&self) -> Option<u64> {
+                None
+            }
+            fn total_bytes(&self) -> Option<u64> {
+                None
+            }
+            fn as_backend_streams(&self) -> Option<&dyn BackendStreams> {
+                Some(self)
+            }
+        }
+        impl BackendStreams for StreamingHandle {
+            fn pending_work_count(&self) -> Option<u32> {
+                Some(self.inflight)
+            }
+            fn slot_capacity(&self) -> u32 {
+                4
+            }
+            fn flush(&self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let handle = StreamingHandle { inflight: 3 };
+        let as_runtime: &dyn BackendRuntime = &handle;
+        let streams = as_runtime
+            .as_backend_streams()
+            .expect("streaming handle exposes BackendStreams");
+        assert_eq!(streams.pending_work_count(), Some(3));
+        assert_eq!(streams.slot_capacity(), 4);
+        streams.flush().expect("flush is Ok");
     }
 }

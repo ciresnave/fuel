@@ -13,7 +13,8 @@
 //! - [`dyn_backend`] — [`DynBackendStorage`] / [`DynBackendDevice`], the
 //!   object-safe storage + device traits at the heart of dispatch.
 //! - [`backend`] — the capability/runtime traits [`HostStorage`],
-//!   [`BackendStorage`], [`BackendCapabilityProvider`], [`BackendRuntime`].
+//!   [`BackendStorage`], [`BackendCapabilityProvider`], [`BackendRuntime`],
+//!   and the Tier-2 [`BackendStreams`] live-load extension.
 //!   (Their *data* types — `SubstrateClass`, `TransferPath`,
 //!   `BackendCapabilities`, `FitStatus` — stay in [`fuel_ir::backend`].)
 //! - [`quantized`] — [`DynQuantizedStorage`] / [`QuantizedDeviceKernels`].
@@ -30,7 +31,9 @@ pub mod inplace_op;
 pub mod quantized;
 pub mod storage;
 
-pub use backend::{BackendCapabilityProvider, BackendRuntime, BackendStorage, HostStorage};
+pub use backend::{
+    BackendCapabilityProvider, BackendRuntime, BackendStorage, BackendStreams, HostStorage,
+};
 pub use dyn_backend::{DynBackendDevice, DynBackendStorage};
 pub use inplace_op::{InplaceOp1, InplaceOp2, InplaceOp3};
 pub use quantized::{DynQuantizedStorage, QuantizedDeviceKernels};

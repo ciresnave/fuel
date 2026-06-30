@@ -24,7 +24,7 @@
 
 use fuel_core::lazy::LazyTensor;
 use fuel_cuda_backend::CudaDevice;
-use fuel_ir::{DType, Shape};
+use fuel_ir::{DType, DeviceLocation, Shape};
 
 fn dev_or_skip() -> Option<CudaDevice> {
     match CudaDevice::new(0) {
@@ -88,6 +88,19 @@ fn deep_chain_realize_on_cuda_matches_reference() {
 
     let out = out_t.realize_f32_cuda(&dev);
     assert_eq!(out, vec![22.0_f32, 132.0, 396.0, 880.0]);
+
+    // Step E Phase C / B1 — single-device in-flight counter BALANCE. This deep
+    // CUDA chain submits several events (one per producing node) and drains them
+    // all at realize-end (drain_handles + the per-copy/eviction waits). After the
+    // drain the per-device count MUST be 0: every CudaCompletion::new (+1) was
+    // matched by exactly one Drop (-1), covering wait, drain, and eviction-drop.
+    // No leak, no underflow. B1 is behavior-preserving — the byte-exact assert
+    // above is unchanged by the counter.
+    assert_eq!(
+        fuel_dispatch::dispatch::inflight_count(DeviceLocation::Cuda { gpu_id: 0 }),
+        0,
+        "B1: CUDA in-flight count must return to 0 after the chain fully drains",
+    );
 }
 
 /// Pool-reuse / stream-ordered-free pressure: a longer add-chain on a larger

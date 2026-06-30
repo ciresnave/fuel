@@ -72,7 +72,7 @@ use std::sync::{Arc, RwLock};
 use fuel_ir::{
     probe::BackendId, DeviceLocation, Error, HostBuffer, Layout, Result, SymEnv,
 };
-use fuel_backend_contract::backend::BackendRuntime;
+use fuel_backend_contract::backend::{BackendRuntime, BackendStreams};
 use fuel_ir::backend::FitStatus;
 use fuel_backend_contract::dyn_backend::DynBackendDevice;
 use fuel_graph::{Graph, Node, NodeId, Op, topo_order_multi};
@@ -1161,6 +1161,62 @@ impl BackendRuntime for DeviceRuntimeHandle {
             None => FitStatus::Unknown,
         }
     }
+
+    /// Step E Phase C / B1: expose this handle's Tier-2 [`BackendStreams`]
+    /// live-load surface so the load-aware selector (C2, later) can reach
+    /// `pending_work_count` over the route picker's
+    /// [`BackendRuntimeLookup`] — which only ever hands out a
+    /// `&dyn BackendRuntime` — without naming `DeviceRuntimeHandle`.
+    ///
+    /// A streaming device (CUDA / Vulkan) returns `Some(self)`; a
+    /// synchronous device (CPU) returns `None` — the honesty contract:
+    /// CPU has no queue, so it is NOT a `BackendStreams` (a selector reads
+    /// "no load signal," never a fabricated "idle"). The CPU
+    /// [`fuel_cpu_backend::dyn_impl::CpuBackendDevice`] handle the lookup
+    /// builds for the host-RAM arm isn't a `DeviceRuntimeHandle` at all
+    /// and keeps the base-trait default `None`, so CPU stays honest on
+    /// both lookup paths.
+    fn as_backend_streams(&self) -> Option<&dyn BackendStreams> {
+        match self.0.location_dyn() {
+            DeviceLocation::Cpu => None,
+            _ => Some(self),
+        }
+    }
+}
+
+/// Step E Phase C / B1: the live-load read surface for the per-device
+/// in-flight counter. `pending_work_count` reads the process-wide
+/// `fuel-dispatch` counter for THIS handle's device — the executor's own
+/// submitted-but-not-drained async-op count (CUDA events + eager Vulkan
+/// batches), which is the "queue depth" signal `06-runtime` names. Only
+/// streaming devices reach this impl (CPU is filtered out in
+/// [`BackendRuntime::as_backend_streams`]); the `Cpu` arm here is a
+/// belt-and-suspenders honesty guard, never hit in practice.
+impl BackendStreams for DeviceRuntimeHandle {
+    fn pending_work_count(&self) -> Option<u32> {
+        match self.0.location_dyn() {
+            DeviceLocation::Cpu => None,
+            loc => Some(fuel_dispatch::dispatch::inflight_count(loc)),
+        }
+    }
+
+    /// Advertised concurrent in-flight capacity. B1 reports a conservative
+    /// constant: Fuel today drives one stream per CUDA device and one
+    /// compute queue per Vulkan device (A3 / A4b), so the meaningful slot
+    /// count is 1. The per-device capacity wiring (a `BackendCapabilities`
+    /// field) lands with C2's load tiering (`count / slot_capacity`,
+    /// design §9 open-Q1) — nothing reads this in B1.
+    fn slot_capacity(&self) -> u32 {
+        1
+    }
+
+    /// Barrier: block until all submitted work on this device's slots has
+    /// retired. Delegates to the device's `synchronize` (CUDA
+    /// `cuCtxSynchronize` / Vulkan device-wait) — the same realize-boundary
+    /// drain the executor already performs.
+    fn flush(&self) -> Result<()> {
+        self.0.synchronize_dyn()
+    }
 }
 
 /// Live-handle lookup for the VramPressure guard / picker fingerprint.
@@ -1308,6 +1364,31 @@ mod tests {
         _p: &fuel_dispatch::kernel::OpParams,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// Step E Phase C / B1 honesty contract: a CPU `DeviceRuntimeHandle` is
+    /// NOT a `BackendStreams` (CPU dispatches synchronously — no queue). Its
+    /// `as_backend_streams` upcast returns `None`, so the load-aware selector
+    /// (C2) reads "no load signal" for CPU, never a fabricated "idle." This is
+    /// the CPU half of B1's seam; the streaming half (CUDA/Vulkan reading the
+    /// in-flight counter) is covered by the live mid-realize gate.
+    #[test]
+    fn cpu_runtime_handle_is_not_backend_streams() {
+        let handle = DeviceRuntimeHandle(
+            Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice) as Arc<dyn DynBackendDevice>,
+        );
+        // The upcast a C2 selector performs over a `&dyn BackendRuntime`.
+        let as_runtime: &dyn BackendRuntime = &handle;
+        assert!(
+            as_runtime.as_backend_streams().is_none(),
+            "CPU has no queue concept — it must not expose BackendStreams",
+        );
+        // And the direct surface is honest too (None, not Some(0)).
+        assert_eq!(
+            handle.pending_work_count(),
+            None,
+            "CPU pending_work_count must be None (no queue), never Some(0)",
+        );
     }
 
     /// Step 4a preserves the old monolithic loop's "always

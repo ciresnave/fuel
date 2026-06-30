@@ -168,6 +168,26 @@ fn two_subdags_cuda_and_vulkan_realize_in_one_pass() {
         "mixed CUDA+Vulkan single-pass realize must match the host oracle",
     );
 
+    // Step E Phase C / B1 — the in-flight counter BALANCE on the REAL async
+    // path. After a realize fully drains (every CUDA event waited, every Vulkan
+    // batch retired), the per-device in-flight count MUST be back to 0 — no
+    // leak, no underflow. This exercises the real CUDA event inc/dec
+    // (produce_pending -> CudaCompletion::Drop) AND the eager Vulkan batch
+    // inc/dec (eager_submit_all_vulkan -> VulkanCompletion::Drop) end-to-end on
+    // a genuinely multi-device realize that both submits and drains on both
+    // devices. (B1 is behavior-preserving — nothing READS this to alter the
+    // result, which the byte-exact assert above proves.)
+    assert_eq!(
+        fuel_dispatch::dispatch::inflight_count(cuda0),
+        0,
+        "B1: CUDA in-flight count must return to 0 after the realize fully drains",
+    );
+    assert_eq!(
+        fuel_dispatch::dispatch::inflight_count(vk_loc),
+        0,
+        "B1: Vulkan in-flight count must return to 0 after the realize fully drains",
+    );
+
     // Self-verify the MECHANISM (not just the math).
     let g = g_arc.read().expect("graph lock");
 
