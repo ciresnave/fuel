@@ -4859,10 +4859,19 @@ fn find_cuda_device_in_cache(
 /// `CommandBuffer` / `DescriptorSet` / `Buffer` / `Allocation` / `CommandPool`
 /// are all `Send` in vulkane (Arc-of-`DeviceInner` + explicit `unsafe impl`s),
 /// and `Arc<VulkanBackend>` is `Send + Sync`.
+/// Step E B1: `batch` is an `Option` ONLY so [`Drop`] can coexist with the
+/// by-value `into_wait` consume. A type with a `Drop` impl cannot be
+/// destructured by move (`let VulkanCompletion { backend, batch } = self`,
+/// E0509), so `into_wait` `take()`s the batch out of the `Option` instead of
+/// moving it out of the struct, then lets the normal `Drop` run. In every
+/// reachable state the batch is `Some` until exactly one `into_wait` consumes it.
 #[cfg(feature = "vulkan")]
 struct VulkanCompletion {
     backend: Arc<fuel_vulkan_backend::VulkanBackend>,
-    batch: fuel_vulkan_backend::SubmittedBatch,
+    batch: Option<fuel_vulkan_backend::SubmittedBatch>,
+    /// The device this submitted batch counts against in the in-flight counter
+    /// (Step E B1). `Drop` decrements this slot.
+    loc: fuel_ir::DeviceLocation,
 }
 
 /// Step E A4b-4: the element type of the executor's in-flight-Vulkan-batch list.
@@ -4907,22 +4916,57 @@ fn copy_source_is_vulkan(_cache: &StorageCache, _producer: NodeId) -> Result<boo
 #[cfg(feature = "vulkan")]
 impl crate::compiled::Completion for VulkanCompletion {
     fn wait(self: Box<Self>) -> Result<()> {
-        self.into_wait()
+        // Move the whole `VulkanCompletion` out of the `Box` (allowed even with a
+        // `Drop` impl — it's a full move, not a destructure) and consume by value.
+        (*self).into_wait()
     }
 }
 
 #[cfg(feature = "vulkan")]
 impl VulkanCompletion {
+    /// Build the handle for an eagerly-submitted Vulkan batch and register it as
+    /// one in-flight batch on `loc` (Step E B1). The matching decrement is in
+    /// [`Drop`]. `loc` is the backend's `DeviceLocation::Vulkan { gpu_id }`.
+    fn new(
+        backend: Arc<fuel_vulkan_backend::VulkanBackend>,
+        batch: fuel_vulkan_backend::SubmittedBatch,
+        loc: fuel_ir::DeviceLocation,
+    ) -> Self {
+        crate::dispatch::inflight_inc(loc);
+        Self { backend, batch: Some(batch), loc }
+    }
+
     /// Block on this batch's fence, retire pools, then free the batch. Consumes
     /// `self` by value (the by-value sibling of the boxed `Completion::wait`),
     /// used by the executor's `inflight_vulkan` drain (A4b-4) where we hold the
     /// `VulkanCompletion` unboxed in a `Vec`.
-    fn into_wait(self) -> Result<()> {
+    ///
+    /// Step E B1: `take()`s the batch out of the `Option` (NOT a destructure
+    /// move — that's illegal with a `Drop` impl) and waits it; the in-flight
+    /// decrement then rides `self`'s `Drop` as this returns. So a wait-consume
+    /// and a bare drop (e.g. an error unwinding before the wait) BOTH decrement
+    /// exactly once, and `into_wait` never double-counts.
+    fn into_wait(mut self) -> Result<()> {
         // `wait_submitted` consumes the batch by value: waits the fence, retires
         // pools, then drops the batch (UAF-safe — nothing the in-flight CB
-        // references frees before the fence signals).
-        let VulkanCompletion { backend, batch } = self;
-        backend.wait_submitted(batch)
+        // references frees before the fence signals). After a `new` the batch is
+        // always `Some`; `take` leaves `None` so `Drop` doesn't touch it again.
+        if let Some(batch) = self.batch.take() {
+            self.backend.wait_submitted(batch)?;
+        }
+        Ok(())
+        // `self` drops here → `inflight_dec(self.loc)`.
+    }
+}
+
+#[cfg(feature = "vulkan")]
+impl Drop for VulkanCompletion {
+    fn drop(&mut self) {
+        // The single in-flight decrement for a Vulkan batch — fires whether the
+        // batch was waited (`into_wait` / `wait`) or merely dropped (error
+        // unwind), so the per-device count returns to baseline. Relaxed +
+        // saturating (a scheduling hint, never a correctness gate).
+        crate::dispatch::inflight_dec(self.loc);
     }
 }
 
@@ -4974,8 +5018,12 @@ fn eager_submit_all_vulkan(
         }
     }
     for backend in backends {
+        // Step E B1: the per-device location for the in-flight counter. A batch
+        // submitted here is one in-flight unit on this iGPU until its handle's
+        // `Drop` (after `drain_inflight_vulkan` / realize-end).
+        let loc = DeviceLocation::Vulkan { gpu_id: backend.gpu_id };
         if let Some(batch) = backend.submit_pending()? {
-            inflight.push(VulkanCompletion { backend, batch });
+            inflight.push(VulkanCompletion::new(backend, batch, loc));
         }
     }
     Ok(())
@@ -5048,9 +5096,13 @@ fn drain_vulkan_pending(cache: &StorageCache) -> Result<()> {
         let Some(backend) = backend else { continue };
         // Submit the open batch (if any) without waiting, then wait via the
         // completion handle. Empty batch → None → nothing to wait.
+        // Step E B1: `new` increments the in-flight counter for this device;
+        // `handle.wait()` waits + drops the `VulkanCompletion`, decrementing it
+        // — a balanced submit/retire even on this transient realize-end path.
+        let loc = DeviceLocation::Vulkan { gpu_id: backend.gpu_id };
         if let Some(batch) = backend.submit_pending()? {
             let handle: CompletionHandle =
-                CompletionHandle::Pending(Box::new(VulkanCompletion { backend, batch }));
+                CompletionHandle::Pending(Box::new(VulkanCompletion::new(backend, batch, loc)));
             handle.wait()?;
         }
     }

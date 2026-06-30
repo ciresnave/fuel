@@ -195,8 +195,16 @@ fn produce_pending(
                 .read()
                 .map_err(|_| Error::Msg("output storage lock poisoned recording completion".into()).bt())?;
             if let fuel_memory::BackendStorage::Cuda(cuda_bytes) = &guard.inner {
+                // Step E B1: this is the single CUDA async-submit site — the kernel
+                // was just enqueued on the device stream. The completion handle's
+                // lifetime IS the in-flight window, so `CudaCompletion::new`
+                // increments the per-device in-flight counter here and the handle's
+                // `Drop` decrements it (covering wait, drain, AND the eviction-drop
+                // path uniformly — see the type docs). The device location keys the
+                // counter.
+                let loc = cuda_bytes.device().location();
                 let ev = cuda_bytes.record_completion_event()?;
-                return Ok(CompletionHandle::Pending(Box::new(CudaCompletion { ev })));
+                return Ok(CompletionHandle::Pending(Box::new(CudaCompletion::new(ev, loc))));
             }
         }
     }
@@ -206,9 +214,45 @@ fn produce_pending(
 /// Step E A4b-1: a CUDA [`Completion`] over a recorded [`Event`]. `wait` is a
 /// blocking host wait (`cuEventSynchronize`) on the event — which fires after
 /// the producing kernel and every prior op on the (single per-device) stream.
+///
+/// Step E B1: carries the producing op's [`DeviceLocation`] and owns one slot
+/// of the process-wide in-flight counter. [`CudaCompletion::new`] (called at the
+/// async-submit site, `produce_pending`) increments; [`Drop`] decrements. Putting
+/// the decrement in `Drop` — NOT in `wait` — is what makes the counter BALANCE:
+/// every path that ends this handle's life decrements exactly once and only once:
+///   - `wait(self: Box<Self>)` synchronizes the event (a `&self` read) then the
+///     `Box` drops → one dec;
+///   - the executor's `drain_handles` / `wait_producer_handle` consume the handle
+///     via `wait` → the same one dec;
+///   - the eviction path `handles.remove(&destroyed)` DROPS the handle WITHOUT
+///     waiting → still one dec (via `Drop`);
+///   - an error (`?`) unwinding the realize loop drops the still-owned handles →
+///     one dec each.
+/// `wait` deliberately does not touch the counter, so no path double-counts.
 #[cfg(feature = "cuda")]
 struct CudaCompletion {
     ev: fuel_cuda_backend::Event,
+    loc: fuel_ir::DeviceLocation,
+}
+
+#[cfg(feature = "cuda")]
+impl CudaCompletion {
+    /// Build the handle for a just-enqueued CUDA op and register it as one
+    /// in-flight op on `loc`. The matching decrement is in [`Drop`].
+    fn new(ev: fuel_cuda_backend::Event, loc: fuel_ir::DeviceLocation) -> Self {
+        crate::dispatch::inflight_inc(loc);
+        Self { ev, loc }
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl Drop for CudaCompletion {
+    fn drop(&mut self) {
+        // The single in-flight decrement — fires on wait-consume, drain, OR
+        // eviction-drop, so the counter returns to baseline once every handle
+        // is gone. Relaxed + saturating (a hint, never a correctness gate).
+        crate::dispatch::inflight_dec(self.loc);
+    }
 }
 
 #[cfg(feature = "cuda")]
@@ -216,7 +260,9 @@ impl Completion for CudaCompletion {
     fn wait(self: Box<Self>) -> Result<()> {
         use fuel_cuda_backend::WrapErr;
         // cuEventSynchronize: blocks the host until the event completes; surfaces
-        // a sticky async kernel fault on this stream as the mapped `Err`.
+        // a sticky async kernel fault on this stream as the mapped `Err`. The
+        // in-flight decrement is NOT here — it rides the `Box`'s `Drop` (which
+        // runs as this method returns), so the eviction-drop path also decrements.
         self.ev.synchronize().w()
     }
 }

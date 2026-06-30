@@ -500,6 +500,18 @@ Migration order recommended by this contract:
 3. **`BackendStreams` for CUDA + Vulkan** — formalize stream / queue
    counts as trait methods. Trim out the inherent methods that
    selectors currently touch directly.
+   - **Update (Step E Phase C / B1):** the `BackendStreams` trait now
+     exists in `fuel-backend-contract` and is implemented at the
+     `DeviceRuntimeHandle` seam (`fuel-core::pipelined_bridge`), reading
+     a fuel-internal process-wide per-device in-flight async-op counter
+     (`fuel-dispatch::dispatch::inflight_count`) for `pending_work_count`
+     — because the count a selector needs is the *executor's*
+     submitted-but-not-drained count, which a bare backend-device handle
+     cannot observe. A base `BackendRuntime::as_backend_streams()` upcast
+     (default `None`; `Some` only for streaming devices, never CPU)
+     preserves the honesty contract. B1 wires the signal but **nothing
+     reads it to alter dispatch yet** (the load-aware selector is C2);
+     the per-backend inherent-method trim remains future cleanup.
 4. **`BackendPressureSignals` for Vulkan** — promote vulkane's
    pressure-callback API to the trait. CUDA impl waits on baracuda
    exposing notifications (lower priority than `MemGetInfo`).
