@@ -343,7 +343,18 @@ fn insert_residency_copies(
     pinned_loc: DeviceLocation,
     input_residency: Option<&dyn Fn(NodeId) -> Option<DeviceLocation>>,
 ) {
-    let placements = effective_placements(graph, roots, plan, pinned_loc, input_residency);
+    // Step E Phase C, PR C-0: walk the ARM-INCLUSIVE reachable set, not bare
+    // `roots`. A finalized `Op::Branch` is orphaned (its `reconverge_at` reads
+    // arm-0 directly, per the PR-A1 runnability invariant), so a plain
+    // `topo_order_multi(roots)` never reaches it — and therefore never reaches
+    // its non-arm-0 arms. The residency pass MUST stitch inbound cross-device
+    // copies for EVERY surviving arm so the executor can legally re-pick
+    // arm-1+ at runtime by live load (C2): whichever arm it picks, that arm's
+    // device-inputs are already resident. `effective_roots` (the same seeding
+    // the run extractor + route picker use) pulls every Branch's arms into the
+    // walk. On a branchless graph it returns exactly `roots` ⇒ byte-identical.
+    let eff_roots = fuel_graph::effective_roots(graph, roots);
+    let placements = effective_placements(graph, &eff_roots, plan, pinned_loc, input_residency);
     let topology = SystemTopology::current();
     // Identical locations short-circuit to `true` BEFORE the topology lookup
     // (a location trivially shares bytes with itself; `shares_storage` returns
@@ -380,7 +391,7 @@ fn insert_residency_copies(
     };
     let inserted = insert_cross_device_copies(
         graph,
-        roots,
+        &eff_roots,
         |id| placements.get(&id).copied(),
         shares,
         needs_host_staging,
@@ -415,7 +426,11 @@ fn insert_residency_copies(
     // CPU intermediate's source is the original GPU producer (stamped to that
     // GPU); the consumer-side hop's source is the CPU intermediate (stamped
     // Cpu via the `graph.placement` fallback in `src_location`).
-    let order = topo_order_multi(graph, roots);
+    // Arm-inclusive (C-0): re-walk from the arm-seeded roots so copies just
+    // inserted inside non-arm-0 arms are re-stamped too. The `eff_roots` seed
+    // set (Branch nodes are unchanged by insertion) reaches the fresh arm
+    // copies via the now-rewired arm-input edges.
+    let order = topo_order_multi(graph, &eff_roots);
     for &id in &order {
         if !matches!(graph.node(id).op, Op::Copy { .. } | Op::Move { .. }) {
             continue;
@@ -783,6 +798,104 @@ mod tests {
         assert_eq!(
             g.target_backend(copy_id), Some(BackendId::Cpu),
             "re-stamp sweep restores the source-backend stamp",
+        );
+    }
+
+    // ---- Step E Phase C, PR C-0: arm residency-copy audit ----
+    //
+    // C2 lets the executor re-pick an `Op::Branch` arm at runtime by live
+    // device load — it may choose arm-1+ instead of the static arm-0 winner.
+    // That is only legal if the optimizer's residency pass has ALREADY
+    // stitched the inbound cross-device `Op::Copy` for EVERY surviving arm,
+    // so whichever arm the executor picks, that arm's device-inputs are
+    // resident on its device. This test builds a 2-arm diamond whose two arms
+    // live on DIFFERENT devices (arm-0 CPU, arm-1 CUDA) sharing one CPU
+    // producer, runs the residency pass, and asserts BOTH arms' cross-device
+    // inputs got their copy — not just arm-0's.
+    //
+    // The finalized `Op::Branch` is orphaned (its `reconverge_at` reads arm-0
+    // directly, per the PR-A1 runnability invariant), so arm-1 is reachable
+    // ONLY through the Branch node. `insert_residency_copies` walks
+    // `topo_order_multi(roots)` directly (NOT `effective_roots`), so it never
+    // reaches an orphaned Branch — and therefore never reaches arm-1. The
+    // run/route machinery (`extract_runs_multi`, `branches_in_topo_order`)
+    // does use `effective_roots`; the residency pass does not. This is the
+    // C-0 prerequisite gap.
+
+    /// Build a 2-arm diamond: a CPU producer `diverge` fans into arm-0 (CPU)
+    /// and arm-1 (`arm1_loc`); `reconverge` reads arm-0 (the runnability
+    /// invariant); the Branch merges {arm0, arm1} at `reconverge`. Returns
+    /// `(graph, branch, diverge, arm0, arm1, post)`. Placements are set via
+    /// `set_placement` so the residency pass reads them with no plan/winner.
+    fn residency_diamond(
+        arm1_loc: DeviceLocation,
+    ) -> (Graph, NodeId, NodeId, NodeId, NodeId, NodeId) {
+        let mut g = Graph::new();
+        let pre = f32_node(&mut g, Op::Const, vec![]);
+        let diverge = f32_node(&mut g, Op::Relu, vec![pre]);
+        let arm0 = f32_node(&mut g, Op::Silu, vec![diverge]);
+        let arm1 = f32_node(&mut g, Op::Gelu, vec![diverge]);
+        let reconverge = f32_node(&mut g, Op::Relu, vec![arm0]);
+        let mut b = g.open_branch(diverge);
+        b.add_arm(arm0);
+        b.add_arm(arm1);
+        let branch = b
+            .finalize_branches(&mut g, reconverge)
+            .expect("well-formed 2-arm branch")
+            .expect("2 arms survive");
+        let post = f32_node(&mut g, Op::Tanh, vec![reconverge]);
+        // Producer + arm-0 + the post-merge region on CPU; arm-1 elsewhere.
+        g.set_placement(pre, DeviceLocation::Cpu);
+        g.set_placement(diverge, DeviceLocation::Cpu);
+        g.set_placement(arm0, DeviceLocation::Cpu);
+        g.set_placement(reconverge, DeviceLocation::Cpu);
+        g.set_placement(post, DeviceLocation::Cpu);
+        g.set_placement(arm1, arm1_loc);
+        (g, branch, diverge, arm0, arm1, post)
+    }
+
+    /// C-0 PREREQUISITE: the residency pass must insert the inbound
+    /// cross-device `Op::Copy` for BOTH arms of a 2-device branch — arm-0
+    /// (CPU, same device as the producer ⇒ no copy needed) AND arm-1 (CUDA,
+    /// crosses ⇒ MUST get a copy). If only arm-0 were stitched, re-picking
+    /// arm-1 at runtime (C2) would dispatch a CUDA kernel whose input was
+    /// never copied to the GPU → the un-bridged-mixed-edge error / a UAF.
+    #[test]
+    fn residency_stitches_every_branch_arm_not_just_arm0() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let (mut g, _branch, diverge, arm0, arm1, post) = residency_diamond(cuda0);
+
+        insert_residency_copies(
+            &mut g, &[post], &ExecutionPlan::empty(), DeviceLocation::Cpu, None,
+        );
+
+        // arm-0 is CPU, same substrate as the CPU producer ⇒ its input edge
+        // does NOT cross ⇒ no copy (and must stay reading `diverge`).
+        assert_eq!(
+            g.node(arm0).inputs, vec![diverge],
+            "arm-0 is co-located with its producer ⇒ no copy, edge untouched",
+        );
+
+        // arm-1 is CUDA, its producer `diverge` is CPU ⇒ the edge crosses ⇒
+        // the residency pass MUST have inserted an Op::Copy targeting CUDA on
+        // arm-1's input. THIS is the C-0 invariant: every surviving arm's
+        // device-inputs are made resident, not just arm-0's.
+        let arm1_in = g.node(arm1).inputs[0];
+        assert_ne!(
+            arm1_in, diverge,
+            "arm-1 (CUDA) reads the CPU producer directly — its inbound \
+             cross-device Op::Copy was NEVER inserted. Re-picking arm-1 at \
+             runtime (C2) would dispatch a CUDA kernel over un-copied CPU \
+             bytes. The residency pass stitched only arm-0's route.",
+        );
+        let copy = g.node(arm1_in);
+        assert!(
+            matches!(copy.op, Op::Copy { target } if target == cuda0),
+            "arm-1's inbound copy must target CUDA; got {:?}", copy.op,
+        );
+        assert_eq!(
+            copy.inputs, vec![diverge],
+            "arm-1's copy reads the shared CPU producer",
         );
     }
 
