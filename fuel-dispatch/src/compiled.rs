@@ -168,10 +168,14 @@ pub fn execute_compiled(
 ///   stream marker — A4b-1 §1.2).
 /// - **CPU** → [`CompletionHandle::Ready`] (the kernel computed in-process; the
 ///   work is already done).
-/// - **Vulkan** → [`CompletionHandle::Ready`] for A4b-1. Vulkan's async path
-///   (the per-batch fence produced by submitting) is A4b-2; until then the
-///   backend's lazy-batch + `force_flush` model (A2) carries Vulkan correctness,
-///   and the executor's realize-end `force_flush_all_vulkan` drain is unchanged.
+/// - **Vulkan** → [`CompletionHandle::Ready`]. The per-op compute path keeps
+///   RECORDING into the deferred batch and returns `Ready` during the walk (no
+///   per-op handle, no eager submit — eager submission at sub-DAG boundaries is
+///   A4b-4). A4b-2's async split lives at the executor's realize-end drain
+///   (`drain_vulkan_pending`): it `submit_pending`s the open batch (the per-batch
+///   fence) then waits it through a `VulkanCompletion` handle — byte-identical to
+///   A2's atomic submit+wait, just split. The A2 lazy-batch model still carries
+///   intra-walk Vulkan correctness (same-queue order + the eviction `force_flush`).
 ///
 /// Multi-output kernels share one backing buffer (one `BackendStorage`), so
 /// `outputs[0]` is the device handle for every slot — a single event covers them.

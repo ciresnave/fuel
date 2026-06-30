@@ -747,12 +747,14 @@ impl PipelinedExecutor {
         // Step E A4b-1: drain every outstanding async handle before the result is
         // read / the cache drops (freeing intermediates). For CUDA this waits the
         // recorded events (one stream/device ⇒ waiting the latest drains all prior
-        // stream work too; see `drain_handles`). Then the A2 Vulkan realize-end
-        // drain (unchanged).
+        // stream work too; see `drain_handles`).
         drain_handles(&mut handles)?;
-        // Step E A2: drain all deferred Vulkan work before reading/returning
-        // the result (and before the cache drops, freeing buffers).
-        force_flush_all_vulkan(&cache)?;
+        // Step E A4b-2: drain all deferred Vulkan work before reading/returning
+        // the result (and before the cache drops, freeing buffers). The A2
+        // submit+wait is now SPLIT — `drain_vulkan_pending` submits the open
+        // batch then waits it via a `VulkanCompletion` handle. Byte-identical to
+        // A2 for pure-Vulkan (one submission at realize-end, just split).
+        drain_vulkan_pending(&cache)?;
 
         let storage = cache.remove(&target).ok_or_else(|| {
             Error::Msg(format!(
@@ -998,11 +1000,12 @@ impl PipelinedExecutor {
             .map_err(|_| Error::Msg("compiler thread panicked".to_string()).bt())?;
 
         // Step E A4b-1: drain every outstanding async handle (CUDA events) before
-        // results are read / the cache drops, then the A2 Vulkan drain (unchanged).
+        // results are read / the cache drops.
         drain_handles(&mut handles)?;
-        // Step E A2: drain all deferred Vulkan work before reading/returning
-        // results (and before the cache drops, freeing buffers).
-        force_flush_all_vulkan(&cache)?;
+        // Step E A4b-2: drain all deferred Vulkan work — submit the open batch
+        // then wait it via a `VulkanCompletion` handle (the A2 submit+wait, split;
+        // byte-identical for pure-Vulkan — one submission at realize-end).
+        drain_vulkan_pending(&cache)?;
 
         // Verify every target was realized + collect outputs in
         // target order. We don't `remove` from the cache because the
@@ -4641,11 +4644,95 @@ fn find_cuda_device_in_cache(
     None
 }
 
+/// Step E A4b-2: a Vulkan [`Completion`](crate::compiled::Completion) over an
+/// in-flight (submitted, not-yet-waited) batch. `wait` blocks on the batch's
+/// fence (`vkWaitForFences`) — which fires when the whole submitted command
+/// buffer has retired on the single compute queue — then releases the batch
+/// (frees the CB / descriptor sets / transient buffers / retired pool, all now
+/// idle on the GPU).
+///
+/// The fence is per-BATCH, not per-node: one `submit_pending` flushes every op
+/// recorded since the last submit, so this single handle covers a contiguous run
+/// of Vulkan nodes (the A2 batching win, preserved — fewer fences, larger
+/// submissions). `backend` keeps the [`VulkanBackend`] alive so the
+/// post-fence pool retire + the `DeviceInner` the batch's resources reference
+/// outlive the wait.
+///
+/// `Send` (required by `Completion`): every owned field is `Send` — `Fence` /
+/// `CommandBuffer` / `DescriptorSet` / `Buffer` / `Allocation` / `CommandPool`
+/// are all `Send` in vulkane (Arc-of-`DeviceInner` + explicit `unsafe impl`s),
+/// and `Arc<VulkanBackend>` is `Send + Sync`.
+#[cfg(feature = "vulkan")]
+struct VulkanCompletion {
+    backend: Arc<fuel_vulkan_backend::VulkanBackend>,
+    batch: fuel_vulkan_backend::SubmittedBatch,
+}
+
+#[cfg(feature = "vulkan")]
+impl crate::compiled::Completion for VulkanCompletion {
+    fn wait(self: Box<Self>) -> Result<()> {
+        // Move the batch out of the box; `wait_submitted` consumes it by value,
+        // waits the fence, retires pools, then drops it (UAF-safe: nothing the
+        // in-flight CB references frees before the fence signals).
+        let VulkanCompletion { backend, batch } = *self;
+        backend.wait_submitted(batch)
+    }
+}
+
+/// Step E A4b-2: the realize-end Vulkan drain, SPLIT into submit-then-wait.
+///
+/// Replaces A2's `force_flush_all_vulkan` (which submitted + waited atomically
+/// inside `force_flush`). For each DISTINCT Vulkan backend referenced by the
+/// cache, `submit_pending` submits the still-open batch WITHOUT waiting (→ a
+/// `SubmittedBatch`), wraps it in the executor's [`VulkanCompletion`] handle, and
+/// `wait`s it. Net for a pure-Vulkan realize: the batch still accumulates across
+/// the whole walk (the per-op path keeps returning `Ready`; no eager submit —
+/// that is A4b-4) and is submitted ONCE here, then waited — **byte-identical to
+/// A2**, same single submission at realize-end, just split through the handle.
+///
+/// Idempotent across repeated cache arcs: the first `submit_pending` on a backend
+/// returns `Some(batch)`; subsequent calls on the same backend see an empty batch
+/// and return `None` (skipped) — exactly the `force_flush` idempotence A2 relied
+/// on. No-op for a non-Vulkan build.
+#[cfg(feature = "vulkan")]
+fn drain_vulkan_pending(cache: &StorageCache) -> Result<()> {
+    use crate::compiled::CompletionHandle;
+    for arc in cache.values() {
+        let backend = {
+            let guard = arc
+                .read()
+                .map_err(|_| poisoned("storage lock during vulkan submit_pending"))?;
+            match &guard.inner {
+                fuel_memory::BackendStorage::Vulkan(v) => v.backend().cloned(),
+                _ => None,
+            }
+        };
+        let Some(backend) = backend else { continue };
+        // Submit the open batch (if any) without waiting, then wait via the
+        // completion handle. Empty batch → None → nothing to wait.
+        if let Some(batch) = backend.submit_pending()? {
+            let handle: CompletionHandle =
+                CompletionHandle::Pending(Box::new(VulkanCompletion { backend, batch }));
+            handle.wait()?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "vulkan"))]
+fn drain_vulkan_pending(_cache: &StorageCache) -> Result<()> {
+    Ok(())
+}
+
 /// Step E A2: force the Vulkan backend behind `arc` (if any) to submit + wait
 /// its deferred batch — called before freeing a buffer the batch may reference
 /// (a destructive eviction) so a recorded-but-unsubmitted command never reads
 /// freed memory. No-op for non-Vulkan storage, an empty batch, or a non-Vulkan
 /// build.
+///
+/// A4b-2 keeps this as the blocking submit+wait (its conversion to the
+/// async wait-H(evicted) handle is A4b-3); only the realize-end drain
+/// ([`drain_vulkan_pending`]) is split for A4b-2.
 #[cfg(feature = "vulkan")]
 fn force_flush_vulkan(arc: &Arc<RwLock<Storage>>) -> Result<()> {
     let guard = arc
@@ -4661,17 +4748,6 @@ fn force_flush_vulkan(arc: &Arc<RwLock<Storage>>) -> Result<()> {
 
 #[cfg(not(feature = "vulkan"))]
 fn force_flush_vulkan(_arc: &Arc<RwLock<Storage>>) -> Result<()> {
-    Ok(())
-}
-
-/// Step E A2: drain every Vulkan backend referenced by `cache` — the
-/// realize-end barrier so all deferred GPU work completes and buffers are
-/// stable before results return / the cache drops. `force_flush` on an empty
-/// batch is a no-op, so per-arc repeats after the first drain are free.
-fn force_flush_all_vulkan(cache: &StorageCache) -> Result<()> {
-    for arc in cache.values() {
-        force_flush_vulkan(arc)?;
-    }
     Ok(())
 }
 

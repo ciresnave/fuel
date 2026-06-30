@@ -59,6 +59,53 @@ impl OpStats {
     }
 }
 
+/// Step E A4b-2: an already-submitted (but not-yet-waited) Vulkan batch.
+///
+/// Produced by [`Recorder::submit_batch`], which ends recording and calls
+/// `vkQueueSubmit` with a fresh fence WITHOUT waiting it. The struct OWNS every
+/// resource the in-flight command buffer still references on the GPU:
+///
+/// - `fence`     — signals when the whole submitted CB has retired.
+/// - `cmd`       — the command buffer the GPU is executing (must outlive the
+///   submission, i.e. until `fence` signals).
+/// - `transients`— per-dispatch params/uniform buffers the shaders read.
+/// - `descs`     — descriptor sets bound by the CB (point at the I/O buffers).
+/// - `retired_pool` — the command pool the `cmd` was allocated from, swapped out
+///   of the [`Recorder`] so a fresh pool serves the next batch while this one is
+///   still in flight (dropping the pool would free the CB's backing memory).
+///
+/// **UAF-critical contract:** none of these may drop before `fence` signals.
+/// `SubmittedBatch`'s `Drop` is the default (field-by-field) drop, so the whole
+/// set frees exactly when the struct itself is dropped — which the owner does
+/// ONLY after `fence.wait(..)` returns (see [`crate::VulkanBackend::wait_submitted`]).
+pub struct SubmittedBatch {
+    fence: Fence,
+    // `cmd`/`transients`/`descs`/`retired_pool` are never *read* — they exist
+    // solely as lifetime anchors: the GPU is still executing `cmd` (which binds
+    // `descs` and reads `transients`, allocated from `retired_pool`) until
+    // `fence` signals, so all four must outlive the wait and free only on this
+    // struct's drop. `#[allow(dead_code)]` documents that the ownership IS the
+    // contract (dropping any of them early would be a use-after-free).
+    #[allow(dead_code)]
+    cmd: CommandBuffer,
+    #[allow(dead_code)]
+    transients: Vec<(Buffer, Allocation)>,
+    #[allow(dead_code)]
+    descs: Vec<DescriptorSet>,
+    #[allow(dead_code)]
+    retired_pool: CommandPool,
+}
+
+impl SubmittedBatch {
+    /// Block the host until this batch's fence signals — i.e. until the GPU has
+    /// finished every command in the submitted CB. After this returns it is safe
+    /// to drop `self` (freeing the CB / descriptor sets / transient buffers /
+    /// retired pool), which the caller does immediately.
+    pub(crate) fn wait(&self) -> Result<()> {
+        self.fence.wait(u64::MAX)
+    }
+}
+
 pub(crate) struct Recorder {
     pub pool: CommandPool,
     /// The single CB being recorded into for the current batch.
@@ -235,6 +282,68 @@ impl Recorder {
         drop(cmd);
         self.pool = CommandPool::new(device, queue_family)?;
         Ok(())
+    }
+
+    /// Step E A4b-2: end the current batch CB recording and SUBMIT it with a
+    /// fresh fence WITHOUT waiting (the async half of [`flush_batch`]). Returns
+    /// the [`SubmittedBatch`] that owns the fence + every resource the in-flight
+    /// CB references; the caller waits the fence later (via the executor's
+    /// completion handle) and drops the batch only after it signals.
+    ///
+    /// Returns `Ok(None)` for an empty batch (no CB recorded since the last
+    /// submit) — identical no-op semantics to `flush_batch`'s early return.
+    ///
+    /// This is the ONLY difference from `flush_batch`: same `vkEndCommandBuffer`
+    /// + same `queue.submit(&[&cmd], Some(&fence))`, but instead of
+    /// `fence.wait(u64::MAX)` + dropping the transients/CB/pool inline, it MOVES
+    /// them into the returned struct so they outlive the (still-running) GPU work.
+    /// Counters/dirty-set are reset exactly as `flush_batch` does, and the pool is
+    /// swapped for a fresh one so the next batch records into a clean pool while
+    /// this one is in flight.
+    pub fn submit_batch(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        queue_family: u32,
+    ) -> Result<Option<SubmittedBatch>> {
+        let Some(cmd) = self.batch_cb.take() else {
+            return Ok(None);
+        };
+        let dt = device.dispatch();
+
+        // End recording (same as flush_batch).
+        unsafe {
+            let end = dt.vkEndCommandBuffer
+                .ok_or(Error::MissingFunction("vkEndCommandBuffer"))?;
+            let r = end(cmd.raw());
+            if r != VkResult::SUCCESS { return Err(Error::Vk(r)); }
+        }
+
+        // Submit with a fence but DO NOT wait — the async split.
+        let fence = Fence::new(device)?;
+        queue.submit(&[&cmd], Some(&fence))?;
+
+        // Move (not drop) everything the in-flight CB references into the
+        // returned batch. Swap the pool for a fresh one so the next batch
+        // records cleanly while this CB is still executing; the retired pool
+        // travels with the batch and frees only after the fence signals.
+        let batch = SubmittedBatch {
+            fence,
+            cmd,
+            transients: std::mem::take(&mut self.batch_transients),
+            descs: std::mem::take(&mut self.batch_descs),
+            retired_pool: std::mem::replace(
+                &mut self.pool,
+                CommandPool::new(device, queue_family)?,
+            ),
+        };
+
+        // Reset counters/dirty exactly as flush_batch does (the moved Vecs are
+        // already empty after take()).
+        self.batch_count = 0;
+        self.dirty_buffers.clear();
+
+        Ok(Some(batch))
     }
 
     /// Drain without submitting (for cleanup).
