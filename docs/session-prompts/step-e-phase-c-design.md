@@ -5,12 +5,20 @@ iGPU): C-0 residency-all-arms fix (`5cf57516`) → B1 in-flight counter + `Backe
 (`d3d21e20`) → C1 streaming run-walk (`aed217d7`) → C2 `DeviceLoadSelector` / live-load arm
 re-pick (`337a4b77`) → C3 auto-overlap reorder (`1ad3c32d`). The **live-load arm re-pick is
 proven** (a 2-device branched graph picks the unloaded arm under load; VRAM still outranks
-load); single-device byte-identical throughout. **One honest follow-on:** C3's reorder produces
-the overlap-enabling dispatch order for arbitrary graphs (deterministic, structurally gated),
-but fully operand-independent wall-clock *overlap* of a reconverge has a residual in the
-executor's async-submit timing below the run-reorder — full auto-overlap needs that made
-operand-insensitive OR the full ready-set Kahn scheduler (the design's deferred option B). This
-is the culmination of the "dispatch-core cleanup / plan IS the graph" program.
+load); single-device byte-identical throughout. This is the culmination of the "dispatch-core
+cleanup / plan IS the graph" program.
+
+**Follow-ons resolved (2026-06-30):** ① The suspected "operand-order auto-overlap residual" was
+a MISDIAGNOSIS — a max-effort investigation (`c48ddfa3`) proved it was MEASUREMENT NOISE, not a
+code path. C3's reorder sorts runs by downstream compute weight (operand-position-independent),
+so both reconverge operand orders (`xc.add(&xv)` / `xv.add(&xc)`) lower to a **byte-identical
+(op,device) dispatch order**, and the executor already eager-submits all Vulkan before any wait —
+i.e. the executor is already operand-insensitive. The earlier "0.39 vs 0.0" flipped run-to-run on
+identical code (thermal + CUDA mem-pool growth + iGPU OOM ceiling). Now proven deterministically by
+`c3_reorder_is_operand_order_invariant` (CPU) + the both-orders benchmark. The full ready-set Kahn
+pump remains a *deferred* end-state for bounded-lookahead scheduling / CUDA-graph replay — **not**
+for operand-independence. ② The error-path UAF (`SubmittedBatch::Drop` didn't fence-wait) is FIXED
+(`1eb3f515`, self-wait-on-Drop). ③ A2.1 (Vulkan deferred-deletion, throughput-only) in flight.
 
 (Originally: design / scoping 2026-06-30 — read-only audit; implemented PR-by-PR via sub-agents
 with per-PR review + live verify.)
