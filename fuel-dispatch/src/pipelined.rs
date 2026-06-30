@@ -868,26 +868,32 @@ impl PipelinedExecutor {
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
                     if destroyed != target {
-                        // Step E A4b-4 (in-flight-batch DATA-BUFFER lifetime — the
-                        // UAF guard). A `SubmittedBatch` owns its CB/descriptors/
-                        // transients but NOT the DATA buffers it reads (those live
-                        // here in the cache). Freeing a data buffer an in-flight CB
-                        // still reads is a use-after-free. Before this destructive
-                        // eviction, wait ALL in-flight Vulkan batches (conservative
-                        // — we can't cheaply map buffer→batch, so wait every one
-                        // that could reference `destroyed`). This is design §3
-                        // row 4's "wait H(evicted)", now coherent because under
-                        // A4b-4 the batch IS submitted. No-op single-device / no
-                        // in-flight batches.
-                        if multi_backend && !inflight_vulkan.is_empty() {
-                            drain_inflight_vulkan(&mut inflight_vulkan)?;
-                        }
-                        // Step E A2: ALSO drain the still-OPEN (recorded-but-
-                        // unsubmitted) Vulkan batch — `force_flush` submits+waits it
-                        // so a recorded command never reads freed memory either.
-                        // (Together the two drains cover every Vulkan reference to
-                        // `destroyed`; CUDA eviction is stream-ordered-safe via A3.)
-                        if let Some(d_arc) = cache.get(&destroyed) {
+                        // Step E A2.1 (in-flight-batch DATA-BUFFER lifetime — the
+                        // UAF guard, now DEFERRED-DELETION instead of a drain). A
+                        // `SubmittedBatch` owns its CB/descriptors/transients but
+                        // NOT the DATA buffers it reads (those live here in the
+                        // cache); recycling a data buffer an in-flight/open CB still
+                        // reads is a use-after-free. PRE-A2.1 we host-blocked here —
+                        // `drain_inflight_vulkan` (wait every in-flight batch) +
+                        // `force_flush` (submit+wait the open batch) — which stalled
+                        // the iGPU work we were overlapping with CUDA at EVERY such
+                        // eviction. A2.1 instead RETAINS the evicted buffer until the
+                        // reader fences signal: it eager-submits the open batch (no
+                        // wait → it becomes a fenced in-flight batch) and moves a
+                        // refcount clone of the buffer into every in-flight batch, so
+                        // the buffer frees POST-fence on each batch's `Drop`
+                        // (follow-on #2) with NO host block. Conservative over all
+                        // batches (no cheap buffer→batch map — the same reason the old
+                        // drain waited all of them). CUDA eviction is stream-ordered-
+                        // safe via A3. Single-device (multi_backend == false) keeps the
+                        // pre-A2.1 blocking force_flush of the OPEN batch (the else
+                        // branch) — byte-identical + UAF-safe there; the deferred path is
+                        // unsafe single-device (no eager-submit/in-flight tracking, and the
+                        // cross-batch RAW guard at :832 doesn't run — see
+                        // force_flush_vulkan's doc).
+                        if multi_backend {
+                            defer_evicted_vulkan_buffer(&cache, destroyed, &mut inflight_vulkan)?;
+                        } else if let Some(d_arc) = cache.get(&destroyed) {
                             force_flush_vulkan(d_arc)?;
                         }
                         cache.remove(&destroyed);
@@ -1202,18 +1208,23 @@ impl PipelinedExecutor {
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
                     if !target_set.contains(&destroyed) {
-                        // Step E A4b-4 (in-flight DATA-BUFFER lifetime — UAF guard):
-                        // wait ALL in-flight Vulkan batches before freeing a buffer
-                        // their CBs may read (conservative buffer→batch mapping).
-                        // See realize_inner for the UAF argument. No-op
-                        // single-device / no in-flight batches.
-                        if multi_backend && !inflight_vulkan.is_empty() {
-                            drain_inflight_vulkan(&mut inflight_vulkan)?;
-                        }
-                        // Step E A2: ALSO drain the still-OPEN recorded Vulkan batch
-                        // (force_flush submit+wait) so a recorded command never
-                        // reads freed memory. CUDA eviction is A3 stream-safe.
-                        if let Some(d_arc) = cache.get(&destroyed) {
+                        // Step E A2.1 (in-flight DATA-BUFFER lifetime — UAF guard,
+                        // now DEFERRED-DELETION instead of a drain): retain the
+                        // evicted buffer until the reader fences signal — eager-
+                        // submit the open batch (no wait) + move a refcount clone of
+                        // the buffer into every in-flight batch, freeing it post-
+                        // fence on each batch's `Drop` with NO host block. Replaces
+                        // the pre-A2.1 `drain_inflight_vulkan` + open-batch
+                        // `force_flush` (two host-blocking fence waits). See
+                        // `defer_evicted_vulkan_buffer` / realize_inner for the
+                        // UAF/leak argument. CUDA eviction is A3 stream-safe.
+                        // Single-device (multi_backend == false) keeps the pre-A2.1
+                        // blocking force_flush of the OPEN batch (the else branch) —
+                        // byte-identical + UAF-safe; the deferred path is unsafe there
+                        // (see force_flush_vulkan's doc).
+                        if multi_backend {
+                            defer_evicted_vulkan_buffer(&cache, destroyed, &mut inflight_vulkan)?;
+                        } else if let Some(d_arc) = cache.get(&destroyed) {
                             force_flush_vulkan(d_arc)?;
                         }
                         cache.remove(&destroyed);
@@ -5135,6 +5146,22 @@ impl VulkanCompletion {
         Ok(())
         // `self` drops here → `inflight_dec(self.loc)`.
     }
+
+    /// Step E A2.1 (deferred-deletion): retain an evicted DATA buffer until THIS
+    /// in-flight batch's fence signals, then free it post-fence (on the batch's
+    /// `Drop` — guaranteed post-fence by follow-on #2). Delegates to
+    /// [`fuel_vulkan_backend::SubmittedBatch::retain_buffer`].
+    ///
+    /// The executor calls this for every in-flight batch when it evicts a Vulkan
+    /// buffer those batches' CBs may read, INSTEAD of host-blocking on a drain.
+    /// `batch` is `Some` in every reachable mid-walk state (it is `take`n only by
+    /// `into_wait`/`wait`, which consume the whole `VulkanCompletion`), so the
+    /// retain always lands on a live in-flight batch.
+    fn retain_data(&mut self, buf: std::sync::Arc<fuel_vulkan_backend::VulkanBuffer>) {
+        if let Some(batch) = self.batch.as_mut() {
+            batch.retain_buffer(buf);
+        }
+    }
 }
 
 #[cfg(feature = "vulkan")]
@@ -5292,20 +5319,22 @@ fn drain_vulkan_pending(_cache: &StorageCache) -> Result<()> {
     Ok(())
 }
 
-/// Step E A2: force the Vulkan backend behind `arc` (if any) to submit + wait
-/// its deferred batch — called before freeing a buffer the batch may reference
-/// (a destructive eviction) so a recorded-but-unsubmitted command never reads
-/// freed memory. No-op for non-Vulkan storage, an empty batch, or a non-Vulkan
-/// build.
+/// Step E A2: force the Vulkan backend behind `arc` (if any) to submit + WAIT
+/// its open batch — the blocking drain before freeing a buffer the batch may
+/// reference (a destructive eviction) so a recorded-but-unsubmitted command never
+/// reads freed memory. No-op for non-Vulkan storage, an empty batch, or a
+/// non-Vulkan build.
 ///
-/// A4b-2/A4b-3 KEEP this as the blocking submit+wait. Design §3 row 4 wants
-/// `wait H(evicted)`, but that is not coherent until A4b-4's eager submit
-/// exists: under A4b-2 the Vulkan per-op path only RECORDS into the batch and
-/// returns `Ready` during the walk (no eager submit), so mid-walk a Vulkan
-/// buffer has NO completion handle to wait — its in-flight command is still
-/// unsubmitted. `force_flush` (submit + wait) is the only coherent drain before
-/// freeing such a buffer. The conversion to a handle wait rides A4b-4. Only the
-/// realize-end drain ([`drain_vulkan_pending`]) is split (A4b-2).
+/// **Retained for the SINGLE-DEVICE path (byte-identical to pre-A2.1).** A2.1's
+/// deferred-deletion ([`defer_evicted_vulkan_buffer`]) replaces this only on a
+/// MULTI-backend realize, where eager-submit + in-flight tracking + the
+/// realize-end `drain_inflight_vulkan` are all live. On a single-device Vulkan
+/// realize the A4b machinery is gated off (`multi_backend == false`): the
+/// cross-batch RAW guard (`pipelined.rs:832`) does not run, so a later Vulkan op
+/// reading a buffer an eager-submitted batch wrote could race (separate
+/// submissions only BEGIN in order, may overlap). The blocking `force_flush`
+/// (submit + wait) is the coherent eviction drain there — exactly the original
+/// behavior — so single-device stays byte-identical and UAF-safe.
 #[cfg(feature = "vulkan")]
 fn force_flush_vulkan(arc: &Arc<RwLock<Storage>>) -> Result<()> {
     let guard = arc
@@ -5321,6 +5350,122 @@ fn force_flush_vulkan(arc: &Arc<RwLock<Storage>>) -> Result<()> {
 
 #[cfg(not(feature = "vulkan"))]
 fn force_flush_vulkan(_arc: &Arc<RwLock<Storage>>) -> Result<()> {
+    Ok(())
+}
+
+/// Step E A2.1 — DEFERRED-DELETION of a Vulkan data buffer evicted while Vulkan
+/// work is in flight (the throughput refinement that REPLACES the eviction-time
+/// drain on a MULTI-backend realize). Called at the per-NodeId destructive
+/// eviction (`Op::Release`/`Op::Move` cleanup) for the buffer about to leave the
+/// cache, INSTEAD of `drain_inflight_vulkan` + `force_flush` (two host-blocking
+/// fence waits) — so the iGPU work the executor was overlapping with CUDA is not
+/// stalled at every eviction.
+///
+/// Two classes of Vulkan reader can hold a reference to `destroyed`'s buffer at
+/// the eviction:
+///   1. the **in-flight** `SubmittedBatch`es in `inflight` (submitted CBs, each
+///      fenced), and
+///   2. the **open**, not-yet-submitted recorder batch (recorded commands, NO
+///      fence yet).
+///
+/// We make BOTH fence-gated without blocking the host:
+///   - `eager_submit_all_vulkan` submits the open batch WITHOUT waiting, turning
+///     it into one more in-flight `SubmittedBatch` (now fenced) pushed onto
+///     `inflight`. (Whole-chunk granularity — UAF/race-safe per its contract; at a
+///     destructive eviction the open batch is a contiguous Vulkan run.)
+///   - We then move a refcount clone of the evicted buffer's `Arc<VulkanBuffer>`
+///     into EVERY in-flight batch (conservative: we cannot cheaply map
+///     buffer→batch, exactly the reason the old drain waited *all* of them). Each
+///     batch frees its retained clone POST-fence on `Drop` (follow-on #2).
+///
+/// After this returns the caller `cache.remove`s `destroyed`; the cache's
+/// `Arc<RwLock<Storage>>` drops, but the buffer's recycler
+/// (`VulkanBuffer::drop`) reclaims it only when its LAST `Arc` drops — and the
+/// retained clones keep it alive until their owning batches' fences signal. So the
+/// GPU's last read of the buffer strictly precedes the free (NO use-after-free),
+/// the host never blocks at the eviction (the iGPU keeps overlapping CUDA — the
+/// throughput win), and every batch (hence every retained buffer) is drained by
+/// realize-end at the latest (`drain_inflight_vulkan`, `pipelined.rs:916/1238`,
+/// runs unconditionally → NO leak).
+///
+/// **Multi-backend only** (the call site gates `if multi_backend`). On a
+/// single-device realize the open batch is drained by the blocking
+/// [`force_flush_vulkan`] instead (byte-identical to pre-A2.1; see its doc for
+/// why the deferred path is unsafe without the cross-batch RAW guard). No-op for a
+/// non-Vulkan storage, an empty open + no in-flight batches, or a non-Vulkan build.
+#[cfg(feature = "vulkan")]
+fn defer_evicted_vulkan_buffer(
+    cache: &StorageCache,
+    destroyed: NodeId,
+    inflight: &mut Vec<VulkanCompletion>,
+) -> Result<()> {
+    // Pull the evicted buffer's device Arc out of the cache BEFORE it is removed.
+    // Non-Vulkan storage, a host-evicted (no device buffer) Vulkan storage, or an
+    // absent entry → nothing to retain (no Vulkan reader can hold a device buffer).
+    let buf = {
+        let Some(arc) = cache.get(&destroyed) else { return Ok(()) };
+        let guard = arc
+            .read()
+            .map_err(|_| poisoned("storage lock during deferred-eviction retain"))?;
+        match &guard.inner {
+            fuel_memory::BackendStorage::Vulkan(v) => v.device_buffer_arc(),
+            _ => None,
+        }
+    };
+    let Some(buf) = buf else { return Ok(()) };
+
+    // The OPEN-batch case: eager-submit (no wait) so the recorded-but-unsubmitted
+    // commands that may read `destroyed` become a fenced in-flight batch on
+    // `inflight`. This NEVER waits — it only flushes the open batch to the GPU.
+    eager_submit_all_vulkan(cache, inflight)?;
+
+    // Retain a clone of the evicted buffer in EVERY in-flight batch (now including
+    // the just-submitted open batch). Each frees it POST-fence on `Drop` — the
+    // buffer outlives the GPU's last read with no host block. Conservative over
+    // all batches (no cheap buffer→batch map); over-retention only lengthens the
+    // lifetime, never a UAF, and all batches drain by realize-end.
+    for vc in inflight.iter_mut() {
+        vc.retain_data(buf.clone());
+    }
+    // Step E A2.1 — throughput-observability. Count a DEFERRED retain that
+    // actually replaced a host block: an evicted Vulkan buffer retained onto ≥1
+    // in-flight batch (the open-batch eager-submit and/or pre-existing in-flight
+    // batches). Pre-A2.1 every such site host-blocked (`force_flush` and/or
+    // `drain_inflight_vulkan`); now it does not. A test reads
+    // [`deferred_eviction_retains`] to assert the deferred path fired without a
+    // drain (deterministic — no wall-clock, which is noisy on this box). When
+    // `inflight` is empty here there was genuinely no in-flight/open Vulkan reader
+    // to wait for, so no host block was avoided (and none was needed) — not counted.
+    if !inflight.is_empty() {
+        DEFERRED_EVICTION_RETAINS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// Step E A2.1 — cumulative count of deferred-deletion retains that replaced a
+/// host-blocking eviction drain (an evicted Vulkan buffer retained onto ≥1
+/// in-flight batch instead of waiting it). Process-global, `Relaxed` — a pure
+/// test/telemetry observation, never a correctness gate (mirrors the B1 in-flight
+/// counter idiom). Read by the live deferred-eviction throughput test.
+#[cfg(feature = "vulkan")]
+pub static DEFERRED_EVICTION_RETAINS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Read the A2.1 deferred-eviction-retain counter (see
+/// [`DEFERRED_EVICTION_RETAINS`]). `pub` so the live throughput test can assert a
+/// deferred retain fired (the eviction did NOT host-block on a Vulkan fence).
+#[cfg(feature = "vulkan")]
+pub fn deferred_eviction_retains() -> usize {
+    DEFERRED_EVICTION_RETAINS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(not(feature = "vulkan"))]
+#[inline]
+fn defer_evicted_vulkan_buffer(
+    _cache: &StorageCache,
+    _destroyed: NodeId,
+    _inflight: &mut Vec<InflightVulkan>,
+) -> Result<()> {
     Ok(())
 }
 
