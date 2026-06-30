@@ -788,4 +788,90 @@ mod tests {
             "no binding ⇒ synthetic placement candidates ⇒ guard still picks CPU",
         );
     }
+
+    // ===== Step E Phase C / C2: live-load arm re-pick (the headline gate) =====
+
+    /// Silu bindings at CUDA + Vulkan (the two streaming arms of the
+    /// load-gate diamond). No-op kernels — the picker reads only placement
+    /// metadata for the arm decision.
+    fn diamond_bindings_cuda_vulkan() -> KernelBindingTable {
+        let mut t = KernelBindingTable::new();
+        for backend in [BackendId::Cuda, BackendId::Vulkan] {
+            t.register(
+                OpKind::SiluElementwise,
+                &[DType::F32, DType::F32],
+                backend,
+                noop_kernel,
+            );
+        }
+        t
+    }
+
+    /// THE C2 HEADLINE GATE (selection logic, CPU — no GPU needed). A
+    /// 2-device branched graph (arm-0 on CUDA, arm-1 on Vulkan, BOTH
+    /// VRAM-fit) with a FAKE `BackendStreams` lookup reporting HIGH
+    /// pending_work_count on arm-0's device (CUDA, saturated) and LOW on
+    /// arm-1's (Vulkan, idle): the load-aware `ChainedSelector` re-picks
+    /// the UNLOADED arm-1, and the chosen arm's `target_backend` is the
+    /// unloaded device (Vulkan). Mirrors `vram_pressure_picks_host_ram_arm`
+    /// but with a LOAD signal instead of a memory signal — the live-load
+    /// re-pick that is the whole point of Step E, proven deterministically
+    /// with a fake signal (the real signal is B1, already verified).
+    #[test]
+    fn load_pressure_picks_unloaded_arm() {
+        let (g, branch, _arm0, arm1, post) =
+            diamond(BackendId::Cuda, BackendId::Vulkan);
+        let bindings = diamond_bindings_cuda_vulkan();
+
+        // Both arms VRAM-fit (ample free / total). CUDA saturated (4 in
+        // flight / 1 slot), Vulkan idle (0). The ONLY differentiator is
+        // load — VRAM ties, cost ties (no-op kernels, same static cost),
+        // so the load leg alone must flip the pick to arm-1.
+        let lookup = crate::ranker::mock_combined_lookup(vec![
+            (BackendId::Cuda, Some(10_000), Some(10_000), Some(4), 1),
+            (BackendId::Vulkan, Some(10_000), Some(10_000), Some(0), 1),
+        ]);
+        let chained =
+            ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
+
+        let route = pick_route(&g, &[post], &bindings, &chained, Some(&lookup));
+        assert_eq!(
+            route.get(&branch).copied(),
+            Some(1),
+            "under simulated CUDA saturation the picker takes the UNLOADED \
+             Vulkan arm (arm-1); route={route:?}",
+        );
+        // The chosen arm's node lands on the unloaded device.
+        assert_eq!(
+            g.target_backend(arm1),
+            Some(BackendId::Vulkan),
+            "the picked arm's target_backend is the unloaded device",
+        );
+    }
+
+    /// No-load mirror of the headline gate (the degenerate-fallback): the
+    /// SAME 2-device diamond with BOTH devices reporting 0 in flight ⇒
+    /// every load_tier is 0 ⇒ the route is arm-0 everywhere ⇒ empty route,
+    /// byte-identical to `no_telemetry_picks_arm0_empty_route`. Load
+    /// changes nothing unless devices genuinely contend.
+    #[test]
+    fn no_load_picks_arm0_empty_route() {
+        let (g, _branch, _arm0, _arm1, post) =
+            diamond(BackendId::Cuda, BackendId::Vulkan);
+        let bindings = diamond_bindings_cuda_vulkan();
+
+        // Both VRAM-fit, both idle (0 in flight) → no load signal anywhere.
+        let lookup = crate::ranker::mock_combined_lookup(vec![
+            (BackendId::Cuda, Some(10_000), Some(10_000), Some(0), 1),
+            (BackendId::Vulkan, Some(10_000), Some(10_000), Some(0), 1),
+        ]);
+        let chained =
+            ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
+
+        let route = pick_route(&g, &[post], &bindings, &chained, Some(&lookup));
+        assert!(
+            route.is_empty(),
+            "no load anywhere ⇒ arm-0 everywhere ⇒ empty route; got {route:?}",
+        );
+    }
 }
