@@ -5787,6 +5787,116 @@ mod tests {
         );
     }
 
+    /// **PR-C3 reorder-invariance gate (CPU, runnable — ORDERING level).**
+    /// The auto-overlap reorder is a HINT: it changes only *which order*
+    /// independent device runs dispatch in, never *which* nodes run nor the
+    /// result. The byte-identical-OUTPUT proof is necessarily LIVE (the
+    /// reorder fires only on a ≥2-device graph, which needs ≥2 real backends
+    /// to realize — see `cuda_vulkan_multidevice_realize_live`'s
+    /// `[22,86,192,340]` oracle, which now flows through this reorder, plus
+    /// the dual-GPU `cuda_vulkan_overlap_bench_live` arbitrary-graph
+    /// auto-overlap gate). THIS test proves the ordering-level invariant on a
+    /// CPU-only path: the C3 reorder of a two-device graph is a valid
+    /// topological **permutation** of the un-reordered topo order — same node
+    /// multiset, every node still after its inputs — that genuinely DIFFERS
+    /// from the un-reordered order (so the reorder fired). Because the
+    /// executor caches each node's result and every op is deterministic,
+    /// realizing any valid topological order yields identical bytes; this
+    /// test guards the precondition (a valid permutation) that makes that so.
+    #[test]
+    fn c3_reorder_is_a_valid_topo_permutation() {
+        // Two INDEPENDENT device sub-chains over distinct consts reconverging
+        // at a final CUDA add, the Vulkan root bridged to CUDA by an explicit
+        // Op::Copy (a residency seam = its own run). Reconverge inputs in the
+        // "wrong" (cuda-first) order, the order the un-reordered topo DFS pops
+        // CUDA-last — exactly the arbitrary-graph shape the auto-overlap pass
+        // must fix. The chains are UNARY (Relu) so each stays a single
+        // contiguous run (no const-re-read fan-in fragmenting them), exactly
+        // like the live benchmark's `relu(mul·add)` chains; the CUDA chain is
+        // HEAVIER (4 vs 2) so the critical-path reorder emits it first.
+        // (Stamps only; not realized here — the ordering proof, CPU-runnable.)
+        let n = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
+            g.push(Node { op, inputs, shape: Shape::from_dims(&[3]), dtype: DType::F32 })
+        };
+        let mut g = Graph::new();
+        let ca = n(&mut g, Op::Const, vec![]);
+        let cb = n(&mut g, Op::Const, vec![]);
+        // CUDA chain — HEAVIER (4 unary stages, one contiguous run).
+        let mut cprev = ca;
+        for _ in 0..4 {
+            cprev = n(&mut g, Op::Relu, vec![cprev]);
+            g.set_target_backend(cprev, BackendId::Cuda);
+        }
+        let c2 = cprev; // CUDA chunk root
+        // Vulkan chain — lighter (2 unary stages).
+        let mut vprev = cb;
+        for _ in 0..2 {
+            vprev = n(&mut g, Op::Relu, vec![vprev]);
+            g.set_target_backend(vprev, BackendId::Vulkan);
+        }
+        let v2 = vprev; // Vulkan chunk root
+        // Vulkan -> CUDA copy (residency seam), then reconverge on CUDA with
+        // inputs [cuda_root, copy] (cuda-first).
+        let copy = g.push(Node {
+            op: Op::Copy { target: DeviceLocation::Cuda { gpu_id: 0 } },
+            inputs: vec![v2],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        g.set_target_backend(copy, BackendId::Cuda);
+        let out = n(&mut g, Op::Add, vec![c2, copy]);
+        g.set_target_backend(out, BackendId::Cuda);
+
+        let unreordered = execution_plan(&g, &[out]);
+        let reordered = fuel_graph::lower_runs_arm0(&g, &[out]);
+
+        // (1) The reorder FIRED — the order changed (else the test is
+        //     vacuous + auto-overlap did nothing on an arbitrary graph).
+        assert_ne!(
+            reordered, unreordered,
+            "the C3 reorder must change the order on a two-device graph; \
+             reordered={reordered:?} unreordered={unreordered:?}",
+        );
+
+        // (2) Same node multiset — a permutation, no add/drop.
+        let mut a = unreordered.clone();
+        let mut b = reordered.clone();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b, "the reorder is a permutation of the same node set");
+
+        // (3) The reordered order is a VALID topological order: every node
+        //     appears after all of its inputs that are in the order.
+        let pos: std::collections::HashMap<NodeId, usize> =
+            reordered.iter().enumerate().map(|(i, &node)| (node, i)).collect();
+        for (i, &node) in reordered.iter().enumerate() {
+            for &inp in &g.node(node).inputs {
+                if let Some(&j) = pos.get(&inp) {
+                    assert!(
+                        j < i,
+                        "input {inp:?} of {node:?} must precede it in the reordered \
+                         order; reordered={reordered:?}",
+                    );
+                }
+            }
+        }
+
+        // (4) The overlap-relevant property: BOTH device producer chunks
+        //     (the CUDA root c2, the Vulkan root v2) are emitted BEFORE the
+        //     host-blocking cross-device copy — the A4b overlap topology the
+        //     un-reordered cuda-last DFS violates — AND the HEAVIER CUDA chunk
+        //     is emitted first (critical-path: the auto-submit device runs
+        //     earliest, the live-overlap regression guard).
+        let p = |node: NodeId| pos[&node];
+        assert!(p(c2) < p(copy), "CUDA chunk before the cross-device copy");
+        assert!(p(v2) < p(copy), "Vulkan chunk before the cross-device copy");
+        assert!(
+            p(c2) < p(v2),
+            "the heavier CUDA chunk is emitted before the lighter Vulkan chunk \
+             (critical-path heavy-first); reordered={reordered:?}",
+        );
+    }
+
     /// A selector that always takes the LAST arm (arm 1) so a non-arm-0
     /// pick is observable (a `WinnerSelector` picks arm-0 ⇒ empty route).
     #[cfg(test)]

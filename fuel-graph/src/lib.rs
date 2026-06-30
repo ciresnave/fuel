@@ -48,10 +48,10 @@ pub mod run;
 
 #[doc(inline)]
 pub use run::{
-    branch_density, branch_density_multi, branches_in_topo_order, effective_roots, extract_runs,
-    extract_runs_multi, lower_picked_route, lower_picked_route_streaming, lower_run,
-    lower_runs_arm0, passes_fewness_gate, walk_picked_route_streaming, PickedRoute, Run,
-    FEWNESS_THRESHOLD,
+    branch_density, branch_density_multi, branches_in_topo_order, device_alternating_order,
+    effective_roots, extract_runs, extract_runs_multi, lower_picked_route,
+    lower_picked_route_streaming, lower_run, lower_runs_arm0, passes_fewness_gate,
+    walk_picked_route_streaming, PickedRoute, Run, FEWNESS_THRESHOLD,
 };
 
 use crate::registry::{FusedOpId, FusedOpParams};
