@@ -75,11 +75,24 @@ impl OpStats {
 ///   still in flight (dropping the pool would free the CB's backing memory).
 ///
 /// **UAF-critical contract:** none of these may drop before `fence` signals.
-/// `SubmittedBatch`'s `Drop` is the default (field-by-field) drop, so the whole
-/// set frees exactly when the struct itself is dropped — which the owner does
-/// ONLY after `fence.wait(..)` returns (see [`crate::VulkanBackend::wait_submitted`]).
+/// This is enforced **by construction in [`Drop`]** (the safety net): dropping a
+/// `SubmittedBatch` that has NOT yet had its fence waited (`consumed == false`)
+/// fence-waits first, so the GPU is guaranteed idle on this CB before `cmd`/
+/// `descs`/`transients`/`retired_pool` free — regardless of the drop site (the
+/// normal [`crate::VulkanBackend::wait_submitted`] path, an error unwinding the
+/// realize loop while in-flight batches are still queued, or any future drop
+/// site). On the normal path `wait()` has already waited + set `consumed`, so
+/// `Drop` skips the redundant wait (no double-wait); the fence would be
+/// signalled anyway, so even if it didn't skip the wait would be instant.
 pub struct SubmittedBatch {
     fence: Fence,
+    /// `true` once [`wait`](Self::wait) has fence-waited this batch (the normal
+    /// `wait_submitted` path). When set, `Drop` skips the fence wait — the GPU is
+    /// already known idle. When `false` (the batch is dropped without an explicit
+    /// `wait` — e.g. a `?` unwinds the realize loop with in-flight batches still
+    /// queued), `Drop` does the wait itself so freeing the CB/descs/transients/
+    /// pool can never race the GPU (closes the error-path use-after-free).
+    consumed: bool,
     // `cmd`/`transients`/`descs`/`retired_pool` are never *read* — they exist
     // solely as lifetime anchors: the GPU is still executing `cmd` (which binds
     // `descs` and reads `transients`, allocated from `retired_pool`) until
@@ -101,8 +114,54 @@ impl SubmittedBatch {
     /// finished every command in the submitted CB. After this returns it is safe
     /// to drop `self` (freeing the CB / descriptor sets / transient buffers /
     /// retired pool), which the caller does immediately.
-    pub(crate) fn wait(&self) -> Result<()> {
-        self.fence.wait(u64::MAX)
+    ///
+    /// Marks the batch `consumed` so the [`Drop`] safety net skips the (now
+    /// redundant) fence wait — the normal `wait_submitted` path pays exactly one
+    /// real wait, here.
+    pub(crate) fn wait(&mut self) -> Result<()> {
+        let r = self.fence.wait(u64::MAX);
+        // Mark consumed regardless of the wait's Result: on success the GPU is
+        // idle; on a wait error there's nothing more Drop can usefully do (and a
+        // retry in Drop would just re-hit the same error), so we don't want Drop
+        // to wait again either way.
+        self.consumed = true;
+        r
+    }
+}
+
+impl Drop for SubmittedBatch {
+    /// UAF safety net: if this batch was dropped WITHOUT an explicit
+    /// [`wait`](Self::wait) (e.g. a `?` error unwound the realize loop while this
+    /// batch was still in flight in the executor's `inflight_vulkan` list), wait
+    /// the fence here so the GPU has finished executing the command buffer BEFORE
+    /// the CB / descriptor sets / transient buffers / retired pool free. Without
+    /// this the resources would free while the GPU was still reading them — a
+    /// use-after-free (GPU fault / validation error / corruption) on the error
+    /// path.
+    ///
+    /// On the normal path `consumed` is already `true` (`wait_submitted` →
+    /// `wait`), so this is a no-op: no double-wait, and `retire_pools_post_drain`
+    /// has already run in `wait_submitted` between the fence wait and this drop.
+    ///
+    /// Never panics on drop (CLAUDE.md): a fence-wait error is swallowed (logged
+    /// via tracing). Blocking in Drop on the error path is intentional and
+    /// necessary — it is the price of not leaking a use-after-free; on the normal
+    /// path the wait is skipped entirely.
+    fn drop(&mut self) {
+        if !self.consumed {
+            // The fence was submitted in `Recorder::submit_batch` (a
+            // `SubmittedBatch` is only ever constructed there, after
+            // `queue.submit(.., Some(&fence))`), so the fence IS pending GPU work
+            // — waiting it is always valid and bounded by the GPU's CB.
+            if let Err(e) = self.fence.wait(u64::MAX) {
+                tracing::error!(
+                    error = ?e,
+                    "SubmittedBatch dropped without wait_submitted; \
+                     fence wait in Drop failed — freeing GPU resources may race \
+                     the GPU (potential use-after-free)"
+                );
+            }
+        }
     }
 }
 
@@ -329,6 +388,7 @@ impl Recorder {
         // travels with the batch and frees only after the fence signals.
         let batch = SubmittedBatch {
             fence,
+            consumed: false,
             cmd,
             transients: std::mem::take(&mut self.batch_transients),
             descs: std::mem::take(&mut self.batch_descs),
