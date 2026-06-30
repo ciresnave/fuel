@@ -426,6 +426,213 @@ pub fn lower_picked_route(
     order
 }
 
+/// **Streaming route-aware lowering** (Step E Phase C, PR C1) — the
+/// incremental form of [`lower_picked_route`]. Instead of taking a
+/// fully-resolved [`PickedRoute`] up front, it walks the run partition in
+/// topological order and **resolves each branch lazily, the first time the
+/// walk reaches one of its arm-entry runs**, by calling `resolve(branch)`.
+/// It emits only the chosen arm's runs (skipping the non-chosen arms),
+/// exactly like [`lower_picked_route`] — but the arm decision happens *at
+/// the frontier*, not before the walk.
+///
+/// This is the substrate that lets the runtime picker re-pick a branch's
+/// arm **by the live device load at the moment the frontier reaches it**
+/// (C2): the compiler thread drives this walk while the executor drains
+/// the previous runs, so `resolve` sees the load current to that decision
+/// point. `resolve` returns the chosen arm index for a branch (a stale /
+/// out-of-range index is clamped to arm 0 by the same skip logic, so it
+/// never panics — never-panic on a production path).
+///
+/// **Byte-identity with the one-shot lowering (the C1 gate).** Because
+/// `resolve` is the same per-branch decision the eager picker makes (the
+/// production VRAM-pressure chain reads only free-memory state, not walk
+/// progress), the route this walk accumulates equals
+/// [`fuel_graph::PickedRoute`] the eager `pick_route` produces, and the
+/// emitted order therefore equals `lower_picked_route(graph, roots,
+/// pick_route(..))` on every input. C1 changes *when* a branch resolves,
+/// never *which* arm — and a branchless graph never enters this walk at
+/// all (the caller's branchless fast path returns before streaming).
+/// `resolve` is invoked **at most once per branch** (memoized in the
+/// accumulated route), so a coupled downstream branch that reads upstream
+/// picks still resolves upstream-first (arm-entries of an upstream branch
+/// precede a downstream branch's in run-topo order).
+pub fn lower_picked_route_streaming<F>(
+    graph: &Graph,
+    roots: &[NodeId],
+    mut resolve: F,
+) -> Vec<NodeId>
+where
+    F: FnMut(NodeId) -> usize,
+{
+    let mut order = Vec::new();
+    walk_picked_route_streaming(graph, roots, &mut resolve, |members| {
+        order.extend_from_slice(members);
+    });
+    order
+}
+
+/// The callback core of the streaming lowering — the form the compiler
+/// thread drives so resolution and emission genuinely interleave (the
+/// thread compiles + dispatches each chosen run as the walk reaches it,
+/// rather than first materializing a flat order). `resolve(branch)` yields
+/// the chosen arm index at the frontier; `emit(&[NodeId])` receives each
+/// kept run's members in topological order. [`lower_picked_route_streaming`]
+/// is the `Vec`-collecting wrapper over this (used by the byte-identity
+/// test); the executor's compiler thread passes an `emit` that
+/// `compile_one`'s + sends each node.
+///
+/// Walks the run partition once, in topological order of run entries
+/// (identical to [`extract_runs_multi`]); at the first run that opens an
+/// arm of a not-yet-resolved branch it calls `resolve`, folds that
+/// branch's non-chosen arms into the skip set, then emits the run iff its
+/// entry is not skipped. See [`lower_picked_route_streaming`] for the
+/// byte-identity argument.
+pub fn walk_picked_route_streaming<R, E>(
+    graph: &Graph,
+    roots: &[NodeId],
+    mut resolve: R,
+    mut emit: E,
+) where
+    R: FnMut(NodeId) -> usize,
+    E: FnMut(&[NodeId]),
+{
+    let runs = extract_runs_multi(graph, roots);
+
+    // Per-branch lowering metadata, precomputed once from the reachable
+    // structure (cones + the diverge/shared prefix + each arm's entry
+    // node). The *decision* — which arm — is still deferred to `resolve`
+    // at the frontier; only the structure is precomputed.
+    let branch_meta = branch_arm_meta(graph, roots);
+
+    // arm-entry node -> the branches it opens an arm of. A node can be the
+    // arm-entry of more than one branch only in degenerate shared-prefix
+    // overlaps; resolving every such branch on first encounter is correct
+    // (each resolves independently) and keeps the walk single-pass.
+    let mut entry_to_branches: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+    for meta in &branch_meta {
+        for &(entry, _arm) in &meta.arm_entries {
+            entry_to_branches.entry(entry).or_default().push(meta.branch);
+        }
+    }
+    let meta_of: HashMap<NodeId, &BranchArmMeta> =
+        branch_meta.iter().map(|m| (m.branch, m)).collect();
+
+    let mut skip: HashSet<NodeId> = HashSet::new();
+    let mut resolved: HashSet<NodeId> = HashSet::new();
+
+    for run in &runs {
+        // Frontier reached this run's entry. If it opens an arm of one or
+        // more not-yet-resolved branches, resolve them NOW (reading live
+        // load via `resolve` once C2 lands) and fold their non-chosen arms
+        // into the skip set — before we decide whether to emit this run.
+        if let Some(branches) = entry_to_branches.get(&run.entry) {
+            for &branch in branches {
+                if !resolved.insert(branch) {
+                    continue;
+                }
+                let meta = meta_of[&branch];
+                let chosen = resolve(branch);
+                add_non_chosen_skip(meta, chosen, &mut skip);
+            }
+        }
+        // A run is a single contiguous arm/region (extract never spans a
+        // branch boundary), so it is either wholly inside a non-chosen arm
+        // or wholly outside. Skip iff its entry is a skipped node.
+        if skip.contains(&run.entry) {
+            continue;
+        }
+        emit(lower_run(run));
+    }
+}
+
+/// Per-branch structural metadata for the streaming lowering: the branch
+/// node, its arms' `(arm-entry node, arm index)` pairs, the per-arm
+/// backward cones, and the shared diverge prefix. The arm *decision* is
+/// not here — only the structure the skip-set computation needs once an
+/// arm is chosen.
+struct BranchArmMeta {
+    branch: NodeId,
+    /// `(arm-entry node, arm index)` for each arm — the run entry that
+    /// opens that arm. Used to detect, while walking runs, which branch a
+    /// run opens an arm of.
+    arm_entries: Vec<(NodeId, usize)>,
+    /// Backward cone of each arm exit (`inputs[i]`), bounded to reachable.
+    cones: Vec<HashSet<NodeId>>,
+    /// Shared diverge prefix = intersection of every arm's cone.
+    shared: HashSet<NodeId>,
+}
+
+/// Precompute [`BranchArmMeta`] for every reachable ≥2-arm [`Op::Branch`].
+/// Mirrors `non_chosen_arm_nodes`'s cone/shared-prefix derivation and
+/// `compute_arm_entries`'s arm-entry recovery (the op carries only
+/// `reconverge_at`, so the diverge prefix is recovered as the cone
+/// intersection), so the streaming skip set is byte-identical to the
+/// one-shot `non_chosen_arm_nodes` for the same picks.
+fn branch_arm_meta(graph: &Graph, roots: &[NodeId]) -> Vec<BranchArmMeta> {
+    let eff_roots = effective_roots(graph, roots);
+    let order = topo_order_multi(graph, &eff_roots);
+    let reachable: HashSet<NodeId> = order.iter().copied().collect();
+
+    let mut metas = Vec::new();
+    for &id in &order {
+        let Op::Branch { .. } = graph.node(id).op else { continue };
+        let arm_exits = graph.node(id).inputs.clone();
+        if arm_exits.len() < 2 {
+            continue;
+        }
+        let cones: Vec<HashSet<NodeId>> = arm_exits
+            .iter()
+            .map(|&e| backward_cone(graph, e, &reachable))
+            .collect();
+        let mut shared: HashSet<NodeId> = cones[0].clone();
+        for c in &cones[1..] {
+            shared = shared.intersection(c).copied().collect();
+        }
+        // Each arm's entry: the interior node (cone minus shared) whose
+        // sole/any predecessor lies in the shared prefix — where the arm
+        // departs from the diverge region (mirrors `compute_arm_entries`).
+        let mut arm_entries: Vec<(NodeId, usize)> = Vec::new();
+        for (arm_idx, cone) in cones.iter().enumerate() {
+            for &n in cone {
+                if shared.contains(&n) {
+                    continue;
+                }
+                let departs =
+                    graph.node(n).inputs.iter().any(|p| shared.contains(p));
+                if departs {
+                    arm_entries.push((n, arm_idx));
+                }
+            }
+        }
+        metas.push(BranchArmMeta { branch: id, arm_entries, cones, shared });
+    }
+    metas
+}
+
+/// Fold one branch's non-chosen arms into `skip`, given the chosen arm
+/// index. Identical to the per-branch body of [`non_chosen_arm_nodes`]: a
+/// node is skipped when it lies in a non-chosen arm's cone but is neither
+/// shared nor part of the chosen arm's cone. A stale / out-of-range
+/// `chosen` clamps to arm 0 (never panic).
+fn add_non_chosen_skip(
+    meta: &BranchArmMeta,
+    chosen: usize,
+    skip: &mut HashSet<NodeId>,
+) {
+    let chosen = if chosen < meta.cones.len() { chosen } else { 0 };
+    let chosen_cone = &meta.cones[chosen];
+    for (i, cone) in meta.cones.iter().enumerate() {
+        if i == chosen {
+            continue;
+        }
+        for &n in cone {
+            if !meta.shared.contains(&n) && !chosen_cone.contains(&n) {
+                skip.insert(n);
+            }
+        }
+    }
+}
+
 /// The set of nodes that belong to a **non-chosen arm** of some reachable
 /// [`Op::Branch`] — the nodes the route-aware lowering skips. The arm-0
 /// generalization: when `picked` is empty (or a branch is absent from
@@ -758,6 +965,115 @@ mod tests {
             bad_order, arm0_order,
             "an out-of-range arm index clamps to arm 0 rather than panicking",
         );
+    }
+
+    /// Build two coupled diamonds back-to-back (diamond-2 diverges off
+    /// diamond-1's reconverge) so the streaming-walk equality test exercises
+    /// upstream-first lazy resolution over more than one branch. Returns the
+    /// graph + `(branch1, branch2, post, arm1_of_b1, arm1_of_b2)`.
+    fn two_coupled_diamonds() -> (Graph, NodeId, NodeId, NodeId, NodeId, NodeId) {
+        let mut g = Graph::new();
+        let pre = f32_node(&mut g, Op::Const, vec![]);
+        // diamond 1
+        let div1 = f32_node(&mut g, Op::Relu, vec![pre]);
+        let a0_1 = f32_node(&mut g, Op::Silu, vec![div1]);
+        let a1_1 = f32_node(&mut g, Op::Gelu, vec![div1]);
+        let recon1 = f32_node(&mut g, Op::Relu, vec![a0_1]);
+        let mut b1 = g.open_branch(div1);
+        b1.add_arm(a0_1);
+        b1.add_arm(a1_1);
+        let branch1 = b1
+            .finalize_branches(&mut g, recon1)
+            .expect("branch1 valid")
+            .expect("2 arms");
+        // diamond 2 (downstream of diamond 1's merge)
+        let div2 = f32_node(&mut g, Op::Tanh, vec![recon1]);
+        let a0_2 = f32_node(&mut g, Op::Silu, vec![div2]);
+        let a1_2 = f32_node(&mut g, Op::Gelu, vec![div2]);
+        let recon2 = f32_node(&mut g, Op::Relu, vec![a0_2]);
+        let mut b2 = g.open_branch(div2);
+        b2.add_arm(a0_2);
+        b2.add_arm(a1_2);
+        let branch2 = b2
+            .finalize_branches(&mut g, recon2)
+            .expect("branch2 valid")
+            .expect("2 arms");
+        let post = f32_node(&mut g, Op::Tanh, vec![recon2]);
+        (g, branch1, branch2, post, a1_1, a1_2)
+    }
+
+    /// **C1 byte-identity gate (fuel-graph layer).** The streaming lowering
+    /// — which resolves each branch lazily, at the run-walk frontier, via a
+    /// closure — emits the SAME `NodeId` order as the one-shot
+    /// [`lower_picked_route`] over the route the same closure would produce,
+    /// for every combination of arm picks across one and two branches. This
+    /// is the structural proof that C1 changes *when* a branch resolves, not
+    /// *which* arm it picks (or the order it emits).
+    #[test]
+    fn streaming_lowering_equals_one_shot_on_every_pick() {
+        // --- single diamond: all four pick combinations ---
+        let (g, _diverge, _arm0, _arm1, _reconverge, branch, post) =
+            diamond_with_branch();
+        for chosen in [0usize, 1, 99] {
+            // One-shot: build the route then lower.
+            let mut route = PickedRoute::new();
+            if chosen != 0 {
+                route.insert(branch, chosen);
+            }
+            let one_shot = lower_picked_route(&g, &[post], &route);
+            // Streaming: resolve the branch lazily at its arm-entry.
+            let streamed = lower_picked_route_streaming(&g, &[post], |b| {
+                assert_eq!(b, branch, "only the diamond's branch is resolved");
+                chosen
+            });
+            assert_eq!(
+                streamed, one_shot,
+                "streamed order must equal one-shot for branch pick {chosen}",
+            );
+        }
+
+        // --- two coupled diamonds: every (arm1, arm2) combination ---
+        let (g2, branch1, branch2, post2, _a1_1, _a1_2) = two_coupled_diamonds();
+        for c1 in [0usize, 1] {
+            for c2 in [0usize, 1] {
+                let mut route = PickedRoute::new();
+                if c1 != 0 {
+                    route.insert(branch1, c1);
+                }
+                if c2 != 0 {
+                    route.insert(branch2, c2);
+                }
+                let one_shot = lower_picked_route(&g2, &[post2], &route);
+
+                // The streaming closure resolves each branch at most once
+                // and upstream-first (branch1 before branch2). Assert that
+                // discipline AND the resulting byte-identity.
+                let mut seen: Vec<NodeId> = Vec::new();
+                let streamed = lower_picked_route_streaming(&g2, &[post2], |b| {
+                    assert!(
+                        !seen.contains(&b),
+                        "each branch is resolved at most once; b={b:?} seen={seen:?}",
+                    );
+                    seen.push(b);
+                    if b == branch1 {
+                        c1
+                    } else if b == branch2 {
+                        c2
+                    } else {
+                        panic!("unexpected branch {b:?}")
+                    }
+                });
+                assert_eq!(
+                    seen,
+                    vec![branch1, branch2],
+                    "coupled branches resolve upstream-first at the frontier",
+                );
+                assert_eq!(
+                    streamed, one_shot,
+                    "streamed == one-shot for picks ({c1},{c2})",
+                );
+            }
+        }
     }
 
     /// (c) A `target_backend` change mid-chain (set via the existing

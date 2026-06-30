@@ -240,21 +240,49 @@ pub fn pick_route(
     let branches = branches_in_topo_order(graph, roots);
 
     for branch in branches {
-        let arms = graph.node(branch).inputs.clone();
-        if arms.len() < 2 {
-            // A single-arm (or zero-arm) branch has no decision — arm 0.
-            continue;
-        }
-        let chosen = pick_arm(graph, &arms, bindings, selector);
         // Only record a non-arm-0 pick; arm 0 is the default in
         // `lower_picked_route`, so keeping the route minimal makes the
         // "no pressure ⇒ empty route ⇒ Phase B behavior" contract direct.
+        let chosen = resolve_branch(graph, branch, bindings, selector);
         if chosen != 0 {
             picked.insert(branch, chosen);
         }
     }
 
     picked
+}
+
+/// Resolve **one** `Op::Branch` to its chosen arm index — the body of
+/// [`pick_route`]'s per-branch loop, lifted out so the **streaming
+/// run-walk** (Step E Phase C, PR C1) can resolve branches **lazily, as
+/// the frontier reaches each one**, rather than resolving the whole route
+/// up front (06-runtime §"selecting arms by live device load … per-
+/// decision-point during the dispatch walk").
+///
+/// This is the SINGLE arm-decision primitive: [`pick_route`] (the eager
+/// lane — [`RouteCache`] + the route-picker tests) calls it in
+/// topological order over every branch; the streaming lowering
+/// ([`fuel_graph::lower_picked_route_streaming`]) calls it one branch at a
+/// time at the branch's arm-entry boundary. Because it consults the **same
+/// [`RuntimeSelector`]** either way — and the production VRAM-pressure
+/// chain reads only free-memory state (not walk progress) — the lazy and
+/// eager resolutions are byte-identical on every input. C1 changes *when*
+/// a branch resolves, never *which* arm it picks; the load signal that
+/// will make the moment matter is C2.
+///
+/// A single-arm (or zero-arm) branch has no decision — returns arm 0
+/// (`lower_picked_route`'s default), so it never enters the route map.
+pub fn resolve_branch(
+    graph: &Graph,
+    branch: NodeId,
+    bindings: &KernelBindingTable,
+    selector: &dyn RuntimeSelector,
+) -> usize {
+    let arms = graph.node(branch).inputs.clone();
+    if arms.len() < 2 {
+        return 0;
+    }
+    pick_arm(graph, &arms, bindings, selector)
 }
 
 /// Choose one arm index for a single branch. Builds a per-arm
