@@ -17,6 +17,11 @@ pub mod residency;
 pub use byte_storage::VulkanStorageBytes;
 pub use capture::CapturedRun;
 pub use dyn_impl::VulkanBackendDevice;
+/// Step E A4b-2: an in-flight (submitted, not-yet-waited) Vulkan batch. Produced
+/// by [`VulkanBackend::submit_pending`]; the executor wraps it in its
+/// `Completion` handle and waits it (via [`VulkanBackend::wait_submitted`]) at a
+/// deferred sync point, then drops it (freeing the GPU resources post-fence).
+pub use recorder::SubmittedBatch;
 
 use fuel_ir::{DType, Layout, Shape};
 use pipelines::Pipelines;
@@ -1505,6 +1510,60 @@ impl VulkanBackend {
             .flush_batch(&self.device, &self.queue, self.queue_family)
             .map_err(vk_err)?;
         self.pipelines.retire_pools_post_drain();
+        Ok(())
+    }
+
+    /// Step E A4b-2: the ASYNC half of [`force_flush`] — submit the current
+    /// batch (if any) with a fence but DO NOT wait. Returns the
+    /// [`SubmittedBatch`] (the fence + every resource the in-flight CB
+    /// references); the caller waits it later (via [`wait_submitted`]) at a
+    /// deferred sync point and drops it only after the fence signals.
+    ///
+    /// `Ok(None)` for an empty batch — a no-op, exactly like `force_flush`'s
+    /// `batch_count == 0` early return. Idempotent: a second call before any new
+    /// dispatch returns `None`.
+    ///
+    /// Unlike `force_flush` this does NOT call `retire_pools_post_drain` — the
+    /// retired descriptor pools may still be referenced by the in-flight CB, so
+    /// that runs in [`wait_submitted`] AFTER the fence has signalled.
+    ///
+    /// `pub` so `fuel-dispatch`'s executor can submit-without-waiting via the
+    /// backend handle it pulls from the storage cache, then defer the wait into
+    /// its async-completion handle (A4b-2). A2's `force_flush` stays the blocking
+    /// submit+wait variant for host reads / the destructive-eviction guard.
+    ///
+    /// [`wait_submitted`]: VulkanBackend::wait_submitted
+    /// [`force_flush`]: VulkanBackend::force_flush
+    pub fn submit_pending(&self) -> fuel_ir::Result<Option<SubmittedBatch>> {
+        let batch_count = self.recorder.lock().expect("recorder poisoned").batch_count;
+        if batch_count == 0 {
+            return Ok(None);
+        }
+        let _span = info_span!("vk_submit_batch_async", batch_count).entered();
+        let batch = self
+            .recorder
+            .lock()
+            .expect("recorder poisoned")
+            .submit_batch(&self.device, &self.queue, self.queue_family)
+            .map_err(vk_err)?;
+        Ok(batch)
+    }
+
+    /// Step E A4b-2: block until `batch`'s fence signals, then release the batch.
+    ///
+    /// This is the deferred wait that pairs with [`submit_pending`]. After the
+    /// fence signals: (1) retire the descriptor pools (now safe — the in-flight
+    /// CB that referenced them has retired; mirrors `force_flush`'s post-wait
+    /// `retire_pools_post_drain`), then (2) drop `batch` (frees the CB,
+    /// descriptor sets, transient buffers, and the retired command pool — all
+    /// now idle on the GPU). Consuming `batch` by value guarantees it cannot be
+    /// dropped before the fence wait above.
+    ///
+    /// [`submit_pending`]: VulkanBackend::submit_pending
+    pub fn wait_submitted(&self, batch: SubmittedBatch) -> fuel_ir::Result<()> {
+        batch.wait().map_err(vk_err)?;
+        self.pipelines.retire_pools_post_drain();
+        drop(batch); // explicit: CB/descs/transients/pool free here, post-fence (UAF-safe)
         Ok(())
     }
 
