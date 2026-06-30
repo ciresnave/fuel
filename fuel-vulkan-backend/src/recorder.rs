@@ -73,6 +73,17 @@ impl OpStats {
 /// - `retired_pool` — the command pool the `cmd` was allocated from, swapped out
 ///   of the [`Recorder`] so a fresh pool serves the next batch while this one is
 ///   still in flight (dropping the pool would free the CB's backing memory).
+/// - `retained_data` — Step E A2.1: DATA buffers the in-flight CB reads that the
+///   executor has EVICTED from its per-NodeId cache while this batch is still in
+///   flight (deferred-deletion / retain-until-fence). Unlike `transients` (which
+///   the recorder owns), these are I/O data buffers normally owned by the cache;
+///   when the cache evicts one mid-flight the executor moves a refcount clone here
+///   instead of host-blocking on a drain, so the buffer outlives the GPU's last
+///   read of it and frees post-fence on this struct's `Drop` (see
+///   [`Self::retain_buffer`]). The recycler (`VulkanBuffer::drop`) only reclaims
+///   the buffer when its LAST `Arc` drops, so the retained clone keeps it out of
+///   the free pool until the fence has signalled — exactly the `transients`
+///   lifetime guarantee, extended to evicted data buffers.
 ///
 /// **UAF-critical contract:** none of these may drop before `fence` signals.
 /// This is enforced **by construction in [`Drop`]** (the safety net): dropping a
@@ -107,9 +118,36 @@ pub struct SubmittedBatch {
     descs: Vec<DescriptorSet>,
     #[allow(dead_code)]
     retired_pool: CommandPool,
+    // Step E A2.1: data buffers the executor evicted from its cache while this
+    // batch was in flight, retained here (a refcount clone) so they outlive the
+    // GPU's last read and free POST-fence on `Drop`. Never *read* — a lifetime
+    // anchor, exactly like `transients`. Empty for a batch the executor never
+    // deferred an eviction onto (the common case); the cost when used is one
+    // `Arc::clone` per evicted buffer (no GPU work, no host block).
+    #[allow(dead_code)]
+    retained_data: Vec<std::sync::Arc<crate::VulkanBuffer>>,
 }
 
 impl SubmittedBatch {
+    /// Step E A2.1 (deferred-deletion / retain-until-fence): keep `buf` alive
+    /// until this batch's fence signals, then free it on `Drop`.
+    ///
+    /// Called by the executor when it EVICTS a data buffer from its per-NodeId
+    /// cache that this still-in-flight CB may read. Instead of host-blocking on a
+    /// fence wait before the eviction (the pre-A2.1 drain), the executor moves a
+    /// refcount clone of the buffer here; the buffer's recycler
+    /// (`VulkanBuffer::drop`) only reclaims it when its LAST `Arc` drops, so this
+    /// retained clone keeps the underlying `VkBuffer`/memory out of the alloc pool
+    /// until this batch's `Drop` (guaranteed POST-fence — `wait_submitted`, or the
+    /// self-wait safety net). The GPU's last read of the buffer therefore strictly
+    /// precedes the free: no use-after-free, no host block at the eviction.
+    ///
+    /// Idempotent / additive: multiple evictions onto one batch just push more
+    /// anchors. Cheap (one `Arc::clone`, no GPU work).
+    pub fn retain_buffer(&mut self, buf: std::sync::Arc<crate::VulkanBuffer>) {
+        self.retained_data.push(buf);
+    }
+
     /// Block the host until this batch's fence signals — i.e. until the GPU has
     /// finished every command in the submitted CB. After this returns it is safe
     /// to drop `self` (freeing the CB / descriptor sets / transient buffers /
@@ -134,10 +172,17 @@ impl Drop for SubmittedBatch {
     /// [`wait`](Self::wait) (e.g. a `?` error unwound the realize loop while this
     /// batch was still in flight in the executor's `inflight_vulkan` list), wait
     /// the fence here so the GPU has finished executing the command buffer BEFORE
-    /// the CB / descriptor sets / transient buffers / retired pool free. Without
-    /// this the resources would free while the GPU was still reading them — a
-    /// use-after-free (GPU fault / validation error / corruption) on the error
-    /// path.
+    /// the CB / descriptor sets / transient buffers / retired pool / retained data
+    /// buffers free. Without this the resources would free while the GPU was still
+    /// reading them — a use-after-free (GPU fault / validation error / corruption)
+    /// on the error path.
+    ///
+    /// Step E A2.1: this same post-fence guarantee is what makes deferred-deletion
+    /// of evicted DATA buffers (`retained_data`, via [`Self::retain_buffer`])
+    /// correct — when those `Arc<VulkanBuffer>` clones drop here, the fence has
+    /// signalled (either consumed by `wait_submitted` or self-waited above), so the
+    /// recycler reclaims the buffer only after the GPU's last read. The drop of the
+    /// fields below (including `retained_data`) happens AFTER this fence wait.
     ///
     /// On the normal path `consumed` is already `true` (`wait_submitted` →
     /// `wait`), so this is a no-op: no double-wait, and `retire_pools_post_drain`
@@ -396,6 +441,10 @@ impl Recorder {
                 &mut self.pool,
                 CommandPool::new(device, queue_family)?,
             ),
+            // Step E A2.1: starts empty — the executor pushes evicted data buffers
+            // onto it via `retain_buffer` only when it defers an eviction onto this
+            // in-flight batch (deferred-deletion). Freed POST-fence on `Drop`.
+            retained_data: Vec::new(),
         };
 
         // Reset counters/dirty exactly as flush_batch does (the moved Vecs are

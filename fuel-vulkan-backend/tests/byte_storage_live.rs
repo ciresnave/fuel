@@ -183,3 +183,89 @@ fn submitted_batch_dropped_without_wait_is_uaf_safe() {
         .collect();
     assert_eq!(got_f32, vec![3.0_f32, 5.0, 7.0, 9.0]);
 }
+
+/// Step E A2.1 (deferred-deletion / retain-until-fence) — the MECHANISM, isolated.
+///
+/// Proves the executor's deferred-eviction primitive: a DATA buffer evicted from
+/// the cache while an in-flight `SubmittedBatch` may read it is RETAINED on that
+/// batch (`SubmittedBatch::retain_buffer`) instead of host-blocking on a drain,
+/// and freed only POST-fence on the batch's `Drop` (follow-on #2). This is
+/// deterministic (no wall-clock — the box's timer is noisy per follow-on #1): we
+/// observe the buffer's `Arc` lifetime via a `Weak`.
+///
+/// Sequence (mirrors `defer_evicted_vulkan_buffer` in the executor):
+///   1. Record an affine op into the open batch; `submit_pending` → an in-flight
+///      `SubmittedBatch` whose CB reads `out`'s buffer.
+///   2. Take `out`'s device buffer `Arc`, retain a clone on the batch, and a
+///      `Weak` to observe its life. Then DROP every other strong ref (the `out`
+///      storage + our `Arc`), so the ONLY strong ref left is the one inside the
+///      batch — exactly the post-`cache.remove` state.
+///   3. ASSERT the buffer is STILL ALIVE (`Weak::upgrade().is_some()`): the
+///      retain kept it out of the recycler even though the cache "evicted" it —
+///      i.e. NO eviction-time free, the GPU can still read it. (This is the
+///      no-UAF property: the buffer outlives the eviction.)
+///   4. `wait_submitted(batch)` → the batch drops → its retained `Arc` drops.
+///   5. ASSERT the buffer is now GONE (`Weak::upgrade().is_none()`): freed
+///      POST-fence, exactly when `wait_submitted` released the batch — proving
+///      retain-until-fence (the deferred free actually happens; no leak).
+#[test]
+#[ignore = "requires a live Vulkan device"]
+fn evicted_buffer_retained_on_batch_frees_post_fence() {
+    use fuel_ir::{Layout, Shape};
+    use std::sync::Arc;
+
+    let Some(b) = backend_or_skip() else { return };
+
+    let input_f32: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
+    let mut in_bytes = Vec::with_capacity(16);
+    for v in input_f32 {
+        in_bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    let input = b.upload_bytes(&in_bytes).expect("h2d input");
+    let mut out = b.alloc_bytes(16).expect("alloc out");
+
+    let layout = Layout::contiguous(Shape::from_dims(&[4]));
+    b.affine_f32_bytes(&input, &mut out, 2.0, 1.0, &layout)
+        .expect("affine records");
+
+    // Submit WITHOUT waiting — the CB now reads `out`'s buffer on the GPU.
+    let mut batch = b
+        .submit_pending()
+        .expect("submit_pending ok")
+        .expect("non-empty batch ⇒ Some(SubmittedBatch)");
+
+    // The evicted buffer: take its device Arc, retain a clone on the in-flight
+    // batch (what the executor does), and a Weak to watch its lifetime.
+    let out_arc: Arc<_> = out
+        .device_buffer_arc()
+        .expect("out is device-resident ⇒ Some(Arc<VulkanBuffer>)");
+    let weak = Arc::downgrade(&out_arc);
+    batch.retain_buffer(out_arc.clone());
+
+    // "Evict": drop every strong ref EXCEPT the one inside the batch — the
+    // post-`cache.remove(&destroyed)` state where only the deferred retain holds
+    // the buffer alive.
+    drop(out_arc);
+    drop(out);
+
+    // The buffer must still be ALIVE — retained by the in-flight batch, NOT freed
+    // at eviction time (no UAF: the GPU can still read it). If the retain were a
+    // no-op (the pre-A2.1 drain-then-free), this strong ref would be gone.
+    assert!(
+        weak.upgrade().is_some(),
+        "A2.1: an evicted buffer retained on an in-flight batch must STILL be \
+         alive after the cache drops its ref — freeing it now would be a UAF",
+    );
+
+    // Wait the fence + release the batch → the retained Arc drops POST-fence.
+    b.wait_submitted(batch).expect("wait_submitted ok");
+
+    // Now the buffer is freed — exactly when the batch (post-fence) released it.
+    // Proves retain-until-fence: the deferred free DID happen (no leak), and only
+    // AFTER the GPU finished (the fence the wait blocked on).
+    assert!(
+        weak.upgrade().is_none(),
+        "A2.1: the retained buffer must be freed once the batch is released \
+         post-fence (deferred-deletion completes — no permanent leak)",
+    );
+}
