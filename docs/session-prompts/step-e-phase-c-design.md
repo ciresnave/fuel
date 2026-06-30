@@ -18,7 +18,10 @@ identical code (thermal + CUDA mem-pool growth + iGPU OOM ceiling). Now proven d
 `c3_reorder_is_operand_order_invariant` (CPU) + the both-orders benchmark. The full ready-set Kahn
 pump remains a *deferred* end-state for bounded-lookahead scheduling / CUDA-graph replay — **not**
 for operand-independence. ② The error-path UAF (`SubmittedBatch::Drop` didn't fence-wait) is FIXED
-(`1eb3f515`, self-wait-on-Drop). ③ A2.1 (Vulkan deferred-deletion, throughput-only) in flight.
+(`1eb3f515`, self-wait-on-Drop). ③ A2.1 (Vulkan deferred-deletion, throughput-only) SHIPPED
+(`ebce71f5`): the multi-backend eviction path retains the evicted buffer on the in-flight batch
+(freed post-fence via ②) instead of draining — no host block, no UAF, no leak; single-device keeps
+the blocking `force_flush` (byte-identical). **All three Step E follow-ons are now resolved.**
 
 (Originally: design / scoping 2026-06-30 — read-only audit; implemented PR-by-PR via sub-agents
 with per-PR review + live verify.)
