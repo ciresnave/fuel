@@ -40,6 +40,7 @@ pub mod chain;
 pub mod chained_selector;
 pub mod cost;
 pub mod cost_vector;
+pub mod device_load;
 pub mod enumerate;
 pub mod filter;
 pub mod filters;
@@ -59,6 +60,11 @@ pub use cost::{
     TransferEstimator,
 };
 pub use cost_vector::{AccuracyClass, CostVector, MemoryTiers, PrecisionDigits};
+pub use device_load::{
+    load_tier, load_tier_for, mock_combined_lookup, mock_load_lookup, DeviceLoadSelector,
+    LoadLookup, MockBackendStreams, MockCombinedRuntime, LOAD_TIER_IDLE,
+    LOAD_TIER_MODERATE, LOAD_TIER_SATURATED,
+};
 pub use enumerate::enumerate_candidates;
 pub use filter::{AlternativeFilter, FilterClass, FilterContext};
 pub use filters::{

@@ -109,22 +109,29 @@ enum OrderSource<'a> {
 /// bindings are read from [`global_bindings`] inside the thread (as the
 /// eager `pick_route_for` does), so they are not carried here.
 ///
-/// C1 uses the SAME selector chain as the one-shot picker (the production
-/// `ChainedSelector`, VRAM-pressure only — B1's in-flight counter is NOT
-/// read here; that is C2). The lazy resolution therefore yields the same
-/// arm as the eager `pick_route` on every input.
+/// The streaming walk consults the SAME selector chain as the one-shot
+/// picker (the production `ChainedSelector`). As of C2 that chain is
+/// load-aware: its key is `(pressure_tier, load_tier, latency_ns,
+/// original_index)`, and the `load_tier` leg reads B1's in-flight counter
+/// through the selector's own `BackendRuntimeLookup` handle (the
+/// `BackendStreams` seam). Under no load / no pressure every leg is the
+/// no-signal default, so the lazy resolution yields the same arm as the
+/// eager `pick_route` on every input — byte-identical to pre-C2.
 #[derive(Clone)]
 pub(crate) struct StreamingPick {
     /// The runtime selector the streaming walk consults at each branch —
-    /// the production `ChainedSelector` (VRAM-pressure guard + Judge rank).
+    /// the production `ChainedSelector` (VRAM-pressure guard + load tier +
+    /// Judge rank). It holds its own `BackendRuntimeLookup`, so it reads
+    /// both VRAM fit and live device load off that lookup's handles.
     pub selector: Arc<dyn RuntimeSelector>,
-    /// The live per-tier free-memory lookup the picker fingerprints
+    /// The live per-tier free-memory + load lookup the picker fingerprints
     /// telemetry through (consulted *through* the selector). `None` ⇒ no
-    /// pressure signal ⇒ arm-0 (the no-telemetry contract). The streaming
-    /// walk consults load through the selector (the production
-    /// `ChainedSelector` holds its own lookup), so this is carried for the
-    /// `RouteCache`-fingerprint parity / future direct reads but not
-    /// re-queried in the C1 walk (mirrors `pick_route`'s `let _ = lookup`).
+    /// pressure/load signal ⇒ arm-0 (the no-telemetry contract). The
+    /// streaming walk consults VRAM + load through the selector (the
+    /// production `ChainedSelector` holds its own lookup), so this is
+    /// carried for the `RouteCache`-fingerprint parity / future direct
+    /// reads but not re-queried in the walk (mirrors `pick_route`'s
+    /// `let _ = lookup`).
     #[allow(dead_code)]
     pub lookup: Option<BackendRuntimeLookup>,
 }
@@ -1426,12 +1433,17 @@ fn compiler_thread_body(
             }
         }
         CompilerWork::Streaming { roots, pick } => {
-            // Resolve each branch lazily at its arm-entry (C1: the SAME
-            // VRAM-only selector the one-shot `pick_route` uses; C2 will
-            // make this read live device load at THIS moment). Emit only
-            // the chosen arm's runs, compiling + sending each node as the
-            // walk reaches it — genuine streaming (resolution interleaved
-            // with dispatch), not a pre-flattened order.
+            // Resolve each branch lazily at its arm-entry. C1 built the
+            // streaming frontier; C2 made `pick.selector` load-aware (the
+            // production `ChainedSelector` now reads each arm's live device
+            // load — `pending_work_count / slot_capacity` via the
+            // `BackendStreams` seam — as a key leg under the VRAM guard),
+            // so this resolution reads live device load at THIS moment: the
+            // executor has been submitting/draining (and updating the B1
+            // counter) while the compiler ran ahead. Emit only the chosen
+            // arm's runs, compiling + sending each node as the walk reaches
+            // it — genuine streaming (resolution interleaved with
+            // dispatch), not a pre-flattened order.
             let mut stopped = false;
             fuel_graph::walk_picked_route_streaming(
                 &g,

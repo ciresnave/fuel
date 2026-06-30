@@ -16,8 +16,8 @@
 //! # Semantics
 //!
 //! For each candidate, compute a sort key
-//! `(pressure_tier, latency_ns, original_index)` and pick the
-//! minimum:
+//! `(pressure_tier, load_tier, latency_ns, original_index)` and pick
+//! the minimum:
 //!
 //! 1. **Pressure tier (the guard).** Query the candidate backend's
 //!    [`fuel_backend_contract::backend::BackendRuntime::would_fit`] for
@@ -31,9 +31,27 @@
 //!      ties with Comfortable (post-remediation semantics).
 //!    No runtime lookup configured, or no handle for the pair, also
 //!    yields Unknown.
-//! 2. **Latency (the rank).** Within a tier, candidates rank on one
-//!    uniform nanosecond axis: the Judge's measured latency at
-//!    `(ctx.op, ctx.principal_dtype, ctx.size_class, backend,
+//! 2. **Load tier (the live-load re-pick — Step E Phase C / C2).** A
+//!    coarse bucket of the candidate device's live in-flight count over
+//!    its slot capacity ([`super::device_load::load_tier`]), read off the
+//!    SAME runtime handle the guard queried, through its Tier-2
+//!    [`fuel_backend_contract::backend::BackendStreams`] seam: idle (0),
+//!    moderate (1), saturated (2). A busy device's arm sorts after an
+//!    idle device's arm **of the same VRAM tier** — "which path drains
+//!    the queues fastest right now". A handle with no `BackendStreams`
+//!    (CPU / Reference), no handle at all, or a `None`
+//!    `pending_work_count` ⇒ tier 0 — an honest no-signal, identical to
+//!    a VRAM `Unknown`, NEVER a fabricated "idle".
+//!
+//!    **VRAM outranks load (critical).** `pressure_tier` is the FIRST key
+//!    component, so the load leg reorders arms ONLY within a VRAM fit
+//!    tier — it can never lift a `WontFit` (skipped outright) or a
+//!    `Tight` (tier 1) arm above a `Comfortable` (tier 0) one to balance
+//!    load. Load is a tie-break *under* the OOM-safety guard, not a peer
+//!    of it.
+//! 3. **Latency (the rank).** Within a (pressure, load) tier, candidates
+//!    rank on one uniform nanosecond axis: the Judge's measured latency
+//!    at `(ctx.op, ctx.principal_dtype, ctx.size_class, backend,
 //!    kernel_source)` when a measurement exists, else
 //!    [`composite_ns`] of the candidate's (plan-refined) static
 //!    cost. Measured and unmeasured candidates compete on equal
@@ -41,7 +59,7 @@
 //!    "measured trumps unmeasured". No judge, or no
 //!    [`DecisionContext`] on the set, means every candidate uses
 //!    its static composite.
-//! 3. **Original index.** Ties resolve toward Picker 1's static
+//! 4. **Original index.** Ties resolve toward Picker 1's static
 //!    rank, preserving determinism.
 //!
 //! If EVERY candidate is `WontFit`, fall back to `set.winner()` —
@@ -53,11 +71,14 @@
 //! # Degenerate-fallback guarantee
 //!
 //! With no signals at all (no judge data, all fit statuses
-//! Unknown/Comfortable), every key is `(0, composite_ns(static), i)`.
-//! `compile_plan` ranks sets ascending by that same composite before
-//! truncation, so the minimum key is index 0 — `set.winner()`,
-//! byte-identical to [`super::WinnerSelector`] on every
-//! plan-produced set.
+//! Unknown/Comfortable, no `BackendStreams` load), every key is
+//! `(0, 0, composite_ns(static), i)`. `compile_plan` ranks sets
+//! ascending by that same composite before truncation, so the minimum
+//! key is index 0 — `set.winner()`, byte-identical to
+//! [`super::WinnerSelector`] on every plan-produced set. The added
+//! `load_tier` leg is a constant 0 when no device reports load, so it
+//! drops out of the comparison entirely: C2 changes nothing unless
+//! devices genuinely contend (design §3.2).
 
 use std::sync::Arc;
 
@@ -118,16 +139,36 @@ impl ChainedSelector {
         )
     }
 
-    /// Guard leg: the candidate's fit status. `Unknown` when no
-    /// lookup is configured, the lookup has no handle for the
-    /// `(backend, device)` pair, or the backend itself can't answer.
-    fn fit_status_for(&self, c: &Candidate) -> FitStatus {
+    /// Guard + load legs from ONE lookup: the candidate's VRAM fit status
+    /// AND its live load tier, both read off the same runtime handle.
+    ///
+    /// - **fit status** — `would_fit(estimated_output_bytes)`; `Unknown`
+    ///   when no lookup is configured, the lookup has no handle for the
+    ///   `(backend, device)` pair, or the backend can't answer.
+    /// - **load tier** — the candidate device's coarse live in-flight
+    ///   bucket via the handle's Tier-2 `BackendStreams` seam
+    ///   ([`super::device_load::load_tier_of_handle`]);
+    ///   [`super::device_load::LOAD_TIER_IDLE`] (tier 0 — honest no-signal)
+    ///   when there is no lookup / no handle / no `BackendStreams` (CPU,
+    ///   Reference) / a `None` `pending_work_count`. NEVER a fabricated
+    ///   "idle".
+    ///
+    /// Reading both off one handle (rather than a second lookup call for
+    /// load) keeps the per-candidate cost a single lookup + the SAME
+    /// `DeviceRuntimeHandle` the bridge hands out — which already
+    /// implements `BackendStreams`, so the VRAM lookup IS the load lookup
+    /// (design §3.3: one load source serves all backends).
+    fn fit_and_load_for(&self, c: &Candidate) -> (FitStatus, u8) {
         let Some(lookup) = self.backend_runtime_lookup.as_ref() else {
-            return FitStatus::Unknown;
+            return (FitStatus::Unknown, super::device_load::LOAD_TIER_IDLE);
         };
         match lookup(c.backend, c.device) {
-            Some(runtime) => runtime.would_fit((self.estimate_output_bytes)(c)),
-            None => FitStatus::Unknown,
+            Some(runtime) => {
+                let fit = runtime.would_fit((self.estimate_output_bytes)(c));
+                let load = super::device_load::load_tier_of_handle(runtime.as_ref());
+                (fit, load)
+            }
+            None => (FitStatus::Unknown, super::device_load::LOAD_TIER_IDLE),
         }
     }
 
@@ -181,23 +222,27 @@ impl RuntimeSelector for ChainedSelector {
         let ctx = set.context();
 
         // Walk in original (cost-ranked) order, tracking the minimum
-        // (tier, ns, idx) key. WontFit candidates are skipped
-        // outright.
-        let mut best: Option<(u8, u64, usize)> = None;
+        // (pressure_tier, load_tier, ns, idx) key. WontFit candidates are
+        // skipped outright. `load_tier` slots BELOW the VRAM guard and
+        // ABOVE the latency rank, so load reorders arms only within a VRAM
+        // fit tier (VRAM outranks load) and never overrides the static
+        // rank by more than a tie-break under that guard (Step E / C2).
+        let mut best: Option<(u8, u8, u64, usize)> = None;
         for (i, c) in alts.iter().enumerate() {
-            let tier = match self.fit_status_for(c) {
+            let (fit, load_tier) = self.fit_and_load_for(c);
+            let pressure_tier = match fit {
                 FitStatus::WontFit => continue,
                 FitStatus::Comfortable | FitStatus::Unknown => 0u8,
                 FitStatus::Tight => 1u8,
             };
-            let key = (tier, self.latency_ns(c, ctx), i);
+            let key = (pressure_tier, load_tier, self.latency_ns(c, ctx), i);
             if best.map_or(true, |b| key < b) {
                 best = Some(key);
             }
         }
 
         match best {
-            Some((_, _, i)) => alts.get(i),
+            Some((_, _, _, i)) => alts.get(i),
             // Every candidate WontFit → static winner, so the
             // executor surfaces a clean OOM at the planner-blessed
             // pick instead of the selector breaking the non-empty-
@@ -300,6 +345,173 @@ mod tests {
                     as Box<dyn BackendRuntime + Send + Sync>
             })
         })
+    }
+
+    // ===== Step E Phase C / C2: the load leg =====
+
+    /// A runtime handle carrying BOTH a VRAM signal (available/total) AND
+    /// a Tier-2 `BackendStreams` live-load signal (pending/capacity). The
+    /// production `DeviceRuntimeHandle` is exactly this shape — one handle
+    /// answering both `would_fit` and `pending_work_count` — so the
+    /// ChainedSelector reads load off the same handle it queries for VRAM.
+    struct MockRuntimeWithLoad {
+        available: Option<u64>,
+        total: Option<u64>,
+        pending: Option<u32>,
+        capacity: u32,
+    }
+    impl BackendRuntime for MockRuntimeWithLoad {
+        fn available_bytes(&self) -> Option<u64> {
+            self.available
+        }
+        fn total_bytes(&self) -> Option<u64> {
+            self.total
+        }
+        fn as_backend_streams(
+            &self,
+        ) -> Option<&dyn fuel_backend_contract::backend::BackendStreams> {
+            Some(self)
+        }
+    }
+    impl fuel_backend_contract::backend::BackendStreams for MockRuntimeWithLoad {
+        fn pending_work_count(&self) -> Option<u32> {
+            self.pending
+        }
+        fn slot_capacity(&self) -> u32 {
+            self.capacity
+        }
+        fn flush(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Per-backend `(available, total, pending, capacity)` lookup handing
+    /// out the combined VRAM+load handle; absent backends ⇒ `None`.
+    fn load_lookup_for(
+        entries: Vec<(BackendId, Option<u64>, Option<u64>, Option<u32>, u32)>,
+    ) -> BackendRuntimeLookup {
+        Arc::new(move |b, _d| {
+            entries
+                .iter()
+                .find(|(eb, _, _, _, _)| *eb == b)
+                .map(|&(_, a, t, p, cap)| {
+                    Box::new(MockRuntimeWithLoad {
+                        available: a,
+                        total: t,
+                        pending: p,
+                        capacity: cap,
+                    }) as Box<dyn BackendRuntime + Send + Sync>
+                })
+        })
+    }
+
+    /// LOAD LEG: two arms, both VRAM-Comfortable, but the cost-winner
+    /// (CUDA) is SATURATED while the runner-up (CPU) is idle. The load
+    /// tier demotes the saturated arm below the idle one within the shared
+    /// VRAM tier, flipping the pick to the unloaded CPU arm. This is the
+    /// headline C2 mechanic at the selector level: "which path drains the
+    /// queues fastest right now".
+    #[test]
+    fn load_demotes_saturated_arm_within_vram_tier() {
+        let set = ranked_set();
+        // CUDA: ample VRAM (Comfortable) but 4 ops in flight on 1 slot
+        // (saturated). CPU: ample VRAM, idle (0 in flight).
+        let lookup = load_lookup_for(vec![
+            (BackendId::Cuda, Some(10_000), Some(10_000), Some(4), 1),
+            (BackendId::Cpu, Some(10_000), Some(10_000), Some(0), 1),
+        ]);
+        let chained = ChainedSelector::with_default_estimator(None, Some(lookup));
+        assert_eq!(
+            chained.select(&set).expect("non-empty").backend,
+            BackendId::Cpu,
+            "saturated cost-winner demoted below the idle arm by the load leg",
+        );
+    }
+
+    /// VRAM OUTRANKS LOAD (the critical guard): the cost-winner (CUDA)
+    /// WONT FIT, and the runner-up (CPU) is SATURATED. Load would prefer
+    /// to stay off the saturated CPU — but VRAM is the FIRST key leg, so
+    /// the WontFit CUDA is skipped outright and the picker takes the
+    /// saturated-but-fitting CPU arm. Load NEVER lifts a WontFit device to
+    /// balance load.
+    #[test]
+    fn vram_wont_fit_outranks_load() {
+        let set = ranked_set();
+        // CUDA: 1 byte free of 10_000 → WontFit (skipped). CPU: ample VRAM
+        // but saturated (4 in flight / 1 slot).
+        let lookup = load_lookup_for(vec![
+            (BackendId::Cuda, Some(1), Some(10_000), Some(0), 1),
+            (BackendId::Cpu, Some(8_000), Some(10_000), Some(4), 1),
+        ]);
+        let chained = ChainedSelector::with_default_estimator(None, Some(lookup));
+        assert_eq!(
+            chained.select(&set).expect("non-empty").backend,
+            BackendId::Cpu,
+            "WontFit CUDA skipped; saturated-but-fitting CPU taken — VRAM \
+             outranks load",
+        );
+    }
+
+    /// VRAM OUTRANKS LOAD, the Tight case: the cost-winner (CUDA) is Tight
+    /// (VRAM tier 1) but IDLE; the runner-up (CPU) is Comfortable (tier 0)
+    /// but SATURATED. The Tight CUDA's idle load tier (0) does NOT lift it
+    /// above the Comfortable CPU — pressure_tier (1 vs 0) is compared
+    /// first, so CPU (Comfortable) wins despite being the more loaded
+    /// device. Load reorders only WITHIN a fit tier.
+    #[test]
+    fn tight_idle_still_loses_to_comfortable_saturated() {
+        let set = ranked_set();
+        // CUDA: available==total==100, alloc 100 → 100% used → Tight; idle.
+        // CPU: ample VRAM → Comfortable; saturated.
+        let lookup = load_lookup_for(vec![
+            (BackendId::Cuda, Some(100), Some(100), Some(0), 1),
+            (BackendId::Cpu, Some(10_000), Some(10_000), Some(4), 1),
+        ]);
+        let chained = ChainedSelector::with_default_estimator(None, Some(lookup));
+        assert_eq!(
+            chained.select(&set).expect("non-empty").backend,
+            BackendId::Cpu,
+            "Tight+idle CUDA stays demoted below Comfortable+saturated CPU; \
+             VRAM tier compared before load tier",
+        );
+    }
+
+    /// No-load degenerate: both arms VRAM-Comfortable and BOTH idle (0 in
+    /// flight) ⇒ every load_tier is 0 ⇒ the key reduces to the pre-C2
+    /// `(pressure, latency, idx)` ⇒ the static cost-winner (CUDA) is
+    /// preserved. Byte-identical to pre-C2 dispatch.
+    #[test]
+    fn no_load_preserves_static_winner() {
+        let set = ranked_set();
+        let lookup = load_lookup_for(vec![
+            (BackendId::Cuda, Some(10_000), Some(10_000), Some(0), 1),
+            (BackendId::Cpu, Some(10_000), Some(10_000), Some(0), 1),
+        ]);
+        let chained = ChainedSelector::with_default_estimator(None, Some(lookup));
+        assert_eq!(
+            chained.select(&set).expect("non-empty").backend,
+            BackendId::Cuda,
+            "no load anywhere ⇒ load leg is constant 0 ⇒ static winner stands",
+        );
+    }
+
+    /// `pending_work_count() == None` (a streaming backend that can't
+    /// report depth) is an honest no-signal = tier 0, NOT a fabricated
+    /// load. The cost-winner is preserved even though it "has" a streams
+    /// handle — because the handle reports `None`.
+    #[test]
+    fn none_count_is_no_signal_not_load() {
+        let set = ranked_set();
+        let lookup = load_lookup_for(vec![
+            (BackendId::Cuda, Some(10_000), Some(10_000), None, 1),
+            (BackendId::Cpu, Some(10_000), Some(10_000), None, 1),
+        ]);
+        let chained = ChainedSelector::with_default_estimator(None, Some(lookup));
+        assert_eq!(
+            chained.select(&set).expect("non-empty").backend,
+            BackendId::Cuda,
+            "None pending_work_count ⇒ tier 0 (no signal) ⇒ static winner",
+        );
     }
 
     /// No judge data + no runtime lookup → the pick equals

@@ -1115,7 +1115,11 @@ fn runtime_selector_disabled() -> bool {
 ///
 /// - the **VramPressure guard** over live [`BackendRuntime`] handles
 ///   ([`backend_runtime_lookup_for`] — the realize device + the
-///   always-present CPU backend), and
+///   always-present CPU backend),
+/// - the **live-load tier** (Step E Phase C / C2) read off the SAME
+///   handles via their Tier-2 `BackendStreams` seam (B1's per-device
+///   in-flight counter) — demoting arms on busy devices within a VRAM fit
+///   tier, and
 /// - the **JudgeAware rank** over the cached profile oracle
 ///   ([`crate::judge::cached_oracle`], the same Layer-2 source
 ///   `build_optimized_graph` feeds `PlanOptions::with_judge`).
@@ -1167,10 +1171,13 @@ impl BackendRuntime for DeviceRuntimeHandle {
     }
 
     /// Step E Phase C / B1: expose this handle's Tier-2 [`BackendStreams`]
-    /// live-load surface so the load-aware selector (C2, later) can reach
+    /// live-load surface so the load-aware selector (C2) reaches
     /// `pending_work_count` over the route picker's
     /// [`BackendRuntimeLookup`] — which only ever hands out a
-    /// `&dyn BackendRuntime` — without naming `DeviceRuntimeHandle`.
+    /// `&dyn BackendRuntime` — without naming `DeviceRuntimeHandle`. C2's
+    /// `ChainedSelector` load leg downcasts the boxed handle this lookup
+    /// returns via `as_backend_streams()`, so the SAME lookup that answers
+    /// the VRAM guard also carries the load signal (no second lookup).
     ///
     /// A streaming device (CUDA / Vulkan) returns `Some(self)`; a
     /// synchronous device (CPU) returns `None` — the honesty contract:
@@ -1204,12 +1211,15 @@ impl BackendStreams for DeviceRuntimeHandle {
         }
     }
 
-    /// Advertised concurrent in-flight capacity. B1 reports a conservative
+    /// Advertised concurrent in-flight capacity. Reports a conservative
     /// constant: Fuel today drives one stream per CUDA device and one
     /// compute queue per Vulkan device (A3 / A4b), so the meaningful slot
-    /// count is 1. The per-device capacity wiring (a `BackendCapabilities`
-    /// field) lands with C2's load tiering (`count / slot_capacity`,
-    /// design §9 open-Q1) — nothing reads this in B1.
+    /// count is 1. C2's load tiering reads this as the denominator of
+    /// `pending_work_count / slot_capacity`
+    /// ([`fuel_dispatch::ranker::load_tier`]); with capacity 1 the tiering
+    /// is binary (idle at 0 in flight, saturated at >=1), which is exactly
+    /// right for a single-stream device. Per-device capacity wiring (a
+    /// `BackendCapabilities` field) is the design §9 open-Q1 refinement.
     fn slot_capacity(&self) -> u32 {
         1
     }
@@ -1223,8 +1233,12 @@ impl BackendStreams for DeviceRuntimeHandle {
     }
 }
 
-/// Live-handle lookup for the VramPressure guard / picker fingerprint.
-/// Resolves:
+/// Live-handle lookup for the VramPressure guard, the C2 load leg, and the
+/// picker fingerprint — one lookup, both signals. Each handle it returns
+/// (`DeviceRuntimeHandle`) answers `would_fit` (VRAM) AND, via its Tier-2
+/// `BackendStreams` impl, `pending_work_count` (live load), so C2's
+/// `ChainedSelector` reads VRAM + load off the same handle without a second
+/// lookup (design §3.3). Resolves:
 ///
 /// - the realize device's `(backend, location)` → the realize `Device`'s
 ///   own handle (the live GPU handle the bridge holds — with today's
