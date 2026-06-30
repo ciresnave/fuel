@@ -364,6 +364,54 @@ impl CudaStorageBytes {
         }
         Ok(out)
     }
+
+    /// Step E A4b-3: the FINER cross-device D2H — read the device buffer's
+    /// bytes to host WITHOUT the whole-device drain that [`Self::to_cpu_bytes`]
+    /// appends.
+    ///
+    /// **Contract (the caller MUST honor it):** the producer of this buffer has
+    /// already been waited (the executor waits the source node's
+    /// [`CompletionHandle`] before dispatching the cross-device `Op::Copy` /
+    /// `Op::Move` — `fuel-dispatch::pipelined`'s `wait_producer_handle`). This
+    /// method does NOT call `device.synchronize()`, so it does NOT force-drain
+    /// the OTHER in-flight work on this device's stream — that independent work
+    /// (e.g. a second sub-DAG on the same GPU) keeps running while only THIS
+    /// buffer's bytes come back. That non-drain is the whole point of A4b-3.
+    ///
+    /// **Why dropping the full sync is still race-free for the copy itself:**
+    /// `copy_to_host` is `DeviceBuffer::copy_to_host` → baracuda's
+    /// `cu_memcpy_dtoh`, pinned to the version-suffixed symbol `cuMemcpyDtoH_v2`
+    /// (driver.rs), so it resolves via `dlsym` to the LEGACY synchronous D2H
+    /// (never the `_ptds` per-thread variant) regardless of baracuda's stream
+    /// mode. `cuMemcpyDtoH_v2` is (a) host-synchronous — it returns only once the
+    /// copy has completed, which IS the copy's own completion the host read needs
+    /// — and (b) issued on the legacy default stream (stream 0), which CUDA
+    /// implicitly synchronizes against every stream created with the
+    /// `CU_STREAM_DEFAULT` flag. This device's per-op stream is created via
+    /// `Stream::new` = `CU_STREAM_DEFAULT` (NOT `NON_BLOCKING` — see
+    /// `device.rs::new_with_stream`), so the memcpy is ALREADY ordered after all
+    /// prior work on that stream — including any `auto_contiguize` kernel the
+    /// executor enqueues between the producer wait and this read. The producer
+    /// wait the executor already performed makes the read-after-producer ordering
+    /// explicit at the seam A4b-4 leans on; this implicit legacy-stream ordering
+    /// is the belt that proves the copy stays correct even without the drain.
+    ///
+    /// Behavior-preserving for VALUES (byte-identical result); it only changes
+    /// WHICH device work the host blocks on (this copy, not the whole stream).
+    /// `to_cpu_bytes` stays the conservative full-drain variant for its many
+    /// standalone callers (reduce / indexing / concat / transfer-cost probes)
+    /// that do NOT go through the executor's producer-wait seam.
+    pub fn to_cpu_bytes_finer(&self) -> Result<Vec<u8>> {
+        let mut out = vec![0_u8; self.len_bytes];
+        if self.len_bytes > 0 {
+            // `cuMemcpyDtoH_v2`: host-synchronous (the copy's own completion) +
+            // legacy-default-stream ordered after this device's CU_STREAM_DEFAULT
+            // stream (read-after-producer). No `device.synchronize()` — the other
+            // sub-DAG's independent in-flight work is NOT force-drained.
+            self.buffer.copy_to_host(&mut out).w()?;
+        }
+        Ok(out)
+    }
 }
 
 impl Clone for CudaStorageBytes {
