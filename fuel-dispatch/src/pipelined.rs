@@ -49,7 +49,7 @@ use crate::compiled::{compile_node, execute_compiled, CompiledNode, CompletionHa
 use crate::dispatch::global_bindings;
 use crate::kernel::{KernelBindingTable, OpParams};
 use crate::optimize::OptimizedGraph;
-use crate::ranker::{pick_route, BackendRuntimeLookup, RuntimeSelector};
+use crate::ranker::{pick_route, resolve_branch, BackendRuntimeLookup, RuntimeSelector};
 use fuel_memory::Storage;
 
 /// How the executor derives its dispatch order + topology-generation
@@ -86,6 +86,47 @@ enum OrderSource<'a> {
         /// arm-0 everywhere (no picker / no pressure ⇒ Phase B behavior).
         route: Option<&'a PickedRoute>,
     },
+    /// Step E Phase C, PR C1 — the **streaming run-walk**. Instead of a
+    /// route resolved up front, the compiler thread resolves each branch
+    /// **lazily, as the topo walk reaches its arm-entry**, via
+    /// [`resolve_branch`] over the threaded [`StreamingPick`]. The order is
+    /// never pre-flattened: the compiler thread interleaves arm resolution,
+    /// node compilation, and dispatch (so C2 can later read live device
+    /// load at the moment a branch resolves). Still VRAM-only selection in
+    /// C1, so the streamed order equals the one-shot
+    /// [`OrderSource::Optimized`]`{route: Some(pick_route(..))}` order
+    /// byte-for-byte.
+    Streaming {
+        optimized: &'a OptimizedGraph,
+        pick: &'a StreamingPick,
+    },
+}
+
+/// Owned arm-resolution config threaded into the compiler thread for the
+/// [`OrderSource::Streaming`] walk (Step E Phase C, PR C1). The selector +
+/// lookup are owned `Arc`s (not borrows) so they can be `move`d into the
+/// spawned compiler thread; both are `Send + Sync`. The per-arm candidate
+/// bindings are read from [`global_bindings`] inside the thread (as the
+/// eager `pick_route_for` does), so they are not carried here.
+///
+/// C1 uses the SAME selector chain as the one-shot picker (the production
+/// `ChainedSelector`, VRAM-pressure only — B1's in-flight counter is NOT
+/// read here; that is C2). The lazy resolution therefore yields the same
+/// arm as the eager `pick_route` on every input.
+#[derive(Clone)]
+pub(crate) struct StreamingPick {
+    /// The runtime selector the streaming walk consults at each branch —
+    /// the production `ChainedSelector` (VRAM-pressure guard + Judge rank).
+    pub selector: Arc<dyn RuntimeSelector>,
+    /// The live per-tier free-memory lookup the picker fingerprints
+    /// telemetry through (consulted *through* the selector). `None` ⇒ no
+    /// pressure signal ⇒ arm-0 (the no-telemetry contract). The streaming
+    /// walk consults load through the selector (the production
+    /// `ChainedSelector` holds its own lookup), so this is carried for the
+    /// `RouteCache`-fingerprint parity / future direct reads but not
+    /// re-queried in the C1 walk (mirrors `pick_route`'s `let _ = lookup`).
+    #[allow(dead_code)]
+    pub lookup: Option<BackendRuntimeLookup>,
 }
 
 /// Map from NodeId to a realized Storage Arc. Used both as the
@@ -570,21 +611,32 @@ impl PipelinedExecutor {
     /// graph (Step D: no threaded `ExecutionPlan`).
     ///
     /// No `selector` (the `runtime_selector_disabled()` opt-out) or a
-    /// branchless graph yields `None` ⇒ arm-0 lowering, byte-identical to Phase
-    /// B. Step E later makes this re-pick per decision-point by live device
-    /// queue depth.
+    /// branchless graph yields the arm-0 lowering, byte-identical to Phase B.
+    ///
+    /// **Step E Phase C, PR C1 — STREAMING.** A branched graph WITH a
+    /// selector no longer resolves the whole route up front: it routes to the
+    /// [`OrderSource::Streaming`] walk, where the compiler thread resolves
+    /// each branch lazily as the frontier reaches it (via
+    /// [`resolve_branch`]). C1 keeps the SAME VRAM-only selector chain — so
+    /// the streamed route equals the one-shot `pick_route` route byte-for-byte
+    /// — and only changes *when* a branch resolves; C2 makes that moment read
+    /// live device load.
     pub fn realize_with_optimized_picking_env(
         graph: Arc<RwLock<Graph>>,
         target: NodeId,
         inputs: StorageCache,
         optimized: &OptimizedGraph,
-        selector: Option<&dyn RuntimeSelector>,
-        lookup: Option<&BackendRuntimeLookup>,
+        selector: Option<Arc<dyn RuntimeSelector>>,
+        lookup: Option<BackendRuntimeLookup>,
         sym_env: SymEnv,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        match Self::pick_route_for(&graph, &[target], selector, lookup)? {
-            Some(route) => Self::realize_with_optimized_route_env(
-                graph, target, inputs, optimized, &route, sym_env,
+        match Self::streaming_pick_for(&graph, selector, lookup)? {
+            Some(pick) => Self::realize_inner(
+                graph,
+                target,
+                inputs,
+                OrderSource::Streaming { optimized, pick: &pick },
+                sym_env,
             ),
             None => Self::realize_with_optimized_env(
                 graph, target, inputs, optimized, sym_env,
@@ -592,20 +644,24 @@ impl PipelinedExecutor {
         }
     }
 
-    /// Compute the runtime route for the executor's picking entry points — the
-    /// relocated body of the bridge's old `resolve_runtime_route`. Returns
-    /// `None` (⇒ arm-0 lowering) when there is no `selector` (the disabled
+    /// Build the [`StreamingPick`] for the executor's picking entry points —
+    /// the streaming successor of the one-shot `pick_route_for` (which was the
+    /// relocated body of the bridge's old `resolve_runtime_route`). Returns
+    /// `None` (⇒ arm-0 lowering, the untouched `route: None` /
+    /// `dispatch_order` path) when there is no `selector` (the disabled
     /// opt-out) or the graph has no `Op::Branch` (the branchless fast-path:
-    /// skip the topo walk + selector entirely so the common case is unchanged).
-    /// The per-arm candidates are re-enumerated from the runtime binding
-    /// registry (Step D — was the threaded `ExecutionPlan`).
-    fn pick_route_for(
+    /// skip the streaming machinery entirely so the common case is unchanged
+    /// and byte-identical). Otherwise it carries the selector + lookup into
+    /// the [`OrderSource::Streaming`] walk, which resolves each branch at the
+    /// frontier (PR C1). The per-arm candidates are re-enumerated from the
+    /// runtime binding registry inside the compiler thread (Step D — was the
+    /// threaded `ExecutionPlan`).
+    fn streaming_pick_for(
         graph: &Arc<RwLock<Graph>>,
-        roots: &[NodeId],
-        selector: Option<&dyn RuntimeSelector>,
-        lookup: Option<&BackendRuntimeLookup>,
-    ) -> Result<Option<PickedRoute>> {
-        let Some(sel) = selector else {
+        selector: Option<Arc<dyn RuntimeSelector>>,
+        lookup: Option<BackendRuntimeLookup>,
+    ) -> Result<Option<StreamingPick>> {
+        let Some(selector) = selector else {
             return Ok(None);
         };
         let g = graph
@@ -616,8 +672,7 @@ impl PipelinedExecutor {
         if !has_branch {
             return Ok(None);
         }
-        let bindings = global_bindings();
-        Ok(Some(pick_route(&g, roots, &bindings, sel, lookup)))
+        Ok(Some(StreamingPick { selector, lookup }))
     }
 
     fn realize_inner(
@@ -646,7 +701,7 @@ impl PipelinedExecutor {
         // integrates `derive_ordering`'s view-aware pinning so
         // destructive ops run AFTER non-destructive readers of
         // their targets.
-        let (order, mut layout_cache): (Vec<NodeId>, HashMap<NodeId, Layout>) = {
+        let (compiler_work, mut layout_cache): (CompilerWork, HashMap<NodeId, Layout>) = {
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, &[target]);
             // PR-A3b-1: the OptimizedGraph path lowers via
@@ -655,23 +710,30 @@ impl PipelinedExecutor {
             // inserted safety-copy nodes). The default path keeps the
             // pre-A3b-1 `execution_plan` walk. On a branchless graph the
             // two sequences are identical (A3a equivalence gate).
-            let order = order_for(&g, &effective_roots, &order_source);
+            //
+            // PR-C1: a `Streaming` source is NOT flattened here — it is
+            // handed to the compiler thread as a `CompilerWork::Streaming`
+            // spec so the thread resolves each branch lazily at the
+            // frontier (see `compiler_thread_body`).
+            let work = compiler_work_for(&g, &effective_roots, &order_source);
             let mut layouts = HashMap::with_capacity(inputs.len());
             for &id in inputs.keys() {
                 layouts.insert(id, g.layout(id));
             }
-            (order, layouts)
+            (work, layouts)
         };
 
         let (tx, rx) = channel::<Result<WorkItem>>();
         let graph_for_compiler = Arc::clone(&graph);
-        let order_for_compiler = order.clone();
 
         // Compiler thread: read graph nodes, resolve kernels,
-        // push WorkItems. On error, push the error and bail.
+        // push WorkItems. On error, push the error and bail. PR-C1: for a
+        // `Streaming` work spec the thread also resolves each branch's arm
+        // at the frontier (the SAME VRAM-only selector the one-shot picker
+        // uses) before compiling that arm's runs.
         let compiler = thread::spawn(move || {
             compiler_thread_body(
-                graph_for_compiler, order_for_compiler, sym_env, tx,
+                graph_for_compiler, compiler_work, sym_env, tx,
             );
         });
 
@@ -973,20 +1035,26 @@ impl PipelinedExecutor {
     }
 
     /// Multi-target sibling of [`realize_with_optimized_picking_env`] —
-    /// the executor picks one arm per `Op::Branch` (cleanup Step C/D) over the
-    /// effective targets, then lowers the chosen route.
+    /// the executor resolves one arm per `Op::Branch` (cleanup Step C/D) over
+    /// the effective targets. PR C1: a branched graph routes to the
+    /// [`OrderSource::Streaming`] walk (lazy per-branch resolution at the
+    /// frontier); branchless / no-selector falls to the untouched arm-0 path.
     pub fn realize_many_with_optimized_picking_env(
         graph: Arc<RwLock<Graph>>,
         targets: &[NodeId],
         inputs: StorageCache,
         optimized: &OptimizedGraph,
-        selector: Option<&dyn RuntimeSelector>,
-        lookup: Option<&BackendRuntimeLookup>,
+        selector: Option<Arc<dyn RuntimeSelector>>,
+        lookup: Option<BackendRuntimeLookup>,
         sym_env: SymEnv,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
-        match Self::pick_route_for(&graph, targets, selector, lookup)? {
-            Some(route) => Self::realize_many_with_optimized_route_env(
-                graph, targets, inputs, optimized, &route, sym_env,
+        match Self::streaming_pick_for(&graph, selector, lookup)? {
+            Some(pick) => Self::realize_many_inner(
+                graph,
+                targets,
+                inputs,
+                OrderSource::Streaming { optimized, pick: &pick },
+                sym_env,
             ),
             None => Self::realize_many_with_optimized_env(
                 graph, targets, inputs, optimized, sym_env,
@@ -1021,18 +1089,21 @@ impl PipelinedExecutor {
         // reachable from any target. `execution_plan` integrates
         // `derive_ordering`'s view-aware pinning so destructive ops
         // run AFTER non-destructive readers of their targets.
-        let (order, mut layout_cache): (Vec<NodeId>, HashMap<NodeId, Layout>) = {
+        let (compiler_work, mut layout_cache): (CompilerWork, HashMap<NodeId, Layout>) = {
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, targets);
             // PR-A3b-1: derive from the OptimizedGraph's run lowering
             // when present (post-safety-copies); else the legacy
             // `execution_plan` walk. Identical on branchless graphs.
-            let order = order_for(&g, &effective_roots, &order_source);
+            //
+            // PR-C1: a `Streaming` source is handed to the compiler thread
+            // unflattened (resolves branches at the frontier).
+            let work = compiler_work_for(&g, &effective_roots, &order_source);
             let mut layouts = HashMap::with_capacity(inputs.len());
             for &id in inputs.keys() {
                 layouts.insert(id, g.layout(id));
             }
-            (order, layouts)
+            (work, layouts)
         };
 
         // Caller's target set — used to gate destructive-input
@@ -1041,11 +1112,10 @@ impl PipelinedExecutor {
 
         let (tx, rx) = channel::<Result<WorkItem>>();
         let graph_for_compiler = Arc::clone(&graph);
-        let order_for_compiler = order.clone();
 
         let compiler = thread::spawn(move || {
             compiler_thread_body(
-                graph_for_compiler, order_for_compiler, sym_env, tx,
+                graph_for_compiler, compiler_work, sym_env, tx,
             );
         });
 
@@ -1208,6 +1278,19 @@ fn order_for(
 ) -> Vec<NodeId> {
     match order_source {
         OrderSource::Default => execution_plan(graph, effective_roots),
+        // The streaming walk is driven in the compiler thread (it
+        // interleaves arm resolution with compilation), so `order_for`
+        // never flattens it on the production path. This arm exists only
+        // for match totality / non-pipelined callers: it collects the SAME
+        // lazily-resolved order eagerly (the streaming walk with the same
+        // `resolve_branch` over the threaded selector), which equals the
+        // one-shot `lower_picked_route(pick_route(..))` order.
+        OrderSource::Streaming { optimized: _optimized, pick } => {
+            let bindings = global_bindings();
+            fuel_graph::lower_picked_route_streaming(graph, effective_roots, |branch| {
+                resolve_branch(graph, branch, &bindings, pick.selector.as_ref())
+            })
+        }
         OrderSource::Optimized { optimized, route } => {
             // Lower the runs over the *effective* roots (user targets +
             // any spliced/side-effect roots) so the order matches the
@@ -1236,6 +1319,27 @@ fn order_for(
     }
 }
 
+/// Build the [`CompilerWork`] the compiler thread walks for the configured
+/// [`OrderSource`]. The non-streaming sources flatten up front via
+/// [`order_for`] (unchanged); [`OrderSource::Streaming`] is handed to the
+/// compiler thread as a [`CompilerWork::Streaming`] spec — NOT flattened
+/// here — so the thread resolves branches lazily at the frontier (Step E
+/// Phase C, PR C1). Holds the graph read-lock only for the flattening
+/// branches; the streaming branch defers the lock to the compiler thread.
+fn compiler_work_for(
+    graph: &Graph,
+    effective_roots: &[NodeId],
+    order_source: &OrderSource<'_>,
+) -> CompilerWork {
+    match order_source {
+        OrderSource::Streaming { pick, .. } => CompilerWork::Streaming {
+            roots: effective_roots.to_vec(),
+            pick: (*pick).clone(),
+        },
+        other => CompilerWork::Order(order_for(graph, effective_roots, other)),
+    }
+}
+
 /// The topology generation that keys the executor's `TopologyChanged`
 /// chunk-boundary check. Uses the `OptimizedGraph`'s optimize-time
 /// generation (PR-A3b-1 path). `None` ⇒ no check (the plain
@@ -1245,16 +1349,41 @@ fn generation_for(
 ) -> Option<u64> {
     match order_source {
         OrderSource::Optimized { optimized, .. } => Some(optimized.generation),
+        OrderSource::Streaming { optimized, .. } => Some(optimized.generation),
         OrderSource::Default => None,
     }
 }
 
-/// Compiler thread body. Reads each node in topo order, resolves
-/// its kernel via `global_bindings()`, and pushes a `WorkItem` on
-/// the channel. Sends `Err(...)` and stops on the first failure.
+/// What the compiler thread walks: either a pre-flattened dispatch
+/// `Order` (the `Default` / `Optimized` paths — unchanged), or a
+/// `Streaming` spec the thread resolves branch-by-branch at the frontier
+/// (Step E Phase C, PR C1).
+enum CompilerWork {
+    /// A frozen topological order (computed up front by `order_for`). The
+    /// compiler thread compiles each node and sends it in turn.
+    Order(Vec<NodeId>),
+    /// The streaming run-walk: the compiler thread drives
+    /// [`fuel_graph::walk_picked_route_streaming`] over `roots`, resolving
+    /// each `Op::Branch` lazily via [`resolve_branch`] as the frontier
+    /// reaches its arm-entry, and compiling + sending only the chosen
+    /// arm's runs. `roots` are the effective roots (same set `order_for`
+    /// lowers over). Byte-identical to `Order(lower_picked_route(
+    /// pick_route(..)))` in C1 (same VRAM-only selector).
+    Streaming {
+        roots: Vec<NodeId>,
+        pick: StreamingPick,
+    },
+}
+
+/// Compiler thread body. Holds the graph read-lock + a thread-local
+/// layout cache and emits `WorkItem`s in topological order. For
+/// [`CompilerWork::Order`] it walks the frozen order; for
+/// [`CompilerWork::Streaming`] it resolves each branch at the frontier and
+/// emits only the chosen arm's runs (Step E Phase C, PR C1). Sends
+/// `Err(...)` and stops on the first failure.
 fn compiler_thread_body(
     graph: Arc<RwLock<Graph>>,
-    order: Vec<NodeId>,
+    work: CompilerWork,
     sym_env: SymEnv,
     tx: Sender<Result<WorkItem>>,
 ) {
@@ -1274,15 +1403,52 @@ fn compiler_thread_body(
     // the strided layouts emitted by metadata-only view ops earlier
     // in the same realize call.
     let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-
-    for id in order {
-        let item = compile_one(&g, id, &mut layout_cache, &bindings, &sym_env);
+    // `compile_one` for one node + send; returns `false` to stop the walk
+    // (channel closed or compile error). Shared by both work modes so the
+    // streamed and frozen-order paths compile identically.
+    let compile_and_send = |id: NodeId,
+                            layout_cache: &mut HashMap<NodeId, Layout>|
+     -> bool {
+        let item = compile_one(&g, id, layout_cache, &bindings, &sym_env);
         let stop_on_err = item.is_err();
         if tx.send(item).is_err() {
-            return;
+            return false;
         }
-        if stop_on_err {
-            return;
+        !stop_on_err
+    };
+
+    match work {
+        CompilerWork::Order(order) => {
+            for id in order {
+                if !compile_and_send(id, &mut layout_cache) {
+                    return;
+                }
+            }
+        }
+        CompilerWork::Streaming { roots, pick } => {
+            // Resolve each branch lazily at its arm-entry (C1: the SAME
+            // VRAM-only selector the one-shot `pick_route` uses; C2 will
+            // make this read live device load at THIS moment). Emit only
+            // the chosen arm's runs, compiling + sending each node as the
+            // walk reaches it — genuine streaming (resolution interleaved
+            // with dispatch), not a pre-flattened order.
+            let mut stopped = false;
+            fuel_graph::walk_picked_route_streaming(
+                &g,
+                &roots,
+                |branch| resolve_branch(&g, branch, &bindings, pick.selector.as_ref()),
+                |members| {
+                    if stopped {
+                        return;
+                    }
+                    for &id in members {
+                        if !compile_and_send(id, &mut layout_cache) {
+                            stopped = true;
+                            return;
+                        }
+                    }
+                },
+            );
         }
     }
 }
@@ -5609,34 +5775,30 @@ mod tests {
         );
     }
 
-    /// Cleanup Step C: the executor owns the arm-pick. `pick_route_for` (the
-    /// relocated `resolve_runtime_route` body) must (1) forward to `pick_route`
-    /// when a selector + a branch are present, (2) return `None` with no
-    /// selector (the `runtime_selector_disabled` opt-out), and (3) short-circuit
-    /// to `None` on a branchless graph (the fast-path) — each matching the old
-    /// bridge behavior. `pick_route` itself is covered by the route_picker tests.
-    #[test]
-    fn pick_route_for_gates_and_forwards() {
-        use crate::ranker::{AlternativeSet, Candidate};
-
-        // A selector that always takes the LAST arm (arm 1), so a non-empty
-        // route is observable (WinnerSelector picks arm-0 ⇒ empty route).
-        #[derive(Debug)]
-        struct PickLast;
-        impl RuntimeSelector for PickLast {
-            fn select<'a>(&self, set: &'a AlternativeSet) -> Option<&'a Candidate> {
-                set.alternatives().last()
-            }
+    /// A selector that always takes the LAST arm (arm 1) so a non-arm-0
+    /// pick is observable (a `WinnerSelector` picks arm-0 ⇒ empty route).
+    #[cfg(test)]
+    #[derive(Debug)]
+    struct PickLast;
+    #[cfg(test)]
+    impl RuntimeSelector for PickLast {
+        fn select<'a>(
+            &self,
+            set: &'a crate::ranker::AlternativeSet,
+        ) -> Option<&'a crate::ranker::Candidate> {
+            set.alternatives().last()
         }
+    }
 
+    /// Build the 2-arm diamond (mirrors `route_picker::tests::diamond`):
+    /// arm-0 on CUDA, arm-1 on CPU; the arm exits carry their
+    /// `target_backend` so the picker reads each arm's placement. Returns
+    /// `(graph_arc, branch, post)`.
+    #[cfg(test)]
+    fn picking_diamond() -> (Arc<RwLock<Graph>>, NodeId, NodeId) {
         let node = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
             g.push(Node { op, inputs, shape: Shape::from_dims(&[2]), dtype: DType::F32 })
         };
-
-        // 2-arm diamond (mirrors ranker::route_picker::tests::diamond): the
-        // arm exits carry their `target_backend` so the picker reads each
-        // arm's placement. Candidates are re-enumerated from the global
-        // registry (Step D); PickLast selects the last arm regardless.
         let mut g = Graph::new();
         let pre = node(&mut g, Op::Const, vec![]);
         let diverge = node(&mut g, Op::Relu, vec![pre]);
@@ -5653,52 +5815,92 @@ mod tests {
             .expect("well-formed 2-arm branch")
             .expect("2 arms survive");
         let post = node(&mut g, Op::Tanh, vec![reconverge]);
-        let graph = Arc::new(RwLock::new(g));
+        (Arc::new(RwLock::new(g)), branch, post)
+    }
 
-        // (1) selector + branch ⇒ Some(route); PickLast ⇒ arm 1 at the branch,
-        //     and the route is byte-for-byte what `pick_route` produces directly
-        //     (both re-enumerate from the same global registry).
-        let route = PipelinedExecutor::pick_route_for(
-            &graph, &[post], Some(&PickLast), None,
-        )
-        .expect("pick_route_for ok")
-        .expect("a branched graph + selector yields a route");
-        assert_eq!(
-            route.get(&branch).copied(),
-            Some(1),
-            "PickLast selects arm 1 at the branch; route={route:?}",
-        );
-        let direct = {
-            let g = graph.read().unwrap();
-            pick_route(&g, &[post], &global_bindings(), &PickLast, None)
-        };
-        assert_eq!(route, direct, "the executor's pick forwards pick_route verbatim");
+    /// Step E Phase C, PR C1: the streaming picking entry's gate.
+    /// `streaming_pick_for` (the streaming successor of the old one-shot
+    /// `pick_route_for`) must (1) return `Some(pick)` when a selector + a
+    /// branch are present (⇒ the `OrderSource::Streaming` walk), (2) return
+    /// `None` with no selector (the `runtime_selector_disabled` opt-out ⇒
+    /// arm-0), and (3) short-circuit to `None` on a branchless graph (the
+    /// fast-path ⇒ the untouched `dispatch_order` lowering).
+    #[test]
+    fn streaming_pick_for_gates() {
+        let (graph, _branch, post) = picking_diamond();
+        let _ = post;
 
-        // (2) no selector (the runtime-selector-disabled opt-out) ⇒ None.
+        // (1) selector + branch ⇒ Some(pick).
+        let sel: Arc<dyn RuntimeSelector> = Arc::new(PickLast);
         assert!(
-            PipelinedExecutor::pick_route_for(&graph, &[post], None, None)
+            PipelinedExecutor::streaming_pick_for(&graph, Some(sel.clone()), None)
+                .expect("ok")
+                .is_some(),
+            "selector + branch ⇒ a streaming pick",
+        );
+
+        // (2) no selector ⇒ None (arm-0 lowering).
+        assert!(
+            PipelinedExecutor::streaming_pick_for(&graph, None, None)
                 .expect("ok")
                 .is_none(),
-            "no selector ⇒ no route (arm-0 lowering)",
+            "no selector ⇒ no streaming pick (arm-0 lowering)",
         );
 
         // (3) branchless graph + selector ⇒ None (the fast-path).
-        let (bl_graph, bl_root) = {
+        let node = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
+            g.push(Node { op, inputs, shape: Shape::from_dims(&[2]), dtype: DType::F32 })
+        };
+        let bl_graph = {
             let mut g = Graph::new();
             let c1 = node(&mut g, Op::Const, vec![]);
             let c2 = node(&mut g, Op::Const, vec![]);
             let add = node(&mut g, Op::Add, vec![c1, c2]);
             g.set_target_backend(add, BackendId::Cpu);
-            (Arc::new(RwLock::new(g)), add)
+            Arc::new(RwLock::new(g))
         };
         assert!(
-            PipelinedExecutor::pick_route_for(
-                &bl_graph, &[bl_root], Some(&PickLast), None,
-            )
-            .expect("ok")
-            .is_none(),
-            "branchless graph ⇒ no branches ⇒ no route (fast-path)",
+            PipelinedExecutor::streaming_pick_for(&bl_graph, Some(sel), None)
+                .expect("ok")
+                .is_none(),
+            "branchless graph ⇒ no branches ⇒ no streaming pick (fast-path)",
         );
+    }
+
+    /// **C1 byte-identity gate (executor layer).** The STREAMED dispatch
+    /// order — produced by the compiler thread's lazy per-branch resolution
+    /// (`walk_picked_route_streaming` over `resolve_branch`, the same path
+    /// `order_for(OrderSource::Streaming)` collects) — equals the ONE-SHOT
+    /// order (`lower_picked_route` over the route the eager `pick_route`
+    /// resolves) on the branched diamond, for both arm-0 (WinnerSelector)
+    /// and arm-1 (PickLast). This is the proof that C1 changes *when* a
+    /// branch resolves, not *which* arm — the same selector, the same
+    /// `resolve_branch`, the same emitted order.
+    #[test]
+    fn streamed_order_equals_one_shot() {
+        let (graph, _branch, post) = picking_diamond();
+        let g = graph.read().unwrap();
+        let bindings = global_bindings();
+
+        for sel in [
+            Arc::new(crate::ranker::WinnerSelector) as Arc<dyn RuntimeSelector>,
+            Arc::new(PickLast) as Arc<dyn RuntimeSelector>,
+        ] {
+            // One-shot: resolve the whole route, then lower.
+            let one_shot_route = pick_route(&g, &[post], &bindings, sel.as_ref(), None);
+            let one_shot = fuel_graph::lower_picked_route(&g, &[post], &one_shot_route);
+
+            // Streamed: resolve each branch lazily at the frontier via the
+            // SAME `resolve_branch` the compiler thread uses.
+            let streamed = fuel_graph::lower_picked_route_streaming(&g, &[post], |branch| {
+                resolve_branch(&g, branch, &bindings, sel.as_ref())
+            });
+
+            assert_eq!(
+                streamed, one_shot,
+                "streamed order must equal one-shot for selector {sel:?}",
+            );
+        }
     }
 
     /// Realizing a node whose target_backend isn't set surfaces a

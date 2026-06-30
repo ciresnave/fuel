@@ -69,7 +69,7 @@ pub use judge::{HashMapJudge, JudgeOracle};
 pub use judge_aware_selector::JudgeAwareSelector;
 pub use placement_dp::{ChainInput, PlacementDp};
 pub use route_picker::{
-    pick_route, RouteCache, TelemetryFingerprint, LOOKAHEAD_K,
+    pick_route, resolve_branch, RouteCache, TelemetryFingerprint, LOOKAHEAD_K,
 };
 pub use runtime_selector::{RuntimeSelector, WinnerSelector};
 pub use vram_pressure_selector::{

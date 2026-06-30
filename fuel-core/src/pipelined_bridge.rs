@@ -500,16 +500,19 @@ fn dispatch_with_plan_retry(
         // which picks one arm per branch at dispatch — or arm-0 when the
         // selector is disabled / the graph is branchless (realize unchanged
         // from Phase B). Replaces the bridge's old `resolve_runtime_route`.
-        let sel_lookup = production_selector_for(device);
-        let (selector, lookup) = match &sel_lookup {
-            Some((s, l)) => (Some(s.as_ref()), Some(l)),
+        // Step E Phase C / PR C1: hand the selector + lookup to the executor
+        // as OWNED `Arc`s so the streaming compiler thread can `move` them in
+        // and resolve each branch lazily at the frontier (the SAME VRAM-only
+        // selector — byte-identical to the prior one-shot pick).
+        let (selector, lookup) = match production_selector_for(device) {
+            Some((s, l)) => (Some(s), Some(l)),
             None => (None, None),
         };
         let cache_for_attempt = cache.clone();
         // Dispatch the "plan IS the graph" form: the executor recomputes its
         // run/`lower_run` dispatch order from the (now fully-stamped) graph,
-        // picks each branch's arm, then resolves each node's kernel via the
-        // binding-table lookup.
+        // resolves each branch's arm at the frontier (streaming), then
+        // resolves each node's kernel via the binding-table lookup.
         let result = PipelinedExecutor::realize_with_optimized_picking_env(
             graph.clone(), cpu_target, cache_for_attempt, &optimized,
             selector, lookup, sym_env.clone(),
@@ -645,12 +648,13 @@ fn dispatch_many_with_plan_retry(
         // stamped, copy-stitched graph.
         let optimized =
             build_optimized_graph(graph, effective_targets, pinned_loc, &cache)?;
-        // Cleanup Step C: the executor picks each branch's arm at dispatch
+        // Cleanup Step C: the executor resolves each branch's arm at dispatch
         // (was the bridge's `resolve_runtime_route`); the bridge just builds +
-        // hands over the Device/Judge-derived selector + live lookup.
-        let sel_lookup = production_selector_for(device);
-        let (selector, lookup) = match &sel_lookup {
-            Some((s, l)) => (Some(s.as_ref()), Some(l)),
+        // hands over the Device/Judge-derived selector + live lookup. PR C1:
+        // owned `Arc`s so the streaming compiler thread can `move` them in and
+        // resolve branches lazily at the frontier.
+        let (selector, lookup) = match production_selector_for(device) {
+            Some((s, l)) => (Some(s), Some(l)),
             None => (None, None),
         };
         let cache_for_attempt = cache.clone();
