@@ -1560,7 +1560,10 @@ impl VulkanBackend {
     /// dropped before the fence wait above.
     ///
     /// [`submit_pending`]: VulkanBackend::submit_pending
-    pub fn wait_submitted(&self, batch: SubmittedBatch) -> fuel_ir::Result<()> {
+    pub fn wait_submitted(&self, mut batch: SubmittedBatch) -> fuel_ir::Result<()> {
+        // `wait` waits the fence AND sets `batch.consumed`, so the `SubmittedBatch`
+        // `Drop` safety net below skips its (now-redundant) fence wait — exactly
+        // one real wait on the normal path, no double-wait.
         batch.wait().map_err(vk_err)?;
         self.pipelines.retire_pools_post_drain();
         drop(batch); // explicit: CB/descs/transients/pool free here, post-fence (UAF-safe)

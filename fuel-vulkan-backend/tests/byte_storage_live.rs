@@ -127,3 +127,59 @@ fn submit_pending_then_wait_submitted_computes_and_releases() {
         .collect();
     assert_eq!(got_f32, vec![3.0_f32, 5.0, 7.0, 9.0]);
 }
+
+/// Follow-on #2 (the error-path UAF safety net): a `SubmittedBatch` dropped
+/// WITHOUT `wait_submitted` — the shape of a `?` unwinding the realize loop with
+/// in-flight Vulkan batches still queued — must still complete safely. The
+/// `SubmittedBatch::Drop` safety net fence-waits (because `consumed == false`)
+/// BEFORE the CB / descriptor sets / transient buffers / pool free, so the GPU
+/// has finished the command buffer and freeing it can't race the GPU (the UAF
+/// this fix closes). Here we submit an affine batch, then DROP the returned
+/// `SubmittedBatch` directly (never calling `wait_submitted`); the test
+/// completing without a hang / GPU fault, the batch being idempotently consumed
+/// (a second `submit_pending` ⇒ `None`), and the output reading back correct all
+/// confirm the Drop path waited + released cleanly.
+#[test]
+#[ignore = "requires a live Vulkan device"]
+fn submitted_batch_dropped_without_wait_is_uaf_safe() {
+    use fuel_ir::{Layout, Shape};
+
+    let Some(b) = backend_or_skip() else { return };
+
+    let input_f32: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
+    let mut in_bytes = Vec::with_capacity(16);
+    for v in input_f32 {
+        in_bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    let input = b.upload_bytes(&in_bytes).expect("h2d input");
+    let mut out = b.alloc_bytes(16).expect("alloc out");
+
+    let layout = Layout::contiguous(Shape::from_dims(&[4]));
+    b.affine_f32_bytes(&input, &mut out, 2.0, 1.0, &layout)
+        .expect("affine records");
+
+    // ASYNC submit, then DROP the in-flight batch WITHOUT wait_submitted — the
+    // error-unwind shape. SubmittedBatch::Drop (consumed == false) fence-waits
+    // here before freeing the CB/descriptors/transients/pool.
+    {
+        let batch = b
+            .submit_pending()
+            .expect("submit_pending ok")
+            .expect("non-empty batch ⇒ Some(SubmittedBatch)");
+        drop(batch); // <- the safety net fires: fence-wait, THEN free. No UAF.
+    }
+
+    // The batch was submitted (and its Drop waited), so a second submit is empty.
+    assert!(
+        b.submit_pending().expect("submit_pending ok 2").is_none(),
+        "the dropped batch was already submitted ⇒ empty open batch ⇒ None",
+    );
+
+    // The GPU finished (the Drop waited the fence), so the output is correct.
+    let got = b.download_bytes(&out).expect("d2h out");
+    let got_f32: Vec<f32> = got
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    assert_eq!(got_f32, vec![3.0_f32, 5.0, 7.0, 9.0]);
+}
