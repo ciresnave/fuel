@@ -697,10 +697,32 @@ impl PipelinedExecutor {
         // cross-device copy (A4b-3, below), and drain whatever remains at
         // realize-end.
         let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
+        // Step E A4b-4: eagerly-submitted-but-not-yet-waited Vulkan batches. The
+        // OVERLAP enabler — when we LEAVE a Vulkan chunk (or are about to block on
+        // a CUDA copy) we `submit_pending` the open Vulkan batch so the iGPU runs
+        // it while the executor records/dispatches the next (CUDA) chunk, instead
+        // of letting it sit merely-recorded until realize-end (the A4b-2 behavior,
+        // which never overlapped). Each submitted batch is tracked here and waited
+        // at the in-flight-lifetime guard (before a Vulkan read / Vulkan-referenced
+        // eviction / realize-end). `multi_backend` gates ALL eager submits so a
+        // single-device realize never touches this path (byte-identical to A4b-2).
+        let mut inflight_vulkan: Vec<InflightVulkan> = Vec::new();
+        // Step E A4b-4: set true the first time the dispatch order transitions
+        // between two DIFFERENT non-CPU... actually any two distinct backends — a
+        // genuine backend switch. On a pure-CUDA or pure-Vulkan graph there is no
+        // switch, so this stays false and the eager-submit / in-flight machinery is
+        // unreachable (single-device byte-identical + throughput-neutral, §5).
+        let mut multi_backend = false;
         for item in rx {
             let item = item?;
-            if let Some(plan_gen) = plan_generation {
-                if current_chunk_backend != Some(item.target_backend) {
+            // Chunk-boundary hook (target_backend change). Existing duty: the
+            // `TopologyChanged` generation check. Step E A4b-4 adds two duties:
+            // (1) detect a genuine backend switch → arm `multi_backend`; (2) when
+            // LEAVING a Vulkan chunk on a multi-backend graph, eager-submit the
+            // open Vulkan batch so the iGPU starts it concurrently with the chunk
+            // we are about to dispatch (the overlap win).
+            if current_chunk_backend != Some(item.target_backend) {
+                if let Some(plan_gen) = plan_generation {
                     let live = crate::dispatch::topology_generation();
                     if live != plan_gen {
                         return Err(Error::TopologyChanged {
@@ -709,18 +731,66 @@ impl PipelinedExecutor {
                         }
                         .bt());
                     }
-                    current_chunk_backend = Some(item.target_backend);
                 }
+                let leaving = current_chunk_backend;
+                if let Some(prev) = leaving {
+                    if prev != item.target_backend {
+                        // A real backend switch occurred — this realize is
+                        // genuinely multi-backend.
+                        multi_backend = true;
+                        // Leaving a Vulkan chunk → submit it NOW so it runs on the
+                        // iGPU while we record/dispatch the next chunk. Whole-chunk
+                        // granularity (the open batch IS the just-finished Vulkan
+                        // chunk with all its intra-CB barriers) — UAF/race-safe per
+                        // `eager_submit_all_vulkan`'s contract.
+                        if prev == BackendId::Vulkan {
+                            eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
+                        }
+                    }
+                }
+                current_chunk_backend = Some(item.target_backend);
             }
-            // Step E A4b-3: FINER cross-device source-drain. Before a Copy/Move
-            // (the residency boundary), wait ONLY the source producer's handle —
-            // not the whole source device (the old `to_cpu_bytes` full
-            // `synchronize`). This lets the OTHER sub-DAG's independent in-flight
-            // work on that device keep running while we read just this buffer.
-            // No-op for non-Copy items (same-device kernel edges stay
-            // wait-free — the A2/A3 single-stream/queue ordering win).
+            // Step E A4b-4 (Invariant E — same-device cross-chunk RAW safety):
+            // before RECORDING a new Vulkan op while in-flight Vulkan batches
+            // exist, wait them. Vulkan only guarantees batches BEGIN in submission
+            // order (they may overlap / complete out of order), so a later Vulkan
+            // op that reads a buffer an in-flight batch wrote would race without
+            // this. The in-flight batch was submitted at the prior chunk boundary
+            // and an intervening (CUDA) chunk has since run, so this fence is
+            // typically already signalled — the iGPU work overlapped, and we only
+            // re-sync as Vulkan work resumes. No-op when single-device
+            // (`multi_backend` false) or no batches are in flight.
+            if multi_backend
+                && item.target_backend == BackendId::Vulkan
+                && !inflight_vulkan.is_empty()
+            {
+                drain_inflight_vulkan(&mut inflight_vulkan)?;
+            }
+            // Step E A4b-3 + A4b-4: the cross-device residency boundary.
             if matches!(item.kind, WorkItemKind::Copy { .. } | WorkItemKind::Move { .. }) {
+                // A4b-4: before we (possibly) block the host on the CUDA producer,
+                // eager-submit any open Vulkan chunk so the iGPU runs it WHILE we
+                // wait on CUDA (the §5.1 ordering — submit Vulkan *before* draining
+                // CUDA). Cheap + safe; gated to multi-backend (no-op single-device).
+                if multi_backend {
+                    eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
+                }
                 if let Some(&producer) = item.inputs.first() {
+                    // A4b-4: a VULKAN-source D2H must read COMPLETED data, and the
+                    // Vulkan download path only flushes the OPEN batch (not our
+                    // in-flight ones) — so wait the in-flight Vulkan batches here.
+                    // For a CUDA/CPU source we do NOT wait Vulkan (the copy reads no
+                    // Vulkan buffer); waiting it would needlessly serialize the
+                    // independent Vulkan sub-DAG and kill the overlap. The Vulkan
+                    // work that was eager-submitted at the chunk boundary keeps
+                    // running concurrently until ITS result is the one being copied.
+                    if multi_backend && copy_source_is_vulkan(&cache, producer)? {
+                        drain_inflight_vulkan(&mut inflight_vulkan)?;
+                    }
+                    // Step E A4b-3: FINER CUDA source-drain — wait ONLY the source
+                    // producer's recorded event (not the whole source device), so
+                    // the OTHER sub-DAG's independent in-flight CUDA work keeps
+                    // running. No-op for a Vulkan/CPU producer (no CUDA handle).
                     wait_producer_handle(&mut handles, producer)?;
                 }
             }
@@ -729,18 +799,25 @@ impl PipelinedExecutor {
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
                     if destroyed != target {
-                        // Step E A2 / A4b-3 (Vulkan eviction guard): the deferred
-                        // Vulkan batch may hold a recorded-but-unsubmitted command
-                        // referencing this buffer. KEEP the blocking
-                        // `force_flush_vulkan` (submit + wait) here — design §3
-                        // row 4 wants `wait H(evicted)`, but under A4b-2 Vulkan
-                        // does NOT eager-submit during the walk (that is A4b-4), so
-                        // mid-walk there is NO Vulkan handle to wait: the batch is
-                        // still merely recorded. `force_flush` is the only coherent
-                        // drain until A4b-4 lands the eager submit. No-op for
-                        // non-Vulkan / empty batch. (CUDA eviction needs no host
-                        // wait — A3 stream-ordered free enqueues the free after the
-                        // consuming kernel on the same stream.)
+                        // Step E A4b-4 (in-flight-batch DATA-BUFFER lifetime — the
+                        // UAF guard). A `SubmittedBatch` owns its CB/descriptors/
+                        // transients but NOT the DATA buffers it reads (those live
+                        // here in the cache). Freeing a data buffer an in-flight CB
+                        // still reads is a use-after-free. Before this destructive
+                        // eviction, wait ALL in-flight Vulkan batches (conservative
+                        // — we can't cheaply map buffer→batch, so wait every one
+                        // that could reference `destroyed`). This is design §3
+                        // row 4's "wait H(evicted)", now coherent because under
+                        // A4b-4 the batch IS submitted. No-op single-device / no
+                        // in-flight batches.
+                        if multi_backend && !inflight_vulkan.is_empty() {
+                            drain_inflight_vulkan(&mut inflight_vulkan)?;
+                        }
+                        // Step E A2: ALSO drain the still-OPEN (recorded-but-
+                        // unsubmitted) Vulkan batch — `force_flush` submits+waits it
+                        // so a recorded command never reads freed memory either.
+                        // (Together the two drains cover every Vulkan reference to
+                        // `destroyed`; CUDA eviction is stream-ordered-safe via A3.)
                         if let Some(d_arc) = cache.get(&destroyed) {
                             force_flush_vulkan(d_arc)?;
                         }
@@ -764,12 +841,20 @@ impl PipelinedExecutor {
         // recorded events (one stream/device ⇒ waiting the latest drains all prior
         // stream work too; see `drain_handles`).
         drain_handles(&mut handles)?;
+        // Step E A4b-4: wait every eagerly-submitted (in-flight) Vulkan batch
+        // before the cache drops, freeing the data buffers their CBs read. Empty
+        // on a single-device realize (nothing was eager-submitted).
+        drain_inflight_vulkan(&mut inflight_vulkan)?;
         // Step E A4b-2: drain all deferred Vulkan work before reading/returning
         // the result (and before the cache drops, freeing buffers). The A2
         // submit+wait is now SPLIT — `drain_vulkan_pending` submits the open
         // batch then waits it via a `VulkanCompletion` handle. Byte-identical to
         // A2 for pure-Vulkan (one submission at realize-end, just split).
         drain_vulkan_pending(&cache)?;
+        debug_assert!(
+            inflight_vulkan.is_empty(),
+            "A4b-4: in-flight Vulkan batch list must be empty after realize-end drain",
+        );
 
         let storage = cache.remove(&target).ok_or_else(|| {
             Error::Msg(format!(
@@ -972,13 +1057,22 @@ impl PipelinedExecutor {
         let mut cache: StorageCache = inputs;
         // Step E A4b-1/A4b-3: per-node async-completion handles (see realize_inner
         // for the full rationale). Map drained at realize-end; the cross-device
-        // copy waits the SOURCE producer's handle (A4b-3); the Vulkan eviction
-        // guard stays the blocking `force_flush_vulkan` until A4b-4's eager submit.
+        // copy waits the SOURCE producer's handle (A4b-3).
         let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
+        // Step E A4b-4: eagerly-submitted in-flight Vulkan batches + the
+        // multi-backend gate. See realize_inner for the full rationale — this is
+        // the identical eager-submit / in-flight-lifetime machinery applied to the
+        // multi-target walk. `multi_backend` arms on a genuine backend switch and
+        // gates every eager submit, so a single-device realize_many is
+        // byte-identical to A4b-2.
+        let mut inflight_vulkan: Vec<InflightVulkan> = Vec::new();
+        let mut multi_backend = false;
         for item in rx {
             let item = item?;
-            if let Some(plan_gen) = plan_generation {
-                if current_chunk_backend != Some(item.target_backend) {
+            // Chunk-boundary hook: TopologyChanged check + (A4b-4) backend-switch
+            // detection + eager-submit-on-leaving-a-Vulkan-chunk.
+            if current_chunk_backend != Some(item.target_backend) {
+                if let Some(plan_gen) = plan_generation {
                     let live = crate::dispatch::topology_generation();
                     if live != plan_gen {
                         return Err(Error::TopologyChanged {
@@ -987,14 +1081,42 @@ impl PipelinedExecutor {
                         }
                         .bt());
                     }
-                    current_chunk_backend = Some(item.target_backend);
                 }
+                let leaving = current_chunk_backend;
+                if let Some(prev) = leaving {
+                    if prev != item.target_backend {
+                        multi_backend = true;
+                        if prev == BackendId::Vulkan {
+                            eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
+                        }
+                    }
+                }
+                current_chunk_backend = Some(item.target_backend);
             }
-            // Step E A4b-3: finer cross-device source-drain — wait ONLY the source
-            // producer before a Copy/Move (not the whole source device). No-op for
-            // non-Copy items. See realize_inner for the race-safety argument.
+            // Step E A4b-4 (Invariant E): wait in-flight Vulkan before recording a
+            // new Vulkan op (same-device cross-chunk RAW safety). See realize_inner.
+            if multi_backend
+                && item.target_backend == BackendId::Vulkan
+                && !inflight_vulkan.is_empty()
+            {
+                drain_inflight_vulkan(&mut inflight_vulkan)?;
+            }
+            // Step E A4b-3 + A4b-4: cross-device residency boundary. See
+            // realize_inner for the full rationale.
             if matches!(item.kind, WorkItemKind::Copy { .. } | WorkItemKind::Move { .. }) {
+                // A4b-4: submit any open Vulkan chunk so the iGPU runs while the
+                // host (possibly) waits on the CUDA producer.
+                if multi_backend {
+                    eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
+                }
                 if let Some(&producer) = item.inputs.first() {
+                    // A4b-4: wait in-flight Vulkan ONLY for a Vulkan-source D2H
+                    // (reads completed data; download flushes only the OPEN batch).
+                    // A CUDA/CPU source does NOT wait Vulkan (preserves overlap).
+                    if multi_backend && copy_source_is_vulkan(&cache, producer)? {
+                        drain_inflight_vulkan(&mut inflight_vulkan)?;
+                    }
+                    // Step E A4b-3: finer CUDA source-drain — wait ONLY the producer.
                     wait_producer_handle(&mut handles, producer)?;
                 }
             }
@@ -1003,11 +1125,17 @@ impl PipelinedExecutor {
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
                     if !target_set.contains(&destroyed) {
-                        // Step E A2 / A4b-3 (Vulkan eviction guard): KEEP the
-                        // blocking `force_flush_vulkan` (submit + wait) — under
-                        // A4b-2 Vulkan does not eager-submit mid-walk (A4b-4), so
-                        // there is no Vulkan handle to `wait H(evicted)`; the batch
-                        // is still merely recorded. No-op otherwise.
+                        // Step E A4b-4 (in-flight DATA-BUFFER lifetime — UAF guard):
+                        // wait ALL in-flight Vulkan batches before freeing a buffer
+                        // their CBs may read (conservative buffer→batch mapping).
+                        // See realize_inner for the UAF argument. No-op
+                        // single-device / no in-flight batches.
+                        if multi_backend && !inflight_vulkan.is_empty() {
+                            drain_inflight_vulkan(&mut inflight_vulkan)?;
+                        }
+                        // Step E A2: ALSO drain the still-OPEN recorded Vulkan batch
+                        // (force_flush submit+wait) so a recorded command never
+                        // reads freed memory. CUDA eviction is A3 stream-safe.
                         if let Some(d_arc) = cache.get(&destroyed) {
                             force_flush_vulkan(d_arc)?;
                         }
@@ -1028,10 +1156,17 @@ impl PipelinedExecutor {
         // Step E A4b-1: drain every outstanding async handle (CUDA events) before
         // results are read / the cache drops.
         drain_handles(&mut handles)?;
+        // Step E A4b-4: wait every eagerly-submitted in-flight Vulkan batch before
+        // the cache drops. Empty on a single-device realize.
+        drain_inflight_vulkan(&mut inflight_vulkan)?;
         // Step E A4b-2: drain all deferred Vulkan work — submit the open batch
         // then wait it via a `VulkanCompletion` handle (the A2 submit+wait, split;
         // byte-identical for pure-Vulkan — one submission at realize-end).
         drain_vulkan_pending(&cache)?;
+        debug_assert!(
+            inflight_vulkan.is_empty(),
+            "A4b-4: in-flight Vulkan batch list must be empty after realize-end drain",
+        );
 
         // Verify every target was realized + collect outputs in
         // target order. We don't `remove` from the cache because the
@@ -4730,15 +4865,156 @@ struct VulkanCompletion {
     batch: fuel_vulkan_backend::SubmittedBatch,
 }
 
+/// Step E A4b-4: the element type of the executor's in-flight-Vulkan-batch list.
+/// A [`VulkanCompletion`] on a Vulkan build; a zero-sized placeholder otherwise
+/// so the realize loops carry one `Vec<InflightVulkan>` local without `cfg` on
+/// every use site (the helpers `eager_submit_all_vulkan` / `drain_inflight_vulkan`
+/// are the only code that ever pushes/drains it, and they are `cfg`-gated).
+#[cfg(feature = "vulkan")]
+type InflightVulkan = VulkanCompletion;
+#[cfg(not(feature = "vulkan"))]
+type InflightVulkan = ();
+
+/// Step E A4b-4: is the cross-device copy's SOURCE buffer Vulkan-resident?
+///
+/// Used at the cross-device `Op::Copy`/`Op::Move` boundary to decide whether the
+/// executor must wait the in-flight Vulkan batches before the copy. A Vulkan→CPU
+/// D2H reads the source on the host, and the Vulkan `download` path only
+/// `force_flush`es the OPEN batch (never the executor's eagerly-submitted
+/// in-flight ones), so for a VULKAN source we must `drain_inflight_vulkan` first
+/// to read completed data. For a CUDA / CPU source we must NOT wait Vulkan — the
+/// copy doesn't read any Vulkan buffer, and waiting Vulkan there would needlessly
+/// serialize the independent Vulkan sub-DAG (killing the overlap A4b-4 exists to
+/// win). Returns `false` when the producer's storage isn't in the cache (treated
+/// as not-Vulkan → no Vulkan wait; the CUDA/CPU producer handle still covers it).
+#[cfg(feature = "vulkan")]
+fn copy_source_is_vulkan(cache: &StorageCache, producer: NodeId) -> Result<bool> {
+    if let Some(arc) = cache.get(&producer) {
+        let guard = arc
+            .read()
+            .map_err(|_| poisoned("storage lock probing copy-source backend"))?;
+        return Ok(matches!(guard.inner, fuel_memory::BackendStorage::Vulkan(_)));
+    }
+    Ok(false)
+}
+
+#[cfg(not(feature = "vulkan"))]
+#[inline]
+fn copy_source_is_vulkan(_cache: &StorageCache, _producer: NodeId) -> Result<bool> {
+    Ok(false)
+}
+
 #[cfg(feature = "vulkan")]
 impl crate::compiled::Completion for VulkanCompletion {
     fn wait(self: Box<Self>) -> Result<()> {
-        // Move the batch out of the box; `wait_submitted` consumes it by value,
-        // waits the fence, retires pools, then drops it (UAF-safe: nothing the
-        // in-flight CB references frees before the fence signals).
-        let VulkanCompletion { backend, batch } = *self;
+        self.into_wait()
+    }
+}
+
+#[cfg(feature = "vulkan")]
+impl VulkanCompletion {
+    /// Block on this batch's fence, retire pools, then free the batch. Consumes
+    /// `self` by value (the by-value sibling of the boxed `Completion::wait`),
+    /// used by the executor's `inflight_vulkan` drain (A4b-4) where we hold the
+    /// `VulkanCompletion` unboxed in a `Vec`.
+    fn into_wait(self) -> Result<()> {
+        // `wait_submitted` consumes the batch by value: waits the fence, retires
+        // pools, then drops the batch (UAF-safe — nothing the in-flight CB
+        // references frees before the fence signals).
+        let VulkanCompletion { backend, batch } = self;
         backend.wait_submitted(batch)
     }
+}
+
+/// Step E A4b-4 — eager Vulkan submission during the walk (the OVERLAP enabler).
+///
+/// Submits each DISTINCT Vulkan backend's currently-open batch WITHOUT waiting,
+/// pushing the resulting in-flight [`VulkanCompletion`]s onto `inflight` so the
+/// executor waits them later (at the in-flight-lifetime guard / realize-end). An
+/// empty open batch yields `None` and is skipped (idempotent).
+///
+/// This is what makes a Vulkan sub-DAG actually START on the iGPU while the
+/// executor records/dispatches the next (CUDA) chunk — without it the Vulkan
+/// batch sits merely *recorded* until realize-end and never overlaps the CUDA
+/// stream (design §5). Called ONLY on a genuinely multi-backend realize (gated by
+/// the executor's `multi_backend` flag); on a single-device graph it is never
+/// reached, so pure-Vulkan stays byte-identical to A4b-2 (one realize-end submit).
+///
+/// **Whole-chunk granularity (UAF/race-safety, design §4 + the Vulkan
+/// single-queue OOO-completion semantics).** We submit only at chunk boundaries
+/// and before a cross-device wait — never mid-chunk — so the batch handed to the
+/// GPU is a COMPLETE contiguous run of Vulkan nodes with all its intra-CB
+/// dependency barriers (`recorder.rs` `vkCmdPipelineBarrier`) already in place.
+/// Vulkan only guarantees that batches on one queue BEGIN in submission order;
+/// they may overlap / complete out of order, so a split mid-chunk would lose the
+/// write-before-read ordering for ops that read an earlier op's buffer in the
+/// SAME chunk. By submitting whole chunks and re-syncing (`drain_inflight_vulkan`)
+/// before any later Vulkan op records, before any cross-device copy, and before
+/// any Vulkan-referenced eviction, no in-flight batch is ever read or freed while
+/// still running.
+#[cfg(feature = "vulkan")]
+fn eager_submit_all_vulkan(
+    cache: &StorageCache,
+    inflight: &mut Vec<VulkanCompletion>,
+) -> Result<()> {
+    // Collect distinct Vulkan backends referenced by the cache (dedup by gpu_id).
+    let mut seen: Vec<usize> = Vec::new();
+    let mut backends: Vec<Arc<fuel_vulkan_backend::VulkanBackend>> = Vec::new();
+    for arc in cache.values() {
+        let guard = arc
+            .read()
+            .map_err(|_| poisoned("storage lock during eager vulkan submit"))?;
+        if let fuel_memory::BackendStorage::Vulkan(v) = &guard.inner {
+            if let Some(backend) = v.backend() {
+                if !seen.contains(&backend.gpu_id) {
+                    seen.push(backend.gpu_id);
+                    backends.push(backend.clone());
+                }
+            }
+        }
+    }
+    for backend in backends {
+        if let Some(batch) = backend.submit_pending()? {
+            inflight.push(VulkanCompletion { backend, batch });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "vulkan"))]
+#[inline]
+fn eager_submit_all_vulkan(_cache: &StorageCache, _inflight: &mut Vec<InflightVulkan>) -> Result<()> {
+    Ok(())
+}
+
+/// Step E A4b-4 — wait every in-flight (eagerly-submitted) Vulkan batch, then
+/// clear the list. The re-sync half of [`eager_submit_all_vulkan`].
+///
+/// Each `into_wait` blocks on the batch fence (`vkWaitForFences`), retires the
+/// backend's descriptor pools, and frees the batch (CB / descriptor sets /
+/// transient buffers / retired command pool — all now idle on the GPU). After
+/// this returns, NO submitted Vulkan command buffer is still executing, so it is
+/// safe to (a) record a new Vulkan op that may read a just-produced buffer,
+/// (b) D2H-copy a Vulkan buffer on the host, or (c) free a buffer a batch read.
+///
+/// Because the eager submit happened at the PRIOR chunk boundary and an
+/// intervening (e.g. CUDA) chunk has since been recorded/dispatched, the fence is
+/// typically already signalled here — the wait is a fast no-op, and the iGPU work
+/// genuinely overlapped the other device's stream. Waiting the Vulkan fence does
+/// NOT touch the CUDA stream, so the other device keeps running (concurrency
+/// preserved — design §5 "the per-device guards don't cross-stall").
+#[cfg(feature = "vulkan")]
+fn drain_inflight_vulkan(inflight: &mut Vec<VulkanCompletion>) -> Result<()> {
+    for vc in inflight.drain(..) {
+        vc.into_wait()?;
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "vulkan"))]
+#[inline]
+fn drain_inflight_vulkan(_inflight: &mut Vec<InflightVulkan>) -> Result<()> {
+    Ok(())
 }
 
 /// Step E A4b-2: the realize-end Vulkan drain, SPLIT into submit-then-wait.
