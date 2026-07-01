@@ -6277,9 +6277,21 @@ impl LlamaModel {
         )?;
         let mut ctx = InferenceContext::new(device.clone());
 
+        // Phase D · D2c: hold ONE plan-once decode session across the
+        // whole generation. Prefill (seq>1) routes through the persistent
+        // entry, which internally falls back to the D1 rebuild path for
+        // non-seq==1 steps WITHOUT building the session (behaviour byte-
+        // identical to a bare `forward_with_kv_context` prefill). Each
+        // per-token decode step (seq==1) then builds the held graph on the
+        // FIRST token (optimize once) and reuses it — skipping optimize —
+        // for every subsequent token. The session is loop-internal; the
+        // public signature is unchanged.
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+
         // Prefill: one forward pass over the full prompt.
-        let mut last_logits =
-            self.forward_with_kv_context(prompt_tokens, &mut cache, &mut ctx)?;
+        let mut last_logits = self.forward_with_kv_context_persistent(
+            prompt_tokens, &mut cache, &mut ctx, &mut session,
+        )?;
 
         // Decode loop.
         for _ in 0..max_new_tokens {
@@ -6291,8 +6303,9 @@ impl LlamaModel {
                     break;
                 }
             }
-            last_logits =
-                self.forward_with_kv_context(&[next], &mut cache, &mut ctx)?;
+            last_logits = self.forward_with_kv_context_persistent(
+                &[next], &mut cache, &mut ctx, &mut session,
+            )?;
         }
         Ok(tokens)
     }
@@ -8456,6 +8469,245 @@ mod generate_tests {
         // Sanity: both caches advanced identically.
         assert_eq!(cache2.cached_len, max_seq_len);
         assert_eq!(cache1.cached_len, max_seq_len);
+    }
+
+    /// Phase D · D2c born-red gate for generate-loop integration.
+    ///
+    /// The plain LlamaModel decode generate loops
+    /// (`generate_streaming_with_kv_context` / `generate_with_kv_context`)
+    /// now hold ONE plan-once [`DecodeSession`] across the generation and
+    /// route every step through
+    /// [`LlamaModel::forward_with_kv_context_persistent`]. This is the
+    /// end-to-end guard that the plan-once path is actually USED in
+    /// production generation and stays bit-exact vs. the D1 rebuild path.
+    ///
+    /// The test drives an explicit persistent generate loop (mirroring the
+    /// wired production loop: hold `session`, call
+    /// `forward_with_kv_context_persistent` for prefill + every decode
+    /// step) and asserts, against a SEPARATE D1 reference loop over the
+    /// same inputs (bare `forward_with_kv_context` + the identical greedy
+    /// `sample_logits`):
+    ///   (a) the generated token sequence is **byte-identical** over N≥4
+    ///       greedy tokens — because greedy sampling means ANY per-token
+    ///       logit drift diverges the sequence, an exact N-token match is
+    ///       a strong end-to-end guard;
+    ///   (b) each step's **logits** are **exactly `==`** the D1 cached
+    ///       path (same plan → same kernels → bit-exact, NOT epsilon);
+    ///   (c) `optimize_calls_thread_local()` bumps **only ~once for the
+    ///       decode portion** — the first decode token builds the held
+    ///       session (optimize once); tokens 2..N skip optimize. The
+    ///       prefill (seq>1) falls back to the D1 rebuild path, which
+    ///       optimizes once too, so the total across prefill + N decode
+    ///       tokens is exactly 2.
+    /// It ALSO drives the real production wrapper
+    /// `generate_with_kv_context` and asserts the returned token sequence
+    /// matches the reference — confirming the wiring, not just the entry.
+    ///
+    /// Born-red shape: greedy over N tokens diverges the sequence on ANY
+    /// per-token logit drift, so a broken session-reuse (stale
+    /// intermediate, re-optimize corruption, per-token node growth) would
+    /// flip a token and fail (a). Before the loops were wired to
+    /// `forward_with_kv_context_persistent`, (c) fails (the D1 path
+    /// re-optimizes per token → the decode window bumps N times, not 1).
+    #[test]
+    fn generate_loop_persistent_byte_exact_and_plans_once() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    4,
+            n_kv_heads: 2, // exercise GQA (n_rep = 2)
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+
+        let prompt = [1_u32, 2, 3];
+        let max_new = 5; // N ≥ 4 greedy decode tokens
+        let max_seq_len = prompt.len() + max_new;
+        let strategy = SamplingStrategy::Greedy;
+
+        // ---- D1 (rebuild) REFERENCE loop FIRST, in its own pass, so its
+        // per-token re-plans do NOT pollute the optimize-count window we
+        // measure around the D2 loop. Greedy sampling is open-coded with
+        // `sample_logits` so it is bit-identical to the persistent loop's
+        // sampling; we capture BOTH the token sequence AND per-step logits.
+        let dev1 = Device::cpu();
+        let mut cache1 = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev1,
+        ).expect("with_capacity d1");
+        let mut ctx1 = InferenceContext::new(dev1);
+        let mut rng1: u64 = 0;
+        let mut ref_tokens: Vec<u32> = prompt.to_vec();
+        let mut ref_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
+        // Prefill.
+        let mut last1 = model
+            .forward_with_kv_context(&prompt, &mut cache1, &mut ctx1)
+            .expect("d1 prefill");
+        for _ in 0..max_new {
+            let next = sample_logits(&last1, strategy, &mut rng1);
+            ref_tokens.push(next);
+            last1 = model
+                .forward_with_kv_context(&[next], &mut cache1, &mut ctx1)
+                .expect("d1 decode");
+            ref_step_logits.push(last1.clone());
+        }
+
+        // ---- D2 (persistent) generate loop — mirrors the wired
+        // production loop exactly (hold `session`, route prefill + every
+        // decode step through `forward_with_kv_context_persistent`). We
+        // snapshot the thread-local optimize count around the WHOLE loop
+        // (prefill + decode). ----
+        let opt_before = crate::pipelined_bridge::optimize_calls_thread_local();
+
+        let dev2 = Device::cpu();
+        let mut cache2 = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev2,
+        ).expect("with_capacity d2");
+        let mut ctx2 = InferenceContext::new(dev2);
+        let mut rng2: u64 = 0;
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+        let mut d2_tokens: Vec<u32> = prompt.to_vec();
+        let mut d2_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
+        // Prefill through the persistent entry (seq>1 → falls back to the
+        // D1 rebuild path WITHOUT building the session).
+        let mut last2 = model
+            .forward_with_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
+            .expect("d2 prefill");
+        assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+        for _ in 0..max_new {
+            let next = sample_logits(&last2, strategy, &mut rng2);
+            d2_tokens.push(next);
+            last2 = model
+                .forward_with_kv_context_persistent(&[next], &mut cache2, &mut ctx2, &mut session)
+                .expect("d2 decode");
+            d2_step_logits.push(last2.clone());
+        }
+
+        let opt_after = crate::pipelined_bridge::optimize_calls_thread_local();
+
+        // (a) Byte-identical token sequence over N greedy tokens. Any
+        // per-token logit drift would diverge greedy argmax → this is the
+        // strong end-to-end guard.
+        assert_eq!(
+            d2_tokens, ref_tokens,
+            "persistent generate loop must produce the byte-identical token \
+             sequence as the D1 rebuild path over {max_new} greedy tokens",
+        );
+
+        // (b) Each step's logits exactly == the D1 cached path (bit-exact,
+        // NOT epsilon — same plan → same kernel sequence → identical bytes).
+        assert_eq!(d2_step_logits.len(), ref_step_logits.len());
+        for (i, (d2, d1)) in d2_step_logits.iter().zip(ref_step_logits.iter()).enumerate() {
+            assert_eq!(
+                d2, d1,
+                "persistent decode step {i} logits must be byte-identical to the \
+                 D1 cached path",
+            );
+        }
+
+        // (c) optimize bumped only ~once for the decode portion. Prefill
+        // (seq>1) falls back to the rebuild path (1 optimize); the first
+        // decode token builds the session (1 optimize); decode tokens
+        // 2..N skip optimize. Total across prefill + N decode = exactly 2.
+        assert_eq!(
+            opt_after - opt_before, 2,
+            "persistent generate must optimize EXACTLY twice (1 prefill \
+             fallback + 1 decode-session build) regardless of N={max_new} \
+             decode tokens: {opt_before} -> {opt_after}",
+        );
+
+        // The session was built (on the first decode token) and is still
+        // held/valid at the end of the generation.
+        assert!(session.is_some(), "held session survives the decode loop");
+        assert_eq!(cache2.cached_len, max_seq_len);
+        assert_eq!(cache1.cached_len, max_seq_len);
+
+        // ---- Finally, drive the REAL production wrapper and confirm the
+        // wiring: the token sequence it returns matches the reference. ----
+        let via_wrapper = model.generate_with_kv_context(
+            &prompt, max_new, strategy, None, &Device::cpu(), DType::F32,
+        ).expect("generate_with_kv_context");
+        assert_eq!(
+            via_wrapper, ref_tokens,
+            "generate_with_kv_context (wired to the persistent path) must \
+             produce the byte-identical token sequence as the D1 reference",
+        );
+    }
+
+    /// Phase D · D2c perf SCAFFOLD (ignored — NOT a CI gate). The
+    /// wall-clock ~1.8×/token win of plan-once over per-token re-plan is a
+    /// MANUAL live-GPU measurement on a realistic model (per the design
+    /// doc §10: CPU planning is a smaller fraction of CPU compute, so the
+    /// CPU ratio understates the win; timing tests are flaky in CI). This
+    /// scaffold shows the A/B shape — a D1 rebuild loop vs. a D2 persistent
+    /// loop over N seq==1 tokens — and prints the per-token wall-clock so a
+    /// human can run it on CUDA/Vulkan. Do NOT assert on timing here.
+    ///
+    /// Run manually: `cargo test -p fuel-core --lib
+    /// generate_loop_persistent_bench_scaffold -- --ignored --nocapture`.
+    /// For the real number, port this shape to a live-GPU harness with a
+    /// realistic model + N≥64 (one live suite at a time, per CLAUDE.md).
+    #[test]
+    #[ignore = "perf scaffold — manual live-GPU measurement, not a CI gate"]
+    fn generate_loop_persistent_bench_scaffold() {
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
+            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+
+        let prompt = [1_u32, 2, 3];
+        let n = 64usize;
+        let max_seq_len = prompt.len() + n;
+        let strategy = SamplingStrategy::Greedy;
+        let dev = Device::cpu();
+
+        // D1: rebuild + re-optimize every decode token.
+        let mut cache1 = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+        ).unwrap();
+        let mut ctx1 = InferenceContext::new(dev.clone());
+        let mut rng1 = 0u64;
+        let mut last1 = model.forward_with_kv_context(&prompt, &mut cache1, &mut ctx1).unwrap();
+        let t_d1 = std::time::Instant::now();
+        for _ in 0..n {
+            let next = sample_logits(&last1, strategy, &mut rng1);
+            last1 = model.forward_with_kv_context(&[next], &mut cache1, &mut ctx1).unwrap();
+        }
+        let d1 = t_d1.elapsed();
+
+        // D2: plan-once persistent decode (the wired production path).
+        let mut cache2 = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+        ).unwrap();
+        let mut ctx2 = InferenceContext::new(dev.clone());
+        let mut rng2 = 0u64;
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+        let mut last2 = model
+            .forward_with_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
+            .unwrap();
+        let t_d2 = std::time::Instant::now();
+        for _ in 0..n {
+            let next = sample_logits(&last2, strategy, &mut rng2);
+            last2 = model
+                .forward_with_kv_context_persistent(&[next], &mut cache2, &mut ctx2, &mut session)
+                .unwrap();
+        }
+        let d2 = t_d2.elapsed();
+
+        eprintln!(
+            "D2c bench (CPU, tiny model, N={n}): D1 rebuild = {:?} ({:?}/tok), \
+             D2 plan-once = {:?} ({:?}/tok), ratio = {:.2}x (CPU understates; \
+             measure the ~1.8x on a live GPU with a realistic model)",
+            d1, d1 / n as u32, d2, d2 / n as u32,
+            d1.as_secs_f64() / d2.as_secs_f64().max(1e-9),
+        );
+        // NO timing assertion — perf is a verify-after gate, not a CI gate.
     }
 
     /// Phase D · D2b invalidation: a `seq != 1` step mid-stream (e.g. a
