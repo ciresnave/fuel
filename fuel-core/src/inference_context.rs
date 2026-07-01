@@ -509,6 +509,58 @@ impl InferenceContext {
         )
     }
 
+    /// Phase D · D2a — first-realize that ALSO captures the reusable
+    /// optimize artifacts for a later prebuilt (plan-once) re-realize.
+    ///
+    /// Runs the full `prepare` + `optimize_graph` + dispatch path ONCE (like
+    /// [`Self::realize_one_as_with_env`]) and returns
+    /// `(effective_target, OptimizedGraph, result)`. The caller (D2b's
+    /// `DecodeSession`) holds the `effective_target` (the spliced D2H
+    /// `Op::Copy` root) + the cached `OptimizedGraph` and feeds them to
+    /// [`Self::realize_prebuilt_as_with_env`] on later tokens to SKIP the
+    /// re-plan. See [`crate::pipelined_bridge::prebuild_optimized_env`].
+    pub fn prebuild_optimized_as_with_env<T: bytemuck::Pod>(
+        &self,
+        graph: &Arc<RwLock<Graph>>,
+        target: NodeId,
+        env: &SymEnv,
+    ) -> Result<(NodeId, fuel_dispatch::optimize::OptimizedGraph, Vec<T>)> {
+        crate::pipelined_bridge::prebuild_optimized_env::<T>(
+            graph,
+            target,
+            &self.device,
+            self.cloned_persistent(),
+            env,
+        )
+    }
+
+    /// Phase D · D2a — plan-once re-realize over a graph already prepared +
+    /// optimized by a prior [`Self::prebuild_optimized_as_with_env`]. Skips
+    /// BOTH `prepare` (no D2H re-splice / const-cache walk) AND
+    /// `optimize_graph` (no re-plan / double-insert). Re-binds only the
+    /// per-call `StorageCache` (this context's persistent Arcs, incl. the
+    /// re-bound per-token data Consts) + `env`, then dispatches straight to
+    /// the executor. `effective_target` + `optimized` come from the prebuild.
+    ///
+    /// A `TopologyChanged` error surfaces to the caller (typed, not
+    /// retried) — the cached view is stale; invalidate + rebuild the session.
+    pub fn realize_prebuilt_as_with_env<T: bytemuck::Pod>(
+        &self,
+        graph: &Arc<RwLock<Graph>>,
+        effective_target: NodeId,
+        optimized: &fuel_dispatch::optimize::OptimizedGraph,
+        env: &SymEnv,
+    ) -> Result<Vec<T>> {
+        crate::pipelined_bridge::realize_one_prebuilt_env::<T>(
+            graph,
+            effective_target,
+            optimized,
+            &self.device,
+            self.cloned_persistent(),
+            env,
+        )
+    }
+
     /// Multi-target counterpart of [`realize_one_as`].
     pub fn realize_many_as<T: bytemuck::Pod>(
         &self,

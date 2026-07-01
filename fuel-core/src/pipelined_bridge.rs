@@ -91,6 +91,52 @@ use crate::Device;
 use crate::topology::SystemTopology;
 
 // ---------------------------------------------------------------------------
+// Optimize-call telemetry (Phase D · D2a)
+// ---------------------------------------------------------------------------
+
+/// Process-global count of real `optimize_graph` invocations, bumped once
+/// per [`build_optimized_graph`] call (the expensive placement DP + cost
+/// composer + Judge + residency/layout mutation). Mirrors the B1 in-flight
+/// counter idiom: a plain `AtomicUsize` with `Relaxed` ordering.
+///
+/// This is a **test/telemetry observation**, never a correctness gate. The
+/// D2a optimize-skip born-red test reads it to prove the prebuilt realize
+/// path (`realize_one_prebuilt_env`) does NOT re-run the optimizer on a
+/// held, already-optimized graph. `TopologyChanged` retries legitimately
+/// bump it (each retry re-optimizes against the fresh topology).
+static OPTIMIZE_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+std::thread_local! {
+    /// Per-thread mirror of [`OPTIMIZE_CALLS`], bumped in the SAME spot.
+    /// `build_optimized_graph` always runs on the realize CALLER's thread
+    /// (the optimize takes the graph write-lock synchronously, BEFORE the
+    /// executor spawns its compiler thread), so a thread-local count
+    /// isolates one realize sequence from every OTHER test thread's
+    /// concurrent optimizes — which a single process-global counter cannot.
+    /// The D2a born-red test reads the thread-local delta so it is robust
+    /// under the full concurrent suite; the process-global
+    /// [`optimize_calls`] stays the coarse telemetry surface.
+    static OPTIMIZE_CALLS_TL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Read the process-global `optimize_graph` invocation count (D2a
+/// telemetry — see [`OPTIMIZE_CALLS`]). Monotonically non-decreasing across
+/// the process lifetime; process-wide, so it is polluted by concurrent test
+/// threads — use [`optimize_calls_thread_local`] for a per-thread delta.
+pub fn optimize_calls() -> usize {
+    OPTIMIZE_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Read THIS thread's `optimize_graph` invocation count (see
+/// [`OPTIMIZE_CALLS_TL`]). Robust for a single-threaded realize sequence
+/// even while other threads optimize concurrently — the D2a optimize-skip
+/// assertion measures a delta on this reader.
+pub fn optimize_calls_thread_local() -> usize {
+    OPTIMIZE_CALLS_TL.with(|c| c.get())
+}
+
+// ---------------------------------------------------------------------------
 // Public entry points
 // ---------------------------------------------------------------------------
 
@@ -309,6 +355,148 @@ pub fn realize_one_as_with_initial_reporting<T: bytemuck::Pod>(
     Ok((extract_cpu_bytes_typed::<T>(&storage)?, root_kernel_source))
 }
 
+// ---------------------------------------------------------------------------
+// Phase D · D2a — the optimize-skip bridge seam (plan-once persistent decode)
+// ---------------------------------------------------------------------------
+
+/// First-realize sibling of [`realize_one_as_with_initial_env`] that ALSO
+/// returns the reusable optimize artifacts so a caller (D2b's
+/// `DecodeSession`) can re-realize the SAME graph on later tokens WITHOUT
+/// re-paying `prepare`'s D2H-splice/const-cache or `build_optimized_graph`'s
+/// placement DP.
+///
+/// Runs the normal path ONCE — `prepare` (splices the D2H `Op::Copy` at the
+/// root + builds the const cache) then `optimize_graph` in place (stamps +
+/// residency/layout fixups) then dispatch — and returns
+/// `(effective_target, OptimizedGraph, result)`:
+/// - `effective_target` — the D2H `Op::Copy` NodeId `prepare` spliced (the
+///   node the executor was asked for; stable across tokens because the graph
+///   structure is stable per D1).
+/// - `OptimizedGraph` — the cached `{roots, generation}` view. It bakes NO
+///   Const data / storage / `SymEnv`; the durable optimization output lives
+///   in the (now-mutated) graph. Sound to reuse **iff the graph structure +
+///   topology generation are unchanged** — exactly D1's guarantee.
+/// - `result` — the first token's host bytes (so the caller can byte-compare
+///   later prebuilt realizes against it).
+///
+/// Byte-identical to `realize_one_as_with_initial_env` for the value it
+/// produces — it IS that path, just additionally surfacing the optimize view
+/// and spliced root. `OPTIMIZE_CALLS` bumps exactly once here (plus once per
+/// `TopologyChanged` retry, as on the normal path).
+pub fn prebuild_optimized_env<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    target: NodeId,
+    device: &Device,
+    initial: StorageCache,
+    sym_env: &SymEnv,
+) -> Result<(NodeId, OptimizedGraph, Vec<T>)> {
+    let (cache, _backend_id, mut effective_targets) =
+        prepare(graph, &[target], device, initial)?;
+    let Some(cpu_target) = effective_targets.pop() else {
+        return Err(Error::Msg(
+            "pipelined_bridge: prepare returned no effective target for a \
+             single-target prebuild — internal bug"
+                .into(),
+        )
+        .bt());
+    };
+    let (storage, optimized) = dispatch_with_plan_retry_capturing(
+        graph, cpu_target, cache, device, sym_env,
+    )?;
+    let bytes = extract_cpu_bytes_typed::<T>(&storage)?;
+    Ok((cpu_target, optimized, bytes))
+}
+
+/// Plan-once realize: the `graph` has ALREADY been `prepare`d (the D2H
+/// `Op::Copy` spliced at the root) AND `optimize_graph`'d (backend stamps +
+/// residency `Op::Copy` + layout `Op::Contiguize` baked in place) on a prior
+/// [`prebuild_optimized_env`] call; `optimized` is the cached view from that
+/// call. This entry goes STRAIGHT to
+/// [`PipelinedExecutor::realize_with_optimized_picking_env`], **skipping
+/// BOTH** `prepare` (no re-splice, no const-cache walk) **AND**
+/// `build_optimized_graph`/`optimize_graph` (no re-plan, no double-insert of
+/// residency/layout nodes). `OPTIMIZE_CALLS` does NOT move.
+///
+/// `effective_target` is the D2H `Op::Copy` NodeId `prebuild_optimized_env`
+/// returned; `cache` is the per-token [`StorageCache`] (the re-bound data
+/// Consts, typically `InferenceContext::cloned_persistent()`); `sym_env`
+/// carries the per-token `DynScalar` bindings (e.g. `cached_len`).
+///
+/// The `(selector, lookup)` are per-realize-stateless (Device + Judge
+/// derived, no per-realize state — verified Q3), so we rebuild them cheaply
+/// per call; for the branchless decode graph the selector is never consulted
+/// (arm-0 lowering), so this is a no-op there.
+///
+/// `TopologyChanged` is surfaced as its typed error (NOT retried here): a
+/// topology shift means the cached `optimized.generation` is stale and the
+/// stamps may be wrong, so re-optimizing in place would be incorrect. The
+/// caller (D2b) handles it by invalidating the held session and rebuilding
+/// (§4/§5, Q5). Every other error propagates unchanged. Never panics.
+pub fn realize_one_prebuilt_env<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    effective_target: NodeId,
+    optimized: &OptimizedGraph,
+    device: &Device,
+    cache: StorageCache,
+    sym_env: &SymEnv,
+) -> Result<Vec<T>> {
+    // NO prepare(), NO build_optimized_graph(). Straight to the executor.
+    let (selector, lookup) = match production_selector_for(device) {
+        Some((s, l)) => (Some(s), Some(l)),
+        None => (None, None),
+    };
+    let (storage, _layout) = PipelinedExecutor::realize_with_optimized_picking_env(
+        graph.clone(),
+        effective_target,
+        cache,
+        optimized,
+        selector,
+        lookup,
+        sym_env.clone(),
+    )?;
+    extract_cpu_bytes_typed::<T>(&storage)
+}
+
+/// Capturing sibling of [`dispatch_with_plan_retry`] used by
+/// [`prebuild_optimized_env`]: identical retry-on-`TopologyChanged` loop, but
+/// returns the FINAL successful [`OptimizedGraph`] view alongside the storage
+/// so it can be cached for later prebuilt realizes. (The base
+/// `dispatch_with_plan_retry` drops the view; the plan-once path needs to
+/// keep it.) No `report_node` attribution here — the prebuild caller wants
+/// the reusable view, not the root sibling tag.
+fn dispatch_with_plan_retry_capturing(
+    graph: &Arc<RwLock<Graph>>,
+    cpu_target: NodeId,
+    cache: StorageCache,
+    device: &Device,
+    sym_env: &SymEnv,
+) -> Result<(Arc<RwLock<Storage>>, OptimizedGraph)> {
+    let pinned_loc = device.location();
+    let mut retry = TopologyRetryState::new();
+    loop {
+        let optimized =
+            build_optimized_graph(graph, &[cpu_target], pinned_loc, &cache)?;
+        let (selector, lookup) = match production_selector_for(device) {
+            Some((s, l)) => (Some(s), Some(l)),
+            None => (None, None),
+        };
+        let cache_for_attempt = cache.clone();
+        let result = PipelinedExecutor::realize_with_optimized_picking_env(
+            graph.clone(), cpu_target, cache_for_attempt, &optimized,
+            selector, lookup, sym_env.clone(),
+        );
+        match result {
+            Ok((storage, _layout)) => return Ok((storage, optimized)),
+            Err(e) if matches!(e, Error::TopologyChanged { .. })
+                && retry.permit_retry() =>
+            {
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// Retry-on-stale-plan loop for the single-target path. Pulled out so
 /// the multi-target path can reuse the same retry shape.
 ///
@@ -419,6 +607,14 @@ fn build_optimized_graph(
     pinned_device: DeviceLocation,
     cache: &StorageCache,
 ) -> Result<OptimizedGraph> {
+    // D2a telemetry: one bump per real optimize (the expensive placement DP
+    // + cost composer + Judge + in-place residency/layout mutation). The
+    // prebuilt realize path skips this entirely; the born-red test asserts
+    // the count does not move on a re-realize of a held, optimized graph.
+    // Bump BOTH the process-global counter (coarse telemetry) and this
+    // thread's mirror (the isolated per-realize delta the test reads).
+    OPTIMIZE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    OPTIMIZE_CALLS_TL.with(|c| c.set(c.get() + 1));
     let topology = SystemTopology::current();
     let placements_for = |dev: DeviceLocation| -> Vec<BackendId> {
         topology.backends_for(dev).to_vec()
@@ -1552,6 +1748,121 @@ mod tests {
         let out = realize_one_as_with_initial::<f32>(&graph, add, &device, initial)
             .expect("realize through the optimized + route-picker path");
         assert_eq!(out, vec![11.0, 22.0, 33.0, 44.0]);
+    }
+
+    /// Phase D · D2a born-red gate for the optimize-skip bridge seam.
+    ///
+    /// Realize a small CPU graph ONCE via [`prebuild_optimized_env`]
+    /// (capturing the cached `OptimizedGraph` + the spliced D2H target), then
+    /// re-realize the SAME graph via [`realize_one_prebuilt_env`] with a fresh
+    /// per-call cache + empty `SymEnv`, and assert the three plan-once
+    /// invariants:
+    ///   (a) the optimizer count (this thread's isolated
+    ///       [`optimize_calls_thread_local`]) did NOT increase on the 2nd
+    ///       realize (the optimizer was skipped);
+    ///   (b) the 2nd result is **exactly** `==` the 1st (same plan → same
+    ///       kernels → bit-exact, NOT epsilon);
+    ///   (c) the graph node `len()` did NOT grow between the two realizes (no
+    ///       double-spliced D2H `Op::Copy`, no double-inserted
+    ///       residency/`Op::Contiguize`).
+    ///
+    /// The test also demonstrates the HAZARD the seam avoids (the born-red
+    /// shape): routing a 3rd realize of the same graph through the normal
+    /// full path (`realize_one_as_with_initial`) DOES re-optimize (the count
+    /// moves) and DOES re-splice a D2H `Op::Copy` (the node count grows) —
+    /// which is exactly what the prebuilt seam skips.
+    #[test]
+    fn d2a_prebuilt_realize_skips_optimize_and_does_not_grow_graph() {
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (c1, c2, add) = {
+            let mut g = graph.write().unwrap();
+            let c1 = push_node(&mut g, Op::Const, vec![]);
+            let c2 = push_node(&mut g, Op::Const, vec![]);
+            let add = push_node(&mut g, Op::Add, vec![c1, c2]);
+            (c1, c2, add)
+        };
+        // Stable Const storages (the "data" that would be re-bound per token).
+        let c1_arc = cpu_storage_f32(&[1.0, 2.0, 3.0, 4.0]);
+        let c2_arc = cpu_storage_f32(&[10.0, 20.0, 30.0, 40.0]);
+        let device = crate::Device::cpu();
+
+        // --- First realize: full path, capture the reusable optimize view. ---
+        let mut initial = StorageCache::new();
+        initial.insert(c1, Arc::clone(&c1_arc));
+        initial.insert(c2, Arc::clone(&c2_arc));
+        // Per-thread counter — isolated from other test threads' concurrent
+        // optimizes (the process-global `optimize_calls()` is polluted under
+        // the full suite; a global counter cannot give an isolated delta).
+        let calls_before = optimize_calls_thread_local();
+        let (effective_target, optimized, first) =
+            prebuild_optimized_env::<f32>(&graph, add, &device, initial, &SymEnv::default())
+                .expect("prebuild (first) realize");
+        assert_eq!(first, vec![11.0, 22.0, 33.0, 44.0]);
+        let calls_after_first = optimize_calls_thread_local();
+        assert!(
+            calls_after_first > calls_before,
+            "the FIRST realize must run the optimizer (prepare + optimize_graph): \
+             {calls_before} -> {calls_after_first}",
+        );
+        let len_after_first = graph.read().unwrap().len();
+
+        // --- Second realize: PREBUILT seam — skip prepare + optimize. ---
+        // Fresh per-call cache carrying the same const Arcs (the D2b caller
+        // would re-bind per-token data here; on CPU it is a slice-identical
+        // clone). No new prepare/const-cache walk runs on this path.
+        let mut cache2 = StorageCache::new();
+        cache2.insert(c1, Arc::clone(&c1_arc));
+        cache2.insert(c2, Arc::clone(&c2_arc));
+        let second = realize_one_prebuilt_env::<f32>(
+            &graph,
+            effective_target,
+            &optimized,
+            &device,
+            cache2,
+            &SymEnv::default(),
+        )
+        .expect("prebuilt (second) realize");
+        let calls_after_second = optimize_calls_thread_local();
+        let len_after_second = graph.read().unwrap().len();
+
+        // (a) optimizer skipped on the prebuilt path.
+        assert_eq!(
+            calls_after_second, calls_after_first,
+            "prebuilt realize must NOT re-run optimize_graph: \
+             {calls_after_first} -> {calls_after_second}",
+        );
+        // (b) bit-exact (same plan → same kernels), NOT epsilon.
+        assert_eq!(
+            second, first,
+            "prebuilt realize must reproduce the first result byte-for-byte",
+        );
+        // (c) no double-splice / double-insert.
+        assert_eq!(
+            len_after_second, len_after_first,
+            "prebuilt realize must NOT grow the graph (no re-spliced D2H Copy \
+             / re-inserted residency or Contiguize)",
+        );
+
+        // --- Control: the HAZARD the seam avoids (born-red shape). ---
+        // Routing the SAME graph through the full path a THIRD time DOES
+        // re-optimize and DOES splice a second D2H Op::Copy at the root —
+        // exactly the double-work + node growth the prebuilt seam skips.
+        let mut initial3 = StorageCache::new();
+        initial3.insert(c1, Arc::clone(&c1_arc));
+        initial3.insert(c2, Arc::clone(&c2_arc));
+        let third =
+            realize_one_as_with_initial::<f32>(&graph, add, &device, initial3)
+                .expect("full-path (third) realize");
+        assert_eq!(third, first, "full path still computes the same value");
+        assert!(
+            optimize_calls_thread_local() > calls_after_second,
+            "the FULL path re-optimizes (this is what the prebuilt seam skips)",
+        );
+        assert!(
+            graph.read().unwrap().len() > len_after_second,
+            "the FULL path re-splices a D2H Op::Copy at the root, growing the \
+             graph (this is the double-splice the prebuilt seam skips)",
+        );
     }
 
     /// PR-C1: the production selector builder returns both a selector and
