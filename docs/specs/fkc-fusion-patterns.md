@@ -255,6 +255,16 @@ any: true             # matches any single node; does NOT bind it and does NOT i
    graph presents** (an e-graph / operand-reordering optimizer cannot desync the two — both sides
    canonicalize identically). Non-commutative ops (`Sub`, `Div`, `MatMul`, …) stay strictly
    positional. This removes the §9 "emit both orderings" escape hatch for v1.
+2b. **Attribute matching is wildcard-on-unset (NORMATIVE — landed 2026-07-01, F1).** A pattern node
+   carries `OpAttrs` (`scalars`, `axis`, `perm`, `target_shape`, `dims`). The matcher now **compares**
+   them against the graph node's projected attrs (`fuel_graph::jit::op_to_attrs` reads them off the
+   typed `Op` payload — `Op::Permute` → `perm`, `Op::AddScalar` → `scalars`, `Op::BroadcastTo`/`Reshape`
+   → `target_shape`, etc.). **An empty/unset pattern field is a WILDCARD** (empty `Vec` or `axis: None`
+   matches any graph value); **a SET pattern field must equal the graph node's value exactly** (absolute
+   perm, §F2a). This keeps every attr-agnostic pattern (all authored `OpAttrs::default()`) matching
+   unchanged, while a layout/scalar pattern that *sets* `perm`/`target_shape`/`dims`/`scalars`/`axis`
+   discriminates. (Before this, `match_node` dropped `attrs` entirely — carried across the seam but
+   never compared.)
 3. **Auto-skip is symmetric across guards and extract.** Both `operand(j)` in a `guard:` (§5) and in
    an `extract:` (§6) resolve to the **first non-transparent producer** — they skip `see_through`-set
    wrappers (§4.3) identically. (`input(i)` resolves directly to the bound node.)
