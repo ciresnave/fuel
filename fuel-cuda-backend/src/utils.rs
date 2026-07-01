@@ -1,6 +1,6 @@
 ﻿/// Helper functions to plug cuda kernels in fuel.
-use fuel_core_types::dtype::WithDType;
-use fuel_core_types::{Layout, Result};
+use fuel_ir::dtype::WithDType;
+use fuel_ir::{Layout, Result};
 use baracuda_driver::DeviceBuffer;
 use baracuda_types::{DeviceRepr, ValidAsZeroBits};
 
@@ -30,7 +30,7 @@ pub trait Map1 {
             S::F64(s) => S::F64(self.f(s, d, l)?),
             S::F8E4M3(s) => S::F8E4M3(self.f(s, d, l)?),
             S::F4(_) | S::F6E2M3(_) | S::F6E3M2(_) | S::F8E8M0(_) => {
-                fuel_core_types::bail!("Map1 does not uspport this dtype.");
+                fuel_ir::bail!("Map1 does not uspport this dtype.");
             }
         };
         Ok(out)
@@ -164,7 +164,7 @@ pub trait Map1Any {
             S::F64(s) => self.f(s, d, l, S::F64)?,
             S::F8E4M3(s) => self.f(s, d, l, S::F8E4M3)?,
             S::F4(_) | S::F6E2M3(_) | S::F6E3M2(_) | S::F8E8M0(_) => {
-                fuel_core_types::bail!("Map1 does not uspport this dtype.");
+                fuel_ir::bail!("Map1 does not uspport this dtype.");
             }
         };
         Ok(out)

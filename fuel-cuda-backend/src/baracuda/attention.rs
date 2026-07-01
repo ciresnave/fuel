@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{Error, Layout, Result};
+use fuel_ir::{Error, Layout, Result};
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -229,7 +229,6 @@ fn rope_run(
         }
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
         device,
@@ -280,7 +279,7 @@ fn flash_sdpa_run(
 
     let i32_or = |dim_index: usize, dim_value: usize| -> Result<i32> {
         i32::try_from(dim_value).map_err(|_| {
-            fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+            fuel_ir::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
                 op: op_label,
                 dim_index,
                 dim_value,
@@ -309,7 +308,6 @@ fn flash_sdpa_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     drop(lse_buf);
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
@@ -426,7 +424,7 @@ fn sdpa_arbmask_run(
 
     let i32_or = |dim_index: usize, dim_value: usize| -> Result<i32> {
         i32::try_from(dim_value).map_err(|_| {
-            fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+            fuel_ir::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
                 op: op_label,
                 dim_index,
                 dim_value,
@@ -451,7 +449,6 @@ fn sdpa_arbmask_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     drop(lse_buf);
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),

@@ -8,7 +8,7 @@
 
 use crate::Result;
 use crate::lazy::LazyTensor;
-use fuel_core_types::{DType, Shape};
+use fuel_ir::{DType, Shape};
 
 /// Reduction mode for losses with per-sample outputs. Matches
 /// PyTorch's `reduction` parameter shape.

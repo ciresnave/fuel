@@ -8,8 +8,8 @@
 //! identification (AVX-512 vs AVX2 dispatch, e.g.) that's the cue to
 //! add a real cpuid crate.
 
-use fuel_core_types::probe::{BackendId, BackendProbe, DeviceDescriptor};
-use fuel_core_types::{DeviceLocation, error::Result};
+use fuel_ir::probe::{BackendId, BackendProbe, DeviceDescriptor};
+use fuel_ir::{DeviceLocation, error::Result};
 
 pub struct CpuBackendProbe;
 

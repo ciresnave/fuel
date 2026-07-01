@@ -29,11 +29,14 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, Layout, Result};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::probe::BackendId;
+#[cfg_attr(not(feature = "cuda"), allow(unused_imports))]
+use fuel_ir::Error;
+use fuel_ir::{DType, Layout, Result};
 
 use crate::kernel::{KernelBindingTable, KernelCaps, KernelDTypes, KernelRef, OpParams};
+use fuel_graph::{Graph, NodeId};
 use fuel_memory::Storage;
 
 /// A graph node plus its resolved kernel function pointer and
@@ -101,6 +104,32 @@ pub fn compile_node(
     })
 }
 
+/// The diagnostic `kernel_source` tag the executor dispatches for `node`,
+/// derived from the SAME graph stamp + registry the executor resolves
+/// through: `op_to_op_kind` + `build_lookup_dtypes` + `graph.target_backend`
+/// → the first-registered binding at `(op, dtypes, backend)` (the entry
+/// [`compile_node`]'s `lookup_with_caps` picks). `None` when the node has no
+/// dispatch mapping (view/structural op) or no registered binding.
+///
+/// This is the post-realize attribution the bridge reports for the Judge
+/// telemetry. Step D moved it off the plan's `AlternativeSet::winner()`: the
+/// production realize path dispatches via the binding-table lookup (no plan),
+/// so the first-registered binding IS the matching attribution.
+pub fn dispatched_kernel_source(
+    graph: &Graph,
+    node: NodeId,
+    bindings: &KernelBindingTable,
+) -> Option<&'static str> {
+    let n = graph.node(node);
+    let op = crate::pipelined::op_to_op_kind(&n.op)?;
+    let dtypes = crate::pipelined::build_lookup_dtypes(graph, n);
+    let backend = graph.target_backend(node)?;
+    bindings
+        .lookup_alternatives(op, &dtypes, backend)
+        .first()
+        .map(|e| e.kernel_source)
+}
+
 /// Run a compiled node against the given inputs/outputs. The output
 /// `Storage`s must be pre-allocated (the executor's responsibility,
 /// using the node's shape + dtype).
@@ -118,8 +147,164 @@ pub fn execute_compiled(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     layouts: &[Layout],
-) -> Result<()> {
-    (compiled.kernel)(inputs, outputs, layouts, &compiled.op_params)
+) -> Result<CompletionHandle> {
+    (compiled.kernel)(inputs, outputs, layouts, &compiled.op_params)?;
+    // Step E A4b-1: the kernel has *enqueued* its work (CUDA: launched on the
+    // device stream and returned without a per-op sync, per A3; CPU/Vulkan: see
+    // below). Produce a completion handle FROM THE OUTPUT STORAGE — the kernel
+    // reaches the device via the `Storage`, not an executor-held backend, so the
+    // output's `BackendStorage` is where we find the device/stream to record a
+    // signal on. The executor stores this handle and defers the wait to a
+    // dependency / realize-end boundary instead of `wait`ing inline here.
+    produce_pending(compiled.backend, outputs)
+}
+
+/// Step E A4b-1: build the [`CompletionHandle`] for a just-launched kernel by
+/// inspecting `outputs[0]`'s backend storage.
+///
+/// - **CUDA** → [`CompletionHandle::Pending`] wrapping an [`Event`] recorded on
+///   the output's device stream (signals when this kernel + all prior stream
+///   work completes; one stream per device makes a per-node event a sufficient
+///   stream marker — A4b-1 §1.2).
+/// - **CPU** → [`CompletionHandle::Ready`] (the kernel computed in-process; the
+///   work is already done).
+/// - **Vulkan** → [`CompletionHandle::Ready`]. The per-op compute path keeps
+///   RECORDING into the deferred batch and returns `Ready` during the walk (no
+///   per-op handle, no eager submit — eager submission at sub-DAG boundaries is
+///   A4b-4). A4b-2's async split lives at the executor's realize-end drain
+///   (`drain_vulkan_pending`): it `submit_pending`s the open batch (the per-batch
+///   fence) then waits it through a `VulkanCompletion` handle — byte-identical to
+///   A2's atomic submit+wait, just split. The A2 lazy-batch model still carries
+///   intra-walk Vulkan correctness (same-queue order + the eviction `force_flush`).
+///
+/// Multi-output kernels share one backing buffer (one `BackendStorage`), so
+/// `outputs[0]` is the device handle for every slot — a single event covers them.
+fn produce_pending(
+    _backend: BackendId,
+    outputs: &[Arc<RwLock<Storage>>],
+) -> Result<CompletionHandle> {
+    // `_backend` (= `compiled.backend`) records the *intent*; we read the
+    // device truth off the output storage's variant instead, which is robust
+    // even where the backend stamp and the realized storage could ever diverge.
+    #[cfg(not(feature = "cuda"))]
+    let _ = outputs;
+    #[cfg(feature = "cuda")]
+    {
+        if let Some(out0) = outputs.first() {
+            let guard = out0
+                .read()
+                .map_err(|_| Error::Msg("output storage lock poisoned recording completion".into()).bt())?;
+            if let fuel_memory::BackendStorage::Cuda(cuda_bytes) = &guard.inner {
+                // Step E B1: this is the single CUDA async-submit site — the kernel
+                // was just enqueued on the device stream. The completion handle's
+                // lifetime IS the in-flight window, so `CudaCompletion::new`
+                // increments the per-device in-flight counter here and the handle's
+                // `Drop` decrements it (covering wait, drain, AND the eviction-drop
+                // path uniformly — see the type docs). The device location keys the
+                // counter.
+                let loc = cuda_bytes.device().location();
+                let ev = cuda_bytes.record_completion_event()?;
+                return Ok(CompletionHandle::Pending(Box::new(CudaCompletion::new(ev, loc))));
+            }
+        }
+    }
+    Ok(CompletionHandle::Ready)
+}
+
+/// Step E A4b-1: a CUDA [`Completion`] over a recorded [`Event`]. `wait` is a
+/// blocking host wait (`cuEventSynchronize`) on the event — which fires after
+/// the producing kernel and every prior op on the (single per-device) stream.
+///
+/// Step E B1: carries the producing op's [`DeviceLocation`] and owns one slot
+/// of the process-wide in-flight counter. [`CudaCompletion::new`] (called at the
+/// async-submit site, `produce_pending`) increments; [`Drop`] decrements. Putting
+/// the decrement in `Drop` — NOT in `wait` — is what makes the counter BALANCE:
+/// every path that ends this handle's life decrements exactly once and only once:
+///   - `wait(self: Box<Self>)` synchronizes the event (a `&self` read) then the
+///     `Box` drops → one dec;
+///   - the executor's `drain_handles` / `wait_producer_handle` consume the handle
+///     via `wait` → the same one dec;
+///   - the eviction path `handles.remove(&destroyed)` DROPS the handle WITHOUT
+///     waiting → still one dec (via `Drop`);
+///   - an error (`?`) unwinding the realize loop drops the still-owned handles →
+///     one dec each.
+/// `wait` deliberately does not touch the counter, so no path double-counts.
+#[cfg(feature = "cuda")]
+struct CudaCompletion {
+    ev: fuel_cuda_backend::Event,
+    loc: fuel_ir::DeviceLocation,
+}
+
+#[cfg(feature = "cuda")]
+impl CudaCompletion {
+    /// Build the handle for a just-enqueued CUDA op and register it as one
+    /// in-flight op on `loc`. The matching decrement is in [`Drop`].
+    fn new(ev: fuel_cuda_backend::Event, loc: fuel_ir::DeviceLocation) -> Self {
+        crate::dispatch::inflight_inc(loc);
+        Self { ev, loc }
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl Drop for CudaCompletion {
+    fn drop(&mut self) {
+        // The single in-flight decrement — fires on wait-consume, drain, OR
+        // eviction-drop, so the counter returns to baseline once every handle
+        // is gone. Relaxed + saturating (a hint, never a correctness gate).
+        crate::dispatch::inflight_dec(self.loc);
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl Completion for CudaCompletion {
+    fn wait(self: Box<Self>) -> Result<()> {
+        use fuel_cuda_backend::WrapErr;
+        // cuEventSynchronize: blocks the host until the event completes; surfaces
+        // a sticky async kernel fault on this stream as the mapped `Err`. The
+        // in-flight decrement is NOT here — it rides the `Box`'s `Drop` (which
+        // runs as this method returns), so the eviction-drop path also decrements.
+        self.ev.synchronize().w()
+    }
+}
+
+/// A node's completion signal, returned by [`execute_compiled`]. Step E
+/// Phase A1 foundation: today every dispatch is synchronous, so this is always
+/// [`CompletionHandle::Ready`] (the work finished before the call returned) and
+/// callers `wait` it immediately — byte-identical to the prior `Result<()>`.
+/// Phases A2/A3 add an async GPU path that returns [`CompletionHandle::Pending`]
+/// carrying a device fence/event the executor defers the wait on.
+///
+/// `#[must_use]`: dropping a `Pending` handle without `wait`ing would leak
+/// un-awaited async work (harmless for today's `Ready`, a correctness bug once
+/// A2/A3 land) — callers must `wait` it or thread it to the executor.
+#[must_use = "a CompletionHandle must be waited on (or threaded to the executor) — dropping a Pending handle leaks async work"]
+pub enum CompletionHandle {
+    /// The work finished synchronously before [`execute_compiled`] returned —
+    /// [`wait`](CompletionHandle::wait) is a no-op.
+    Ready,
+    /// The work was enqueued asynchronously; [`wait`](CompletionHandle::wait)
+    /// blocks until the carried device signal fires. (No producers until A2/A3.)
+    Pending(Box<dyn Completion>),
+}
+
+impl CompletionHandle {
+    /// Block until this node's work has finished. No-op for [`Ready`].
+    ///
+    /// [`Ready`]: CompletionHandle::Ready
+    pub fn wait(self) -> Result<()> {
+        match self {
+            CompletionHandle::Ready => Ok(()),
+            CompletionHandle::Pending(c) => c.wait(),
+        }
+    }
+}
+
+/// An async-dispatch completion signal — a backend's wrapper over a CUDA event
+/// / Vulkan fence so the executor can defer the wait past the submit point
+/// (Step E Phase A2/A3). No implementors today; all dispatch is synchronous.
+pub trait Completion: Send {
+    /// Block until the enqueued work this handle represents has finished.
+    fn wait(self: Box<Self>) -> Result<()>;
 }
 
 #[cfg(test)]
@@ -154,15 +339,78 @@ mod tests {
         let inputs = vec![Arc::new(RwLock::new(lhs)), Arc::new(RwLock::new(rhs))];
         let mut outputs = vec![Arc::new(RwLock::new(out))];
 
-        let layout_3 = Layout::contiguous(fuel_core_types::Shape::from(vec![3]));
+        let layout_3 = Layout::contiguous(fuel_ir::Shape::from(vec![3]));
         let layouts = vec![layout_3.clone(), layout_3.clone(), layout_3];
-        execute_compiled(&compiled, &inputs, &mut outputs, &layouts).expect("execute");
+        execute_compiled(&compiled, &inputs, &mut outputs, &layouts)
+            .expect("execute")
+            .wait()
+            .expect("wait");
 
         let out_guard = outputs[0].read().unwrap();
         if let fuel_memory::BackendStorage::Cpu(c) = &out_guard.inner {
             let typed: &[f32] = c.as_slice().unwrap();
             assert_eq!(typed, &[6.0, 8.0, 10.0]);
         }
+    }
+
+    /// Step E A4b-1 behavior-preservation: a CPU kernel's `execute_compiled`
+    /// returns `CompletionHandle::Ready` — `produce_pending` must NOT turn the
+    /// (synchronous, in-process) CPU path into a `Pending` handle. The CUDA arm
+    /// (Pending) is covered by the live `cuda_async_realize_live` gate.
+    #[test]
+    fn execute_compiled_cpu_is_ready_not_pending() {
+        let mut bindings = KernelBindingTable::new();
+        register_cpu_kernels(&mut bindings);
+        let compiled = compile_node(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            OpParams::None,
+            &bindings,
+        )
+        .expect("compile");
+
+        let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0]);
+        let rhs = fuel_memory::from_slice_cpu(&[3.0_f32, 4.0]);
+        let out = fuel_memory::alloc_cpu_zeroed(DType::F32, 2).unwrap();
+        let inputs = vec![Arc::new(RwLock::new(lhs)), Arc::new(RwLock::new(rhs))];
+        let mut outputs = vec![Arc::new(RwLock::new(out))];
+        let l = Layout::contiguous(fuel_ir::Shape::from(vec![2]));
+        let layouts = vec![l.clone(), l.clone(), l];
+
+        let handle = execute_compiled(&compiled, &inputs, &mut outputs, &layouts)
+            .expect("execute");
+        assert!(
+            matches!(handle, CompletionHandle::Ready),
+            "CPU execute_compiled must return Ready (A4b-1 behavior-preserving)",
+        );
+        handle.wait().expect("wait");
+    }
+
+    /// Step E A1: the completion-handle contract — `Ready.wait()` is a no-op
+    /// success; `Pending(c).wait()` delegates to the boxed `Completion`.
+    #[test]
+    fn completion_handle_ready_is_noop_pending_delegates() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc as StdArc;
+
+        CompletionHandle::Ready.wait().expect("Ready.wait() is Ok");
+
+        struct Flag(StdArc<AtomicBool>);
+        impl Completion for Flag {
+            fn wait(self: Box<Self>) -> Result<()> {
+                self.0.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        let waited = StdArc::new(AtomicBool::new(false));
+        CompletionHandle::Pending(Box::new(Flag(waited.clone())))
+            .wait()
+            .expect("Pending.wait() is Ok");
+        assert!(
+            waited.load(Ordering::SeqCst),
+            "Pending.wait() must run the boxed Completion",
+        );
     }
 
     /// compile_node surfaces NoBackendForOp on missing binding.

@@ -51,7 +51,7 @@ use crate::lazy_paddleocr_vl_vision::{
 };
 pub use crate::lazy_paddleocr_vl_vision::{aspect_ratio_chooser, partition_image};
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// Bundled configuration for the full PaddleOCR-VL stack.

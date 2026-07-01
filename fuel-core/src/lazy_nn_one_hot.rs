@@ -34,7 +34,7 @@
 
 use crate::Result;
 use crate::lazy::LazyTensor;
-use fuel_core_types::{DType, Shape};
+use fuel_ir::{DType, Shape};
 use std::sync::Arc;
 
 /// Build a one-hot (or one-cold) encoding of `labels` along a new

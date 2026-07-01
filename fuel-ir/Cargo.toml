@@ -1,0 +1,37 @@
+﻿[package]
+    categories.workspace = true
+    description          = "Core types and traits for the fuel ML framework"
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-ir"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    float8      = { workspace = true }
+    half        = { workspace = true }
+    libm        = { workspace = true }
+    num-traits  = { workspace = true }
+    safetensors = { workspace = true }
+    serde       = { workspace = true, optional = true, features = ["derive"] }
+    serde_json  = { workspace = true, optional = true }
+    smallvec    = { workspace = true }
+    thiserror   = { workspace = true }
+    zip         = { workspace = true }
+
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))'.dependencies]
+    fuel-ug = { workspace = true, optional = true }
+
+[features]
+    default = []
+    # FDX — the Fuel DLPack eXtension (docs/specs/dlpack-extension.md): a
+    # versioned, optional sidecar over standard DLPack for the kernel boundary.
+    # POD structs + the normative FDX code tables; no extra deps yet.
+    dlpack  = []
+    ug      = ["dep:fuel-ug"]
+    # Enable `#[derive(Serialize, Deserialize)]` on persistence-shaped types
+    # (device probe descriptors, later Judge output). Kept opt-in so downstream
+    # crates that don't need serde avoid the compile cost. Pulls serde_json so
+    # the persistence-shaped types can also expose `save`/`load` directly.
+    serde   = ["dep:serde", "dep:serde_json"]

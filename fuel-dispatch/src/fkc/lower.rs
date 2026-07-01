@@ -15,9 +15,9 @@
 //! `fuel-graph`'s `default_registry()` so it cannot drift from the graph's
 //! single source of truth.
 
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::DType;
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::probe::BackendId;
+use fuel_ir::DType;
 use fuel_graph::registry::{FusedOpId, FusedOps};
 use smallvec::SmallVec;
 
@@ -747,9 +747,9 @@ mod tests {
     fn dummy_kernel(
         _inputs: &[Arc<RwLock<fuel_memory::Storage>>],
         _outputs: &mut [Arc<RwLock<fuel_memory::Storage>>],
-        _layouts: &[fuel_core_types::Layout],
+        _layouts: &[fuel_ir::Layout],
         _params: &crate::kernel::OpParams,
-    ) -> fuel_core_types::Result<()> {
+    ) -> fuel_ir::Result<()> {
         Ok(())
     }
 

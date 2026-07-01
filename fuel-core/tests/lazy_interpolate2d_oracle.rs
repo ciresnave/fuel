@@ -10,7 +10,7 @@
 //! head that resizes features to arbitrary targets.
 
 use fuel_core::lazy::LazyTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 /// Reproduce the eager UpsampleNearest2D convention in plain
 /// Rust so the lazy output can be checked element-wise.

@@ -36,7 +36,7 @@ use crate::lazy_qwen3_vl_vision::{
     Qwen3VlVisionConfig, Qwen3VlVisionModel, Qwen3VlVisionWeights,
 };
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// Patch grid `(t_patches, h_patches, w_patches)` describing the

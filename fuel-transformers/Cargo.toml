@@ -14,7 +14,6 @@ accelerate-src = { workspace = true, optional = true }
 byteorder = { workspace = true }
 fuel = { workspace = true }
 fuel-cpu-backend = { workspace = true }
-fuel-flash-attn-cuda = { workspace = true, optional = true }
 fancy-regex = { workspace = true }
 intel-mkl-src = { workspace = true, optional = true }
 num-traits = { workspace = true }
@@ -30,6 +29,5 @@ default = []
 accelerate = ["dep:accelerate-src", "fuel/accelerate"]
 cuda = ["fuel/cuda"]
 cudnn = ["fuel/cudnn"]
-flash-attn = ["cuda", "dep:fuel-flash-attn-cuda"]
 mkl = ["dep:intel-mkl-src", "fuel/mkl"]
 metal = ["fuel/metal"]

@@ -19,7 +19,7 @@
 //! ## Storage during the migration
 //!
 //! `fuel_graph::Graph::storage_map` uses the legacy
-//! `fuel_core_types::Storage` (the `Box<dyn DynBackendStorage>`
+//! `fuel_backend_contract::Storage` (the `Box<dyn DynBackendStorage>`
 //! newtype). The pipelined executor uses the new
 //! `fuel_memory::Storage` (BackendStorage enum + dtype). During
 //! the migration the two coexist — neither is converted on the fly.
@@ -39,18 +39,17 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, RwLock};
 use std::thread;
 
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result, SymEnv};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, SymEnv};
 use fuel_graph::opt::{execution_plan, insert_safety_copies};
 use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute};
 
-use crate::compiled::{compile_node, execute_compiled, CompiledNode};
+use crate::compiled::{compile_node, execute_compiled, CompiledNode, CompletionHandle};
 use crate::dispatch::global_bindings;
-use crate::kernel::{KernelBindingTable, KernelDTypes, OpParams};
+use crate::kernel::{KernelBindingTable, OpParams};
 use crate::optimize::OptimizedGraph;
-use crate::plan::ExecutionPlan;
-use crate::ranker::RuntimeSelector;
+use crate::ranker::{pick_route, resolve_branch, BackendRuntimeLookup, RuntimeSelector};
 use fuel_memory::Storage;
 
 /// How the executor derives its dispatch order + topology-generation
@@ -87,6 +86,54 @@ enum OrderSource<'a> {
         /// arm-0 everywhere (no picker / no pressure ⇒ Phase B behavior).
         route: Option<&'a PickedRoute>,
     },
+    /// Step E Phase C, PR C1 — the **streaming run-walk**. Instead of a
+    /// route resolved up front, the compiler thread resolves each branch
+    /// **lazily, as the topo walk reaches its arm-entry**, via
+    /// [`resolve_branch`] over the threaded [`StreamingPick`]. The order is
+    /// never pre-flattened: the compiler thread interleaves arm resolution,
+    /// node compilation, and dispatch (so C2 can later read live device
+    /// load at the moment a branch resolves). Still VRAM-only selection in
+    /// C1, so the streamed order equals the one-shot
+    /// [`OrderSource::Optimized`]`{route: Some(pick_route(..))}` order
+    /// byte-for-byte.
+    Streaming {
+        optimized: &'a OptimizedGraph,
+        pick: &'a StreamingPick,
+    },
+}
+
+/// Owned arm-resolution config threaded into the compiler thread for the
+/// [`OrderSource::Streaming`] walk (Step E Phase C, PR C1). The selector +
+/// lookup are owned `Arc`s (not borrows) so they can be `move`d into the
+/// spawned compiler thread; both are `Send + Sync`. The per-arm candidate
+/// bindings are read from [`global_bindings`] inside the thread (as the
+/// eager `pick_route_for` does), so they are not carried here.
+///
+/// The streaming walk consults the SAME selector chain as the one-shot
+/// picker (the production `ChainedSelector`). As of C2 that chain is
+/// load-aware: its key is `(pressure_tier, load_tier, latency_ns,
+/// original_index)`, and the `load_tier` leg reads B1's in-flight counter
+/// through the selector's own `BackendRuntimeLookup` handle (the
+/// `BackendStreams` seam). Under no load / no pressure every leg is the
+/// no-signal default, so the lazy resolution yields the same arm as the
+/// eager `pick_route` on every input — byte-identical to pre-C2.
+#[derive(Clone)]
+pub(crate) struct StreamingPick {
+    /// The runtime selector the streaming walk consults at each branch —
+    /// the production `ChainedSelector` (VRAM-pressure guard + load tier +
+    /// Judge rank). It holds its own `BackendRuntimeLookup`, so it reads
+    /// both VRAM fit and live device load off that lookup's handles.
+    pub selector: Arc<dyn RuntimeSelector>,
+    /// The live per-tier free-memory + load lookup the picker fingerprints
+    /// telemetry through (consulted *through* the selector). `None` ⇒ no
+    /// pressure/load signal ⇒ arm-0 (the no-telemetry contract). The
+    /// streaming walk consults VRAM + load through the selector (the
+    /// production `ChainedSelector` holds its own lookup), so this is
+    /// carried for the `RouteCache`-fingerprint parity / future direct
+    /// reads but not re-queried in the walk (mirrors `pick_route`'s
+    /// `let _ = lookup`).
+    #[allow(dead_code)]
+    pub lookup: Option<BackendRuntimeLookup>,
 }
 
 /// Map from NodeId to a realized Storage Arc. Used both as the
@@ -338,7 +385,7 @@ struct WorkItem {
     /// then attaches the bundle via `Storage::with_bundle` so
     /// downstream `Op::View`/`Op::ViewOwned` nodes resolve
     /// correctly.
-    output_bundle: Option<Arc<[fuel_core_types::storage::OutputView]>>,
+    output_bundle: Option<Arc<[fuel_ir::storage::OutputView]>>,
 }
 
 /// Merge the graph's side-effect roots into the caller's requested
@@ -451,7 +498,7 @@ impl PipelinedExecutor {
         target: NodeId,
         inputs: StorageCache,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        Self::realize_inner(graph, target, inputs, None, None, OrderSource::Default, SymEnv::default())
+        Self::realize_inner(graph, target, inputs, OrderSource::Default, SymEnv::default())
     }
 
     /// Env-carrying sibling of [`realize`]: realize `target` with a
@@ -472,7 +519,7 @@ impl PipelinedExecutor {
         inputs: StorageCache,
         sym_env: SymEnv,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        Self::realize_inner(graph, target, inputs, None, None, OrderSource::Default, sym_env)
+        Self::realize_inner(graph, target, inputs, OrderSource::Default, sym_env)
     }
 
     /// PR-A3b-1 entry: realize `target` driven from `optimized`'s
@@ -496,8 +543,6 @@ impl PipelinedExecutor {
             graph,
             target,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: None },
             SymEnv::default(),
         )
@@ -520,8 +565,6 @@ impl PipelinedExecutor {
             graph,
             target,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: None },
             sym_env,
         )
@@ -547,8 +590,6 @@ impl PipelinedExecutor {
             graph,
             target,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: Some(route) },
             SymEnv::default(),
         )
@@ -569,62 +610,88 @@ impl PipelinedExecutor {
             graph,
             target,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: Some(route) },
             sym_env,
         )
     }
 
-    /// Plan-aware sibling of [`realize`]. The compiler thread
-    /// consults `plan.alternatives(node)` for each kernel-bearing
-    /// node first — the picker's committed winner is dispatched.
-    /// Nodes not in the plan's map (view ops, structural ops,
-    /// anything the optimizer left out) fall through to the legacy
-    /// first-registered binding-table lookup.
+    /// Cleanup Step C/D entry: the executor OWNS `Op::Branch` arm-selection.
+    /// Given the runtime `selector` + the live device `lookup` (built
+    /// bridge-side from the realize `Device` + Judge oracle and passed in,
+    /// exactly like the residency `input_residency` provider), pick one arm per
+    /// branch HERE — at dispatch — then lower the chosen route. The per-arm
+    /// candidates are re-enumerated from the runtime binding registry + the
+    /// graph (Step D: no threaded `ExecutionPlan`).
     ///
-    /// Phase 4.1 of the picker-work arc. This is the load-bearing
-    /// wire from the optimizer ranker (Phases 1.1–1.5 + 3) to the
-    /// executor.
-    pub fn realize_with_plan(
+    /// No `selector` (the `runtime_selector_disabled()` opt-out) or a
+    /// branchless graph yields the arm-0 lowering, byte-identical to Phase B.
+    ///
+    /// **Step E Phase C, PR C1 — STREAMING.** A branched graph WITH a
+    /// selector no longer resolves the whole route up front: it routes to the
+    /// [`OrderSource::Streaming`] walk, where the compiler thread resolves
+    /// each branch lazily as the frontier reaches it (via
+    /// [`resolve_branch`]). C1 keeps the SAME VRAM-only selector chain — so
+    /// the streamed route equals the one-shot `pick_route` route byte-for-byte
+    /// — and only changes *when* a branch resolves; C2 makes that moment read
+    /// live device load.
+    pub fn realize_with_optimized_picking_env(
         graph: Arc<RwLock<Graph>>,
         target: NodeId,
         inputs: StorageCache,
-        plan: Arc<ExecutionPlan>,
+        optimized: &OptimizedGraph,
+        selector: Option<Arc<dyn RuntimeSelector>>,
+        lookup: Option<BackendRuntimeLookup>,
+        sym_env: SymEnv,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        Self::realize_inner(graph, target, inputs, Some(plan), None, OrderSource::Default, SymEnv::default())
+        match Self::streaming_pick_for(&graph, selector, lookup)? {
+            Some(pick) => Self::realize_inner(
+                graph,
+                target,
+                inputs,
+                OrderSource::Streaming { optimized, pick: &pick },
+                sym_env,
+            ),
+            None => Self::realize_with_optimized_env(
+                graph, target, inputs, optimized, sym_env,
+            ),
+        }
     }
 
-    /// Plan- and selector-aware sibling of [`realize`]. Phase 5.1 of
-    /// the picker-work arc. Both `plan` and `selector` are required
-    /// here — the selector consults the plan's [`AlternativeSet`]s
-    /// per node to pick at dispatch time. Without a plan there's
-    /// nothing for the selector to pick among; use
-    /// [`realize_with_plan`] when you have a plan but want the
-    /// default static-winner pick (= `WinnerSelector`).
-    ///
-    /// Use this entry point when a Picker 2 implementation has
-    /// runtime signals the plan-time ranker couldn't see (device
-    /// load, recent failures, fresh telemetry).
-    pub fn realize_with_plan_and_selector(
-        graph: Arc<RwLock<Graph>>,
-        target: NodeId,
-        inputs: StorageCache,
-        plan: Arc<ExecutionPlan>,
-        selector: Arc<dyn RuntimeSelector>,
-    ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
-        Self::realize_inner(
-            graph, target, inputs, Some(plan), Some(selector), OrderSource::Default,
-            SymEnv::default(),
-        )
+    /// Build the [`StreamingPick`] for the executor's picking entry points —
+    /// the streaming successor of the one-shot `pick_route_for` (which was the
+    /// relocated body of the bridge's old `resolve_runtime_route`). Returns
+    /// `None` (⇒ arm-0 lowering, the untouched `route: None` /
+    /// `dispatch_order` path) when there is no `selector` (the disabled
+    /// opt-out) or the graph has no `Op::Branch` (the branchless fast-path:
+    /// skip the streaming machinery entirely so the common case is unchanged
+    /// and byte-identical). Otherwise it carries the selector + lookup into
+    /// the [`OrderSource::Streaming`] walk, which resolves each branch at the
+    /// frontier (PR C1). The per-arm candidates are re-enumerated from the
+    /// runtime binding registry inside the compiler thread (Step D — was the
+    /// threaded `ExecutionPlan`).
+    fn streaming_pick_for(
+        graph: &Arc<RwLock<Graph>>,
+        selector: Option<Arc<dyn RuntimeSelector>>,
+        lookup: Option<BackendRuntimeLookup>,
+    ) -> Result<Option<StreamingPick>> {
+        let Some(selector) = selector else {
+            return Ok(None);
+        };
+        let g = graph
+            .read()
+            .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
+        let has_branch =
+            (0..g.len()).any(|i| matches!(g.node(NodeId(i)).op, Op::Branch { .. }));
+        if !has_branch {
+            return Ok(None);
+        }
+        Ok(Some(StreamingPick { selector, lookup }))
     }
 
     fn realize_inner(
         graph: Arc<RwLock<Graph>>,
         target: NodeId,
         inputs: StorageCache,
-        plan: Option<Arc<ExecutionPlan>>,
-        selector: Option<Arc<dyn RuntimeSelector>>,
         order_source: OrderSource<'_>,
         sym_env: SymEnv,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
@@ -647,7 +714,7 @@ impl PipelinedExecutor {
         // integrates `derive_ordering`'s view-aware pinning so
         // destructive ops run AFTER non-destructive readers of
         // their targets.
-        let (order, mut layout_cache): (Vec<NodeId>, HashMap<NodeId, Layout>) = {
+        let (compiler_work, mut layout_cache): (CompilerWork, HashMap<NodeId, Layout>) = {
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, &[target]);
             // PR-A3b-1: the OptimizedGraph path lowers via
@@ -656,26 +723,30 @@ impl PipelinedExecutor {
             // inserted safety-copy nodes). The default path keeps the
             // pre-A3b-1 `execution_plan` walk. On a branchless graph the
             // two sequences are identical (A3a equivalence gate).
-            let order = order_for(&g, &effective_roots, &order_source);
+            //
+            // PR-C1: a `Streaming` source is NOT flattened here — it is
+            // handed to the compiler thread as a `CompilerWork::Streaming`
+            // spec so the thread resolves each branch lazily at the
+            // frontier (see `compiler_thread_body`).
+            let work = compiler_work_for(&g, &effective_roots, &order_source);
             let mut layouts = HashMap::with_capacity(inputs.len());
             for &id in inputs.keys() {
                 layouts.insert(id, g.layout(id));
             }
-            (order, layouts)
+            (work, layouts)
         };
 
         let (tx, rx) = channel::<Result<WorkItem>>();
         let graph_for_compiler = Arc::clone(&graph);
-        let order_for_compiler = order.clone();
 
         // Compiler thread: read graph nodes, resolve kernels,
-        // push WorkItems. On error, push the error and bail.
-        let plan_for_compiler = plan.clone();
-        let selector_for_compiler = selector.clone();
+        // push WorkItems. On error, push the error and bail. PR-C1: for a
+        // `Streaming` work spec the thread also resolves each branch's arm
+        // at the frontier (the SAME VRAM-only selector the one-shot picker
+        // uses) before compiling that arm's runs.
         let compiler = thread::spawn(move || {
             compiler_thread_body(
-                graph_for_compiler, order_for_compiler,
-                plan_for_compiler, selector_for_compiler, sym_env, tx,
+                graph_for_compiler, compiler_work, sym_env, tx,
             );
         });
 
@@ -691,13 +762,42 @@ impl PipelinedExecutor {
         // `Error::TopologyChanged`; the realize layer
         // (`pipelined_bridge`) catches it, rebuilds the plan against
         // the fresh topology, and retries.
-        let plan_generation: Option<u64> = generation_for(&plan, &order_source);
+        let plan_generation: Option<u64> = generation_for(&order_source);
         let mut current_chunk_backend: Option<BackendId> = None;
         let mut cache: StorageCache = inputs;
+        // Step E A4b-1: per-node async-completion handles. Each producing node's
+        // `execute_compiled` returns a `CompletionHandle` (CUDA → a recorded
+        // `Event`; CPU/Vulkan → `Ready`) instead of being `wait`ed inline. We
+        // store them here, wait the SOURCE producer's handle before a
+        // cross-device copy (A4b-3, below), and drain whatever remains at
+        // realize-end.
+        let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
+        // Step E A4b-4: eagerly-submitted-but-not-yet-waited Vulkan batches. The
+        // OVERLAP enabler — when we LEAVE a Vulkan chunk (or are about to block on
+        // a CUDA copy) we `submit_pending` the open Vulkan batch so the iGPU runs
+        // it while the executor records/dispatches the next (CUDA) chunk, instead
+        // of letting it sit merely-recorded until realize-end (the A4b-2 behavior,
+        // which never overlapped). Each submitted batch is tracked here and waited
+        // at the in-flight-lifetime guard (before a Vulkan read / Vulkan-referenced
+        // eviction / realize-end). `multi_backend` gates ALL eager submits so a
+        // single-device realize never touches this path (byte-identical to A4b-2).
+        let mut inflight_vulkan: Vec<InflightVulkan> = Vec::new();
+        // Step E A4b-4: set true the first time the dispatch order transitions
+        // between two DIFFERENT non-CPU... actually any two distinct backends — a
+        // genuine backend switch. On a pure-CUDA or pure-Vulkan graph there is no
+        // switch, so this stays false and the eager-submit / in-flight machinery is
+        // unreachable (single-device byte-identical + throughput-neutral, §5).
+        let mut multi_backend = false;
         for item in rx {
             let item = item?;
-            if let Some(plan_gen) = plan_generation {
-                if current_chunk_backend != Some(item.target_backend) {
+            // Chunk-boundary hook (target_backend change). Existing duty: the
+            // `TopologyChanged` generation check. Step E A4b-4 adds two duties:
+            // (1) detect a genuine backend switch → arm `multi_backend`; (2) when
+            // LEAVING a Vulkan chunk on a multi-backend graph, eager-submit the
+            // open Vulkan batch so the iGPU starts it concurrently with the chunk
+            // we are about to dispatch (the overlap win).
+            if current_chunk_backend != Some(item.target_backend) {
+                if let Some(plan_gen) = plan_generation {
                     let live = crate::dispatch::topology_generation();
                     if live != plan_gen {
                         return Err(Error::TopologyChanged {
@@ -706,15 +806,108 @@ impl PipelinedExecutor {
                         }
                         .bt());
                     }
-                    current_chunk_backend = Some(item.target_backend);
+                }
+                let leaving = current_chunk_backend;
+                if let Some(prev) = leaving {
+                    if prev != item.target_backend {
+                        // A real backend switch occurred — this realize is
+                        // genuinely multi-backend.
+                        multi_backend = true;
+                        // Leaving a Vulkan chunk → submit it NOW so it runs on the
+                        // iGPU while we record/dispatch the next chunk. Whole-chunk
+                        // granularity (the open batch IS the just-finished Vulkan
+                        // chunk with all its intra-CB barriers) — UAF/race-safe per
+                        // `eager_submit_all_vulkan`'s contract.
+                        if prev == BackendId::Vulkan {
+                            eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
+                        }
+                    }
+                }
+                current_chunk_backend = Some(item.target_backend);
+            }
+            // Step E A4b-4 (Invariant E — same-device cross-chunk RAW safety):
+            // before RECORDING a new Vulkan op while in-flight Vulkan batches
+            // exist, wait them. Vulkan only guarantees batches BEGIN in submission
+            // order (they may overlap / complete out of order), so a later Vulkan
+            // op that reads a buffer an in-flight batch wrote would race without
+            // this. The in-flight batch was submitted at the prior chunk boundary
+            // and an intervening (CUDA) chunk has since run, so this fence is
+            // typically already signalled — the iGPU work overlapped, and we only
+            // re-sync as Vulkan work resumes. No-op when single-device
+            // (`multi_backend` false) or no batches are in flight.
+            if multi_backend
+                && item.target_backend == BackendId::Vulkan
+                && !inflight_vulkan.is_empty()
+            {
+                drain_inflight_vulkan(&mut inflight_vulkan)?;
+            }
+            // Step E A4b-3 + A4b-4: the cross-device residency boundary.
+            if matches!(item.kind, WorkItemKind::Copy { .. } | WorkItemKind::Move { .. }) {
+                // A4b-4: before we (possibly) block the host on the CUDA producer,
+                // eager-submit any open Vulkan chunk so the iGPU runs it WHILE we
+                // wait on CUDA (the §5.1 ordering — submit Vulkan *before* draining
+                // CUDA). Cheap + safe; gated to multi-backend (no-op single-device).
+                if multi_backend {
+                    eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
+                }
+                if let Some(&producer) = item.inputs.first() {
+                    // A4b-4: a VULKAN-source D2H must read COMPLETED data, and the
+                    // Vulkan download path only flushes the OPEN batch (not our
+                    // in-flight ones) — so wait the in-flight Vulkan batches here.
+                    // For a CUDA/CPU source we do NOT wait Vulkan (the copy reads no
+                    // Vulkan buffer); waiting it would needlessly serialize the
+                    // independent Vulkan sub-DAG and kill the overlap. The Vulkan
+                    // work that was eager-submitted at the chunk boundary keeps
+                    // running concurrently until ITS result is the one being copied.
+                    if multi_backend && copy_source_is_vulkan(&cache, producer)? {
+                        drain_inflight_vulkan(&mut inflight_vulkan)?;
+                    }
+                    // Step E A4b-3: FINER CUDA source-drain — wait ONLY the source
+                    // producer's recorded event (not the whole source device), so
+                    // the OTHER sub-DAG's independent in-flight CUDA work keeps
+                    // running. No-op for a Vulkan/CPU producer (no CUDA handle).
+                    wait_producer_handle(&mut handles, producer)?;
                 }
             }
-            execute_work_item(&item, &mut cache, &mut layout_cache)?;
+            let handle = execute_work_item(&item, &mut cache, &mut layout_cache)?;
+            store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
                     if destroyed != target {
+                        // Step E A2.1 (in-flight-batch DATA-BUFFER lifetime — the
+                        // UAF guard, now DEFERRED-DELETION instead of a drain). A
+                        // `SubmittedBatch` owns its CB/descriptors/transients but
+                        // NOT the DATA buffers it reads (those live here in the
+                        // cache); recycling a data buffer an in-flight/open CB still
+                        // reads is a use-after-free. PRE-A2.1 we host-blocked here —
+                        // `drain_inflight_vulkan` (wait every in-flight batch) +
+                        // `force_flush` (submit+wait the open batch) — which stalled
+                        // the iGPU work we were overlapping with CUDA at EVERY such
+                        // eviction. A2.1 instead RETAINS the evicted buffer until the
+                        // reader fences signal: it eager-submits the open batch (no
+                        // wait → it becomes a fenced in-flight batch) and moves a
+                        // refcount clone of the buffer into every in-flight batch, so
+                        // the buffer frees POST-fence on each batch's `Drop`
+                        // (follow-on #2) with NO host block. Conservative over all
+                        // batches (no cheap buffer→batch map — the same reason the old
+                        // drain waited all of them). CUDA eviction is stream-ordered-
+                        // safe via A3. Single-device (multi_backend == false) keeps the
+                        // pre-A2.1 blocking force_flush of the OPEN batch (the else
+                        // branch) — byte-identical + UAF-safe there; the deferred path is
+                        // unsafe single-device (no eager-submit/in-flight tracking, and the
+                        // cross-batch RAW guard at :832 doesn't run — see
+                        // force_flush_vulkan's doc).
+                        if multi_backend {
+                            defer_evicted_vulkan_buffer(&cache, destroyed, &mut inflight_vulkan)?;
+                        } else if let Some(d_arc) = cache.get(&destroyed) {
+                            force_flush_vulkan(d_arc)?;
+                        }
                         cache.remove(&destroyed);
                         layout_cache.remove(&destroyed);
+                        // Drop the evicted node's CUDA handle (if still present)
+                        // so the realize-end drain's empty-map assert stays
+                        // meaningful. The free itself is stream-ordered-safe (A3).
+                        handles.remove(&destroyed);
                     }
                 }
             }
@@ -723,6 +916,26 @@ impl PipelinedExecutor {
         compiler
             .join()
             .map_err(|_| Error::Msg("compiler thread panicked".to_string()).bt())?;
+
+        // Step E A4b-1: drain every outstanding async handle before the result is
+        // read / the cache drops (freeing intermediates). For CUDA this waits the
+        // recorded events (one stream/device ⇒ waiting the latest drains all prior
+        // stream work too; see `drain_handles`).
+        drain_handles(&mut handles)?;
+        // Step E A4b-4: wait every eagerly-submitted (in-flight) Vulkan batch
+        // before the cache drops, freeing the data buffers their CBs read. Empty
+        // on a single-device realize (nothing was eager-submitted).
+        drain_inflight_vulkan(&mut inflight_vulkan)?;
+        // Step E A4b-2: drain all deferred Vulkan work before reading/returning
+        // the result (and before the cache drops, freeing buffers). The A2
+        // submit+wait is now SPLIT — `drain_vulkan_pending` submits the open
+        // batch then waits it via a `VulkanCompletion` handle. Byte-identical to
+        // A2 for pure-Vulkan (one submission at realize-end, just split).
+        drain_vulkan_pending(&cache)?;
+        debug_assert!(
+            inflight_vulkan.is_empty(),
+            "A4b-4: in-flight Vulkan batch list must be empty after realize-end drain",
+        );
 
         let storage = cache.remove(&target).ok_or_else(|| {
             Error::Msg(format!(
@@ -760,7 +973,7 @@ impl PipelinedExecutor {
         targets: &[NodeId],
         inputs: StorageCache,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
-        Self::realize_many_inner(graph, targets, inputs, None, None, OrderSource::Default, SymEnv::default())
+        Self::realize_many_inner(graph, targets, inputs, OrderSource::Default, SymEnv::default())
     }
 
     /// Multi-target PR-A3b-1 entry — the `realize_many` sibling of
@@ -778,8 +991,6 @@ impl PipelinedExecutor {
             graph,
             targets,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: None },
             SymEnv::default(),
         )
@@ -798,8 +1009,6 @@ impl PipelinedExecutor {
             graph,
             targets,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: None },
             sym_env,
         )
@@ -820,8 +1029,6 @@ impl PipelinedExecutor {
             graph,
             targets,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: Some(route) },
             SymEnv::default(),
         )
@@ -841,47 +1048,43 @@ impl PipelinedExecutor {
             graph,
             targets,
             inputs,
-            None,
-            None,
             OrderSource::Optimized { optimized, route: Some(route) },
             sym_env,
         )
     }
 
-    /// Plan- and selector-aware sibling of [`realize_many`]. Phase
-    /// 5.1 of the picker-work arc. See [`realize_with_plan_and_selector`]
-    /// for the selector contract.
-    pub fn realize_many_with_plan_and_selector(
+    /// Multi-target sibling of [`realize_with_optimized_picking_env`] —
+    /// the executor resolves one arm per `Op::Branch` (cleanup Step C/D) over
+    /// the effective targets. PR C1: a branched graph routes to the
+    /// [`OrderSource::Streaming`] walk (lazy per-branch resolution at the
+    /// frontier); branchless / no-selector falls to the untouched arm-0 path.
+    pub fn realize_many_with_optimized_picking_env(
         graph: Arc<RwLock<Graph>>,
         targets: &[NodeId],
         inputs: StorageCache,
-        plan: Arc<ExecutionPlan>,
-        selector: Arc<dyn RuntimeSelector>,
+        optimized: &OptimizedGraph,
+        selector: Option<Arc<dyn RuntimeSelector>>,
+        lookup: Option<BackendRuntimeLookup>,
+        sym_env: SymEnv,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
-        Self::realize_many_inner(
-            graph, targets, inputs, Some(plan), Some(selector), OrderSource::Default,
-            SymEnv::default(),
-        )
-    }
-
-    /// Plan-aware sibling of [`realize_many`]. The compiler
-    /// consults `plan.alternatives(node)` for each kernel-bearing
-    /// node first. Phase 4.1 of the picker-work arc.
-    pub fn realize_many_with_plan(
-        graph: Arc<RwLock<Graph>>,
-        targets: &[NodeId],
-        inputs: StorageCache,
-        plan: Arc<ExecutionPlan>,
-    ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
-        Self::realize_many_inner(graph, targets, inputs, Some(plan), None, OrderSource::Default, SymEnv::default())
+        match Self::streaming_pick_for(&graph, selector, lookup)? {
+            Some(pick) => Self::realize_many_inner(
+                graph,
+                targets,
+                inputs,
+                OrderSource::Streaming { optimized, pick: &pick },
+                sym_env,
+            ),
+            None => Self::realize_many_with_optimized_env(
+                graph, targets, inputs, optimized, sym_env,
+            ),
+        }
     }
 
     fn realize_many_inner(
         graph: Arc<RwLock<Graph>>,
         targets: &[NodeId],
         inputs: StorageCache,
-        plan: Option<Arc<ExecutionPlan>>,
-        selector: Option<Arc<dyn RuntimeSelector>>,
         order_source: OrderSource<'_>,
         sym_env: SymEnv,
     ) -> Result<Vec<(Arc<RwLock<Storage>>, Layout)>> {
@@ -905,18 +1108,21 @@ impl PipelinedExecutor {
         // reachable from any target. `execution_plan` integrates
         // `derive_ordering`'s view-aware pinning so destructive ops
         // run AFTER non-destructive readers of their targets.
-        let (order, mut layout_cache): (Vec<NodeId>, HashMap<NodeId, Layout>) = {
+        let (compiler_work, mut layout_cache): (CompilerWork, HashMap<NodeId, Layout>) = {
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, targets);
             // PR-A3b-1: derive from the OptimizedGraph's run lowering
             // when present (post-safety-copies); else the legacy
             // `execution_plan` walk. Identical on branchless graphs.
-            let order = order_for(&g, &effective_roots, &order_source);
+            //
+            // PR-C1: a `Streaming` source is handed to the compiler thread
+            // unflattened (resolves branches at the frontier).
+            let work = compiler_work_for(&g, &effective_roots, &order_source);
             let mut layouts = HashMap::with_capacity(inputs.len());
             for &id in inputs.keys() {
                 layouts.insert(id, g.layout(id));
             }
-            (order, layouts)
+            (work, layouts)
         };
 
         // Caller's target set — used to gate destructive-input
@@ -925,27 +1131,37 @@ impl PipelinedExecutor {
 
         let (tx, rx) = channel::<Result<WorkItem>>();
         let graph_for_compiler = Arc::clone(&graph);
-        let order_for_compiler = order.clone();
-        let plan_for_compiler = plan.clone();
-        let selector_for_compiler = selector.clone();
 
         let compiler = thread::spawn(move || {
             compiler_thread_body(
-                graph_for_compiler, order_for_compiler,
-                plan_for_compiler, selector_for_compiler, sym_env, tx,
+                graph_for_compiler, compiler_work, sym_env, tx,
             );
         });
 
         // Phase 4.3: per-chunk SystemTopology generation check (see
         // realize_inner for the rationale). PR-A3b-1: the OptimizedGraph
-        // path supplies its own optimize-time generation (plan is None).
-        let plan_generation: Option<u64> = generation_for(&plan, &order_source);
+        // path supplies its own optimize-time generation.
+        let plan_generation: Option<u64> = generation_for(&order_source);
         let mut current_chunk_backend: Option<BackendId> = None;
         let mut cache: StorageCache = inputs;
+        // Step E A4b-1/A4b-3: per-node async-completion handles (see realize_inner
+        // for the full rationale). Map drained at realize-end; the cross-device
+        // copy waits the SOURCE producer's handle (A4b-3).
+        let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
+        // Step E A4b-4: eagerly-submitted in-flight Vulkan batches + the
+        // multi-backend gate. See realize_inner for the full rationale — this is
+        // the identical eager-submit / in-flight-lifetime machinery applied to the
+        // multi-target walk. `multi_backend` arms on a genuine backend switch and
+        // gates every eager submit, so a single-device realize_many is
+        // byte-identical to A4b-2.
+        let mut inflight_vulkan: Vec<InflightVulkan> = Vec::new();
+        let mut multi_backend = false;
         for item in rx {
             let item = item?;
-            if let Some(plan_gen) = plan_generation {
-                if current_chunk_backend != Some(item.target_backend) {
+            // Chunk-boundary hook: TopologyChanged check + (A4b-4) backend-switch
+            // detection + eager-submit-on-leaving-a-Vulkan-chunk.
+            if current_chunk_backend != Some(item.target_backend) {
+                if let Some(plan_gen) = plan_generation {
                     let live = crate::dispatch::topology_generation();
                     if live != plan_gen {
                         return Err(Error::TopologyChanged {
@@ -954,15 +1170,74 @@ impl PipelinedExecutor {
                         }
                         .bt());
                     }
-                    current_chunk_backend = Some(item.target_backend);
+                }
+                let leaving = current_chunk_backend;
+                if let Some(prev) = leaving {
+                    if prev != item.target_backend {
+                        multi_backend = true;
+                        if prev == BackendId::Vulkan {
+                            eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
+                        }
+                    }
+                }
+                current_chunk_backend = Some(item.target_backend);
+            }
+            // Step E A4b-4 (Invariant E): wait in-flight Vulkan before recording a
+            // new Vulkan op (same-device cross-chunk RAW safety). See realize_inner.
+            if multi_backend
+                && item.target_backend == BackendId::Vulkan
+                && !inflight_vulkan.is_empty()
+            {
+                drain_inflight_vulkan(&mut inflight_vulkan)?;
+            }
+            // Step E A4b-3 + A4b-4: cross-device residency boundary. See
+            // realize_inner for the full rationale.
+            if matches!(item.kind, WorkItemKind::Copy { .. } | WorkItemKind::Move { .. }) {
+                // A4b-4: submit any open Vulkan chunk so the iGPU runs while the
+                // host (possibly) waits on the CUDA producer.
+                if multi_backend {
+                    eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
+                }
+                if let Some(&producer) = item.inputs.first() {
+                    // A4b-4: wait in-flight Vulkan ONLY for a Vulkan-source D2H
+                    // (reads completed data; download flushes only the OPEN batch).
+                    // A CUDA/CPU source does NOT wait Vulkan (preserves overlap).
+                    if multi_backend && copy_source_is_vulkan(&cache, producer)? {
+                        drain_inflight_vulkan(&mut inflight_vulkan)?;
+                    }
+                    // Step E A4b-3: finer CUDA source-drain — wait ONLY the producer.
+                    wait_producer_handle(&mut handles, producer)?;
                 }
             }
-            execute_work_item(&item, &mut cache, &mut layout_cache)?;
+            let handle = execute_work_item(&item, &mut cache, &mut layout_cache)?;
+            store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
                     if !target_set.contains(&destroyed) {
+                        // Step E A2.1 (in-flight DATA-BUFFER lifetime — UAF guard,
+                        // now DEFERRED-DELETION instead of a drain): retain the
+                        // evicted buffer until the reader fences signal — eager-
+                        // submit the open batch (no wait) + move a refcount clone of
+                        // the buffer into every in-flight batch, freeing it post-
+                        // fence on each batch's `Drop` with NO host block. Replaces
+                        // the pre-A2.1 `drain_inflight_vulkan` + open-batch
+                        // `force_flush` (two host-blocking fence waits). See
+                        // `defer_evicted_vulkan_buffer` / realize_inner for the
+                        // UAF/leak argument. CUDA eviction is A3 stream-safe.
+                        // Single-device (multi_backend == false) keeps the pre-A2.1
+                        // blocking force_flush of the OPEN batch (the else branch) —
+                        // byte-identical + UAF-safe; the deferred path is unsafe there
+                        // (see force_flush_vulkan's doc).
+                        if multi_backend {
+                            defer_evicted_vulkan_buffer(&cache, destroyed, &mut inflight_vulkan)?;
+                        } else if let Some(d_arc) = cache.get(&destroyed) {
+                            force_flush_vulkan(d_arc)?;
+                        }
                         cache.remove(&destroyed);
                         layout_cache.remove(&destroyed);
+                        // CUDA eviction is stream-ordered-safe (A3); drop the
+                        // handle so the realize-end empty-map assert stays valid.
+                        handles.remove(&destroyed);
                     }
                 }
             }
@@ -971,6 +1246,21 @@ impl PipelinedExecutor {
         compiler
             .join()
             .map_err(|_| Error::Msg("compiler thread panicked".to_string()).bt())?;
+
+        // Step E A4b-1: drain every outstanding async handle (CUDA events) before
+        // results are read / the cache drops.
+        drain_handles(&mut handles)?;
+        // Step E A4b-4: wait every eagerly-submitted in-flight Vulkan batch before
+        // the cache drops. Empty on a single-device realize.
+        drain_inflight_vulkan(&mut inflight_vulkan)?;
+        // Step E A4b-2: drain all deferred Vulkan work — submit the open batch
+        // then wait it via a `VulkanCompletion` handle (the A2 submit+wait, split;
+        // byte-identical for pure-Vulkan — one submission at realize-end).
+        drain_vulkan_pending(&cache)?;
+        debug_assert!(
+            inflight_vulkan.is_empty(),
+            "A4b-4: in-flight Vulkan batch list must be empty after realize-end drain",
+        );
 
         // Verify every target was realized + collect outputs in
         // target order. We don't `remove` from the cache because the
@@ -1012,6 +1302,19 @@ fn order_for(
 ) -> Vec<NodeId> {
     match order_source {
         OrderSource::Default => execution_plan(graph, effective_roots),
+        // The streaming walk is driven in the compiler thread (it
+        // interleaves arm resolution with compilation), so `order_for`
+        // never flattens it on the production path. This arm exists only
+        // for match totality / non-pipelined callers: it collects the SAME
+        // lazily-resolved order eagerly (the streaming walk with the same
+        // `resolve_branch` over the threaded selector), which equals the
+        // one-shot `lower_picked_route(pick_route(..))` order.
+        OrderSource::Streaming { optimized: _optimized, pick } => {
+            let bindings = global_bindings();
+            fuel_graph::lower_picked_route_streaming(graph, effective_roots, |branch| {
+                resolve_branch(graph, branch, &bindings, pick.selector.as_ref())
+            })
+        }
         OrderSource::Optimized { optimized, route } => {
             // Lower the runs over the *effective* roots (user targets +
             // any spliced/side-effect roots) so the order matches the
@@ -1040,32 +1343,71 @@ fn order_for(
     }
 }
 
+/// Build the [`CompilerWork`] the compiler thread walks for the configured
+/// [`OrderSource`]. The non-streaming sources flatten up front via
+/// [`order_for`] (unchanged); [`OrderSource::Streaming`] is handed to the
+/// compiler thread as a [`CompilerWork::Streaming`] spec — NOT flattened
+/// here — so the thread resolves branches lazily at the frontier (Step E
+/// Phase C, PR C1). Holds the graph read-lock only for the flattening
+/// branches; the streaming branch defers the lock to the compiler thread.
+fn compiler_work_for(
+    graph: &Graph,
+    effective_roots: &[NodeId],
+    order_source: &OrderSource<'_>,
+) -> CompilerWork {
+    match order_source {
+        OrderSource::Streaming { pick, .. } => CompilerWork::Streaming {
+            roots: effective_roots.to_vec(),
+            pick: (*pick).clone(),
+        },
+        other => CompilerWork::Order(order_for(graph, effective_roots, other)),
+    }
+}
+
 /// The topology generation that keys the executor's `TopologyChanged`
-/// chunk-boundary check. Prefer the plan's stamped generation (legacy
-/// path); fall back to the `OptimizedGraph`'s optimize-time generation
-/// (PR-A3b-1 path, where `plan` is `None`). `None` ⇒ no check (the
-/// plain `realize`/`realize_many` entries).
+/// chunk-boundary check. Uses the `OptimizedGraph`'s optimize-time
+/// generation (PR-A3b-1 path). `None` ⇒ no check (the plain
+/// `realize`/`realize_many` entries).
 fn generation_for(
-    plan: &Option<Arc<ExecutionPlan>>,
     order_source: &OrderSource<'_>,
 ) -> Option<u64> {
-    if let Some(p) = plan.as_ref() {
-        return Some(p.generation);
-    }
     match order_source {
         OrderSource::Optimized { optimized, .. } => Some(optimized.generation),
+        OrderSource::Streaming { optimized, .. } => Some(optimized.generation),
         OrderSource::Default => None,
     }
 }
 
-/// Compiler thread body. Reads each node in topo order, resolves
-/// its kernel via `global_bindings()`, and pushes a `WorkItem` on
-/// the channel. Sends `Err(...)` and stops on the first failure.
+/// What the compiler thread walks: either a pre-flattened dispatch
+/// `Order` (the `Default` / `Optimized` paths — unchanged), or a
+/// `Streaming` spec the thread resolves branch-by-branch at the frontier
+/// (Step E Phase C, PR C1).
+enum CompilerWork {
+    /// A frozen topological order (computed up front by `order_for`). The
+    /// compiler thread compiles each node and sends it in turn.
+    Order(Vec<NodeId>),
+    /// The streaming run-walk: the compiler thread drives
+    /// [`fuel_graph::walk_picked_route_streaming`] over `roots`, resolving
+    /// each `Op::Branch` lazily via [`resolve_branch`] as the frontier
+    /// reaches its arm-entry, and compiling + sending only the chosen
+    /// arm's runs. `roots` are the effective roots (same set `order_for`
+    /// lowers over). Byte-identical to `Order(lower_picked_route(
+    /// pick_route(..)))` in C1 (same VRAM-only selector).
+    Streaming {
+        roots: Vec<NodeId>,
+        pick: StreamingPick,
+    },
+}
+
+/// Compiler thread body. Holds the graph read-lock + a thread-local
+/// layout cache and emits `WorkItem`s in topological order. For
+/// [`CompilerWork::Order`] it walks the frozen order; for
+/// [`CompilerWork::Streaming`] it resolves each branch at the frontier and
+/// emits only the chosen arm's runs (Step E Phase C, PR C1). Sends
+/// `Err(...)` and stops on the first failure.
 fn compiler_thread_body(
     graph: Arc<RwLock<Graph>>,
-    order: Vec<NodeId>,
-    plan: Option<Arc<ExecutionPlan>>,
-    selector: Option<Arc<dyn RuntimeSelector>>,
+    work: CompilerWork,
     sym_env: SymEnv,
     tx: Sender<Result<WorkItem>>,
 ) {
@@ -1085,73 +1427,76 @@ fn compiler_thread_body(
     // the strided layouts emitted by metadata-only view ops earlier
     // in the same realize call.
     let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-
-    let plan_ref: Option<&ExecutionPlan> = plan.as_deref();
-    let selector_ref: Option<&dyn RuntimeSelector> = selector.as_deref();
-    for id in order {
-        let item = compile_one(&g, id, &mut layout_cache, &bindings, plan_ref, selector_ref, &sym_env);
+    // `compile_one` for one node + send; returns `false` to stop the walk
+    // (channel closed or compile error). Shared by both work modes so the
+    // streamed and frozen-order paths compile identically.
+    let compile_and_send = |id: NodeId,
+                            layout_cache: &mut HashMap<NodeId, Layout>|
+     -> bool {
+        let item = compile_one(&g, id, layout_cache, &bindings, &sym_env);
         let stop_on_err = item.is_err();
         if tx.send(item).is_err() {
-            return;
+            return false;
         }
-        if stop_on_err {
-            return;
+        !stop_on_err
+    };
+
+    match work {
+        CompilerWork::Order(order) => {
+            for id in order {
+                if !compile_and_send(id, &mut layout_cache) {
+                    return;
+                }
+            }
+        }
+        CompilerWork::Streaming { roots, pick } => {
+            // Resolve each branch lazily at its arm-entry. C1 built the
+            // streaming frontier; C2 made `pick.selector` load-aware (the
+            // production `ChainedSelector` now reads each arm's live device
+            // load — `pending_work_count / slot_capacity` via the
+            // `BackendStreams` seam — as a key leg under the VRAM guard),
+            // so this resolution reads live device load at THIS moment: the
+            // executor has been submitting/draining (and updating the B1
+            // counter) while the compiler ran ahead. Emit only the chosen
+            // arm's runs, compiling + sending each node as the walk reaches
+            // it — genuine streaming (resolution interleaved with
+            // dispatch), not a pre-flattened order.
+            let mut stopped = false;
+            fuel_graph::walk_picked_route_streaming(
+                &g,
+                &roots,
+                |branch| resolve_branch(&g, branch, &bindings, pick.selector.as_ref()),
+                |members| {
+                    if stopped {
+                        return;
+                    }
+                    for &id in members {
+                        if !compile_and_send(id, &mut layout_cache) {
+                            stopped = true;
+                            return;
+                        }
+                    }
+                },
+            );
         }
     }
 }
 
-/// Resolve the [`CompiledNode`] for a kernel-bearing graph node,
-/// preferring the optimizer ranker's pick (if `plan` carries an
-/// `AlternativeSet` whose winner is set) and falling back to the
-/// legacy first-registered [`compile_node`] path otherwise.
-///
-/// Phase 4.1 of the picker-work arc — the wire from
-/// `compile_plan`'s output to the executor's dispatch. Plan absent
-/// or no entry for the node ⇒ behavior is byte-identical to the
-/// pre-4.1 first-registered path.
+/// Resolve the [`CompiledNode`] for a kernel-bearing graph node via
+/// the first-registered [`compile_node`] binding-table lookup.
 ///
 /// `op_params` always comes from the executor's
-/// `op_to_op_params(graph, node, layout_cache, sym_env)`. The candidate's
-/// `Candidate::op_params` is a plan-time placeholder
-/// (`OpParams::None`; see `candidate_default_op_params` in
-/// `crate::plan`) because the live OpParams shape — reduce dims,
-/// conv geometry, the per-pass `SymEnv`-resolved `WriteSlice` offset,
-/// etc. — derives from the graph node + its resolved input layouts at
-/// execute time. The plan owns `(kernel, caps, backend)`; the executor
-/// owns op-params derivation.
+/// `op_to_op_params(graph, node, layout_cache, sym_env)` — the live
+/// OpParams shape (reduce dims, conv geometry, the per-pass
+/// `SymEnv`-resolved `WriteSlice` offset, etc.) derives from the graph
+/// node + its resolved input layouts at execute time.
 fn resolve_compiled(
-    id: NodeId,
     op_kind: OpKind,
     dtypes: &[DType],
     target_backend: BackendId,
     op_params: OpParams,
     bindings: &KernelBindingTable,
-    plan: Option<&ExecutionPlan>,
-    selector: Option<&dyn RuntimeSelector>,
 ) -> Result<CompiledNode> {
-    if let Some(p) = plan {
-        if let Some(set) = p.alternatives(id) {
-            // Phase 5.1: consult the runtime selector (Picker 2) if
-            // one was supplied; otherwise fall back to the static
-            // winner (`set.winner()` = Picker 1's pick after
-            // rank+truncate). The two paths produce identical
-            // results when the selector is `WinnerSelector`.
-            let pick = match selector {
-                Some(s) => s.select(set),
-                None => set.winner(),
-            };
-            if let Some(picked) = pick {
-                return Ok(CompiledNode {
-                    op: op_kind,
-                    dtypes: KernelDTypes::from_slice(dtypes),
-                    backend: picked.backend,
-                    kernel: picked.kernel,
-                    caps: picked.caps,
-                    op_params,
-                });
-            }
-        }
-    }
     compile_node(op_kind, dtypes, target_backend, op_params, bindings)
 }
 
@@ -1174,8 +1519,6 @@ fn compile_one(
     id: NodeId,
     layout_cache: &mut HashMap<NodeId, Layout>,
     bindings: &KernelBindingTable,
-    plan: Option<&ExecutionPlan>,
-    selector: Option<&dyn RuntimeSelector>,
     sym_env: &SymEnv,
 ) -> Result<WorkItem> {
     let node = graph.node(id);
@@ -1377,7 +1720,7 @@ fn compile_one(
             let op_params = op_to_op_params(graph, node, layout_cache, sym_env)?;
             let dtypes = build_lookup_dtypes(graph, node);
             let compiled = resolve_compiled(
-                id, op_kind, &dtypes, target_backend, op_params, bindings, plan, selector,
+                op_kind, &dtypes, target_backend, op_params, bindings,
             )?;
             // Output adopts target's Layout (same Storage Arc, same shape).
             let output_layout = graph.layout(inputs[target_idx]);
@@ -1420,7 +1763,7 @@ fn compile_one(
         let op_params = op_to_op_params(graph, node, layout_cache, sym_env)?;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
-            id, OpKind::WriteSlice, &dtypes, target_backend, op_params, bindings, plan, selector,
+            OpKind::WriteSlice, &dtypes, target_backend, op_params, bindings,
         )?;
         // Output adopts the destination's Layout — same Storage Arc,
         // same shape. Downstream consumers that want a post-write
@@ -1465,7 +1808,7 @@ fn compile_one(
         let op_params = op_to_op_params(graph, node, layout_cache, sym_env)?;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
-            id, OpKind::WriteSliceRotating, &dtypes, target_backend, op_params, bindings, plan, selector,
+            OpKind::WriteSliceRotating, &dtypes, target_backend, op_params, bindings,
         )?;
         let output_layout = graph.layout(inputs[0]);
         layout_cache.insert(id, output_layout.clone());
@@ -1620,7 +1963,7 @@ fn compile_one(
         let op_params = OpParams::None;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
-            id, OpKind::Copy, &dtypes, target_backend, op_params, bindings, plan, selector,
+            OpKind::Copy, &dtypes, target_backend, op_params, bindings,
         )?;
         // Output layout: contiguous in the node's shape (mirrors the
         // source's logical shape). Auto-contiguize on the input side
@@ -1674,7 +2017,7 @@ fn compile_one(
         let op_params = OpParams::None;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
-            id, OpKind::Copy, &dtypes, target_backend, op_params, bindings, plan, selector,
+            OpKind::Copy, &dtypes, target_backend, op_params, bindings,
         )?;
         // Output layout: contiguous in the node's shape, same as
         // Op::Copy (the transfer materializes strided sources via
@@ -1794,7 +2137,7 @@ fn compile_one(
     // (Concat) collapse to the canonical `[T_in, T_out]` shorthand to
     // match how registrations index them.
     let dtypes = build_lookup_dtypes(graph, node);
-    let compiled = resolve_compiled(id, op_kind, &dtypes, target_backend, op_params, bindings, plan, selector)?;
+    let compiled = resolve_compiled(op_kind, &dtypes, target_backend, op_params, bindings)?;
     let output_layout = Layout::contiguous(node.shape.clone());
     layout_cache.insert(id, output_layout.clone());
     // Multi-output: snapshot the producer's bundle metadata. When
@@ -1884,7 +2227,7 @@ fn op_is_fused_linear(op: &Op) -> bool {
     matches!(op, Op::Fused(fid, _) if *fid == fuel_graph::registry::FusedOps::FUSED_LINEAR)
 }
 
-/// Map a `fuel_graph::Op` to a `fuel_core_types::dispatch::OpKind`.
+/// Map a `fuel_graph::Op` to a `fuel_ir::dispatch::OpKind`.
 /// Returns `None` for ops that haven't been wired into the new
 /// dispatch path yet — Phase C extends this as op families migrate.
 ///
@@ -2152,8 +2495,8 @@ fn encode_value_to_bytes(dtype: DType, value: f64) -> Result<Vec<u8>> {
 /// Encode a typed `Scalar` to its little-endian byte representation.
 /// Used by Op::MaskedFill so the kernel only sees bytes — never has
 /// to know the value's dtype.
-fn scalar_to_bytes(s: fuel_core_types::Scalar) -> Vec<u8> {
-    use fuel_core_types::Scalar;
+fn scalar_to_bytes(s: fuel_ir::Scalar) -> Vec<u8> {
+    use fuel_ir::Scalar;
     match s {
         Scalar::U8(v)  => vec![v],
         Scalar::I8(v)  => vec![v as u8],
@@ -3545,11 +3888,20 @@ fn op_to_op_params(
 /// - `Kernel` — gather input Arcs, allocate the output, run the
 ///   compiled kernel, store the result; record the contiguous
 ///   layout from the WorkItem.
+/// Execute one [`WorkItem`] against the cache, returning the node's
+/// [`CompletionHandle`].
+///
+/// Step E A4b-1: the producing arms (Kernel / WriteSlice / WriteSliceRotating /
+/// in-place / cross-device Copy alloc) return the handle from `execute_compiled`
+/// *without* waiting it inline — the realize loop stores it in its per-node
+/// handle map and drains at realize-end. Non-producing arms (const adopt, view,
+/// slot projection, release marker, contiguize) are pure Arc-clones / host
+/// allocs whose work is already complete → [`CompletionHandle::Ready`].
 fn execute_work_item(
     item: &WorkItem,
     cache: &mut StorageCache,
     layout_cache: &mut HashMap<NodeId, Layout>,
-) -> Result<()> {
+) -> Result<CompletionHandle> {
     match &item.kind {
         WorkItemKind::ConstAdopt => {
             if !cache.contains_key(&item.node_id) {
@@ -3563,7 +3915,7 @@ fn execute_work_item(
             // start; refresh from the WorkItem in case the side-table
             // was set after seeding.
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::ViewOf { input } => {
             let input_arc = cache.get(input).cloned().ok_or_else(|| {
@@ -3575,7 +3927,7 @@ fn execute_work_item(
             })?;
             cache.insert(item.node_id, input_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::SlotView { producer } => {
             // Op::View — multi-output projection. Same realization
@@ -3595,7 +3947,7 @@ fn execute_work_item(
             })?;
             cache.insert(item.node_id, producer_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::SlotOwn { producer, slot } => {
             // Op::ViewOwned — allocate a fresh Storage of the slot's
@@ -3703,7 +4055,10 @@ fn execute_work_item(
             };
             cache.insert(item.node_id, Arc::new(RwLock::new(new_storage)));
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            // A4b-1: Op::ViewOwned's slot copy (CUDA D2D) is same-stream; its
+            // completion is carried by the realize-end full-stream sync in
+            // `to_cpu_bytes` (unchanged) — `Ready` here is behavior-preserving.
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::WriteSlice { dest, source } => {
             let compiled = item.compiled.as_ref().ok_or_else(|| {
@@ -3778,7 +4133,7 @@ fn execute_work_item(
                 }
             };
             let source_layout_kernel =
-                fuel_core_types::Layout::contiguous(source_layout.shape().clone());
+                fuel_ir::Layout::contiguous(source_layout.shape().clone());
             // The kernel sees inputs=[source] and outputs=[dest_arc].
             // The dest input slot is intentionally absent — the kernel
             // doesn't read from dest; it only writes to its bytes
@@ -3786,14 +4141,16 @@ fn execute_work_item(
             let input_arcs = vec![source_arc_contig];
             let mut output_arcs = vec![dest_arc.clone()];
             let kernel_layouts = vec![source_layout_kernel, dest_layout.clone()];
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+            // A4b-1: defer the wait — return the handle to the realize loop.
+            let handle =
+                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
             // Adopt the dest Arc at this WriteSlice node's slot. The
             // realize loop's destructive_input cleanup evicts the
             // dest's own NodeId from the cache afterward — downstream
             // readers go through this node's NodeId.
             cache.insert(item.node_id, dest_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(handle)
         }
         WorkItemKind::WriteSliceRotating { dest, source, position } => {
             // Same shape as WriteSlice but with a position input.
@@ -3873,19 +4230,21 @@ fn execute_work_item(
                 }
             };
             let source_layout_kernel =
-                fuel_core_types::Layout::contiguous(source_layout.shape().clone());
-            let position_layout = fuel_core_types::Layout::contiguous(
-                fuel_core_types::Shape::from_dims(&[]),
+                fuel_ir::Layout::contiguous(source_layout.shape().clone());
+            let position_layout = fuel_ir::Layout::contiguous(
+                fuel_ir::Shape::from_dims(&[]),
             );
             let input_arcs = vec![source_arc_contig, position_arc];
             let mut output_arcs = vec![dest_arc.clone()];
             let kernel_layouts = vec![
                 source_layout_kernel, position_layout, dest_layout.clone(),
             ];
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+            // A4b-1: defer the wait — return the handle to the realize loop.
+            let handle =
+                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
             cache.insert(item.node_id, dest_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(handle)
         }
         WorkItemKind::Alloc { target_location } => {
             // Op::Alloc { target }: allocate a fresh, zero-init storage
@@ -3968,7 +4327,7 @@ fn execute_work_item(
             };
             cache.insert(item.node_id, Arc::new(RwLock::new(alloced)));
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::Iota { len } => {
             // Op::Iota { len }: 0-input F32 position generator
@@ -3987,7 +4346,7 @@ fn execute_work_item(
             let iota = fuel_memory::from_slice_cpu(&v);
             cache.insert(item.node_id, Arc::new(RwLock::new(iota)));
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::ZeroFill => {
             // Op::ZeroFill: in-place zero the input's bytes. Output
@@ -4056,7 +4415,11 @@ fn execute_work_item(
             // realize loop's destructive_input cleanup.
             cache.insert(item.node_id, src_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            // A4b-1: ZeroFill's CUDA memset is same-stream (and Op::Alloc
+            // typically zero-inits, so this is usually elided). Its completion
+            // is carried by the realize-end full-stream sync in `to_cpu_bytes`
+            // (unchanged) and same-stream ordering — `Ready` is behavior-preserving.
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::Copy { target_location }
         | WorkItemKind::Move { target_location } => {
@@ -4164,7 +4527,7 @@ fn execute_work_item(
                 auto_contiguize(&src_arc, &src_layout)?
             };
             let kernel_input_layout =
-                fuel_core_types::Layout::contiguous(src_layout.shape().clone());
+                fuel_ir::Layout::contiguous(src_layout.shape().clone());
             // Allocate the output on `target_location`. Phase 2
             // covered D2H (target=Cpu); Phase 3b extends to H2D
             // (target=Cuda / Vulkan from a CPU source). For non-CPU
@@ -4236,11 +4599,13 @@ fn execute_work_item(
             let mut output_arcs = vec![Arc::new(RwLock::new(output))];
             let kernel_layouts =
                 vec![kernel_input_layout, item.output_layout.clone()];
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+            // A4b-1: defer the wait — return the handle to the realize loop.
+            let handle =
+                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
             let arc = output_arcs.into_iter().next().expect("one output");
             cache.insert(item.node_id, arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(handle)
         }
         WorkItemKind::ReleaseMarker => {
             // Emit a zero-byte CPU storage at the Release node's
@@ -4252,7 +4617,7 @@ fn execute_work_item(
             let marker = fuel_memory::alloc_cpu_zeroed(item.dtype, 0)?;
             cache.insert(item.node_id, Arc::new(RwLock::new(marker)));
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::ContiguizeOf { input } => {
             let input_arc = cache.get(input).cloned().ok_or_else(|| {
@@ -4280,7 +4645,10 @@ fn execute_work_item(
                 };
             cache.insert(item.node_id, out_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            // A4b-1: a materializing contiguize (CUDA) is same-stream; its
+            // completion is carried by the realize-end full-stream sync in
+            // `to_cpu_bytes` (unchanged) — `Ready` here is behavior-preserving.
+            Ok(CompletionHandle::Ready)
         }
         WorkItemKind::Kernel => {
             let compiled = item.compiled.as_ref().ok_or_else(|| {
@@ -4302,7 +4670,7 @@ fn execute_work_item(
             // the input's shape; for inputs already contiguous we use
             // the cached layout directly. Output layout comes last.
             let mut input_arcs: Vec<Arc<RwLock<Storage>>> = Vec::with_capacity(item.inputs.len());
-            let mut kernel_layouts: Vec<fuel_core_types::Layout> =
+            let mut kernel_layouts: Vec<fuel_ir::Layout> =
                 Vec::with_capacity(item.inputs.len() + 1);
             // The kernel's `strided_input` cap lets non-contiguous
             // inputs (broadcast, transpose, etc.) flow through without
@@ -4366,7 +4734,7 @@ fn execute_work_item(
                 } else {
                     let contig_arc = auto_contiguize(&in_arc, &in_layout)?;
                     input_arcs.push(contig_arc);
-                    kernel_layouts.push(fuel_core_types::Layout::contiguous(
+                    kernel_layouts.push(fuel_ir::Layout::contiguous(
                         in_layout.shape().clone(),
                     ));
                 }
@@ -4494,12 +4862,14 @@ fn execute_work_item(
             };
             let mut output_arcs = vec![Arc::new(RwLock::new(output))];
 
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+            // A4b-1: defer the wait — return the handle to the realize loop.
+            let handle =
+                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
 
             let arc = output_arcs.into_iter().next().expect("one output");
             cache.insert(item.node_id, arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(handle)
         }
         WorkItemKind::InplaceKernel { target_idx } => {
             let compiled = item.compiled.as_ref().ok_or_else(|| {
@@ -4579,19 +4949,112 @@ fn execute_work_item(
             }
             let mut output_arcs = vec![target_arc.clone()];
             kernel_layouts.push(target_layout.clone());
-            execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+            // A4b-1: defer the wait — return the handle to the realize loop.
+            let handle =
+                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
             // Adopt the target Arc at this node's slot. The realize
             // loop's destructive_input cleanup evicts the target's own
             // NodeId from the cache afterward.
             cache.insert(item.node_id, target_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
-            Ok(())
+            Ok(handle)
         }
     }
 }
 
 fn poisoned(what: &'static str) -> Error {
     Error::Msg(format!("PipelinedExecutor: {} poisoned", what)).bt()
+}
+
+/// Step E A4b-1: record a node's [`CompletionHandle`] in the executor's
+/// per-node handle map.
+///
+/// `Ready` handles (CPU / Vulkan / view-and-alloc arms) carry no async work, so
+/// we DON'T store them — keeping the map to genuinely-pending entries makes the
+/// realize-end empty-after-drain assert (open question #6) meaningful and keeps
+/// the drain O(pending) rather than O(nodes). A re-used NodeId (in-place adopt
+/// re-keys an existing slot) waits the prior handle first so nothing leaks.
+#[inline]
+fn store_handle(
+    handles: &mut HashMap<NodeId, CompletionHandle>,
+    node_id: NodeId,
+    handle: CompletionHandle,
+) {
+    if matches!(handle, CompletionHandle::Ready) {
+        // A prior pending handle at this slot must still be waited (don't drop a
+        // Pending silently). In practice NodeIds are unique per realize, so this
+        // is just defensive.
+        if let Some(prev) = handles.remove(&node_id) {
+            let _ = prev.wait();
+        }
+        return;
+    }
+    if let Some(prev) = handles.insert(node_id, handle) {
+        let _ = prev.wait();
+    }
+}
+
+/// Step E A4b-3: the FINER cross-device producer wait.
+///
+/// Before dispatching a cross-device `Op::Copy` / `Op::Move` WorkItem, the
+/// executor calls this on the copy's single source input. It removes the
+/// source producer's [`CompletionHandle`] from the map and waits it — so the
+/// specific producer P is complete before the D2H reads P's device buffer,
+/// WITHOUT draining the whole source device (the conservative pre-A4b-3
+/// behavior, where `to_cpu_bytes`'s `device.synchronize()` blocked on ALL
+/// in-flight work on that device — including the OTHER sub-DAG's independent
+/// work A4b-4 wants to overlap).
+///
+/// - **CUDA producer** → waits P's recorded `Event` (`cuEventSynchronize`):
+///   fires after P + its already-ordered stream predecessors, nothing else.
+/// - **Absent / `Ready` producer** (CPU producer, or a Vulkan producer — which
+///   under A4b-2 is `Ready` mid-walk because nothing is submitted until
+///   realize-end) → no-op. A Vulkan SOURCE's own ordering is handled inside
+///   `download_bytes` (it `force_flush`es the open batch then reads), so there
+///   is no mid-walk Vulkan handle to wait here; the cross-device Vulkan→CPU hop
+///   stays correct without one.
+///
+/// Removing the handle here (rather than waiting it again at realize-end) keeps
+/// `drain_handles`' post-drain empty-map assert meaningful and avoids a
+/// double-wait. Waiting it twice would be harmless (`cuEventSynchronize` on an
+/// already-signalled event is a fast no-op), but the consume-once contract is
+/// cleaner. The producing node's *storage* stays in the cache for downstream
+/// readers; only its completion handle is consumed.
+fn wait_producer_handle(
+    handles: &mut HashMap<NodeId, CompletionHandle>,
+    producer: NodeId,
+) -> Result<()> {
+    if let Some(handle) = handles.remove(&producer) {
+        handle.wait()?;
+    }
+    Ok(())
+}
+
+/// Step E A4b-1: realize-end drain — wait every outstanding async handle, then
+/// clear the map.
+///
+/// **Event-recording / wait strategy (A4b-1 §1.2, open question #4).** CUDA has
+/// one stream per device, and an `Event` recorded after a node's launch signals
+/// when that node *and all prior stream work* have completed. So once the
+/// latest-recorded event on a device has signalled, every earlier event on that
+/// device is already signalled too: waiting them is a non-blocking
+/// `cuEventQuery` fast-path, not N host stalls. We therefore wait every stored
+/// handle (correct + simple); the only per-node cost is the `cuEventRecord` at
+/// production time (a lightweight stream marker — measured negligible on the
+/// long_chain 32-op stress, see the PR notes). We keep a per-node handle (rather
+/// than a single per-device event) because A4b-3's finer cross-device wait needs
+/// to wait a *specific producer's* completion — the per-node handle is that seam.
+fn drain_handles(handles: &mut HashMap<NodeId, CompletionHandle>) -> Result<()> {
+    for (_node, handle) in handles.drain() {
+        handle.wait()?;
+    }
+    // Open question #6: once handles are stored instead of `wait`ed inline, the
+    // `#[must_use]` on `CompletionHandle` can't catch a leaked (never-waited)
+    // handle at the call site. The drain consumes the whole map, so it is empty
+    // here by construction; assert it to catch a future leak (e.g. a new
+    // dispatch path that forgets to thread its handle through `store_handle`).
+    debug_assert!(handles.is_empty(), "A4b-1: handle map must be empty after drain");
+    Ok(())
 }
 
 /// Search the input cache for any `BackendStorage::Cuda(s)` whose
@@ -4622,6 +5085,445 @@ fn find_cuda_device_in_cache(
         }
     }
     None
+}
+
+/// Step E A4b-2: a Vulkan [`Completion`](crate::compiled::Completion) over an
+/// in-flight (submitted, not-yet-waited) batch. `wait` blocks on the batch's
+/// fence (`vkWaitForFences`) — which fires when the whole submitted command
+/// buffer has retired on the single compute queue — then releases the batch
+/// (frees the CB / descriptor sets / transient buffers / retired pool, all now
+/// idle on the GPU).
+///
+/// The fence is per-BATCH, not per-node: one `submit_pending` flushes every op
+/// recorded since the last submit, so this single handle covers a contiguous run
+/// of Vulkan nodes (the A2 batching win, preserved — fewer fences, larger
+/// submissions). `backend` keeps the [`VulkanBackend`] alive so the
+/// post-fence pool retire + the `DeviceInner` the batch's resources reference
+/// outlive the wait.
+///
+/// `Send` (required by `Completion`): every owned field is `Send` — `Fence` /
+/// `CommandBuffer` / `DescriptorSet` / `Buffer` / `Allocation` / `CommandPool`
+/// are all `Send` in vulkane (Arc-of-`DeviceInner` + explicit `unsafe impl`s),
+/// and `Arc<VulkanBackend>` is `Send + Sync`.
+/// Step E B1: `batch` is an `Option` ONLY so [`Drop`] can coexist with the
+/// by-value `into_wait` consume. A type with a `Drop` impl cannot be
+/// destructured by move (`let VulkanCompletion { backend, batch } = self`,
+/// E0509), so `into_wait` `take()`s the batch out of the `Option` instead of
+/// moving it out of the struct, then lets the normal `Drop` run. In every
+/// reachable state the batch is `Some` until exactly one `into_wait` consumes it.
+#[cfg(feature = "vulkan")]
+struct VulkanCompletion {
+    backend: Arc<fuel_vulkan_backend::VulkanBackend>,
+    batch: Option<fuel_vulkan_backend::SubmittedBatch>,
+    /// The device this submitted batch counts against in the in-flight counter
+    /// (Step E B1). `Drop` decrements this slot.
+    loc: fuel_ir::DeviceLocation,
+}
+
+/// Step E A4b-4: the element type of the executor's in-flight-Vulkan-batch list.
+/// A [`VulkanCompletion`] on a Vulkan build; a zero-sized placeholder otherwise
+/// so the realize loops carry one `Vec<InflightVulkan>` local without `cfg` on
+/// every use site (the helpers `eager_submit_all_vulkan` / `drain_inflight_vulkan`
+/// are the only code that ever pushes/drains it, and they are `cfg`-gated).
+#[cfg(feature = "vulkan")]
+type InflightVulkan = VulkanCompletion;
+#[cfg(not(feature = "vulkan"))]
+type InflightVulkan = ();
+
+/// Step E A4b-4: is the cross-device copy's SOURCE buffer Vulkan-resident?
+///
+/// Used at the cross-device `Op::Copy`/`Op::Move` boundary to decide whether the
+/// executor must wait the in-flight Vulkan batches before the copy. A Vulkan→CPU
+/// D2H reads the source on the host, and the Vulkan `download` path only
+/// `force_flush`es the OPEN batch (never the executor's eagerly-submitted
+/// in-flight ones), so for a VULKAN source we must `drain_inflight_vulkan` first
+/// to read completed data. For a CUDA / CPU source we must NOT wait Vulkan — the
+/// copy doesn't read any Vulkan buffer, and waiting Vulkan there would needlessly
+/// serialize the independent Vulkan sub-DAG (killing the overlap A4b-4 exists to
+/// win). Returns `false` when the producer's storage isn't in the cache (treated
+/// as not-Vulkan → no Vulkan wait; the CUDA/CPU producer handle still covers it).
+#[cfg(feature = "vulkan")]
+fn copy_source_is_vulkan(cache: &StorageCache, producer: NodeId) -> Result<bool> {
+    if let Some(arc) = cache.get(&producer) {
+        let guard = arc
+            .read()
+            .map_err(|_| poisoned("storage lock probing copy-source backend"))?;
+        return Ok(matches!(guard.inner, fuel_memory::BackendStorage::Vulkan(_)));
+    }
+    Ok(false)
+}
+
+#[cfg(not(feature = "vulkan"))]
+#[inline]
+fn copy_source_is_vulkan(_cache: &StorageCache, _producer: NodeId) -> Result<bool> {
+    Ok(false)
+}
+
+#[cfg(feature = "vulkan")]
+impl crate::compiled::Completion for VulkanCompletion {
+    fn wait(self: Box<Self>) -> Result<()> {
+        // Move the whole `VulkanCompletion` out of the `Box` (allowed even with a
+        // `Drop` impl — it's a full move, not a destructure) and consume by value.
+        (*self).into_wait()
+    }
+}
+
+#[cfg(feature = "vulkan")]
+impl VulkanCompletion {
+    /// Build the handle for an eagerly-submitted Vulkan batch and register it as
+    /// one in-flight batch on `loc` (Step E B1). The matching decrement is in
+    /// [`Drop`]. `loc` is the backend's `DeviceLocation::Vulkan { gpu_id }`.
+    fn new(
+        backend: Arc<fuel_vulkan_backend::VulkanBackend>,
+        batch: fuel_vulkan_backend::SubmittedBatch,
+        loc: fuel_ir::DeviceLocation,
+    ) -> Self {
+        crate::dispatch::inflight_inc(loc);
+        Self { backend, batch: Some(batch), loc }
+    }
+
+    /// Block on this batch's fence, retire pools, then free the batch. Consumes
+    /// `self` by value (the by-value sibling of the boxed `Completion::wait`),
+    /// used by the executor's `inflight_vulkan` drain (A4b-4) where we hold the
+    /// `VulkanCompletion` unboxed in a `Vec`.
+    ///
+    /// Step E B1: `take()`s the batch out of the `Option` (NOT a destructure
+    /// move — that's illegal with a `Drop` impl) and waits it; the in-flight
+    /// decrement then rides `self`'s `Drop` as this returns. So a wait-consume
+    /// and a bare drop (e.g. an error unwinding before the wait) BOTH decrement
+    /// exactly once, and `into_wait` never double-counts.
+    fn into_wait(mut self) -> Result<()> {
+        // `wait_submitted` consumes the batch by value: waits the fence, retires
+        // pools, then drops the batch (UAF-safe — nothing the in-flight CB
+        // references frees before the fence signals). After a `new` the batch is
+        // always `Some`; `take` leaves `None` so `Drop` doesn't touch it again.
+        if let Some(batch) = self.batch.take() {
+            self.backend.wait_submitted(batch)?;
+        }
+        Ok(())
+        // `self` drops here → `inflight_dec(self.loc)`.
+    }
+
+    /// Step E A2.1 (deferred-deletion): retain an evicted DATA buffer until THIS
+    /// in-flight batch's fence signals, then free it post-fence (on the batch's
+    /// `Drop` — guaranteed post-fence by follow-on #2). Delegates to
+    /// [`fuel_vulkan_backend::SubmittedBatch::retain_buffer`].
+    ///
+    /// The executor calls this for every in-flight batch when it evicts a Vulkan
+    /// buffer those batches' CBs may read, INSTEAD of host-blocking on a drain.
+    /// `batch` is `Some` in every reachable mid-walk state (it is `take`n only by
+    /// `into_wait`/`wait`, which consume the whole `VulkanCompletion`), so the
+    /// retain always lands on a live in-flight batch.
+    fn retain_data(&mut self, buf: std::sync::Arc<fuel_vulkan_backend::VulkanBuffer>) {
+        if let Some(batch) = self.batch.as_mut() {
+            batch.retain_buffer(buf);
+        }
+    }
+}
+
+#[cfg(feature = "vulkan")]
+impl Drop for VulkanCompletion {
+    fn drop(&mut self) {
+        // The single in-flight decrement for a Vulkan batch — fires whether the
+        // batch was waited (`into_wait` / `wait`) or merely dropped (error
+        // unwind), so the per-device count returns to baseline. Relaxed +
+        // saturating (a scheduling hint, never a correctness gate).
+        crate::dispatch::inflight_dec(self.loc);
+    }
+}
+
+/// Step E A4b-4 — eager Vulkan submission during the walk (the OVERLAP enabler).
+///
+/// Submits each DISTINCT Vulkan backend's currently-open batch WITHOUT waiting,
+/// pushing the resulting in-flight [`VulkanCompletion`]s onto `inflight` so the
+/// executor waits them later (at the in-flight-lifetime guard / realize-end). An
+/// empty open batch yields `None` and is skipped (idempotent).
+///
+/// This is what makes a Vulkan sub-DAG actually START on the iGPU while the
+/// executor records/dispatches the next (CUDA) chunk — without it the Vulkan
+/// batch sits merely *recorded* until realize-end and never overlaps the CUDA
+/// stream (design §5). Called ONLY on a genuinely multi-backend realize (gated by
+/// the executor's `multi_backend` flag); on a single-device graph it is never
+/// reached, so pure-Vulkan stays byte-identical to A4b-2 (one realize-end submit).
+///
+/// **Whole-chunk granularity (UAF/race-safety, design §4 + the Vulkan
+/// single-queue OOO-completion semantics).** We submit only at chunk boundaries
+/// and before a cross-device wait — never mid-chunk — so the batch handed to the
+/// GPU is a COMPLETE contiguous run of Vulkan nodes with all its intra-CB
+/// dependency barriers (`recorder.rs` `vkCmdPipelineBarrier`) already in place.
+/// Vulkan only guarantees that batches on one queue BEGIN in submission order;
+/// they may overlap / complete out of order, so a split mid-chunk would lose the
+/// write-before-read ordering for ops that read an earlier op's buffer in the
+/// SAME chunk. By submitting whole chunks and re-syncing (`drain_inflight_vulkan`)
+/// before any later Vulkan op records, before any cross-device copy, and before
+/// any Vulkan-referenced eviction, no in-flight batch is ever read or freed while
+/// still running.
+#[cfg(feature = "vulkan")]
+fn eager_submit_all_vulkan(
+    cache: &StorageCache,
+    inflight: &mut Vec<VulkanCompletion>,
+) -> Result<()> {
+    // Collect distinct Vulkan backends referenced by the cache (dedup by gpu_id).
+    let mut seen: Vec<usize> = Vec::new();
+    let mut backends: Vec<Arc<fuel_vulkan_backend::VulkanBackend>> = Vec::new();
+    for arc in cache.values() {
+        let guard = arc
+            .read()
+            .map_err(|_| poisoned("storage lock during eager vulkan submit"))?;
+        if let fuel_memory::BackendStorage::Vulkan(v) = &guard.inner {
+            if let Some(backend) = v.backend() {
+                if !seen.contains(&backend.gpu_id) {
+                    seen.push(backend.gpu_id);
+                    backends.push(backend.clone());
+                }
+            }
+        }
+    }
+    for backend in backends {
+        // Step E B1: the per-device location for the in-flight counter. A batch
+        // submitted here is one in-flight unit on this iGPU until its handle's
+        // `Drop` (after `drain_inflight_vulkan` / realize-end).
+        let loc = DeviceLocation::Vulkan { gpu_id: backend.gpu_id };
+        if let Some(batch) = backend.submit_pending()? {
+            inflight.push(VulkanCompletion::new(backend, batch, loc));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "vulkan"))]
+#[inline]
+fn eager_submit_all_vulkan(_cache: &StorageCache, _inflight: &mut Vec<InflightVulkan>) -> Result<()> {
+    Ok(())
+}
+
+/// Step E A4b-4 — wait every in-flight (eagerly-submitted) Vulkan batch, then
+/// clear the list. The re-sync half of [`eager_submit_all_vulkan`].
+///
+/// Each `into_wait` blocks on the batch fence (`vkWaitForFences`), retires the
+/// backend's descriptor pools, and frees the batch (CB / descriptor sets /
+/// transient buffers / retired command pool — all now idle on the GPU). After
+/// this returns, NO submitted Vulkan command buffer is still executing, so it is
+/// safe to (a) record a new Vulkan op that may read a just-produced buffer,
+/// (b) D2H-copy a Vulkan buffer on the host, or (c) free a buffer a batch read.
+///
+/// Because the eager submit happened at the PRIOR chunk boundary and an
+/// intervening (e.g. CUDA) chunk has since been recorded/dispatched, the fence is
+/// typically already signalled here — the wait is a fast no-op, and the iGPU work
+/// genuinely overlapped the other device's stream. Waiting the Vulkan fence does
+/// NOT touch the CUDA stream, so the other device keeps running (concurrency
+/// preserved — design §5 "the per-device guards don't cross-stall").
+#[cfg(feature = "vulkan")]
+fn drain_inflight_vulkan(inflight: &mut Vec<VulkanCompletion>) -> Result<()> {
+    for vc in inflight.drain(..) {
+        vc.into_wait()?;
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "vulkan"))]
+#[inline]
+fn drain_inflight_vulkan(_inflight: &mut Vec<InflightVulkan>) -> Result<()> {
+    Ok(())
+}
+
+/// Step E A4b-2: the realize-end Vulkan drain, SPLIT into submit-then-wait.
+///
+/// Replaces A2's `force_flush_all_vulkan` (which submitted + waited atomically
+/// inside `force_flush`). For each DISTINCT Vulkan backend referenced by the
+/// cache, `submit_pending` submits the still-open batch WITHOUT waiting (→ a
+/// `SubmittedBatch`), wraps it in the executor's [`VulkanCompletion`] handle, and
+/// `wait`s it. Net for a pure-Vulkan realize: the batch still accumulates across
+/// the whole walk (the per-op path keeps returning `Ready`; no eager submit —
+/// that is A4b-4) and is submitted ONCE here, then waited — **byte-identical to
+/// A2**, same single submission at realize-end, just split through the handle.
+///
+/// Idempotent across repeated cache arcs: the first `submit_pending` on a backend
+/// returns `Some(batch)`; subsequent calls on the same backend see an empty batch
+/// and return `None` (skipped) — exactly the `force_flush` idempotence A2 relied
+/// on. No-op for a non-Vulkan build.
+#[cfg(feature = "vulkan")]
+fn drain_vulkan_pending(cache: &StorageCache) -> Result<()> {
+    use crate::compiled::CompletionHandle;
+    for arc in cache.values() {
+        let backend = {
+            let guard = arc
+                .read()
+                .map_err(|_| poisoned("storage lock during vulkan submit_pending"))?;
+            match &guard.inner {
+                fuel_memory::BackendStorage::Vulkan(v) => v.backend().cloned(),
+                _ => None,
+            }
+        };
+        let Some(backend) = backend else { continue };
+        // Submit the open batch (if any) without waiting, then wait via the
+        // completion handle. Empty batch → None → nothing to wait.
+        // Step E B1: `new` increments the in-flight counter for this device;
+        // `handle.wait()` waits + drops the `VulkanCompletion`, decrementing it
+        // — a balanced submit/retire even on this transient realize-end path.
+        let loc = DeviceLocation::Vulkan { gpu_id: backend.gpu_id };
+        if let Some(batch) = backend.submit_pending()? {
+            let handle: CompletionHandle =
+                CompletionHandle::Pending(Box::new(VulkanCompletion::new(backend, batch, loc)));
+            handle.wait()?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "vulkan"))]
+fn drain_vulkan_pending(_cache: &StorageCache) -> Result<()> {
+    Ok(())
+}
+
+/// Step E A2: force the Vulkan backend behind `arc` (if any) to submit + WAIT
+/// its open batch — the blocking drain before freeing a buffer the batch may
+/// reference (a destructive eviction) so a recorded-but-unsubmitted command never
+/// reads freed memory. No-op for non-Vulkan storage, an empty batch, or a
+/// non-Vulkan build.
+///
+/// **Retained for the SINGLE-DEVICE path (byte-identical to pre-A2.1).** A2.1's
+/// deferred-deletion ([`defer_evicted_vulkan_buffer`]) replaces this only on a
+/// MULTI-backend realize, where eager-submit + in-flight tracking + the
+/// realize-end `drain_inflight_vulkan` are all live. On a single-device Vulkan
+/// realize the A4b machinery is gated off (`multi_backend == false`): the
+/// cross-batch RAW guard (`pipelined.rs:832`) does not run, so a later Vulkan op
+/// reading a buffer an eager-submitted batch wrote could race (separate
+/// submissions only BEGIN in order, may overlap). The blocking `force_flush`
+/// (submit + wait) is the coherent eviction drain there — exactly the original
+/// behavior — so single-device stays byte-identical and UAF-safe.
+#[cfg(feature = "vulkan")]
+fn force_flush_vulkan(arc: &Arc<RwLock<Storage>>) -> Result<()> {
+    let guard = arc
+        .read()
+        .map_err(|_| poisoned("storage lock during vulkan force_flush"))?;
+    if let fuel_memory::BackendStorage::Vulkan(v) = &guard.inner {
+        if let Some(backend) = v.backend() {
+            backend.force_flush()?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "vulkan"))]
+fn force_flush_vulkan(_arc: &Arc<RwLock<Storage>>) -> Result<()> {
+    Ok(())
+}
+
+/// Step E A2.1 — DEFERRED-DELETION of a Vulkan data buffer evicted while Vulkan
+/// work is in flight (the throughput refinement that REPLACES the eviction-time
+/// drain on a MULTI-backend realize). Called at the per-NodeId destructive
+/// eviction (`Op::Release`/`Op::Move` cleanup) for the buffer about to leave the
+/// cache, INSTEAD of `drain_inflight_vulkan` + `force_flush` (two host-blocking
+/// fence waits) — so the iGPU work the executor was overlapping with CUDA is not
+/// stalled at every eviction.
+///
+/// Two classes of Vulkan reader can hold a reference to `destroyed`'s buffer at
+/// the eviction:
+///   1. the **in-flight** `SubmittedBatch`es in `inflight` (submitted CBs, each
+///      fenced), and
+///   2. the **open**, not-yet-submitted recorder batch (recorded commands, NO
+///      fence yet).
+///
+/// We make BOTH fence-gated without blocking the host:
+///   - `eager_submit_all_vulkan` submits the open batch WITHOUT waiting, turning
+///     it into one more in-flight `SubmittedBatch` (now fenced) pushed onto
+///     `inflight`. (Whole-chunk granularity — UAF/race-safe per its contract; at a
+///     destructive eviction the open batch is a contiguous Vulkan run.)
+///   - We then move a refcount clone of the evicted buffer's `Arc<VulkanBuffer>`
+///     into EVERY in-flight batch (conservative: we cannot cheaply map
+///     buffer→batch, exactly the reason the old drain waited *all* of them). Each
+///     batch frees its retained clone POST-fence on `Drop` (follow-on #2).
+///
+/// After this returns the caller `cache.remove`s `destroyed`; the cache's
+/// `Arc<RwLock<Storage>>` drops, but the buffer's recycler
+/// (`VulkanBuffer::drop`) reclaims it only when its LAST `Arc` drops — and the
+/// retained clones keep it alive until their owning batches' fences signal. So the
+/// GPU's last read of the buffer strictly precedes the free (NO use-after-free),
+/// the host never blocks at the eviction (the iGPU keeps overlapping CUDA — the
+/// throughput win), and every batch (hence every retained buffer) is drained by
+/// realize-end at the latest (`drain_inflight_vulkan`, `pipelined.rs:916/1238`,
+/// runs unconditionally → NO leak).
+///
+/// **Multi-backend only** (the call site gates `if multi_backend`). On a
+/// single-device realize the open batch is drained by the blocking
+/// [`force_flush_vulkan`] instead (byte-identical to pre-A2.1; see its doc for
+/// why the deferred path is unsafe without the cross-batch RAW guard). No-op for a
+/// non-Vulkan storage, an empty open + no in-flight batches, or a non-Vulkan build.
+#[cfg(feature = "vulkan")]
+fn defer_evicted_vulkan_buffer(
+    cache: &StorageCache,
+    destroyed: NodeId,
+    inflight: &mut Vec<VulkanCompletion>,
+) -> Result<()> {
+    // Pull the evicted buffer's device Arc out of the cache BEFORE it is removed.
+    // Non-Vulkan storage, a host-evicted (no device buffer) Vulkan storage, or an
+    // absent entry → nothing to retain (no Vulkan reader can hold a device buffer).
+    let buf = {
+        let Some(arc) = cache.get(&destroyed) else { return Ok(()) };
+        let guard = arc
+            .read()
+            .map_err(|_| poisoned("storage lock during deferred-eviction retain"))?;
+        match &guard.inner {
+            fuel_memory::BackendStorage::Vulkan(v) => v.device_buffer_arc(),
+            _ => None,
+        }
+    };
+    let Some(buf) = buf else { return Ok(()) };
+
+    // The OPEN-batch case: eager-submit (no wait) so the recorded-but-unsubmitted
+    // commands that may read `destroyed` become a fenced in-flight batch on
+    // `inflight`. This NEVER waits — it only flushes the open batch to the GPU.
+    eager_submit_all_vulkan(cache, inflight)?;
+
+    // Retain a clone of the evicted buffer in EVERY in-flight batch (now including
+    // the just-submitted open batch). Each frees it POST-fence on `Drop` — the
+    // buffer outlives the GPU's last read with no host block. Conservative over
+    // all batches (no cheap buffer→batch map); over-retention only lengthens the
+    // lifetime, never a UAF, and all batches drain by realize-end.
+    for vc in inflight.iter_mut() {
+        vc.retain_data(buf.clone());
+    }
+    // Step E A2.1 — throughput-observability. Count a DEFERRED retain that
+    // actually replaced a host block: an evicted Vulkan buffer retained onto ≥1
+    // in-flight batch (the open-batch eager-submit and/or pre-existing in-flight
+    // batches). Pre-A2.1 every such site host-blocked (`force_flush` and/or
+    // `drain_inflight_vulkan`); now it does not. A test reads
+    // [`deferred_eviction_retains`] to assert the deferred path fired without a
+    // drain (deterministic — no wall-clock, which is noisy on this box). When
+    // `inflight` is empty here there was genuinely no in-flight/open Vulkan reader
+    // to wait for, so no host block was avoided (and none was needed) — not counted.
+    if !inflight.is_empty() {
+        DEFERRED_EVICTION_RETAINS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// Step E A2.1 — cumulative count of deferred-deletion retains that replaced a
+/// host-blocking eviction drain (an evicted Vulkan buffer retained onto ≥1
+/// in-flight batch instead of waiting it). Process-global, `Relaxed` — a pure
+/// test/telemetry observation, never a correctness gate (mirrors the B1 in-flight
+/// counter idiom). Read by the live deferred-eviction throughput test.
+#[cfg(feature = "vulkan")]
+pub static DEFERRED_EVICTION_RETAINS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Read the A2.1 deferred-eviction-retain counter (see
+/// [`DEFERRED_EVICTION_RETAINS`]). `pub` so the live throughput test can assert a
+/// deferred retain fired (the eviction did NOT host-block on a Vulkan fence).
+#[cfg(feature = "vulkan")]
+pub fn deferred_eviction_retains() -> usize {
+    DEFERRED_EVICTION_RETAINS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(not(feature = "vulkan"))]
+#[inline]
+fn defer_evicted_vulkan_buffer(
+    _cache: &StorageCache,
+    _destroyed: NodeId,
+    _inflight: &mut Vec<InflightVulkan>,
+) -> Result<()> {
+    Ok(())
 }
 
 /// Vulkan counterpart of [`find_cuda_device_in_cache`]. Returns an
@@ -4733,8 +5635,130 @@ fn auto_contiguize(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
     use fuel_graph::Node;
+
+    /// A4b-1 test double: a `Completion` whose `wait` flips a shared flag, so a
+    /// test can observe whether the drain actually waited it.
+    struct FlagCompletion(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl crate::compiled::Completion for FlagCompletion {
+        fn wait(self: Box<Self>) -> Result<()> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// A4b-1: `store_handle` keeps only `Pending` handles (so the post-drain
+    /// empty-map assert is meaningful and the drain is O(pending)), and
+    /// `drain_handles` waits each pending handle exactly once then empties the map.
+    #[test]
+    fn handle_map_stores_pending_and_drains_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
+
+        // Ready handles are not stored.
+        store_handle(&mut handles, NodeId(1), CompletionHandle::Ready);
+        assert!(handles.is_empty(), "Ready handles must not be stored");
+
+        // Two pending handles are stored and each waited once on drain.
+        let waited = StdArc::new(AtomicUsize::new(0));
+        store_handle(
+            &mut handles,
+            NodeId(2),
+            CompletionHandle::Pending(Box::new(FlagCompletion(waited.clone()))),
+        );
+        store_handle(
+            &mut handles,
+            NodeId(3),
+            CompletionHandle::Pending(Box::new(FlagCompletion(waited.clone()))),
+        );
+        assert_eq!(handles.len(), 2);
+
+        drain_handles(&mut handles).expect("drain");
+        assert_eq!(waited.load(Ordering::SeqCst), 2, "each pending handle waited once");
+        assert!(handles.is_empty(), "map empty after drain");
+    }
+
+    /// A4b-1: re-keying a NodeId with a new Pending handle waits the prior one
+    /// (no leaked async work), and storing `Ready` over a prior Pending also
+    /// waits it. Defensive — NodeIds are unique per realize in practice.
+    #[test]
+    fn handle_map_rekey_waits_previous() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
+        let waited = StdArc::new(AtomicUsize::new(0));
+
+        store_handle(
+            &mut handles,
+            NodeId(7),
+            CompletionHandle::Pending(Box::new(FlagCompletion(waited.clone()))),
+        );
+        // Re-key with another Pending → prior is waited.
+        store_handle(
+            &mut handles,
+            NodeId(7),
+            CompletionHandle::Pending(Box::new(FlagCompletion(waited.clone()))),
+        );
+        assert_eq!(waited.load(Ordering::SeqCst), 1, "rekey waited the prior pending");
+
+        // Store Ready over the live Pending → it is waited too.
+        store_handle(&mut handles, NodeId(7), CompletionHandle::Ready);
+        assert_eq!(waited.load(Ordering::SeqCst), 2, "Ready-over-Pending waited it");
+        assert!(handles.is_empty());
+
+        drain_handles(&mut handles).expect("drain empty");
+    }
+
+    /// A4b-3: `wait_producer_handle` waits the named producer's handle EXACTLY
+    /// once and removes it from the map (the finer cross-device source-drain
+    /// consumes the producer's completion before the Copy reads its buffer), and
+    /// is a no-op for an absent producer (CPU / Vulkan-`Ready` source, or an
+    /// already-consumed handle). The realize-end drain then waits only what
+    /// remains — no double-wait.
+    #[test]
+    fn wait_producer_handle_consumes_named_handle_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let mut handles: HashMap<NodeId, CompletionHandle> = HashMap::new();
+        let waited = StdArc::new(AtomicUsize::new(0));
+
+        // Two producers in flight; the Copy's source is NodeId(2).
+        store_handle(
+            &mut handles,
+            NodeId(2),
+            CompletionHandle::Pending(Box::new(FlagCompletion(waited.clone()))),
+        );
+        store_handle(
+            &mut handles,
+            NodeId(5),
+            CompletionHandle::Pending(Box::new(FlagCompletion(waited.clone()))),
+        );
+
+        // Absent producer → no-op (a CPU/Vulkan-Ready source has no handle).
+        wait_producer_handle(&mut handles, NodeId(99)).expect("absent is no-op");
+        assert_eq!(waited.load(Ordering::SeqCst), 0, "absent producer waited nothing");
+        assert_eq!(handles.len(), 2);
+
+        // The cross-device copy's source: waited once, removed from the map.
+        wait_producer_handle(&mut handles, NodeId(2)).expect("wait source");
+        assert_eq!(waited.load(Ordering::SeqCst), 1, "source producer waited once");
+        assert!(!handles.contains_key(&NodeId(2)), "source handle consumed");
+        assert!(handles.contains_key(&NodeId(5)), "unrelated handle untouched");
+
+        // Re-waiting the (now absent) source is a no-op — no double-wait.
+        wait_producer_handle(&mut handles, NodeId(2)).expect("re-wait is no-op");
+        assert_eq!(waited.load(Ordering::SeqCst), 1, "no double-wait");
+
+        // Realize-end drain waits only the remaining unrelated producer.
+        drain_handles(&mut handles).expect("drain");
+        assert_eq!(waited.load(Ordering::SeqCst), 2, "drain waited the remaining one");
+        assert!(handles.is_empty());
+    }
 
     /// Op::Contiguize on a contiguous-already input is zero-copy:
     /// the executor adopts the input Storage Arc unchanged.
@@ -4963,6 +5987,332 @@ mod tests {
             routed, arm0,
             "an empty route realizes byte-identically to arm-0 (Phase B contract)",
         );
+    }
+
+    /// **PR-C3 reorder-invariance gate (CPU, runnable — ORDERING level).**
+    /// The auto-overlap reorder is a HINT: it changes only *which order*
+    /// independent device runs dispatch in, never *which* nodes run nor the
+    /// result. The byte-identical-OUTPUT proof is necessarily LIVE (the
+    /// reorder fires only on a ≥2-device graph, which needs ≥2 real backends
+    /// to realize — see `cuda_vulkan_multidevice_realize_live`'s
+    /// `[22,86,192,340]` oracle, which now flows through this reorder, plus
+    /// the dual-GPU `cuda_vulkan_overlap_bench_live` arbitrary-graph
+    /// auto-overlap gate). THIS test proves the ordering-level invariant on a
+    /// CPU-only path: the C3 reorder of a two-device graph is a valid
+    /// topological **permutation** of the un-reordered topo order — same node
+    /// multiset, every node still after its inputs — that genuinely DIFFERS
+    /// from the un-reordered order (so the reorder fired). Because the
+    /// executor caches each node's result and every op is deterministic,
+    /// realizing any valid topological order yields identical bytes; this
+    /// test guards the precondition (a valid permutation) that makes that so.
+    #[test]
+    fn c3_reorder_is_a_valid_topo_permutation() {
+        // Two INDEPENDENT device sub-chains over distinct consts reconverging
+        // at a final CUDA add, the Vulkan root bridged to CUDA by an explicit
+        // Op::Copy (a residency seam = its own run). Reconverge inputs in the
+        // "wrong" (cuda-first) order, the order the un-reordered topo DFS pops
+        // CUDA-last — exactly the arbitrary-graph shape the auto-overlap pass
+        // must fix. The chains are UNARY (Relu) so each stays a single
+        // contiguous run (no const-re-read fan-in fragmenting them), exactly
+        // like the live benchmark's `relu(mul·add)` chains; the CUDA chain is
+        // HEAVIER (4 vs 2) so the critical-path reorder emits it first.
+        // (Stamps only; not realized here — the ordering proof, CPU-runnable.)
+        let n = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
+            g.push(Node { op, inputs, shape: Shape::from_dims(&[3]), dtype: DType::F32 })
+        };
+        let mut g = Graph::new();
+        let ca = n(&mut g, Op::Const, vec![]);
+        let cb = n(&mut g, Op::Const, vec![]);
+        // CUDA chain — HEAVIER (4 unary stages, one contiguous run).
+        let mut cprev = ca;
+        for _ in 0..4 {
+            cprev = n(&mut g, Op::Relu, vec![cprev]);
+            g.set_target_backend(cprev, BackendId::Cuda);
+        }
+        let c2 = cprev; // CUDA chunk root
+        // Vulkan chain — lighter (2 unary stages).
+        let mut vprev = cb;
+        for _ in 0..2 {
+            vprev = n(&mut g, Op::Relu, vec![vprev]);
+            g.set_target_backend(vprev, BackendId::Vulkan);
+        }
+        let v2 = vprev; // Vulkan chunk root
+        // Vulkan -> CUDA copy (residency seam), then reconverge on CUDA with
+        // inputs [cuda_root, copy] (cuda-first).
+        let copy = g.push(Node {
+            op: Op::Copy { target: DeviceLocation::Cuda { gpu_id: 0 } },
+            inputs: vec![v2],
+            shape: Shape::from_dims(&[3]),
+            dtype: DType::F32,
+        });
+        g.set_target_backend(copy, BackendId::Cuda);
+        let out = n(&mut g, Op::Add, vec![c2, copy]);
+        g.set_target_backend(out, BackendId::Cuda);
+
+        let unreordered = execution_plan(&g, &[out]);
+        let reordered = fuel_graph::lower_runs_arm0(&g, &[out]);
+
+        // (1) The reorder FIRED — the order changed (else the test is
+        //     vacuous + auto-overlap did nothing on an arbitrary graph).
+        assert_ne!(
+            reordered, unreordered,
+            "the C3 reorder must change the order on a two-device graph; \
+             reordered={reordered:?} unreordered={unreordered:?}",
+        );
+
+        // (2) Same node multiset — a permutation, no add/drop.
+        let mut a = unreordered.clone();
+        let mut b = reordered.clone();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b, "the reorder is a permutation of the same node set");
+
+        // (3) The reordered order is a VALID topological order: every node
+        //     appears after all of its inputs that are in the order.
+        let pos: std::collections::HashMap<NodeId, usize> =
+            reordered.iter().enumerate().map(|(i, &node)| (node, i)).collect();
+        for (i, &node) in reordered.iter().enumerate() {
+            for &inp in &g.node(node).inputs {
+                if let Some(&j) = pos.get(&inp) {
+                    assert!(
+                        j < i,
+                        "input {inp:?} of {node:?} must precede it in the reordered \
+                         order; reordered={reordered:?}",
+                    );
+                }
+            }
+        }
+
+        // (4) The overlap-relevant property: BOTH device producer chunks
+        //     (the CUDA root c2, the Vulkan root v2) are emitted BEFORE the
+        //     host-blocking cross-device copy — the A4b overlap topology the
+        //     un-reordered cuda-last DFS violates — AND the HEAVIER CUDA chunk
+        //     is emitted first (critical-path: the auto-submit device runs
+        //     earliest, the live-overlap regression guard).
+        let p = |node: NodeId| pos[&node];
+        assert!(p(c2) < p(copy), "CUDA chunk before the cross-device copy");
+        assert!(p(v2) < p(copy), "Vulkan chunk before the cross-device copy");
+        assert!(
+            p(c2) < p(v2),
+            "the heavier CUDA chunk is emitted before the lighter Vulkan chunk \
+             (critical-path heavy-first); reordered={reordered:?}",
+        );
+    }
+
+    /// **C3 follow-on — the OPERAND-ORDER-INVARIANCE gate (CPU, runnable —
+    /// the reliable operand-independence proof).** The residual the live
+    /// `cuda_vulkan_overlap_bench_live` benchmark targets is whether the
+    /// reconverge OPERAND order (`xc.add(&xv)` vs `xv.add(&xc)`) changes the
+    /// wall-clock overlap. Wall-clock is thermally noisy on a heterogeneous
+    /// dev box; the DETERMINISTIC root guarantee is this: the C3-reordered
+    /// dispatch order the executor consumes is **byte-identical for both
+    /// operand orders**. If the lowered order is the same, the executor
+    /// processes the SAME WorkItem stream with the SAME cross-device
+    /// submit/wait timing, so overlap cannot depend on the operand order.
+    ///
+    /// This builds the SAME two-device reconverge as
+    /// `c3_reorder_is_a_valid_topo_permutation` but TWICE — once cuda-first
+    /// (`add(cuda_root, copy)`), once vulkan-first (`add(copy, cuda_root)`)
+    /// — over structurally identical graphs (same node ids, only the
+    /// reconverge's two inputs swapped) and asserts `lower_runs_arm0` emits
+    /// the identical op/device run sequence. The live executor trace confirms
+    /// the same: both operand orders produce the identical WorkItem stream
+    /// (the eager-submit/drain/wait sequence at every cross-device copy is the
+    /// same, and the CUDA chunk is enqueued first in both).
+    #[test]
+    fn c3_reorder_is_operand_order_invariant() {
+        // Build the two-device reconverge with the reconverge inputs in the
+        // given order; return (graph, out) over a FRESH graph so node ids line
+        // up 1:1 between the two builds (only the add's input order differs).
+        let build = |cuda_first: bool| -> (Graph, NodeId) {
+            let n = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
+                g.push(Node { op, inputs, shape: Shape::from_dims(&[3]), dtype: DType::F32 })
+            };
+            let mut g = Graph::new();
+            let ca = n(&mut g, Op::Const, vec![]);
+            let cb = n(&mut g, Op::Const, vec![]);
+            let mut cprev = ca;
+            for _ in 0..4 {
+                cprev = n(&mut g, Op::Relu, vec![cprev]);
+                g.set_target_backend(cprev, BackendId::Cuda);
+            }
+            let c2 = cprev;
+            let mut vprev = cb;
+            for _ in 0..2 {
+                vprev = n(&mut g, Op::Relu, vec![vprev]);
+                g.set_target_backend(vprev, BackendId::Vulkan);
+            }
+            let v2 = vprev;
+            let copy = g.push(Node {
+                op: Op::Copy { target: DeviceLocation::Cuda { gpu_id: 0 } },
+                inputs: vec![v2],
+                shape: Shape::from_dims(&[3]),
+                dtype: DType::F32,
+            });
+            g.set_target_backend(copy, BackendId::Cuda);
+            // The ONE knob: the reconverge's two inputs, swapped.
+            let inputs = if cuda_first { vec![c2, copy] } else { vec![copy, c2] };
+            let out = n(&mut g, Op::Add, inputs);
+            g.set_target_backend(out, BackendId::Cuda);
+            (g, out)
+        };
+
+        let (g_cf, out_cf) = build(true);
+        let (g_vf, out_vf) = build(false);
+
+        // Lower both via the production path (dispatch_order → lower_runs_arm0
+        // → device_alternating_order, the C3 reorder).
+        let order_cf = fuel_graph::lower_runs_arm0(&g_cf, &[out_cf]);
+        let order_vf = fuel_graph::lower_runs_arm0(&g_vf, &[out_vf]);
+
+        // The decisive guarantee: the lowered dispatch order — as an
+        // (op, device) sequence — is IDENTICAL for both operand orders. (Node
+        // ids can differ if the build assigned them differently, but here the
+        // builds are structurally identical so even the ids match; compare the
+        // op/device sequence to be robust + descriptive on failure.)
+        let tag = |g: &Graph, ids: &[NodeId]| -> Vec<(String, Option<BackendId>)> {
+            ids.iter()
+                .map(|&id| (format!("{:?}", g.node(id).op), g.target_backend(id)))
+                .collect()
+        };
+        let seq_cf = tag(&g_cf, &order_cf);
+        let seq_vf = tag(&g_vf, &order_vf);
+        assert_eq!(
+            seq_cf, seq_vf,
+            "the C3-reordered dispatch order MUST be identical for both \
+             reconverge operand orders (operand-order-invariance — the \
+             executor then sees the same WorkItem stream regardless of \
+             operand order, so overlap is operand-insensitive).\n\
+             cuda-first = {seq_cf:?}\nvulkan-first = {seq_vf:?}",
+        );
+    }
+
+    /// A selector that always takes the LAST arm (arm 1) so a non-arm-0
+    /// pick is observable (a `WinnerSelector` picks arm-0 ⇒ empty route).
+    #[cfg(test)]
+    #[derive(Debug)]
+    struct PickLast;
+    #[cfg(test)]
+    impl RuntimeSelector for PickLast {
+        fn select<'a>(
+            &self,
+            set: &'a crate::ranker::AlternativeSet,
+        ) -> Option<&'a crate::ranker::Candidate> {
+            set.alternatives().last()
+        }
+    }
+
+    /// Build the 2-arm diamond (mirrors `route_picker::tests::diamond`):
+    /// arm-0 on CUDA, arm-1 on CPU; the arm exits carry their
+    /// `target_backend` so the picker reads each arm's placement. Returns
+    /// `(graph_arc, branch, post)`.
+    #[cfg(test)]
+    fn picking_diamond() -> (Arc<RwLock<Graph>>, NodeId, NodeId) {
+        let node = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
+            g.push(Node { op, inputs, shape: Shape::from_dims(&[2]), dtype: DType::F32 })
+        };
+        let mut g = Graph::new();
+        let pre = node(&mut g, Op::Const, vec![]);
+        let diverge = node(&mut g, Op::Relu, vec![pre]);
+        let arm0 = node(&mut g, Op::Silu, vec![diverge]);
+        let arm1 = node(&mut g, Op::Gelu, vec![diverge]);
+        g.set_target_backend(arm0, BackendId::Cuda);
+        g.set_target_backend(arm1, BackendId::Cpu);
+        let reconverge = node(&mut g, Op::Relu, vec![arm0]);
+        let mut b = g.open_branch(diverge);
+        b.add_arm(arm0);
+        b.add_arm(arm1);
+        let branch = b
+            .finalize_branches(&mut g, reconverge)
+            .expect("well-formed 2-arm branch")
+            .expect("2 arms survive");
+        let post = node(&mut g, Op::Tanh, vec![reconverge]);
+        (Arc::new(RwLock::new(g)), branch, post)
+    }
+
+    /// Step E Phase C, PR C1: the streaming picking entry's gate.
+    /// `streaming_pick_for` (the streaming successor of the old one-shot
+    /// `pick_route_for`) must (1) return `Some(pick)` when a selector + a
+    /// branch are present (⇒ the `OrderSource::Streaming` walk), (2) return
+    /// `None` with no selector (the `runtime_selector_disabled` opt-out ⇒
+    /// arm-0), and (3) short-circuit to `None` on a branchless graph (the
+    /// fast-path ⇒ the untouched `dispatch_order` lowering).
+    #[test]
+    fn streaming_pick_for_gates() {
+        let (graph, _branch, post) = picking_diamond();
+        let _ = post;
+
+        // (1) selector + branch ⇒ Some(pick).
+        let sel: Arc<dyn RuntimeSelector> = Arc::new(PickLast);
+        assert!(
+            PipelinedExecutor::streaming_pick_for(&graph, Some(sel.clone()), None)
+                .expect("ok")
+                .is_some(),
+            "selector + branch ⇒ a streaming pick",
+        );
+
+        // (2) no selector ⇒ None (arm-0 lowering).
+        assert!(
+            PipelinedExecutor::streaming_pick_for(&graph, None, None)
+                .expect("ok")
+                .is_none(),
+            "no selector ⇒ no streaming pick (arm-0 lowering)",
+        );
+
+        // (3) branchless graph + selector ⇒ None (the fast-path).
+        let node = |g: &mut Graph, op: Op, inputs: Vec<NodeId>| {
+            g.push(Node { op, inputs, shape: Shape::from_dims(&[2]), dtype: DType::F32 })
+        };
+        let bl_graph = {
+            let mut g = Graph::new();
+            let c1 = node(&mut g, Op::Const, vec![]);
+            let c2 = node(&mut g, Op::Const, vec![]);
+            let add = node(&mut g, Op::Add, vec![c1, c2]);
+            g.set_target_backend(add, BackendId::Cpu);
+            Arc::new(RwLock::new(g))
+        };
+        assert!(
+            PipelinedExecutor::streaming_pick_for(&bl_graph, Some(sel), None)
+                .expect("ok")
+                .is_none(),
+            "branchless graph ⇒ no branches ⇒ no streaming pick (fast-path)",
+        );
+    }
+
+    /// **C1 byte-identity gate (executor layer).** The STREAMED dispatch
+    /// order — produced by the compiler thread's lazy per-branch resolution
+    /// (`walk_picked_route_streaming` over `resolve_branch`, the same path
+    /// `order_for(OrderSource::Streaming)` collects) — equals the ONE-SHOT
+    /// order (`lower_picked_route` over the route the eager `pick_route`
+    /// resolves) on the branched diamond, for both arm-0 (WinnerSelector)
+    /// and arm-1 (PickLast). This is the proof that C1 changes *when* a
+    /// branch resolves, not *which* arm — the same selector, the same
+    /// `resolve_branch`, the same emitted order.
+    #[test]
+    fn streamed_order_equals_one_shot() {
+        let (graph, _branch, post) = picking_diamond();
+        let g = graph.read().unwrap();
+        let bindings = global_bindings();
+
+        for sel in [
+            Arc::new(crate::ranker::WinnerSelector) as Arc<dyn RuntimeSelector>,
+            Arc::new(PickLast) as Arc<dyn RuntimeSelector>,
+        ] {
+            // One-shot: resolve the whole route, then lower.
+            let one_shot_route = pick_route(&g, &[post], &bindings, sel.as_ref(), None);
+            let one_shot = fuel_graph::lower_picked_route(&g, &[post], &one_shot_route);
+
+            // Streamed: resolve each branch lazily at the frontier via the
+            // SAME `resolve_branch` the compiler thread uses.
+            let streamed = fuel_graph::lower_picked_route_streaming(&g, &[post], |branch| {
+                resolve_branch(&g, branch, &bindings, sel.as_ref())
+            });
+
+            assert_eq!(
+                streamed, one_shot,
+                "streamed order must equal one-shot for selector {sel:?}",
+            );
+        }
     }
 
     /// Realizing a node whose target_backend isn't set surfaces a
@@ -7689,7 +9039,7 @@ mod tests {
     /// and the live prefix grows per token.
     #[test]
     fn pipelined_realize_flash_attn_dynamic_k_len() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         // q [1,1,2,2]; K/V capacity [1,1,4,2]; bind k_len = 3 so row 3
         // (the "poison" row) is never attended.
         let q = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0,  0.0, 1.0]);
@@ -7774,7 +9124,7 @@ mod tests {
     /// error at realize (never a panic).
     #[test]
     fn pipelined_realize_flash_attn_dynamic_k_len_unbound_errors() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         let q = fuel_memory::from_slice_cpu(&[1.0_f32, 0.0, 0.0, 1.0]);
         let k = fuel_memory::from_slice_cpu(&[0.0_f32; 16]);
         let v = fuel_memory::from_slice_cpu(&[0.0_f32; 16]);
@@ -9128,7 +10478,7 @@ mod tests {
         let g = graph_rc.read().unwrap();
         let bindings = crate::dispatch::global_bindings();
         let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-        let item = compile_one(&g, release_id, &mut layout_cache, &bindings, None, None, &SymEnv::default())
+        let item = compile_one(&g, release_id, &mut layout_cache, &bindings, &SymEnv::default())
             .expect("compile_one Op::Release");
         assert!(matches!(item.kind, WorkItemKind::ReleaseMarker));
         assert_eq!(item.destructive_input, Some(0));
@@ -9161,7 +10511,7 @@ mod tests {
         let g = graph_rc.read().unwrap();
         let bindings = crate::dispatch::global_bindings();
         let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
-        let item = compile_one(&g, move_id, &mut layout_cache, &bindings, None, None, &SymEnv::default())
+        let item = compile_one(&g, move_id, &mut layout_cache, &bindings, &SymEnv::default())
             .expect("compile_one Op::Move");
         assert!(matches!(
             item.kind,
@@ -9478,7 +10828,7 @@ mod tests {
                 shape: Shape::from_dims(&[4]), dtype: DType::U8,
             });
             let out = g.push(Node {
-                op: Op::MaskedFill { value: fuel_core_types::Scalar::F32(-1000.0) },
+                op: Op::MaskedFill { value: fuel_ir::Scalar::F32(-1000.0) },
                 inputs: vec![x, mask],
                 shape: Shape::from_dims(&[4]), dtype: DType::F32,
             });
@@ -9608,7 +10958,7 @@ mod tests {
     /// write at a per-token `cached_len`.
     #[test]
     fn pipelined_realize_write_slice_dynamic_offset() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         let dest_storage = fuel_memory::from_slice_cpu(&[0.0_f32; 6]);
         let src_storage = fuel_memory::from_slice_cpu(&[7.0_f32, 8.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -9663,7 +11013,7 @@ mod tests {
     /// typed error at realize (never a panic).
     #[test]
     fn pipelined_realize_write_slice_dynamic_offset_unbound_errors() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         let dest_storage = fuel_memory::from_slice_cpu(&[0.0_f32; 6]);
         let src_storage = fuel_memory::from_slice_cpu(&[7.0_f32, 8.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -9705,7 +11055,7 @@ mod tests {
     /// capacity errors at realize (never an out-of-bounds write).
     #[test]
     fn pipelined_realize_write_slice_dynamic_offset_out_of_capacity_errors() {
-        use fuel_core_types::{DynScalar, SymId};
+        use fuel_ir::{DynScalar, SymId};
         let dest_storage = fuel_memory::from_slice_cpu(&[0.0_f32; 6]);
         let src_storage = fuel_memory::from_slice_cpu(&[7.0_f32, 8.0]);
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -9762,7 +11112,7 @@ mod tests {
     /// `step_x` deterministically sees `x` and is `[1, 0, 1, 0]`.
     #[test]
     fn pipelined_inplace_with_multiple_readers_orders_correctly() {
-        use fuel_core_types::Shape;
+        use fuel_ir::Shape;
         let data = [1.0_f32, -2.0, 3.0, -4.0];
         let src_storage = fuel_memory::from_slice_cpu(&data);
 
@@ -9841,7 +11191,7 @@ mod tests {
     /// `x` input to `x_safe`. Result: `z = relu(x) + x = [2, -2, 6, -4]`.
     #[test]
     fn pipelined_residual_connection_inserts_safety_copy() {
-        use fuel_core_types::Shape;
+        use fuel_ir::Shape;
         let data = [1.0_f32, -2.0, 3.0, -4.0];
         let src_storage = fuel_memory::from_slice_cpu(&data);
 
@@ -9975,606 +11325,5 @@ mod tests {
         );
         let ls_value = typed[last_state_layout.start_offset()];
         assert!((ls_value - 6.0).abs() < 1e-5, "last_state expected 6.0 got {ls_value}");
-    }
-
-    // ===== Phase 4.1 — plan-aware compile_one =====
-    //
-    // These tests construct an `ExecutionPlan` directly (bypassing
-    // `compile_plan`) so we can pin a specific winner kernel per
-    // node and observe that `realize_with_plan` dispatches it. The
-    // four scenarios cover the load-bearing contract:
-    //
-    //   1. Plan-resolved kernel wins (vs first-registered).
-    //   2. Plan present but no entry → legacy fallback.
-    //   3. Existing `realize` (no plan) → byte-identical to pre-4.1.
-    //   4. Plan with cross-backend winner overrides graph
-    //      `target_backend`.
-    //
-    // The trick: register the legacy "Add" kernel through the global
-    // bindings table (standard sum), then build a custom kernel that
-    // doubles the LHS — feed it into the plan's `AlternativeSet`
-    // winner. If the plan path is wired, the output is 2× LHS; if
-    // it falls back to legacy, the output is LHS + RHS.
-
-    use crate::fused::PrecisionGuarantee;
-    use crate::kernel::KernelCaps;
-    use crate::plan::ExecutionPlan;
-    use crate::ranker::{AlternativeSet, Candidate};
-    use std::collections::HashMap as StdHashMap;
-
-    /// Custom kernel for Phase 4.1 tests: writes `2 * inputs[0]`
-    /// into `outputs[0]` (ignoring `inputs[1]`). Distinguishes the
-    /// picker-resolved path from the legacy first-registered Add
-    /// kernel's sum behavior in test 1 and test 4.
-    fn double_lhs_kernel_f32(
-        inputs: &[Arc<RwLock<Storage>>],
-        outputs: &mut [Arc<RwLock<Storage>>],
-        _layouts: &[Layout],
-        _params: &OpParams,
-    ) -> Result<()> {
-        let lhs_guard = inputs[0].read().map_err(|_| poisoned("lhs lock"))?;
-        let doubled: Vec<f32> = if let fuel_memory::BackendStorage::Cpu(c) = &lhs_guard.inner {
-            c.as_slice().expect("f32 cast").iter().map(|x: &f32| x * 2.0).collect()
-        } else {
-            panic!("test kernel: lhs must be CPU storage");
-        };
-        let mut out_guard = outputs[0]
-            .write()
-            .map_err(|_| poisoned("output lock"))?;
-        if let fuel_memory::BackendStorage::Cpu(c) = &mut out_guard.inner {
-            c.as_slice_mut().expect("f32 cast").copy_from_slice(&doubled);
-        } else {
-            panic!("test kernel: output must be CPU storage");
-        }
-        Ok(())
-    }
-
-    /// Build a fresh Add(F32) graph + pre-seeded `inputs` cache.
-    /// Returns `(graph, lhs_id, rhs_id, add_id, inputs)`.
-    fn build_add_graph(
-        lhs: &[f32],
-        rhs: &[f32],
-        target_backend: BackendId,
-    ) -> (Arc<RwLock<Graph>>, NodeId, NodeId, NodeId, StorageCache) {
-        assert_eq!(lhs.len(), rhs.len());
-        let graph = Arc::new(RwLock::new(Graph::new()));
-        let (lhs_id, rhs_id, add_id) = {
-            let mut g = graph.write().unwrap();
-            let lhs_id = g.push(Node {
-                op: Op::Const,
-                inputs: vec![],
-                shape: Shape::from_dims(&[lhs.len()]),
-                dtype: DType::F32,
-            });
-            let rhs_id = g.push(Node {
-                op: Op::Const,
-                inputs: vec![],
-                shape: Shape::from_dims(&[lhs.len()]),
-                dtype: DType::F32,
-            });
-            let add_id = g.push(Node {
-                op: Op::Add,
-                inputs: vec![lhs_id, rhs_id],
-                shape: Shape::from_dims(&[lhs.len()]),
-                dtype: DType::F32,
-            });
-            g.set_target_backend(add_id, target_backend);
-            (lhs_id, rhs_id, add_id)
-        };
-        let mut inputs = StorageCache::new();
-        inputs.insert(lhs_id, Arc::new(RwLock::new(fuel_memory::from_slice_cpu(lhs))));
-        inputs.insert(rhs_id, Arc::new(RwLock::new(fuel_memory::from_slice_cpu(rhs))));
-        (graph, lhs_id, rhs_id, add_id, inputs)
-    }
-
-    /// Phase 4.1, test 1: an `ExecutionPlan` whose `AlternativeSet`
-    /// for the Add node has `double_lhs_kernel_f32` as winner is
-    /// dispatched by `realize_with_plan`. Result is `2 * lhs`, not
-    /// `lhs + rhs` — proves the picker's pick reached the executor.
-    #[test]
-    fn phase4_1_plan_resolved_kernel_wins() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        let winner = Candidate {
-            kernel: double_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        };
-        let mut set = AlternativeSet::empty();
-        set.push(winner);
-        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
-        alternatives.insert(add_id, set);
-        let plan = Arc::new(ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: crate::dispatch::topology_generation(),
-        });
-
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan)
-                .expect("realize_with_plan");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(
-            typed,
-            &[2.0, 4.0, 6.0],
-            "winner kernel must be dispatched (2*lhs), not legacy Add (lhs+rhs)",
-        );
-    }
-
-    /// Phase 4.1, test 2: an `ExecutionPlan` with no entry for the
-    /// Add node falls through to the legacy first-registered binding-
-    /// table Add kernel. Result is the standard sum.
-    #[test]
-    fn phase4_1_fallback_when_plan_has_no_entry() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        // Plan exists but `alternatives` is empty — every node falls
-        // through.
-        let plan = Arc::new(ExecutionPlan::empty());
-
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan)
-                .expect("realize_with_plan");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(
-            typed,
-            &[11.0, 22.0, 33.0],
-            "empty plan must fall through to legacy Add (lhs+rhs)",
-        );
-    }
-
-    /// Phase 4.1, test 3: the existing no-plan `realize` path is
-    /// byte-identical to pre-4.1. The same workload through the
-    /// plan-less call surface must still produce the sum.
-    #[test]
-    fn phase4_1_existing_realize_path_unchanged() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        let (result_arc, _) =
-            PipelinedExecutor::realize(graph, add_id, inputs).expect("realize");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(
-            typed,
-            &[11.0, 22.0, 33.0],
-            "no-plan realize must remain byte-identical to pre-4.1 (lhs+rhs)",
-        );
-    }
-
-    /// Phase 4.1, test 4: an `AlternativeSet` with multiple
-    /// candidates dispatches the first (the winner — the top
-    /// candidate after rank+truncate). This proves
-    /// [`crate::ranker::AlternativeSet::winner`] is what
-    /// `resolve_compiled` reads, not e.g. the last entry or a
-    /// random pick.
-    ///
-    /// Both candidates use the same backend (Cpu) — full cross-
-    /// backend override depends on Phase 4.2's `prepare()` loosening
-    /// since today's executor consults the graph node's
-    /// `target_backend` for output allocation. Phase 4.1's contract
-    /// is "kernel ref + caps come from the winner"; backend dispatch
-    /// for output allocation is downstream.
-    #[test]
-    fn phase4_1_alternative_set_winner_dispatched() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        // First-pushed candidate is the winner; second is a runner-
-        // up that must NOT be dispatched. Both are Cpu — only the
-        // kernel-ref differs.
-        let winner = Candidate {
-            kernel: double_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        };
-        let runner_up = Candidate {
-            // Loud kernel that would panic if dispatched — proves
-            // the winner is what runs.
-            kernel: |_, _, _, _| {
-                panic!(
-                    "Phase 4.1: runner-up Candidate kernel was dispatched — \
-                     resolve_compiled must read AlternativeSet::winner, NOT a \
-                     non-winner entry",
-                )
-            },
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        };
-        let mut set = AlternativeSet::empty();
-        set.push(winner);
-        set.push(runner_up);
-        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
-        alternatives.insert(add_id, set);
-        let plan = Arc::new(ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: crate::dispatch::topology_generation(),
-        });
-
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan)
-                .expect("realize_with_plan");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(
-            typed,
-            &[2.0, 4.0, 6.0],
-            "AlternativeSet's winner (first-pushed candidate, 2*lhs) must be dispatched",
-        );
-    }
-
-    // ===== Phase 4.3 — dispatch-chunk topology-generation check =====
-
-    /// Phase 4.3, test 1: a plan stamped with a generation that
-    /// doesn't match the live counter surfaces
-    /// `Error::TopologyChanged`. The check fires at the first
-    /// dispatch-chunk boundary (the first kernel-bearing item).
-    ///
-    /// Implementation note: we stamp `live + 1` rather than calling
-    /// `bump_topology_generation()` because the counter is process-
-    /// global and bumping would race with other tests that also
-    /// construct `ExecutionPlan { generation: live, ... }`. The
-    /// executor's `!=` check fires for stamps in either direction.
-    #[test]
-    fn phase4_3_topology_changed_surfaces_error() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        let mut set = AlternativeSet::empty();
-        set.push(Candidate {
-            kernel: double_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        });
-        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
-        alternatives.insert(add_id, set);
-
-        // Stamp a stale generation (live + 1, guaranteed not to
-        // match the current counter without disturbing global state).
-        let live = crate::dispatch::topology_generation();
-        let plan = Arc::new(ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: live + 1,
-        });
-
-        let result = PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan);
-        let err = result.expect_err("stale plan must surface TopologyChanged");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("topology generation"),
-            "error must name topology generation: {msg}",
-        );
-    }
-
-    /// Phase 4.3, test 2: when the plan's stamped generation matches
-    /// the live generation, the dispatch-chunk boundary check passes
-    /// silently and the plan's winner runs as normal.
-    #[test]
-    fn phase4_3_generation_match_passes_through() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        let mut set = AlternativeSet::empty();
-        set.push(Candidate {
-            kernel: double_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        });
-        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
-        alternatives.insert(add_id, set);
-        let plan = Arc::new(ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: crate::dispatch::topology_generation(),
-        });
-
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_plan(graph, add_id, inputs, plan)
-                .expect("matching-generation plan must dispatch successfully");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(typed, &[2.0, 4.0, 6.0]);
-    }
-
-    // ===== Phase 5.1 — RuntimeSelector substrate =====
-
-    use crate::ranker::{RuntimeSelector, WinnerSelector};
-
-    /// Phase 5.1, test 1: passing `WinnerSelector` to
-    /// `realize_with_plan_and_selector` is behaviorally identical
-    /// to the no-selector `realize_with_plan` path. Proves the
-    /// default selector is the static baseline.
-    #[test]
-    fn phase5_1_winner_selector_matches_no_selector() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        let mut set = AlternativeSet::empty();
-        set.push(Candidate {
-            kernel: double_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        });
-        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
-        alternatives.insert(add_id, set);
-        let plan = Arc::new(ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: crate::dispatch::topology_generation(),
-        });
-
-        let selector: Arc<dyn RuntimeSelector> = Arc::new(WinnerSelector);
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_plan_and_selector(
-                graph, add_id, inputs, plan, selector,
-            )
-            .expect("realize_with_plan_and_selector");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(
-            typed,
-            &[2.0, 4.0, 6.0],
-            "WinnerSelector picks the same kernel realize_with_plan would",
-        );
-    }
-
-    /// Phase 5.1, test 2: a custom selector that picks the LAST
-    /// entry of the AlternativeSet (instead of the first/winner)
-    /// dispatches that candidate's kernel. Proves the seam is real
-    /// — the selector's choice overrides the static winner.
-    #[test]
-    fn phase5_1_custom_selector_overrides_winner() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        // First candidate: a kernel that doubles LHS. Static winner.
-        // Second candidate: a kernel that triples LHS. The custom
-        // selector will pick this one.
-        fn triple_lhs_kernel_f32(
-            inputs: &[Arc<RwLock<Storage>>],
-            outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
-            _params: &OpParams,
-        ) -> Result<()> {
-            let lhs_guard = inputs[0].read().map_err(|_| poisoned("lhs lock"))?;
-            let tripled: Vec<f32> = if let fuel_memory::BackendStorage::Cpu(c) = &lhs_guard.inner {
-                c.as_slice().expect("f32 cast").iter().map(|x: &f32| x * 3.0).collect()
-            } else {
-                panic!("test kernel: lhs must be CPU storage");
-            };
-            let mut out_guard = outputs[0]
-                .write()
-                .map_err(|_| poisoned("output lock"))?;
-            if let fuel_memory::BackendStorage::Cpu(c) = &mut out_guard.inner {
-                c.as_slice_mut().expect("f32 cast").copy_from_slice(&tripled);
-            } else {
-                panic!("test kernel: output must be CPU storage");
-            }
-            Ok(())
-        }
-
-        let mut set = AlternativeSet::empty();
-        set.push(Candidate {
-            kernel: double_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        });
-        set.push(Candidate {
-            kernel: triple_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        });
-        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
-        alternatives.insert(add_id, set);
-        let plan = Arc::new(ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: crate::dispatch::topology_generation(),
-        });
-
-        /// Custom selector for the test: picks the last entry.
-        /// A real Picker 2 would consult telemetry / runtime
-        /// signals; this picks deterministically by structure to
-        /// keep the test hermetic.
-        #[derive(Debug)]
-        struct LastEntrySelector;
-        impl RuntimeSelector for LastEntrySelector {
-            fn select<'a>(
-                &self, set: &'a crate::ranker::AlternativeSet,
-            ) -> Option<&'a Candidate> {
-                set.alternatives().last()
-            }
-        }
-
-        let selector: Arc<dyn RuntimeSelector> = Arc::new(LastEntrySelector);
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_plan_and_selector(
-                graph, add_id, inputs, plan, selector,
-            )
-            .expect("realize_with_plan_and_selector");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(
-            typed,
-            &[3.0, 6.0, 9.0],
-            "custom selector's pick (3*lhs) must override the static winner (2*lhs)",
-        );
-    }
-
-    /// Phase 5.1, test 3: a selector that returns `None` (e.g. would
-    /// happen if the set is empty) gracefully falls through to the
-    /// legacy `compile_node` path — same as if there were no plan
-    /// entry for the node.
-    ///
-    /// The mechanism: `resolve_compiled` only constructs a
-    /// `CompiledNode` from the picker when `pick.is_some()`;
-    /// otherwise it falls through to `compile_node`. This proves the
-    /// fallback is wired regardless of WHO returned None (no plan
-    /// entry vs selector explicitly opting out).
-    #[test]
-    fn phase5_1_selector_returning_none_falls_through() {
-        let (graph, _lhs_id, _rhs_id, add_id, inputs) =
-            build_add_graph(&[1.0, 2.0, 3.0], &[10.0, 20.0, 30.0], BackendId::Cpu);
-
-        // Plan with a valid alternative, but a selector that
-        // explicitly returns None for it. Executor should fall
-        // through to the legacy Add kernel (lhs + rhs).
-        let mut set = AlternativeSet::empty();
-        set.push(Candidate {
-            kernel: double_lhs_kernel_f32,
-            caps: KernelCaps::empty(),
-            backend: BackendId::Cpu,
-            device: DeviceLocation::Cpu,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: Default::default(),
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "",
-        });
-        let mut alternatives: StdHashMap<NodeId, AlternativeSet> = StdHashMap::new();
-        alternatives.insert(add_id, set);
-        let plan = Arc::new(ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: crate::dispatch::topology_generation(),
-        });
-
-        /// Selector that opts out of every pick. Real Picker 2
-        /// implementations would do this when their telemetry can't
-        /// distinguish candidates or has no opinion.
-        #[derive(Debug)]
-        struct OptOutSelector;
-        impl RuntimeSelector for OptOutSelector {
-            fn select<'a>(
-                &self, _set: &'a crate::ranker::AlternativeSet,
-            ) -> Option<&'a Candidate> {
-                None
-            }
-        }
-
-        let selector: Arc<dyn RuntimeSelector> = Arc::new(OptOutSelector);
-        let (result_arc, _) =
-            PipelinedExecutor::realize_with_plan_and_selector(
-                graph, add_id, inputs, plan, selector,
-            )
-            .expect("realize_with_plan_and_selector");
-
-        let guard = result_arc.read().unwrap();
-        let cpu = if let fuel_memory::BackendStorage::Cpu(c) = &guard.inner {
-            c
-        } else {
-            panic!("expected Cpu storage");
-        };
-        let typed: &[f32] = cpu.as_slice().expect("f32 cast");
-        assert_eq!(
-            typed,
-            &[11.0, 22.0, 33.0],
-            "selector returning None must fall through to legacy Add (lhs+rhs)",
-        );
     }
 }

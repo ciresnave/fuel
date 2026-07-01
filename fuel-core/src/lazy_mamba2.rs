@@ -37,7 +37,7 @@
 
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// Mamba-2's conv kernel size. Fixed at 4 across released checkpoints.

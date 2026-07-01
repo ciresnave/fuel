@@ -25,7 +25,7 @@
 use std::sync::{Arc, RwLock};
 
 use fuel_graph::{Graph, NodeId};
-use fuel_core_types::Result;
+use fuel_ir::Result;
 
 use crate::Device;
 
@@ -59,7 +59,7 @@ impl Planner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::{DType, Shape};
+    use fuel_ir::{DType, Shape};
     use fuel_dispatch::pipelined::StorageCache;
     use fuel_graph::{Node, Op};
     use fuel_memory::{BackendStorage, Storage};

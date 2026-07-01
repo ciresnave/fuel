@@ -208,13 +208,13 @@ impl GradientRule for ReluRule {
 mod tests {
     use super::*;
     use crate::{Tensor};
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
     use std::sync::Arc;
 
     /// Phase 7.5 G2: tests need a real device for slot-populating
     /// constructors. Singleton CpuBackendDevice via OnceLock.
-    fn cpu_dev() -> &'static Arc<dyn fuel_core_types::DynBackendDevice> {
-        static D: std::sync::OnceLock<Arc<dyn fuel_core_types::DynBackendDevice>>
+    fn cpu_dev() -> &'static Arc<dyn fuel_backend_contract::DynBackendDevice> {
+        static D: std::sync::OnceLock<Arc<dyn fuel_backend_contract::DynBackendDevice>>
             = std::sync::OnceLock::new();
         D.get_or_init(|| Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
     }
@@ -263,7 +263,7 @@ mod tests {
     fn dispatch_where_returns_none_for_cond_some_for_a_and_b() {
         use crate::SharedGraph;
         use std::sync::{Arc, RwLock};
-        use fuel_core_types::{DType, Shape};
+        use fuel_ir::{DType, Shape};
         // Build a real graph so push_node calls inside the rule have
         // somewhere to land. Three placeholder Const nodes for the
         // three inputs.

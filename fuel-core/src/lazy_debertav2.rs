@@ -20,7 +20,7 @@
 
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::{DType, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::collections::HashMap;
 use std::sync::Arc;
 

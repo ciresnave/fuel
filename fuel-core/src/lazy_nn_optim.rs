@@ -29,7 +29,7 @@
 
 use crate::lazy::{realize_many_f32, LazyTensor};
 use crate::Result;
-use fuel_core_types::{Error, Shape};
+use fuel_ir::{Error, Shape};
 use fuel_graph::NodeId;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};

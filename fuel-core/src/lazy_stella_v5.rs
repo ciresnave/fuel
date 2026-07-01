@@ -43,7 +43,7 @@
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_qwen2::{Qwen2Config, Qwen2Model, Qwen2Weights};
 use crate::Result;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// Canonical output dimensions for Stella-en-v5's Matryoshka

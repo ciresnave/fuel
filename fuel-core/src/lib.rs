@@ -247,10 +247,17 @@ pub mod pipelined_bridge;
 pub mod planner;
 pub mod judge;
 pub mod npy;
-pub mod probe;
+/// Hardware discovery moved to the `fuel-hardware` crate (retirement B0.2);
+/// re-exported here so `fuel_core::probe` / `crate::probe` callers are unchanged.
+pub use fuel_hardware::probe;
 pub mod scheduling;
-pub mod topology;
-pub mod transfer_cost;
+/// `SystemTopology` moved to `fuel-dispatch::topology` (retirement B0.2c — it fuses
+/// the dispatch overlay with fuel-hardware discovery); re-exported so
+/// `crate::topology` / `fuel_core::topology` callers are unchanged.
+pub use fuel_dispatch::topology;
+/// Transfer (bandwidth) calibration moved to `fuel-hardware` (retirement B0.2b);
+/// re-exported so `crate::transfer_cost` / `fuel_core::transfer_cost` is unchanged.
+pub use fuel_hardware::transfer_cost;
 pub mod op;
 pub mod pickle;
 pub mod quantized;
@@ -291,8 +298,8 @@ pub use variable::Var;
 // New user code should use [`lazy::LazyTensor`] — the graph builder — and
 // realize it via `realize_f32` etc. The eager `Tensor` re-export below is
 // kept for backend-adjacent crates (fuel-onnx, fuel-pyo3, fuel-parallel,
-// fuel-flash-attn-cuda, fuel-datasets, fuel-examples helpers) that still
-// shuttle device-resident buffers around. Marked `#[doc(hidden)]` so it
+// fuel-datasets, fuel-examples helpers) that still shuttle
+// device-resident buffers around. Marked `#[doc(hidden)]` so it
 // does not appear in generated rustdoc; the canonical path
 // `fuel_core::tensor::Tensor` remains accessible for the same callers.
 #[doc(hidden)]

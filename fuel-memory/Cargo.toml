@@ -9,7 +9,7 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-fuel-core-types = { workspace = true }
+fuel-ir = { workspace = true }
 fuel-cpu-backend = { workspace = true }
 fuel-cuda-backend = { workspace = true, optional = true }
 fuel-graph = { workspace = true }
@@ -39,5 +39,5 @@ vulkan = ["dep:fuel-vulkan-backend"]
 metal = ["dep:fuel-metal-backend"]
 # DLPack + FDX-sidecar borrowed zero-copy view over a (Storage, Layout[, SymEnv])
 # pair at the kernel-call boundary (docs/session-prompts/dlpack-comm-layer-plan.md
-# §2). Turns on fuel-core-types' `dlpack` POD/codes/validators. Default off.
-dlpack = ["fuel-core-types/dlpack"]
+# §2). Turns on fuel-ir's `dlpack` POD/codes/validators. Default off.
+dlpack = ["fuel-ir/dlpack"]

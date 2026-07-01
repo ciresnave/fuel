@@ -18,7 +18,7 @@
 
 use std::sync::{OnceLock, RwLock};
 
-use fuel_core_types::{DType, Shape, backend::BackendCapabilities, probe::BackendId};
+use fuel_ir::{DType, Shape, backend::BackendCapabilities, probe::BackendId};
 use fuel_graph::jit::PatternNode;
 use fuel_graph::registry::{FusedOpId, FusedOpParams};
 
@@ -101,7 +101,7 @@ pub fn adopt_runtime_fused(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::Layout;
+    use fuel_ir::Layout;
     use fuel_graph::jit::{OpAttrs, OpTag};
     use std::sync::{Arc, RwLock as StdRwLock};
 
@@ -110,7 +110,7 @@ mod tests {
         _outputs: &mut [Arc<StdRwLock<fuel_memory::Storage>>],
         _layouts: &[Layout],
         _params: &crate::kernel::OpParams,
-    ) -> fuel_core_types::Result<()> {
+    ) -> fuel_ir::Result<()> {
         Ok(())
     }
 

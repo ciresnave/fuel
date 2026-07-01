@@ -14,7 +14,7 @@ use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_nn::LazyModule;
 use crate::lazy_nn_varbuilder::LazyVarBuilder;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::sync::Arc;

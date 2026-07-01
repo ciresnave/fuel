@@ -9,7 +9,7 @@
 //! masking enabled (paged attention's masking is implicit via
 //! `context_lens`).
 
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use fuel_reference_backend::attention::{
     attention_naive, attention_paged_naive, AttentionParams,
 };

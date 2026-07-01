@@ -1,6 +1,7 @@
 ﻿use crate::{DType, MetalDevice, MetalStorage, Result, Shape, D};
-use fuel_core_types::dyn_backend::DynBackendStorage;
-use fuel_core_types::quantized::{DynQuantizedStorage, GgmlDType, QuantizedDeviceKernels};
+use fuel_backend_contract::dyn_backend::DynBackendStorage;
+use fuel_backend_contract::quantized::{DynQuantizedStorage, QuantizedDeviceKernels};
+use fuel_ir::quantized::GgmlDType;
 use fuel_quantized::GgmlType;
 use fuel_metal_kernels::metal::Buffer;
 use std::any::Any;
@@ -154,14 +155,14 @@ impl QMetalStorage {
 
     pub fn quantize_imatrix_onto(
         &mut self,
-        src: &fuel_core_types::HostBuffer,
+        src: &fuel_ir::HostBuffer,
         imatrix_weights: &[f32],
         n_per_row: usize,
     ) -> Result<()> {
         self.quantize_from_f32(src.as_slice::<f32>()?, Some((imatrix_weights, n_per_row)))
     }
 
-    pub fn quantize_onto(&mut self, src: &fuel_core_types::HostBuffer) -> Result<()> {
+    pub fn quantize_onto(&mut self, src: &fuel_ir::HostBuffer) -> Result<()> {
         self.quantize_from_f32(src.as_slice::<f32>()?, None)
     }
 
@@ -178,12 +179,12 @@ impl QMetalStorage {
         use crate::MetalError;
 
         if !layout.is_contiguous() {
-            fuel_core_types::bail!("input tensor is not contiguous {layout:?}")
+            fuel_ir::bail!("input tensor is not contiguous {layout:?}")
         }
         let src_shape = layout.shape();
         // self is transposed so n is first then k.
         if src_shape.rank() < 2 {
-            fuel_core_types::bail!("input tensor has only one dimension {layout:?}")
+            fuel_ir::bail!("input tensor has only one dimension {layout:?}")
         }
         let (n, k) = self_shape.dims2()?;
         let mut dst_shape = src_shape.dims().to_vec();
@@ -194,11 +195,11 @@ impl QMetalStorage {
         let m = match dst_shape.len() {
             3 => dst_shape[0] * dst_shape[1],
             2 => dst_shape[0],
-            n => fuel_core_types::bail!("Invalid rank {n} for quantized matmul metal"),
+            n => fuel_ir::bail!("Invalid rank {n} for quantized matmul metal"),
         };
         let last_k = dst_shape.pop().unwrap();
         if last_k != k {
-            fuel_core_types::bail!("input tensor {layout:?} incompatible with {:?}", self_shape)
+            fuel_ir::bail!("input tensor {layout:?} incompatible with {:?}", self_shape)
         }
         dst_shape.push(n);
         let dst_shape = Shape::from(dst_shape);
@@ -235,19 +236,19 @@ impl QMetalStorage {
         use crate::MetalError;
 
         if !layout.is_contiguous() {
-            fuel_core_types::bail!("input tensor is not contiguous {layout:?}")
+            fuel_ir::bail!("input tensor is not contiguous {layout:?}")
         }
         let src_shape = layout.shape();
         // self is transposed so n is first then k.
         if src_shape.rank() < 2 {
-            fuel_core_types::bail!("input tensor has only one dimension {layout:?}")
+            fuel_ir::bail!("input tensor has only one dimension {layout:?}")
         }
         let n = self_shape.dim(D::Minus2)?;
         let k = self_shape.dim(D::Minus1)?;
         let mut dst_shape = src_shape.dims().to_vec();
 
         if src_shape.rank() < self_shape.rank() {
-            fuel_core_types::bail!(
+            fuel_ir::bail!(
                 "input rank ({}) must be >= weight rank ({})",
                 src_shape.rank(),
                 self_shape.rank()
@@ -260,7 +261,7 @@ impl QMetalStorage {
 
         let last_k = dst_shape.pop().unwrap();
         if last_k != k {
-            fuel_core_types::bail!("input tensor {layout:?} incompatible with {:?}", self_shape)
+            fuel_ir::bail!("input tensor {layout:?} incompatible with {:?}", self_shape)
         }
         dst_shape.push(n);
         let dst_shape = Shape::from(dst_shape);
@@ -271,7 +272,7 @@ impl QMetalStorage {
         assert_eq!(storage.dtype(), DType::F32);
 
         if self_shape.rank() > 4 {
-            fuel_core_types::bail!("weight rank ({}) must be <= 4", self_shape.rank())
+            fuel_ir::bail!("weight rank ({}) must be <= 4", self_shape.rank())
         }
         let src0_l = crate::Layout::contiguous(
             [vec![1; 4 - self_shape.rank()], self_shape.dims().to_vec()].concat(),
@@ -286,7 +287,7 @@ impl QMetalStorage {
             .collect::<Vec<_>>();
 
         if src_shape.rank() > 4 {
-            fuel_core_types::bail!("weight rank ({}) must be <= 4", src_shape.rank())
+            fuel_ir::bail!("weight rank ({}) must be <= 4", src_shape.rank())
         }
         let src1_l = crate::Layout::contiguous(
             [vec![1; 4 - src_shape.rank()], src_shape.dims().to_vec()].concat(),
@@ -368,7 +369,7 @@ impl DynQuantizedStorage for QMetalStorage {
     }
     fn quantize(&mut self, src: &dyn DynBackendStorage) -> Result<()> {
         let metal = src.as_any().downcast_ref::<MetalStorage>().ok_or_else(|| {
-            fuel_core_types::Error::Msg("quantize: expected metal storage".into()).bt()
+            fuel_ir::Error::Msg("quantize: expected metal storage".into()).bt()
         })?;
         QMetalStorage::quantize(self, metal)
     }
@@ -379,7 +380,7 @@ impl DynQuantizedStorage for QMetalStorage {
         n_per_row: usize,
     ) -> Result<()> {
         let metal = src.as_any().downcast_ref::<MetalStorage>().ok_or_else(|| {
-            fuel_core_types::Error::Msg("quantize_imatrix: expected metal storage".into()).bt()
+            fuel_ir::Error::Msg("quantize_imatrix: expected metal storage".into()).bt()
         })?;
         QMetalStorage::quantize_imatrix(self, metal, imatrix_weights, n_per_row)
     }
@@ -388,7 +389,7 @@ impl DynQuantizedStorage for QMetalStorage {
             .as_any()
             .downcast_ref::<fuel_cpu_backend::CpuStorage>()
             .ok_or_else(|| {
-                fuel_core_types::Error::Msg("quantize_onto: expected cpu storage".into()).bt()
+                fuel_ir::Error::Msg("quantize_onto: expected cpu storage".into()).bt()
             })?;
         QMetalStorage::quantize_onto(self, &cpu.0)
     }
@@ -402,7 +403,7 @@ impl DynQuantizedStorage for QMetalStorage {
             .as_any()
             .downcast_ref::<fuel_cpu_backend::CpuStorage>()
             .ok_or_else(|| {
-                fuel_core_types::Error::Msg("quantize_imatrix_onto: expected cpu storage".into())
+                fuel_ir::Error::Msg("quantize_imatrix_onto: expected cpu storage".into())
                     .bt()
             })?;
         QMetalStorage::quantize_imatrix_onto(self, &cpu.0, imatrix_weights, n_per_row)
@@ -420,7 +421,7 @@ impl DynQuantizedStorage for QMetalStorage {
         layout: &crate::Layout,
     ) -> Result<(Box<dyn DynBackendStorage>, Shape)> {
         let metal = input.as_any().downcast_ref::<MetalStorage>().ok_or_else(|| {
-            fuel_core_types::Error::Msg("qmatmul: expected metal storage".into()).bt()
+            fuel_ir::Error::Msg("qmatmul: expected metal storage".into()).bt()
         })?;
         let (s, sh) = QMetalStorage::fwd(self, self_shape, metal, layout)?;
         Ok((Box::new(s), sh))
@@ -428,7 +429,7 @@ impl DynQuantizedStorage for QMetalStorage {
     fn as_any(&self) -> &dyn Any {
         self
     }
-    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_core_types::dyn_backend::DynBackendDevice> {
+    fn device_arc_dyn(&self) -> std::sync::Arc<dyn fuel_backend_contract::dyn_backend::DynBackendDevice> {
         std::sync::Arc::new(self.device.clone())
     }
 }

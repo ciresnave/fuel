@@ -23,7 +23,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{DType, Layout, Result};
+use fuel_ir::{DType, Layout, Result};
 
 use crate::byte_storage::CudaStorageBytes;
 use crate::error::CudaError;
@@ -43,14 +43,14 @@ fn shape_and_strides_from_layout(
     let dims = layout.shape().dims();
     let rank = dims.len();
     if rank == 0 {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "{op_label}: rank-0 input not supported",
         )).bt());
     }
     let mut shape_i32: Vec<i32> = Vec::with_capacity(rank);
     for (i, &d) in dims.iter().enumerate() {
         shape_i32.push(i32::try_from(d).map_err(|_| {
-            fuel_core_types::Error::cuda(CudaError::BaracudaShapeOverflow {
+            fuel_ir::Error::cuda(CudaError::BaracudaShapeOverflow {
                 op: op_label, dim_index: i, dim_value: d,
             })
         })?);
@@ -135,7 +135,7 @@ fn rms_norm_last_dim_run(
     let device = src.device().clone();
     let dims = src_layout.shape().dims();
     let rank = dims.len();
-    let last_dim = *dims.last().ok_or_else(|| fuel_core_types::Error::Msg(
+    let last_dim = *dims.last().ok_or_else(|| fuel_ir::Error::Msg(
         format!("{op_label}: rank-0 input not supported"),
     ).bt())?;
     let numel: i64 = src_layout.shape().elem_count() as i64;
@@ -152,7 +152,7 @@ fn rms_norm_last_dim_run(
     let (shape_i32, stride_x, stride_y, stride_rms) =
         shape_and_strides_from_layout(src_layout, op_label)?;
     let ld_i32 = i32::try_from(last_dim).map_err(|_| {
-        fuel_core_types::Error::cuda(CudaError::BaracudaShapeOverflow {
+        fuel_ir::Error::cuda(CudaError::BaracudaShapeOverflow {
             op: op_label, dim_index: rank - 1, dim_value: last_dim,
         })
     })?;
@@ -185,7 +185,6 @@ fn rms_norm_last_dim_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     drop(rms_buf);
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
@@ -208,7 +207,7 @@ fn layer_norm_last_dim_run(
     let device = src.device().clone();
     let dims = src_layout.shape().dims();
     let rank = dims.len();
-    let last_dim = *dims.last().ok_or_else(|| fuel_core_types::Error::Msg(
+    let last_dim = *dims.last().ok_or_else(|| fuel_ir::Error::Msg(
         format!("{op_label}: rank-0 input not supported"),
     ).bt())?;
     let numel: i64 = src_layout.shape().elem_count() as i64;
@@ -226,7 +225,7 @@ fn layer_norm_last_dim_run(
     let (shape_i32, stride_x, stride_y, stride_save) =
         shape_and_strides_from_layout(src_layout, op_label)?;
     let ld_i32 = i32::try_from(last_dim).map_err(|_| {
-        fuel_core_types::Error::cuda(CudaError::BaracudaShapeOverflow {
+        fuel_ir::Error::cuda(CudaError::BaracudaShapeOverflow {
             op: op_label, dim_index: rank - 1, dim_value: last_dim,
         })
     })?;
@@ -260,7 +259,6 @@ fn layer_norm_last_dim_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     drop(mean_buf);
     drop(inv_std_buf);
     Ok(CudaStorageBytes::from_parts(

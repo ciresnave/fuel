@@ -27,7 +27,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{DType, Layout, Result, Shape};
+use fuel_ir::{DType, Layout, Result, Shape};
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -149,7 +149,6 @@ fn unary_run(
         }
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
         device,
@@ -203,7 +202,6 @@ fn unary_inplace_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(())
 }
 

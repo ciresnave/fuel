@@ -1,4 +1,4 @@
-﻿use fuel_core_types::{DType, Result};
+﻿use fuel_ir::{DType, Result};
 
 #[cfg(feature = "ug")]
 use fuel_metal_kernels::metal::ComputePipeline;

@@ -34,7 +34,7 @@ use crate::registry::{
     PatternMatch, SubgraphPattern,
 };
 use crate::{Graph, Node, NodeId, Op};
-use fuel_core_types::{DType, Scalar, Shape};
+use fuel_ir::{DType, Scalar, Shape};
 
 /// Metadata-side registry entry for PagedAttn.
 pub fn entry() -> FusedOpEntry {

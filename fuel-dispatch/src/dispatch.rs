@@ -21,13 +21,13 @@
 //! ([`global_registry`] / [`global_bindings`]).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use fuel_core_types::backend::{BackendCapabilities, SubstrateClass, TransferPath};
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result};
+use fuel_ir::backend::{BackendCapabilities, SubstrateClass, TransferPath};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, DeviceLocation, Error, Layout, Result};
 
 use crate::kernel::{KernelBindingTable, KernelRef, OpParams};
 #[cfg(feature = "cuda")]
@@ -70,7 +70,7 @@ impl CapabilityRegistry {
 
     /// Pick the first registered backend that supports
     /// `(op, dtype)`. Returns
-    /// [`Error::NoBackendForOp`](fuel_core_types::Error::NoBackendForOp)
+    /// [`Error::NoBackendForOp`](fuel_ir::Error::NoBackendForOp)
     /// with diagnostic data if none does. Production-correct: never
     /// panics, always surfaces the gap as a typed error.
     ///
@@ -145,7 +145,7 @@ impl TransferMatrix {
     /// direct advertised path exists. CPU is reachable from every
     /// backend through host-staging, so this never returns an error
     /// for practical use cases — though see
-    /// [`Error::UnsupportedTransfer`](fuel_core_types::Error::UnsupportedTransfer)
+    /// [`Error::UnsupportedTransfer`](fuel_ir::Error::UnsupportedTransfer)
     /// for the case when a backend can't even host-stage.
     pub fn path_or_staging(&self, src: DeviceLocation, dst: DeviceLocation) -> TransferPath {
         self.path(src, dst).unwrap_or(TransferPath::HostStaging)
@@ -4983,7 +4983,18 @@ fn copy_from_cuda_wrapper(
     let mut out_guard = write_storage(&outputs[0])?;
     match &mut out_guard.inner {
         BackendStorage::Cpu(_) => {
-            let bytes = cuda_src.to_cpu_bytes()?;
+            // Step E A4b-3: the FINER cross-device D2H. The executor waited the
+            // source node's CompletionHandle before dispatching this Copy/Move
+            // (`pipelined::wait_producer_handle`), so the producer is done; use
+            // `to_cpu_bytes_finer` (no whole-device `synchronize`) so the OTHER
+            // sub-DAG's independent in-flight CUDA work is NOT force-drained.
+            // `cuMemcpyDtoH_v2` is itself host-synchronous + legacy-stream-ordered
+            // (see `CudaStorageBytes::to_cpu_bytes_finer`), so the read stays
+            // byte-exact. This wrapper is reached ONLY via the executor's
+            // Copy/Move WorkItem (it is the kernel registered at
+            // `(OpKind::Copy, [dt,dt], Cuda)`), never standalone — so the finer
+            // contract always holds here.
+            let bytes = cuda_src.to_cpu_bytes_finer()?;
             let dst = cpu_output(&mut out_guard)?;
             let n = bytes.len().min(dst.len_bytes());
             dst.bytes_mut()[..n].copy_from_slice(&bytes[..n]);
@@ -5084,6 +5095,100 @@ pub fn topology_generation() -> u64 {
 /// `topology_generation`.
 pub fn bump_topology_generation() {
     TOPOLOGY_GENERATION.fetch_add(1, Ordering::Release);
+}
+
+// =============================================================================
+// Step E Phase C / B1 — per-device in-flight async-op counter (the load signal)
+// =============================================================================
+
+/// Process-wide per-[`DeviceLocation`] in-flight async-op counter — the
+/// "queue depth / slot utilization" load signal `06-runtime` names. The
+/// same idiom as [`TOPOLOGY_GENERATION`]: a lazily-initialized
+/// process-wide table the executor mutates and a runtime selector reads.
+///
+/// **What it counts.** The number of GPU operations the executor has
+/// SUBMITTED but not yet observed completed, per device. It is a
+/// *fuel-internal* count derived from the A4b async-completion handle
+/// lifecycle ([`compiled::execute_compiled`]'s CUDA event +
+/// `pipelined`'s eager-submitted Vulkan batches), NOT a driver query
+/// (`cuStreamQuery` is a busy/idle bool, not a depth). One `+1` per
+/// async submit ([`inflight_inc`]), one `-1` per completion-handle
+/// retirement ([`inflight_dec`], fired from the handle's `Drop`).
+///
+/// **Honesty / correctness.** This is a SCHEDULING HINT, never a
+/// correctness gate — correctness rests entirely on the A4b waits. So
+/// the atomics are [`Ordering::Relaxed`] (no memory to synchronize) and
+/// [`inflight_dec`] is underflow-saturating: a hint that briefly
+/// mis-reads costs at most a sub-optimal route, never a wrong result.
+///
+/// **CPU.** Keyed uniformly by `DeviceLocation`, but the CPU dispatch
+/// path is synchronous and never builds an async completion handle, so
+/// `inflight_count(DeviceLocation::Cpu)` is always 0 — no special-case
+/// needed. A `BackendStreams` impl reports CPU as `None` (no queue
+/// concept) regardless (see `fuel-core::pipelined_bridge`).
+static DEVICE_INFLIGHT: OnceLock<RwLock<HashMap<DeviceLocation, AtomicU32>>> = OnceLock::new();
+
+fn device_inflight_table() -> &'static RwLock<HashMap<DeviceLocation, AtomicU32>> {
+    DEVICE_INFLIGHT.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Increment the in-flight async-op count for `loc` — called when the
+/// executor SUBMITS an async op (the same site that builds an A4b
+/// completion handle). Cheap: a single relaxed `fetch_add` once the
+/// per-device slot exists (the slot is created once, under a brief write
+/// lock, on the first submit to a device). A poisoned lock is swallowed
+/// (the counter is a hint; a poisoned table just stops tracking — never
+/// a panic on a production path).
+pub fn inflight_inc(loc: DeviceLocation) {
+    let table = device_inflight_table();
+    // Fast path: slot already exists — read lock + relaxed add, no map mutation.
+    if let Ok(guard) = table.read() {
+        if let Some(slot) = guard.get(&loc) {
+            slot.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    }
+    // Slow path: create the slot. `entry().or_insert` is idempotent under the
+    // write lock, so a racing inc that took the same slow path is harmless —
+    // whichever lands second sees the slot and adds to it.
+    if let Ok(mut guard) = table.write() {
+        guard
+            .entry(loc)
+            .or_insert_with(|| AtomicU32::new(0))
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Decrement the in-flight async-op count for `loc` — called when an A4b
+/// completion handle RETIRES (its `Drop`). Underflow-saturating: if the
+/// slot is missing or already 0 this is a no-op, so an unexpected extra
+/// dec can never wrap the count to `u32::MAX` and poison future
+/// scheduling. (Under the balance invariant — every `inc` is matched by
+/// exactly one `dec` via the handle's `Drop` — this saturation never
+/// actually fires; it is pure defense.)
+pub fn inflight_dec(loc: DeviceLocation) {
+    let table = device_inflight_table();
+    if let Ok(guard) = table.read() {
+        if let Some(slot) = guard.get(&loc) {
+            // saturating: never wrap below 0.
+            let _ = slot.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(1))
+            });
+        }
+    }
+}
+
+/// Read the current in-flight async-op count for `loc`. The signal a
+/// load-aware selector consults (Step E Phase C / C2, via
+/// `BackendStreams::pending_work_count`). 0 for a device that has never
+/// submitted async work (including CPU, which never submits any).
+pub fn inflight_count(loc: DeviceLocation) -> u32 {
+    let table = device_inflight_table();
+    table
+        .read()
+        .ok()
+        .and_then(|guard| guard.get(&loc).map(|slot| slot.load(Ordering::Relaxed)))
+        .unwrap_or(0)
 }
 
 /// Process-wide [`KernelBindingTable`]. Initialized on first access
@@ -6106,8 +6211,8 @@ mod tests {
     /// "all kernels accounted for" reference.
     #[test]
     fn precision_guarantee_lint_bit_stable_cpu_coverage_primitives() {
-        use fuel_core_types::dispatch::OpKind;
-        use fuel_core_types::probe::BackendId;
+        use fuel_ir::dispatch::OpKind;
+        use fuel_ir::probe::BackendId;
 
         // Allowlist for OpKind variants that *can't* have bit-stable
         // CPU coverage. Empty as of step 7b (every variant routes
@@ -6279,8 +6384,8 @@ mod tests {
     /// documented allowlist entry AND a follow-up.
     #[test]
     fn cost_lint_per_op_kind_cpu_coverage() {
-        use fuel_core_types::dispatch::OpKind;
-        use fuel_core_types::probe::BackendId;
+        use fuel_ir::dispatch::OpKind;
+        use fuel_ir::probe::BackendId;
 
         const KNOWN_GAPS: &[(OpKind, &str)] = &[];
 
@@ -6898,5 +7003,90 @@ mod tests {
         println!("Single-alternative keys (no pick to make): {single_alt}");
         println!("Multi-backend keys (cross-backend pick):   {multi_backend}");
         println!("Multi-impl single-backend keys:            {multi_impl_single_backend}");
+    }
+
+    // =========================================================================
+    // Step E Phase C / B1 — DEVICE_INFLIGHT counter (the BALANCE gate)
+    // =========================================================================
+    //
+    // The counter is PROCESS-WIDE, so these tests use sentinel `gpu_id`s no
+    // real device uses (and that no other test in this binary touches) to stay
+    // independent of any concurrent counter activity.
+
+    /// The crux of B1: after a balanced sequence of `inc`/`dec`, the per-device
+    /// count returns to its baseline. Mirrors the executor's invariant — every
+    /// async submit (`inc`) is matched by exactly one completion-handle `Drop`
+    /// (`dec`), so after a realize fully drains the counter is back where it
+    /// started (the `drain_handles` empty-map assert, in counter form).
+    #[test]
+    fn inflight_inc_dec_balances_to_baseline() {
+        let loc = DeviceLocation::Cuda { gpu_id: 99_001 };
+        let base = inflight_count(loc);
+
+        // N submits in flight → count rises by N.
+        const N: u32 = 7;
+        for i in 0..N {
+            inflight_inc(loc);
+            assert_eq!(inflight_count(loc), base + i + 1, "inc must raise the count");
+        }
+        assert_eq!(inflight_count(loc), base + N);
+
+        // N completions retire → count falls back to baseline.
+        for i in 0..N {
+            inflight_dec(loc);
+            assert_eq!(
+                inflight_count(loc),
+                base + N - i - 1,
+                "dec must lower the count",
+            );
+        }
+        assert_eq!(
+            inflight_count(loc),
+            base,
+            "balanced inc/dec must return the count to its pre-sequence baseline",
+        );
+    }
+
+    /// `inflight_dec` is underflow-saturating: decrementing a device whose count
+    /// is already 0 (or that has never been touched) leaves it at 0, never wraps
+    /// to `u32::MAX`. A stray dec is harmless to scheduling, never a poison.
+    #[test]
+    fn inflight_dec_is_underflow_safe() {
+        let untouched = DeviceLocation::Vulkan { gpu_id: 99_002 };
+        // Never incremented: dec must not create a wrapped count.
+        inflight_dec(untouched);
+        assert_eq!(inflight_count(untouched), 0, "dec on an untouched device stays 0");
+
+        let loc = DeviceLocation::Vulkan { gpu_id: 99_003 };
+        inflight_inc(loc);
+        inflight_dec(loc);
+        assert_eq!(inflight_count(loc), 0);
+        // One extra dec past zero (the over-drain guard).
+        inflight_dec(loc);
+        assert_eq!(inflight_count(loc), 0, "extra dec past zero must saturate, not wrap");
+    }
+
+    /// Distinct `DeviceLocation`s have independent slots — incrementing one
+    /// device's count never perturbs another's (the per-device keying the
+    /// selector relies on to compare CUDA vs Vulkan load).
+    #[test]
+    fn inflight_counts_are_per_device_independent() {
+        let cuda = DeviceLocation::Cuda { gpu_id: 99_004 };
+        let vulkan = DeviceLocation::Vulkan { gpu_id: 99_004 };
+        let base_c = inflight_count(cuda);
+        let base_v = inflight_count(vulkan);
+
+        inflight_inc(cuda);
+        inflight_inc(cuda);
+        inflight_inc(vulkan);
+
+        assert_eq!(inflight_count(cuda), base_c + 2);
+        assert_eq!(inflight_count(vulkan), base_v + 1);
+
+        inflight_dec(cuda);
+        inflight_dec(cuda);
+        inflight_dec(vulkan);
+        assert_eq!(inflight_count(cuda), base_c);
+        assert_eq!(inflight_count(vulkan), base_v);
     }
 }

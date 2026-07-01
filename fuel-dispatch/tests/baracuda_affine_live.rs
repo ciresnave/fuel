@@ -11,7 +11,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType};
+use fuel_ir::{dispatch::OpKind, probe::BackendId, DType};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
 use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
 use fuel_memory::{BackendStorage, Storage};

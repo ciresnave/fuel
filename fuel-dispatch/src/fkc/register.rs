@@ -35,9 +35,9 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
-use fuel_core_types::backend::BackendCapabilities;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::Shape;
+use fuel_ir::backend::BackendCapabilities;
+use fuel_ir::probe::BackendId;
+use fuel_ir::Shape;
 use fuel_graph::registry::FusedOpParams;
 
 use crate::fkc::error::FkcError;
@@ -85,8 +85,8 @@ pub(crate) fn intern(s: &str) -> &'static str {
 /// Backed by the same bounded process-lifetime leak as [`intern`]: each
 /// distinct dtype tuple is leaked once and cached. Distinct fused ops use
 /// a small, fixed set of dtype tuples, so the leak is bounded.
-fn intern_dtypes(dtypes: &[fuel_core_types::DType]) -> &'static [fuel_core_types::DType] {
-    use fuel_core_types::DType;
+fn intern_dtypes(dtypes: &[fuel_ir::DType]) -> &'static [fuel_ir::DType] {
+    use fuel_ir::DType;
     static POOL: OnceLock<Mutex<HashSet<&'static [DType]>>> = OnceLock::new();
     let pool = POOL.get_or_init(|| Mutex::new(HashSet::new()));
     let mut guard = pool.lock().expect("fused dtypes interner poisoned");
@@ -223,7 +223,7 @@ impl ImportedProvider {
             // Resolved*.cost but not yet wired into a CostFn; the Judge
             // bootstraps all imported costs for now. A follow-up slice
             // adds the cost trampoline (plan §2.3 strategy A).
-            let dtypes: &'static [fuel_core_types::DType] = intern_dtypes(&f.dtypes);
+            let dtypes: &'static [fuel_ir::DType] = intern_dtypes(&f.dtypes);
             fused.register(
                 f.id,
                 f.backend,
@@ -478,8 +478,8 @@ mod tests {
     use crate::fkc::lower::ResolvedFused;
     use crate::fused::{KernelRevisionHash, PrecisionGuarantee};
     use crate::kernel::{KernelCaps, KernelDTypes, KernelRef};
-    use fuel_core_types::dispatch::OpKind;
-    use fuel_core_types::DType;
+    use fuel_ir::dispatch::OpKind;
+    use fuel_ir::DType;
     use fuel_graph::registry::FusedOps;
     use smallvec::SmallVec;
     use std::sync::{Arc, RwLock};
@@ -492,17 +492,17 @@ mod tests {
     fn dummy_a(
         _i: &[Arc<RwLock<fuel_memory::Storage>>],
         _o: &mut [Arc<RwLock<fuel_memory::Storage>>],
-        _l: &[fuel_core_types::Layout],
+        _l: &[fuel_ir::Layout],
         _p: &crate::kernel::OpParams,
-    ) -> fuel_core_types::Result<()> {
+    ) -> fuel_ir::Result<()> {
         Ok(())
     }
     fn dummy_b(
         _i: &[Arc<RwLock<fuel_memory::Storage>>],
         _o: &mut [Arc<RwLock<fuel_memory::Storage>>],
-        _l: &[fuel_core_types::Layout],
+        _l: &[fuel_ir::Layout],
         _p: &crate::kernel::OpParams,
-    ) -> fuel_core_types::Result<()> {
+    ) -> fuel_ir::Result<()> {
         Ok(())
     }
 
@@ -682,10 +682,10 @@ mod tests {
         ));
         let inputs = [a, b];
         let mut outputs = [out];
-        let shape = fuel_core_types::Shape::from_dims(&[3]);
+        let shape = fuel_ir::Shape::from_dims(&[3]);
         let layouts = [
-            fuel_core_types::Layout::contiguous(shape.clone()),
-            fuel_core_types::Layout::contiguous(shape),
+            fuel_ir::Layout::contiguous(shape.clone()),
+            fuel_ir::Layout::contiguous(shape),
         ];
         resolved(&inputs, &mut outputs, &layouts, &crate::kernel::OpParams::None)
             .expect("the FKC-resolved add_f32 kernel executes on real storage");

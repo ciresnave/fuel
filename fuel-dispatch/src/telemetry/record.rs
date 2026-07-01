@@ -70,8 +70,8 @@ pub struct MissRecord {
 mod tests {
     use super::*;
     use crate::telemetry::{ImplId, StructureKeyToken};
-    use fuel_core_types::dispatch::OpKind;
-    use fuel_core_types::{BackendId, DType};
+    use fuel_ir::dispatch::OpKind;
+    use fuel_ir::{BackendId, DType};
 
     fn baracuda_impl() -> ImplId {
         ImplId {

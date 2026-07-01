@@ -264,7 +264,7 @@ fn match_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::DType;
+    use fuel_ir::DType;
 
     #[test]
     fn op_to_tag_projects_functional_ops_and_skips_structural() {
@@ -293,13 +293,13 @@ mod tests {
         c
     }
 
-    fn leaf(g: &mut Graph, s: &fuel_core_types::Shape) -> NodeId {
+    fn leaf(g: &mut Graph, s: &fuel_ir::Shape) -> NodeId {
         g.push(crate::Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 })
     }
-    fn op1(g: &mut Graph, op: Op, x: NodeId, s: &fuel_core_types::Shape) -> NodeId {
+    fn op1(g: &mut Graph, op: Op, x: NodeId, s: &fuel_ir::Shape) -> NodeId {
         g.push(crate::Node { op, inputs: vec![x], shape: s.clone(), dtype: DType::F32 })
     }
-    fn op2(g: &mut Graph, op: Op, x: NodeId, y: NodeId, s: &fuel_core_types::Shape) -> NodeId {
+    fn op2(g: &mut Graph, op: Op, x: NodeId, y: NodeId, s: &fuel_ir::Shape) -> NodeId {
         g.push(crate::Node { op, inputs: vec![x, y], shape: s.clone(), dtype: DType::F32 })
     }
 
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn match_region_binds_relu_add() {
         let mut g = Graph::new();
-        let s = fuel_core_types::Shape::from_dims(&[2]);
+        let s = fuel_ir::Shape::from_dims(&[2]);
         let a = leaf(&mut g, &s);
         let b = leaf(&mut g, &s);
         let sum = op2(&mut g, Op::Add, a, b, &s);
@@ -333,7 +333,7 @@ mod tests {
         // mul(c, relu(d)); the pattern puts relu on operand[0] — matches via
         // commutativity (§3a.2a).
         let mut g = Graph::new();
-        let s = fuel_core_types::Shape::from_dims(&[2]);
+        let s = fuel_ir::Shape::from_dims(&[2]);
         let c = leaf(&mut g, &s);
         let d = leaf(&mut g, &s);
         let rd = op1(&mut g, Op::Relu, d, &s);
@@ -359,7 +359,7 @@ mod tests {
     fn match_region_rejects_wrong_interior_op() {
         // relu(mul(a, b)) does not match the relu(add(...)) pattern.
         let mut g = Graph::new();
-        let s = fuel_core_types::Shape::from_dims(&[2]);
+        let s = fuel_ir::Shape::from_dims(&[2]);
         let a = leaf(&mut g, &s);
         let b = leaf(&mut g, &s);
         let prod = op2(&mut g, Op::Mul, a, b, &s);
@@ -375,7 +375,7 @@ mod tests {
     fn match_region_declines_shared_interior() {
         // sum feeds two consumers → fusing duplicates it → decline (§3a.4).
         let mut g = Graph::new();
-        let s = fuel_core_types::Shape::from_dims(&[2]);
+        let s = fuel_ir::Shape::from_dims(&[2]);
         let a = leaf(&mut g, &s);
         let b = leaf(&mut g, &s);
         let sum = op2(&mut g, Op::Add, a, b, &s);
@@ -405,9 +405,9 @@ mod tests {
     fn match_node_discriminates_on_perm_attr() {
         // A graph node that permutes with perm = [1, 0].
         let mut g = Graph::new();
-        let s = fuel_core_types::Shape::from_dims(&[2, 3]);
+        let s = fuel_ir::Shape::from_dims(&[2, 3]);
         let x = leaf(&mut g, &s);
-        let p = op1(&mut g, Op::Permute(vec![1, 0]), x, &fuel_core_types::Shape::from_dims(&[3, 2]));
+        let p = op1(&mut g, Op::Permute(vec![1, 0]), x, &fuel_ir::Shape::from_dims(&[3, 2]));
         let counts = consumer_counts(&g);
         let cf = |n: NodeId| *counts.get(&n).unwrap_or(&0);
 

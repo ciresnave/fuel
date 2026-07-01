@@ -47,8 +47,8 @@ use std::collections::HashMap;
 
 use crate::fused::CostEstimate;
 use crate::kernel::OpParams;
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::{DType, Shape};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::{DType, Shape};
 
 /// A compiled cost-expression AST (FKC §4.4 / §2.3 strategy A).
 ///

@@ -14,9 +14,12 @@ accelerate-src = { workspace = true, optional = true }
 byteorder = { workspace = true }
 fuel-aocl-cpu-backend = { workspace = true, optional = true }
 fuel-mkl-cpu-backend = { workspace = true, optional = true }
-fuel-core-types = { workspace = true, features = ["serde"] }
+fuel-ir = { workspace = true, features = ["serde"] }
+fuel-cpu-kernels = { workspace = true }
+fuel-backend-contract = { workspace = true }
 fuel-correctness-fixtures = { workspace = true, features = ["serde", "capture"] }
 fuel-cpu-backend = { workspace = true }
+fuel-hardware = { workspace = true }
 fuel-dispatch = { workspace = true }
 fuel-memory = { workspace = true }
 bytemuck = { workspace = true }
@@ -85,18 +88,12 @@ cuda = [
     "dep:baracuda-driver",
     "fuel-dispatch/cuda",
     "fuel-memory/cuda",
+    "fuel-hardware/cuda",
     "fuel-ug?/cuda",
 ]
 
 # Enables cuda + cuDNN accelerated convolution and normalization.
 cudnn = ["cuda", "dep:baracuda-cudnn", "fuel-cuda-backend?/cudnn"]
-
-# Transitional: enables the lazy `Op::FlashAttn` launcher on CUDA.
-# baracuda alpha.60+ provides `fa2_sdpa_*_run_v2` directly so this no
-# longer pulls in the old fuel-flash-attn-cuda-sys nvcc build. The
-# feature gate stays until the eager `fuel-flash-attn-cuda` wrapper
-# (used by transformers) is migrated or retired.
-flash-attn = ["cuda", "fuel-cuda-backend?/flash-attn"]
 
 # Multi-GPU communication via NVIDIA NCCL.
 nccl = ["cuda", "dep:baracuda-nccl", "fuel-cuda-backend?/nccl"]
@@ -138,13 +135,13 @@ metal = [
 # Cross-vendor GPU backend via Vulkan (vulkane + precompiled SPIR-V).
 # Use: cargo build --features vulkan. No toolchain required at build
 # time — shaders are precompiled and committed.
-vulkan = ["dep:fuel-vulkan-backend", "fuel-dispatch/vulkan", "fuel-memory/vulkan"]
+vulkan = ["dep:fuel-vulkan-backend", "fuel-dispatch/vulkan", "fuel-memory/vulkan", "fuel-hardware/vulkan"]
 
 # fuel-ug (μGPU) experimental backend.
 # Pipes the `ug` feature through to fuel-cuda-backend and fuel-metal-backend so the
 # per-backend `XxxUgIOp1::new(..., device)` constructors are available
 # whenever `cuda`/`metal` is also enabled.
-ug = ["dep:fuel-ug", "fuel-core-types/ug", "fuel-cuda-backend?/ug", "fuel-metal-backend?/ug"]
+ug = ["dep:fuel-ug", "fuel-ir/ug", "fuel-cuda-backend?/ug", "fuel-metal-backend?/ug"]
 
 [[bench]]
 name = "bench_main"

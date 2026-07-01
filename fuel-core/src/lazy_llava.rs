@@ -43,7 +43,7 @@ use crate::lazy::{
 };
 use crate::lazy_clip::{ClipEncoderLayerWeights, ClipVisionConfig, ClipVisionWeights};
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use serde::Deserialize;
 use std::sync::Arc;
 

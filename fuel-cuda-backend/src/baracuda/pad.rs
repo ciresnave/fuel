@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{Error, Result};
+use fuel_ir::{Error, Result};
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -213,7 +213,6 @@ fn run_pad_mode(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(Arc::new(dest), device, out_bytes))
 }
 
@@ -245,7 +244,6 @@ fn run_pad_constant_f32(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(Arc::new(dest), device, out_bytes))
 }
 
@@ -275,7 +273,6 @@ fn run_pad_constant_f64(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(Arc::new(dest), device, out_bytes))
 }
 
@@ -305,7 +302,6 @@ fn run_pad_constant_u16(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(Arc::new(dest), device, out_bytes))
 }
 
@@ -463,7 +459,6 @@ fn run_pad_backward(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(Arc::new(dx), device, dx_bytes))
 }
 

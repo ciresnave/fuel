@@ -26,7 +26,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{dispatch::OpKind, probe::BackendId, DType, Error, Layout, Result};
+use fuel_ir::{dispatch::OpKind, probe::BackendId, DType, Error, Layout, Result};
 use fuel_dispatch::{dispatch::{cpu_input, cpu_output, read_storage, write_storage}, fused::PrecisionGuarantee, kernel::OpParams, KernelBindingTable};
 use fuel_memory::{Storage};
 

@@ -41,8 +41,8 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use fuel_core_types::dispatch::{OpKind, SizeClass};
-use fuel_core_types::DType;
+use fuel_ir::dispatch::{OpKind, SizeClass};
+use fuel_ir::DType;
 
 use crate::{CorrectnessFixture, FixtureFile, ToleranceBand, FIXTURE_FILE_VERSION};
 
@@ -156,7 +156,7 @@ pub fn representative_capture_matrix() -> Vec<CaptureCell> {
 /// the seed-match check to mean anything.
 pub fn derive_seed(op: OpKind, dtype: DType, sc: SizeClass) -> u64 {
     // SplitMix-style mix of stable inputs. `op.as_str()` is
-    // committed-stable per `fuel_core_types::dispatch::OpKind::as_str`
+    // committed-stable per `fuel_ir::dispatch::OpKind::as_str`
     // (used in profile-report serialization — changing it is a
     // breaking change). Byte size of dtype is stable across releases.
     let mut acc: u64 = 0xcafe_babe_dead_beef;

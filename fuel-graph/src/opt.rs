@@ -40,7 +40,7 @@ use crate::registry::{
     default_registry, FusedOpEntry, FusedOpId, FusedOpParams, FusedOps, SubgraphPattern,
 };
 use crate::{topo_order_multi, Graph, Node, NodeId, Op, SharedGraph};
-use fuel_core_types::{DeviceLocation, DType, Shape};
+use fuel_ir::{DeviceLocation, DType, Shape};
 use std::collections::HashMap;
 
 // ---- Rule registry framework ----------------------------------------------
@@ -673,7 +673,7 @@ impl CastFusionRule {
         &self,
         graph: &Graph,
         id: NodeId,
-    ) -> Option<(usize, NodeId, Vec<fuel_core_types::DType>)> {
+    ) -> Option<(usize, NodeId, Vec<fuel_ir::DType>)> {
         let node = graph.node(id);
         // Don't fire on a Cast node itself — fire on the consumer.
         if matches!(node.op, Op::Cast(_)) { return None; }
@@ -725,7 +725,7 @@ impl CastFusionRule {
             // Type-preserving filter above guarantees output dtype
             // tracks the cast-fed input, so the new output dtype is
             // `final_src_dtype` (not the original `node.dtype`).
-            let mut dtypes: Vec<fuel_core_types::DType> = node
+            let mut dtypes: Vec<fuel_ir::DType> = node
                 .inputs
                 .iter()
                 .map(|&iid| if iid == input_id {
@@ -1567,7 +1567,7 @@ pub fn derive_ordering(graph: &crate::Graph, roots: &[NodeId]) -> OrderingEdges 
 ///    exposes one slot's window — bytes are shared, the bundle's Arc
 ///    refcount tracks the consumer's lifetime (Session 1 of the
 ///    multi-output Option C design — see
-///    [`fuel_core_types::storage::OutputView`]).
+///    [`fuel_ir::storage::OutputView`]).
 ///
 /// `Op::ViewOwned` is explicitly NOT alias-extending: at execution
 /// time it allocates a fresh standalone Storage and memcpys the
@@ -2248,6 +2248,22 @@ pub fn insert_evict_reload(
 ///   device-level (`Cpu` shares with `Cpu`, `Cuda{0}` shares with
 ///   `Cuda{0}` but not `Cuda{1}`, etc.). Same-device queries should
 ///   return `true`.
+/// - `needs_host_staging` — `Fn(DeviceLocation, DeviceLocation) -> bool`.
+///   For a non-shared edge that this pass IS bridging, returns `true`
+///   when the transfer cannot be done as a SINGLE `Op::Copy` hop and
+///   must instead route through host memory as TWO hops
+///   (producer-GPU → CPU, then CPU → consumer-GPU). This is the
+///   cross-VENDOR GPU↔GPU case (CUDA↔Vulkan): there is no direct
+///   device-to-device copy kernel between distinct GPU substrates, so
+///   the source-backend Copy kernel only accepts a CPU or same-substrate
+///   output. The single-hop cases — CPU↔CUDA, CPU↔Vulkan, and any edge
+///   touching CPU on either end — return `false` and get exactly ONE
+///   `Op::Copy` (byte-identical to the pre-two-hop behavior). Typical
+///   wiring derives this from `SystemTopology::transfer_path(src, dst)
+///   == TransferPath::HostStaging` for GPU↔GPU pairs. When `true`, the
+///   pass inserts a CPU intermediate `Op::Copy { target: Cpu }` (placed
+///   on CPU) and a second `Op::Copy { target: consumer }` reading it;
+///   the consumer is rewired to the second hop.
 ///
 /// # Returns
 ///
@@ -2258,7 +2274,12 @@ pub fn insert_evict_reload(
 /// Op::Copy kernel-lookup convention: the transfer kernel runs on
 /// the backend the bytes come FROM). `.len()` is the transfer-count
 /// metric the optimizer reports when deciding whether to pursue
-/// alternative placements that minimize transfers.
+/// alternative placements that minimize transfers. A two-hop
+/// (host-staged) edge contributes BOTH inserted copies (the CPU
+/// intermediate and the consumer-side hop) to this vec; the SOURCE-
+/// backend re-stamp the caller applies to `inputs.first()` is
+/// correct for each hop independently (the CPU hop's source is the
+/// producer GPU; the consumer hop's source is the CPU intermediate).
 ///
 /// # Idempotence
 ///
@@ -2273,18 +2294,24 @@ pub fn insert_evict_reload(
 /// the same target device, the pass deduplicates: one `Op::Copy`
 /// node serves both consumers. This matches the existing CSE
 /// pattern in `optimize_to_fixpoint`.
-pub fn insert_cross_device_copies<P, S>(
+pub fn insert_cross_device_copies<P, S, H>(
     graph: &mut Graph,
     roots: &[NodeId],
     placement_for: P,
     shares_storage: S,
+    needs_host_staging: H,
 ) -> Vec<NodeId>
 where
     P: Fn(NodeId) -> Option<DeviceLocation>,
     S: Fn(DeviceLocation, DeviceLocation) -> bool,
+    H: Fn(DeviceLocation, DeviceLocation) -> bool,
 {
     let order = topo_order_multi(graph, roots);
     // CSE on inserted copies: `(producer, target_device) → Op::Copy NodeId`.
+    // For a two-hop edge the CPU intermediate is itself CSE-keyed at
+    // `(producer, Cpu)` and the consumer hop at `(cpu_intermediate, target)`,
+    // so a producer feeding several cross-vendor consumers stages to CPU
+    // exactly once and each distinct target gets one consumer-side hop.
     let mut copy_cache: HashMap<(NodeId, DeviceLocation), NodeId> = HashMap::new();
     let mut inserted: Vec<NodeId> = Vec::new();
 
@@ -2317,15 +2344,60 @@ where
                 continue;
             }
 
-            let copy_id = match copy_cache.get(&(producer_id, consumer_placement)) {
+            // Decide hop count. A cross-VENDOR GPU↔GPU edge (e.g.
+            // CUDA↔Vulkan) can't be done as one `Op::Copy` — there's no
+            // direct device-to-device copy kernel between distinct GPU
+            // substrates, so the source-backend Copy kernel rejects the
+            // foreign-GPU output. Route it through host memory as TWO hops:
+            // producer-GPU → CPU (intermediate), then CPU → consumer-GPU.
+            // Single-hop edges (anything touching CPU on either end, or a
+            // same-vendor pair the topology can copy directly) stay exactly
+            // one `Op::Copy` — byte-identical to the pre-two-hop behavior.
+            let two_hop = needs_host_staging(producer_placement, consumer_placement);
+
+            // `source_for_consumer_hop` is the node the consumer-side
+            // `Op::Copy { target: consumer_placement }` reads FROM: the
+            // producer directly for a single hop, or the CPU intermediate
+            // for a two-hop edge.
+            let source_for_consumer_hop = if two_hop {
+                // Hop 1: producer-GPU → CPU intermediate. CSE-keyed at
+                // `(producer, Cpu)` so a producer feeding several cross-
+                // vendor consumers stages to CPU exactly once.
+                match copy_cache.get(&(producer_id, DeviceLocation::Cpu)) {
+                    Some(&id) => id,
+                    None => {
+                        let producer = graph.node(producer_id);
+                        let shape = producer.shape.clone();
+                        let dtype = producer.dtype;
+                        let cpu_id = graph.push(Node {
+                            op: Op::Copy { target: DeviceLocation::Cpu },
+                            inputs: vec![producer_id],
+                            shape,
+                            dtype,
+                        });
+                        // The CPU intermediate bridges the two hops; place
+                        // it on CPU.
+                        graph.set_placement(cpu_id, DeviceLocation::Cpu);
+                        copy_cache.insert((producer_id, DeviceLocation::Cpu), cpu_id);
+                        inserted.push(cpu_id);
+                        cpu_id
+                    }
+                }
+            } else {
+                producer_id
+            };
+
+            // Hop 2 (or the single hop): `source_for_consumer_hop` →
+            // consumer device. CSE-keyed at `(source, consumer_placement)`.
+            let copy_id = match copy_cache.get(&(source_for_consumer_hop, consumer_placement)) {
                 Some(&id) => id,
                 None => {
-                    let producer = graph.node(producer_id);
-                    let shape = producer.shape.clone();
-                    let dtype = producer.dtype;
+                    let src = graph.node(source_for_consumer_hop);
+                    let shape = src.shape.clone();
+                    let dtype = src.dtype;
                     let id = graph.push(Node {
                         op: Op::Copy { target: consumer_placement },
-                        inputs: vec![producer_id],
+                        inputs: vec![source_for_consumer_hop],
                         shape,
                         dtype,
                     });
@@ -2333,7 +2405,7 @@ where
                     // consumer's device — its output is what the
                     // consumer reads.
                     graph.set_placement(id, consumer_placement);
-                    copy_cache.insert((producer_id, consumer_placement), id);
+                    copy_cache.insert((source_for_consumer_hop, consumer_placement), id);
                     inserted.push(id);
                     id
                 }
@@ -2487,13 +2559,13 @@ where
 mod tests {
     use super::*;
     use crate::Tensor;
-    use fuel_core_types::{DeviceLocation, Shape};
+    use fuel_ir::{DeviceLocation, Shape};
     use std::sync::Arc;
 
     /// Phase 7.5 G2: tests need a real device for slot-populating
     /// constructors. Singleton CpuBackendDevice via OnceLock.
-    fn cpu_dev() -> &'static Arc<dyn fuel_core_types::DynBackendDevice> {
-        static D: std::sync::OnceLock<Arc<dyn fuel_core_types::DynBackendDevice>>
+    fn cpu_dev() -> &'static Arc<dyn fuel_backend_contract::DynBackendDevice> {
+        static D: std::sync::OnceLock<Arc<dyn fuel_backend_contract::DynBackendDevice>>
             = std::sync::OnceLock::new();
         D.get_or_init(|| Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
     }
@@ -2757,7 +2829,7 @@ mod tests {
     fn keeps_real_cast() {
         let (graph, a) = make_scalar_graph();
         // A genuine dtype change (F32→F64) is NOT elided.
-        let cast = a.cast(fuel_core_types::DType::F64);
+        let cast = a.cast(fuel_ir::DType::F64);
         let new_roots = optimize(&graph, &[cast.id()]);
         assert_ne!(new_roots[0], a.id(), "a real Cast must survive optimization");
     }
@@ -3845,13 +3917,13 @@ mod tests {
     /// the test wants to confirm the matcher/rewriter mechanics work;
     /// orthogonal tests cover the predicate-says-no path.
     fn allow_all_predicate() -> CapabilityPredicate {
-        Arc::new(|_op: &Op, _dtypes: &[fuel_core_types::DType]| true)
+        Arc::new(|_op: &Op, _dtypes: &[fuel_ir::DType]| true)
     }
 
     /// Predicate that says no for everything. Useful for confirming
     /// the rule respects the capability gate.
     fn deny_all_predicate() -> CapabilityPredicate {
-        Arc::new(|_op: &Op, _dtypes: &[fuel_core_types::DType]| false)
+        Arc::new(|_op: &Op, _dtypes: &[fuel_ir::DType]| false)
     }
 
     /// Happy path: `x:f32 → Cast(BF16) → Neg(BF16)` collapses to
@@ -3859,7 +3931,7 @@ mod tests {
     #[test]
     fn cast_fusion_drops_cast_when_consumer_supports_source_dtype() {
         let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let xc = x.cast(fuel_core_types::DType::BF16);
+        let xc = x.cast(fuel_ir::DType::BF16);
         let y = xc.neg();
         let graph = y.graph().clone();
         let pre_len = graph.read().unwrap().len();
@@ -3890,7 +3962,7 @@ mod tests {
     #[test]
     fn cast_fusion_no_fire_when_predicate_denies() {
         let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let xc = x.cast(fuel_core_types::DType::BF16);
+        let xc = x.cast(fuel_ir::DType::BF16);
         let y = xc.neg();
         let graph = y.graph().clone();
         let pre_len = graph.read().unwrap().len();
@@ -3914,7 +3986,7 @@ mod tests {
     #[test]
     fn cast_fusion_no_fire_when_cast_has_multiple_consumers() {
         let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let xc = x.cast(fuel_core_types::DType::BF16);
+        let xc = x.cast(fuel_ir::DType::BF16);
         // Two consumers of the same Cast.
         let y1 = xc.neg();
         let y2 = xc.relu();
@@ -3940,10 +4012,10 @@ mod tests {
     #[test]
     fn cast_fusion_rewrites_output_dtype_to_source_dtype() {
         let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let xc = x.cast(fuel_core_types::DType::BF16);
+        let xc = x.cast(fuel_ir::DType::BF16);
         let y = xc.neg();
         // Pre-fusion the original Neg produces BF16.
-        assert_eq!(y.dtype(), fuel_core_types::DType::BF16);
+        assert_eq!(y.dtype(), fuel_ir::DType::BF16);
 
         let graph = y.graph().clone();
         let registry = RuleRegistry::new()
@@ -3955,7 +4027,7 @@ mod tests {
         // The rewritten Neg consumes the F32 source directly and
         // produces F32. This differs from the original BF16
         // output; the rule's aggressive semantics commit to this.
-        assert_eq!(g.node(new_root).dtype, fuel_core_types::DType::F32);
+        assert_eq!(g.node(new_root).dtype, fuel_ir::DType::F32);
     }
 
     /// Multi-input op: only the qualifying input fuses; the others
@@ -3964,7 +4036,7 @@ mod tests {
     fn cast_fusion_multi_input_op_fuses_only_qualifying_edge() {
         let a = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
         // a:f32 → Cast(BF16) → Add(bf16, b:bf16) where b is already bf16.
-        let ac = a.cast(fuel_core_types::DType::BF16);
+        let ac = a.cast(fuel_ir::DType::BF16);
         let b = a.const_bf16_like(
             vec![half::bf16::from_f32(2.0); 4],
             Shape::from_dims(&[4]),
@@ -3977,7 +4049,7 @@ mod tests {
         // this isolates the matcher's per-input behavior. If the
         // predicate said no, the rule wouldn't fire and `b` would
         // stay paired with the Cast.)
-        let predicate: CapabilityPredicate = Arc::new(|op: &Op, _dtypes: &[fuel_core_types::DType]| {
+        let predicate: CapabilityPredicate = Arc::new(|op: &Op, _dtypes: &[fuel_ir::DType]| {
             matches!(op, Op::Add)
         });
 
@@ -3999,8 +4071,8 @@ mod tests {
     #[test]
     fn cast_fusion_handles_chained_casts_via_fixpoint() {
         let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let x_bf16 = x.cast(fuel_core_types::DType::BF16);
-        let x_f32 = x_bf16.cast(fuel_core_types::DType::F32);
+        let x_bf16 = x.cast(fuel_ir::DType::BF16);
+        let x_f32 = x_bf16.cast(fuel_ir::DType::F32);
         let y = x_f32.neg();
         let graph = y.graph().clone();
 
@@ -4028,7 +4100,7 @@ mod tests {
     #[test]
     fn cast_fusion_does_not_fire_on_cast_node_itself() {
         let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let xc = x.cast(fuel_core_types::DType::BF16);
+        let xc = x.cast(fuel_ir::DType::BF16);
         let graph = xc.graph().clone();
         let pre_len = graph.read().unwrap().len();
 
@@ -4101,6 +4173,33 @@ mod tests {
         }
     }
 
+    /// Single-hop everywhere: the pre-two-hop behavior. Every bridged
+    /// edge gets exactly one `Op::Copy`. Used by the legacy single-hop
+    /// tests so they stay byte-identical to before the two-hop param.
+    fn no_host_staging(_a: DeviceLocation, _b: DeviceLocation) -> bool {
+        false
+    }
+
+    /// Realistic topology predicate: a cross-VENDOR GPU↔GPU pair (CUDA↔
+    /// Vulkan, or any two distinct GPU substrates) needs host staging
+    /// (two hops). Any edge touching CPU, or a same-vendor pair, is a
+    /// single hop.
+    fn host_staging_cross_vendor_gpu(a: DeviceLocation, b: DeviceLocation) -> bool {
+        use DeviceLocation::*;
+        match (a, b) {
+            // CPU on either end → single hop.
+            (Cpu, _) | (_, Cpu) => false,
+            // Same vendor (both CUDA, both Vulkan, both Metal) → single
+            // hop (the topology can copy directly / shares_storage may
+            // even short-circuit it first).
+            (Cuda { .. }, Cuda { .. }) => false,
+            (Vulkan { .. }, Vulkan { .. }) => false,
+            (Metal { .. }, Metal { .. }) => false,
+            // Cross-vendor GPU↔GPU → two hops through host.
+            _ => true,
+        }
+    }
+
     /// No cross-device edges → no copies inserted.
     #[test]
     fn insert_copies_noop_when_all_same_device() {
@@ -4114,6 +4213,7 @@ mod tests {
             &mut g, &[n2],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
+            no_host_staging,
         );
         assert_eq!(inserted.len(), 0, "same-device edge → no copy needed");
         assert_eq!(g.len(), pre_len, "graph unchanged");
@@ -4133,6 +4233,7 @@ mod tests {
             &mut g, &[n2],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
+            no_host_staging,
         );
         assert_eq!(inserted.len(), 1);
         assert_eq!(g.len(), pre_len + 1, "one new Op::Copy node appended");
@@ -4170,6 +4271,7 @@ mod tests {
             &mut g, &[cuda_a, cuda_b],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
+            no_host_staging,
         );
         assert_eq!(inserted.len(), 1, "CSE — one Op::Copy serves both consumers");
         assert_eq!(g.len(), pre_len + 1);
@@ -4199,6 +4301,7 @@ mod tests {
             &mut g, &[cuda_c, vk_c],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
+            no_host_staging,
         );
         assert_eq!(inserted.len(), 2, "distinct targets → distinct copies");
         let cuda_input = g.node(cuda_c).inputs[0];
@@ -4221,6 +4324,7 @@ mod tests {
             &mut g, &[n2],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
+            no_host_staging,
         );
         assert_eq!(inserted.len(), 0, "producer with no placement → skip");
     }
@@ -4250,6 +4354,7 @@ mod tests {
             &mut g, &[copy],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
+            no_host_staging,
         );
         assert_eq!(inserted.len(), 0, "the existing Op::Copy is not re-wrapped");
         assert_eq!(g.len(), pre_len);
@@ -4268,12 +4373,14 @@ mod tests {
             &mut g, &[n2],
             |id| placements_before.get(&id).copied(),
             shares_storage_cpu_devices_only,
+            no_host_staging,
         );
         let placements_after = snapshot_placements(&g);
         let second = insert_cross_device_copies(
             &mut g, &[n2],
             |id| placements_after.get(&id).copied(),
             shares_storage_cpu_devices_only,
+            no_host_staging,
         );
         assert_eq!(first.len(), 1);
         assert_eq!(second.len(), 0, "re-run sees inserted-Copy as on-target; no new copies");
@@ -4291,11 +4398,149 @@ mod tests {
             &mut g, &[n2],
             |id| placements.get(&id).copied(),
             shares_storage_cpu_devices_only,
+            no_host_staging,
         );
         assert_eq!(inserted.len(), 1, "cross-gpu_id is cross-device too");
         let copy_id = g.node(n2).inputs[0];
         let copy_node = g.node(copy_id);
         assert!(matches!(copy_node.op, Op::Copy { target } if target == cuda1));
+    }
+
+    /// Cross-VENDOR GPU↔GPU edge (Vulkan → CUDA) with `needs_host_staging`
+    /// returning true → TWO `Op::Copy` hops through a CPU intermediate:
+    /// the consumer reads `Op::Copy{target:Cuda}`, which reads
+    /// `Op::Copy{target:Cpu}`, which reads the Vulkan producer.
+    #[test]
+    fn insert_copies_cross_vendor_gpu_inserts_two_hops_through_cpu() {
+        let cuda = DeviceLocation::Cuda { gpu_id: 0 };
+        let vulkan = DeviceLocation::Vulkan { gpu_id: 0 };
+        let (mut g, vk_src, cuda_consumer) =
+            build_two_node_graph_with_placements(vulkan, cuda);
+        let pre_len = g.len();
+        let placements = snapshot_placements(&g);
+        let inserted = insert_cross_device_copies(
+            &mut g, &[cuda_consumer],
+            |id| placements.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+            host_staging_cross_vendor_gpu,
+        );
+        assert_eq!(inserted.len(), 2, "cross-vendor GPU↔GPU → two hops");
+        assert_eq!(g.len(), pre_len + 2, "two new Op::Copy nodes appended");
+
+        // Consumer reads the consumer-side hop (Copy → Cuda).
+        let hop2 = g.node(cuda_consumer).inputs[0];
+        let hop2_node = g.node(hop2);
+        assert!(
+            matches!(hop2_node.op, Op::Copy { target } if target == cuda),
+            "consumer-side hop targets CUDA; got {:?}",
+            hop2_node.op,
+        );
+        assert_eq!(g.placement(hop2), Some(cuda), "consumer-side hop lands on CUDA");
+
+        // The consumer-side hop reads the CPU intermediate (Copy → Cpu).
+        let hop1 = hop2_node.inputs[0];
+        let hop1_node = g.node(hop1);
+        assert!(
+            matches!(hop1_node.op, Op::Copy { target } if target == DeviceLocation::Cpu),
+            "CPU-intermediate hop targets Cpu; got {:?}",
+            hop1_node.op,
+        );
+        assert_eq!(
+            g.placement(hop1),
+            Some(DeviceLocation::Cpu),
+            "CPU intermediate is placed on CPU",
+        );
+
+        // The CPU intermediate reads the original Vulkan producer.
+        assert_eq!(hop1_node.inputs, vec![vk_src], "CPU hop reads the Vulkan producer");
+    }
+
+    /// Two-hop edge is idempotent: re-running adds zero new copies. The
+    /// consumer now reads a same-device `Op::Copy`; the CPU intermediate's
+    /// consumer is also an `Op::Copy` (skipped as a transfer op).
+    #[test]
+    fn insert_copies_cross_vendor_two_hop_idempotent() {
+        let cuda = DeviceLocation::Cuda { gpu_id: 0 };
+        let vulkan = DeviceLocation::Vulkan { gpu_id: 0 };
+        let (mut g, _vk_src, cuda_consumer) =
+            build_two_node_graph_with_placements(vulkan, cuda);
+        let p1 = snapshot_placements(&g);
+        let first = insert_cross_device_copies(
+            &mut g, &[cuda_consumer],
+            |id| p1.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+            host_staging_cross_vendor_gpu,
+        );
+        let p2 = snapshot_placements(&g);
+        let second = insert_cross_device_copies(
+            &mut g, &[cuda_consumer],
+            |id| p2.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+            host_staging_cross_vendor_gpu,
+        );
+        assert_eq!(first.len(), 2, "two hops on first run");
+        assert_eq!(second.len(), 0, "re-run adds no new copies");
+    }
+
+    /// CSE on a two-hop edge: one Vulkan producer feeding TWO CUDA
+    /// consumers stages to CPU exactly once (one CPU intermediate), then
+    /// one consumer-side CUDA hop shared by both → 2 inserted copies
+    /// total, not 4.
+    #[test]
+    fn insert_copies_cross_vendor_two_hop_cse_shares_cpu_intermediate() {
+        let cuda = DeviceLocation::Cuda { gpu_id: 0 };
+        let vulkan = DeviceLocation::Vulkan { gpu_id: 0 };
+        let mut g = Graph::new();
+        let vk_src = add_node(&mut g, Op::Const, vec![]);
+        g.set_placement(vk_src, vulkan);
+        let cuda_a = add_node(&mut g, Op::Neg, vec![vk_src]);
+        let cuda_b = add_node(&mut g, Op::Sqr, vec![vk_src]);
+        g.set_placement(cuda_a, cuda);
+        g.set_placement(cuda_b, cuda);
+
+        let placements = snapshot_placements(&g);
+        let inserted = insert_cross_device_copies(
+            &mut g, &[cuda_a, cuda_b],
+            |id| placements.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+            host_staging_cross_vendor_gpu,
+        );
+        // One CPU intermediate + one shared CUDA hop = 2.
+        assert_eq!(inserted.len(), 2, "CSE — one CPU intermediate + one CUDA hop");
+        let a_input = g.node(cuda_a).inputs[0];
+        let b_input = g.node(cuda_b).inputs[0];
+        assert_eq!(a_input, b_input, "both CUDA consumers share the consumer-side hop");
+        // That shared hop reads the single CPU intermediate.
+        let cpu_hop = g.node(a_input).inputs[0];
+        assert!(matches!(
+            g.node(cpu_hop).op,
+            Op::Copy { target: DeviceLocation::Cpu }
+        ));
+        assert_eq!(g.node(cpu_hop).inputs, vec![vk_src]);
+    }
+
+    /// A CPU↔GPU edge stays SINGLE hop even when the host-staging
+    /// predicate is the realistic cross-vendor one (which returns false
+    /// for any CPU-touching edge) — byte-identical to the legacy path.
+    #[test]
+    fn insert_copies_cpu_gpu_edge_stays_single_hop_under_cross_vendor_predicate() {
+        let cuda = DeviceLocation::Cuda { gpu_id: 0 };
+        let (mut g, n1, n2) = build_two_node_graph_with_placements(
+            DeviceLocation::Cpu, cuda,
+        );
+        let pre_len = g.len();
+        let placements = snapshot_placements(&g);
+        let inserted = insert_cross_device_copies(
+            &mut g, &[n2],
+            |id| placements.get(&id).copied(),
+            shares_storage_cpu_devices_only,
+            host_staging_cross_vendor_gpu,
+        );
+        assert_eq!(inserted.len(), 1, "CPU↔CUDA is a single hop");
+        assert_eq!(g.len(), pre_len + 1);
+        let copy_id = g.node(n2).inputs[0];
+        assert!(matches!(g.node(copy_id).op, Op::Copy { target } if target == cuda));
+        assert_eq!(g.node(copy_id).inputs, vec![n1]);
     }
 
     /// Per-node `placement_for` can be backed by an external map, not
@@ -4320,6 +4565,7 @@ mod tests {
             &mut g, &[n2],
             |id| external.get(&id).copied(),
             shares_storage_cpu_devices_only,
+            no_host_staging,
         );
         assert_eq!(inserted.len(), 1);
     }

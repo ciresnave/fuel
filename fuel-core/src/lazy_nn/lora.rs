@@ -18,7 +18,7 @@
 use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_nn::LazyModule;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// LoRA-adapted linear layer over `LazyTensor`.

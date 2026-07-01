@@ -9,15 +9,16 @@ members = [
     "fuel-book",
     "fuel-conv",
     "fuel-core",
-    "fuel-core-types",
+    "fuel-ir",
+    "fuel-backend-contract",
+    "fuel-cpu-kernels",
+    "fuel-hardware",
     "fuel-cpu-backend",
     "fuel-mkl-cpu-backend",
     "fuel-cublaslt",
     "fuel-cuda-vmm",
     "fuel-datasets",
     "fuel-examples",
-    "fuel-flash-attn-cuda",
-    "fuel-flash-attn-cuda-sys",
     "fuel-formats",
     "fuel-graph",
     "fuel-kernel-seam-types",
@@ -52,7 +53,10 @@ members = [
 # `-p` or `--workspace`.
 default-members = [
     "fuel-core",
-    "fuel-core-types",
+    "fuel-ir",
+    "fuel-backend-contract",
+    "fuel-cpu-kernels",
+    "fuel-hardware",
     "fuel-cpu-backend",
     "fuel-dispatch",
     "fuel-formats",
@@ -112,7 +116,10 @@ byteorder = "1.4.3"
 fuel = { path = "./fuel-core", package = "fuel-core", version = "0.10.2" }
 fuel-aocl-cpu-backend = { path = "./fuel-aocl-cpu-backend", version = "0.10.2" }
 fuel-conv = { path = "./fuel-conv", version = "0.10.2" }
-fuel-core-types = { path = "./fuel-core-types", version = "0.10.2" }
+fuel-ir = { path = "./fuel-ir", version = "0.10.2" }
+fuel-backend-contract = { path = "./fuel-backend-contract", version = "0.10.2" }
+fuel-cpu-kernels = { path = "./fuel-cpu-kernels", version = "0.10.2" }
+fuel-hardware = { path = "./fuel-hardware", version = "0.10.2" }
 fuel-correctness-fixtures = { path = "./fuel-correctness-fixtures", version = "0.10.2" }
 fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.10.2" }
 fuel-mkl-cpu-backend = { path = "./fuel-mkl-cpu-backend", version = "0.10.2" }
@@ -125,8 +132,6 @@ fuel-vulkan-backend = { path = "./fuel-vulkan-backend", version = "0.10.2" }
 fuel-kernels-source = { path = "./fuel-kernels-source", version = "0.10.2" }
 fuel-vulkan-kernels = { path = "./fuel-vulkan-kernels", version = "0.10.2" }
 fuel-datasets = { path = "./fuel-datasets", version = "0.10.2" }
-fuel-flash-attn-cuda = { path = "./fuel-flash-attn-cuda", version = "0.10.2" }
-fuel-flash-attn-cuda-sys = { path = "./fuel-flash-attn-cuda-sys", version = "0.10.2" }
 fuel-formats = { path = "./fuel-formats", version = "0.10.2" }
 fuel-inference = { path = "./fuel-inference", version = "0.10.2" }
 fuel-metal-backend = { path = "./fuel-metal-backend", version = "0.10.2" }
@@ -180,39 +185,53 @@ criterion = { version = "0.8", default-features = false }
 # cl.exe's traditional preprocessor (the wall that blocked the A3b-1 live
 # smoke). No Fuel-facing API change vs alpha.67.
 #
-# alpha.69 (2026-06-20) — stay-current bump (alpha.68 → alpha.69), whole
-# baracuda-* set together to keep the workspace on one version. NOTE: a grep of
-# the published alpha.69 FFI surface (baracuda-kernels-sys + all baracuda-*
-# crates, 2026-06-21) found NO `baracuda_seam_hello`, NO DLPack/DLTensor
+# alpha.70 (2026-06-28) — Step E Phase B2 device-load telemetry: adds
+# `Stream::is_complete()`/`is_idle()` (cuStreamQuery) + `baracuda-nvml`
+# `Device::utilization()`/`gpu_utilization_percent()` (NVML, separate crate, not
+# yet a Fuel dep — B2 wires it later). No breaking change to the surfaces Fuel
+# consumes today; bumped for currency + to unblock B2.
+#
+# alpha.72 (2026-06-29) — Step E Phase A3 (CUDA async dispatch): `DeviceBuffer`
+# allocated via `new_async` now frees STREAM-ORDERED on `Drop` (cuMemFreeAsync on
+# the retained origin stream), and NEW `zeros_async(ctx,len,stream)` gives output
+# buffers async alloc+zero+free. Sync constructors (new/zeros/from_slice) stay
+# fully synchronous (no behavior change). Lets A3 drop the per-op
+# `device.synchronize()` and pipeline on the per-device stream with no Fuel-side
+# retention pool or executor lifetime guards. Use alpha.72 (alpha.71 had a Drop
+# fallback hazard, fixed here). Answers docs/outreach/baracuda-stream-ordered-alloc-ask.md.
+#
+# KERNEL-SEAM STATUS (carried from the FKC branch, re-verified against the surface
+# up to alpha.72): the published baracuda-* FFI surface (baracuda-kernels-sys + all
+# baracuda-* crates) exposes NO `baracuda_seam_hello`, NO DLPack/DLTensor
 # consumption, and NO JIT-on-request / runtime-fused-op-registration endpoint —
 # i.e. the ratified Kernel-Seam (Profile v1) is NOT yet exposed by Baracuda.
-# alpha.69 ships the building blocks (baracuda-nvrtc runtime PTX compile,
+# alpha.69+ ships the building blocks (baracuda-nvrtc runtime PTX compile,
 # baracuda-forge build-time nvcc), but the seam surface (seam_hello + a
 # DLPack-consuming kernel + the §5 JIT endpoint) must land in a later Baracuda
 # version before the cross-FFI seam can be tested. Tracked in docs/specs/kernel-seam-interop.md §7.1.
-baracuda-types         = { version = "0.0.1-alpha.69", features = ["half-crate", "f8-crate"] }
-baracuda-core          = { version = "0.0.1-alpha.69" }
-baracuda-cuda-sys      = { version = "0.0.1-alpha.69" }
-baracuda-driver        = { version = "0.0.1-alpha.69" }
-baracuda-runtime       = { version = "0.0.1-alpha.69" }
-baracuda-cublas-sys    = { version = "0.0.1-alpha.69" }
-baracuda-cublas        = { version = "0.0.1-alpha.69" }
-baracuda-cudnn-sys     = { version = "0.0.1-alpha.69" }
-baracuda-cudnn         = { version = "0.0.1-alpha.69", features = ["half-crate"] }
-baracuda-curand-sys    = { version = "0.0.1-alpha.69" }
-baracuda-curand        = { version = "0.0.1-alpha.69" }
-baracuda-nvrtc-sys     = { version = "0.0.1-alpha.69" }
-baracuda-nvrtc         = { version = "0.0.1-alpha.69" }
-baracuda-nccl-sys      = { version = "0.0.1-alpha.69" }
-baracuda-nccl          = { version = "0.0.1-alpha.69", features = ["half-crate"] }
-baracuda-cutlass       = { version = "0.0.1-alpha.69" }
+baracuda-types         = { version = "0.0.1-alpha.72", features = ["half-crate", "f8-crate"] }
+baracuda-core          = { version = "0.0.1-alpha.72" }
+baracuda-cuda-sys      = { version = "0.0.1-alpha.72" }
+baracuda-driver        = { version = "0.0.1-alpha.72" }
+baracuda-runtime       = { version = "0.0.1-alpha.72" }
+baracuda-cublas-sys    = { version = "0.0.1-alpha.72" }
+baracuda-cublas        = { version = "0.0.1-alpha.72" }
+baracuda-cudnn-sys     = { version = "0.0.1-alpha.72" }
+baracuda-cudnn         = { version = "0.0.1-alpha.72", features = ["half-crate"] }
+baracuda-curand-sys    = { version = "0.0.1-alpha.72" }
+baracuda-curand        = { version = "0.0.1-alpha.72" }
+baracuda-nvrtc-sys     = { version = "0.0.1-alpha.72" }
+baracuda-nvrtc         = { version = "0.0.1-alpha.72" }
+baracuda-nccl-sys      = { version = "0.0.1-alpha.72" }
+baracuda-nccl          = { version = "0.0.1-alpha.72", features = ["half-crate"] }
+baracuda-cutlass       = { version = "0.0.1-alpha.72" }
 # baracuda alpha.26 — new ML kernel facade. Fuel uses `baracuda-kernels-sys`
 # (raw extern "C") rather than the safe `baracuda-kernels` Plan-based wrapper
 # so each kernel becomes its own KernelRef in Fuel's binding table — the
 # safe layer's Plan-cached dispatch isn't compatible with Fuel's
 # per-decision-point alternatives composition.
-baracuda-kernels-types = { version = "0.0.1-alpha.69" }
-baracuda-kernels-sys   = { version = "0.0.1-alpha.69", features = [
+baracuda-kernels-types = { version = "0.0.1-alpha.72" }
+baracuda-kernels-sys   = { version = "0.0.1-alpha.72", features = [
     "cudnn",
     "sm89",
     # Phase 48 (Consolidation B) 4-bit weight-only GEMM families.
@@ -301,7 +320,6 @@ zip = { version = "8.5.0", default-features = false }
 objc2 = { version = "0.6" }
 objc2-metal = { version = "0.3.1" }
 objc2-foundation = { version = "0.3.1" }
-cudaforge = "0.1"
 prost = "0.13"
 prost-build = "0.13"
 rstest = "0.23"

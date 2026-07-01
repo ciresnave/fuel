@@ -80,8 +80,8 @@ pub use cache::*;
 pub use oracle::ProfileJudgeOracle;
 
 use crate::probe::ProbeReport;
-use fuel_core_types::probe::{BackendId, DeviceDescriptor};
-use fuel_core_types::{DType, Result, Shape};
+use fuel_ir::probe::{BackendId, DeviceDescriptor};
+use fuel_ir::{DType, Result, Shape};
 use fuel_correctness_fixtures::{
     validate_against_fixture, CorrectnessDrift, CorrectnessFixture, FixtureFile,
     FIXTURE_FILE_VERSION,
@@ -97,7 +97,7 @@ use std::sync::{Arc, RwLock};
 // on `fuel-core`). All existing callers `use fuel_core::judge::*`
 // keep working — `ProfileReport::save` / `ProfileReport::load` are
 // inherent methods on the moved type.
-pub use fuel_core_types::dispatch::{
+pub use fuel_ir::dispatch::{
     OpKind, ProfileEntry, ProfileReport, SizeClass, PROFILE_REPORT_VERSION,
 };
 
@@ -931,7 +931,7 @@ struct DirectCallAlternative {
 struct PreparedDirectCall {
     inputs:    Vec<Arc<RwLock<fuel_memory::Storage>>>,
     output:    Arc<RwLock<fuel_memory::Storage>>,
-    layouts:   Vec<fuel_core_types::Layout>,
+    layouts:   Vec<fuel_ir::Layout>,
     op_params: fuel_dispatch::kernel::OpParams,
 }
 
@@ -1079,7 +1079,7 @@ fn canonical_binding_dtypes_for(op: OpKind) -> Option<Vec<DType>> {
 /// realizer-measured primary alternative (consensus needs aligned
 /// inputs across CellRuns).
 fn prepare_direct_call_inputs(op: OpKind, size: &OpSize) -> Option<PreparedDirectCall> {
-    use fuel_core_types::Layout;
+    use fuel_ir::Layout;
     use fuel_cpu_backend::CpuStorageBytes;
     use fuel_dispatch::kernel::OpParams;
     use fuel_memory::{BackendStorage, Storage};
@@ -1898,7 +1898,7 @@ mod tests {
             compute_capability: None,
             driver_version: String::new(),
             total_memory_bytes: 0,
-            location: fuel_core_types::DeviceLocation::Cpu,
+            location: fuel_ir::DeviceLocation::Cpu,
         };
         let op = OpKind::AddElementwise;
         let size = OpSize::Elementwise(8);
@@ -2131,7 +2131,7 @@ mod tests {
         // expanded OpKind coverage. The route picker can now pick
         // among many more (op, size_class) cells than the original
         // matmul + add report supported.
-        use fuel_core_types::dispatch::{Criterion, DispatchTable};
+        use fuel_ir::dispatch::{Criterion, DispatchTable};
 
         let probe = ProbeReport::probe_all();
         let judge = Judge {

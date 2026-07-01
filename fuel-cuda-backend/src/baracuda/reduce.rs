@@ -31,7 +31,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{DType, Layout, Result, Shape};
+use fuel_ir::{DType, Layout, Result, Shape};
 
 use crate::byte_storage::CudaStorageBytes;
 use crate::error::CudaError;
@@ -102,7 +102,7 @@ fn reduce_multi_axis(
     // remaining axis indices stay stable.
     for &axis in dims_sorted.iter().rev() {
         if axis >= current_shape.len() {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "{op_label}: reduce axis {axis} out of bounds for shape {current_shape:?}",
             ))
             .bt());
@@ -126,7 +126,7 @@ fn reduce_multi_axis(
         let mut shape_i32: Vec<i32> = Vec::with_capacity(out_shape.len());
         for (i, &d) in out_shape.iter().enumerate() {
             shape_i32.push(i32::try_from(d).map_err(|_| {
-                fuel_core_types::Error::cuda(CudaError::BaracudaShapeOverflow {
+                fuel_ir::Error::cuda(CudaError::BaracudaShapeOverflow {
                     op: op_label,
                     dim_index: i,
                     dim_value: d,
@@ -161,7 +161,6 @@ fn reduce_multi_axis(
             )
         };
         check(status, op_label)?;
-        device.synchronize()?;
 
         // Output of this round becomes input to the next.
         let bytes = out_bytes;

@@ -14,7 +14,7 @@
 //! added in a separate pass when there is a concrete validation need.
 
 use crate::RefTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use num_traits::Float;
 
 /// Internal helper: build a tensor of type `T` from an `f64` constant. Used

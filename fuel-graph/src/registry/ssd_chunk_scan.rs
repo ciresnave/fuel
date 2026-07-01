@@ -66,8 +66,8 @@ use crate::registry::{
     PatternMatch, SubgraphPattern,
 };
 use crate::{Graph, NodeId};
-use fuel_core_types::storage::OutputViewSpec;
-use fuel_core_types::{DType, Layout, Shape};
+use fuel_ir::storage::OutputViewSpec;
+use fuel_ir::{DType, Layout, Shape};
 
 /// Metadata-side registry entry for SsdChunkScan. Multi-output (item
 /// 3 consumer migration, 2026-06-01): slot 0 = `y`, slot 1 =

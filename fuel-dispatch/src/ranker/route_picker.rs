@@ -55,15 +55,18 @@
 
 use std::sync::Arc;
 
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::DeviceLocation;
+use fuel_ir::dispatch::{OpKind, SizeClass};
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, DeviceLocation};
 use fuel_graph::{branches_in_topo_order, Graph, NodeId, PickedRoute};
 
 use crate::fused::{CostEstimate, PrecisionGuarantee};
-use crate::kernel::{KernelCaps, OpParams};
-use crate::plan::{default_device_for, ExecutionPlan};
+use crate::kernel::{KernelBindingTable, KernelCaps, OpParams};
+use crate::pipelined::{build_lookup_dtypes, op_to_op_kind};
+use crate::plan::default_device_for;
 use crate::ranker::{
-    AlternativeSet, BackendRuntimeLookup, Candidate, RuntimeSelector,
+    enumerate_candidates, AlternativeSet, BackendRuntimeLookup, Candidate,
+    DecisionContext, RuntimeSelector,
 };
 
 /// Bounded lookahead for adversarially-coupled branches (06-runtime
@@ -156,14 +159,15 @@ impl RouteCache {
     /// live telemetry fingerprint is unchanged. Re-resolves (and updates
     /// the cache) on the first call or a meaningful telemetry delta.
     ///
-    /// `plan` supplies the per-arm cost/context; `selector` is the
-    /// production runtime selector; `lookup` is the live per-tier
-    /// free-memory closure (`None` ⇒ no pressure signal ⇒ arm-0).
+    /// `bindings` is the runtime kernel registry (the per-arm candidates are
+    /// re-enumerated from it + the graph); `selector` is the production runtime
+    /// selector; `lookup` is the live per-tier free-memory closure (`None` ⇒ no
+    /// pressure signal ⇒ arm-0).
     pub fn resolve(
         &mut self,
         graph: &Graph,
         roots: &[NodeId],
-        plan: &ExecutionPlan,
+        bindings: &KernelBindingTable,
         selector: &dyn RuntimeSelector,
         lookup: Option<&BackendRuntimeLookup>,
     ) -> PickedRoute {
@@ -177,7 +181,7 @@ impl RouteCache {
             }
         }
 
-        let route = pick_route(graph, roots, plan, selector, lookup);
+        let route = pick_route(graph, roots, bindings, selector, lookup);
         self.resolves += 1;
         self.cached = Some((fingerprint, route.clone()));
         route
@@ -220,7 +224,7 @@ fn route_backends(graph: &Graph, roots: &[NodeId]) -> Vec<BackendId> {
 pub fn pick_route(
     graph: &Graph,
     roots: &[NodeId],
-    plan: &ExecutionPlan,
+    bindings: &KernelBindingTable,
     selector: &dyn RuntimeSelector,
     lookup: Option<&BackendRuntimeLookup>,
 ) -> PickedRoute {
@@ -236,21 +240,49 @@ pub fn pick_route(
     let branches = branches_in_topo_order(graph, roots);
 
     for branch in branches {
-        let arms = graph.node(branch).inputs.clone();
-        if arms.len() < 2 {
-            // A single-arm (or zero-arm) branch has no decision — arm 0.
-            continue;
-        }
-        let chosen = pick_arm(graph, &arms, plan, selector);
         // Only record a non-arm-0 pick; arm 0 is the default in
         // `lower_picked_route`, so keeping the route minimal makes the
         // "no pressure ⇒ empty route ⇒ Phase B behavior" contract direct.
+        let chosen = resolve_branch(graph, branch, bindings, selector);
         if chosen != 0 {
             picked.insert(branch, chosen);
         }
     }
 
     picked
+}
+
+/// Resolve **one** `Op::Branch` to its chosen arm index — the body of
+/// [`pick_route`]'s per-branch loop, lifted out so the **streaming
+/// run-walk** (Step E Phase C, PR C1) can resolve branches **lazily, as
+/// the frontier reaches each one**, rather than resolving the whole route
+/// up front (06-runtime §"selecting arms by live device load … per-
+/// decision-point during the dispatch walk").
+///
+/// This is the SINGLE arm-decision primitive: [`pick_route`] (the eager
+/// lane — [`RouteCache`] + the route-picker tests) calls it in
+/// topological order over every branch; the streaming lowering
+/// ([`fuel_graph::lower_picked_route_streaming`]) calls it one branch at a
+/// time at the branch's arm-entry boundary. Because it consults the **same
+/// [`RuntimeSelector`]** either way — and the production VRAM-pressure
+/// chain reads only free-memory state (not walk progress) — the lazy and
+/// eager resolutions are byte-identical on every input. C1 changes *when*
+/// a branch resolves, never *which* arm it picks; the load signal that
+/// will make the moment matter is C2.
+///
+/// A single-arm (or zero-arm) branch has no decision — returns arm 0
+/// (`lower_picked_route`'s default), so it never enters the route map.
+pub fn resolve_branch(
+    graph: &Graph,
+    branch: NodeId,
+    bindings: &KernelBindingTable,
+    selector: &dyn RuntimeSelector,
+) -> usize {
+    let arms = graph.node(branch).inputs.clone();
+    if arms.len() < 2 {
+        return 0;
+    }
+    pick_arm(graph, &arms, bindings, selector)
 }
 
 /// Choose one arm index for a single branch. Builds a per-arm
@@ -261,30 +293,31 @@ pub fn pick_route(
 fn pick_arm(
     graph: &Graph,
     arms: &[NodeId],
-    plan: &ExecutionPlan,
+    bindings: &KernelBindingTable,
     selector: &dyn RuntimeSelector,
 ) -> usize {
-    // The fork node = arm-0's exit. Its plan `AlternativeSet` (when
-    // present) carries the real per-placement Candidates the ranker
-    // produced + the DecisionContext (op/dtype/size_class) the
-    // Judge-aware rank keys on. We mirror its candidates into a per-arm
-    // set in ARM ORDER so the picked index maps straight back to an arm.
+    // Step D: re-derive the fork's candidate set from the graph + the runtime
+    // binding registry (was the cached `plan.alternatives(fork)`). The fork
+    // node = arm-0's exit; enumerating its `(op, dtypes)` across the arms'
+    // placements reproduces the per-placement Candidates + the DecisionContext
+    // the selector's VRAM-pressure guard + Judge-aware rank read. We mirror
+    // them into a per-arm set in ARM ORDER so the picked index maps straight
+    // back to an arm.
     let fork = arms[0];
-    let plan_set = plan.alternatives(fork);
+    let fork_set = enumerate_fork_set(graph, fork, arms, bindings);
 
     let mut arm_set = AlternativeSet::empty();
     for &arm in arms {
         let backend = graph.target_backend(arm).unwrap_or(BackendId::Cpu);
         let device = default_device_for(backend);
-        let candidate = plan_set
-            .and_then(|set| candidate_for_placement(set, backend, device))
+        let candidate = candidate_for_placement(&fork_set, backend, device)
             .cloned()
             .unwrap_or_else(|| synthetic_candidate(backend, device));
         arm_set.push(candidate);
     }
     // Carry the fork's decision context so the Judge-aware rank leg can
     // re-query measurements per arm.
-    if let Some(ctx) = plan_set.and_then(|s| s.context()) {
+    if let Some(ctx) = fork_set.context() {
         arm_set.set_context(*ctx);
     }
 
@@ -295,6 +328,67 @@ fn pick_arm(
         Some(picked) => arm_index_of(&arm_set, picked),
         None => 0,
     }
+}
+
+/// Re-derive the fork node's candidate set from the graph + the runtime
+/// binding registry — the dispatch-time replacement for the cached
+/// `ExecutionPlan::alternatives(fork)` (Step D). Enumerates the fork's
+/// `(op, dtypes)` across the arms' `(backend, device)` placements and stamps
+/// the fork's [`DecisionContext`] so the selector's Judge leg keys on the same
+/// `(op, dtype, size_class)` triple the planner used. A non-kernel fork (no
+/// `OpKind` mapping) yields an empty set ⇒ the per-arm loop falls back to
+/// [`synthetic_candidate`], preserving the prior behavior when the plan
+/// carried no entry for the fork. Layer-1 cost only (the candidates' default
+/// `static_cost`); the selector's own Judge leg supplies the Layer-2
+/// measurement, so no cost composition is needed here.
+fn enumerate_fork_set(
+    graph: &Graph,
+    fork: NodeId,
+    arms: &[NodeId],
+    bindings: &KernelBindingTable,
+) -> AlternativeSet {
+    let node = graph.node(fork);
+    let Some(op_kind) = op_to_op_kind(&node.op) else {
+        return AlternativeSet::empty();
+    };
+    let dtypes = build_lookup_dtypes(graph, node);
+    let placements: Vec<(BackendId, DeviceLocation)> = arms
+        .iter()
+        .map(|&arm| {
+            let backend = graph.target_backend(arm).unwrap_or(BackendId::Cpu);
+            (backend, default_device_for(backend))
+        })
+        .collect();
+    // `op_params` is unread by the selector (it ranks on backend/device/cost/
+    // kernel_source), so `None` suffices — the chosen arm is lowered to real
+    // runs and dispatched through the normal binding-table path regardless.
+    let mut set =
+        enumerate_candidates(op_kind, &dtypes, &placements, &OpParams::None, bindings);
+    if let Some(ctx) = fork_decision_context(graph, node, op_kind, &dtypes) {
+        set.set_context(ctx);
+    }
+    set
+}
+
+/// The fork's [`DecisionContext`] — `(op, principal dtype, size class of the
+/// first input)`, the triple the Judge keys measurements on. Mirrors
+/// `compile_plan`'s stamping (plan.rs) exactly so dispatch-time re-derivation
+/// hits the same Judge entries.
+fn fork_decision_context(
+    graph: &Graph,
+    node: &fuel_graph::Node,
+    op_kind: OpKind,
+    dtypes: &[DType],
+) -> Option<DecisionContext> {
+    let &principal_dtype = dtypes.first()?;
+    let size_class = node
+        .inputs
+        .first()
+        .map(|&input_id| {
+            SizeClass::from_elem_count(graph.node(input_id).shape.elem_count())
+        })
+        .unwrap_or(SizeClass(0));
+    Some(DecisionContext { op: op_kind, principal_dtype, size_class })
 }
 
 /// Find a plan candidate matching `(backend, device)` (the arm's real
@@ -358,22 +452,21 @@ fn synthetic_candidate(backend: BackendId, device: DeviceLocation) -> Candidate 
 fn noop_kernel(
     _i: &[Arc<std::sync::RwLock<fuel_memory::Storage>>],
     _o: &mut [Arc<std::sync::RwLock<fuel_memory::Storage>>],
-    _l: &[fuel_core_types::Layout],
+    _l: &[fuel_ir::Layout],
     _p: &OpParams,
-) -> fuel_core_types::Result<()> {
+) -> fuel_ir::Result<()> {
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fused::CostEstimate;
     use crate::ranker::{
         BackendRuntimeHandle, ChainedSelector, WinnerSelector,
     };
-    use fuel_core_types::backend::BackendRuntime;
+    use fuel_backend_contract::backend::BackendRuntime;
     use fuel_graph::{Node, Op};
-    use fuel_core_types::{DType, Shape};
+    use fuel_ir::{DType, Shape};
 
     fn f32_node(g: &mut Graph, op: Op, inputs: Vec<NodeId>) -> NodeId {
         g.push(Node {
@@ -414,43 +507,22 @@ mod tests {
         (g, branch, arm0, arm1, post)
     }
 
-    /// A plan `AlternativeSet` for the fork node with two placements:
-    /// arm-0 backend at `cost0` ns (the winner), arm-1 backend at
-    /// `cost1` ns.
-    fn plan_with_fork_set(
-        fork: NodeId,
-        a0: (BackendId, DeviceLocation, u64),
-        a1: (BackendId, DeviceLocation, u64),
-    ) -> ExecutionPlan {
-        let mut set = AlternativeSet::empty();
-        set.push(make_candidate(a0.0, a0.1, a0.2));
-        set.push(make_candidate(a1.0, a1.1, a1.2));
-        let mut plan = ExecutionPlan::empty();
-        plan.alternatives.insert(fork, set);
-        plan
-    }
-
-    fn make_candidate(
-        backend: BackendId,
-        device: DeviceLocation,
-        cost_ns: u64,
-    ) -> Candidate {
-        Candidate {
-            kernel: noop_kernel,
-            caps: KernelCaps::empty(),
-            backend,
-            device,
-            precision: PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            static_cost: CostEstimate {
-                flops: cost_ns,
-                bytes_moved: cost_ns,
-                kernel_overhead_ns: 0,
-            },
-            inbound_transfer_ns: 0,
-            op_params: OpParams::None,
-            coupling: Vec::new(),
-            kernel_source: "test",
+    /// A binding table with the diamond's fork op (`Op::Silu` ⇒
+    /// `SiluElementwise`) registered at both arm backends, so `pick_arm`
+    /// re-enumerates a real candidate per placement (Step D — was a hand-built
+    /// `ExecutionPlan`). No-op kernels: the picker reads only placement
+    /// metadata + `kernel_source`, never invoking the pointer.
+    fn diamond_bindings() -> KernelBindingTable {
+        let mut t = KernelBindingTable::new();
+        for backend in [BackendId::Cuda, BackendId::Cpu] {
+            t.register(
+                OpKind::SiluElementwise,
+                &[DType::F32, DType::F32],
+                backend,
+                noop_kernel,
+            );
         }
+        t
     }
 
     struct MockRuntime {
@@ -484,17 +556,13 @@ mod tests {
     /// production `ChainedSelector` with no signals.
     #[test]
     fn no_telemetry_picks_arm0_empty_route() {
-        let (g, _branch, fork, _arm1, post) =
+        let (g, _branch, _fork, _arm1, post) =
             diamond(BackendId::Cuda, BackendId::Cpu);
-        let plan = plan_with_fork_set(
-            fork,
-            (BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }, 100),
-            (BackendId::Cpu, DeviceLocation::Cpu, 200),
-        );
+        let bindings = diamond_bindings();
 
         // Bare winner selector: always arm 0.
         let winner = WinnerSelector;
-        let route = pick_route(&g, &[post], &plan, &winner, None);
+        let route = pick_route(&g, &[post], &bindings, &winner, None);
         assert!(
             route.is_empty(),
             "no telemetry ⇒ arm-0 everywhere ⇒ empty route; got {route:?}",
@@ -503,7 +571,7 @@ mod tests {
         // Production chained selector with NO signals (no judge, no
         // lookup) degrades to the static winner = arm 0.
         let chained = ChainedSelector::with_default_estimator(None, None);
-        let route = pick_route(&g, &[post], &plan, &chained, None);
+        let route = pick_route(&g, &[post], &bindings, &chained, None);
         assert!(
             route.is_empty(),
             "ChainedSelector with no signals ⇒ arm-0 everywhere; got {route:?}",
@@ -515,18 +583,14 @@ mod tests {
     /// the picker takes the host-RAM (CPU) arm instead — arm 1.
     #[test]
     fn vram_pressure_picks_host_ram_arm() {
-        let (g, branch, fork, _arm1, post) =
+        let (g, branch, _fork, _arm1, post) =
             diamond(BackendId::Cuda, BackendId::Cpu);
-        // Both placements cost the same kernel time; the only signal is
+        // Both placements resolve to the same no-op kernel; the only signal is
         // memory pressure, so the guard alone must flip the pick.
-        let plan = plan_with_fork_set(
-            fork,
-            (BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }, 100),
-            (BackendId::Cpu, DeviceLocation::Cpu, 100),
-        );
+        let bindings = diamond_bindings();
 
         // CUDA has 1 byte free of 10_000 → WontFit for the default
-        // bytes_moved=100 estimate; CPU has ample room → Comfortable.
+        // bytes_moved estimate; CPU has ample room → Comfortable.
         let lookup = lookup_for(vec![
             (BackendId::Cuda, Some(1), Some(10_000)),
             (BackendId::Cpu, Some(8_000), Some(10_000)),
@@ -534,7 +598,7 @@ mod tests {
         let chained =
             ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
 
-        let route = pick_route(&g, &[post], &plan, &chained, Some(&lookup));
+        let route = pick_route(&g, &[post], &bindings, &chained, Some(&lookup));
         assert_eq!(
             route.get(&branch).copied(),
             Some(1),
@@ -590,18 +654,9 @@ mod tests {
             "coupled branches resolve upstream-first in topo order",
         );
 
-        // Plans for both forks: GPU winner + CPU runner-up, same cost.
-        let mut plan = ExecutionPlan::empty();
-        for fork in [a0_1, a0_2] {
-            let mut set = AlternativeSet::empty();
-            set.push(make_candidate(
-                BackendId::Cuda,
-                DeviceLocation::Cuda { gpu_id: 0 },
-                100,
-            ));
-            set.push(make_candidate(BackendId::Cpu, DeviceLocation::Cpu, 100));
-            plan.alternatives.insert(fork, set);
-        }
+        // Both forks (`Op::Silu`) re-enumerate from the same registered
+        // bindings (Silu at both arm backends).
+        let bindings = diamond_bindings();
 
         // GPU under pressure ⇒ both branches pick the CPU arm (arm 1).
         let lookup = lookup_for(vec![
@@ -610,7 +665,7 @@ mod tests {
         ]);
         let chained =
             ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
-        let route = pick_route(&g, &[post], &plan, &chained, Some(&lookup));
+        let route = pick_route(&g, &[post], &bindings, &chained, Some(&lookup));
 
         assert_eq!(route.get(&branch1).copied(), Some(1), "branch1 → CPU arm");
         assert_eq!(route.get(&branch2).copied(), Some(1), "branch2 → CPU arm");
@@ -622,13 +677,9 @@ mod tests {
     /// route.
     #[test]
     fn route_cached_and_reresolved_on_telemetry_delta() {
-        let (g, branch, fork, _arm1, post) =
+        let (g, branch, _fork, _arm1, post) =
             diamond(BackendId::Cuda, BackendId::Cpu);
-        let plan = plan_with_fork_set(
-            fork,
-            (BackendId::Cuda, DeviceLocation::Cuda { gpu_id: 0 }, 100),
-            (BackendId::Cpu, DeviceLocation::Cpu, 100),
-        );
+        let bindings = diamond_bindings();
 
         // Start comfortable: both backends have ample free memory.
         let comfy = lookup_for(vec![
@@ -639,13 +690,13 @@ mod tests {
             ChainedSelector::with_default_estimator(None, Some(comfy.clone()));
 
         let mut cache = RouteCache::new();
-        let r1 = cache.resolve(&g, &[post], &plan, &chained_comfy, Some(&comfy));
+        let r1 = cache.resolve(&g, &[post], &bindings, &chained_comfy, Some(&comfy));
         assert!(r1.is_empty(), "comfortable ⇒ arm-0 (winner) route");
         assert_eq!(cache.resolves, 1, "first resolve populates the cache");
         assert_eq!(cache.hits, 0);
 
         // Same telemetry ⇒ cache hit, no re-resolve.
-        let r2 = cache.resolve(&g, &[post], &plan, &chained_comfy, Some(&comfy));
+        let r2 = cache.resolve(&g, &[post], &bindings, &chained_comfy, Some(&comfy));
         assert_eq!(r2, r1, "stable telemetry reuses the cached route");
         assert_eq!(cache.resolves, 1, "no re-resolve on a stable fingerprint");
         assert_eq!(cache.hits, 1, "stable telemetry is a cache hit");
@@ -663,7 +714,7 @@ mod tests {
         let r3 = cache.resolve(
             &g,
             &[post],
-            &plan,
+            &bindings,
             &chained_pressured,
             Some(&pressured),
         );
@@ -685,9 +736,142 @@ mod tests {
         let a = f32_node(&mut g, Op::Const, vec![]);
         let b = f32_node(&mut g, Op::Relu, vec![a]);
         let c = f32_node(&mut g, Op::Tanh, vec![b]);
-        let plan = ExecutionPlan::empty();
+        let bindings = KernelBindingTable::new();
         let winner = WinnerSelector;
-        let route = pick_route(&g, &[c], &plan, &winner, None);
+        let route = pick_route(&g, &[c], &bindings, &winner, None);
         assert!(route.is_empty(), "no branches ⇒ empty route (picker no-op)");
+    }
+
+    /// Step D: the fork's candidate set is re-enumerated from the runtime
+    /// registry (not a cached plan). With the fork op registered at both arm
+    /// backends, the set carries a real candidate per placement + the fork's
+    /// `DecisionContext` (so the Judge leg keys on the same triple the planner
+    /// used).
+    #[test]
+    fn enumerate_fork_set_pulls_registered_candidates() {
+        let (g, _branch, fork, arm1, _post) =
+            diamond(BackendId::Cuda, BackendId::Cpu);
+        let bindings = diamond_bindings();
+        let set = enumerate_fork_set(&g, fork, &[fork, arm1], &bindings);
+
+        assert_eq!(
+            set.alternatives().len(),
+            2,
+            "Silu registered at both arm backends ⇒ one candidate per placement",
+        );
+        assert!(set.alternatives().iter().any(|c| c.backend == BackendId::Cuda));
+        assert!(set.alternatives().iter().any(|c| c.backend == BackendId::Cpu));
+        let ctx = set.context().expect("fork DecisionContext stamped");
+        assert_eq!(ctx.op, OpKind::SiluElementwise);
+        assert_eq!(ctx.principal_dtype, DType::F32);
+    }
+
+    /// A fork op with no registered binding falls back to placement-only
+    /// synthetic candidates — they still carry each arm's `(backend, device)`,
+    /// so the VRAM-pressure guard still flips to the CPU arm. Preserves the
+    /// prior no-plan-entry behavior.
+    #[test]
+    fn synthetic_fallback_when_fork_op_unregistered() {
+        let (g, branch, _fork, _arm1, post) =
+            diamond(BackendId::Cuda, BackendId::Cpu);
+        let empty = KernelBindingTable::new();
+        let lookup = lookup_for(vec![
+            (BackendId::Cuda, Some(1), Some(10_000)),
+            (BackendId::Cpu, Some(8_000), Some(10_000)),
+        ]);
+        let chained =
+            ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
+        let route = pick_route(&g, &[post], &empty, &chained, Some(&lookup));
+        assert_eq!(
+            route.get(&branch).copied(),
+            Some(1),
+            "no binding ⇒ synthetic placement candidates ⇒ guard still picks CPU",
+        );
+    }
+
+    // ===== Step E Phase C / C2: live-load arm re-pick (the headline gate) =====
+
+    /// Silu bindings at CUDA + Vulkan (the two streaming arms of the
+    /// load-gate diamond). No-op kernels — the picker reads only placement
+    /// metadata for the arm decision.
+    fn diamond_bindings_cuda_vulkan() -> KernelBindingTable {
+        let mut t = KernelBindingTable::new();
+        for backend in [BackendId::Cuda, BackendId::Vulkan] {
+            t.register(
+                OpKind::SiluElementwise,
+                &[DType::F32, DType::F32],
+                backend,
+                noop_kernel,
+            );
+        }
+        t
+    }
+
+    /// THE C2 HEADLINE GATE (selection logic, CPU — no GPU needed). A
+    /// 2-device branched graph (arm-0 on CUDA, arm-1 on Vulkan, BOTH
+    /// VRAM-fit) with a FAKE `BackendStreams` lookup reporting HIGH
+    /// pending_work_count on arm-0's device (CUDA, saturated) and LOW on
+    /// arm-1's (Vulkan, idle): the load-aware `ChainedSelector` re-picks
+    /// the UNLOADED arm-1, and the chosen arm's `target_backend` is the
+    /// unloaded device (Vulkan). Mirrors `vram_pressure_picks_host_ram_arm`
+    /// but with a LOAD signal instead of a memory signal — the live-load
+    /// re-pick that is the whole point of Step E, proven deterministically
+    /// with a fake signal (the real signal is B1, already verified).
+    #[test]
+    fn load_pressure_picks_unloaded_arm() {
+        let (g, branch, _arm0, arm1, post) =
+            diamond(BackendId::Cuda, BackendId::Vulkan);
+        let bindings = diamond_bindings_cuda_vulkan();
+
+        // Both arms VRAM-fit (ample free / total). CUDA saturated (4 in
+        // flight / 1 slot), Vulkan idle (0). The ONLY differentiator is
+        // load — VRAM ties, cost ties (no-op kernels, same static cost),
+        // so the load leg alone must flip the pick to arm-1.
+        let lookup = crate::ranker::mock_combined_lookup(vec![
+            (BackendId::Cuda, Some(10_000), Some(10_000), Some(4), 1),
+            (BackendId::Vulkan, Some(10_000), Some(10_000), Some(0), 1),
+        ]);
+        let chained =
+            ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
+
+        let route = pick_route(&g, &[post], &bindings, &chained, Some(&lookup));
+        assert_eq!(
+            route.get(&branch).copied(),
+            Some(1),
+            "under simulated CUDA saturation the picker takes the UNLOADED \
+             Vulkan arm (arm-1); route={route:?}",
+        );
+        // The chosen arm's node lands on the unloaded device.
+        assert_eq!(
+            g.target_backend(arm1),
+            Some(BackendId::Vulkan),
+            "the picked arm's target_backend is the unloaded device",
+        );
+    }
+
+    /// No-load mirror of the headline gate (the degenerate-fallback): the
+    /// SAME 2-device diamond with BOTH devices reporting 0 in flight ⇒
+    /// every load_tier is 0 ⇒ the route is arm-0 everywhere ⇒ empty route,
+    /// byte-identical to `no_telemetry_picks_arm0_empty_route`. Load
+    /// changes nothing unless devices genuinely contend.
+    #[test]
+    fn no_load_picks_arm0_empty_route() {
+        let (g, _branch, _arm0, _arm1, post) =
+            diamond(BackendId::Cuda, BackendId::Vulkan);
+        let bindings = diamond_bindings_cuda_vulkan();
+
+        // Both VRAM-fit, both idle (0 in flight) → no load signal anywhere.
+        let lookup = crate::ranker::mock_combined_lookup(vec![
+            (BackendId::Cuda, Some(10_000), Some(10_000), Some(0), 1),
+            (BackendId::Vulkan, Some(10_000), Some(10_000), Some(0), 1),
+        ]);
+        let chained =
+            ChainedSelector::with_default_estimator(None, Some(lookup.clone()));
+
+        let route = pick_route(&g, &[post], &bindings, &chained, Some(&lookup));
+        assert!(
+            route.is_empty(),
+            "no load anywhere ⇒ arm-0 everywhere ⇒ empty route; got {route:?}",
+        );
     }
 }

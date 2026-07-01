@@ -11,7 +11,7 @@
 //! - **`VulkanStorageBytes`** (this module): holds the same
 //!   `StorageBacking` + `tier` plus a single `len_bytes` field.
 //!   Dtype lives on the [`fuel_memory::Storage`] wrapper, not
-//!   here. Implements [`fuel_core_types::backend::BackendStorage`].
+//!   here. Implements [`fuel_backend_contract::backend::BackendStorage`].
 //!
 //! Per-op kernels migrate during Phase B/C. The eviction / fault-
 //! back paths in [`crate::residency`] continue to operate on the
@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use fuel_core_types::backend::BackendStorage;
+use fuel_backend_contract::backend::BackendStorage;
 use vulkane::safe::Buffer;
 
 use crate::{StorageBacking, Tier, VulkanBuffer};

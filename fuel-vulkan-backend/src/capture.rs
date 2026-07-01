@@ -66,9 +66,9 @@ impl VulkanBackend {
     /// / `dispatch` calls onto it. A dedicated command pool is allocated
     /// for the captured buffer so its lifetime is independent of the
     /// backend's batching `Recorder`.
-    pub fn capture_run<F>(&self, record: F) -> fuel_core_types::Result<CapturedRun>
+    pub fn capture_run<F>(&self, record: F) -> fuel_ir::Result<CapturedRun>
     where
-        F: FnOnce(&mut CommandBufferRecording<'_>) -> fuel_core_types::Result<()>,
+        F: FnOnce(&mut CommandBufferRecording<'_>) -> fuel_ir::Result<()>,
     {
         let pool = CommandPool::new(&self.device, self.queue_family).map_err(vk_err)?;
         let cb = record_into(&pool, record)?;
@@ -77,9 +77,9 @@ impl VulkanBackend {
 }
 
 /// Allocate a primary command buffer from `pool` and record `f` into it.
-fn record_into<F>(pool: &CommandPool, f: F) -> fuel_core_types::Result<CommandBuffer>
+fn record_into<F>(pool: &CommandPool, f: F) -> fuel_ir::Result<CommandBuffer>
 where
-    F: FnOnce(&mut CommandBufferRecording<'_>) -> fuel_core_types::Result<()>,
+    F: FnOnce(&mut CommandBufferRecording<'_>) -> fuel_ir::Result<()>,
 {
     let mut cb = pool.allocate_primary().map_err(vk_err)?;
     {
@@ -94,7 +94,7 @@ impl CapturedRun {
     /// Replay the captured dispatches: submit the command buffer and block
     /// until it completes. Reads whatever buffers the bound descriptor
     /// sets currently point at.
-    pub fn replay(&self, backend: &VulkanBackend) -> fuel_core_types::Result<()> {
+    pub fn replay(&self, backend: &VulkanBackend) -> fuel_ir::Result<()> {
         let fence = Fence::new(&backend.device).map_err(vk_err)?;
         backend
             .queue
@@ -109,9 +109,9 @@ impl CapturedRun {
     /// sequence (same pipeline + workgroups), binding a descriptor set
     /// that points at the new buffers. After this returns the run is ready
     /// to [`replay`](CapturedRun::replay) against the new operands.
-    pub fn rebind<F>(&mut self, _backend: &VulkanBackend, record: F) -> fuel_core_types::Result<()>
+    pub fn rebind<F>(&mut self, _backend: &VulkanBackend, record: F) -> fuel_ir::Result<()>
     where
-        F: FnOnce(&mut CommandBufferRecording<'_>) -> fuel_core_types::Result<()>,
+        F: FnOnce(&mut CommandBufferRecording<'_>) -> fuel_ir::Result<()>,
     {
         // Allocate a fresh command buffer from the existing pool and
         // record the re-targeted dispatches; the previous buffer drops
@@ -124,7 +124,7 @@ impl CapturedRun {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::{Layout, Shape};
+    use fuel_ir::{Layout, Shape};
 
     fn backend_or_skip() -> Option<VulkanBackend> {
         match VulkanBackend::new() {

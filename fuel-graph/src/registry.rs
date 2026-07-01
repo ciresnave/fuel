@@ -27,8 +27,8 @@
 //! - Step 5: drop the per-fused-op `Op` variants once nothing emits them.
 
 use crate::{Graph, NodeId};
-use fuel_core_types::storage::OutputViewSpec;
-use fuel_core_types::{DType, DynScalar, Shape};
+use fuel_ir::storage::OutputViewSpec;
+use fuel_ir::{DType, DynScalar, Shape};
 use std::collections::HashMap;
 
 pub mod causal_conv1d;
@@ -125,7 +125,7 @@ pub struct FusedOpEntry {
     /// `None` for single-output ops (the default) — the op produces
     /// one logical output whose shape/dtype come from `shape_rule`
     /// and `dtype_rule`, and the realized storage is a plain
-    /// non-bundled [`fuel_core_types::Storage`].
+    /// non-bundled [`fuel_backend_contract::Storage`].
     ///
     /// `Some(fn)` for multi-output ops: returns the per-slot specs
     /// from input shapes + dtypes + params. The Graph and the realized
@@ -993,7 +993,7 @@ impl FusedOps {
     pub const NF4_MATMUL: FusedOpId = FusedOpId(21);
 
     /// FlashAttnBackwardQ — produces dQ from `(q, k, v, do, [alibi])`.
-    /// See [`fuel_core_types::OpKind::FlashAttnBackwardQ`]. Three
+    /// See [`fuel_ir::OpKind::FlashAttnBackwardQ`]. Three
     /// separate FusedOp ids (Q/K/V) is the v1 design — a single
     /// multi-output op would share the recompute pass across all three
     /// gradients but needs multi-output infrastructure that doesn't

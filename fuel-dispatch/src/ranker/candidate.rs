@@ -12,8 +12,8 @@
 //! Phase 1.1 ships the shape with `coupling` as an empty `Vec`.
 //! Phase 2 populates it when transfer-op insertion lands.
 
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::DeviceLocation;
+use fuel_ir::probe::BackendId;
+use fuel_ir::DeviceLocation;
 
 use crate::fused::{CostEstimate, PrecisionGuarantee};
 use crate::kernel::{KernelCaps, KernelRef, OpParams};
@@ -116,8 +116,8 @@ pub struct CouplingAdjustment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::Layout;
-    use fuel_core_types::Result;
+    use fuel_ir::Layout;
+    use fuel_ir::Result;
     use std::sync::{Arc, RwLock};
 
     use fuel_memory::Storage;

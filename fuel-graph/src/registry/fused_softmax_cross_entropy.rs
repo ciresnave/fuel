@@ -62,7 +62,7 @@ use crate::registry::{
     PatternMatch, Reduction, SubgraphPattern,
 };
 use crate::{Graph, Node, NodeId, Op};
-use fuel_core_types::{DType, Shape};
+use fuel_ir::{DType, Shape};
 
 /// Metadata-side registry entry for FusedSoftmaxCrossEntropy.
 pub fn entry() -> FusedOpEntry {

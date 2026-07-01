@@ -90,7 +90,7 @@ impl Llama2cModel {
         };
         let anchor = LazyTensor::from_f32(
             llama.weights.token_embedding.clone(),
-            fuel_core_types::Shape::from_dims(&[llama.config.vocab_size, llama.config.dim]),
+            fuel_ir::Shape::from_dims(&[llama.config.vocab_size, llama.config.dim]),
             &crate::Device::cpu(),
         );
         llama.forward_hidden(tokens, start_pos, &anchor)
@@ -632,7 +632,7 @@ pub fn load_llama2c_bin_path<P: AsRef<std::path::Path>>(path: P) -> Result<Llama
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
 
     #[test]
     fn from_hf_json_str_parses_canonical_tinyllama_fields() {

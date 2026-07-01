@@ -28,7 +28,7 @@
 
 use crate::Result;
 use crate::lazy::LazyTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// PReLU activation with a learned per-channel (or scalar) slope.

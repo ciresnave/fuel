@@ -9,8 +9,8 @@ use crate::k_quants::{
     self, BlockQ2K, BlockQ3K, BlockQ4K, BlockQ4_0, BlockQ4_1, BlockQ5K, BlockQ5_0, BlockQ5_1,
     BlockQ6K, BlockQ8K, BlockQ8_0, BlockQ8_1, GgmlType,
 };
-use fuel_core_types::quantized::GgmlDType;
-use fuel_core_types::{HostBuffer, Result};
+use fuel_ir::quantized::GgmlDType;
+use fuel_ir::{HostBuffer, Result};
 use half::{bf16, f16};
 use std::borrow::Cow;
 

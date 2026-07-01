@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::Result;
+use fuel_ir::Result;
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -86,7 +86,6 @@ pub fn top_k_sampling_f32(
         )
     };
     check(status, "flashinfer_top_k_sampling_f32")?;
-    device.synchronize()?;
     Ok(SamplingOutput { tokens, valid })
 }
 
@@ -118,7 +117,6 @@ pub fn top_p_sampling_f32(
         )
     };
     check(status, "flashinfer_top_p_sampling_f32")?;
-    device.synchronize()?;
     Ok(SamplingOutput { tokens, valid })
 }
 
@@ -150,7 +148,6 @@ pub fn min_p_sampling_f32(
         )
     };
     check(status, "flashinfer_min_p_sampling_f32")?;
-    device.synchronize()?;
     Ok(SamplingOutput { tokens, valid })
 }
 
@@ -184,7 +181,6 @@ pub fn top_k_top_p_sampling_f32(
         )
     };
     check(status, "flashinfer_top_k_top_p_sampling_f32")?;
-    device.synchronize()?;
     Ok(SamplingOutput { tokens, valid })
 }
 

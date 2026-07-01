@@ -31,9 +31,9 @@
 //! optimizer ranker doesn't need to know HOW the Judge collected
 //! the data, just that it can be queried per cell.
 
-use fuel_core_types::dispatch::{OpKind, SizeClass};
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::DType;
+use fuel_ir::dispatch::{OpKind, SizeClass};
+use fuel_ir::probe::BackendId;
+use fuel_ir::DType;
 
 /// Read-only oracle over empirical measurements. Phase 3 wires this
 /// into [`super::cost::compute_static_costs`] as the optional
@@ -45,7 +45,7 @@ pub trait JudgeOracle: Send + Sync {
     /// treat absence as "no measurement" — not "zero" — so the
     /// static estimate stays the fallback.
     ///
-    /// `kernel_source` is the [`fuel_core_types::dispatch::Pick::kernel_source`]
+    /// `kernel_source` is the [`fuel_ir::dispatch::Pick::kernel_source`]
     /// tag (e.g. `"aocl"`, `"mkl"`, `"cublas"`, `"cutlass"`,
     /// `"portable-cpu"`, `"slang"`) — required to disambiguate
     /// sibling kernels at the same `(backend, device)` slot. Pass

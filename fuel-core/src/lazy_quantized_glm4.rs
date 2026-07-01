@@ -40,7 +40,7 @@
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_glm4::{Glm4Config, Glm4LayerWeights, Glm4Model, Glm4Weights};
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// GGUF-quantized GLM-4 causal language model. Wraps a plain

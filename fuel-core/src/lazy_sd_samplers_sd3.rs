@@ -44,7 +44,7 @@
 
 use crate::lazy::LazyTensor;
 use crate::{Error, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 /// Skip-Layer-Guidance + CFG + time-shift configuration for the SD3
 /// flow-match Euler sampler.

@@ -506,7 +506,7 @@ mod tests {
     use crate::lazy::LlamaConfig;
     use crate::lazy_llama_full::{Llama3RopeConfig, Llama3RopeType, LlamaEosToks};
     use crate::Device;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
 
     fn test_cfg() -> LlamaFullConfig {
         LlamaFullConfig {

@@ -37,9 +37,9 @@
 
 use crate::fused::CostEstimate;
 use crate::kernel::{unknown_cost, CostFn, OpParams};
-use fuel_core_types::backend::BackendCapabilities;
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::{DType, Shape};
+use fuel_ir::backend::BackendCapabilities;
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::{DType, Shape};
 
 // =============================================================================
 // Helpers
@@ -926,9 +926,9 @@ mod tests {
     /// families themselves compute something.
     #[test]
     fn elementwise_unary_cost_scales_with_elem_count() {
-        use fuel_core_types::backend::{BackendCapabilities, TransferPath};
-        use fuel_core_types::probe::BackendId;
-        use fuel_core_types::DeviceLocation;
+        use fuel_ir::backend::{BackendCapabilities, TransferPath};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DeviceLocation;
         use std::collections::HashSet;
 
         let in_shape = Shape::from_dims(&[8, 16]);
@@ -940,7 +940,7 @@ mod tests {
             required_alignment: 1,
             access_granularity_bits: 8,
             transfer_paths: vec![(DeviceLocation::Cpu, TransferPath::SameDevice)],
-            storage_substrate: fuel_core_types::backend::SubstrateClass::HostBytes,
+            storage_substrate: fuel_ir::backend::SubstrateClass::HostBytes,
         };
         let c = cost_elementwise_unary_cpu(
             &[in_shape, out_shape],
@@ -956,9 +956,9 @@ mod tests {
     /// Smoke: unknown_cost returns all-zero estimate.
     #[test]
     fn unknown_cost_returns_default() {
-        use fuel_core_types::backend::BackendCapabilities;
-        use fuel_core_types::probe::BackendId;
-        use fuel_core_types::DeviceLocation;
+        use fuel_ir::backend::BackendCapabilities;
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DeviceLocation;
         use std::collections::HashSet;
 
         let caps = BackendCapabilities {
@@ -968,7 +968,7 @@ mod tests {
             required_alignment: 1,
             access_granularity_bits: 8,
             transfer_paths: vec![],
-            storage_substrate: fuel_core_types::backend::SubstrateClass::HostBytes,
+            storage_substrate: fuel_ir::backend::SubstrateClass::HostBytes,
         };
         let c = unknown_cost(&[], &[], &OpParams::None, &caps);
         assert_eq!(c, CostEstimate::default());

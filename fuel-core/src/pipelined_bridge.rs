@@ -69,25 +69,72 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{
+use fuel_ir::{
     probe::BackendId, DeviceLocation, Error, HostBuffer, Layout, Result, SymEnv,
 };
-use fuel_core_types::backend::{BackendRuntime, FitStatus};
-use fuel_core_types::dyn_backend::DynBackendDevice;
-use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute, topo_order_multi};
-use fuel_graph::opt::{insert_cross_device_copies, insert_layout_fixups};
+use fuel_backend_contract::backend::{BackendRuntime, BackendStreams};
+use fuel_ir::backend::FitStatus;
+use fuel_backend_contract::dyn_backend::DynBackendDevice;
+use fuel_graph::{Graph, Node, NodeId, Op, topo_order_multi};
 use fuel_dispatch::dispatch::global_bindings;
+use fuel_dispatch::dispatched_kernel_source;
 use fuel_dispatch::optimize::{optimize_graph, OptimizedGraph};
-use fuel_dispatch::plan::{ExecutionPlan, PlanOptions};
+use fuel_dispatch::plan::PlanOptions;
 use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
 use fuel_dispatch::ranker::{
-    pick_route, BackendRuntimeHandle, BackendRuntimeLookup, ChainedSelector, JudgeOracle,
+    BackendRuntimeHandle, BackendRuntimeLookup, ChainedSelector, JudgeOracle,
     RuntimeSelector,
 };
 use fuel_memory::{BackendStorage, Storage};
 
 use crate::Device;
 use crate::topology::SystemTopology;
+
+// ---------------------------------------------------------------------------
+// Optimize-call telemetry (Phase D · D2a)
+// ---------------------------------------------------------------------------
+
+/// Process-global count of real `optimize_graph` invocations, bumped once
+/// per [`build_optimized_graph`] call (the expensive placement DP + cost
+/// composer + Judge + residency/layout mutation). Mirrors the B1 in-flight
+/// counter idiom: a plain `AtomicUsize` with `Relaxed` ordering.
+///
+/// This is a **test/telemetry observation**, never a correctness gate. The
+/// D2a optimize-skip born-red test reads it to prove the prebuilt realize
+/// path (`realize_one_prebuilt_env`) does NOT re-run the optimizer on a
+/// held, already-optimized graph. `TopologyChanged` retries legitimately
+/// bump it (each retry re-optimizes against the fresh topology).
+static OPTIMIZE_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+std::thread_local! {
+    /// Per-thread mirror of [`OPTIMIZE_CALLS`], bumped in the SAME spot.
+    /// `build_optimized_graph` always runs on the realize CALLER's thread
+    /// (the optimize takes the graph write-lock synchronously, BEFORE the
+    /// executor spawns its compiler thread), so a thread-local count
+    /// isolates one realize sequence from every OTHER test thread's
+    /// concurrent optimizes — which a single process-global counter cannot.
+    /// The D2a born-red test reads the thread-local delta so it is robust
+    /// under the full concurrent suite; the process-global
+    /// [`optimize_calls`] stays the coarse telemetry surface.
+    static OPTIMIZE_CALLS_TL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Read the process-global `optimize_graph` invocation count (D2a
+/// telemetry — see [`OPTIMIZE_CALLS`]). Monotonically non-decreasing across
+/// the process lifetime; process-wide, so it is polluted by concurrent test
+/// threads — use [`optimize_calls_thread_local`] for a per-thread delta.
+pub fn optimize_calls() -> usize {
+    OPTIMIZE_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Read THIS thread's `optimize_graph` invocation count (see
+/// [`OPTIMIZE_CALLS_TL`]). Robust for a single-threaded realize sequence
+/// even while other threads optimize concurrently — the D2a optimize-skip
+/// assertion measures a delta on this reader.
+pub fn optimize_calls_thread_local() -> usize {
+    OPTIMIZE_CALLS_TL.with(|c| c.get())
+}
 
 // ---------------------------------------------------------------------------
 // Public entry points
@@ -102,21 +149,114 @@ use crate::topology::SystemTopology;
 ///    `device`. Per-node backends are NOT pinned here (picker-arc
 ///    step 4a) — the device is the only pin.
 /// 2. `build_optimized_graph` — `optimize_graph` transforms the graph
-///    in place ("plan IS the graph") against the pinned device and
-///    surfaces the `ExecutionPlan` it computed; `stamp_plan_backends`
-///    commits each winner's backend to the graph.
-/// 3. `insert_resident_input_copies` + `apply_layout_fixups` —
-///    residency + layout stitching against the final placements.
-/// 4. `PipelinedExecutor::realize_with_optimized` — kick the compile +
+///    in place ("plan IS the graph") against the pinned device: it stamps
+///    each winner's backend onto the graph (cleanup A1) AND runs the
+///    residency (cross-device `Op::Copy`) + layout-fixup (`Op::Contiguize`)
+///    passes (cleanup Step B), consuming its internal `ExecutionPlan` and
+///    returning only the `OptimizedGraph` view (cleanup Step D). The bridge
+///    no longer makes any of those decisions — the graph arrives fully
+///    stamped, copy-stitched, and fixed up.
+/// 3. `PipelinedExecutor::realize_with_optimized` — kick the compile +
 ///    execute pipeline over the run/`lower_run` dispatch order; returns
 ///    a `BackendStorage::Cpu` for the spliced root.
-/// 5. `bytemuck::cast_slice` — reinterpret the CPU bytes as `T`.
+/// 4. `bytemuck::cast_slice` — reinterpret the CPU bytes as `T`.
 pub fn realize_one_as<T: bytemuck::Pod>(
     graph: &Arc<RwLock<Graph>>,
     target: NodeId,
     device: &Device,
 ) -> Result<Vec<T>> {
     realize_one_as_with_initial::<T>(graph, target, device, StorageCache::new())
+}
+
+/// Multi-DEVICE realize: like [`realize_one_as`], but additionally seeds
+/// the executor's input cache with a device-handle anchor for each device
+/// in `extra_devices` — the backends that appear in the graph's per-node
+/// placements OTHER than the primary realize `device`.
+///
+/// # Why this exists (the dual-device-seed gap)
+///
+/// A realize pins ONE `device` (the primary). [`build_const_cache`] uploads
+/// the reachable `Op::Const`s to that device, so a primary-device handle
+/// lands in the cache (carried by the uploaded const storages) and the
+/// executor's H2D `Op::Copy`/`Op::Alloc` device-handle search
+/// (`find_cuda_device_in_cache` / `find_vulkan_backend_in_cache`) succeeds
+/// for the primary backend. But a genuinely multi-VENDOR graph (e.g. a
+/// sub-DAG placed on CUDA reconverging with one placed on Vulkan) also has
+/// H2D copies targeting the OTHER backend — and NO storage on that backend
+/// is in the cache, so the handle search fails with "no storage in input
+/// cache to derive the handle".
+///
+/// This entry closes that: for each `extra_devices` handle it pushes a tiny
+/// `Op::Const` anchor node into the graph and inserts that backend's
+/// 0-byte [`device_seed_storage`] at the anchor's NodeId. The anchor is
+/// unreachable from `target`, so it is never dispatched (it does not appear
+/// in the executor's run order) — it exists ONLY so the per-backend handle
+/// search resolves. The anchor IS a cache key, so the executor's
+/// `layout_cache` seeding (`g.layout(id)` over `inputs.keys()`) requires it
+/// to be a real graph node — hence the push rather than a synthetic id.
+///
+/// Single-device realize is unaffected: pass an empty `extra_devices` and
+/// this is byte-identical to [`realize_one_as`] (no anchors pushed, the
+/// same `StorageCache::new()` initial).
+///
+/// CPU appearing among the extra devices is a no-op (CPU's allocation path
+/// is handle-free; [`device_seed_storage`] returns `Ok(None)` for it).
+pub fn realize_one_as_multi_device<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    target: NodeId,
+    device: &Device,
+    extra_devices: &[&Device],
+) -> Result<Vec<T>> {
+    let initial = seed_extra_device_handles(graph, device, extra_devices)?;
+    realize_one_as_with_initial::<T>(graph, target, device, initial)
+}
+
+/// Build the `initial` [`StorageCache`] for a multi-device realize: one
+/// device-handle anchor per `extra_devices` entry whose backend differs
+/// from the primary `device`'s backend (and isn't CPU). See
+/// [`realize_one_as_multi_device`] for the rationale.
+///
+/// Each anchor is a fresh `Op::Const` node pushed into `graph`, paired
+/// with the backend's [`device_seed_storage`] in the returned cache. The
+/// primary backend is skipped — the const upload already seeds it.
+fn seed_extra_device_handles(
+    graph: &Arc<RwLock<Graph>>,
+    primary: &Device,
+    extra_devices: &[&Device],
+) -> Result<StorageCache> {
+    let mut cache = StorageCache::new();
+    if extra_devices.is_empty() {
+        return Ok(cache);
+    }
+    let primary_backend = device_to_backend_id(primary);
+    // De-dup: seed each distinct extra backend once.
+    let mut seeded: Vec<BackendId> = vec![primary_backend];
+    for dev in extra_devices {
+        let backend = device_to_backend_id(dev);
+        if seeded.contains(&backend) {
+            continue;
+        }
+        // device_seed_storage returns Ok(None) for CPU (no handle anchor
+        // needed) and a 0/4-byte device storage for GPU backends.
+        let Some(seed) = device_seed_storage(dev)? else {
+            seeded.push(backend);
+            continue;
+        };
+        let anchor_id = {
+            let mut g = graph
+                .write()
+                .map_err(|_| Error::Msg("graph lock poisoned during device-handle seed".into()).bt())?;
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: fuel_ir::Shape::from_dims(&[4]),
+                dtype: fuel_ir::DType::U8,
+            })
+        };
+        cache.insert(anchor_id, Arc::new(RwLock::new(seed)));
+        seeded.push(backend);
+    }
+    Ok(cache)
 }
 
 /// Multi-target counterpart of [`realize_one_as`]. Returns parallel
@@ -215,24 +355,198 @@ pub fn realize_one_as_with_initial_reporting<T: bytemuck::Pod>(
     Ok((extract_cpu_bytes_typed::<T>(&storage)?, root_kernel_source))
 }
 
+// ---------------------------------------------------------------------------
+// Phase D · D2a — the optimize-skip bridge seam (plan-once persistent decode)
+// ---------------------------------------------------------------------------
+
+/// First-realize sibling of [`realize_one_as_with_initial_env`] that ALSO
+/// returns the reusable optimize artifacts so a caller (D2b's
+/// `DecodeSession`) can re-realize the SAME graph on later tokens WITHOUT
+/// re-paying `prepare`'s D2H-splice/const-cache or `build_optimized_graph`'s
+/// placement DP.
+///
+/// Runs the normal path ONCE — `prepare` (splices the D2H `Op::Copy` at the
+/// root + builds the const cache) then `optimize_graph` in place (stamps +
+/// residency/layout fixups) then dispatch — and returns
+/// `(effective_target, OptimizedGraph, result)`:
+/// - `effective_target` — the D2H `Op::Copy` NodeId `prepare` spliced (the
+///   node the executor was asked for; stable across tokens because the graph
+///   structure is stable per D1).
+/// - `OptimizedGraph` — the cached `{roots, generation}` view. It bakes NO
+///   Const data / storage / `SymEnv`; the durable optimization output lives
+///   in the (now-mutated) graph. Sound to reuse **iff the graph structure +
+///   topology generation are unchanged** — exactly D1's guarantee.
+/// - `result` — the first token's host bytes (so the caller can byte-compare
+///   later prebuilt realizes against it).
+///
+/// Byte-identical to `realize_one_as_with_initial_env` for the value it
+/// produces — it IS that path, just additionally surfacing the optimize view
+/// and spliced root. `OPTIMIZE_CALLS` bumps exactly once here (plus once per
+/// `TopologyChanged` retry, as on the normal path).
+pub fn prebuild_optimized_env<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    target: NodeId,
+    device: &Device,
+    initial: StorageCache,
+    sym_env: &SymEnv,
+) -> Result<(NodeId, OptimizedGraph, Vec<T>)> {
+    let (cache, _backend_id, mut effective_targets) =
+        prepare(graph, &[target], device, initial)?;
+    let Some(cpu_target) = effective_targets.pop() else {
+        return Err(Error::Msg(
+            "pipelined_bridge: prepare returned no effective target for a \
+             single-target prebuild — internal bug"
+                .into(),
+        )
+        .bt());
+    };
+    let (storage, optimized, _full_cache) = dispatch_with_plan_retry_capturing(
+        graph, cpu_target, cache, device, sym_env,
+    )?;
+    let bytes = extract_cpu_bytes_typed::<T>(&storage)?;
+    Ok((cpu_target, optimized, bytes))
+}
+
+/// Phase D · D2b — like [`prebuild_optimized_env`] but ALSO returns the
+/// full realized [`StorageCache`] (all reachable `Op::Const` uploaded by
+/// `build_const_cache` — the weights et al., merged over `initial`). The
+/// held decode session keeps this cache so subsequent prebuilt realizes
+/// (which SKIP the const-cache walk) still find every weight Const; only
+/// the per-token data Consts (token-ids / RoPE / mask) are overwritten
+/// in the held cache each token. Without this, the prebuilt path would
+/// error on the first weight Const it can't resolve.
+pub fn prebuild_optimized_env_capturing_cache<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    target: NodeId,
+    device: &Device,
+    initial: StorageCache,
+    sym_env: &SymEnv,
+) -> Result<(NodeId, OptimizedGraph, StorageCache, Vec<T>)> {
+    let (cache, _backend_id, mut effective_targets) =
+        prepare(graph, &[target], device, initial)?;
+    let Some(cpu_target) = effective_targets.pop() else {
+        return Err(Error::Msg(
+            "pipelined_bridge: prepare returned no effective target for a \
+             single-target prebuild — internal bug"
+                .into(),
+        )
+        .bt());
+    };
+    let (storage, optimized, full_cache) = dispatch_with_plan_retry_capturing(
+        graph, cpu_target, cache, device, sym_env,
+    )?;
+    let bytes = extract_cpu_bytes_typed::<T>(&storage)?;
+    Ok((cpu_target, optimized, full_cache, bytes))
+}
+
+/// Plan-once realize: the `graph` has ALREADY been `prepare`d (the D2H
+/// `Op::Copy` spliced at the root) AND `optimize_graph`'d (backend stamps +
+/// residency `Op::Copy` + layout `Op::Contiguize` baked in place) on a prior
+/// [`prebuild_optimized_env`] call; `optimized` is the cached view from that
+/// call. This entry goes STRAIGHT to
+/// [`PipelinedExecutor::realize_with_optimized_picking_env`], **skipping
+/// BOTH** `prepare` (no re-splice, no const-cache walk) **AND**
+/// `build_optimized_graph`/`optimize_graph` (no re-plan, no double-insert of
+/// residency/layout nodes). `OPTIMIZE_CALLS` does NOT move.
+///
+/// `effective_target` is the D2H `Op::Copy` NodeId `prebuild_optimized_env`
+/// returned; `cache` is the per-token [`StorageCache`] (the re-bound data
+/// Consts, typically `InferenceContext::cloned_persistent()`); `sym_env`
+/// carries the per-token `DynScalar` bindings (e.g. `cached_len`).
+///
+/// The `(selector, lookup)` are per-realize-stateless (Device + Judge
+/// derived, no per-realize state — verified Q3), so we rebuild them cheaply
+/// per call; for the branchless decode graph the selector is never consulted
+/// (arm-0 lowering), so this is a no-op there.
+///
+/// `TopologyChanged` is surfaced as its typed error (NOT retried here): a
+/// topology shift means the cached `optimized.generation` is stale and the
+/// stamps may be wrong, so re-optimizing in place would be incorrect. The
+/// caller (D2b) handles it by invalidating the held session and rebuilding
+/// (§4/§5, Q5). Every other error propagates unchanged. Never panics.
+pub fn realize_one_prebuilt_env<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    effective_target: NodeId,
+    optimized: &OptimizedGraph,
+    device: &Device,
+    cache: StorageCache,
+    sym_env: &SymEnv,
+) -> Result<Vec<T>> {
+    // NO prepare(), NO build_optimized_graph(). Straight to the executor.
+    let (selector, lookup) = match production_selector_for(device) {
+        Some((s, l)) => (Some(s), Some(l)),
+        None => (None, None),
+    };
+    let (storage, _layout) = PipelinedExecutor::realize_with_optimized_picking_env(
+        graph.clone(),
+        effective_target,
+        cache,
+        optimized,
+        selector,
+        lookup,
+        sym_env.clone(),
+    )?;
+    extract_cpu_bytes_typed::<T>(&storage)
+}
+
+/// Capturing sibling of [`dispatch_with_plan_retry`] used by
+/// [`prebuild_optimized_env`]: identical retry-on-`TopologyChanged` loop, but
+/// returns the FINAL successful [`OptimizedGraph`] view alongside the storage
+/// so it can be cached for later prebuilt realizes. (The base
+/// `dispatch_with_plan_retry` drops the view; the plan-once path needs to
+/// keep it.) No `report_node` attribution here — the prebuild caller wants
+/// the reusable view, not the root sibling tag.
+fn dispatch_with_plan_retry_capturing(
+    graph: &Arc<RwLock<Graph>>,
+    cpu_target: NodeId,
+    cache: StorageCache,
+    device: &Device,
+    sym_env: &SymEnv,
+) -> Result<(Arc<RwLock<Storage>>, OptimizedGraph, StorageCache)> {
+    let pinned_loc = device.location();
+    let mut retry = TopologyRetryState::new();
+    loop {
+        let optimized =
+            build_optimized_graph(graph, &[cpu_target], pinned_loc, &cache)?;
+        let (selector, lookup) = match production_selector_for(device) {
+            Some((s, l)) => (Some(s), Some(l)),
+            None => (None, None),
+        };
+        let cache_for_attempt = cache.clone();
+        let result = PipelinedExecutor::realize_with_optimized_picking_env(
+            graph.clone(), cpu_target, cache_for_attempt, &optimized,
+            selector, lookup, sym_env.clone(),
+        );
+        match result {
+            Ok((storage, _layout)) => return Ok((storage, optimized, cache)),
+            Err(e) if matches!(e, Error::TopologyChanged { .. })
+                && retry.permit_retry() =>
+            {
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// Retry-on-stale-plan loop for the single-target path. Pulled out so
 /// the multi-target path can reuse the same retry shape.
 ///
 /// Each attempt runs the full optimize → stamp → copy-insert → fixup
 /// sequence. `optimize_graph` (via [`build_optimized_graph`]) transforms
-/// the graph in place against the pinned DEVICE and surfaces the
-/// `ExecutionPlan` it computed; the per-node winners are then stamped
-/// onto the graph (`stamp_plan_backends`), the cross-device-copy pass
-/// stitches residency against those final placements, and the
-/// layout-fixup pass runs last. Re-optimizing after a `TopologyChanged`
-/// retry re-runs the whole sequence so stamps stay consistent with the
-/// fresh placement.
+/// the graph in place against the pinned DEVICE: internally it stamps each
+/// per-node winner's backend, stitches cross-device-copy residency against
+/// those final placements, and runs the layout-fixup pass last — all
+/// consuming its internal `ExecutionPlan`, which is not returned (cleanup
+/// Step D). Re-optimizing after a `TopologyChanged` retry re-runs the whole
+/// sequence so stamps stay consistent with the fresh placement.
 ///
 /// Dispatch goes through [`PipelinedExecutor::realize_with_optimized`]
 /// — the executor recomputes its run/`lower_run` dispatch order from the
 /// (post-stamping) graph and resolves each node's kernel via the
-/// binding-table lookup; the surfaced plan is reused only for the
-/// stamp/residency/layout passes and the root-attribution report.
+/// binding-table lookup. No plan is threaded (Step D); the stamp/residency/
+/// layout passes are internal to `optimize_graph`, and root attribution
+/// reads the graph + registry.
 /// Settle budget for `TopologyChanged` plan rebuilds, measured from
 /// the **last observed generation movement**, not from retry start.
 /// A generation bump means registration state is actively
@@ -307,31 +621,38 @@ impl TopologyRetryState {
     }
 }
 
-/// Build the `OptimizedGraph` lowering view for the realize path and
-/// surface the transient `ExecutionPlan` it computed.
+/// Build the `OptimizedGraph` lowering view for the realize path.
 ///
 /// `optimize_graph` transforms the graph **in place** into the "plan IS
-/// the graph" form (zero `Op::Branch` nodes today — every graph is
-/// branchless until A4) and returns the transient [`OptimizedGraph`]
-/// whose `dispatch_order` (the runs' `lower_run` sequence) the executor
-/// walks, plus the [`ExecutionPlan`] it drove `compile_plan` to produce
-/// for placement/cost/validation. PR-A3b-2 reuses that single plan for
-/// the bridge's `stamp_plan_backends` / residency / layout passes
-/// instead of re-running `compile_plan` — one `compile_plan` per
-/// realize. Build-time diagnostics (missing binding, no device context)
-/// fire here exactly as they did for the legacy `compile_plan` path.
+/// the graph" form and returns only the [`OptimizedGraph`] view whose
+/// `dispatch_order` (the runs' `lower_run` sequence) the executor walks.
+/// Its internal `ExecutionPlan` accumulator (placement/cost/validation +
+/// the stamp / residency / layout passes) is consumed inside
+/// `optimize_graph` and never surfaced (Step D — the graph's
+/// `target_backend` stamps + `Op::Branch` arms are the only output; the
+/// executor re-derives any per-arm candidate from the binding registry).
+/// Build-time diagnostics (missing binding, no device context) fire here
+/// exactly as they did for the legacy `compile_plan` path.
 fn build_optimized_graph(
     graph: &Arc<RwLock<Graph>>,
     roots: &[NodeId],
     pinned_device: DeviceLocation,
     cache: &StorageCache,
-) -> Result<(OptimizedGraph, ExecutionPlan)> {
+) -> Result<OptimizedGraph> {
+    // D2a telemetry: one bump per real optimize (the expensive placement DP
+    // + cost composer + Judge + in-place residency/layout mutation). The
+    // prebuilt realize path skips this entirely; the born-red test asserts
+    // the count does not move on a re-realize of a held, optimized graph.
+    // Bump BOTH the process-global counter (coarse telemetry) and this
+    // thread's mirror (the isolated per-realize delta the test reads).
+    OPTIMIZE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    OPTIMIZE_CALLS_TL.with(|c| c.set(c.get() + 1));
     let topology = SystemTopology::current();
     let placements_for = |dev: DeviceLocation| -> Vec<BackendId> {
         topology.backends_for(dev).to_vec()
     };
     let capabilities_for = |b: BackendId|
-        -> Option<&fuel_core_types::backend::BackendCapabilities>
+        -> Option<&fuel_ir::backend::BackendCapabilities>
     { topology.capabilities(b) };
     let fallback_for = |dev: DeviceLocation|
         -> Vec<(BackendId, DeviceLocation)>
@@ -387,58 +708,54 @@ fn dispatch_with_plan_retry(
     // structurally-empty layer for the executor to consume.
     loop {
         // Optimize the graph in place — `optimize_graph` runs the ONE
-        // `compile_plan` per realize and surfaces its `ExecutionPlan`
-        // (PR-A3b-2 de-dup). The plan drives the correctness machinery:
-        // `stamp_plan_backends` (the executor needs `target_backend` on
-        // every kernel node), `insert_resident_input_copies` (residency
-        // stitch), and `apply_layout_fixups`. Build-time validation
-        // (missing binding / no device) fires inside `optimize_graph`.
-        let (optimized, plan) =
+        // `compile_plan` per realize, **stamps each node's winning backend
+        // onto the graph** (cleanup A1: the executor needs `target_backend`
+        // on every kernel node, and that's an optimizer concern), and runs
+        // the residency + layout passes — all consuming its internal
+        // `ExecutionPlan`, which is not returned (Step D). Build-time
+        // validation (missing binding / no device) fires inside `optimize_graph`.
+        let optimized =
             build_optimized_graph(graph, &[cpu_target], pinned_loc, &cache)?;
-        // Commit the picker's winners to the graph BEFORE residency
-        // stitching + the executor's order derivation read them.
-        stamp_plan_backends(graph, &[cpu_target], &plan, pinned_loc)?;
-        // Materialize Op::Copy on cross-device edges now that final
-        // placements are stamped. Idempotent on retry.
-        insert_resident_input_copies(
-            graph, &[cpu_target], &cache, pinned_loc, &plan,
-        )?;
-        // Insert Op::Contiguize before any kernel whose chosen winner
-        // doesn't advertise `KernelCaps::strided_input` and whose live
-        // input layout is non-contiguous. CSE-deduped across consumers;
-        // idempotent on retry.
-        apply_layout_fixups(graph, &[cpu_target], &plan)?;
-        // PR-C1: resolve the runtime route — Picker 2 chooses one arm per
-        // `Op::Branch` by live telemetry (VRAM-pressure guard + Judge
-        // rank over the production `ChainedSelector`). A branchless graph
-        // (CPU-only build, or no genuine fork) yields an empty route, so
-        // the executor falls back to the arm-0 lowering — realize
-        // unchanged from Phase B.
-        let route = resolve_runtime_route(graph, &[cpu_target], &plan, device)?;
-        let cache_for_attempt = cache.clone();
-        // Dispatch the "plan IS the graph" form: the executor recomputes
-        // its run/`lower_run` dispatch order from the (now fully-stamped)
-        // graph, following the picker's chosen arms (or arm-0 when there
-        // is no route), and resolves each node's kernel via the
-        // binding-table lookup.
-        let result = match &route {
-            Some(route) => PipelinedExecutor::realize_with_optimized_route_env(
-                graph.clone(), cpu_target, cache_for_attempt, &optimized, route,
-                sym_env.clone(),
-            ),
-            None => PipelinedExecutor::realize_with_optimized_env(
-                graph.clone(), cpu_target, cache_for_attempt, &optimized,
-                sym_env.clone(),
-            ),
+        // Residency (cross-device `Op::Copy`) and layout-fixup
+        // (`Op::Contiguize`) are now optimizer passes inside `optimize_graph`
+        // (cleanup Step B) — driven by the graph stamps + the `input_residency`
+        // provider threaded through `build_optimized_graph`. The graph arrives
+        // here already copy-stitched and fixed up; the bridge no longer runs
+        // either pass.
+        // Cleanup Step C: the EXECUTOR owns `Op::Branch` arm-selection now.
+        // The bridge builds the runtime selector + live device lookup (Device-
+        // and Judge-derived, so they stay here) and hands them to the executor,
+        // which picks one arm per branch at dispatch — or arm-0 when the
+        // selector is disabled / the graph is branchless (realize unchanged
+        // from Phase B). Replaces the bridge's old `resolve_runtime_route`.
+        // Step E Phase C / PR C1: hand the selector + lookup to the executor
+        // as OWNED `Arc`s so the streaming compiler thread can `move` them in
+        // and resolve each branch lazily at the frontier (the SAME VRAM-only
+        // selector — byte-identical to the prior one-shot pick).
+        let (selector, lookup) = match production_selector_for(device) {
+            Some((s, l)) => (Some(s), Some(l)),
+            None => (None, None),
         };
+        let cache_for_attempt = cache.clone();
+        // Dispatch the "plan IS the graph" form: the executor recomputes its
+        // run/`lower_run` dispatch order from the (now fully-stamped) graph,
+        // resolves each branch's arm at the frontier (streaming), then
+        // resolves each node's kernel via the binding-table lookup.
+        let result = PipelinedExecutor::realize_with_optimized_picking_env(
+            graph.clone(), cpu_target, cache_for_attempt, &optimized,
+            selector, lookup, sym_env.clone(),
+        );
         match result {
             Ok((storage, _layout)) => {
                 // Session 3 rider: report which sibling dispatched for
-                // `report_node`, from the SAME plan the successful
-                // attempt ran with. The executor dispatches via the
-                // first-registered binding-table lookup, so the static
-                // `set.winner()` here is the matching attribution.
-                let dispatched = dispatched_kernel_source(&plan, report_node);
+                // `report_node` — derived from the SAME graph stamp + registry
+                // the executor dispatched through (Step D: was the plan's
+                // `AlternativeSet::winner`). Best-effort telemetry: a
+                // lock/lookup miss yields `None`, not an error.
+                let dispatched = graph
+                    .read()
+                    .ok()
+                    .and_then(|g| dispatched_kernel_source(&g, report_node, &global_bindings()));
                 return Ok((storage, dispatched));
             }
             Err(e) if matches!(e, Error::TopologyChanged { .. })
@@ -449,51 +766,6 @@ fn dispatch_with_plan_retry(
             Err(e) => return Err(e),
         }
     }
-}
-
-/// Replicate the executor's `resolve_compiled` pick for one node
-/// against the plan that just dispatched: the static
-/// `AlternativeSet::winner`. `None` when the plan has no
-/// `AlternativeSet` for the node — the executor then dispatched the
-/// first-registered binding via its `compile_node` fallback.
-///
-/// The optimized realize path dispatches via the binding-table lookup
-/// (no runtime route-picker), so the static winner is the matching
-/// attribution.
-fn dispatched_kernel_source(
-    plan: &ExecutionPlan,
-    node: NodeId,
-) -> Option<&'static str> {
-    let set = plan.alternatives(node)?;
-    let pick = set.winner()?;
-    Some(pick.kernel_source)
-}
-
-/// Phase 2.2 wiring: insert `Op::Contiguize` before kernels whose
-/// committed winner rejects strided inputs. The callback queries
-/// the plan's per-node `AlternativeSet::winner()` for its caps.
-/// Idempotent — safe to call on retry.
-///
-/// When a node has no plan entry (the picker skipped it because
-/// `op_to_op_kind` returned `None`, typical for view ops + structural
-/// ops), the callback returns `true` (= no fixup needed); the
-/// executor's auto-Contiguize gate at execute time is the safety net
-/// for these.
-fn apply_layout_fixups(
-    graph: &Arc<RwLock<Graph>>,
-    roots: &[NodeId],
-    plan: &ExecutionPlan,
-) -> Result<()> {
-    let mut g = graph
-        .write()
-        .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
-    insert_layout_fixups(&mut g, roots, |id| {
-        plan.alternatives(id)
-            .and_then(|set| set.winner())
-            .map(|cand| cand.caps.strided_input)
-            .unwrap_or(true)
-    });
-    Ok(())
 }
 
 /// Multi-target counterpart of [`realize_one_as_with_initial`].
@@ -598,31 +870,26 @@ fn dispatch_many_with_plan_retry(
     let mut retry = TopologyRetryState::new();
     loop {
         // See `dispatch_with_plan_retry`: one `optimize_graph` runs the
-        // single `compile_plan` and surfaces the plan that drives
-        // stamping / residency / layout fixups; the executor recomputes
-        // its run/`lower_run` order from the stamped graph.
-        let (optimized, plan) =
+        // single `compile_plan`, stamps the winning backends onto the graph
+        // (cleanup A1), AND runs the residency + layout-fixup passes (cleanup
+        // Step B); the executor recomputes its run/`lower_run` order from the
+        // stamped, copy-stitched graph.
+        let optimized =
             build_optimized_graph(graph, effective_targets, pinned_loc, &cache)?;
-        stamp_plan_backends(graph, effective_targets, &plan, pinned_loc)?;
-        insert_resident_input_copies(
-            graph, effective_targets, &cache, pinned_loc, &plan,
-        )?;
-        apply_layout_fixups(graph, effective_targets, &plan)?;
-        // PR-C1: resolve the runtime route (Picker 2) over the branches;
-        // empty for a branchless graph ⇒ arm-0 lowering ⇒ Phase B.
-        let route =
-            resolve_runtime_route(graph, effective_targets, &plan, device)?;
-        let cache_for_attempt = cache.clone();
-        let result = match &route {
-            Some(route) => PipelinedExecutor::realize_many_with_optimized_route_env(
-                graph.clone(), effective_targets, cache_for_attempt, &optimized,
-                route, sym_env.clone(),
-            ),
-            None => PipelinedExecutor::realize_many_with_optimized_env(
-                graph.clone(), effective_targets, cache_for_attempt, &optimized,
-                sym_env.clone(),
-            ),
+        // Cleanup Step C: the executor resolves each branch's arm at dispatch
+        // (was the bridge's `resolve_runtime_route`); the bridge just builds +
+        // hands over the Device/Judge-derived selector + live lookup. PR C1:
+        // owned `Arc`s so the streaming compiler thread can `move` them in and
+        // resolve branches lazily at the frontier.
+        let (selector, lookup) = match production_selector_for(device) {
+            Some((s, l)) => (Some(s), Some(l)),
+            None => (None, None),
         };
+        let cache_for_attempt = cache.clone();
+        let result = PipelinedExecutor::realize_many_with_optimized_picking_env(
+            graph.clone(), effective_targets, cache_for_attempt, &optimized,
+            selector, lookup, sym_env.clone(),
+        );
         match result {
             Ok(r) => break Ok(r),
             Err(e) if matches!(e, Error::TopologyChanged { .. })
@@ -678,8 +945,8 @@ fn extract_cpu_bytes_typed<T: bytemuck::Pod>(
 /// produces a CPU storage at the returned `effective_targets`.
 ///
 /// Picker-arc step 4a: per-node `target_backend` pinning moved OUT
-/// of this function — the dispatch loops stamp each node's plan
-/// winner via [`stamp_plan_backends`] after `compile_plan` runs.
+/// of this function — `optimize_graph` stamps each node's plan winner
+/// onto the graph (cleanup A1; the optimizer owns placement).
 ///
 /// Returns `(cache, backend_id, effective_targets)`:
 /// - `effective_targets[i]` mirrors `targets[i]`'s order. For CPU
@@ -784,11 +1051,10 @@ fn prepare_split(
     // Picker-arc step 4a: prepare() pins the realize DEVICE only.
     // Per-node `target_backend` is no longer stamped here — the
     // dispatch loops build an ExecutionPlan against the pinned
-    // device (`PlanOptions::with_pinned_device`) and
-    // `stamp_plan_backends` commits each node's winner AFTER
-    // planning, before `insert_resident_input_copies` (so the
-    // residency stitch sees final placements) and before the
-    // executor derives its ordering.
+    // device (`PlanOptions::with_pinned_device`) and `optimize_graph`
+    // commits each node's winner backend AFTER planning, then runs the
+    // residency + layout passes over those final placements (cleanup
+    // Step B), before the executor derives its ordering.
     //
     // The pre-4a monolithic loop's "always overwrite" doctrine
     // survives in `stamp_plan_backends`: graphs are shared
@@ -796,61 +1062,6 @@ fn prepare_split(
     // multiple devices across a session, so every realize call
     // re-stamps from its own plan rather than trusting stale pins.
     Ok((cache, backend_id, effective_targets))
-}
-
-/// Picker-arc step 4a: commit the plan's per-node winners to the
-/// graph's `target_backend` side-table. Runs AFTER `compile_plan`
-/// (the winners exist) and BEFORE [`insert_resident_input_copies`]
-/// + the executor's ordering derivation (both read the stamps).
-///
-/// Per computational node (the same skip-set the pre-4a monolithic
-/// loop used — `Op::Const` / `Op::Release` / `Op::Contiguize` /
-/// view ops / `Op::Reshape` inherit or don't need a stamp):
-///
-/// - **Plan winner present** → stamp `winner.backend`. Under the
-///   locality policy every winner sits on the pinned device, so on
-///   a single-backend system this is byte-identical to the old
-///   monolithic pin; off-device fallback winners (step 4b) stamp
-///   their owning backend so the executor allocates output on the
-///   backend that actually runs the kernel.
-/// - **No plan entry** (structural ops the planner skips —
-///   `Op::Copy` / `Op::Move` / `Op::Alloc` / `Op::ZeroFill` — plus
-///   ops without an OpKind mapping) → stamp the pinned device's
-///   backend, exactly like the old loop. `Op::Copy` / `Op::Move`
-///   stamps are subsequently corrected to the SOURCE backend by
-///   [`insert_resident_input_copies`]'s re-stamp sweep where the
-///   source's placement resolves.
-///
-/// Always overwrites (see `prepare()` doc) — re-planning after a
-/// `TopologyChanged` retry re-stamps consistently from the fresh
-/// plan.
-fn stamp_plan_backends(
-    graph: &Arc<RwLock<Graph>>,
-    roots: &[NodeId],
-    plan: &ExecutionPlan,
-    pinned_loc: DeviceLocation,
-) -> Result<()> {
-    let pinned_backend = location_to_backend_id(pinned_loc);
-    let mut g = graph
-        .write()
-        .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
-    let order = topo_order_multi(&g, roots);
-    for &id in &order {
-        let node = g.node(id);
-        if matches!(node.op, Op::Const | Op::Release | Op::Contiguize)
-            || node.op.is_view_op()
-            || matches!(node.op, Op::Reshape(_))
-        {
-            continue;
-        }
-        let stamp = plan
-            .alternatives(id)
-            .and_then(|set| set.winner())
-            .map(|c| c.backend)
-            .unwrap_or(pinned_backend);
-        g.set_target_backend(id, stamp);
-    }
-    Ok(())
 }
 
 /// For each reachable `Op::Const`, take its legacy storage slot,
@@ -892,11 +1103,11 @@ pub(crate) fn build_const_cache(
     // Pass 1: collect (user_const_id, host_bytes, dtype, need_bytes)
     // for every reachable Op::Const that isn't already in the cache
     // (persistent slots from InferenceContext take precedence).
-    let consts_to_upload: Vec<(NodeId, Vec<u8>, fuel_core_types::DType)> = {
+    let consts_to_upload: Vec<(NodeId, Vec<u8>, fuel_ir::DType)> = {
         let g = graph
             .read()
             .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
-        let mut out: Vec<(NodeId, Vec<u8>, fuel_core_types::DType)> =
+        let mut out: Vec<(NodeId, Vec<u8>, fuel_ir::DType)> =
             Vec::with_capacity(order.len() / 4);
         for &id in order {
             if cache.contains_key(&id) {
@@ -979,8 +1190,8 @@ pub(crate) fn build_const_cache(
             g.push(Node {
                 op: Op::Const,
                 inputs: vec![],
-                shape: fuel_core_types::Shape::from_dims(&[4]),
-                dtype: fuel_core_types::DType::U8,
+                shape: fuel_ir::Shape::from_dims(&[4]),
+                dtype: fuel_ir::DType::U8,
             })
         };
         transient_cache.insert(anchor_id, Arc::new(RwLock::new(seed)));
@@ -1009,7 +1220,7 @@ pub(crate) fn build_const_cache(
             } else {
                 bytes.len() / dtype.size_in_bytes()
             };
-            let shape = fuel_core_types::Shape::from_dims(&[n_elem]);
+            let shape = fuel_ir::Shape::from_dims(&[n_elem]);
             let trans_const_id = g.push(Node {
                 op: Op::Const,
                 inputs: vec![],
@@ -1049,6 +1260,126 @@ pub(crate) fn build_const_cache(
         cache.insert(user_id, arc);
     }
     Ok(cache)
+}
+
+/// Phase D · D2b — build a single device-resident `fuel_memory::Storage`
+/// Arc from a host buffer, the same upload path [`build_const_cache`]
+/// uses per Const. The persistent-decode re-bind inserts the result into
+/// the [`crate::inference_context::InferenceContext`]'s persistent map
+/// under a STABLE data-Const NodeId each token (token-ids / RoPE / mask),
+/// so the bytes stay out of the const-cache walk on the prebuilt realize.
+///
+/// **CPU device**: wraps the host bytes directly
+/// (`CpuStorageBytes::from_bytes`) — no transient graph / executor. This
+/// is the D2b born-red bed and the only path exercised at CPU parity.
+///
+/// **Non-CPU device**: builds a one-node transient `Op::Const → Op::Copy
+/// { target }` graph (+ device-handle anchor) and realizes the copy —
+/// the H2D upload. Mirrors [`build_const_cache`]'s non-CPU arm for a
+/// single buffer.
+///
+/// The `dtype` tag comes from the `HostBuffer` variant. Never panics.
+pub fn upload_host_buffer_to_device(
+    device: &Device,
+    buf: HostBuffer,
+) -> Result<Arc<RwLock<Storage>>> {
+    let dtype = host_buffer_dtype(&buf);
+    let bytes = host_buffer_to_bytes(&buf);
+    let target_loc = device.location();
+
+    if target_loc == DeviceLocation::Cpu {
+        let storage = Storage::new(
+            BackendStorage::Cpu(
+                fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(&bytes),
+            ),
+            dtype,
+        );
+        return Ok(Arc::new(RwLock::new(storage)));
+    }
+
+    // Non-CPU: transient Op::Const → Op::Copy { target } upload.
+    let transient = Arc::new(RwLock::new(Graph::new()));
+    let mut transient_cache = StorageCache::new();
+    if let Some(seed) = device_seed_storage(device)? {
+        let anchor_id = {
+            let mut g = transient
+                .write()
+                .map_err(|_| Error::Msg("transient graph lock poisoned".into()).bt())?;
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: fuel_ir::Shape::from_dims(&[4]),
+                dtype: fuel_ir::DType::U8,
+            })
+        };
+        transient_cache.insert(anchor_id, Arc::new(RwLock::new(seed)));
+    }
+    let n_elem = if dtype.size_in_bytes() == 0 {
+        0
+    } else {
+        bytes.len() / dtype.size_in_bytes()
+    };
+    let shape = fuel_ir::Shape::from_dims(&[n_elem]);
+    let copy_id = {
+        let mut g = transient
+            .write()
+            .map_err(|_| Error::Msg("transient graph lock poisoned".into()).bt())?;
+        let trans_const_id = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: shape.clone(),
+            dtype,
+        });
+        let cpu_storage = Storage::new(
+            BackendStorage::Cpu(
+                fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(&bytes),
+            ),
+            dtype,
+        );
+        transient_cache.insert(trans_const_id, Arc::new(RwLock::new(cpu_storage)));
+        let copy_id = g.push(Node {
+            op: Op::Copy { target: target_loc },
+            inputs: vec![trans_const_id],
+            shape,
+            dtype,
+        });
+        g.set_target_backend(copy_id, BackendId::Cpu);
+        copy_id
+    };
+    let realized = PipelinedExecutor::realize_many(
+        Arc::clone(&transient), &[copy_id], transient_cache,
+    )?;
+    let (arc, _layout) = realized.into_iter().next().ok_or_else(|| {
+        Error::Msg(
+            "upload_host_buffer_to_device: realize_many returned no storage \
+             for the Op::Copy target — internal bug"
+                .into(),
+        )
+        .bt()
+    })?;
+    Ok(arc)
+}
+
+/// The `DType` a `HostBuffer` variant carries.
+fn host_buffer_dtype(buf: &HostBuffer) -> fuel_ir::DType {
+    use fuel_ir::DType;
+    match buf {
+        HostBuffer::U8(_) => DType::U8,
+        HostBuffer::I8(_) => DType::I8,
+        HostBuffer::U32(_) => DType::U32,
+        HostBuffer::I16(_) => DType::I16,
+        HostBuffer::I32(_) => DType::I32,
+        HostBuffer::I64(_) => DType::I64,
+        HostBuffer::BF16(_) => DType::BF16,
+        HostBuffer::F16(_) => DType::F16,
+        HostBuffer::F32(_) => DType::F32,
+        HostBuffer::F64(_) => DType::F64,
+        HostBuffer::F8E4M3(_) => DType::F8E4M3,
+        HostBuffer::F6E2M3(_) => DType::F6E2M3,
+        HostBuffer::F6E3M2(_) => DType::F6E3M2,
+        HostBuffer::F4(_) => DType::F4,
+        HostBuffer::F8E8M0(_) => DType::F8E8M0,
+    }
 }
 
 /// Extract the raw bytes from a `HostBuffer` via a per-variant match
@@ -1106,18 +1437,18 @@ fn location_to_backend_id(loc: DeviceLocation) -> BackendId {
 }
 
 // ---------------------------------------------------------------------------
-// Runtime route picker (Picker 2) — Phase C PR-C1
+// Runtime route picker (Picker 2) — selector construction (cleanup Step C)
 // ---------------------------------------------------------------------------
 //
-// Re-introduces the selector + live-telemetry plumbing PR-A3b-2 removed
-// (`production_selector_for` / `backend_runtime_lookup_for` /
-// `DeviceRuntimeHandle`), now feeding the **branch route picker**
-// (`fuel_dispatch::ranker::pick_route`) rather than a per-node selector.
-// The bridge builds the production `ChainedSelector` (VRAM-pressure guard
-// + Judge-aware rank) and the live per-tier free-memory lookup, then
-// resolves one arm per `Op::Branch` into a `PickedRoute` the executor
-// lowers via `lower_picked_route`. With no branches (CPU-only build) the
-// route is empty and realize is unchanged from Phase B.
+// The selector + live-telemetry plumbing (`production_selector_for` /
+// `backend_runtime_lookup_for` / `DeviceRuntimeHandle`) is built HERE because
+// it needs the realize `Device` + the Judge oracle, both fuel-core. Cleanup
+// Step C moved the *pick itself* into the executor: the bridge builds the
+// production `ChainedSelector` (VRAM-pressure guard + Judge-aware rank) and
+// the live per-tier free-memory lookup, then hands them to the executor's
+// `realize_with_optimized_picking_env`, which runs `pick_route` (one arm per
+// `Op::Branch`) at dispatch and lowers via `lower_picked_route`. With no
+// branches (CPU-only build) the route is empty and realize is unchanged.
 
 /// Opt-out knob for the runtime route picker. Matches the `FUEL_*`
 /// env-var convention (`FUEL_FORCE_F32`, `FUEL_TRACE`, ...): set
@@ -1132,7 +1463,11 @@ fn runtime_selector_disabled() -> bool {
 ///
 /// - the **VramPressure guard** over live [`BackendRuntime`] handles
 ///   ([`backend_runtime_lookup_for`] — the realize device + the
-///   always-present CPU backend), and
+///   always-present CPU backend),
+/// - the **live-load tier** (Step E Phase C / C2) read off the SAME
+///   handles via their Tier-2 `BackendStreams` seam (B1's per-device
+///   in-flight counter) — demoting arms on busy devices within a VRAM fit
+///   tier, and
 /// - the **JudgeAware rank** over the cached profile oracle
 ///   ([`crate::judge::cached_oracle`], the same Layer-2 source
 ///   `build_optimized_graph` feeds `PlanOptions::with_judge`).
@@ -1182,10 +1517,76 @@ impl BackendRuntime for DeviceRuntimeHandle {
             None => FitStatus::Unknown,
         }
     }
+
+    /// Step E Phase C / B1: expose this handle's Tier-2 [`BackendStreams`]
+    /// live-load surface so the load-aware selector (C2) reaches
+    /// `pending_work_count` over the route picker's
+    /// [`BackendRuntimeLookup`] — which only ever hands out a
+    /// `&dyn BackendRuntime` — without naming `DeviceRuntimeHandle`. C2's
+    /// `ChainedSelector` load leg downcasts the boxed handle this lookup
+    /// returns via `as_backend_streams()`, so the SAME lookup that answers
+    /// the VRAM guard also carries the load signal (no second lookup).
+    ///
+    /// A streaming device (CUDA / Vulkan) returns `Some(self)`; a
+    /// synchronous device (CPU) returns `None` — the honesty contract:
+    /// CPU has no queue, so it is NOT a `BackendStreams` (a selector reads
+    /// "no load signal," never a fabricated "idle"). The CPU
+    /// [`fuel_cpu_backend::dyn_impl::CpuBackendDevice`] handle the lookup
+    /// builds for the host-RAM arm isn't a `DeviceRuntimeHandle` at all
+    /// and keeps the base-trait default `None`, so CPU stays honest on
+    /// both lookup paths.
+    fn as_backend_streams(&self) -> Option<&dyn BackendStreams> {
+        match self.0.location_dyn() {
+            DeviceLocation::Cpu => None,
+            _ => Some(self),
+        }
+    }
 }
 
-/// Live-handle lookup for the VramPressure guard / picker fingerprint.
-/// Resolves:
+/// Step E Phase C / B1: the live-load read surface for the per-device
+/// in-flight counter. `pending_work_count` reads the process-wide
+/// `fuel-dispatch` counter for THIS handle's device — the executor's own
+/// submitted-but-not-drained async-op count (CUDA events + eager Vulkan
+/// batches), which is the "queue depth" signal `06-runtime` names. Only
+/// streaming devices reach this impl (CPU is filtered out in
+/// [`BackendRuntime::as_backend_streams`]); the `Cpu` arm here is a
+/// belt-and-suspenders honesty guard, never hit in practice.
+impl BackendStreams for DeviceRuntimeHandle {
+    fn pending_work_count(&self) -> Option<u32> {
+        match self.0.location_dyn() {
+            DeviceLocation::Cpu => None,
+            loc => Some(fuel_dispatch::dispatch::inflight_count(loc)),
+        }
+    }
+
+    /// Advertised concurrent in-flight capacity. Reports a conservative
+    /// constant: Fuel today drives one stream per CUDA device and one
+    /// compute queue per Vulkan device (A3 / A4b), so the meaningful slot
+    /// count is 1. C2's load tiering reads this as the denominator of
+    /// `pending_work_count / slot_capacity`
+    /// ([`fuel_dispatch::ranker::load_tier`]); with capacity 1 the tiering
+    /// is binary (idle at 0 in flight, saturated at >=1), which is exactly
+    /// right for a single-stream device. Per-device capacity wiring (a
+    /// `BackendCapabilities` field) is the design §9 open-Q1 refinement.
+    fn slot_capacity(&self) -> u32 {
+        1
+    }
+
+    /// Barrier: block until all submitted work on this device's slots has
+    /// retired. Delegates to the device's `synchronize` (CUDA
+    /// `cuCtxSynchronize` / Vulkan device-wait) — the same realize-boundary
+    /// drain the executor already performs.
+    fn flush(&self) -> Result<()> {
+        self.0.synchronize_dyn()
+    }
+}
+
+/// Live-handle lookup for the VramPressure guard, the C2 load leg, and the
+/// picker fingerprint — one lookup, both signals. Each handle it returns
+/// (`DeviceRuntimeHandle`) answers `would_fit` (VRAM) AND, via its Tier-2
+/// `BackendStreams` impl, `pending_work_count` (live load), so C2's
+/// `ChainedSelector` reads VRAM + load off the same handle without a second
+/// lookup (design §3.3). Resolves:
 ///
 /// - the realize device's `(backend, location)` → the realize `Device`'s
 ///   own handle (the live GPU handle the bridge holds — with today's
@@ -1214,37 +1615,6 @@ fn backend_runtime_lookup_for(device: &Device) -> BackendRuntimeLookup {
     })
 }
 
-/// Resolve the runtime route — one arm per `Op::Branch` chosen by the
-/// production Picker 2 (selector + live telemetry). `None` when the
-/// picker is disabled; otherwise the [`PickedRoute`] the executor lowers
-/// via `lower_picked_route`. A branchless graph yields an empty route
-/// (the picker is a no-op), so realize is byte-identical to Phase B.
-fn resolve_runtime_route(
-    graph: &Arc<RwLock<Graph>>,
-    roots: &[NodeId],
-    plan: &ExecutionPlan,
-    device: &Device,
-) -> Result<Option<PickedRoute>> {
-    let Some((selector, lookup)) = production_selector_for(device) else {
-        return Ok(None);
-    };
-    let g = graph
-        .read()
-        .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
-    // Cheap branchless fast-path: a graph with no `Op::Branch` (every
-    // CPU-only build, every graph with no genuine fork) has no decision
-    // for the picker. Skip the topo walk + selector entirely and take the
-    // arm-0 lowering — realize is byte-identical to Phase B, with no
-    // per-realize picker overhead on the common case.
-    let has_branch = (0..g.len())
-        .any(|i| matches!(g.node(NodeId(i)).op, Op::Branch { .. }));
-    if !has_branch {
-        return Ok(None);
-    }
-    let route = pick_route(&g, roots, plan, selector.as_ref(), Some(&lookup));
-    Ok(Some(route))
-}
-
 // ---------------------------------------------------------------------------
 // Cross-device copy insertion (picker arc Phase 2.1 wire-in)
 // ---------------------------------------------------------------------------
@@ -1268,221 +1638,6 @@ fn cached_storage_location(storage: &Storage) -> Option<DeviceLocation> {
         #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
         BackendStorage::Metal(_) => None,
     }
-}
-
-/// Compute every reachable node's *effective placement* for the
-/// cross-device-copy pass. Resolution priority per node:
-///
-/// 1. **Residency-declaring ops** — `Op::Copy` / `Op::Move` /
-///    `Op::Alloc` carry their output's location in the op variant;
-///    that's definitional.
-/// 2. **Explicit `Graph::placement`** — set by
-///    [`insert_cross_device_copies`] on the copies it inserts (and,
-///    later in the picker arc, by per-node picker placements).
-/// 3. **Cache-resident storages** — consts (uploaded to the realize
-///    device by [`build_const_cache`]) and persistent `initial`
-///    slots (InferenceContext): effective placement is where the
-///    bytes actually live. Authoritative even when residency can't
-///    be determined (no fall-through to the pin — a cached slot is
-///    never recomputed on the pinned backend).
-/// 4. **Plan winner** (picker-arc step 4a) — a node the picker
-///    planned runs on its winner's device. Under the locality
-///    policy that's the pinned device; off-device fallback winners
-///    (step 4b) place the node where the kernel actually runs so
-///    this pass stitches the crossing.
-/// 5. **Backend stamp** — a node with `target_backend` set but no
-///    plan entry (structural ops, plus stamps left by
-///    [`stamp_plan_backends`]'s no-entry arm) follows the realize
-///    device.
-/// 6. **Residency-inheriting pass-throughs** — view ops, `Reshape`,
-///    and `Contiguize` carry no pin and produce no new residency;
-///    they follow their data input (already resolved — `order` is
-///    topological).
-///
-/// Nodes matching none of the above stay absent; the pass leaves
-/// their edges alone.
-fn effective_placements(
-    g: &Graph,
-    order: &[NodeId],
-    cache: &StorageCache,
-    pinned_loc: DeviceLocation,
-    plan: &ExecutionPlan,
-) -> Result<HashMap<NodeId, DeviceLocation>> {
-    let mut map: HashMap<NodeId, DeviceLocation> =
-        HashMap::with_capacity(order.len());
-    for &id in order {
-        let node = g.node(id);
-        match node.op {
-            Op::Copy { target } | Op::Move { target } | Op::Alloc { target } => {
-                map.insert(id, target);
-                continue;
-            }
-            _ => {}
-        }
-        if let Some(loc) = g.placement(id) {
-            map.insert(id, loc);
-            continue;
-        }
-        if let Some(slot) = cache.get(&id) {
-            let guard = slot
-                .read()
-                .map_err(|_| Error::Msg("storage lock poisoned".into()).bt())?;
-            if let Some(loc) = cached_storage_location(&guard) {
-                map.insert(id, loc);
-            }
-            continue;
-        }
-        if let Some(winner) = plan.alternatives(id).and_then(|set| set.winner()) {
-            map.insert(id, winner.device);
-            continue;
-        }
-        if g.target_backend(id).is_some() {
-            map.insert(id, pinned_loc);
-            continue;
-        }
-        if node.op.is_view_op()
-            || matches!(node.op, Op::Reshape(_) | Op::Contiguize)
-        {
-            if let Some(&loc) = node.inputs.first().and_then(|i| map.get(i)) {
-                map.insert(id, loc);
-            }
-        }
-    }
-    Ok(map)
-}
-
-/// Phase 2.1 wire-in: insert `Op::Copy { target }` on every graph
-/// edge whose producer's resident location doesn't share a storage
-/// substrate with the consumer's placement, then stamp each inserted
-/// copy's `target_backend` with the SOURCE backend (the pipelined
-/// executor's Op::Copy convention — the transfer kernel runs on the
-/// backend the bytes come FROM: `copy_from_cpu_wrapper` for H2D,
-/// the source backend's download wrapper for D2H).
-///
-/// ## Ownership split vs. the bridge's other transfer mechanisms
-///
-/// Three owners coexist, each covering a disjoint class of edges:
-///
-/// - **Realize-root splice** (`prepare()` step 1): D2H for the FINAL
-///   outputs. Those `Op::Copy` nodes are consumers this pass skips
-///   (`Op::Copy`/`Op::Move` consumers are never re-wrapped), so no
-///   double-insertion is possible.
-/// - **[`build_const_cache`]** (Phase 3b): HOST→device
-///   materialization of graph-owned consts (from
-///   `graph.storage_map`), re-derived per realize call so the same
-///   graph can be realized on different devices across a session.
-///   This pass does NOT subsume it: const upload happens through a
-///   transient graph precisely so the upload target can follow the
-///   per-call pin; in-graph copies would be sticky (graph rewrites
-///   survive the call) and would pin the upload target of the first
-///   realize forever. Because `build_const_cache` runs first, those
-///   consts are already co-located and this pass proves no-op on
-///   their edges.
-/// - **This pass**: cross-device edges among ALREADY-RESIDENT
-///   storages — today exactly the `initial`-cache slots
-///   (InferenceContext persistent storages) living on a different
-///   device than the pinned backend. Previously nothing handled
-///   these (the executor dispatched the consumer's kernel against a
-///   foreign-device input).
-///
-/// ## Re-stamping on repeat realizes (and after `stamp_plan_backends`)
-///
-/// Graph rewrites are sticky and [`stamp_plan_backends`] overwrites
-/// `target_backend` on every computational node — including copies
-/// this pass inserted on a PREVIOUS realize call (whose correct
-/// stamp is the source backend, not the realize backend). This
-/// helper therefore runs after the stamping pass and re-stamps every
-/// `Op::Copy` / `Op::Move` whose source location resolves with the
-/// SOURCE's backend — the transfer kernel runs where the bytes come
-/// from (Move dispatches the same `OpKind::Copy` kernel; only its
-/// destructive-release bookkeeping differs).
-/// That covers placement-carrying copies (this pass's own inserts)
-/// AND placement-less copies (realize-root splices, safety copies):
-/// under the locality policy a root splice's source resolves to the
-/// pinned device, reproducing the old "follow the realize device"
-/// stamp; when an off-device fallback winner (picker-arc step 4b)
-/// produces the root's input, the source-backend rule stamps the
-/// download kernel onto the backend that actually owns the bytes.
-/// Copies whose source doesn't resolve keep the stamping pass's
-/// pinned-backend stamp.
-///
-/// Returns the number of copies inserted (0 on any single-device
-/// graph).
-fn insert_resident_input_copies(
-    graph: &Arc<RwLock<Graph>>,
-    roots: &[NodeId],
-    cache: &StorageCache,
-    pinned_loc: DeviceLocation,
-    plan: &ExecutionPlan,
-) -> Result<usize> {
-    let topology = SystemTopology::current();
-    let mut g = graph
-        .write()
-        .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
-    let order = topo_order_multi(&g, roots);
-    let placements = effective_placements(&g, &order, cache, pinned_loc, plan)?;
-
-    // Substrate query routed through SystemTopology. Identical
-    // locations short-circuit to `true` BEFORE the topology lookup:
-    // a location trivially shares bytes with itself, and
-    // `SystemTopology::shares_storage` returns `false` for unknown
-    // backends — without the short-circuit an unprobed topology
-    // would wrap every same-device edge in a copy.
-    let shares = |a: DeviceLocation, b: DeviceLocation| -> bool {
-        if a == b {
-            return true;
-        }
-        topology.shares_storage(
-            (location_to_backend_id(a), a),
-            (location_to_backend_id(b), b),
-        )
-    };
-
-    let inserted = insert_cross_device_copies(
-        &mut g,
-        roots,
-        |id| placements.get(&id).copied(),
-        shares,
-    );
-
-    // Stamp the new copies: target_backend = SOURCE backend. The
-    // pass only inserts a copy when the producer's placement
-    // resolved to Some, so the lookup can't miss.
-    for &copy_id in &inserted {
-        let src = g.node(copy_id).inputs.first().copied().ok_or_else(|| {
-            Error::Msg(format!(
-                "insert_resident_input_copies: inserted Op::Copy {copy_id:?} \
-                 has no input — fuel_graph::opt::insert_cross_device_copies \
-                 broke its single-input invariant",
-            ))
-            .bt()
-        })?;
-        let src_loc = placements.get(&src).copied().ok_or_else(|| {
-            Error::Msg(format!(
-                "insert_resident_input_copies: inserted Op::Copy {copy_id:?} \
-                 wraps producer {src:?} with no resolved placement — the \
-                 pass should only fire on placed producers",
-            ))
-            .bt()
-        })?;
-        g.set_target_backend(copy_id, location_to_backend_id(src_loc));
-    }
-
-    // Re-stamp pre-existing copies/moves with their SOURCE backend
-    // (see doc comment) — placement-carrying copies from previous
-    // realize calls AND placement-less realize-root splices whose
-    // source resolves. `order` predates the insertions above, so this
-    // never touches the freshly stamped nodes.
-    for &id in &order {
-        if !matches!(g.node(id).op, Op::Copy { .. } | Op::Move { .. }) {
-            continue;
-        }
-        let Some(&src) = g.node(id).inputs.first() else { continue };
-        let Some(&src_loc) = placements.get(&src) else { continue };
-        g.set_target_backend(id, location_to_backend_id(src_loc));
-    }
-
-    Ok(inserted.len())
 }
 
 /// Allocate a small "device anchor" storage on `device` — enough bytes
@@ -1514,7 +1669,7 @@ pub fn device_seed_storage(device: &Device) -> Result<Option<Storage>> {
             let cuda_dev = crate::cuda_backend::as_device(device)?;
             let cuda_bytes =
                 fuel_cuda_backend::CudaStorageBytes::alloc(cuda_dev, SEED_BYTES)?;
-            Ok(Some(Storage::new(BackendStorage::Cuda(cuda_bytes), fuel_core_types::DType::U8)))
+            Ok(Some(Storage::new(BackendStorage::Cuda(cuda_bytes), fuel_ir::DType::U8)))
         }
         #[cfg(not(feature = "cuda"))]
         DeviceLocation::Cuda { .. } => Err(Error::Msg(
@@ -1527,7 +1682,7 @@ pub fn device_seed_storage(device: &Device) -> Result<Option<Storage>> {
             let backend = crate::vulkan_backend::as_device(device)?;
             let zeros = vec![0_u8; SEED_BYTES];
             let vk_bytes = backend.upload_bytes_handle(&zeros)?;
-            Ok(Some(Storage::new(BackendStorage::Vulkan(vk_bytes), fuel_core_types::DType::U8)))
+            Ok(Some(Storage::new(BackendStorage::Vulkan(vk_bytes), fuel_ir::DType::U8)))
         }
         #[cfg(not(feature = "vulkan"))]
         DeviceLocation::Vulkan { .. } => Err(Error::Msg(
@@ -1546,7 +1701,7 @@ pub fn device_seed_storage(device: &Device) -> Result<Option<Storage>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::{DType, Shape};
+    use fuel_ir::{DType, Shape};
     use fuel_dispatch::plan::compile_plan;
 
     fn push_node(g: &mut Graph, op: Op, inputs: Vec<NodeId>) -> NodeId {
@@ -1568,226 +1723,38 @@ mod tests {
         )))
     }
 
-    /// Regression guard for the Phase 2.1 wire-in's no-op guarantee:
-    /// when every resident input lives on the same device the nodes
-    /// are pinned to, the pass mutates NOTHING — no new nodes, no
-    /// rewired edges. This is the shape of every single-device
-    /// realize under today's monolithic pinning (build_const_cache
-    /// uploads consts to the realize device before the pass runs).
-    #[test]
-    fn resident_copies_noop_when_colocated() {
-        let graph = Arc::new(RwLock::new(Graph::new()));
-        let (c1, c2, add) = {
-            let mut g = graph.write().unwrap();
-            let c1 = push_node(&mut g, Op::Const, vec![]);
-            let c2 = push_node(&mut g, Op::Const, vec![]);
-            let add = push_node(&mut g, Op::Add, vec![c1, c2]);
-            // Mimic prepare()'s monolithic pinning loop.
-            g.set_target_backend(add, BackendId::Cpu);
-            (c1, c2, add)
-        };
-        let mut cache = StorageCache::new();
-        cache.insert(c1, cpu_storage_f32(&[1.0; 4]));
-        cache.insert(c2, cpu_storage_f32(&[2.0; 4]));
-
-        let pre_len = graph.read().unwrap().len();
-        let inserted = insert_resident_input_copies(
-            &graph, &[add], &cache, DeviceLocation::Cpu, &ExecutionPlan::empty(),
-        )
-        .unwrap();
-
-        assert_eq!(inserted, 0, "co-located graph must be a no-op");
-        let g = graph.read().unwrap();
-        assert_eq!(g.len(), pre_len, "no nodes appended");
-        assert_eq!(g.node(add).inputs, vec![c1, c2], "edges untouched");
-    }
-
-    /// Positive case: a persistent input (initial-cache slot) is
-    /// CPU-resident while the consumers are pinned to CUDA. Exactly
-    /// ONE Op::Copy bridges the crossing, CSE-deduped across both
-    /// consumers, stamped target_backend = SOURCE backend (Cpu — the
-    /// H2D `copy_from_cpu_wrapper` registration) with its output
-    /// placement on the consumer device. Placement metadata only —
-    /// no GPU needed.
-    #[test]
-    fn resident_copies_one_copy_per_crossing_deduped() {
-        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
-        let graph = Arc::new(RwLock::new(Graph::new()));
-        let (c1, neg, sqr) = {
-            let mut g = graph.write().unwrap();
-            let c1 = push_node(&mut g, Op::Const, vec![]);
-            let neg = push_node(&mut g, Op::Neg, vec![c1]);
-            let sqr = push_node(&mut g, Op::Sqr, vec![c1]);
-            g.set_target_backend(neg, BackendId::Cuda);
-            g.set_target_backend(sqr, BackendId::Cuda);
-            (c1, neg, sqr)
-        };
-        // Persistent slot resident on CPU (the InferenceContext
-        // `initial` pattern — build_const_cache skips slots already
-        // in the cache, so they keep their residency).
-        let mut cache = StorageCache::new();
-        cache.insert(c1, cpu_storage_f32(&[1.0; 4]));
-
-        let pre_len = graph.read().unwrap().len();
-        let inserted = insert_resident_input_copies(
-            &graph, &[neg, sqr], &cache, cuda0, &ExecutionPlan::empty(),
-        )
-        .unwrap();
-
-        assert_eq!(inserted, 1, "one crossing → one copy, CSE-deduped");
-        let g = graph.read().unwrap();
-        assert_eq!(g.len(), pre_len + 1);
-        let neg_in = g.node(neg).inputs[0];
-        let sqr_in = g.node(sqr).inputs[0];
-        assert_eq!(neg_in, sqr_in, "both consumers share the one copy");
-        assert_ne!(neg_in, c1, "consumers were rewired off the raw input");
-        let copy_node = g.node(neg_in);
-        assert!(
-            matches!(copy_node.op, Op::Copy { target } if target == cuda0),
-            "bridge copy targets the consumer device; got {:?}",
-            copy_node.op,
-        );
-        assert_eq!(copy_node.inputs, vec![c1], "copy reads the resident slot");
-        assert_eq!(
-            g.target_backend(neg_in),
-            Some(BackendId::Cpu),
-            "stamped with the SOURCE backend (H2D runs on the CPU wrapper)",
-        );
-        assert_eq!(
-            g.placement(neg_in),
-            Some(cuda0),
-            "copy output placed on the consumer device",
-        );
-    }
-
-    /// Sticky-graph idempotence: a second prepare()-shaped call on
-    /// the already-rewritten graph (same device) inserts nothing and
-    /// keeps the source-backend stamp intact — including across the
-    /// monolithic pinning loop's overwrite, which the re-stamp sweep
-    /// corrects.
-    #[test]
-    fn resident_copies_idempotent_and_restamped_on_second_call() {
-        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
-        let graph = Arc::new(RwLock::new(Graph::new()));
-        let (c1, neg) = {
-            let mut g = graph.write().unwrap();
-            let c1 = push_node(&mut g, Op::Const, vec![]);
-            let neg = push_node(&mut g, Op::Neg, vec![c1]);
-            g.set_target_backend(neg, BackendId::Cuda);
-            (c1, neg)
-        };
-        let mut cache = StorageCache::new();
-        cache.insert(c1, cpu_storage_f32(&[1.0; 4]));
-
-        let first = insert_resident_input_copies(
-            &graph, &[neg], &cache, cuda0, &ExecutionPlan::empty(),
-        )
-        .unwrap();
-        assert_eq!(first, 1);
-        let copy_id = graph.read().unwrap().node(neg).inputs[0];
-
-        // Second realize on the same graph: the monolithic loop
-        // re-stamps every computational node — including the copy —
-        // with the realize backend. Simulate that clobber, then
-        // verify the pass both proves no-op AND restores the
-        // source-backend stamp.
-        {
-            let mut g = graph.write().unwrap();
-            g.set_target_backend(copy_id, BackendId::Cuda);
-        }
-        let pre_len = graph.read().unwrap().len();
-        let second = insert_resident_input_copies(
-            &graph, &[neg], &cache, cuda0, &ExecutionPlan::empty(),
-        )
-        .unwrap();
-        assert_eq!(second, 0, "re-run inserts nothing");
-        let g = graph.read().unwrap();
-        assert_eq!(g.len(), pre_len, "no nodes appended on re-run");
-        assert_eq!(
-            g.target_backend(copy_id),
-            Some(BackendId::Cpu),
-            "re-stamp sweep restores the source-backend stamp after \
-             the monolithic loop clobbered it",
-        );
-    }
-
     fn noop_kernel_for_tests(
         _i: &[Arc<RwLock<Storage>>],
         _o: &mut [Arc<RwLock<Storage>>],
-        _l: &[fuel_core_types::Layout],
+        _l: &[fuel_ir::Layout],
         _p: &fuel_dispatch::kernel::OpParams,
     ) -> Result<()> {
         Ok(())
     }
 
-    /// Build an ExecutionPlan with one single-candidate winner per
-    /// `(node, backend, device)` entry. The kernel ref is a no-op —
-    /// these tests assert stamping/placement metadata, not dispatch.
-    fn plan_with_winners(
-        winners: &[(NodeId, BackendId, DeviceLocation)],
-    ) -> ExecutionPlan {
-        use fuel_dispatch::ranker::{AlternativeSet, Candidate};
-        let mut alternatives = HashMap::new();
-        for &(node, backend, device) in winners {
-            let mut set = AlternativeSet::empty();
-            set.push(Candidate {
-                kernel: noop_kernel_for_tests,
-                caps: fuel_dispatch::kernel::KernelCaps::empty(),
-                backend,
-                device,
-                precision:
-                    fuel_dispatch::fused::PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-                static_cost: Default::default(),
-                inbound_transfer_ns: 0,
-                op_params: fuel_dispatch::kernel::OpParams::None,
-                coupling: Vec::new(),
-                kernel_source: "",
-            });
-            alternatives.insert(node, set);
-        }
-        ExecutionPlan {
-            order: Vec::new(),
-            alternatives,
-            generation: 0,
-        }
-    }
-
-    /// Picker-arc step 4a: `stamp_plan_backends` commits the plan's
-    /// winner backend per node; nodes without a plan entry (here the
-    /// structural Op::Copy) get the pinned device's backend; Consts
-    /// stay unstamped.
+    /// Step E Phase C / B1 honesty contract: a CPU `DeviceRuntimeHandle` is
+    /// NOT a `BackendStreams` (CPU dispatches synchronously — no queue). Its
+    /// `as_backend_streams` upcast returns `None`, so the load-aware selector
+    /// (C2) reads "no load signal" for CPU, never a fabricated "idle." This is
+    /// the CPU half of B1's seam; the streaming half (CUDA/Vulkan reading the
+    /// in-flight counter) is covered by the live mid-realize gate.
     #[test]
-    fn stamp_plan_backends_winner_and_pinned_default() {
-        let graph = Arc::new(RwLock::new(Graph::new()));
-        let (c1, add, copy) = {
-            let mut g = graph.write().unwrap();
-            let c1 = push_node(&mut g, Op::Const, vec![]);
-            let add = push_node(&mut g, Op::Add, vec![c1, c1]);
-            let copy = push_node(
-                &mut g,
-                Op::Copy { target: DeviceLocation::Cpu },
-                vec![add],
-            );
-            (c1, add, copy)
-        };
-        let plan = plan_with_winners(&[(
-            add,
-            BackendId::Cuda,
-            DeviceLocation::Cuda { gpu_id: 0 },
-        )]);
-        stamp_plan_backends(&graph, &[copy], &plan, DeviceLocation::Cpu).unwrap();
-        let g = graph.read().unwrap();
-        assert_eq!(
-            g.target_backend(add),
-            Some(BackendId::Cuda),
-            "plan winner's backend stamped",
+    fn cpu_runtime_handle_is_not_backend_streams() {
+        let handle = DeviceRuntimeHandle(
+            Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice) as Arc<dyn DynBackendDevice>,
         );
-        assert_eq!(
-            g.target_backend(copy),
-            Some(BackendId::Cpu),
-            "no plan entry → pinned device's backend",
+        // The upcast a C2 selector performs over a `&dyn BackendRuntime`.
+        let as_runtime: &dyn BackendRuntime = &handle;
+        assert!(
+            as_runtime.as_backend_streams().is_none(),
+            "CPU has no queue concept — it must not expose BackendStreams",
         );
-        assert_eq!(g.target_backend(c1), None, "Const skipped");
+        // And the direct surface is honest too (None, not Some(0)).
+        assert_eq!(
+            handle.pending_work_count(),
+            None,
+            "CPU pending_work_count must be None (no queue), never Some(0)",
+        );
     }
 
     /// Step 4a preserves the old monolithic loop's "always
@@ -1835,7 +1802,7 @@ mod tests {
     /// keeps every candidate and residency on CPU anyway.)
     #[test]
     fn stage2_cpu_only_estimator_leaves_plan_unchanged() {
-        use fuel_core_types::dispatch::OpKind;
+        use fuel_ir::dispatch::OpKind;
         use fuel_dispatch::kernel::{unknown_cost, KernelBindingTable, KernelCaps};
 
         let mut table = KernelBindingTable::new();
@@ -1864,7 +1831,7 @@ mod tests {
             topology.backends_for(dev).to_vec()
         };
         let capabilities_for = |b: BackendId|
-            -> Option<&fuel_core_types::backend::BackendCapabilities>
+            -> Option<&fuel_ir::backend::BackendCapabilities>
         { topology.capabilities(b) };
         // Same closure shape build_optimized_graph wires.
         let input_residency = |id: NodeId| -> Option<DeviceLocation> {
@@ -1920,12 +1887,12 @@ mod tests {
         initial.insert(c2, cpu_storage_f32(&[10.0, 20.0, 30.0, 40.0]));
 
         let device = crate::Device::cpu();
-        // PR-C1: the production runtime route picker (Picker 2) defaults
-        // ON, so this CPU realize goes through `resolve_runtime_route` →
-        // `pick_route`. A CPU-only graph has no `Op::Branch`, so the route
-        // is empty ⇒ the executor uses the arm-0 lowering ⇒ realize is
-        // unchanged. The correct bytes pin that no-branch-no-op contract
-        // at the bridge level.
+        // Step C: the production runtime route picker (Picker 2) defaults
+        // ON, so this CPU realize threads the bridge-built selector into the
+        // executor's `realize_with_optimized_picking_env`, which runs the
+        // pick. A CPU-only graph has no `Op::Branch`, so the route is empty
+        // ⇒ the executor uses the arm-0 lowering ⇒ realize is unchanged. The
+        // correct bytes pin that no-branch-no-op contract at the bridge level.
         assert!(
             production_selector_for(&device).is_some(),
             "the runtime route picker defaults ON (no opt-out env set)",
@@ -1933,6 +1900,121 @@ mod tests {
         let out = realize_one_as_with_initial::<f32>(&graph, add, &device, initial)
             .expect("realize through the optimized + route-picker path");
         assert_eq!(out, vec![11.0, 22.0, 33.0, 44.0]);
+    }
+
+    /// Phase D · D2a born-red gate for the optimize-skip bridge seam.
+    ///
+    /// Realize a small CPU graph ONCE via [`prebuild_optimized_env`]
+    /// (capturing the cached `OptimizedGraph` + the spliced D2H target), then
+    /// re-realize the SAME graph via [`realize_one_prebuilt_env`] with a fresh
+    /// per-call cache + empty `SymEnv`, and assert the three plan-once
+    /// invariants:
+    ///   (a) the optimizer count (this thread's isolated
+    ///       [`optimize_calls_thread_local`]) did NOT increase on the 2nd
+    ///       realize (the optimizer was skipped);
+    ///   (b) the 2nd result is **exactly** `==` the 1st (same plan → same
+    ///       kernels → bit-exact, NOT epsilon);
+    ///   (c) the graph node `len()` did NOT grow between the two realizes (no
+    ///       double-spliced D2H `Op::Copy`, no double-inserted
+    ///       residency/`Op::Contiguize`).
+    ///
+    /// The test also demonstrates the HAZARD the seam avoids (the born-red
+    /// shape): routing a 3rd realize of the same graph through the normal
+    /// full path (`realize_one_as_with_initial`) DOES re-optimize (the count
+    /// moves) and DOES re-splice a D2H `Op::Copy` (the node count grows) —
+    /// which is exactly what the prebuilt seam skips.
+    #[test]
+    fn d2a_prebuilt_realize_skips_optimize_and_does_not_grow_graph() {
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (c1, c2, add) = {
+            let mut g = graph.write().unwrap();
+            let c1 = push_node(&mut g, Op::Const, vec![]);
+            let c2 = push_node(&mut g, Op::Const, vec![]);
+            let add = push_node(&mut g, Op::Add, vec![c1, c2]);
+            (c1, c2, add)
+        };
+        // Stable Const storages (the "data" that would be re-bound per token).
+        let c1_arc = cpu_storage_f32(&[1.0, 2.0, 3.0, 4.0]);
+        let c2_arc = cpu_storage_f32(&[10.0, 20.0, 30.0, 40.0]);
+        let device = crate::Device::cpu();
+
+        // --- First realize: full path, capture the reusable optimize view. ---
+        let mut initial = StorageCache::new();
+        initial.insert(c1, Arc::clone(&c1_arc));
+        initial.insert(c2, Arc::clone(&c2_arc));
+        // Per-thread counter — isolated from other test threads' concurrent
+        // optimizes (the process-global `optimize_calls()` is polluted under
+        // the full suite; a global counter cannot give an isolated delta).
+        let calls_before = optimize_calls_thread_local();
+        let (effective_target, optimized, first) =
+            prebuild_optimized_env::<f32>(&graph, add, &device, initial, &SymEnv::default())
+                .expect("prebuild (first) realize");
+        assert_eq!(first, vec![11.0, 22.0, 33.0, 44.0]);
+        let calls_after_first = optimize_calls_thread_local();
+        assert!(
+            calls_after_first > calls_before,
+            "the FIRST realize must run the optimizer (prepare + optimize_graph): \
+             {calls_before} -> {calls_after_first}",
+        );
+        let len_after_first = graph.read().unwrap().len();
+
+        // --- Second realize: PREBUILT seam — skip prepare + optimize. ---
+        // Fresh per-call cache carrying the same const Arcs (the D2b caller
+        // would re-bind per-token data here; on CPU it is a slice-identical
+        // clone). No new prepare/const-cache walk runs on this path.
+        let mut cache2 = StorageCache::new();
+        cache2.insert(c1, Arc::clone(&c1_arc));
+        cache2.insert(c2, Arc::clone(&c2_arc));
+        let second = realize_one_prebuilt_env::<f32>(
+            &graph,
+            effective_target,
+            &optimized,
+            &device,
+            cache2,
+            &SymEnv::default(),
+        )
+        .expect("prebuilt (second) realize");
+        let calls_after_second = optimize_calls_thread_local();
+        let len_after_second = graph.read().unwrap().len();
+
+        // (a) optimizer skipped on the prebuilt path.
+        assert_eq!(
+            calls_after_second, calls_after_first,
+            "prebuilt realize must NOT re-run optimize_graph: \
+             {calls_after_first} -> {calls_after_second}",
+        );
+        // (b) bit-exact (same plan → same kernels), NOT epsilon.
+        assert_eq!(
+            second, first,
+            "prebuilt realize must reproduce the first result byte-for-byte",
+        );
+        // (c) no double-splice / double-insert.
+        assert_eq!(
+            len_after_second, len_after_first,
+            "prebuilt realize must NOT grow the graph (no re-spliced D2H Copy \
+             / re-inserted residency or Contiguize)",
+        );
+
+        // --- Control: the HAZARD the seam avoids (born-red shape). ---
+        // Routing the SAME graph through the full path a THIRD time DOES
+        // re-optimize and DOES splice a second D2H Op::Copy at the root —
+        // exactly the double-work + node growth the prebuilt seam skips.
+        let mut initial3 = StorageCache::new();
+        initial3.insert(c1, Arc::clone(&c1_arc));
+        initial3.insert(c2, Arc::clone(&c2_arc));
+        let third =
+            realize_one_as_with_initial::<f32>(&graph, add, &device, initial3)
+                .expect("full-path (third) realize");
+        assert_eq!(third, first, "full path still computes the same value");
+        assert!(
+            optimize_calls_thread_local() > calls_after_second,
+            "the FULL path re-optimizes (this is what the prebuilt seam skips)",
+        );
+        assert!(
+            graph.read().unwrap().len() > len_after_second,
+            "the FULL path re-splices a D2H Op::Copy at the root, growing the \
+             graph (this is the double-splice the prebuilt seam skips)",
+        );
     }
 
     /// PR-C1: the production selector builder returns both a selector and
@@ -1983,7 +2065,7 @@ mod tests {
     /// first — membership, not position, is the contract).
     #[test]
     fn reporting_realize_returns_root_kernel_source() {
-        use fuel_core_types::dispatch::OpKind;
+        use fuel_ir::dispatch::OpKind;
 
         let graph = Arc::new(RwLock::new(Graph::new()));
         let (c1, c2, add) = {
@@ -2015,224 +2097,6 @@ mod tests {
             alts.iter().any(|e| e.kernel_source == src),
             "reported kernel_source {src:?} must be a registered sibling at \
              the (AddElementwise, [F32;3], Cpu) cell",
-        );
-    }
-
-    /// Real CPU negation kernel for the step-4b end-to-end test —
-    /// reads `inputs[0]` as f32 and writes the negation into
-    /// `outputs[0]`.
-    fn neg_kernel_cpu_f32(
-        inputs: &[Arc<RwLock<Storage>>],
-        outputs: &mut [Arc<RwLock<Storage>>],
-        _layouts: &[fuel_core_types::Layout],
-        _params: &fuel_dispatch::kernel::OpParams,
-    ) -> Result<()> {
-        let negated: Vec<f32> = {
-            let guard = inputs[0]
-                .read()
-                .map_err(|_| Error::Msg("input lock poisoned".into()).bt())?;
-            let BackendStorage::Cpu(c) = &guard.inner else {
-                return Err(Error::Msg("test kernel: input must be CPU".into()).bt());
-            };
-            let typed: &[f32] = c.as_slice().expect("f32 cast");
-            typed.iter().map(|x| -x).collect()
-        };
-        let mut out = outputs[0]
-            .write()
-            .map_err(|_| Error::Msg("output lock poisoned".into()).bt())?;
-        let BackendStorage::Cpu(c) = &mut out.inner else {
-            return Err(Error::Msg("test kernel: output must be CPU".into()).bt());
-        };
-        c.as_slice_mut().expect("f32 cast").copy_from_slice(&negated);
-        Ok(())
-    }
-
-    /// Step 4b end-to-end on CPU, no GPU needed: the realize device
-    /// is pinned to CUDA but the (synthetic) binding table has Neg
-    /// f32 ONLY on CPU. The picker's off-device fallback places the
-    /// op on CPU, the stamping pass commits BackendId::Cpu, the
-    /// residency pass proves no crossing (the const lives on CPU
-    /// too), and the executor realizes the plan's winner kernel
-    /// correctly on CPU.
-    #[test]
-    fn fallback_off_device_node_realizes_on_cpu_end_to_end() {
-        use fuel_core_types::dispatch::OpKind;
-        use fuel_dispatch::kernel::{unknown_cost, KernelBindingTable, KernelCaps};
-
-        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
-        let graph = Arc::new(RwLock::new(Graph::new()));
-        let (c1, neg) = {
-            let mut g = graph.write().unwrap();
-            let c1 = push_node(&mut g, Op::Const, vec![]);
-            let neg = push_node(&mut g, Op::Neg, vec![c1]);
-            (c1, neg)
-        };
-        let mut cache = StorageCache::new();
-        cache.insert(c1, cpu_storage_f32(&[1.0, 2.0, 3.0, 4.0]));
-
-        // Synthetic table: Neg f32 registered ONLY under Cpu — the
-        // pinned CUDA device has no implementation.
-        let mut table = KernelBindingTable::new();
-        table.register_full(
-            OpKind::NegElementwise,
-            &[DType::F32, DType::F32],
-            BackendId::Cpu,
-            neg_kernel_cpu_f32,
-            KernelCaps::empty(),
-            fuel_dispatch::fused::PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-            unknown_cost,
-        );
-
-        let placements_fn = move |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == cuda0 { vec![BackendId::Cuda] } else { vec![BackendId::Cpu] }
-        };
-        let fallback_fn = |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
-            vec![(BackendId::Cpu, DeviceLocation::Cpu)]
-        };
-        let options = PlanOptions::new()
-            .without_cost_population()
-            .with_pinned_device(cuda0)
-            .with_placements_for_device(&placements_fn)
-            .with_fallback_placements_for(&fallback_fn);
-        let plan = {
-            let g = graph.read().unwrap();
-            let order = fuel_graph::topo_order(&g, neg);
-            compile_plan(&g, &order, &table, &options).expect("plan with fallback")
-        };
-        let winner = plan
-            .alternatives(neg)
-            .and_then(|s| s.winner())
-            .expect("fallback winner");
-        assert_eq!(winner.backend, BackendId::Cpu);
-        assert_eq!(winner.device, DeviceLocation::Cpu, "placed off-device");
-
-        stamp_plan_backends(&graph, &[neg], &plan, cuda0).unwrap();
-        assert_eq!(
-            graph.read().unwrap().target_backend(neg),
-            Some(BackendId::Cpu),
-            "off-device winner's backend stamped",
-        );
-        let inserted = insert_resident_input_copies(
-            &graph, &[neg], &cache, cuda0, &plan,
-        )
-        .unwrap();
-        assert_eq!(
-            inserted, 0,
-            "const lives on CPU; the fallback node runs on CPU — no crossing",
-        );
-
-        let (storage, _layout) = PipelinedExecutor::realize_with_plan(
-            Arc::clone(&graph), neg, cache, Arc::new(plan),
-        )
-        .expect("realize the off-device fallback winner on CPU");
-        let guard = storage.read().unwrap();
-        let BackendStorage::Cpu(c) = &guard.inner else {
-            panic!("expected CPU storage from the fallback node");
-        };
-        let typed: &[f32] = c.as_slice().expect("f32 cast");
-        assert_eq!(typed, &[-1.0, -2.0, -3.0, -4.0]);
-    }
-
-    /// Step 4b residency stitch: when an off-device fallback winner
-    /// feeds a consumer planned on the pinned device, the
-    /// cross-device-copy pass inserts exactly one Op::Copy on the
-    /// crossing, targeting the consumer device and stamped with the
-    /// SOURCE backend. Graph-rewrite assertions only — no GPU.
-    #[test]
-    fn fallback_winner_crossing_gets_copy_stitched() {
-        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
-        let graph = Arc::new(RwLock::new(Graph::new()));
-        let (c1, neg, sqr) = {
-            let mut g = graph.write().unwrap();
-            let c1 = push_node(&mut g, Op::Const, vec![]);
-            let neg = push_node(&mut g, Op::Neg, vec![c1]);
-            let sqr = push_node(&mut g, Op::Sqr, vec![neg]);
-            (c1, neg, sqr)
-        };
-        let mut cache = StorageCache::new();
-        cache.insert(c1, cpu_storage_f32(&[1.0; 4]));
-
-        // Neg fell back to CPU; Sqr stays on the pinned CUDA device.
-        let plan = plan_with_winners(&[
-            (neg, BackendId::Cpu, DeviceLocation::Cpu),
-            (sqr, BackendId::Cuda, cuda0),
-        ]);
-        stamp_plan_backends(&graph, &[sqr], &plan, cuda0).unwrap();
-        let inserted = insert_resident_input_copies(
-            &graph, &[sqr], &cache, cuda0, &plan,
-        )
-        .unwrap();
-        assert_eq!(inserted, 1, "one crossing (neg→sqr) → one copy");
-
-        let g = graph.read().unwrap();
-        let bridge_id = g.node(sqr).inputs[0];
-        assert_ne!(bridge_id, neg, "sqr rewired off the raw fallback output");
-        let bridge = g.node(bridge_id);
-        assert!(
-            matches!(bridge.op, Op::Copy { target } if target == cuda0),
-            "bridge copy targets the consumer device; got {:?}",
-            bridge.op,
-        );
-        assert_eq!(bridge.inputs, vec![neg], "copy reads the fallback output");
-        assert_eq!(
-            g.target_backend(bridge_id),
-            Some(BackendId::Cpu),
-            "copy stamped with the SOURCE backend (bytes live on CPU)",
-        );
-        assert_eq!(
-            g.target_backend(neg),
-            Some(BackendId::Cpu),
-            "fallback node keeps its off-device stamp",
-        );
-        assert_eq!(
-            g.target_backend(sqr),
-            Some(BackendId::Cuda),
-            "pinned-device consumer keeps its winner stamp",
-        );
-    }
-
-    /// Step 4b realize-root coherence: a root Op::Copy (placement-
-    /// less splice) whose input fell back off-device gets re-stamped
-    /// with the SOURCE backend by the residency pass — the download
-    /// kernel must run where the bytes actually live, not on the
-    /// pinned device.
-    #[test]
-    fn realize_root_copy_restamped_to_fallback_source() {
-        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
-        let graph = Arc::new(RwLock::new(Graph::new()));
-        let (c1, neg, root_copy) = {
-            let mut g = graph.write().unwrap();
-            let c1 = push_node(&mut g, Op::Const, vec![]);
-            let neg = push_node(&mut g, Op::Neg, vec![c1]);
-            // Mimic prepare()'s realize-root splice (no placement).
-            let root_copy = push_node(
-                &mut g,
-                Op::Copy { target: DeviceLocation::Cpu },
-                vec![neg],
-            );
-            (c1, neg, root_copy)
-        };
-        let mut cache = StorageCache::new();
-        cache.insert(c1, cpu_storage_f32(&[1.0; 4]));
-
-        let plan = plan_with_winners(&[(neg, BackendId::Cpu, DeviceLocation::Cpu)]);
-        stamp_plan_backends(&graph, &[root_copy], &plan, cuda0).unwrap();
-        assert_eq!(
-            graph.read().unwrap().target_backend(root_copy),
-            Some(BackendId::Cuda),
-            "stamping pass defaults the planless root copy to the pinned backend",
-        );
-
-        let inserted = insert_resident_input_copies(
-            &graph, &[root_copy], &cache, cuda0, &plan,
-        )
-        .unwrap();
-        assert_eq!(inserted, 0, "Op::Copy consumers are never re-wrapped");
-        assert_eq!(
-            graph.read().unwrap().target_backend(root_copy),
-            Some(BackendId::Cpu),
-            "re-stamp sweep moves the root copy onto the SOURCE backend \
-             (its input fell back to CPU)",
         );
     }
 
@@ -2326,13 +2190,11 @@ mod tests {
     /// whichever value the test binary observed first.)
     /// PR-A3b-2: the single optimized realize path runs the bridge's
     /// exact correctness sequence — `build_optimized_graph` (the ONE
-    /// `compile_plan`, surfacing its `ExecutionPlan`) → stamp backends →
-    /// residency stitch → layout fixups → `realize_with_optimized` (run
-    /// / `lower_run` order + binding-table lookup) — and produces the
-    /// expected values for `(a + b) * a`. This exercises the de-duped
-    /// plan reuse directly: the SAME plan `optimize_graph` surfaces
-    /// drives stamping/residency/layout, and the executor recomputes its
-    /// order from the stamped graph.
+    /// `compile_plan`, internal: stamp backends → residency stitch →
+    /// layout fixups) → `realize_with_optimized` (run / `lower_run` order +
+    /// binding-table lookup) — and produces the expected values for
+    /// `(a + b) * a`. `optimize_graph` returns only the `OptimizedGraph`
+    /// (Step D); the executor recomputes its order from the stamped graph.
     #[test]
     fn optimized_path_runs_full_correctness_sequence() {
         // Realize `(a + b) * a` with a = [1,2,3,4], b = [10,20,30,40].
@@ -2364,15 +2226,13 @@ mod tests {
             prepare(&graph, &[out], &device, initial).expect("prepare");
         let cpu_target = eff.pop().expect("one effective target");
 
-        // The bridge's correctness sequence: one optimize_graph surfaces
-        // the plan that drives stamp/residency/layout, then dispatch.
-        let (optimized, plan) =
+        // The bridge's correctness sequence is now entirely inside
+        // `optimize_graph`: it stamps the winning backends AND runs the
+        // residency + layout-fixup passes (cleanup A1 + Step B). The bridge
+        // just dispatches the stamped, copy-stitched graph.
+        let optimized =
             build_optimized_graph(&graph, &[cpu_target], pinned, &cache)
                 .expect("optimize_graph");
-        stamp_plan_backends(&graph, &[cpu_target], &plan, pinned).expect("stamp");
-        insert_resident_input_copies(&graph, &[cpu_target], &cache, pinned, &plan)
-            .expect("residency");
-        apply_layout_fixups(&graph, &[cpu_target], &plan).expect("fixups");
 
         let (storage, _layout) = PipelinedExecutor::realize_with_optimized(
             graph.clone(), cpu_target, cache, &optimized,

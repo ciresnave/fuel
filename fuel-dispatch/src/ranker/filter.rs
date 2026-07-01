@@ -11,8 +11,8 @@
 //! composition lets Phase 3's Judge filter slot in without touching
 //! the consumer's chain construction.
 
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::{DType, Layout};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::{DType, Layout};
 
 use super::candidate::Candidate;
 
@@ -48,7 +48,7 @@ pub trait AlternativeFilter: Send + Sync {
 
     /// Short identifier shown in diagnostics. Convention: short
     /// kebab-case ("precision-floor", "strided-input-pref",
-    /// "judge-fastest"). Used in [`fuel_core_types::Error::FilterRejected`].
+    /// "judge-fastest"). Used in [`fuel_ir::Error::FilterRejected`].
     fn name(&self) -> &'static str;
 }
 
@@ -57,7 +57,7 @@ pub trait AlternativeFilter: Send + Sync {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FilterClass {
     /// The filter may filter to zero. If it does, the pipeline
-    /// surfaces [`fuel_core_types::Error::FilterRejected`] — the
+    /// surfaces [`fuel_ir::Error::FilterRejected`] — the
     /// user asked for something the binding-table can't deliver and
     /// we surface it rather than silently substituting a
     /// non-admissible alternative.
@@ -144,7 +144,7 @@ impl<'a> FilterContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
 
     /// Mock filter for tests — keeps exactly the indices it was
     /// configured with, regardless of input.

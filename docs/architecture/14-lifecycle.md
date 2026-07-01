@@ -1,6 +1,6 @@
 # Lifecycle: from model file to finished inference/training
 
-**Status**: v0.6 (2026-06-20). v0.6 reconciles the glossary + narrative to the 2026-06-20 adaptive-runtime-fusion decision ([10-decisions-log](10-decisions-log.md)): the fused-op registry is **no longer "frozen"** but two-tier runtime-extensible (G4 — Tier-1 binding table already extensible, Tier-2 trusted Fuel-orchestrated fused-op registration the new goal; untrusted user ops/rules + new primitives stay closed); the base-map/`decompose` narrative gains the **total + never-panic + primitive→self** invariant (G2); **missing-fusion telemetry** is named as distinct from the Judge (G5); the run-capture/replay passage positions the **megakernel** as the narrow, highest-risk, non-default step above captured-run replay (G6); and the optimizer narrative references the **closed-loop adaptive optimizer** with its Fuel-strategist / backend-synthesizer division (G7).
+**Status**: v0.6 (2026-06-25). v0.6 reconciles the glossary + narrative to the 2026-06-20 adaptive-runtime-fusion decision ([10-decisions-log](10-decisions-log.md)): the fused-op registry is **no longer "frozen"** but two-tier runtime-extensible (G4 — Tier-1 binding table already extensible, Tier-2 trusted Fuel-orchestrated fused-op registration the new goal; untrusted user ops/rules + new primitives stay closed); the base-map/`decompose` narrative gains the **total + never-panic + primitive→self** invariant (G2); **missing-fusion telemetry** is named as distinct from the Judge (G5); the run-capture/replay passage positions the **megakernel** as the narrow, highest-risk, non-default step above captured-run replay (G6); and the optimizer narrative references the **closed-loop adaptive optimizer** with its Fuel-strategist / backend-synthesizer division (G7). v0.6 also refines Stage 5's autoregressive-barrier story: the per-pass re-bind substrate (realize binds the runtime KV append offset / `cached_len` into one stable graph instead of baking it into a fresh per-token graph) has landed at the executor/session level, framed honestly as the Intended mechanism whose substrate has shipped but is not yet wired into production decode. Core claim unchanged.
 
 This is the one document that walks the **whole path**, in order: from "load a model
 from disk" to "inference or training has finished." Every other architecture section
@@ -441,11 +441,7 @@ step (only the host scalar `cached_len` changes), so re-optimizing each token is
 "1.8×/token" planning result that originally motivated memoization was measured on a synthetic
 single-growing-graph loop and **does not reach this production decode path**.
 
-Under the redirection this gap closes *by construction*: the decode graph is **not** rebuilt
-per token — the loaded, input-independent graph is reused across steps, and the only thing that
-advances is **session-class** storage (the KV-cache, keyed by `SessionId`). Plan reuse then
-falls out of the graph being the same object, instead of needing a structural-hash plan cache
-bolted onto fresh-every-step graphs.
+Under the redirection this gap closes *by construction*: the decode graph is **not** rebuilt per token — the loaded, input-independent graph is reused across steps, and the only thing that advances is **session-class** storage (the KV-cache, keyed by `SessionId`) together with the runtime values (the write offset `cached_len`) **re-bound per pass** rather than baked into a fresh graph. The substrate for that re-bind has landed at the executor/session level: realize accepts a per-pass environment that binds the runtime value of each symbolic scalar (the KV append offset) into one stable graph, so a step *re-binds and re-runs* instead of re-building and re-planning. Production decode does not yet use it — it still bakes the host scalar and mints a fresh graph each token — so this is the **Intended** mechanism with its substrate proven, not the as-built decode path. Plan reuse then falls out of the graph being the same object, instead of needing a structural-hash plan cache bolted onto fresh-every-step graphs.
 
 ---
 

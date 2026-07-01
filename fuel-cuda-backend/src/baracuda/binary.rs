@@ -25,7 +25,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{DType, Layout, Result, Shape};
+use fuel_ir::{DType, Layout, Result, Shape};
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -77,7 +77,7 @@ impl BinaryStrides {
     ) -> Result<Self> {
         let dims = y_layout.shape().dims();
         if a_layout.shape().dims() != dims || b_layout.shape().dims() != dims {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "{op_label}: a / b / y shapes must match after broadcast \
                  (a={:?}, b={:?}, y={:?})",
                 a_layout.shape().dims(),
@@ -89,7 +89,7 @@ impl BinaryStrides {
         let mut shape = Vec::with_capacity(dims.len());
         for (i, &d) in dims.iter().enumerate() {
             shape.push(i32::try_from(d).map_err(|_| {
-                fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+                fuel_ir::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
                     op: op_label,
                     dim_index: i,
                     dim_value: d,
@@ -140,7 +140,7 @@ fn binary_run(
     let out_bytes = (numel as usize) * dtype_size_bytes;
     let device = lhs.device().clone();
     if rhs.device().id() != device.id() {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "{op_label}: lhs and rhs on different CUDA devices",
         ))
         .bt());
@@ -195,7 +195,6 @@ fn binary_run(
         }
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
         device,

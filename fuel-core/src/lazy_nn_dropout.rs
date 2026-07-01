@@ -53,7 +53,7 @@
 
 use crate::lazy::LazyTensor;
 use crate::Result;
-use fuel_core_types::{DType, Shape};
+use fuel_ir::{DType, Shape};
 use std::sync::Arc;
 
 /// A dropout layer that randomly zeroes input elements during
@@ -67,7 +67,7 @@ use std::sync::Arc;
 /// ```rust,no_run
 /// # use fuel_core::{Device, lazy::LazyTensor};
 /// # use fuel_core::lazy_nn_dropout::Dropout;
-/// # use fuel_core_types::Shape;
+/// # use fuel_ir::Shape;
 /// let device = Device::cpu();
 /// let x = LazyTensor::from_f32(
 ///     vec![1.0_f32, 2.0, 3.0, 4.0],

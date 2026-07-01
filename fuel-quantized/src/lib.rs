@@ -10,7 +10,7 @@
 //!   crate that defines `BlockQX`.
 //! - [`utils`] — quantization-time helpers shared by k_quants impls.
 //! - [`cpu`] — CPU-side adapters that bridge `Vec<BlockQX>` to the
-//!   backend-agnostic [`fuel_core_types::quantized::DynQuantizedStorage`]
+//!   backend-agnostic [`fuel_backend_contract::quantized::DynQuantizedStorage`]
 //!   trait, plus the `QuantizedDeviceKernels` impl on
 //!   `fuel_cpu_backend::CpuBackendDevice`.
 //!
@@ -37,4 +37,5 @@ pub use k_quants::{
 
 // Re-export GgmlDType so downstream callers can write
 // `fuel_quantized::GgmlDType` without naming fuel-core-types.
-pub use fuel_core_types::quantized::{DynQuantizedStorage, GgmlDType, QuantizedDeviceKernels};
+pub use fuel_backend_contract::quantized::{DynQuantizedStorage, QuantizedDeviceKernels};
+pub use fuel_ir::quantized::GgmlDType;

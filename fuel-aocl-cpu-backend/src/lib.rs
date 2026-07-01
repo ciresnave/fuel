@@ -37,7 +37,7 @@ mod dll_path;
 
 pub use binding_table::register_aocl_cpu_kernels;
 
-use fuel_core_types::Result;
+use fuel_ir::Result;
 
 /// Probe `libaocl_blas` with a 2×2 sgemm. Returns `Ok` on a successful
 /// call, `Err` if the library can't be loaded (or any deeper failure
@@ -62,11 +62,11 @@ pub fn probe_aocl_loadable() -> Result<()> {
         &a, &b,
         0.0_f32,
         &mut c,
-    ).map_err(|e| fuel_core_types::Error::Msg(
+    ).map_err(|e| fuel_ir::Error::Msg(
         format!("AOCL probe gemm failed: {e}")
     ))?;
     if c != [1.0, 2.0, 3.0, 4.0] {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "AOCL probe gemm produced wrong result: {c:?} != [1, 2, 3, 4]"
         )));
     }

@@ -67,7 +67,7 @@
 //!   VAE.decode` to produce a finite image of the expected shape.
 
 use crate::lazy::LazyTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 // ============================================================================

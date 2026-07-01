@@ -53,20 +53,20 @@
 use core::ffi::c_void;
 use core::marker::PhantomData;
 
-use fuel_core_types::dlpack::abi::{
+use fuel_ir::dlpack::abi::{
     device_type, DLDataType, DLDevice, DLTensor,
 };
-use fuel_core_types::dlpack::codes::*;
-use fuel_core_types::dlpack::convert::{dl_dtype, extent_to_fdx};
-use fuel_core_types::dlpack::sidecar::{
+use fuel_ir::dlpack::codes::*;
+use fuel_ir::dlpack::convert::{dl_dtype, extent_to_fdx};
+use fuel_ir::dlpack::sidecar::{
     FDXAffine, FDXAffineTerm, FDXBufferRef, FDXDTypeExt, FDXExtent, FDXIndexedResidency,
     FDXOutputView, FDXQuant, FDXResidency, FDXSidecar, FDXStorage, FDXSymBinding, FDXSymEnv,
     FDXTiling,
 };
-use fuel_core_types::dlpack::validate::{self, FdxValidationError};
-use fuel_core_types::shape::Extent;
-use fuel_core_types::storage::OutputView;
-use fuel_core_types::{DType, DeviceLocation, Error, Layout, Result, SymEnv};
+use fuel_ir::dlpack::validate::{self, FdxValidationError};
+use fuel_ir::shape::Extent;
+use fuel_ir::storage::OutputView;
+use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, SymEnv};
 
 use crate::Storage;
 
@@ -376,7 +376,7 @@ fn gather_none() -> FDXIndexedResidency {
         physical_strides: [0; 6],
         element_dtype: FDX_DTYPE_NONE,
         _pad3: [0; 2],
-        block_table: fuel_core_types::dlpack::sidecar::FDXBlockTable {
+        block_table: fuel_ir::dlpack::sidecar::FDXBlockTable {
             table_buffer: 0,
             id_dtype: FDX_DTYPE_NONE,
             _pad0: 0,
@@ -471,7 +471,7 @@ fn fnv1a(s: &str) -> u64 {
 /// FDX logical-dtype code for a Fuel dtype (the §6.1 table), via the
 /// `fuel-core-types` conversion.
 fn dtype_to_fdx_code(d: DType) -> u16 {
-    fuel_core_types::dlpack::convert::dtype_to_fdx(d)
+    fuel_ir::dlpack::convert::dtype_to_fdx(d)
 }
 
 /// Construct a borrowed DLPack + FDX view over `(storage, layout)` with **no
@@ -559,7 +559,7 @@ pub fn view<'a>(
         shape[0] = storage.len_bytes() as i64;
         strides[0] = 1;
         dl_dt = DLDataType {
-            code: fuel_core_types::dlpack::abi::dtype_code::K_DL_UINT,
+            code: fuel_ir::dlpack::abi::dtype_code::K_DL_UINT,
             bits: 8,
             lanes: 1,
         };
