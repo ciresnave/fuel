@@ -10,7 +10,7 @@
 #![cfg(any(feature = "aocl", feature = "onemkl"))]
 
 use fuel_core::lazy::LazyTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 fn build_conv_graph(
     n: usize, c_in: usize, h: usize, w: usize,

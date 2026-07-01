@@ -90,7 +90,7 @@ impl Gemma4MmEmbedWeights {
 mod tests {
     use super::*;
     use crate::Device;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
 
     fn rng(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;

@@ -24,8 +24,8 @@
 use std::any::Any;
 use std::sync::{Arc, Mutex};
 
-use fuel_core_types::dyn_backend::{DynBackendDevice, DynBackendStorage};
-use fuel_core_types::{DType, DeviceLocation, Error, HostBuffer, Result, Shape};
+use fuel_backend_contract::dyn_backend::{DynBackendDevice, DynBackendStorage};
+use fuel_ir::{DType, DeviceLocation, Error, HostBuffer, Result, Shape};
 
 use crate::VulkanBackend;
 
@@ -72,7 +72,7 @@ impl VulkanBackendDevice {
     }
 }
 
-impl fuel_core_types::backend::BackendRuntime for VulkanBackendDevice {
+impl fuel_backend_contract::backend::BackendRuntime for VulkanBackendDevice {
     /// Vulkan VRAM available = budget − used. Driver-level signal
     /// from `VK_EXT_memory_budget`. Returns `None` when the
     /// extension isn't loaded or the device doesn't support it
@@ -116,7 +116,7 @@ impl DynBackendDevice for VulkanBackendDevice {
         DeviceLocation::Vulkan { gpu_id: self.inner.gpu_id }
     }
 
-    fn as_backend_runtime(&self) -> Option<&dyn fuel_core_types::backend::BackendRuntime> {
+    fn as_backend_runtime(&self) -> Option<&dyn fuel_backend_contract::backend::BackendRuntime> {
         Some(self)
     }
 

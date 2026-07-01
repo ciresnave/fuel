@@ -16,7 +16,7 @@
 use std::io::{Read, Seek, SeekFrom};
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use fuel_core_types::{Error, GgmlDType, Result, bail};
+use fuel_ir::{Error, GgmlDType, Result, bail};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Magic {

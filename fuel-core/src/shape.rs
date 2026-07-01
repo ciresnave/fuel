@@ -12,13 +12,13 @@
 //! ```
 
 // Re-export all shape types, traits, and free functions from the types crate.
-pub use fuel_core_types::shape::*;
+pub use fuel_ir::shape::*;
 
 // ---------------------------------------------------------------------------
 // Tensor dimension-extraction methods
 //
 // These mirror the Shape::dimsN() methods on Tensor for convenience.
-// The `?` operator handles the fuel_core_types::Error → fuel_core::Error
+// The `?` operator handles the fuel_ir::Error → fuel_core::Error
 // conversion via the From impl in error.rs.
 // ---------------------------------------------------------------------------
 

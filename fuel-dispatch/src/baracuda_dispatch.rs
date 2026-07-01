@@ -14,9 +14,9 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::{Layout, Error, Result, probe::BackendId};
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::DType;
+use fuel_ir::{Layout, Error, Result, probe::BackendId};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::DType;
 
 use crate::kernel::{KernelBindingTable, KernelCaps, OpParams};
 use fuel_memory::Storage;

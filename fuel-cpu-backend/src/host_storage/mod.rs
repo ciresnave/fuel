@@ -1,4 +1,4 @@
-//! Alternative [`HostStorage`](fuel_core_types::backend::HostStorage) impls
+//! Alternative [`HostStorage`](fuel_backend_contract::backend::HostStorage) impls
 //! beyond the default owned [`CpuBackendStorage`](crate::dyn_impl::
 //! CpuBackendStorage).
 //!

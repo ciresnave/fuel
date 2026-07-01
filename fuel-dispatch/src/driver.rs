@@ -70,8 +70,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::Result;
+use fuel_ir::probe::BackendId;
+use fuel_ir::Result;
 use fuel_graph::{Graph, Node, NodeId, Op};
 
 use crate::plan::ExecutionPlan;

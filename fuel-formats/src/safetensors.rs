@@ -30,7 +30,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fuel_core_types::{Error, Result};
+use fuel_ir::{Error, Result};
 
 pub use safetensors::SafeTensors;
 pub use safetensors::tensor::{Dtype, TensorView, View};

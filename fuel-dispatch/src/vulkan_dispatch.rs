@@ -29,9 +29,9 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, Error, Layout, Result};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, Error, Layout, Result};
 
 use crate::kernel::{KernelBindingTable, OpParams};
 use fuel_memory::{BackendStorage, Storage};
@@ -598,7 +598,7 @@ pub mod softmax {
             &fuel_vulkan_backend::VulkanStorageBytes,
             &mut fuel_vulkan_backend::VulkanStorageBytes,
             usize, usize,
-        ) -> fuel_core_types::Result<()>,
+        ) -> fuel_ir::Result<()>,
     {
         if inputs.len() != 2 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
@@ -782,7 +782,7 @@ pub mod norm {
             &fuel_vulkan_backend::VulkanStorageBytes,
             &mut fuel_vulkan_backend::VulkanStorageBytes,
             usize, usize, f64,
-        ) -> fuel_core_types::Result<()>,
+        ) -> fuel_ir::Result<()>,
     {
         if inputs.len() != 2 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
@@ -861,7 +861,7 @@ pub mod norm {
             &fuel_vulkan_backend::VulkanStorageBytes,
             &mut fuel_vulkan_backend::VulkanStorageBytes,
             usize, usize, f64,
-        ) -> fuel_core_types::Result<()>,
+        ) -> fuel_ir::Result<()>,
     {
         if inputs.len() != 1 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
@@ -1016,7 +1016,7 @@ pub mod attention {
             &fuel_vulkan_backend::VulkanStorageBytes,
             &mut fuel_vulkan_backend::VulkanStorageBytes,
             &Layout,
-        ) -> fuel_core_types::Result<()>,
+        ) -> fuel_ir::Result<()>,
     {
         if inputs.len() != 3 || outputs.len() != 1 {
             return Err(Error::Msg(format!(
@@ -2149,7 +2149,7 @@ pub mod pad {
 pub mod concat {
     use super::*;
     use fuel_memory::BackendStorage;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
 
     /// Generic concat dispatcher. Takes the per-pair concat call
     /// (which knows the source/destination dtype) plus the per-element
@@ -2174,7 +2174,7 @@ pub mod concat {
             usize,
             &Layout,
             &Layout,
-        ) -> fuel_core_types::Result<()>,
+        ) -> fuel_ir::Result<()>,
     {
         if outputs.len() != 1 {
             return Err(Error::Msg(format!(
@@ -3153,7 +3153,7 @@ pub mod indexing {
             &fuel_vulkan_backend::VulkanStorageBytes,
             &mut fuel_vulkan_backend::VulkanStorageBytes,
             usize, usize, usize, usize,
-        ) -> fuel_core_types::Result<()>,
+        ) -> fuel_ir::Result<()>,
     {
         if inputs.len() != 2 || outputs.len() != 1 {
             return Err(Error::Msg(format!(

@@ -37,10 +37,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
 
-use fuel_core_types::conv::{ParamsConv1D, ParamsConvTranspose1D};
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, Error, Layout, Result};
+use fuel_ir::conv::{ParamsConv1D, ParamsConvTranspose1D};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, Error, Layout, Result};
 use fuel_graph::QuantType;
 use smallvec::SmallVec;
 
@@ -140,7 +140,7 @@ use fuel_memory::Storage;
 ///   dispatch info.
 /// - The bundle is pre-allocated by the executor via
 ///   `allocate_bundled_storage(device, &output_views_spec)` (see
-///   `fuel_core_types::storage::allocate_bundled_storage`). Kernels
+///   `fuel_backend_contract::storage::allocate_bundled_storage`). Kernels
 ///   never allocate; they only fill bytes.
 ///
 /// Consumers of multi-output producers are NOT multi-output kernels —
@@ -711,10 +711,10 @@ pub enum OpParams {
 /// cost model lives here; Layer-2 empirical refinement composes on
 /// top via the telemetry framework, not by changing this signature.
 pub type CostFn = fn(
-    &[fuel_core_types::Shape],
+    &[fuel_ir::Shape],
     &[DType],
     &OpParams,
-    &fuel_core_types::backend::BackendCapabilities,
+    &fuel_ir::backend::BackendCapabilities,
 ) -> crate::fused::CostEstimate;
 
 /// Sentinel "no cost claim" function — returns
@@ -722,10 +722,10 @@ pub type CostFn = fn(
 /// (`fill_unset_cpu_cost`) recognizes this exact function pointer
 /// to decide which entries get the OpKind-family default.
 pub fn unknown_cost(
-    _shapes: &[fuel_core_types::Shape],
+    _shapes: &[fuel_ir::Shape],
     _dtypes: &[DType],
     _params: &OpParams,
-    _caps: &fuel_core_types::backend::BackendCapabilities,
+    _caps: &fuel_ir::backend::BackendCapabilities,
 ) -> crate::fused::CostEstimate {
     crate::fused::CostEstimate::default()
 }
@@ -1235,7 +1235,7 @@ impl std::fmt::Debug for KernelBindingTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::DType;
+    use fuel_ir::DType;
 
     /// Smoke: KernelRef can be constructed and stored.
     #[test]
@@ -1351,7 +1351,7 @@ mod tests {
     /// returns both in registration order.
     #[test]
     fn step_9a_two_alternatives_append_then_first_wins_on_legacy_lookup() {
-        use fuel_core_types::probe::BackendId;
+        use fuel_ir::probe::BackendId;
         let mut table = KernelBindingTable::new();
         let dts = [DType::BF16, DType::BF16, DType::BF16];
         table.register(OpKind::MatMul, &dts, BackendId::Cuda, ok_kernel);
@@ -1380,7 +1380,7 @@ mod tests {
     /// `Err`. (Replaces the former `#[should_panic]` guard.)
     #[test]
     fn step_9a_duplicate_kernel_ref_detected_by_finalize_not_panic() {
-        use fuel_core_types::probe::BackendId;
+        use fuel_ir::probe::BackendId;
         let mut table = KernelBindingTable::new();
         let dts = [DType::F32, DType::F32, DType::F32];
         table.register(OpKind::MatMul, &dts, BackendId::Cpu, ok_kernel);
@@ -1397,7 +1397,7 @@ mod tests {
     /// Distinct sibling kernels under one key finalize cleanly.
     #[test]
     fn finalize_ok_for_distinct_sibling_kernels() {
-        use fuel_core_types::probe::BackendId;
+        use fuel_ir::probe::BackendId;
         let mut table = KernelBindingTable::new();
         let dts = [DType::F32, DType::F32, DType::F32];
         table.register(OpKind::MatMul, &dts, BackendId::Cpu, ok_kernel);
@@ -1412,7 +1412,7 @@ mod tests {
     #[test]
     fn step_9a_fill_passes_touch_every_alternative() {
         use crate::fused::PrecisionGuarantee;
-        use fuel_core_types::probe::BackendId;
+        use fuel_ir::probe::BackendId;
         let mut table = KernelBindingTable::new();
         let dts = [DType::F32, DType::F32, DType::F32];
         table.register(OpKind::AddElementwise, &dts, BackendId::Cpu, ok_kernel);

@@ -136,15 +136,15 @@ impl RotaryEmbI {
         };
         // Baracuda's `rope_apply_interleaved_<dt>_run` requires F32
         // cos/sin tables regardless of operand dtype; cast on demand.
-        let cos_f32 = if s2.dtype() == fuel_core_types::DType::F32 {
+        let cos_f32 = if s2.dtype() == fuel_ir::DType::F32 {
             None
         } else {
-            Some(s2.to_dtype(l2, fuel_core_types::DType::F32)?)
+            Some(s2.to_dtype(l2, fuel_ir::DType::F32)?)
         };
-        let sin_f32 = if s3.dtype() == fuel_core_types::DType::F32 {
+        let sin_f32 = if s3.dtype() == fuel_ir::DType::F32 {
             None
         } else {
-            Some(s3.to_dtype(l3, fuel_core_types::DType::F32)?)
+            Some(s3.to_dtype(l3, fuel_ir::DType::F32)?)
         };
         let cos_ref = cos_f32.as_ref().unwrap_or(s2);
         let sin_ref = sin_f32.as_ref().unwrap_or(s3);
@@ -439,15 +439,15 @@ impl RotaryEmb {
         }
         // Baracuda's `rope_apply_<dt>_run` requires F32 cos/sin
         // tables regardless of operand dtype; cast on demand.
-        let cos_f32 = if s2.dtype() == fuel_core_types::DType::F32 {
+        let cos_f32 = if s2.dtype() == fuel_ir::DType::F32 {
             None
         } else {
-            Some(s2.to_dtype(l2, fuel_core_types::DType::F32)?)
+            Some(s2.to_dtype(l2, fuel_ir::DType::F32)?)
         };
-        let sin_f32 = if s3.dtype() == fuel_core_types::DType::F32 {
+        let sin_f32 = if s3.dtype() == fuel_ir::DType::F32 {
             None
         } else {
-            Some(s3.to_dtype(l3, fuel_core_types::DType::F32)?)
+            Some(s3.to_dtype(l3, fuel_ir::DType::F32)?)
         };
         let cos_ref = cos_f32.as_ref().unwrap_or(s2);
         let sin_ref = sin_f32.as_ref().unwrap_or(s3);
@@ -730,15 +730,15 @@ impl RotaryEmbThd {
         } else {
             0
         };
-        let cos_f32 = if s2.dtype() == fuel_core_types::DType::F32 {
+        let cos_f32 = if s2.dtype() == fuel_ir::DType::F32 {
             None
         } else {
-            Some(s2.to_dtype(l2, fuel_core_types::DType::F32)?)
+            Some(s2.to_dtype(l2, fuel_ir::DType::F32)?)
         };
-        let sin_f32 = if s3.dtype() == fuel_core_types::DType::F32 {
+        let sin_f32 = if s3.dtype() == fuel_ir::DType::F32 {
             None
         } else {
-            Some(s3.to_dtype(l3, fuel_core_types::DType::F32)?)
+            Some(s3.to_dtype(l3, fuel_ir::DType::F32)?)
         };
         let cos_ref = cos_f32.as_ref().unwrap_or(s2);
         let sin_ref = sin_f32.as_ref().unwrap_or(s3);

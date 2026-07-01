@@ -23,7 +23,7 @@ use crate::lazy::{
 };
 use crate::lazy_vit::{VitConfig, VitLayerWeights, VitModel, VitWeights};
 use crate::Result;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

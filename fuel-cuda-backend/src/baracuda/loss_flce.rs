@@ -31,7 +31,7 @@
 //! per_row to support strided `logits`. `target` is `i64` indices.
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::Result;
+use fuel_ir::Result;
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -142,7 +142,6 @@ fn per_row_inner(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(())
 }
 
@@ -170,7 +169,6 @@ macro_rules! per_row_cast {
                 )
             };
             check(status, stringify!($name))?;
-            device.synchronize()?;
             Ok(())
         }
     };
@@ -207,7 +205,6 @@ macro_rules! scalar_finalize {
                 )
             };
             check(status, stringify!($name))?;
-            device.synchronize()?;
             Ok(())
         }
     };
@@ -241,7 +238,6 @@ macro_rules! inplace_scale {
                 )
             };
             check(status, stringify!($name))?;
-            device.synchronize()?;
             Ok(())
         }
     };
@@ -275,6 +271,5 @@ pub fn count_non_ignore(
         )
     };
     check(status, "loss_flce_count_non_ignore")?;
-    device.synchronize()?;
     Ok(())
 }

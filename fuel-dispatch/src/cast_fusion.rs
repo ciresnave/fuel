@@ -23,8 +23,8 @@
 
 use std::sync::Arc;
 
-use fuel_core_types::{probe::BackendId, DType};
-use fuel_core_types::dispatch::OpKind;
+use fuel_ir::{probe::BackendId, DType};
+use fuel_ir::dispatch::OpKind;
 use fuel_graph::opt::CapabilityPredicate;
 use fuel_graph::Op;
 
@@ -164,15 +164,15 @@ fn op_kind(op: &Op) -> Option<OpKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
     use fuel_graph::opt::{CastFusionRule, RuleRegistry};
     use fuel_graph::Tensor;
     use fuel_graph::topo_order_multi;
     use std::sync::Arc as StdArc;
 
-    fn cpu_dev() -> &'static StdArc<dyn fuel_core_types::DynBackendDevice> {
+    fn cpu_dev() -> &'static StdArc<dyn fuel_backend_contract::DynBackendDevice> {
         use std::sync::OnceLock;
-        static D: OnceLock<StdArc<dyn fuel_core_types::DynBackendDevice>> = OnceLock::new();
+        static D: OnceLock<StdArc<dyn fuel_backend_contract::DynBackendDevice>> = OnceLock::new();
         D.get_or_init(|| StdArc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
     }
 

@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::Result;
+use fuel_ir::Result;
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -72,7 +72,7 @@ fn index_select_run(
 
     let i32_or = |dim_index: usize, dim_value: usize| -> Result<i32> {
         i32::try_from(dim_value).map_err(|_| {
-            fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+            fuel_ir::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
                 op: op_label,
                 dim_index,
                 dim_value,
@@ -115,7 +115,6 @@ fn index_select_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
         device,
@@ -189,7 +188,7 @@ fn shape_strides_for(
     let mut shape_i32 = Vec::with_capacity(rank);
     for (i, &d) in shape.iter().enumerate() {
         shape_i32.push(i32::try_from(d).map_err(|_| {
-            fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+            fuel_ir::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
                 op: op_label,
                 dim_index: i,
                 dim_value: d,
@@ -217,7 +216,7 @@ fn gather_run(
     dtype_size_bytes: usize,
 ) -> Result<CudaStorageBytes> {
     if source_shape.len() != output_shape.len() {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "{op_label}: source rank {} != output rank {}",
             source_shape.len(),
             output_shape.len(),
@@ -225,7 +224,7 @@ fn gather_run(
         .bt());
     }
     if dim >= source_shape.len() {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "{op_label}: dim {dim} out of bounds for rank {}",
             source_shape.len(),
         ))
@@ -247,7 +246,7 @@ fn gather_run(
     let (_idx_shape_i32, stride_index) = shape_strides_for(output_shape, op_label)?;
     let rank = source_shape.len() as i32;
     let src_dim = i32::try_from(source_shape[dim]).map_err(|_| {
-        fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+        fuel_ir::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
             op: op_label,
             dim_index: dim,
             dim_value: source_shape[dim],
@@ -277,7 +276,6 @@ fn gather_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
         device,
@@ -336,7 +334,7 @@ type MaskedFillRun = unsafe extern "C" fn(
 /// are ignored.
 fn pack_fill_bits(fill_bytes: &[u8], op_label: &'static str) -> Result<i64> {
     if fill_bytes.len() > 8 {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "{op_label}: fill_bytes length {} exceeds i64 (8 bytes)",
             fill_bytes.len(),
         ))
@@ -383,7 +381,6 @@ fn masked_fill_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
         device,
@@ -453,7 +450,7 @@ fn scatter_add_run(
     dtype_size_bytes: usize,
 ) -> Result<CudaStorageBytes> {
     if base_shape.len() != src_shape.len() {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "{op_label}: base rank {} != src rank {}",
             base_shape.len(),
             src_shape.len(),
@@ -461,7 +458,7 @@ fn scatter_add_run(
         .bt());
     }
     if dim >= base_shape.len() {
-        return Err(fuel_core_types::Error::Msg(format!(
+        return Err(fuel_ir::Error::Msg(format!(
             "{op_label}: dim {dim} out of bounds for rank {}",
             base_shape.len(),
         ))
@@ -482,7 +479,7 @@ fn scatter_add_run(
     let (_idx_shape_i32, stride_index) = shape_strides_for(src_shape, op_label)?;
     let (_out_shape_i32, stride_out) = shape_strides_for(base_shape, op_label)?;
     let out_dim = i32::try_from(base_shape[dim]).map_err(|_| {
-        fuel_core_types::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+        fuel_ir::Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
             op: op_label,
             dim_index: dim,
             dim_value: base_shape[dim],
@@ -514,7 +511,6 @@ fn scatter_add_run(
         )
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(out)
 }
 

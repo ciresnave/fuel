@@ -1,10 +1,10 @@
 ﻿//! Implementation of Backend traits for CUDA device
 //!
 
-use fuel_core_types::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use fuel_core_types::dtype::WithDType;
-use fuel_core_types::quantized::GgmlDType;
-use fuel_core_types::{HostBuffer, DType, Layout, Result};
+use fuel_ir::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
+use fuel_ir::dtype::WithDType;
+use fuel_ir::quantized::GgmlDType;
+use fuel_ir::{HostBuffer, DType, Layout, Result};
 use crate::builder_arg as barg;
 
 use baracuda_driver::{DeviceBuffer as CudaSlice, DevicePtr};
@@ -85,8 +85,8 @@ pub(crate) fn dims_strides_strides_usize(dims: &[usize], a: &Layout, b: &Layout)
 // `conv_dims_strides_usize` retired in Phase 5b alongside the PTX
 // Conv*/ConvTranspose* structs that consumed its packed-strides arg.
 
-fn push_scalar_arg<'a>(scalar: &'a fuel_core_types::scalar::Scalar, builder: &mut crate::device::LaunchArgs<'a>) {
-    use fuel_core_types::scalar::Scalar;
+fn push_scalar_arg<'a>(scalar: &'a fuel_ir::scalar::Scalar, builder: &mut crate::device::LaunchArgs<'a>) {
+    use fuel_ir::scalar::Scalar;
     match scalar {
         Scalar::U8(v) => builder.arg(v),
         Scalar::I8(v) => builder.arg(v),
@@ -265,7 +265,7 @@ impl Map1 for Affine {
                     std::ptr::null_mut(), 0, stream,
                 )
             },
-            (other, _, _) => fuel_core_types::bail!("baracuda affine: unsupported dtype {other:?}"),
+            (other, _, _) => fuel_ir::bail!("baracuda affine: unsupported dtype {other:?}"),
         };
         crate::baracuda::status::check(status, "affine")?;
         dev.synchronize()?;
@@ -378,7 +378,7 @@ impl Map1 for Elu {
                 sys::baracuda_kernels_unary_elu_bf16_run as UnaryScalarContigRun,
                 sys::baracuda_kernels_unary_elu_bf16_strided_run as UnaryScalarStridedRun,
             ),
-            other => fuel_core_types::bail!("baracuda elu: unsupported dtype {other:?}"),
+            other => fuel_ir::bail!("baracuda elu: unsupported dtype {other:?}"),
         };
         unary_scalar_baracuda(src, dev, layout, self.0 as f32, contig, strided, "unary_elu")
     }
@@ -413,7 +413,7 @@ impl Map1 for Powf {
                 sys::baracuda_kernels_unary_powf_bf16_run as UnaryScalarContigRun,
                 sys::baracuda_kernels_unary_powf_bf16_strided_run as UnaryScalarStridedRun,
             ),
-            other => fuel_core_types::bail!("baracuda powf: unsupported dtype {other:?}"),
+            other => fuel_ir::bail!("baracuda powf: unsupported dtype {other:?}"),
         };
         unary_scalar_baracuda(src, dev, layout, self.0 as f32, contig, strided, "unary_powf")
     }
@@ -875,7 +875,7 @@ pub fn unary_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
 ) -> Result<CudaSlice<T>> {
     let dt = T::DTYPE;
     let (contig_fn, strided_fn) = pick_unary_ffi(kernel, dt).ok_or_else(|| {
-        fuel_core_types::Error::Msg(format!("baracuda unary: unsupported (op={kernel}, dtype={dt:?})"))
+        fuel_ir::Error::Msg(format!("baracuda unary: unsupported (op={kernel}, dtype={dt:?})"))
             .bt()
     })?;
     let el = layout.shape().elem_count();
@@ -1526,16 +1526,16 @@ fn baracuda_conv2d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     inp_l: &Layout,
     k: &CudaSlice<T>,
     k_l: &Layout,
-    params: &fuel_core_types::conv::ParamsConv2D,
+    params: &fuel_ir::conv::ParamsConv2D,
     dev: &CudaDevice,
 ) -> Result<CudaSlice<T>> {
     use baracuda_kernels_sys as sys;
     let dt = T::DTYPE;
     if !inp_l.is_contiguous() || inp_l.start_offset() != 0 {
-        fuel_core_types::bail!("baracuda conv_2d: expected contiguous NCHW input (start_offset=0)");
+        fuel_ir::bail!("baracuda conv_2d: expected contiguous NCHW input (start_offset=0)");
     }
     if !k_l.is_contiguous() || k_l.start_offset() != 0 {
-        fuel_core_types::bail!("baracuda conv_2d: expected contiguous filter (start_offset=0)");
+        fuel_ir::bail!("baracuda conv_2d: expected contiguous filter (start_offset=0)");
     }
     let inp_ptr = inp.as_raw().0 as *const std::ffi::c_void;
     let k_ptr = k.as_raw().0 as *const std::ffi::c_void;
@@ -1597,7 +1597,7 @@ fn baracuda_conv2d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
                 std::ptr::null_mut(), 0, stream,
             )
         },
-        other => fuel_core_types::bail!("baracuda conv_2d: unsupported dtype {other:?}"),
+        other => fuel_ir::bail!("baracuda conv_2d: unsupported dtype {other:?}"),
     };
     crate::baracuda::status::check(status, "conv_2d_fw")?;
     dev.synchronize()?;
@@ -1609,16 +1609,16 @@ fn baracuda_conv1d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     inp_l: &Layout,
     k: &CudaSlice<T>,
     k_l: &Layout,
-    params: &fuel_core_types::conv::ParamsConv1D,
+    params: &fuel_ir::conv::ParamsConv1D,
     dev: &CudaDevice,
 ) -> Result<CudaSlice<T>> {
     use baracuda_kernels_sys as sys;
     let dt = T::DTYPE;
     if !inp_l.is_contiguous() || inp_l.start_offset() != 0 {
-        fuel_core_types::bail!("baracuda conv_1d: expected contiguous NCL input (start_offset=0)");
+        fuel_ir::bail!("baracuda conv_1d: expected contiguous NCL input (start_offset=0)");
     }
     if !k_l.is_contiguous() || k_l.start_offset() != 0 {
-        fuel_core_types::bail!("baracuda conv_1d: expected contiguous filter (start_offset=0)");
+        fuel_ir::bail!("baracuda conv_1d: expected contiguous filter (start_offset=0)");
     }
     let inp_ptr = inp.as_raw().0 as *const std::ffi::c_void;
     let k_ptr = k.as_raw().0 as *const std::ffi::c_void;
@@ -1672,7 +1672,7 @@ fn baracuda_conv1d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
                 std::ptr::null_mut(), 0, stream,
             )
         },
-        other => fuel_core_types::bail!("baracuda conv_1d: unsupported dtype {other:?}"),
+        other => fuel_ir::bail!("baracuda conv_1d: unsupported dtype {other:?}"),
     };
     crate::baracuda::status::check(status, "conv_1d_fw")?;
     dev.synchronize()?;
@@ -1684,7 +1684,7 @@ fn conv2d_dispatch(
     inp_l: &Layout,
     kernel: &CudaStorageSlice,
     k_l: &Layout,
-    params: &fuel_core_types::conv::ParamsConv2D,
+    params: &fuel_ir::conv::ParamsConv2D,
     dev: &CudaDevice,
 ) -> Result<CudaStorageSlice> {
     Ok(match (slice, kernel) {
@@ -1712,16 +1712,16 @@ fn baracuda_conv_transpose2d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     inp_l: &Layout,
     k: &CudaSlice<T>,
     k_l: &Layout,
-    params: &fuel_core_types::conv::ParamsConvTranspose2D,
+    params: &fuel_ir::conv::ParamsConvTranspose2D,
     dev: &CudaDevice,
 ) -> Result<CudaSlice<T>> {
     use baracuda_kernels_sys as sys;
     let dt = T::DTYPE;
     if !inp_l.is_contiguous() || inp_l.start_offset() != 0 {
-        fuel_core_types::bail!("baracuda conv_transpose_2d: expected contiguous NCHW input");
+        fuel_ir::bail!("baracuda conv_transpose_2d: expected contiguous NCHW input");
     }
     if !k_l.is_contiguous() || k_l.start_offset() != 0 {
-        fuel_core_types::bail!("baracuda conv_transpose_2d: expected contiguous filter");
+        fuel_ir::bail!("baracuda conv_transpose_2d: expected contiguous filter");
     }
     let (out_h, out_w) = (params.out_h(), params.out_w());
     let dst_el = params.c_out * out_h * out_w * params.b_size;
@@ -1786,7 +1786,7 @@ fn baracuda_conv_transpose2d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
                 std::ptr::null_mut(), 0, stream,
             )
         },
-        other => fuel_core_types::bail!("baracuda conv_transpose_2d: unsupported dtype {other:?}"),
+        other => fuel_ir::bail!("baracuda conv_transpose_2d: unsupported dtype {other:?}"),
     };
     crate::baracuda::status::check(status, "conv_transpose_2d_fw")?;
     dev.synchronize()?;
@@ -1798,16 +1798,16 @@ fn baracuda_conv_transpose1d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     inp_l: &Layout,
     k: &CudaSlice<T>,
     k_l: &Layout,
-    params: &fuel_core_types::conv::ParamsConvTranspose1D,
+    params: &fuel_ir::conv::ParamsConvTranspose1D,
     dev: &CudaDevice,
 ) -> Result<CudaSlice<T>> {
     use baracuda_kernels_sys as sys;
     let dt = T::DTYPE;
     if !inp_l.is_contiguous() || inp_l.start_offset() != 0 {
-        fuel_core_types::bail!("baracuda conv_transpose_1d: expected contiguous NCL input");
+        fuel_ir::bail!("baracuda conv_transpose_1d: expected contiguous NCL input");
     }
     if !k_l.is_contiguous() || k_l.start_offset() != 0 {
-        fuel_core_types::bail!("baracuda conv_transpose_1d: expected contiguous filter");
+        fuel_ir::bail!("baracuda conv_transpose_1d: expected contiguous filter");
     }
     let l_out = params.l_out();
     let dst_el = params.c_out * l_out * params.b_size;
@@ -1865,7 +1865,7 @@ fn baracuda_conv_transpose1d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
                 std::ptr::null_mut(), 0, stream,
             )
         },
-        other => fuel_core_types::bail!("baracuda conv_transpose_1d: unsupported dtype {other:?}"),
+        other => fuel_ir::bail!("baracuda conv_transpose_1d: unsupported dtype {other:?}"),
     };
     crate::baracuda::status::check(status, "conv_transpose_1d_fw")?;
     dev.synchronize()?;
@@ -1877,7 +1877,7 @@ fn conv_transpose2d_dispatch(
     inp_l: &Layout,
     kernel: &CudaStorageSlice,
     k_l: &Layout,
-    params: &fuel_core_types::conv::ParamsConvTranspose2D,
+    params: &fuel_ir::conv::ParamsConvTranspose2D,
     dev: &CudaDevice,
 ) -> Result<CudaStorageSlice> {
     Ok(match (slice, kernel) {
@@ -1902,7 +1902,7 @@ fn conv_transpose1d_dispatch(
     inp_l: &Layout,
     kernel: &CudaStorageSlice,
     k_l: &Layout,
-    params: &fuel_core_types::conv::ParamsConvTranspose1D,
+    params: &fuel_ir::conv::ParamsConvTranspose1D,
     dev: &CudaDevice,
 ) -> Result<CudaStorageSlice> {
     Ok(match (slice, kernel) {
@@ -1927,7 +1927,7 @@ fn conv1d_dispatch(
     inp_l: &Layout,
     kernel: &CudaStorageSlice,
     k_l: &Layout,
-    params: &fuel_core_types::conv::ParamsConv1D,
+    params: &fuel_ir::conv::ParamsConv1D,
     dev: &CudaDevice,
 ) -> Result<CudaStorageSlice> {
     Ok(match (slice, kernel) {
@@ -1984,7 +1984,7 @@ fn pool2d_dispatch(
         CudaStorageSlice::BF16(s) => {
             CudaStorageSlice::BF16(pool2d_baracuda(s, dev, l, k, stride, op)?)
         }
-        other => fuel_core_types::bail!("pool_2d: unsupported storage variant {other:?}"),
+        other => fuel_ir::bail!("pool_2d: unsupported storage variant {other:?}"),
     })
 }
 
@@ -2000,10 +2000,10 @@ fn pool2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     let dt = T::DTYPE;
     let dims = inp_l.shape().dims();
     if dims.len() != 4 {
-        fuel_core_types::bail!("unexpected input shape for pool {dims:?}")
+        fuel_ir::bail!("unexpected input shape for pool {dims:?}")
     }
     if !inp_l.is_contiguous() || inp_l.start_offset() != 0 {
-        fuel_core_types::bail!("baracuda pool_2d: expected contiguous NCHW input")
+        fuel_ir::bail!("baracuda pool_2d: expected contiguous NCHW input")
     }
     let (batch, channels, h_in, w_in) = (dims[0], dims[1], dims[2], dims[3]);
     let (kh, kw) = (kernel.1, kernel.0);
@@ -2062,7 +2062,7 @@ fn pool2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
                 b, c, hi, wi, ho, wo, kh, kw, sh, sw, 0, 0, 0, x_ptr, y_ptr, stream,
             )
         },
-        (_, other) => fuel_core_types::bail!("baracuda pool_2d: unsupported dtype {other:?}"),
+        (_, other) => fuel_ir::bail!("baracuda pool_2d: unsupported dtype {other:?}"),
     };
     crate::baracuda::status::check(status, "pool_2d_fw")?;
     dev.synchronize()?;
@@ -2087,10 +2087,10 @@ fn upsample_nearest2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     let dt = T::DTYPE;
     let dims = inp_l.shape().dims();
     if dims.len() != 4 {
-        fuel_core_types::bail!("unexpected input shape for upsample {dims:?}")
+        fuel_ir::bail!("unexpected input shape for upsample {dims:?}")
     }
     if !inp_l.is_contiguous() || inp_l.start_offset() != 0 {
-        fuel_core_types::bail!("baracuda upsample_nearest_2d: expected contiguous NCHW input")
+        fuel_ir::bail!("baracuda upsample_nearest_2d: expected contiguous NCHW input")
     }
     let (batch, channels, h_in, w_in) = (dims[0], dims[1], dims[2], dims[3]);
     // Fuel's tensor-level upsample_nearest2d(target_h, target_w) reaches
@@ -2139,7 +2139,7 @@ fn upsample_nearest2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
                 scratch.as_raw(), scratch.bytes(), stream,
             )
         },
-        other => fuel_core_types::bail!("baracuda upsample_nearest_2d: unsupported dtype {other:?}"),
+        other => fuel_ir::bail!("baracuda upsample_nearest_2d: unsupported dtype {other:?}"),
     };
     crate::baracuda::status::check(status, "upsample_nearest_2d_fw")?;
     dev.synchronize()?;
@@ -2166,7 +2166,7 @@ fn upsample_nearest2d_dispatch(
         CudaStorageSlice::BF16(s) => {
             CudaStorageSlice::BF16(upsample_nearest2d_baracuda(s, dev, l, out_w, out_h)?)
         }
-        other => fuel_core_types::bail!("upsample_nearest_2d: unsupported storage variant {other:?}"),
+        other => fuel_ir::bail!("upsample_nearest_2d: unsupported storage variant {other:?}"),
     })
 }
 
@@ -2193,10 +2193,10 @@ fn upsample_bilinear2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     let dt = T::DTYPE;
     let dims = inp_l.shape().dims();
     if dims.len() != 4 {
-        fuel_core_types::bail!("unexpected input shape for upsample_bilinear2d {dims:?}")
+        fuel_ir::bail!("unexpected input shape for upsample_bilinear2d {dims:?}")
     }
     if !inp_l.is_contiguous() || inp_l.start_offset() != 0 {
-        fuel_core_types::bail!("baracuda upsample_bilinear_2d: expected contiguous NCHW input")
+        fuel_ir::bail!("baracuda upsample_bilinear_2d: expected contiguous NCHW input")
     }
     let (batch, channels, h_in, w_in) = (dims[0], dims[1], dims[2], dims[3]);
     let dst_el = batch * channels * out_w * out_h;
@@ -2244,7 +2244,7 @@ fn upsample_bilinear2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
                 align, sh, sw, stream,
             )
         },
-        other => fuel_core_types::bail!("baracuda upsample_bilinear_2d: unsupported dtype {other:?}"),
+        other => fuel_ir::bail!("baracuda upsample_bilinear_2d: unsupported dtype {other:?}"),
     };
     crate::baracuda::status::check(status, "upsample_bilinear_2d_fw")?;
     dev.synchronize()?;
@@ -2274,7 +2274,7 @@ fn upsample_bilinear2d_dispatch(
         CudaStorageSlice::BF16(s) => CudaStorageSlice::BF16(upsample_bilinear2d_baracuda(
             s, dev, l, out_w, out_h, align_corners, scale_h, scale_w,
         )?),
-        other => fuel_core_types::bail!("upsample_bilinear_2d: unsupported storage variant {other:?}"),
+        other => fuel_ir::bail!("upsample_bilinear_2d: unsupported storage variant {other:?}"),
     })
 }
 
@@ -2573,7 +2573,7 @@ pub(crate) fn binary_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
 ) -> Result<CudaSlice<T>> {
     let dt = T::DTYPE;
     let (contig, strided) = pick_binary_ffi(kernel, dt).ok_or_else(|| {
-        fuel_core_types::Error::Msg(format!(
+        fuel_ir::Error::Msg(format!(
             "baracuda binary: unsupported (op={kernel}, dtype={dt:?})"
         ))
         .bt()
@@ -2591,7 +2591,7 @@ pub(crate) fn binary_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     Ok(out)
 }
 
-impl<U: fuel_core_types::op::BinaryOpT> Map2 for U {
+impl<U: fuel_ir::op::BinaryOpT> Map2 for U {
     fn f<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         &self,
         lhs: &CudaSlice<T>,
@@ -2628,7 +2628,7 @@ impl Map2Any for Cmp {
         };
         let dt = T::DTYPE;
         let (contig, strided) = pick_binary_ffi(kernel, dt).ok_or_else(|| {
-            fuel_core_types::Error::Msg(format!(
+            fuel_ir::Error::Msg(format!(
                 "baracuda cmp: unsupported (op={kernel}, dtype={dt:?})"
             ))
             .bt()
@@ -2841,7 +2841,7 @@ fn cast_baracuda(
     dev: &CudaDevice,
 ) -> Result<()> {
     let run = pick_cast_ffi(src, dst).ok_or_else(|| {
-        fuel_core_types::Error::Msg(format!(
+        fuel_ir::Error::Msg(format!(
             "baracuda cast: unsupported pair ({src:?} -> {dst:?})"
         ))
         .bt()
@@ -2869,14 +2869,14 @@ fn matmul_q_gguf_baracuda(
         CudaStorageSlice::F32(s) => {
             s.slice(a_layout.start_offset()..s.len()).as_raw().0 as *const std::ffi::c_void
         }
-        _ => fuel_core_types::bail!("matmul_q_gguf: A must be F32"),
+        _ => fuel_ir::bail!("matmul_q_gguf: A must be F32"),
     };
     // Weight pointer: blob is stored as U32 (256-byte super-block packed)
     // OR as U8 (raw byte buffer for PaddedCudaSlice-style storage).
     let w_ptr = match &w_q_bytes.slice {
         CudaStorageSlice::U32(s) => s.slice(0..s.len()).as_raw().0 as *const std::ffi::c_void,
         CudaStorageSlice::U8(s) => s.slice(0..s.len()).as_raw().0 as *const std::ffi::c_void,
-        _ => fuel_core_types::bail!("matmul_q_gguf: weight blob must be U8 or U32 storage"),
+        _ => fuel_ir::bail!("matmul_q_gguf: weight blob must be U8 or U32 storage"),
     };
     // M=1 routing prelude: single identity entry.
     let sorted_token_ids_dev = dev.clone_htod(&[0_i32])?;
@@ -2907,7 +2907,7 @@ fn matmul_q_gguf_baracuda(
         GgmlDType::Q4K => sys::baracuda_kernels_mmvq_q4_K_batched_run,
         GgmlDType::Q5K => sys::baracuda_kernels_mmvq_q5_K_batched_run,
         GgmlDType::Q6K => sys::baracuda_kernels_mmvq_q6_K_batched_run,
-        other => fuel_core_types::bail!("matmul_q_gguf: unsupported dtype {other:?}"),
+        other => fuel_ir::bail!("matmul_q_gguf: unsupported dtype {other:?}"),
     };
     // SAFETY: all pointers validated above; workspace sized per FFI
     // contract (m_total=1 → 4 bytes); top_k=1 ⇒ plain stores.
@@ -3177,9 +3177,9 @@ impl CudaStorage {
     /// may be strided). Phase 6c.4 migration to baracuda alpha.54's
     /// `fill_<dt>_strided_run` family (replaces the PTX
     /// `const_set_<dt>` kernels from kernels::FILL).
-    pub fn const_set(&mut self, s: fuel_core_types::scalar::Scalar, layout: &Layout) -> Result<()> {
+    pub fn const_set(&mut self, s: fuel_ir::scalar::Scalar, layout: &Layout) -> Result<()> {
         use baracuda_kernels_sys as sys;
-        use fuel_core_types::scalar::Scalar;
+        use fuel_ir::scalar::Scalar;
         let dev = &self.device;
         let dims = layout.shape().dims();
         let rank = dims.len();
@@ -3473,7 +3473,7 @@ impl CudaStorage {
         use baracuda_kernels_sys as sys;
         let dims = layout.shape().dims();
         if dims.is_empty() {
-            return fuel_core_types::bail!("softmax_last_dim: empty shape");
+            return fuel_ir::bail!("softmax_last_dim: empty shape");
         }
         let device = self.device().clone();
         let rank = dims.len();
@@ -3514,7 +3514,7 @@ impl CudaStorage {
         launch!(F64, f64, baracuda_kernels_softmax_f64_run, "softmax_f64");
         launch!(F16, half::f16, baracuda_kernels_softmax_f16_run, "softmax_f16");
         launch!(BF16, half::bf16, baracuda_kernels_softmax_bf16_run, "softmax_bf16");
-        fuel_core_types::bail!("softmax_last_dim: unsupported dtype {:?}", self.dtype())
+        fuel_ir::bail!("softmax_last_dim: unsupported dtype {:?}", self.dtype())
     }
 
     /// Q4_0 matmul: `out = a @ dequant_q4_0(w_q_bytes)`.
@@ -3541,29 +3541,29 @@ impl CudaStorage {
         a_layout: &Layout,
     ) -> Result<Self> {
         if self.dtype() != DType::F32 {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "CudaStorage::matmul_q4_0: A must be F32, got {:?}", self.dtype());
         }
         if !a_layout.is_contiguous() {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "CudaStorage::matmul_q4_0: requires contiguous A");
         }
         let a_dims = a_layout.shape().dims();
         let rank = a_dims.len();
         if rank < 2 {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "CudaStorage::matmul_q4_0: A must be rank >= 2");
         }
         let m = a_dims[rank - 2];
         let batch: usize = a_dims[..rank - 2].iter().product::<usize>().max(1);
         let total_rows = batch * m;
         if total_rows != 1 {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "CudaStorage::matmul_q4_0: only M=1 supported on CUDA today; \
                  got total_rows={total_rows}. Route prefill to Vulkan.");
         }
         if k < 64 {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "CudaStorage::matmul_q4_0: baracuda batched MMVQ requires k >= 64 for type-0/1 quants, got {k}");
         }
         let device = self.device().clone();
@@ -3590,24 +3590,24 @@ impl CudaStorage {
         a_layout: &Layout,
     ) -> Result<Self> {
         if self.dtype() != DType::F32 {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "CudaStorage::matmul_q4_km: A must be F32, got {:?}", self.dtype());
         }
         if !a_layout.is_contiguous() {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "CudaStorage::matmul_q4_km: requires contiguous A");
         }
         let a_dims = a_layout.shape().dims();
         let rank = a_dims.len();
         if rank < 2 {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "CudaStorage::matmul_q4_km: A must be rank >= 2");
         }
         let m = a_dims[rank - 2];
         let batch: usize = a_dims[..rank - 2].iter().product::<usize>().max(1);
         let total_rows = batch * m;
         if total_rows != 1 {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "CudaStorage::matmul_q4_km: only M=1 supported on CUDA today; \
                  got total_rows={total_rows}. Route prefill to Vulkan.");
         }
@@ -3627,7 +3627,7 @@ impl CudaStorage {
         let dims = layout.shape().dims();
         let rank = dims.len();
         if rank == 0 {
-            return fuel_core_types::bail!("rms_norm_last_dim: empty shape");
+            return fuel_ir::bail!("rms_norm_last_dim: empty shape");
         }
         let last_dim = dims[rank - 1];
         let numel = layout.shape().elem_count();
@@ -3684,7 +3684,7 @@ impl CudaStorage {
         launch!(F64, f64, baracuda_kernels_rms_norm_f64_run, "rms_norm_f64");
         launch!(F16, half::f16, baracuda_kernels_rms_norm_f16_run, "rms_norm_f16");
         launch!(BF16, half::bf16, baracuda_kernels_rms_norm_bf16_run, "rms_norm_bf16");
-        fuel_core_types::bail!(
+        fuel_ir::bail!(
             "CudaStorage::rms_norm_last_dim: unsupported dtype {:?}", self.dtype()
         )
     }
@@ -3701,7 +3701,7 @@ impl CudaStorage {
     ) -> Result<Self> {
         use baracuda_kernels_sys as sys;
         if self.dtype() != gain.dtype() {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "rms_norm_with_gain: dtype mismatch x={:?} gain={:?}",
                 self.dtype(), gain.dtype()
             );
@@ -3709,7 +3709,7 @@ impl CudaStorage {
         let dims = layout.shape().dims();
         let rank = dims.len();
         if rank == 0 {
-            return fuel_core_types::bail!("rms_norm_with_gain: empty shape");
+            return fuel_ir::bail!("rms_norm_with_gain: empty shape");
         }
         let last_dim = dims[rank - 1];
         let numel = layout.shape().elem_count();
@@ -3769,7 +3769,7 @@ impl CudaStorage {
         launch!(F64, f64, baracuda_kernels_rms_norm_f64_run, "rms_norm_gain_f64");
         launch!(F16, half::f16, baracuda_kernels_rms_norm_f16_run, "rms_norm_gain_f16");
         launch!(BF16, half::bf16, baracuda_kernels_rms_norm_bf16_run, "rms_norm_gain_bf16");
-        fuel_core_types::bail!(
+        fuel_ir::bail!(
             "rms_norm_with_gain: unsupported dtype {:?}", self.dtype()
         )
     }
@@ -3789,7 +3789,7 @@ impl CudaStorage {
     ) -> Result<Self> {
         use baracuda_kernels_sys as sys;
         if self.dtype() != gain.dtype() || self.dtype() != bias.dtype() {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "layer_norm: dtype mismatch x={:?} gain={:?} bias={:?}",
                 self.dtype(), gain.dtype(), bias.dtype(),
             );
@@ -3797,7 +3797,7 @@ impl CudaStorage {
         let dims = layout.shape().dims();
         let rank = dims.len();
         if rank == 0 {
-            return fuel_core_types::bail!("layer_norm: empty shape");
+            return fuel_ir::bail!("layer_norm: empty shape");
         }
         let last_dim = dims[rank - 1];
         let numel = layout.shape().elem_count();
@@ -3864,7 +3864,7 @@ impl CudaStorage {
         launch!(F64, f64, baracuda_kernels_layer_norm_f64_run, "layer_norm_f64");
         launch!(F16, half::f16, baracuda_kernels_layer_norm_f16_run, "layer_norm_f16");
         launch!(BF16, half::bf16, baracuda_kernels_layer_norm_bf16_run, "layer_norm_bf16");
-        fuel_core_types::bail!(
+        fuel_ir::bail!(
             "layer_norm: unsupported dtype {:?}", self.dtype()
         )
     }
@@ -3888,7 +3888,7 @@ impl CudaStorage {
     ) -> Result<Self> {
         use baracuda_kernels_sys as sys;
         if cos.dtype() != DType::F32 || sin.dtype() != DType::F32 {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "CudaStorage::rope: cos/sin tables must be F32 (baracuda ABI), got cos={:?} sin={:?}",
                 cos.dtype(), sin.dtype(),
             );
@@ -3896,17 +3896,17 @@ impl CudaStorage {
         let dims = x_layout.shape().dims();
         let rank = dims.len();
         if rank < 2 {
-            return fuel_core_types::bail!("CudaStorage::rope requires rank >= 2, got {dims:?}");
+            return fuel_ir::bail!("CudaStorage::rope requires rank >= 2, got {dims:?}");
         }
         if !x_layout.is_contiguous() {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "CudaStorage::rope first-cut requires contiguous x_layout"
             );
         }
         let seq = dims[rank - 2];
         let head_dim = dims[rank - 1];
         if head_dim % 2 != 0 {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "CudaStorage::rope head_dim must be even, got {head_dim}"
             );
         }
@@ -3954,7 +3954,7 @@ impl CudaStorage {
         launch!(F64, f64, baracuda_kernels_rope_apply_f64_run, "rope_apply_f64");
         launch!(F16, half::f16, baracuda_kernels_rope_apply_f16_run, "rope_apply_f16");
         launch!(BF16, half::bf16, baracuda_kernels_rope_apply_bf16_run, "rope_apply_bf16");
-        fuel_core_types::bail!(
+        fuel_ir::bail!(
             "CudaStorage::rope: unsupported operand dtype {:?}", self.dtype()
         )
     }
@@ -3976,7 +3976,7 @@ impl CudaStorage {
     ) -> Result<Self> {
         use baracuda_kernels_sys as sys;
         if cos.dtype() != DType::F32 || sin.dtype() != DType::F32 {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "rope_interleaved: cos/sin must be F32 (baracuda ABI), got cos={:?} sin={:?}",
                 cos.dtype(), sin.dtype(),
             );
@@ -4018,7 +4018,7 @@ impl CudaStorage {
         launch!(F64, f64, baracuda_kernels_rope_apply_interleaved_f64_run, "rope_apply_interleaved_f64");
         launch!(F16, half::f16, baracuda_kernels_rope_apply_interleaved_f16_run, "rope_apply_interleaved_f16");
         launch!(BF16, half::bf16, baracuda_kernels_rope_apply_interleaved_bf16_run, "rope_apply_interleaved_bf16");
-        fuel_core_types::bail!(
+        fuel_ir::bail!(
             "rope_interleaved: unsupported operand dtype {:?}", self.dtype()
         )
     }
@@ -4040,7 +4040,7 @@ impl CudaStorage {
     ) -> Result<Self> {
         use baracuda_kernels_sys as sys;
         if cos.dtype() != DType::F32 || sin.dtype() != DType::F32 {
-            return fuel_core_types::bail!(
+            return fuel_ir::bail!(
                 "rope_thd: cos/sin must be F32 (baracuda ABI), got cos={:?} sin={:?}",
                 cos.dtype(), sin.dtype(),
             );
@@ -4082,7 +4082,7 @@ impl CudaStorage {
         launch!(F64, f64, baracuda_kernels_rope_apply_thd_f64_run, "rope_apply_thd_f64");
         launch!(F16, half::f16, baracuda_kernels_rope_apply_thd_f16_run, "rope_apply_thd_f16");
         launch!(BF16, half::bf16, baracuda_kernels_rope_apply_thd_bf16_run, "rope_apply_thd_bf16");
-        fuel_core_types::bail!(
+        fuel_ir::bail!(
             "rope_thd: unsupported operand dtype {:?}", self.dtype()
         )
     }
@@ -4164,7 +4164,7 @@ impl CudaStorage {
         inp_l: &Layout,
         kernel: &Self,
         kernel_l: &Layout,
-        params: &fuel_core_types::conv::ParamsConv1D,
+        params: &fuel_ir::conv::ParamsConv1D,
     ) -> Result<Self> {
         let device = self.device().clone();
         // Contiguize inputs if needed (baracuda's conv FFI takes plain
@@ -4210,7 +4210,7 @@ impl CudaStorage {
         inp_l: &Layout,
         kernel: &Self,
         kernel_l: &Layout,
-        params: &fuel_core_types::conv::ParamsConvTranspose1D,
+        params: &fuel_ir::conv::ParamsConvTranspose1D,
     ) -> Result<Self> {
         let device = self.device().clone();
         let inp_storage;
@@ -4262,7 +4262,7 @@ impl CudaStorage {
         inp_l: &Layout,
         kernel: &Self,
         kernel_l: &Layout,
-        params: &fuel_core_types::conv::ParamsConv2D,
+        params: &fuel_ir::conv::ParamsConv2D,
     ) -> Result<Self> {
         let device = self.device().clone();
         // Contiguize inputs if needed (baracuda's conv FFI takes plain
@@ -4309,7 +4309,7 @@ impl CudaStorage {
         inp_l: &Layout,
         kernel: &Self,
         kernel_l: &Layout,
-        params: &fuel_core_types::conv::ParamsConvTranspose2D,
+        params: &fuel_ir::conv::ParamsConvTranspose2D,
     ) -> Result<Self> {
         let device = self.device().clone();
         let inp_storage;
@@ -4363,7 +4363,7 @@ impl CudaStorage {
     }
 
     pub fn upsample_nearest1d(&self, _: &Layout, _out_sz: usize) -> Result<Self> {
-        fuel_core_types::bail!("upsample-nearest1d is not supported on cuda")
+        fuel_ir::bail!("upsample-nearest1d is not supported on cuda")
     }
 
     pub fn upsample_nearest2d(&self, l: &Layout, out_w: usize, out_h: usize) -> Result<Self> {
@@ -4645,7 +4645,7 @@ fn copy_strided_baracuda(
         2 => baracuda_kernels_sys::baracuda_kernels_contiguize_b2_run,
         4 => baracuda_kernels_sys::baracuda_kernels_contiguize_b4_run,
         8 => baracuda_kernels_sys::baracuda_kernels_contiguize_b8_run,
-        other => fuel_core_types::bail!("copy_strided_src: unsupported byte width {other}"),
+        other => fuel_ir::bail!("copy_strided_src: unsupported byte width {other}"),
     };
     let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
     // SAFETY: device-resident src/dst pointers; shape/stride arrays are

@@ -1,10 +1,10 @@
 ﻿//! Implementation of Backend traits for Metal
 //!
-use fuel_core_types::conv::{
+use fuel_ir::conv::{
     ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,
 };
-use fuel_core_types::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use fuel_core_types::{HostBuffer, HostBufferRef, DType, Error, Layout, Result, Shape};
+use fuel_ir::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
+use fuel_ir::{HostBuffer, HostBufferRef, DType, Error, Layout, Result, Shape};
 use fuel_metal_kernels::{
     BufferOffset, CallConvTranspose2dCfg, Kernels, RESOURCE_OPTIONS,
     metal::{Buffer, Commands, Device},
@@ -70,9 +70,9 @@ impl From<String> for MetalError {
     }
 }
 
-impl From<MetalError> for fuel_core_types::Error {
+impl From<MetalError> for fuel_ir::Error {
     fn from(val: MetalError) -> Self {
-        fuel_core_types::Error::metal(val)
+        fuel_ir::Error::metal(val)
     }
 }
 
@@ -114,7 +114,7 @@ impl MetalStorage {
             DType::F64 => Ok(HostBuffer::F64(self.to_cpu()?)),
             DType::F8E4M3 => Ok(HostBuffer::F8E4M3(self.to_cpu()?)),
             DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => Err(
-                fuel_core_types::Error::UnsupportedDTypeForOp(self.dtype, "to_cpu_storage").bt(),
+                fuel_ir::Error::UnsupportedDTypeForOp(self.dtype, "to_cpu_storage").bt(),
             ),
         }
     }
@@ -139,7 +139,7 @@ impl MetalStorage {
                 DType::U32 => "affine_u32",
                 DType::I64 => "affine_i64",
                 dtype => {
-                    fuel_core_types::bail!("Metal contiguous affine {dtype:?} not implemented")
+                    fuel_ir::bail!("Metal contiguous affine {dtype:?} not implemented")
                 }
             };
             fuel_metal_kernels::call_affine(
@@ -163,7 +163,7 @@ impl MetalStorage {
                 DType::U8 => "affine_u8_strided",
                 DType::U32 => "affine_u32_strided",
                 DType::I64 => "affine_i64_strided",
-                dtype => fuel_core_types::bail!("Metal strided affine {dtype:?} not implemented"),
+                dtype => fuel_ir::bail!("Metal strided affine {dtype:?} not implemented"),
             };
             fuel_metal_kernels::call_affine_strided(
                 &device.device,
@@ -199,7 +199,7 @@ impl MetalStorage {
                 DType::F16 => "powf_f16",
                 DType::BF16 => "powf_bf16",
                 dtype => {
-                    fuel_core_types::bail!("Metal contiguous powf {dtype:?} not implemented")
+                    fuel_ir::bail!("Metal contiguous powf {dtype:?} not implemented")
                 }
             };
             fuel_metal_kernels::call_powf(
@@ -219,7 +219,7 @@ impl MetalStorage {
                 DType::F32 => "powf_f32_strided",
                 DType::F16 => "powf_f16_strided",
                 DType::BF16 => "powf_bf16_strided",
-                dtype => fuel_core_types::bail!("Metal strided powf {dtype:?} not implemented"),
+                dtype => fuel_ir::bail!("Metal strided powf {dtype:?} not implemented"),
             };
             fuel_metal_kernels::call_powf_strided(
                 &device.device,
@@ -253,7 +253,7 @@ impl MetalStorage {
                 DType::F32 => "elu_f32",
                 DType::F16 => "elu_f16",
                 DType::BF16 => "elu_bf16",
-                dtype => fuel_core_types::bail!("Metal contiguous elu {dtype:?} not implemented"),
+                dtype => fuel_ir::bail!("Metal contiguous elu {dtype:?} not implemented"),
             };
             fuel_metal_kernels::call_elu(
                 &device.device,
@@ -272,7 +272,7 @@ impl MetalStorage {
                 DType::F32 => "elu_f32_strided",
                 DType::F16 => "elu_f16_strided",
                 DType::BF16 => "elu_bf16_strided",
-                dtype => fuel_core_types::bail!("Metal strided elu {dtype:?} not implemented"),
+                dtype => fuel_ir::bail!("Metal strided elu {dtype:?} not implemented"),
             };
             fuel_metal_kernels::call_elu_strided(
                 &device.device,
@@ -347,13 +347,13 @@ impl MetalStorage {
                 (ReduceOp::ArgMin, DType::U8) => ("fast_argmin_u8", true, true),
                 (ReduceOp::ArgMax, DType::U8) => ("fast_argmax_u8", true, true),
                 (k, dtype) => {
-                    fuel_core_types::bail!(
+                    fuel_ir::bail!(
                         "Metal contiguous reduce op {k:?} {dtype:?} not implemented"
                     )
                 }
             };
             if check_empty && layout.shape().elem_count() == 0 {
-                Err(fuel_core_types::Error::EmptyTensor { op: "reduce" }.bt())?
+                Err(fuel_ir::Error::EmptyTensor { op: "reduce" }.bt())?
             }
             let dtype = if return_index { DType::U32 } else { self.dtype };
             let buffer = device.new_buffer(dst_el, dtype, "reduce")?;
@@ -407,11 +407,11 @@ impl MetalStorage {
             (ReduceOp::ArgMin, DType::U8) => ("fast_argmin_u8_strided", true, true),
             (ReduceOp::ArgMax, DType::U8) => ("fast_argmax_u8_strided", true, true),
             (k, dtype) => {
-                fuel_core_types::bail!("Metal strided reduce op {k:?} {dtype:?} not implemented")
+                fuel_ir::bail!("Metal strided reduce op {k:?} {dtype:?} not implemented")
             }
         };
         if check_empty && layout.shape().elem_count() == 0 {
-            Err(fuel_core_types::Error::EmptyTensor { op: "reduce" }.bt())?
+            Err(fuel_ir::Error::EmptyTensor { op: "reduce" }.bt())?
         }
         let dtype = if return_index { DType::U32 } else { self.dtype };
         let buffer = device.new_buffer(dst_el, dtype, "reduce")?;
@@ -446,10 +446,10 @@ impl MetalStorage {
         self.binary(name, rhs, lhs_l, rhs_l)
     }
 
-    pub fn const_set(&mut self, s: fuel_core_types::Scalar, l: &Layout) -> Result<()> {
-        use fuel_core_types::Scalar;
+    pub fn const_set(&mut self, s: fuel_ir::Scalar, l: &Layout) -> Result<()> {
+        use fuel_ir::Scalar;
         fn set<
-            S: fuel_core_types::dtype::WithDType + fuel_metal_kernels::utils::EncoderParam,
+            S: fuel_ir::dtype::WithDType + fuel_metal_kernels::utils::EncoderParam,
         >(
             self_: &mut MetalStorage,
             s: S,
@@ -472,8 +472,8 @@ impl MetalStorage {
                     DType::I64 => contiguous::const_set::I64,
                     DType::U32 => contiguous::const_set::U32,
                     DType::U8 => contiguous::const_set::U8,
-                    DType::F8E4M3 => fuel_core_types::bail!("unsupported const-set f8e4m3"),
-                    DType::F64 => fuel_core_types::bail!("unsupported const-set f64"),
+                    DType::F8E4M3 => fuel_ir::bail!("unsupported const-set f8e4m3"),
+                    DType::F64 => fuel_ir::bail!("unsupported const-set f64"),
                     DType::F4
                     | DType::F6E2M3
                     | DType::F6E3M2
@@ -503,8 +503,8 @@ impl MetalStorage {
                     DType::I64 => strided::const_set::I64,
                     DType::U32 => strided::const_set::U32,
                     DType::U8 => strided::const_set::U8,
-                    DType::F8E4M3 => fuel_core_types::bail!("unsupported const-set f8e4m3"),
-                    DType::F64 => fuel_core_types::bail!("unsupported const-set f64"),
+                    DType::F8E4M3 => fuel_ir::bail!("unsupported const-set f8e4m3"),
+                    DType::F64 => fuel_ir::bail!("unsupported const-set f64"),
                     DType::F4
                     | DType::F6E2M3
                     | DType::F6E3M2
@@ -536,7 +536,7 @@ impl MetalStorage {
             (DType::BF16, Scalar::BF16(s)) => set(self, s, l),
             (DType::F32, Scalar::F32(s)) => set(self, s, l),
             (DType::F64, Scalar::F64(s)) => set(self, s, l),
-            _ => fuel_core_types::bail!("dtype mismatch, expected {:?}, got {:?}", self.dtype, s),
+            _ => fuel_ir::bail!("dtype mismatch, expected {:?}, got {:?}", self.dtype, s),
         }
     }
 
@@ -587,7 +587,7 @@ impl MetalStorage {
                 (DType::BF16, DType::U8) => "cast_bf16_u8",
 
                 (left, right) => {
-                    fuel_core_types::bail!(
+                    fuel_ir::bail!(
                         "Metal contiguous to_dtype {left:?} {right:?} not implemented"
                     )
                 }
@@ -642,7 +642,7 @@ impl MetalStorage {
                 (DType::U8, DType::U32) => "cast_u8_u32_strided",
 
                 (left, right) => {
-                    fuel_core_types::bail!(
+                    fuel_ir::bail!(
                         "Metal strided to_dtype {left:?} {right:?} not implemented"
                     )
                 }
@@ -738,7 +738,7 @@ impl MetalStorage {
                 ("usign", DType::BF16) => contiguous::sign::BFLOAT,
                 ("usign", DType::I64) => contiguous::sign::I64,
                 (name, dtype) => {
-                    fuel_core_types::bail!(
+                    fuel_ir::bail!(
                         "Metal contiguous unary {name} {dtype:?} not implemented"
                     )
                 }
@@ -813,7 +813,7 @@ impl MetalStorage {
                 ("utanh", DType::BF16) => strided::tanh::BFLOAT,
 
                 (name, dtype) => {
-                    fuel_core_types::bail!("Metal strided unary {name} {dtype:?} not implemented")
+                    fuel_ir::bail!("Metal strided unary {name} {dtype:?} not implemented")
                 }
             };
             let dst = BufferOffset::zero_offset(&buffer);
@@ -859,7 +859,7 @@ impl MetalStorage {
         let encoder = self.device.command_encoder()?;
         encoder.set_label("where");
         if t.dtype() != f.dtype() {
-            fuel_core_types::bail!(
+            fuel_ir::bail!(
                 "Invalid where: different dtypes for values {:?} != {:?}",
                 t.dtype(),
                 f.dtype()
@@ -874,7 +874,7 @@ impl MetalStorage {
             (DType::U8, DType::U32) => "where_u8_u32",
             (DType::U8, DType::U8) => "where_u8_u8",
             (left, right) => {
-                fuel_core_types::bail!("Metal where_cond {left:?} {right:?} not implemented")
+                fuel_ir::bail!("Metal where_cond {left:?} {right:?} not implemented")
             }
         };
         let src = buffer_o(&self.buffer, layout, self.dtype);
@@ -931,7 +931,7 @@ impl MetalStorage {
             DType::BF16 => "im2col1d_bf16",
             DType::U8 => "im2col1d_u8",
             DType::U32 => "im2col1d_u32",
-            dtype => fuel_core_types::bail!("Metal conv1d {dtype:?} not implemented"),
+            dtype => fuel_ir::bail!("Metal conv1d {dtype:?} not implemented"),
         };
         let src = buffer_o(&self.buffer, layout, self.dtype);
         fuel_metal_kernels::call_im2col1d_strided(
@@ -999,7 +999,7 @@ impl MetalStorage {
             let (b_size, c_in, l_in) = layout.shape().dims3()?;
             let (c_in2, c_out, k_size) = k_layout.shape().dims3()?;
             if c_in != c_in2 {
-                fuel_core_types::bail!(
+                fuel_ir::bail!(
                     "convtr1d: shape mismatch on c_in {:?} {:?}",
                     layout.shape(),
                     k_layout.shape()
@@ -1015,7 +1015,7 @@ impl MetalStorage {
                 DType::BF16 => "col2im1d_bf16",
                 DType::U32 => "col2im1d_u32",
                 DType::U8 => "col2im1d_u8",
-                dtype => fuel_core_types::bail!("metal col2im1d {dtype:?} not implemented"),
+                dtype => fuel_ir::bail!("metal col2im1d {dtype:?} not implemented"),
             };
             let col = {
                 // This merges the last two dimensions of the kernel together.
@@ -1065,7 +1065,7 @@ impl MetalStorage {
                 DType::U32 => "conv_transpose1d_u32",
                 DType::U8 => "conv_transpose1d_u8",
                 dtype => {
-                    fuel_core_types::bail!("Metal conv_transpose1d {dtype:?} not implemented")
+                    fuel_ir::bail!("Metal conv_transpose1d {dtype:?} not implemented")
                 }
             };
             fuel_metal_kernels::call_conv_transpose1d(
@@ -1129,7 +1129,7 @@ impl MetalStorage {
             DType::BF16 => "im2col_bf16",
             DType::U8 => "im2col_u8",
             DType::U32 => "im2col_u32",
-            dtype => fuel_core_types::bail!("Metal conv2d {dtype:?} not implemented"),
+            dtype => fuel_ir::bail!("Metal conv2d {dtype:?} not implemented"),
         };
         let src = buffer_o(&self.buffer, layout, self.dtype);
         fuel_metal_kernels::call_im2col_strided(
@@ -1194,14 +1194,14 @@ impl MetalStorage {
 
         let dims = l.dims();
         if dims.len() != 4 {
-            fuel_core_types::bail!(
+            fuel_ir::bail!(
                 "unexpected input shape for conv_transpose2d {dims:?}, expected 4"
             )
         }
 
         let k_dims = kernel_l.dims();
         if k_dims.len() != 4 {
-            fuel_core_types::bail!(
+            fuel_ir::bail!(
                 "unexpected kernel shape for conv_transpose2d {k_dims:?}, expected 4"
             )
         }
@@ -1217,7 +1217,7 @@ impl MetalStorage {
             DType::F32 => "conv_transpose2d_f32",
             DType::F16 => "conv_transpose2d_f16",
             DType::BF16 => "conv_transpose2d_bf16",
-            dtype => fuel_core_types::bail!("Metal conv_transpose2d {dtype:?} not implemented"),
+            dtype => fuel_ir::bail!("Metal conv_transpose2d {dtype:?} not implemented"),
         };
 
         fuel_metal_kernels::call_conv_transpose2d(
@@ -1264,7 +1264,7 @@ impl MetalStorage {
             DType::BF16 => "avg_pool2d_bf16",
             DType::U8 => "avg_pool2d_u8",
             DType::U32 => "avg_pool2d_u32",
-            dtype => fuel_core_types::bail!("Metal avg_pool2d {dtype:?} not implemented"),
+            dtype => fuel_ir::bail!("Metal avg_pool2d {dtype:?} not implemented"),
         };
         let out_w = (width - w_k) / w_stride + 1;
         let out_h = (height - h_k) / h_stride + 1;
@@ -1307,7 +1307,7 @@ impl MetalStorage {
             DType::BF16 => "max_pool2d_bf16",
             DType::U8 => "max_pool2d_u8",
             DType::U32 => "max_pool2d_u32",
-            dtype => fuel_core_types::bail!("Metal max_pool2d {dtype:?} not implemented"),
+            dtype => fuel_ir::bail!("Metal max_pool2d {dtype:?} not implemented"),
         };
         let out_w = (width - w_k) / w_stride + 1;
         let out_h = (height - h_k) / h_stride + 1;
@@ -1336,7 +1336,7 @@ impl MetalStorage {
     }
 
     pub fn upsample_nearest1d(&self, _: &Layout, _: usize) -> Result<Self> {
-        fuel_core_types::bail!("Metal upsample_nearest1d not implemented")
+        fuel_ir::bail!("Metal upsample_nearest1d not implemented")
     }
 
     pub fn upsample_nearest2d(&self, inp_l: &Layout, out_w: usize, out_h: usize) -> Result<Self> {
@@ -1345,7 +1345,7 @@ impl MetalStorage {
         let dims = shape.dims();
         let strides = inp_l.stride();
         if dims.len() != 4 {
-            fuel_core_types::bail!("unexpected input shape for upsample {dims:?}")
+            fuel_ir::bail!("unexpected input shape for upsample {dims:?}")
         }
         let name = match self.dtype {
             DType::F32 => "upsample_nearest2d_f32",
@@ -1353,7 +1353,7 @@ impl MetalStorage {
             DType::BF16 => "upsample_nearest2d_bf16",
             DType::U8 => "upsample_nearest2d_u8",
             DType::U32 => "upsample_nearest2d_u32",
-            dtype => fuel_core_types::bail!("Metal upsample_nearest2d {dtype:?} not implemented"),
+            dtype => fuel_ir::bail!("Metal upsample_nearest2d {dtype:?} not implemented"),
         };
 
         let dst_el = out_w * out_h * dims[0] * dims[1];
@@ -1393,7 +1393,7 @@ impl MetalStorage {
         let strides = inp_l.stride();
 
         if dims.len() != 4 {
-            fuel_core_types::bail!("unexpected input shape for upsample_bilinear2d {dims:?}")
+            fuel_ir::bail!("unexpected input shape for upsample_bilinear2d {dims:?}")
         }
 
         let name = match self.dtype {
@@ -1403,7 +1403,7 @@ impl MetalStorage {
             DType::U8 => "upsample_bilinear2d_u8",
             DType::U32 => "upsample_bilinear2d_u32",
             dtype => {
-                fuel_core_types::bail!("Metal upsample_bilinear2d {dtype:?} not implemented")
+                fuel_ir::bail!("Metal upsample_bilinear2d {dtype:?} not implemented")
             }
         };
 
@@ -1438,7 +1438,7 @@ impl MetalStorage {
 
     pub fn gather(&self, src_l: &Layout, ids: &Self, ids_l: &Layout, dim: usize) -> Result<Self> {
         if !ids_l.is_contiguous() {
-            return Err(fuel_core_types::Error::RequiresContiguous { op: "gather" }.bt());
+            return Err(fuel_ir::Error::RequiresContiguous { op: "gather" }.bt());
         };
         let ids_el = ids_l.dims()[dim];
         let dst_el = ids_l.shape().elem_count();
@@ -1463,7 +1463,7 @@ impl MetalStorage {
             (DType::I64, DType::U32) => "gather_i64_u32",
             (DType::I64, DType::I64) => "gather_i64_i64",
             (left, right) => {
-                fuel_core_types::bail!("Metal gather {left:?} {right:?} not implemented")
+                fuel_ir::bail!("Metal gather {left:?} {right:?} not implemented")
             }
         };
         let encoder = self.device.command_encoder()?;
@@ -1496,7 +1496,7 @@ impl MetalStorage {
         dim: usize,
     ) -> Result<()> {
         if !l.is_contiguous() || !ids_l.is_contiguous() || !src_l.is_contiguous() {
-            return Err(fuel_core_types::Error::RequiresContiguous { op: "scatter" }.bt());
+            return Err(fuel_ir::Error::RequiresContiguous { op: "scatter" }.bt());
         };
         let name = match (ids.dtype, self.dtype) {
             (DType::U8, DType::F32) => "s_u8_f32",
@@ -1546,7 +1546,7 @@ impl MetalStorage {
         dim: usize,
     ) -> Result<()> {
         if !l.is_contiguous() || !ids_l.is_contiguous() || !src_l.is_contiguous() {
-            return Err(fuel_core_types::Error::RequiresContiguous { op: "scatter-add" }.bt());
+            return Err(fuel_ir::Error::RequiresContiguous { op: "scatter-add" }.bt());
         };
         let name = match (ids.dtype, self.dtype) {
             (DType::U8, DType::F32) => "sa_u8_f32",
@@ -1594,7 +1594,7 @@ impl MetalStorage {
         dim: usize,
     ) -> Result<Self> {
         if !ids_l.is_contiguous() {
-            fuel_core_types::bail!("Metal index_select requires contiguous ids")
+            fuel_ir::bail!("Metal index_select requires contiguous ids")
         }
         let left_size: usize = src_l.dims()[..dim].iter().product();
         let right_size: usize = src_l.dims()[dim + 1..].iter().product();
@@ -1626,7 +1626,7 @@ impl MetalStorage {
             (DType::I64, DType::BF16) => "is_i64_bf16",
 
             (left, right) => {
-                fuel_core_types::bail!(
+                fuel_ir::bail!(
                     "Metal contiguous index_select {left:?} {right:?} not implemented"
                 )
             }
@@ -1665,7 +1665,7 @@ impl MetalStorage {
         let mut acc = self.device.zeros_impl(l.shape(), self.dtype())?;
         self.copy_strided_src(&mut acc, 0, l)?;
         if !ids_l.is_contiguous() || !src_l.is_contiguous() {
-            return Err(fuel_core_types::Error::RequiresContiguous { op: "index-add" }.bt());
+            return Err(fuel_ir::Error::RequiresContiguous { op: "index-add" }.bt());
         };
         let name = match (ids.dtype, self.dtype) {
             (DType::I64, DType::BF16) => "ia_i64_bf16",
@@ -1771,7 +1771,7 @@ impl MetalStorage {
         dst_o: usize,
     ) -> Result<()> {
         if self.dtype() != dst.dtype() {
-            fuel_core_types::bail!(
+            fuel_ir::bail!(
                 "copy2d with inconsistent dtypes {:?} {:?}",
                 self.dtype(),
                 dst.dtype()
@@ -1797,7 +1797,7 @@ impl MetalStorage {
                 DType::I64 => fuel_metal_kernels::copy2d::I64,
                 DType::U32 => fuel_metal_kernels::copy2d::U32,
                 DType::U8 => fuel_metal_kernels::copy2d::U8,
-                dtype => fuel_core_types::bail!("Metal copy2d {dtype:?} not implemented"),
+                dtype => fuel_ir::bail!("Metal copy2d {dtype:?} not implemented"),
             };
             let encoder = self.device.command_encoder()?;
             encoder.set_label("copy2d");
@@ -1847,7 +1847,7 @@ impl MetalStorage {
                 DType::I64 => fuel_metal_kernels::unary::strided::copy::I64,
                 DType::U32 => fuel_metal_kernels::unary::strided::copy::U32,
                 DType::U8 => fuel_metal_kernels::unary::strided::copy::U8,
-                dtype => fuel_core_types::bail!("Metal copy_strided {dtype:?} not implemented"),
+                dtype => fuel_ir::bail!("Metal copy_strided {dtype:?} not implemented"),
             };
             let src = buffer_o(&self.buffer, src_l, self.dtype);
             let dst = BufferOffset {
@@ -1997,8 +1997,8 @@ impl MetalDevice {
         })
     }
 
-    pub fn location(&self) -> fuel_core_types::DeviceLocation {
-        fuel_core_types::DeviceLocation::Metal {
+    pub fn location(&self) -> fuel_ir::DeviceLocation {
+        fuel_ir::DeviceLocation::Metal {
             gpu_id: self.registry_id() as usize,
         }
     }
@@ -2028,7 +2028,12 @@ impl MetalDevice {
         ))
     }
 
-    pub fn storage_from_slice<T: fuel_core_types::dtype::WithDType>(
+    // B0.4 (WithDType weld break): `+ fuel_ir::HostDType` added because
+    // `T::cpu_storage_ref` moved off `WithDType` onto `HostDType`. SHOULD WORK BUT
+    // UNTESTED — fuel-metal-backend cannot be built/verified on this dev box (no
+    // macOS access). The edit is mechanical (a trait-bound addition mirroring the
+    // verified fuel-cuda-backend change at device.rs:707) and the body is unchanged.
+    pub fn storage_from_slice<T: fuel_ir::dtype::WithDType + fuel_ir::HostDType>(
         &self,
         s: &[T],
     ) -> Result<MetalStorage> {
@@ -2095,7 +2100,7 @@ impl MetalDevice {
             DType::F32 => "rand_uniform_f32",
             DType::F16 => "rand_uniform_f16",
             DType::BF16 => "rand_uniform_bf16",
-            dtype => fuel_core_types::bail!("rand_uniform not implemented for {dtype:?}"),
+            dtype => fuel_ir::bail!("rand_uniform not implemented for {dtype:?}"),
         };
         let buffer = self.new_buffer(shape.elem_count(), dtype, "rand_uniform")?;
         let encoder = self.command_encoder()?;
@@ -2132,7 +2137,7 @@ impl MetalDevice {
             DType::F32 => "rand_normal_f32",
             DType::F16 => "rand_normal_f16",
             DType::BF16 => "rand_normal_bf16",
-            dtype => fuel_core_types::bail!("rand_uniform not implemented for {dtype:?}"),
+            dtype => fuel_ir::bail!("rand_uniform not implemented for {dtype:?}"),
         };
         let buffer = self.new_buffer(shape.elem_count(), dtype, "rand_normal")?;
         let encoder = self.command_encoder()?;

@@ -41,7 +41,7 @@ use crate::lazy_t5::{
 };
 use crate::lazy::WeightStorage;
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// GGUF-quantized T5 (encoder-decoder) model. Wraps a plain

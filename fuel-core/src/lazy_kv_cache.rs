@@ -59,7 +59,7 @@
 //!   one logical owner, the most recent cache.
 
 use crate::{DType, Device, lazy::LazyTensor};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// Per-forward-pass KV cache. See module docs for lifecycle and shape
@@ -94,14 +94,14 @@ impl LazyKvCache {
         n_kv_heads: usize,
         head_dim: usize,
         dtype: DType,
-    ) -> std::result::Result<Self, fuel_core_types::Error> {
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         if n_layers == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "LazyKvCache::new: n_layers must be ≥ 1".into(),
             ).bt());
         }
         if max_seq_len == 0 {
-            return Err(fuel_core_types::Error::Msg(
+            return Err(fuel_ir::Error::Msg(
                 "LazyKvCache::new: max_seq_len must be ≥ 1".into(),
             ).bt());
         }
@@ -346,13 +346,13 @@ impl LazyKvCache {
 /// cache buffers have a different shape from the anchor.
 fn zero_const_on(
     anchor: &LazyTensor, dtype: DType, shape: Shape, elems: usize,
-) -> std::result::Result<LazyTensor, fuel_core_types::Error> {
+) -> std::result::Result<LazyTensor, fuel_ir::Error> {
     match dtype {
         DType::F32 => Ok(anchor.const_f32_like(vec![0.0_f32; elems], shape)),
         DType::F64 => Ok(anchor.const_f64_like(vec![0.0_f64; elems], shape)),
         DType::BF16 => Ok(anchor.const_bf16_like(vec![half::bf16::ZERO; elems], shape)),
         DType::F16 => Ok(anchor.const_f16_like(vec![half::f16::ZERO; elems], shape)),
-        other => Err(fuel_core_types::Error::Msg(format!(
+        other => Err(fuel_ir::Error::Msg(format!(
             "LazyKvCache: unsupported dtype {other:?}",
         )).bt()),
     }

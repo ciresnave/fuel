@@ -11,16 +11,16 @@
 //! | `4`  | workspace too small or null when required |
 //! | `5`  | internal kernel error (typically a launch failure) |
 
-use fuel_core_types::Error;
+use fuel_ir::Error;
 
 use crate::error::CudaError;
 
 /// Convert a baracuda `_run` / `_can_implement` status code to a
-/// `fuel_core_types::Result`. `op_label` is folded into the error
+/// `fuel_ir::Result`. `op_label` is folded into the error
 /// message so the caller doesn't have to repeat it (kernel sites pass
 /// the family + dtype, e.g. `"unary_neg_f32"`).
 #[inline]
-pub fn check(status: i32, op_label: &'static str) -> fuel_core_types::Result<()> {
+pub fn check(status: i32, op_label: &'static str) -> fuel_ir::Result<()> {
     if status == 0 {
         return Ok(());
     }

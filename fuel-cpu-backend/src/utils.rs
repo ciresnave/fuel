@@ -1,9 +1,10 @@
 ﻿/// Helper functions to write CPU kernels.
-use fuel_core_types::{HostBuffer, Error, Layout, Result, WithDType};
+use fuel_ir::{HostBuffer, Error, Layout, Result, WithDType};
+use fuel_cpu_kernels::VecOps;
 
 type C = HostBuffer;
 pub trait Map1 {
-    fn f<T: WithDType>(&self, vs: &[T], layout: &Layout) -> Result<Vec<T>>;
+    fn f<T: WithDType + VecOps>(&self, vs: &[T], layout: &Layout) -> Result<Vec<T>>;
 
     fn map(&self, vs: &C, layout: &Layout) -> Result<C> {
         match vs {
@@ -54,7 +55,7 @@ pub trait Map1Any {
 
 pub trait Map2 {
     const OP: &'static str;
-    fn f<T: WithDType>(&self, v1: &[T], l1: &Layout, v2: &[T], l2: &Layout) -> Result<Vec<T>>;
+    fn f<T: WithDType + VecOps>(&self, v1: &[T], l1: &Layout, v2: &[T], l2: &Layout) -> Result<Vec<T>>;
 
     fn map(&self, v1: &C, l1: &Layout, v2: &C, l2: &Layout) -> Result<C> {
         match (v1, v2) {
@@ -328,12 +329,12 @@ pub fn unary_map<T: Copy, U: Copy, F: FnMut(T) -> U>(
     mut f: F,
 ) -> Vec<U> {
     match layout.strided_blocks() {
-        fuel_core_types::StridedBlocks::SingleBlock { start_offset, len } => vs
+        fuel_ir::StridedBlocks::SingleBlock { start_offset, len } => vs
             [start_offset..start_offset + len]
             .iter()
             .map(|&v| f(v))
             .collect(),
-        fuel_core_types::StridedBlocks::MultipleBlocks {
+        fuel_ir::StridedBlocks::MultipleBlocks {
             block_start_index,
             block_len,
         } => {
@@ -364,7 +365,7 @@ pub fn unary_map_vec<T: Copy, U: Copy, F: FnMut(T) -> U, FV: FnMut(&[T], &mut [U
     mut f_vec: FV,
 ) -> Vec<U> {
     match layout.strided_blocks() {
-        fuel_core_types::StridedBlocks::SingleBlock { start_offset, len } => {
+        fuel_ir::StridedBlocks::SingleBlock { start_offset, len } => {
             let mut ys: Vec<U> = Vec::with_capacity(len);
             let ys_to_set = ys.spare_capacity_mut();
             let ys_to_set = unsafe {
@@ -375,7 +376,7 @@ pub fn unary_map_vec<T: Copy, U: Copy, F: FnMut(T) -> U, FV: FnMut(&[T], &mut [U
             unsafe { ys.set_len(len) };
             ys
         }
-        fuel_core_types::StridedBlocks::MultipleBlocks {
+        fuel_ir::StridedBlocks::MultipleBlocks {
             block_start_index,
             block_len,
         } => {

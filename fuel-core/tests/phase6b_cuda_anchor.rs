@@ -37,7 +37,7 @@ use fuel_core::lazy_sd_text_encoder::{
 use fuel_core::lazy_whisper::WhisperModel;
 use fuel_core::lazy_yolov8::{YoloV8Config, YoloV8Model, YoloV8Weights};
 use fuel_core::Result;
-use fuel_core_types::{probe::BackendId, Shape};
+use fuel_ir::{probe::BackendId, Shape};
 use std::sync::Arc;
 
 /// Construct a fresh CUDA device handle on device 0. Asserts presence —

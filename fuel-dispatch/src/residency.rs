@@ -48,7 +48,7 @@
 //!   graph-level planning.
 
 use crate::plan::backend_for_device;
-use fuel_core_types::{DeviceLocation, Error, Result};
+use fuel_ir::{DeviceLocation, Error, Result};
 use fuel_graph::{opt, topo_order_multi, Graph, NodeId, Op, SharedGraph};
 use std::collections::HashMap;
 
@@ -395,7 +395,7 @@ fn write_graph(graph: &SharedGraph) -> Result<std::sync::RwLockWriteGuard<'_, Gr
 mod tests {
     use super::*;
     use crate::pipelined::{PipelinedExecutor, StorageCache};
-    use fuel_core_types::{probe::BackendId, DType, Shape};
+    use fuel_ir::{probe::BackendId, DType, Shape};
     use fuel_graph::Node;
     use std::sync::{Arc, RwLock};
 

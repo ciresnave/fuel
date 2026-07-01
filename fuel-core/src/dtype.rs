@@ -3,19 +3,24 @@
 //! The [`DType`] enum and its inherent methods, Display, FromStr, DTypeParseError,
 //! and safetensors interop are all defined in `fuel-core-types` and re-exported here.
 //!
-//! [`WithDType`] is a local marker subtrait of `fuel_core_types::dtype::WithDType`.
+//! [`WithDType`] is a local marker subtrait of `fuel_ir::dtype::WithDType`.
 //! Keeping it local lets Rust's coherence checker prove disjointness of generic impls
 //! (e.g. `NdArray for S` vs `NdArray for Vec<S>`).  All methods are inherited from
 //! the upstream trait.
 #![allow(clippy::redundant_closure_call)]
 
 // Re-export DType and related types from fuel-core-types.
-pub use fuel_core_types::dtype::{DType, DTypeParseError};
+pub use fuel_ir::dtype::{DType, DTypeParseError};
 
 /// Local marker subtrait — inherits every method from
-/// `fuel_core_types::dtype::WithDType` but is defined in this crate so that
+/// `fuel_ir::dtype::WithDType` but is defined in this crate so that
 /// the orphan/coherence rules treat it as a local trait.
-pub trait WithDType: fuel_core_types::dtype::WithDType {}
+///
+/// Also requires `fuel_ir::HostDType` (the host-buffer conversion methods split
+/// off `WithDType` in B0.4): every `BuiltinDType` here is host-storable, so this
+/// keeps `crate::WithDType`-bounded fuel-core code (NdArray, tensor `to_vec*` /
+/// `from_*`) able to call `to_cpu_storage` / `cpu_storage_as_slice` unchanged.
+pub trait WithDType: fuel_ir::dtype::WithDType + fuel_ir::HostDType {}
 
 macro_rules! with_dtype {
     ($ty:ty, $dtype:ident, $from_f64:expr, $to_f64:expr) => {

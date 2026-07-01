@@ -1,0 +1,12 @@
+[package]
+    categories.workspace = true
+    description          = "Backend-contract traits for the fuel ML framework (the object-safe surface every backend implements)"
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-backend-contract"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    fuel-ir = { workspace = true }

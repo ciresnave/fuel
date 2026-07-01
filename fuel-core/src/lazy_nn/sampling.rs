@@ -188,7 +188,7 @@ pub fn top_p_sample(
 mod tests {
     use super::*;
     use crate::Device;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
     use rand::SeedableRng;
 
     fn lazy_logits(values: Vec<f32>) -> LazyTensor {

@@ -13,7 +13,7 @@
 //! large graph.
 
 use fuel_core::lazy::LazyTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 /// Reach into the boxed payload and pull out a String. Mirrors

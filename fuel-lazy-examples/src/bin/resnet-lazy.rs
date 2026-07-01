@@ -24,7 +24,7 @@
 
 use fuel::lazy::LazyTensor;
 use fuel::lazy_resnet::{ResNetConfig, ResNetModel};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::io::Write;
 use std::time::Instant;
 

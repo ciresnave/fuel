@@ -10,7 +10,7 @@
 #![cfg(feature = "cuda")]
 
 use fuel_core::lazy::LazyTensor;
-use fuel_core_types::{probe::BackendId, Shape};
+use fuel_ir::{probe::BackendId, Shape};
 
 fn cuda_present() -> bool {
     let probe = fuel_core::probe::ProbeReport::probe_all();

@@ -11,8 +11,8 @@
 //! wire form, and the `from_binding`/`from_resolved_primitive` constructors,
 //! land in step 2; this module defines the serializable identity itself.
 
-use fuel_core_types::dispatch::OpKind;
-use fuel_core_types::{BackendId, DType};
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::{BackendId, DType};
 
 /// The stable, pointer-free implementation id. Basis tuple = FKC kernel
 /// identity. Serialized into every `DispatchRecord`/`Candidate`/`MissRecord`.
@@ -83,7 +83,7 @@ impl ImplId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::dispatch::OpKind;
+    use fuel_ir::dispatch::OpKind;
 
     fn id(kernel_source: &str, backend: BackendId) -> ImplId {
         ImplId {

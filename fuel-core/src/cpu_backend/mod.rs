@@ -5,7 +5,7 @@
 //! the crate path `fuel_core::cpu_backend::*` stable for downstream
 //! consumers (notably `fuel-nn` which calls `unary_map` here).
 
-pub use fuel_core_types::{CpuDevice, CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
+pub use fuel_ir::{CpuDevice, CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
 
 pub use fuel_cpu_backend::utils::{
     binary_map, binary_map_vec, unary_map, unary_map_vec,

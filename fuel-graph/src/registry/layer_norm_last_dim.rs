@@ -33,7 +33,7 @@ use crate::registry::{
     PatternMatch, SubgraphPattern,
 };
 use crate::{Graph, Node, NodeId, Op};
-use fuel_core_types::{DType, Shape};
+use fuel_ir::{DType, Shape};
 
 /// Metadata-side registry entry for LayerNormLastDim.
 pub fn entry() -> FusedOpEntry {

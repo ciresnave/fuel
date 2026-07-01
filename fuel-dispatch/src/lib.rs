@@ -59,9 +59,13 @@ pub mod residency;
 pub mod runtime_fused_kernels;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
+pub mod topology;
 pub mod vulkan_dispatch;
 
-pub use compiled::{compile_node, execute_compiled, CompiledNode};
+pub use compiled::{
+    compile_node, dispatched_kernel_source, execute_compiled, Completion, CompiledNode,
+    CompletionHandle,
+};
 pub use driver::{
     FrontierConvergenceOptimizer, OptimizationContext, Optimizer, PassRegistry,
     Pathfinder, PlacementForkPathfinder,

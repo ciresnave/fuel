@@ -1,0 +1,22 @@
+[package]
+    categories.workspace = true
+    description          = "Hardware discovery for the fuel ML framework — device enumeration, probe reports, transfer calibration, topology"
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-hardware"
+    repository.workspace = true
+    version.workspace    = true
+
+[dependencies]
+    fuel-ir             = { workspace = true, features = ["serde"] }
+    fuel-cpu-backend    = { workspace = true }
+    fuel-cuda-backend   = { workspace = true, optional = true }
+    fuel-vulkan-backend = { workspace = true, optional = true }
+    serde               = { workspace = true }
+    serde_json          = { workspace = true }
+
+[features]
+    default = []
+    cuda    = ["dep:fuel-cuda-backend"]
+    vulkan  = ["dep:fuel-vulkan-backend"]

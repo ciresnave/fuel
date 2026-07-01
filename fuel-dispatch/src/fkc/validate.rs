@@ -1596,10 +1596,10 @@ determinism: nondeterministic
             // A family of distinct fn items so distinct symbols get distinct
             // pointers (avoids spurious duplicate-pointer collapse on lower —
             // lowering does not finalize, but keep them distinct anyway).
-            fn k0(_i: &[Arc<RwLock<fuel_memory::Storage>>], _o: &mut [Arc<RwLock<fuel_memory::Storage>>], _l: &[fuel_core_types::Layout], _p: &crate::kernel::OpParams) -> fuel_core_types::Result<()> { Ok(()) }
-            fn k1(_i: &[Arc<RwLock<fuel_memory::Storage>>], _o: &mut [Arc<RwLock<fuel_memory::Storage>>], _l: &[fuel_core_types::Layout], _p: &crate::kernel::OpParams) -> fuel_core_types::Result<()> { Ok(()) }
-            fn k2(_i: &[Arc<RwLock<fuel_memory::Storage>>], _o: &mut [Arc<RwLock<fuel_memory::Storage>>], _l: &[fuel_core_types::Layout], _p: &crate::kernel::OpParams) -> fuel_core_types::Result<()> { Ok(()) }
-            fn k3(_i: &[Arc<RwLock<fuel_memory::Storage>>], _o: &mut [Arc<RwLock<fuel_memory::Storage>>], _l: &[fuel_core_types::Layout], _p: &crate::kernel::OpParams) -> fuel_core_types::Result<()> { Ok(()) }
+            fn k0(_i: &[Arc<RwLock<fuel_memory::Storage>>], _o: &mut [Arc<RwLock<fuel_memory::Storage>>], _l: &[fuel_ir::Layout], _p: &crate::kernel::OpParams) -> fuel_ir::Result<()> { Ok(()) }
+            fn k1(_i: &[Arc<RwLock<fuel_memory::Storage>>], _o: &mut [Arc<RwLock<fuel_memory::Storage>>], _l: &[fuel_ir::Layout], _p: &crate::kernel::OpParams) -> fuel_ir::Result<()> { Ok(()) }
+            fn k2(_i: &[Arc<RwLock<fuel_memory::Storage>>], _o: &mut [Arc<RwLock<fuel_memory::Storage>>], _l: &[fuel_ir::Layout], _p: &crate::kernel::OpParams) -> fuel_ir::Result<()> { Ok(()) }
+            fn k3(_i: &[Arc<RwLock<fuel_memory::Storage>>], _o: &mut [Arc<RwLock<fuel_memory::Storage>>], _l: &[fuel_ir::Layout], _p: &crate::kernel::OpParams) -> fuel_ir::Result<()> { Ok(()) }
             let table: [crate::kernel::KernelRef; 4] = [k0, k1, k2, k3];
             let mut g = self.seen.lock().unwrap();
             if let Some(k) = g.get(symbol) {

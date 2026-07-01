@@ -49,7 +49,7 @@
 
 use crate::lazy::LazyTensor;
 use crate::Result;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// Padding mode for [`pad_last_1d`] / streaming-conv left context.

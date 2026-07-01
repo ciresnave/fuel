@@ -10,7 +10,8 @@
 
 [dependencies]
     float8                 = { workspace = true }
-    fuel-core-types        = { workspace = true }
+    fuel-ir                = { workspace = true }
+    fuel-backend-contract  = { workspace = true }
     fuel-kernel-seam-types = { workspace = true }
     half                   = { workspace = true }
 

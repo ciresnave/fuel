@@ -62,7 +62,7 @@ use crate::lazy_sd_text_encoder::{
 };
 use crate::lazy_t5::{T5Config, T5Model, T5Weights};
 use crate::Result;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 /// SD3 max position embeddings for each of the three encoders.
 /// Both CLIPs and T5 use 77 to keep the per-token sequence

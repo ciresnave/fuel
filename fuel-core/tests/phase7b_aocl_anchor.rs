@@ -7,7 +7,7 @@
 #![cfg(feature = "aocl")]
 
 use fuel_core::lazy::LazyTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 /// AOCL loadability via the crate's runtime probe. Replaces the
 /// pre-retirement `BackendId::Aocl` discovery path.

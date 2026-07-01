@@ -21,7 +21,7 @@ use baracuda_cutlass::{
     MatrixRef, PlanPreference, Workspace,
 };
 use baracuda_types::DeviceRepr;
-use fuel_core_types::{Error, Result};
+use fuel_ir::{Error, Result};
 use half::{bf16, f16};
 
 use crate::byte_storage::CudaStorageBytes;

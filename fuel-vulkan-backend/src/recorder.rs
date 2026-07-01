@@ -59,6 +59,157 @@ impl OpStats {
     }
 }
 
+/// Step E A4b-2: an already-submitted (but not-yet-waited) Vulkan batch.
+///
+/// Produced by [`Recorder::submit_batch`], which ends recording and calls
+/// `vkQueueSubmit` with a fresh fence WITHOUT waiting it. The struct OWNS every
+/// resource the in-flight command buffer still references on the GPU:
+///
+/// - `fence`     — signals when the whole submitted CB has retired.
+/// - `cmd`       — the command buffer the GPU is executing (must outlive the
+///   submission, i.e. until `fence` signals).
+/// - `transients`— per-dispatch params/uniform buffers the shaders read.
+/// - `descs`     — descriptor sets bound by the CB (point at the I/O buffers).
+/// - `retired_pool` — the command pool the `cmd` was allocated from, swapped out
+///   of the [`Recorder`] so a fresh pool serves the next batch while this one is
+///   still in flight (dropping the pool would free the CB's backing memory).
+/// - `retained_data` — Step E A2.1: DATA buffers the in-flight CB reads that the
+///   executor has EVICTED from its per-NodeId cache while this batch is still in
+///   flight (deferred-deletion / retain-until-fence). Unlike `transients` (which
+///   the recorder owns), these are I/O data buffers normally owned by the cache;
+///   when the cache evicts one mid-flight the executor moves a refcount clone here
+///   instead of host-blocking on a drain, so the buffer outlives the GPU's last
+///   read of it and frees post-fence on this struct's `Drop` (see
+///   [`Self::retain_buffer`]). The recycler (`VulkanBuffer::drop`) only reclaims
+///   the buffer when its LAST `Arc` drops, so the retained clone keeps it out of
+///   the free pool until the fence has signalled — exactly the `transients`
+///   lifetime guarantee, extended to evicted data buffers.
+///
+/// **UAF-critical contract:** none of these may drop before `fence` signals.
+/// This is enforced **by construction in [`Drop`]** (the safety net): dropping a
+/// `SubmittedBatch` that has NOT yet had its fence waited (`consumed == false`)
+/// fence-waits first, so the GPU is guaranteed idle on this CB before `cmd`/
+/// `descs`/`transients`/`retired_pool` free — regardless of the drop site (the
+/// normal [`crate::VulkanBackend::wait_submitted`] path, an error unwinding the
+/// realize loop while in-flight batches are still queued, or any future drop
+/// site). On the normal path `wait()` has already waited + set `consumed`, so
+/// `Drop` skips the redundant wait (no double-wait); the fence would be
+/// signalled anyway, so even if it didn't skip the wait would be instant.
+pub struct SubmittedBatch {
+    fence: Fence,
+    /// `true` once [`wait`](Self::wait) has fence-waited this batch (the normal
+    /// `wait_submitted` path). When set, `Drop` skips the fence wait — the GPU is
+    /// already known idle. When `false` (the batch is dropped without an explicit
+    /// `wait` — e.g. a `?` unwinds the realize loop with in-flight batches still
+    /// queued), `Drop` does the wait itself so freeing the CB/descs/transients/
+    /// pool can never race the GPU (closes the error-path use-after-free).
+    consumed: bool,
+    // `cmd`/`transients`/`descs`/`retired_pool` are never *read* — they exist
+    // solely as lifetime anchors: the GPU is still executing `cmd` (which binds
+    // `descs` and reads `transients`, allocated from `retired_pool`) until
+    // `fence` signals, so all four must outlive the wait and free only on this
+    // struct's drop. `#[allow(dead_code)]` documents that the ownership IS the
+    // contract (dropping any of them early would be a use-after-free).
+    #[allow(dead_code)]
+    cmd: CommandBuffer,
+    #[allow(dead_code)]
+    transients: Vec<(Buffer, Allocation)>,
+    #[allow(dead_code)]
+    descs: Vec<DescriptorSet>,
+    #[allow(dead_code)]
+    retired_pool: CommandPool,
+    // Step E A2.1: data buffers the executor evicted from its cache while this
+    // batch was in flight, retained here (a refcount clone) so they outlive the
+    // GPU's last read and free POST-fence on `Drop`. Never *read* — a lifetime
+    // anchor, exactly like `transients`. Empty for a batch the executor never
+    // deferred an eviction onto (the common case); the cost when used is one
+    // `Arc::clone` per evicted buffer (no GPU work, no host block).
+    #[allow(dead_code)]
+    retained_data: Vec<std::sync::Arc<crate::VulkanBuffer>>,
+}
+
+impl SubmittedBatch {
+    /// Step E A2.1 (deferred-deletion / retain-until-fence): keep `buf` alive
+    /// until this batch's fence signals, then free it on `Drop`.
+    ///
+    /// Called by the executor when it EVICTS a data buffer from its per-NodeId
+    /// cache that this still-in-flight CB may read. Instead of host-blocking on a
+    /// fence wait before the eviction (the pre-A2.1 drain), the executor moves a
+    /// refcount clone of the buffer here; the buffer's recycler
+    /// (`VulkanBuffer::drop`) only reclaims it when its LAST `Arc` drops, so this
+    /// retained clone keeps the underlying `VkBuffer`/memory out of the alloc pool
+    /// until this batch's `Drop` (guaranteed POST-fence — `wait_submitted`, or the
+    /// self-wait safety net). The GPU's last read of the buffer therefore strictly
+    /// precedes the free: no use-after-free, no host block at the eviction.
+    ///
+    /// Idempotent / additive: multiple evictions onto one batch just push more
+    /// anchors. Cheap (one `Arc::clone`, no GPU work).
+    pub fn retain_buffer(&mut self, buf: std::sync::Arc<crate::VulkanBuffer>) {
+        self.retained_data.push(buf);
+    }
+
+    /// Block the host until this batch's fence signals — i.e. until the GPU has
+    /// finished every command in the submitted CB. After this returns it is safe
+    /// to drop `self` (freeing the CB / descriptor sets / transient buffers /
+    /// retired pool), which the caller does immediately.
+    ///
+    /// Marks the batch `consumed` so the [`Drop`] safety net skips the (now
+    /// redundant) fence wait — the normal `wait_submitted` path pays exactly one
+    /// real wait, here.
+    pub(crate) fn wait(&mut self) -> Result<()> {
+        let r = self.fence.wait(u64::MAX);
+        // Mark consumed regardless of the wait's Result: on success the GPU is
+        // idle; on a wait error there's nothing more Drop can usefully do (and a
+        // retry in Drop would just re-hit the same error), so we don't want Drop
+        // to wait again either way.
+        self.consumed = true;
+        r
+    }
+}
+
+impl Drop for SubmittedBatch {
+    /// UAF safety net: if this batch was dropped WITHOUT an explicit
+    /// [`wait`](Self::wait) (e.g. a `?` error unwound the realize loop while this
+    /// batch was still in flight in the executor's `inflight_vulkan` list), wait
+    /// the fence here so the GPU has finished executing the command buffer BEFORE
+    /// the CB / descriptor sets / transient buffers / retired pool / retained data
+    /// buffers free. Without this the resources would free while the GPU was still
+    /// reading them — a use-after-free (GPU fault / validation error / corruption)
+    /// on the error path.
+    ///
+    /// Step E A2.1: this same post-fence guarantee is what makes deferred-deletion
+    /// of evicted DATA buffers (`retained_data`, via [`Self::retain_buffer`])
+    /// correct — when those `Arc<VulkanBuffer>` clones drop here, the fence has
+    /// signalled (either consumed by `wait_submitted` or self-waited above), so the
+    /// recycler reclaims the buffer only after the GPU's last read. The drop of the
+    /// fields below (including `retained_data`) happens AFTER this fence wait.
+    ///
+    /// On the normal path `consumed` is already `true` (`wait_submitted` →
+    /// `wait`), so this is a no-op: no double-wait, and `retire_pools_post_drain`
+    /// has already run in `wait_submitted` between the fence wait and this drop.
+    ///
+    /// Never panics on drop (CLAUDE.md): a fence-wait error is swallowed (logged
+    /// via tracing). Blocking in Drop on the error path is intentional and
+    /// necessary — it is the price of not leaking a use-after-free; on the normal
+    /// path the wait is skipped entirely.
+    fn drop(&mut self) {
+        if !self.consumed {
+            // The fence was submitted in `Recorder::submit_batch` (a
+            // `SubmittedBatch` is only ever constructed there, after
+            // `queue.submit(.., Some(&fence))`), so the fence IS pending GPU work
+            // — waiting it is always valid and bounded by the GPU's CB.
+            if let Err(e) = self.fence.wait(u64::MAX) {
+                tracing::error!(
+                    error = ?e,
+                    "SubmittedBatch dropped without wait_submitted; \
+                     fence wait in Drop failed — freeing GPU resources may race \
+                     the GPU (potential use-after-free)"
+                );
+            }
+        }
+    }
+}
+
 pub(crate) struct Recorder {
     pub pool: CommandPool,
     /// The single CB being recorded into for the current batch.
@@ -235,6 +386,73 @@ impl Recorder {
         drop(cmd);
         self.pool = CommandPool::new(device, queue_family)?;
         Ok(())
+    }
+
+    /// Step E A4b-2: end the current batch CB recording and SUBMIT it with a
+    /// fresh fence WITHOUT waiting (the async half of [`flush_batch`]). Returns
+    /// the [`SubmittedBatch`] that owns the fence + every resource the in-flight
+    /// CB references; the caller waits the fence later (via the executor's
+    /// completion handle) and drops the batch only after it signals.
+    ///
+    /// Returns `Ok(None)` for an empty batch (no CB recorded since the last
+    /// submit) — identical no-op semantics to `flush_batch`'s early return.
+    ///
+    /// This is the ONLY difference from `flush_batch`: same `vkEndCommandBuffer`
+    /// + same `queue.submit(&[&cmd], Some(&fence))`, but instead of
+    /// `fence.wait(u64::MAX)` + dropping the transients/CB/pool inline, it MOVES
+    /// them into the returned struct so they outlive the (still-running) GPU work.
+    /// Counters/dirty-set are reset exactly as `flush_batch` does, and the pool is
+    /// swapped for a fresh one so the next batch records into a clean pool while
+    /// this one is in flight.
+    pub fn submit_batch(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        queue_family: u32,
+    ) -> Result<Option<SubmittedBatch>> {
+        let Some(cmd) = self.batch_cb.take() else {
+            return Ok(None);
+        };
+        let dt = device.dispatch();
+
+        // End recording (same as flush_batch).
+        unsafe {
+            let end = dt.vkEndCommandBuffer
+                .ok_or(Error::MissingFunction("vkEndCommandBuffer"))?;
+            let r = end(cmd.raw());
+            if r != VkResult::SUCCESS { return Err(Error::Vk(r)); }
+        }
+
+        // Submit with a fence but DO NOT wait — the async split.
+        let fence = Fence::new(device)?;
+        queue.submit(&[&cmd], Some(&fence))?;
+
+        // Move (not drop) everything the in-flight CB references into the
+        // returned batch. Swap the pool for a fresh one so the next batch
+        // records cleanly while this CB is still executing; the retired pool
+        // travels with the batch and frees only after the fence signals.
+        let batch = SubmittedBatch {
+            fence,
+            consumed: false,
+            cmd,
+            transients: std::mem::take(&mut self.batch_transients),
+            descs: std::mem::take(&mut self.batch_descs),
+            retired_pool: std::mem::replace(
+                &mut self.pool,
+                CommandPool::new(device, queue_family)?,
+            ),
+            // Step E A2.1: starts empty — the executor pushes evicted data buffers
+            // onto it via `retain_buffer` only when it defers an eviction onto this
+            // in-flight batch (deferred-deletion). Freed POST-fence on `Drop`.
+            retained_data: Vec::new(),
+        };
+
+        // Reset counters/dirty exactly as flush_batch does (the moved Vecs are
+        // already empty after take()).
+        self.batch_count = 0;
+        self.dirty_buffers.clear();
+
+        Ok(Some(batch))
     }
 
     /// Drain without submitting (for cleanup).

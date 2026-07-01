@@ -11,8 +11,8 @@
 //! passthrough). Returns `Err` only when the driver dynamic-load
 //! itself fails.
 
-use fuel_core_types::probe::{BackendId, BackendProbe, DeviceDescriptor};
-use fuel_core_types::{DeviceLocation, Error, Result};
+use fuel_ir::probe::{BackendId, BackendProbe, DeviceDescriptor};
+use fuel_ir::{DeviceLocation, Error, Result};
 
 /// NVIDIA's PCI-SIG vendor ID. Hardcoded because (a) CUDA only ever
 /// runs on NVIDIA silicon and (b) the CUDA device-attribute API does

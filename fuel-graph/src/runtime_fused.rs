@@ -223,7 +223,7 @@ pub fn runtime_lowering_decompose(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::{DType, Shape};
+    use fuel_ir::{DType, Shape};
 
     fn relu_add_region() -> PatternNode {
         PatternNode::Op {

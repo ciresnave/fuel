@@ -23,7 +23,7 @@
 
 use crate::ops;
 use crate::RefTensor;
-use fuel_core_types::{DType, Shape};
+use fuel_ir::{DType, Shape};
 use fuel_graph::{topo_order, topo_order_multi, NodeId, Op, Tensor};
 use half::{bf16, f16};
 use std::collections::HashMap;
@@ -121,13 +121,13 @@ fn try_adopt_slot_ref(
     Some(host_buffer_to_any_ref(buf, shape))
 }
 
-fn host_buffer_to_any_ref(buf: fuel_core_types::HostBuffer, shape: &Shape) -> AnyRefTensor {
+fn host_buffer_to_any_ref(buf: fuel_ir::HostBuffer, shape: &Shape) -> AnyRefTensor {
     match buf {
-        fuel_core_types::HostBuffer::F32(v) => AnyRefTensor::F32(RefTensor::from_vec(v, shape.clone())),
-        fuel_core_types::HostBuffer::F64(v) => AnyRefTensor::F64(RefTensor::from_vec(v, shape.clone())),
-        fuel_core_types::HostBuffer::BF16(v) => AnyRefTensor::BF16(RefTensor::from_vec(v, shape.clone())),
-        fuel_core_types::HostBuffer::F16(v) => AnyRefTensor::F16(RefTensor::from_vec(v, shape.clone())),
-        fuel_core_types::HostBuffer::U32(v) => AnyRefTensor::U32(RefTensor::from_vec(v, shape.clone())),
+        fuel_ir::HostBuffer::F32(v) => AnyRefTensor::F32(RefTensor::from_vec(v, shape.clone())),
+        fuel_ir::HostBuffer::F64(v) => AnyRefTensor::F64(RefTensor::from_vec(v, shape.clone())),
+        fuel_ir::HostBuffer::BF16(v) => AnyRefTensor::BF16(RefTensor::from_vec(v, shape.clone())),
+        fuel_ir::HostBuffer::F16(v) => AnyRefTensor::F16(RefTensor::from_vec(v, shape.clone())),
+        fuel_ir::HostBuffer::U32(v) => AnyRefTensor::U32(RefTensor::from_vec(v, shape.clone())),
         other => panic!(
             "fuel-reference-backend slot adopt: unsupported host-buffer dtype {:?}",
             other.dtype(),
@@ -1889,14 +1889,14 @@ fn eval_scatter_add(
 mod tests {
     /// Phase 7.5 G2: tests need a real device for slot-populating
     /// constructors. Singleton CpuBackendDevice via OnceLock.
-    fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_core_types::DynBackendDevice> {
-        static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_core_types::DynBackendDevice>>
+    fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice> {
+        static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice>>
             = std::sync::OnceLock::new();
         D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
     }
 
     use super::*;
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
     use fuel_graph::Tensor;
 
     fn approx_vec(a: &[f32], b: &[f32], tol: f32) {

@@ -12,7 +12,7 @@
 //!
 //! ```no_run
 //! use fuel_cuda_backend::{CudaDevice, PinnedHostStorage};
-//! use fuel_core_types::backend::HostStorage;
+//! use fuel_backend_contract::backend::HostStorage;
 //!
 //! let dev = CudaDevice::new(0)?;
 //! let mut buf = PinnedHostStorage::zeros_f32(&dev, 4096)?;
@@ -21,7 +21,7 @@
 //!     for (i, v) in slice.iter_mut().enumerate() { *v = i as f32; }
 //! }
 //! let view = buf.as_host_buffer_ref()?;
-//! # Ok::<(), fuel_core_types::Error>(())
+//! # Ok::<(), fuel_ir::Error>(())
 //! ```
 //!
 //! # Alternative: `PinnedRegistration`
@@ -35,8 +35,8 @@
 
 use crate::{CudaDevice, CudaError, WrapErr};
 use baracuda_driver::pinned::PinnedBuffer;
-use fuel_core_types::backend::HostStorage;
-use fuel_core_types::{DType, Error, HostBuffer, HostBufferRef, Result};
+use fuel_backend_contract::backend::HostStorage;
+use fuel_ir::{DType, Error, HostBuffer, HostBufferRef, Result};
 use half::{bf16, f16};
 
 /// Dtype-tagged pinned host allocation.

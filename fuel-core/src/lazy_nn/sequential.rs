@@ -60,7 +60,7 @@ mod tests {
     use crate::Device;
     use crate::lazy::WeightStorage;
     use crate::lazy_nn::{LazyLinear, LazyModule};
-    use fuel_core_types::Shape;
+    use fuel_ir::Shape;
     use std::sync::Arc;
 
     fn tiny_xs(b: usize, d: usize, val: f32) -> LazyTensor {

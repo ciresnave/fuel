@@ -16,7 +16,7 @@
 use crate::lazy::LazyTensor;
 use crate::lazy_sd_samplers::{BetaSchedule, PredictionType, SdScheduler, TimestepSpacing};
 use crate::{Error, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 /// Configuration for [`EulerAncestralDiscreteScheduler`].
 #[derive(Debug, Clone, Copy)]

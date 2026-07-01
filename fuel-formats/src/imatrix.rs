@@ -23,7 +23,7 @@ use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use fuel_core_types::{Error, Result, bail};
+use fuel_ir::{Error, Result, bail};
 
 /// Parse an imatrix stream from any source.
 ///

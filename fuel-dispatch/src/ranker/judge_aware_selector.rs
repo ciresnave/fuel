@@ -40,7 +40,7 @@
 //! # What "kernel_source" does here
 //!
 //! Phase v0.4 of the backend contract carries `kernel_source` on
-//! both [`Candidate`] and [`fuel_core_types::dispatch::ProfileEntry`].
+//! both [`Candidate`] and [`fuel_ir::dispatch::ProfileEntry`].
 //! The [`JudgeOracle`] trait's `measured_latency_ns` doesn't take
 //! `kernel_source` today (the trait predates per-alternative
 //! measurement). When a future Judge revision adds it, this selector
@@ -53,8 +53,8 @@
 
 use std::sync::Arc;
 
-use fuel_core_types::dispatch::{OpKind, SizeClass};
-use fuel_core_types::DType;
+use fuel_ir::dispatch::{OpKind, SizeClass};
+use fuel_ir::DType;
 
 use super::{composite_ns, AlternativeSet, Candidate, JudgeOracle, RuntimeSelector};
 
@@ -67,8 +67,8 @@ use super::{composite_ns, AlternativeSet, Candidate, JudgeOracle, RuntimeSelecto
 ///
 /// ```ignore
 /// use std::sync::Arc;
-/// use fuel_core_types::dispatch::{OpKind, SizeClass};
-/// use fuel_core_types::DType;
+/// use fuel_ir::dispatch::{OpKind, SizeClass};
+/// use fuel_ir::DType;
 /// use fuel_dispatch::ranker::{HashMapJudge, JudgeAwareSelector};
 ///
 /// let judge = Arc::new(HashMapJudge::new());
@@ -202,8 +202,8 @@ mod tests {
     use crate::fused::{CostEstimate, PrecisionGuarantee};
     use crate::kernel::{KernelCaps, OpParams};
     use crate::ranker::HashMapJudge;
-    use fuel_core_types::probe::BackendId;
-    use fuel_core_types::{DeviceLocation, Layout, Result};
+    use fuel_ir::probe::BackendId;
+    use fuel_ir::{DeviceLocation, Layout, Result};
     use fuel_memory::Storage;
     use std::sync::{Arc, RwLock};
 

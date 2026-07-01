@@ -28,7 +28,7 @@
 use bytemuck::Pod;
 
 use crate::byte_storage::CpuStorageBytes;
-use fuel_core_types::{Error, Result};
+use fuel_ir::{Error, Result};
 
 // =============================================================================
 // Trait

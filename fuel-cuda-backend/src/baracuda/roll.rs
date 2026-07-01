@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{Error, Layout, Result};
+use fuel_ir::{Error, Layout, Result};
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -149,7 +149,6 @@ fn roll_run(
         }
     };
     check(status, op_label)?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(Arc::new(out), device, out_bytes))
 }
 

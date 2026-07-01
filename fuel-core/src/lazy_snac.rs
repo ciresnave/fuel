@@ -28,7 +28,7 @@
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_dac::expand_conv1d_weight_for_dilation_if_needed;
 use crate::Result;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -243,7 +243,7 @@ impl SnacModel {
             });
         }
         sum.ok_or_else(|| {
-            fuel_core_types::Error::Msg("SNAC RVQ: no codebooks".into()).bt()
+            fuel_ir::Error::Msg("SNAC RVQ: no codebooks".into()).bt()
         })
     }
 

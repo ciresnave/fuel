@@ -1,6 +1,6 @@
 # Backend contract
 
-**Status**: v0.5 (draft, 2026-06-20). **v0.5 is a MAJOR core-claim change** — the adaptive-runtime-fusion decision ([10-decisions-log §2026-06-20](10-decisions-log.md)). It corrects the over-broad "frozen for the process lifetime / re-compiling fuel to add a kernel" framing (the kernel binding table is already runtime-extensible via `extend_global_bindings` — Tier 1; recompiling is only needed for new *primitives*), names the **Fuel-strategist / backend-synthesizer** split for the JIT-on-request fusion path (Fuel chooses the region, a backend synthesizes the kernel — never backend-side opportunity-finding), names a backend offering a kernel for a known fused op that currently lacks one as the **`FusionMissRecord` `NoBackendKernel`** signal source, and updates stale Reference-backend trait examples to live backends. v0.4 changes: Reference backend retired from the dispatch system. No `BackendId::Reference` enum variant, no `ReferenceFactory`, no `LazyTensor::realize_f32_reference()`, no `fuel_reference_backend::probe` module. Judge correctness comparison now uses pairwise consensus across whatever backends are present at each profiling cell — no privileged oracle. The `fuel-reference-backend` crate remains as a test-oracle utility (`exec::realize_f32` + `attention` + `ops`) for callers that explicitly want textbook scalar math, but it is no longer architecturally privileged. AOCL and MKL are collapsed into `BackendId::Cpu`: they no longer have their own `BackendId` variants (no `BackendId::Aocl`, no `BackendId::Mkl`) and are distinguished from the portable CPU kernels by a `kernel_source` tag on each binding-table entry / `ProfileEntry` / `Pick`. They share the singleton `CpuBackendDevice` and therefore inherit its `BackendRuntime` impl. v0.3 changes (preserved): concrete trait surface, Tier 1/2/3 mandatory/optional framing, per-backend compliance snapshot, inference-vs-training capability split, `Option<u64>` honest returns for runtime state. v0.2 changes (preserved): `PrecisionGuarantee` structure replacing binary OracleGrade; Reference's architectural privilege replaced by the "always-built coverage commitment" on fuel-cpu-backend; opt-in kernel-stat telemetry upload.
+**Status**: v0.6 (draft, 2026-06-27). v0.6 changes: crate-location refresh only — the Tier-1 contract **traits** now live in the `fuel-backend-contract` crate (cut out of fuel-ir by the B0.3 step of the fuel-core-retirement program, 2026-06-27); the capability **data** types stay in `fuel-ir`. No contract-claim change (MINOR). **v0.5 also included a MAJOR core-claim change** — the adaptive-runtime-fusion decision ([10-decisions-log §2026-06-20](10-decisions-log.md)): it corrects the over-broad "frozen for the process lifetime / re-compiling fuel to add a kernel" framing (the kernel binding table is already runtime-extensible via `extend_global_bindings` — Tier 1; recompiling is only needed for new *primitives*), names the **Fuel-strategist / backend-synthesizer** split for the JIT-on-request fusion path (Fuel chooses the region, a backend synthesizes the kernel — never backend-side opportunity-finding), names a backend offering a kernel for a known fused op that currently lacks one as the **`FusionMissRecord` `NoBackendKernel`** signal source, and updates stale Reference-backend trait examples to live backends. v0.5 changes: §Per-backend kernel registration now names the op families where the `strided-input` capability earns its keep (elementwise / reductions / norm-softmax / clamp / pad / flip-roll-cumsum / concat / affine / stride-friendly indexing), and the families that keep the auto-Contiguize gate (packed casts, slab slice writes, irregular gather/scatter). Refines an already-stated capability; no core-claim change. v0.4 changes: Reference backend retired from the dispatch system. No `BackendId::Reference` enum variant, no `ReferenceFactory`, no `LazyTensor::realize_f32_reference()`, no `fuel_reference_backend::probe` module. Judge correctness comparison now uses pairwise consensus across whatever backends are present at each profiling cell — no privileged oracle. The `fuel-reference-backend` crate remains as a test-oracle utility (`exec::realize_f32` + `attention` + `ops`) for callers that explicitly want textbook scalar math, but it is no longer architecturally privileged. AOCL and MKL are collapsed into `BackendId::Cpu`: they no longer have their own `BackendId` variants (no `BackendId::Aocl`, no `BackendId::Mkl`) and are distinguished from the portable CPU kernels by a `kernel_source` tag on each binding-table entry / `ProfileEntry` / `Pick`. They share the singleton `CpuBackendDevice` and therefore inherit its `BackendRuntime` impl. v0.3 changes (preserved): concrete trait surface, Tier 1/2/3 mandatory/optional framing, per-backend compliance snapshot, inference-vs-training capability split, `Option<u64>` honest returns for runtime state. v0.2 changes (preserved): `PrecisionGuarantee` structure replacing binary OracleGrade; Reference's architectural privilege replaced by the "always-built coverage commitment" on fuel-cpu-backend; opt-in kernel-stat telemetry upload.
 
 What backends provide to the Foundation layer, what they don't decide, and how the boundary is enforced. Anchored in the architectural principle from [01-identity](01-identity.md): **backends advertise; they don't decide.** Every strategic choice (placement, fusion, kernel selection, slot assignment, tolerance trade-off) lives at the DAG level. Backends provide the substrate the optimizer reasons about.
 
@@ -90,6 +90,8 @@ Each kernel a backend ships is registered against the binding-table catalog. Reg
 Registration is at backend init for the kernels a backend crate ships. But the kernel binding table is **not** frozen for the process lifetime — it is **already runtime-extensible** (Tier 1 of the 2026-06-20 two-tier extensibility model, [10-decisions-log §2026-06-20](10-decisions-log.md) G4): `extend_global_bindings` (`fuel-dispatch/src/dispatch.rs`) write-locks the global binding table, appends new entries (append-only, multi-sibling), re-finalizes, and bumps the topology generation to invalidate cached routes. Adding a *kernel* — including a JIT-synthesized kernel for an **existing op identity** — does **not** require recompiling fuel; it lands through this path at runtime. Recompiling fuel is required only to add a new **primitive** to the closed `Op` enum (per [03-ir](03-ir.md) and [09-non-goals](09-non-goals.md) — the build-time-closed primitive basis), never to add a kernel. (Trusted, Fuel-orchestrated registration of a *new fused-op identity* is Tier 2 — the declarative form — also runtime; see [03-ir §the fused-op registry](03-ir.md) and [09-non-goals](09-non-goals.md).)
 
 This append path is also the **consumer of the missing-fusion telemetry**: a known fused op (a `FusedOpId` Fuel recognized in the base map) that was realized as N primitives because **no backend currently ships a kernel for it** is exactly the closed-world `FusionMissRecord` with reason `NoBackendKernel` ([10-decisions-log §2026-06-20](10-decisions-log.md) G5; canonical in [08-pattern-harvest](08-pattern-harvest.md) and `docs/session-prompts/baracuda-telemetry-plan.md` §9). When a backend later offers a kernel for that op identity, `extend_global_bindings` ingests it and the miss closes — the binding-table-append path is the `FusionMissRecord` consumer that already exists (Tier 1).
+
+The `strided-input` capability pays off across the op families whose access pattern composes cleanly with per-axis strides — elementwise unary/binary, reductions and their normalization/softmax cousins, clamp, pad, flip/roll/cumsum, concat, affine, and the common stride-friendly indexing cases. For these, a broadcast / transpose / non-contiguous view flows straight into the kernel and the materialize step never runs. Families whose kernel geometry assumes contiguity — sub-byte and half-pair-packed casts, slab-geometry slice writes, irregular gather/scatter — keep the auto-Contiguize gate; the capability is advertised per kernel, not assumed per backend.
 
 ## Backend implementation guidelines
 
@@ -211,9 +213,14 @@ the corresponding underlying primitive implement Tiers 2 and 3.
 
 Naming and layout convention:
 
-- All Tier 1 trait methods live in `fuel-core-types::backend` so
-  every crate can name them without depending on backend
-  implementations.
+- All Tier 1 contract **traits** live in `fuel-backend-contract` (the
+  `backend` + `dyn_backend` modules) so every crate can name them without
+  depending on backend implementations. The capability **data** types they
+  traffic in (`BackendCapabilities`, `SubstrateClass`, `TransferPath`,
+  `FitStatus`, `GgmlDType`) stay in `fuel-ir::backend` / `fuel-ir::quantized`.
+  (Pre-B0.3 the traits lived in `fuel-ir::backend`, née `fuel-core-types`; the
+  `fuel-backend-contract` crate was cut out 2026-06-27 — see the
+  `fuel-core-retirement` B0 program.)
 - Trait impls live in the per-backend crate (`fuel-cpu-backend`,
   `fuel-cuda-backend`, `fuel-vulkan-backend`, `fuel-aocl-cpu-backend`,
   `fuel-mkl-cpu-backend`). `fuel-reference-backend` was retired from
@@ -270,8 +277,9 @@ pub trait BackendCapabilityProvider {
 }
 ```
 
-Already present at [fuel-core-types/src/backend.rs](../../fuel-core-types/src/backend.rs).
-v0.3 confirms it stays in Tier 1 unchanged.
+The trait lives at [fuel-backend-contract/src/backend.rs](../../fuel-backend-contract/src/backend.rs);
+the `BackendCapabilities` data it returns lives at
+[fuel-ir/src/backend.rs](../../fuel-ir/src/backend.rs). v0.3 confirms it stays in Tier 1 unchanged.
 
 #### `BackendRuntime` (NEW in v0.3)
 
@@ -503,6 +511,18 @@ Migration order recommended by this contract:
 3. **`BackendStreams` for CUDA + Vulkan** — formalize stream / queue
    counts as trait methods. Trim out the inherent methods that
    selectors currently touch directly.
+   - **Update (Step E Phase C / B1):** the `BackendStreams` trait now
+     exists in `fuel-backend-contract` and is implemented at the
+     `DeviceRuntimeHandle` seam (`fuel-core::pipelined_bridge`), reading
+     a fuel-internal process-wide per-device in-flight async-op counter
+     (`fuel-dispatch::dispatch::inflight_count`) for `pending_work_count`
+     — because the count a selector needs is the *executor's*
+     submitted-but-not-drained count, which a bare backend-device handle
+     cannot observe. A base `BackendRuntime::as_backend_streams()` upcast
+     (default `None`; `Some` only for streaming devices, never CPU)
+     preserves the honesty contract. B1 wires the signal but **nothing
+     reads it to alter dispatch yet** (the load-aware selector is C2);
+     the per-backend inherent-method trim remains future cleanup.
 4. **`BackendPressureSignals` for Vulkan** — promote vulkane's
    pressure-callback API to the trait. CUDA impl waits on baracuda
    exposing notifications (lower priority than `MemGetInfo`).

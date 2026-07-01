@@ -51,7 +51,7 @@ use crate::lazy_mistral::{
     load_mistral_weights_with_prefix, MistralConfig, MistralModel, MistralWeights,
 };
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

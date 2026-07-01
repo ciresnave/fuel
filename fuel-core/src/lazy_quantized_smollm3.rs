@@ -18,7 +18,7 @@
 use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
 use crate::lazy_smollm3::{SmolLm3Config, SmolLm3Model, SmolLm3Weights};
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// GGUF-quantized SmolLM3 causal language model. Wraps a plain

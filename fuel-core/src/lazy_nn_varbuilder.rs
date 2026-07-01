@@ -30,7 +30,7 @@ use crate::Result;
 use crate::lazy_nn_optim::LazyVar;
 use crate::lazy_nn_varmap::LazyVarMap;
 use crate::{DType, Device};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 /// A name-prefixing handle over a [`LazyVarMap`] for constructing
 /// named lazy parameters. Cheap to clone — internally an Arc-shared

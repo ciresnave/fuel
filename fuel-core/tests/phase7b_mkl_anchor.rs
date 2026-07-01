@@ -5,7 +5,7 @@
 #![cfg(feature = "onemkl")]
 
 use fuel_core::lazy::LazyTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 fn mkl_present() -> bool {
     fuel_mkl_cpu_backend::probe_mkl_loadable().is_ok()

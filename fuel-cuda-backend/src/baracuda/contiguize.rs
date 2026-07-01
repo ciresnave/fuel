@@ -36,7 +36,7 @@ use std::sync::Arc;
 
 use baracuda_driver::DeviceBuffer;
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{Error, Layout, Result};
+use fuel_ir::{Error, Layout, Result};
 
 use crate::byte_storage::CudaStorageBytes;
 
@@ -120,7 +120,6 @@ fn contiguize_with(
             )
         };
         check(status, "contiguize_b*_scalar")?;
-        device.synchronize()?;
         return Ok(CudaStorageBytes::from_parts(Arc::new(dest), device, dest_bytes));
     }
     if rank > 8 {
@@ -179,7 +178,6 @@ fn contiguize_with(
         )
     };
     check(status, "contiguize_b*")?;
-    device.synchronize()?;
     Ok(CudaStorageBytes::from_parts(Arc::new(dest), device, dest_bytes))
 }
 

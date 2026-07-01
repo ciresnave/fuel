@@ -28,7 +28,7 @@
 //! - **Softcap** (`tanh(x / softcap) * softcap`) before softmax.
 
 use crate::RefTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use num_traits::Float;
 
 /// Parameters that don't depend on the input tensors.

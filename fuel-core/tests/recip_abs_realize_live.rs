@@ -19,7 +19,7 @@
 #![cfg(feature = "cuda")]
 
 use fuel_core::lazy::LazyTensor;
-use fuel_core_types::{DType, Shape};
+use fuel_ir::{DType, Shape};
 use fuel_cuda_backend::CudaDevice;
 
 fn dev_or_skip() -> Option<CudaDevice> {

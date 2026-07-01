@@ -13,7 +13,7 @@
 //!   `DeviceBuffer<u8>` (raw bytes on device) plus `CudaDevice`
 //!   plus `len_bytes`. Dtype lives on the [`fuel_memory::Storage`]
 //!   wrapper, not here. Implements
-//!   [`fuel_core_types::backend::BackendStorage`].
+//!   [`fuel_backend_contract::backend::BackendStorage`].
 //!
 //! Per-op kernels migrate one family at a time during Phase B/C.
 //! When the last kernel migrates, the legacy `CudaStorage` retires
@@ -21,10 +21,10 @@
 
 use std::sync::Arc;
 
-use baracuda_driver::{DeviceBuffer, DeviceSlice};
+use baracuda_driver::{DeviceBuffer, DeviceSlice, Event};
 use baracuda_types::DeviceRepr;
-use fuel_core_types::backend::BackendStorage;
-use fuel_core_types::Result;
+use fuel_backend_contract::backend::BackendStorage;
+use fuel_ir::Result;
 
 use crate::error::{CudaError, WrapErr};
 use crate::CudaDevice;
@@ -72,6 +72,28 @@ impl CudaStorageBytes {
     /// Total byte count.
     pub fn len_bytes(&self) -> usize {
         self.len_bytes
+    }
+
+    /// Step E A4b-1: record a synchronization-only [`Event`] on this
+    /// storage's device stream and return it as a completion handle.
+    ///
+    /// Called by the executor *after* a kernel's launch has been enqueued
+    /// on the device stream (A3: kernels enqueue and return without a
+    /// per-op sync). Because there is one stream per device, the recorded
+    /// event signals exactly when this storage's producing kernel — and
+    /// every prior op on the stream — has completed; `Event::synchronize`
+    /// on it is the host wait the executor defers to a dependency / host
+    /// boundary. The event carries `DISABLE_TIMING` (sync-only, cheaper
+    /// than a timing event).
+    ///
+    /// `Event::no_timing` calls `Context::set_current()` internally; the
+    /// executor records from the output storage's *own* device, so the
+    /// context is the one whose stream the kernel just launched on (a
+    /// no-op push on the single-device path).
+    pub fn record_completion_event(&self) -> Result<Event> {
+        let ev = Event::no_timing(self.device.context_ref()).w()?;
+        ev.record(self.device.stream()).w()?;
+        Ok(ev)
     }
 
     /// Reinterpret the byte buffer as a typed `DeviceSlice<T>` view.
@@ -145,14 +167,14 @@ impl CudaStorageBytes {
         len_bytes:   usize,
     ) -> Result<Self> {
         let end = byte_offset.checked_add(len_bytes).ok_or_else(|| {
-            fuel_core_types::Error::Msg(format!(
+            fuel_ir::Error::Msg(format!(
                 "CudaStorageBytes::slot_copy_to_new: byte_offset {byte_offset} \
                  + len_bytes {len_bytes} overflows",
             ))
             .bt()
         })?;
         if end > self.len_bytes {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "CudaStorageBytes::slot_copy_to_new: slot byte range \
                  [{byte_offset}..{end}) exceeds source byte length {}",
                 self.len_bytes,
@@ -213,7 +235,7 @@ impl CudaStorageBytes {
         let dest_total = outer_count
             .checked_mul(chunk_row_bytes)
             .ok_or_else(|| {
-                fuel_core_types::Error::Msg(
+                fuel_ir::Error::Msg(
                     "extract_strided_to_new: outer_count * chunk_row_bytes overflows".into(),
                 ).bt()
             })?;
@@ -227,12 +249,12 @@ impl CudaStorageBytes {
                 .and_then(|x| x.checked_add(offset_in_outer))
                 .and_then(|x| x.checked_add(chunk_row_bytes))
                 .ok_or_else(|| {
-                    fuel_core_types::Error::Msg(
+                    fuel_ir::Error::Msg(
                         "extract_strided_to_new: tile span overflow".into(),
                     ).bt()
                 })?;
             if last_tile_end > self.len_bytes {
-                return Err(fuel_core_types::Error::Msg(format!(
+                return Err(fuel_ir::Error::Msg(format!(
                     "extract_strided_to_new: last tile end {last_tile_end} > src bytes {}",
                     self.len_bytes,
                 )).bt());
@@ -274,7 +296,7 @@ impl CudaStorageBytes {
             return Ok(());
         }
         if src.len() != self.len_bytes {
-            return Err(fuel_core_types::Error::Msg(format!(
+            return Err(fuel_ir::Error::Msg(format!(
                 "CudaStorageBytes::write_from_host: src.len() ({}) != \
                  storage.len_bytes ({})",
                 src.len(), self.len_bytes,
@@ -339,6 +361,54 @@ impl CudaStorageBytes {
             // still sync defensively in case async-paths are wired
             // upstream of us in the future.
             self.device.synchronize()?;
+        }
+        Ok(out)
+    }
+
+    /// Step E A4b-3: the FINER cross-device D2H — read the device buffer's
+    /// bytes to host WITHOUT the whole-device drain that [`Self::to_cpu_bytes`]
+    /// appends.
+    ///
+    /// **Contract (the caller MUST honor it):** the producer of this buffer has
+    /// already been waited (the executor waits the source node's
+    /// [`CompletionHandle`] before dispatching the cross-device `Op::Copy` /
+    /// `Op::Move` — `fuel-dispatch::pipelined`'s `wait_producer_handle`). This
+    /// method does NOT call `device.synchronize()`, so it does NOT force-drain
+    /// the OTHER in-flight work on this device's stream — that independent work
+    /// (e.g. a second sub-DAG on the same GPU) keeps running while only THIS
+    /// buffer's bytes come back. That non-drain is the whole point of A4b-3.
+    ///
+    /// **Why dropping the full sync is still race-free for the copy itself:**
+    /// `copy_to_host` is `DeviceBuffer::copy_to_host` → baracuda's
+    /// `cu_memcpy_dtoh`, pinned to the version-suffixed symbol `cuMemcpyDtoH_v2`
+    /// (driver.rs), so it resolves via `dlsym` to the LEGACY synchronous D2H
+    /// (never the `_ptds` per-thread variant) regardless of baracuda's stream
+    /// mode. `cuMemcpyDtoH_v2` is (a) host-synchronous — it returns only once the
+    /// copy has completed, which IS the copy's own completion the host read needs
+    /// — and (b) issued on the legacy default stream (stream 0), which CUDA
+    /// implicitly synchronizes against every stream created with the
+    /// `CU_STREAM_DEFAULT` flag. This device's per-op stream is created via
+    /// `Stream::new` = `CU_STREAM_DEFAULT` (NOT `NON_BLOCKING` — see
+    /// `device.rs::new_with_stream`), so the memcpy is ALREADY ordered after all
+    /// prior work on that stream — including any `auto_contiguize` kernel the
+    /// executor enqueues between the producer wait and this read. The producer
+    /// wait the executor already performed makes the read-after-producer ordering
+    /// explicit at the seam A4b-4 leans on; this implicit legacy-stream ordering
+    /// is the belt that proves the copy stays correct even without the drain.
+    ///
+    /// Behavior-preserving for VALUES (byte-identical result); it only changes
+    /// WHICH device work the host blocks on (this copy, not the whole stream).
+    /// `to_cpu_bytes` stays the conservative full-drain variant for its many
+    /// standalone callers (reduce / indexing / concat / transfer-cost probes)
+    /// that do NOT go through the executor's producer-wait seam.
+    pub fn to_cpu_bytes_finer(&self) -> Result<Vec<u8>> {
+        let mut out = vec![0_u8; self.len_bytes];
+        if self.len_bytes > 0 {
+            // `cuMemcpyDtoH_v2`: host-synchronous (the copy's own completion) +
+            // legacy-default-stream ordered after this device's CU_STREAM_DEFAULT
+            // stream (read-after-producer). No `device.synchronize()` — the other
+            // sub-DAG's independent in-flight work is NOT force-drained.
+            self.buffer.copy_to_host(&mut out).w()?;
         }
         Ok(out)
     }

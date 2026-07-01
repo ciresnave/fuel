@@ -1,5 +1,5 @@
 //! OS-level system RAM queries for the CPU backend's
-//! [`fuel_core_types::backend::BackendRuntime`] impl.
+//! [`fuel_backend_contract::backend::BackendRuntime`] impl.
 //!
 //! Architectural note: system RAM is shared with the entire OS, not
 //! just Fuel's workload. The reported value reflects total

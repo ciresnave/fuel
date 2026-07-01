@@ -28,9 +28,9 @@
 
 use std::collections::HashMap;
 
-use fuel_core_types::dispatch::{OpKind, SizeClass};
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::{DType, DeviceLocation, Error, Result, Shape};
+use fuel_ir::dispatch::{OpKind, SizeClass};
+use fuel_ir::probe::BackendId;
+use fuel_ir::{DType, DeviceLocation, Error, Result, Shape};
 use fuel_graph::{Graph, NodeId};
 
 use smallvec::SmallVec;
@@ -184,12 +184,26 @@ pub fn backend_for_device(loc: DeviceLocation) -> BackendId {
 ///   is `Some`): in-place mutation semantics don't survive moving
 ///   the op away from the device that owns its mutation target;
 ///   those ops keep the plan-time `NoBackendForOp` error.
-/// - **The surviving set lives on ONE device** (legacy fallback
-///   sets freeze to their single ranked winner; relaxed sets prune
-///   to the winner's device): the residency stitch (`Op::Copy`
-///   insertion) is a graph rewrite computed from the static
-///   winner, so a dispatch-time selector must not be able to pick
-///   a sibling on a different device.
+/// - **Each NODE's surviving alternative set lives on one device**
+///   (legacy fallback sets freeze to their single ranked winner;
+///   relaxed sets prune to *that node's* winner's device): the
+///   residency stitch (`Op::Copy` insertion) is a graph rewrite
+///   computed from the static winner, so a dispatch-time selector
+///   (the `Op::Branch` arm picker) must not be able to swap in a
+///   sibling on a *different* device whose inputs were never copied
+///   there. This is a **per-node** invariant on the candidate set —
+///   NOT a graph-global "everything realizes on one device" claim.
+///   Step E A4a-1 confirmed (CireSnave 2026-06-29) device placement
+///   is per-node: the surviving graph is almost never single-device,
+///   and even a path between decision points may span devices. The
+///   planner already honors that — each node's decision device is
+///   `Graph::placement` → `pinned_device` → stamp-default
+///   (independently per node), `stamp_plan_backends` writes each
+///   node's own winner backend, and `insert_residency_copies`
+///   bridges every resulting cross-device boundary edge. A
+///   single-device plan is just the degenerate case where every
+///   node's per-node device happens to coincide; this prune is a
+///   no-op there, so single-device realize stays byte-identical.
 ///
 /// # `capabilities_for`
 ///
@@ -1114,7 +1128,7 @@ fn build_node_draft(
     }
 
     // Apply the default filter chain.
-    let input_layouts: Vec<fuel_core_types::Layout> = node
+    let input_layouts: Vec<fuel_ir::Layout> = node
         .inputs
         .iter()
         .map(|&input_id| graph.layout(input_id))
@@ -1355,10 +1369,10 @@ mod tests {
     use super::*;
     use crate::fused::PrecisionGuarantee;
     use crate::kernel::{unknown_cost, KernelCaps, OpParams};
-    use fuel_core_types::backend::{
+    use fuel_ir::backend::{
         BackendCapabilities, SubstrateClass, TransferPath,
     };
-    use fuel_core_types::{DType, Layout, Result as FuelResult, Shape, StrideVec};
+    use fuel_ir::{DType, Layout, Result as FuelResult, Shape, StrideVec};
     use fuel_graph::{topo_order, Node, Op};
     use fuel_memory::Storage;
     use smallvec::smallvec;
@@ -1726,7 +1740,7 @@ mod tests {
         // Layer-2 (Judge) measured the opposite: Aocl 20 ns, CPU 5000 ns.
         // After compile_plan's cost composition + rank, Aocl wins.
         use crate::ranker::HashMapJudge;
-        use fuel_core_types::dispatch::SizeClass;
+        use fuel_ir::dispatch::SizeClass;
 
         fn cpu_layer1(
             _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
@@ -1790,7 +1804,7 @@ mod tests {
     /// class = first input's element count.
     #[test]
     fn compile_plan_stamps_decision_context() {
-        use fuel_core_types::dispatch::SizeClass;
+        use fuel_ir::dispatch::SizeClass;
 
         let mut table = KernelBindingTable::new();
         register_add_f32(

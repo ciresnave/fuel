@@ -8,7 +8,7 @@ use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
 use fuel::lazy::LazyTensor;
 use fuel::lazy_snac::{SnacConfig, SnacModel, SnacWeights};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use hf_hub::api::sync::Api;
 use serde::Deserialize;
 

@@ -4,13 +4,13 @@
 //! implements `DynBackendStorage` directly. `CpuBackendDevice` is the stateless
 //! device handle. `CpuBackendStorage` is a backward-compat alias for `CpuStorage`.
 
-use fuel_core_types::conv::{
+use fuel_ir::conv::{
     ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,
 };
-use fuel_core_types::cpu::erf;
-use fuel_core_types::dyn_backend::{DynBackendDevice, DynBackendStorage};
-use fuel_core_types::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
-use fuel_core_types::{CpuStorage as HostBuffer, DType, DeviceLocation, Error, Layout, Result,
+use fuel_cpu_kernels::erf;
+use fuel_backend_contract::dyn_backend::{DynBackendDevice, DynBackendStorage};
+use fuel_ir::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
+use fuel_ir::{CpuStorage as HostBuffer, DType, DeviceLocation, Error, Layout, Result,
                          Scalar, Shape};
 use float8::F8E4M3;
 use half::{bf16, f16};
@@ -59,16 +59,16 @@ impl From<CpuStorage> for HostBuffer {
     }
 }
 
-impl fuel_core_types::backend::HostStorage for CpuStorage {
+impl fuel_backend_contract::backend::HostStorage for CpuStorage {
     fn as_host_buffer_ref(
         &self,
-    ) -> fuel_core_types::Result<fuel_core_types::HostBufferRef<'_>> {
+    ) -> fuel_ir::Result<fuel_ir::HostBufferRef<'_>> {
         Ok(self.0.as_ref())
     }
 
     // Override the default to hand out the existing `Vec<T>` without
     // a copy — we own the buffer outright.
-    fn into_host_buffer(self) -> fuel_core_types::Result<fuel_core_types::HostBuffer> {
+    fn into_host_buffer(self) -> fuel_ir::Result<fuel_ir::HostBuffer> {
         Ok(self.0)
     }
 }
@@ -81,7 +81,7 @@ impl fuel_core_types::backend::HostStorage for CpuStorage {
 #[derive(Debug, Clone, Copy)]
 pub struct CpuBackendDevice;
 
-impl fuel_core_types::backend::BackendRuntime for CpuBackendDevice {
+impl fuel_backend_contract::backend::BackendRuntime for CpuBackendDevice {
     /// System-wide available RAM via the OS query in
     /// [`crate::system_memory`]. `None` on platforms without an
     /// implemented query (macOS + unknown). The signal reflects
@@ -429,12 +429,12 @@ fn copy2d_<T: Copy>(
 
 fn copy_strided_src_<T: Copy>(src: &[T], dst: &mut [T], dst_offset: usize, src_l: &Layout) {
     match src_l.strided_blocks() {
-        fuel_core_types::StridedBlocks::SingleBlock { start_offset, len } => {
+        fuel_ir::StridedBlocks::SingleBlock { start_offset, len } => {
             let to_copy = (dst.len() - dst_offset).min(len);
             dst[dst_offset..dst_offset + to_copy]
                 .copy_from_slice(&src[start_offset..start_offset + to_copy])
         }
-        fuel_core_types::StridedBlocks::MultipleBlocks {
+        fuel_ir::StridedBlocks::MultipleBlocks {
             block_start_index,
             block_len: 1,
         } => {
@@ -446,7 +446,7 @@ fn copy_strided_src_<T: Copy>(src: &[T], dst: &mut [T], dst_offset: usize, src_l
                 dst[dst_index] = src[src_index];
             }
         }
-        fuel_core_types::StridedBlocks::MultipleBlocks {
+        fuel_ir::StridedBlocks::MultipleBlocks {
             block_start_index,
             block_len,
         } => {
@@ -1022,7 +1022,7 @@ impl DynBackendDevice for CpuBackendDevice {
         DeviceLocation::Cpu
     }
 
-    fn as_backend_runtime(&self) -> Option<&dyn fuel_core_types::backend::BackendRuntime> {
+    fn as_backend_runtime(&self) -> Option<&dyn fuel_backend_contract::backend::BackendRuntime> {
         Some(self)
     }
 
@@ -1102,7 +1102,7 @@ impl DynBackendDevice for CpuBackendDevice {
 
     fn as_quantized_kernels(
         &self,
-    ) -> Option<&dyn fuel_core_types::quantized::QuantizedDeviceKernels> {
+    ) -> Option<&dyn fuel_backend_contract::quantized::QuantizedDeviceKernels> {
         Some(self)
     }
 }
@@ -1161,31 +1161,31 @@ fn cpu_rand_uniform(shape: &Shape, dtype: DType, min: f64, max: f64) -> Result<H
     match dtype {
         DType::BF16 => {
             let uniform = rand::distr::Uniform::new(bf16::from_f64(min), bf16::from_f64(max))
-                .map_err(fuel_core_types::Error::wrap)?;
+                .map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| rng.sample::<bf16, _>(uniform)).collect();
             Ok(HostBuffer::BF16(data))
         }
         DType::F16 => {
             let uniform = rand::distr::Uniform::new(f16::from_f64(min), f16::from_f64(max))
-                .map_err(fuel_core_types::Error::wrap)?;
+                .map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| rng.sample::<f16, _>(uniform)).collect();
             Ok(HostBuffer::F16(data))
         }
         DType::F8E4M3 => {
             let uniform = rand::distr::Uniform::new(F8E4M3::from_f64(min), F8E4M3::from_f64(max))
-                .map_err(fuel_core_types::Error::wrap)?;
+                .map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| rng.sample::<F8E4M3, _>(uniform)).collect();
             Ok(HostBuffer::F8E4M3(data))
         }
         DType::F32 => {
             let uniform = rand::distr::Uniform::new(min as f32, max as f32)
-                .map_err(fuel_core_types::Error::wrap)?;
+                .map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| rng.sample::<f32, _>(uniform)).collect();
             Ok(HostBuffer::F32(data))
         }
         DType::F64 => {
             let uniform = rand::distr::Uniform::new(min, max)
-                .map_err(fuel_core_types::Error::wrap)?;
+                .map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| rng.sample::<f64, _>(uniform)).collect();
             Ok(HostBuffer::F64(data))
         }
@@ -1200,31 +1200,31 @@ fn cpu_rand_normal(shape: &Shape, dtype: DType, mean: f64, std: f64) -> Result<H
     match dtype {
         DType::BF16 => {
             let normal = rand_distr::Normal::new(bf16::from_f64(mean), bf16::from_f64(std))
-                .map_err(fuel_core_types::Error::wrap)?;
+                .map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| normal.sample(&mut rng)).collect();
             Ok(HostBuffer::BF16(data))
         }
         DType::F16 => {
             let normal = rand_distr::Normal::new(f16::from_f64(mean), f16::from_f64(std))
-                .map_err(fuel_core_types::Error::wrap)?;
+                .map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| normal.sample(&mut rng)).collect();
             Ok(HostBuffer::F16(data))
         }
         DType::F8E4M3 => {
             let normal = rand_distr::Normal::new(F8E4M3::from_f64(mean), F8E4M3::from_f64(std))
-                .map_err(fuel_core_types::Error::wrap)?;
+                .map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| normal.sample(&mut rng)).collect();
             Ok(HostBuffer::F8E4M3(data))
         }
         DType::F32 => {
             let normal = rand_distr::Normal::new(mean as f32, std as f32)
-                .map_err(fuel_core_types::Error::wrap)?;
+                .map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| normal.sample(&mut rng)).collect();
             Ok(HostBuffer::F32(data))
         }
         DType::F64 => {
             let normal = rand_distr::Normal::new(mean, std)
-                .map_err(fuel_core_types::Error::wrap)?;
+                .map_err(fuel_ir::Error::wrap)?;
             let data: Vec<_> = (0..elem_count).map(|_| normal.sample(&mut rng)).collect();
             Ok(HostBuffer::F64(data))
         }
@@ -1297,18 +1297,18 @@ fn cpu_copy2d(
 }
 
 fn cpu_const_set(storage: &mut HostBuffer, s: Scalar, l: &Layout) -> Result<()> {
-    use fuel_core_types::Scalar as S;
-    fn set<T: fuel_core_types::WithDType + Copy>(src: &mut [T], l: &Layout, s: T) {
+    use fuel_ir::Scalar as S;
+    fn set<T: fuel_ir::WithDType + Copy>(src: &mut [T], l: &Layout, s: T) {
         match l.strided_blocks() {
-            fuel_core_types::StridedBlocks::SingleBlock { start_offset, len } => {
+            fuel_ir::StridedBlocks::SingleBlock { start_offset, len } => {
                 src[start_offset..start_offset + len].fill(s)
             }
-            fuel_core_types::StridedBlocks::MultipleBlocks { block_start_index, block_len: 1 } => {
+            fuel_ir::StridedBlocks::MultipleBlocks { block_start_index, block_len: 1 } => {
                 for src_index in block_start_index {
                     src[src_index] = s;
                 }
             }
-            fuel_core_types::StridedBlocks::MultipleBlocks { block_start_index, block_len } => {
+            fuel_ir::StridedBlocks::MultipleBlocks { block_start_index, block_len } => {
                 for src_index in block_start_index {
                     src[src_index..src_index + block_len].fill(s);
                 }
@@ -1389,7 +1389,8 @@ fn cpu_to_dtype(src: &HostBuffer, layout: &Layout, dtype: DType) -> Result<HostB
 #[cfg(test)]
 mod backend_runtime_tests {
     use super::*;
-    use fuel_core_types::backend::{BackendRuntime, FitStatus};
+    use fuel_backend_contract::backend::BackendRuntime;
+use fuel_ir::backend::FitStatus;
 
     /// CpuBackendDevice implements BackendRuntime. On a supported
     /// platform (Linux/Windows) reports `Some(_)`; on an unsupported

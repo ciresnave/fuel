@@ -62,7 +62,7 @@
 use crate::lazy::LazyTensor;
 use crate::lazy_mimi_conv::{bake_weight_norm, pad_last_1d, LazyPadMode};
 use crate::Result;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 // Re-export for completeness so a caller only needs to bring this

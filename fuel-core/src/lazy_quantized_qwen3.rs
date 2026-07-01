@@ -28,7 +28,7 @@
 use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
 use crate::lazy_qwen3::{Qwen3Config, Qwen3LayerExtras, Qwen3Model, Qwen3Weights};
 use crate::{Device, Result};
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// GGUF-quantized Qwen3 causal language model. Wraps a plain

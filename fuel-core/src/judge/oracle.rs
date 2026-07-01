@@ -37,11 +37,11 @@
 //! of entry order. Within one equivalence class the replicated
 //! entries share a latency, so the min is a no-op there.
 
-use fuel_core_types::dispatch::{
+use fuel_ir::dispatch::{
     OpKind, ProfileReport, SizeClass, PROFILE_REPORT_VERSION,
 };
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::DType;
+use fuel_ir::probe::BackendId;
+use fuel_ir::DType;
 use fuel_dispatch::ranker::{HashMapJudge, JudgeOracle};
 
 /// [`JudgeOracle`] adapter over a [`ProfileReport`]. Build once per
@@ -120,7 +120,7 @@ impl JudgeOracle for ProfileJudgeOracle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_core_types::dispatch::ProfileEntry;
+    use fuel_ir::dispatch::ProfileEntry;
 
     fn entry(
         backend: BackendId,

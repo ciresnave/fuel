@@ -18,7 +18,7 @@ use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_bert::{BertConfig, BertModel, BertWeights};
 use crate::lazy_clip::{ClipVisionConfig, ClipVisionModel, ClipVisionWeights};
 use crate::Result;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]

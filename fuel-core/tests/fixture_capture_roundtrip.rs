@@ -34,8 +34,8 @@
 
 use fuel_core::judge::{Judge, OpKind, OpSize, SizeClass};
 use fuel_core::probe::ProbeReport;
-use fuel_core_types::probe::BackendId;
-use fuel_core_types::DType;
+use fuel_ir::probe::BackendId;
+use fuel_ir::DType;
 use fuel_correctness_fixtures::capture::{
     derive_seed, deterministic_f32_input, fixture_from_consensus,
     group_fixtures_for_emission, write_fixture_file, ConsensusDecision,

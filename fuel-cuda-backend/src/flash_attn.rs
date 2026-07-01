@@ -26,11 +26,16 @@
 //! - head_dim must be in the supported set (no d40 / d80 rounding
 //!   — those callers fall back to standard attention in model code).
 //! - All inputs must be contiguous (executor handles materialization).
+//!
+//! Staged module: `launch` is not yet wired into `Op::FlashAttn`
+//! dispatch (the executor currently routes FlashAttn elsewhere), so
+//! the whole module is dead today — hence the module-level allow.
+
+#![allow(dead_code)]
 
 use crate::storage::{CudaStorage, CudaStorageSlice};
-use baracuda_driver::DevicePtr;
 use baracuda_kernels_sys as sys;
-use fuel_core_types::{DType, Layout};
+use fuel_ir::{DType, Layout};
 
 /// Translate the lazy `Op::FlashAttn` parameters into the FA-v2
 /// FFI's `is_causal` / window-size convention.
@@ -96,16 +101,16 @@ pub(crate) fn launch(
     window_size_left: Option<usize>,
     window_size_right: Option<usize>,
     softcap: Option<f32>,
-) -> fuel_core_types::Result<CudaStorage> {
+) -> fuel_ir::Result<CudaStorage> {
     let is_bf16 = match q.dtype() {
         DType::F16 => false,
         DType::BF16 => true,
-        other => fuel_core_types::bail!(
+        other => fuel_ir::bail!(
             "CudaBackend::flash_attn: dtype {other:?} not supported (F16 or BF16 only)"
         ),
     };
     if k.dtype() != q.dtype() || v.dtype() != q.dtype() {
-        fuel_core_types::bail!(
+        fuel_ir::bail!(
             "CudaBackend::flash_attn: dtype mismatch q={:?} k={:?} v={:?}",
             q.dtype(),
             k.dtype(),
@@ -113,7 +118,7 @@ pub(crate) fn launch(
         );
     }
     if !q_layout.is_contiguous() || !k_layout.is_contiguous() || !v_layout.is_contiguous() {
-        fuel_core_types::bail!("CudaBackend::flash_attn: strided inputs not supported");
+        fuel_ir::bail!("CudaBackend::flash_attn: strided inputs not supported");
     }
 
     // Lazy IR shape: q = [B, Hq, Sq, D], k/v = [B, Hkv, Sk, D].
@@ -121,14 +126,14 @@ pub(crate) fn launch(
     let k_dims = k_layout.shape().dims();
     let v_dims = v_layout.shape().dims();
     if q_dims.len() != 4 || k_dims.len() != 4 || v_dims.len() != 4 {
-        fuel_core_types::bail!(
+        fuel_ir::bail!(
             "CudaBackend::flash_attn: rank-4 q/k/v required, got {q_dims:?} {k_dims:?} {v_dims:?}"
         );
     }
     let (b, hq, sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
     let (_, hkv, sk, _) = (k_dims[0], k_dims[1], k_dims[2], k_dims[3]);
     if hq % hkv != 0 {
-        fuel_core_types::bail!(
+        fuel_ir::bail!(
             "CudaBackend::flash_attn: Hq={hq} must be a multiple of Hkv={hkv}"
         );
     }
@@ -137,7 +142,7 @@ pub(crate) fn launch(
     // callers stay on the standard-attention fallback path.
     const SUPPORTED_HEAD_DIMS: [usize; 9] = [32, 64, 96, 128, 160, 192, 224, 256, 512];
     if !SUPPORTED_HEAD_DIMS.contains(&d) {
-        fuel_core_types::bail!(
+        fuel_ir::bail!(
             "CudaBackend::flash_attn: head_dim={d} not in baracuda FA2's supported set {SUPPORTED_HEAD_DIMS:?}; \
              use the standard attention fallback for this model"
         );
