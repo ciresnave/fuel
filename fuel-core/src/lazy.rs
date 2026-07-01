@@ -5054,16 +5054,24 @@ impl LlamaModel {
     /// `total_seq`), so early tokens do extra masked work — a documented
     /// efficiency follow-up (the flash arm with a runtime `k_len`), not a
     /// correctness issue.
+    ///
+    /// **Phase D · D2b (mask hoist):** the `[1, 1, seq, max_seq_len]`
+    /// causal mask is now built ONCE in the forward (`mask` param, like
+    /// RoPE tables) and shared across all layers, instead of one Const
+    /// per layer. Byte-exact refactor (the mask data is identical across
+    /// layers — it depends only on `cached_len`, `seq`, `max_seq_len`);
+    /// it also cuts the per-token data-Const re-bind count on the
+    /// persistent path from `n_layers` to 1.
     fn apply_layer_with_kv_writes(
         &self,
         x: &LazyTensor,
         layer: &LayerWeights,
         k_cache_const: &LazyTensor,
         v_cache_const: &LazyTensor,
-        cached_len: usize,
         cached_len_sym: fuel_ir::SymId,
         rope_cos: &LazyTensor,
         rope_sin: &LazyTensor,
+        mask: &LazyTensor,
     ) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
@@ -5071,9 +5079,6 @@ impl LlamaModel {
         let batch = dims[0];
         let seq = dims[1];
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
-        // Fixed capacity (the KV buffers' allocated sequence axis). The
-        // attention shape is keyed to this, NOT to the live `total_seq`.
-        let max_seq_len = k_cache_const.shape().dims()[2];
 
         let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
 
@@ -5123,21 +5128,12 @@ impl LlamaModel {
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_t).unwrap();
 
-        let mut mask_data = vec![0.0_f32; seq * max_seq_len];
-        for q_idx in 0..seq {
-            let abs_q = cached_len + q_idx;
-            for k_idx in (abs_q + 1)..max_seq_len {
-                mask_data[q_idx * max_seq_len + k_idx] = f32::NEG_INFINITY;
-            }
-        }
-        let mask = x.const_f32_like(
-            mask_data,
-            Shape::from_dims(&[1, 1, seq, max_seq_len]),
-        );
+        // Mask is hoisted to the forward (built once, shared across
+        // layers) — see the D2b note on this method.
         let scores_scaled = LazyTensor {
             inner: scores.inner.mul_scalar(scale),
         };
-        let scores_masked = scores_scaled.broadcast_add(&mask).unwrap();
+        let scores_masked = scores_scaled.broadcast_add(mask).unwrap();
         let attn = scores_masked.softmax_last_dim().unwrap();
         let attn_v = attn.matmul(&full_v).unwrap();
 
@@ -5279,6 +5275,17 @@ impl LlamaModel {
         // tokens — the prerequisite for plan-once persistent decode.
         let cached_len_sym = fuel_ir::SymId(0);
 
+        // Phase D · D2b: the causal mask is hoisted to ONE Const built
+        // here (was one Const per layer) and shared across all layers
+        // (byte-identical across layers — it depends only on
+        // `cached_len`, `seq`, `max_seq_len`). Fewer nodes + a single
+        // per-token re-bind on the persistent path.
+        let mask_data = build_decode_causal_mask(cached_len, seq, max_seq_len);
+        let mask = h.const_f32_like(
+            mask_data,
+            Shape::from_dims(&[1, 1, seq, max_seq_len]),
+        );
+
         // Per-layer: bind the cache K + V Arcs to fresh Const NodeIds,
         // dispatch through the WriteSlice variant. Track the NodeIds
         // we insert into ctx so we can clean them up after realize
@@ -5315,10 +5322,10 @@ impl LlamaModel {
                 layer_weights,
                 &k_cache_node,
                 &v_cache_node,
-                cached_len,
                 cached_len_sym,
                 &rope_cos,
                 &rope_sin,
+                &mask,
             )?;
         }
 
@@ -5379,6 +5386,373 @@ impl LlamaModel {
 
         Ok(logits_vec)
     }
+
+    /// Phase D · D2b — plan-once persistent decode. Sibling of
+    /// [`Self::forward_with_kv_context`] that HOLDS the optimized
+    /// decode-step graph in `session` and, on every token after the
+    /// first, re-realizes the SAME graph with the D2a prebuilt seam —
+    /// **skipping the `prepare` D2H-splice + the `optimize_graph`
+    /// placement DP**. The ~1.8×/token win comes from not re-planning.
+    ///
+    /// ## Control flow
+    ///
+    /// - **`seq != 1`** (prefill / spec-decode verification) OR the held
+    ///   `session` is **invalid** for this step (validity-key mismatch):
+    ///   drop the session and fall back to the D1 rebuild path
+    ///   ([`Self::forward_with_kv_context`]). The session is rebuilt on
+    ///   the next `seq == 1` token.
+    /// - **First `seq == 1` token with no session:** build the decode
+    ///   graph ONCE with STABLE re-bindable data Consts (token-ids /
+    ///   RoPE cos+sin / mask / per-layer KV, all as
+    ///   `const_placeholder_like` + `ctx.insert` of a device-resident
+    ///   Arc), `prebuild_optimized_env` (runs `prepare` + `optimize` +
+    ///   dispatch ONCE), and populate `session` with the held graph +
+    ///   cached `OptimizedGraph` + the stable NodeIds. `OPTIMIZE_CALLS`
+    ///   bumps once here.
+    /// - **Subsequent `seq == 1` tokens with a valid session:** recompute
+    ///   the per-token host bytes (token-ids = the new token, RoPE tables
+    ///   at `position = cached_len`, mask with the shifted `-inf`
+    ///   boundary) and WRITE them into the held device Arcs (re-bind);
+    ///   bind the per-pass `SymEnv` (`cached_len`); call
+    ///   [`InferenceContext::realize_prebuilt_as_with_env`] which SKIPS
+    ///   optimize. The KV Arcs are re-bound once at build time and mutate
+    ///   in place via `Op::WriteSlice` (NOT re-inserted per token). A
+    ///   `TopologyChanged` invalidates the session (dropped) and falls
+    ///   back to the rebuild path this token.
+    ///
+    /// Byte-identical to the D1 cached path on the same prefix (same plan
+    /// → same kernels). Bumps `cache.cached_len` + per-slot versions
+    /// exactly as [`Self::forward_with_kv_context`] does.
+    ///
+    /// The held data Consts persist across tokens (NOT removed each
+    /// token); they are removed from `ctx` when the session is dropped.
+    pub fn forward_with_kv_context_persistent(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<crate::inference_context::DecodeSession>,
+    ) -> crate::Result<Vec<f32>> {
+        let cfg = &self.config;
+        let seq = tokens.len();
+        let max_seq_len = cache.max_seq_len;
+        let cache_dtype = cache.dtype.unwrap_or(DType::F32);
+
+        // A non-`seq==1` step (prefill / spec-decode verification) is
+        // shape-distinct from the held decode graph — drop any session and
+        // fall back to the D1 rebuild path (the session rebuilds on the
+        // next decode token).
+        if seq != 1 {
+            self.drop_decode_session(session, ctx);
+            return self.forward_with_kv_context(tokens, cache, ctx);
+        }
+
+        // seq == 1. If a session exists but its validity keys no longer
+        // match the live cache/model (max_seq_len / n_layers / dtype), it
+        // is stale — drop it so we rebuild fresh below.
+        if let Some(s) = session.as_ref() {
+            let valid = match max_seq_len {
+                Some(msl) => s.is_valid_for(seq, msl, cfg.n_layers, cache_dtype),
+                None => false,
+            };
+            if !valid {
+                self.drop_decode_session(session, ctx);
+            }
+        }
+
+        match session.as_ref() {
+            None => {
+                // ---- First decode token (or post-invalidation): build +
+                // optimize the held graph ONCE. ----
+                self.build_and_realize_first_decode_token(
+                    tokens, cache, ctx, session,
+                )
+            }
+            Some(_) => {
+                // ---- Subsequent decode token: re-bind data + skip optimize. ----
+                let res =
+                    self.rebind_and_realize_prebuilt(tokens, cache, &*ctx, &*session);
+                match res {
+                    Ok(logits) => Ok(logits),
+                    Err(e) if matches!(e, crate::Error::TopologyChanged { .. }) => {
+                        // Stale cached generation — drop the session and
+                        // rebuild via the D1 path this token; the session
+                        // rebuilds on the next decode token.
+                        self.drop_decode_session(session, ctx);
+                        self.forward_with_kv_context(tokens, cache, ctx)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        }
+    }
+
+    /// Build the held decode-step graph with STABLE re-bindable data
+    /// Consts, optimize it ONCE via `prebuild_optimized_env`, populate
+    /// `session`, and return the first token's logits. Only called for
+    /// the first `seq == 1` decode token when there is no valid session.
+    fn build_and_realize_first_decode_token(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &mut InferenceContext,
+        session: &mut Option<crate::inference_context::DecodeSession>,
+    ) -> crate::Result<Vec<f32>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let seq = tokens.len();
+        let batch = 1;
+        let cached_len = cache.cached_len;
+        let max_seq_len = cache.max_seq_len.ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "forward_with_kv_context_persistent: cache built via with_dims \
+                 (no pre-allocated buffers); use KvCache::with_capacity"
+                    .to_string(),
+            ).bt()
+        })?;
+        if cache.n_layers() != cfg.n_layers {
+            return Err(fuel_ir::Error::Msg(format!(
+                "forward_with_kv_context_persistent: cache n_layers {} != model {}",
+                cache.n_layers(), cfg.n_layers,
+            )).bt());
+        }
+        if cached_len + seq > max_seq_len {
+            return Err(fuel_ir::Error::Msg(format!(
+                "forward_with_kv_context_persistent: cached_len ({cached_len}) + \
+                 seq ({seq}) > max_seq_len ({max_seq_len})",
+            )).bt());
+        }
+        let cache_dtype = cache.dtype.unwrap_or(DType::F32);
+
+        // Embed lookup + reshape to [batch, seq, dim]. Token-ids is a
+        // STABLE re-bindable placeholder Const (bytes bound via ctx).
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &Device::cpu(),
+        );
+        let token_ids = embed.const_placeholder_like(
+            Shape::from_dims(&[seq]), DType::U32,
+        );
+        let token_ids_node = token_ids.inner.id();
+        let mut h = embed
+            .index_select(0, &token_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
+
+        // RoPE cos/sin: STABLE re-bindable placeholder Consts.
+        let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
+        let rope_cos = h.const_placeholder_like(rope_shape.clone(), DType::F32);
+        let rope_sin = h.const_placeholder_like(rope_shape, DType::F32);
+        let rope_cos_node = rope_cos.inner.id();
+        let rope_sin_node = rope_sin.inner.id();
+
+        // Mask: STABLE re-bindable placeholder Const (hoisted; shared).
+        let mask = h.const_placeholder_like(
+            Shape::from_dims(&[1, 1, seq, max_seq_len]), DType::F32,
+        );
+        let mask_node = mask.inner.id();
+
+        let cached_len_sym = fuel_ir::SymId(0);
+        let cache_shape = Shape::from_dims(
+            &[batch, cfg.n_kv_heads, max_seq_len, cfg.head_dim],
+        );
+
+        // Per-layer KV placeholder Consts (STABLE). The Arcs are bound
+        // ONCE here and mutate in place via Op::WriteSlice each token.
+        let mut kv_nodes: Vec<(fuel_graph::NodeId, fuel_graph::NodeId)> =
+            Vec::with_capacity(cfg.n_layers);
+        for (li, layer_weights) in weights.layers.iter().enumerate() {
+            let k_arc = cache.slot_storage(li, KvSlot::K).ok_or_else(|| {
+                fuel_ir::Error::Msg(format!(
+                    "forward_with_kv_context_persistent: cache layer {li} has no K slot",
+                )).bt()
+            })?;
+            let v_arc = cache.slot_storage(li, KvSlot::V).ok_or_else(|| {
+                fuel_ir::Error::Msg(format!(
+                    "forward_with_kv_context_persistent: cache layer {li} has no V slot",
+                )).bt()
+            })?;
+            let k_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
+            let v_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
+            let k_id = k_cache_node.inner.id();
+            let v_id = v_cache_node.inner.id();
+            ctx.insert(k_id, k_arc);
+            ctx.insert(v_id, v_arc);
+            kv_nodes.push((k_id, v_id));
+
+            h = self.apply_layer_with_kv_writes(
+                &h,
+                layer_weights,
+                &k_cache_node,
+                &v_cache_node,
+                cached_len_sym,
+                &rope_cos,
+                &rope_sin,
+                &mask,
+            )?;
+        }
+
+        let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
+        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
+        let last_pos = seq - 1;
+        let logits_root = logits
+            .slice(1, last_pos, 1)?
+            .reshape(Shape::from_dims(&[cfg.vocab_size]))?;
+        let logits_node = logits_root.inner.id();
+        let graph = logits_root.inner.graph().clone();
+
+        // Bind the per-token DATA into ctx (token-ids / RoPE / mask) as
+        // device-resident Arcs so the FIRST realize's const-cache walk
+        // resolves them (they are placeholders, not in graph.storage_map).
+        // KV Arcs were already inserted above. The optimize + realize
+        // then runs ONCE, capturing the reusable artifacts + the full
+        // realized cache (weights + KV + data) for the held session.
+        let data = self.build_token_rope_mask_arcs(ctx.device(), cached_len, tokens, max_seq_len)?;
+        ctx.insert(token_ids_node, Arc::clone(&data.token_ids));
+        ctx.insert(rope_cos_node, Arc::clone(&data.rope_cos));
+        ctx.insert(rope_sin_node, Arc::clone(&data.rope_sin));
+        ctx.insert(mask_node, Arc::clone(&data.mask));
+
+        let mut sym_env = fuel_ir::SymEnv::new();
+        sym_env.bind(cached_len_sym, cached_len).map_err(crate::Error::from)?;
+
+        let (effective_target, optimized, base_cache, logits_vec) =
+            ctx.prebuild_optimized_capturing_as_with_env::<f32>(&graph, logits_node, &sym_env)?;
+
+        // The held session now owns the graph + base_cache; drop the
+        // transient ctx bindings (they live in base_cache from here on —
+        // re-bound per token into a clone of base_cache, not ctx).
+        ctx.remove(token_ids_node);
+        ctx.remove(rope_cos_node);
+        ctx.remove(rope_sin_node);
+        ctx.remove(mask_node);
+        for (k, v) in &kv_nodes {
+            ctx.remove(*k);
+            ctx.remove(*v);
+        }
+
+        *session = Some(crate::inference_context::DecodeSession::new(
+            graph,
+            optimized,
+            effective_target,
+            logits_node,
+            token_ids_node,
+            rope_cos_node,
+            rope_sin_node,
+            mask_node,
+            kv_nodes,
+            cached_len_sym,
+            base_cache,
+            seq,
+            max_seq_len,
+            cfg.n_layers,
+            cache_dtype,
+        ));
+
+        // Bump cache state (identical to the D1 path).
+        cache.cached_len += seq;
+        for li in 0..cfg.n_layers {
+            cache.bump_version(li, KvSlot::K);
+            cache.bump_version(li, KvSlot::V);
+        }
+        Ok(logits_vec)
+    }
+
+    /// Re-bind the per-token data Consts (token-ids / RoPE / mask) into
+    /// device Arcs, bind the `SymEnv`, and realize via the D2a prebuilt
+    /// seam (SKIPPING optimize) over the held session's base cache. The
+    /// KV Arcs are stable (mutated in place by WriteSlice via the held
+    /// base_cache entries) — not touched here. Called for every decode
+    /// token after the first.
+    fn rebind_and_realize_prebuilt(
+        &self,
+        tokens: &[u32],
+        cache: &mut KvCache,
+        ctx: &InferenceContext,
+        session: &Option<crate::inference_context::DecodeSession>,
+    ) -> crate::Result<Vec<f32>> {
+        let cfg = &self.config;
+        let seq = tokens.len();
+        let cached_len = cache.cached_len;
+        let device = ctx.device().clone();
+
+        // Session guaranteed Some + valid by the caller. Recompute the
+        // per-token data Arcs, then realize the held graph via the
+        // prebuilt seam (base_cache clone + overwritten data entries).
+        // ctx is NOT mutated on the reuse path — the data lands in a
+        // clone of the session's held base_cache, not in ctx.persistent.
+        let s = session.as_ref().expect("session is Some");
+        let data = self.build_token_rope_mask_arcs(
+            &device, cached_len, tokens, s.max_seq_len(),
+        )?;
+        let mut sym_env = fuel_ir::SymEnv::new();
+        sym_env.bind(s.cached_len_sym(), cached_len).map_err(crate::Error::from)?;
+        let logits_vec = s.realize_token(&device, data, &sym_env)?;
+
+        // Bump cache state (identical to the D1 path).
+        cache.cached_len += seq;
+        for li in 0..cfg.n_layers {
+            cache.bump_version(li, KvSlot::K);
+            cache.bump_version(li, KvSlot::V);
+        }
+        Ok(logits_vec)
+    }
+
+    /// Recompute the per-token host bytes for token-ids / RoPE cos+sin /
+    /// mask and build device-resident Arcs from them (the SAME upload
+    /// path `KvCache::with_capacity` uses). On CPU the Storage wraps the
+    /// host bytes; on GPU it performs the H2D upload (tiny tensors).
+    /// Design §2 option (b): the bytes change per token, the NodeId stays
+    /// stable (the held graph's Const nodes are re-bound via `base_cache`
+    /// overwrite, not a fresh graph).
+    fn build_token_rope_mask_arcs(
+        &self,
+        device: &Device,
+        cached_len: usize,
+        tokens: &[u32],
+        max_seq_len: usize,
+    ) -> crate::Result<crate::inference_context::DecodeTokenData> {
+        let cfg = &self.config;
+        let seq = tokens.len();
+        let upload = crate::pipelined_bridge::upload_host_buffer_to_device;
+
+        let token_ids = upload(device, fuel_ir::HostBuffer::U32(tokens.to_vec()))?;
+        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
+            cfg.rope_base, cached_len, seq, cfg.head_dim,
+        );
+        let rope_cos = upload(device, fuel_ir::HostBuffer::F32(cos_data))?;
+        let rope_sin = upload(device, fuel_ir::HostBuffer::F32(sin_data))?;
+        let mask_data = build_decode_causal_mask(cached_len, seq, max_seq_len);
+        let mask = upload(device, fuel_ir::HostBuffer::F32(mask_data))?;
+
+        Ok(crate::inference_context::DecodeTokenData {
+            token_ids,
+            rope_cos,
+            rope_sin,
+            mask,
+        })
+    }
+
+    /// Drop a held decode session, removing any leftover persistent
+    /// data-Const / KV bindings from `ctx` (defensive — the build path
+    /// already removes them once the session owns `base_cache`; this
+    /// covers the invalidation path). No-op if `session` is `None`.
+    fn drop_decode_session(
+        &self,
+        session: &mut Option<crate::inference_context::DecodeSession>,
+        ctx: &mut InferenceContext,
+    ) {
+        if let Some(s) = session.take() {
+            ctx.remove(s.token_ids_node());
+            ctx.remove(s.rope_cos_node());
+            ctx.remove(s.rope_sin_node());
+            ctx.remove(s.mask_node());
+            for (k, v) in s.kv_nodes() {
+                ctx.remove(*k);
+                ctx.remove(*v);
+            }
+        }
+    }
 }
 
 
@@ -5403,6 +5777,24 @@ impl LlamaModel {
 /// `0` at `j <= i` and `-inf` at `j > i`, ready to
 /// broadcast-add onto attention scores. Anchored on `g` so
 /// the mask shares its graph with the rest of the model.
+/// Build the fixed-capacity causal mask for the input-independent decode
+/// graph (Phase D · D1/D2b). Shape `[seq, max_seq_len]` flattened
+/// row-major: `-inf` where `k > cached_len + q` (masks future positions
+/// AND the zero-init stale tail), `0` otherwise. Hoisted to ONE shared
+/// Const (was per-layer); the per-token re-bind on the persistent decode
+/// path recomputes exactly this each token (the `-inf` boundary shifts
+/// with `cached_len`).
+fn build_decode_causal_mask(cached_len: usize, seq: usize, max_seq_len: usize) -> Vec<f32> {
+    let mut mask_data = vec![0.0_f32; seq * max_seq_len];
+    for q_idx in 0..seq {
+        let abs_q = cached_len + q_idx;
+        for k_idx in (abs_q + 1)..max_seq_len {
+            mask_data[q_idx * max_seq_len + k_idx] = f32::NEG_INFINITY;
+        }
+    }
+    mask_data
+}
+
 fn apply_affine_rms_norm(
     x: &LazyTensor,
     gain: &Arc<[f32]>,
@@ -7930,6 +8322,211 @@ mod generate_tests {
             assert_eq!(cache.layer(li).unwrap().k_version, 2);
             assert_eq!(cache.layer(li).unwrap().v_version, 2);
         }
+    }
+
+    /// Phase D · D2b born-red gate for plan-once persistent decode.
+    ///
+    /// Drive [`LlamaModel::forward_with_kv_context_persistent`] for ≥3
+    /// decode tokens (after a prefill) holding ONE [`DecodeSession`], run
+    /// in lockstep against the D1 [`LlamaModel::forward_with_kv_context`]
+    /// path (a SECOND identical model + cache + ctx fed the identical
+    /// token at each step). Assert the three plan-once invariants:
+    ///   (a) `optimize_calls_thread_local()` bumps **exactly once** across
+    ///       all the decode tokens — the first persistent decode token
+    ///       builds + optimizes the held session; tokens 2..N skip
+    ///       optimize entirely (the held graph + cached `OptimizedGraph`
+    ///       are reused via the D2a prebuilt seam);
+    ///   (b) each persistent token's logits are **exactly `==`** the D1
+    ///       cached path on the same prefix — same plan → same kernels →
+    ///       bit-exact (NOT epsilon);
+    ///   (c) the held graph's node `len()` is **stable from token 2
+    ///       onward** — no per-token node growth (the guard that no
+    ///       builder snuck a `cached_len`-dependent shape / re-splice /
+    ///       re-insert back in).
+    ///
+    /// Born-red shape: if the data Consts are rebuilt fresh per token
+    /// (a new graph each token) OR the session re-optimizes, (a)/(c)
+    /// fail; wiring the held session + per-token data re-bind makes them
+    /// pass.
+    #[test]
+    fn forward_with_kv_context_persistent_plan_once_matches_d1() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    4,
+            n_kv_heads: 2, // exercise GQA (n_rep = 2)
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+
+        // Two byte-identical models: one drives the D2 persistent path,
+        // one drives the D1 rebuild path. Identical weights (same seed).
+        let model_d2 = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let model_d1 = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+
+        let prompt = [1_u32, 2, 3];
+        let decode_tokens = [4_u32, 5, 6, 7]; // ≥3 decode tokens
+        let max_seq_len = prompt.len() + decode_tokens.len();
+
+        // --- D1 (rebuild) reference FIRST, in its own pass, so its
+        // per-token re-plans do NOT pollute the optimize-count window we
+        // measure around the D2 loop. Store the expected logits. ---
+        let dev1 = Device::cpu();
+        let mut cache1 = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev1,
+        ).expect("with_capacity d1");
+        let mut ctx1 = InferenceContext::new(dev1);
+        let _ = model_d1
+            .forward_with_kv_context(&prompt, &mut cache1, &mut ctx1)
+            .expect("d1 prefill");
+        let mut d1_expected: Vec<Vec<f32>> = Vec::with_capacity(decode_tokens.len());
+        for &tok in &decode_tokens {
+            d1_expected.push(
+                model_d1
+                    .forward_with_kv_context(&[tok], &mut cache1, &mut ctx1)
+                    .expect("d1 decode"),
+            );
+        }
+
+        // --- D2 (persistent) session state ---
+        let dev2 = Device::cpu();
+        let mut cache2 = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev2,
+        ).expect("with_capacity d2");
+        let mut ctx2 = InferenceContext::new(dev2);
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+
+        // Prefill the D2 path (seq > 1 → the persistent path falls back to
+        // the rebuild path; the session is NOT built here).
+        let _ = model_d2
+            .forward_with_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
+            .expect("d2 prefill");
+        assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+
+        // Decode ≥3 tokens through the persistent path ONLY. Snapshot the
+        // optimizer count on THIS thread just before the decode loop
+        // (isolated from other suite threads' concurrent optimizes — the
+        // process-global count is polluted; the thread-local delta is
+        // exact). The D2 loop is the ONLY optimize source in this window.
+        let opt_before = crate::pipelined_bridge::optimize_calls_thread_local();
+        let mut len_at_token2: Option<usize> = None;
+
+        for (i, &tok) in decode_tokens.iter().enumerate() {
+            let d2 = model_d2
+                .forward_with_kv_context_persistent(&[tok], &mut cache2, &mut ctx2, &mut session)
+                .expect("d2 decode");
+
+            // (b) bit-exact vs. the D1 cached path (same plan → same
+            // kernels), NOT epsilon.
+            assert_eq!(
+                d2, d1_expected[i],
+                "persistent decode token {i} must be byte-identical to the D1 \
+                 cached path",
+            );
+
+            // The session must exist after the first decode token and
+            // stay valid across the rest.
+            let sess = session.as_ref().expect("session built on first decode token");
+            let graph_len = sess.graph_node_count();
+            if i == 1 {
+                len_at_token2 = Some(graph_len);
+            } else if i >= 2 {
+                // (c) node count stable from token 2 onward.
+                assert_eq!(
+                    Some(graph_len), len_at_token2,
+                    "held graph must NOT grow from token 2 onward (token {i})",
+                );
+            }
+        }
+
+        // (a) optimize bumped EXACTLY ONCE across all decode tokens.
+        let opt_after = crate::pipelined_bridge::optimize_calls_thread_local();
+        assert_eq!(
+            opt_after - opt_before, 1,
+            "persistent decode must optimize EXACTLY ONCE across {} decode \
+             tokens (the first builds the session; the rest skip optimize): \
+             {opt_before} -> {opt_after}",
+            decode_tokens.len(),
+        );
+
+        // Sanity: both caches advanced identically.
+        assert_eq!(cache2.cached_len, max_seq_len);
+        assert_eq!(cache1.cached_len, max_seq_len);
+    }
+
+    /// Phase D · D2b invalidation: a `seq != 1` step mid-stream (e.g. a
+    /// spec-decode verification batch) must DROP the held session and
+    /// fall back to the D1 rebuild path (the session is shape-keyed to
+    /// seq==1); a subsequent seq==1 token rebuilds a fresh session and
+    /// still produces correct logits. Also checks the session is rebuilt
+    /// (a NEW session object) after the fallback.
+    #[test]
+    fn forward_with_kv_context_persistent_invalidates_on_non_decode_step() {
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
+            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+
+        let prompt = [1_u32, 2];
+        let max_seq_len = 8;
+        let device = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &device,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(device);
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+
+        // Prefill (seq>1 → no session).
+        let _ = model
+            .forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
+            .expect("prefill");
+        assert!(session.is_none());
+
+        // One decode token builds the session.
+        let _ = model
+            .forward_with_kv_context_persistent(&[3], &mut cache, &mut ctx, &mut session)
+            .expect("decode 1");
+        assert!(session.is_some(), "first decode token builds the session");
+        let graph_ptr_1 = Arc::as_ptr(session.as_ref().unwrap().graph());
+
+        // A seq!=1 all-positions step drops the session (fallback to D1).
+        let _ = model
+            .forward_with_kv_context_persistent(&[4, 5], &mut cache, &mut ctx, &mut session)
+            .expect("multi-token step");
+        assert!(
+            session.is_none(),
+            "a seq!=1 step must invalidate + drop the held session",
+        );
+
+        // A subsequent seq==1 token rebuilds a FRESH session (different
+        // graph Arc) and produces correct logits vs. the D1 path on the
+        // same running cache.
+        let d2 = model
+            .forward_with_kv_context_persistent(&[6], &mut cache, &mut ctx, &mut session)
+            .expect("decode after fallback");
+        assert!(session.is_some(), "session rebuilt on the next decode token");
+        let graph_ptr_2 = Arc::as_ptr(session.as_ref().unwrap().graph());
+        assert!(
+            graph_ptr_1 != graph_ptr_2,
+            "the rebuilt session must hold a NEW graph, not the dropped one",
+        );
+
+        // Byte-exact vs. a fresh D1 run over the identical token history.
+        let mut cache_ref = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &Device::cpu(),
+        ).expect("with_capacity ref");
+        let mut ctx_ref = InferenceContext::new(Device::cpu());
+        let _ = model.forward_with_kv_context(&prompt, &mut cache_ref, &mut ctx_ref).unwrap();
+        let _ = model.forward_with_kv_context(&[3], &mut cache_ref, &mut ctx_ref).unwrap();
+        let _ = model.forward_with_kv_context(&[4, 5], &mut cache_ref, &mut ctx_ref).unwrap();
+        let d1 = model.forward_with_kv_context(&[6], &mut cache_ref, &mut ctx_ref).unwrap();
+        assert_eq!(d2, d1, "post-fallback decode must match the D1 cached path");
     }
 
     /// Prefill-only forward through `forward_with_kv_context` should

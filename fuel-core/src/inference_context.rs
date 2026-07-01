@@ -41,9 +41,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, Shape, SymEnv};
+use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, Shape, SymEnv, SymId};
 use fuel_graph::{Graph, Node, NodeId, Op};
-use fuel_dispatch::{pipelined::{PipelinedExecutor, StorageCache}};
+use fuel_dispatch::{optimize::OptimizedGraph, pipelined::{PipelinedExecutor, StorageCache}};
 use fuel_memory::{BackendStorage, Storage};
 
 use crate::Device;
@@ -380,6 +380,222 @@ impl KvCache {
     }
 }
 
+// ===========================================================================
+// DecodeSession (Phase D · D2b — plan-once persistent decode)
+// ===========================================================================
+
+/// Per-token re-bound data-Const Arcs for a persistent decode step
+/// (Phase D · D2b). Each is a device-resident `fuel_memory::Storage`
+/// built from freshly recomputed host bytes (token-ids = the new token,
+/// RoPE cos+sin at `position = cached_len`, mask with the shifted `-inf`
+/// boundary). [`DecodeSession::realize_token`] overwrites the held
+/// `base_cache`'s stable data-Const entries with these for the token.
+pub struct DecodeTokenData {
+    pub token_ids: Arc<RwLock<Storage>>,
+    pub rope_cos: Arc<RwLock<Storage>>,
+    pub rope_sin: Arc<RwLock<Storage>>,
+    pub mask: Arc<RwLock<Storage>>,
+}
+
+/// Plan-once persistent decode state for one `LlamaModel` + one
+/// [`KvCache`] capacity/dtype. Built on the first `seq == 1` decode token;
+/// reused (graph + optimize view HELD, only the per-token data Consts +
+/// `SymEnv` re-bound) for every subsequent token.
+///
+/// The ~1.8×/token win lives here: the decode-step graph is built +
+/// `prepare`d (D2H `Op::Copy` spliced at the root) + `optimize_graph`'d
+/// (placement stamps + residency `Op::Copy` + layout `Op::Contiguize`
+/// baked in place) ONCE, then re-realized via the D2a prebuilt seam
+/// ([`InferenceContext::realize_prebuilt_as_with_env`]) which SKIPS both
+/// `prepare` and `optimize_graph`.
+///
+/// Held by the generate-loop owner (the caller of
+/// `forward_with_kv_context_persistent`), NOT by the immutable
+/// `LlamaModel` (the model is read-only weights; a session is per-
+/// generation state). Constructed lazily as `Option<DecodeSession>` and
+/// dropped-then-rebuilt on any validity-key mismatch / `TopologyChanged`
+/// / a non-`seq==1` step (see `forward_with_kv_context_persistent`).
+///
+/// ## Why the graph is HELD here
+///
+/// D1 rebuilds a fresh `LazyTensor` graph every token and drops it after
+/// realize. D2 keeps the `Arc<RwLock<Graph>>` alive on the session so the
+/// already-optimized structure (the stamps + inserted copies) survives.
+/// The cached [`OptimizedGraph`] holds only `{roots, generation}` — it
+/// bakes NO Const data / storage / `SymEnv`, so reusing it is sound
+/// **iff the graph structure + topology generation are unchanged** (D1's
+/// input-independent-graph guarantee).
+pub struct DecodeSession {
+    /// The held decode-step graph, ALREADY optimized in place (stamps +
+    /// residency/layout copies + D2H root splice baked in). Structure is
+    /// stable across tokens (D1 guarantee).
+    graph: Arc<RwLock<Graph>>,
+    /// The cached optimize view from the first realize. Holds only
+    /// `{roots, generation}`; valid while `graph` structure + topology
+    /// generation are unchanged.
+    optimized: OptimizedGraph,
+    /// The realize root the executor was asked for — the D2H `Op::Copy`
+    /// NodeId `prepare` spliced (NOT the logits node itself). Stable
+    /// across tokens.
+    effective_target: NodeId,
+    /// The logits node (pre-D2H-splice) — `effective_target`'s input.
+    /// Retained for D3 attribution / debugging; the executor is asked
+    /// for `effective_target`.
+    #[allow(dead_code)]
+    logits_node: NodeId,
+    /// Stable re-bindable token-ids Const (`[seq]` U32).
+    token_ids_node: NodeId,
+    /// Stable re-bindable RoPE cos table Const (`[seq, head_dim]` F32).
+    rope_cos_node: NodeId,
+    /// Stable re-bindable RoPE sin table Const (`[seq, head_dim]` F32).
+    rope_sin_node: NodeId,
+    /// Stable re-bindable causal mask Const (`[1, 1, seq, max_seq_len]`
+    /// F32) — hoisted to ONE shared Const (was per-layer in D1).
+    mask_node: NodeId,
+    /// Per-layer `(k_const, v_const)` stable KV placeholder NodeIds. The
+    /// KV Arcs are re-bound once at build time and mutated in place by
+    /// `Op::WriteSlice` each token (never re-inserted per token).
+    kv_nodes: Vec<(NodeId, NodeId)>,
+    /// The symbol the per-pass `SymEnv` binds to `cached_len` each token.
+    cached_len_sym: SymId,
+    /// The full realized [`StorageCache`] from the first realize — every
+    /// reachable `Op::Const` (weights + the KV Arcs + the initial data
+    /// Consts) that `build_const_cache` uploaded. Held because the
+    /// prebuilt-realize path SKIPS the const-cache walk: each token we
+    /// clone this and overwrite ONLY the per-token data-Const entries
+    /// (token-ids / RoPE / mask). The weight Arcs + KV Arcs are stable
+    /// (KV mutates in place via `Op::WriteSlice`).
+    base_cache: StorageCache,
+    /// The `seq` the held graph is shape-keyed to (always 1 for D2 decode).
+    seq: usize,
+    // ---- validity keys — rebuild if any change vs. the live cache/model ----
+    max_seq_len: usize,
+    n_layers: usize,
+    cache_dtype: DType,
+}
+
+impl DecodeSession {
+    /// Assemble a held session from the artifacts a first-realize
+    /// prebuild produced. `graph` is the (already prepared + optimized)
+    /// held decode graph; `effective_target` / `optimized` come from
+    /// [`InferenceContext::prebuild_optimized_as_with_env`]; the node ids
+    /// are the STABLE data-Const NodeIds the builder minted.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        graph: Arc<RwLock<Graph>>,
+        optimized: OptimizedGraph,
+        effective_target: NodeId,
+        logits_node: NodeId,
+        token_ids_node: NodeId,
+        rope_cos_node: NodeId,
+        rope_sin_node: NodeId,
+        mask_node: NodeId,
+        kv_nodes: Vec<(NodeId, NodeId)>,
+        cached_len_sym: SymId,
+        base_cache: StorageCache,
+        seq: usize,
+        max_seq_len: usize,
+        n_layers: usize,
+        cache_dtype: DType,
+    ) -> Self {
+        Self {
+            graph,
+            optimized,
+            effective_target,
+            logits_node,
+            token_ids_node,
+            rope_cos_node,
+            rope_sin_node,
+            mask_node,
+            kv_nodes,
+            cached_len_sym,
+            base_cache,
+            seq,
+            max_seq_len,
+            n_layers,
+            cache_dtype,
+        }
+    }
+
+    /// Realize the held graph for one decode token via the D2a prebuilt
+    /// seam (SKIP `prepare` + `optimize_graph`). `data` supplies the
+    /// per-token re-bound data-Const Arcs (token-ids / RoPE cos+sin /
+    /// mask); they overwrite the held `base_cache`'s entries for this
+    /// token (the weight + KV Arcs stay from `base_cache`). `sym_env`
+    /// binds `cached_len`. `TopologyChanged` surfaces typed (caller
+    /// invalidates the session).
+    pub fn realize_token(
+        &self,
+        device: &Device,
+        data: DecodeTokenData,
+        sym_env: &SymEnv,
+    ) -> Result<Vec<f32>> {
+        let mut cache = self.base_cache.clone();
+        cache.insert(self.token_ids_node, data.token_ids);
+        cache.insert(self.rope_cos_node, data.rope_cos);
+        cache.insert(self.rope_sin_node, data.rope_sin);
+        cache.insert(self.mask_node, data.mask);
+        crate::pipelined_bridge::realize_one_prebuilt_env::<f32>(
+            &self.graph,
+            self.effective_target,
+            &self.optimized,
+            device,
+            cache,
+            sym_env,
+        )
+    }
+
+    /// Whether this held session is valid for the given decode step.
+    /// Rebuild (drop + build fresh) on any mismatch. `seq` must be 1
+    /// (the held graph is the seq==1 decode graph); a change in
+    /// `max_seq_len` / `n_layers` / `cache_dtype` means a different
+    /// model/cache → the held graph's shapes are stale.
+    pub fn is_valid_for(
+        &self,
+        seq: usize,
+        max_seq_len: usize,
+        n_layers: usize,
+        cache_dtype: DType,
+    ) -> bool {
+        self.seq == seq
+            && self.max_seq_len == max_seq_len
+            && self.n_layers == n_layers
+            && self.cache_dtype == cache_dtype
+    }
+
+    /// The held graph handle (the caller re-binds data Consts + realizes
+    /// through it).
+    pub fn graph(&self) -> &Arc<RwLock<Graph>> {
+        &self.graph
+    }
+
+    /// The cached optimize view (fed to the prebuilt-realize seam).
+    pub fn optimized(&self) -> &OptimizedGraph {
+        &self.optimized
+    }
+
+    /// The D2H `Op::Copy` root the executor is asked for.
+    pub fn effective_target(&self) -> NodeId {
+        self.effective_target
+    }
+
+    pub fn token_ids_node(&self) -> NodeId { self.token_ids_node }
+    pub fn rope_cos_node(&self) -> NodeId { self.rope_cos_node }
+    pub fn rope_sin_node(&self) -> NodeId { self.rope_sin_node }
+    pub fn mask_node(&self) -> NodeId { self.mask_node }
+    pub fn kv_nodes(&self) -> &[(NodeId, NodeId)] { &self.kv_nodes }
+    pub fn cached_len_sym(&self) -> SymId { self.cached_len_sym }
+    pub fn max_seq_len(&self) -> usize { self.max_seq_len }
+
+    /// The held graph's node count. The D2b born-red test asserts this
+    /// is stable from token 2 onward (no per-token node growth — the
+    /// guard against an accidental re-splice / re-insert / a builder
+    /// sneaking a `cached_len`-dependent shape back in).
+    pub fn graph_node_count(&self) -> usize {
+        self.graph.read().map(|g| g.len()).unwrap_or(0)
+    }
+}
+
 // `alloc_zeroed_on` retired 2026-05-22 (bridge-retirement Phase 3a).
 // Zero-init device allocation now flows through `Op::Alloc` graph
 // emission + the executor's `WorkItemKind::Alloc` arm. The per-
@@ -526,6 +742,28 @@ impl InferenceContext {
         env: &SymEnv,
     ) -> Result<(NodeId, fuel_dispatch::optimize::OptimizedGraph, Vec<T>)> {
         crate::pipelined_bridge::prebuild_optimized_env::<T>(
+            graph,
+            target,
+            &self.device,
+            self.cloned_persistent(),
+            env,
+        )
+    }
+
+    /// Phase D · D2b — first-realize that captures the reusable optimize
+    /// artifacts AND the full realized [`StorageCache`] (all weight
+    /// Consts uploaded by `build_const_cache`, merged over this context's
+    /// persistent Arcs). The [`DecodeSession`] holds the cache so later
+    /// prebuilt realizes (which SKIP the const-cache walk) still resolve
+    /// every weight Const. Returns
+    /// `(effective_target, OptimizedGraph, full_cache, result)`.
+    pub fn prebuild_optimized_capturing_as_with_env<T: bytemuck::Pod>(
+        &self,
+        graph: &Arc<RwLock<Graph>>,
+        target: NodeId,
+        env: &SymEnv,
+    ) -> Result<(NodeId, fuel_dispatch::optimize::OptimizedGraph, StorageCache, Vec<T>)> {
+        crate::pipelined_bridge::prebuild_optimized_env_capturing_cache::<T>(
             graph,
             target,
             &self.device,

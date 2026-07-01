@@ -400,11 +400,43 @@ pub fn prebuild_optimized_env<T: bytemuck::Pod>(
         )
         .bt());
     };
-    let (storage, optimized) = dispatch_with_plan_retry_capturing(
+    let (storage, optimized, _full_cache) = dispatch_with_plan_retry_capturing(
         graph, cpu_target, cache, device, sym_env,
     )?;
     let bytes = extract_cpu_bytes_typed::<T>(&storage)?;
     Ok((cpu_target, optimized, bytes))
+}
+
+/// Phase D · D2b — like [`prebuild_optimized_env`] but ALSO returns the
+/// full realized [`StorageCache`] (all reachable `Op::Const` uploaded by
+/// `build_const_cache` — the weights et al., merged over `initial`). The
+/// held decode session keeps this cache so subsequent prebuilt realizes
+/// (which SKIP the const-cache walk) still find every weight Const; only
+/// the per-token data Consts (token-ids / RoPE / mask) are overwritten
+/// in the held cache each token. Without this, the prebuilt path would
+/// error on the first weight Const it can't resolve.
+pub fn prebuild_optimized_env_capturing_cache<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    target: NodeId,
+    device: &Device,
+    initial: StorageCache,
+    sym_env: &SymEnv,
+) -> Result<(NodeId, OptimizedGraph, StorageCache, Vec<T>)> {
+    let (cache, _backend_id, mut effective_targets) =
+        prepare(graph, &[target], device, initial)?;
+    let Some(cpu_target) = effective_targets.pop() else {
+        return Err(Error::Msg(
+            "pipelined_bridge: prepare returned no effective target for a \
+             single-target prebuild — internal bug"
+                .into(),
+        )
+        .bt());
+    };
+    let (storage, optimized, full_cache) = dispatch_with_plan_retry_capturing(
+        graph, cpu_target, cache, device, sym_env,
+    )?;
+    let bytes = extract_cpu_bytes_typed::<T>(&storage)?;
+    Ok((cpu_target, optimized, full_cache, bytes))
 }
 
 /// Plan-once realize: the `graph` has ALREADY been `prepare`d (the D2H
@@ -470,7 +502,7 @@ fn dispatch_with_plan_retry_capturing(
     cache: StorageCache,
     device: &Device,
     sym_env: &SymEnv,
-) -> Result<(Arc<RwLock<Storage>>, OptimizedGraph)> {
+) -> Result<(Arc<RwLock<Storage>>, OptimizedGraph, StorageCache)> {
     let pinned_loc = device.location();
     let mut retry = TopologyRetryState::new();
     loop {
@@ -486,7 +518,7 @@ fn dispatch_with_plan_retry_capturing(
             selector, lookup, sym_env.clone(),
         );
         match result {
-            Ok((storage, _layout)) => return Ok((storage, optimized)),
+            Ok((storage, _layout)) => return Ok((storage, optimized, cache)),
             Err(e) if matches!(e, Error::TopologyChanged { .. })
                 && retry.permit_retry() =>
             {
@@ -1228,6 +1260,126 @@ pub(crate) fn build_const_cache(
         cache.insert(user_id, arc);
     }
     Ok(cache)
+}
+
+/// Phase D · D2b — build a single device-resident `fuel_memory::Storage`
+/// Arc from a host buffer, the same upload path [`build_const_cache`]
+/// uses per Const. The persistent-decode re-bind inserts the result into
+/// the [`crate::inference_context::InferenceContext`]'s persistent map
+/// under a STABLE data-Const NodeId each token (token-ids / RoPE / mask),
+/// so the bytes stay out of the const-cache walk on the prebuilt realize.
+///
+/// **CPU device**: wraps the host bytes directly
+/// (`CpuStorageBytes::from_bytes`) — no transient graph / executor. This
+/// is the D2b born-red bed and the only path exercised at CPU parity.
+///
+/// **Non-CPU device**: builds a one-node transient `Op::Const → Op::Copy
+/// { target }` graph (+ device-handle anchor) and realizes the copy —
+/// the H2D upload. Mirrors [`build_const_cache`]'s non-CPU arm for a
+/// single buffer.
+///
+/// The `dtype` tag comes from the `HostBuffer` variant. Never panics.
+pub fn upload_host_buffer_to_device(
+    device: &Device,
+    buf: HostBuffer,
+) -> Result<Arc<RwLock<Storage>>> {
+    let dtype = host_buffer_dtype(&buf);
+    let bytes = host_buffer_to_bytes(&buf);
+    let target_loc = device.location();
+
+    if target_loc == DeviceLocation::Cpu {
+        let storage = Storage::new(
+            BackendStorage::Cpu(
+                fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(&bytes),
+            ),
+            dtype,
+        );
+        return Ok(Arc::new(RwLock::new(storage)));
+    }
+
+    // Non-CPU: transient Op::Const → Op::Copy { target } upload.
+    let transient = Arc::new(RwLock::new(Graph::new()));
+    let mut transient_cache = StorageCache::new();
+    if let Some(seed) = device_seed_storage(device)? {
+        let anchor_id = {
+            let mut g = transient
+                .write()
+                .map_err(|_| Error::Msg("transient graph lock poisoned".into()).bt())?;
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: fuel_ir::Shape::from_dims(&[4]),
+                dtype: fuel_ir::DType::U8,
+            })
+        };
+        transient_cache.insert(anchor_id, Arc::new(RwLock::new(seed)));
+    }
+    let n_elem = if dtype.size_in_bytes() == 0 {
+        0
+    } else {
+        bytes.len() / dtype.size_in_bytes()
+    };
+    let shape = fuel_ir::Shape::from_dims(&[n_elem]);
+    let copy_id = {
+        let mut g = transient
+            .write()
+            .map_err(|_| Error::Msg("transient graph lock poisoned".into()).bt())?;
+        let trans_const_id = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: shape.clone(),
+            dtype,
+        });
+        let cpu_storage = Storage::new(
+            BackendStorage::Cpu(
+                fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(&bytes),
+            ),
+            dtype,
+        );
+        transient_cache.insert(trans_const_id, Arc::new(RwLock::new(cpu_storage)));
+        let copy_id = g.push(Node {
+            op: Op::Copy { target: target_loc },
+            inputs: vec![trans_const_id],
+            shape,
+            dtype,
+        });
+        g.set_target_backend(copy_id, BackendId::Cpu);
+        copy_id
+    };
+    let realized = PipelinedExecutor::realize_many(
+        Arc::clone(&transient), &[copy_id], transient_cache,
+    )?;
+    let (arc, _layout) = realized.into_iter().next().ok_or_else(|| {
+        Error::Msg(
+            "upload_host_buffer_to_device: realize_many returned no storage \
+             for the Op::Copy target — internal bug"
+                .into(),
+        )
+        .bt()
+    })?;
+    Ok(arc)
+}
+
+/// The `DType` a `HostBuffer` variant carries.
+fn host_buffer_dtype(buf: &HostBuffer) -> fuel_ir::DType {
+    use fuel_ir::DType;
+    match buf {
+        HostBuffer::U8(_) => DType::U8,
+        HostBuffer::I8(_) => DType::I8,
+        HostBuffer::U32(_) => DType::U32,
+        HostBuffer::I16(_) => DType::I16,
+        HostBuffer::I32(_) => DType::I32,
+        HostBuffer::I64(_) => DType::I64,
+        HostBuffer::BF16(_) => DType::BF16,
+        HostBuffer::F16(_) => DType::F16,
+        HostBuffer::F32(_) => DType::F32,
+        HostBuffer::F64(_) => DType::F64,
+        HostBuffer::F8E4M3(_) => DType::F8E4M3,
+        HostBuffer::F6E2M3(_) => DType::F6E2M3,
+        HostBuffer::F6E3M2(_) => DType::F6E3M2,
+        HostBuffer::F4(_) => DType::F4,
+        HostBuffer::F8E8M0(_) => DType::F8E8M0,
+    }
 }
 
 /// Extract the raw bytes from a `HostBuffer` via a per-variant match

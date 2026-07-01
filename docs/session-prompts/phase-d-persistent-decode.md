@@ -474,6 +474,88 @@ in the full suite (**1284 passed**, was 1283 at HEAD; 0 failed, 10 ignored).
   `forward_with_kv_context` path on the same prefix; (3) the held graph's node `len()` is stable
   from token 2 onward (no per-token node growth). Red before the persistent path exists.
 
+#### D2b — landed (2026-06-30, uncommitted on `b0-3-backend-contract`)
+
+**Mask hoist (byte-exact refactor).** The `[1,1,seq,max_seq_len]` causal mask moved out of
+`apply_layer_with_kv_writes` (was one Const per layer) to ONE Const built in
+`forward_with_kv_context_impl` and passed into each layer (like RoPE) — `lazy.rs`
+`apply_layer_with_kv_writes` now takes a `mask: &LazyTensor` param; the mask data comes from a new
+free fn `build_decode_causal_mask(cached_len, seq, max_seq_len)`. Byte-identical across layers by
+construction (mask depends only on `cached_len`/`seq`/`max_seq_len`); cuts the per-token re-bind
+count on the persistent path from `n_layers` to 1. The existing D1 decode gate
+(`forward_with_kv_context_decode_matches_non_cached_forward`) stays green (the born-red for this
+refactor).
+
+**`DecodeSession`** (`inference_context.rs`, beside `InferenceContext`). Holds: the optimized
+`graph: Arc<RwLock<Graph>>`, the cached `OptimizedGraph`, the D2H-spliced `effective_target` +
+`logits_node`, the STABLE data-Const NodeIds (`token_ids_node`, `rope_cos_node`, `rope_sin_node`,
+`mask_node`, `kv_nodes: Vec<(k,v)>`), `cached_len_sym`, the **full realized `base_cache`**
+(StorageCache; see below), and validity keys (`seq`, `max_seq_len`, `n_layers`, `cache_dtype`).
+`is_valid_for(...)` is a cheap field compare; `realize_token(device, DecodeTokenData, sym_env)`
+does the per-token prebuilt realize. Held by the generate-loop owner as `&mut Option<DecodeSession>`
+(NOT on the immutable `LlamaModel`).
+
+**Deviation from §2/§3 (necessary — a real gap the design's `ctx.insert`-only re-bind missed).**
+The prebuilt-realize seam SKIPS `build_const_cache` — so it does **not** upload the model **weight**
+Consts (`token_embedding`, per-layer projections, output) that live in `graph.storage_map`, not in
+`ctx.persistent`. The naive "re-bind data Consts into `ctx` each token" (design §2 option b) would
+fail on the first weight Const (`Const node NodeId(..) not in input cache`). Fix: capture the FULL
+`StorageCache` the first realize builds (weights + KV + initial data) and HOLD it on the session
+(`base_cache`); each subsequent token clones it and overwrites ONLY the 4 data-Const entries
+(token-ids / RoPE cos+sin / mask). Added `pipelined_bridge::prebuild_optimized_env_capturing_cache`
++ `InferenceContext::prebuild_optimized_capturing_as_with_env` (the capturing prebuild returns the
+cache alongside `effective_target` + `OptimizedGraph`); `dispatch_with_plan_retry_capturing` now
+returns the final cache. This is strictly stronger than §2's plan: the const-cache walk is skipped
+**entirely** on every reuse token (a secondary win the design flagged), and the KV Arcs live in
+`base_cache` (mutated in place by `Op::WriteSlice` — the same accumulation as D1).
+
+**Data-Const re-bind mechanism (§2 option b, backend-agnostic).** Per token, host bytes are
+recomputed — token-ids = the new token (U32 `[seq]`), RoPE cos+sin via `build_rope_tables(base,
+cached_len, seq, head_dim)` (`[seq,head_dim]` F32), mask via `build_decode_causal_mask(cached_len,
+seq, max_seq_len)` (`[1,1,seq,max_seq_len]` F32; the `-inf` boundary `k > cached_len + q` shifts
+per token) — and uploaded to a device-resident `fuel_memory::Storage` Arc via a new
+`pipelined_bridge::upload_host_buffer_to_device(device, HostBuffer)` (CPU: wraps bytes; non-CPU:
+the transient `Op::Const → Op::Copy{target}` H2D, mirroring `build_const_cache`'s non-CPU arm). The
+NodeIds stay stable (the held graph's Const nodes); only the `base_cache` entries change. **Q1
+resolved as (b), generalized: base_cache-overwrite instead of `ctx.insert`.** CPU is the born-red
+bed; the non-CPU upload arm is wired but GPU-unverified (a later verify).
+
+**`forward_with_kv_context_persistent(tokens, cache, ctx, session)` control flow.** (1) `seq != 1`
+→ drop the session (removing any ctx bindings) + fall back to `forward_with_kv_context` (D1
+rebuild). (2) `seq == 1` with a session whose validity keys mismatch → drop it (fall through to
+build). (3) `seq == 1`, no session → **build**: construct the graph with placeholder data + KV
+Consts (`const_placeholder_like` + `ctx.insert`), `prebuild_optimized_capturing_as_with_env`
+(optimize + realize ONCE, `OPTIMIZE_CALLS` +1), capture `base_cache`, remove the transient ctx
+bindings (they live in `base_cache` now), populate `session`, bump `cache.cached_len` + versions.
+(4) `seq == 1`, valid session → **reuse**: recompute the 4 data Arcs, `session.realize_token(...)`
+(SKIP optimize, `OPTIMIZE_CALLS` unmoved), bump state. A `TopologyChanged` on reuse drops the
+session + falls back to D1 this token (rebuilds next token). Held Consts persist across tokens (in
+`base_cache`); removed on session drop.
+
+**Born-red tests** (`lazy.rs` `generate_tests`, CPU):
+- `forward_with_kv_context_persistent_plan_once_matches_d1` — prefill (seq 3) then 4 decode tokens
+  through the persistent path, with the D1 reference logits captured in a SEPARATE pass first (so
+  D1's per-token re-plans don't pollute the measured window). Asserts (a)
+  `optimize_calls_thread_local()` delta == 1 across all decode tokens; (b) each token's logits
+  **exactly** `==` the D1 cached path; (c) the held graph `len()` stable from token 2 onward. Also
+  asserts prefill does NOT build the session.
+- `forward_with_kv_context_persistent_invalidates_on_non_decode_step` — a mid-stream `seq!=1` step
+  drops the session (fallback), and the next `seq==1` token rebuilds a NEW graph Arc + byte-matches
+  the D1 path over the identical history.
+- **Red→green observed:** first red = compile failure (`DecodeSession` / method / `graph_node_count`
+  absent); progressed through logical reds (session not built on token 1 — a control-flow bug where
+  `seq==1 && no-session` wrongly hit the fallback; then `Const node not in input cache` — the weight
+  gap above, fixed by `base_cache`; then optimize-count `5 != 1` — a TEST-harness pollution from the
+  lockstep D1 reference, fixed by capturing D1 in a separate pass); then green. The 5→1 red proved
+  (a) is not vacuous: the fallback path DOES optimize per token, only the reuse path skips.
+
+**Verified:** `cargo test -p fuel-core --lib` = **1286 passed / 0 failed / 10 ignored** (was 1284 at
+HEAD; +2 D2b tests). Regression-critical gates confirmed green:
+`forward_with_kv_context_decode_matches_non_cached_forward`, all 8 `forward_with_kv_context*`
+tests, the D2a `d2a_prebuilt_realize_skips_optimize_and_does_not_grow_graph`, generate/llama2c/
+spec-decode. Perf (the ~1.8×/token) is a later GPU verify — NOT gated here (CPU planning is a
+smaller fraction of CPU compute; correctness + the optimize-skip COUNT are the CI gates per §10).
+
 ### D2c — generate-loop integration + multi-token byte-exact
 - Wire the held `session` into the (test/caller) generation loop; ensure invalidation on
   prefill/seq-change/cache-clear (§5).
