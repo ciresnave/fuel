@@ -9101,6 +9101,67 @@ mod generate_tests {
         // NO timing assertion — perf is a verify-after gate, not a CI gate.
     }
 
+    /// Phase D · D3 — concurrency isolation. N threads each run a full
+    /// plan-once persistent greedy generation from the SAME shared `&model`,
+    /// each with its OWN internal `KvCache` + `InferenceContext` + loop-held
+    /// `DecodeSession` (all created inside `generate_with_kv_context`). Every
+    /// thread must reproduce the single-threaded reference EXACTLY — proving
+    /// concurrent persistent decode is correct + isolated (no shared-session
+    /// clobber, no data race that would perturb a thread's logits).
+    ///
+    /// This IS the spec's `(NodeId, SessionId)` concurrency model, realized as
+    /// per-session `DecodeSession` isolation: each generation owns its session
+    /// state (its held graph + `base_cache` + KV); only the read-only model
+    /// weights and the kernel-binding registry (read-locked during optimize)
+    /// are shared. (A future refinement could SHARE one optimized graph across
+    /// same-model sessions to save N builds — consumerless today, so deferred.)
+    #[test]
+    fn generate_persistent_is_concurrency_isolated() {
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
+            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+
+        let prompt = [1_u32, 2, 3];
+        let max_new = 6usize;
+
+        // Single-threaded greedy reference (through the wired persistent path).
+        let reference = model
+            .generate_with_kv_context(
+                &prompt, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32,
+            )
+            .expect("reference generation");
+
+        // N concurrent generations sharing `&model`; each builds its own
+        // KvCache / InferenceContext / DecodeSession internally.
+        const N_THREADS: usize = 8;
+        std::thread::scope(|s| {
+            let handles: Vec<_> = (0..N_THREADS)
+                .map(|_| {
+                    s.spawn(|| {
+                        model
+                            .generate_with_kv_context(
+                                &prompt, max_new, SamplingStrategy::Greedy, None,
+                                &Device::cpu(), DType::F32,
+                            )
+                            .expect("concurrent generation")
+                    })
+                })
+                .collect();
+            for h in handles {
+                let out = h.join().expect("thread join");
+                assert_eq!(
+                    out, reference,
+                    "concurrent plan-once persistent generation must match the \
+                     single-threaded reference — per-generation DecodeSession \
+                     isolation, no shared-session clobber",
+                );
+            }
+        });
+    }
+
     /// Phase D · D2b invalidation: a `seq != 1` step mid-stream (e.g. a
     /// spec-decode verification batch) must DROP the held session and
     /// fall back to the D1 rebuild path (the session is shape-keyed to
