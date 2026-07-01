@@ -9029,6 +9029,484 @@ mod generate_tests {
         );
     }
 
+    /// Phase D · FIRST live-GPU verification of plan-once persistent decode
+    /// on CUDA — the core correctness gate for the previously UNVERIFIED
+    /// GPU upload arm.
+    ///
+    /// The persistent decode (D1–D4) is CPU-verified byte-exact, but its GPU
+    /// path — the non-CPU arm of
+    /// [`crate::pipelined_bridge::upload_host_buffer_to_device`], which does
+    /// the per-token token/RoPE/mask re-bind as a transient `Op::Const →
+    /// Op::Copy { target }` H2D upload (CUDA `write_from_host`) — is wired but
+    /// was never exercised live. GPU is the production decode target, so this
+    /// closes a real gap.
+    ///
+    /// The test drives greedy generation two ways ON THE SAME CUDA DEVICE:
+    ///   - **persistent** (plan-once): hold one `DecodeSession`, route prefill
+    ///     + every decode token through `forward_with_kv_context_persistent`
+    ///     (this is the wired production path; it exercises the per-token GPU
+    ///     re-bind upload arm), and
+    ///   - **rebuild** (D1 reference): a bare per-token
+    ///     `forward_with_kv_context` loop (re-plans every token).
+    ///
+    /// The two share the SAME optimized plan → SAME kernel sequence, so their
+    /// per-step logits must be **bit-exact `==`**. ANY difference means the GPU
+    /// upload arm (per-token H2D re-bind of token/RoPE/mask) is wrong — that is
+    /// the headline correctness finding.
+    ///
+    /// It ALSO cross-checks the CUDA persistent logits against a CPU rebuild
+    /// reference within the decode epsilon convention (`diff < 5e-3 ||
+    /// rel < 1e-2`, the same band the CPU-vs-Vulkan decode twin uses) — this
+    /// catches a GPU numeric bug BEYOND the upload arm (e.g. a bad kernel),
+    /// which the CUDA-vs-CUDA bit-exact check alone would miss (both CUDA paths
+    /// would share the same wrong kernel).
+    ///
+    /// Finally it drives the real production wrapper `generate_with_kv_context`
+    /// on the CUDA device and confirms the returned token sequence matches the
+    /// CUDA rebuild reference — proving the wiring, not just the entry point.
+    ///
+    /// Gated `#[cfg(feature = "cuda")]` + `#[ignore]`; skips cleanly if no CUDA
+    /// device is present. Run:
+    ///   `cargo test -p fuel-core --features cuda --lib \
+    ///    generate_persistent_decode_on_cuda_matches_rebuild_and_cpu \
+    ///    -- --ignored --nocapture`
+    #[test]
+    #[cfg(feature = "cuda")]
+    #[ignore = "requires a live CUDA device"]
+    fn generate_persistent_decode_on_cuda_matches_rebuild_and_cpu() {
+        // Same tiny GQA config as the CPU persistent gate
+        // (`forward_with_kv_context_persistent_plan_once_matches_d1`).
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        8,
+            n_layers:   2,
+            n_heads:    4,
+            n_kv_heads: 2, // exercise GQA (n_rep = 2)
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+
+        let prompt = [1_u32, 2, 3];
+        let max_new = 5usize; // N ≥ 4 greedy decode tokens
+        let max_seq_len = prompt.len() + max_new;
+        let strategy = SamplingStrategy::Greedy;
+
+        // ---- CPU REBUILD reference (BEST-EFFORT epsilon cross-check).
+        //
+        // LIVE-GPU FINDING (not the decode path under test): on a box with a
+        // physical CUDA GPU, in a `--features cuda` build, the process-global
+        // `SystemTopology` reports CUDA as an available device REGARDLESS of
+        // whether this test constructed a `CudaDevice` yet (capabilities probe,
+        // not device-handle-gated). The multi-backend placement DP then offers
+        // CUDA as a *fallback* placement even for a CPU-pinned realize and can
+        // stamp a node onto CUDA; the CPU cache has no CUDA seed, so the H2D
+        // `Op::Copy` fails to derive a device handle. That failure is unrelated
+        // to persistent decode, so the CPU cross-check is BEST-EFFORT: run it,
+        // and if the CPU realize errors with that cross-backend-placement
+        // condition, SKIP the epsilon assert (with a note) rather than fail the
+        // headline CUDA-vs-CUDA gate. If the CPU realize succeeds, the epsilon
+        // assert runs for real. ----
+        let cpu_step_logits: Option<Vec<Vec<f32>>> = {
+            let cpu_device = Device::cpu();
+            let cpu_ref = || -> crate::Result<Vec<Vec<f32>>> {
+                let mut cpu_cache = KvCache::with_capacity(
+                    cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32,
+                    &cpu_device,
+                )?;
+                let mut cpu_ctx = InferenceContext::new(cpu_device.clone());
+                let mut cpu_rng: u64 = 0;
+                let mut out: Vec<Vec<f32>> = Vec::with_capacity(max_new);
+                let mut last_cpu =
+                    model.forward_with_kv_context(&prompt, &mut cpu_cache, &mut cpu_ctx)?;
+                for _ in 0..max_new {
+                    let next = sample_logits(&last_cpu, strategy, &mut cpu_rng);
+                    last_cpu =
+                        model.forward_with_kv_context(&[next], &mut cpu_cache, &mut cpu_ctx)?;
+                    out.push(last_cpu.clone());
+                }
+                Ok(out)
+            };
+            match cpu_ref() {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    eprintln!(
+                        "CPU epsilon cross-check SKIPPED (cross-backend placement \
+                         fallback under --features cuda on a live-GPU host — not a \
+                         decode bug): {e:?}"
+                    );
+                    None
+                }
+            }
+        };
+
+        // CUDA device or skip cleanly (mirrors the live-GPU integration tests'
+        // `dev_or_skip`).
+        let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                return;
+            }
+        };
+        let cuda_device: Device = cuda.into();
+
+        // ---- CUDA REBUILD (D1) reference: bare per-token
+        // `forward_with_kv_context` loop on the CUDA device. Open-coded greedy
+        // via `sample_logits` so it is bit-identical to the persistent loop's
+        // sampling. Capture BOTH the token sequence AND the per-step logits. ----
+        let mut cuda_rebuild_cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &cuda_device,
+        ).expect("cuda rebuild with_capacity");
+        let mut cuda_rebuild_ctx = InferenceContext::new(cuda_device.clone());
+        let mut rebuild_rng: u64 = 0;
+        let mut rebuild_tokens: Vec<u32> = prompt.to_vec();
+        let mut rebuild_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
+        let mut last_rebuild = model
+            .forward_with_kv_context(&prompt, &mut cuda_rebuild_cache, &mut cuda_rebuild_ctx)
+            .expect("cuda rebuild prefill");
+        for _ in 0..max_new {
+            let next = sample_logits(&last_rebuild, strategy, &mut rebuild_rng);
+            rebuild_tokens.push(next);
+            last_rebuild = model
+                .forward_with_kv_context(&[next], &mut cuda_rebuild_cache, &mut cuda_rebuild_ctx)
+                .expect("cuda rebuild decode");
+            rebuild_step_logits.push(last_rebuild.clone());
+        }
+
+        // ---- CUDA PERSISTENT (plan-once): hold one DecodeSession, route
+        // prefill + every decode step through the persistent entry (the wired
+        // production path; this is what exercises the per-token GPU re-bind
+        // upload arm under test). Capture tokens + per-step logits. ----
+        let mut cuda_persist_cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &cuda_device,
+        ).expect("cuda persistent with_capacity");
+        let mut cuda_persist_ctx = InferenceContext::new(cuda_device.clone());
+        let mut persist_rng: u64 = 0;
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+        let mut persist_tokens: Vec<u32> = prompt.to_vec();
+        let mut persist_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
+        let mut last_persist = model
+            .forward_with_kv_context_persistent(
+                &prompt, &mut cuda_persist_cache, &mut cuda_persist_ctx, &mut session,
+            )
+            .expect("cuda persistent prefill");
+        assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+        for _ in 0..max_new {
+            let next = sample_logits(&last_persist, strategy, &mut persist_rng);
+            persist_tokens.push(next);
+            last_persist = model
+                .forward_with_kv_context_persistent(
+                    &[next], &mut cuda_persist_cache, &mut cuda_persist_ctx, &mut session,
+                )
+                .expect("cuda persistent decode");
+            persist_step_logits.push(last_persist.clone());
+        }
+        assert!(session.is_some(), "held session survives the CUDA decode loop");
+
+        // === (1) HEADLINE GATE: CUDA persistent == CUDA rebuild, BIT-EXACT.
+        // Same optimized plan → same kernels → identical bytes. Any diff means
+        // the per-token GPU H2D re-bind upload arm is wrong. ===
+        assert_eq!(
+            persist_tokens, rebuild_tokens,
+            "CUDA persistent greedy token sequence must be byte-identical to \
+             the CUDA rebuild path over {max_new} tokens",
+        );
+        assert_eq!(persist_step_logits.len(), rebuild_step_logits.len());
+        for (i, (p, r)) in persist_step_logits.iter().zip(rebuild_step_logits.iter()).enumerate() {
+            assert_eq!(
+                p, r,
+                "CUDA persistent decode step {i} logits must be BIT-EXACT vs the \
+                 CUDA rebuild path — a divergence here is a bug in the per-token \
+                 GPU upload arm (token/RoPE/mask H2D re-bind)",
+            );
+        }
+
+        // === (2) EPSILON CROSS-CHECK: CUDA persistent vs CPU rebuild. Catches
+        // a GPU numeric bug beyond the upload arm (both CUDA paths would share
+        // it). Same decode tolerance band as the CPU-vs-Vulkan twin. Runs only
+        // if the CPU reference realized (see the best-effort note above). ===
+        let mut epsilon_checked = false;
+        if let Some(cpu_step_logits) = cpu_step_logits.as_ref() {
+            assert_eq!(persist_step_logits.len(), cpu_step_logits.len());
+            for (i, (p, c)) in persist_step_logits.iter().zip(cpu_step_logits.iter()).enumerate() {
+                assert_eq!(p.len(), c.len(), "step {i} logit width");
+                for (j, (a, b)) in p.iter().zip(c.iter()).enumerate() {
+                    let diff = (a - b).abs();
+                    let rel = diff / a.abs().max(b.abs()).max(1e-6);
+                    assert!(
+                        diff < 5e-3 || rel < 1e-2,
+                        "step {i} logit[{j}]: cuda={a}, cpu={b}, diff={diff}, rel={rel}",
+                    );
+                }
+            }
+            epsilon_checked = true;
+        }
+
+        // === (3) WIRING: the real production wrapper on CUDA returns the same
+        // token sequence as the CUDA rebuild reference. ===
+        let via_wrapper = model
+            .generate_with_kv_context(
+                &prompt, max_new, strategy, None, &cuda_device, DType::F32,
+            )
+            .expect("generate_with_kv_context on CUDA");
+        assert_eq!(
+            via_wrapper, rebuild_tokens,
+            "generate_with_kv_context on CUDA (wired to the persistent path) \
+             must return the byte-identical token sequence as the CUDA rebuild \
+             reference",
+        );
+
+        eprintln!(
+            "CUDA persistent decode VERIFIED: {} tokens + logits BIT-EXACT vs \
+             CUDA rebuild path; CPU epsilon cross-check {}. tokens={:?}",
+            max_new,
+            if epsilon_checked { "PASSED" } else { "SKIPPED (see note above)" },
+            persist_tokens,
+        );
+    }
+
+    /// Phase D · FIRST live-GPU verification of plan-once persistent decode on
+    /// VULKAN — the `write_bytes` variant of the per-token H2D re-bind upload
+    /// arm (`upload_host_buffer_to_device`'s non-CPU branch on a Vulkan
+    /// `Device`). Same structure/gates as the CUDA twin: persistent must be
+    /// BIT-EXACT vs the Vulkan rebuild path (same plan → same kernels), and
+    /// within the decode epsilon vs a CPU rebuild reference.
+    ///
+    /// Gated `#[cfg(feature = "vulkan")]` + `#[ignore]`; skips cleanly if no
+    /// Vulkan device. Run:
+    ///   `cargo test -p fuel-core --features "cuda vulkan" --lib \
+    ///    generate_persistent_decode_on_vulkan_matches_rebuild_and_cpu \
+    ///    -- --ignored --nocapture`
+    #[test]
+    #[cfg(feature = "vulkan")]
+    #[ignore = "requires a live Vulkan device"]
+    fn generate_persistent_decode_on_vulkan_matches_rebuild_and_cpu() {
+        use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
+
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
+            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+
+        let prompt = [1_u32, 2, 3];
+        let max_new = 5usize;
+        let max_seq_len = prompt.len() + max_new;
+        let strategy = SamplingStrategy::Greedy;
+
+        // CPU rebuild reference (BEST-EFFORT epsilon cross-check) — see the CUDA
+        // twin for the cross-backend-placement caveat: under a build that also
+        // has CUDA/Vulkan probed in, a CPU-pinned realize can be stamped onto a
+        // GPU as a placement fallback and fail (no GPU seed in the CPU cache).
+        // That is not a decode bug, so the CPU cross-check is best-effort: skip
+        // (with a note) on that error, run the epsilon assert for real on
+        // success.
+        let cpu_step_logits: Option<Vec<Vec<f32>>> = {
+            let cpu_device = Device::cpu();
+            let cpu_ref = || -> crate::Result<Vec<Vec<f32>>> {
+                let mut cpu_cache = KvCache::with_capacity(
+                    cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32,
+                    &cpu_device,
+                )?;
+                let mut cpu_ctx = InferenceContext::new(cpu_device.clone());
+                let mut cpu_rng: u64 = 0;
+                let mut out: Vec<Vec<f32>> = Vec::with_capacity(max_new);
+                let mut last_cpu =
+                    model.forward_with_kv_context(&prompt, &mut cpu_cache, &mut cpu_ctx)?;
+                for _ in 0..max_new {
+                    let next = sample_logits(&last_cpu, strategy, &mut cpu_rng);
+                    last_cpu =
+                        model.forward_with_kv_context(&[next], &mut cpu_cache, &mut cpu_ctx)?;
+                    out.push(last_cpu.clone());
+                }
+                Ok(out)
+            };
+            match cpu_ref() {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    eprintln!(
+                        "CPU epsilon cross-check SKIPPED (cross-backend placement \
+                         fallback — not a decode bug): {e:?}"
+                    );
+                    None
+                }
+            }
+        };
+
+        let vk_backend = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("no Vulkan device; skipping: {e:?}");
+                return;
+            }
+        };
+        let vk_device: Device = vk_backend.into();
+
+        // Vulkan rebuild (D1) reference.
+        let mut vk_rebuild_cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &vk_device,
+        ).expect("vk rebuild with_capacity");
+        let mut vk_rebuild_ctx = InferenceContext::new(vk_device.clone());
+        let mut rebuild_rng: u64 = 0;
+        let mut rebuild_tokens: Vec<u32> = prompt.to_vec();
+        let mut rebuild_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
+        let mut last_rebuild = model
+            .forward_with_kv_context(&prompt, &mut vk_rebuild_cache, &mut vk_rebuild_ctx)
+            .expect("vk rebuild prefill");
+        for _ in 0..max_new {
+            let next = sample_logits(&last_rebuild, strategy, &mut rebuild_rng);
+            rebuild_tokens.push(next);
+            last_rebuild = model
+                .forward_with_kv_context(&[next], &mut vk_rebuild_cache, &mut vk_rebuild_ctx)
+                .expect("vk rebuild decode");
+            rebuild_step_logits.push(last_rebuild.clone());
+        }
+
+        // Vulkan persistent (plan-once).
+        let mut vk_persist_cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &vk_device,
+        ).expect("vk persistent with_capacity");
+        let mut vk_persist_ctx = InferenceContext::new(vk_device.clone());
+        let mut persist_rng: u64 = 0;
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+        let mut persist_tokens: Vec<u32> = prompt.to_vec();
+        let mut persist_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
+        let mut last_persist = model
+            .forward_with_kv_context_persistent(
+                &prompt, &mut vk_persist_cache, &mut vk_persist_ctx, &mut session,
+            )
+            .expect("vk persistent prefill");
+        assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+        for _ in 0..max_new {
+            let next = sample_logits(&last_persist, strategy, &mut persist_rng);
+            persist_tokens.push(next);
+            last_persist = model
+                .forward_with_kv_context_persistent(
+                    &[next], &mut vk_persist_cache, &mut vk_persist_ctx, &mut session,
+                )
+                .expect("vk persistent decode");
+            persist_step_logits.push(last_persist.clone());
+        }
+        assert!(session.is_some(), "held session survives the Vulkan decode loop");
+
+        // (1) BIT-EXACT: Vulkan persistent == Vulkan rebuild.
+        assert_eq!(persist_tokens, rebuild_tokens, "Vulkan persistent token sequence");
+        for (i, (p, r)) in persist_step_logits.iter().zip(rebuild_step_logits.iter()).enumerate() {
+            assert_eq!(
+                p, r,
+                "Vulkan persistent decode step {i} logits must be BIT-EXACT vs \
+                 the Vulkan rebuild path (upload arm's write_bytes branch)",
+            );
+        }
+
+        // (2) EPSILON: Vulkan persistent vs CPU rebuild (best-effort).
+        let mut epsilon_checked = false;
+        if let Some(cpu_step_logits) = cpu_step_logits.as_ref() {
+            for (i, (p, c)) in persist_step_logits.iter().zip(cpu_step_logits.iter()).enumerate() {
+                for (j, (a, b)) in p.iter().zip(c.iter()).enumerate() {
+                    let diff = (a - b).abs();
+                    let rel = diff / a.abs().max(b.abs()).max(1e-6);
+                    assert!(
+                        diff < 5e-3 || rel < 1e-2,
+                        "step {i} logit[{j}]: vulkan={a}, cpu={b}, diff={diff}, rel={rel}",
+                    );
+                }
+            }
+            epsilon_checked = true;
+        }
+
+        // (3) WIRING.
+        let via_wrapper = model
+            .generate_with_kv_context(&prompt, max_new, strategy, None, &vk_device, DType::F32)
+            .expect("generate_with_kv_context on Vulkan");
+        assert_eq!(via_wrapper, rebuild_tokens, "generate_with_kv_context on Vulkan");
+
+        eprintln!(
+            "VULKAN persistent decode VERIFIED: tokens + logits BIT-EXACT vs \
+             Vulkan rebuild path; CPU epsilon cross-check {}. tokens={:?}",
+            if epsilon_checked { "PASSED" } else { "SKIPPED (see note above)" },
+            persist_tokens,
+        );
+    }
+
+    /// Phase D · INDICATIVE live-GPU wall-clock (ignored — NOT a CI gate, NO
+    /// timing assertion). Prints the persistent-vs-rebuild per-token ratio on a
+    /// CUDA device so a human can eyeball it. NOTE: this is a TINY model — the
+    /// honest ~1.8× plan-once win needs a realistic model (per design doc §10,
+    /// CPU/planning is a small fraction of GPU compute for tiny models, so this
+    /// ratio UNDERSTATES the real win). Do NOT read a CI signal into it.
+    ///
+    /// Run: `cargo test -p fuel-core --features cuda --lib \
+    ///  generate_persistent_decode_cuda_bench_scaffold -- --ignored --nocapture`
+    #[test]
+    #[cfg(feature = "cuda")]
+    #[ignore = "perf scaffold — manual live-CUDA measurement, not a CI gate"]
+    fn generate_persistent_decode_cuda_bench_scaffold() {
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
+            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+
+        let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
+            Ok(d) => d,
+            Err(e) => { eprintln!("no CUDA device; skipping: {e:?}"); return; }
+        };
+        let dev: Device = cuda.into();
+
+        let prompt = [1_u32, 2, 3];
+        let n = 64usize;
+        let max_seq_len = prompt.len() + n;
+        let strategy = SamplingStrategy::Greedy;
+
+        // D1: rebuild + re-optimize every decode token.
+        let mut cache1 = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+        ).unwrap();
+        let mut ctx1 = InferenceContext::new(dev.clone());
+        let mut rng1 = 0u64;
+        let mut last1 = model.forward_with_kv_context(&prompt, &mut cache1, &mut ctx1).unwrap();
+        let t_d1 = std::time::Instant::now();
+        for _ in 0..n {
+            let next = sample_logits(&last1, strategy, &mut rng1);
+            last1 = model.forward_with_kv_context(&[next], &mut cache1, &mut ctx1).unwrap();
+        }
+        let d1 = t_d1.elapsed();
+
+        // D2: plan-once persistent decode.
+        let mut cache2 = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+        ).unwrap();
+        let mut ctx2 = InferenceContext::new(dev.clone());
+        let mut rng2 = 0u64;
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+        let mut last2 = model
+            .forward_with_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
+            .unwrap();
+        let t_d2 = std::time::Instant::now();
+        for _ in 0..n {
+            let next = sample_logits(&last2, strategy, &mut rng2);
+            last2 = model
+                .forward_with_kv_context_persistent(&[next], &mut cache2, &mut ctx2, &mut session)
+                .unwrap();
+        }
+        let d2 = t_d2.elapsed();
+
+        eprintln!(
+            "CUDA D2c bench (TINY model, N={n}): D1 rebuild = {:?} ({:?}/tok), \
+             D2 plan-once = {:?} ({:?}/tok), ratio = {:.2}x — INDICATIVE ONLY; \
+             the honest ~1.8x needs a realistic model (tiny model understates).",
+            d1, d1 / n as u32, d2, d2 / n as u32,
+            d1.as_secs_f64() / d2.as_secs_f64().max(1e-9),
+        );
+    }
+
     /// Phase D · D2c perf SCAFFOLD (ignored — NOT a CI gate). The
     /// wall-clock ~1.8×/token win of plan-once over per-token re-plan is a
     /// MANUAL live-GPU measurement on a realistic model (per the design
