@@ -710,3 +710,86 @@ lazy-only. GPU-verify (CUDA + Vulkan) after each behaviour-touching PR.
   the live `SystemTopology` generation matches; the executor's chunk-boundary check enforces this
   and surfaces `TopologyChanged` → Q5 handles it.
 ```
+
+---
+
+## D4 — landed (2026-06-30, uncommitted on `b0-3-backend-contract`)
+
+Ported the D1 (input-independent decode graph) + D2b (held session + per-token data re-bind) + D2c
+(generate-loop wiring) transform onto the **second model, `PhiModel`** — which the D1 author left on
+the sliced rebuild path as a mechanical follow-up. Reuses ALL the model-agnostic machinery unchanged
+(`DecodeSession`, `DecodeTokenData`, `DecodeSession::realize_token`,
+`InferenceContext::prebuild_optimized_capturing_as_with_env`,
+`pipelined_bridge::{realize_one_prebuilt_env, upload_host_buffer_to_device, optimize_calls_thread_local}`,
+`LazyTensor::write_slice_dyn`, and the module-level `build_decode_causal_mask`). CPU-verified
+byte-exact; the wall-clock win is the same later live-GPU verify D2c documents.
+
+**How Phi differs from Llama (and how the transform adapted).** Phi's decode block is NOT a copy of
+Llama's, so the transform tracked Phi's actual structure:
+- **Parallel attention + MLP over a single shared pre-block `LayerNorm`** (not RMSNorm), with the
+  parallel residual `x + attn_out + mlp_out`. The D1 transform is orthogonal to this — it only
+  rewrote the KV-write + attention-extent + mask, so the parallel MLP branch and the shared
+  `x_norm` were left exactly as-is.
+- **Partial RoPE** (`rotary_dim < head_dim`; only the first `rotary_dim` head entries rotate, via
+  `partial_rope`). The RoPE tables are sized `[seq, rotary_dim]`, NOT `[seq, head_dim]` — so both
+  the placeholder Const shape (`build_and_realize_first_decode_token`) and the per-token host-byte
+  recompute (`build_token_rope_mask_arcs`) use `cfg.rotary_dim` in `build_rope_tables(...)`. This
+  was the single most error-prone adaptation vs. the Llama helper (which uses `head_dim`).
+- **Bias on every projection** (Q/K/V/dense/fc1/fc2) + an **optional output bias**. The output-bias
+  branch (`weights.output_bias` → `broadcast_add`) is reproduced verbatim in the persistent build so
+  the held logits root is byte-identical to the D1 path's.
+- **No GQA** (`n_kv_heads == n_heads`): the KV cache carries `n_heads`; the KV cache shape and the
+  `write_ranges` axis-1 extent use `cfg.n_heads` (Llama uses `cfg.n_kv_heads`).
+- **QKV packing** (`PhiQkv::Split` vs `Packed`): untouched — it lives inside
+  `apply_layer_with_kv_writes` before the KV-write, and the transform did not move it.
+
+**Phi-D1 transform (`PhiModel::apply_layer_with_kv_writes`).** Made byte-identical across tokens:
+KV write offset `write_slice` (concrete `cached_len`) → `write_slice_dyn` at
+`DynScalar::Sym(cached_len_sym)` on axis 2 (width `seq`); dropped `slice(2, 0, total_seq)` — attend
+the FULL fixed-capacity buffers `[batch, n_heads, max_seq_len, head_dim]`; the per-layer mask Const
+is hoisted to ONE shared `[1,1,seq,max_seq_len]` causal mask built in the forward
+(`build_decode_causal_mask`, `-inf` where `k > cached_len + q`, masking future positions AND the
+zero-init stale tail). `forward_with_kv_context` binds `cached_len_sym = SymId(0)` + a per-pass
+`SymEnv` and realizes via `realize_one_as_with_env`. Numerically identical to the sliced form
+(masked positions contribute 0).
+
+**Phi persistent path.** Added `PhiModel::forward_with_kv_context_persistent(tokens, cache, ctx,
+&mut Option<DecodeSession>)` + the three private helpers (`build_and_realize_first_decode_token`,
+`rebind_and_realize_prebuilt`, `build_token_rope_mask_arcs`, `drop_decode_session`) mirroring the
+LlamaModel siblings: seq!=1 / stale-keys / `TopologyChanged` → drop session + D1 rebuild fallback;
+first seq==1 token → build the held graph with stable re-bindable data Consts + capturing prebuild
+(OPTIMIZE +1); subsequent seq==1 tokens → recompute host bytes (token-ids / partial-RoPE tables at
+`position = cached_len` / shifted mask) + realize via the prebuilt seam (SKIP optimize).
+
+**Generate-loop wiring.** `PhiModel::generate_streaming_with_kv_context` now holds ONE loop-internal
+`Option<DecodeSession>` and routes prefill + every decode step through
+`forward_with_kv_context_persistent` (prefill seq>1 falls back WITHOUT building the session; first
+decode token builds; the rest reuse). `generate_with_kv_context` delegates to the streaming loop, so
+it is on the persistent path too; public signatures unchanged. (No plain-decode spec loop exists for
+PhiModel; there was nothing left on a rebuild path.)
+
+**Born-red tests** (`lazy.rs` `phi_kv_context_tests`, CPU):
+- `phi_decode_matches_non_cached_forward` — Phi-D1 correctness: prefill(3) + decode(1) through the
+  input-independent graph vs. a monolithic prefill over the same 4-token history (PhiModel has no
+  non-cached `forward`, so the monolithic prefill is the reference, matching the existing
+  `phi_kv_context_decode_consistent_with_monolithic_prefill`). Within the existing O(ε) gemm band.
+- `phi_persistent_plan_once_matches_d1` — Phi-D2: prefill + 4 DISTINCT decode tokens; asserts
+  **(a)** `optimize_calls_thread_local()` bumps EXACTLY 1 across all decode tokens, **(b)** each
+  token EXACTLY `==` the Phi rebuild path (bit-exact), **(c)** held graph node `len()` stable from
+  token 2.
+- `phi_generate_loop_persistent_byte_exact_and_plans_once` — end-to-end: an explicit persistent
+  generate loop (N=5 greedy) vs. a separate D1 reference loop; asserts byte-identical token
+  sequence, per-step logits `==`, `optimize` bumps EXACTLY 2 across prefill + N decode; also drives
+  the real `generate_with_kv_context` wrapper.
+
+**Red→green observed.** A temporary probe forcing `forward_with_kv_context_persistent` onto the D1
+rebuild path made `phi_persistent_plan_once_matches_d1` fail (optimize count per-token, not once) and
+`phi_generate_loop_persistent_byte_exact_and_plans_once` fail `optimize EXACTLY twice ... 6 != 12`
+(N=5 → +6 re-optimizes instead of +2) — proving assertion (c) is non-vacuous. Restoring the
+persistent path → green.
+
+**Verified:** `cargo test -p fuel-core --lib` green with the 3 new Phi tests; the Llama D1/D2a/D2b/D2c
+gates + all pre-existing Phi tests (`phi_kv_context_decode_consistent_with_monolithic_prefill`,
+`phi_generate_with_kv_context_greedy_is_deterministic`,
+`phi_forward_with_kv_context_rejects_invalid_cache`) stay green. CPU-only. **Not committed** (per
+prompt).
