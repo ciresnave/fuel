@@ -74,6 +74,20 @@ pub struct OpAttrs {
     pub scalars: Vec<f64>,
     /// Axis attribute for dim-bearing ops (reductions, `Triu`/`Tril` diagonal).
     pub axis: Option<i64>,
+    /// Permute/Transpose: the new axis order, **ABSOLUTE** — a permutation of
+    /// `0..rank` with `out.axis[i] = in.axis[perm[i]]` (matches Fuel
+    /// `Op::Permute` semantics exactly; `Op::Transpose` is the last-two-axes
+    /// special case). Empty ⇒ not a permuting node (a matcher wildcard). See
+    /// `baracuda-layout-fusion-response.md` F1/F2a.
+    pub perm: Vec<u8>,
+    /// BroadcastTo/Reshape: the target **LOGICAL** shape (the op's output
+    /// shape); one field serves both (the [`OpTag`] disambiguates which op).
+    /// Empty ⇒ not a shape-target node (a matcher wildcard).
+    pub target_shape: Vec<i64>,
+    /// Squeeze/Unsqueeze: the affected dim list (0-based, output-rank terms).
+    /// Fuel's single-dim `Op::Squeeze`/`Op::Unsqueeze` emit a one-element list.
+    /// Empty ⇒ not a squeeze/unsqueeze node (a matcher wildcard).
+    pub dims: Vec<u8>,
 }
 
 /// A node of the §3 declarative subgraph grammar. One type, two directions: a

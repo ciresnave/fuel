@@ -112,6 +112,57 @@ fn is_commutative(op: OpTag) -> bool {
     matches!(op, OpTag::Add | OpTag::Mul | OpTag::Maximum | OpTag::Minimum)
 }
 
+/// Project a graph [`Op`]'s load-bearing non-tensor parameters into an
+/// [`OpAttrs`] — the graph-side mirror of the region-side `attrs` a
+/// [`PatternNode::Op`] carries. The graph node stores these as *typed* `Op`
+/// payloads (`Op::Permute(Vec<usize>)`, `Op::AddScalar(f64)`, `Op::SumDim(usize)`,
+/// `Op::BroadcastTo(Shape)`, …); this reads them out into the flat `OpAttrs`
+/// surface so [`attrs_match`] can compare a pattern's `attrs` against them
+/// without the seam-types crate needing to know about the graph `Op` (it stays
+/// dependency-free). Ops with no attr payload project to `OpAttrs::default()`
+/// (all fields empty), which the wildcard rule treats as "no constraint".
+fn op_to_attrs(op: &Op) -> OpAttrs {
+    let mut a = OpAttrs::default();
+    match op {
+        // Scalar-param ops → `scalars` (the region's slot snapshot; F1).
+        Op::AddScalar(v) | Op::MulScalar(v) => a.scalars = vec![*v],
+        Op::Clamp { min, max } => a.scalars = vec![*min, *max],
+        // Dim-bearing ops → `axis`.
+        Op::SumDim(d) | Op::MeanDim(d) => a.axis = Some(*d as i64),
+        Op::Triu { diagonal } | Op::Tril { diagonal } => a.axis = Some(*diagonal),
+        // Permute/Transpose → absolute `perm` (F1/F2a). `Transpose` is the
+        // rank-2 last-two-axes special case; without the input rank on the op
+        // itself it projects to an empty perm (a wildcard) here — a `Permute`
+        // pattern is the discriminating form.
+        Op::Permute(axes) => a.perm = axes.iter().map(|&x| x as u8).collect(),
+        // Shape-target ops → `target_shape` (BroadcastTo + Reshape share it; F1).
+        Op::BroadcastTo(shape) | Op::Reshape(shape) => {
+            a.target_shape = shape.dims().iter().map(|&d| d as i64).collect()
+        }
+        // Squeeze/Unsqueeze → single-element `dims` (F1).
+        Op::Unsqueeze { dim } | Op::Squeeze { dim } => a.dims = vec![*dim as u8],
+        _ => {}
+    }
+    a
+}
+
+/// Compare a pattern node's `attrs` against the graph node's projected attrs
+/// with **wildcard-on-unset** semantics: an *empty/unset* field on the pattern
+/// is a wildcard (matches any graph value); a *set* field must equal the graph
+/// node's value. This is what keeps every existing attr-agnostic pattern (all
+/// authored with `OpAttrs::default()`) matching after attrs become comparable,
+/// while letting a layout/scalar pattern that *sets* a field discriminate.
+///
+/// `Vec` fields are unset ⇔ empty; `axis: Option` is unset ⇔ `None`. A set
+/// pattern field must equal the graph projection exactly (absolute perm, F2a).
+fn attrs_match(pattern: &OpAttrs, node: &OpAttrs) -> bool {
+    (pattern.scalars.is_empty() || pattern.scalars == node.scalars)
+        && (pattern.axis.is_none() || pattern.axis == node.axis)
+        && (pattern.perm.is_empty() || pattern.perm == node.perm)
+        && (pattern.target_shape.is_empty() || pattern.target_shape == node.target_shape)
+        && (pattern.dims.is_empty() || pattern.dims == node.dims)
+}
+
 /// Match a declarative region [`PatternNode`] against the graph rooted at
 /// `root` (the subgraph **sink**, §3a.1). Returns the region's external inputs
 /// in `bind`-index order on a match, or `None`. This is the structural core of
@@ -166,9 +217,16 @@ fn match_node(
             // against this node directly.
             match_node(graph, node_id, then, is_root, consumers, binds)
         }
-        PatternNode::Op { op, operands, .. } => {
+        PatternNode::Op { op, operands, attrs } => {
             let node = graph.node(node_id);
             if op_to_tag(&node.op) != Some(*op) {
+                return None;
+            }
+            // Attr guard (F1): a SET pattern attr must equal the graph node's
+            // projected value; an empty/unset pattern attr is a wildcard, so
+            // existing attr-agnostic patterns (all `OpAttrs::default()`) keep
+            // matching. Op-tag is checked first, so the projection is meaningful.
+            if !attrs_match(attrs, &op_to_attrs(&node.op)) {
                 return None;
             }
             // Interior nodes (not the root, not a bind leaf) must be sole-consumer.
@@ -327,6 +385,52 @@ mod tests {
         assert_eq!(
             match_region(&g, r1, &relu_add_pattern(), &|n| *counts.get(&n).unwrap_or(&0)),
             None
+        );
+    }
+
+    // ---- attr-comparison (F1: match_node compares OpAttrs) --------------------
+
+    /// A single-`Permute` region binding one input, with the given absolute
+    /// perm on `attrs.perm`. An empty `perm` (`&[]`) is the attr-agnostic
+    /// (wildcard) pattern — the shape every existing authored pattern has.
+    fn permute_pattern(perm: &[u8]) -> PatternNode {
+        PatternNode::Op {
+            op: OpTag::Permute,
+            attrs: OpAttrs { perm: perm.to_vec(), ..OpAttrs::default() },
+            operands: vec![PatternNode::Bind { index: 0 }],
+        }
+    }
+
+    #[test]
+    fn match_node_discriminates_on_perm_attr() {
+        // A graph node that permutes with perm = [1, 0].
+        let mut g = Graph::new();
+        let s = fuel_core_types::Shape::from_dims(&[2, 3]);
+        let x = leaf(&mut g, &s);
+        let p = op1(&mut g, Op::Permute(vec![1, 0]), x, &fuel_core_types::Shape::from_dims(&[3, 2]));
+        let counts = consumer_counts(&g);
+        let cf = |n: NodeId| *counts.get(&n).unwrap_or(&0);
+
+        // The matching perm binds; the non-matching perm is rejected.
+        assert_eq!(
+            match_region(&g, p, &permute_pattern(&[1, 0]), &cf),
+            Some(vec![x]),
+            "perm=[1,0] pattern must match a [1,0] graph node",
+        );
+        assert_eq!(
+            match_region(&g, p, &permute_pattern(&[0, 2, 1]), &cf),
+            None,
+            "perm=[0,2,1] pattern must NOT match a [1,0] graph node (attr discrimination)",
+        );
+
+        // No-regression guard: an empty-attr (wildcard) pattern — the shape of
+        // every existing authored pattern — still matches regardless of the
+        // graph node's real perm. This is what keeps attr-agnostic patterns
+        // matching after attrs become comparable.
+        assert_eq!(
+            match_region(&g, p, &permute_pattern(&[]), &cf),
+            Some(vec![x]),
+            "empty-perm (wildcard) pattern must still match (no regression)",
         );
     }
 }
