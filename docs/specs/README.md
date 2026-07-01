@@ -1,10 +1,23 @@
 # Fuel specs — kernel boundary (FDX + FKC)
 
-This directory holds the two design specs for Fuel's kernel boundary and the digest they were
-designed against. The boundary has two orthogonal axes — the **tensor** handed to a kernel and
-the kernel's **advertisement** — and one spec owns each.
+This directory holds the design specs for Fuel's kernel boundary, the cross-project contract that
+ratifies them across the seam, and the digest they were designed against. The boundary has two
+orthogonal axes — the **tensor** handed to a kernel and the kernel's **advertisement** — and one spec
+owns each; the interop contract pins *who implements what, at which version*.
 
-## The specs
+## The interop contract (the cross-project ratification surface)
+
+- **[`kernel-seam-interop.md`](kernel-seam-interop.md) — Kernel-Seam Interop Contract (Profile v1).**
+  The single, ratifiable description of how the two sides of the kernel seam communicate: the party
+  subsets (Fuel/Baracuda full; Vulkane FDX-BDA-only; open for future ecosystems), the **connect-time
+  version handshake** (a frozen envelope + highest-mutually-supported-profile negotiation + capability
+  flags, so future versions negotiate without a flag-day), the conformance matrix, the **JIT-on-request**
+  contract, and the sync reconciliation of what each party last accepted. FDX and FKC below are its
+  **normative annexes** — it references them, never re-states them. Circulation cover notes (drafts) live
+  at [`../outreach/baracuda-seam-v1-roundtrip.md`](../outreach/baracuda-seam-v1-roundtrip.md) and
+  [`../outreach/vulkane-seam-v1-confirm.md`](../outreach/vulkane-seam-v1-confirm.md).
+
+## The specs (FDX + FKC — the normative annexes)
 
 - **[`dlpack-extension.md`](dlpack-extension.md) — FDX (Fuel DLPack Extension).** The
   **tensor / storage axis.** A versioned, *optional sidecar* extension to standard DLPack that
