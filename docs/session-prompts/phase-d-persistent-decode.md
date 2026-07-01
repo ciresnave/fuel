@@ -391,6 +391,23 @@ D3 = concurrent sessions keyed by `(NodeId, SessionId)`. The D2 API anticipates 
 - **Do not** key anything on global mutable state in D2; everything threads through
   `DecodeSession` + `InferenceContext` so D3 is additive.
 
+### D3 — landed (2026-06-30, the concurrency capability PROVEN)
+
+The `(NodeId, SessionId)` keyed-storage-map the spec §9 `[9]` envisioned is **superseded** by D2's
+per-session `DecodeSession` isolation: each generation owns its held graph + `base_cache` + KV, so
+concurrent decodes are isolated with no shared mutable session state. Proven by
+`lazy::generate_tests::generate_persistent_is_concurrency_isolated` — 8 threads each run a full
+plan-once greedy generation from the SAME shared `&model` (LlamaModel is `Sync`; each thread builds its
+own `KvCache` / `InferenceContext` / `DecodeSession` internally), and every thread's output is
+byte-identical to the single-threaded reference. Only the read-only model weights + the kernel-binding
+registry (read-locked during optimize) are shared.
+
+**Deferred (consumerless):** SHARING one optimized graph across same-model concurrent sessions (1
+build+optimize + N session-keyed caches instead of N builds) is a memory / build-time refinement for a
+multi-session server. `realize_one_prebuilt_env` already takes the `StorageCache` explicitly, so it
+slots in without a bridge change — but fuel has no multi-session-server consumer yet, so it's queued
+behind one (per the "sequence behind consumers" norm).
+
 ---
 
 ## 9. PR breakdown (each born-red first)
