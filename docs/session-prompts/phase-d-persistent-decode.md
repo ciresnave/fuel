@@ -565,6 +565,74 @@ smaller fraction of CPU compute; correctness + the optimize-skip COUNT are the C
 - The existing `forward_with_kv_context_decode_matches_non_cached_forward` must STILL pass
   (regression guard) — it exercises the D1 path, which D2 leaves intact.
 
+#### D2c — landed (2026-06-30, uncommitted on `b0-3-backend-contract`)
+
+**Wiring (`fuel-core/src/lazy.rs`, `impl LlamaModel`).** The plain-decode generate loop
+`generate_streaming_with_kv_context` (`~lazy.rs:6251`) now holds ONE loop-internal
+`let mut session: Option<DecodeSession> = None;` across the whole generation and routes BOTH the
+prefill AND every per-token decode step through
+`forward_with_kv_context_persistent(&[..], &mut cache, &mut ctx, &mut session)` (was bare
+`forward_with_kv_context`). `generate_with_kv_context` (`~lazy.rs:6303`) is a thin wrapper over the
+streaming loop, so it is now on the persistent path too — no separate edit. **Public signatures
+unchanged** (the session is loop-internal state; callers see the same API).
+
+**Prefill handling — routed through persistent, behaviour identical.** The prefill call
+(`seq>1`) goes through `forward_with_kv_context_persistent`, which for any non-`seq==1` step
+immediately drops the session (a no-op when it's `None`) and delegates to `forward_with_kv_context`
+— i.e. the D1 rebuild path, byte-for-byte the pre-D2c prefill, and it does NOT build the session.
+So the first *decode* token (the first `seq==1` call) is what builds the held graph (optimize once)
+and every subsequent decode token reuses it (skips optimize). Chose "route prefill through
+persistent" over "keep prefill on the bare entry" because it is the cleaner single call site (one
+`forward_with_kv_context_persistent` for the whole loop) and the internal fallback makes it provably
+identical to the bare prefill.
+
+**Left on the rebuild path (unchanged, by design §7):**
+- `generate_streaming_spec_with_kv_context` (`~lazy.rs:6372`) — spec-decode's verification step uses
+  `forward_with_kv_context_all_positions` (multi-token, `seq>1`); the held graph is shape-keyed to
+  `seq==1`, so this stays on `forward_with_kv_context`. (Its per-token draft/target steps also stay
+  on the bare entry — spec decode threads two models + truncation, out of D2c scope.)
+- `PhiModel::generate_streaming_with_kv_context` / `generate_with_kv_context` (`~lazy.rs:7206/7257`)
+  — the second model is D4; left on the rebuild path.
+
+**Born-red test** (`lazy.rs` `generate_tests`, CPU):
+`generate_loop_persistent_byte_exact_and_plans_once`. Drives an explicit persistent generate loop
+(mirroring the wired production loop: hold `session`, `forward_with_kv_context_persistent` for
+prefill + every decode step) over a 3-token prompt + **N=5 greedy decode tokens**, against a
+SEPARATE D1 reference loop (bare `forward_with_kv_context` + the identical greedy `sample_logits`)
+captured FIRST in its own pass (so D1's per-token re-plans don't pollute the measured optimize
+window). Asserts: **(a)** the generated token sequence is **byte-identical** over N tokens — greedy
+argmax diverges on ANY per-token logit drift, so an exact N-token match is a strong end-to-end
+guard; **(b)** each step's logits are **exactly `==`** the D1 cached path (bit-exact, NOT epsilon);
+**(c)** `optimize_calls_thread_local()` bumps **exactly 2** across prefill + N decode (1 prefill
+fallback + 1 decode-session build) regardless of N — the reuse tokens skip optimize. It also drives
+the REAL `generate_with_kv_context` wrapper and asserts its token sequence matches the reference
+(confirms the wiring, not just the entry). Asserts the session is `None` after prefill and `Some`
+after the loop. **Red→green observed:** a temporary probe routing the decode step through
+`forward_with_kv_context` (D1) failed (c) `6 != 2` (1 prefill + 5 decode re-optimizes) — proving (c)
+is not vacuous and the optimize-skip is exactly what the wiring buys; restoring the persistent
+decode call → green.
+
+**Regression guards confirmed green** (in the full suite): `generate_greedy_appends_tokens`,
+`generate_with_kv_context_matches_legacy_generate`,
+`generate_streaming_with_kv_context_fires_callback_per_token` / `_stops_on_eos`,
+`forward_with_kv_context_decode_matches_non_cached_forward` (the D1 gate),
+`forward_with_kv_context_persistent_plan_once_matches_d1` (D2b),
+`forward_with_kv_context_persistent_invalidates_on_non_decode_step` (D2b), the D2a prebuilt-seam
+test, and the spec-decode tests (untouched path).
+
+**Perf scaffold (optional, delivered `#[ignore]`'d, NOT gated).**
+`generate_loop_persistent_bench_scaffold` shows the A/B shape (D1 rebuild loop vs. D2 persistent
+loop over N=64 seq==1 tokens on the tiny CPU model) and prints per-token wall-clock + ratio, with NO
+timing assertion. The real ~1.8×/token measurement is a **manual live-GPU run on a realistic
+model** (CPU understates the win — planning is a smaller fraction of CPU compute); the scaffold's
+A/B shape is the template to port to a live-GPU harness (N≥64, realistic model, one live suite at a
+time per CLAUDE.md).
+
+**Verified:** `cargo test -p fuel-core --lib` = **1287 passed / 0 failed / 11 ignored** (was 1286
+passed / 10 ignored at the D2b HEAD `ca518525`; +1 D2c born-red test, +1 D2c ignored bench
+scaffold). CPU-only; the wall-clock win is a later GPU verify (the ignored CPU scaffold observed
+≈1.87×/tok on the tiny model — indicative only). **Not committed** (per prompt).
+
 ### D2d (optional follow-up) — skip `insert_safety_copies` on the prebuilt path
 - Only if the D2b/c profile shows `insert_safety_copies` is a measurable per-token cost on the held
   graph. Add an `OrderSource`/`realize_inner` opt-out asserting the graph is already safety-copied.
