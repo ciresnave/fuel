@@ -308,11 +308,47 @@ pub static CPU_REDUCE_TO_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("reduce_max_to_backward", "f16",  reduce_max_to_backward_f16_cpu_wrapper),
 ];
 
+/// The CPU last-dim NORM (forward) family's `symbol → production wrapper` map
+/// (Softmax / LogSoftmax / RmsNorm / LayerNorm last-dim × 4 dtypes = 16). Contract:
+/// `docs/kernel-contracts/cpu/norm.fkc.md`. Each per-(op, dtype) section
+/// (`## softmax_last_dim_f32`, `## rms_norm_last_dim_f32`, …) declares a SPECIFIC
+/// single-dtype `entry_point` (`…::softmax_last_dim_f32`), so none of them fan —
+/// the importer resolves that symbol AS-IS. The binding key is `[T, T]` (a SINGLE
+/// input + `passthrough(input)` output; the RMS/LayerNorm kernels carry NO affine
+/// gamma/beta operand — they are the bare normalization — and `outer_count` /
+/// `last_dim` / `eps` ride in `OpParams::{SoftmaxLastDim,LogSoftmaxLastDim,
+/// NormLastDim}`, NOT the dtype-list), identical to the deleted `&unary(t)` regs.
+/// The `log_softmax` wrapper fn-names (`log_softmax_<dt>_cpu_wrapper`) differ from
+/// their `log_softmax_last_dim_<dt>` symbol — the `ep!` symbol is built from the
+/// `$op`/`$dt` literals, so the mapping still binds the correct contract symbol
+/// (mirrors the clamp/powi/where fn-vs-symbol cases). This contract has NO `##`
+/// chassis umbrella section, so there is no `registrable: false` describe-only
+/// entry to omit; the BACKWARD forms live in a separate norm-backward contract.
+pub static CPU_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    ep!("softmax_last_dim", "f32",  softmax_last_dim_f32_cpu_wrapper),
+    ep!("softmax_last_dim", "f64",  softmax_last_dim_f64_cpu_wrapper),
+    ep!("softmax_last_dim", "bf16", softmax_last_dim_bf16_cpu_wrapper),
+    ep!("softmax_last_dim", "f16",  softmax_last_dim_f16_cpu_wrapper),
+    ep!("log_softmax_last_dim", "f32",  log_softmax_f32_cpu_wrapper),
+    ep!("log_softmax_last_dim", "f64",  log_softmax_f64_cpu_wrapper),
+    ep!("log_softmax_last_dim", "bf16", log_softmax_bf16_cpu_wrapper),
+    ep!("log_softmax_last_dim", "f16",  log_softmax_f16_cpu_wrapper),
+    ep!("rms_norm_last_dim", "f32",  rms_norm_last_dim_f32_cpu_wrapper),
+    ep!("rms_norm_last_dim", "f64",  rms_norm_last_dim_f64_cpu_wrapper),
+    ep!("rms_norm_last_dim", "bf16", rms_norm_last_dim_bf16_cpu_wrapper),
+    ep!("rms_norm_last_dim", "f16",  rms_norm_last_dim_f16_cpu_wrapper),
+    ep!("layer_norm_last_dim", "f32",  layer_norm_last_dim_f32_cpu_wrapper),
+    ep!("layer_norm_last_dim", "f64",  layer_norm_last_dim_f64_cpu_wrapper),
+    ep!("layer_norm_last_dim", "bf16", layer_norm_last_dim_bf16_cpu_wrapper),
+    ep!("layer_norm_last_dim", "f16",  layer_norm_last_dim_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
 /// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
 /// [`CPU_COMPARE_ENTRY_POINTS`], [`CPU_WHERE_ENTRY_POINTS`],
-/// [`CPU_REDUCE_ENTRY_POINTS`], and [`CPU_REDUCE_TO_ENTRY_POINTS`].
+/// [`CPU_REDUCE_ENTRY_POINTS`], [`CPU_REDUCE_TO_ENTRY_POINTS`], and
+/// [`CPU_NORM_ENTRY_POINTS`].
 /// Unresolved → `None`, which the importer turns into a typed
 /// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;
@@ -327,13 +363,14 @@ impl LinkRegistry for CpuLinkRegistry {
             .chain(CPU_WHERE_ENTRY_POINTS.iter())
             .chain(CPU_REDUCE_ENTRY_POINTS.iter())
             .chain(CPU_REDUCE_TO_ENTRY_POINTS.iter())
+            .chain(CPU_NORM_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
 
     fn resolve_fused(&self, _symbol: &str) -> Option<KernelRef> {
         // No fused-op contracts in the elementwise-binary, affine/clamp/powi,
-        // elementwise-unary, compare/where, reduce, or reduce-to corpora.
+        // elementwise-unary, compare/where, reduce, reduce-to, or norm corpora.
         None
     }
 }
