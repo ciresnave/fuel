@@ -2381,6 +2381,11 @@ mod tests {
     ) -> crate::fused::CostEstimate {
         crate::fused::CostEstimate { flops: 10, bytes_moved: 0, kernel_overhead_ns: 0 }
     }
+    fn cost_500(
+        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+    ) -> crate::fused::CostEstimate {
+        crate::fused::CostEstimate { flops: 500, bytes_moved: 0, kernel_overhead_ns: 0 }
+    }
     fn cost_10_000_000(
         _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
     ) -> crate::fused::CostEstimate {
@@ -2463,6 +2468,160 @@ mod tests {
         assert!(
             set.alternatives().iter().all(|c| c.device == DeviceLocation::Cpu),
             "off-device siblings pruned after rank",
+        );
+    }
+
+    /// FKC cost unification Part A — born-red for the "uncapped GPU
+    /// prices at ZERO" bug.
+    ///
+    /// The production `capabilities_for` closure is
+    /// `topology.capabilities(backend)`, which is backed by the
+    /// `CapabilityRegistry`. Before Part A only the CPU auto-registered
+    /// `BackendCapabilities`; a GPU backend registered its kernels into
+    /// the binding table but NO caps. `compute_static_costs`
+    /// (`ranker/cost.rs`) then hits `let Some(caps) =
+    /// capabilities_for(backend) else { continue }` and SKIPS the GPU
+    /// candidate's cost fn, leaving `static_cost` at the default ZERO.
+    /// A CPU-pinned realize with a GPU fallback candidate then sees the
+    /// GPU price at `0 + inbound_transfer` and win the priced relax —
+    /// spilling onto an unseeded GPU (the observed `Op::Alloc/Copy`
+    /// "no CUDA storage in input cache" crash).
+    ///
+    /// This test models both halves against the real placement DP:
+    ///
+    /// - **Bug half** (`caps_fn` returns `None` for CUDA, matching the
+    ///   pre-Part-A registry): the CUDA fallback candidate is skipped,
+    ///   prices at `0 + transfer(200) = 200 < CPU 600`, and wins.
+    /// - **Fix half** (`caps_fn` returns the caps DERIVED FROM THE
+    ///   BINDING TABLE by `dispatch::derive_backend_caps`, exactly what
+    ///   Part A registers into the global registry): the CUDA candidate
+    ///   is now costed via its flops fn — `500 + transfer(200) = 700 >
+    ///   CPU 600` — so CPU wins and no spurious spill happens.
+    ///
+    /// The kernel gap (CUDA 500 < CPU 600) is deliberately real: the
+    /// GPU is a *cheaper kernel*, so the only thing that makes CPU win
+    /// is that the GPU is now HONESTLY priced (flops + transfer) rather
+    /// than free. Same fixture as `relaxed_plan_with_costs` but with an
+    /// explicit per-backend `caps_fn` so we can toggle the GPU's caps.
+    #[test]
+    fn compile_plan_uncapped_gpu_no_longer_wins_by_being_free() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+
+        // A binding table exactly like production: CPU + CUDA kernels
+        // for Add f32. The CUDA kernel is CHEAPER (500 < 600) — a real
+        // kernel-cost advantage.
+        fn build_table() -> KernelBindingTable {
+            let mut table = KernelBindingTable::new();
+            table.register_full(
+                OpKind::AddElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cpu,
+                noop_kernel,
+                KernelCaps::empty(),
+                PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+                cost_600,
+            );
+            table.register_full(
+                OpKind::AddElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cuda,
+                noop_kernel_b,
+                KernelCaps::empty(),
+                PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+                cost_500,
+            );
+            table
+        }
+
+        // Run the CPU-pinned Add + CUDA-fallback relax; `gpu_caps`
+        // controls whether `capabilities_for(Cuda)` returns Some (the
+        // fix) or None (the pre-Part-A registry bug). All the borrowed
+        // `PlanOptions` fields — including the caps closure — are LOCAL
+        // to this function so `PlanOptions`'s single lifetime unifies to
+        // this body. The caps values are `'static` (leaked) so the
+        // closure can be built here from the caller's choice.
+        fn winner_device_under(
+            table: &KernelBindingTable,
+            cpu_caps_val: &'static BackendCapabilities,
+            gpu_caps: Option<&'static BackendCapabilities>,
+            cuda0: DeviceLocation,
+        ) -> DeviceLocation {
+            let (g, add_id) = build_add_graph();
+            let order = topo_order(&g, add_id);
+            let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
+                if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![] }
+            };
+            let fallback_fn = move |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+                vec![(BackendId::Cuda, cuda0)]
+            };
+            // Both consts CPU-resident (a CPU realize) — the crash
+            // scenario: the GPU is UNSEEDED, so any spill onto it is a
+            // correctness bug downstream.
+            let residency_fn =
+                |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
+            // 100 ns per input crossing → 200 ns inbound transfer for
+            // the two-input Add on the CUDA candidate.
+            let est = FlatEstimator { latency_ns: 100 };
+            let caps_fn = move |b: BackendId| -> Option<&BackendCapabilities> {
+                match b {
+                    BackendId::Cpu => Some(cpu_caps_val),
+                    BackendId::Cuda => gpu_caps,
+                    _ => None,
+                }
+            };
+            let opts = PlanOptions::new()
+                .with_pinned_device(DeviceLocation::Cpu)
+                .with_placements_for_device(&placements_fn)
+                .with_fallback_placements_for(&fallback_fn)
+                .with_capabilities_for(&caps_fn)
+                .with_transfer_estimator(&est)
+                .with_input_residency(&residency_fn);
+            let plan = compile_plan(&g, &order, table, &opts).expect("compile");
+            plan.alternatives(add_id).unwrap().winner().unwrap().device
+        }
+
+        let table = build_table();
+        // `'static` caps values so the caps closure built inside the
+        // helper can capture them without threading a lifetime through
+        // `PlanOptions`.
+        let cpu_caps_val: &'static BackendCapabilities = Box::leak(Box::new(cpu_caps()));
+
+        // --- Bug half: the pre-Part-A registry returns None for CUDA. ---
+        // (Kept as an inner assertion, sharing one fixture with the fix
+        // half, so the red→green contrast is a single self-checking test.)
+        let winner_bug = winner_device_under(&table, cpu_caps_val, None, cuda0);
+        assert_eq!(
+            winner_bug, cuda0,
+            "PRE-FIX: an uncapped CUDA candidate is skipped by \
+             compute_static_costs, prices at 0 + 200 transfer, and \
+             spuriously beats the CPU's honest 600 — this IS the bug",
+        );
+
+        // --- Fix half: Part A derives CUDA caps from the binding table
+        // and registers them, so capabilities_for(Cuda) returns Some. ---
+        let cuda_caps_val: &'static BackendCapabilities = Box::leak(Box::new(
+            crate::dispatch::derive_backend_caps(BackendId::Cuda, cuda0, &table),
+        ));
+        // The derivation must advertise the CUDA-registered (op, dtype)
+        // pair so the cost fn actually runs.
+        assert!(
+            cuda_caps_val
+                .op_dtype_support
+                .contains(&(OpKind::AddElementwise, DType::F32)),
+            "derive_backend_caps must mirror the binding table's \
+             registered (op, output-dtype) pairs for the backend",
+        );
+        assert_eq!(cuda_caps_val.backend_id, BackendId::Cuda);
+        assert_eq!(cuda_caps_val.device_location, cuda0);
+
+        let winner_fixed =
+            winner_device_under(&table, cpu_caps_val, Some(cuda_caps_val), cuda0);
+        assert_eq!(
+            winner_fixed, DeviceLocation::Cpu,
+            "POST-FIX: with GPU caps registered the CUDA candidate is \
+             costed honestly (500 flops + 200 transfer = 700 > CPU 600), \
+             so the CPU-pinned realize stays on CPU — no spill onto the \
+             unseeded GPU",
         );
     }
 

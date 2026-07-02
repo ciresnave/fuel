@@ -5378,6 +5378,138 @@ fn default_cpu_caps() -> BackendCapabilities {
     }
 }
 
+/// Default storage substrate for a backend, matching the storage type
+/// each backend actually produces. Mirrors `topology::default_substrate_for`
+/// (kept in lockstep; that one is private to `topology.rs`).
+fn substrate_for_backend(backend: BackendId) -> SubstrateClass {
+    match backend {
+        BackendId::Cpu => SubstrateClass::HostBytes,
+        BackendId::Cuda => SubstrateClass::CudaUntyped,
+        BackendId::Vulkan => SubstrateClass::VulkanBuffer,
+        BackendId::Metal => SubstrateClass::MetalBuffer,
+        // `BackendId` is `#[non_exhaustive]`; a downstream variant
+        // defaults to host bytes until it declares its own substrate.
+        _ => SubstrateClass::HostBytes,
+    }
+}
+
+/// FKC cost unification — Part A.
+///
+/// Derive a [`BackendCapabilities`] for `backend` (at `device_location`)
+/// from the kernel binding `table`. This is the general (any-backend)
+/// analogue of [`default_cpu_caps`]: instead of a hand-maintained list,
+/// it reads the backend's REGISTERED KERNELS out of the binding table
+/// and advertises exactly the `(OpKind, DType)` pairs those kernels
+/// cover.
+///
+/// The `(op, dtype)` derivation mirrors
+/// [`fuel_core::topology::SystemTopology`]'s `binding_op_coverage`: each
+/// binding key carries per-operand dtypes (inputs then outputs); the
+/// classic `(op, dtype)` shape takes the OUTPUT dtype — the last entry
+/// in the key's dtype list. Single-dtype keys (most elementwise ops)
+/// are unambiguous; multi-dtype keys (e.g. QMatMul `[F32, U32, F32]`)
+/// still produce the consumer-relevant output-dtype entry.
+///
+/// **Why this fixes the placement cost model.** The placement cost
+/// composer (`ranker::cost::compute_static_costs`) skips any candidate
+/// whose backend has no `BackendCapabilities` in the registry —
+/// leaving its `static_cost` at the default ZERO, so an uncapped GPU
+/// candidate prices as free and can spuriously out-rank a real CPU
+/// cost. Registering the caps this function derives makes
+/// `capabilities_for(gpu)` return `Some`, so the GPU candidate's
+/// FLOP/byte cost fn actually runs (see also
+/// [`KernelBindingTable::fill_unset_cost_for_backend`], which ensures
+/// those kernels carry a non-`unknown_cost` cost fn).
+///
+/// Alignment / granularity use conservative device defaults (256-byte
+/// alignment for GPU buffers — covers CUDA's 256B and Vulkan's typical
+/// storage-buffer alignment; byte-addressable). Transfer paths
+/// advertise the universal `HostStaging` link back to the CPU so the
+/// `TransferMatrix` can price GPU↔CPU crossings; richer paths (P2P,
+/// shared memory) are a future refinement the backend can declare
+/// explicitly. Never panics.
+pub fn derive_backend_caps(
+    backend: BackendId,
+    device_location: DeviceLocation,
+    table: &KernelBindingTable,
+) -> BackendCapabilities {
+    use std::collections::HashSet;
+    let mut op_dtype_support: HashSet<(OpKind, DType)> = HashSet::new();
+    for (op, dtypes, this_backend) in table.iter_keys() {
+        if this_backend != backend {
+            continue;
+        }
+        if let Some(&output_dt) = dtypes.last() {
+            op_dtype_support.insert((op, output_dt));
+        }
+    }
+    // GPU substrate + a universal host-staging path back to CPU so the
+    // transfer matrix can price GPU↔CPU. CPU keeps its SameDevice self
+    // edge (this function is general, but CPU has its own hand-tuned
+    // `default_cpu_caps`; the CPU branch here is just defensive).
+    let transfer_paths = if device_location == DeviceLocation::Cpu {
+        vec![(DeviceLocation::Cpu, TransferPath::SameDevice)]
+    } else {
+        vec![(DeviceLocation::Cpu, TransferPath::HostStaging)]
+    };
+    let (required_alignment, access_granularity_bits) = match backend {
+        BackendId::Cpu => (64, 8),
+        // GPU buffer allocations: 256-byte alignment is a safe
+        // superset (CUDA cudaMalloc is 256B-aligned; Vulkan storage
+        // buffers meet this). Byte-addressable.
+        _ => (256, 8),
+    };
+    BackendCapabilities {
+        backend_id: backend,
+        device_location,
+        op_dtype_support,
+        required_alignment,
+        access_granularity_bits,
+        transfer_paths,
+        storage_substrate: substrate_for_backend(backend),
+    }
+}
+
+/// FKC cost unification — Part A.
+///
+/// Register the [`BackendCapabilities`] for every non-CPU backend that
+/// has kernels in `table` into the process-wide [`CapabilityRegistry`],
+/// deriving each backend's caps from its registered kernels via
+/// [`derive_backend_caps`]. Called once, at the same init boundary that
+/// populates the global binding table (see [`global_bindings`]), AFTER
+/// the kernels are registered — so the derivation sees the full kernel
+/// set.
+///
+/// This is the registration half of Part A: it closes the gap where
+/// only the CPU auto-registered caps, leaving CUDA/Vulkan candidates
+/// priced at zero in the placement DP. CPU is skipped here because it
+/// already auto-registers its hand-tuned [`default_cpu_caps`] via
+/// [`global_registry`].
+///
+/// Idempotency: the registry appends and lookups pick the first match,
+/// so this should run exactly once per backend. The single init
+/// boundary in [`global_bindings`] guarantees that.
+fn register_derived_gpu_caps(table: &KernelBindingTable) {
+    use std::collections::HashSet;
+    // Which non-CPU backends have at least one kernel registered?
+    let gpu_backends: HashSet<BackendId> = table
+        .iter_keys()
+        .map(|(_, _, backend)| backend)
+        .filter(|b| *b != BackendId::Cpu)
+        .collect();
+    for backend in gpu_backends {
+        let device_location = match backend {
+            BackendId::Cuda => DeviceLocation::Cuda { gpu_id: 0 },
+            BackendId::Vulkan => DeviceLocation::Vulkan { gpu_id: 0 },
+            BackendId::Metal => DeviceLocation::Metal { gpu_id: 0 },
+            // Non-exhaustive: an unknown backend with kernels still
+            // gets caps derived; default its device to CPU (defensive).
+            _ => DeviceLocation::Cpu,
+        };
+        register_backend_capabilities(derive_backend_caps(backend, device_location, table));
+    }
+}
+
 /// Read-lock the process-wide capability registry. CPU is auto-
 /// registered on first access; subsequent backends register
 /// themselves via [`register_backend_capabilities`].
@@ -5440,11 +5572,36 @@ fn register_optional_backends(table: &mut KernelBindingTable) {
     {
         register_cuda_kernels(table);
         crate::baracuda_dispatch::register_baracuda_cuda_kernels(table);
+        // FKC cost unification — Part A. The CUDA registrations above
+        // use `table.register(...)`, defaulting cost to `unknown_cost`
+        // (→ zero cost). Bulk-fill the OpKind-family FLOP/byte cost fn
+        // for every CUDA entry still on the sentinel — the same pass
+        // Vulkan already runs at the end of `register_vulkan_kernels`,
+        // and the same `default_cost_for_op_kind` families the CPU fill
+        // uses (op FLOPs/bytes are backend-agnostic; per-backend
+        // throughput is a Layer-2 / Part-C refinement). Without this,
+        // even a *capped* CUDA candidate would price at zero.
+        table.fill_unset_cost_for_backend(
+            BackendId::Cuda,
+            crate::cost::default_cost_for_op_kind,
+        );
     }
     #[cfg(feature = "vulkan")]
     {
         crate::vulkan_dispatch::register_vulkan_kernels(table);
     }
+
+    // FKC cost unification — Part A. Now that every compiled-in
+    // backend's kernels are registered (and their cost fns filled),
+    // derive + register the `BackendCapabilities` for every non-CPU
+    // backend that has kernels, so the placement cost model's
+    // `capabilities_for(gpu)` returns `Some` and the GPU candidate's
+    // cost fn actually runs (instead of being skipped → priced at
+    // zero). CPU already auto-registers its hand-tuned caps via
+    // `global_registry`. Touches the separate `GLOBAL_REGISTRY` lock,
+    // not this table's — no re-entrancy.
+    register_derived_gpu_caps(table);
+
     let _ = table;
 }
 
@@ -7088,5 +7245,70 @@ mod tests {
         inflight_dec(vulkan);
         assert_eq!(inflight_count(cuda), base_c);
         assert_eq!(inflight_count(vulkan), base_v);
+    }
+
+    /// FKC cost unification — Part A. `derive_backend_caps` reads a
+    /// backend's kernels out of the binding table and advertises the
+    /// `(OpKind, OUTPUT-dtype)` pairs those kernels cover — the general
+    /// analogue of the hand-maintained `default_cpu_caps`. Verifies:
+    /// (1) only the requested backend's keys are picked; (2) the OUTPUT
+    /// dtype (last operand) is what's advertised for multi-dtype keys;
+    /// (3) substrate/device match the backend. Feature-independent: it
+    /// builds a fresh table with synthetic wrappers.
+    #[test]
+    fn derive_backend_caps_mirrors_binding_table_output_dtypes() {
+        fn stub(
+            _i: &[Arc<RwLock<Storage>>],
+            _o: &mut [Arc<RwLock<Storage>>],
+            _l: &[Layout],
+            _p: &OpParams,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn stub_b(
+            _i: &[Arc<RwLock<Storage>>],
+            _o: &mut [Arc<RwLock<Storage>>],
+            _l: &[Layout],
+            _p: &OpParams,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn stub_c(
+            _i: &[Arc<RwLock<Storage>>],
+            _o: &mut [Arc<RwLock<Storage>>],
+            _l: &[Layout],
+            _p: &OpParams,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        let mut table = KernelBindingTable::new();
+        // A CPU key that MUST NOT bleed into the Vulkan derivation.
+        table.register(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu, stub);
+        // Vulkan: an elementwise key (single output dtype) ...
+        table.register(OpKind::MulElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Vulkan, stub_b);
+        // ... and a MIXED-dtype key: inputs F16/F16, OUTPUT F32. The
+        // derived pair must key on the OUTPUT dtype (F32), not an input.
+        table.register(OpKind::MatMul, &[DType::F16, DType::F16, DType::F32], BackendId::Vulkan, stub_c);
+
+        let vk0 = DeviceLocation::Vulkan { gpu_id: 0 };
+        let caps = derive_backend_caps(BackendId::Vulkan, vk0, &table);
+
+        assert_eq!(caps.backend_id, BackendId::Vulkan);
+        assert_eq!(caps.device_location, vk0);
+        assert_eq!(caps.storage_substrate, SubstrateClass::VulkanBuffer);
+        // Elementwise output dtype advertised.
+        assert!(caps.op_dtype_support.contains(&(OpKind::MulElementwise, DType::F32)));
+        // Multi-dtype key advertises the OUTPUT dtype (F32), not F16.
+        assert!(caps.op_dtype_support.contains(&(OpKind::MatMul, DType::F32)));
+        assert!(!caps.op_dtype_support.contains(&(OpKind::MatMul, DType::F16)));
+        // The CPU key is NOT attributed to Vulkan.
+        assert!(!caps.op_dtype_support.contains(&(OpKind::AddElementwise, DType::F32)));
+        // A universal host-staging path back to CPU is advertised so the
+        // transfer matrix can price GPU↔CPU crossings.
+        assert!(caps
+            .transfer_paths
+            .iter()
+            .any(|&(dst, path)| dst == DeviceLocation::Cpu && path == TransferPath::HostStaging));
     }
 }
