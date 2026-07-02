@@ -62,22 +62,57 @@ pub static CPU_BINARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("rem", "bf16", rem_elementwise_bf16_cpu_wrapper),
 ];
 
+/// The CPU out-of-place scalar-param family's `symbol → production wrapper`
+/// map (affine / clamp / powi × 4 dtypes + powi_backward × 4 = 16 kernels).
+/// Contract: `docs/kernel-contracts/cpu/affine-clamp-powi.fkc.md`. The scalar
+/// params (affine mul/add, clamp min/max, powi exp) ride in `OpParams`, NOT the
+/// dtype-list, so the binding keys stay `[t, t]` for the single-input forward
+/// ops and `[t, t, t]` for the two-input `powi_backward`. The `ep!` symbol is
+/// built from `$op`/`$dt`, so the three f32 hand-written wrappers whose fn-name
+/// differs from the symbol (`clamp_elementwise_f32`, `powi_elementwise_f32`)
+/// still map to the contract's `clamp_f32` / `powi_f32` entry points.
+pub static CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // affine (y = mul*x + add)
+    ep!("affine", "f32",  affine_f32_cpu_wrapper),
+    ep!("affine", "f64",  affine_f64_cpu_wrapper),
+    ep!("affine", "bf16", affine_bf16_cpu_wrapper),
+    ep!("affine", "f16",  affine_f16_cpu_wrapper),
+    // clamp (y = clamp(x, min, max))
+    ep!("clamp",  "f32",  clamp_elementwise_f32_cpu_wrapper),
+    ep!("clamp",  "f64",  clamp_f64_cpu_wrapper),
+    ep!("clamp",  "bf16", clamp_bf16_cpu_wrapper),
+    ep!("clamp",  "f16",  clamp_f16_cpu_wrapper),
+    // powi (y = x.powi(exp))
+    ep!("powi",   "f32",  powi_elementwise_f32_cpu_wrapper),
+    ep!("powi",   "f64",  powi_f64_cpu_wrapper),
+    ep!("powi",   "bf16", powi_bf16_cpu_wrapper),
+    ep!("powi",   "f16",  powi_f16_cpu_wrapper),
+    // powi_backward (grad_x = exp*x^(exp-1)*upstream) — TWO inputs (x, upstream)
+    ep!("powi_backward", "f32",  powi_backward_f32_cpu_wrapper),
+    ep!("powi_backward", "f64",  powi_backward_f64_cpu_wrapper),
+    ep!("powi_backward", "bf16", powi_backward_bf16_cpu_wrapper),
+    ep!("powi_backward", "f16",  powi_backward_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
-/// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`]. Unresolved →
-/// `None`, which the importer turns into a typed `UnknownEntryPoint` error
-/// (never a panic, never a fabricated pointer).
+/// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`] and
+/// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`]. Unresolved → `None`, which the
+/// importer turns into a typed `UnknownEntryPoint` error (never a panic, never
+/// a fabricated pointer).
 pub struct CpuLinkRegistry;
 
 impl LinkRegistry for CpuLinkRegistry {
     fn resolve_primitive(&self, symbol: &str) -> Option<KernelRef> {
         CPU_BINARY_ENTRY_POINTS
             .iter()
+            .chain(CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
 
     fn resolve_fused(&self, _symbol: &str) -> Option<KernelRef> {
-        // No fused-op contracts in the elementwise-binary corpus.
+        // No fused-op contracts in the elementwise-binary or
+        // affine/clamp/powi corpora.
         None
     }
 }
