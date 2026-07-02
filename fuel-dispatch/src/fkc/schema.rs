@@ -236,6 +236,15 @@ pub struct TensorDesc {
     /// Operand role name (diagnostic + maps to an FDX view name, §5.5).
     #[serde(default)]
     pub name: Option<String>,
+    /// `true` ⇒ this INPUT operand is OPTIONAL (§3.4 optional-operand support):
+    /// production registers the op BOTH with and without it (e.g. conv's
+    /// `bias`). The importer's key-builder fans each dtype variant into two
+    /// keys — one omitting this operand, one including it — when set. Only the
+    /// LAST input may be optional. Defaults to `false` (a required operand);
+    /// `#[serde(default)]` so every existing contract that omits the field
+    /// keeps building exactly one key per dtype variant (additive §11).
+    #[serde(default)]
+    pub optional: bool,
     /// Accepted DLPack dtype names (Fuel `DType` names; FDX §6.1). Strings;
     /// the string → `DType` conversion is a lowering concern.
     #[serde(default)]

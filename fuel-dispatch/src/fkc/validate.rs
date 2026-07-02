@@ -1735,6 +1735,19 @@ determinism: nondeterministic
                         FkcError::FanoutDtypeMismatch { .. } => {
                             deferred.push(format!("{rel} :: {kname}: LOWER: {e}"));
                         }
+                        // Describable but NOT-YET-FANNABLE (§3.4 optional-operand
+                        // fan-out): a section with MULTIPLE / chained trailing
+                        // optional operands (e.g. Metal layernorm's `alpha` AND
+                        // `beta`, so `alpha` is optional but not last). The
+                        // key-builder supports a SINGLE optional LAST input
+                        // (conv's `bias`); a chained-optional ABI needs a nested
+                        // fan follow-up. The importer surfaces it as a typed error
+                        // rather than silently mis-keying (before optional support
+                        // it was silently coerced to an all-present required key).
+                        // Recorded as deferred (consumer-behind), not a hard fail.
+                        FkcError::OptionalOperandNotLast { .. } => {
+                            deferred.push(format!("{rel} :: {kname}: LOWER: {e}"));
+                        }
                         _ => hard_failures.push(format!("{rel} :: {kname}: LOWER: {e}")),
                     }
                 }
@@ -1742,7 +1755,7 @@ determinism: nondeterministic
         }
 
         eprintln!(
-            "FKC corpus lint: {file_count} files, {section_count} sections; {} deferred (MX/gather not-yet-registrable + multi-axis dtype not-yet-fannable), {} hard failures",
+            "FKC corpus lint: {file_count} files, {section_count} sections; {} deferred (MX/gather not-yet-registrable + multi-axis dtype / chained-optional not-yet-fannable), {} hard failures",
             deferred.len(),
             hard_failures.len()
         );
