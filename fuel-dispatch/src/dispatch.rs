@@ -2769,9 +2769,11 @@ macro_rules! cpu_cast_wrapper {
 /// Dispatch wrapper for `(Conv2D, *, Cpu)`. Two or three inputs
 /// (x, weight, optional bias). Shapes + geometry flow through
 /// `OpParams::Conv2D`.
+/// `pub(crate)` so the FKC `link_registry` (`fkc::cpu_link`) can name the real
+/// production wrapper and the importer can bind it FROM the contract.
 macro_rules! cpu_conv2d_wrapper {
     ($name:ident, $kernel:path) => {
-        fn $name(
+        pub(crate) fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -2833,9 +2835,11 @@ cpu_conv2d_wrapper!(conv2d_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::con
 /// Dispatch wrapper for `(ConvTranspose2D, *, Cpu)`. Two or three
 /// inputs (x, weight, [bias]). Geometry flows through
 /// `OpParams::ConvTranspose2D`.
+/// `pub(crate)` so the FKC `link_registry` (`fkc::cpu_link`) can name the real
+/// production wrapper and the importer can bind it FROM the contract.
 macro_rules! cpu_conv_transpose2d_wrapper {
     ($name:ident, $kernel:path) => {
-        fn $name(
+        pub(crate) fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -4587,6 +4591,72 @@ fn register_cpu_ssm_from_contract(table: &mut KernelBindingTable) {
     );
 }
 
+/// The authored CPU 2D-convolution kernel contract, embedded into the binary
+/// (the PRODUCTION `include_str!`). `register_cpu_conv_from_contract` parses +
+/// lowers it and binds the MIGRATED (with-bias) subset of the family FROM THE
+/// CONTRACT.
+const CPU_CONV_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/conv.fkc.md");
+
+/// Register the CPU 2D-convolution family's MIGRATED (with-bias) subset —
+/// Conv2D + ConvTranspose2D at the WITH-BIAS key `[T, T, T, T]` (x, weight, bias
+/// + passthrough(x) output), 2 ops × 4 dtypes = 8 bindings — by IMPORTING its
+/// FKC kernel contract, the eleventh production FKC consumer. FKC is
+/// unconditional core infrastructure, so this is the ONE registration path for
+/// the migrated (with-bias) keys: their hand-written `table.register(...)` calls
+/// are DELETED.
+///
+/// Each per-(op, dtype) section (`## conv2d_f32`, `## conv_transpose2d_f32`, …)
+/// is a SPECIFIC single-dtype contract with a concrete `entry_point`
+/// (`…::conv2d_f32`), so none of them fan — the importer resolves each declared
+/// symbol AS-IS through the production [`crate::fkc::CpuLinkRegistry`] (now
+/// chaining [`crate::fkc::CPU_CONV_ENTRY_POINTS`]) to the exact wrapper
+/// fn-pointer the CPU backend exposes. Conv2D's weight is `[Cout, Cin/groups,
+/// Kh, Kw]`; ConvTranspose2D's is the transposed `[Cin, Cout/groups, Kh, Kw]`
+/// and it carries an extra `output_padding` op-param — but both are the same
+/// three-input (x, weight, bias) → one-output (passthrough(x)) accept shape, and
+/// every geometry knob rides in `OpParams::{Conv2D, ConvTranspose2D}`, NOT the
+/// dtype-list — identical keys to the deleted hand-written with-bias regs.
+///
+/// **The NO-BIAS key (`[T, T, T]` — x, weight + out) is DEFERRED, not migrated.**
+/// The conv contract declares `bias` as `optional: true`, but the FKC importer's
+/// key-builder (`fkc/lower.rs` `assemble_dtype_variants`) has no `optional`
+/// support — it consumes every `accept.input` unconditionally, so each section
+/// builds ONLY the 4-operand with-bias key. The 3-operand no-bias key that
+/// production ALSO registers for operand-count dispatch is not buildable by
+/// today's importer, so those KEEP their hand-written `table.register(Conv2D /
+/// ConvTranspose2D, &[dt; 3], ...)` regs (below), an optional-operand deferral
+/// analogous to the ssm-scan `return.bundle` deferral. Adding `optional`-operand
+/// support to the importer (build both the with- and without-operand keys) would
+/// let the no-bias keys migrate too.
+///
+/// Behavior-preserving vs. the deleted hand-written path (for the migrated
+/// with-bias keys): identical kernels + caps (contiguous-only NCHW); the
+/// binding's `kernel_source` becomes the contract's `"portable-cpu"` tag and its
+/// precision the contract's bit-stable claim. Cost is preserved because this
+/// runs BEFORE `fill_unset_cpu_cost`, which upgrades the imported entries'
+/// `unknown_cost` sentinel to the same OpKind cost fn every CPU primitive gets.
+/// The family declares NO fused ops (the SEPARATE FusedKernelRegistry
+/// `FusedOps::{CONV2D, CONV_TRANSPOSE2D}` seam is hand-written, in
+/// `register_default_fused_kernels`, and stays untouched), so `register_into`'s
+/// required fused argument is a local throwaway that provably stays empty.
+fn register_cpu_conv_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_CONV_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU conv contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "conv contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU conv contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -4612,8 +4682,12 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // from docs/kernel-contracts/cpu/rope.fkc.md — see
     // register_cpu_rope_from_contract; the hand-written `rope_dts` closure was
     // removed with its regs.)
+    // (Conv2D/ConvTranspose2D's with-bias (x, w, bias, out) key is now built by
+    // the FKC importer from docs/kernel-contracts/cpu/conv.fkc.md — see
+    // register_cpu_conv_from_contract; the `conv2d_with_bias` closure was removed
+    // with its regs. The no-bias key stays hand-written, so `conv2d_no_bias`
+    // remains.)
     let conv2d_no_bias   = |t: DType| [t, t, t];                // (x, w, out)
-    let conv2d_with_bias = |t: DType| [t, t, t, t];             // (x, w, bias, out)
     let fused_linear     = |t: DType| [t, t, t, t];             // (lhs, rhs, bias, out)
     let flash_attn_no_alibi   = |t: DType| [t, t, t, t];        // (q, k, v, out)
     let flash_attn_with_alibi = |t: DType| [t, t, t, t, t];     // (q, k, v, alibi, out)
@@ -4767,6 +4841,26 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // fill.
     register_cpu_ssm_from_contract(table);
 
+    // CPU 2D-convolution family — MIGRATED (with-bias) subset only: Conv2D +
+    // ConvTranspose2D at the WITH-BIAS key [T, T, T, T] (x, weight, bias +
+    // passthrough(x) output), 2 ops × 4 dtypes = 8 bindings. Eleventh production
+    // FKC-contract consumer: IMPORTED from docs/kernel-contracts/cpu/conv.fkc.md
+    // via the same `CpuLinkRegistry`. Each per-(op,dtype) section carries a
+    // SPECIFIC single-dtype entry_point (`conv2d_f32`, `conv_transpose2d_f32`, …)
+    // resolved AS-IS (no fan-out); every geometry knob rides in
+    // OpParams::{Conv2D, ConvTranspose2D}, so the key stays [T, T, T, T]. The
+    // hand-written `table.register(Conv2D/ConvTranspose2D, &conv2d_with_bias(dt),
+    // ...)` calls are DELETED — this is the sole registration path for the
+    // with-bias keys. The NO-BIAS key [T, T, T] is DEFERRED: the contract marks
+    // `bias` as `optional: true`, but the importer's key-builder has no
+    // `optional` support (it includes every accept.input), so it can only build
+    // the with-bias key — the no-bias key KEEPS its hand-written reg (below).
+    // Placed BEFORE the `fill_unset_cpu_*` passes so the imported entries pick up
+    // the CPU cost fill. The conv ops' SEPARATE FusedKernelRegistry seam
+    // (register_default_fused_kernels, FusedOps::{CONV2D, CONV_TRANSPOSE2D}) stays
+    // untouched.
+    register_cpu_conv_from_contract(table);
+
     table.register(MatMul,             &binary(f32_dt),  cpu, matmul_f32_cpu_wrapper);
     table.register(MatMul,             &binary(f64_dt),  cpu, matmul_f64_cpu_wrapper);
     table.register(MatMul,             &binary(bf16_dt), cpu, matmul_bf16_cpu_wrapper);
@@ -4912,8 +5006,14 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(Cast, &[DType::I16, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
     table.register(Cast, &[DType::I32, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
 
-    // Conv2D — register both no-bias (3 operands) and with-bias
-    // (4 operands) shapes per dtype; the wrapper handles both.
+    // Conv2D / ConvTranspose2D — the WITH-BIAS key [T, T, T, T] is now
+    // registered FROM the conv FKC contract (`register_cpu_conv_from_contract`,
+    // above); its hand-written regs were DELETED (FKC is the sole path). Only the
+    // NO-BIAS key [T, T, T] (x, weight, out) stays hand-written here: the contract
+    // marks `bias` as `optional: true`, but the importer's key-builder has no
+    // `optional` support, so it cannot emit the 3-operand no-bias key — that key
+    // is DEFERRED and kept hand-written for operand-count dispatch. The same
+    // wrapper handles both operand counts.
     for (dt, w) in [
         (f32_dt,  conv2d_f32_cpu_wrapper  as KernelRef),
         (f64_dt,  conv2d_f64_cpu_wrapper),
@@ -4921,7 +5021,6 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         (f16_dt,  conv2d_f16_cpu_wrapper),
     ] {
         table.register(Conv2D, &conv2d_no_bias(dt),   cpu, w);
-        table.register(Conv2D, &conv2d_with_bias(dt), cpu, w);
     }
     for (dt, w) in [
         (f32_dt,  conv_transpose2d_f32_cpu_wrapper as KernelRef),
@@ -4930,7 +5029,6 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         (f16_dt,  conv_transpose2d_f16_cpu_wrapper),
     ] {
         table.register(ConvTranspose2D, &conv2d_no_bias(dt),   cpu, w);
-        table.register(ConvTranspose2D, &conv2d_with_bias(dt), cpu, w);
     }
 
     // ReduceSumTo / ReduceMaxTo (× 4 dtypes, key [T, T]) are now registered
@@ -8270,6 +8368,87 @@ mod tests {
             checked += 1;
         }
         assert_eq!(checked, 4, "2 ops × 4 dtypes checked (8 migrated bindings)");
+    }
+
+    /// Born-red gate for the CPU conv family migration to FKC-contract
+    /// registration. The MIGRATED subset is the WITH-BIAS keys of Conv2D and
+    /// ConvTranspose2D (key `[T, T, T, T]` — x, weight, bias + passthrough(x)
+    /// output), 2 ops × 4 dtypes = 8 bindings, IMPORTED from
+    /// `docs/kernel-contracts/cpu/conv.fkc.md`.
+    ///
+    /// The NO-BIAS keys (`[T, T, T]` — x, weight + out) are DEFERRED and stay
+    /// hand-written: the conv contract declares `bias` as `optional: true`, but
+    /// the importer's key-builder (`fkc/lower.rs` `assemble_dtype_variants`) has
+    /// no `optional` support — it includes every `accept.input` unconditionally,
+    /// so each section builds ONLY the 4-operand with-bias key. The 3-operand
+    /// no-bias key production also registers for operand-count dispatch is not
+    /// buildable by today's importer, so it is NOT checked here (see
+    /// `register_cpu_conv_from_contract`).
+    ///
+    /// For each migrated key: resolves to the EXACT production wrapper
+    /// fn-pointer with `kernel_source == "portable-cpu"` — the contract
+    /// provenance tag (the deleted hand-written path stamped `""`; THIS is the
+    /// discriminator that goes red until the import is wired) — caps
+    /// contiguous, and the contract's bit-stable precision riding through.
+    #[test]
+    fn global_bindings_registers_conv_family_from_contract() {
+        let table = global_bindings();
+        let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+
+        // Conv2D: with-bias key [x, weight, bias, out]; wrapper order matches `dts`.
+        let conv2d_wrappers: [crate::kernel::KernelRef; 4] = [
+            conv2d_f32_cpu_wrapper,
+            conv2d_f64_cpu_wrapper,
+            conv2d_bf16_cpu_wrapper,
+            conv2d_f16_cpu_wrapper,
+        ];
+        // ConvTranspose2D: with-bias key [x, weight, bias, out]; order matches `dts`.
+        let convt_wrappers: [crate::kernel::KernelRef; 4] = [
+            conv_transpose2d_f32_cpu_wrapper,
+            conv_transpose2d_f64_cpu_wrapper,
+            conv_transpose2d_bf16_cpu_wrapper,
+            conv_transpose2d_f16_cpu_wrapper,
+        ];
+
+        let mut checked = 0usize;
+        for (i, dt) in dts.iter().enumerate() {
+            for (op, expected) in [
+                (OpKind::Conv2D, conv2d_wrappers[i]),
+                (OpKind::ConvTranspose2D, convt_wrappers[i]),
+            ] {
+                // WITH-BIAS key: [x, weight, bias, out] all T.
+                let key = [*dt, *dt, *dt, *dt];
+                let alts = table.lookup_alternatives(op, &key, BackendId::Cpu);
+                let entry = alts
+                    .iter()
+                    .find(|e| e.kernel as usize == expected as usize)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{op:?}/{dt:?}/Cpu (with-bias): the production wrapper must be \
+                             bound FROM the conv contract in global_bindings() — found {} \
+                             alternative(s) with sources {:?}",
+                            alts.len(),
+                            alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                        )
+                    });
+                assert_eq!(
+                    entry.kernel_source, "portable-cpu",
+                    "{op:?}/{dt:?} (with-bias): family must be contract-sourced \
+                     (kernel_source=\"portable-cpu\"); got {:?}",
+                    entry.kernel_source,
+                );
+                assert!(
+                    !entry.caps.strided_input,
+                    "{op:?}/{dt:?}: caps preserved (contiguous-only)",
+                );
+                assert!(
+                    entry.precision.bit_stable_on_same_hardware,
+                    "{op:?}/{dt:?}: contract's bit-stable claim rode through",
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 8, "2 ops × 4 dtypes checked (8 migrated with-bias bindings)");
     }
 
     /// Lookup miss returns NoBackendForOp with diagnostic data.
