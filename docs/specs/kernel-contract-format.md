@@ -458,6 +458,35 @@ Sub-byte dtypes (`F4`, `F6E2M3`, `F6E3M2` — `size_in_bytes()==0`) MUST be pair
 `fdx.sub_byte` code and an `fdx.quant` block (bit-width + packing come from FDX, never from
 `size_in_bytes`). `F8E8M0` is the canonical MX block-scale dtype (digest §8).
 
+**Multi-dtype fan-out.** A section whose operand(s) *vary* — enumerate more than one dtype (a
+compact family chassis like elementwise-unary's `[F32, F64, BF16, F16]`), or a `dtype_class` that
+expands to more than one — **fans out at import into one binding per fanned dtype** (NOT a single
+"first-dtype representative"; a section keyed on a dtype *list* registers the whole family). The
+rules the importer applies (`fuel-dispatch/src/fkc/lower.rs::assemble_dtype_variants`):
+
+- The **fan-out dtype set** is the enumerated list of the operand(s) that vary. **All varying
+  operands MUST enumerate the same list in the same order**; if they disagree it is a typed
+  `FanoutDtypeMismatch` error — the importer never silently picks one operand's list. (A genuine
+  *multi-axis* contract — a mixed-precision matmul, or an indexing op with an independent
+  data-dtype axis and index-dtype axis — is therefore *describable but not-yet-fannable* by this
+  uniform importer: it surfaces the typed error and is deferred, awaiting a cartesian / per-axis
+  fan-out follow-up.)
+- Per fanned dtype `dt`, each **input** operand contributes its dtype at that variant — a *fixed*
+  (single-enumerated) operand its one dtype (e.g. `where`'s `cond` = `U8`), a *varying* operand
+  `dt`. Then **outputs**: `fixed(D)` → `D`; `passthrough(role)` → the dtype of the input operand
+  *named* `role` at that variant (so `where`'s `passthrough(a)` mirrors operand `a` = `dt`, NOT the
+  first input `cond`). The binding key stays inputs-in-order then outputs.
+- A **fanning** section's `entry_point` is a **BASE** symbol (no dtype suffix, e.g.
+  `fuel_cpu_backend::byte_kernels::relu`); per fanned `dt` the importer resolves
+  `<base>_<dtype_suffix>` through the `LinkRegistry`, where `<dtype_suffix>` is the canonical
+  lowercase `DType` spelling (`F32`→`f32`, `BF16`→`bf16`, `U8`→`u8`, `F8E4M3`→`f8e4m3`, … — the
+  same spelling the byte-kernel `ep!` macro uses). A **non-fanning** (all-fixed, single-variant)
+  section keeps its specific `entry_point` and resolves it AS-IS (so a per-`(op,dtype)` thunk like
+  `add_f32` stays `add_f32`). Revision/cost/precision/caps are per-section (shared across variants);
+  only the per-variant `dtypes` + resolved kernel differ.
+- Fused (`fused_op`) sections do **not** fan out in this slice: a multi-dtype fused section
+  registers only its representative (first) dtype today (a follow-up fans the fused registry).
+
 **GGML dtype names are the as-built `GgmlDType` variant names, matched by numeric code.** The
 canonical set (`fuel-core-types/src/quantized.rs`) is:
 `F32(0), F16(1), Q4_0(2), Q4_1(3), Q5_0(6), Q5_1(7), Q8_0(8), Q8_1(9), Q2K(10), Q3K(11),

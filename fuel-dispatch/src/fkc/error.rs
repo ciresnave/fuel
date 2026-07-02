@@ -125,6 +125,23 @@ pub enum FkcError {
         token: String,
     },
 
+    /// Two operands that both **vary** (enumerate >1 dtype) in one section
+    /// disagree on their fan-out dtype list (§3.4 multi-dtype fan-out). ALL
+    /// varying operands must enumerate the SAME dtype list in the SAME order
+    /// so the importer can fan the section into one per-dtype binding without
+    /// silently picking one operand's list over another's.
+    #[error(
+        "FKC §3.4: kernel `{section}` operand `{operand}` varies over `{found}` but a prior \
+         varying operand enumerated `{expected}` — all varying operands must share one dtype \
+         list (and order) for multi-dtype fan-out"
+    )]
+    FanoutDtypeMismatch {
+        section: String,
+        operand: String,
+        expected: String,
+        found: String,
+    },
+
     /// A `backend` string did not match any as-built `BackendId` (§2.1).
     #[error("FKC §2.1: kernel `{section}` names unknown backend `{backend}`")]
     UnknownBackend { section: String, backend: String },

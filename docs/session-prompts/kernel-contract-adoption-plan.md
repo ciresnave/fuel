@@ -216,9 +216,9 @@ This is the concrete `RawContract -> registry call` mapping. Two targets, per FK
 | FKC field | As-built target | How |
 |-----------|-----------------|-----|
 | `op_kind` | `OpKind` (key.0) | string -> `OpKind` via an explicit `match` table in `lower.rs` (`UnknownOpKind` on miss). NOT `FromStr`-by-discriminant — an exhaustive match so a new `OpKind` forces a compile error to extend the table. |
-| `accept.inputs[*].dtypes` + outputs | `KernelDTypes` (key.1 = `SmallVec<[DType; 8]>`) | per-operand dtype list, inputs in order then outputs (matches `kernel.rs` key shape). dtype strings -> `DType` via explicit match (FKC §3.4); `dtype_class` shorthands expand here. Quant facts enrich the operand slot for the key (FKC §3.2, §12.1). |
+| `accept.inputs[*].dtypes` + outputs | `KernelDTypes` (key.1 = `SmallVec<[DType; 8]>`) | per-operand dtype list, inputs in order then outputs (matches `kernel.rs` key shape). dtype strings -> `DType` via explicit match (FKC §3.4); `dtype_class` shorthands expand here. Quant facts enrich the operand slot for the key (FKC §3.2, §12.1). **Multi-dtype fan-out (§3.4):** a section whose operand(s) vary (enumerate >1 dtype, same list/order for all varying operands — else `FanoutDtypeMismatch`) fans out into ONE binding per fanned dtype; `passthrough(role)` resolves the *named* operand's per-variant dtype (fixes the "where bug"). See `lower.rs::assemble_dtype_variants`. |
 | `backend` | `BackendId` (key.2) | explicit match. |
-| `entry_point` | `KernelRef` (`BindingEntry.kernel`) | `LinkRegistry::resolve_primitive` (`UnknownEntryPoint` on miss). |
+| `entry_point` | `KernelRef` (`BindingEntry.kernel`) | `LinkRegistry::resolve_primitive` (`UnknownEntryPoint` on miss). A **fanning** section's `entry_point` is a BASE symbol → per fanned `dt` resolve `<base>_<dtype_suffix>` (canonical `DType::as_str`, the `ep!` spelling); a non-fanning section resolves its specific symbol AS-IS. |
 | `caps.*` + `layout.*` | `KernelCaps` (`BindingEntry.caps`) | the five-flag layout set projected onto today's single `strided_input` bool — see §6. |
 | `cost.*` | `CostFn` (`BindingEntry.cost`) | compiled to a `CostFn` — see §2.3. |
 | `precision.*` | `PrecisionGuarantee` (`BindingEntry.precision`) | direct field map; `audited: false` + all-null -> `UNAUDITED`; `audited: true` + all-null -> `none(notes)`; bounds present -> populated struct. |

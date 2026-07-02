@@ -1162,4 +1162,269 @@ determinism: same_hardware_bitwise
         // The revision rode through unchanged.
         assert_eq!(impl_.revision, KernelRevisionHash::UNTRACKED);
     }
+
+    // =====================================================================
+    // MULTI-DTYPE FAN-OUT (§3.4): a section whose operand(s) vary fans out
+    // into N per-dtype bindings; `passthrough(role)` resolves the named
+    // operand's dtype (NOT blindly the first input — the "where bug").
+    // =====================================================================
+
+    /// A [`LinkRegistry`] that resolves EVERY requested symbol to a dummy
+    /// pointer (keyed by the symbol string so a symbol maps stably) and
+    /// RECORDS every requested symbol — so a test can assert exactly which
+    /// `<base>_<suffix>` entry points the importer resolved. Permissive on
+    /// purpose: it resolves the base symbol too, so the pre-change importer
+    /// (which resolves the base as-is) still imports — letting the born-red
+    /// fail on a clean binding-COUNT assertion, not an import error.
+    struct FanStubLink {
+        seen: Mutex<std::collections::HashMap<String, KernelRef>>,
+        requested: Mutex<Vec<String>>,
+    }
+    impl FanStubLink {
+        fn new() -> Self {
+            Self {
+                seen: Mutex::new(std::collections::HashMap::new()),
+                requested: Mutex::new(Vec::new()),
+            }
+        }
+        fn resolve(&self, symbol: &str) -> Option<KernelRef> {
+            self.requested.lock().unwrap().push(symbol.to_string());
+            let mut g = self.seen.lock().unwrap();
+            if let Some(k) = g.get(symbol) {
+                return Some(*k);
+            }
+            let k: KernelRef = if g.len() % 2 == 0 { dummy_a } else { dummy_b };
+            g.insert(symbol.to_string(), k);
+            Some(k)
+        }
+    }
+    impl LinkRegistry for FanStubLink {
+        fn resolve_primitive(&self, symbol: &str) -> Option<KernelRef> {
+            self.resolve(symbol)
+        }
+        fn resolve_fused(&self, symbol: &str) -> Option<KernelRef> {
+            self.resolve(symbol)
+        }
+    }
+
+    /// A synthetic bundle with (a) a UNIFORM multi-dtype section (`relu`: one
+    /// input varying over `[F32,F64,BF16,F16]`, base `entry_point`) and (b) a
+    /// MIXED section (`where_op`: a fixed `U8` `cond` + two varying operands +
+    /// `passthrough(a)`). Authored with BASE entry_points (no dtype suffix) so
+    /// the importer must resolve `<base>_<suffix>` per fanned dtype.
+    const FANOUT_CONTRACT: &str = r#"---
+fkc_version: 1
+provider:
+  name: fanout-provider
+  backend: Cpu
+  kernel_source: "fanout-cpu"
+---
+
+# fanout bundle
+
+## relu
+
+Uniform multi-dtype unary: one input varying over 4 dtypes.
+
+```fkc
+kernel: relu
+op_kind: ReluElementwise
+blurb: "relu fan-out"
+entry_point: "stub::relu"
+accept:
+  inputs:
+    - name: in
+      dtypes: [F32, F64, BF16, F16]
+      layout: { contiguous: required, strided: rejected }
+  op_params: { variant: None }
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(in)
+cost:
+  provenance: declared
+  class: cheap_elementwise
+  flops: "n"
+precision:
+  bit_stable_on_same_hardware: true
+  audited: true
+determinism: same_hardware_bitwise
+```
+
+## where_op
+
+Mixed: a fixed U8 cond + two varying operands; passthrough(a).
+
+```fkc
+kernel: where_op
+op_kind: Where
+blurb: "where fan-out with passthrough(a)"
+entry_point: "stub::where"
+accept:
+  inputs:
+    - name: cond
+      dtypes: [U8]
+      layout: { contiguous: required, strided: rejected }
+    - name: a
+      dtypes: [F32, F64, BF16, F16]
+      layout: { contiguous: required, strided: rejected }
+    - name: b
+      dtypes: [F32, F64, BF16, F16]
+      layout: { contiguous: required, strided: rejected }
+  op_params: { variant: None }
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(a)
+cost:
+  provenance: declared
+  class: cheap_elementwise
+  flops: "n"
+precision:
+  bit_stable_on_same_hardware: true
+  audited: true
+determinism: same_hardware_bitwise
+```
+"#;
+
+    #[test]
+    fn multi_dtype_section_fans_out_into_per_dtype_bindings() {
+        let link = FanStubLink::new();
+        let provider =
+            import_bundle_str(FANOUT_CONTRACT, &link).expect("fan-out contract imports");
+
+        // (1) FAN-OUT: `relu` (1 varying input) + `where_op` (2 varying inputs)
+        // each fan to 4 per-dtype bindings ⇒ 8 primitives. Pre-change the
+        // importer keyed on each operand's FIRST dtype and registered ONE
+        // binding per section → 2. RED→GREEN.
+        assert_eq!(
+            provider.primitives.len(),
+            8,
+            "relu×4 + where×4 = 8 fanned bindings (pre-change: 2 — first-dtype only)"
+        );
+
+        let mut table = KernelBindingTable::new();
+        let mut fused = FusedKernelRegistry::new();
+        provider
+            .register_into(&mut table, &mut fused)
+            .expect("fanned bindings register");
+
+        let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+
+        // (2) UNIFORM fan-out: ReluElementwise bound at [dt, dt] for every dt.
+        for dt in dts {
+            assert!(
+                table
+                    .lookup(OpKind::ReluElementwise, &[dt, dt], BackendId::Cpu)
+                    .is_ok(),
+                "relu must be bound at [{dt:?}, {dt:?}]",
+            );
+        }
+
+        // (3) MIXED fan-out + passthrough-role FIX: Where bound at
+        // [U8, dt, dt, dt] — the output mirrors operand `a` (= dt), NOT the
+        // first input `cond` (U8).
+        for dt in dts {
+            assert!(
+                table
+                    .lookup(OpKind::Where, &[DType::U8, dt, dt, dt], BackendId::Cpu)
+                    .is_ok(),
+                "where must be bound at [U8, {dt:?}, {dt:?}, {dt:?}] (passthrough(a) = a's dtype)",
+            );
+            // The OLD buggy key (passthrough mirrored cond=U8) must NOT exist.
+            assert!(
+                table
+                    .lookup(OpKind::Where, &[DType::U8, dt, dt, DType::U8], BackendId::Cpu)
+                    .is_err(),
+                "the pre-fix buggy key [U8,{dt:?},{dt:?},U8] must NOT be registered",
+            );
+        }
+
+        // (4) ENTRY-POINT base+suffix: the importer resolved `<base>_<suffix>`
+        // for every fanned dtype (canonical `DType::as_str`, not a hand-rolled
+        // spelling), NOT the bare base symbol.
+        let requested = link.requested.lock().unwrap().clone();
+        for suffix in ["f32", "f64", "bf16", "f16"] {
+            assert!(
+                requested.iter().any(|s| s == &format!("stub::relu_{suffix}")),
+                "relu variant must resolve stub::relu_{suffix}; requested={requested:?}",
+            );
+            assert!(
+                requested.iter().any(|s| s == &format!("stub::where_{suffix}")),
+                "where variant must resolve stub::where_{suffix}; requested={requested:?}",
+            );
+        }
+    }
+
+    /// Backward-compat guard: a section with NO varying operand (every operand
+    /// single-dtype) produces EXACTLY ONE binding and resolves its declared
+    /// `entry_point` AS-IS (no `_<suffix>` appended). This is what keeps the
+    /// already-migrated per-(op,dtype) binary / affine / cast families
+    /// byte-identical under fan-out. GREEN before AND after the change.
+    #[test]
+    fn single_dtype_section_yields_exactly_one_unchanged_binding() {
+        let src = r#"---
+fkc_version: 1
+provider:
+  name: single-provider
+  backend: Cpu
+  kernel_source: "single-cpu"
+---
+
+# single bundle
+
+## add_f32
+
+```fkc
+kernel: add_f32
+op_kind: AddElementwise
+blurb: "single-dtype add"
+entry_point: "stub::add_f32"
+accept:
+  inputs:
+    - name: lhs
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+    - name: rhs
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+  op_params: { variant: None }
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(lhs)
+cost:
+  provenance: declared
+  class: cheap_elementwise
+  flops: "n"
+precision:
+  bit_stable_on_same_hardware: true
+  audited: true
+determinism: same_hardware_bitwise
+```
+"#;
+        let link = FanStubLink::new();
+        let provider = import_bundle_str(src, &link).expect("single-dtype imports");
+        assert_eq!(
+            provider.primitives.len(),
+            1,
+            "no varying operand ⇒ exactly one binding"
+        );
+        assert_eq!(
+            provider.primitives[0].dtypes.as_slice(),
+            &[DType::F32, DType::F32, DType::F32],
+        );
+
+        // entry_point resolved AS-IS (no `_f32` suffix appended to a
+        // single-variant section — its declared symbol is already specific).
+        let requested = link.requested.lock().unwrap().clone();
+        assert!(
+            requested.iter().any(|s| s == "stub::add_f32"),
+            "single-variant resolves the declared symbol as-is; requested={requested:?}",
+        );
+        assert!(
+            !requested.iter().any(|s| s == "stub::add_f32_f32"),
+            "must NOT append a suffix to a single-variant section",
+        );
+    }
 }

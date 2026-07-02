@@ -414,96 +414,226 @@ fn lower_backend(s: &str, section: &str) -> Result<BackendId, FkcError> {
 }
 
 // ===========================================================================
-// Per-operand dtype assembly → KernelDTypes
+// Per-operand dtype assembly → per-variant KernelDTypes (multi-dtype fan-out)
 // ===========================================================================
 
-/// Build the per-operand dtype list for the binding key: each INPUT
-/// operand contributes one dtype (its first enumerated dtype, or the
-/// single value of its `dtype_class` expansion when a class is used),
-/// inputs in order, then each OUTPUT.
+/// One fanned variant of a section: its full binding key (`[in1, .., out]`)
+/// plus the fan dtype that produced it.
+#[derive(Debug, Clone)]
+pub(crate) struct DtypeVariant {
+    /// The binding-table key: input operand dtypes in order, then outputs.
+    pub(crate) dtypes: KernelDTypes,
+    /// The dtype the varying operands took for this variant. `Some(dt)` when
+    /// the section fans out (drives the `<entry_point>_<suffix>` resolution);
+    /// `None` for the single all-fixed variant (entry_point resolved as-is).
+    pub(crate) fan_dtype: Option<DType>,
+}
+
+/// The canonical `DType → FKC dtype suffix` spelling used to build a fanning
+/// section's per-variant `entry_point` symbol (`<base>_<suffix>`), e.g.
+/// `F32 → "f32"`, `BF16 → "bf16"`, `U8 → "u8"`, `F8E4M3 → "f8e4m3"`.
 ///
-/// Per FKC §3.4 / the binding-table key shape (`[in1, in2, ..., out]`):
-/// when an operand enumerates multiple dtypes (a family chassis like
-/// `binary`'s `[F32, F64, BF16, F16]`) the FIRST dtype is taken as the
-/// key's representative (a chassis section is documentation; the
-/// per-(op, dtype) thunks carry the precise single-dtype keys). When a
-/// `dtype_class` shorthand is present, the operand must resolve to a
-/// single representative too.
-fn assemble_dtypes(
+/// This is the **inverse** of [`lower_dtype`] and is deliberately the SAME
+/// spelling the byte-kernel `ep!` macro (`fkc/cpu_link.rs`) and the CPU
+/// backend's per-(op,dtype) thunks use — it reuses [`DType::as_str`] rather
+/// than hand-rolling a second table (the [`tests::dtype_suffix_is_the_inverse_of_lower_dtype`]
+/// drift-guard locks the round-trip).
+fn dtype_suffix(dt: DType) -> &'static str {
+    dt.as_str()
+}
+
+/// A resolved input operand: its role name + its enumerated dtype list
+/// (post `dtype_class` expansion; always ≥1).
+struct InputOperand {
+    name: String,
+    dtypes: Vec<DType>,
+}
+
+/// Resolve one operand's enumerated dtype list (explicit `dtypes:` wins; a
+/// `dtype_class` shorthand only fills an empty explicit list; §3.4). Errors
+/// [`FkcError::BadScalarType`] on a bad token or an empty result.
+fn resolve_operand_dtypes(
+    d: &crate::fkc::schema::TensorDesc,
+    section: &str,
+    operand: &str,
+) -> Result<Vec<DType>, FkcError> {
+    let mut enumerated: Vec<DType> = Vec::new();
+    for tok in &d.dtypes {
+        enumerated.push(lower_dtype(tok, section, operand)?);
+    }
+    let resolved = if enumerated.is_empty() {
+        if let Some(class) = &d.dtype_class {
+            expand_dtype_class(class, &enumerated, section, operand)?
+        } else {
+            enumerated
+        }
+    } else {
+        // Explicit list present ⇒ it is the enumeration (a `dtype_class`, if
+        // also present, is descriptive only — the explicit list wins, §3.4).
+        enumerated
+    };
+    if resolved.is_empty() {
+        return Err(FkcError::BadScalarType {
+            section: section.to_string(),
+            operand: operand.to_string(),
+            token: "<no dtypes and no dtype_class>".to_string(),
+        });
+    }
+    Ok(resolved)
+}
+
+/// Assemble the per-variant binding-key dtype-lists for a section (§3.4
+/// **multi-dtype fan-out**) plus the shared per-operand layouts.
+///
+/// A section whose operands are all single-dtype (or a `dtype_class` that
+/// expands to exactly one) yields exactly ONE variant with `fan_dtype: None`
+/// — today's behavior, and what keeps the per-(op,dtype) binary / affine /
+/// cast families byte-identical. A section whose operand(s) **vary**
+/// (enumerate >1 dtype, or a `dtype_class` that expands to >1) fans out into
+/// N variants — one per fanned dtype.
+///
+/// Fan rules:
+/// - The fan-out dtype set is the enumerated list of the operand(s) that
+///   vary. ALL varying operands must enumerate the SAME list in the SAME
+///   order; a disagreement is [`FkcError::FanoutDtypeMismatch`] (never a
+///   silent pick).
+/// - Per fanned dtype `dt`, each INPUT operand contributes its dtype at this
+///   variant — a FIXED (single-enumerated) operand its one dtype (e.g.
+///   `where`'s `cond` = U8), a VARYING operand `dt`. Then OUTPUTS:
+///   `fixed(D)` → D; `passthrough(role)` → the dtype of the INPUT operand
+///   named `role` **at this variant** (so `where`'s `passthrough(a)` mirrors
+///   `a` = `dt`, NOT the first input `cond`). Key shape is inputs-then-outputs.
+fn assemble_dtype_variants(
     kernel: &FkcKernel,
     section: &str,
-) -> Result<(KernelDTypes, Vec<ResolvedLayout>), FkcError> {
-    let mut dtypes: KernelDTypes = SmallVec::new();
+) -> Result<(Vec<DtypeVariant>, Vec<ResolvedLayout>), FkcError> {
+    let mut inputs: Vec<InputOperand> = Vec::new();
     let mut layouts: Vec<ResolvedLayout> = Vec::new();
 
     if let Some(accept) = &kernel.accept {
         for d in &accept.inputs {
             let operand = d.name.as_deref().unwrap_or("<input>");
-            // Resolve this operand's enumerated dtypes first.
-            let mut enumerated: Vec<DType> = Vec::new();
-            for tok in &d.dtypes {
-                enumerated.push(lower_dtype(tok, section, operand)?);
-            }
-            // dtype_class shorthand expands here (§3.4). If both a class
-            // and explicit dtypes are present, the explicit list wins as
-            // the enumeration; the class only fills an empty list.
-            let representative = if let Some(class) = &d.dtype_class {
-                let expanded = expand_dtype_class(class, &enumerated, section, operand)?;
-                *expanded.first().ok_or_else(|| FkcError::BadScalarType {
-                    section: section.to_string(),
-                    operand: operand.to_string(),
-                    token: format!("dtype_class={class} expanded to empty"),
-                })?
-            } else {
-                *enumerated.first().ok_or_else(|| FkcError::BadScalarType {
-                    section: section.to_string(),
-                    operand: operand.to_string(),
-                    token: "<no dtypes and no dtype_class>".to_string(),
-                })?
-            };
-            dtypes.push(representative);
+            let resolved = resolve_operand_dtypes(d, section, operand)?;
+            inputs.push(InputOperand {
+                name: operand.to_string(),
+                dtypes: resolved,
+            });
             layouts.push(caps_map::resolve_layout(d.layout.as_ref(), section, operand)?);
         }
     }
 
-    // Outputs (return.outputs) contribute their dtype to the key tail
-    // when it is a literal `fixed(DType)` rule; `passthrough(role)`
-    // outputs default to the first input dtype (the key convention for
-    // same-dtype ops). Best-effort: an output we cannot type is omitted
-    // from the key tail rather than failing (the full return validation
-    // is a later slice).
-    if let Some(ret) = &kernel.return_ {
-        for out in &ret.outputs {
-            let operand = out.name.as_deref().unwrap_or("<output>");
-            if let Some(rule) = out.dtype_rule.as_deref() {
-                if let Some(dt) = parse_fixed_dtype_rule(rule, section, operand)? {
-                    dtypes.push(dt);
-                } else {
-                    // passthrough(...) — mirror the first input dtype.
-                    if let Some(first) = dtypes.first().copied() {
-                        dtypes.push(first);
+    // The fan-out dtype set = the enumerated list of the operand(s) that vary
+    // (enumerate >1). All varying operands must agree on the SAME list/order.
+    let mut fan_set: Option<&[DType]> = None;
+    for operand in &inputs {
+        if operand.dtypes.len() > 1 {
+            match fan_set {
+                None => fan_set = Some(&operand.dtypes),
+                Some(existing) => {
+                    if existing != operand.dtypes.as_slice() {
+                        return Err(FkcError::FanoutDtypeMismatch {
+                            section: section.to_string(),
+                            operand: operand.name.clone(),
+                            expected: format!("{existing:?}"),
+                            found: format!("{:?}", operand.dtypes),
+                        });
                     }
                 }
             }
         }
     }
 
-    Ok((dtypes, layouts))
+    // The list of fan dtypes: one all-fixed variant (None) when nothing
+    // varies, else one variant per fanned dtype.
+    let fan_dtypes: Vec<Option<DType>> = match fan_set {
+        None => vec![None],
+        Some(set) => set.iter().map(|dt| Some(*dt)).collect(),
+    };
+
+    let mut variants: Vec<DtypeVariant> = Vec::with_capacity(fan_dtypes.len());
+    for fan in fan_dtypes {
+        // Each input operand contributes its dtype at THIS variant: a fixed
+        // operand its single dtype, a varying operand the fan dtype.
+        let mut dtypes: KernelDTypes = SmallVec::new();
+        for operand in &inputs {
+            let dt = if operand.dtypes.len() > 1 {
+                // Varying: fan_dtype is Some by construction here.
+                fan.expect("a varying operand implies a fanned dtype")
+            } else {
+                operand.dtypes[0]
+            };
+            dtypes.push(dt);
+        }
+
+        // Outputs: `fixed(D)` → D; `passthrough(role)` → the role operand's
+        // dtype at this variant. Best-effort: an output we cannot type (a
+        // passthrough naming no known input, no inputs at all) is omitted
+        // from the key tail rather than failing (full return validation is a
+        // separate slice).
+        if let Some(ret) = &kernel.return_ {
+            for out in &ret.outputs {
+                let operand = out.name.as_deref().unwrap_or("<output>");
+                if let Some(rule) = out.dtype_rule.as_deref() {
+                    match parse_dtype_rule(rule, section, operand)? {
+                        DtypeRule::Fixed(dt) => dtypes.push(dt),
+                        DtypeRule::Passthrough(role) => {
+                            if let Some(dt) = passthrough_dtype(&inputs, &role, fan) {
+                                dtypes.push(dt);
+                            }
+                        }
+                        DtypeRule::Other => {}
+                    }
+                }
+            }
+        }
+
+        variants.push(DtypeVariant {
+            dtypes,
+            fan_dtype: fan,
+        });
+    }
+
+    Ok((variants, layouts))
 }
 
-/// Parse a `dtype_rule` string. Returns `Some(DType)` for `fixed(DType)`,
-/// `None` for `passthrough(role)` / anything that is not a literal fixed
-/// dtype. `BadScalarType` only if `fixed(...)` names a bad dtype.
-fn parse_fixed_dtype_rule(
-    rule: &str,
-    section: &str,
-    operand: &str,
-) -> Result<Option<DType>, FkcError> {
+/// Resolve `passthrough(role)` to the dtype of the input operand named
+/// `role` at this variant: a varying operand takes `fan`, a fixed operand
+/// its single dtype. Falls back to the first input's variant dtype when the
+/// role names no input (best-effort — the prior behavior for an untyped
+/// passthrough), and `None` when there are no inputs at all.
+fn passthrough_dtype(inputs: &[InputOperand], role: &str, fan: Option<DType>) -> Option<DType> {
+    let operand_dtype = |op: &InputOperand| -> DType {
+        if op.dtypes.len() > 1 {
+            fan.expect("a varying operand implies a fanned dtype")
+        } else {
+            op.dtypes[0]
+        }
+    };
+    if let Some(op) = inputs.iter().find(|op| op.name == role) {
+        Some(operand_dtype(op))
+    } else {
+        inputs.first().map(operand_dtype)
+    }
+}
+
+/// A parsed `dtype_rule` (§5.1): `fixed(DType)`, `passthrough(role)`, or an
+/// unrecognized rule (typed later).
+enum DtypeRule {
+    Fixed(DType),
+    Passthrough(String),
+    Other,
+}
+
+/// Parse a `dtype_rule` string into a [`DtypeRule`]. `BadScalarType` only if
+/// `fixed(...)` names a bad dtype; `passthrough(role)` captures the role name.
+fn parse_dtype_rule(rule: &str, section: &str, operand: &str) -> Result<DtypeRule, FkcError> {
     let rule = rule.trim();
     if let Some(inner) = rule.strip_prefix("fixed(").and_then(|s| s.strip_suffix(")")) {
-        Ok(Some(lower_dtype(inner.trim(), section, operand)?))
+        Ok(DtypeRule::Fixed(lower_dtype(inner.trim(), section, operand)?))
+    } else if let Some(inner) = rule.strip_prefix("passthrough(").and_then(|s| s.strip_suffix(")")) {
+        Ok(DtypeRule::Passthrough(inner.trim().to_string()))
     } else {
-        Ok(None)
+        Ok(DtypeRule::Other)
     }
 }
 
@@ -574,9 +704,14 @@ struct Defaults<'a> {
     revision_base: &'a str,
 }
 
-/// Lower one parsed [`FkcKernel`] into a [`Resolved`] record, resolving its
-/// `entry_point` through `link`. Exactly one of `op_kind` / `fused_op`
-/// must be present.
+/// Lower one parsed [`FkcKernel`] into its [`Resolved`] records, resolving
+/// each per-variant `entry_point` through `link`. Exactly one of `op_kind` /
+/// `fused_op` must be present.
+///
+/// A primitive (`op_kind`) section **fans out** into one [`Resolved`] per
+/// dtype variant (§3.4 multi-dtype fan-out); a section with no varying
+/// operand yields exactly one. A fused (`fused_op`) section yields one record
+/// (fused fan-out is out of scope for this slice — see [`lower_fused`]).
 ///
 /// `defaults` carries the front-matter `backend` / `kernel_source` /
 /// `revision_base` so a kernel that omits them inherits the provider's.
@@ -584,18 +719,21 @@ fn lower_kernel(
     kernel: &FkcKernel,
     defaults: &Defaults<'_>,
     link: &dyn LinkRegistry,
-) -> Result<Resolved, FkcError> {
+) -> Result<Vec<Resolved>, FkcError> {
     let section = kernel.kernel.as_str();
 
     // Exactly one of op_kind / fused_op.
     match (kernel.op_kind.as_deref(), kernel.fused_op.as_deref()) {
         (Some(op_str), None) => {
             let op = lower_op_kind(op_str, section)?;
-            lower_primitive(kernel, op, defaults, link).map(Resolved::Primitive)
+            Ok(lower_primitive(kernel, op, defaults, link)?
+                .into_iter()
+                .map(Resolved::Primitive)
+                .collect())
         }
         (None, Some(fused_str)) => {
             let id = lower_fused_op(fused_str, section)?;
-            lower_fused(kernel, id, defaults, link).map(Resolved::Fused)
+            Ok(vec![Resolved::Fused(lower_fused(kernel, id, defaults, link)?)])
         }
         (op, fused) => Err(FkcError::OpTargetAmbiguous {
             section: section.to_string(),
@@ -605,30 +743,38 @@ fn lower_kernel(
     }
 }
 
+/// Lower a primitive (`op_kind`) section into ONE [`ResolvedPrimitive`] per
+/// dtype variant (§3.4 multi-dtype fan-out).
+///
+/// A section whose operand(s) vary fans out into N bindings — one per fanned
+/// dtype, with the per-variant binding key rebuilt from
+/// [`assemble_dtype_variants`]. Its declared `entry_point` is a **BASE**
+/// symbol; each variant resolves `<base>_<dtype_suffix>` via `link`. A
+/// non-fanning (single-variant) section keeps its specific `entry_point` and
+/// resolves it AS-IS.
+///
+/// Everything except the per-variant `dtypes` + resolved `kernel` is
+/// per-section (shared): backend, caps, layouts, precision, cost, and the
+/// revision hash (which folds the declared BASE `entry_point`, so it is one
+/// value for the whole section).
 fn lower_primitive(
     kernel: &FkcKernel,
     op: OpKind,
     defaults: &Defaults<'_>,
     link: &dyn LinkRegistry,
-) -> Result<ResolvedPrimitive, FkcError> {
+) -> Result<Vec<ResolvedPrimitive>, FkcError> {
     let section = kernel.kernel.as_str();
     let backend_str = kernel.backend.as_deref().unwrap_or(defaults.backend);
     let backend = lower_backend(backend_str, section)?;
-    let (dtypes, layouts) = assemble_dtypes(kernel, section)?;
+    let (variants, layouts) = assemble_dtype_variants(kernel, section)?;
     let caps = caps_map::project_kernel_caps(&layouts);
     let precision = precision::lower_precision(kernel.precision.as_ref(), section)?;
     let cost = compile_cost(kernel.cost.as_ref(), section)?;
 
-    let entry_point = kernel.entry_point.as_deref().ok_or_else(|| {
+    let base_entry_point = kernel.entry_point.as_deref().ok_or_else(|| {
         FkcError::MissingRequiredField {
             section: section.to_string(),
             field: "entry_point".to_string(),
-        }
-    })?;
-    let kernel_ref = link.resolve_primitive(entry_point).ok_or_else(|| {
-        FkcError::UnknownEntryPoint {
-            section: section.to_string(),
-            entry_point: entry_point.to_string(),
         }
     })?;
 
@@ -637,22 +783,51 @@ fn lower_primitive(
         .as_deref()
         .unwrap_or(defaults.kernel_source)
         .to_string();
-    let revision = revhash::compute_revision(kernel, entry_point, defaults.revision_base)?;
+    // Per-section revision (same for all variants); folds the BASE entry_point
+    // so it is byte-identical to the pre-fan-out single-binding revision.
+    let revision = revhash::compute_revision(kernel, base_entry_point, defaults.revision_base)?;
 
-    Ok(ResolvedPrimitive {
-        op,
-        dtypes,
-        backend,
-        caps,
-        layouts,
-        precision,
-        cost,
-        kernel: kernel_ref,
-        kernel_source,
-        revision,
-    })
+    let mut out = Vec::with_capacity(variants.len());
+    for variant in variants {
+        // Per-variant entry_point: a fanning section's declared entry_point is
+        // a BASE symbol → resolve `<base>_<suffix>`; a non-fanning section
+        // keeps its specific symbol and resolves AS-IS.
+        let symbol: std::borrow::Cow<'_, str> = match variant.fan_dtype {
+            Some(dt) => std::borrow::Cow::Owned(format!("{base_entry_point}_{}", dtype_suffix(dt))),
+            None => std::borrow::Cow::Borrowed(base_entry_point),
+        };
+        let kernel_ref = link.resolve_primitive(&symbol).ok_or_else(|| {
+            FkcError::UnknownEntryPoint {
+                section: section.to_string(),
+                entry_point: symbol.into_owned(),
+            }
+        })?;
+
+        out.push(ResolvedPrimitive {
+            op,
+            dtypes: variant.dtypes,
+            backend,
+            caps,
+            layouts: layouts.clone(),
+            precision,
+            cost: cost.clone(),
+            kernel: kernel_ref,
+            kernel_source: kernel_source.clone(),
+            revision,
+        });
+    }
+    Ok(out)
 }
 
+/// Lower a fused (`fused_op`) section into ONE [`ResolvedFused`].
+///
+/// **Fused fan-out is out of scope for this slice** (§3.4 multi-dtype fan-out
+/// is a primitive-only concern here). A fused section registers its
+/// **representative** (first) dtype variant — byte-identical to the
+/// pre-fan-out behavior — and resolves its `entry_point` AS-IS (a fused
+/// entry_point is already a specific symbol, not a base). A multi-dtype fused
+/// section therefore still binds only its representative dtype today; fanning
+/// the fused registry is a follow-up.
 fn lower_fused(
     kernel: &FkcKernel,
     id: FusedOpId,
@@ -662,7 +837,7 @@ fn lower_fused(
     let section = kernel.kernel.as_str();
     let backend_str = kernel.backend.as_deref().unwrap_or(defaults.backend);
     let backend = lower_backend(backend_str, section)?;
-    let (dtypes, layouts) = assemble_dtypes(kernel, section)?;
+    let (variants, layouts) = assemble_dtype_variants(kernel, section)?;
     let caps = caps_map::project_kernel_caps(&layouts);
     let precision = precision::lower_precision(kernel.precision.as_ref(), section)?;
     let cost = compile_cost(kernel.cost.as_ref(), section)?;
@@ -686,6 +861,18 @@ fn lower_fused(
         .unwrap_or(defaults.kernel_source)
         .to_string();
     let revision = revhash::compute_revision(kernel, entry_point, defaults.revision_base)?;
+
+    // The representative (first) variant. `assemble_dtype_variants` always
+    // yields ≥1 variant by construction; treat an empty result as a typed
+    // error rather than panicking (never-panic).
+    let dtypes = variants
+        .into_iter()
+        .next()
+        .map(|v| v.dtypes)
+        .ok_or_else(|| FkcError::MissingRequiredField {
+            section: section.to_string(),
+            field: "accept.inputs (no dtype variant)".to_string(),
+        })?;
 
     Ok(ResolvedFused {
         id,
@@ -720,11 +907,15 @@ pub fn lower_file(
         kernel_source: provider.kernel_source.as_str(),
         revision_base: provider.revision_base.as_deref().unwrap_or(""),
     };
-    file.kernels
-        .iter()
-        .filter(|k| k.registrable) // §3.10: skip describe-only documentation sections
-        .map(|k| lower_kernel(k, &defaults, link))
-        .collect()
+    // Each registrable section lowers to ONE-OR-MORE Resolved records (a
+    // primitive section fans out over its dtype variants, §3.4); flatten them
+    // into the provider's flat list.
+    let mut out = Vec::new();
+    for kernel in file.kernels.iter().filter(|k| k.registrable) {
+        // §3.10: describe-only documentation sections are skipped above.
+        out.extend(lower_kernel(kernel, &defaults, link)?);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -774,7 +965,9 @@ mod tests {
         }
     }
 
-    fn lower_one(src: &str, kernel_name: &str) -> Result<Resolved, FkcError> {
+    /// Lower every dtype variant of one section (a primitive fans out; a
+    /// fused section yields one).
+    fn lower_all(src: &str, kernel_name: &str) -> Result<Vec<Resolved>, FkcError> {
         let file = parse_file(src).expect("parses");
         let provider = &file.front_matter.provider;
         let defaults = Defaults {
@@ -788,6 +981,15 @@ mod tests {
             .find(|k| k.kernel == kernel_name)
             .unwrap_or_else(|| panic!("kernel {kernel_name} present"));
         lower_kernel(kernel, &defaults, &StubLink)
+    }
+
+    /// The first (representative) variant of a section — convenience for the
+    /// single-variant positive tests.
+    fn lower_one(src: &str, kernel_name: &str) -> Result<Resolved, FkcError> {
+        Ok(lower_all(src, kernel_name)?
+            .into_iter()
+            .next()
+            .expect("a section lowers to ≥1 variant"))
     }
 
     // =====================================================================
@@ -817,13 +1019,31 @@ mod tests {
     }
 
     #[test]
-    fn lowers_binary_chassis_section() {
-        // The umbrella `binary` section uses dtype lists [F32,F64,BF16,F16]
-        // ⇒ representative F32 (first).
-        let r = lower_one(ELEMENTWISE_BINARY, "binary").expect("binary lowers");
-        let Resolved::Primitive(p) = r else { panic!() };
-        assert_eq!(p.op, OpKind::AddElementwise);
-        assert_eq!(p.dtypes[0], DType::F32);
+    fn lowers_binary_chassis_section_fans_out_over_all_dtypes() {
+        // The umbrella `binary` section has two operands both enumerating
+        // [F32,F64,BF16,F16] (a UNIFORM multi-dtype section), so it FANS OUT
+        // into one binding per dtype (§3.4) — not a single first-dtype
+        // representative. `passthrough(lhs)` mirrors lhs at each variant.
+        let all = lower_all(ELEMENTWISE_BINARY, "binary").expect("binary lowers");
+        assert_eq!(all.len(), 4, "4 dtypes ⇒ 4 fanned variants");
+        let keys: Vec<Vec<DType>> = all
+            .iter()
+            .map(|r| {
+                let Resolved::Primitive(p) = r else { panic!("binary is a primitive") };
+                assert_eq!(p.op, OpKind::AddElementwise);
+                p.dtypes.to_vec()
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                vec![DType::F32, DType::F32, DType::F32],
+                vec![DType::F64, DType::F64, DType::F64],
+                vec![DType::BF16, DType::BF16, DType::BF16],
+                vec![DType::F16, DType::F16, DType::F16],
+            ],
+            "each variant keys on [lhs, rhs, out(passthrough lhs)] at that dtype"
+        );
     }
 
     #[test]
@@ -934,6 +1154,29 @@ mod tests {
     fn bogus_dtype_is_bad_scalar_type() {
         let err = lower_dtype("F99", "k", "lhs").expect_err("bogus dtype");
         assert!(matches!(err, FkcError::BadScalarType { .. }), "got {err:?}");
+    }
+
+    /// DRIFT GUARD (§3.4 fan-out): the `DType → FKC dtype suffix` spelling
+    /// used to build a fanning section's `<entry_point>_<suffix>` symbol must
+    /// stay the exact INVERSE of `lower_dtype` — i.e. uppercasing the suffix
+    /// round-trips back to the same `DType`. This locks `dtype_suffix`
+    /// (`DType::as_str`, the `ep!`/byte-kernel convention) to the token table
+    /// so the two cannot drift into a second spelling.
+    #[test]
+    fn dtype_suffix_is_the_inverse_of_lower_dtype() {
+        for dt in [
+            DType::U8, DType::I8, DType::U32, DType::I16, DType::I32, DType::I64,
+            DType::BF16, DType::F16, DType::F32, DType::F64, DType::F8E4M3,
+            DType::F6E2M3, DType::F6E3M2, DType::F4, DType::F8E8M0,
+        ] {
+            let suffix = super::dtype_suffix(dt);
+            let token = suffix.to_uppercase();
+            assert_eq!(
+                super::lower_dtype(&token, "k", "op").expect("round-trips"),
+                dt,
+                "suffix {suffix:?} (token {token:?}) must lower back to {dt:?}",
+            );
+        }
     }
 
     #[test]
