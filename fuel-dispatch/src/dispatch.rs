@@ -1307,7 +1307,9 @@ fn scatter_add_f32_cpu_wrapper(
 
 /// Dispatch wrapper for `(Rope, F32, Cpu)`. Three inputs:
 /// `(x, cos, sin)`. `OpParams::Rope` carries the geometry.
-fn rope_f32_cpu_wrapper(
+/// `pub(crate)` so the FKC `CpuLinkRegistry` (`fkc::cpu_link`) can bind this
+/// symbol from the rope contract.
+pub(crate) fn rope_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -1571,10 +1573,12 @@ cpu_softmax_last_dim_wrapper!(softmax_last_dim_f16_cpu_wrapper,  fuel_cpu_backen
 
 /// Generate a CPU Rope wrapper for any element type. The wrapper
 /// shape is identical across dtypes — three inputs (x, cos, sin)
-/// and `OpParams::Rope` carries the geometry.
+/// and `OpParams::Rope` carries the geometry. `pub(crate)` so the FKC
+/// `CpuLinkRegistry` (`fkc::cpu_link`) can bind these symbols from the rope
+/// contract.
 macro_rules! cpu_rope_wrapper {
     ($wrapper:ident, $kernel:path) => {
-        fn $wrapper(
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -4466,6 +4470,62 @@ fn register_cpu_norm_backward_from_contract(table: &mut KernelBindingTable) {
     );
 }
 
+/// The authored CPU RoPE kernel contract, embedded into the binary (the
+/// PRODUCTION `include_str!`). `register_cpu_rope_from_contract` parses +
+/// lowers it and binds the family FROM THE CONTRACT.
+const CPU_ROPE_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/rope.fkc.md");
+
+/// Register the CPU RoPE family (rotary position embedding; 1 op × 4 dtypes =
+/// 4 bindings, key `[T, T, T, T]`) by IMPORTING its FKC kernel contract, the
+/// ninth production FKC consumer. FKC is unconditional core infrastructure, so
+/// this is the ONE registration path for the family: the hand-written
+/// `table.register(Rope, ...)` calls it used to carry are DELETED.
+///
+/// Each of the 4 per-dtype sections (`## rope_f32`, `## rope_f64`,
+/// `## rope_bf16`, `## rope_f16`) is a SPECIFIC single-dtype contract with a
+/// concrete `entry_point` (`…::rope_f32`), so none of them fan — the importer
+/// resolves each declared symbol AS-IS through the production
+/// [`crate::fkc::CpuLinkRegistry`] (now chaining
+/// [`crate::fkc::CPU_ROPE_ENTRY_POINTS`]) to the exact wrapper fn-pointer the
+/// CPU backend exposes. The binding key is `[T, T, T, T]` — RoPE takes THREE
+/// inputs (`x` + the precomputed `cos`/`sin` tables of shape `[seq, head_dim]`,
+/// all one dtype; the tables broadcast over the `outer_count` axis by the
+/// kernel re-indexing them per outer, NOT a stride-0 view) and writes ONE
+/// `passthrough(x)` output; outer_count / seq / head_dim ride in
+/// `OpParams::Rope`, NOT the dtype-list — identical to the deleted
+/// `rope_dts(t)` regs.
+///
+/// Behavior-preserving vs. the deleted hand-written path: identical kernels +
+/// caps (contiguous-only, even `head_dim`); the binding's `kernel_source`
+/// becomes the contract's `"portable-cpu"` tag and its precision the contract's
+/// bit-stable claim. Cost is preserved because this runs BEFORE
+/// `fill_unset_cpu_cost`, which upgrades the imported entries' `unknown_cost`
+/// sentinel to the same OpKind cost fn every CPU primitive gets. This contract
+/// has NO `##` chassis umbrella section, so there is nothing marked
+/// `registrable: false` and no double-register risk. RoPE is ALSO registered in
+/// the `FusedKernelRegistry` (`register_default_fused_kernels`,
+/// `FusedOps::ROPE`) — that is a SEPARATE registry seam and stays untouched;
+/// this migration only moves the `KernelBindingTable` primitive path. The
+/// family declares NO fused ops, so `register_into`'s required fused argument is
+/// a local throwaway that provably stays empty.
+fn register_cpu_rope_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_ROPE_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU rope contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "rope contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU rope contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -4487,7 +4547,10 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     let unary  = |t: DType| [t, t];                             // (in, out)
     let binary = |t: DType| [t, t, t];                          // (lhs, rhs, out)
     let u8_dt  = DType::U8;
-    let rope_dts = |t: DType| [t, t, t, t];                     // (x, cos, sin, out)
+    // (Rope's (x, cos, sin, out) key shape is now built by the FKC importer
+    // from docs/kernel-contracts/cpu/rope.fkc.md — see
+    // register_cpu_rope_from_contract; the hand-written `rope_dts` closure was
+    // removed with its regs.)
     let conv2d_no_bias   = |t: DType| [t, t, t];                // (x, w, out)
     let conv2d_with_bias = |t: DType| [t, t, t, t];             // (x, w, bias, out)
     let fused_linear     = |t: DType| [t, t, t, t];             // (lhs, rhs, bias, out)
@@ -4612,6 +4675,20 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // imported entries pick up the CPU cost fill. The norm-backward ops' SEPARATE
     // FusedKernelRegistry seam (register_default_fused_kernels) stays untouched.
     register_cpu_norm_backward_from_contract(table);
+
+    // RoPE (rotary position embedding; 1 op × 4 dtypes = 4 bindings, key
+    // [T, T, T, T]). Ninth production FKC-contract consumer: IMPORTED from
+    // docs/kernel-contracts/cpu/rope.fkc.md via the same `CpuLinkRegistry`.
+    // Each per-dtype section carries a SPECIFIC single-dtype entry_point
+    // (`rope_f32`, …) resolved AS-IS (no fan-out). RoPE takes THREE inputs
+    // (x + the precomputed cos/sin tables, all one dtype) → ONE passthrough(x)
+    // output, so the key is [T, T, T, T]; outer_count/seq/head_dim ride in
+    // OpParams::Rope. The hand-written `table.register(Rope, ...)` calls (the
+    // rope_dts block below) are DELETED — this is the sole registration path.
+    // Placed BEFORE the `fill_unset_cpu_*` passes so the imported entries pick
+    // up the CPU cost fill. RoPE's SEPARATE FusedKernelRegistry seam
+    // (register_default_fused_kernels, FusedOps::ROPE) stays untouched.
+    register_cpu_rope_from_contract(table);
 
     table.register(MatMul,             &binary(f32_dt),  cpu, matmul_f32_cpu_wrapper);
     table.register(MatMul,             &binary(f64_dt),  cpu, matmul_f64_cpu_wrapper);
@@ -5153,11 +5230,11 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         table.register(Gather,      &gather_dts(dt),   cpu, gather_cpu_wrapper);
     }
 
-    // Rope: x + cos + sin → out, all same dtype.
-    table.register(Rope, &rope_dts(f32_dt),  cpu, rope_f32_cpu_wrapper);
-    table.register(Rope, &rope_dts(bf16_dt), cpu, rope_bf16_cpu_wrapper);
-    table.register(Rope, &rope_dts(f16_dt),  cpu, rope_f16_cpu_wrapper);
-    table.register(Rope, &rope_dts(f64_dt),  cpu, rope_f64_cpu_wrapper);
+    // (Rope × 4 dtypes is now registered FROM the rope FKC contract via
+    // register_cpu_rope_from_contract near the top of this fn — key
+    // [T, T, T, T] (x, cos, sin + passthrough output), geometry in
+    // OpParams::Rope. Its SEPARATE FusedKernelRegistry seam
+    // (register_default_fused_kernels, FusedOps::ROPE) stays hand-written.)
 
     // QMatMul: F32 activations, U32 weight blocks, F32 output.
     table.register(QMatMul, &[f32_dt, u32_dt, f32_dt], cpu, qmatmul_f32_cpu_wrapper);
@@ -7970,6 +8047,71 @@ mod tests {
             }
         }
         assert_eq!(checked, 16, "4 ops × 4 dtypes checked");
+    }
+
+    /// RoPE (rotary position embedding) is ONE primitive op (`OpKind::Rope`)
+    /// monomorphized over the four float dtypes {F32, F64, BF16, F16}. Each
+    /// dtype is a distinct single-dtype contract section (`## rope_f32`, …) with
+    /// a concrete `entry_point` (`fuel_cpu_backend::byte_kernels::rope_f32`), so
+    /// none of them fan — the importer resolves each declared symbol AS-IS. RoPE
+    /// takes THREE inputs (`x` + the precomputed `cos`/`sin` tables, all one
+    /// dtype; the tables broadcast over the outer axis by re-indexing, NOT a
+    /// stride-0 view) and writes ONE `passthrough(x)` output, so the binding key
+    /// is `[T, T, T, T]` (x, cos, sin, out); outer_count / seq / head_dim ride in
+    /// `OpParams::Rope`, NOT the dtype-list — identical to the deleted
+    /// `rope_dts(t)` regs.
+    ///
+    /// For each key: resolves to the EXACT production wrapper fn-pointer with
+    /// `kernel_source == "portable-cpu"` — the contract provenance tag (the
+    /// deleted hand-written path stamped `""`; THIS is the discriminator that
+    /// goes red until the import is wired) — caps contiguous, and the audited
+    /// bit-stable precision riding through.
+    #[test]
+    fn global_bindings_registers_rope_family_from_contract() {
+        let table = global_bindings();
+        let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+        // Wrapper order matches `dts`.
+        let expected_wrappers: [crate::kernel::KernelRef; 4] = [
+            rope_f32_cpu_wrapper,
+            rope_f64_cpu_wrapper,
+            rope_bf16_cpu_wrapper,
+            rope_f16_cpu_wrapper,
+        ];
+
+        let mut checked = 0usize;
+        for (dt, expected) in dts.iter().zip(expected_wrappers.iter()) {
+            // [T, T, T, T] operand-dtype list (x, cos, sin + passthrough output).
+            let alts =
+                table.lookup_alternatives(OpKind::Rope, &[*dt, *dt, *dt, *dt], BackendId::Cpu);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Rope/{dt:?}/Cpu: the production wrapper must be bound \
+                         FROM the rope contract in global_bindings() \
+                         — found {} alternative(s) with sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "portable-cpu",
+                "Rope/{dt:?}: rope family must be contract-sourced \
+                 (kernel_source=\"portable-cpu\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                !entry.caps.strided_input,
+                "Rope/{dt:?}: caps preserved (contiguous-only, strided_input=false)",
+            );
+            assert!(
+                entry.precision.bit_stable_on_same_hardware,
+                "Rope/{dt:?}: the contract's audited bit-stable claim rode through",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 4, "1 op × 4 dtypes checked");
     }
 
     /// Lookup miss returns NoBackendForOp with diagnostic data.
