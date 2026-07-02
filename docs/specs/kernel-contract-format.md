@@ -324,6 +324,13 @@ is a YAML mapping:
 ```yaml
 # A tensor descriptor.
 name: lhs                 # operand role name (diagnostic + maps to FDX view name; §5.5)
+optional: false           # true ⇒ OPTIONAL input operand (e.g. conv `bias`, flash `alibi_slopes`).
+                          # The importer's key-builder then registers the op BOTH with AND without
+                          # this operand (two operand-count keys, same entry_point/kernel — presence
+                          # is implicit in inputs.len()). Only the LAST input may be optional
+                          # (an earlier optional operand is an OptionalOperandNotLast error, never a
+                          # silent mis-key); an output may not passthrough() an optional operand.
+                          # Defaults to false (a required operand). Ignored on outputs.
 dtypes: [F32, F64, BF16, F16]   # accepted DLPack dtypes (Fuel DType names; FDX §6.1 / §3.4)
 dtype_class: float        # optional shorthand: int|uint|float|any (expands per §3.4)
 # --- layout capability (richer than one bool — §4.1) ---

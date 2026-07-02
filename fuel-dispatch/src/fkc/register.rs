@@ -1427,4 +1427,156 @@ determinism: same_hardware_bitwise
             "must NOT append a suffix to a single-variant section",
         );
     }
+
+    // =====================================================================
+    // OPTIONAL-OPERAND FAN-OUT (§3.4): an `optional: true` LAST input fans
+    // EACH dtype variant into TWO keys — one OMITTING the optional operand,
+    // one INCLUDING it — BOTH bound to the SAME kernel_ref. Composes with
+    // the dtype fan-out (multi-dtype AND optional ⇒ 2N bindings).
+    // =====================================================================
+
+    /// A synthetic single-dtype contract: one REQUIRED input `x` + one
+    /// `optional: true` LAST input `bias`, output `passthrough(x)`. With
+    /// optional-operand support the importer registers TWO primitive bindings
+    /// — no-bias `[x, out]` = `[F32, F32]` and with-bias `[x, bias, out]` =
+    /// `[F32, F32, F32]` — BOTH resolving the SAME (single, as-is) `entry_point`
+    /// ⇒ the SAME `KernelRef`.
+    ///
+    /// **Born-red**: BEFORE the fix the schema `TensorDesc` has no `optional`
+    /// field, so serde silently drops `optional: true`; the operand is treated
+    /// as REQUIRED and ONLY the with-bias key builds → `primitives.len() == 1`
+    /// (RED). After the schema+key-builder fix → 2 (GREEN).
+    const OPTIONAL_LAST_OPERAND_CONTRACT: &str = r#"---
+fkc_version: 1
+provider:
+  name: opt-provider
+  backend: Cpu
+  kernel_source: "opt-cpu"
+---
+
+# optional-operand bundle
+
+## opt_add
+
+One required input + one optional LAST input.
+
+```fkc
+kernel: opt_add
+op_kind: AddElementwise
+blurb: "optional last operand"
+entry_point: "stub::opt_add"
+accept:
+  inputs:
+    - name: x
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+    - name: bias
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+      optional: true
+  op_params: { variant: None }
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(x)
+cost:
+  provenance: declared
+  class: cheap_elementwise
+  flops: "n"
+precision:
+  bit_stable_on_same_hardware: true
+  audited: true
+determinism: same_hardware_bitwise
+```
+"#;
+
+    #[test]
+    fn optional_last_operand_registers_both_with_and_without_keys() {
+        let link = FanStubLink::new();
+        let provider = import_bundle_str(OPTIONAL_LAST_OPERAND_CONTRACT, &link)
+            .expect("optional-operand contract imports");
+
+        // TWO bindings: the with-optional key AND the without-optional key.
+        // Pre-change (no `optional` schema field): serde drops the flag, the
+        // operand is required, only the with-operand key builds → 1. RED→GREEN.
+        assert_eq!(
+            provider.primitives.len(),
+            2,
+            "an optional LAST input fans into 2 keys (with + without the operand); \
+             pre-change (no `optional` schema field) only the with-operand key builds → 1",
+        );
+
+        // BOTH keys bind the SAME kernel_ref (same entry_point resolved AS-IS —
+        // single-dtype, so no `_<suffix>` is appended).
+        let k0 = provider.primitives[0].kernel as usize;
+        let k1 = provider.primitives[1].kernel as usize;
+        assert_eq!(
+            k0, k1,
+            "both the with- and without-optional keys resolve the SAME kernel (one entry_point)",
+        );
+
+        // The two keys are exactly `[x, out]` and `[x, bias, out]`.
+        let mut keys: Vec<Vec<DType>> =
+            provider.primitives.iter().map(|p| p.dtypes.to_vec()).collect();
+        keys.sort_by_key(|k| k.len());
+        assert_eq!(
+            keys[0],
+            vec![DType::F32, DType::F32],
+            "no-optional key = [x, out]",
+        );
+        assert_eq!(
+            keys[1],
+            vec![DType::F32, DType::F32, DType::F32],
+            "with-optional key = [x, bias, out]",
+        );
+
+        // Both register into the binding table + look up.
+        let mut table = KernelBindingTable::new();
+        let mut fused = FusedKernelRegistry::new();
+        provider
+            .register_into(&mut table, &mut fused)
+            .expect("both keys register");
+        assert!(
+            table
+                .lookup(OpKind::AddElementwise, &[DType::F32, DType::F32], BackendId::Cpu)
+                .is_ok(),
+            "no-optional key [F32, F32] is bound",
+        );
+        assert!(
+            table
+                .lookup(
+                    OpKind::AddElementwise,
+                    &[DType::F32, DType::F32, DType::F32],
+                    BackendId::Cpu,
+                )
+                .is_ok(),
+            "with-optional key [F32, F32, F32] is bound",
+        );
+
+        // The declared entry_point resolved AS-IS (single-dtype ⇒ no suffix).
+        let requested = link.requested.lock().unwrap().clone();
+        assert!(
+            requested.iter().any(|s| s == "stub::opt_add"),
+            "single-dtype section resolves its declared symbol as-is; requested={requested:?}",
+        );
+
+        // BACKWARD-COMPAT: the SAME contract WITHOUT the `optional: true` flag is
+        // a plain 2-input section → EXACTLY ONE binding (the fan is driven ONLY
+        // by the optional flag; nothing else changed).
+        let non_optional =
+            OPTIONAL_LAST_OPERAND_CONTRACT.replace("      optional: true\n", "");
+        let link2 = FanStubLink::new();
+        let provider2 =
+            import_bundle_str(&non_optional, &link2).expect("non-optional twin imports");
+        assert_eq!(
+            provider2.primitives.len(),
+            1,
+            "no optional operand ⇒ exactly one binding (backward-compat)",
+        );
+        assert_eq!(
+            provider2.primitives[0].dtypes.to_vec(),
+            vec![DType::F32, DType::F32, DType::F32],
+            "the required-both key [x, bias, out]",
+        );
+    }
 }

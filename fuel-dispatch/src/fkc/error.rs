@@ -142,6 +142,29 @@ pub enum FkcError {
         found: String,
     },
 
+    /// An `optional: true` operand is NOT the LAST input (§3.4 optional-operand
+    /// fan-out). Only the last input may be optional — omitting the last input
+    /// yields a CONTIGUOUS valid key ending just before the outputs, whereas an
+    /// earlier optional operand would leave a hole in the middle of the key and
+    /// mis-align every following operand. This is a typed error, never a silent
+    /// mis-key.
+    #[error(
+        "FKC §3.4: kernel `{section}` operand `{operand}` is `optional: true` but is not the \
+         last input — only the last input may be optional (omitting it yields a contiguous key)"
+    )]
+    OptionalOperandNotLast { section: String, operand: String },
+
+    /// A `passthrough(role)` output names the OPTIONAL operand as its dtype
+    /// source (§3.4 / §5.1). When the optional operand is absent the passthrough
+    /// cannot resolve, so its two keys (with / without the operand) would carry
+    /// DIFFERENT output dtypes — an output may not derive its dtype from an
+    /// operand that can be omitted. A typed error, never a silent mis-key.
+    #[error(
+        "FKC §3.4/§5.1: kernel `{section}` output `passthrough({role})` derives its dtype from \
+         the optional operand `{role}` — an output may not passthrough an optional operand"
+    )]
+    PassthroughNamesOptionalOperand { section: String, role: String },
+
     /// A `backend` string did not match any as-built `BackendId` (§2.1).
     #[error("FKC §2.1: kernel `{section}` names unknown backend `{backend}`")]
     UnknownBackend { section: String, backend: String },

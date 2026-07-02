@@ -443,10 +443,13 @@ fn dtype_suffix(dt: DType) -> &'static str {
 }
 
 /// A resolved input operand: its role name + its enumerated dtype list
-/// (post `dtype_class` expansion; always ≥1).
+/// (post `dtype_class` expansion; always ≥1) + whether it is OPTIONAL (§3.4).
 struct InputOperand {
     name: String,
     dtypes: Vec<DType>,
+    /// `optional: true` (§3.4): production registers the op BOTH with and
+    /// without this operand. Only the LAST input may be optional.
+    optional: bool,
 }
 
 /// Resolve one operand's enumerated dtype list (explicit `dtypes:` wins; a
@@ -503,6 +506,25 @@ fn resolve_operand_dtypes(
 ///   `fixed(D)` → D; `passthrough(role)` → the dtype of the INPUT operand
 ///   named `role` **at this variant** (so `where`'s `passthrough(a)` mirrors
 ///   `a` = `dt`, NOT the first input `cond`). Key shape is inputs-then-outputs.
+///
+/// **Optional-operand fan-out (§3.4).** When the LAST input carries
+/// `optional: true` (e.g. conv's `bias`), EACH dtype variant fans into TWO
+/// keys — one OMITTING the optional operand (its dtype dropped from the input
+/// tail) and one INCLUDING it — so `variants = (dtype fan-out) × (optional
+/// {absent, present})`. Both keys resolve the SAME `entry_point`/kernel (the
+/// optional operand rides through op-params, not a distinct symbol). Rules:
+/// - Only the LAST input may be optional; an earlier optional operand would
+///   leave a hole mid-key and is [`FkcError::OptionalOperandNotLast`] (never a
+///   silent mis-key).
+/// - An output may NOT `passthrough(role)` the optional operand — absent, the
+///   two keys' output dtypes would disagree — that is
+///   [`FkcError::PassthroughNamesOptionalOperand`]. `passthrough` of any other
+///   (always-present) operand resolves identically for both keys.
+/// - A section with NO optional operand behaves EXACTLY as before (one key per
+///   dtype variant) — the already-migrated per-(op,dtype) families stay
+///   byte-identical.
+/// The PRESENT (full-operand) key is emitted FIRST so the fused path's
+/// representative (first) variant is unchanged (`lower_fused` takes `.next()`).
 fn assemble_dtype_variants(
     kernel: &FkcKernel,
     section: &str,
@@ -517,8 +539,23 @@ fn assemble_dtype_variants(
             inputs.push(InputOperand {
                 name: operand.to_string(),
                 dtypes: resolved,
+                optional: d.optional,
             });
             layouts.push(caps_map::resolve_layout(d.layout.as_ref(), section, operand)?);
+        }
+    }
+
+    // §3.4 optional-operand support: at most the LAST input may be `optional`.
+    // An earlier optional operand, when omitted, would leave a hole in the
+    // MIDDLE of the key and mis-align every following operand — a typed error,
+    // never a silent mis-key. `optional_last` drives the {absent, present} fan.
+    let optional_last = inputs.last().map(|op| op.optional).unwrap_or(false);
+    for (i, op) in inputs.iter().enumerate() {
+        if op.optional && i != inputs.len() - 1 {
+            return Err(FkcError::OptionalOperandNotLast {
+                section: section.to_string(),
+                operand: op.name.clone(),
+            });
         }
     }
 
@@ -550,11 +587,15 @@ fn assemble_dtype_variants(
         Some(set) => set.iter().map(|dt| Some(*dt)).collect(),
     };
 
-    let mut variants: Vec<DtypeVariant> = Vec::with_capacity(fan_dtypes.len());
+    // Capacity: one key per dtype variant, doubled when an optional operand
+    // fans each into {absent, present}.
+    let per_variant = if optional_last { 2 } else { 1 };
+    let mut variants: Vec<DtypeVariant> = Vec::with_capacity(fan_dtypes.len() * per_variant);
     for fan in fan_dtypes {
         // Each input operand contributes its dtype at THIS variant: a fixed
-        // operand its single dtype, a varying operand the fan dtype.
-        let mut dtypes: KernelDTypes = SmallVec::new();
+        // operand its single dtype, a varying operand the fan dtype. Built with
+        // ALL inputs (incl. the optional last); the absent-key drops its tail.
+        let mut input_dtypes: KernelDTypes = SmallVec::new();
         for operand in &inputs {
             let dt = if operand.dtypes.len() > 1 {
                 // Varying: fan_dtype is Some by construction here.
@@ -562,23 +603,37 @@ fn assemble_dtype_variants(
             } else {
                 operand.dtypes[0]
             };
-            dtypes.push(dt);
+            input_dtypes.push(dt);
         }
 
         // Outputs: `fixed(D)` → D; `passthrough(role)` → the role operand's
-        // dtype at this variant. Best-effort: an output we cannot type (a
-        // passthrough naming no known input, no inputs at all) is omitted
-        // from the key tail rather than failing (full return validation is a
-        // separate slice).
+        // dtype at this variant. Built ONCE and shared by BOTH the present and
+        // absent keys — an output may not `passthrough` the optional operand
+        // (checked below), so the output tail is identical for both. Best-
+        // effort otherwise: an output we cannot type (a passthrough naming no
+        // known input, no inputs at all) is omitted from the key tail rather
+        // than failing (full return validation is a separate slice).
+        let mut output_dtypes: KernelDTypes = SmallVec::new();
         if let Some(ret) = &kernel.return_ {
             for out in &ret.outputs {
                 let operand = out.name.as_deref().unwrap_or("<output>");
                 if let Some(rule) = out.dtype_rule.as_deref() {
                     match parse_dtype_rule(rule, section, operand)? {
-                        DtypeRule::Fixed(dt) => dtypes.push(dt),
+                        DtypeRule::Fixed(dt) => output_dtypes.push(dt),
                         DtypeRule::Passthrough(role) => {
+                            // An output may not derive its dtype from the
+                            // optional operand: absent, the two keys' output
+                            // dtypes would disagree (§3.4/§5.1).
+                            if optional_last
+                                && inputs.last().map(|o| o.name == role).unwrap_or(false)
+                            {
+                                return Err(FkcError::PassthroughNamesOptionalOperand {
+                                    section: section.to_string(),
+                                    role,
+                                });
+                            }
                             if let Some(dt) = passthrough_dtype(&inputs, &role, fan) {
-                                dtypes.push(dt);
+                                output_dtypes.push(dt);
                             }
                         }
                         DtypeRule::Other => {}
@@ -587,10 +642,32 @@ fn assemble_dtype_variants(
             }
         }
 
-        variants.push(DtypeVariant {
-            dtypes,
-            fan_dtype: fan,
-        });
+        if optional_last {
+            // PRESENT (full-operand) key FIRST so `lower_fused`'s representative
+            // (first) variant is unchanged: all inputs (incl. optional), outputs.
+            let mut present: KernelDTypes = input_dtypes.clone();
+            present.extend_from_slice(&output_dtypes);
+            variants.push(DtypeVariant {
+                dtypes: present,
+                fan_dtype: fan,
+            });
+            // ABSENT key: inputs MINUS the optional last, then outputs. Both
+            // resolve the SAME entry_point/kernel (same `fan_dtype`).
+            let mut absent: KernelDTypes = SmallVec::new();
+            absent.extend_from_slice(&input_dtypes[..input_dtypes.len() - 1]);
+            absent.extend_from_slice(&output_dtypes);
+            variants.push(DtypeVariant {
+                dtypes: absent,
+                fan_dtype: fan,
+            });
+        } else {
+            let mut dtypes: KernelDTypes = input_dtypes;
+            dtypes.extend_from_slice(&output_dtypes);
+            variants.push(DtypeVariant {
+                dtypes,
+                fan_dtype: fan,
+            });
+        }
     }
 
     Ok((variants, layouts))
