@@ -18,12 +18,12 @@
 
 use std::sync::{OnceLock, RwLock};
 
-use fuel_ir::{DType, Shape, backend::BackendCapabilities, probe::BackendId};
+use fuel_ir::{DType, probe::BackendId};
 use fuel_graph::jit::PatternNode;
-use fuel_graph::registry::{FusedOpId, FusedOpParams};
+use fuel_graph::registry::FusedOpId;
 
 use crate::fused::{
-    BackendImpl, CostEstimate, FusedKernelRegistry, KernelRevisionHash, PrecisionGuarantee,
+    BackendImpl, FusedKernelRegistry, KernelRevisionHash, PrecisionGuarantee,
     default_kernel_registry,
 };
 use crate::kernel::{KernelCaps, KernelRef};
@@ -55,14 +55,6 @@ pub fn fused_kernel_available(id: FusedOpId, backend: BackendId) -> bool {
         || lookup_runtime_kernel(id, backend).is_some()
 }
 
-/// A trivial runtime cost (v1). `BackendImpl.cost` is a `fn` pointer (it can't
-/// capture the adopted op's cost AST), so cost-gating adoption against the
-/// `JitResponse` cost — via the `cost_expr` trampoline — is a follow-up that
-/// runs *before* `adopt_runtime_fused`, not inside this uniform estimate.
-fn runtime_fused_cost(_: &[Shape], _: &FusedOpParams, _: &BackendCapabilities) -> CostEstimate {
-    CostEstimate::default()
-}
-
 /// Adopt a synthesized/imported runtime fused op: register its recipe (the
 /// `region`) in the `fuel-graph` sidecar **and** bind its `kernel` here, then
 /// return the freshly-allocated runtime [`FusedOpId`]. After this the capability
@@ -86,10 +78,16 @@ pub fn adopt_runtime_fused(
     // process, so leaking its dtype tuple to `'static` is sound (not a per-call
     // leak — one per adopted op).
     let dtypes: &'static [DType] = Box::leak(dtypes.into_boxed_slice());
+    // The fused-op cost sentinel (not a private zero-cost twin): so the
+    // adopted op's Layer-1 cost is composed from its recipe
+    // (`crate::fused_cost::fused_layer1_cost` → `cost_from_decompose`)
+    // rather than pricing at a spurious zero. A `cost_expr`/Judge override
+    // still supersedes it (measured › declared › composed › zero). This is
+    // the runtime-fused case spec §6 flags as most sentinel-zero-prone.
     let impl_ = BackendImpl {
         kernel,
         dtypes,
-        cost: runtime_fused_cost,
+        cost: crate::fkc::fused_unknown_cost,
         precision: PrecisionGuarantee::UNAUDITED,
         caps: KernelCaps::empty(),
         revision: KernelRevisionHash::UNTRACKED,
@@ -150,6 +148,27 @@ mod tests {
         assert!(
             fuel_graph::runtime_fused::runtime_region(id).is_some(),
             "the recipe (region) is registered in the fuel-graph sidecar",
+        );
+    }
+
+    #[test]
+    fn adopted_runtime_op_carries_the_cost_from_decompose_sentinel() {
+        // The adopted op's cost is the fused sentinel — so its Layer-1 cost
+        // is composed from its recipe (`fused_cost::fused_layer1_cost`),
+        // never a spurious zero (spec §6: runtime-fused ops are the most
+        // sentinel-zero-prone).
+        let id = adopt_runtime_fused(
+            "test::adopt::relu_add::cost_sentinel",
+            relu_add(),
+            noop_kernel as KernelRef,
+            vec![DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+        )
+        .expect("relu(add) is a registrable region");
+        let impl_ = lookup_runtime_kernel(id, BackendId::Cpu).expect("kernel bound");
+        assert!(
+            crate::fused_cost::is_fused_cost_sentinel(impl_.cost),
+            "adopted runtime op carries the fused cost sentinel (→ cost-from-decompose)",
         );
     }
 }
