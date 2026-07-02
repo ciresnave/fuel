@@ -1,6 +1,16 @@
 # Fused-op Layer-1 cost from its decomposition
 
-**Status:** DESIGN SPEC (2026-07-01, for review). No code yet. Proposed by CireSnave:
+**Status:** LANDED (2026-07-02). v1 shipped in `fuel-dispatch/src/fused_cost.rs`
+(`cost_from_decompose` + the sentinel-fallback accessor `fused_layer1_cost`); the
+runtime-adoption path (`adopt_runtime_fused`) now stamps the `fused_unknown_cost`
+sentinel so runtime/JIT ops compose too. Chose shape **(A)** (use-site sentinel
+fallback), the **tight** `bytes_moved` (boundary I/O), and one launch overhead
+(`max` of component overheads, since `BackendCapabilities` carries no
+`kernel_launch_overhead_ns` field). Not yet wired into the ranker's fused-op cost
+read (the fused-registry cost is not consumer-side yet); `fused_layer1_cost` is the
+accessor that consumer will call. See [10-decisions-log](../architecture/10-decisions-log.md)
+2026-07-02 and [04-optimization §Three layers of cost data](../architecture/04-optimization.md).
+Original design spec below (2026-07-01, for review). Proposed by CireSnave:
 *"could the combination of [the base-model ops] that makes up the fused version of a
 kernel be used to estimate the cost of that fused kernel until the Judge can verify it
 during real runs?"* — answer: yes, and it should be the **default** Layer-1 cost for any

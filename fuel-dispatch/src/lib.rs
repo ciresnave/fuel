@@ -49,6 +49,7 @@ pub mod dispatch;
 pub mod driver;
 pub mod fkc;
 pub mod fused;
+pub mod fused_cost;
 pub mod kernel;
 pub mod optimize;
 pub mod pipelined;

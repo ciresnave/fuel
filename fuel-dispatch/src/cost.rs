@@ -48,7 +48,11 @@ use fuel_ir::{DType, Shape};
 /// Bytes per element for the supplied dtype. Used to convert
 /// element counts into bandwidth. Returns 4 (F32 byte width) for
 /// non-numeric dtypes that the cost model doesn't differentiate.
-fn dtype_bytes(dt: DType) -> u64 {
+///
+/// `pub(crate)` so the fused-op cost-from-decompose fold
+/// ([`crate::fused_cost`]) prices the fused op's boundary I/O with the
+/// same per-dtype widths the primitive cost families use.
+pub(crate) fn dtype_bytes(dt: DType) -> u64 {
     match dt {
         DType::F32 | DType::U32 | DType::I32 => 4,
         DType::F64 | DType::I64 => 8,

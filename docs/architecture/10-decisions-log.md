@@ -376,6 +376,22 @@ Cross-references are fine — an architecture-decision-log entry can link to the
 
 ---
 
+## 2026-07-02 — Fused-op Layer-1 cost composed from its decomposition (no zero sentinel)
+
+**Sections affected**: 04
+**Phase / PR**: Fused-op cost-from-decompose (this change); follows FKC cost unification Part A/C (`1acf3222` / `0e178b9b`)
+**Bumped to**: 04 v0.7 → v0.8
+
+**What changed**: A fused / synthesized op with no declared or measured cost registered a zero-cost sentinel (`fused_unknown_cost` for FKC-imported ops; the runtime-adopted path likewise), and a zero-priced candidate wins spuriously — the exact mis-pricing Part A fixed for GPUs, now recurring for every fused op that lacks a Judge cell. This adds a **Layer-1 default that composes the fused op's cost from its own `decompose`**: `flops = Σ` over the decompose subgraph's primitive nodes of their per-node Layer-1 FLOPs (arithmetically exact for algebraic fusions); `bytes_moved =` the fused op's own **boundary I/O** (declared inputs + final output — fusion elides the intermediates, so the *tight* estimate, not `Σ` intermediate bytes); `kernel_overhead_ns =` **one** launch overhead (the fused kernel launches once). It is an **optimizer-level default** — `fuel_dispatch::fused_cost::{cost_from_decompose, fused_layer1_cost}`, computed where the graph + `decompose` are both in hand, NOT inside the bare `cost(shapes, params, caps)` fn pointer (which has no graph). It fires **only for the sentinel** (identity fn-pointer compare, as `fill_unset_*` already does for the primitive `unknown_cost`): a fused op WITH a declared cost or a Judge measurement is priced by that, unchanged — so the layering is **measured › declared › composed-from-recipe › (never) zero**. The runtime-adoption path (`adopt_runtime_fused`) now stamps the same sentinel so runtime/JIT-synthesized fused ops (where sentinel-zero was most likely) benefit too.
+
+**Why**: The recipe principle (every fused op carries a total, never-panic `decompose` whose fixpoint is the primitive base map — 2026-06-20 decision) means the exact primitive-equivalent of every fused kernel is already known, and every primitive already has a Layer-1 cost fn. Composing those is a real, bounded number available immediately (no Judge data required) — the bridge "until the Judge can verify it during real runs." It is directionally safe under carry-forward placement: for algorithm-changing fusions (flash-attention trades recompute for O(n) memory) the decompose FLOPs are an approximation the Judge later refines *downward* — a missed win until measured, not an optimistic *irreversible* bad commit.
+
+**Alternatives considered**: *Populate a real cost fn at registration that closes over the decompose (spec shape B).* Rejected — the `cost:` field is a bare `fn` pointer that can't capture the decomposition map; it would need the same signature-widening the deferred Task-F trampoline needs. The use-site sentinel fallback (shape A) is zero registry churn. *A declared `cost:` expression as the default (Task F).* Kept as an optional Layer-1 *override* for authors who want to beat the composition's precision — this decision demotes it from prerequisite to refinement. *Loose `Σ decompose.bytes` upper bound for `bytes_moved`.* Available as a conservative fallback; the tight boundary-I/O estimate is used because every input is already in hand and it is closer to the true fused value.
+
+**Implications going forward**: (1) Every fused op — FKC-imported, static-registered, or runtime-adopted — now has a nonzero, directionally-safe Layer-1 cost the moment it exists; the zero-cost landmine is closed across the fused surface. (2) Task F (contract-declared `cost:` trampoline) is now an *optional* precision refinement, not a prerequisite. (3) A param-carrying interior primitive in a decompose prices at its shape-derivable floor under the v1 fold (`OpParams::None`); the Judge is the corrector, and a full `op_to_op_params` reconstruction is a possible follow-up if a consumer needs tighter interior pricing. (4) The fused-registry cost read is not yet consumed by the ranker's `compute_static_costs` (which prices primitives via the binding table); `fused_layer1_cost` is the accessor the fused-op cost consumer will call when it lands.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
