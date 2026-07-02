@@ -63,6 +63,7 @@ any non-contiguous operand must be contiguized by the planner first.
 ```fkc
 kernel: compare
 op_kind: EqualElementwise        # family representative; per-op cells in the thunk sections (Eq/Ne/Lt/Le/Gt/Ge)
+registrable: false               # §3.10 describe-only: shared compare chassis (generic compare<T,U>), NOT a dispatch target — the per-(op,dtype) thunks below are the registrable contracts
 blurb: "Elementwise compare chassis: T x T -> U8 mask; contiguous same-shape; half via f32; NaN per IEEE."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -1710,7 +1711,7 @@ op_kind: Where
 blurb: "Ternary select out[i] = cond[i] != 0 ? a[i] : b[i]; cond U8, a/b/out share dtype T; contiguous same-shape; exact copy."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::where_f32"   # one per dtype: where_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::where"   # BASE symbol; §3.4 fan-out resolves <base>_<dtype> = where_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
