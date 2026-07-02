@@ -55,7 +55,10 @@ pub use caps_map::{ResolvedLayout, Tri};
 pub use cost_expr::{
     bind_cost_symbols, cost_estimate, eval as eval_cost, CompiledCostExpr, CostEvalError, CostNode,
 };
-pub use cpu_link::{CpuLinkRegistry, CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS, CPU_BINARY_ENTRY_POINTS};
+pub use cpu_link::{
+    CpuLinkRegistry, CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS, CPU_BINARY_ENTRY_POINTS,
+    CPU_UNARY_ENTRY_POINTS,
+};
 pub use error::FkcError;
 pub use lower::{
     lower_file, LinkRegistry, Resolved, ResolvedFused, ResolvedPrimitive,

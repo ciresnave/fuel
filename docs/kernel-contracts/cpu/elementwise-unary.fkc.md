@@ -15,6 +15,13 @@ flat `CpuStorageBytes` buffer, `out[i] = op(in[i])`, generated from the shared `
 walker (`fuel-cpu-backend/src/chassis/unary.rs:94`) with per-(op, dtype) public thunks emitted by
 `unary_thunk!` (`fuel-cpu-backend/src/byte_kernels.rs:93`).
 
+**Entry-point fan-out (§3.4).** Each per-op section declares a **base** `entry_point`
+(`fuel_cpu_backend::byte_kernels::<op>`, e.g. `…::relu`) and enumerates `dtypes: [F32, F64, BF16, F16]`.
+The FKC importer fans the section into one binding per enumerated dtype, resolving `<base>_<dtype>`
+(e.g. `relu_f32` … `relu_f16`) through the CPU link registry — so a single section registers all four
+dtype thunks. The two GELU flavors keep distinct bases: `gelu_tanh` → `gelu` (the canonical
+`OpKind::GeluElementwise`), `gelu_erf` → `gelu_erf` (`OpKind::GeluErfElementwise`).
+
 Cross-cutting facts for this whole family (verified against the inventory and source):
 
 - **Layout: contiguous-only, offset 0, row-major.** Every kernel reads the input via `as_slice()`
@@ -139,7 +146,7 @@ op_kind: ReluElementwise
 blurb: "Elementwise ReLU max(0, x); contiguous same-shape; half via f32."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::relu_f32"   # one per (op, dtype): relu_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::relu"   # one per (op, dtype): relu_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -201,7 +208,7 @@ op_kind: NegElementwise
 blurb: "Elementwise negation -x; contiguous same-shape; exact all dtypes."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::neg_f32"   # neg_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::neg"   # neg_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -264,7 +271,7 @@ op_kind: SqrElementwise
 blurb: "Elementwise square x*x; contiguous same-shape; half via f32."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::sqr_f32"   # sqr_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::sqr"   # sqr_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -327,7 +334,7 @@ op_kind: SqrtElementwise
 blurb: "Elementwise square root; contiguous same-shape; negatives -> NaN; half via f32."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::sqrt_f32"   # sqrt_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::sqrt"   # sqrt_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -389,7 +396,7 @@ op_kind: RecipElementwise
 blurb: "Elementwise reciprocal 1/x; contiguous same-shape; IEEE inf/NaN; half via f32."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::recip_f32"   # recip_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::recip"   # recip_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -451,7 +458,7 @@ op_kind: AbsElementwise
 blurb: "Elementwise absolute value |x|; contiguous same-shape; exact all dtypes."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::abs_f32"   # abs_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::abs"   # abs_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -515,7 +522,7 @@ op_kind: TanhElementwise
 blurb: "Elementwise tanh; contiguous same-shape; half via f32; not bit-stable cross-hardware."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::tanh_f32"   # tanh_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::tanh"   # tanh_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -577,7 +584,7 @@ op_kind: ExpElementwise
 blurb: "Elementwise exp e^x; contiguous same-shape; half via f32; not bit-stable cross-hardware."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::exp_f32"   # exp_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::exp"   # exp_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -640,7 +647,7 @@ op_kind: LogElementwise
 blurb: "Elementwise natural log ln(x); contiguous same-shape; negatives -> NaN; half via f32."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::log_f32"   # log_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::log"   # log_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -703,7 +710,7 @@ op_kind: SinElementwise
 blurb: "Elementwise sine; contiguous same-shape; half via f32; not bit-stable cross-hardware."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::sin_f32"   # sin_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::sin"   # sin_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -765,7 +772,7 @@ op_kind: CosElementwise
 blurb: "Elementwise cosine; contiguous same-shape; half via f32; not bit-stable cross-hardware."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::cos_f32"   # cos_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::cos"   # cos_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -828,7 +835,7 @@ op_kind: SigmoidElementwise
 blurb: "Elementwise logistic sigmoid 1/(1+e^-x); contiguous same-shape; half via f32."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::sigmoid_f32"   # sigmoid_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::sigmoid"   # sigmoid_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -891,7 +898,7 @@ op_kind: SiluElementwise
 blurb: "Elementwise SiLU/Swish x*sigmoid(x); contiguous same-shape; half via f32."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::silu_f32"   # silu_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::silu"   # silu_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -953,7 +960,7 @@ op_kind: StepElementwise
 blurb: "Elementwise Heaviside step 1 where x>0 else 0; contiguous same-shape; exact."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::step_f32"   # step_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::step"   # step_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -1015,7 +1022,7 @@ op_kind: FloorElementwise
 blurb: "Elementwise floor ⌊x⌋; contiguous same-shape; exact."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::floor_f32"   # floor_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::floor"   # floor_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -1077,7 +1084,7 @@ op_kind: CeilElementwise
 blurb: "Elementwise ceiling ⌈x⌉; contiguous same-shape; exact."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::ceil_f32"   # ceil_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::ceil"   # ceil_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -1140,7 +1147,7 @@ op_kind: RoundElementwise
 blurb: "Elementwise round-half-to-even (banker's); contiguous same-shape; exact."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::round_f32"   # round_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::round"   # round_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -1204,7 +1211,7 @@ op_kind: SignElementwise
 blurb: "Elementwise sign -1/0/1 with sign(0)=0; contiguous same-shape; exact."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::sign_f32"   # sign_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::sign"   # sign_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -1267,7 +1274,7 @@ op_kind: ErfElementwise
 blurb: "Elementwise Gauss error function erf(x) via libm; contiguous same-shape; half via f32."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::erf_f32"   # erf_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::erf"   # erf_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -1332,7 +1339,7 @@ op_kind: GeluErfElementwise
 blurb: "Elementwise exact-erf GELU 0.5*x*(1+erf(x/sqrt2)); contiguous same-shape; half via f32."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::gelu_erf_f32"   # gelu_erf_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::gelu_erf"   # gelu_erf_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -1400,7 +1407,7 @@ op_kind: GeluElementwise
 blurb: "Elementwise tanh-approx GELU (the canonical Gelu); contiguous same-shape; half via f32."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::gelu_f32"   # gelu_{f32,f64,bf16,f16} (half thunks gelu_bf16/gelu_f16); §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::gelu"   # gelu_{f32,f64,bf16,f16} (half thunks gelu_bf16/gelu_f16); §12.6
 kernel_revision_hash: auto
 
 accept:
@@ -1464,7 +1471,7 @@ op_kind: RsqrtElementwise
 blurb: "Elementwise reciprocal sqrt 1/sqrt(x); single op; contiguous same-shape; half via f32."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::rsqrt_f32"   # rsqrt_{f32,f64,bf16,f16}; §12.6
+entry_point: "fuel_cpu_backend::byte_kernels::rsqrt"   # rsqrt_{f32,f64,bf16,f16}; §12.6
 kernel_revision_hash: auto
 
 accept:
