@@ -403,13 +403,47 @@ pub static CPU_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("rope", "f16",  rope_f16_cpu_wrapper),
 ];
 
+/// The CPU SSM / Mamba family's `symbol → production wrapper` map — the
+/// MIGRATED subset only: FusedSoftmaxCrossEntropy + CausalConv1d
+/// (2 ops × 4 dtypes = 8). Contract: `docs/kernel-contracts/cpu/ssm.fkc.md`.
+/// Each per-(op, dtype) section (`## fused_softmax_cross_entropy_f32`,
+/// `## causal_conv1d_f32`, …) declares a SPECIFIC single-dtype `entry_point`
+/// (`…::fused_softmax_cross_entropy_f32`), so none of them fan — the importer
+/// resolves that symbol AS-IS. FSCE's binding key is `[T, I64, F32]` (logits T
+/// + I64 targets → `fixed(F32)` output; n_rows / vocab / reduction /
+/// ignore_index ride in `OpParams::FusedSoftmaxCrossEntropy`, NOT the
+/// dtype-list); CausalConv1d's is `[T, T, T, T]` (x, weight, bias +
+/// `passthrough(x)` output; batch / channels / seq / kernel / use_silu ride in
+/// `OpParams::CausalConv1d`).
+///
+/// The two SCAN ops (`selective_scan`, `ssd_chunk_scan`) are DEFERRED and are
+/// ABSENT here: their `return.bundle` multi-output (Option C, one buffer
+/// `[y ; last_state]`) is not yet key-buildable by the importer, which reads
+/// `return.outputs` ONLY (`fkc/lower.rs` `assemble_dtype_variants`). A bundle
+/// section would therefore key on 5 input dtypes (missing the bundled output
+/// slot) whereas production registers a 6-dtype `[T; 6]` key. Those sections
+/// are `registrable: false` in the contract (so the importer skips them) and
+/// keep their hand-written `table.register(...)` regs. The migrated ops have NO
+/// `##` chassis umbrella section, so there is no `registrable: false`
+/// describe-only entry to omit for them.
+pub static CPU_SSM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    ep!("fused_softmax_cross_entropy", "f32",  fused_softmax_cross_entropy_f32_cpu_wrapper),
+    ep!("fused_softmax_cross_entropy", "f64",  fused_softmax_cross_entropy_f64_cpu_wrapper),
+    ep!("fused_softmax_cross_entropy", "bf16", fused_softmax_cross_entropy_bf16_cpu_wrapper),
+    ep!("fused_softmax_cross_entropy", "f16",  fused_softmax_cross_entropy_f16_cpu_wrapper),
+    ep!("causal_conv1d", "f32",  causal_conv1d_f32_cpu_wrapper),
+    ep!("causal_conv1d", "f64",  causal_conv1d_f64_cpu_wrapper),
+    ep!("causal_conv1d", "bf16", causal_conv1d_bf16_cpu_wrapper),
+    ep!("causal_conv1d", "f16",  causal_conv1d_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
 /// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
 /// [`CPU_COMPARE_ENTRY_POINTS`], [`CPU_WHERE_ENTRY_POINTS`],
 /// [`CPU_REDUCE_ENTRY_POINTS`], [`CPU_REDUCE_TO_ENTRY_POINTS`],
-/// [`CPU_NORM_ENTRY_POINTS`], [`CPU_NORM_BACKWARD_ENTRY_POINTS`], and
-/// [`CPU_ROPE_ENTRY_POINTS`].
+/// [`CPU_NORM_ENTRY_POINTS`], [`CPU_NORM_BACKWARD_ENTRY_POINTS`],
+/// [`CPU_ROPE_ENTRY_POINTS`], and [`CPU_SSM_ENTRY_POINTS`].
 /// Unresolved → `None`, which the importer turns into a typed
 /// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;
@@ -427,6 +461,7 @@ impl LinkRegistry for CpuLinkRegistry {
             .chain(CPU_NORM_ENTRY_POINTS.iter())
             .chain(CPU_NORM_BACKWARD_ENTRY_POINTS.iter())
             .chain(CPU_ROPE_ENTRY_POINTS.iter())
+            .chain(CPU_SSM_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
@@ -434,7 +469,9 @@ impl LinkRegistry for CpuLinkRegistry {
     fn resolve_fused(&self, _symbol: &str) -> Option<KernelRef> {
         // No fused-op contracts in the elementwise-binary, affine/clamp/powi,
         // elementwise-unary, compare/where, reduce, reduce-to, norm,
-        // norm-backward, or rope corpora.
+        // norm-backward, rope, or ssm corpora (the ssm ops are all primitive
+        // `op_kind` contracts — "fused" in FusedSoftmaxCrossEntropy names an
+        // intra-op softmax+NLL fusion, NOT a graph `FusedOpId`).
         None
     }
 }
