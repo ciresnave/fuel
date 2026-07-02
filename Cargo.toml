@@ -302,7 +302,8 @@ smallvec = { version = "1", features = ["const_new"] }
 serde_plain = "1.0.2"
 serde_json = "1.0.99"
 # serde_yaml fork (maintained) for the FKC kernel-contract importer's
-# fenced ```fkc YAML blocks. Gated behind the `fkc` feature on fuel-dispatch.
+# fenced ```fkc YAML blocks. Always compiled by fuel-dispatch (FKC is
+# unconditional core infrastructure — no feature gate).
 # 0.0.12 is the last self-contained release (0.0.13 is a deprecation shim
 # forwarding to noyalib). FKC enforces a restricted §3.8 subset in a pre-pass
 # before handing the chunk to this deserializer.

@@ -47,7 +47,6 @@ pub mod compiled;
 pub mod cost;
 pub mod dispatch;
 pub mod driver;
-#[cfg(feature = "fkc")]
 pub mod fkc;
 pub mod fused;
 pub mod kernel;

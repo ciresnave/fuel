@@ -4018,6 +4018,61 @@ fn copy_from_cpu_wrapper(
     Ok(())
 }
 
+/// The authored CPU elementwise-binary kernel contract, embedded into the
+/// binary. This is the PRODUCTION `include_str!` (distinct from the identical
+/// path used in the `fkc::register` test module); `register_cpu_binary_from_contract`
+/// parses + lowers it and binds the family FROM THE CONTRACT.
+const CPU_ELEMENTWISE_BINARY_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/elementwise-binary.fkc.md");
+
+/// Register the CPU elementwise-binary family (8 ops × 4 dtypes = 32
+/// bindings) by IMPORTING its FKC kernel contract — the FIRST production
+/// FKC consumer. FKC is unconditional core infrastructure, so this is the
+/// ONE registration path for the family: there is no hand-written fallback
+/// (deleting it was the point — a build that lost the importer would silently
+/// lose the family).
+///
+/// The authored contract `docs/kernel-contracts/cpu/elementwise-binary.fkc.md`
+/// is parsed + lowered and each `entry_point` symbol resolved through the
+/// production [`crate::fkc::CpuLinkRegistry`] to the exact same wrapper
+/// fn-pointers the CPU backend exposes (`add_elementwise_f32_cpu_wrapper`, …;
+/// the very map [`crate::fkc::CPU_BINARY_ENTRY_POINTS`] holds). Relative to the
+/// deleted hand-written registrations this is behavior-preserving: identical
+/// kernels + caps; the binding's `kernel_source` becomes the contract's
+/// `"portable-cpu"` tag and its precision the contract's audited claim. Cost is
+/// preserved because this runs BEFORE the `fill_unset_cpu_cost` pass, which
+/// upgrades the imported entries' `unknown_cost` sentinel to the same OpKind
+/// cost fn every other CPU primitive gets.
+///
+/// Fused-registry decision: the elementwise-binary family declares NO fused
+/// ops (`provider.fused` is empty), and `register_cpu_kernels` threads only a
+/// `KernelBindingTable` — there is no paired global `FusedKernelRegistry` at
+/// this seam (the static `crate::fused::default_kernel_registry()` is built
+/// independently). So `register_into`'s required fused argument is a local
+/// throwaway that provably stays empty.
+///
+/// Init-boundary fail-fast: a parse/lower/link failure of the embedded,
+/// authored contract is a programmer error surfaced once here via `expect`
+/// (mirroring the `finalize().expect(...)` convention in [`global_bindings`]).
+/// It cannot fail for a runtime-data reason — the contract is `include_str!`'d
+/// into the binary and the link registry is exhaustive for this family.
+fn register_cpu_binary_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_ELEMENTWISE_BINARY_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU elementwise-binary contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "elementwise-binary contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU elementwise-binary contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -4055,12 +4110,22 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     let index_add_dts = |t: DType| [t, u32_dt, t, t];           // (base, indices, src, out)
     let scatter_add   = |t: DType| [t, u32_dt, t, t];           // (base, indices, src, out)
 
-    // Elementwise binary / unary — F32.
-    table.register(AddElementwise,   &binary(f32_dt), cpu, add_elementwise_f32_cpu_wrapper);
-    table.register(SubElementwise,   &binary(f32_dt), cpu, sub_elementwise_f32_cpu_wrapper);
-    table.register(MulElementwise,   &binary(f32_dt), cpu, mul_elementwise_f32_cpu_wrapper);
-    table.register(DivElementwise,   &binary(f32_dt), cpu, div_elementwise_f32_cpu_wrapper);
+    // Elementwise binary family (8 ops × 4 dtypes = 32 bindings:
+    // Add/Sub/Mul/Div/Maximum/Minimum/Pow/Rem × F32/F64/BF16/F16).
+    //
+    // This family is the FIRST production FKC-contract consumer: it is
+    // IMPORTED from its kernel contract
+    // (docs/kernel-contracts/cpu/elementwise-binary.fkc.md), resolving every
+    // `entry_point` symbol through the production `CpuLinkRegistry` to the
+    // exact same wrapper fn-pointers the CPU backend exposes. The hand-written
+    // `table.register(...)` calls this family used to carry are DELETED — FKC
+    // is unconditional core infrastructure, so this is the sole registration
+    // path (no build config, no fallback). Placed here — BEFORE the
+    // `fill_unset_cpu_*` passes — so the imported entries pick up the same CPU
+    // cost fill every other CPU primitive gets.
+    register_cpu_binary_from_contract(table);
 
+    // Elementwise unary — F32.
     table.register(ReluElementwise,    &unary(f32_dt), cpu, relu_elementwise_f32_cpu_wrapper);
     table.register(NegElementwise,     &unary(f32_dt), cpu, neg_elementwise_f32_cpu_wrapper);
     table.register(SqrElementwise,     &unary(f32_dt), cpu, sqr_elementwise_f32_cpu_wrapper);
@@ -4077,11 +4142,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(GeluElementwise,    &unary(f32_dt), cpu, gelu_elementwise_f32_cpu_wrapper);
     table.register(StepElementwise,    &unary(f32_dt), cpu, step_elementwise_f32_cpu_wrapper);
 
-    // Elementwise binary / unary — F64.
-    table.register(AddElementwise,     &binary(f64_dt), cpu, add_elementwise_f64_cpu_wrapper);
-    table.register(SubElementwise,     &binary(f64_dt), cpu, sub_elementwise_f64_cpu_wrapper);
-    table.register(MulElementwise,     &binary(f64_dt), cpu, mul_elementwise_f64_cpu_wrapper);
-    table.register(DivElementwise,     &binary(f64_dt), cpu, div_elementwise_f64_cpu_wrapper);
+    // Elementwise unary — F64.
     table.register(ReluElementwise,    &unary(f64_dt), cpu, relu_elementwise_f64_cpu_wrapper);
     table.register(NegElementwise,     &unary(f64_dt), cpu, neg_elementwise_f64_cpu_wrapper);
     table.register(SqrElementwise,     &unary(f64_dt), cpu, sqr_elementwise_f64_cpu_wrapper);
@@ -4513,10 +4574,6 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 
     table.register(ClampElementwise,   &unary(f32_dt), cpu, clamp_elementwise_f32_cpu_wrapper);
     table.register(PowIElementwise,    &unary(f32_dt), cpu, powi_elementwise_f32_cpu_wrapper);
-    table.register(MaximumElementwise, &binary(f32_dt), cpu, maximum_elementwise_f32_cpu_wrapper);
-    table.register(MinimumElementwise, &binary(f32_dt), cpu, minimum_elementwise_f32_cpu_wrapper);
-    table.register(MaximumElementwise, &binary(f64_dt), cpu, maximum_elementwise_f64_cpu_wrapper);
-    table.register(MinimumElementwise, &binary(f64_dt), cpu, minimum_elementwise_f64_cpu_wrapper);
 
     // Comparison family (output dtype = U8). Each kernel produces a
     // U8 mask (`1` where the predicate holds, `0` otherwise).
@@ -4589,20 +4646,10 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(GeluErfElementwise, &unary(bf16_dt), cpu, gelu_erf_elementwise_bf16_cpu_wrapper);
     table.register(GeluErfElementwise, &unary(f16_dt),  cpu, gelu_erf_elementwise_f16_cpu_wrapper);
 
-    table.register(PowElementwise, &binary(f32_dt),  cpu, pow_elementwise_f32_cpu_wrapper);
-    table.register(PowElementwise, &binary(f64_dt),  cpu, pow_elementwise_f64_cpu_wrapper);
-    table.register(PowElementwise, &binary(bf16_dt), cpu, pow_elementwise_bf16_cpu_wrapper);
-    table.register(PowElementwise, &binary(f16_dt),  cpu, pow_elementwise_f16_cpu_wrapper);
-
     table.register(RsqrtElementwise, &unary(f32_dt),  cpu, rsqrt_elementwise_f32_cpu_wrapper);
     table.register(RsqrtElementwise, &unary(f64_dt),  cpu, rsqrt_elementwise_f64_cpu_wrapper);
     table.register(RsqrtElementwise, &unary(bf16_dt), cpu, rsqrt_elementwise_bf16_cpu_wrapper);
     table.register(RsqrtElementwise, &unary(f16_dt),  cpu, rsqrt_elementwise_f16_cpu_wrapper);
-
-    table.register(RemElementwise, &binary(f32_dt),  cpu, rem_elementwise_f32_cpu_wrapper);
-    table.register(RemElementwise, &binary(f64_dt),  cpu, rem_elementwise_f64_cpu_wrapper);
-    table.register(RemElementwise, &binary(bf16_dt), cpu, rem_elementwise_bf16_cpu_wrapper);
-    table.register(RemElementwise, &binary(f16_dt),  cpu, rem_elementwise_f16_cpu_wrapper);
 
     // Flip and Roll are dtype-agnostic at the byte level — the
     // wrappers read `dtype_size` from the output Storage. Register
@@ -4725,13 +4772,10 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(PadBackward, &unary(bf16_dt), cpu, pad_backward_bf16_cpu_wrapper);
     table.register(PadBackward, &unary(f16_dt),  cpu, pad_backward_f16_cpu_wrapper);
 
-    // bf16 + f16 elementwise — via-f32 round-trip kernels.
-    table.register(AddElementwise,     &binary(bf16_dt), cpu, add_elementwise_bf16_cpu_wrapper);
-    table.register(SubElementwise,     &binary(bf16_dt), cpu, sub_elementwise_bf16_cpu_wrapper);
-    table.register(MulElementwise,     &binary(bf16_dt), cpu, mul_elementwise_bf16_cpu_wrapper);
-    table.register(DivElementwise,     &binary(bf16_dt), cpu, div_elementwise_bf16_cpu_wrapper);
-    table.register(MaximumElementwise, &binary(bf16_dt), cpu, maximum_elementwise_bf16_cpu_wrapper);
-    table.register(MinimumElementwise, &binary(bf16_dt), cpu, minimum_elementwise_bf16_cpu_wrapper);
+    // bf16 + f16 elementwise (unary) — via-f32 round-trip kernels. (The
+    // binary bf16/f16 ops are part of the elementwise-binary family
+    // registered near the top of this fn — from the FKC contract under the
+    // default `fkc` feature.)
     table.register(ReluElementwise,    &unary(bf16_dt),  cpu, relu_elementwise_bf16_cpu_wrapper);
     table.register(NegElementwise,     &unary(bf16_dt),  cpu, neg_elementwise_bf16_cpu_wrapper);
     table.register(SqrElementwise,     &unary(bf16_dt),  cpu, sqr_elementwise_bf16_cpu_wrapper);
@@ -4748,12 +4792,6 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(GeluElementwise,    &unary(bf16_dt),  cpu, gelu_elementwise_bf16_cpu_wrapper);
     table.register(StepElementwise,    &unary(bf16_dt),  cpu, step_elementwise_bf16_cpu_wrapper);
 
-    table.register(AddElementwise,     &binary(f16_dt), cpu, add_elementwise_f16_cpu_wrapper);
-    table.register(SubElementwise,     &binary(f16_dt), cpu, sub_elementwise_f16_cpu_wrapper);
-    table.register(MulElementwise,     &binary(f16_dt), cpu, mul_elementwise_f16_cpu_wrapper);
-    table.register(DivElementwise,     &binary(f16_dt), cpu, div_elementwise_f16_cpu_wrapper);
-    table.register(MaximumElementwise, &binary(f16_dt), cpu, maximum_elementwise_f16_cpu_wrapper);
-    table.register(MinimumElementwise, &binary(f16_dt), cpu, minimum_elementwise_f16_cpu_wrapper);
     table.register(ReluElementwise,    &unary(f16_dt),  cpu, relu_elementwise_f16_cpu_wrapper);
     table.register(NegElementwise,     &unary(f16_dt),  cpu, neg_elementwise_f16_cpu_wrapper);
     table.register(SqrElementwise,     &unary(f16_dt),  cpu, sqr_elementwise_f16_cpu_wrapper);
@@ -6906,6 +6944,92 @@ mod tests {
         let _kernel = table
             .lookup(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu)
             .expect("registered");
+    }
+
+    /// FIRST PRODUCTION FKC CONSUMER (born-red gate). `global_bindings()`
+    /// registers the CPU elementwise-binary family (8 ops × 4 dtypes = 32
+    /// bindings) FROM ITS KERNEL CONTRACT
+    /// (`docs/kernel-contracts/cpu/elementwise-binary.fkc.md`) — the sole
+    /// registration path, now that the hand-written `table.register(...)`
+    /// calls for this family are DELETED.
+    ///
+    /// For each of the 32 `(op, [dt; 3], Cpu)` keys this asserts:
+    ///  - the binding resolves to the EXACT production wrapper fn-pointer
+    ///    (behavior-preserving execution),
+    ///  - `kernel_source == "portable-cpu"` — the contract's provenance tag
+    ///    (the deleted hand-written path stamped `""`). THIS is the
+    ///    discriminator that makes the test go red without the import wired:
+    ///    with the hand-written binary regs removed and the import absent, the
+    ///    family is simply missing from `global_bindings()`,
+    ///  - caps stay empty (`strided_input == false`) and the contract's
+    ///    audited bit-stable precision claim rode through.
+    #[test]
+    fn global_bindings_registers_binary_family_from_contract() {
+        let table = global_bindings();
+
+        // (op, [f32, f64, bf16, f16] production wrappers) for all 8 ops.
+        let families: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
+            (OpKind::AddElementwise, [
+                add_elementwise_f32_cpu_wrapper, add_elementwise_f64_cpu_wrapper,
+                add_elementwise_bf16_cpu_wrapper, add_elementwise_f16_cpu_wrapper]),
+            (OpKind::SubElementwise, [
+                sub_elementwise_f32_cpu_wrapper, sub_elementwise_f64_cpu_wrapper,
+                sub_elementwise_bf16_cpu_wrapper, sub_elementwise_f16_cpu_wrapper]),
+            (OpKind::MulElementwise, [
+                mul_elementwise_f32_cpu_wrapper, mul_elementwise_f64_cpu_wrapper,
+                mul_elementwise_bf16_cpu_wrapper, mul_elementwise_f16_cpu_wrapper]),
+            (OpKind::DivElementwise, [
+                div_elementwise_f32_cpu_wrapper, div_elementwise_f64_cpu_wrapper,
+                div_elementwise_bf16_cpu_wrapper, div_elementwise_f16_cpu_wrapper]),
+            (OpKind::MaximumElementwise, [
+                maximum_elementwise_f32_cpu_wrapper, maximum_elementwise_f64_cpu_wrapper,
+                maximum_elementwise_bf16_cpu_wrapper, maximum_elementwise_f16_cpu_wrapper]),
+            (OpKind::MinimumElementwise, [
+                minimum_elementwise_f32_cpu_wrapper, minimum_elementwise_f64_cpu_wrapper,
+                minimum_elementwise_bf16_cpu_wrapper, minimum_elementwise_f16_cpu_wrapper]),
+            (OpKind::PowElementwise, [
+                pow_elementwise_f32_cpu_wrapper, pow_elementwise_f64_cpu_wrapper,
+                pow_elementwise_bf16_cpu_wrapper, pow_elementwise_f16_cpu_wrapper]),
+            (OpKind::RemElementwise, [
+                rem_elementwise_f32_cpu_wrapper, rem_elementwise_f64_cpu_wrapper,
+                rem_elementwise_bf16_cpu_wrapper, rem_elementwise_f16_cpu_wrapper]),
+        ];
+        let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+
+        let mut checked = 0usize;
+        for (op, wrappers) in families {
+            for (dt, expected) in dts.iter().zip(wrappers.iter()) {
+                let alts = table.lookup_alternatives(*op, &[*dt, *dt, *dt], BackendId::Cpu);
+                let entry = alts
+                    .iter()
+                    .find(|e| e.kernel as usize == *expected as usize)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{op:?}/{dt:?}/Cpu: the production wrapper must be bound \
+                             FROM the elementwise-binary contract in global_bindings() \
+                             — found {} alternative(s) with sources {:?}",
+                            alts.len(),
+                            alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                        )
+                    });
+                assert_eq!(
+                    entry.kernel_source, "portable-cpu",
+                    "{op:?}/{dt:?}: binary family must be contract-sourced \
+                     (kernel_source=\"portable-cpu\"); got {:?}",
+                    entry.kernel_source,
+                );
+                assert!(
+                    !entry.caps.strided_input,
+                    "{op:?}/{dt:?}: caps preserved (contiguous-only, strided_input=false)",
+                );
+                assert!(
+                    entry.precision.bit_stable_on_same_hardware,
+                    "{op:?}/{dt:?}: the contract's audited bit-stable claim rode through",
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 32, "all 8 ops × 4 dtypes checked");
     }
 
     /// Lookup miss returns NoBackendForOp with diagnostic data.

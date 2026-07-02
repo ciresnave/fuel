@@ -1650,7 +1650,7 @@ determinism: nondeterministic
     /// failures; only the `MxNotYetRegistrable` / `GatherNotYetSupported`
     /// deferred (consumer-ahead) cases remain, which are a CORRECT outcome and
     /// are NOT counted as failures. Run it verbosely with
-    /// `cargo test -p fuel-dispatch --features fkc --lib -- \
+    /// `cargo test -p fuel-dispatch --lib -- \
     ///  ci_lint_corpus_parse_lower_validate --nocapture` to see the full
     /// file/section/deferred counts. It does NOT relax a validator or edit the
     /// corpus to hide defects — a new hard failure must be fixed (or the section

@@ -554,9 +554,24 @@ This is the constitution's "statically verifiable at registration, CI-lintable" 
 
 ## 11. Rollout — keep `main` building, ship in verifiable increments
 
+> **STATUS UPDATE (2026-07-02) — strategy superseded for the endgame.** Steps 1–7 shipped
+> (importer + parser + lowering + `register_into` + validators + the authored CPU corpus + CI lint).
+> The **first production consumer landed** (WIP branch): the CPU **elementwise-binary** family (8 ops
+> × 4 dtypes = 32 bindings) is now registered by importing its contract in `register_cpu_kernels`,
+> and its hand-written `table.register(...)` calls are **DELETED** (behavior-preserving; born-red
+> `global_bindings_registers_binary_family_from_contract`). Crucially, the maintainer **superseded the
+> "parallel path behind `--features fkc`, flip the default later" plan (old steps 6/7/9)**: the `fkc`
+> cargo feature is **REMOVED** and FKC is now **unconditional core infrastructure** (serde/serde_yml
+> always compiled; `pub mod fkc` unconditional). Rationale: once a family's hand-written registration
+> is deleted on migration, a build that could disable the importer would silently lose that family —
+> a doomed config. No gate ⇒ no such config, and no dual registration paths to drift. So the remaining
+> work (step 8: widen family-by-family) is **plain deletion of each migrated family's hand-written
+> glue**, not a `cfg(not(fkc))` fallback, and there is no "flip the default" step 9 to do.
+
 Ordered. Each numbered item is a separate commit (or small commit cluster) on
-`feat/kernel-contracts-dlpack`, each with its born-red test observed to go red then green. **`main`
-keeps building because the importer is feature-gated until 11.6.**
+`feat/kernel-contracts-dlpack`, each with its born-red test observed to go red then green. ~~**`main`
+keeps building because the importer is feature-gated until 11.6.**~~ (Superseded — FKC is now
+unconditional; see the status update above.)
 
 1. **Prerequisite — `register_full_with_source` -> `Result` (§3).** Born-red: the duplicate-errors
    test. Thread `Result` through wrappers + bulk callers + the three sibling backends + tests. Gate:
@@ -565,11 +580,11 @@ keeps building because the importer is feature-gated until 11.6.**
    this is a standalone never-panic fix that is independently valuable and lands first.
 
 2. **`fkc` feature + module skeleton (§1).** Empty modules, `FkcError` enum, `LinkRegistry` trait,
-   feature off by default. Gate: `cargo check -p fuel-dispatch` (no feature) unchanged;
-   `cargo check -p fuel-dispatch --features fkc` compiles the skeleton.
+   feature off by default. Gate: `cargo check -p fuel-dispatch` compiles the skeleton. (The `fkc`
+   feature has since been REMOVED — FKC is unconditional; see the §11 status update.)
 
 3. **Parse + schema (§4.1).** Born-red parse fixtures (tab/anchor/Norway/blurb). Gate:
-   `cargo test -p fuel-dispatch --features fkc fkc::parse`.
+   `cargo test -p fuel-dispatch --lib fkc::parse`.
 
 4. **Lower + caps/cost/precision/link (§4.2–4.3, §2, §6).** Born-red: op/dtype/entry-point resolution
    + the caps projection truth table + cost-expr eval. Gate: the `fkc::lower` / `fkc::cost_expr`
