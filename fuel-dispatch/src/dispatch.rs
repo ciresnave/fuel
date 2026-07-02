@@ -311,7 +311,9 @@ macro_rules! cpu_binary_wrapper {
 /// typed unary kernel.
 macro_rules! cpu_unary_wrapper {
     ($wrapper:ident, $kernel:path, $op_name:literal) => {
-        fn $wrapper(
+        // pub(crate) so the FKC link registry (fkc::cpu_link) can name the real
+        // production wrapper for the elementwise-unary contract's entry points.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -4131,6 +4133,55 @@ fn register_cpu_affine_clamp_powi_from_contract(table: &mut KernelBindingTable) 
     );
 }
 
+/// The authored CPU elementwise-unary kernel contract, embedded into the binary
+/// (the PRODUCTION `include_str!`). `register_cpu_unary_from_contract` parses +
+/// lowers it and binds the family FROM THE CONTRACT.
+const CPU_ELEMENTWISE_UNARY_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/elementwise-unary.fkc.md");
+
+/// Register the CPU elementwise-unary family (22 ops × 4 dtypes = 88 bindings)
+/// by IMPORTING its FKC kernel contract — the third production FKC consumer,
+/// mirroring [`register_cpu_binary_from_contract`] /
+/// [`register_cpu_affine_clamp_powi_from_contract`]. FKC is unconditional core
+/// infrastructure, so this is the ONE registration path for the family: the
+/// hand-written `table.register(...)` calls it used to carry are DELETED.
+///
+/// This is the **first** consumer of the §3.4 multi-dtype fan-out: each per-op
+/// section declares a BASE `entry_point` (e.g. `…::relu`) and enumerates
+/// `dtypes: [F32, F64, BF16, F16]`; the importer fans it into one binding per
+/// dtype, resolving `<base>_<dtype>` through the production
+/// [`crate::fkc::CpuLinkRegistry`] (now chaining
+/// [`crate::fkc::CPU_UNARY_ENTRY_POINTS`]) to the exact same wrapper fn-pointers
+/// the CPU backend exposes. Behavior-preserving vs. the deleted hand-written
+/// path: identical kernels + caps (contiguous-only, `[t, t]` keys); the
+/// binding's `kernel_source` becomes the contract's `"portable-cpu"` tag and its
+/// precision the contract's bit-stable claim. Cost is preserved because this
+/// runs BEFORE `fill_unset_cpu_cost`, which upgrades the imported entries'
+/// `unknown_cost` sentinel to the same OpKind cost fn every CPU primitive gets.
+///
+/// `gelu_tanh` (`OpKind::GeluElementwise`, base `gelu`) and `gelu_erf`
+/// (`OpKind::GeluErfElementwise`, base `gelu_erf`) stay DISTINCT — the exact-erf
+/// GELU must never be confused with the tanh approximation under a Judge epsilon.
+///
+/// The family declares NO fused ops, so `register_into`'s required fused argument
+/// is a local throwaway that provably stays empty.
+fn register_cpu_unary_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_ELEMENTWISE_UNARY_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU elementwise-unary contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "elementwise-unary contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU elementwise-unary contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -4194,39 +4245,19 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // FusedOps::POWI_BACKWARD fused-registry seam are separate and untouched.)
     register_cpu_affine_clamp_powi_from_contract(table);
 
-    // Elementwise unary — F32.
-    table.register(ReluElementwise,    &unary(f32_dt), cpu, relu_elementwise_f32_cpu_wrapper);
-    table.register(NegElementwise,     &unary(f32_dt), cpu, neg_elementwise_f32_cpu_wrapper);
-    table.register(SqrElementwise,     &unary(f32_dt), cpu, sqr_elementwise_f32_cpu_wrapper);
-    table.register(SqrtElementwise,    &unary(f32_dt), cpu, sqrt_elementwise_f32_cpu_wrapper);
-    table.register(RecipElementwise,   &unary(f32_dt), cpu, recip_elementwise_f32_cpu_wrapper);
-    table.register(AbsElementwise,     &unary(f32_dt), cpu, abs_elementwise_f32_cpu_wrapper);
-    table.register(TanhElementwise,    &unary(f32_dt), cpu, tanh_elementwise_f32_cpu_wrapper);
-    table.register(ExpElementwise,     &unary(f32_dt), cpu, exp_elementwise_f32_cpu_wrapper);
-    table.register(LogElementwise,     &unary(f32_dt), cpu, log_elementwise_f32_cpu_wrapper);
-    table.register(SinElementwise,     &unary(f32_dt), cpu, sin_elementwise_f32_cpu_wrapper);
-    table.register(CosElementwise,     &unary(f32_dt), cpu, cos_elementwise_f32_cpu_wrapper);
-    table.register(SigmoidElementwise, &unary(f32_dt), cpu, sigmoid_elementwise_f32_cpu_wrapper);
-    table.register(SiluElementwise,    &unary(f32_dt), cpu, silu_elementwise_f32_cpu_wrapper);
-    table.register(GeluElementwise,    &unary(f32_dt), cpu, gelu_elementwise_f32_cpu_wrapper);
-    table.register(StepElementwise,    &unary(f32_dt), cpu, step_elementwise_f32_cpu_wrapper);
-
-    // Elementwise unary — F64.
-    table.register(ReluElementwise,    &unary(f64_dt), cpu, relu_elementwise_f64_cpu_wrapper);
-    table.register(NegElementwise,     &unary(f64_dt), cpu, neg_elementwise_f64_cpu_wrapper);
-    table.register(SqrElementwise,     &unary(f64_dt), cpu, sqr_elementwise_f64_cpu_wrapper);
-    table.register(SqrtElementwise,    &unary(f64_dt), cpu, sqrt_elementwise_f64_cpu_wrapper);
-    table.register(RecipElementwise,   &unary(f64_dt), cpu, recip_elementwise_f64_cpu_wrapper);
-    table.register(AbsElementwise,     &unary(f64_dt), cpu, abs_elementwise_f64_cpu_wrapper);
-    table.register(TanhElementwise,    &unary(f64_dt), cpu, tanh_elementwise_f64_cpu_wrapper);
-    table.register(ExpElementwise,     &unary(f64_dt), cpu, exp_elementwise_f64_cpu_wrapper);
-    table.register(LogElementwise,     &unary(f64_dt), cpu, log_elementwise_f64_cpu_wrapper);
-    table.register(SinElementwise,     &unary(f64_dt), cpu, sin_elementwise_f64_cpu_wrapper);
-    table.register(CosElementwise,     &unary(f64_dt), cpu, cos_elementwise_f64_cpu_wrapper);
-    table.register(SigmoidElementwise, &unary(f64_dt), cpu, sigmoid_elementwise_f64_cpu_wrapper);
-    table.register(SiluElementwise,    &unary(f64_dt), cpu, silu_elementwise_f64_cpu_wrapper);
-    table.register(GeluElementwise,    &unary(f64_dt), cpu, gelu_elementwise_f64_cpu_wrapper);
-    table.register(StepElementwise,    &unary(f64_dt), cpu, step_elementwise_f64_cpu_wrapper);
+    // Elementwise unary (22 ops × 4 dtypes = 88 bindings: relu/neg/sqr/sqrt/
+    // recip/abs/tanh/exp/log/sin/cos/sigmoid/silu/step/gelu/floor/ceil/round/
+    // sign/erf/gelu_erf/rsqrt × F32/F64/BF16/F16). Third production FKC-contract
+    // consumer and the FIRST user of the §3.4 multi-dtype fan-out: IMPORTED from
+    // docs/kernel-contracts/cpu/elementwise-unary.fkc.md via the same
+    // `CpuLinkRegistry`. Each per-op section declares a BASE entry_point that the
+    // importer expands to `<base>_<dtype>`. The hand-written `table.register(...)`
+    // calls (the F32/F64/BF16/F16 unary blocks + the rounding/sign/erf/gelu_erf/
+    // rsqrt block) are DELETED — this is the sole registration path. Placed
+    // BEFORE the `fill_unset_cpu_*` passes so the imported entries pick up the CPU
+    // cost fill. gelu_tanh (GeluElementwise) and gelu_erf (GeluErfElementwise)
+    // stay DISTINCT.
+    register_cpu_unary_from_contract(table);
 
     // Reductions.
     table.register(SumReduce,          &unary(f32_dt), cpu, sum_reduce_f32_cpu_wrapper);
@@ -4684,41 +4715,9 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(Where, &where_dts(bf16_dt), cpu, where_bf16_cpu_wrapper);
     table.register(Where, &where_dts(f16_dt),  cpu, where_f16_cpu_wrapper);
 
-    // Rounding family — standard unary shape `[T, T]`.
-    table.register(FloorElementwise, &unary(f32_dt),  cpu, floor_elementwise_f32_cpu_wrapper);
-    table.register(FloorElementwise, &unary(f64_dt),  cpu, floor_elementwise_f64_cpu_wrapper);
-    table.register(FloorElementwise, &unary(bf16_dt), cpu, floor_elementwise_bf16_cpu_wrapper);
-    table.register(FloorElementwise, &unary(f16_dt),  cpu, floor_elementwise_f16_cpu_wrapper);
-
-    table.register(CeilElementwise, &unary(f32_dt),  cpu, ceil_elementwise_f32_cpu_wrapper);
-    table.register(CeilElementwise, &unary(f64_dt),  cpu, ceil_elementwise_f64_cpu_wrapper);
-    table.register(CeilElementwise, &unary(bf16_dt), cpu, ceil_elementwise_bf16_cpu_wrapper);
-    table.register(CeilElementwise, &unary(f16_dt),  cpu, ceil_elementwise_f16_cpu_wrapper);
-
-    table.register(RoundElementwise, &unary(f32_dt),  cpu, round_elementwise_f32_cpu_wrapper);
-    table.register(RoundElementwise, &unary(f64_dt),  cpu, round_elementwise_f64_cpu_wrapper);
-    table.register(RoundElementwise, &unary(bf16_dt), cpu, round_elementwise_bf16_cpu_wrapper);
-    table.register(RoundElementwise, &unary(f16_dt),  cpu, round_elementwise_f16_cpu_wrapper);
-
-    table.register(SignElementwise, &unary(f32_dt),  cpu, sign_elementwise_f32_cpu_wrapper);
-    table.register(SignElementwise, &unary(f64_dt),  cpu, sign_elementwise_f64_cpu_wrapper);
-    table.register(SignElementwise, &unary(bf16_dt), cpu, sign_elementwise_bf16_cpu_wrapper);
-    table.register(SignElementwise, &unary(f16_dt),  cpu, sign_elementwise_f16_cpu_wrapper);
-
-    table.register(ErfElementwise, &unary(f32_dt),  cpu, erf_elementwise_f32_cpu_wrapper);
-    table.register(ErfElementwise, &unary(f64_dt),  cpu, erf_elementwise_f64_cpu_wrapper);
-    table.register(ErfElementwise, &unary(bf16_dt), cpu, erf_elementwise_bf16_cpu_wrapper);
-    table.register(ErfElementwise, &unary(f16_dt),  cpu, erf_elementwise_f16_cpu_wrapper);
-
-    table.register(GeluErfElementwise, &unary(f32_dt),  cpu, gelu_erf_elementwise_f32_cpu_wrapper);
-    table.register(GeluErfElementwise, &unary(f64_dt),  cpu, gelu_erf_elementwise_f64_cpu_wrapper);
-    table.register(GeluErfElementwise, &unary(bf16_dt), cpu, gelu_erf_elementwise_bf16_cpu_wrapper);
-    table.register(GeluErfElementwise, &unary(f16_dt),  cpu, gelu_erf_elementwise_f16_cpu_wrapper);
-
-    table.register(RsqrtElementwise, &unary(f32_dt),  cpu, rsqrt_elementwise_f32_cpu_wrapper);
-    table.register(RsqrtElementwise, &unary(f64_dt),  cpu, rsqrt_elementwise_f64_cpu_wrapper);
-    table.register(RsqrtElementwise, &unary(bf16_dt), cpu, rsqrt_elementwise_bf16_cpu_wrapper);
-    table.register(RsqrtElementwise, &unary(f16_dt),  cpu, rsqrt_elementwise_f16_cpu_wrapper);
+    // Rounding / sign / transcendental unary ops (floor/ceil/round/sign/erf/
+    // gelu_erf/rsqrt × F32/F64/BF16/F16) are registered from the elementwise-unary
+    // FKC contract via register_cpu_unary_from_contract (near the top of this fn).
 
     // Flip and Roll are dtype-agnostic at the byte level — the
     // wrappers read `dtype_size` from the output Storage. Register
@@ -4841,41 +4840,11 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(PadBackward, &unary(bf16_dt), cpu, pad_backward_bf16_cpu_wrapper);
     table.register(PadBackward, &unary(f16_dt),  cpu, pad_backward_f16_cpu_wrapper);
 
-    // bf16 + f16 elementwise (unary) — via-f32 round-trip kernels. (The
-    // binary bf16/f16 ops are part of the elementwise-binary family
-    // registered near the top of this fn — from the FKC contract under the
-    // default `fkc` feature.)
-    table.register(ReluElementwise,    &unary(bf16_dt),  cpu, relu_elementwise_bf16_cpu_wrapper);
-    table.register(NegElementwise,     &unary(bf16_dt),  cpu, neg_elementwise_bf16_cpu_wrapper);
-    table.register(SqrElementwise,     &unary(bf16_dt),  cpu, sqr_elementwise_bf16_cpu_wrapper);
-    table.register(SqrtElementwise,    &unary(bf16_dt),  cpu, sqrt_elementwise_bf16_cpu_wrapper);
-    table.register(RecipElementwise,   &unary(bf16_dt),  cpu, recip_elementwise_bf16_cpu_wrapper);
-    table.register(AbsElementwise,     &unary(bf16_dt),  cpu, abs_elementwise_bf16_cpu_wrapper);
-    table.register(TanhElementwise,    &unary(bf16_dt),  cpu, tanh_elementwise_bf16_cpu_wrapper);
-    table.register(ExpElementwise,     &unary(bf16_dt),  cpu, exp_elementwise_bf16_cpu_wrapper);
-    table.register(LogElementwise,     &unary(bf16_dt),  cpu, log_elementwise_bf16_cpu_wrapper);
-    table.register(SinElementwise,     &unary(bf16_dt),  cpu, sin_elementwise_bf16_cpu_wrapper);
-    table.register(CosElementwise,     &unary(bf16_dt),  cpu, cos_elementwise_bf16_cpu_wrapper);
-    table.register(SigmoidElementwise, &unary(bf16_dt),  cpu, sigmoid_elementwise_bf16_cpu_wrapper);
-    table.register(SiluElementwise,    &unary(bf16_dt),  cpu, silu_elementwise_bf16_cpu_wrapper);
-    table.register(GeluElementwise,    &unary(bf16_dt),  cpu, gelu_elementwise_bf16_cpu_wrapper);
-    table.register(StepElementwise,    &unary(bf16_dt),  cpu, step_elementwise_bf16_cpu_wrapper);
-
-    table.register(ReluElementwise,    &unary(f16_dt),  cpu, relu_elementwise_f16_cpu_wrapper);
-    table.register(NegElementwise,     &unary(f16_dt),  cpu, neg_elementwise_f16_cpu_wrapper);
-    table.register(SqrElementwise,     &unary(f16_dt),  cpu, sqr_elementwise_f16_cpu_wrapper);
-    table.register(SqrtElementwise,    &unary(f16_dt),  cpu, sqrt_elementwise_f16_cpu_wrapper);
-    table.register(RecipElementwise,   &unary(f16_dt),  cpu, recip_elementwise_f16_cpu_wrapper);
-    table.register(AbsElementwise,     &unary(f16_dt),  cpu, abs_elementwise_f16_cpu_wrapper);
-    table.register(TanhElementwise,    &unary(f16_dt),  cpu, tanh_elementwise_f16_cpu_wrapper);
-    table.register(ExpElementwise,     &unary(f16_dt),  cpu, exp_elementwise_f16_cpu_wrapper);
-    table.register(LogElementwise,     &unary(f16_dt),  cpu, log_elementwise_f16_cpu_wrapper);
-    table.register(SinElementwise,     &unary(f16_dt),  cpu, sin_elementwise_f16_cpu_wrapper);
-    table.register(CosElementwise,     &unary(f16_dt),  cpu, cos_elementwise_f16_cpu_wrapper);
-    table.register(SigmoidElementwise, &unary(f16_dt),  cpu, sigmoid_elementwise_f16_cpu_wrapper);
-    table.register(SiluElementwise,    &unary(f16_dt),  cpu, silu_elementwise_f16_cpu_wrapper);
-    table.register(GeluElementwise,    &unary(f16_dt),  cpu, gelu_elementwise_f16_cpu_wrapper);
-    table.register(StepElementwise,    &unary(f16_dt),  cpu, step_elementwise_f16_cpu_wrapper);
+    // (Elementwise unary BF16 + F16 — like F32/F64 — are registered from the
+    // elementwise-unary FKC contract via register_cpu_unary_from_contract near
+    // the top of this fn; the importer fans each per-op section over all four
+    // dtypes. The binary bf16/f16 ops likewise come from the elementwise-binary
+    // contract.)
 
     // Concat is a variadic uniform-dtype op (N inputs, all the same
     // dtype, plus output). Register the canonical `[T, T]` shorthand
@@ -7187,6 +7156,129 @@ mod tests {
         }
 
         assert_eq!(checked, 16, "3 forward ops × 4 dtypes + powi_backward × 4");
+    }
+
+    /// FKC born-red gate for the CPU elementwise-unary family.
+    /// `global_bindings()` registers the elementwise-unary family (22 ops × 4
+    /// dtypes = 88 bindings) FROM ITS KERNEL CONTRACT
+    /// (`docs/kernel-contracts/cpu/elementwise-unary.fkc.md`) via the §3.4
+    /// multi-dtype fan-out (each per-op section declares a BASE `entry_point`
+    /// that the importer expands to `<base>_<dtype>`) — the sole registration
+    /// path, now that the hand-written `table.register(...)` calls are DELETED.
+    /// Asserts each (op, dtype, Cpu) key resolves to the EXACT production
+    /// wrapper fn-pointer, is contract-sourced (`kernel_source == "portable-cpu"`),
+    /// caps stayed contiguous-only, and the audited bit-stable precision claim
+    /// rode through. `gelu_tanh` (`GeluElementwise`, base `gelu`) and `gelu_erf`
+    /// (`GeluErfElementwise`, base `gelu_erf`) are kept DISTINCT.
+    #[test]
+    fn global_bindings_registers_unary_family_from_contract() {
+        let table = global_bindings();
+        let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+
+        // (op, [f32, f64, bf16, f16] production wrappers) for all 22 ops.
+        let families: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
+            (OpKind::ReluElementwise, [
+                relu_elementwise_f32_cpu_wrapper, relu_elementwise_f64_cpu_wrapper,
+                relu_elementwise_bf16_cpu_wrapper, relu_elementwise_f16_cpu_wrapper]),
+            (OpKind::NegElementwise, [
+                neg_elementwise_f32_cpu_wrapper, neg_elementwise_f64_cpu_wrapper,
+                neg_elementwise_bf16_cpu_wrapper, neg_elementwise_f16_cpu_wrapper]),
+            (OpKind::SqrElementwise, [
+                sqr_elementwise_f32_cpu_wrapper, sqr_elementwise_f64_cpu_wrapper,
+                sqr_elementwise_bf16_cpu_wrapper, sqr_elementwise_f16_cpu_wrapper]),
+            (OpKind::SqrtElementwise, [
+                sqrt_elementwise_f32_cpu_wrapper, sqrt_elementwise_f64_cpu_wrapper,
+                sqrt_elementwise_bf16_cpu_wrapper, sqrt_elementwise_f16_cpu_wrapper]),
+            (OpKind::RecipElementwise, [
+                recip_elementwise_f32_cpu_wrapper, recip_elementwise_f64_cpu_wrapper,
+                recip_elementwise_bf16_cpu_wrapper, recip_elementwise_f16_cpu_wrapper]),
+            (OpKind::AbsElementwise, [
+                abs_elementwise_f32_cpu_wrapper, abs_elementwise_f64_cpu_wrapper,
+                abs_elementwise_bf16_cpu_wrapper, abs_elementwise_f16_cpu_wrapper]),
+            (OpKind::TanhElementwise, [
+                tanh_elementwise_f32_cpu_wrapper, tanh_elementwise_f64_cpu_wrapper,
+                tanh_elementwise_bf16_cpu_wrapper, tanh_elementwise_f16_cpu_wrapper]),
+            (OpKind::ExpElementwise, [
+                exp_elementwise_f32_cpu_wrapper, exp_elementwise_f64_cpu_wrapper,
+                exp_elementwise_bf16_cpu_wrapper, exp_elementwise_f16_cpu_wrapper]),
+            (OpKind::LogElementwise, [
+                log_elementwise_f32_cpu_wrapper, log_elementwise_f64_cpu_wrapper,
+                log_elementwise_bf16_cpu_wrapper, log_elementwise_f16_cpu_wrapper]),
+            (OpKind::SinElementwise, [
+                sin_elementwise_f32_cpu_wrapper, sin_elementwise_f64_cpu_wrapper,
+                sin_elementwise_bf16_cpu_wrapper, sin_elementwise_f16_cpu_wrapper]),
+            (OpKind::CosElementwise, [
+                cos_elementwise_f32_cpu_wrapper, cos_elementwise_f64_cpu_wrapper,
+                cos_elementwise_bf16_cpu_wrapper, cos_elementwise_f16_cpu_wrapper]),
+            (OpKind::SigmoidElementwise, [
+                sigmoid_elementwise_f32_cpu_wrapper, sigmoid_elementwise_f64_cpu_wrapper,
+                sigmoid_elementwise_bf16_cpu_wrapper, sigmoid_elementwise_f16_cpu_wrapper]),
+            (OpKind::SiluElementwise, [
+                silu_elementwise_f32_cpu_wrapper, silu_elementwise_f64_cpu_wrapper,
+                silu_elementwise_bf16_cpu_wrapper, silu_elementwise_f16_cpu_wrapper]),
+            (OpKind::StepElementwise, [
+                step_elementwise_f32_cpu_wrapper, step_elementwise_f64_cpu_wrapper,
+                step_elementwise_bf16_cpu_wrapper, step_elementwise_f16_cpu_wrapper]),
+            (OpKind::GeluElementwise, [
+                gelu_elementwise_f32_cpu_wrapper, gelu_elementwise_f64_cpu_wrapper,
+                gelu_elementwise_bf16_cpu_wrapper, gelu_elementwise_f16_cpu_wrapper]),
+            (OpKind::FloorElementwise, [
+                floor_elementwise_f32_cpu_wrapper, floor_elementwise_f64_cpu_wrapper,
+                floor_elementwise_bf16_cpu_wrapper, floor_elementwise_f16_cpu_wrapper]),
+            (OpKind::CeilElementwise, [
+                ceil_elementwise_f32_cpu_wrapper, ceil_elementwise_f64_cpu_wrapper,
+                ceil_elementwise_bf16_cpu_wrapper, ceil_elementwise_f16_cpu_wrapper]),
+            (OpKind::RoundElementwise, [
+                round_elementwise_f32_cpu_wrapper, round_elementwise_f64_cpu_wrapper,
+                round_elementwise_bf16_cpu_wrapper, round_elementwise_f16_cpu_wrapper]),
+            (OpKind::SignElementwise, [
+                sign_elementwise_f32_cpu_wrapper, sign_elementwise_f64_cpu_wrapper,
+                sign_elementwise_bf16_cpu_wrapper, sign_elementwise_f16_cpu_wrapper]),
+            (OpKind::ErfElementwise, [
+                erf_elementwise_f32_cpu_wrapper, erf_elementwise_f64_cpu_wrapper,
+                erf_elementwise_bf16_cpu_wrapper, erf_elementwise_f16_cpu_wrapper]),
+            (OpKind::GeluErfElementwise, [
+                gelu_erf_elementwise_f32_cpu_wrapper, gelu_erf_elementwise_f64_cpu_wrapper,
+                gelu_erf_elementwise_bf16_cpu_wrapper, gelu_erf_elementwise_f16_cpu_wrapper]),
+            (OpKind::RsqrtElementwise, [
+                rsqrt_elementwise_f32_cpu_wrapper, rsqrt_elementwise_f64_cpu_wrapper,
+                rsqrt_elementwise_bf16_cpu_wrapper, rsqrt_elementwise_f16_cpu_wrapper]),
+        ];
+
+        let mut checked = 0usize;
+        for (op, wrappers) in families {
+            for (dt, expected) in dts.iter().zip(wrappers.iter()) {
+                let alts = table.lookup_alternatives(*op, &[*dt, *dt], BackendId::Cpu);
+                let entry = alts
+                    .iter()
+                    .find(|e| e.kernel as usize == *expected as usize)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{op:?}/{dt:?}/Cpu: the production wrapper must be bound \
+                             FROM the elementwise-unary contract in global_bindings() \
+                             — found {} alternative(s) with sources {:?}",
+                            alts.len(),
+                            alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                        )
+                    });
+                assert_eq!(
+                    entry.kernel_source, "portable-cpu",
+                    "{op:?}/{dt:?}: unary family must be contract-sourced \
+                     (kernel_source=\"portable-cpu\"); got {:?}",
+                    entry.kernel_source,
+                );
+                assert!(
+                    !entry.caps.strided_input,
+                    "{op:?}/{dt:?}: caps preserved (contiguous-only, strided_input=false)",
+                );
+                assert!(
+                    entry.precision.bit_stable_on_same_hardware,
+                    "{op:?}/{dt:?}: the contract's audited bit-stable claim rode through",
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 88, "all 22 ops × 4 dtypes checked");
     }
 
     /// Lookup miss returns NoBackendForOp with diagnostic data.

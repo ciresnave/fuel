@@ -94,11 +94,116 @@ pub static CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("powi_backward", "f16",  powi_backward_f16_cpu_wrapper),
 ];
 
+/// The CPU elementwise-unary family's `symbol → production wrapper` map
+/// (22 ops × 4 dtypes = 88 kernels). Contract:
+/// `docs/kernel-contracts/cpu/elementwise-unary.fkc.md`. Each per-op section
+/// declares a BASE `entry_point` (e.g. `…::relu`) and enumerates
+/// `dtypes: [F32,F64,BF16,F16]`; the importer's §3.4 multi-dtype fan-out then
+/// resolves `<base>_<dtype>` (e.g. `relu_f32`) against this table — so the
+/// `$op` literals below are the byte-kernel BASES, NOT the OpKind names. The
+/// two GELU flavors stay distinct: `gelu_tanh` (`OpKind::GeluElementwise`) has
+/// base `gelu` (wrapper `gelu_elementwise_<dt>`), while `gelu_erf`
+/// (`OpKind::GeluErfElementwise`) has base `gelu_erf`. The `unary` chassis
+/// umbrella is `registrable: false` (§3.10 describe-only) and never resolves,
+/// so it is absent here.
+pub static CPU_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    ep!("relu", "f32",  relu_elementwise_f32_cpu_wrapper),
+    ep!("relu", "f64",  relu_elementwise_f64_cpu_wrapper),
+    ep!("relu", "bf16", relu_elementwise_bf16_cpu_wrapper),
+    ep!("relu", "f16",  relu_elementwise_f16_cpu_wrapper),
+    ep!("neg", "f32",  neg_elementwise_f32_cpu_wrapper),
+    ep!("neg", "f64",  neg_elementwise_f64_cpu_wrapper),
+    ep!("neg", "bf16", neg_elementwise_bf16_cpu_wrapper),
+    ep!("neg", "f16",  neg_elementwise_f16_cpu_wrapper),
+    ep!("sqr", "f32",  sqr_elementwise_f32_cpu_wrapper),
+    ep!("sqr", "f64",  sqr_elementwise_f64_cpu_wrapper),
+    ep!("sqr", "bf16", sqr_elementwise_bf16_cpu_wrapper),
+    ep!("sqr", "f16",  sqr_elementwise_f16_cpu_wrapper),
+    ep!("sqrt", "f32",  sqrt_elementwise_f32_cpu_wrapper),
+    ep!("sqrt", "f64",  sqrt_elementwise_f64_cpu_wrapper),
+    ep!("sqrt", "bf16", sqrt_elementwise_bf16_cpu_wrapper),
+    ep!("sqrt", "f16",  sqrt_elementwise_f16_cpu_wrapper),
+    ep!("recip", "f32",  recip_elementwise_f32_cpu_wrapper),
+    ep!("recip", "f64",  recip_elementwise_f64_cpu_wrapper),
+    ep!("recip", "bf16", recip_elementwise_bf16_cpu_wrapper),
+    ep!("recip", "f16",  recip_elementwise_f16_cpu_wrapper),
+    ep!("abs", "f32",  abs_elementwise_f32_cpu_wrapper),
+    ep!("abs", "f64",  abs_elementwise_f64_cpu_wrapper),
+    ep!("abs", "bf16", abs_elementwise_bf16_cpu_wrapper),
+    ep!("abs", "f16",  abs_elementwise_f16_cpu_wrapper),
+    ep!("tanh", "f32",  tanh_elementwise_f32_cpu_wrapper),
+    ep!("tanh", "f64",  tanh_elementwise_f64_cpu_wrapper),
+    ep!("tanh", "bf16", tanh_elementwise_bf16_cpu_wrapper),
+    ep!("tanh", "f16",  tanh_elementwise_f16_cpu_wrapper),
+    ep!("exp", "f32",  exp_elementwise_f32_cpu_wrapper),
+    ep!("exp", "f64",  exp_elementwise_f64_cpu_wrapper),
+    ep!("exp", "bf16", exp_elementwise_bf16_cpu_wrapper),
+    ep!("exp", "f16",  exp_elementwise_f16_cpu_wrapper),
+    ep!("log", "f32",  log_elementwise_f32_cpu_wrapper),
+    ep!("log", "f64",  log_elementwise_f64_cpu_wrapper),
+    ep!("log", "bf16", log_elementwise_bf16_cpu_wrapper),
+    ep!("log", "f16",  log_elementwise_f16_cpu_wrapper),
+    ep!("sin", "f32",  sin_elementwise_f32_cpu_wrapper),
+    ep!("sin", "f64",  sin_elementwise_f64_cpu_wrapper),
+    ep!("sin", "bf16", sin_elementwise_bf16_cpu_wrapper),
+    ep!("sin", "f16",  sin_elementwise_f16_cpu_wrapper),
+    ep!("cos", "f32",  cos_elementwise_f32_cpu_wrapper),
+    ep!("cos", "f64",  cos_elementwise_f64_cpu_wrapper),
+    ep!("cos", "bf16", cos_elementwise_bf16_cpu_wrapper),
+    ep!("cos", "f16",  cos_elementwise_f16_cpu_wrapper),
+    ep!("sigmoid", "f32",  sigmoid_elementwise_f32_cpu_wrapper),
+    ep!("sigmoid", "f64",  sigmoid_elementwise_f64_cpu_wrapper),
+    ep!("sigmoid", "bf16", sigmoid_elementwise_bf16_cpu_wrapper),
+    ep!("sigmoid", "f16",  sigmoid_elementwise_f16_cpu_wrapper),
+    ep!("silu", "f32",  silu_elementwise_f32_cpu_wrapper),
+    ep!("silu", "f64",  silu_elementwise_f64_cpu_wrapper),
+    ep!("silu", "bf16", silu_elementwise_bf16_cpu_wrapper),
+    ep!("silu", "f16",  silu_elementwise_f16_cpu_wrapper),
+    ep!("step", "f32",  step_elementwise_f32_cpu_wrapper),
+    ep!("step", "f64",  step_elementwise_f64_cpu_wrapper),
+    ep!("step", "bf16", step_elementwise_bf16_cpu_wrapper),
+    ep!("step", "f16",  step_elementwise_f16_cpu_wrapper),
+    // gelu_tanh (the canonical Gelu): base `gelu`, wrapper `gelu_elementwise_*`.
+    ep!("gelu", "f32",  gelu_elementwise_f32_cpu_wrapper),
+    ep!("gelu", "f64",  gelu_elementwise_f64_cpu_wrapper),
+    ep!("gelu", "bf16", gelu_elementwise_bf16_cpu_wrapper),
+    ep!("gelu", "f16",  gelu_elementwise_f16_cpu_wrapper),
+    ep!("floor", "f32",  floor_elementwise_f32_cpu_wrapper),
+    ep!("floor", "f64",  floor_elementwise_f64_cpu_wrapper),
+    ep!("floor", "bf16", floor_elementwise_bf16_cpu_wrapper),
+    ep!("floor", "f16",  floor_elementwise_f16_cpu_wrapper),
+    ep!("ceil", "f32",  ceil_elementwise_f32_cpu_wrapper),
+    ep!("ceil", "f64",  ceil_elementwise_f64_cpu_wrapper),
+    ep!("ceil", "bf16", ceil_elementwise_bf16_cpu_wrapper),
+    ep!("ceil", "f16",  ceil_elementwise_f16_cpu_wrapper),
+    ep!("round", "f32",  round_elementwise_f32_cpu_wrapper),
+    ep!("round", "f64",  round_elementwise_f64_cpu_wrapper),
+    ep!("round", "bf16", round_elementwise_bf16_cpu_wrapper),
+    ep!("round", "f16",  round_elementwise_f16_cpu_wrapper),
+    ep!("sign", "f32",  sign_elementwise_f32_cpu_wrapper),
+    ep!("sign", "f64",  sign_elementwise_f64_cpu_wrapper),
+    ep!("sign", "bf16", sign_elementwise_bf16_cpu_wrapper),
+    ep!("sign", "f16",  sign_elementwise_f16_cpu_wrapper),
+    ep!("erf", "f32",  erf_elementwise_f32_cpu_wrapper),
+    ep!("erf", "f64",  erf_elementwise_f64_cpu_wrapper),
+    ep!("erf", "bf16", erf_elementwise_bf16_cpu_wrapper),
+    ep!("erf", "f16",  erf_elementwise_f16_cpu_wrapper),
+    // gelu_erf (exact-erf GELU): base `gelu_erf`, DISTINCT from `gelu` above.
+    ep!("gelu_erf", "f32",  gelu_erf_elementwise_f32_cpu_wrapper),
+    ep!("gelu_erf", "f64",  gelu_erf_elementwise_f64_cpu_wrapper),
+    ep!("gelu_erf", "bf16", gelu_erf_elementwise_bf16_cpu_wrapper),
+    ep!("gelu_erf", "f16",  gelu_erf_elementwise_f16_cpu_wrapper),
+    ep!("rsqrt", "f32",  rsqrt_elementwise_f32_cpu_wrapper),
+    ep!("rsqrt", "f64",  rsqrt_elementwise_f64_cpu_wrapper),
+    ep!("rsqrt", "bf16", rsqrt_elementwise_bf16_cpu_wrapper),
+    ep!("rsqrt", "f16",  rsqrt_elementwise_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
-/// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`] and
-/// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`]. Unresolved → `None`, which the
-/// importer turns into a typed `UnknownEntryPoint` error (never a panic, never
-/// a fabricated pointer).
+/// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
+/// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], and [`CPU_UNARY_ENTRY_POINTS`].
+/// Unresolved → `None`, which the importer turns into a typed
+/// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;
 
 impl LinkRegistry for CpuLinkRegistry {
@@ -106,13 +211,14 @@ impl LinkRegistry for CpuLinkRegistry {
         CPU_BINARY_ENTRY_POINTS
             .iter()
             .chain(CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS.iter())
+            .chain(CPU_UNARY_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
 
     fn resolve_fused(&self, _symbol: &str) -> Option<KernelRef> {
-        // No fused-op contracts in the elementwise-binary or
-        // affine/clamp/powi corpora.
+        // No fused-op contracts in the elementwise-binary, affine/clamp/powi,
+        // or elementwise-unary corpora.
         None
     }
 }
