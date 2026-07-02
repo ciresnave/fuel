@@ -61,6 +61,7 @@ strided/broadcast/offset operand must be contiguized by the planner first.
 ```fkc
 kernel: reduce
 op_kind: SumReduce          # family chassis; one registrable contract per (op,dtype) below
+registrable: false          # §3.10 describe-only: shared reduction chassis, NOT a dispatch target — the per-(op,dtype) thunks below are the registrable contracts (WITHOUT this the chassis double-registers SumReduce/[F32] → DuplicateKernelRef at init)
 blurb: "Per-axis Sum/Mean/Max/Min reduction chassis; contiguous row-major; half via f32 accumulator."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -1144,6 +1145,7 @@ constraint (`dim = dims[0]`); `dim` size 0 is rejected (argmax undefined). The o
 ```fkc
 kernel: argmax_dim_f32
 op_kind: ArgMaxDim
+registrable: false          # DEFERRED: this contract section is f32-only, but production registers ArgMaxDim for ALL input dtypes {F32,F64,BF16,F16} via the single argmax_dim_u32_cpu_dispatch (dispatch.rs, in a dtype loop). Reconcile the contract (add the other-dtype sections / match the dispatch granularity) before importing; the hand-written arg regs stay authoritative until then.
 blurb: "Argmax along one dim (f32 in, U32 index out); first/lowest index wins ties; NaN never wins; contiguous."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -1212,6 +1214,7 @@ output drops `dim`. Contiguous-only.
 ```fkc
 kernel: argmin_dim_f32
 op_kind: ArgMinDim
+registrable: false          # DEFERRED: this contract section is f32-only, but production registers ArgMinDim for ALL input dtypes {F32,F64,BF16,F16} via the single argmin_dim_u32_cpu_dispatch (dispatch.rs, in a dtype loop). Reconcile the contract (add the other-dtype sections / match the dispatch granularity) before importing; the hand-written arg regs stay authoritative until then.
 blurb: "Argmin along one dim (f32 in, U32 index out); first/lowest index wins ties; NaN never wins; contiguous."
 backend: Cpu
 kernel_source: "portable-cpu"

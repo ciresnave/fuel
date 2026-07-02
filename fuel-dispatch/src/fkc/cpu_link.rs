@@ -250,10 +250,41 @@ pub static CPU_WHERE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("where", "f16",  where_f16_cpu_wrapper),
 ];
 
+/// The CPU per-axis REDUCE family's `symbol → production wrapper` map
+/// (4 ops × 4 dtypes = 16). Contract: `docs/kernel-contracts/cpu/reduce.fkc.md`.
+/// Each per-(op, dtype) section (`## sum_reduce_f32`, …) declares a SPECIFIC
+/// single-dtype `entry_point` (`…::sum_reduce_f32`), so it does NOT fan — the
+/// importer resolves that symbol AS-IS. The binding key is `[T, T]` (input +
+/// `passthrough(input)` output; the reduce axes + keepdim ride in
+/// `OpParams::Reduce`, NOT the dtype-list). The `## reduce` chassis umbrella is
+/// `registrable: false` (§3.10 describe-only) and never resolves, so it is
+/// absent here; the f32-only `argmax_dim_f32` / `argmin_dim_f32` sections are
+/// `registrable: false` (deferred — production registers Arg{Max,Min}Dim for all
+/// input dtypes via a hand-written dispatch) and are likewise absent.
+pub static CPU_REDUCE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    ep!("sum_reduce",  "f32",  sum_reduce_f32_cpu_wrapper),
+    ep!("sum_reduce",  "f64",  sum_reduce_f64_cpu_wrapper),
+    ep!("sum_reduce",  "bf16", sum_reduce_bf16_cpu_wrapper),
+    ep!("sum_reduce",  "f16",  sum_reduce_f16_cpu_wrapper),
+    ep!("mean_reduce", "f32",  mean_reduce_f32_cpu_wrapper),
+    ep!("mean_reduce", "f64",  mean_reduce_f64_cpu_wrapper),
+    ep!("mean_reduce", "bf16", mean_reduce_bf16_cpu_wrapper),
+    ep!("mean_reduce", "f16",  mean_reduce_f16_cpu_wrapper),
+    ep!("max_reduce",  "f32",  max_reduce_f32_cpu_wrapper),
+    ep!("max_reduce",  "f64",  max_reduce_f64_cpu_wrapper),
+    ep!("max_reduce",  "bf16", max_reduce_bf16_cpu_wrapper),
+    ep!("max_reduce",  "f16",  max_reduce_f16_cpu_wrapper),
+    ep!("min_reduce",  "f32",  min_reduce_f32_cpu_wrapper),
+    ep!("min_reduce",  "f64",  min_reduce_f64_cpu_wrapper),
+    ep!("min_reduce",  "bf16", min_reduce_bf16_cpu_wrapper),
+    ep!("min_reduce",  "f16",  min_reduce_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
 /// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
-/// [`CPU_COMPARE_ENTRY_POINTS`], and [`CPU_WHERE_ENTRY_POINTS`].
+/// [`CPU_COMPARE_ENTRY_POINTS`], [`CPU_WHERE_ENTRY_POINTS`], and
+/// [`CPU_REDUCE_ENTRY_POINTS`].
 /// Unresolved → `None`, which the importer turns into a typed
 /// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;
@@ -266,13 +297,14 @@ impl LinkRegistry for CpuLinkRegistry {
             .chain(CPU_UNARY_ENTRY_POINTS.iter())
             .chain(CPU_COMPARE_ENTRY_POINTS.iter())
             .chain(CPU_WHERE_ENTRY_POINTS.iter())
+            .chain(CPU_REDUCE_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
 
     fn resolve_fused(&self, _symbol: &str) -> Option<KernelRef> {
         // No fused-op contracts in the elementwise-binary, affine/clamp/powi,
-        // elementwise-unary, or compare/where corpora.
+        // elementwise-unary, compare/where, or reduce corpora.
         None
     }
 }
