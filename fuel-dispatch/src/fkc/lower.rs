@@ -618,25 +618,29 @@ fn assemble_dtype_variants(
             for out in &ret.outputs {
                 let operand = out.name.as_deref().unwrap_or("<output>");
                 if let Some(rule) = out.dtype_rule.as_deref() {
-                    match parse_dtype_rule(rule, section, operand)? {
-                        DtypeRule::Fixed(dt) => output_dtypes.push(dt),
-                        DtypeRule::Passthrough(role) => {
-                            // An output may not derive its dtype from the
-                            // optional operand: absent, the two keys' output
-                            // dtypes would disagree (§3.4/§5.1).
-                            if optional_last
-                                && inputs.last().map(|o| o.name == role).unwrap_or(false)
-                            {
-                                return Err(FkcError::PassthroughNamesOptionalOperand {
-                                    section: section.to_string(),
-                                    role,
-                                });
-                            }
-                            if let Some(dt) = passthrough_dtype(&inputs, &role, fan) {
-                                output_dtypes.push(dt);
-                            }
-                        }
-                        DtypeRule::Other => {}
+                    if let Some(dt) =
+                        resolve_output_slot_dtype(rule, operand, &inputs, fan, optional_last, section)?
+                    {
+                        output_dtypes.push(dt);
+                    }
+                }
+            }
+            // §5.5 multi-output bundle (Option C): a `return.bundle` packs
+            // several logical slots into ONE output buffer whose PRIMARY
+            // (first) slot's dtype tags the binding key — the multi-output
+            // contract on [`crate::kernel::KernelRef`] states the key
+            // "describes inputs + the bundle's primary dtype only". Derive that
+            // one slot dtype through the SAME `dtype_rule`/passthrough path as a
+            // regular output and append it to the key tail — so a 5-input scan
+            // with a `passthrough(u)` bundle keys `[T; 6]`, byte-for-byte the
+            // deleted hand-written reg. A section with NO bundle is unaffected
+            // (the migrated per-(op,dtype) families stay byte-identical).
+            if let Some(bundle) = &ret.bundle {
+                if let Some((slot, rule)) = bundle_primary_dtype_rule(bundle) {
+                    if let Some(dt) =
+                        resolve_output_slot_dtype(&rule, &slot, &inputs, fan, optional_last, section)?
+                    {
+                        output_dtypes.push(dt);
                     }
                 }
             }
@@ -691,6 +695,67 @@ fn passthrough_dtype(inputs: &[InputOperand], role: &str, fan: Option<DType>) ->
     } else {
         inputs.first().map(operand_dtype)
     }
+}
+
+/// Resolve ONE output slot's key dtype from its `dtype_rule` at this variant —
+/// the single path shared by a regular `return.outputs` entry and a
+/// `return.bundle`'s primary slot (§5.5). `fixed(D)` → `D`;
+/// `passthrough(role)` → the role operand's dtype at this variant (best-effort
+/// untyped fallback per [`passthrough_dtype`]); an unrecognized rule → `None`
+/// (best-effort — the full return validation is a separate slice). A
+/// `passthrough` naming the OPTIONAL last operand is the typed
+/// [`FkcError::PassthroughNamesOptionalOperand`] (its dtype would disagree
+/// between the operand's present/absent keys, §3.4/§5.1).
+fn resolve_output_slot_dtype(
+    rule: &str,
+    operand: &str,
+    inputs: &[InputOperand],
+    fan: Option<DType>,
+    optional_last: bool,
+    section: &str,
+) -> Result<Option<DType>, FkcError> {
+    match parse_dtype_rule(rule, section, operand)? {
+        DtypeRule::Fixed(dt) => Ok(Some(dt)),
+        DtypeRule::Passthrough(role) => {
+            if optional_last && inputs.last().map(|o| o.name == role).unwrap_or(false) {
+                return Err(FkcError::PassthroughNamesOptionalOperand {
+                    section: section.to_string(),
+                    role,
+                });
+            }
+            Ok(passthrough_dtype(inputs, &role, fan))
+        }
+        DtypeRule::Other => Ok(None),
+    }
+}
+
+/// Extract the PRIMARY (first) slot's `(name, dtype_rule)` from a
+/// `return.bundle` value (§5.5 Option C multi-output). The bundle is carried
+/// opaquely in the schema — a `serde_yml::Value` sequence of
+/// `{ name, dtype_rule, shape_rule, … }` slot maps (its rank/name validation is
+/// a separate slice) — but the binding KEY only needs the first slot's
+/// `dtype_rule` string, which is then fed through the regular
+/// [`resolve_output_slot_dtype`] machinery exactly like a `return.outputs`
+/// entry. Returns `None` when the bundle is not a non-empty sequence of maps or
+/// the first slot declares no `dtype_rule` (best-effort — a malformed bundle is
+/// a validation concern, never a key that silently mirrors the wrong operand).
+fn bundle_primary_dtype_rule(bundle: &serde_yml::Value) -> Option<(String, String)> {
+    let serde_yml::Value::Sequence(slots) = bundle else {
+        return None;
+    };
+    let serde_yml::Value::Mapping(first) = slots.first()? else {
+        return None;
+    };
+    let rule = first
+        .get(serde_yml::Value::String("dtype_rule".into()))
+        .and_then(|v| v.as_str())?
+        .to_string();
+    let name = first
+        .get(serde_yml::Value::String("name".into()))
+        .and_then(|v| v.as_str())
+        .unwrap_or("<bundle>")
+        .to_string();
+    Some((name, rule))
 }
 
 /// A parsed `dtype_rule` (§5.1): `fixed(DType)`, `passthrough(role)`, or an
@@ -1215,6 +1280,109 @@ mod tests {
         let resolved = lower_file(&file, &StubLink).expect("all fused kernels lower");
         assert_eq!(resolved.len(), file.kernels.len());
         assert!(resolved.iter().all(|r| matches!(r, Resolved::Fused(_))));
+    }
+
+    // =====================================================================
+    // return.bundle key derivation (§5.5 Option C multi-output)
+    // =====================================================================
+
+    /// A synthetic contract exercising the `return.bundle` key-derivation gap.
+    /// `bundle_op` has TWO inputs (`a`, `b`) and a `return.bundle` (Option C
+    /// multi-output: one packed buffer) whose PRIMARY slot mirrors input `a`
+    /// (`passthrough(a)` → F32) and NO `return.outputs` — so its binding key
+    /// must be `[a, b, out] = [F32; 3]` (N+1 slots). The importer previously
+    /// read `return.outputs` ONLY, so a bundle-only section produced the N-slot
+    /// short key `[F32, F32]` (missing the bundled output slot) — exactly why
+    /// the `selective_scan_*` / `ssd_chunk_scan_*` families were deferred.
+    /// `plain_op` is the no-bundle backward-compat guard: TWO inputs + a regular
+    /// `return.outputs`, key `[F32, F32, F32]` (unchanged).
+    const BUNDLE_SYNTH: &str = r#"---
+fkc_version: 1
+provider:
+  name: test-provider
+  backend: Cpu
+  kernel_source: "test-cpu"
+---
+
+# bundle key-derivation synthetic
+
+## bundle_op
+
+A blurb.
+
+```fkc
+kernel: bundle_op
+op_kind: SelectiveScan
+blurb: "synthetic multi-output bundle op"
+entry_point: "x::bundle_op"
+accept:
+  inputs:
+    - name: a
+      dtypes: [F32]
+    - name: b
+      dtypes: [F32]
+return:
+  bundle:
+    - { name: y,  dtype_rule: passthrough(a), shape_rule: same_as(a), layout_guarantee: contiguous }
+    - { name: st, dtype_rule: passthrough(a), shape_rule: same_as(a), layout_guarantee: contiguous }
+```
+
+## plain_op
+
+A blurb.
+
+```fkc
+kernel: plain_op
+op_kind: AddElementwise
+blurb: "synthetic no-bundle op"
+entry_point: "x::plain_op"
+accept:
+  inputs:
+    - name: a
+      dtypes: [F32]
+    - name: b
+      dtypes: [F32]
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(a)
+```
+"#;
+
+    #[test]
+    fn return_bundle_appends_primary_output_slot_to_key() {
+        // A `return.bundle` (Option C multi-output, one packed buffer) must
+        // contribute its PRIMARY slot's dtype to the binding key tail — so a
+        // bundle-only section with N inputs keys `[in.., out] = N+1 slots`, NOT
+        // the N-slot short key the importer built when it read `return.outputs`
+        // only. The primary slot mirrors input `a` (`passthrough(a)` → F32).
+        let r = lower_one(BUNDLE_SYNTH, "bundle_op").expect("bundle_op lowers");
+        let Resolved::Primitive(p) = r else {
+            panic!("bundle_op is a primitive");
+        };
+        assert_eq!(
+            p.dtypes.as_slice(),
+            &[DType::F32, DType::F32, DType::F32],
+            "a `return.bundle` must append its primary output slot to the key \
+             (2 inputs + 1 bundle out = 3); the importer previously built the \
+             2-slot short key `[F32, F32]` from `return.outputs` only",
+        );
+    }
+
+    #[test]
+    fn no_bundle_section_key_is_unchanged() {
+        // Backward-compat guard: a section WITHOUT a `return.bundle` is
+        // byte-identical to today — 2 inputs + 1 regular `passthrough(a)`
+        // output = `[F32; 3]`, with NO phantom bundle slot appended.
+        let r = lower_one(BUNDLE_SYNTH, "plain_op").expect("plain_op lowers");
+        let Resolved::Primitive(p) = r else {
+            panic!("plain_op is a primitive");
+        };
+        assert_eq!(
+            p.dtypes.as_slice(),
+            &[DType::F32, DType::F32, DType::F32],
+            "a no-bundle section keys on inputs + regular outputs only",
+        );
     }
 
     // =====================================================================

@@ -403,29 +403,29 @@ pub static CPU_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("rope", "f16",  rope_f16_cpu_wrapper),
 ];
 
-/// The CPU SSM / Mamba family's `symbol → production wrapper` map — the
-/// MIGRATED subset only: FusedSoftmaxCrossEntropy + CausalConv1d
-/// (2 ops × 4 dtypes = 8). Contract: `docs/kernel-contracts/cpu/ssm.fkc.md`.
-/// Each per-(op, dtype) section (`## fused_softmax_cross_entropy_f32`,
-/// `## causal_conv1d_f32`, …) declares a SPECIFIC single-dtype `entry_point`
-/// (`…::fused_softmax_cross_entropy_f32`), so none of them fan — the importer
-/// resolves that symbol AS-IS. FSCE's binding key is `[T, I64, F32]` (logits T
-/// + I64 targets → `fixed(F32)` output; n_rows / vocab / reduction /
-/// ignore_index ride in `OpParams::FusedSoftmaxCrossEntropy`, NOT the
-/// dtype-list); CausalConv1d's is `[T, T, T, T]` (x, weight, bias +
-/// `passthrough(x)` output; batch / channels / seq / kernel / use_silu ride in
-/// `OpParams::CausalConv1d`).
+/// The CPU SSM / Mamba family's `symbol → production wrapper` map — the FULL
+/// family: FusedSoftmaxCrossEntropy + CausalConv1d + SelectiveScan +
+/// SsdChunkScan (4 ops × 4 dtypes = 16). Contract:
+/// `docs/kernel-contracts/cpu/ssm.fkc.md`. Each per-(op, dtype) section
+/// (`## fused_softmax_cross_entropy_f32`, `## selective_scan_f32`, …) declares a
+/// SPECIFIC single-dtype `entry_point` (`…::selective_scan_f32`), so none of
+/// them fan — the importer resolves that symbol AS-IS. Binding keys:
+/// - FSCE: `[T, I64, F32]` (logits T + I64 targets → `fixed(F32)` output;
+///   n_rows / vocab / reduction / ignore_index ride in
+///   `OpParams::FusedSoftmaxCrossEntropy`, NOT the dtype-list).
+/// - CausalConv1d: `[T, T, T, T]` (x, weight, bias + `passthrough(x)` output;
+///   batch / channels / seq / kernel / use_silu ride in `OpParams::CausalConv1d`).
+/// - SelectiveScan / SsdChunkScan: `[T; 6]` — 5 inputs (u,delta,a,b,c /
+///   x,dt,a,b,c) + the ONE bundled output slot. These sections return a
+///   `return.bundle` multi-output (Option C, one packed buffer `[y ; last_state]`);
+///   the importer's key-builder now appends the bundle's PRIMARY-slot dtype
+///   (`passthrough(u)` / `passthrough(x)` → T) to the key tail (`fkc/lower.rs`
+///   `assemble_dtype_variants`), so a bundle section keys `[T; 6]` byte-for-byte
+///   the deleted hand-written reg. The geometry / delta_softplus / chunk_size
+///   ride in `OpParams::{SelectiveScan, SsdChunkScan}`, NOT the dtype-list.
 ///
-/// The two SCAN ops (`selective_scan`, `ssd_chunk_scan`) are DEFERRED and are
-/// ABSENT here: their `return.bundle` multi-output (Option C, one buffer
-/// `[y ; last_state]`) is not yet key-buildable by the importer, which reads
-/// `return.outputs` ONLY (`fkc/lower.rs` `assemble_dtype_variants`). A bundle
-/// section would therefore key on 5 input dtypes (missing the bundled output
-/// slot) whereas production registers a 6-dtype `[T; 6]` key. Those sections
-/// are `registrable: false` in the contract (so the importer skips them) and
-/// keep their hand-written `table.register(...)` regs. The migrated ops have NO
-/// `##` chassis umbrella section, so there is no `registrable: false`
-/// describe-only entry to omit for them.
+/// These sections have NO `##` chassis umbrella, so there is no
+/// `registrable: false` describe-only entry to omit.
 pub static CPU_SSM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("fused_softmax_cross_entropy", "f32",  fused_softmax_cross_entropy_f32_cpu_wrapper),
     ep!("fused_softmax_cross_entropy", "f64",  fused_softmax_cross_entropy_f64_cpu_wrapper),
@@ -435,6 +435,14 @@ pub static CPU_SSM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("causal_conv1d", "f64",  causal_conv1d_f64_cpu_wrapper),
     ep!("causal_conv1d", "bf16", causal_conv1d_bf16_cpu_wrapper),
     ep!("causal_conv1d", "f16",  causal_conv1d_f16_cpu_wrapper),
+    ep!("selective_scan", "f32",  selective_scan_f32_cpu_wrapper),
+    ep!("selective_scan", "f64",  selective_scan_f64_cpu_wrapper),
+    ep!("selective_scan", "bf16", selective_scan_bf16_cpu_wrapper),
+    ep!("selective_scan", "f16",  selective_scan_f16_cpu_wrapper),
+    ep!("ssd_chunk_scan", "f32",  ssd_chunk_scan_f32_cpu_wrapper),
+    ep!("ssd_chunk_scan", "f64",  ssd_chunk_scan_f64_cpu_wrapper),
+    ep!("ssd_chunk_scan", "bf16", ssd_chunk_scan_bf16_cpu_wrapper),
+    ep!("ssd_chunk_scan", "f16",  ssd_chunk_scan_f16_cpu_wrapper),
 ];
 
 /// The CPU 2D-convolution family's `symbol → production wrapper` map — the FULL
