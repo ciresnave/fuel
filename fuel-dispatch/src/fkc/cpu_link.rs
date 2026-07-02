@@ -437,13 +437,50 @@ pub static CPU_SSM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("causal_conv1d", "f16",  causal_conv1d_f16_cpu_wrapper),
 ];
 
+/// The CPU 2D-convolution family's `symbol → production wrapper` map — the
+/// MIGRATED (with-bias) subset only: Conv2D + ConvTranspose2D × 4 dtypes = 8.
+/// Contract: `docs/kernel-contracts/cpu/conv.fkc.md`. Each per-(op, dtype)
+/// section (`## conv2d_f32`, `## conv_transpose2d_f32`, …) declares a SPECIFIC
+/// single-dtype `entry_point` (`…::conv2d_f32`), so none of them fan — the
+/// importer resolves that symbol AS-IS. The binding key each section builds is
+/// `[T, T, T, T]` — x, weight, and the `bias` operand (which the contract marks
+/// `optional: true`) + `passthrough(x)` output; the spatial geometry
+/// (x_shape/w_shape/out_shape, stride/padding/[output_padding]/dilation, groups)
+/// rides in `OpParams::{Conv2D, ConvTranspose2D}`, NOT the dtype-list — identical
+/// to the deleted hand-written with-bias `table.register(Conv2D, &[t;4], …)` regs.
+///
+/// **The NO-BIAS key (`[T, T, T]` — x, weight + out) is DEFERRED and is ABSENT
+/// here.** The importer's key-builder (`fkc/lower.rs` `assemble_dtype_variants`)
+/// has no `optional`-operand support: it includes EVERY `accept.input`
+/// unconditionally, so each conv section builds ONLY the 4-operand with-bias key
+/// — it cannot emit the 3-operand no-bias key that production ALSO registers for
+/// operand-count dispatch. That no-bias key therefore KEEPS its hand-written
+/// `table.register(Conv2D/ConvTranspose2D, &[t; 3], …)` reg (an optional-operand
+/// deferral, analogous to the ssm-scan `return.bundle` deferral). The conv ops'
+/// SEPARATE `FusedKernelRegistry` seam (`register_default_fused_kernels`,
+/// `FusedOps::{CONV2D, CONV_TRANSPOSE2D}`, both no-bias + with-bias) is untouched;
+/// this map only serves the `KernelBindingTable` primitive path. These sections
+/// have NO `##` chassis umbrella, so there is no `registrable: false`
+/// describe-only entry to omit.
+pub static CPU_CONV_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    ep!("conv2d", "f32",  conv2d_f32_cpu_wrapper),
+    ep!("conv2d", "f64",  conv2d_f64_cpu_wrapper),
+    ep!("conv2d", "bf16", conv2d_bf16_cpu_wrapper),
+    ep!("conv2d", "f16",  conv2d_f16_cpu_wrapper),
+    ep!("conv_transpose2d", "f32",  conv_transpose2d_f32_cpu_wrapper),
+    ep!("conv_transpose2d", "f64",  conv_transpose2d_f64_cpu_wrapper),
+    ep!("conv_transpose2d", "bf16", conv_transpose2d_bf16_cpu_wrapper),
+    ep!("conv_transpose2d", "f16",  conv_transpose2d_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
 /// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
 /// [`CPU_COMPARE_ENTRY_POINTS`], [`CPU_WHERE_ENTRY_POINTS`],
 /// [`CPU_REDUCE_ENTRY_POINTS`], [`CPU_REDUCE_TO_ENTRY_POINTS`],
 /// [`CPU_NORM_ENTRY_POINTS`], [`CPU_NORM_BACKWARD_ENTRY_POINTS`],
-/// [`CPU_ROPE_ENTRY_POINTS`], and [`CPU_SSM_ENTRY_POINTS`].
+/// [`CPU_ROPE_ENTRY_POINTS`], [`CPU_SSM_ENTRY_POINTS`], and
+/// [`CPU_CONV_ENTRY_POINTS`].
 /// Unresolved → `None`, which the importer turns into a typed
 /// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;
@@ -462,6 +499,7 @@ impl LinkRegistry for CpuLinkRegistry {
             .chain(CPU_NORM_BACKWARD_ENTRY_POINTS.iter())
             .chain(CPU_ROPE_ENTRY_POINTS.iter())
             .chain(CPU_SSM_ENTRY_POINTS.iter())
+            .chain(CPU_CONV_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
@@ -469,9 +507,12 @@ impl LinkRegistry for CpuLinkRegistry {
     fn resolve_fused(&self, _symbol: &str) -> Option<KernelRef> {
         // No fused-op contracts in the elementwise-binary, affine/clamp/powi,
         // elementwise-unary, compare/where, reduce, reduce-to, norm,
-        // norm-backward, rope, or ssm corpora (the ssm ops are all primitive
-        // `op_kind` contracts — "fused" in FusedSoftmaxCrossEntropy names an
-        // intra-op softmax+NLL fusion, NOT a graph `FusedOpId`).
+        // norm-backward, rope, ssm, or conv corpora. The ssm ops are all
+        // primitive `op_kind` contracts ("fused" in FusedSoftmaxCrossEntropy
+        // names an intra-op softmax+NLL fusion, NOT a graph `FusedOpId`); the
+        // conv contract's sections are all `op_kind: Conv2D/ConvTranspose2D`
+        // primitives (the SEPARATE FusedOps::{CONV2D, CONV_TRANSPOSE2D} registry
+        // seam is hand-written, not FKC-imported).
         None
     }
 }
