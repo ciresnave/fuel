@@ -5367,6 +5367,8 @@ fn default_cpu_caps() -> BackendCapabilities {
     for target in [DType::F32, DType::F64, DType::BF16, DType::F16] {
         op_dtype_support.insert((Cast, target));
     }
+    let (compute_throughput_flops_per_ns, mem_bandwidth_bytes_per_ns) =
+        crate::ranker::default_backend_rates(BackendId::Cpu);
     BackendCapabilities {
         backend_id: BackendId::Cpu,
         device_location: DeviceLocation::Cpu,
@@ -5375,6 +5377,8 @@ fn default_cpu_caps() -> BackendCapabilities {
         access_granularity_bits: 8,
         transfer_paths: vec![(DeviceLocation::Cpu, TransferPath::SameDevice)],
         storage_substrate: SubstrateClass::HostBytes,
+        compute_throughput_flops_per_ns,
+        mem_bandwidth_bytes_per_ns,
     }
 }
 
@@ -5459,6 +5463,8 @@ pub fn derive_backend_caps(
         // buffers meet this). Byte-addressable.
         _ => (256, 8),
     };
+    let (compute_throughput_flops_per_ns, mem_bandwidth_bytes_per_ns) =
+        crate::ranker::default_backend_rates(backend);
     BackendCapabilities {
         backend_id: backend,
         device_location,
@@ -5467,6 +5473,8 @@ pub fn derive_backend_caps(
         access_granularity_bits,
         transfer_paths,
         storage_substrate: substrate_for_backend(backend),
+        compute_throughput_flops_per_ns,
+        mem_bandwidth_bytes_per_ns,
     }
 }
 
@@ -6680,6 +6688,8 @@ mod tests {
             access_granularity_bits: 8,
             transfer_paths: vec![(DeviceLocation::Cpu, TransferPath::SameDevice)],
             storage_substrate: SubstrateClass::HostBytes,
+            compute_throughput_flops_per_ns: 1.0,
+            mem_bandwidth_bytes_per_ns: 4.0,
         }
     }
 
@@ -6701,6 +6711,8 @@ mod tests {
                 (DeviceLocation::Cuda { gpu_id: 0 }, TransferPath::SameDevice),
             ],
             storage_substrate: SubstrateClass::CudaUntyped,
+            compute_throughput_flops_per_ns: 30.0,
+            mem_bandwidth_bytes_per_ns: 40.0,
         }
     }
 

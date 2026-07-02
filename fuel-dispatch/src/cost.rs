@@ -941,6 +941,8 @@ mod tests {
             access_granularity_bits: 8,
             transfer_paths: vec![(DeviceLocation::Cpu, TransferPath::SameDevice)],
             storage_substrate: fuel_ir::backend::SubstrateClass::HostBytes,
+            compute_throughput_flops_per_ns: 1.0,
+            mem_bandwidth_bytes_per_ns: 4.0,
         };
         let c = cost_elementwise_unary_cpu(
             &[in_shape, out_shape],
@@ -969,6 +971,8 @@ mod tests {
             access_granularity_bits: 8,
             transfer_paths: vec![],
             storage_substrate: fuel_ir::backend::SubstrateClass::HostBytes,
+            compute_throughput_flops_per_ns: 1.0,
+            mem_bandwidth_bytes_per_ns: 4.0,
         };
         let c = unknown_cost(&[], &[], &OpParams::None, &caps);
         assert_eq!(c, CostEstimate::default());

@@ -97,21 +97,86 @@ pub fn apply_inbound_transfer_costs(
     }
 }
 
-/// Convert a `CostEstimate` into a sortable composite nanosecond
-/// figure. Lower is better. Treats compute + memory as parallel
-/// (roofline-style) and adds launch overhead serially.
+/// CPU baseline compute throughput prior, in FLOPs per nanosecond.
+/// Reproduces `composite_ns`'s historical neutral prior (1 FLOP ≈ 1 ns).
+pub const CPU_COMPUTE_FLOPS_PER_NS: f64 = 1.0;
+/// CPU baseline memory bandwidth prior, in bytes per nanosecond.
+/// Reproduces the historical prior (4 bytes ≈ 1 ns, i.e. `bytes / 4`).
+pub const CPU_MEM_BYTES_PER_NS: f64 = 4.0;
+/// GPU-class compute throughput prior, in FLOPs per nanosecond.
+/// Deliberately conservative — ~30× the CPU baseline models the real
+/// parallel-throughput advantage a GPU has on large ops well enough for
+/// the placement DP to prefer it there, while a small op's transfer
+/// cost still keeps it local. Directionally correct, not calibrated;
+/// the Judge's Layer-2 measurements refine the effective figure.
+pub const GPU_COMPUTE_FLOPS_PER_NS: f64 = 30.0;
+/// GPU-class memory bandwidth prior, in bytes per nanosecond (~10× the
+/// CPU baseline).
+pub const GPU_MEM_BYTES_PER_NS: f64 = 40.0;
+
+/// The per-backend Layer-1 throughput prior for a consumer that does
+/// NOT have the registered [`BackendCapabilities`] in hand — the
+/// candidate rank (`CostVector::from_candidate`) and the dispatch-time
+/// selectors, which see only `Candidate::backend`.
 ///
-/// Saturating arithmetic — extreme inputs clamp to `u64::MAX`
-/// rather than overflowing. This is plan-time scoring, not a
-/// realtime path; the saturation is purely defensive.
-pub fn composite_ns(cost: &CostEstimate) -> u64 {
-    // Treat 1 FLOP ≈ 1 ns and 1 byte ≈ 0.25 ns as Layer-1's neutral
-    // throughput priors. Real backend capabilities (peak FLOPs/s,
-    // bandwidth GB/s) will refine this once they thread through from
-    // SystemTopology in Phase 1.5+; until then, the proportionality
-    // is what matters for ordering, not the absolute numbers.
-    let compute_ns = cost.flops;                // 1 FLOP/ns prior
-    let memory_ns = cost.bytes_moved / 4;       // 4 GB/s prior
+/// The AUTHORITATIVE source is the registered caps'
+/// `compute_throughput_flops_per_ns` / `mem_bandwidth_bytes_per_ns`,
+/// which the placement DP (`compile_plan`) reads directly. This fallback
+/// is kept consistent by deriving from the SAME constants that
+/// `default_cpu_caps` / `derive_backend_caps` populate those caps with,
+/// so a candidate ranks with the same prior the DP would price it at
+/// until the Judge refines a specific cell.
+///
+/// Returns `(compute_flops_per_ns, mem_bytes_per_ns)`.
+pub fn default_backend_rates(backend: BackendId) -> (f64, f64) {
+    match backend {
+        BackendId::Cpu => (CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS),
+        // CUDA / Vulkan / Metal — GPU-class parallel throughput.
+        _ => (GPU_COMPUTE_FLOPS_PER_NS, GPU_MEM_BYTES_PER_NS),
+    }
+}
+
+/// Convert a `CostEstimate` into a sortable composite nanosecond
+/// figure using a backend's throughput. Lower is better. Treats
+/// compute + memory as parallel (roofline-style) and adds launch
+/// overhead serially.
+///
+/// `compute_rate_flops_per_ns` / `mem_bandwidth_bytes_per_ns` are the
+/// candidate backend's throughput priors (from its registered
+/// [`BackendCapabilities`], or [`default_backend_rates`] when caps
+/// aren't in hand). A faster backend divides the same FLOP/byte count by
+/// a larger rate → fewer ns → the cross-backend placement DP can prefer
+/// it for large parallel work. Passing the CPU baseline (`1.0`, `4.0`)
+/// reproduces the pre-throughput neutral prior exactly.
+///
+/// Never-panic: a non-finite or non-positive rate falls back to the CPU
+/// baseline (so a mis-registered backend degrades to the old prior
+/// rather than dividing by zero). `f64 → u64` casts saturate (Rust
+/// float-to-int semantics: `+inf`/overflow → `u64::MAX`, `NaN` → 0), so
+/// extreme inputs clamp to `u64::MAX` rather than overflowing.
+///
+/// `kernel_overhead_ns` is added serially and NOT scaled — the Judge's
+/// Layer-2 refinement packs a measured latency there (with `flops` =
+/// `bytes_moved` = 0), so this returns that measurement unchanged
+/// regardless of the rates.
+pub fn composite_ns(
+    cost: &CostEstimate,
+    compute_rate_flops_per_ns: f64,
+    mem_bandwidth_bytes_per_ns: f64,
+) -> u64 {
+    let compute_rate = if compute_rate_flops_per_ns.is_finite() && compute_rate_flops_per_ns > 0.0 {
+        compute_rate_flops_per_ns
+    } else {
+        CPU_COMPUTE_FLOPS_PER_NS
+    };
+    let bandwidth = if mem_bandwidth_bytes_per_ns.is_finite() && mem_bandwidth_bytes_per_ns > 0.0 {
+        mem_bandwidth_bytes_per_ns
+    } else {
+        CPU_MEM_BYTES_PER_NS
+    };
+    // f64 → u64 casts saturate in Rust (no panic / no UB).
+    let compute_ns = (cost.flops as f64 / compute_rate) as u64;
+    let memory_ns = (cost.bytes_moved as f64 / bandwidth) as u64;
     let parallel_ns = compute_ns.max(memory_ns);
     parallel_ns.saturating_add(cost.kernel_overhead_ns as u64)
 }
@@ -266,6 +331,8 @@ mod tests {
             access_granularity_bits: 8,
             transfer_paths: vec![(DeviceLocation::Cpu, TransferPath::SameDevice)],
             storage_substrate: SubstrateClass::HostBytes,
+            compute_throughput_flops_per_ns: default_backend_rates(backend_id).0,
+            mem_bandwidth_bytes_per_ns: default_backend_rates(backend_id).1,
         }
     }
 
@@ -309,28 +376,31 @@ mod tests {
 
     #[test]
     fn composite_ns_zero_cost_is_zero() {
-        assert_eq!(composite_ns(&CostEstimate::default()), 0);
+        assert_eq!(
+            composite_ns(&CostEstimate::default(), CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS),
+            0
+        );
     }
 
     #[test]
     fn composite_ns_flops_dominant() {
         // 1000 FLOPs, 0 bytes, 0 overhead → 1000 ns.
         let c = CostEstimate { flops: 1000, bytes_moved: 0, kernel_overhead_ns: 0 };
-        assert_eq!(composite_ns(&c), 1000);
+        assert_eq!(composite_ns(&c, CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS), 1000);
     }
 
     #[test]
     fn composite_ns_memory_dominant() {
         // 0 FLOPs, 4000 bytes, 0 overhead → 1000 ns (4 bytes/ns).
         let c = CostEstimate { flops: 0, bytes_moved: 4000, kernel_overhead_ns: 0 };
-        assert_eq!(composite_ns(&c), 1000);
+        assert_eq!(composite_ns(&c, CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS), 1000);
     }
 
     #[test]
     fn composite_ns_takes_max_of_compute_and_memory() {
         // Compute = 500 ns, memory = 1000 ns → max is 1000 (parallel).
         let c = CostEstimate { flops: 500, bytes_moved: 4000, kernel_overhead_ns: 0 };
-        assert_eq!(composite_ns(&c), 1000);
+        assert_eq!(composite_ns(&c, CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS), 1000);
     }
 
     #[test]
@@ -338,7 +408,7 @@ mod tests {
         // Parallel work = max(500, 800) = 800. Overhead = 200.
         // Total = 1000.
         let c = CostEstimate { flops: 500, bytes_moved: 3200, kernel_overhead_ns: 200 };
-        assert_eq!(composite_ns(&c), 1000);
+        assert_eq!(composite_ns(&c, CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS), 1000);
     }
 
     #[test]
@@ -348,9 +418,13 @@ mod tests {
             bytes_moved: u64::MAX,
             kernel_overhead_ns: u32::MAX,
         };
-        // max() of two u64::MAX values is u64::MAX; saturating_add
-        // pins to u64::MAX.
-        assert_eq!(composite_ns(&c), u64::MAX);
+        // max() of two saturated values is u64::MAX; saturating_add
+        // pins to u64::MAX. (flops / 1.0 saturates the f64→u64 cast;
+        // bytes / 4.0 does not, but the max + overhead still pin.)
+        assert_eq!(
+            composite_ns(&c, CPU_COMPUTE_FLOPS_PER_NS, CPU_MEM_BYTES_PER_NS),
+            u64::MAX
+        );
     }
 
     #[test]
@@ -552,7 +626,12 @@ mod tests {
         assert_eq!(c.static_cost.flops, 0, "Layer-2 zeroes FLOPs");
         assert_eq!(c.static_cost.bytes_moved, 0, "Layer-2 zeroes bytes");
         assert_eq!(c.static_cost.kernel_overhead_ns, 250, "Layer-2 stamps latency");
-        assert_eq!(composite_ns(&c.static_cost), 250, "composite returns measurement");
+        // The Judge packs its latency into kernel_overhead_ns with
+        // flops = bytes = 0, so composite_ns returns it unchanged for
+        // ANY throughput — verified here with a GPU rate to prove the
+        // per-backend scaling never touches the measured leg.
+        let (cr, bw) = default_backend_rates(BackendId::Cuda);
+        assert_eq!(composite_ns(&c.static_cost, cr, bw), 250, "composite returns measurement");
     }
 
     #[test]

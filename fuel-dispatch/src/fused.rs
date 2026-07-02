@@ -2004,6 +2004,8 @@ mod tests {
             access_granularity_bits: 8,
             transfer_paths: vec![],
             storage_substrate: fuel_ir::backend::SubstrateClass::HostBytes,
+            compute_throughput_flops_per_ns: 1.0,
+            mem_bandwidth_bytes_per_ns: 4.0,
         };
         let params = FusedOpParams::Conv2D {
             stride:  (1, 1),
@@ -2032,6 +2034,8 @@ mod tests {
             access_granularity_bits: 8,
             transfer_paths: vec![],
             storage_substrate: fuel_ir::backend::SubstrateClass::HostBytes,
+            compute_throughput_flops_per_ns: 1.0,
+            mem_bandwidth_bytes_per_ns: 4.0,
         };
         let c = cost_fused_linear_cpu(
             &[a, b, bias],

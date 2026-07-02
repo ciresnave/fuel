@@ -113,6 +113,23 @@ pub struct BackendCapabilities {
     /// [`SubstrateClass::CudaUntyped`]; Vulkan declares
     /// [`SubstrateClass::VulkanBuffer`].
     pub storage_substrate: SubstrateClass,
+    /// Peak sustained compute throughput as a Layer-1 cost prior, in
+    /// FLOPs per nanosecond (numerically GFLOP/s). The ranker's
+    /// `composite_ns` divides a kernel's FLOP count by this to estimate
+    /// compute time, so a higher value models a genuinely faster
+    /// backend — the placement DP prefers it for large parallel work
+    /// while transfer cost still keeps small ops local. The historical
+    /// neutral prior was 1.0 for every backend (1 FLOP ≈ 1 ns); real
+    /// per-backend tiers replace it, and the Judge's Layer-2 latency
+    /// measurements refine the effective figure per (op, dtype, size)
+    /// cell. Never zero/negative — consumers guard and fall back to the
+    /// CPU prior if it is.
+    pub compute_throughput_flops_per_ns: f64,
+    /// Peak sustained memory bandwidth as a Layer-1 cost prior, in bytes
+    /// per nanosecond (numerically GB/s). `composite_ns` divides
+    /// bytes-moved by this to estimate memory-transfer time. Historical
+    /// neutral prior: 4.0 for every backend.
+    pub mem_bandwidth_bytes_per_ns: f64,
 }
 
 /// Predictive fit-check result for a projected allocation. Consumed
@@ -158,6 +175,8 @@ mod tests {
             access_granularity_bits: 8,
             transfer_paths: vec![(DeviceLocation::Cpu, TransferPath::SameDevice)],
             storage_substrate: SubstrateClass::HostBytes,
+            compute_throughput_flops_per_ns: 1.0,
+            mem_bandwidth_bytes_per_ns: 4.0,
         };
         assert_eq!(caps.backend_id, BackendId::Cpu);
         assert_eq!(caps.required_alignment, 64);

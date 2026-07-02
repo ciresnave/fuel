@@ -253,6 +253,8 @@ mod tests {
                     access_granularity_bits: 8,
                     transfer_paths: Vec::new(),
                     storage_substrate: SubstrateClass::HostBytes,
+                    compute_throughput_flops_per_ns: 1.0,
+                    mem_bandwidth_bytes_per_ns: 4.0,
                 }
             }
         }

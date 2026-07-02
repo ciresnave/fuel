@@ -39,9 +39,9 @@ use crate::kernel::KernelBindingTable;
 use crate::pipelined::{build_lookup_dtypes, op_to_op_kind};
 use crate::ranker::{
     apply_filter_chain, apply_inbound_transfer_costs, composite_ns,
-    compute_static_costs, default_chain, enumerate_candidates, AlternativeSet,
-    CapabilitiesLookup, ChainInput, DecisionContext, FilterContext, JudgeOracle,
-    PlacementDp, PrecisionRequirement, TransferEstimator, KEEP_PER_DEVICE,
+    compute_static_costs, default_backend_rates, default_chain, enumerate_candidates,
+    AlternativeSet, CapabilitiesLookup, ChainInput, DecisionContext, FilterContext,
+    JudgeOracle, PlacementDp, PrecisionRequirement, TransferEstimator, KEEP_PER_DEVICE,
 };
 
 /// Per-realize execution plan. Built by [`compile_plan`].
@@ -557,7 +557,17 @@ pub fn compile_plan(
                     // Stage 3: open a DP row instead of committing a
                     // winner. Residency stays unresolved until the
                     // backtrack commits a device.
-                    open_dp_row(&mut dp, graph, id, node, &draft.set, &devices, &residency, est);
+                    open_dp_row(
+                        &mut dp,
+                        graph,
+                        id,
+                        node,
+                        &draft.set,
+                        &devices,
+                        &residency,
+                        est,
+                        options.capabilities_for,
+                    );
                     dp_drafts.insert(id, draft);
                     dp_row_opened = true;
                     None
@@ -816,9 +826,27 @@ fn open_dp_row(
     devices: &[DeviceLocation],
     residency: &HashMap<NodeId, DeviceLocation>,
     est: &dyn TransferEstimator,
+    caps_for: Option<&CapabilitiesLookup<'_>>,
 ) {
     // Per-device node cost: the cheapest same-device candidate's
-    // composite (static + Judge-refined) figure.
+    // composite (static + Judge-refined) figure. Each candidate's FLOP
+    // / byte pressure is converted to nanoseconds by ITS backend's
+    // throughput — the authoritative registered `BackendCapabilities`
+    // figure when caps are in hand, else the per-backend prior. This is
+    // what makes the cross-device placement DP honest: a GPU candidate
+    // is priced on GPU throughput, so it can out-price a CPU candidate
+    // for large parallel work despite paying an inbound transfer.
+    let rates_for = |backend: BackendId| -> (f64, f64) {
+        caps_for
+            .and_then(|f| f(backend))
+            .map(|caps| {
+                (
+                    caps.compute_throughput_flops_per_ns,
+                    caps.mem_bandwidth_bytes_per_ns,
+                )
+            })
+            .unwrap_or_else(|| default_backend_rates(backend))
+    };
     let device_costs: Vec<(DeviceLocation, u64)> = devices
         .iter()
         .map(|&d| {
@@ -826,7 +854,10 @@ fn open_dp_row(
                 .alternatives()
                 .iter()
                 .filter(|c| c.device == d)
-                .map(|c| composite_ns(&c.static_cost))
+                .map(|c| {
+                    let (cr, bw) = rates_for(c.backend);
+                    composite_ns(&c.static_cost, cr, bw)
+                })
                 .min()
                 .unwrap_or(u64::MAX);
             (d, min)
@@ -1456,6 +1487,8 @@ mod tests {
             access_granularity_bits: 8,
             transfer_paths: vec![(DeviceLocation::Cpu, TransferPath::SameDevice)],
             storage_substrate: SubstrateClass::HostBytes,
+            compute_throughput_flops_per_ns: 1.0,
+            mem_bandwidth_bytes_per_ns: 4.0,
         }
     }
 
@@ -2386,6 +2419,14 @@ mod tests {
     ) -> crate::fused::CostEstimate {
         crate::fused::CostEstimate { flops: 500, bytes_moved: 0, kernel_overhead_ns: 0 }
     }
+    // 15 000 FLOPs → 500 ns at the GPU throughput prior (30 FLOPs/ns):
+    // a kernel whose GPU compute is faster than a 600-ns CPU kernel, but
+    // whose 200 ns inbound transfer tips the honest total past it.
+    fn cost_15_000(
+        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+    ) -> crate::fused::CostEstimate {
+        crate::fused::CostEstimate { flops: 15_000, bytes_moved: 0, kernel_overhead_ns: 0 }
+    }
     fn cost_10_000_000(
         _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
     ) -> crate::fused::CostEstimate {
@@ -2508,8 +2549,11 @@ mod tests {
         let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
 
         // A binding table exactly like production: CPU + CUDA kernels
-        // for Add f32. The CUDA kernel is CHEAPER (500 < 600) — a real
-        // kernel-cost advantage.
+        // for Add f32. On GPU throughput the CUDA kernel's compute is
+        // nominally faster (15 000 FLOPs ≈ 500 ns at 30 FLOPs/ns < the
+        // CPU's 600 ns), but its 200 ns inbound transfer tips the honest
+        // total to 700 > 600 — so the CPU-pinned realize must stay put
+        // once the GPU is priced honestly (the point of Part A).
         fn build_table() -> KernelBindingTable {
             let mut table = KernelBindingTable::new();
             table.register_full(
@@ -2528,7 +2572,7 @@ mod tests {
                 noop_kernel_b,
                 KernelCaps::empty(),
                 PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
-                cost_500,
+                cost_15_000,
             );
             table
         }
@@ -2619,9 +2663,103 @@ mod tests {
         assert_eq!(
             winner_fixed, DeviceLocation::Cpu,
             "POST-FIX: with GPU caps registered the CUDA candidate is \
-             costed honestly (500 flops + 200 transfer = 700 > CPU 600), \
-             so the CPU-pinned realize stays on CPU — no spill onto the \
-             unseeded GPU",
+             costed honestly (15000 FLOPs ÷ 30/ns = 500 ns compute + 200 \
+             transfer = 700 > CPU 600), so the CPU-pinned realize stays \
+             on CPU — no spill onto the unseeded GPU",
+        );
+    }
+
+    /// FKC cost unification Part C — born-red for **per-backend
+    /// throughput**. The SAME kernel-cost fn is registered on both CPU
+    /// and CUDA (equal FLOP counts — the discriminator is the backend's
+    /// throughput, NOT a hand-tuned kernel-cost gap like the huge-op
+    /// test below). Inputs are CPU-resident, so the CUDA candidate pays
+    /// a fixed 200 ns inbound transfer (100 ns × 2 Add inputs). Expected
+    /// crossover:
+    ///   - SMALL op (100 FLOPs) → stays on CPU: the GPU's throughput
+    ///     win (100 → ~3 ns) can't overcome the 200 ns transfer.
+    ///   - LARGE op (10 M FLOPs) → moves to CUDA: the throughput win
+    ///     (10 M → ~333 k ns) dwarfs the 200 ns transfer.
+    /// Under the pre-Part-C FIXED 1-FLOP/ns prior the GPU's compute-ns
+    /// EQUALS the CPU's for equal FLOPs, so it can never overcome the
+    /// transfer and the large-op case wrongly stays on CPU — that is
+    /// the red this test is born in.
+    #[test]
+    fn compile_plan_places_large_compute_on_gpu_small_on_cpu_by_throughput() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+
+        fn winner(cost: crate::kernel::CostFn, cuda0: DeviceLocation) -> DeviceLocation {
+            let mut table = KernelBindingTable::new();
+            table.register_full(
+                OpKind::AddElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cpu,
+                noop_kernel,
+                KernelCaps::empty(),
+                PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+                cost,
+            );
+            table.register_full(
+                OpKind::AddElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cuda,
+                noop_kernel_b,
+                KernelCaps::empty(),
+                PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+                cost,
+            );
+
+            let (g, add_id) = build_add_graph();
+            let order = topo_order(&g, add_id);
+            let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
+                if dev == DeviceLocation::Cpu {
+                    vec![BackendId::Cpu]
+                } else {
+                    vec![]
+                }
+            };
+            let fallback_fn = move |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+                vec![(BackendId::Cuda, cuda0)]
+            };
+            let residency_fn =
+                |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
+            // 100 ns per input crossing → 200 ns inbound transfer for
+            // the two-input Add on the CUDA candidate.
+            let est = FlatEstimator { latency_ns: 100 };
+            let cpu_caps_val = cpu_caps();
+            let cuda_caps_val =
+                crate::dispatch::derive_backend_caps(BackendId::Cuda, cuda0, &table);
+            let caps_fn = |b: BackendId| -> Option<&BackendCapabilities> {
+                match b {
+                    BackendId::Cpu => Some(&cpu_caps_val),
+                    BackendId::Cuda => Some(&cuda_caps_val),
+                    _ => None,
+                }
+            };
+            let opts = PlanOptions::new()
+                .with_pinned_device(DeviceLocation::Cpu)
+                .with_placements_for_device(&placements_fn)
+                .with_fallback_placements_for(&fallback_fn)
+                .with_capabilities_for(&caps_fn)
+                .with_transfer_estimator(&est)
+                .with_input_residency(&residency_fn);
+            let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+            plan.alternatives(add_id).unwrap().winner().unwrap().device
+        }
+
+        assert_eq!(
+            winner(cost_100, cuda0),
+            DeviceLocation::Cpu,
+            "SMALL op: the GPU's throughput win on 100 FLOPs (~3 ns) \
+             can't overcome the 200 ns inbound transfer → stay on CPU",
+        );
+        assert_eq!(
+            winner(cost_10_000_000, cuda0),
+            cuda0,
+            "LARGE op: the GPU's throughput win on 10 M FLOPs (~333 k ns) \
+             dwarfs the 200 ns transfer → move to CUDA. RED under the \
+             fixed 1-FLOP/ns prior (equal compute-ns → the transfer \
+             always loses the GPU the placement)",
         );
     }
 

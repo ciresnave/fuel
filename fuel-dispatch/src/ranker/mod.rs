@@ -56,8 +56,8 @@ pub use candidate::{Candidate, CouplingAdjustment};
 pub use chain::apply_filter_chain;
 pub use chained_selector::ChainedSelector;
 pub use cost::{
-    apply_inbound_transfer_costs, composite_ns, compute_static_costs, CapabilitiesLookup,
-    TransferEstimator,
+    apply_inbound_transfer_costs, composite_ns, compute_static_costs, default_backend_rates,
+    CapabilitiesLookup, TransferEstimator,
 };
 pub use cost_vector::{AccuracyClass, CostVector, MemoryTiers, PrecisionDigits};
 pub use device_load::{
