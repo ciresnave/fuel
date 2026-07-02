@@ -1642,7 +1642,11 @@ determinism: nondeterministic
     /// describable-but-not-yet-registrable per spec §6/§3.9.1 — they are a
     /// CORRECT validate outcome (the contract is legal, the consumer is
     /// behind), so the lint records them separately as "deferred", not as
-    /// hard failures.
+    /// hard failures. `FanoutDtypeMismatch` (§3.4) is the same posture at
+    /// lower time: a MULTI-AXIS dtype contract (varying operands with
+    /// DIFFERENT dtype lists) is legal but not-yet-fannable by the uniform
+    /// fan-out importer — surfaced (never silently picked), recorded as
+    /// deferred, and awaiting a cartesian / per-axis fan-out follow-up.
     ///
     /// This is a **real CI gate**: it runs as a normal unit test (no
     /// `#[ignore]`) and FAILS the build if any checked-in contract has a hard
@@ -1718,6 +1722,19 @@ determinism: nondeterministic
                     // error here is a real finding.
                     match e {
                         FkcError::MxNotYetRegistrable { .. } | FkcError::GatherNotYetSupported { .. } => {}
+                        // Describable but NOT-YET-FANNABLE (§3.4 multi-dtype
+                        // fan-out): a MULTI-AXIS dtype contract whose varying
+                        // operands enumerate DIFFERENT dtype lists (e.g. a
+                        // mixed-precision matmul, or an indexing op with an
+                        // independent data-dtype axis and index-dtype axis).
+                        // The uniform fan-out importer surfaces this as a typed
+                        // error rather than silently picking one operand's list
+                        // (never a silent pick); registering it needs a
+                        // cartesian / per-axis fan-out follow-up. Recorded as
+                        // deferred (consumer-behind), not a hard failure.
+                        FkcError::FanoutDtypeMismatch { .. } => {
+                            deferred.push(format!("{rel} :: {kname}: LOWER: {e}"));
+                        }
                         _ => hard_failures.push(format!("{rel} :: {kname}: LOWER: {e}")),
                     }
                 }
@@ -1725,12 +1742,12 @@ determinism: nondeterministic
         }
 
         eprintln!(
-            "FKC corpus lint: {file_count} files, {section_count} sections; {} deferred (MX/gather not-yet-registrable), {} hard failures",
+            "FKC corpus lint: {file_count} files, {section_count} sections; {} deferred (MX/gather not-yet-registrable + multi-axis dtype not-yet-fannable), {} hard failures",
             deferred.len(),
             hard_failures.len()
         );
         if !deferred.is_empty() {
-            eprintln!("--- deferred (describable, not-yet-registrable; spec §6/§3.9.1) ---");
+            eprintln!("--- deferred (describable, not-yet-registrable / not-yet-fannable; spec §6/§3.9.1/§3.4) ---");
             for d in &deferred {
                 eprintln!("  {d}");
             }
