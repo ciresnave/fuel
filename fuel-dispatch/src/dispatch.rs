@@ -758,7 +758,9 @@ cpu_log_softmax_wrapper!(log_softmax_f16_cpu_wrapper, fuel_cpu_backend::byte_ker
 /// geometry as forward.
 macro_rules! cpu_log_softmax_backward_wrapper {
     ($wrapper:ident, $kernel:path, $op_name:literal) => {
-        fn $wrapper(
+        // `pub(crate)` so the FKC `link_registry` (`fkc::cpu_link`) can name the
+        // real production wrapper and the importer can bind it FROM the contract.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -800,7 +802,9 @@ cpu_log_softmax_backward_wrapper!(log_softmax_backward_f16_cpu_wrapper, fuel_cpu
 /// as the forward).
 macro_rules! cpu_softmax_last_dim_backward_wrapper {
     ($wrapper:ident, $kernel:path) => {
-        fn $wrapper(
+        // `pub(crate)` so the FKC `link_registry` (`fkc::cpu_link`) can name the
+        // real production wrapper and the importer can bind it FROM the contract.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -848,7 +852,9 @@ cpu_softmax_last_dim_backward_wrapper!(
 /// eps). Two inputs (x, g) + 1 output, same outer × last_dim shape.
 macro_rules! cpu_norm_last_dim_backward_wrapper {
     ($wrapper:ident, $kernel:path, $op_name:literal) => {
-        fn $wrapper(
+        // `pub(crate)` so the FKC `link_registry` (`fkc::cpu_link`) can name the
+        // real production wrapper and the importer can bind it FROM the contract.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -4404,6 +4410,62 @@ fn register_cpu_norm_from_contract(table: &mut KernelBindingTable) {
     );
 }
 
+/// The authored CPU norm-BACKWARD kernel contract, embedded into the binary
+/// (the PRODUCTION `include_str!`). `register_cpu_norm_backward_from_contract`
+/// parses + lowers it and binds the family FROM THE CONTRACT.
+const CPU_NORM_BACKWARD_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/norm-backward.fkc.md");
+
+/// Register the CPU last-dim NORM-BACKWARD family (Softmax / LogSoftmax /
+/// RmsNorm / LayerNorm backward × 4 dtypes = 16 bindings, key `[T, T, T]`) by
+/// IMPORTING its FKC kernel contract, the eighth production FKC consumer (the
+/// BACKWARD sibling of `register_cpu_norm_from_contract`). FKC is unconditional
+/// core infrastructure, so this is the ONE registration path for the family: the
+/// hand-written `table.register(...)` calls it used to carry are DELETED.
+///
+/// Each of the 16 per-(op, dtype) sections (`## softmax_last_dim_backward_f32`,
+/// `## rms_norm_last_dim_backward_f32`, …) is a SPECIFIC single-dtype contract
+/// with a concrete `entry_point` (`…::softmax_last_dim_backward_f32`), so none of
+/// them fan — the importer resolves each declared symbol AS-IS through the
+/// production [`crate::fkc::CpuLinkRegistry`] (now chaining
+/// [`crate::fkc::CPU_NORM_BACKWARD_ENTRY_POINTS`]) to the exact wrapper
+/// fn-pointer the CPU backend exposes. The binding key is `[T, T, T]` — the BARE
+/// backward takes TWO inputs (softmax/log-softmax: forward output `y` + upstream
+/// gradient `g`; layer/rms-norm: forward input `x` + `g`, stats recomputed from
+/// `x` + `eps`) and writes ONE `passthrough(y|x)` output; outer_count / last_dim /
+/// eps ride in `OpParams::{SoftmaxLastDim,LogSoftmaxLastDim,NormLastDim}`, NOT the
+/// dtype-list — identical to the deleted `&binary(t)` regs.
+///
+/// Behavior-preserving vs. the deleted hand-written path: identical kernels +
+/// caps (contiguous-only); the binding's `kernel_source` becomes the contract's
+/// `"portable-cpu"` tag and its precision the contract's audited bit-stable
+/// claim. Cost is preserved because this runs BEFORE `fill_unset_cpu_cost`, which
+/// upgrades the imported entries' `unknown_cost` sentinel to the same OpKind cost
+/// fn every CPU primitive gets. This contract has NO `##` chassis umbrella
+/// section, so there is nothing marked `registrable: false` and no double-register
+/// risk. The backward NORM ops are ALSO registered in the `FusedKernelRegistry`
+/// (`register_default_fused_kernels`, `FusedOps::{SOFTMAX,LAYER_NORM,RMS_NORM}_
+/// LAST_DIM_BACKWARD`) — that is a SEPARATE registry seam and stays untouched;
+/// this migration only moves the `KernelBindingTable` primitive path. The family
+/// declares NO fused ops, so `register_into`'s required fused argument is a local
+/// throwaway that provably stays empty.
+fn register_cpu_norm_backward_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_NORM_BACKWARD_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU norm-backward contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "norm backward contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU norm-backward contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -4533,6 +4595,23 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // (register_default_fused_kernels) and the norm-BACKWARD hand-written regs stay
     // untouched.
     register_cpu_norm_from_contract(table);
+
+    // Last-dim NORM BACKWARD (Softmax / LogSoftmax / RmsNorm / LayerNorm backward
+    // × 4 dtypes = 16 bindings, key [T, T, T]). Eighth production FKC-contract
+    // consumer and the BACKWARD sibling of the norm-forward importer above:
+    // IMPORTED from docs/kernel-contracts/cpu/norm-backward.fkc.md via the same
+    // `CpuLinkRegistry`. Each per-(op,dtype) section carries a SPECIFIC
+    // single-dtype entry_point (`softmax_last_dim_backward_f32`,
+    // `rms_norm_last_dim_backward_f32`, …) resolved AS-IS (no fan-out). The BARE
+    // backward takes TWO inputs (y/x + upstream gradient g) → ONE passthrough
+    // output, so the key is [T, T, T]; outer_count/last_dim/eps ride in OpParams.
+    // The hand-written `table.register(...)` calls (the LogSoftmaxLastDimBackward
+    // block + the SoftmaxLastDimBackward / LayerNormLastDimBackward /
+    // RmsNormLastDimBackward block below) are DELETED — this is the sole
+    // registration path. Placed BEFORE the `fill_unset_cpu_*` passes so the
+    // imported entries pick up the CPU cost fill. The norm-backward ops' SEPARATE
+    // FusedKernelRegistry seam (register_default_fused_kernels) stays untouched.
+    register_cpu_norm_backward_from_contract(table);
 
     table.register(MatMul,             &binary(f32_dt),  cpu, matmul_f32_cpu_wrapper);
     table.register(MatMul,             &binary(f64_dt),  cpu, matmul_f64_cpu_wrapper);
@@ -5005,27 +5084,13 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // via register_cpu_norm_from_contract near the top of this fn, alongside
     // Softmax / RmsNorm / LayerNorm forward.)
 
-    // LogSoftmaxLastDimBackward — per-dtype, two inputs (y, g) → out.
-    table.register(LogSoftmaxLastDimBackward, &binary(f32_dt),  cpu, log_softmax_backward_f32_cpu_wrapper);
-    table.register(LogSoftmaxLastDimBackward, &binary(f64_dt),  cpu, log_softmax_backward_f64_cpu_wrapper);
-    table.register(LogSoftmaxLastDimBackward, &binary(bf16_dt), cpu, log_softmax_backward_bf16_cpu_wrapper);
-    table.register(LogSoftmaxLastDimBackward, &binary(f16_dt),  cpu, log_softmax_backward_f16_cpu_wrapper);
-
-    // Phase 7.6 step 6 follow-up — backward helpers gain byte-level
-    // CPU coverage. Each takes 2 inputs (y/x, g/upstream) + 1 output;
-    // dtype tuple matches the binary `[T, T, T]` shape.
-    table.register(SoftmaxLastDimBackward,    &binary(f32_dt),  cpu, softmax_last_dim_backward_f32_cpu_wrapper);
-    table.register(SoftmaxLastDimBackward,    &binary(f64_dt),  cpu, softmax_last_dim_backward_f64_cpu_wrapper);
-    table.register(SoftmaxLastDimBackward,    &binary(bf16_dt), cpu, softmax_last_dim_backward_bf16_cpu_wrapper);
-    table.register(SoftmaxLastDimBackward,    &binary(f16_dt),  cpu, softmax_last_dim_backward_f16_cpu_wrapper);
-    table.register(LayerNormLastDimBackward,  &binary(f32_dt),  cpu, layer_norm_last_dim_backward_f32_cpu_wrapper);
-    table.register(LayerNormLastDimBackward,  &binary(f64_dt),  cpu, layer_norm_last_dim_backward_f64_cpu_wrapper);
-    table.register(LayerNormLastDimBackward,  &binary(bf16_dt), cpu, layer_norm_last_dim_backward_bf16_cpu_wrapper);
-    table.register(LayerNormLastDimBackward,  &binary(f16_dt),  cpu, layer_norm_last_dim_backward_f16_cpu_wrapper);
-    table.register(RmsNormLastDimBackward,    &binary(f32_dt),  cpu, rms_norm_last_dim_backward_f32_cpu_wrapper);
-    table.register(RmsNormLastDimBackward,    &binary(f64_dt),  cpu, rms_norm_last_dim_backward_f64_cpu_wrapper);
-    table.register(RmsNormLastDimBackward,    &binary(bf16_dt), cpu, rms_norm_last_dim_backward_bf16_cpu_wrapper);
-    table.register(RmsNormLastDimBackward,    &binary(f16_dt),  cpu, rms_norm_last_dim_backward_f16_cpu_wrapper);
+    // (SoftmaxLastDimBackward / LogSoftmaxLastDimBackward / LayerNormLastDimBackward
+    // / RmsNormLastDimBackward × 4 dtypes = 16 bindings, key [T, T, T]) are now
+    // registered FROM the norm-backward FKC contract via
+    // register_cpu_norm_backward_from_contract near the top of this fn — the BARE
+    // backward (two inputs y/x + upstream gradient g → one passthrough output;
+    // outer_count/last_dim/eps in OpParams). Their SEPARATE FusedKernelRegistry
+    // seam (register_default_fused_kernels) stays untouched.
     // ReduceMaxToBackward (× 4 dtypes, key [T, T, T]) is now registered FROM the
     // reduce-to FKC contract (`register_cpu_reduce_to_from_contract`); the
     // hand-written regs were DELETED (FKC is the sole path).
@@ -7814,6 +7879,82 @@ mod tests {
                 assert_eq!(
                     entry.kernel_source, "portable-cpu",
                     "{op:?}/{dt:?}: norm family must be contract-sourced \
+                     (kernel_source=\"portable-cpu\"); got {:?}",
+                    entry.kernel_source,
+                );
+                assert!(
+                    !entry.caps.strided_input,
+                    "{op:?}/{dt:?}: caps preserved (contiguous-only, strided_input=false)",
+                );
+                assert!(
+                    entry.precision.bit_stable_on_same_hardware,
+                    "{op:?}/{dt:?}: the contract's audited bit-stable claim rode through",
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 16, "4 ops × 4 dtypes checked");
+    }
+
+    /// Born-red guard for the CPU last-dim NORM-BACKWARD family FKC migration.
+    /// Softmax / LogSoftmax / LayerNorm / RmsNorm backward are each TWO inputs
+    /// (the forward output-or-input `y`/`x` + the upstream gradient `g`) → ONE
+    /// `passthrough` output — the BARE backward (no affine gamma/beta grad
+    /// operand and no saved-stats operand; the norm kernels recompute mean/var
+    /// or mean-square from `x` + `eps`), so the binding key is `[T, T, T]`
+    /// (in, in, out) and outer_count / last_dim / eps ride in `OpParams`, NOT
+    /// the dtype-list. Each × {f32,f64,bf16,f16} = 16 bindings.
+    ///
+    /// For each key: resolves to the EXACT production wrapper fn-pointer with
+    /// `kernel_source == "portable-cpu"` — the contract provenance tag (the
+    /// deleted hand-written path stamped `""`; THIS is the discriminator that
+    /// goes red until the import is wired) — caps contiguous, and the audited
+    /// bit-stable precision riding through.
+    #[test]
+    fn global_bindings_registers_norm_backward_family_from_contract() {
+        let table = global_bindings();
+        let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+
+        // Softmax / LogSoftmax / LayerNorm / RmsNorm backward — two inputs
+        // (y/x, g) + passthrough output, key [T, T, T]. Wrapper order matches
+        // `dts`. (LogSoftmax's wrapper fn-name `log_softmax_backward_*` differs
+        // from its `log_softmax_last_dim_backward_*` contract symbol — the same
+        // fn-vs-symbol split as the forward `log_softmax` case.)
+        let backward_families: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
+            (OpKind::SoftmaxLastDimBackward, [
+                softmax_last_dim_backward_f32_cpu_wrapper, softmax_last_dim_backward_f64_cpu_wrapper,
+                softmax_last_dim_backward_bf16_cpu_wrapper, softmax_last_dim_backward_f16_cpu_wrapper]),
+            (OpKind::LogSoftmaxLastDimBackward, [
+                log_softmax_backward_f32_cpu_wrapper, log_softmax_backward_f64_cpu_wrapper,
+                log_softmax_backward_bf16_cpu_wrapper, log_softmax_backward_f16_cpu_wrapper]),
+            (OpKind::LayerNormLastDimBackward, [
+                layer_norm_last_dim_backward_f32_cpu_wrapper, layer_norm_last_dim_backward_f64_cpu_wrapper,
+                layer_norm_last_dim_backward_bf16_cpu_wrapper, layer_norm_last_dim_backward_f16_cpu_wrapper]),
+            (OpKind::RmsNormLastDimBackward, [
+                rms_norm_last_dim_backward_f32_cpu_wrapper, rms_norm_last_dim_backward_f64_cpu_wrapper,
+                rms_norm_last_dim_backward_bf16_cpu_wrapper, rms_norm_last_dim_backward_f16_cpu_wrapper]),
+        ];
+
+        let mut checked = 0usize;
+        for (op, wrappers) in backward_families {
+            for (dt, expected) in dts.iter().zip(wrappers.iter()) {
+                // [T, T, T] operand-dtype list (two inputs + passthrough output).
+                let alts = table.lookup_alternatives(*op, &[*dt, *dt, *dt], BackendId::Cpu);
+                let entry = alts
+                    .iter()
+                    .find(|e| e.kernel as usize == *expected as usize)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{op:?}/{dt:?}/Cpu: the production wrapper must be bound \
+                             FROM the norm-backward contract in global_bindings() \
+                             — found {} alternative(s) with sources {:?}",
+                            alts.len(),
+                            alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                        )
+                    });
+                assert_eq!(
+                    entry.kernel_source, "portable-cpu",
+                    "{op:?}/{dt:?}: norm-backward family must be contract-sourced \
                      (kernel_source=\"portable-cpu\"); got {:?}",
                     entry.kernel_source,
                 );
