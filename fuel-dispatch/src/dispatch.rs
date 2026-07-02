@@ -486,7 +486,9 @@ cpu_binary_wrapper!(ge_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kerne
 /// internally.
 macro_rules! cpu_where_wrapper {
     ($wrapper:ident, $kernel:path, $op_name:literal) => {
-        fn $wrapper(
+        // pub(crate) so the FKC link table (fkc::cpu_link) can name the real
+        // production wrapper as `crate::dispatch::where_<dt>_cpu_wrapper`.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -4182,6 +4184,57 @@ fn register_cpu_unary_from_contract(table: &mut KernelBindingTable) {
     );
 }
 
+/// The authored CPU compare + where kernel contract, embedded into the binary
+/// (the PRODUCTION `include_str!`). `register_cpu_compare_where_from_contract`
+/// parses + lowers it and binds the family FROM THE CONTRACT.
+const CPU_COMPARE_WHERE_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/compare-where.fkc.md");
+
+/// Register the CPU compare (6 ops × 4 dtypes = 24) + where (1 op × 4 dtypes =
+/// 4) family — 28 bindings — by IMPORTING its FKC kernel contract, the fourth
+/// production FKC consumer (mirroring the binary / affine-clamp-powi / unary
+/// importers). FKC is unconditional core infrastructure, so this is the ONE
+/// registration path for the family: the hand-written `table.register(...)`
+/// calls it used to carry are DELETED.
+///
+/// Two contract shapes, both resolved through the production
+/// [`crate::fkc::CpuLinkRegistry`] (now chaining
+/// [`crate::fkc::CPU_COMPARE_ENTRY_POINTS`] + [`crate::fkc::CPU_WHERE_ENTRY_POINTS`]):
+///  - the 24 per-(op,dtype) COMPARE thunks are single-dtype sections → each
+///    resolves its declared `_u8`-suffixed symbol (`eq_f32_u8`, …) AS-IS; the
+///    binding key is `[T, T, U8]` (output is the `fixed(U8)` mask), identical
+///    to the deleted `&compare(t)` regs.
+///  - the single WHERE section rides the §3.4 multi-dtype fan-out — its BASE
+///    `entry_point` `…::where` expands to `where_{f32,f64,bf16,f16}`, one
+///    binding per dtype, key `[U8, T, T, T]` (cond U8 + `passthrough(a)` → T),
+///    identical to the deleted `&where_dts(t)` regs.
+///
+/// Behavior-preserving vs. the deleted hand-written path: identical kernels +
+/// caps (contiguous-only); the binding's `kernel_source` becomes the contract's
+/// `"portable-cpu"` tag and its precision the contract's audited bit-stable
+/// claim. Cost is preserved because this runs BEFORE `fill_unset_cpu_cost`,
+/// which upgrades the imported entries' `unknown_cost` sentinel to the same
+/// OpKind cost fn every CPU primitive gets. The `## compare` chassis umbrella is
+/// `registrable: false` (§3.10) and never registers. The family declares NO
+/// fused ops, so `register_into`'s required fused argument is a local throwaway
+/// that provably stays empty.
+fn register_cpu_compare_where_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_COMPARE_WHERE_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU compare/where contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "compare/where contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU compare/where contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -4203,7 +4256,6 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     let unary  = |t: DType| [t, t];                             // (in, out)
     let binary = |t: DType| [t, t, t];                          // (lhs, rhs, out)
     let u8_dt  = DType::U8;
-    let compare = |t: DType| [t, t, u8_dt];                     // (lhs, rhs, U8 mask)
     let rope_dts = |t: DType| [t, t, t, t];                     // (x, cos, sin, out)
     let conv2d_no_bias   = |t: DType| [t, t, t];                // (x, w, out)
     let conv2d_with_bias = |t: DType| [t, t, t, t];             // (x, w, bias, out)
@@ -4258,6 +4310,18 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // cost fill. gelu_tanh (GeluElementwise) and gelu_erf (GeluErfElementwise)
     // stay DISTINCT.
     register_cpu_unary_from_contract(table);
+
+    // Compare (6 ops × 4 dtypes = 24, key [T, T, U8]) + where (1 op × 4 dtypes
+    // = 4, key [U8, T, T, T]) = 28 bindings. Fourth production FKC-contract
+    // consumer: IMPORTED from docs/kernel-contracts/cpu/compare-where.fkc.md via
+    // the same `CpuLinkRegistry`. The 24 compare thunks resolve their declared
+    // `_u8`-suffixed symbols AS-IS; the single `where_kernel` section rides the
+    // §3.4 multi-dtype fan-out (BASE `…::where` → `where_{f32,f64,bf16,f16}`)
+    // and the `passthrough(a)` output rule. The hand-written `table.register(...)`
+    // calls (the compare block + the `where_dts` block) are DELETED — this is the
+    // sole registration path. Placed BEFORE the `fill_unset_cpu_*` passes so the
+    // imported entries pick up the CPU cost fill.
+    register_cpu_compare_where_from_contract(table);
 
     // Reductions.
     table.register(SumReduce,          &unary(f32_dt), cpu, sum_reduce_f32_cpu_wrapper);
@@ -4675,45 +4739,11 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // (ClampElementwise / PowIElementwise F32 are now registered from the
     // affine-clamp-powi contract above.)
 
-    // Comparison family (output dtype = U8). Each kernel produces a
-    // U8 mask (`1` where the predicate holds, `0` otherwise).
-    table.register(EqualElementwise, &compare(f32_dt),  cpu, eq_elementwise_f32_cpu_wrapper);
-    table.register(EqualElementwise, &compare(f64_dt),  cpu, eq_elementwise_f64_cpu_wrapper);
-    table.register(EqualElementwise, &compare(bf16_dt), cpu, eq_elementwise_bf16_cpu_wrapper);
-    table.register(EqualElementwise, &compare(f16_dt),  cpu, eq_elementwise_f16_cpu_wrapper);
-
-    table.register(NotEqualElementwise, &compare(f32_dt),  cpu, ne_elementwise_f32_cpu_wrapper);
-    table.register(NotEqualElementwise, &compare(f64_dt),  cpu, ne_elementwise_f64_cpu_wrapper);
-    table.register(NotEqualElementwise, &compare(bf16_dt), cpu, ne_elementwise_bf16_cpu_wrapper);
-    table.register(NotEqualElementwise, &compare(f16_dt),  cpu, ne_elementwise_f16_cpu_wrapper);
-
-    table.register(LessElementwise, &compare(f32_dt),  cpu, lt_elementwise_f32_cpu_wrapper);
-    table.register(LessElementwise, &compare(f64_dt),  cpu, lt_elementwise_f64_cpu_wrapper);
-    table.register(LessElementwise, &compare(bf16_dt), cpu, lt_elementwise_bf16_cpu_wrapper);
-    table.register(LessElementwise, &compare(f16_dt),  cpu, lt_elementwise_f16_cpu_wrapper);
-
-    table.register(LessEqualElementwise, &compare(f32_dt),  cpu, le_elementwise_f32_cpu_wrapper);
-    table.register(LessEqualElementwise, &compare(f64_dt),  cpu, le_elementwise_f64_cpu_wrapper);
-    table.register(LessEqualElementwise, &compare(bf16_dt), cpu, le_elementwise_bf16_cpu_wrapper);
-    table.register(LessEqualElementwise, &compare(f16_dt),  cpu, le_elementwise_f16_cpu_wrapper);
-
-    table.register(GreaterElementwise, &compare(f32_dt),  cpu, gt_elementwise_f32_cpu_wrapper);
-    table.register(GreaterElementwise, &compare(f64_dt),  cpu, gt_elementwise_f64_cpu_wrapper);
-    table.register(GreaterElementwise, &compare(bf16_dt), cpu, gt_elementwise_bf16_cpu_wrapper);
-    table.register(GreaterElementwise, &compare(f16_dt),  cpu, gt_elementwise_f16_cpu_wrapper);
-
-    table.register(GreaterEqualElementwise, &compare(f32_dt),  cpu, ge_elementwise_f32_cpu_wrapper);
-    table.register(GreaterEqualElementwise, &compare(f64_dt),  cpu, ge_elementwise_f64_cpu_wrapper);
-    table.register(GreaterEqualElementwise, &compare(bf16_dt), cpu, ge_elementwise_bf16_cpu_wrapper);
-    table.register(GreaterEqualElementwise, &compare(f16_dt),  cpu, ge_elementwise_f16_cpu_wrapper);
-
-    // Ternary select. Binding-table dtype list is `[U8, T, T, T]`:
-    // cond + lhs + rhs + output. Per-dtype kernel for each `T`.
-    let where_dts = |t: DType| [u8_dt, t, t, t];
-    table.register(Where, &where_dts(f32_dt),  cpu, where_f32_cpu_wrapper);
-    table.register(Where, &where_dts(f64_dt),  cpu, where_f64_cpu_wrapper);
-    table.register(Where, &where_dts(bf16_dt), cpu, where_bf16_cpu_wrapper);
-    table.register(Where, &where_dts(f16_dt),  cpu, where_f16_cpu_wrapper);
+    // Comparison (6 ops × 4 dtypes, key [T, T, U8]) + ternary select `where`
+    // (4 dtypes, key [U8, T, T, T]) are now registered FROM the compare-where
+    // FKC contract via register_cpu_compare_where_from_contract (near the top of
+    // this fn) — the hand-written regs (and the `compare` / `where_dts`
+    // dtype-list closures) are DELETED.
 
     // Rounding / sign / transcendental unary ops (floor/ceil/round/sign/erf/
     // gelu_erf/rsqrt × F32/F64/BF16/F16) are registered from the elementwise-unary
@@ -7279,6 +7309,123 @@ mod tests {
             }
         }
         assert_eq!(checked, 88, "all 22 ops × 4 dtypes checked");
+    }
+
+    /// FKC production consumer (born-red gate). `global_bindings()` registers
+    /// the CPU compare + where family FROM ITS KERNEL CONTRACT
+    /// (`docs/kernel-contracts/cpu/compare-where.fkc.md`) — the sole path now
+    /// that the hand-written `table.register(...)` calls for this family are
+    /// DELETED.
+    ///
+    /// Two key shapes, and getting them right IS the point of the test:
+    ///  - COMPARE (6 ops × 4 dtypes = 24): the U8-mask operand-dtype list
+    ///    `[T, T, U8]` (`return.out` is always `fixed(U8)`), NOT `[T, T, T]`.
+    ///  - WHERE (1 op × 4 dtypes = 4): the ternary-select list `[U8, T, T, T]`
+    ///    (cond U8 + a/b/out share T). `where` exercises BOTH the §3.4
+    ///    multi-dtype fan-out (one contract section → 4 per-dtype bindings) AND
+    ///    the `passthrough(a)` fix (output mirrors `a`=T, not the U8 cond).
+    ///
+    /// For each key: resolves to the EXACT production wrapper fn-pointer and
+    /// `kernel_source == "portable-cpu"` — the contract provenance tag (the
+    /// deleted hand-written path stamped `""`; THIS is the discriminator that
+    /// goes red until the import is wired) — with caps contiguous and the
+    /// audited bit-stable precision riding through.
+    #[test]
+    fn global_bindings_registers_compare_where_family_from_contract() {
+        let table = global_bindings();
+        let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+
+        // -- COMPARE: 6 ops × 4 dtypes, key [T, T, U8] --
+        let compare_families: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
+            (OpKind::EqualElementwise, [
+                eq_elementwise_f32_cpu_wrapper, eq_elementwise_f64_cpu_wrapper,
+                eq_elementwise_bf16_cpu_wrapper, eq_elementwise_f16_cpu_wrapper]),
+            (OpKind::NotEqualElementwise, [
+                ne_elementwise_f32_cpu_wrapper, ne_elementwise_f64_cpu_wrapper,
+                ne_elementwise_bf16_cpu_wrapper, ne_elementwise_f16_cpu_wrapper]),
+            (OpKind::LessElementwise, [
+                lt_elementwise_f32_cpu_wrapper, lt_elementwise_f64_cpu_wrapper,
+                lt_elementwise_bf16_cpu_wrapper, lt_elementwise_f16_cpu_wrapper]),
+            (OpKind::LessEqualElementwise, [
+                le_elementwise_f32_cpu_wrapper, le_elementwise_f64_cpu_wrapper,
+                le_elementwise_bf16_cpu_wrapper, le_elementwise_f16_cpu_wrapper]),
+            (OpKind::GreaterElementwise, [
+                gt_elementwise_f32_cpu_wrapper, gt_elementwise_f64_cpu_wrapper,
+                gt_elementwise_bf16_cpu_wrapper, gt_elementwise_f16_cpu_wrapper]),
+            (OpKind::GreaterEqualElementwise, [
+                ge_elementwise_f32_cpu_wrapper, ge_elementwise_f64_cpu_wrapper,
+                ge_elementwise_bf16_cpu_wrapper, ge_elementwise_f16_cpu_wrapper]),
+        ];
+
+        let mut checked = 0usize;
+        for (op, wrappers) in compare_families {
+            for (dt, expected) in dts.iter().zip(wrappers.iter()) {
+                // U8-mask operand-dtype list: [T, T, U8] — NOT [T, T, T].
+                let alts = table.lookup_alternatives(*op, &[*dt, *dt, DType::U8], BackendId::Cpu);
+                let entry = alts
+                    .iter()
+                    .find(|e| e.kernel as usize == *expected as usize)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{op:?}/{dt:?}/Cpu: the production wrapper must be bound \
+                             FROM the compare-where contract in global_bindings() \
+                             — found {} alternative(s) with sources {:?}",
+                            alts.len(),
+                            alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                        )
+                    });
+                assert_eq!(
+                    entry.kernel_source, "portable-cpu",
+                    "{op:?}/{dt:?}: compare family must be contract-sourced \
+                     (kernel_source=\"portable-cpu\"); got {:?}",
+                    entry.kernel_source,
+                );
+                assert!(
+                    !entry.caps.strided_input,
+                    "{op:?}/{dt:?}: caps preserved (contiguous-only, strided_input=false)",
+                );
+                assert!(
+                    entry.precision.bit_stable_on_same_hardware,
+                    "{op:?}/{dt:?}: the contract's audited bit-stable claim rode through",
+                );
+                checked += 1;
+            }
+        }
+
+        // -- WHERE: 1 op × 4 dtypes, key [U8, T, T, T] (fan-out + passthrough(a)) --
+        let where_wrappers: [crate::kernel::KernelRef; 4] = [
+            where_f32_cpu_wrapper, where_f64_cpu_wrapper,
+            where_bf16_cpu_wrapper, where_f16_cpu_wrapper,
+        ];
+        for (dt, expected) in dts.iter().zip(where_wrappers.iter()) {
+            // Ternary-select list: [U8 cond, T a, T b, T out].
+            let alts = table.lookup_alternatives(OpKind::Where, &[DType::U8, *dt, *dt, *dt], BackendId::Cpu);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Where/{dt:?}/Cpu: the production wrapper must be bound FROM \
+                         the compare-where contract (where fans to [U8,T,T,T]) in \
+                         global_bindings() — found {} alternative(s) with sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "portable-cpu",
+                "Where/{dt:?}: where must be contract-sourced \
+                 (kernel_source=\"portable-cpu\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                !entry.caps.strided_input,
+                "Where/{dt:?}: caps preserved (contiguous-only, strided_input=false)",
+            );
+            checked += 1;
+        }
+
+        assert_eq!(checked, 28, "24 compare (6×4) + 4 where keys checked");
     }
 
     /// Lookup miss returns NoBackendForOp with diagnostic data.

@@ -199,9 +199,61 @@ pub static CPU_UNARY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("rsqrt", "f16",  rsqrt_elementwise_f16_cpu_wrapper),
 ];
 
+/// The CPU elementwise-COMPARE family's `symbol → production wrapper` map
+/// (6 ops × 4 dtypes = 24). Contract:
+/// `docs/kernel-contracts/cpu/compare-where.fkc.md`. Each thunk is a
+/// single-(op,dtype) section (its `lhs`/`rhs` enumerate ONE dtype), so it does
+/// NOT fan — the importer resolves its declared symbol AS-IS. That symbol
+/// carries the `_u8` output-mask suffix (`T × T → U8` mask, `return.out:
+/// fixed(U8)`), so the `ep!` dtype slot is `<dt>_u8` (e.g. `eq_f32_u8`), NOT
+/// the plain `<dt>` the binary/unary families use. The `## compare` chassis
+/// umbrella is `registrable: false` (§3.10 describe-only) and never resolves,
+/// so it is absent here.
+pub static CPU_COMPARE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    ep!("eq", "f32_u8",  eq_elementwise_f32_cpu_wrapper),
+    ep!("eq", "f64_u8",  eq_elementwise_f64_cpu_wrapper),
+    ep!("eq", "bf16_u8", eq_elementwise_bf16_cpu_wrapper),
+    ep!("eq", "f16_u8",  eq_elementwise_f16_cpu_wrapper),
+    ep!("ne", "f32_u8",  ne_elementwise_f32_cpu_wrapper),
+    ep!("ne", "f64_u8",  ne_elementwise_f64_cpu_wrapper),
+    ep!("ne", "bf16_u8", ne_elementwise_bf16_cpu_wrapper),
+    ep!("ne", "f16_u8",  ne_elementwise_f16_cpu_wrapper),
+    ep!("lt", "f32_u8",  lt_elementwise_f32_cpu_wrapper),
+    ep!("lt", "f64_u8",  lt_elementwise_f64_cpu_wrapper),
+    ep!("lt", "bf16_u8", lt_elementwise_bf16_cpu_wrapper),
+    ep!("lt", "f16_u8",  lt_elementwise_f16_cpu_wrapper),
+    ep!("le", "f32_u8",  le_elementwise_f32_cpu_wrapper),
+    ep!("le", "f64_u8",  le_elementwise_f64_cpu_wrapper),
+    ep!("le", "bf16_u8", le_elementwise_bf16_cpu_wrapper),
+    ep!("le", "f16_u8",  le_elementwise_f16_cpu_wrapper),
+    ep!("gt", "f32_u8",  gt_elementwise_f32_cpu_wrapper),
+    ep!("gt", "f64_u8",  gt_elementwise_f64_cpu_wrapper),
+    ep!("gt", "bf16_u8", gt_elementwise_bf16_cpu_wrapper),
+    ep!("gt", "f16_u8",  gt_elementwise_f16_cpu_wrapper),
+    ep!("ge", "f32_u8",  ge_elementwise_f32_cpu_wrapper),
+    ep!("ge", "f64_u8",  ge_elementwise_f64_cpu_wrapper),
+    ep!("ge", "bf16_u8", ge_elementwise_bf16_cpu_wrapper),
+    ep!("ge", "f16_u8",  ge_elementwise_f16_cpu_wrapper),
+];
+
+/// The CPU ternary-select (`where`) family's `symbol → production wrapper` map
+/// (1 op × 4 dtypes = 4). Contract:
+/// `docs/kernel-contracts/cpu/compare-where.fkc.md`. The single `where_kernel`
+/// section enumerates `a`/`b` `dtypes: [F32,F64,BF16,F16]`, so it FANS (§3.4):
+/// its declared BASE `entry_point` `…::where` resolves `<base>_<dtype>` =
+/// `where_{f32,f64,bf16,f16}` against this table. The binding key is
+/// `[U8, T, T, T]` (cond U8 + a/b/out share T; `out: passthrough(a)` → T).
+pub static CPU_WHERE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    ep!("where", "f32",  where_f32_cpu_wrapper),
+    ep!("where", "f64",  where_f64_cpu_wrapper),
+    ep!("where", "bf16", where_bf16_cpu_wrapper),
+    ep!("where", "f16",  where_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
-/// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], and [`CPU_UNARY_ENTRY_POINTS`].
+/// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
+/// [`CPU_COMPARE_ENTRY_POINTS`], and [`CPU_WHERE_ENTRY_POINTS`].
 /// Unresolved → `None`, which the importer turns into a typed
 /// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;
@@ -212,13 +264,15 @@ impl LinkRegistry for CpuLinkRegistry {
             .iter()
             .chain(CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS.iter())
             .chain(CPU_UNARY_ENTRY_POINTS.iter())
+            .chain(CPU_COMPARE_ENTRY_POINTS.iter())
+            .chain(CPU_WHERE_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
 
     fn resolve_fused(&self, _symbol: &str) -> Option<KernelRef> {
         // No fused-op contracts in the elementwise-binary, affine/clamp/powi,
-        // or elementwise-unary corpora.
+        // elementwise-unary, or compare/where corpora.
         None
     }
 }
