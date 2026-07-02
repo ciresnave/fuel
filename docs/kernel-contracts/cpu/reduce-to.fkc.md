@@ -62,6 +62,7 @@ awkward layouts first. Dispatched via `Op::ReduceSumTo` / `Op::ReduceMaxTo` and 
 ```fkc
 kernel: reduce_to
 op_kind: ReduceSumTo               # shared chassis; concrete entries are ReduceSumTo / ReduceMaxTo (per-dtype sections below)
+registrable: false                # §3.10 describe-only: shared reduction chassis, NOT a dispatch target — the per-(op,dtype) thunks below are the registrable contracts (WITHOUT this the chassis double-registers ReduceSumTo/[F32] → DuplicateKernelRef at init)
 blurb: "Broadcast-target reduce chassis (Sum/Max): fold to output_shape; one pass; half via f32 accumulator."
 backend: Cpu
 kernel_source: "portable-cpu"

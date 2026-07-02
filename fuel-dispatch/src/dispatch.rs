@@ -910,9 +910,11 @@ cpu_norm_last_dim_backward_wrapper!(
 
 /// ReduceMaxTo backward — 2 inputs (x, upstream) + 1 output. Carries
 /// the shape pair via `OpParams::ReduceMaxToBackward`.
+/// `pub(crate)` so the FKC `link_registry` (`fkc::cpu_link`) can name the real
+/// production wrapper and the importer can bind it FROM the contract.
 macro_rules! cpu_reduce_max_to_backward_wrapper {
     ($wrapper:ident, $kernel:path) => {
-        fn $wrapper(
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -2885,9 +2887,11 @@ cpu_conv_transpose2d_wrapper!(conv_transpose2d_f16_cpu_wrapper,  fuel_cpu_backen
 
 /// Dispatch wrapper for `(ReduceSumTo, *, Cpu)`. Single input → single
 /// output; shapes flow through `OpParams::ReduceSumTo`.
+/// `pub(crate)` so the FKC `link_registry` (`fkc::cpu_link`) can name the real
+/// production wrapper and the importer can bind it FROM the contract.
 macro_rules! cpu_reduce_sum_to_wrapper {
     ($name:ident, $kernel:path) => {
-        fn $name(
+        pub(crate) fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -2934,9 +2938,11 @@ cpu_reduce_sum_to_wrapper!(reduce_sum_to_f16_cpu_wrapper,  fuel_cpu_backend::byt
 
 /// Dispatch wrapper for `(ReduceMaxTo, *, Cpu)`. Single input → single
 /// output; shapes flow through `OpParams::ReduceMaxTo`.
+/// `pub(crate)` so the FKC `link_registry` (`fkc::cpu_link`) can name the real
+/// production wrapper and the importer can bind it FROM the contract.
 macro_rules! cpu_reduce_max_to_wrapper {
     ($name:ident, $kernel:path) => {
-        fn $name(
+        pub(crate) fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -4287,6 +4293,60 @@ fn register_cpu_reduce_from_contract(table: &mut KernelBindingTable) {
     );
 }
 
+/// The authored CPU reduce-to kernel contract, embedded into the binary (the
+/// PRODUCTION `include_str!`). `register_cpu_reduce_to_from_contract` parses +
+/// lowers it and binds the family FROM THE CONTRACT.
+const CPU_REDUCE_TO_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/reduce-to.fkc.md");
+
+/// Register the CPU broadcast-target reduce-to family (ReduceSumTo /
+/// ReduceMaxTo × 4 dtypes = 8, key `[T, T]`; ReduceMaxToBackward × 4 dtypes = 4,
+/// key `[T, T, T]` = 12 bindings) by IMPORTING its FKC kernel contract, the
+/// sixth production FKC consumer (mirroring the binary / affine-clamp-powi /
+/// unary / compare-where / reduce importers). FKC is unconditional core
+/// infrastructure, so this is the ONE registration path for the family: the
+/// hand-written `table.register(...)` calls it used to carry are DELETED.
+///
+/// Each of the 12 per-(op, dtype) sections (`## reduce_sum_to_f32`, …) is a
+/// SPECIFIC single-dtype contract with a concrete `entry_point`
+/// (`…::reduce_sum_to_f32`), so none of them fan — the importer resolves each
+/// declared symbol AS-IS through the production [`crate::fkc::CpuLinkRegistry`]
+/// (now chaining [`crate::fkc::CPU_REDUCE_TO_ENTRY_POINTS`]) to the exact
+/// wrapper fn-pointer the CPU backend exposes. The forward binding key is
+/// `[T, T]` (input + `passthrough(input)` output — the target
+/// `input_shape`/`output_shape` ride in `OpParams::ReduceSumTo` /
+/// `OpParams::ReduceMaxTo`, NOT the dtype-list), identical to the deleted
+/// `&unary(t)` regs; the backward key is `[T, T, T]` (x, upstream +
+/// `passthrough(x)` output), identical to the deleted `&binary(t)` regs.
+///
+/// Behavior-preserving vs. the deleted hand-written path: identical kernels +
+/// caps (contiguous-only); the binding's `kernel_source` becomes the contract's
+/// `"portable-cpu"` tag and its precision the contract's audited bit-stable
+/// claim. Cost is preserved because this runs BEFORE `fill_unset_cpu_cost`,
+/// which upgrades the imported entries' `unknown_cost` sentinel to the same
+/// OpKind cost fn every CPU primitive gets (ReduceMaxToBackward keeps its own
+/// `cost_reduce_max_to_backward_cpu` fill). The `## reduce_to` chassis umbrella
+/// is `registrable: false` (§3.10) and never registers (without it the chassis
+/// would double-register `ReduceSumTo`/`[F32]` → `DuplicateKernelRef` at init).
+/// The family declares NO fused ops, so `register_into`'s required fused
+/// argument is a local throwaway that provably stays empty.
+fn register_cpu_reduce_to_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_REDUCE_TO_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU reduce-to contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "reduce-to contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU reduce-to contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -4387,6 +4447,19 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // f32-only argmax/argmin sections are deferred (registrable: false); the
     // hand-written Arg{Max,Min}Dim regs below stay authoritative.
     register_cpu_reduce_from_contract(table);
+
+    // Broadcast-target reduce-to (ReduceSumTo / ReduceMaxTo × 4 dtypes, key
+    // [T, T]; ReduceMaxToBackward × 4 dtypes, key [T, T, T] = 12 bindings).
+    // Sixth production FKC-contract consumer: IMPORTED from
+    // docs/kernel-contracts/cpu/reduce-to.fkc.md via the same `CpuLinkRegistry`.
+    // Each per-(op,dtype) section carries a SPECIFIC single-dtype entry_point
+    // (`reduce_sum_to_f32`, …) resolved AS-IS (no fan-out). The hand-written
+    // `table.register(...)` calls (the ReduceSumTo/ReduceMaxTo forward block +
+    // the ReduceMaxToBackward block) are DELETED — this is the sole registration
+    // path. Placed BEFORE the `fill_unset_cpu_*` passes so the imported entries
+    // pick up the CPU cost fill. The `## reduce_to` chassis is
+    // `registrable: false` (§3.10) and never registers.
+    register_cpu_reduce_to_from_contract(table);
 
     table.register(MatMul,             &binary(f32_dt),  cpu, matmul_f32_cpu_wrapper);
     table.register(MatMul,             &binary(f64_dt),  cpu, matmul_f64_cpu_wrapper);
@@ -4554,15 +4627,10 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         table.register(ConvTranspose2D, &conv2d_with_bias(dt), cpu, w);
     }
 
-    table.register(ReduceSumTo, &unary(f32_dt),  cpu, reduce_sum_to_f32_cpu_wrapper);
-    table.register(ReduceSumTo, &unary(f64_dt),  cpu, reduce_sum_to_f64_cpu_wrapper);
-    table.register(ReduceSumTo, &unary(bf16_dt), cpu, reduce_sum_to_bf16_cpu_wrapper);
-    table.register(ReduceSumTo, &unary(f16_dt),  cpu, reduce_sum_to_f16_cpu_wrapper);
-
-    table.register(ReduceMaxTo, &unary(f32_dt),  cpu, reduce_max_to_f32_cpu_wrapper);
-    table.register(ReduceMaxTo, &unary(f64_dt),  cpu, reduce_max_to_f64_cpu_wrapper);
-    table.register(ReduceMaxTo, &unary(bf16_dt), cpu, reduce_max_to_bf16_cpu_wrapper);
-    table.register(ReduceMaxTo, &unary(f16_dt),  cpu, reduce_max_to_f16_cpu_wrapper);
+    // ReduceSumTo / ReduceMaxTo (× 4 dtypes, key [T, T]) are now registered
+    // FROM the reduce-to FKC contract (`register_cpu_reduce_to_from_contract`,
+    // above) — the hand-written regs were DELETED (FKC is the sole path). The
+    // ReduceMaxToBackward regs (key [T, T, T]) below were likewise deleted.
 
     // FusedLinear: 3 inputs (lhs, rhs, bias) → out.
     table.register(FusedLinear, &fused_linear(f32_dt),  cpu, fused_linear_f32_cpu_wrapper);
@@ -4887,10 +4955,9 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(RmsNormLastDimBackward,    &binary(f64_dt),  cpu, rms_norm_last_dim_backward_f64_cpu_wrapper);
     table.register(RmsNormLastDimBackward,    &binary(bf16_dt), cpu, rms_norm_last_dim_backward_bf16_cpu_wrapper);
     table.register(RmsNormLastDimBackward,    &binary(f16_dt),  cpu, rms_norm_last_dim_backward_f16_cpu_wrapper);
-    table.register(ReduceMaxToBackward,       &binary(f32_dt),  cpu, reduce_max_to_backward_f32_cpu_wrapper);
-    table.register(ReduceMaxToBackward,       &binary(f64_dt),  cpu, reduce_max_to_backward_f64_cpu_wrapper);
-    table.register(ReduceMaxToBackward,       &binary(bf16_dt), cpu, reduce_max_to_backward_bf16_cpu_wrapper);
-    table.register(ReduceMaxToBackward,       &binary(f16_dt),  cpu, reduce_max_to_backward_f16_cpu_wrapper);
+    // ReduceMaxToBackward (× 4 dtypes, key [T, T, T]) is now registered FROM the
+    // reduce-to FKC contract (`register_cpu_reduce_to_from_contract`); the
+    // hand-written regs were DELETED (FKC is the sole path).
 
     // MaskedFill — dtype-agnostic byte kernel; binding-table key is
     // [T, U8, T] (x dtype, mask U8, output == x).
@@ -7548,6 +7615,85 @@ mod tests {
             }
         }
         assert_eq!(checked, 16, "4 ops × 4 dtypes checked");
+    }
+
+    /// Born-red guard for the CPU reduce-to family FKC migration. Mirrors the
+    /// reduce-family test across the two key shapes this family carries:
+    /// `ReduceSumTo` / `ReduceMaxTo` are single input → `passthrough` output,
+    /// key `[T, T]`; `ReduceMaxToBackward` is two inputs (x, upstream) +
+    /// `passthrough(x)` output, key `[T, T, T]`. Each × {f32,f64,bf16,f16}.
+    ///
+    /// For each key: resolves to the EXACT production wrapper fn-pointer with
+    /// `kernel_source == "portable-cpu"` — the contract provenance tag (the
+    /// deleted hand-written path stamped `""`; THIS is the discriminator that
+    /// goes red until the import is wired) — caps contiguous, and the audited
+    /// bit-stable precision riding through.
+    #[test]
+    fn global_bindings_registers_reduce_to_family_from_contract() {
+        let table = global_bindings();
+        let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+
+        // ReduceSumTo / ReduceMaxTo — single input + passthrough output, key [T, T].
+        let unary_families: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
+            (OpKind::ReduceSumTo, [
+                reduce_sum_to_f32_cpu_wrapper, reduce_sum_to_f64_cpu_wrapper,
+                reduce_sum_to_bf16_cpu_wrapper, reduce_sum_to_f16_cpu_wrapper]),
+            (OpKind::ReduceMaxTo, [
+                reduce_max_to_f32_cpu_wrapper, reduce_max_to_f64_cpu_wrapper,
+                reduce_max_to_bf16_cpu_wrapper, reduce_max_to_f16_cpu_wrapper]),
+        ];
+        // ReduceMaxToBackward — two inputs (x, upstream) + passthrough(x)
+        // output, key [T, T, T].
+        let backward_family: (OpKind, [crate::kernel::KernelRef; 4]) = (
+            OpKind::ReduceMaxToBackward, [
+                reduce_max_to_backward_f32_cpu_wrapper, reduce_max_to_backward_f64_cpu_wrapper,
+                reduce_max_to_backward_bf16_cpu_wrapper, reduce_max_to_backward_f16_cpu_wrapper]);
+
+        // Assert one (op, key, expected-wrapper) is bound FROM the contract.
+        let assert_contract_bound =
+            |op: OpKind, key: &[DType], expected: crate::kernel::KernelRef| {
+                let alts = table.lookup_alternatives(op, key, BackendId::Cpu);
+                let entry = alts
+                    .iter()
+                    .find(|e| e.kernel as usize == expected as usize)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{op:?}/{key:?}/Cpu: the production wrapper must be bound \
+                             FROM the reduce-to contract in global_bindings() \
+                             — found {} alternative(s) with sources {:?}",
+                            alts.len(),
+                            alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                        )
+                    });
+                assert_eq!(
+                    entry.kernel_source, "portable-cpu",
+                    "{op:?}/{key:?}: reduce-to family must be contract-sourced \
+                     (kernel_source=\"portable-cpu\"); got {:?}",
+                    entry.kernel_source,
+                );
+                assert!(
+                    !entry.caps.strided_input,
+                    "{op:?}/{key:?}: caps preserved (contiguous-only, strided_input=false)",
+                );
+                assert!(
+                    entry.precision.bit_stable_on_same_hardware,
+                    "{op:?}/{key:?}: the contract's audited bit-stable claim rode through",
+                );
+            };
+
+        let mut checked = 0usize;
+        for (op, wrappers) in unary_families {
+            for (dt, expected) in dts.iter().zip(wrappers.iter()) {
+                assert_contract_bound(*op, &[*dt, *dt], *expected);
+                checked += 1;
+            }
+        }
+        let (op, wrappers) = backward_family;
+        for (dt, expected) in dts.iter().zip(wrappers.iter()) {
+            assert_contract_bound(op, &[*dt, *dt, *dt], *expected);
+            checked += 1;
+        }
+        assert_eq!(checked, 12, "3 ops × 4 dtypes checked");
     }
 
     /// Lookup miss returns NoBackendForOp with diagnostic data.
