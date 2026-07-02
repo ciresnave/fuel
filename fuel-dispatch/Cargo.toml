@@ -22,9 +22,12 @@ half = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-# FKC kernel-contract importer (default OFF — gated behind the `fkc` feature).
-serde = { workspace = true, optional = true }
-serde_yml = { workspace = true, optional = true }
+# FKC kernel-contract importer deps. FKC is unconditional core infrastructure
+# (the CPU elementwise-binary family registers from its contract in
+# `register_cpu_kernels`), so serde / serde_yml are always compiled — no
+# feature gate.
+serde = { workspace = true }
+serde_yml = { workspace = true }
 # Baracuda telemetry emission (default OFF — gated behind the `telemetry` feature).
 serde_json = { workspace = true, optional = true }
 
@@ -38,6 +41,12 @@ fuel-quantized = { workspace = true }
 fuel-conv = { workspace = true }
 
 [features]
+# FKC is NOT a feature — it is unconditional core infrastructure. serde /
+# serde_yml are always-on deps and `pub mod fkc` is unconditional. There is
+# deliberately no `fkc` gate: once a family's hand-written registration is
+# deleted on migration to its contract (the CPU elementwise-binary family
+# already is — see `register_cpu_kernels`), a build without the importer would
+# silently lose that family. No gate ⇒ no such doomed config.
 default = []
 # Per-backend dispatch wrappers. Feature flags propagate the same shape
 # fuel-memory used: each GPU backend's registration entry-point is
@@ -45,11 +54,9 @@ default = []
 cuda = ["dep:fuel-cuda-backend", "fuel-memory/cuda", "fuel-hardware/cuda"]
 vulkan = ["dep:fuel-vulkan-backend", "fuel-memory/vulkan", "fuel-hardware/vulkan"]
 metal = ["dep:fuel-metal-backend", "fuel-memory/metal"]
-# FKC kernel-contract importer (§1 of the kernel-contract adoption plan).
-# Default OFF so plain builds are untouched while the importer is WIP.
-fkc = ["dep:serde", "dep:serde_yml"]
 # Baracuda dispatch-telemetry / miss-reporting emission (docs/session-prompts/
 # baracuda-telemetry-plan.md). Reads the already-retained Judge timings; emits
 # DispatchRecord/MissRecord JSONL. Default OFF; pulls fuel-ir/serde so the
-# ImplId basis tuple (OpKind/DType/BackendId) serializes.
-telemetry = ["dep:serde", "dep:serde_json", "fuel-ir/serde"]
+# ImplId basis tuple (OpKind/DType/BackendId) serializes. (serde itself is now
+# an unconditional dep, so it is no longer listed here.)
+telemetry = ["dep:serde_json", "fuel-ir/serde"]
