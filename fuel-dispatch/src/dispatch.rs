@@ -1932,7 +1932,9 @@ cpu_scatter_add_wrapper!(scatter_add_f16_cpu_wrapper,  fuel_cpu_backend::byte_ke
 /// happens inside the macro (different cast for f64 vs half).
 macro_rules! cpu_affine_wrapper_native {
     ($wrapper:ident, $kernel:path, $T:ty) => {
-        fn $wrapper(
+        // pub(crate) so the FKC link registry (fkc::cpu_link) can name the
+        // real production wrapper for the affine-clamp-powi contract import.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -1958,7 +1960,9 @@ cpu_affine_wrapper_native!(affine_f64_cpu_wrapper, fuel_cpu_backend::byte_kernel
 
 macro_rules! cpu_affine_wrapper_half {
     ($wrapper:ident, $kernel:path) => {
-        fn $wrapper(
+        // pub(crate) so the FKC link registry (fkc::cpu_link) can name the
+        // real production wrapper for the affine-clamp-powi contract import.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -1985,7 +1989,9 @@ cpu_affine_wrapper_half!(affine_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels
 
 macro_rules! cpu_clamp_wrapper {
     ($wrapper:ident, $kernel:path, $T:ty) => {
-        fn $wrapper(
+        // pub(crate) so the FKC link registry (fkc::cpu_link) can name the
+        // real production wrapper for the affine-clamp-powi contract import.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -2013,7 +2019,9 @@ cpu_clamp_wrapper!(clamp_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::clamp
 
 macro_rules! cpu_powi_wrapper {
     ($wrapper:ident, $kernel:path) => {
-        fn $wrapper(
+        // pub(crate) so the FKC link registry (fkc::cpu_link) can name the
+        // real production wrapper for the affine-clamp-powi contract import.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -2143,7 +2151,7 @@ cpu_arg_dim_wrapper_typed!(argmin_dim_f16_only_wrapper,  fuel_cpu_backend::byte_
 
 /// Dispatch wrapper for `(Affine, F32, Cpu)`. Extracts scalar
 /// coefficients from `OpParams::Affine`.
-fn affine_f32_cpu_wrapper(
+pub(crate) fn affine_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -2490,7 +2498,7 @@ cpu_unary_inplace_wrapper!(gelu_erf_inplace_bf16_cpu_wrapper, gelu_erf_inplace_b
 cpu_unary_inplace_wrapper!(gelu_erf_inplace_f16_cpu_wrapper,  gelu_erf_inplace_f16);
 
 /// Dispatch wrapper for `(ClampElementwise, F32, Cpu)`.
-fn clamp_elementwise_f32_cpu_wrapper(
+pub(crate) fn clamp_elementwise_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -2520,7 +2528,7 @@ fn clamp_elementwise_f32_cpu_wrapper(
 }
 
 /// Dispatch wrapper for `(PowIElementwise, F32, Cpu)`.
-fn powi_elementwise_f32_cpu_wrapper(
+pub(crate) fn powi_elementwise_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -2553,7 +2561,9 @@ fn powi_elementwise_f32_cpu_wrapper(
 /// dispatch wrapper for the per-dtype PowIBackward kernels.
 macro_rules! cpu_powi_backward_wrapper {
     ($wrapper:ident, $kernel:path, $op_name:literal) => {
-        fn $wrapper(
+        // pub(crate) so the FKC link registry (fkc::cpu_link) can name the
+        // real production wrapper for the affine-clamp-powi contract import.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -4073,6 +4083,54 @@ fn register_cpu_binary_from_contract(table: &mut KernelBindingTable) {
     );
 }
 
+/// The authored CPU affine / clamp / powi kernel contract, embedded into the
+/// binary (the PRODUCTION `include_str!`). `register_cpu_affine_clamp_powi_from_contract`
+/// parses + lowers it and binds the family FROM THE CONTRACT.
+const CPU_AFFINE_CLAMP_POWI_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/affine-clamp-powi.fkc.md");
+
+/// Register the CPU out-of-place scalar-param family (affine/clamp/powi × 4
+/// dtypes + powi_backward × 4 = 16 bindings) by IMPORTING its FKC kernel
+/// contract — the second production FKC consumer, mirroring
+/// [`register_cpu_binary_from_contract`]. FKC is unconditional core
+/// infrastructure, so this is the ONE registration path for the family: the
+/// hand-written `table.register(...)` calls it used to carry are DELETED.
+///
+/// Each `entry_point` symbol resolves through the production
+/// [`crate::fkc::CpuLinkRegistry`] (now chaining
+/// [`crate::fkc::CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`]) to the exact same wrapper
+/// fn-pointers the CPU backend exposes. Behavior-preserving vs. the deleted
+/// hand-written path: identical kernels + caps (contiguous-only); the binding's
+/// `kernel_source` becomes the contract's `"portable-cpu"` tag and its precision
+/// the contract's audited bit-stable claim. Cost is preserved because this runs
+/// BEFORE `fill_unset_cpu_cost`, which upgrades the imported entries'
+/// `unknown_cost` sentinel to the same OpKind cost fn every CPU primitive gets.
+///
+/// The scalar params (affine mul/add, clamp min/max, powi exp) ride in
+/// `OpParams`, NOT the dtype-list, so the imported binding keys are `[t, t]` for
+/// the single-input forward ops and `[t, t, t]` for the two-input
+/// `powi_backward` — identical to the deleted `&unary(t)` / `&binary(t)` regs.
+///
+/// The family declares NO fused ops (the FusedOps::POWI_BACKWARD fused-registry
+/// registration is a SEPARATE seam, untouched), so `register_into`'s required
+/// fused argument is a local throwaway that provably stays empty.
+fn register_cpu_affine_clamp_powi_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_AFFINE_CLAMP_POWI_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU affine/clamp/powi contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "affine/clamp/powi contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU affine/clamp/powi contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -4124,6 +4182,17 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // `fill_unset_cpu_*` passes — so the imported entries pick up the same CPU
     // cost fill every other CPU primitive gets.
     register_cpu_binary_from_contract(table);
+
+    // Out-of-place scalar-param family (affine/clamp/powi × 4 dtypes +
+    // powi_backward × 4 = 16 bindings). Second production FKC-contract
+    // consumer: IMPORTED from docs/kernel-contracts/cpu/affine-clamp-powi.fkc.md
+    // via the same `CpuLinkRegistry`. The hand-written `table.register(...)`
+    // calls (Affine / ClampElementwise / PowIElementwise / PowIElementwiseBackward)
+    // are DELETED — this is the sole registration path. Placed BEFORE the
+    // `fill_unset_cpu_*` passes so the imported entries pick up the CPU cost
+    // fill. (The in-place InplaceAffine/ClampInplace/PowIInplace family and the
+    // FusedOps::POWI_BACKWARD fused-registry seam are separate and untouched.)
+    register_cpu_affine_clamp_powi_from_contract(table);
 
     // Elementwise unary — F32.
     table.register(ReluElementwise,    &unary(f32_dt), cpu, relu_elementwise_f32_cpu_wrapper);
@@ -4409,7 +4478,7 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         table.register(PagedAttn, &paged_attn_with_alibi(dt), cpu, w);
     }
 
-    table.register(Affine,             &unary(f32_dt), cpu, affine_f32_cpu_wrapper);
+    // (Affine F32 is now registered from the affine-clamp-powi contract above.)
 
     // In-place affine — Phase 3c of in-place ops infrastructure.
     // Binding-table key shape mirrors the non-inplace Affine ([T, T])
@@ -4572,8 +4641,8 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         }
     }
 
-    table.register(ClampElementwise,   &unary(f32_dt), cpu, clamp_elementwise_f32_cpu_wrapper);
-    table.register(PowIElementwise,    &unary(f32_dt), cpu, powi_elementwise_f32_cpu_wrapper);
+    // (ClampElementwise / PowIElementwise F32 are now registered from the
+    // affine-clamp-powi contract above.)
 
     // Comparison family (output dtype = U8). Each kernel produces a
     // U8 mask (`1` where the predicate holds, `0` otherwise).
@@ -4870,9 +4939,8 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         table.register(ArgMinDim, &[dt, u32_dt], cpu, argmin_dim_u32_cpu_dispatch);
     }
 
-    table.register(Affine,             &unary(f64_dt),  cpu, affine_f64_cpu_wrapper);
-    table.register(Affine,             &unary(bf16_dt), cpu, affine_bf16_cpu_wrapper);
-    table.register(Affine,             &unary(f16_dt),  cpu, affine_f16_cpu_wrapper);
+    // (Affine F64/BF16/F16 are now registered from the affine-clamp-powi
+    // contract above.)
 
     // Op::Copy — D2H / SameDevice byte-level transfer. The CPU
     // registration here is the CPU→CPU memcpy noop; per-source-
@@ -4891,20 +4959,10 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     for dt in copy_dtypes {
         table.register(Copy, &[dt, dt], cpu, copy_from_cpu_wrapper);
     }
-    table.register(ClampElementwise,   &unary(f64_dt),  cpu, clamp_f64_cpu_wrapper);
-    table.register(ClampElementwise,   &unary(bf16_dt), cpu, clamp_bf16_cpu_wrapper);
-    table.register(ClampElementwise,   &unary(f16_dt),  cpu, clamp_f16_cpu_wrapper);
-    table.register(PowIElementwise,    &unary(f64_dt),  cpu, powi_f64_cpu_wrapper);
-    table.register(PowIElementwise,    &unary(bf16_dt), cpu, powi_bf16_cpu_wrapper);
-    table.register(PowIElementwise,    &unary(f16_dt),  cpu, powi_f16_cpu_wrapper);
-
-    // PowI backward — `(x, upstream) → grad_x`. Two inputs, same
-    // dtype on both inputs + output. Routes Op::Fused(POWI_BACKWARD,
-    // _) emitted by autograd through the binding table.
-    table.register(PowIElementwiseBackward, &binary(f32_dt),  cpu, powi_backward_f32_cpu_wrapper);
-    table.register(PowIElementwiseBackward, &binary(f64_dt),  cpu, powi_backward_f64_cpu_wrapper);
-    table.register(PowIElementwiseBackward, &binary(bf16_dt), cpu, powi_backward_bf16_cpu_wrapper);
-    table.register(PowIElementwiseBackward, &binary(f16_dt),  cpu, powi_backward_f16_cpu_wrapper);
+    // (ClampElementwise / PowIElementwise F64/BF16/F16 and the two-input
+    // PowIElementwiseBackward × 4 dtypes are now registered from the
+    // affine-clamp-powi contract above. The FusedOps::POWI_BACKWARD
+    // fused-registry seam remains separate and untouched.)
 
     // Phase 7.6 step 7b — populate `PrecisionGuarantee` for every
     // CPU primitive registration. Every `table.register(...)` call
@@ -7030,6 +7088,105 @@ mod tests {
             }
         }
         assert_eq!(checked, 32, "all 8 ops × 4 dtypes checked");
+    }
+
+    /// FKC born-red gate for the CPU affine / clamp / powi family.
+    /// `global_bindings()` registers the out-of-place scalar-param family
+    /// (affine/clamp/powi × 4 dtypes + powi_backward × 4 = 16 bindings) FROM
+    /// ITS KERNEL CONTRACT (`docs/kernel-contracts/cpu/affine-clamp-powi.fkc.md`)
+    /// — the sole registration path, now that the hand-written
+    /// `table.register(...)` calls are DELETED. Asserts each (op, dtype, Cpu)
+    /// key resolves to the EXACT production wrapper fn-pointer, is
+    /// contract-sourced (`kernel_source == "portable-cpu"`), caps stayed
+    /// contiguous-only, and the audited bit-stable precision claim rode through.
+    #[test]
+    fn global_bindings_registers_affine_clamp_powi_family_from_contract() {
+        let table = global_bindings();
+        let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+
+        // Single-input forward ops → key [dt, dt].
+        let forward: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
+            (OpKind::Affine, [
+                affine_f32_cpu_wrapper, affine_f64_cpu_wrapper,
+                affine_bf16_cpu_wrapper, affine_f16_cpu_wrapper]),
+            (OpKind::ClampElementwise, [
+                clamp_elementwise_f32_cpu_wrapper, clamp_f64_cpu_wrapper,
+                clamp_bf16_cpu_wrapper, clamp_f16_cpu_wrapper]),
+            (OpKind::PowIElementwise, [
+                powi_elementwise_f32_cpu_wrapper, powi_f64_cpu_wrapper,
+                powi_bf16_cpu_wrapper, powi_f16_cpu_wrapper]),
+        ];
+
+        let mut checked = 0usize;
+        for (op, wrappers) in forward {
+            for (dt, expected) in dts.iter().zip(wrappers.iter()) {
+                let alts = table.lookup_alternatives(*op, &[*dt, *dt], BackendId::Cpu);
+                let entry = alts
+                    .iter()
+                    .find(|e| e.kernel as usize == *expected as usize)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{op:?}/{dt:?}/Cpu: the production wrapper must be bound \
+                             FROM the affine-clamp-powi contract in global_bindings() \
+                             — found {} alternative(s) with sources {:?}",
+                            alts.len(),
+                            alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                        )
+                    });
+                assert_eq!(
+                    entry.kernel_source, "portable-cpu",
+                    "{op:?}/{dt:?}: family must be contract-sourced \
+                     (kernel_source=\"portable-cpu\"); got {:?}",
+                    entry.kernel_source,
+                );
+                assert!(
+                    !entry.caps.strided_input,
+                    "{op:?}/{dt:?}: caps preserved (contiguous-only, strided_input=false)",
+                );
+                assert!(
+                    entry.precision.bit_stable_on_same_hardware,
+                    "{op:?}/{dt:?}: the contract's audited bit-stable claim rode through",
+                );
+                checked += 1;
+            }
+        }
+
+        // Two-input backward op → key [dt, dt, dt].
+        let bw: [crate::kernel::KernelRef; 4] = [
+            powi_backward_f32_cpu_wrapper, powi_backward_f64_cpu_wrapper,
+            powi_backward_bf16_cpu_wrapper, powi_backward_f16_cpu_wrapper];
+        for (dt, expected) in dts.iter().zip(bw.iter()) {
+            let alts = table.lookup_alternatives(
+                OpKind::PowIElementwiseBackward, &[*dt, *dt, *dt], BackendId::Cpu);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "PowIElementwiseBackward/{dt:?}/Cpu: the production wrapper must \
+                         be bound FROM the affine-clamp-powi contract in global_bindings() \
+                         — found {} alternative(s) with sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "portable-cpu",
+                "PowIElementwiseBackward/{dt:?}: must be contract-sourced; got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                !entry.caps.strided_input,
+                "PowIElementwiseBackward/{dt:?}: caps preserved (contiguous-only)",
+            );
+            assert!(
+                entry.precision.bit_stable_on_same_hardware,
+                "PowIElementwiseBackward/{dt:?}: the audited bit-stable claim rode through",
+            );
+            checked += 1;
+        }
+
+        assert_eq!(checked, 16, "3 forward ops × 4 dtypes + powi_backward × 4");
     }
 
     /// Lookup miss returns NoBackendForOp with diagnostic data.
