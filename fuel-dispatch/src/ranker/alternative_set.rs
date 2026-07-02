@@ -657,7 +657,7 @@ mod tests {
     /// CPU `--lib` suite is exactly this case.
     #[test]
     fn rank_by_cost_preserves_single_precision_winner() {
-        use super::super::cost::composite_ns;
+        use super::super::cost::{composite_ns, default_backend_rates};
 
         let mk = |flops: u64, bytes: u64, overhead: u32, inbound: u64| Candidate {
             inbound_transfer_ns: inbound,
@@ -676,10 +676,15 @@ mod tests {
             mk(120, 0, 0, 0),
         ];
 
-        // Expected order from the OLD scalar key.
+        // Expected order from the scalar key — mirrors
+        // `CostVector::from_candidate`, which resolves the per-backend
+        // throughput prior from the candidate's backend. (All `mk`
+        // candidates are `dummy_candidate` = CPU, so this is the neutral
+        // 1.0/4.0 prior and the expected order is unchanged.)
         let mut expected = cands.clone();
         expected.sort_by_key(|c| {
-            composite_ns(&c.static_cost).saturating_add(c.inbound_transfer_ns)
+            let (cr, bw) = default_backend_rates(c.backend);
+            composite_ns(&c.static_cost, cr, bw).saturating_add(c.inbound_transfer_ns)
         });
         let expected_flops: Vec<u64> =
             expected.iter().map(|c| c.static_cost.flops).collect();

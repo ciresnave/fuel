@@ -85,8 +85,9 @@ use std::sync::Arc;
 use fuel_ir::backend::FitStatus;
 
 use super::{
-    composite_ns, default_estimate_output_bytes, AlternativeSet, BackendRuntimeLookup,
-    Candidate, DecisionContext, JudgeOracle, OutputBytesEstimator, RuntimeSelector,
+    composite_ns, default_backend_rates, default_estimate_output_bytes, AlternativeSet,
+    BackendRuntimeLookup, Candidate, DecisionContext, JudgeOracle, OutputBytesEstimator,
+    RuntimeSelector,
 };
 
 /// Production runtime selector: VRAM-pressure guard + Judge-measured
@@ -191,7 +192,8 @@ impl ChainedSelector {
                     return measured;
                 }
             }
-            composite_ns(&c.static_cost)
+            let (cr, bw) = default_backend_rates(c.backend);
+            composite_ns(&c.static_cost, cr, bw)
         })();
         kernel_ns.saturating_add(c.inbound_transfer_ns)
     }
@@ -311,10 +313,16 @@ mod tests {
     /// CUDA wins at 100ns, CPU runner-up at 200ns. Context stamped.
     fn ranked_set() -> AlternativeSet {
         let mut set = AlternativeSet::empty();
+        // CUDA raw work is 3000 FLOPs, but at the GPU throughput prior
+        // (30 FLOPs/ns) that composites to 100 ns — the value these
+        // tests reason about. CPU's 200 FLOPs composites to 200 ns at
+        // the 1 FLOP/ns baseline. So the static rank is still CUDA(100)
+        // < CPU(200), and the measured-vs-unmeasured thresholds below
+        // are relative to CUDA's 100 ns composite.
         set.push(make_candidate(
             BackendId::Cuda,
             DeviceLocation::Cuda { gpu_id: 0 },
-            100,
+            3000,
         ));
         set.push(make_candidate(BackendId::Cpu, DeviceLocation::Cpu, 200));
         set.set_context(ctx());

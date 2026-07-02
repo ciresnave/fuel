@@ -56,7 +56,9 @@ use std::sync::Arc;
 use fuel_ir::dispatch::{OpKind, SizeClass};
 use fuel_ir::DType;
 
-use super::{composite_ns, AlternativeSet, Candidate, JudgeOracle, RuntimeSelector};
+use super::{
+    composite_ns, default_backend_rates, AlternativeSet, Candidate, JudgeOracle, RuntimeSelector,
+};
 
 /// Phase 5.2 runtime selector that re-queries the Judge at dispatch
 /// time and re-ranks candidates by the freshest measured latency.
@@ -186,7 +188,10 @@ impl RuntimeSelector for JudgeAwareSelector {
                 // consistent with the plan rank.
                 let score = self
                     .measured_latency(c)
-                    .unwrap_or_else(|| composite_ns(&c.static_cost))
+                    .unwrap_or_else(|| {
+                        let (cr, bw) = default_backend_rates(c.backend);
+                        composite_ns(&c.static_cost, cr, bw)
+                    })
                     .saturating_add(c.inbound_transfer_ns);
                 (i, score)
             })

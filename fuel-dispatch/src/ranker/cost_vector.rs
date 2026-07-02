@@ -49,7 +49,7 @@ use fuel_ir::DeviceLocation;
 use crate::fused::{CostEstimate, PrecisionGuarantee};
 
 use super::candidate::Candidate;
-use super::cost::composite_ns;
+use super::cost::{composite_ns, default_backend_rates};
 
 /// Discrete precision level in **decimal digits** — higher is better.
 ///
@@ -179,8 +179,13 @@ impl CostVector {
     /// - `precision` / `accuracy` are derived from
     ///   `candidate.precision`.
     pub fn from_candidate(candidate: &Candidate) -> Self {
-        let time =
-            composite_ns(&candidate.static_cost).saturating_add(candidate.inbound_transfer_ns);
+        // The rank sees only `Candidate::backend` (no registered caps in
+        // hand), so it uses the per-backend throughput prior — kept
+        // consistent with the placement DP's authoritative caps figure
+        // via `default_backend_rates`.
+        let (compute_rate, mem_bandwidth) = default_backend_rates(candidate.backend);
+        let time = composite_ns(&candidate.static_cost, compute_rate, mem_bandwidth)
+            .saturating_add(candidate.inbound_transfer_ns);
         let memory =
             MemoryTiers::for_placement(candidate.device, candidate.static_cost.bytes_moved);
         CostVector {

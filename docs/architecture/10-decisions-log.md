@@ -360,6 +360,22 @@ Cross-references are fine — an architecture-decision-log entry can link to the
 
 ---
 
+## 2026-07-01 — FKC cost unification: register GPU capabilities + per-backend throughput (honest cross-device placement)
+
+**Sections affected**: 04
+**Phase / PR**: FKC cost unification Part A (`1acf3222`) + Part C (this change)
+**Bumped to**: 04 v0.6 → v0.7
+
+**What changed**: Two coupled fixes to the Layer-1 cost model that together make cross-device placement honest. **Part A** registers GPU `BackendCapabilities` (derived from the binding table) and the per-op cost functions for GPU backends, so `compute_static_costs` no longer *skips* an uncapped GPU candidate and leave it priced at zero. **Part C** replaces the backend-agnostic `1 FLOP ≈ 1 ns` prior in the composite-nanosecond figure with a **roofline over each candidate backend's throughput**: `composite_ns ≈ max(flops ÷ compute_throughput, bytes ÷ mem_bandwidth) + kernel_overhead_ns`, with `compute_throughput_flops_per_ns` / `mem_bandwidth_bytes_per_ns` added to `BackendCapabilities`. The placement DP reads the authoritative registered figure; the candidate rank (no caps in hand) uses a matching per-backend prior derived from the same constants. `kernel_overhead_ns` is never scaled, so Layer-2's measured latency (packed into overhead) is unaffected.
+
+**Why**: A concrete crash — a CPU-pinned realize spilled onto an *unseeded* GPU because the GPU candidate was priced at zero (Part A's bug) and, once priced, was still modeled at CPU throughput so it could never legitimately out-price the CPU (the gap Part C closes). The root cause was that "backends advertise capabilities/costs" (§constitution) wasn't actually wired into the FLOP→time conversion. This realizes the throughput refinement earlier drafts deferred to "Phase 1.5."
+
+**Alternatives considered**: *A reachability filter that prunes unseeded devices from placement.* Rejected — it hides the mis-pricing rather than fixing it, and forecloses seed-on-demand. *Storing the throughput on each `Candidate` / `CostEstimate`.* Rejected — 40+ field-explicit construction sites, and `bytes_moved` is also read raw for the VRAM tiers; resolving the rate from `candidate.backend` at the composite site is cleaner. *Calibrated per-device numbers.* Deferred — the priors are deliberately directionally-correct only; Layer 2 (Judge) supplies calibration.
+
+**Implications going forward**: (1) `BackendCapabilities` is now the single authoritative home for per-backend throughput; a real backend or the Judge can refine it per cell. (2) The composite figure is throughput-aware everywhere it is consumed (placement DP, candidate rank, dispatch-time selectors). (3) Part B (route *every* kernel's cost through its FKC contract so the FLOP/byte counts themselves are contract-sourced) is the remaining leg of the cost-unification program.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
