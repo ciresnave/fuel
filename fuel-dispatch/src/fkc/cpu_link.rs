@@ -380,12 +380,36 @@ pub static CPU_NORM_BACKWARD_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("layer_norm_last_dim_backward", "f16",  layer_norm_last_dim_backward_f16_cpu_wrapper),
 ];
 
+/// The CPU RoPE (rotary position embedding) family's `symbol → production
+/// wrapper` map (1 op × 4 dtypes = 4). Contract:
+/// `docs/kernel-contracts/cpu/rope.fkc.md`. Each per-dtype section
+/// (`## rope_f32`, …) declares a SPECIFIC single-dtype `entry_point`
+/// (`…::rope_f32`), so none of them fan — the importer resolves that symbol
+/// AS-IS. The binding key is `[T, T, T, T]` — RoPE takes THREE inputs (`x` +
+/// the precomputed `cos`/`sin` tables, all one dtype; the `[seq, head_dim]`
+/// tables broadcast over the `outer_count` axis by the kernel re-indexing them
+/// per outer, NOT a stride-0 view) and writes ONE `passthrough(x)` output;
+/// outer_count / seq / head_dim ride in `OpParams::Rope`, NOT the dtype-list —
+/// identical to the deleted `rope_dts(t)` regs. This contract has NO `##`
+/// chassis umbrella section, so there is no `registrable: false` describe-only
+/// entry to omit. RoPE is ALSO registered in the `FusedKernelRegistry`
+/// (`register_default_fused_kernels`, `FusedOps::ROPE`) — that is a SEPARATE
+/// registry seam and stays untouched; this map only serves the
+/// `KernelBindingTable` primitive path.
+pub static CPU_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    ep!("rope", "f32",  rope_f32_cpu_wrapper),
+    ep!("rope", "f64",  rope_f64_cpu_wrapper),
+    ep!("rope", "bf16", rope_bf16_cpu_wrapper),
+    ep!("rope", "f16",  rope_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
 /// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
 /// [`CPU_COMPARE_ENTRY_POINTS`], [`CPU_WHERE_ENTRY_POINTS`],
 /// [`CPU_REDUCE_ENTRY_POINTS`], [`CPU_REDUCE_TO_ENTRY_POINTS`],
-/// [`CPU_NORM_ENTRY_POINTS`], and [`CPU_NORM_BACKWARD_ENTRY_POINTS`].
+/// [`CPU_NORM_ENTRY_POINTS`], [`CPU_NORM_BACKWARD_ENTRY_POINTS`], and
+/// [`CPU_ROPE_ENTRY_POINTS`].
 /// Unresolved → `None`, which the importer turns into a typed
 /// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;
@@ -402,14 +426,15 @@ impl LinkRegistry for CpuLinkRegistry {
             .chain(CPU_REDUCE_TO_ENTRY_POINTS.iter())
             .chain(CPU_NORM_ENTRY_POINTS.iter())
             .chain(CPU_NORM_BACKWARD_ENTRY_POINTS.iter())
+            .chain(CPU_ROPE_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
 
     fn resolve_fused(&self, _symbol: &str) -> Option<KernelRef> {
         // No fused-op contracts in the elementwise-binary, affine/clamp/powi,
-        // elementwise-unary, compare/where, reduce, reduce-to, norm, or
-        // norm-backward corpora.
+        // elementwise-unary, compare/where, reduce, reduce-to, norm,
+        // norm-backward, or rope corpora.
         None
     }
 }
