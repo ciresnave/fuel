@@ -280,11 +280,39 @@ pub static CPU_REDUCE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("min_reduce",  "f16",  min_reduce_f16_cpu_wrapper),
 ];
 
+/// The CPU broadcast-target REDUCE-TO family's `symbol → production wrapper`
+/// map (ReduceSumTo / ReduceMaxTo × 4 dtypes = 8, key `[T, T]`, +
+/// ReduceMaxToBackward × 4 dtypes = 4, key `[T, T, T]` = 12). Contract:
+/// `docs/kernel-contracts/cpu/reduce-to.fkc.md`. Each per-(op, dtype) section
+/// (`## reduce_sum_to_f32`, …) declares a SPECIFIC single-dtype `entry_point`
+/// (`…::reduce_sum_to_f32`), so it does NOT fan — the importer resolves that
+/// symbol AS-IS. The forward keys are `[T, T]` (input + `passthrough(input)`
+/// output; the target `input_shape`/`output_shape` ride in
+/// `OpParams::ReduceSumTo` / `OpParams::ReduceMaxTo`, NOT the dtype-list); the
+/// backward key is `[T, T, T]` (x, upstream + `passthrough(x)` output). The
+/// `## reduce_to` chassis umbrella is `registrable: false` (§3.10 describe-only)
+/// and never resolves, so it is absent here (without it the chassis would
+/// double-register `ReduceSumTo`/`[F32]` → `DuplicateKernelRef` at init).
+pub static CPU_REDUCE_TO_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    ep!("reduce_sum_to", "f32",  reduce_sum_to_f32_cpu_wrapper),
+    ep!("reduce_sum_to", "f64",  reduce_sum_to_f64_cpu_wrapper),
+    ep!("reduce_sum_to", "bf16", reduce_sum_to_bf16_cpu_wrapper),
+    ep!("reduce_sum_to", "f16",  reduce_sum_to_f16_cpu_wrapper),
+    ep!("reduce_max_to", "f32",  reduce_max_to_f32_cpu_wrapper),
+    ep!("reduce_max_to", "f64",  reduce_max_to_f64_cpu_wrapper),
+    ep!("reduce_max_to", "bf16", reduce_max_to_bf16_cpu_wrapper),
+    ep!("reduce_max_to", "f16",  reduce_max_to_f16_cpu_wrapper),
+    ep!("reduce_max_to_backward", "f32",  reduce_max_to_backward_f32_cpu_wrapper),
+    ep!("reduce_max_to_backward", "f64",  reduce_max_to_backward_f64_cpu_wrapper),
+    ep!("reduce_max_to_backward", "bf16", reduce_max_to_backward_bf16_cpu_wrapper),
+    ep!("reduce_max_to_backward", "f16",  reduce_max_to_backward_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
 /// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
-/// [`CPU_COMPARE_ENTRY_POINTS`], [`CPU_WHERE_ENTRY_POINTS`], and
-/// [`CPU_REDUCE_ENTRY_POINTS`].
+/// [`CPU_COMPARE_ENTRY_POINTS`], [`CPU_WHERE_ENTRY_POINTS`],
+/// [`CPU_REDUCE_ENTRY_POINTS`], and [`CPU_REDUCE_TO_ENTRY_POINTS`].
 /// Unresolved → `None`, which the importer turns into a typed
 /// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;
@@ -298,13 +326,14 @@ impl LinkRegistry for CpuLinkRegistry {
             .chain(CPU_COMPARE_ENTRY_POINTS.iter())
             .chain(CPU_WHERE_ENTRY_POINTS.iter())
             .chain(CPU_REDUCE_ENTRY_POINTS.iter())
+            .chain(CPU_REDUCE_TO_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
 
     fn resolve_fused(&self, _symbol: &str) -> Option<KernelRef> {
         // No fused-op contracts in the elementwise-binary, affine/clamp/powi,
-        // elementwise-unary, compare/where, or reduce corpora.
+        // elementwise-unary, compare/where, reduce, or reduce-to corpora.
         None
     }
 }
