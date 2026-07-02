@@ -3196,7 +3196,7 @@ cpu_causal_conv1d_wrapper!(causal_conv1d_f16_cpu_wrapper,  fuel_cpu_backend::byt
 /// the binding-table key is `[T; 6]`.
 macro_rules! cpu_selective_scan_wrapper {
     ($wrapper:ident, $kernel:path) => {
-        fn $wrapper(
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -3257,7 +3257,7 @@ cpu_selective_scan_wrapper!(selective_scan_f16_cpu_wrapper,  fuel_cpu_backend::b
 /// binding-table key is `[T; 6]`.
 macro_rules! cpu_ssd_chunk_scan_wrapper {
     ($wrapper:ident, $kernel:path) => {
-        fn $wrapper(
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -4536,37 +4536,37 @@ fn register_cpu_rope_from_contract(table: &mut KernelBindingTable) {
 const CPU_SSM_CONTRACT: &str =
     include_str!("../../docs/kernel-contracts/cpu/ssm.fkc.md");
 
-/// Register the CPU SSM / Mamba family's MIGRATED subset —
+/// Register the ENTIRE CPU SSM / Mamba family —
 /// FusedSoftmaxCrossEntropy (key `[T, I64, F32]`) + CausalConv1d (key
-/// `[T, T, T, T]`), 2 ops × 4 dtypes = 8 bindings — by IMPORTING its FKC kernel
-/// contract, the tenth production FKC consumer. FKC is unconditional core
-/// infrastructure, so this is the ONE registration path for the migrated ops:
-/// their hand-written `table.register(...)` calls are DELETED.
+/// `[T, T, T, T]`) + SelectiveScan + SsdChunkScan (key `[T; 6]`), 4 ops ×
+/// 4 dtypes = 16 bindings — by IMPORTING its FKC kernel contract, the tenth
+/// production FKC consumer. FKC is unconditional core infrastructure, so this is
+/// the ONE registration path for the whole family: every hand-written
+/// `table.register(...)` call is DELETED.
 ///
-/// Each migrated per-(op, dtype) section (`## fused_softmax_cross_entropy_f32`,
-/// `## causal_conv1d_f32`, …) is a SPECIFIC single-dtype contract with a
-/// concrete `entry_point` (`…::fused_softmax_cross_entropy_f32`), so none of
-/// them fan — the importer resolves each declared symbol AS-IS through the
-/// production [`crate::fkc::CpuLinkRegistry`] (now chaining
-/// [`crate::fkc::CPU_SSM_ENTRY_POINTS`]) to the exact wrapper fn-pointer the CPU
-/// backend exposes. FSCE takes TWO inputs (logits T + I64 targets) → ONE
-/// `fixed(F32)` output; CausalConv1d takes THREE inputs (x, weight, bias) → ONE
-/// `passthrough(x)` output; every geometry/knob rides in `OpParams`, NOT the
-/// dtype-list — identical keys to the deleted hand-written regs.
+/// Each per-(op, dtype) section (`## fused_softmax_cross_entropy_f32`,
+/// `## selective_scan_f32`, …) is a SPECIFIC single-dtype contract with a
+/// concrete `entry_point` (`…::selective_scan_f32`), so none of them fan — the
+/// importer resolves each declared symbol AS-IS through the production
+/// [`crate::fkc::CpuLinkRegistry`] (chaining [`crate::fkc::CPU_SSM_ENTRY_POINTS`])
+/// to the exact wrapper fn-pointer the CPU backend exposes. FSCE takes TWO inputs
+/// (logits T + I64 targets) → ONE `fixed(F32)` output; CausalConv1d takes THREE
+/// inputs (x, weight, bias) → ONE `passthrough(x)` output; every geometry/knob
+/// rides in `OpParams`, NOT the dtype-list — identical keys to the deleted
+/// hand-written regs.
 ///
-/// **The two SCAN ops (SelectiveScan / SsdChunkScan) are DEFERRED, not
-/// migrated.** Their contract sections use `return.bundle` (Option C
-/// multi-output: one buffer `[y ; last_state]`), which the importer's
-/// key-builder (`fkc/lower.rs` `assemble_dtype_variants`) does NOT yet read —
-/// it consumes `return.outputs` only. Importing them would therefore key on 5
-/// input dtypes (missing the bundled output slot) instead of production's
-/// 6-dtype `[T; 6]` key, breaking the runtime lookup. Those sections carry
-/// `registrable: false` in the contract (so `lower_file` skips them and the
-/// import never resolves their entry_points) and KEEP their hand-written
-/// `table.register(SelectiveScan/SsdChunkScan, &[dt; 6], ...)` regs untouched.
+/// **The two SCAN ops (SelectiveScan / SsdChunkScan) return a `return.bundle`**
+/// multi-output (Option C: one packed buffer `[y ; last_state]`). The importer's
+/// key-builder (`fkc/lower.rs` `assemble_dtype_variants`) appends the bundle's
+/// PRIMARY-slot dtype (`passthrough(u)` / `passthrough(x)` → T) to the key tail,
+/// so a 5-input scan section keys `[T; 6]` (5 inputs + the one bundled output
+/// slot) — byte-for-byte the deleted hand-written
+/// `table.register(SelectiveScan/SsdChunkScan, &[dt; 6], ...)` regs. All four
+/// ops are now `registrable: true` (the default), so `lower_file` imports the
+/// whole family.
 ///
-/// Behavior-preserving vs. the deleted hand-written path (for the migrated
-/// ops): identical kernels + caps (contiguous-only); the binding's
+/// Behavior-preserving vs. the deleted hand-written path: identical kernels +
+/// caps (contiguous-only); the binding's
 /// `kernel_source` becomes the contract's `"portable-cpu"` tag and its
 /// precision the contract's bit-stable claim. Cost is preserved because this
 /// runs BEFORE `fill_unset_cpu_cost`, which upgrades the imported entries'
@@ -4822,20 +4822,20 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // (register_default_fused_kernels, FusedOps::ROPE) stays untouched.
     register_cpu_rope_from_contract(table);
 
-    // CPU SSM / Mamba family — MIGRATED subset only: FusedSoftmaxCrossEntropy
-    // (key [T, I64, F32]) + CausalConv1d (key [T, T, T, T]), 2 ops × 4 dtypes =
-    // 8 bindings. Tenth production FKC-contract consumer: IMPORTED from
+    // CPU SSM / Mamba family — the FULL family: FusedSoftmaxCrossEntropy
+    // (key [T, I64, F32]) + CausalConv1d (key [T, T, T, T]) + SelectiveScan +
+    // SsdChunkScan (key [T; 6]), 4 ops × 4 dtypes = 16 bindings. Tenth
+    // production FKC-contract consumer: IMPORTED from
     // docs/kernel-contracts/cpu/ssm.fkc.md via the same `CpuLinkRegistry`. Each
     // per-(op,dtype) section carries a SPECIFIC single-dtype entry_point
-    // (`fused_softmax_cross_entropy_f32`, `causal_conv1d_f32`, …) resolved AS-IS
-    // (no fan-out). The hand-written `table.register(...)` calls for these two
-    // ops (the FSCE loop + the four CausalConv1d regs below) are DELETED — this
-    // is their sole registration path. The two SCAN ops (SelectiveScan /
-    // SsdChunkScan) are DEFERRED: their `return.bundle` multi-output is not yet
-    // key-buildable by the importer, so they are `registrable: false` in the
-    // contract and KEEP their hand-written [dt; 6] regs (below). Placed BEFORE
-    // the `fill_unset_cpu_*` passes so the imported entries pick up the CPU cost
-    // fill.
+    // (`fused_softmax_cross_entropy_f32`, `selective_scan_f32`, …) resolved AS-IS
+    // (no fan-out). The two SCAN ops return a `return.bundle` multi-output
+    // (Option C, one buffer [y ; last_state]); the importer now appends the
+    // bundle's primary-slot dtype to the key tail, so they key [T; 6]
+    // byte-for-byte the deleted hand-written regs. Every hand-written
+    // `table.register(...)` call for the whole family is DELETED — this is its
+    // sole registration path. Placed BEFORE the `fill_unset_cpu_*` passes so the
+    // imported entries pick up the CPU cost fill.
     register_cpu_ssm_from_contract(table);
 
     // CPU 2D-convolution family — FULLY contract-sourced: Conv2D +
@@ -5099,36 +5099,15 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(PowIInplace, &unary(bf16_dt), cpu, powi_inplace_bf16_cpu_wrapper);
     table.register(PowIInplace, &unary(f16_dt),  cpu, powi_inplace_f16_cpu_wrapper);
 
-    // FusedSoftmaxCrossEntropy (key [T, I64, F32]) + CausalConv1d (key
-    // [T, T, T, T]) are now registered from docs/kernel-contracts/cpu/ssm.fkc.md
-    // — see register_cpu_ssm_from_contract near the top of this fn. The
-    // hand-written `table.register(FusedSoftmaxCrossEntropy/CausalConv1d, ...)`
-    // loops that used to live here were DELETED with the migration. The two SCAN
-    // ops below (SelectiveScan / SsdChunkScan) are DEFERRED (their return.bundle
-    // multi-output is not yet key-buildable by the importer) and STAY
-    // hand-written.
-
-    // SelectiveScan: 5 inputs (u, delta, a, b, c) + 1 output, uniform
-    // dtype T ∈ {F32, F64, BF16, F16}.
-    for (dt, w) in [
-        (DType::F32,  selective_scan_f32_cpu_wrapper  as KernelRef),
-        (DType::F64,  selective_scan_f64_cpu_wrapper),
-        (DType::BF16, selective_scan_bf16_cpu_wrapper),
-        (DType::F16,  selective_scan_f16_cpu_wrapper),
-    ] {
-        table.register(SelectiveScan, &[dt, dt, dt, dt, dt, dt], cpu, w);
-    }
-
-    // SsdChunkScan: 5 inputs (x, dt, a, b, c) + 1 output, uniform
-    // dtype T ∈ {F32, F64, BF16, F16}.
-    for (dt, w) in [
-        (DType::F32,  ssd_chunk_scan_f32_cpu_wrapper  as KernelRef),
-        (DType::F64,  ssd_chunk_scan_f64_cpu_wrapper),
-        (DType::BF16, ssd_chunk_scan_bf16_cpu_wrapper),
-        (DType::F16,  ssd_chunk_scan_f16_cpu_wrapper),
-    ] {
-        table.register(SsdChunkScan, &[dt, dt, dt, dt, dt, dt], cpu, w);
-    }
+    // The ENTIRE CPU SSM / Mamba family — FusedSoftmaxCrossEntropy (key
+    // [T, I64, F32]), CausalConv1d (key [T, T, T, T]), and the two SCAN ops
+    // SelectiveScan / SsdChunkScan (key [T; 6] — 5 inputs + the ONE bundled
+    // output slot) — is now registered from docs/kernel-contracts/cpu/ssm.fkc.md
+    // by register_cpu_ssm_from_contract near the top of this fn. The scans'
+    // `return.bundle` multi-output is now key-buildable by the importer (it
+    // appends the bundle's primary-slot dtype to the key tail), so their
+    // hand-written `table.register(SelectiveScan/SsdChunkScan, &[dt; 6], ...)`
+    // loops that used to live here were DELETED with the migration.
 
     // Nf4Matmul: 3 inputs (activations T, w_packed U8, absmax F32) + 1
     // output T, where T ∈ {F32, F16, BF16}. The binding-table key
@@ -8240,113 +8219,105 @@ mod tests {
         assert_eq!(checked, 4, "1 op × 4 dtypes checked");
     }
 
-    /// Born-red gate for the CPU SSM / Mamba family migration to FKC-contract
-    /// registration. The MIGRATED subset is FusedSoftmaxCrossEntropy (key
-    /// `[T, I64, F32]` — logits T + I64 targets → fixed(F32) output) and
+    /// Gate for the CPU SSM / Mamba family FULLY migrated to FKC-contract
+    /// registration. The WHOLE family — FusedSoftmaxCrossEntropy (key
+    /// `[T, I64, F32]` — logits T + I64 targets → fixed(F32) output),
     /// CausalConv1d (key `[T, T, T, T]` — x, weight, bias + passthrough(x)
-    /// output), 2 ops × 4 dtypes = 8 bindings, IMPORTED from
-    /// `docs/kernel-contracts/cpu/ssm.fkc.md`. The two SCAN ops
-    /// (SelectiveScan / SsdChunkScan) are DEFERRED (their `return.bundle`
-    /// multi-output is not yet key-buildable by the importer) and stay
-    /// hand-written, so they are NOT checked here.
+    /// output), and the two SCAN ops SelectiveScan / SsdChunkScan (key `[T; 6]`
+    /// — 5 inputs + the ONE bundled output slot), 4 ops × 4 dtypes = 16
+    /// bindings — is IMPORTED from `docs/kernel-contracts/cpu/ssm.fkc.md`.
     ///
-    /// For each migrated key: resolves to the EXACT production wrapper
-    /// fn-pointer with `kernel_source == "portable-cpu"` — the contract
-    /// provenance tag (the deleted hand-written path stamped `""`; THIS is the
-    /// discriminator that goes red until the import is wired) — caps
+    /// The scans' `[T; 6]` keys are now contract-sourced too: their sections
+    /// return a `return.bundle` multi-output (Option C, one buffer
+    /// `[y ; last_state]`), and the importer's key-builder appends the bundle's
+    /// PRIMARY-slot dtype (`passthrough(u)` / `passthrough(x)` → T) to the key
+    /// tail — byte-for-byte the deleted hand-written `&[dt; 6]` regs.
+    ///
+    /// For each of the 16 keys: resolves to the EXACT production wrapper
+    /// fn-pointer with `kernel_source == "portable-cpu"` (the contract
+    /// provenance tag; the deleted hand-written path stamped `""`), caps
     /// contiguous, and the contract's bit-stable precision riding through.
     #[test]
     fn global_bindings_registers_ssm_family_from_contract() {
         let table = global_bindings();
         let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
 
-        // FusedSoftmaxCrossEntropy: key [T, I64, F32]; wrapper order matches `dts`.
-        let fsce_wrappers: [crate::kernel::KernelRef; 4] = [
+        // Assert one (op, key) binds `expected` FROM the contract (portable-cpu,
+        // contiguous caps, bit-stable precision). `key` is the full binding key.
+        let check = |op: OpKind, key: &[DType], expected: crate::kernel::KernelRef, label: &str| {
+            let alts = table.lookup_alternatives(op, key, BackendId::Cpu);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{label}/Cpu (key {key:?}): the production wrapper must be bound \
+                         FROM the ssm contract in global_bindings() — found {} \
+                         alternative(s) with sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "portable-cpu",
+                "{label}: family must be contract-sourced (kernel_source=\"portable-cpu\"); \
+                 got {:?}",
+                entry.kernel_source,
+            );
+            assert!(!entry.caps.strided_input, "{label}: caps preserved (contiguous-only)");
+            assert!(
+                entry.precision.bit_stable_on_same_hardware,
+                "{label}: contract's bit-stable claim rode through",
+            );
+        };
+
+        // Per-op wrappers, indexed to match `dts` order.
+        let fsce: [crate::kernel::KernelRef; 4] = [
             fused_softmax_cross_entropy_f32_cpu_wrapper,
             fused_softmax_cross_entropy_f64_cpu_wrapper,
             fused_softmax_cross_entropy_bf16_cpu_wrapper,
             fused_softmax_cross_entropy_f16_cpu_wrapper,
         ];
-        // CausalConv1d: key [T, T, T, T]; wrapper order matches `dts`.
-        let conv_wrappers: [crate::kernel::KernelRef; 4] = [
+        let conv: [crate::kernel::KernelRef; 4] = [
             causal_conv1d_f32_cpu_wrapper,
             causal_conv1d_f64_cpu_wrapper,
             causal_conv1d_bf16_cpu_wrapper,
             causal_conv1d_f16_cpu_wrapper,
         ];
+        let sscan: [crate::kernel::KernelRef; 4] = [
+            selective_scan_f32_cpu_wrapper,
+            selective_scan_f64_cpu_wrapper,
+            selective_scan_bf16_cpu_wrapper,
+            selective_scan_f16_cpu_wrapper,
+        ];
+        let ssd: [crate::kernel::KernelRef; 4] = [
+            ssd_chunk_scan_f32_cpu_wrapper,
+            ssd_chunk_scan_f64_cpu_wrapper,
+            ssd_chunk_scan_bf16_cpu_wrapper,
+            ssd_chunk_scan_f16_cpu_wrapper,
+        ];
 
         let mut checked = 0usize;
         for (i, dt) in dts.iter().enumerate() {
             // FSCE: [logits T, targets I64, out F32].
-            let fsce_key = [*dt, DType::I64, DType::F32];
-            let fsce_expected = fsce_wrappers[i];
-            let fsce_alts = table.lookup_alternatives(
+            check(
                 OpKind::FusedSoftmaxCrossEntropy,
-                &fsce_key,
-                BackendId::Cpu,
+                &[*dt, DType::I64, DType::F32],
+                fsce[i],
+                "FusedSoftmaxCrossEntropy",
             );
-            let fsce_entry = fsce_alts
-                .iter()
-                .find(|e| e.kernel as usize == fsce_expected as usize)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "FusedSoftmaxCrossEntropy/{dt:?}/Cpu: the production wrapper \
-                         must be bound FROM the ssm contract in global_bindings() \
-                         — found {} alternative(s) with sources {:?}",
-                        fsce_alts.len(),
-                        fsce_alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
-                    )
-                });
-            assert_eq!(
-                fsce_entry.kernel_source, "portable-cpu",
-                "FusedSoftmaxCrossEntropy/{dt:?}: family must be contract-sourced \
-                 (kernel_source=\"portable-cpu\"); got {:?}",
-                fsce_entry.kernel_source,
-            );
-            assert!(
-                !fsce_entry.caps.strided_input,
-                "FusedSoftmaxCrossEntropy/{dt:?}: caps preserved (contiguous-only)",
-            );
-            assert!(
-                fsce_entry.precision.bit_stable_on_same_hardware,
-                "FusedSoftmaxCrossEntropy/{dt:?}: contract's bit-stable claim rode through",
-            );
-
             // CausalConv1d: [x, weight, bias, out] all T.
-            let conv_key = [*dt, *dt, *dt, *dt];
-            let conv_expected = conv_wrappers[i];
-            let conv_alts =
-                table.lookup_alternatives(OpKind::CausalConv1d, &conv_key, BackendId::Cpu);
-            let conv_entry = conv_alts
-                .iter()
-                .find(|e| e.kernel as usize == conv_expected as usize)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "CausalConv1d/{dt:?}/Cpu: the production wrapper must be bound \
-                         FROM the ssm contract in global_bindings() \
-                         — found {} alternative(s) with sources {:?}",
-                        conv_alts.len(),
-                        conv_alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
-                    )
-                });
-            assert_eq!(
-                conv_entry.kernel_source, "portable-cpu",
-                "CausalConv1d/{dt:?}: family must be contract-sourced \
-                 (kernel_source=\"portable-cpu\"); got {:?}",
-                conv_entry.kernel_source,
-            );
-            assert!(
-                !conv_entry.caps.strided_input,
-                "CausalConv1d/{dt:?}: caps preserved (contiguous-only)",
-            );
-            assert!(
-                conv_entry.precision.bit_stable_on_same_hardware,
-                "CausalConv1d/{dt:?}: contract's bit-stable claim rode through",
-            );
+            check(OpKind::CausalConv1d, &[*dt; 4], conv[i], "CausalConv1d");
+            // SelectiveScan: [u, delta, a, b, c, out] = [T; 6] (5 inputs + the
+            // ONE bundled output slot, `passthrough(u)` → T).
+            check(OpKind::SelectiveScan, &[*dt; 6], sscan[i], "SelectiveScan");
+            // SsdChunkScan: [x, dt, a, b, c, out] = [T; 6] (5 inputs + the ONE
+            // bundled output slot, `passthrough(x)` → T).
+            check(OpKind::SsdChunkScan, &[*dt; 6], ssd[i], "SsdChunkScan");
 
             checked += 1;
         }
-        assert_eq!(checked, 4, "2 ops × 4 dtypes checked (8 migrated bindings)");
+        assert_eq!(checked, 4, "4 ops × 4 dtypes checked (16 contract-sourced bindings)");
     }
 
     /// Gate for the CPU conv family FULLY migrated to FKC-contract registration.

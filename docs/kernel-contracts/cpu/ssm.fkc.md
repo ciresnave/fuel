@@ -46,18 +46,18 @@ log-sum-exp / NLL math in **f64** (f64 lossless, the other three promote) and al
 (`:5215-5241`). `causal_conv1d` follows the ordinary CPU half-float rule: f32/f64 native, bf16/f16
 widen to **f32**, narrow on store (`:5404-5405` native vs `:5466-5467` half).
 
-**Registration status (FKC migration).** The `fused_softmax_cross_entropy_*` (key
-`[T, I64, F32]`) and `causal_conv1d_*` (key `[T, T, T, T]`) sections are
-CONTRACT-REGISTERED: `fuel-dispatch`'s `register_cpu_ssm_from_contract` imports this
-file and binds them onto the `KernelBindingTable` (their hand-written
-`table.register(...)` calls are deleted). The two SCAN ops (`selective_scan_*`,
-`ssd_chunk_scan_*`) are **DEFERRED** and marked `registrable: false`: their
-`return.bundle` multi-output (Option C, one buffer `[y ; last_state]`) is not yet
-key-buildable by the importer, whose key-builder (`fkc/lower.rs`
-`assemble_dtype_variants`) reads `return.outputs` only. A bundle section would key on
-5 input dtypes (missing the bundled output slot) instead of production's 6-dtype
-`[T; 6]` key, so it is left `registrable: false` (the importer skips it) and keeps its
-hand-written registration until the importer learns to key `return.bundle`.
+**Registration status (FKC migration).** ALL FOUR ops are CONTRACT-REGISTERED:
+`fuel-dispatch`'s `register_cpu_ssm_from_contract` imports this file and binds the
+whole family (4 ops × 4 dtypes = 16 primitive bindings) onto the
+`KernelBindingTable` — their hand-written `table.register(...)` calls are deleted.
+The `fused_softmax_cross_entropy_*` (key `[T, I64, F32]`) and `causal_conv1d_*` (key
+`[T, T, T, T]`) sections key straight off `return.outputs`. The two SCAN ops
+(`selective_scan_*`, `ssd_chunk_scan_*`) return a `return.bundle` multi-output
+(Option C, one packed buffer `[y ; last_state]`); the importer's key-builder
+(`fkc/lower.rs` `assemble_dtype_variants`) now appends the bundle's PRIMARY-slot
+dtype (`passthrough(u)` / `passthrough(x)` → T) to the key tail, yielding
+production's 6-dtype `[T; 6]` key (5 inputs + the one bundled output slot),
+byte-for-byte the deleted hand-written registration.
 
 ---
 
@@ -717,7 +717,6 @@ returns `Ok(())` (`:5562-5566`). Byte-length validation returns `Result`, never 
 
 ```fkc
 kernel: selective_scan_f32
-registrable: false
 op_kind: SelectiveScan
 blurb: "Mamba-1 selective state-space scan, f32 I/O with f64 state accumulator; inputs u,delta,a,b,c; bundled output [y; last_state]."
 backend: Cpu
@@ -804,7 +803,6 @@ match the family: contiguous zero-offset only, no in-place.
 
 ```fkc
 kernel: selective_scan_f64
-registrable: false
 op_kind: SelectiveScan
 blurb: "Mamba-1 selective state-space scan, f64 native (f64 state accumulator); inputs u,delta,a,b,c; bundled output [y; last_state]."
 backend: Cpu
@@ -890,7 +888,6 @@ contiguous zero-offset only, no in-place.
 
 ```fkc
 kernel: selective_scan_bf16
-registrable: false
 op_kind: SelectiveScan
 blurb: "Mamba-1 selective state-space scan, bf16 I/O with f64 state accumulator; inputs u,delta,a,b,c; bundled output [y; last_state]."
 backend: Cpu
@@ -975,7 +972,6 @@ Limitations match the family: contiguous zero-offset only, no in-place.
 
 ```fkc
 kernel: selective_scan_f16
-registrable: false
 op_kind: SelectiveScan
 blurb: "Mamba-1 selective state-space scan, f16 I/O with f64 state accumulator; inputs u,delta,a,b,c; bundled output [y; last_state]."
 backend: Cpu
@@ -1072,7 +1068,6 @@ is a documented follow-up, `:5640-5643`).
 
 ```fkc
 kernel: ssd_chunk_scan_f32
-registrable: false
 op_kind: SsdChunkScan
 blurb: "Mamba-2 SSD chunked scan, f32 I/O with f64 state accumulator; inputs x,dt,a,b,c; chunk_size ABI-compat knob; bundled output [y; last_state]."
 backend: Cpu
@@ -1158,7 +1153,6 @@ Limitations match the family: contiguous zero-offset only, no in-place, v1 singl
 
 ```fkc
 kernel: ssd_chunk_scan_f64
-registrable: false
 op_kind: SsdChunkScan
 blurb: "Mamba-2 SSD chunked scan, f64 native (f64 state accumulator); inputs x,dt,a,b,c; chunk_size ABI-compat knob; bundled output [y; last_state]."
 backend: Cpu
@@ -1242,7 +1236,6 @@ match the family: contiguous zero-offset only, no in-place, v1 single-chunk math
 
 ```fkc
 kernel: ssd_chunk_scan_bf16
-registrable: false
 op_kind: SsdChunkScan
 blurb: "Mamba-2 SSD chunked scan, bf16 I/O with f64 state accumulator; inputs x,dt,a,b,c; chunk_size ABI-compat knob; bundled output [y; last_state]."
 backend: Cpu
@@ -1327,7 +1320,6 @@ single-chunk math.
 
 ```fkc
 kernel: ssd_chunk_scan_f16
-registrable: false
 op_kind: SsdChunkScan
 blurb: "Mamba-2 SSD chunked scan, f16 I/O with f64 state accumulator; inputs x,dt,a,b,c; chunk_size ABI-compat knob; bundled output [y; last_state]."
 backend: Cpu

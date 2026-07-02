@@ -483,6 +483,13 @@ rules the importer applies (`fuel-dispatch/src/fkc/lower.rs::assemble_dtype_vari
   `dt`. Then **outputs**: `fixed(D)` → `D`; `passthrough(role)` → the dtype of the input operand
   *named* `role` at that variant (so `where`'s `passthrough(a)` mirrors operand `a` = `dt`, NOT the
   first input `cond`). The binding key stays inputs-in-order then outputs.
+- A section may return `return.outputs` **or** a `return.bundle` (Option C multi-output: one
+  packed buffer, §5.5). A `return.bundle` contributes its **primary (first) slot's** dtype to the
+  key tail — the one dtype the single output buffer is tagged by (per the `KernelRef` multi-output
+  contract: the key "describes inputs + the bundle's primary dtype only") — derived through the
+  *same* `dtype_rule`/`passthrough` path as a regular output. So a 5-input `selective_scan` whose
+  bundle is `passthrough(u)` keys `[T; 6]` (5 inputs + the one bundled output slot), matching the
+  as-built `SelectiveScan` binding.
 - A **fanning** section's `entry_point` is a **BASE** symbol (no dtype suffix, e.g.
   `fuel_cpu_backend::byte_kernels::relu`); per fanned `dt` the importer resolves
   `<base>_<dtype_suffix>` through the `LinkRegistry`, where `<dtype_suffix>` is the canonical
