@@ -862,8 +862,8 @@ struct Defaults<'a> {
 ///
 /// A primitive (`op_kind`) section **fans out** into one [`Resolved`] per
 /// dtype variant (§3.4 multi-dtype fan-out); a section with no varying
-/// operand yields exactly one. A fused (`fused_op`) section yields one record
-/// (fused fan-out is out of scope for this slice — see [`lower_fused`]).
+/// operand yields exactly one. A fused (`fused_op`) section fans out the SAME
+/// way — one [`Resolved::Fused`] per dtype variant (see [`lower_fused`]).
 ///
 /// `defaults` carries the front-matter `backend` / `kernel_source` /
 /// `revision_base` so a kernel that omits them inherits the provider's.
@@ -885,7 +885,10 @@ fn lower_kernel(
         }
         (None, Some(fused_str)) => {
             let id = lower_fused_op(fused_str, section)?;
-            Ok(vec![Resolved::Fused(lower_fused(kernel, id, defaults, link)?)])
+            Ok(lower_fused(kernel, id, defaults, link)?
+                .into_iter()
+                .map(Resolved::Fused)
+                .collect())
         }
         (op, fused) => Err(FkcError::OpTargetAmbiguous {
             section: section.to_string(),
@@ -974,21 +977,32 @@ fn lower_primitive(
     Ok(out)
 }
 
-/// Lower a fused (`fused_op`) section into ONE [`ResolvedFused`].
+/// Lower a fused (`fused_op`) section into ONE [`ResolvedFused`] per dtype
+/// variant (§3.4 multi-dtype fan-out — the fused analogue of
+/// [`lower_primitive`]).
 ///
-/// **Fused fan-out is out of scope for this slice** (§3.4 multi-dtype fan-out
-/// is a primitive-only concern here). A fused section registers its
-/// **representative** (first) dtype variant — byte-identical to the
-/// pre-fan-out behavior — and resolves its `entry_point` AS-IS (a fused
-/// entry_point is already a specific symbol, not a base). A multi-dtype fused
-/// section therefore still binds only its representative dtype today; fanning
-/// the fused registry is a follow-up.
+/// A section whose operand(s) vary fans out into N fused impls — one per fanned
+/// dtype, with the per-variant binding key rebuilt from
+/// [`assemble_dtype_variants`] (so a multi-dtype `SOFTMAX_LAST_DIM` section
+/// registers a per-dtype impl for each of `[F32, F64, BF16, F16]`, 1:1 with the
+/// hand-written `register_default_fused_kernels` seam it replaces). Its declared
+/// `entry_point` is a **BASE** symbol; each variant resolves
+/// `<base>_<dtype_suffix>` via `link` ([`crate::fkc::cpu_link`]'s
+/// `CPU_FUSED_NORM_ENTRY_POINTS` maps those per-dtype symbols to the per-dtype
+/// wrappers). A non-fanning (single-variant) section keeps its specific
+/// `entry_point` and resolves it AS-IS, yielding exactly one record —
+/// byte-identical to the pre-fan-out behavior.
+///
+/// Everything except the per-variant `dtypes` + resolved `kernel` is
+/// per-section (shared): backend, caps, layouts, precision, cost, and the
+/// revision hash (which folds the declared BASE `entry_point`, so it is one
+/// value for the whole section — the primitive precedent).
 fn lower_fused(
     kernel: &FkcKernel,
     id: FusedOpId,
     defaults: &Defaults<'_>,
     link: &dyn LinkRegistry,
-) -> Result<ResolvedFused, FkcError> {
+) -> Result<Vec<ResolvedFused>, FkcError> {
     let section = kernel.kernel.as_str();
     let backend_str = kernel.backend.as_deref().unwrap_or(defaults.backend);
     let backend = lower_backend(backend_str, section)?;
@@ -997,16 +1011,10 @@ fn lower_fused(
     let precision = precision::lower_precision(kernel.precision.as_ref(), section)?;
     let cost = compile_cost(kernel.cost.as_ref(), section)?;
 
-    let entry_point = kernel.entry_point.as_deref().ok_or_else(|| {
+    let base_entry_point = kernel.entry_point.as_deref().ok_or_else(|| {
         FkcError::MissingRequiredField {
             section: section.to_string(),
             field: "entry_point".to_string(),
-        }
-    })?;
-    let kernel_ref = link.resolve_fused(entry_point).ok_or_else(|| {
-        FkcError::UnknownEntryPoint {
-            section: section.to_string(),
-            entry_point: entry_point.to_string(),
         }
     })?;
 
@@ -1015,34 +1023,43 @@ fn lower_fused(
         .as_deref()
         .unwrap_or(defaults.kernel_source)
         .to_string();
-    let revision = revhash::compute_revision(kernel, entry_point, defaults.revision_base)?;
+    // Per-section revision (same for all variants); folds the BASE entry_point
+    // so it is byte-identical to the pre-fan-out single-binding revision.
+    let revision = revhash::compute_revision(kernel, base_entry_point, defaults.revision_base)?;
 
-    // The representative (first) variant. `assemble_dtype_variants` always
-    // yields ≥1 variant by construction; treat an empty result as a typed
-    // error rather than panicking (never-panic).
-    let dtypes = variants
-        .into_iter()
-        .next()
-        .map(|v| v.dtypes)
-        .ok_or_else(|| FkcError::MissingRequiredField {
-            section: section.to_string(),
-            field: "accept.inputs (no dtype variant)".to_string(),
+    let mut out = Vec::with_capacity(variants.len());
+    for variant in variants {
+        // Per-variant entry_point: a fanning section's declared entry_point is
+        // a BASE symbol → resolve `<base>_<suffix>`; a non-fanning section
+        // keeps its specific symbol and resolves AS-IS.
+        let symbol: std::borrow::Cow<'_, str> = match variant.fan_dtype {
+            Some(dt) => std::borrow::Cow::Owned(format!("{base_entry_point}_{}", dtype_suffix(dt))),
+            None => std::borrow::Cow::Borrowed(base_entry_point),
+        };
+        let kernel_ref = link.resolve_fused(&symbol).ok_or_else(|| {
+            FkcError::UnknownEntryPoint {
+                section: section.to_string(),
+                entry_point: symbol.into_owned(),
+            }
         })?;
 
-    Ok(ResolvedFused {
-        id,
-        dtypes,
-        backend,
-        caps,
-        layouts,
-        precision,
-        cost,
-        kernel: kernel_ref,
-        kernel_source,
-        revision,
-        // Retain the opaque `variant:` tag verbatim (see lower_primitive).
-        variant: kernel.variant.clone(),
-    })
+        out.push(ResolvedFused {
+            id,
+            dtypes: variant.dtypes,
+            backend,
+            caps,
+            layouts: layouts.clone(),
+            precision,
+            cost: cost.clone(),
+            kernel: kernel_ref,
+            kernel_source: kernel_source.clone(),
+            revision,
+            // Retain the opaque `variant:` tag verbatim (per-section, shared by
+            // every dtype variant) so it survives to the emission step.
+            variant: kernel.variant.clone(),
+        });
+    }
+    Ok(out)
 }
 
 /// Lower every kernel section of a parsed file into [`Resolved`] records,
@@ -1290,11 +1307,127 @@ mod tests {
         assert_eq!(f.backend, BackendId::Cpu);
         assert_eq!(f.kernel_source, "portable-cpu");
 
-        // The whole bundle lowers (every fused_op token resolves).
+        // The whole bundle lowers (every fused_op token resolves). Each of the
+        // 8 `fused_op` sections enumerates `dtypes: [F32, F64, BF16, F16]` and
+        // now FANS into one `ResolvedFused` per dtype (§3.4 fused dtype-fan), so
+        // the lowered set is 8 sections × 4 dtypes = 32 (was 8 pre-fan, when
+        // `lower_fused` took only the representative first variant).
         let file = parse_file(FUSED_NORM_SOFTMAX).expect("parses");
         let resolved = lower_file(&file, &StubLink).expect("all fused kernels lower");
-        assert_eq!(resolved.len(), file.kernels.len());
+        assert_eq!(
+            resolved.len(),
+            file.kernels.len() * 4,
+            "each fused section fans over its 4 dtypes (8 sections × 4 = 32)",
+        );
         assert!(resolved.iter().all(|r| matches!(r, Resolved::Fused(_))));
+    }
+
+    // =====================================================================
+    // FUSED dtype-fan (§3.4): a multi-dtype `fused_op` section fans into N
+    // per-dtype ResolvedFused (mirroring the primitive fan-out), each keyed
+    // on its own dtype tuple; a single-dtype fused section yields exactly one.
+    // =====================================================================
+
+    /// A synthetic FUSED bundle exercising the fused dtype-fan. `fanned_softmax`
+    /// declares `fused_op: SOFTMAX_LAST_DIM`, a BASE `entry_point`, and its input
+    /// `x` enumerates `[F32, F64, BF16, F16]` — so it must fan into 4 per-dtype
+    /// `ResolvedFused` (keys `[T, T]`), each resolving `<base>_<dt>`.
+    /// `single_norm` is the backward-compat guard: a single-dtype (F32-only)
+    /// section → EXACTLY ONE `ResolvedFused`, its declared symbol resolved AS-IS.
+    const FUSED_FANOUT_SYNTH: &str = r#"---
+fkc_version: 1
+provider:
+  name: test-provider
+  backend: Cpu
+  kernel_source: "test-cpu"
+---
+
+# fused dtype-fan synthetic
+
+## fanned_softmax
+
+A blurb.
+
+```fkc
+kernel: fanned_softmax
+fused_op: SOFTMAX_LAST_DIM
+blurb: "synthetic multi-dtype fused softmax"
+entry_point: "x::softmax_cpu"
+accept:
+  inputs:
+    - name: x
+      dtypes: [F32, F64, BF16, F16]
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(x)
+```
+
+## single_norm
+
+A blurb.
+
+```fkc
+kernel: single_norm
+fused_op: RMS_NORM_LAST_DIM
+blurb: "synthetic single-dtype fused rms-norm"
+entry_point: "x::rms_norm_f32_cpu"
+accept:
+  inputs:
+    - name: x
+      dtypes: [F32]
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(x)
+```
+"#;
+
+    #[test]
+    fn fused_multi_dtype_section_fans_into_per_dtype_resolved_fused() {
+        // BORN-RED → GREEN: `fanned_softmax` (input `x` over 4 dtypes, BASE
+        // entry_point) must fan into 4 `ResolvedFused` — one per dtype — each
+        // keyed `[dt, dt]`. Pre-change `lower_fused` took only the representative
+        // (first) variant → 1 record (RED); the fan yields 4 (GREEN).
+        let all = lower_all(FUSED_FANOUT_SYNTH, "fanned_softmax").expect("fanned_softmax lowers");
+        assert_eq!(
+            all.len(),
+            4,
+            "4 dtypes ⇒ 4 fanned ResolvedFused (pre-change: 1 representative only)",
+        );
+        let keys: Vec<Vec<DType>> = all
+            .iter()
+            .map(|r| {
+                let Resolved::Fused(f) = r else { panic!("fanned_softmax is a fused op") };
+                assert_eq!(f.id, FusedOps::SOFTMAX_LAST_DIM);
+                assert_eq!(f.backend, BackendId::Cpu);
+                f.dtypes.to_vec()
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                vec![DType::F32, DType::F32],
+                vec![DType::F64, DType::F64],
+                vec![DType::BF16, DType::BF16],
+                vec![DType::F16, DType::F16],
+            ],
+            "each variant keys on [x, out(passthrough x)] at that dtype",
+        );
+    }
+
+    #[test]
+    fn fused_single_dtype_section_yields_exactly_one_resolved_fused() {
+        // Backward-compat hard gate: a single-dtype fused section produces
+        // EXACTLY ONE `ResolvedFused`, byte-identical to today (its declared
+        // `entry_point` resolves AS-IS — no `_<suffix>` appended).
+        let all = lower_all(FUSED_FANOUT_SYNTH, "single_norm").expect("single_norm lowers");
+        assert_eq!(all.len(), 1, "single-dtype fused section ⇒ exactly one ResolvedFused");
+        let Resolved::Fused(f) = &all[0] else {
+            panic!("single_norm is a fused op");
+        };
+        assert_eq!(f.id, FusedOps::RMS_NORM_LAST_DIM);
+        assert_eq!(f.dtypes.as_slice(), &[DType::F32, DType::F32]);
     }
 
     // =====================================================================
