@@ -5964,9 +5964,23 @@ mod tests {
             }
         };
 
+        // Stamp the fixture with the LIVE topology generation rather than a
+        // hard-coded 0. The executor's chunk-boundary check compares the plan's
+        // stamped generation against `topology_generation()`; a real
+        // `OptimizedGraph` carries the generation snapshotted at optimize time
+        // (`plan.rs` `compile_plan`, which reads it *after* the bindings table
+        // is warm), so it already reflects every registered backend. Force
+        // `global_bindings()` init here so any feature-gated auto-registration
+        // has run and settled the counter before we read it — otherwise a stale
+        // read would be bumped out from under us the first time realize warms
+        // the bindings. Under default features this is 0; under
+        // `--features vulkan`, `register_derived_gpu_caps` bumps it to 1.
+        drop(global_bindings());
+        let live_gen = crate::dispatch::topology_generation();
+
         // Arm-0 path.
         let (g_a, add_a, in_a) = build();
-        let opt_a = OptimizedGraph { roots: vec![add_a], generation: 0 };
+        let opt_a = OptimizedGraph { roots: vec![add_a], generation: live_gen };
         let (arm0_arc, _) =
             PipelinedExecutor::realize_with_optimized(g_a, add_a, in_a, &opt_a)
                 .expect("arm-0 realize");
@@ -5974,7 +5988,7 @@ mod tests {
 
         // Empty-route path — must match arm-0 exactly.
         let (g_r, add_r, in_r) = build();
-        let opt_r = OptimizedGraph { roots: vec![add_r], generation: 0 };
+        let opt_r = OptimizedGraph { roots: vec![add_r], generation: live_gen };
         let empty_route = PickedRoute::new();
         let (route_arc, _) = PipelinedExecutor::realize_with_optimized_route(
             g_r, add_r, in_r, &opt_r, &empty_route,
