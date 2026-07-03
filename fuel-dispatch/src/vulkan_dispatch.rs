@@ -4288,6 +4288,62 @@ fn register_vulkan_cast_from_contract(table: &mut KernelBindingTable) {
         .expect("Vulkan cast contract must register into the binding table");
 }
 
+/// The authored Vulkan elementwise kernel contract (unary / binary / affine /
+/// clamp / powi), embedded via `include_str!` (the PRODUCTION contract). Parsed
+/// + lowered by [`register_vulkan_elementwise_from_contract`].
+const VULKAN_ELEMENTWISE_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/vulkan/elementwise.fkc.md");
+
+/// Register the Vulkan elementwise family (94 (op, dtype) bindings) by IMPORTING
+/// its RE-AUTHORED FKC kernel contract — the SECOND Vulkan-backend FKC consumer
+/// after the cast family, and the first **caps-through-import** production proof.
+///
+/// The contract was re-authored per-op (the CPU inplace precedent): the old
+/// representative-chassis `unary`/`binary` op_id-selector sections could each
+/// register only ONE OpKind, so they are SUPERSEDED by 16 per-op unary sections
+/// (each fanning `[F32, F16, F64]` on a base `entry_point`, §3.4) + 16 bf16-unary
+/// sections + 6 per-op binary sections (fanning `[F32, F16, F64, BF16]`) + an
+/// affine strided-fan + affine_bf16 + clamp + powi. Every `entry_point` symbol
+/// resolves through [`crate::fkc::VulkanLinkRegistry`] to the exact same
+/// per-(op, dtype) wrapper the deleted hand-written regs used.
+///
+/// **Caps ride through truthfully.** Each section's per-operand five-flag layout
+/// projects onto `KernelCaps.strided_input` (`caps_map::project_kernel_caps`),
+/// stamped onto the binding by the importer: the strided unary/binary/affine/
+/// clamp/powi sections yield `strided_input=true` (byte-for-byte the deleted
+/// `register_with_caps_and_precision(strided)` regs) and the contiguous-only
+/// bf16-unary / affine_bf16 sections yield `strided_input=false` (the deleted
+/// plain `register_with_precision` regs). Precision becomes the contract's author
+/// seed (`audited: false` ⇒ `PrecisionGuarantee::UNAUDITED`; the Judge audits
+/// later) — the same posture the cast migration took; the hand-written
+/// `VULKAN_{FLOAT,HALF,TRANSCENDENTAL}_POINTWISE_PRECISION` consts are retired
+/// from this seam. Cost is preserved because this runs BEFORE
+/// `fill_unset_cost_for_backend`, which upgrades the imported `unknown_cost`
+/// sentinels to the same OpKind cost fn.
+///
+/// The contract's `add_assign_scaled` + `unary`/`binary` chassis sections are
+/// `registrable: false` describe-only (§3.10) and register nothing. Init-boundary
+/// fail-fast: a parse/lower/link failure of the embedded contract is a programmer
+/// error surfaced once here via `expect`.
+fn register_vulkan_elementwise_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(
+        VULKAN_ELEMENTWISE_CONTRACT,
+        &crate::fkc::VulkanLinkRegistry,
+    )
+    .expect(
+        "authored Vulkan elementwise contract must import \
+         (embedded via include_str!, resolved through VulkanLinkRegistry)",
+    );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "vulkan elementwise contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("Vulkan elementwise contract must register into the binding table");
+}
+
 /// Register every Vulkan kernel wrapper against its `(OpKind, dtypes,
 /// BackendId::Vulkan)` decision-point key in the shared
 /// `KernelBindingTable`. Each wrapper appears as an alternative
@@ -4304,7 +4360,10 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         PrecisionGuarantee, VULKAN_BYTE_LEVEL_PRECISION,
         VULKAN_FLOAT_POINTWISE_PRECISION, VULKAN_HALF_POINTWISE_PRECISION,
         VULKAN_MATMUL_PRECISION, VULKAN_MATMUL_TENSORCORE_PRECISION,
-        VULKAN_QMATMUL_PRECISION, VULKAN_TRANSCENDENTAL_PRECISION,
+        VULKAN_QMATMUL_PRECISION,
+        // NB: VULKAN_TRANSCENDENTAL_PRECISION is intentionally NOT imported — the
+        // whole unary family (its only user) now registers from the FKC
+        // elementwise contract, which carries per-section precision. Retired here.
     };
     // NB: `VULKAN_CAST_PRECISION` is intentionally NOT imported — the whole
     // `OpKind::Cast` family now registers from its FKC contract (see
@@ -4344,44 +4403,14 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // Cost functions are bulk-filled at the end via
     // `fill_unset_cost_for_backend(Vulkan, default_cost_for_op_kind)`.
 
-    // ----- Binary f32 (V.2.A) — IEEE-754 pointwise via binary.slang.
-    // STRIDE-AWARE: the Slang kernel decomposes the output index into
-    // per-dim coordinates and applies per-input strides (with stride=0
-    // for broadcast axes). The `binary_f32_bytes` wrapper packs the
-    // input layouts' strides into the Params struct; non-contiguous
-    // inputs (broadcast, transpose, slice views) reach the kernel
-    // unmaterialized. -----
+    // ----- Binary + Unary f32 (V.2.A/B) — MIGRATED to FKC contract import.
+    // The hand-written `register_with_caps_and_precision` regs (6 binary + 16
+    // unary, all strided f32) are DELETED; the whole elementwise family now
+    // registers from `docs/kernel-contracts/vulkan/elementwise.fkc.md` via
+    // `register_vulkan_elementwise_from_contract` (the SOLE path, called at the
+    // END of this fn before the cost-fill pass). `strided` is still declared here
+    // — Rope / Concat / Flip / Roll / CumSum below consume it. -----
     let strided = KernelCaps::strided_input();
-    table.register_with_caps_and_precision(OpKind::AddElementwise,     &b(f32), vk, binary::add_f32,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SubElementwise,     &b(f32), vk, binary::sub_f32,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::MulElementwise,     &b(f32), vk, binary::mul_f32,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::DivElementwise,     &b(f32), vk, binary::div_f32,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::MaximumElementwise, &b(f32), vk, binary::maximum_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::MinimumElementwise, &b(f32), vk, binary::minimum_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-
-    // ----- Unary f32 (V.2.B) — split between pointwise + transcendental.
-    // STRIDE-AWARE (converted 2026-05-24): unary.slang now mirrors
-    // binary.slang's per-dim decomposition + contig fast path; the
-    // `unary_f32_bytes` backend method accepts a Layout and packs
-    // strides into the Params. -----
-    table.register_with_caps_and_precision(OpKind::NegElementwise,     &u(f32), vk, unary::neg_f32,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SqrElementwise,     &u(f32), vk, unary::sqr_f32,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SqrtElementwise,    &u(f32), vk, unary::sqrt_f32,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::ReluElementwise,    &u(f32), vk, unary::relu_f32,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::StepElementwise,    &u(f32), vk, unary::step_f32,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    // Transcendentals via GLSL.std.450 (3-4 ULP per Vulkan spec).
-    table.register_with_caps_and_precision(OpKind::ExpElementwise,     &u(f32), vk, unary::exp_f32,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::LogElementwise,     &u(f32), vk, unary::log_f32,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SinElementwise,     &u(f32), vk, unary::sin_f32,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::CosElementwise,     &u(f32), vk, unary::cos_f32,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::TanhElementwise,    &u(f32), vk, unary::tanh_f32,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SigmoidElementwise, &u(f32), vk, unary::sigmoid_f32, strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SiluElementwise,    &u(f32), vk, unary::silu_f32,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::GeluElementwise,    &u(f32), vk, unary::gelu_f32,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    // V.3.G.unary (2026-05-30): Abs/Sign/Recip — pure arithmetic.
-    table.register_with_caps_and_precision(OpKind::AbsElementwise,     &u(f32), vk, unary::abs_f32,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SignElementwise,    &u(f32), vk, unary::sign_f32,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::RecipElementwise,   &u(f32), vk, unary::recip_f32,   strided, VULKAN_FLOAT_POINTWISE_PRECISION);
 
     // ----- Softmax + RmsNorm last-dim (V.2.C, f32) — per-row reductions
     // with subgroup-tree internal accumulation. CONTIGUOUS-ONLY by
@@ -4702,33 +4731,14 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         table.register_with_precision(OpKind::MatMul, &[f16_d, f16_d, f32], vk, matmul::matmul_f16_f16_f32, VULKAN_MATMUL_TENSORCORE_PRECISION);
     }
 
-    // ----- Affine f32 (V.2.E) — y = mul*x + add. Pointwise FMA.
-    // STRIDE-AWARE (converted 2026-05-24): affine.slang now carries
-    // the same per-dim shape/stride + flags Params as unary.slang.
-    // `affine_f32_bytes` packs the layout identically to the unary
-    // path. -----
-    table.register_with_caps_and_precision(OpKind::Affine, &u(f32), vk, affine::affine_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    {
-        let f16_d  = DType::F16;
-        let bf16_d = DType::BF16;
-        let f64_d  = DType::F64;
-        // f64 and f16: stride-aware via native typed buffers.
-        table.register_with_caps_and_precision(OpKind::Affine, &u(f64_d), vk, affine::affine_f64, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-        table.register_with_caps_and_precision(OpKind::Affine, &u(f16_d), vk, affine::affine_f16, strided, VULKAN_HALF_POINTWISE_PRECISION);
-        // bf16: pair-thread packed-u32 kernel; CONTIGUOUS-ONLY (no strided caps,
-        // so Fuel auto-Contiguizes upstream).
-        table.register_with_precision(OpKind::Affine, &u(bf16_d), vk, affine::affine_bf16, VULKAN_HALF_POINTWISE_PRECISION);
-    }
-
-    // ----- Clamp f32 (V.3.A.1) — pointwise min/max with constants.
-    // STRIDE-AWARE (converted 2026-05-24): clamp.slang mirrors the
-    // affine.slang stride-aware Params shape. -----
-    table.register_with_caps_and_precision(OpKind::ClampElementwise, &u(f32), vk, clamp::clamp_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-
-    // ----- PowI f32 (V.3.A.3) — repeated FMA, bit-stable on same hardware.
-    // STRIDE-AWARE (converted 2026-05-24): powi.slang mirrors the
-    // affine.slang stride-aware Params shape. -----
-    table.register_with_caps_and_precision(OpKind::PowIElementwise, &u(f32), vk, powi::powi_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
+    // ----- Affine / Clamp / PowI — MIGRATED to FKC contract import.
+    // The hand-written Affine (f32/f16/f64 strided + bf16 contiguous-only),
+    // ClampElementwise (f32), and PowIElementwise (f32) regs are DELETED; they now
+    // register from the elementwise contract via
+    // `register_vulkan_elementwise_from_contract` (called at the END of this fn).
+    // Affine's bf16 variant keeps its contiguous-only caps
+    // (`strided_input=false`) via the `affine_bf16` section's
+    // `contiguous: required` layout. -----
 
     // ----- Cast (all pairs) — MIGRATED to FKC contract import.
     // The hand-written `table.register_with_precision(OpKind::Cast, …)`
@@ -4742,74 +4752,13 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     let f16 = DType::F16;
     let bf16_d = DType::BF16;
 
-    // ----- Binary f16 (V.3.E) — native float16_t via shaderFloat16.
-    // STRIDE-AWARE: binary_f16.slang mirrors binary.slang's stride-
-    // aware Params layout exactly (only the buffer element type differs).
-    // The `binary_f16_bytes` wrapper delegates to `binary_typed_bytes`
-    // which packs strides identically to the f32 variant. -----
-    table.register_with_caps_and_precision(OpKind::AddElementwise,     &b(f16), vk, binary_f16::add_f16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SubElementwise,     &b(f16), vk, binary_f16::sub_f16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::MulElementwise,     &b(f16), vk, binary_f16::mul_f16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::DivElementwise,     &b(f16), vk, binary_f16::div_f16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::MaximumElementwise, &b(f16), vk, binary_f16::maximum_f16, strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::MinimumElementwise, &b(f16), vk, binary_f16::minimum_f16, strided, VULKAN_HALF_POINTWISE_PRECISION);
+    // ----- Binary + Unary f16 — MIGRATED to FKC contract import (deleted; now
+    // registered from the elementwise contract, all strided). -----
 
-    // ----- Unary f16 (V.3.E) — split between half-pointwise + half-transcendental.
-    // STRIDE-AWARE (converted 2026-05-24): unary_f16.slang now mirrors
-    // binary.slang's stride-aware Params layout. The `unary_f16_bytes`
-    // wrapper delegates to `unary_typed_bytes` which packs strides
-    // identically to the f32 variant. -----
-    table.register_with_caps_and_precision(OpKind::NegElementwise,     &u(f16), vk, unary_f16::neg_f16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SqrElementwise,     &u(f16), vk, unary_f16::sqr_f16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SqrtElementwise,    &u(f16), vk, unary_f16::sqrt_f16,    strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::ReluElementwise,    &u(f16), vk, unary_f16::relu_f16,    strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::StepElementwise,    &u(f16), vk, unary_f16::step_f16,    strided, VULKAN_HALF_POINTWISE_PRECISION);
-    // f16 transcendentals — same Vulkan-spec 4-ULP envelope, just at half precision.
-    table.register_with_caps_and_precision(OpKind::ExpElementwise,     &u(f16), vk, unary_f16::exp_f16,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::LogElementwise,     &u(f16), vk, unary_f16::log_f16,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SinElementwise,     &u(f16), vk, unary_f16::sin_f16,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::CosElementwise,     &u(f16), vk, unary_f16::cos_f16,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::TanhElementwise,    &u(f16), vk, unary_f16::tanh_f16,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SigmoidElementwise, &u(f16), vk, unary_f16::sigmoid_f16, strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SiluElementwise,    &u(f16), vk, unary_f16::silu_f16,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::GeluElementwise,    &u(f16), vk, unary_f16::gelu_f16,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::AbsElementwise,     &u(f16), vk, unary_f16::abs_f16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SignElementwise,    &u(f16), vk, unary_f16::sign_f16,    strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::RecipElementwise,   &u(f16), vk, unary_f16::recip_f16,   strided, VULKAN_HALF_POINTWISE_PRECISION);
-
-    // ----- Binary f64 (V.3.E.5) — native `double` via shaderFloat64.
-    // STRIDE-AWARE: binary_f64.slang mirrors binary.slang's stride-aware
-    // Params layout exactly. -----
+    // ----- Binary + Unary f64 — MIGRATED to FKC contract import (deleted; now
+    // registered from the elementwise contract, all strided). `f64_d` is still
+    // declared here — CumSum below consumes it. -----
     let f64_d = DType::F64;
-    table.register_with_caps_and_precision(OpKind::AddElementwise,     &b(f64_d), vk, binary_f64::add_f64,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SubElementwise,     &b(f64_d), vk, binary_f64::sub_f64,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::MulElementwise,     &b(f64_d), vk, binary_f64::mul_f64,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::DivElementwise,     &b(f64_d), vk, binary_f64::div_f64,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::MaximumElementwise, &b(f64_d), vk, binary_f64::maximum_f64, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::MinimumElementwise, &b(f64_d), vk, binary_f64::minimum_f64, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-
-    // ----- Unary f64 (V.3.E.5) — full 13-op surface. Transcendentals
-    // implemented via Horner-polynomial approximations (~1e-12 relative
-    // precision target) in unary_f64.slang; portable across any
-    // shaderFloat64 driver.
-    // STRIDE-AWARE (converted 2026-05-24): same Params layout as the
-    // f32/f16 variants; `unary_f64_bytes` forwards to `unary_typed_bytes`. -----
-    table.register_with_caps_and_precision(OpKind::NegElementwise,     &u(f64_d), vk, unary_f64::neg_f64,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SqrElementwise,     &u(f64_d), vk, unary_f64::sqr_f64,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SqrtElementwise,    &u(f64_d), vk, unary_f64::sqrt_f64,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::ReluElementwise,    &u(f64_d), vk, unary_f64::relu_f64,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::StepElementwise,    &u(f64_d), vk, unary_f64::step_f64,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::ExpElementwise,     &u(f64_d), vk, unary_f64::exp_f64,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::LogElementwise,     &u(f64_d), vk, unary_f64::log_f64,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SinElementwise,     &u(f64_d), vk, unary_f64::sin_f64,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::AbsElementwise,     &u(f64_d), vk, unary_f64::abs_f64,     strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SignElementwise,    &u(f64_d), vk, unary_f64::sign_f64,    strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::RecipElementwise,   &u(f64_d), vk, unary_f64::recip_f64,   strided, VULKAN_FLOAT_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::CosElementwise,     &u(f64_d), vk, unary_f64::cos_f64,     strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::TanhElementwise,    &u(f64_d), vk, unary_f64::tanh_f64,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SigmoidElementwise, &u(f64_d), vk, unary_f64::sigmoid_f64, strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SiluElementwise,    &u(f64_d), vk, unary_f64::silu_f64,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_caps_and_precision(OpKind::GeluElementwise,    &u(f64_d), vk, unary_f64::gelu_f64,    strided, VULKAN_TRANSCENDENTAL_PRECISION);
 
     // ----- WriteSlice (V.3.J) — byte-width-keyed (b1/b2/b4/b8). Pure
     // byte-level data movement; no FP math.
@@ -4843,35 +4792,10 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     table.register_with_precision(OpKind::WriteSliceRotating, &u(DType::U8),   vk, write_slice_rotating::write_slice_rotating_b1, VULKAN_BYTE_LEVEL_PRECISION);
     table.register_with_precision(OpKind::WriteSliceRotating, &u(DType::I8),   vk, write_slice_rotating::write_slice_rotating_b1, VULKAN_BYTE_LEVEL_PRECISION);
 
-    // ----- Binary bf16 (V.3.E.3+4) — u32-packed math via Slang.
-    // STRIDE-AWARE: binary_bf16.slang mirrors binary.slang's
-    // stride-aware Params layout exactly; only the bf16↔f32
-    // round-trip on read/write differs. -----
-    table.register_with_caps_and_precision(OpKind::AddElementwise,     &b(bf16_d), vk, binary_bf16::add_bf16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::SubElementwise,     &b(bf16_d), vk, binary_bf16::sub_bf16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::MulElementwise,     &b(bf16_d), vk, binary_bf16::mul_bf16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::DivElementwise,     &b(bf16_d), vk, binary_bf16::div_bf16,     strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::MaximumElementwise, &b(bf16_d), vk, binary_bf16::maximum_bf16, strided, VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_caps_and_precision(OpKind::MinimumElementwise, &b(bf16_d), vk, binary_bf16::minimum_bf16, strided, VULKAN_HALF_POINTWISE_PRECISION);
-
-    // ----- Unary bf16 (V.3.E.3+4) — full 13-op surface via u32 packing.
-    // strided-input candidate: same shape as unary f32. -----
-    table.register_with_precision(OpKind::NegElementwise,     &u(bf16_d), vk, unary_bf16::neg_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::SqrElementwise,     &u(bf16_d), vk, unary_bf16::sqr_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::SqrtElementwise,    &u(bf16_d), vk, unary_bf16::sqrt_bf16,    VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::ReluElementwise,    &u(bf16_d), vk, unary_bf16::relu_bf16,    VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::StepElementwise,    &u(bf16_d), vk, unary_bf16::step_bf16,    VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::ExpElementwise,     &u(bf16_d), vk, unary_bf16::exp_bf16,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::LogElementwise,     &u(bf16_d), vk, unary_bf16::log_bf16,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::SinElementwise,     &u(bf16_d), vk, unary_bf16::sin_bf16,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::CosElementwise,     &u(bf16_d), vk, unary_bf16::cos_bf16,     VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::TanhElementwise,    &u(bf16_d), vk, unary_bf16::tanh_bf16,    VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::SigmoidElementwise, &u(bf16_d), vk, unary_bf16::sigmoid_bf16, VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::SiluElementwise,    &u(bf16_d), vk, unary_bf16::silu_bf16,    VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::GeluElementwise,    &u(bf16_d), vk, unary_bf16::gelu_bf16,    VULKAN_TRANSCENDENTAL_PRECISION);
-    table.register_with_precision(OpKind::AbsElementwise,     &u(bf16_d), vk, unary_bf16::abs_bf16,     VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::SignElementwise,    &u(bf16_d), vk, unary_bf16::sign_bf16,    VULKAN_HALF_POINTWISE_PRECISION);
-    table.register_with_precision(OpKind::RecipElementwise,   &u(bf16_d), vk, unary_bf16::recip_bf16,   VULKAN_HALF_POINTWISE_PRECISION);
+    // ----- Binary + Unary bf16 — MIGRATED to FKC contract import (deleted). The
+    // binary_bf16 regs were strided (lane-masked); the unary_bf16 regs were plain
+    // `register_with_precision` (contiguous-only, `strided_input=false`) — both
+    // reproduced by the contract's per-section layout projection. -----
 
     // ----- Triu / Tril — pure byte-level mask kernel (rank-3 reshape).
     // CONTIGUOUS-ONLY by design: triu_b4 / tril_b4 view inputs as a
@@ -5082,6 +5006,15 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // gets. -----
     register_vulkan_cast_from_contract(table);
 
+    // ----- Elementwise family (unary / binary / affine / clamp / powi, 94
+    // (op, dtype) bindings) — registered FROM its RE-AUTHORED FKC kernel contract,
+    // the SOLE path (all hand-written elementwise regs deleted above). Runs BEFORE
+    // the cost-fill pass so its imported `unknown_cost` sentinels are upgraded to
+    // the same OpKind cost fn every other Vulkan primitive gets. This is the first
+    // caps-through-import proof: the strided sections' layout projects
+    // `strided_input=true`, the bf16-unary / affine_bf16 sections' `false`. -----
+    register_vulkan_elementwise_from_contract(table);
+
     // ----- Bulk-fill cost functions for every Vulkan registration above.
     // The CPU dispatcher (`default_cost_for_op_kind`) captures the
     // FLOP/bandwidth model; backend-specific kernel_overhead_ns
@@ -5182,5 +5115,172 @@ mod cast_contract_tests {
             checked += 1;
         }
         assert_eq!(checked, 12, "all 12 (SRC, DST) cast pairs checked");
+    }
+}
+
+// ===========================================================================
+// FKC contract-migration tests (born-red gate for the Vulkan elementwise family)
+// ===========================================================================
+//
+// Same `#![cfg(feature = "vulkan")]` file gate as the cast tests above: this
+// module compiles only under `--features vulkan` and touches NO device
+// (registration is pure binding-table population).
+
+#[cfg(test)]
+mod elementwise_contract_tests {
+    use super::*;
+    use crate::kernel::{KernelBindingTable, KernelRef};
+
+    /// SECOND VULKAN-BACKEND FKC CONSUMER (born-red gate) + the FIRST
+    /// caps-through-import proof. `register_vulkan_kernels` registers the whole
+    /// elementwise family (94 (op, dtype) bindings) FROM ITS RE-AUTHORED KERNEL
+    /// CONTRACT (`docs/kernel-contracts/vulkan/elementwise.fkc.md`) via
+    /// `register_vulkan_elementwise_from_contract` -- the sole registration path,
+    /// now that the hand-written per-(op,dtype) unary(16)/binary(6)/affine/clamp/
+    /// powi regs are DELETED.
+    ///
+    /// For each `(OpKind, [T..], Vulkan)` key this asserts: the binding resolves
+    /// to the EXACT production wrapper fn-pointer (behavior-preserving); the
+    /// `kernel_source == "vulkan-slang"` (the RED discriminator -- the deleted
+    /// hand path stamped `""`); and `caps.strided_input` MATCHES THE HAND-WRITTEN
+    /// TRUTH PER KEY -- true for the strided unary(f32/f16/f64)/binary(all 4)/
+    /// affine(f32/f16/f64)/clamp/powi keys, false for the contiguous-only
+    /// bf16-unary / affine_bf16 keys. That last assertion is the
+    /// caps-through-import proof: the contract's per-operand five-flag layout
+    /// projects onto the binding's `KernelCaps.strided_input` exactly as the hand
+    /// path set it. Precision is contract-sourced (`audited: false` -> UNAUDITED,
+    /// the cast-migration precedent) and NOT asserted here.
+    #[test]
+    fn register_vulkan_kernels_binds_elementwise_family_from_contract() {
+        let mut table = KernelBindingTable::new();
+        register_vulkan_kernels(&mut table);
+        let vk = BackendId::Vulkan;
+
+        // (OpKind, key dtypes, expected production wrapper, expected strided_input)
+        let cases: &[(OpKind, &[DType], KernelRef, bool)] = &[
+        // ---- Unary: 16 ops x {f32,f16,f64 strided; bf16 contiguous} -- key [T, T]. ----
+        (OpKind::NegElementwise, &[DType::F32, DType::F32], unary::neg_f32 as KernelRef, true),
+        (OpKind::NegElementwise, &[DType::F16, DType::F16], unary_f16::neg_f16 as KernelRef, true),
+        (OpKind::NegElementwise, &[DType::F64, DType::F64], unary_f64::neg_f64 as KernelRef, true),
+        (OpKind::NegElementwise, &[DType::BF16, DType::BF16], unary_bf16::neg_bf16 as KernelRef, false),
+        (OpKind::SqrElementwise, &[DType::F32, DType::F32], unary::sqr_f32 as KernelRef, true),
+        (OpKind::SqrElementwise, &[DType::F16, DType::F16], unary_f16::sqr_f16 as KernelRef, true),
+        (OpKind::SqrElementwise, &[DType::F64, DType::F64], unary_f64::sqr_f64 as KernelRef, true),
+        (OpKind::SqrElementwise, &[DType::BF16, DType::BF16], unary_bf16::sqr_bf16 as KernelRef, false),
+        (OpKind::SqrtElementwise, &[DType::F32, DType::F32], unary::sqrt_f32 as KernelRef, true),
+        (OpKind::SqrtElementwise, &[DType::F16, DType::F16], unary_f16::sqrt_f16 as KernelRef, true),
+        (OpKind::SqrtElementwise, &[DType::F64, DType::F64], unary_f64::sqrt_f64 as KernelRef, true),
+        (OpKind::SqrtElementwise, &[DType::BF16, DType::BF16], unary_bf16::sqrt_bf16 as KernelRef, false),
+        (OpKind::ExpElementwise, &[DType::F32, DType::F32], unary::exp_f32 as KernelRef, true),
+        (OpKind::ExpElementwise, &[DType::F16, DType::F16], unary_f16::exp_f16 as KernelRef, true),
+        (OpKind::ExpElementwise, &[DType::F64, DType::F64], unary_f64::exp_f64 as KernelRef, true),
+        (OpKind::ExpElementwise, &[DType::BF16, DType::BF16], unary_bf16::exp_bf16 as KernelRef, false),
+        (OpKind::LogElementwise, &[DType::F32, DType::F32], unary::log_f32 as KernelRef, true),
+        (OpKind::LogElementwise, &[DType::F16, DType::F16], unary_f16::log_f16 as KernelRef, true),
+        (OpKind::LogElementwise, &[DType::F64, DType::F64], unary_f64::log_f64 as KernelRef, true),
+        (OpKind::LogElementwise, &[DType::BF16, DType::BF16], unary_bf16::log_bf16 as KernelRef, false),
+        (OpKind::SinElementwise, &[DType::F32, DType::F32], unary::sin_f32 as KernelRef, true),
+        (OpKind::SinElementwise, &[DType::F16, DType::F16], unary_f16::sin_f16 as KernelRef, true),
+        (OpKind::SinElementwise, &[DType::F64, DType::F64], unary_f64::sin_f64 as KernelRef, true),
+        (OpKind::SinElementwise, &[DType::BF16, DType::BF16], unary_bf16::sin_bf16 as KernelRef, false),
+        (OpKind::CosElementwise, &[DType::F32, DType::F32], unary::cos_f32 as KernelRef, true),
+        (OpKind::CosElementwise, &[DType::F16, DType::F16], unary_f16::cos_f16 as KernelRef, true),
+        (OpKind::CosElementwise, &[DType::F64, DType::F64], unary_f64::cos_f64 as KernelRef, true),
+        (OpKind::CosElementwise, &[DType::BF16, DType::BF16], unary_bf16::cos_bf16 as KernelRef, false),
+        (OpKind::TanhElementwise, &[DType::F32, DType::F32], unary::tanh_f32 as KernelRef, true),
+        (OpKind::TanhElementwise, &[DType::F16, DType::F16], unary_f16::tanh_f16 as KernelRef, true),
+        (OpKind::TanhElementwise, &[DType::F64, DType::F64], unary_f64::tanh_f64 as KernelRef, true),
+        (OpKind::TanhElementwise, &[DType::BF16, DType::BF16], unary_bf16::tanh_bf16 as KernelRef, false),
+        (OpKind::SigmoidElementwise, &[DType::F32, DType::F32], unary::sigmoid_f32 as KernelRef, true),
+        (OpKind::SigmoidElementwise, &[DType::F16, DType::F16], unary_f16::sigmoid_f16 as KernelRef, true),
+        (OpKind::SigmoidElementwise, &[DType::F64, DType::F64], unary_f64::sigmoid_f64 as KernelRef, true),
+        (OpKind::SigmoidElementwise, &[DType::BF16, DType::BF16], unary_bf16::sigmoid_bf16 as KernelRef, false),
+        (OpKind::SiluElementwise, &[DType::F32, DType::F32], unary::silu_f32 as KernelRef, true),
+        (OpKind::SiluElementwise, &[DType::F16, DType::F16], unary_f16::silu_f16 as KernelRef, true),
+        (OpKind::SiluElementwise, &[DType::F64, DType::F64], unary_f64::silu_f64 as KernelRef, true),
+        (OpKind::SiluElementwise, &[DType::BF16, DType::BF16], unary_bf16::silu_bf16 as KernelRef, false),
+        (OpKind::GeluElementwise, &[DType::F32, DType::F32], unary::gelu_f32 as KernelRef, true),
+        (OpKind::GeluElementwise, &[DType::F16, DType::F16], unary_f16::gelu_f16 as KernelRef, true),
+        (OpKind::GeluElementwise, &[DType::F64, DType::F64], unary_f64::gelu_f64 as KernelRef, true),
+        (OpKind::GeluElementwise, &[DType::BF16, DType::BF16], unary_bf16::gelu_bf16 as KernelRef, false),
+        (OpKind::ReluElementwise, &[DType::F32, DType::F32], unary::relu_f32 as KernelRef, true),
+        (OpKind::ReluElementwise, &[DType::F16, DType::F16], unary_f16::relu_f16 as KernelRef, true),
+        (OpKind::ReluElementwise, &[DType::F64, DType::F64], unary_f64::relu_f64 as KernelRef, true),
+        (OpKind::ReluElementwise, &[DType::BF16, DType::BF16], unary_bf16::relu_bf16 as KernelRef, false),
+        (OpKind::StepElementwise, &[DType::F32, DType::F32], unary::step_f32 as KernelRef, true),
+        (OpKind::StepElementwise, &[DType::F16, DType::F16], unary_f16::step_f16 as KernelRef, true),
+        (OpKind::StepElementwise, &[DType::F64, DType::F64], unary_f64::step_f64 as KernelRef, true),
+        (OpKind::StepElementwise, &[DType::BF16, DType::BF16], unary_bf16::step_bf16 as KernelRef, false),
+        (OpKind::AbsElementwise, &[DType::F32, DType::F32], unary::abs_f32 as KernelRef, true),
+        (OpKind::AbsElementwise, &[DType::F16, DType::F16], unary_f16::abs_f16 as KernelRef, true),
+        (OpKind::AbsElementwise, &[DType::F64, DType::F64], unary_f64::abs_f64 as KernelRef, true),
+        (OpKind::AbsElementwise, &[DType::BF16, DType::BF16], unary_bf16::abs_bf16 as KernelRef, false),
+        (OpKind::SignElementwise, &[DType::F32, DType::F32], unary::sign_f32 as KernelRef, true),
+        (OpKind::SignElementwise, &[DType::F16, DType::F16], unary_f16::sign_f16 as KernelRef, true),
+        (OpKind::SignElementwise, &[DType::F64, DType::F64], unary_f64::sign_f64 as KernelRef, true),
+        (OpKind::SignElementwise, &[DType::BF16, DType::BF16], unary_bf16::sign_bf16 as KernelRef, false),
+        (OpKind::RecipElementwise, &[DType::F32, DType::F32], unary::recip_f32 as KernelRef, true),
+        (OpKind::RecipElementwise, &[DType::F16, DType::F16], unary_f16::recip_f16 as KernelRef, true),
+        (OpKind::RecipElementwise, &[DType::F64, DType::F64], unary_f64::recip_f64 as KernelRef, true),
+        (OpKind::RecipElementwise, &[DType::BF16, DType::BF16], unary_bf16::recip_bf16 as KernelRef, false),
+        // ---- Binary: 6 ops x {f32,f16,f64,bf16} all strided -- key [T, T, T]. ----
+        (OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], binary::add_f32 as KernelRef, true),
+        (OpKind::AddElementwise, &[DType::F16, DType::F16, DType::F16], binary_f16::add_f16 as KernelRef, true),
+        (OpKind::AddElementwise, &[DType::F64, DType::F64, DType::F64], binary_f64::add_f64 as KernelRef, true),
+        (OpKind::AddElementwise, &[DType::BF16, DType::BF16, DType::BF16], binary_bf16::add_bf16 as KernelRef, true),
+        (OpKind::SubElementwise, &[DType::F32, DType::F32, DType::F32], binary::sub_f32 as KernelRef, true),
+        (OpKind::SubElementwise, &[DType::F16, DType::F16, DType::F16], binary_f16::sub_f16 as KernelRef, true),
+        (OpKind::SubElementwise, &[DType::F64, DType::F64, DType::F64], binary_f64::sub_f64 as KernelRef, true),
+        (OpKind::SubElementwise, &[DType::BF16, DType::BF16, DType::BF16], binary_bf16::sub_bf16 as KernelRef, true),
+        (OpKind::MulElementwise, &[DType::F32, DType::F32, DType::F32], binary::mul_f32 as KernelRef, true),
+        (OpKind::MulElementwise, &[DType::F16, DType::F16, DType::F16], binary_f16::mul_f16 as KernelRef, true),
+        (OpKind::MulElementwise, &[DType::F64, DType::F64, DType::F64], binary_f64::mul_f64 as KernelRef, true),
+        (OpKind::MulElementwise, &[DType::BF16, DType::BF16, DType::BF16], binary_bf16::mul_bf16 as KernelRef, true),
+        (OpKind::DivElementwise, &[DType::F32, DType::F32, DType::F32], binary::div_f32 as KernelRef, true),
+        (OpKind::DivElementwise, &[DType::F16, DType::F16, DType::F16], binary_f16::div_f16 as KernelRef, true),
+        (OpKind::DivElementwise, &[DType::F64, DType::F64, DType::F64], binary_f64::div_f64 as KernelRef, true),
+        (OpKind::DivElementwise, &[DType::BF16, DType::BF16, DType::BF16], binary_bf16::div_bf16 as KernelRef, true),
+        (OpKind::MaximumElementwise, &[DType::F32, DType::F32, DType::F32], binary::maximum_f32 as KernelRef, true),
+        (OpKind::MaximumElementwise, &[DType::F16, DType::F16, DType::F16], binary_f16::maximum_f16 as KernelRef, true),
+        (OpKind::MaximumElementwise, &[DType::F64, DType::F64, DType::F64], binary_f64::maximum_f64 as KernelRef, true),
+        (OpKind::MaximumElementwise, &[DType::BF16, DType::BF16, DType::BF16], binary_bf16::maximum_bf16 as KernelRef, true),
+        (OpKind::MinimumElementwise, &[DType::F32, DType::F32, DType::F32], binary::minimum_f32 as KernelRef, true),
+        (OpKind::MinimumElementwise, &[DType::F16, DType::F16, DType::F16], binary_f16::minimum_f16 as KernelRef, true),
+        (OpKind::MinimumElementwise, &[DType::F64, DType::F64, DType::F64], binary_f64::minimum_f64 as KernelRef, true),
+        (OpKind::MinimumElementwise, &[DType::BF16, DType::BF16, DType::BF16], binary_bf16::minimum_bf16 as KernelRef, true),
+        // ---- Affine: f32/f16/f64 strided + bf16 contiguous -- key [T, T]. ----
+        (OpKind::Affine, &[DType::F32, DType::F32], affine::affine_f32 as KernelRef, true),
+        (OpKind::Affine, &[DType::F16, DType::F16], affine::affine_f16 as KernelRef, true),
+        (OpKind::Affine, &[DType::F64, DType::F64], affine::affine_f64 as KernelRef, true),
+        (OpKind::Affine, &[DType::BF16, DType::BF16], affine::affine_bf16 as KernelRef, false),
+        // ---- Clamp / PowI: single-dtype f32 strided -- key [T, T]. ----
+        (OpKind::ClampElementwise, &[DType::F32, DType::F32], clamp::clamp_f32 as KernelRef, true),
+        (OpKind::PowIElementwise, &[DType::F32, DType::F32], powi::powi_f32 as KernelRef, true),
+        ];
+
+        let mut checked = 0usize;
+        for (op, key, expected, expect_strided) in cases {
+            let alts = table.lookup_alternatives(*op, key, vk);
+            let entry = alts.iter().find(|e| e.kernel as usize == *expected as usize);
+            let entry = match entry {
+                Some(e) => e,
+                None => panic!(
+                    "{op:?} {key:?}/Vulkan: production wrapper must be bound FROM the vulkan elementwise contract; found {} alt(s) with sources {:?}",
+                    alts.len(),
+                    alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                ),
+            };
+            assert_eq!(
+                entry.kernel_source, "vulkan-slang",
+                "{op:?} {key:?}: elementwise family must be contract-sourced (kernel_source=vulkan-slang); got {:?}",
+                entry.kernel_source,
+            );
+            assert_eq!(
+                entry.caps.strided_input, *expect_strided,
+                "{op:?} {key:?}: caps must ride through the import truthfully (strided_input matches the hand-written reg)",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 94, "all 94 (op, dtype) elementwise bindings checked");
     }
 }
