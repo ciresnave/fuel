@@ -675,6 +675,15 @@ fn build_optimized_graph(
         cached_storage_location(&guard)
     };
 
+    // Baracuda dispatch/miss telemetry (opt-in, behind the `telemetry`
+    // feature). Snapshot the opt-in state + build the plan-time hooks BEFORE
+    // `options` so the borrow outlives the plan; `hooks()` is `None` (⇒ no
+    // hooks threaded, byte-identical plan) unless emission is enabled.
+    #[cfg(feature = "telemetry")]
+    let tele_install = crate::telemetry::TelemetryInstall::new(pinned_device);
+    #[cfg(feature = "telemetry")]
+    let tele_hooks = tele_install.hooks();
+
     let mut options = PlanOptions::new()
         .with_placements_for_device(&placements_for)
         .with_capabilities_for(&capabilities_for)
@@ -684,6 +693,10 @@ fn build_optimized_graph(
         .with_input_residency(&input_residency);
     if let Some(oracle) = judge_oracle.as_deref() {
         options = options.with_judge(oracle);
+    }
+    #[cfg(feature = "telemetry")]
+    if let Some(ref hooks) = tele_hooks {
+        options = options.with_telemetry(hooks);
     }
 
     let bindings_guard = global_bindings();

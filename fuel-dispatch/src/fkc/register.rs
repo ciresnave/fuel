@@ -211,6 +211,10 @@ impl ImportedProvider {
             // precomputed bool (never re-derives it from the lossy
             // single-bool `KernelCaps`). Baracuda's miss telemetry keys on it.
             let is_generic = crate::fkc::is_generic_contract(&p.layouts);
+            // Thread the contract-computed revision hash onto the binding (FKC
+            // §4.11 basis tuple) so the Baracuda dispatch-telemetry `ImplId`
+            // pins the exact kernel build. Hand-written kernels stamp
+            // `UNTRACKED` (`0`); only this FKC-import path carries a real one.
             table.register_full_with_source_generic(
                 p.op,
                 &p.dtypes,
@@ -221,6 +225,7 @@ impl ImportedProvider {
                 unknown_cost,
                 kernel_source,
                 is_generic,
+                p.revision.0,
             );
         }
 

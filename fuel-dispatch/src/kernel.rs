@@ -784,6 +784,15 @@ pub struct BindingEntry {
     /// not part of Baracuda's matrix. Only the FKC importer, which computed
     /// genericity from the declared contract, ever sets this `true`.
     pub is_generic: bool,
+    /// Stable per-implementation-version hash — the fifth axis of the FKC
+    /// kernel-identity basis tuple (FKC §4.11), pinning the exact kernel build
+    /// so a persisted plan / telemetry record re-resolves to it. `0`
+    /// ([`crate::fused::KernelRevisionHash::UNTRACKED`]) for hand-written
+    /// registrations (which carry no revision); the FKC importer threads the
+    /// contract-computed revision from `ResolvedPrimitive.revision` here. Read
+    /// by the Baracuda dispatch-telemetry `ImplId` at the plan pick site so the
+    /// `chosen`/`candidates` ids carry a real revision instead of a stamped `0`.
+    pub kernel_revision_hash: u64,
 }
 
 #[derive(Default)]
@@ -932,9 +941,19 @@ impl KernelBindingTable {
         // Hand-written registrations make no FKC generic-fallback claim —
         // see [`BindingEntry::is_generic`]. The FKC importer uses
         // [`Self::register_full_with_source_generic`] to stamp the computed
-        // bit.
+        // bit. Hand-written kernels carry no revision, so the revision axis is
+        // `UNTRACKED` (`0`); only the FKC importer threads a real revision.
         self.register_full_with_source_generic(
-            op, dtypes, backend, kernel, caps, precision, cost, kernel_source, false,
+            op,
+            dtypes,
+            backend,
+            kernel,
+            caps,
+            precision,
+            cost,
+            kernel_source,
+            false,
+            crate::fused::KernelRevisionHash::UNTRACKED.0,
         );
     }
 
@@ -960,9 +979,18 @@ impl KernelBindingTable {
         cost: CostFn,
         kernel_source: &'static str,
         is_generic: bool,
+        kernel_revision_hash: u64,
     ) {
         let key = (op, SmallVec::from_slice(dtypes), backend);
-        let entry = BindingEntry { kernel, caps, precision, cost, kernel_source, is_generic };
+        let entry = BindingEntry {
+            kernel,
+            caps,
+            precision,
+            cost,
+            kernel_source,
+            is_generic,
+            kernel_revision_hash,
+        };
         // Append-only (never-panic): distinct `KernelRef`s compose as
         // sibling alternatives at one decision point; the *same*
         // function pointer registered twice is NOT rejected inline.

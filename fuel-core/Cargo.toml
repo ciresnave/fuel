@@ -72,11 +72,19 @@ fuel-ug = { workspace = true, optional = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 criterion = { workspace = true }
+# Telemetry flush tests write JSONL to a scratch dir.
+tempfile = { workspace = true }
 
 [features]
 # CPU-only build is the default. Omitting all GPU features produces a clean
 # CPU-only binary with zero GPU code compiled in.
 default = []
+
+# Baracuda dispatch-telemetry / miss-reporting emission (production consumer).
+# Enables fuel-dispatch's plan-time emission + adds the process-wide opt-in
+# sink, hardware stamp, and explicit-flush API (`fuel_core::telemetry`). Off by
+# default — a build that never sets this is byte-identical.
+telemetry = ["fuel-dispatch/telemetry"]
 
 # NVIDIA GPU backend via baracuda (cuBLAS + driver). Dynamic-loaded at
 # runtime; cargo build does not require the CUDA toolkit installed.

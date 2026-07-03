@@ -789,11 +789,12 @@ pub fn compile_plan(
         }
     }
 
-    // Baracuda structural-miss telemetry (opt-in, behind the `telemetry`
-    // feature). Post-plan pass over the finalized winners; a no-op unless
-    // hooks are threaded AND enabled — the emission never perturbs the plan.
+    // Baracuda dispatch + structural-miss telemetry (opt-in, behind the
+    // `telemetry` feature). Post-plan pass over the finalized winners; a no-op
+    // unless hooks are threaded AND enabled — the emission never perturbs the
+    // plan.
     #[cfg(feature = "telemetry")]
-    emit_structural_misses(graph, &alternatives_map, bindings_table, options);
+    emit_plan_telemetry(graph, &alternatives_map, bindings_table, options);
 
     Ok(ExecutionPlan {
         order: order.to_vec(),
@@ -802,28 +803,40 @@ pub fn compile_plan(
     })
 }
 
-/// Post-plan Baracuda structural-**miss** emission (behind the `telemetry`
-/// feature). For every kernel-bearing node, resolve the winning kernel back to
-/// its [`crate::kernel::BindingEntry`] and — when that entry is the FKC
-/// generic fallback (`is_generic`) — ask the structure-key provider for the
-/// live operands' demand token and aggregate a
-/// [`crate::telemetry::MissRecord`] into the sink.
+/// Post-plan Baracuda **dispatch + structural-miss** emission (behind the
+/// `telemetry` feature). For every kernel-bearing node it emits a
+/// [`crate::telemetry::DispatchRecord`] for the winning kernel (the `chosen`
+/// signal, every planned cell) and — when the winner is the FKC generic
+/// fallback (`is_generic`) — additionally a
+/// [`crate::telemetry::MissRecord`] via the shared
+/// [`crate::telemetry::detect_miss_precomputed`] core.
 ///
-/// The **Off gate is first and branch-predictable**: no hooks (the default)
-/// or a disabled config returns before touching the graph, so a default
-/// realize pays nothing. Emission is best-effort and can never break dispatch
-/// — the sink lock poisoning is swallowed to a no-op, and a missing provider
-/// token forms no signal (never a fabricated one). The plan itself is never
-/// mutated here, so a run with telemetry on is byte-identical to one with it
-/// off save for the sink's contents.
+/// ## What each mode emits
+/// - **Off** (default): nothing (the branch-predictable gate below).
+/// - **Coarse**: a `DispatchRecord` per cell with an EMPTY `candidates[]`
+///   (chosen + count + structure_key + hw) plus the miss histogram — no Judge
+///   reads.
+/// - **Detailed**: Coarse plus `candidates[]` filled from the plan-time Judge
+///   oracle (the SAME `measured_latency_ns` read the ranker uses), one measured
+///   latency per admitted alternative (`None` for unmeasured cells).
+///
+/// The `chosen`/`candidates`/`fallback` [`crate::telemetry::ImplId`]s carry the
+/// FKC revision threaded onto [`crate::kernel::BindingEntry`] (0 = untracked for
+/// hand-written kernels). Emission is best-effort and can never break dispatch —
+/// a poisoned sink lock is swallowed to a no-op, and a missing provider token
+/// forms no miss signal (never a fabricated one). The plan itself is never
+/// mutated, so a run with telemetry on is byte-identical to one with it off save
+/// for the sink's contents.
 #[cfg(feature = "telemetry")]
-fn emit_structural_misses(
+fn emit_plan_telemetry(
     graph: &Graph,
     alternatives: &HashMap<NodeId, AlternativeSet>,
     bindings_table: &KernelBindingTable,
     options: &PlanOptions<'_>,
 ) {
-    use crate::telemetry::{detect_miss_precomputed, FdxOperandDesc, ImplId};
+    use crate::telemetry::{
+        detect_miss_precomputed, DispatchRecord, FdxOperandDesc, ImplId, TELEMETRY_SCHEMA_VERSION,
+    };
 
     // Off gate (branch-predictable, first): no hooks or disabled ⇒ nothing.
     let Some(hooks) = options.telemetry else {
@@ -833,6 +846,7 @@ fn emit_structural_misses(
         return;
     }
     let arch = hooks.arch_tag();
+    let want_candidates = hooks.config.mode.wants_candidates();
 
     for (&id, set) in alternatives {
         let Some(winner) = set.winner() else {
@@ -844,21 +858,21 @@ fn emit_structural_misses(
         };
         let dtypes = build_lookup_dtypes(graph, node);
 
-        // Resolve the chosen kernel back to its binding entry to read the
-        // registration-time `is_generic` bit (the winning ENTRY is in hand
-        // here — the finalize gate guarantees distinct fn-pointers per key,
-        // so the pointer match is unambiguous).
+        // Resolve the winning kernel back to its binding entry to read its
+        // registration-time `is_generic` bit + FKC revision (the winning ENTRY
+        // is in hand here — the finalize gate guarantees distinct fn-pointers
+        // per key, so the pointer match is unambiguous).
         let winner_ptr = winner.kernel as *const () as usize;
-        let is_generic = bindings_table
+        let winner_entry = bindings_table
             .lookup_alternatives(op_kind, &dtypes, winner.backend)
             .iter()
             .find(|e| e.kernel as *const () as usize == winner_ptr)
-            .is_some_and(|e| e.is_generic);
-        if !is_generic {
-            continue;
-        }
+            .copied();
+        let is_generic = winner_entry.is_some_and(|e| e.is_generic);
+        let winner_revision = winner_entry.map_or(0, |e| e.kernel_revision_hash);
 
-        // Build the demand descriptor from the LIVE operand layouts + dtypes.
+        // The demand descriptor for the LIVE operands (shared by the structure
+        // key + the miss detector).
         let operands: Vec<FdxOperandDesc> = node
             .inputs
             .iter()
@@ -867,20 +881,48 @@ fn emit_structural_misses(
             })
             .collect();
         let op_class = format!("{op_kind:?}");
-        // The fallback identity: the winning generic kernel's `ImplId`. The
-        // revision hash is untracked (`0`) until FKC revision threading reaches
-        // the binding table (see `telemetry::impl_id`).
-        let fallback = ImplId {
+
+        // The structure key for the LIVE operands (Fuel CALLS the provider,
+        // never derives). `None` when the callable is unlinked (the v1
+        // NullProvider) — the record then omits the key, and no miss forms.
+        let structure_key = hooks.provider.structure_key(&op_class, &operands, &arch);
+
+        // The chosen (winner) `ImplId`.
+        let chosen = ImplId {
             backend: winner.backend,
             op: op_kind,
-            dtypes: dtypes.clone(),
+            dtypes: dtypes.to_vec(),
             kernel_source: winner.kernel_source.to_string(),
-            kernel_revision_hash: 0,
+            kernel_revision_hash: winner_revision,
         };
 
+        // `candidates[]` — Detailed mode only; each admitted alternative's own
+        // Judge latency (Coarse leaves it empty per the documented semantics).
+        let candidates = if want_candidates {
+            build_candidates(set, op_kind, &dtypes, bindings_table, options.judge)
+        } else {
+            Vec::new()
+        };
+
+        // Emit the dispatch record for this cell (every planned cell).
+        let dispatch = DispatchRecord {
+            schema: TELEMETRY_SCHEMA_VERSION,
+            structure_key,
+            chosen: chosen.clone(),
+            candidates,
+            count: 1,
+            hw: hooks.hw.clone(),
+        };
+        if let Ok(mut sink) = hooks.sink.lock() {
+            sink.record_dispatch(dispatch);
+        }
+
+        // Structural miss — only when the winner is the FKC generic fallback.
+        // Reuse the shared emission core (single source of truth for the
+        // never-fabricate rule); `fallback` is the generic winner's `ImplId`.
         if let Some(miss) = detect_miss_precomputed(
             is_generic,
-            fallback,
+            chosen,
             &op_class,
             &operands,
             &arch,
@@ -894,6 +936,58 @@ fn emit_structural_misses(
             }
         }
     }
+}
+
+/// Build the `candidates[]` for a dispatch record: one
+/// [`crate::telemetry::Candidate`] per admitted alternative in `set`, each
+/// carrying its OWN measured latency read from the plan-time Judge oracle (the
+/// SAME `measured_latency_ns` lookup the ranker/cost composer uses, keyed by the
+/// decision-point context the planner stamped). `None` = unmeasured cell — never
+/// a fabricated `0`; the static estimate stood. Each candidate's `ImplId`
+/// resolves its FKC revision back through the binding table by fn-pointer
+/// identity (0 = untracked).
+#[cfg(feature = "telemetry")]
+fn build_candidates(
+    set: &AlternativeSet,
+    op_kind: OpKind,
+    dtypes: &[DType],
+    bindings_table: &KernelBindingTable,
+    judge: Option<&dyn JudgeOracle>,
+) -> Vec<crate::telemetry::Candidate> {
+    use crate::telemetry::{Candidate as TeleCandidate, ImplId};
+
+    // The decision-point identity the planner stamped (op, principal dtype,
+    // size class) — the exact Judge key axes. Absent ⇒ no measured latencies.
+    let ctx = set.context();
+    set.alternatives()
+        .iter()
+        .map(|cand| {
+            let ptr = cand.kernel as *const () as usize;
+            let revision = bindings_table
+                .lookup_alternatives(op_kind, dtypes, cand.backend)
+                .iter()
+                .find(|e| e.kernel as *const () as usize == ptr)
+                .map_or(0, |e| e.kernel_revision_hash);
+            let impl_id = ImplId {
+                backend: cand.backend,
+                op: op_kind,
+                dtypes: dtypes.to_vec(),
+                kernel_source: cand.kernel_source.to_string(),
+                kernel_revision_hash: revision,
+            };
+            let latency_ns = match (judge, ctx) {
+                (Some(j), Some(ctx)) => j.measured_latency_ns(
+                    ctx.op,
+                    ctx.principal_dtype,
+                    ctx.size_class,
+                    cand.backend,
+                    cand.kernel_source,
+                ),
+                _ => None,
+            };
+            TeleCandidate { impl_id, latency_ns }
+        })
+        .collect()
 }
 
 /// Does this op receive an `AlternativeSet` entry from
@@ -3935,6 +4029,7 @@ mod tests {
                 unknown_cost,
                 "baracuda-generic-strided",
                 true, // the FKC-computed generic-fallback bit
+                0,    // revision UNTRACKED (test binding carries no revision)
             );
             table
         }
@@ -4068,9 +4163,203 @@ mod tests {
                 .with_telemetry(&hooks);
             let _plan = compile_plan(&g, &order, &table, &opts).expect("compile");
 
+            let sink = sink.into_inner().expect("sink lock");
+            assert!(
+                sink.miss_records().is_empty(),
+                "a specialized (is_generic=false) winner must emit no miss",
+            );
+            // The chosen signal STILL fires: a dispatch record is emitted for
+            // every planned cell (generic or not); only the miss half is gated
+            // on genericity.
+            assert_eq!(
+                sink.dispatch_cell_count(),
+                1,
+                "a specialized winner still emits its dispatch record",
+            );
+            let _ = add_id;
+        }
+
+        // -----------------------------------------------------------------
+        // Dispatch-record half (the sibling of the miss half).
+        // -----------------------------------------------------------------
+
+        /// A table with TWO specialized (hand-written) Add siblings at one Cpu
+        /// cell — distinct fn-pointers + sources. Both are planned candidates
+        /// for the dispatch record; neither is generic, so neither emits a miss.
+        fn two_sibling_add_table() -> KernelBindingTable {
+            let mut table = KernelBindingTable::new();
+            table.register_full_with_source(
+                OpKind::AddElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cpu,
+                noop_kernel,
+                KernelCaps::empty(),
+                PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+                unknown_cost,
+                "portable-cpu",
+            );
+            table.register_full_with_source(
+                OpKind::AddElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cpu,
+                noop_kernel_b,
+                KernelCaps::empty(),
+                PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+                unknown_cost,
+                "aocl",
+            );
+            table
+        }
+
+        /// BORN-RED (the headline): a planned cell with two candidates, a stub
+        /// Judge measuring ONLY the winner, and Detailed-mode hooks threaded
+        /// through `PlanOptions` ⇒ the compile-plan path leaves the sink holding
+        /// exactly ONE aggregated `DispatchRecord` whose `chosen` matches the
+        /// winner, whose `candidates[]` carries BOTH siblings with the measured
+        /// one `Some(ns)` and the unmeasured one `None` (never 0).
+        ///
+        /// RED before the wire-in: `compile_plan` never recorded a dispatch
+        /// record, so `dispatch_cell_count()` was 0. GREEN once the post-plan
+        /// pass emits a `DispatchRecord` per winner and fills `candidates[]`
+        /// from the plan-time Judge oracle.
+        #[test]
+        fn detailed_dispatch_record_emitted_with_per_candidate_judge_latency() {
+            use crate::ranker::HashMapJudge;
+            use fuel_ir::dispatch::SizeClass;
+
+            let table = two_sibling_add_table();
+            let (g, add_id) = build_add_graph();
+            let order = topo_order(&g, add_id);
+
+            // Measure ONLY the winner cell ("portable-cpu"); the sibling
+            // ("aocl") is unmeasured ⇒ None (never a fabricated 0). The size
+            // class mirrors the planner's key: first input elem_count = 3.
+            let sc = SizeClass::from_elem_count(3);
+            let mut judge = HashMapJudge::new();
+            judge.insert(
+                OpKind::AddElementwise,
+                DType::F32,
+                sc,
+                BackendId::Cpu,
+                "portable-cpu",
+                41_230,
+            );
+
+            let sink = Mutex::new(TelemetrySink::new());
+            let provider = StubProvider;
+            let config = TelemetryConfig { mode: TelemetryMode::Detailed, out_path: None };
+            let hooks = TelemetryHooks {
+                config: &config,
+                sink: &sink,
+                provider: &provider,
+                hw: cpu_hw(),
+            };
+            let opts = PlanOptions::new()
+                .without_cost_population()
+                .with_telemetry(&hooks)
+                .with_judge(&judge);
+            let _plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+
+            let sink = sink.into_inner().expect("sink lock");
+            assert_eq!(
+                sink.dispatch_cell_count(),
+                1,
+                "one planned cell ⇒ exactly one aggregated dispatch record",
+            );
+            assert_eq!(sink.miss_cell_count(), 0, "specialized winners emit no miss");
+            let recs = sink.dispatch_records();
+            assert_eq!(recs.len(), 1);
+            let rec = &recs[0];
+            // chosen = the winner (first-registered sibling), revision untracked.
+            assert_eq!(rec.chosen.kernel_source, "portable-cpu");
+            assert_eq!(rec.chosen.op, OpKind::AddElementwise);
+            assert_eq!(rec.chosen.backend, BackendId::Cpu);
+            assert_eq!(rec.chosen.dtypes, vec![DType::F32, DType::F32, DType::F32]);
+            assert_eq!(rec.chosen.kernel_revision_hash, 0, "hand-written ⇒ untracked");
+            assert_eq!(rec.count, 1);
+            assert_eq!(rec.hw, cpu_hw());
+            // structure_key from the stub provider (2 live operands reached it).
+            assert_eq!(
+                rec.structure_key,
+                Some(StructureKeyToken("AddElementwise:stub:n=2".into())),
+            );
+            // candidates: BOTH siblings, each with its OWN latency (a loser
+            // keeps its own number, never the winner's).
+            assert_eq!(rec.candidates.len(), 2, "both admitted alternatives appear");
+            let by_src = |src: &str| {
+                rec.candidates
+                    .iter()
+                    .find(|c| c.impl_id.kernel_source == src)
+                    .unwrap_or_else(|| panic!("candidate {src} present"))
+            };
+            assert_eq!(
+                by_src("portable-cpu").latency_ns,
+                Some(41_230),
+                "the measured winner carries its own ns",
+            );
+            assert_eq!(
+                by_src("aocl").latency_ns,
+                None,
+                "the unmeasured sibling is None, never a fabricated 0",
+            );
+        }
+
+        /// GUARD — Coarse: the dispatch record still fires (the `chosen` signal
+        /// for every planned cell) but carries NO `candidates[]` (no Judge
+        /// reads), per the documented Coarse semantics.
+        #[test]
+        fn coarse_dispatch_record_has_no_candidates() {
+            let table = two_sibling_add_table();
+            let (g, add_id) = build_add_graph();
+            let order = topo_order(&g, add_id);
+
+            let sink = Mutex::new(TelemetrySink::new());
+            let provider = StubProvider;
+            let config = TelemetryConfig { mode: TelemetryMode::Coarse, out_path: None };
+            let hooks = TelemetryHooks {
+                config: &config,
+                sink: &sink,
+                provider: &provider,
+                hw: cpu_hw(),
+            };
+            let opts = PlanOptions::new()
+                .without_cost_population()
+                .with_telemetry(&hooks);
+            let _plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+
+            let sink = sink.into_inner().expect("sink lock");
+            assert_eq!(sink.dispatch_cell_count(), 1, "Coarse still emits the chosen signal");
+            let recs = sink.dispatch_records();
+            assert!(recs[0].candidates.is_empty(), "Coarse omits candidates (no Judge reads)");
+            assert_eq!(recs[0].chosen.kernel_source, "portable-cpu");
+            assert_eq!(recs[0].count, 1);
+        }
+
+        /// GUARD — Off: neither a dispatch record nor a miss is emitted (the
+        /// first, branch-predictable gate). The sink stays entirely empty.
+        #[test]
+        fn telemetry_off_emits_no_dispatch_record() {
+            let table = two_sibling_add_table();
+            let (g, add_id) = build_add_graph();
+            let order = topo_order(&g, add_id);
+
+            let sink = Mutex::new(TelemetrySink::new());
+            let provider = StubProvider;
+            let config = TelemetryConfig::default(); // Off
+            let hooks = TelemetryHooks {
+                config: &config,
+                sink: &sink,
+                provider: &provider,
+                hw: cpu_hw(),
+            };
+            let opts = PlanOptions::new()
+                .without_cost_population()
+                .with_telemetry(&hooks);
+            let _plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+
             assert!(
                 sink.into_inner().expect("sink lock").is_empty(),
-                "a specialized (is_generic=false) winner must emit no miss",
+                "Off emits neither dispatch nor miss",
             );
             let _ = add_id;
         }

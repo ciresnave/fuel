@@ -246,6 +246,12 @@ pub mod inference_context;
 pub mod pipelined_bridge;
 pub mod planner;
 pub mod judge;
+/// Baracuda dispatch-telemetry / miss-reporting production consumer — the
+/// process-wide opt-in switch, sink, hardware stamp, and explicit-flush API
+/// that installs the plan-time [`fuel_dispatch::telemetry`] hooks on the
+/// realize path. Behind the `telemetry` cargo feature; off by default.
+#[cfg(feature = "telemetry")]
+pub mod telemetry;
 pub mod npy;
 /// Hardware discovery moved to the `fuel-hardware` crate (retirement B0.2);
 /// re-exported here so `fuel_core::probe` / `crate::probe` callers are unchanged.

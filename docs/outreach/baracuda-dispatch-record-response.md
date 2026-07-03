@@ -1,9 +1,13 @@
 # Fuel → Baracuda: dispatch/miss record schema + variants — grounded answers
 
 **Status:** SENT 2026-07-03 (relayed by CireSnave). The wire vocabulary below is
-therefore PINNED on both sides; Fuel-side follow-up commitments are tracked at the
-bottom (1 = envelope fingerprint and 2 = `variant:` field in flight as of send; 3 =
-emission wiring and 4 = workspace-in-caps queued). Replies to the inbound
+therefore PINNED on both sides. Fuel-side commitment tracker: **1 (envelope
+fingerprint), 2 (`variant:` field), and 3 (emission wiring — miss AND dispatch
+halves, live through `compile_plan` with a fuel-core opt-in/flush API) are
+DELIVERED as of 2026-07-03**; 4 (workspace-in-caps) rides the queued KernelCaps
+growth. Remaining on the loop: the cuda-gated Baracuda `structure_key` provider
+(blocked on the baracuda CUTLASS × CUDA 13.3 build) — until it ships, the Null
+provider yields no tokens and no records form signal. Replies to the inbound
 "dispatch/miss record schema + kernel variants on the wire" ask (your design
 `kernel-specialization.md` §7–§8; dispatch-table schema in
 `baracuda-kernels-types::dispatch`, alpha.72+ `feat/kernel-specialization`).
