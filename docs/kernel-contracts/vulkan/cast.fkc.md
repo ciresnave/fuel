@@ -77,7 +77,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: cast(output)          # target dtype = output Storage dtype = F16 (§5.1)
+      dtype_rule: fixed(F16)            # target dtype = F16 (was cast(output); FKC-recognized §5.1)
       shape_rule: same_as(src)
       layout_guarantee: contiguous
       aliasing: none
@@ -142,7 +142,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: cast(output)          # F32
+      dtype_rule: fixed(F32)            # target dtype = F32 (was cast(output); FKC-recognized §5.1)
       shape_rule: same_as(src)
       layout_guarantee: contiguous
       aliasing: none
@@ -209,7 +209,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: cast(output)          # BF16
+      dtype_rule: fixed(BF16)           # target dtype = BF16 (was cast(output); FKC-recognized §5.1)
       shape_rule: same_as(src)
       layout_guarantee: contiguous
       aliasing: none
@@ -274,7 +274,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: cast(output)          # F32
+      dtype_rule: fixed(F32)            # target dtype = F32 (was cast(output); FKC-recognized §5.1)
       shape_rule: same_as(src)
       layout_guarantee: contiguous
       aliasing: none
@@ -338,7 +338,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: cast(output)          # F64
+      dtype_rule: fixed(F64)            # target dtype = F64 (was cast(output); FKC-recognized §5.1)
       shape_rule: same_as(src)
       layout_guarantee: contiguous
       aliasing: none
@@ -402,7 +402,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: cast(output)          # F32
+      dtype_rule: fixed(F32)            # target dtype = F32 (was cast(output); FKC-recognized §5.1)
       shape_rule: same_as(src)
       layout_guarantee: contiguous
       aliasing: none
@@ -470,7 +470,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: cast(output)          # F8E4M3
+      dtype_rule: fixed(F8E4M3)         # target dtype = F8E4M3 (was cast(output); FKC-recognized §5.1)
       shape_rule: same_as(src)
       layout_guarantee: contiguous
       aliasing: none
@@ -535,7 +535,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: cast(output)          # F32
+      dtype_rule: fixed(F32)            # target dtype = F32 (was cast(output); FKC-recognized §5.1)
       shape_rule: same_as(src)
       layout_guarantee: contiguous
       aliasing: none
@@ -601,7 +601,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: cast(output)          # F8E4M3
+      dtype_rule: fixed(F8E4M3)         # target dtype = F8E4M3 (was cast(output); FKC-recognized §5.1)
       shape_rule: same_as(src)
       layout_guarantee: contiguous
       aliasing: none
@@ -668,7 +668,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: cast(output)          # F16
+      dtype_rule: fixed(F16)            # target dtype = F16 (was cast(output); FKC-recognized §5.1)
       shape_rule: same_as(src)
       layout_guarantee: contiguous
       aliasing: none
@@ -734,7 +734,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: cast(output)          # F8E4M3
+      dtype_rule: fixed(F8E4M3)         # target dtype = F8E4M3 (was cast(output); FKC-recognized §5.1)
       shape_rule: same_as(src)
       layout_guarantee: contiguous
       aliasing: none
@@ -802,7 +802,7 @@ accept:
 return:
   outputs:
     - name: out
-      dtype_rule: cast(output)          # BF16
+      dtype_rule: fixed(BF16)           # target dtype = BF16 (was cast(output); FKC-recognized §5.1)
       shape_rule: same_as(src)
       layout_guarantee: contiguous
       aliasing: none

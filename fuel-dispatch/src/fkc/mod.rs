@@ -50,6 +50,8 @@ mod register;
 mod revhash;
 mod schema;
 mod validate;
+#[cfg(feature = "vulkan")]
+mod vulkan_link;
 
 pub use caps_map::{ResolvedLayout, Tri};
 pub use cost_expr::{
@@ -77,6 +79,8 @@ pub use schema::{
     PrecisionBlock, QuantSpec, ReturnBlock, TensorDesc,
 };
 pub use validate::{validate_file, validate_kernel, FKC_VERSION_MAX};
+#[cfg(feature = "vulkan")]
+pub use vulkan_link::{VulkanLinkRegistry, VULKAN_CAST_ENTRY_POINTS};
 
 #[cfg(test)]
 mod tests {

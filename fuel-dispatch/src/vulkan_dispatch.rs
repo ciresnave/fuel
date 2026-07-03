@@ -4230,6 +4230,64 @@ pub fn copy_to_cpu_vulkan(
 // register_vulkan_kernels — binding-table population
 // ===========================================================================
 
+/// The authored Vulkan cast (dtype-conversion) kernel contract, embedded into
+/// the binary via `include_str!` (the PRODUCTION contract). Parsed + lowered by
+/// [`register_vulkan_cast_from_contract`].
+const VULKAN_CAST_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/vulkan/cast.fkc.md");
+
+/// Register the Vulkan cast family (12 (SRC, DST) pairs → 3 production wrappers:
+/// `cast::cast_f32_half` for f32↔f16 / f32↔bf16, `cast::cast_f32_f64` for
+/// f32↔f64, `cast_f8e4m3::cast_f8e4m3` for the six F8E4M3 pairs) by IMPORTING
+/// its FKC kernel contract — the **first Vulkan-backend FKC consumer**, the GPU
+/// analogue of the CPU `register_cpu_*_from_contract` family. FKC is
+/// unconditional core infrastructure, so this is the ONE registration path for
+/// the family: the hand-written `table.register_with_precision(OpKind::Cast, …)`
+/// calls (both the half/f64 block and the F8E4M3 block) are DELETED.
+///
+/// Each per-pair section declares a single-dtype `src` input + a `fixed(DST)`
+/// output, so the importer keys `[SRC, DST]` — byte-for-byte the deleted regs
+/// (the `cast(output)` dtype-rule the sections used to carry was NOT an
+/// importer-recognized form and would have dropped the output slot from the
+/// key; it was rewritten to the canonical `fixed(DST)` per section's documented
+/// destination). Every `entry_point` symbol resolves through the production
+/// [`crate::fkc::VulkanLinkRegistry`] to the exact same wrapper fn-pointer.
+///
+/// Behavior-preserving vs. the deleted hand-written path on dispatch: identical
+/// wrappers + contiguous-only caps (`awkward_layout_strategy: requires_contiguous`
+/// ⇒ `strided_input == false`). The binding's `kernel_source` becomes the
+/// contract's `"vulkan-slang"` tag and its precision the contract's audited
+/// claim — the shared `VULKAN_CAST_PRECISION` const the regs used to carry
+/// (`max_ulp: Some(0)`) is retired; the contract's per-section `max_ulp: ~`
+/// author seed is what the Judge now audits (both keep
+/// `bit_stable_on_same_hardware: true`). Cost is preserved because this runs
+/// BEFORE the `fill_unset_cost_for_backend` pass, which upgrades the imported
+/// entries' `unknown_cost` sentinel to the same OpKind cost fn every Vulkan
+/// primitive gets.
+///
+/// The family declares NO fused ops, so `register_into`'s required fused
+/// argument is a local throwaway that provably stays empty. Init-boundary
+/// fail-fast: a parse/lower/link failure of the embedded, authored contract is
+/// a programmer error surfaced once here via `expect` (mirroring the CPU
+/// `register_cpu_*_from_contract` convention); it cannot fail for a runtime-data
+/// reason.
+fn register_vulkan_cast_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(VULKAN_CAST_CONTRACT, &crate::fkc::VulkanLinkRegistry)
+            .expect(
+                "authored Vulkan cast contract must import \
+                 (embedded via include_str!, resolved through VulkanLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "vulkan cast contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("Vulkan cast contract must register into the binding table");
+}
+
 /// Register every Vulkan kernel wrapper against its `(OpKind, dtypes,
 /// BackendId::Vulkan)` decision-point key in the shared
 /// `KernelBindingTable`. Each wrapper appears as an alternative
@@ -4243,11 +4301,15 @@ pub fn copy_to_cpu_vulkan(
 /// has and Vulkan doesn't.
 pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     use crate::fused::{
-        PrecisionGuarantee, VULKAN_BYTE_LEVEL_PRECISION, VULKAN_CAST_PRECISION,
+        PrecisionGuarantee, VULKAN_BYTE_LEVEL_PRECISION,
         VULKAN_FLOAT_POINTWISE_PRECISION, VULKAN_HALF_POINTWISE_PRECISION,
         VULKAN_MATMUL_PRECISION, VULKAN_MATMUL_TENSORCORE_PRECISION,
         VULKAN_QMATMUL_PRECISION, VULKAN_TRANSCENDENTAL_PRECISION,
     };
+    // NB: `VULKAN_CAST_PRECISION` is intentionally NOT imported — the whole
+    // `OpKind::Cast` family now registers from its FKC contract (see
+    // `register_vulkan_cast_from_contract`), which carries the contract's
+    // per-section precision. The const is retired from this seam.
     use crate::kernel::KernelCaps;
     let vk = BackendId::Vulkan;
     let f32 = DType::F32;
@@ -4668,28 +4730,17 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // affine.slang stride-aware Params shape. -----
     table.register_with_caps_and_precision(OpKind::PowIElementwise, &u(f32), vk, powi::powi_f32, strided, VULKAN_FLOAT_POINTWISE_PRECISION);
 
-    // ----- Cast (V.3.B) — f32↔f16, f32↔bf16 (pure dtype conversion).
-    // strided-input candidate (with caveat): cast kernels pack pairs
-    // of f16/bf16 per u32 for storage efficiency, so the input/output
-    // must be aligned to even element counts; that constraint
-    // composes awkwardly with arbitrary strides. A strided extension
-    // is plausible but requires careful handling of the packing
-    // boundary. -----
+    // ----- Cast (all pairs) — MIGRATED to FKC contract import.
+    // The hand-written `table.register_with_precision(OpKind::Cast, …)`
+    // regs (f32↔f16, f32↔bf16, f32↔f64, and — further below — the six
+    // F8E4M3↔{f32,f16,bf16} pairs) are DELETED. The whole family now
+    // registers from `docs/kernel-contracts/vulkan/cast.fkc.md` via
+    // `register_vulkan_cast_from_contract`, called at the END of this fn
+    // (before the cost-fill pass), the SOLE registration path.
+    // `f16` / `bf16_d` are still declared here because the binary-f16 (and
+    // many later half) fan-outs below consume these top-level bindings. -----
     let f16 = DType::F16;
     let bf16_d = DType::BF16;
-    table.register_with_precision(OpKind::Cast, &[f32,    f16],    vk, cast::cast_f32_half, VULKAN_CAST_PRECISION);
-    table.register_with_precision(OpKind::Cast, &[f16,    f32],    vk, cast::cast_f32_half, VULKAN_CAST_PRECISION);
-    table.register_with_precision(OpKind::Cast, &[f32,    bf16_d], vk, cast::cast_f32_half, VULKAN_CAST_PRECISION);
-    table.register_with_precision(OpKind::Cast, &[bf16_d, f32],    vk, cast::cast_f32_half, VULKAN_CAST_PRECISION);
-    // V.3.G.cast (2026-05-30): f32↔f64 — the f64 escape hatch for
-    // ops that can't run natively on Vulkan f64 (per the GLSL.std.450
-    // transcendental precision constraint, the graph-level pattern is
-    // Cast→f32→op→Cast).
-    {
-        let f64_d = DType::F64;
-        table.register_with_precision(OpKind::Cast, &[f32,   f64_d], vk, cast::cast_f32_f64, VULKAN_CAST_PRECISION);
-        table.register_with_precision(OpKind::Cast, &[f64_d, f32],   vk, cast::cast_f32_f64, VULKAN_CAST_PRECISION);
-    }
 
     // ----- Binary f16 (V.3.E) — native float16_t via shaderFloat16.
     // STRIDE-AWARE: binary_f16.slang mirrors binary.slang's stride-
@@ -5004,19 +5055,10 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         VULKAN_MATMUL_TENSORCORE_PRECISION,
     );
 
-    // ----- Cast F8E4M3 ↔ {F32, F16, BF16} — pure dtype conversion.
-    // strided-input candidate (with caveat): F8E4M3 packs 4 elements
-    // per u32 (1 byte each), so element count must be a multiple of 4
-    // and stride arithmetic gets awkward at the packing boundary.
-    // A strided extension is plausible but requires careful handling
-    // of the 4-element-aligned pack/unpack. -----
-    let f8 = DType::F8E4M3;
-    table.register_with_precision(OpKind::Cast, &[f32,    f8],     vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
-    table.register_with_precision(OpKind::Cast, &[f8,     f32],    vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
-    table.register_with_precision(OpKind::Cast, &[f16,    f8],     vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
-    table.register_with_precision(OpKind::Cast, &[f8,     f16],    vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
-    table.register_with_precision(OpKind::Cast, &[bf16_d, f8],     vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
-    table.register_with_precision(OpKind::Cast, &[f8,     bf16_d], vk, cast_f8e4m3::cast_f8e4m3, VULKAN_CAST_PRECISION);
+    // ----- Cast F8E4M3 ↔ {F32, F16, BF16} — MIGRATED to FKC contract
+    // import (`register_vulkan_cast_from_contract`, called below). The six
+    // hand-written `OpKind::Cast` F8E4M3 regs are DELETED — the contract is
+    // now the sole registration path for the whole cast family. -----
 
     // ----- Op::Copy D2H (bridge-retirement Phase 2). Byte-level.
     // CONTIGUOUS-ONLY: the wrapper downloads the source's bytes via
@@ -5033,6 +5075,13 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         table.register_with_precision(OpKind::Copy, &[dt, dt], vk, copy_to_cpu_vulkan, VULKAN_BYTE_LEVEL_PRECISION);
     }
 
+    // ----- Cast family (all 12 SRC↔DST pairs) — registered FROM its FKC
+    // kernel contract, the SOLE path (hand-written Cast regs deleted above).
+    // Runs BEFORE the cost-fill pass so its imported `unknown_cost` sentinels
+    // are upgraded to the same OpKind cost fn every other Vulkan primitive
+    // gets. -----
+    register_vulkan_cast_from_contract(table);
+
     // ----- Bulk-fill cost functions for every Vulkan registration above.
     // The CPU dispatcher (`default_cost_for_op_kind`) captures the
     // FLOP/bandwidth model; backend-specific kernel_overhead_ns
@@ -5042,4 +5091,96 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // function so the optimizer's cost-ranking can admit Vulkan
     // alternatives.
     table.fill_unset_cost_for_backend(vk, crate::cost::default_cost_for_op_kind);
+}
+
+// ===========================================================================
+// FKC contract-migration tests (born-red gate for the Vulkan cast family)
+// ===========================================================================
+//
+// The whole file is `#![cfg(feature = "vulkan")]`, so this module is compiled
+// only under `--features vulkan` — no device is touched (registration is pure
+// binding-table population; `register_vulkan_kernels` never probes hardware).
+
+#[cfg(test)]
+mod cast_contract_tests {
+    use super::*;
+    use crate::kernel::{KernelBindingTable, KernelRef};
+
+    /// FIRST VULKAN-BACKEND FKC CONSUMER (born-red gate). `register_vulkan_kernels`
+    /// registers the whole `OpKind::Cast` family (12 (SRC, DST) pairs) FROM ITS
+    /// KERNEL CONTRACT (`docs/kernel-contracts/vulkan/cast.fkc.md`) via
+    /// `register_vulkan_cast_from_contract` — the sole registration path, now
+    /// that the hand-written `table.register_with_precision(OpKind::Cast, …)`
+    /// calls (half/f64 + F8E4M3) are DELETED.
+    ///
+    /// For each `(Cast, [SRC, DST], Vulkan)` key this asserts:
+    ///  - the binding resolves to the EXACT production wrapper fn-pointer
+    ///    (behavior-preserving execution — the SAME 3 wrappers the deleted regs
+    ///    used, several pairs sharing one wrapper),
+    ///  - `kernel_source == "vulkan-slang"` — the contract's provenance tag (the
+    ///    deleted hand-written path stamped `""`). THIS is the discriminator
+    ///    that makes the test go red without the import wired: with the
+    ///    hand-written cast regs removed and the import absent, the family is
+    ///    simply missing from the table (lookup finds 0 alternatives),
+    ///  - caps stay contiguous-only (`strided_input == false`).
+    ///
+    /// Precision is contract-sourced and correctly lowered per FKC §4.8, so it
+    /// is NOT asserted uniformly here: the 5 `audited: true` sections carry
+    /// `bit_stable_on_same_hardware`, while the 7 `audited: false` author-seed
+    /// sections lower to `PrecisionGuarantee::UNAUDITED` (bit_stable=false) —
+    /// the correct "no audited claim yet" posture, which DIFFERS from the
+    /// retired hand-written `VULKAN_CAST_PRECISION` (which asserted bit-stable +
+    /// `max_ulp: Some(0)` uniformly). The Judge audits the seeds later.
+    #[test]
+    fn register_vulkan_kernels_binds_cast_family_from_contract() {
+        let mut table = KernelBindingTable::new();
+        register_vulkan_kernels(&mut table);
+        let vk = BackendId::Vulkan;
+
+        // (SRC, DST, expected production wrapper) for all 12 cast pairs — the
+        // exact wrapper each deleted hand-written reg carried.
+        let cases: &[(DType, DType, KernelRef)] = &[
+            (DType::F32,    DType::F16,    cast::cast_f32_half),
+            (DType::F16,    DType::F32,    cast::cast_f32_half),
+            (DType::F32,    DType::BF16,   cast::cast_f32_half),
+            (DType::BF16,   DType::F32,    cast::cast_f32_half),
+            (DType::F32,    DType::F64,    cast::cast_f32_f64),
+            (DType::F64,    DType::F32,    cast::cast_f32_f64),
+            (DType::F32,    DType::F8E4M3, cast_f8e4m3::cast_f8e4m3),
+            (DType::F8E4M3, DType::F32,    cast_f8e4m3::cast_f8e4m3),
+            (DType::F16,    DType::F8E4M3, cast_f8e4m3::cast_f8e4m3),
+            (DType::F8E4M3, DType::F16,    cast_f8e4m3::cast_f8e4m3),
+            (DType::BF16,   DType::F8E4M3, cast_f8e4m3::cast_f8e4m3),
+            (DType::F8E4M3, DType::BF16,   cast_f8e4m3::cast_f8e4m3),
+        ];
+
+        let mut checked = 0usize;
+        for (src, dst, expected) in cases {
+            let alts = table.lookup_alternatives(OpKind::Cast, &[*src, *dst], vk);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Cast [{src:?}, {dst:?}]/Vulkan: the production wrapper must be bound \
+                         FROM the vulkan cast contract in register_vulkan_kernels — found {} \
+                         alternative(s) with sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "vulkan-slang",
+                "Cast [{src:?}, {dst:?}]: cast family must be contract-sourced \
+                 (kernel_source=\"vulkan-slang\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                !entry.caps.strided_input,
+                "Cast [{src:?}, {dst:?}]: caps preserved (contiguous-only, strided_input=false)",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 12, "all 12 (SRC, DST) cast pairs checked");
+    }
 }
