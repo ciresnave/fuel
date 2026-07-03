@@ -20,7 +20,7 @@ Per-machine memory lives at `~/.claude/projects/c--Projects-fuel/memory/` (wiped
 - **Sibling path deps must exist for the workspace to parse** (they live *beside* `fuel/`, outside the repo):
   - `../aocl` (github.com/ciresnave/aocl) — `aocl-blas`, `aocl-types` path deps. Never enable the `aocl` cargo feature in tests (AMD's DLLs aren't on PATH).
   - `../vulkane/vulkane` (github.com/ciresnave/vulkane) — Vulkan FFI, used by `fuel-vulkan-backend` (a default-member).
-  - `baracuda` (CUDA kernels) comes from **crates.io** pinned `0.0.1-alpha.72`; a local `../baracuda` checkout is reference-only. **To check whether baracuda has a kernel, grep `baracuda-kernels-sys` (the FFI surface), NOT the plan facade.** (Known 2026-07-03: `baracuda-cutlass-kernels-sys` alpha.72 fails its nvcc build under CUDA 13.3, so `--features cuda` builds are blocked here until fixed baracuda-side.)
+  - `baracuda` (CUDA kernels) comes from **crates.io** pinned `0.0.1-alpha.72`; a local `../baracuda` checkout is reference-only. **To check whether baracuda has a kernel, grep `baracuda-kernels-sys` (the FFI surface), NOT the plan facade.** (2026-07-03: `--features cuda` builds from a plain shell fail with `nvcc fatal: Cannot find compiler 'cl.exe' in PATH` — NOT a CUDA-13.3/CUTLASS issue. Workaround until the next baracuda alpha (which self-resolves via vswhere): set `NVCC_CCBIN=<path-to-cl.exe>` or build from a VS Developer shell.)
 - Environment (as of 2026-06-13): Windows 11, RTX 4070, CUDA 13 + Vulkan SDK installed, Rust 1.96 / edition 2024. `fuel-dispatch` checks clean (warnings only).
 
 ## Engineering process (these are expectations, not suggestions)

@@ -1,7 +1,7 @@
 # Baracuda ask — decode-flash kernel interface for Fuel (FlashDecoding / FlashDecoding++)
 
 **From:** Fuel Phase D (symbolic-extent persistent decode), step 2 — the CUDA decode-flash arm.
-**Status:** SENT 2026-07-03 (relayed by CireSnave). Proposal / interface confirmation. `flash_decoding_{f16,bf16}` (alpha.72) already meets
+**Status:** ANSWERED 2026-07-03 — the calling convention is PINNED as a standing contract; FD++ (previously paused baracuda-side) is re-prioritized by this ask and will open with a channel signature proposal (this convention + trailing `float phi`). See `baracuda-flashdecoding-decode-interface-reply.md`. Proposal / interface confirmation. `flash_decoding_{f16,bf16}` (alpha.72) already meets
 most of this; the ask is to **keep that calling convention in the in-flight FlashDecoding++ work** and
 add the one new FD++ input (the unified-max φ). Not blocking — Fuel's decode win lands first via
 persistent plan-once decode (the decomposed base-map arm); the flash arm is an additive per-token
