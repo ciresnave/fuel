@@ -123,6 +123,15 @@ pub struct FkcKernel {
     /// Revision hash hex, OR `"auto"` to derive (§4.7). String per §3.8.
     #[serde(default)]
     pub kernel_revision_hash: Option<String>,
+    /// OPAQUE specialization-variant tag (Baracuda `variant:`, e.g.
+    /// `"splitk_partial"`). Retained verbatim so a contract-declared variant
+    /// survives lowering and can ride into a telemetry record as an opaque
+    /// annotation; the entry point remains the true kernel identity. Purely a
+    /// string on both sides — Fuel never parses or validates it beyond being a
+    /// string (additive §11, no `deny_unknown_fields`). Distinct from
+    /// [`OpParamsSchema::variant`], which names the `OpParams` Rust variant.
+    #[serde(default)]
+    pub variant: Option<String>,
 
     // ----- accept / return -----
     /// Accept contract (§3.6).

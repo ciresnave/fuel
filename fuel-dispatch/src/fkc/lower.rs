@@ -81,6 +81,12 @@ pub struct ResolvedPrimitive {
     pub kernel_source: String,
     /// The kernel revision hash (§4.7).
     pub revision: KernelRevisionHash,
+    /// OPAQUE specialization-variant tag (contract `variant:`), retained
+    /// verbatim from [`crate::fkc::schema::FkcKernel::variant`] so it survives
+    /// to where records / `ImplId` construction (the emission step) will read
+    /// it. Never parsed or validated here; the entry point remains the true
+    /// kernel identity.
+    pub variant: Option<String>,
 }
 
 /// A fully-lowered fused (`fused_op`) contract — analogous to
@@ -108,6 +114,10 @@ pub struct ResolvedFused {
     pub kernel_source: String,
     /// The kernel revision hash (§4.7; `BackendImpl.revision`).
     pub revision: KernelRevisionHash,
+    /// OPAQUE specialization-variant tag (contract `variant:`), retained
+    /// verbatim from [`crate::fkc::schema::FkcKernel::variant`] (see
+    /// [`ResolvedPrimitive::variant`]).
+    pub variant: Option<String>,
 }
 
 /// The result of lowering one kernel section: a primitive xor a fused
@@ -956,6 +966,9 @@ fn lower_primitive(
             kernel: kernel_ref,
             kernel_source: kernel_source.clone(),
             revision,
+            // Retain the opaque `variant:` tag verbatim (per-section, shared by
+            // every dtype variant) so it survives to the emission step.
+            variant: kernel.variant.clone(),
         });
     }
     Ok(out)
@@ -1027,6 +1040,8 @@ fn lower_fused(
         kernel: kernel_ref,
         kernel_source,
         revision,
+        // Retain the opaque `variant:` tag verbatim (see lower_primitive).
+        variant: kernel.variant.clone(),
     })
 }
 
@@ -1383,6 +1398,99 @@ return:
             &[DType::F32, DType::F32, DType::F32],
             "a no-bundle section keys on inputs + regular outputs only",
         );
+    }
+
+    // =====================================================================
+    // variant: retained opaque tag (Baracuda `variant:`)
+    // =====================================================================
+
+    /// A synthetic contract whose primitive section declares an opaque
+    /// specialization `variant:` tag, plus a sibling section that omits it (the
+    /// backward-compat `None` guard). The tag is a top-level per-kernel field
+    /// (NOT `accept.op_params.variant`, which names the `OpParams` Rust
+    /// variant) and must survive lowering onto `ResolvedPrimitive.variant`
+    /// verbatim.
+    const VARIANT_SYNTH: &str = r#"---
+fkc_version: 1
+provider:
+  name: test-provider
+  backend: Cpu
+  kernel_source: "test-cpu"
+---
+
+# variant retention synthetic
+
+## tagged_op
+
+A blurb.
+
+```fkc
+kernel: tagged_op
+op_kind: MatMul
+blurb: "synthetic split-K partial variant"
+entry_point: "x::tagged_op"
+variant: "splitk_partial"
+accept:
+  inputs:
+    - name: lhs
+      dtypes: [F32]
+    - name: rhs
+      dtypes: [F32]
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F32)
+```
+
+## untagged_op
+
+A blurb.
+
+```fkc
+kernel: untagged_op
+op_kind: MatMul
+blurb: "synthetic no-variant op"
+entry_point: "x::untagged_op"
+accept:
+  inputs:
+    - name: lhs
+      dtypes: [F32]
+    - name: rhs
+      dtypes: [F32]
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F32)
+```
+"#;
+
+    #[test]
+    fn variant_tag_is_retained_on_resolved_primitive() {
+        // A contract-declared `variant:` tag must ride verbatim onto the
+        // lowered record so it can reach the (later) records / ImplId emission
+        // step. RED before the wiring: the tag is dropped (retained `None`);
+        // GREEN once `lower_primitive` clones `kernel.variant`.
+        let r = lower_one(VARIANT_SYNTH, "tagged_op").expect("tagged_op lowers");
+        let Resolved::Primitive(p) = r else {
+            panic!("tagged_op is a primitive");
+        };
+        assert_eq!(
+            p.variant.as_deref(),
+            Some("splitk_partial"),
+            "the opaque `variant:` tag must survive lowering onto \
+             ResolvedPrimitive.variant (it was dropped)",
+        );
+    }
+
+    #[test]
+    fn no_variant_section_retains_none() {
+        // Backward-compat guard: a section that omits `variant:` lowers with
+        // `variant: None` (every existing contract is unaffected, additive §11).
+        let r = lower_one(VARIANT_SYNTH, "untagged_op").expect("untagged_op lowers");
+        let Resolved::Primitive(p) = r else {
+            panic!("untagged_op is a primitive");
+        };
+        assert_eq!(p.variant, None, "a section without `variant:` retains None");
     }
 
     // =====================================================================

@@ -1269,6 +1269,7 @@ determinism: same_hardware_bitwise
             kernel: dummy_a,
             kernel_source: "portable-cpu".to_string(),
             revision: KernelRevisionHash::UNTRACKED,
+            variant: None,
         };
 
         let provider = ImportedProvider {
