@@ -83,7 +83,9 @@ pub use schema::{
 };
 pub use validate::{validate_file, validate_kernel, FKC_VERSION_MAX};
 #[cfg(feature = "vulkan")]
-pub use vulkan_link::{VulkanLinkRegistry, VULKAN_CAST_ENTRY_POINTS};
+pub use vulkan_link::{
+    VulkanLinkRegistry, VULKAN_CAST_ENTRY_POINTS, VULKAN_ELEMENTWISE_ENTRY_POINTS,
+};
 
 #[cfg(test)]
 mod tests {
