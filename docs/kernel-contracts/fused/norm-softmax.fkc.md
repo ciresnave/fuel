@@ -46,8 +46,13 @@ inventory `docs/kernel-contracts/_inventory/fused.md` + the as-built registry so
 - **Precision (CPU).** All CPU fused kernels claim `bit_stable_on_same_hardware: true` with no
   static ULP / relative / absolute bound. The norm/softmax family shares
   `NORM_FAMILY_CPU_PRECISION`; `ReduceMaxToBackward` and `PowIBackward` carry their own
-  (`REDUCE_MAX_TO_BACKWARD_CPU_PRECISION` / `POWI_BACKWARD_CPU_PRECISION`). These are
-  author-declared seeds the Judge audits (§4.8).
+  (`REDUCE_MAX_TO_BACKWARD_CPU_PRECISION` / `POWI_BACKWARD_CPU_PRECISION`). Per the **2026-07-03
+  maintainer decision (CireSnave)**, every section here declares `audited: true`: the FKC import is
+  now the production registration path (`register_cpu_norm_softmax_fused_from_contract`), so each
+  kernel's bit-stable claim **relocates** from its `*_CPU_PRECISION` const onto the contract — same
+  author, same guarantee, so the flip moves the evidentiary bar, it does not lower it. Without the
+  flip the import would lower to `UNAUDITED` and DOWNGRADE production metadata. The Judge still
+  audits/refines these bit-stable seeds (§4.8).
 - **Cost provenance is `judge_measured`** for every kernel here — the Judge bootstraps it from
   measurement. Only genuinely derivable bandwidth/FLOP *shape* hints are recorded in the
   cost-expression strings as priors. These are streaming row reductions: forwards read one input
@@ -132,7 +137,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                      # CPU fused: importer applies the family default (§12.4); seed the Judge audits
+  audited: true                       # 2026-07-03 maintainer flip (CireSnave): relocates the NORM_FAMILY_CPU_PRECISION bit-stable claim onto the contract (same author, same guarantee); FKC import is now production — false would DOWNGRADE to UNAUDITED (§12.4).
   notes: "stable softmax (row max-subtract); f32/f64 native, bf16/f16 widen to f32 + narrow on store. Flat f32 sum accumulator: deterministic, order-dependent, bit-stable same hardware."
 
 determinism: same_hardware_bitwise
@@ -208,7 +213,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                      # CPU fused: family default applied (§12.4)
+  audited: true                       # 2026-07-03 maintainer flip (CireSnave): relocates the NORM-family *_CPU_PRECISION bit-stable claim onto the contract (same author, same guarantee); FKC import is now production — false would DOWNGRADE to UNAUDITED (§12.4).
   notes: "no affine; eps f64 narrowed to f32 (native in f64). f32/f64 native, bf16/f16 sum-of-squares + rsqrt in f32, narrow on store. Deterministic, bit-stable same hardware."
 
 determinism: same_hardware_bitwise
@@ -285,7 +290,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                      # CPU fused: family default applied (§12.4)
+  audited: true                       # 2026-07-03 maintainer flip (CireSnave): relocates the NORM-family *_CPU_PRECISION bit-stable claim onto the contract (same author, same guarantee); FKC import is now production — false would DOWNGRADE to UNAUDITED (§12.4).
   notes: "no affine; two-pass mean/variance; eps f64 narrowed to f32 (native in f64). bf16/f16 stats + rsqrt in f32, narrow on store. Deterministic, bit-stable same hardware."
 
 determinism: same_hardware_bitwise
@@ -364,7 +369,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                      # CPU fused: family default applied (§12.4)
+  audited: true                       # 2026-07-03 maintainer flip (CireSnave): relocates the NORM-family *_CPU_PRECISION bit-stable claim onto the contract (same author, same guarantee); FKC import is now production — false would DOWNGRADE to UNAUDITED (§12.4).
   notes: "out = y*(g - sum(y*g)) per row; f32/f64 native, bf16/f16 widen to f32 (dot in f32), narrow on store. Deterministic fixed-order reduction, bit-stable same hardware."
 
 determinism: same_hardware_bitwise
@@ -446,7 +451,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                      # CPU fused: family default applied (§12.4)
+  audited: true                       # 2026-07-03 maintainer flip (CireSnave): relocates the NORM-family *_CPU_PRECISION bit-stable claim onto the contract (same author, same guarantee); FKC import is now production — false would DOWNGRADE to UNAUDITED (§12.4).
   notes: "grad_x = rstd*(g - mean(g) - y*mean(g*y)); recomputes mean/var/rstd; eps f64 narrowed to f32 (native in f64). bf16/f16 stats + combine in f32, narrow on store. Deterministic per-row passes, bit-stable same hardware."
 
 determinism: same_hardware_bitwise
@@ -528,7 +533,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                      # CPU fused: family default applied (§12.4)
+  audited: true                       # 2026-07-03 maintainer flip (CireSnave): relocates the NORM-family *_CPU_PRECISION bit-stable claim onto the contract (same author, same guarantee); FKC import is now production — false would DOWNGRADE to UNAUDITED (§12.4).
   notes: "grad_x = r_rms*(g_y - x*sum(g_y*x)/(n*(mean_sq+eps))); one fused sum_sq/sum_gx pass; eps f64 narrowed to f32 (native in f64). bf16/f16 derived in f32, narrow on store. Deterministic per-row reduction, bit-stable same hardware."
 
 determinism: same_hardware_bitwise
@@ -608,7 +613,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                      # CPU fused: family default applied (§12.4)
+  audited: true                       # 2026-07-03 maintainer flip (CireSnave): relocates the NORM-family *_CPU_PRECISION bit-stable claim onto the contract (same author, same guarantee); FKC import is now production — false would DOWNGRADE to UNAUDITED (§12.4).
   notes: "route upstream to per-window argmax, fair-share on ties; f32/f64 exact, bf16/f16 widen to f32 + narrow on store. Deterministic, bit-stable same hardware."
 
 determinism: same_hardware_bitwise
@@ -691,7 +696,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                      # CPU fused: family default applied (§12.4)
+  audited: true                       # 2026-07-03 maintainer flip (CireSnave): relocates the NORM-family *_CPU_PRECISION bit-stable claim onto the contract (same author, same guarantee); FKC import is now production — false would DOWNGRADE to UNAUDITED (§12.4).
   notes: "grad_x = exp * x^(exp-1) * upstream elementwise; f32/f64 native, bf16/f16 widen to f32 + narrow on store. Deterministic (no reduction), bit-stable same hardware."
 
 determinism: same_hardware_bitwise

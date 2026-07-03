@@ -1153,6 +1153,75 @@ pub static CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     fep!("fused_softmax_cross_entropy_cpu_f16",  fused_softmax_cross_entropy_f16_cpu_wrapper),
 ];
 
+/// The CPU **conv / RoPE / SSM** FUSED family's `symbol → production wrapper`
+/// map — the FULL `audited: true` conv-rope bundle. Contract:
+/// `docs/kernel-contracts/fused/conv-rope.fkc.md`.
+///
+/// All SIX `fused_op` sections migrate here; each declares a dtype-agnostic
+/// BASE `entry_point` `…::<op>_cpu` **plus a per-input `dtypes: [F32, F64, BF16,
+/// F16]` list**, so [`crate::fkc::lower::lower_fused`] **dtype-fans** it (§3.4,
+/// see [`fep!`]) into four per-dtype impls resolving `<base>_<dt>` — one row per
+/// (op, dtype) below (6 ops × 4 dtypes = 24 rows). The naming skew is the norm
+/// family's: the FANNED symbol is `<op>_cpu_<dt>` (base `…_cpu` + `_<dt>`) while
+/// the wrapper fn is `<op>_<dt>_cpu_wrapper`.
+///
+/// The 24 rows fan into **32 registered impls** because two sections
+/// multiply their key count without adding a symbol row:
+/// - **CONV2D** / **CONV_TRANSPOSE2D** mark `bias` `optional: true`, so the
+///   importer's key-builder fans EACH per-dtype section into BOTH the no-bias
+///   key `[T, T, T]` and the with-bias key `[T, T, T, T]` — both resolving the
+///   SAME fanned symbol/wrapper (`conv2d_cpu_<dt>` → `conv2d_<dt>_cpu_wrapper`;
+///   the CPU wrapper handles 2 or 3 inputs, the optional operand riding op-params
+///   not a distinct symbol). So conv2d = 4 rows → 8 impls, conv_transpose2d =
+///   4 rows → 8 impls (the CPU transposed-conv scatter kernel seeds the output
+///   with `bias[co]` or `0`).
+/// - **SELECTIVE_SCAN** / **SSD_CHUNK_SCAN** declare a `return.bundle`
+///   multi-output (Option C, one packed `[y ; last_state]` buffer); the key-
+///   builder appends the bundle's PRIMARY-slot dtype (`passthrough(u)` /
+///   `passthrough(x)` → T) to the 5-input tail, so each keys `[T; 6]`
+///   byte-for-byte the deleted hand-written reg. 4 rows → 4 impls each.
+///
+/// Net: ROPE 4 + CONV2D 8 + CONV_TRANSPOSE2D 8 + CAUSAL_CONV1D 4 +
+/// SELECTIVE_SCAN 4 + SSD_CHUNK_SCAN 4 = 32 impls. Each row binds the exact
+/// per-dtype kernel fn the deleted hand-written `register_default_fused_kernels`
+/// seam registered (a 1:1 replacement, real revision hash vs the hand-written
+/// UNTRACKED sentinel). Serves the [`crate::fused::FusedKernelRegistry`] seam
+/// (the join target `register_default_fused_kernels` populates), NOT the
+/// primitive `KernelBindingTable` (the `cpu/conv.fkc.md` / `cpu/ssm.fkc.md` /
+/// `cpu/rope.fkc.md` primitive tables are separate and stay untouched).
+pub static CPU_FUSED_CONV_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // ROPE — key [T, T, T, T] (x, cos, sin + passthrough(x) out); 4 dtypes.
+    fep!("rope_cpu_f32",  rope_f32_cpu_wrapper),
+    fep!("rope_cpu_f64",  rope_f64_cpu_wrapper),
+    fep!("rope_cpu_bf16", rope_bf16_cpu_wrapper),
+    fep!("rope_cpu_f16",  rope_f16_cpu_wrapper),
+    // CONV2D — optional bias fans no-bias [T,T,T] + with-bias [T,T,T,T]; 4 rows → 8 impls.
+    fep!("conv2d_cpu_f32",  conv2d_f32_cpu_wrapper),
+    fep!("conv2d_cpu_f64",  conv2d_f64_cpu_wrapper),
+    fep!("conv2d_cpu_bf16", conv2d_bf16_cpu_wrapper),
+    fep!("conv2d_cpu_f16",  conv2d_f16_cpu_wrapper),
+    // CONV_TRANSPOSE2D — optional bias fans no-bias + with-bias; 4 rows → 8 impls.
+    fep!("conv_transpose2d_cpu_f32",  conv_transpose2d_f32_cpu_wrapper),
+    fep!("conv_transpose2d_cpu_f64",  conv_transpose2d_f64_cpu_wrapper),
+    fep!("conv_transpose2d_cpu_bf16", conv_transpose2d_bf16_cpu_wrapper),
+    fep!("conv_transpose2d_cpu_f16",  conv_transpose2d_f16_cpu_wrapper),
+    // CAUSAL_CONV1D — key [T, T, T, T] (x, weight, bias + passthrough(x) out); 4 dtypes.
+    fep!("causal_conv1d_cpu_f32",  causal_conv1d_f32_cpu_wrapper),
+    fep!("causal_conv1d_cpu_f64",  causal_conv1d_f64_cpu_wrapper),
+    fep!("causal_conv1d_cpu_bf16", causal_conv1d_bf16_cpu_wrapper),
+    fep!("causal_conv1d_cpu_f16",  causal_conv1d_f16_cpu_wrapper),
+    // SELECTIVE_SCAN — return.bundle: 5 inputs + primary-slot dtype → key [T; 6]; 4 dtypes.
+    fep!("selective_scan_cpu_f32",  selective_scan_f32_cpu_wrapper),
+    fep!("selective_scan_cpu_f64",  selective_scan_f64_cpu_wrapper),
+    fep!("selective_scan_cpu_bf16", selective_scan_bf16_cpu_wrapper),
+    fep!("selective_scan_cpu_f16",  selective_scan_f16_cpu_wrapper),
+    // SSD_CHUNK_SCAN — return.bundle: 5 inputs + primary-slot dtype → key [T; 6]; 4 dtypes.
+    fep!("ssd_chunk_scan_cpu_f32",  ssd_chunk_scan_f32_cpu_wrapper),
+    fep!("ssd_chunk_scan_cpu_f64",  ssd_chunk_scan_f64_cpu_wrapper),
+    fep!("ssd_chunk_scan_cpu_bf16", ssd_chunk_scan_bf16_cpu_wrapper),
+    fep!("ssd_chunk_scan_cpu_f16",  ssd_chunk_scan_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
 /// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
@@ -1196,31 +1265,37 @@ impl LinkRegistry for CpuLinkRegistry {
     fn resolve_fused(&self, symbol: &str) -> Option<KernelRef> {
         // FUSED (`fused_op`) resolution — the live fused import seam. Chains the
         // per-family fused entry-point tables (the norm/softmax family,
-        // `CPU_FUSED_NORM_ENTRY_POINTS`, and the linear/quant-matmul family,
-        // `CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS`). Unresolved → `None`, which the
+        // `CPU_FUSED_NORM_ENTRY_POINTS`; the linear/quant-matmul family,
+        // `CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS`; and the conv/RoPE/SSM family,
+        // `CPU_FUSED_CONV_ROPE_ENTRY_POINTS`). Unresolved → `None`, which the
         // importer turns into a typed `UnknownEntryPoint` (never a panic, never a
         // fabricated pointer — FKC P9).
         //
-        // The `fused/linear-quant.fkc.md` bundle (`audited: true`) is now WIRED
-        // (its FUSED_LINEAR / QMATMUL / INPLACE_AFFINE / FUSED_SOFTMAX_CROSS_ENTROPY
-        // sections resolve through `CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS` and are
-        // PRODUCTION-migrated in `register_default_fused_kernels`); its fifth
-        // section `nf4_matmul` is `registrable: false` (its `fdx.quant.family:
-        // AFFINE_BLOCK` is consumer-ahead, §6) so it never lowers/resolves and
-        // NF4's hand-written regs stay authoritative.
+        // All three checked-in fused bundles are now `audited: true` and WIRED,
+        // PRODUCTION-migrated in `register_default_fused_kernels`:
+        //   - `fused/norm-softmax.fkc.md` — 8 sections → 32 impls (SOFTMAX /
+        //     RMS_NORM / LAYER_NORM_LAST_DIM (+backward), REDUCE_MAX_TO_BACKWARD,
+        //     POWI_BACKWARD) via `CPU_FUSED_NORM_ENTRY_POINTS`.
+        //   - `fused/linear-quant.fkc.md` — FUSED_LINEAR / QMATMUL /
+        //     INPLACE_AFFINE / FUSED_SOFTMAX_CROSS_ENTROPY (its fifth section
+        //     `nf4_matmul` is `registrable: false` — `fdx.quant.family:
+        //     AFFINE_BLOCK` consumer-ahead, §6 — so NF4's hand-written regs stay
+        //     authoritative) via `CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS`.
+        //   - `fused/conv-rope.fkc.md` — all 6 sections → 32 impls (ROPE, CONV2D,
+        //     CONV_TRANSPOSE2D, CAUSAL_CONV1D, SELECTIVE_SCAN, SSD_CHUNK_SCAN) via
+        //     `CPU_FUSED_CONV_ROPE_ENTRY_POINTS`.
         //
-        // Still NOT wired: `fused/conv-rope.fkc.md` declares `audited: false`, so
-        // its imported precision lowers to `PrecisionGuarantee::UNAUDITED`
-        // (bit_stable=false), which would WEAKEN the hand-written bit-stable claim
-        // on migration. The norm/softmax bundle is SEAM-proven but not
-        // production-migrated (its `audited: false` would likewise downgrade).
-        // The `cpu/*.fkc.md` corpora are all primitive `op_kind` contracts (the
-        // "fused" in FusedLinear / FusedSoftmaxCrossEntropy names an intra-op
-        // fusion, NOT a graph `FusedOpId`); their separate `FusedOps::*` registry
-        // seams stay hand-written in `register_default_fused_kernels`.
+        // Still hand-written in `register_default_fused_kernels` (no fused
+        // contract yet): FLASH_ATTN / FLASH_ATTN_BACKWARD_{Q,K,V} / PAGED_ATTN,
+        // plus the deferred NF4_MATMUL. The `cpu/*.fkc.md` corpora are all
+        // primitive `op_kind` contracts (the "fused" in FusedLinear /
+        // FusedSoftmaxCrossEntropy names an intra-op fusion, NOT a graph
+        // `FusedOpId`); their separate primitive `KernelBindingTable` seams stay
+        // untouched.
         CPU_FUSED_NORM_ENTRY_POINTS
             .iter()
             .chain(CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS.iter())
+            .chain(CPU_FUSED_CONV_ROPE_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }

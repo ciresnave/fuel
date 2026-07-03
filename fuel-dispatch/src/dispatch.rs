@@ -6457,36 +6457,135 @@ fn register_cpu_linear_quant_fused_from_contract(r: &mut crate::fused::FusedKern
         .expect("linear-quant fused contract must register into the fused registry");
 }
 
+/// The authored norm / softmax FUSED kernel bundle, embedded into the binary
+/// (the PRODUCTION `include_str!`). `register_cpu_norm_softmax_fused_from_contract`
+/// parses + lowers it and registers the FULL bundle FROM THE CONTRACT.
+const FUSED_NORM_SOFTMAX_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/fused/norm-softmax.fkc.md");
+
+/// Register the norm / softmax FUSED family — all EIGHT `fused_op` sections
+/// (`SOFTMAX_LAST_DIM` / `RMS_NORM_LAST_DIM` / `LAYER_NORM_LAST_DIM`, key `[T, T]`;
+/// `SOFTMAX_LAST_DIM_BACKWARD` / `LAYER_NORM_LAST_DIM_BACKWARD` /
+/// `RMS_NORM_LAST_DIM_BACKWARD` / `REDUCE_MAX_TO_BACKWARD` / `POWI_BACKWARD`, key
+/// `[T, T, T]`), each dtype-fanned over `{F32, F64, BF16, F16}` = **32 CPU
+/// `BackendImpl`s** — into the [`crate::fused::FusedKernelRegistry`] by IMPORTING
+/// its `audited: true` FKC contract (`docs/kernel-contracts/fused/norm-softmax.fkc.md`),
+/// resolved through the production [`crate::fkc::CpuLinkRegistry`] (chaining
+/// [`crate::fkc::CPU_FUSED_NORM_ENTRY_POINTS`], the seam-proven 32-row table).
+/// FKC is unconditional core infrastructure, so this is the ONE registration
+/// path for these eight fused ops — every hand-written `register_fused!(SOFTMAX /
+/// RMS_NORM / LAYER_NORM_LAST_DIM (+backward) / REDUCE_MAX_TO_BACKWARD /
+/// POWI_BACKWARD, …)` call is DELETED.
+///
+/// Behavior-preserving vs. the deleted hand-written path: identical per-dtype
+/// kernels (bound by pointer through the link registry), the contract's
+/// bit-stable `audited: true` precision — the **2026-07-03 maintainer flip
+/// (CireSnave)** that relocates the `NORM_FAMILY_CPU_PRECISION` /
+/// `REDUCE_MAX_TO_BACKWARD_CPU_PRECISION` / `POWI_BACKWARD_CPU_PRECISION`
+/// bit-stable claim onto the contract (same author, same guarantee — no
+/// downgrade), and the real `compute_revision` hash (hand-written stamped
+/// `UNTRACKED`). Cost stays the Judge-bootstrapped `fused_unknown_cost` sentinel
+/// (the fused cost trampoline is a follow-up slice).
+fn register_cpu_norm_softmax_fused_from_contract(r: &mut crate::fused::FusedKernelRegistry) {
+    let provider =
+        crate::fkc::import_bundle_str(FUSED_NORM_SOFTMAX_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored norm-softmax fused contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.primitives.is_empty(),
+        "norm-softmax bundle declares only fused ops",
+    );
+    let mut table = KernelBindingTable::new();
+    provider
+        .register_into(&mut table, r)
+        .expect("norm-softmax fused contract must register into the fused registry");
+}
+
+/// The authored conv / RoPE / SSM FUSED kernel bundle, embedded into the binary
+/// (the PRODUCTION `include_str!`). `register_cpu_conv_rope_fused_from_contract`
+/// parses + lowers it and registers the FULL bundle FROM THE CONTRACT.
+const FUSED_CONV_ROPE_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/fused/conv-rope.fkc.md");
+
+/// Register the conv / RoPE / SSM FUSED family — all SIX `fused_op` sections,
+/// each dtype-fanned over `{F32, F64, BF16, F16}` = **32 CPU `BackendImpl`s** —
+/// into the [`crate::fused::FusedKernelRegistry`] by IMPORTING its `audited: true`
+/// FKC contract (`docs/kernel-contracts/fused/conv-rope.fkc.md`), resolved
+/// through the production [`crate::fkc::CpuLinkRegistry`] (chaining
+/// [`crate::fkc::CPU_FUSED_CONV_ROPE_ENTRY_POINTS`], 24 rows). FKC is
+/// unconditional core infrastructure, so this is the ONE registration path for
+/// these six fused ops — every hand-written `register_fused!(ROPE / CONV2D /
+/// CONV_TRANSPOSE2D / CAUSAL_CONV1D / SELECTIVE_SCAN / SSD_CHUNK_SCAN, …)` call
+/// is DELETED.
+///
+/// The 24 symbol rows fan into **32 impls** (ROPE 4 + CONV2D 8 +
+/// CONV_TRANSPOSE2D 8 + CAUSAL_CONV1D 4 + SELECTIVE_SCAN 4 + SSD_CHUNK_SCAN 4):
+/// - CONV2D / CONV_TRANSPOSE2D mark `bias` `optional: true`, so the importer's
+///   key-builder fans EACH per-dtype section into BOTH the no-bias key `[T, T, T]`
+///   and the with-bias key `[T, T, T, T]` — 4 rows → 8 impls each, byte-for-byte
+///   the deleted `CV_*_NOB` + `CV_*_BIAS` regs. **CONV_TRANSPOSE2D's contract was
+///   WIDENED to declare the optional `bias` operand** (it previously described
+///   only the no-bias form): production registered both tuples and the CPU
+///   transposed-conv scatter kernel seeds the output with `bias[co]` (or `0`), so
+///   the widening is truthful and preserves the 8-impl count the
+///   `default_kernel_registry_step6_coverage` gate asserts.
+/// - SELECTIVE_SCAN / SSD_CHUNK_SCAN declare a `return.bundle` multi-output
+///   (Option C, `[y ; last_state]`), so the key-builder appends the bundle's
+///   primary-slot dtype (`passthrough(u)` / `passthrough(x)` → T) to the 5-input
+///   tail — each keys `[T; 6]` byte-for-byte the deleted `SS_*` / `SCS_*` regs.
+///
+/// Behavior-preserving vs. the deleted hand-written path: identical per-dtype
+/// kernels (bound by pointer), the contract's bit-stable `audited: true`
+/// precision — the **2026-07-03 maintainer flip (CireSnave)** relocating the
+/// `ROPE_CPU_PRECISION` / `CONV2D_CPU_PRECISION` / `CONV_TRANSPOSE2D_CPU_PRECISION`
+/// / `CAUSAL_CONV1D_CPU_PRECISION` / `SELECTIVE_SCAN_CPU_PRECISION` /
+/// `SSD_CHUNK_SCAN_CPU_PRECISION` bit-stable claims onto the contract (same
+/// author, same guarantee — no downgrade), and the real `compute_revision` hash
+/// (hand-written stamped `UNTRACKED`). Cost stays the Judge-bootstrapped
+/// `fused_unknown_cost` sentinel.
+fn register_cpu_conv_rope_fused_from_contract(r: &mut crate::fused::FusedKernelRegistry) {
+    let provider =
+        crate::fkc::import_bundle_str(FUSED_CONV_ROPE_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored conv-rope fused contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.primitives.is_empty(),
+        "conv-rope bundle declares only fused ops",
+    );
+    let mut table = KernelBindingTable::new();
+    provider
+        .register_into(&mut table, r)
+        .expect("conv-rope fused contract must register into the fused registry");
+}
+
 /// Phase 7.6 step 6 — register the always-built fused-op kernels into
 /// the [`crate::fused::FusedKernelRegistry`]. Called by
 /// [`crate::fused::default_kernel_registry`]; kept here so the
 /// crate-private CPU dispatch wrappers stay co-located with their
 /// registration.
 ///
-/// Today's coverage (Phase 7.6 step 6 + backward-helper follow-up — 2026-05-11):
-/// - `FUSED_LINEAR` × `Cpu` × {F32, F64, BF16, F16} — 4 impls (IMPORTED from
-///   the `audited: true` linear-quant FKC contract via
-///   `register_cpu_linear_quant_fused_from_contract`, alongside `QMATMUL` (1),
-///   `INPLACE_AFFINE` (4), `FUSED_SOFTMAX_CROSS_ENTROPY` (4) — 13 total;
-///   `NF4_MATMUL` stays hand-written, its contract section is `registrable: false`)
-/// - `CONV2D` × `Cpu` × {F32, F64, BF16, F16} × {no-bias, with-bias} — 8 impls
-/// - `SOFTMAX_LAST_DIM` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
-/// - `RMS_NORM_LAST_DIM` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
-/// - `LAYER_NORM_LAST_DIM` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
-/// - `ROPE` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
-/// - `CONV_TRANSPOSE2D` × `Cpu` × {F32, F64, BF16, F16} × {no-bias, with-bias} — 8 impls
-/// - `FLASH_ATTN` × `Cpu` × {F32, F64, BF16, F16} × {no-alibi, with-alibi} — 8 impls
-/// - `FLASH_ATTN_BACKWARD_{Q,K,V}` × `Cpu` × {F32, F64, BF16, F16} × {no-alibi, with-alibi} — 24 impls
-/// - `PAGED_ATTN` × `Cpu` × {F32, F64, BF16, F16} × {no-alibi, with-alibi} — 8 impls
-/// - `QMATMUL` × `Cpu` × {F32 activations + U32 weights} — 1 impl
-/// - `SOFTMAX_LAST_DIM_BACKWARD` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
-/// - `LAYER_NORM_LAST_DIM_BACKWARD` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
-/// - `RMS_NORM_LAST_DIM_BACKWARD` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
-/// - `REDUCE_MAX_TO_BACKWARD` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
-/// - plus the later arrivals registered below: `POWI_BACKWARD`,
-///   `INPLACE_AFFINE`, `FUSED_SOFTMAX_CROSS_ENTROPY`, `CAUSAL_CONV1D`,
-///   `SELECTIVE_SCAN`, `SSD_CHUNK_SCAN` (4 impls each) and
-///   `NF4_MATMUL` (3 impls).
+/// Today's coverage. Three `audited: true` FKC contracts are IMPORTED at the top
+/// (contract-sourced, replacing the deleted hand-written `register_fused!`
+/// entries); the attention family + deferred NF4 stay hand-written:
+/// - **linear-quant** (`register_cpu_linear_quant_fused_from_contract`) — 13
+///   impls: `FUSED_LINEAR` (4) + `QMATMUL` (1) + `INPLACE_AFFINE` (4) +
+///   `FUSED_SOFTMAX_CROSS_ENTROPY` (4). The 5th section `NF4_MATMUL` is
+///   `registrable: false` (AFFINE_BLOCK consumer-ahead) → stays hand-written.
+/// - **norm-softmax** (`register_cpu_norm_softmax_fused_from_contract`) — 32
+///   impls: `SOFTMAX_LAST_DIM` / `RMS_NORM_LAST_DIM` / `LAYER_NORM_LAST_DIM`
+///   (+ their `_BACKWARD`) + `REDUCE_MAX_TO_BACKWARD` + `POWI_BACKWARD`
+///   (8 sections × 4 dtypes).
+/// - **conv-rope** (`register_cpu_conv_rope_fused_from_contract`) — 32 impls:
+///   `ROPE` (4) + `CONV2D` (8, no-bias|with-bias) + `CONV_TRANSPOSE2D` (8,
+///   no-bias|with-bias — bias operand WIDENED into the contract) +
+///   `CAUSAL_CONV1D` (4) + `SELECTIVE_SCAN` (4, bundle) + `SSD_CHUNK_SCAN`
+///   (4, bundle).
+/// - hand-written below: `FLASH_ATTN` (8) + `FLASH_ATTN_BACKWARD_{Q,K,V}` (24) +
+///   `PAGED_ATTN` (8) + `NF4_MATMUL` (3).
 ///
 /// Total: 120 CPU BackendImpls registered across **all 24** registered
 /// fused ops. The architecture v1.0 §05 bit-stable coverage
@@ -6497,58 +6596,29 @@ fn register_cpu_linear_quant_fused_from_contract(r: &mut crate::fused::FusedKern
 /// composing against the registry from their own startup paths or via
 /// the step-9 binding-table refactor.
 pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry) {
-    // NOTE: FUSED_LINEAR / QMATMUL / INPLACE_AFFINE / FUSED_SOFTMAX_CROSS_ENTROPY
-    // cost fns + precision consts are no longer imported here — those four fused
-    // ops are registered by `register_cpu_linear_quant_fused_from_contract`
-    // (imported from the linear-quant FKC contract).
+    // NOTE: only the attention family (FLASH_ATTN / FLASH_ATTN_BACKWARD_{Q,K,V} /
+    // PAGED_ATTN) + the deferred NF4_MATMUL keep hand-written cost fns + precision
+    // consts here. The norm-softmax, linear-quant, and conv-rope bundles are
+    // IMPORTED from their `audited: true` FKC contracts (below), so their cost fns
+    // + `*_CPU_PRECISION` consts are no longer imported into this fn.
     use crate::fused::{
-        cost_attn_backward_cpu, cost_attn_cpu, cost_causal_conv1d_cpu,
-        cost_conv2d_cpu,
-        cost_conv_transpose2d_cpu,
+        cost_attn_backward_cpu, cost_attn_cpu,
         cost_nf4_matmul_cpu,
-        cost_norm_family_cpu, cost_powi_backward_cpu,
-        cost_reduce_max_to_backward_cpu, cost_rope_cpu,
-        cost_selective_scan_cpu, cost_ssd_chunk_scan_cpu,
         ATTN_BACKWARD_CPU_PRECISION,
-        ATTN_CPU_PRECISION, CAUSAL_CONV1D_CPU_PRECISION,
-        CONV2D_CPU_PRECISION,
-        CONV_TRANSPOSE2D_CPU_PRECISION,
+        ATTN_CPU_PRECISION,
         NF4_MATMUL_CPU_PRECISION,
-        NORM_FAMILY_CPU_PRECISION,
-        POWI_BACKWARD_CPU_PRECISION,
-        REDUCE_MAX_TO_BACKWARD_CPU_PRECISION,
-        ROPE_CPU_PRECISION, SELECTIVE_SCAN_CPU_PRECISION,
-        SSD_CHUNK_SCAN_CPU_PRECISION,
     };
     use crate::register_fused;
     use fuel_graph::registry::FusedOps;
 
     // Dtype tuples mirror the binding-table shape.
     // (FusedLinear's `(lhs, rhs, bias, out)` tuples are gone — FUSED_LINEAR is
-    // now imported from the linear-quant FKC contract.)
-
-    // Conv2D: two shapes per dtype — no-bias (x, w, out) and
-    // with-bias (x, w, bias, out). The CPU wrapper handles both.
-    const CV_F32_NOB:  &[DType] = &[DType::F32,  DType::F32,  DType::F32];
-    const CV_F32_BIAS: &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32];
-    const CV_F64_NOB:  &[DType] = &[DType::F64,  DType::F64,  DType::F64];
-    const CV_F64_BIAS: &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64];
-    const CV_BF16_NOB:  &[DType] = &[DType::BF16, DType::BF16, DType::BF16];
-    const CV_BF16_BIAS: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16];
-    const CV_F16_NOB:  &[DType] = &[DType::F16,  DType::F16,  DType::F16];
-    const CV_F16_BIAS: &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16];
-
-    // Unary (in, out) — used by Softmax/RmsNorm/LayerNorm.
-    const UNARY_F32:  &[DType] = &[DType::F32,  DType::F32];
-    const UNARY_F64:  &[DType] = &[DType::F64,  DType::F64];
-    const UNARY_BF16: &[DType] = &[DType::BF16, DType::BF16];
-    const UNARY_F16:  &[DType] = &[DType::F16,  DType::F16];
-
-    // Rope (x, cos, sin, out) — all four dtypes agree.
-    const ROPE_F32:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32];
-    const ROPE_F64:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64];
-    const ROPE_BF16: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16];
-    const ROPE_F16:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16];
+    // now imported from the linear-quant FKC contract. Conv2D/ConvTranspose2D
+    // `CV_*`, Softmax/RmsNorm/LayerNorm `UNARY_*`, `ROPE_*`, the norm/reduce/powi
+    // backward `BW_*`, and the SSM `CC1D_*`/`SS_*`/`SCS_*` tuples are ALSO gone —
+    // CONV2D/CONV_TRANSPOSE2D/ROPE + the norm-softmax bundle + CAUSAL_CONV1D/
+    // SELECTIVE_SCAN/SSD_CHUNK_SCAN are now imported from the norm-softmax and
+    // conv-rope FKC contracts, below.)
 
     // FlashAttn: (q, k, v, [alibi], out) — no-alibi 4-tuple,
     // with-alibi 5-tuple. Same wrapper handles both.
@@ -6584,15 +6654,10 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
     const PA_F16_A:    &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::U32, DType::U32, DType::F16,  DType::F16];
 
     // (QMatMul's `(a:F32, w_q:U32, out:F32)` tuple is gone — QMATMUL is now
-    // imported from the linear-quant FKC contract.)
-
-    // Backward helpers — `[T, T, T]` for the binary (input0, input1, out)
-    // shape. SoftmaxBackward, LayerNormBackward, RmsNormBackward,
-    // ReduceMaxToBackward all share this dtype-tuple structure.
-    const BW_F32:  &[DType] = &[DType::F32,  DType::F32,  DType::F32];
-    const BW_F64:  &[DType] = &[DType::F64,  DType::F64,  DType::F64];
-    const BW_BF16: &[DType] = &[DType::BF16, DType::BF16, DType::BF16];
-    const BW_F16:  &[DType] = &[DType::F16,  DType::F16,  DType::F16];
+    // imported from the linear-quant FKC contract. The `[T, T, T]` backward-helper
+    // `BW_*` tuples are gone too — SOFTMAX/LAYER/RMS_NORM_LAST_DIM_BACKWARD +
+    // REDUCE_MAX_TO_BACKWARD + POWI_BACKWARD are now imported from the norm-softmax
+    // FKC contract.)
 
     let cpu = BackendId::Cpu;
 
@@ -6605,148 +6670,23 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
     // hand-written FusedOps::NF4_MATMUL regs below stay authoritative.
     register_cpu_linear_quant_fused_from_contract(r);
 
-    // Conv2D — eight registrations: {F32,F64,BF16,F16} × {no-bias, with-bias}.
-    // The same wrapper handles both shapes; the dtype tuple distinguishes
-    // them in the kernel registry so the route picker matches per-input-count.
-    register_fused!(r, FusedOps::CONV2D, cpu, CV_F32_NOB,
-        conv2d_f32_cpu_wrapper,
-        cost = cost_conv2d_cpu,
-        precision = CONV2D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CONV2D, cpu, CV_F32_BIAS,
-        conv2d_f32_cpu_wrapper,
-        cost = cost_conv2d_cpu,
-        precision = CONV2D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CONV2D, cpu, CV_F64_NOB,
-        conv2d_f64_cpu_wrapper,
-        cost = cost_conv2d_cpu,
-        precision = CONV2D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CONV2D, cpu, CV_F64_BIAS,
-        conv2d_f64_cpu_wrapper,
-        cost = cost_conv2d_cpu,
-        precision = CONV2D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CONV2D, cpu, CV_BF16_NOB,
-        conv2d_bf16_cpu_wrapper,
-        cost = cost_conv2d_cpu,
-        precision = CONV2D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CONV2D, cpu, CV_BF16_BIAS,
-        conv2d_bf16_cpu_wrapper,
-        cost = cost_conv2d_cpu,
-        precision = CONV2D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CONV2D, cpu, CV_F16_NOB,
-        conv2d_f16_cpu_wrapper,
-        cost = cost_conv2d_cpu,
-        precision = CONV2D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CONV2D, cpu, CV_F16_BIAS,
-        conv2d_f16_cpu_wrapper,
-        cost = cost_conv2d_cpu,
-        precision = CONV2D_CPU_PRECISION);
+    // SOFTMAX / RMS_NORM / LAYER_NORM_LAST_DIM (+ backward) +
+    // REDUCE_MAX_TO_BACKWARD + POWI_BACKWARD = 32 CPU impls are IMPORTED from the
+    // `audited: true` norm-softmax FKC contract (8 sections × 4 dtypes), resolved
+    // through the production CpuLinkRegistry (CPU_FUSED_NORM_ENTRY_POINTS). This
+    // REPLACES the deleted hand-written register_fused! entries for those eight
+    // fused ops.
+    register_cpu_norm_softmax_fused_from_contract(r);
 
-    // Phase 7.6 step 6 (continued): SoftmaxLastDim × 4 dtypes.
-    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM, cpu, UNARY_F32,
-        softmax_last_dim_f32_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM, cpu, UNARY_F64,
-        softmax_last_dim_f64_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM, cpu, UNARY_BF16,
-        softmax_last_dim_bf16_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM, cpu, UNARY_F16,
-        softmax_last_dim_f16_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-
-    // RmsNormLastDim × 4 dtypes.
-    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM, cpu, UNARY_F32,
-        rms_norm_last_dim_f32_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM, cpu, UNARY_F64,
-        rms_norm_last_dim_f64_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM, cpu, UNARY_BF16,
-        rms_norm_last_dim_bf16_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM, cpu, UNARY_F16,
-        rms_norm_last_dim_f16_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-
-    // LayerNormLastDim × 4 dtypes.
-    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM, cpu, UNARY_F32,
-        layer_norm_last_dim_f32_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM, cpu, UNARY_F64,
-        layer_norm_last_dim_f64_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM, cpu, UNARY_BF16,
-        layer_norm_last_dim_bf16_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM, cpu, UNARY_F16,
-        layer_norm_last_dim_f16_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-
-    // Rope × 4 dtypes.
-    register_fused!(r, FusedOps::ROPE, cpu, ROPE_F32,
-        rope_f32_cpu_wrapper,
-        cost = cost_rope_cpu,
-        precision = ROPE_CPU_PRECISION);
-    register_fused!(r, FusedOps::ROPE, cpu, ROPE_F64,
-        rope_f64_cpu_wrapper,
-        cost = cost_rope_cpu,
-        precision = ROPE_CPU_PRECISION);
-    register_fused!(r, FusedOps::ROPE, cpu, ROPE_BF16,
-        rope_bf16_cpu_wrapper,
-        cost = cost_rope_cpu,
-        precision = ROPE_CPU_PRECISION);
-    register_fused!(r, FusedOps::ROPE, cpu, ROPE_F16,
-        rope_f16_cpu_wrapper,
-        cost = cost_rope_cpu,
-        precision = ROPE_CPU_PRECISION);
-
-    // ConvTranspose2D × 4 dtypes × {no-bias, with-bias}. The CPU
-    // wrapper handles both — same dispatch pattern as Conv2D.
-    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_F32_NOB,
-        conv_transpose2d_f32_cpu_wrapper,
-        cost = cost_conv_transpose2d_cpu,
-        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_F32_BIAS,
-        conv_transpose2d_f32_cpu_wrapper,
-        cost = cost_conv_transpose2d_cpu,
-        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_F64_NOB,
-        conv_transpose2d_f64_cpu_wrapper,
-        cost = cost_conv_transpose2d_cpu,
-        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_F64_BIAS,
-        conv_transpose2d_f64_cpu_wrapper,
-        cost = cost_conv_transpose2d_cpu,
-        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_BF16_NOB,
-        conv_transpose2d_bf16_cpu_wrapper,
-        cost = cost_conv_transpose2d_cpu,
-        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_BF16_BIAS,
-        conv_transpose2d_bf16_cpu_wrapper,
-        cost = cost_conv_transpose2d_cpu,
-        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_F16_NOB,
-        conv_transpose2d_f16_cpu_wrapper,
-        cost = cost_conv_transpose2d_cpu,
-        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CONV_TRANSPOSE2D, cpu, CV_F16_BIAS,
-        conv_transpose2d_f16_cpu_wrapper,
-        cost = cost_conv_transpose2d_cpu,
-        precision = CONV_TRANSPOSE2D_CPU_PRECISION);
+    // ROPE + CONV2D + CONV_TRANSPOSE2D + CAUSAL_CONV1D + SELECTIVE_SCAN +
+    // SSD_CHUNK_SCAN = 32 CPU impls are IMPORTED from the `audited: true`
+    // conv-rope FKC contract (6 sections; CONV2D/CONV_TRANSPOSE2D fan the optional
+    // bias into no-bias + with-bias keys → 8 impls each; SELECTIVE_SCAN/
+    // SSD_CHUNK_SCAN key [T;6] via the return.bundle primary slot), resolved
+    // through the production CpuLinkRegistry (CPU_FUSED_CONV_ROPE_ENTRY_POINTS).
+    // This REPLACES the deleted hand-written register_fused! entries for those six
+    // fused ops.
+    register_cpu_conv_rope_fused_from_contract(r);
 
     // FlashAttn × 4 dtypes × {no-alibi, with-alibi}.
     register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F32_NOA,
@@ -6920,175 +6860,12 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         precision = ATTN_CPU_PRECISION);
 
     // (QMATMUL × F32 activations × U32 weights — 1 impl — is now IMPORTED from
-    // the linear-quant FKC contract, above.)
-
-    // Phase 7.6 step 6 follow-up — backward helpers gain CPU
-    // BackendImpls now that byte-level wrappers exist. Each takes
-    // 2 inputs + 1 output, dtype tuple `[T, T, T]`. Softmax /
-    // Layer / Rms backwards share `cost_norm_family_cpu` +
-    // `NORM_FAMILY_CPU_PRECISION` (same outer × last_dim shape as
-    // their forward); ReduceMaxToBackward has its own (5-pass
-    // recomputed-max + tie-share gate).
-    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM_BACKWARD, cpu, BW_F32,
-        softmax_last_dim_backward_f32_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM_BACKWARD, cpu, BW_F64,
-        softmax_last_dim_backward_f64_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM_BACKWARD, cpu, BW_BF16,
-        softmax_last_dim_backward_bf16_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::SOFTMAX_LAST_DIM_BACKWARD, cpu, BW_F16,
-        softmax_last_dim_backward_f16_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-
-    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM_BACKWARD, cpu, BW_F32,
-        layer_norm_last_dim_backward_f32_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM_BACKWARD, cpu, BW_F64,
-        layer_norm_last_dim_backward_f64_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM_BACKWARD, cpu, BW_BF16,
-        layer_norm_last_dim_backward_bf16_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::LAYER_NORM_LAST_DIM_BACKWARD, cpu, BW_F16,
-        layer_norm_last_dim_backward_f16_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-
-    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM_BACKWARD, cpu, BW_F32,
-        rms_norm_last_dim_backward_f32_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM_BACKWARD, cpu, BW_F64,
-        rms_norm_last_dim_backward_f64_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM_BACKWARD, cpu, BW_BF16,
-        rms_norm_last_dim_backward_bf16_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-    register_fused!(r, FusedOps::RMS_NORM_LAST_DIM_BACKWARD, cpu, BW_F16,
-        rms_norm_last_dim_backward_f16_cpu_wrapper,
-        cost = cost_norm_family_cpu,
-        precision = NORM_FAMILY_CPU_PRECISION);
-
-    register_fused!(r, FusedOps::REDUCE_MAX_TO_BACKWARD, cpu, BW_F32,
-        reduce_max_to_backward_f32_cpu_wrapper,
-        cost = cost_reduce_max_to_backward_cpu,
-        precision = REDUCE_MAX_TO_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::REDUCE_MAX_TO_BACKWARD, cpu, BW_F64,
-        reduce_max_to_backward_f64_cpu_wrapper,
-        cost = cost_reduce_max_to_backward_cpu,
-        precision = REDUCE_MAX_TO_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::REDUCE_MAX_TO_BACKWARD, cpu, BW_BF16,
-        reduce_max_to_backward_bf16_cpu_wrapper,
-        cost = cost_reduce_max_to_backward_cpu,
-        precision = REDUCE_MAX_TO_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::REDUCE_MAX_TO_BACKWARD, cpu, BW_F16,
-        reduce_max_to_backward_f16_cpu_wrapper,
-        cost = cost_reduce_max_to_backward_cpu,
-        precision = REDUCE_MAX_TO_BACKWARD_CPU_PRECISION);
-
-    register_fused!(r, FusedOps::POWI_BACKWARD, cpu, BW_F32,
-        powi_backward_f32_cpu_wrapper,
-        cost = cost_powi_backward_cpu,
-        precision = POWI_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::POWI_BACKWARD, cpu, BW_F64,
-        powi_backward_f64_cpu_wrapper,
-        cost = cost_powi_backward_cpu,
-        precision = POWI_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::POWI_BACKWARD, cpu, BW_BF16,
-        powi_backward_bf16_cpu_wrapper,
-        cost = cost_powi_backward_cpu,
-        precision = POWI_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::POWI_BACKWARD, cpu, BW_F16,
-        powi_backward_f16_cpu_wrapper,
-        cost = cost_powi_backward_cpu,
-        precision = POWI_BACKWARD_CPU_PRECISION);
-
-    // (INPLACE_AFFINE — `x = mul · x + add`, key `[T, T]`, 4 dtypes — and
-    // FUSED_SOFTMAX_CROSS_ENTROPY — key `[T, I64, F32]`, 4 dtypes — are now
-    // IMPORTED from the linear-quant FKC contract, above.)
-
-    // CAUSAL_CONV1D — four-tuple (x, weight, bias, out), 4 dtype
-    // variants. F32/F64 accumulate natively; F16/BF16 use F32
-    // accumulator + narrow on store.
-    const CC1D_F32:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32];
-    const CC1D_F64:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64];
-    const CC1D_BF16: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16];
-    const CC1D_F16:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16];
-    register_fused!(r, FusedOps::CAUSAL_CONV1D, cpu, CC1D_F32,
-        causal_conv1d_f32_cpu_wrapper,
-        cost = cost_causal_conv1d_cpu,
-        precision = CAUSAL_CONV1D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CAUSAL_CONV1D, cpu, CC1D_F64,
-        causal_conv1d_f64_cpu_wrapper,
-        cost = cost_causal_conv1d_cpu,
-        precision = CAUSAL_CONV1D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CAUSAL_CONV1D, cpu, CC1D_BF16,
-        causal_conv1d_bf16_cpu_wrapper,
-        cost = cost_causal_conv1d_cpu,
-        precision = CAUSAL_CONV1D_CPU_PRECISION);
-    register_fused!(r, FusedOps::CAUSAL_CONV1D, cpu, CC1D_F16,
-        causal_conv1d_f16_cpu_wrapper,
-        cost = cost_causal_conv1d_cpu,
-        precision = CAUSAL_CONV1D_CPU_PRECISION);
-
-    // SELECTIVE_SCAN — six-tuple (u, delta, a, b, c, out), 4 dtype
-    // variants. F64 accumulator regardless of T; F16/BF16 narrow on
-    // store; F32/F64 lossless.
-    const SS_F32:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32];
-    const SS_F64:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64];
-    const SS_BF16: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16];
-    const SS_F16:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16];
-    register_fused!(r, FusedOps::SELECTIVE_SCAN, cpu, SS_F32,
-        selective_scan_f32_cpu_wrapper,
-        cost = cost_selective_scan_cpu,
-        precision = SELECTIVE_SCAN_CPU_PRECISION);
-    register_fused!(r, FusedOps::SELECTIVE_SCAN, cpu, SS_F64,
-        selective_scan_f64_cpu_wrapper,
-        cost = cost_selective_scan_cpu,
-        precision = SELECTIVE_SCAN_CPU_PRECISION);
-    register_fused!(r, FusedOps::SELECTIVE_SCAN, cpu, SS_BF16,
-        selective_scan_bf16_cpu_wrapper,
-        cost = cost_selective_scan_cpu,
-        precision = SELECTIVE_SCAN_CPU_PRECISION);
-    register_fused!(r, FusedOps::SELECTIVE_SCAN, cpu, SS_F16,
-        selective_scan_f16_cpu_wrapper,
-        cost = cost_selective_scan_cpu,
-        precision = SELECTIVE_SCAN_CPU_PRECISION);
-
-    // SSD_CHUNK_SCAN — six-tuple (x, dt, a, b, c, out), 4 dtype
-    // variants. v1 single-chunk only (chunk_size == seqlen). F64
-    // accumulator regardless of T; F16/BF16 narrow on store.
-    const SCS_F32:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32];
-    const SCS_F64:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64];
-    const SCS_BF16: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16];
-    const SCS_F16:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16];
-    register_fused!(r, FusedOps::SSD_CHUNK_SCAN, cpu, SCS_F32,
-        ssd_chunk_scan_f32_cpu_wrapper,
-        cost = cost_ssd_chunk_scan_cpu,
-        precision = SSD_CHUNK_SCAN_CPU_PRECISION);
-    register_fused!(r, FusedOps::SSD_CHUNK_SCAN, cpu, SCS_F64,
-        ssd_chunk_scan_f64_cpu_wrapper,
-        cost = cost_ssd_chunk_scan_cpu,
-        precision = SSD_CHUNK_SCAN_CPU_PRECISION);
-    register_fused!(r, FusedOps::SSD_CHUNK_SCAN, cpu, SCS_BF16,
-        ssd_chunk_scan_bf16_cpu_wrapper,
-        cost = cost_ssd_chunk_scan_cpu,
-        precision = SSD_CHUNK_SCAN_CPU_PRECISION);
-    register_fused!(r, FusedOps::SSD_CHUNK_SCAN, cpu, SCS_F16,
-        ssd_chunk_scan_f16_cpu_wrapper,
-        cost = cost_ssd_chunk_scan_cpu,
-        precision = SSD_CHUNK_SCAN_CPU_PRECISION);
+    // the linear-quant FKC contract, above. The `[T, T, T]` backward helpers
+    // SOFTMAX/LAYER/RMS_NORM_LAST_DIM_BACKWARD + REDUCE_MAX_TO_BACKWARD +
+    // POWI_BACKWARD are IMPORTED from the norm-softmax FKC contract, and
+    // CAUSAL_CONV1D + SELECTIVE_SCAN + SSD_CHUNK_SCAN (with INPLACE_AFFINE +
+    // FUSED_SOFTMAX_CROSS_ENTROPY) are IMPORTED from the conv-rope / linear-quant
+    // FKC contracts — all above.)
 
     // NF4_MATMUL — four-tuple (activations T, w_packed U8, absmax
     // F32, out T), 3 dtype variants (T ∈ {F32, F16, BF16}).
@@ -7235,6 +7012,342 @@ mod tests {
             )
             .expect("NF4_MATMUL hand-written impl present (AFFINE_BLOCK deferred)");
         assert_eq!(nf4.kernel as usize, nf4_matmul_f32_cpu_wrapper as usize);
+        assert_eq!(
+            nf4.revision, KernelRevisionHash::UNTRACKED,
+            "deferred NF4_MATMUL keeps its hand-written UNTRACKED revision",
+        );
+    }
+
+    /// BORN-RED → GREEN: the `audited: true` norm/softmax FUSED bundle is
+    /// PRODUCTION-migrated into the `FusedKernelRegistry` FROM its FKC contract.
+    ///
+    /// `register_default_fused_kernels` now imports
+    /// `docs/kernel-contracts/fused/norm-softmax.fkc.md` through the production
+    /// `CpuLinkRegistry` (chaining `CPU_FUSED_NORM_ENTRY_POINTS`) INSTEAD of the
+    /// hand-written `register_fused!(SOFTMAX / RMS_NORM / LAYER_NORM_LAST_DIM
+    /// (+backward) / REDUCE_MAX_TO_BACKWARD / POWI_BACKWARD, …)` entries (deleted).
+    /// Each migrated `(FusedOpId, Cpu, dtypes)` resolves to the EXACT per-dtype
+    /// production wrapper (pointer identity) AND carries the contract's REAL
+    /// revision hash.
+    ///
+    /// **Discriminator = `revision != UNTRACKED`.** Both paths bind the SAME
+    /// wrapper fn-pointer, so pointer identity holds in BOTH states — it is not
+    /// the red discriminator. The hand-written `register_fused!` path stamps
+    /// `KernelRevisionHash::UNTRACKED`; only the FKC import path stamps the
+    /// contract's real `compute_revision`. RED (before wired + hand-written still
+    /// present): `lookup_by_dtypes` returns the hand-written impl → `UNTRACKED` →
+    /// `assert_ne!` fails. GREEN (deleted + imported): real revision → passes.
+    ///
+    /// Also asserts the **2026-07-03 maintainer flip rode through**: the imported
+    /// precision is bit-stable (`bit_stable_on_same_hardware == true`), NOT the
+    /// `UNAUDITED` an `audited: false` contract would have lowered to — the whole
+    /// point of the flip.
+    #[test]
+    fn norm_softmax_fused_family_migrated_to_fkc_contract() {
+        use crate::fused::{FusedKernelRegistry, KernelRevisionHash};
+        use fuel_graph::registry::FusedOps;
+
+        let mut r = FusedKernelRegistry::new();
+        register_default_fused_kernels(&mut r);
+
+        // FORWARD (key [T, T]) — Softmax / RmsNorm / LayerNorm last-dim.
+        let forward = [
+            (
+                FusedOps::SOFTMAX_LAST_DIM,
+                [
+                    softmax_last_dim_f32_cpu_wrapper as usize,
+                    softmax_last_dim_f64_cpu_wrapper as usize,
+                    softmax_last_dim_bf16_cpu_wrapper as usize,
+                    softmax_last_dim_f16_cpu_wrapper as usize,
+                ],
+            ),
+            (
+                FusedOps::RMS_NORM_LAST_DIM,
+                [
+                    rms_norm_last_dim_f32_cpu_wrapper as usize,
+                    rms_norm_last_dim_f64_cpu_wrapper as usize,
+                    rms_norm_last_dim_bf16_cpu_wrapper as usize,
+                    rms_norm_last_dim_f16_cpu_wrapper as usize,
+                ],
+            ),
+            (
+                FusedOps::LAYER_NORM_LAST_DIM,
+                [
+                    layer_norm_last_dim_f32_cpu_wrapper as usize,
+                    layer_norm_last_dim_f64_cpu_wrapper as usize,
+                    layer_norm_last_dim_bf16_cpu_wrapper as usize,
+                    layer_norm_last_dim_f16_cpu_wrapper as usize,
+                ],
+            ),
+        ];
+        for (id, wrappers) in forward {
+            for (dt, expected) in [DType::F32, DType::F64, DType::BF16, DType::F16]
+                .iter()
+                .zip(wrappers)
+            {
+                let got = r
+                    .lookup_by_dtypes(id, BackendId::Cpu, &[*dt, *dt])
+                    .unwrap_or_else(|| panic!("{id:?} {dt:?} migrated impl present"));
+                assert_eq!(
+                    got.kernel as usize, expected,
+                    "{id:?} {dt:?} binds its exact per-dtype production wrapper",
+                );
+                assert_ne!(
+                    got.revision, KernelRevisionHash::UNTRACKED,
+                    "FKC-imported {id:?} {dt:?} carries the contract's real revision \
+                     (hand-written register_fused! stamps UNTRACKED)",
+                );
+                assert!(
+                    got.precision.bit_stable_on_same_hardware,
+                    "the 2026-07-03 audited:true flip rode through as bit-stable for {id:?} {dt:?} \
+                     (NOT the UNAUDITED an audited:false contract would have lowered to)",
+                );
+            }
+        }
+
+        // BACKWARD (key [T, T, T]) — Softmax / Layer / Rms backward +
+        // ReduceMaxTo / PowI backward (backward-of-primitive helpers).
+        let backward = [
+            (
+                FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
+                [
+                    softmax_last_dim_backward_f32_cpu_wrapper as usize,
+                    softmax_last_dim_backward_f64_cpu_wrapper as usize,
+                    softmax_last_dim_backward_bf16_cpu_wrapper as usize,
+                    softmax_last_dim_backward_f16_cpu_wrapper as usize,
+                ],
+            ),
+            (
+                FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
+                [
+                    layer_norm_last_dim_backward_f32_cpu_wrapper as usize,
+                    layer_norm_last_dim_backward_f64_cpu_wrapper as usize,
+                    layer_norm_last_dim_backward_bf16_cpu_wrapper as usize,
+                    layer_norm_last_dim_backward_f16_cpu_wrapper as usize,
+                ],
+            ),
+            (
+                FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
+                [
+                    rms_norm_last_dim_backward_f32_cpu_wrapper as usize,
+                    rms_norm_last_dim_backward_f64_cpu_wrapper as usize,
+                    rms_norm_last_dim_backward_bf16_cpu_wrapper as usize,
+                    rms_norm_last_dim_backward_f16_cpu_wrapper as usize,
+                ],
+            ),
+            (
+                FusedOps::REDUCE_MAX_TO_BACKWARD,
+                [
+                    reduce_max_to_backward_f32_cpu_wrapper as usize,
+                    reduce_max_to_backward_f64_cpu_wrapper as usize,
+                    reduce_max_to_backward_bf16_cpu_wrapper as usize,
+                    reduce_max_to_backward_f16_cpu_wrapper as usize,
+                ],
+            ),
+            (
+                FusedOps::POWI_BACKWARD,
+                [
+                    powi_backward_f32_cpu_wrapper as usize,
+                    powi_backward_f64_cpu_wrapper as usize,
+                    powi_backward_bf16_cpu_wrapper as usize,
+                    powi_backward_f16_cpu_wrapper as usize,
+                ],
+            ),
+        ];
+        for (id, wrappers) in backward {
+            for (dt, expected) in [DType::F32, DType::F64, DType::BF16, DType::F16]
+                .iter()
+                .zip(wrappers)
+            {
+                let got = r
+                    .lookup_by_dtypes(id, BackendId::Cpu, &[*dt, *dt, *dt])
+                    .unwrap_or_else(|| panic!("{id:?} {dt:?} migrated impl present"));
+                assert_eq!(got.kernel as usize, expected);
+                assert_ne!(
+                    got.revision, KernelRevisionHash::UNTRACKED,
+                    "FKC-imported {id:?} {dt:?} carries the contract's real revision",
+                );
+                assert!(
+                    got.precision.bit_stable_on_same_hardware,
+                    "the audited:true flip rode through as bit-stable for {id:?} {dt:?}",
+                );
+            }
+        }
+
+        // GUARD: an UNMIGRATED fused op (FLASH_ATTN) still resolves its
+        // hand-written impl at UNTRACKED — proves the migration is scoped.
+        let fa = r
+            .lookup_by_dtypes(
+                FusedOps::FLASH_ATTN,
+                BackendId::Cpu,
+                &[DType::F32, DType::F32, DType::F32, DType::F32],
+            )
+            .expect("FLASH_ATTN hand-written impl present");
+        assert_eq!(
+            fa.revision, KernelRevisionHash::UNTRACKED,
+            "unmigrated FLASH_ATTN keeps its hand-written UNTRACKED revision",
+        );
+    }
+
+    /// BORN-RED → GREEN: the `audited: true` conv / RoPE / SSM FUSED bundle is
+    /// PRODUCTION-migrated into the `FusedKernelRegistry` FROM its FKC contract.
+    ///
+    /// `register_default_fused_kernels` now imports
+    /// `docs/kernel-contracts/fused/conv-rope.fkc.md` through the production
+    /// `CpuLinkRegistry` (chaining `CPU_FUSED_CONV_ROPE_ENTRY_POINTS`) INSTEAD of
+    /// the hand-written `register_fused!(ROPE / CONV2D / CONV_TRANSPOSE2D /
+    /// CAUSAL_CONV1D / SELECTIVE_SCAN / SSD_CHUNK_SCAN, …)` entries (deleted). Each
+    /// migrated impl binds the EXACT per-dtype wrapper (pointer identity) AND
+    /// carries the contract's REAL revision (hand-written stamps UNTRACKED — the
+    /// red discriminator). Covers the two multi-key cases:
+    /// - CONV2D / CONV_TRANSPOSE2D fan the optional bias into BOTH the no-bias
+    ///   key `[T, T, T]` and the with-bias key `[T, T, T, T]` (8 impls each);
+    /// - SELECTIVE_SCAN / SSD_CHUNK_SCAN key `[T; 6]` (5 inputs + the bundle's
+    ///   primary output slot).
+    ///
+    /// Also asserts the **2026-07-03 maintainer flip rode through** as bit-stable
+    /// (NOT `UNAUDITED`).
+    #[test]
+    fn conv_rope_fused_family_migrated_to_fkc_contract() {
+        use crate::fused::{FusedKernelRegistry, KernelRevisionHash};
+        use fuel_graph::registry::FusedOps;
+
+        let mut r = FusedKernelRegistry::new();
+        register_default_fused_kernels(&mut r);
+
+        let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+
+        // ROPE — key [T, T, T, T] (x, cos, sin + out).
+        let rope_w = [
+            rope_f32_cpu_wrapper as usize,
+            rope_f64_cpu_wrapper as usize,
+            rope_bf16_cpu_wrapper as usize,
+            rope_f16_cpu_wrapper as usize,
+        ];
+        for (dt, expected) in dts.iter().zip(rope_w) {
+            let got = r
+                .lookup_by_dtypes(FusedOps::ROPE, BackendId::Cpu, &[*dt, *dt, *dt, *dt])
+                .unwrap_or_else(|| panic!("ROPE {dt:?} migrated impl present"));
+            assert_eq!(got.kernel as usize, expected);
+            assert_ne!(got.revision, KernelRevisionHash::UNTRACKED, "ROPE {dt:?} real revision");
+            assert!(
+                got.precision.bit_stable_on_same_hardware,
+                "audited:true rode through bit-stable for ROPE {dt:?}",
+            );
+        }
+
+        // CONV2D / CONV_TRANSPOSE2D — optional bias ⇒ BOTH no-bias [T,T,T] and
+        // with-bias [T,T,T,T] resolve the SAME per-dtype wrapper (8 impls each).
+        let conv = [
+            (
+                FusedOps::CONV2D,
+                [
+                    conv2d_f32_cpu_wrapper as usize,
+                    conv2d_f64_cpu_wrapper as usize,
+                    conv2d_bf16_cpu_wrapper as usize,
+                    conv2d_f16_cpu_wrapper as usize,
+                ],
+            ),
+            (
+                FusedOps::CONV_TRANSPOSE2D,
+                [
+                    conv_transpose2d_f32_cpu_wrapper as usize,
+                    conv_transpose2d_f64_cpu_wrapper as usize,
+                    conv_transpose2d_bf16_cpu_wrapper as usize,
+                    conv_transpose2d_f16_cpu_wrapper as usize,
+                ],
+            ),
+        ];
+        for (id, wrappers) in conv {
+            for (dt, expected) in dts.iter().zip(wrappers) {
+                for key in [vec![*dt, *dt, *dt], vec![*dt, *dt, *dt, *dt]] {
+                    let with_bias = key.len() == 4;
+                    let got = r
+                        .lookup_by_dtypes(id, BackendId::Cpu, &key)
+                        .unwrap_or_else(|| {
+                            panic!("{id:?} {dt:?} (with_bias={with_bias}) migrated impl present")
+                        });
+                    assert_eq!(got.kernel as usize, expected);
+                    assert_ne!(
+                        got.revision, KernelRevisionHash::UNTRACKED,
+                        "{id:?} {dt:?} (with_bias={with_bias}) real revision",
+                    );
+                    assert!(
+                        got.precision.bit_stable_on_same_hardware,
+                        "audited:true rode through bit-stable for {id:?} {dt:?} (with_bias={with_bias})",
+                    );
+                }
+            }
+        }
+
+        // CAUSAL_CONV1D — key [T, T, T, T] (x, weight, bias + out).
+        let cc1d_w = [
+            causal_conv1d_f32_cpu_wrapper as usize,
+            causal_conv1d_f64_cpu_wrapper as usize,
+            causal_conv1d_bf16_cpu_wrapper as usize,
+            causal_conv1d_f16_cpu_wrapper as usize,
+        ];
+        for (dt, expected) in dts.iter().zip(cc1d_w) {
+            let got = r
+                .lookup_by_dtypes(
+                    FusedOps::CAUSAL_CONV1D,
+                    BackendId::Cpu,
+                    &[*dt, *dt, *dt, *dt],
+                )
+                .unwrap_or_else(|| panic!("CAUSAL_CONV1D {dt:?} migrated impl present"));
+            assert_eq!(got.kernel as usize, expected);
+            assert_ne!(got.revision, KernelRevisionHash::UNTRACKED);
+            assert!(got.precision.bit_stable_on_same_hardware);
+        }
+
+        // SELECTIVE_SCAN / SSD_CHUNK_SCAN — return.bundle ⇒ key [T; 6]
+        // (5 inputs + the bundled primary output slot).
+        let scan = [
+            (
+                FusedOps::SELECTIVE_SCAN,
+                [
+                    selective_scan_f32_cpu_wrapper as usize,
+                    selective_scan_f64_cpu_wrapper as usize,
+                    selective_scan_bf16_cpu_wrapper as usize,
+                    selective_scan_f16_cpu_wrapper as usize,
+                ],
+            ),
+            (
+                FusedOps::SSD_CHUNK_SCAN,
+                [
+                    ssd_chunk_scan_f32_cpu_wrapper as usize,
+                    ssd_chunk_scan_f64_cpu_wrapper as usize,
+                    ssd_chunk_scan_bf16_cpu_wrapper as usize,
+                    ssd_chunk_scan_f16_cpu_wrapper as usize,
+                ],
+            ),
+        ];
+        for (id, wrappers) in scan {
+            for (dt, expected) in dts.iter().zip(wrappers) {
+                let got = r
+                    .lookup_by_dtypes(id, BackendId::Cpu, &[*dt; 6])
+                    .unwrap_or_else(|| panic!("{id:?} {dt:?} migrated impl present"));
+                assert_eq!(got.kernel as usize, expected);
+                assert_ne!(
+                    got.revision, KernelRevisionHash::UNTRACKED,
+                    "{id:?} {dt:?} real revision",
+                );
+                assert!(
+                    got.precision.bit_stable_on_same_hardware,
+                    "audited:true rode through bit-stable for {id:?} {dt:?}",
+                );
+            }
+        }
+
+        // GUARD: the DEFERRED NF4_MATMUL (linear-quant `registrable: false`) stays
+        // hand-written at UNTRACKED — proves this migration is scoped to conv-rope.
+        let nf4 = r
+            .lookup_by_dtypes(
+                FusedOps::NF4_MATMUL,
+                BackendId::Cpu,
+                &[DType::F32, DType::U8, DType::F32, DType::F32],
+            )
+            .expect("NF4_MATMUL hand-written impl present");
         assert_eq!(
             nf4.revision, KernelRevisionHash::UNTRACKED,
             "deferred NF4_MATMUL keeps its hand-written UNTRACKED revision",
