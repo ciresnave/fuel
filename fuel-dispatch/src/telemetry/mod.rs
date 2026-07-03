@@ -20,5 +20,5 @@ pub mod record;
 pub mod structure_key;
 
 pub use impl_id::ImplId;
-pub use record::{Candidate, DispatchRecord, MissRecord};
+pub use record::{Candidate, DispatchRecord, HwStamp, MissRecord};
 pub use structure_key::StructureKeyToken;
