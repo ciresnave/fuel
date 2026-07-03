@@ -51,6 +51,7 @@ guarantees this).
 ```fkc
 kernel: pad_const_cpu
 op_kind: Pad                        # mode_tag = 0 distinguishes Constant from Reflect/Replicate
+registrable: false          # DEFERRED: the three forward modes (Constant/Reflect/Replicate) collapse to ONE (Pad,[t,t]) binding per dtype served by the SINGLE mode-dispatching pad_cpu_wrapper (mode chosen at runtime via mode_tag), so these three sections cannot each register — they collide on the shared (Pad,[t,t]) key (DuplicateKernelRef). This section also enumerates 10 dtypes while production wires only 6 {U8,U32,BF16,F16,F32,F64}. Reconcile the contract (a single registrable forward section over the 6 wired dtypes, entry_point resolving to the unified pad_cpu_wrapper) before importing; the hand-written forward Pad regs stay authoritative until then.
 blurb: "Multi-dim constant-fill pad; tiles the output with one constant element then copies the input region in."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -125,6 +126,7 @@ Contiguous + offset-0 only.
 ```fkc
 kernel: pad_reflect_cpu
 op_kind: Pad                        # mode_tag = 1 distinguishes Reflect
+registrable: false          # DEFERRED: same as pad_const_cpu — the forward modes share ONE (Pad,[t,t]) binding served by the single mode-dispatching pad_cpu_wrapper (mode_tag selects Reflect at runtime, plus its before/after <= n-1 validation); an independent reg collides on the shared key (DuplicateKernelRef). Hand-written forward Pad regs stay authoritative.
 blurb: "Multi-dim reflect pad (edge not repeated); delegates to the generic pad walker with the reflect index map."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -196,6 +198,7 @@ Contiguous + offset-0 only.
 ```fkc
 kernel: pad_replicate_cpu
 op_kind: Pad                        # mode_tag = 2 distinguishes Replicate
+registrable: false          # DEFERRED: same as pad_const_cpu — the forward modes share ONE (Pad,[t,t]) binding served by the single mode-dispatching pad_cpu_wrapper (mode_tag selects Replicate at runtime); an independent reg collides on the shared key (DuplicateKernelRef). Hand-written forward Pad regs stay authoritative.
 blurb: "Multi-dim replicate pad (edge repeated); delegates to the generic pad walker with the replicate index map."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -277,6 +280,7 @@ wrappers, not as a third independent binding. Its `op_kind`/key are therefore th
 ```fkc
 kernel: pad_walk_cpu
 op_kind: Pad                        # internal core for Reflect (mode_tag=1) / Replicate (mode_tag=2)
+registrable: false          # DEFERRED: internal helper — NOT a standalone dispatch entry point (generic over the index-map fn pointer, instantiated as reflect_index/replicate_index; bound by the pad_reflect/pad_replicate mode wrappers, themselves served by the unified pad_cpu_wrapper). Describe-only per the Registrability note above.
 blurb: "Generic dtype-agnostic pad walker; copies each output element from its mapped input position via a per-axis index function."
 backend: Cpu
 kernel_source: "portable-cpu"

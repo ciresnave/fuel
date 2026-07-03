@@ -477,14 +477,44 @@ pub static CPU_CONV_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("conv_transpose2d", "f16",  conv_transpose2d_f16_cpu_wrapper),
 ];
 
+/// The CPU **padding** family's `symbol → production wrapper` map — the
+/// MIGRATED subset: `PadBackward` × 4 dtypes = 4 kernels (key `[T, T]`).
+/// Contract: `docs/kernel-contracts/cpu/padding.fkc.md`. Each per-dtype section
+/// (`## pad_backward_f32`, …) declares a SPECIFIC single-dtype `entry_point`
+/// (`…::pad_backward_f32`), so none of them fan — the importer resolves that
+/// symbol AS-IS. The binding key is `[T, T]` (grad_out + `passthrough(grad_out)`
+/// grad_in; the in_shape/out_shape/padding/mode_tag ride in
+/// `OpParams::PadBackward`, NOT the dtype-list), identical to the deleted
+/// `&unary(t)` regs. `PadBackward` is per-dtype (unlike the dtype-agnostic
+/// forward `Pad`) because gradient accumulation is typed (bf16/f16/f32 widen the
+/// scratch accumulator to f64).
+///
+/// **The FORWARD `Pad` half is DEFERRED** (its four multi-dtype sections —
+/// `pad_const_cpu` / `pad_reflect_cpu` / `pad_replicate_cpu` / `pad_walk_cpu` —
+/// are `registrable: false`, §3.10 describe-only, so they never resolve and are
+/// absent here): the three forward modes (Constant/Reflect/Replicate) collapse
+/// to ONE `(Pad, [t,t])` binding per dtype served by the SINGLE mode-dispatching
+/// `pad_cpu_wrapper` (mode chosen at runtime via `mode_tag`), so the contract's
+/// three independent forward sections would collide on the shared key
+/// (`DuplicateKernelRef`), and production wires only 6 dtypes
+/// (`U8/U32/BF16/F16/F32/F64`) vs the contract's dtype-agnostic 10. The
+/// hand-written forward `Pad` regs stay authoritative until the contract models
+/// the unified wrapper as a single registrable section.
+pub static CPU_PADDING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    ep!("pad_backward", "f32",  pad_backward_f32_cpu_wrapper),
+    ep!("pad_backward", "f64",  pad_backward_f64_cpu_wrapper),
+    ep!("pad_backward", "bf16", pad_backward_bf16_cpu_wrapper),
+    ep!("pad_backward", "f16",  pad_backward_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
 /// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
 /// [`CPU_COMPARE_ENTRY_POINTS`], [`CPU_WHERE_ENTRY_POINTS`],
 /// [`CPU_REDUCE_ENTRY_POINTS`], [`CPU_REDUCE_TO_ENTRY_POINTS`],
 /// [`CPU_NORM_ENTRY_POINTS`], [`CPU_NORM_BACKWARD_ENTRY_POINTS`],
-/// [`CPU_ROPE_ENTRY_POINTS`], [`CPU_SSM_ENTRY_POINTS`], and
-/// [`CPU_CONV_ENTRY_POINTS`].
+/// [`CPU_ROPE_ENTRY_POINTS`], [`CPU_SSM_ENTRY_POINTS`],
+/// [`CPU_CONV_ENTRY_POINTS`], and [`CPU_PADDING_ENTRY_POINTS`].
 /// Unresolved → `None`, which the importer turns into a typed
 /// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;
@@ -504,6 +534,7 @@ impl LinkRegistry for CpuLinkRegistry {
             .chain(CPU_ROPE_ENTRY_POINTS.iter())
             .chain(CPU_SSM_ENTRY_POINTS.iter())
             .chain(CPU_CONV_ENTRY_POINTS.iter())
+            .chain(CPU_PADDING_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
@@ -511,7 +542,9 @@ impl LinkRegistry for CpuLinkRegistry {
     fn resolve_fused(&self, _symbol: &str) -> Option<KernelRef> {
         // No fused-op contracts in the elementwise-binary, affine/clamp/powi,
         // elementwise-unary, compare/where, reduce, reduce-to, norm,
-        // norm-backward, rope, ssm, or conv corpora. The ssm ops are all
+        // norm-backward, rope, ssm, conv, or padding corpora. The padding ops
+        // are all primitive `op_kind: Pad`/`PadBackward` contracts (no
+        // `fused_op`). The ssm ops are all
         // primitive `op_kind` contracts ("fused" in FusedSoftmaxCrossEntropy
         // names an intra-op softmax+NLL fusion, NOT a graph `FusedOpId`); the
         // conv contract's sections are all `op_kind: Conv2D/ConvTranspose2D`
