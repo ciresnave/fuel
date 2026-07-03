@@ -932,6 +932,68 @@ pub static CPU_FUSED_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     fep!("powi_backward_cpu_f16",  powi_backward_f16_cpu_wrapper),
 ];
 
+/// The CPU **linear / quantized-matmul** FUSED family's `symbol → production
+/// wrapper` map — the MIGRATED subset of the `audited: true` linear-quant
+/// bundle. Contract: `docs/kernel-contracts/fused/linear-quant.fkc.md`.
+///
+/// Four of the bundle's five `fused_op` sections migrate here (the fifth,
+/// `nf4_matmul`, is `registrable: false` — its `fdx.quant.family: AFFINE_BLOCK`
+/// is consumer-ahead, §6 — so it never lowers/resolves and its hand-written
+/// `FusedOps::NF4_MATMUL` regs stay authoritative; it is absent here):
+///
+/// - **FUSED_LINEAR** — a multi-dtype section (`a`/`b`/`bias`
+///   `dtypes: [F32, F64, BF16, F16]`) on a dtype-agnostic BASE `entry_point`
+///   `…::fused_linear_cpu`, so [`crate::fkc::lower::lower_fused`] **dtype-fans**
+///   it (§3.4, see [`fep!`]) into 4 per-dtype impls resolving
+///   `…::fused_linear_cpu_<dt>`, key `[T, T, T, T]` (a, b, bias +
+///   `passthrough(a)` out).
+/// - **QMATMUL** — a NON-fanning section (all operands single-dtype: `a` F32,
+///   `w_q_bytes` U32 (the LOGICAL dispatch dtype — the physical GGML block
+///   byte-honesty rides `fdx.quant: GGML_BLOCK`, §storage logical/physical
+///   split), output F32), so its BASE `entry_point` `…::qmatmul_cpu` resolves
+///   AS-IS (no `_<dt>` suffix), key `[F32, U32, F32]` byte-for-byte the deleted
+///   hand-written `QM_F32` reg.
+/// - **INPLACE_AFFINE** — a multi-dtype section (`x`
+///   `dtypes: [F32, F64, BF16, F16]`) fanned into 4 per-dtype impls resolving
+///   `…::inplace_affine_cpu_<dt>`, key `[T, T]` (out aliases x). NOTE the
+///   fn-vs-symbol skew: the fanned symbol is `inplace_affine_cpu_<dt>` (base
+///   `…_cpu` + `_<dt>`) while the wrapper fn is `inplace_affine_<dt>_cpu_wrapper`
+///   (`_cpu` after `_<dt>`) — spelled out per row.
+/// - **FUSED_SOFTMAX_CROSS_ENTROPY** — a multi-dtype section (`logits`
+///   `dtypes: [F32, F64, BF16, F16]`; `targets` fixed I64; output `fixed(F32)`)
+///   fanned into 4 per-dtype impls resolving
+///   `…::fused_softmax_cross_entropy_cpu_<dt>`, key `[T, I64, F32]` byte-for-byte
+///   the deleted hand-written `FSCE_<dt>` regs (the fan varies ONLY `logits`;
+///   `targets` I64 + `fixed(F32)` output are constant across variants).
+///
+/// Each fanned row binds the `<op>_<dt>_cpu_wrapper` — the exact kernel fn the
+/// deleted hand-written `register_default_fused_kernels` seam registered for
+/// that op's `dt` dtype tuple — so an imported impl binds the SAME executable
+/// kernel per dtype (a 1:1 replacement, real revision hash vs the hand-written
+/// UNTRACKED sentinel). Serves the [`crate::fused::FusedKernelRegistry`] seam
+/// (the join target `register_default_fused_kernels` populates), NOT the
+/// primitive `KernelBindingTable`.
+pub static CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // FUSED_LINEAR — key [T, T, T, T]; multi-dtype fan over {F32, F64, BF16, F16}.
+    fep!("fused_linear_cpu_f32",  fused_linear_f32_cpu_wrapper),
+    fep!("fused_linear_cpu_f64",  fused_linear_f64_cpu_wrapper),
+    fep!("fused_linear_cpu_bf16", fused_linear_bf16_cpu_wrapper),
+    fep!("fused_linear_cpu_f16",  fused_linear_f16_cpu_wrapper),
+    // QMATMUL — key [F32, U32, F32]; NON-fanning, BASE symbol resolved AS-IS.
+    fep!("qmatmul_cpu", qmatmul_f32_cpu_wrapper),
+    // INPLACE_AFFINE — key [T, T]; multi-dtype fan. Symbol `inplace_affine_cpu_<dt>`
+    // → wrapper `inplace_affine_<dt>_cpu_wrapper` (the `_cpu`/`_<dt>` skew).
+    fep!("inplace_affine_cpu_f32",  inplace_affine_f32_cpu_wrapper),
+    fep!("inplace_affine_cpu_f64",  inplace_affine_f64_cpu_wrapper),
+    fep!("inplace_affine_cpu_bf16", inplace_affine_bf16_cpu_wrapper),
+    fep!("inplace_affine_cpu_f16",  inplace_affine_f16_cpu_wrapper),
+    // FUSED_SOFTMAX_CROSS_ENTROPY — key [T, I64, F32]; fan varies ONLY logits.
+    fep!("fused_softmax_cross_entropy_cpu_f32",  fused_softmax_cross_entropy_f32_cpu_wrapper),
+    fep!("fused_softmax_cross_entropy_cpu_f64",  fused_softmax_cross_entropy_f64_cpu_wrapper),
+    fep!("fused_softmax_cross_entropy_cpu_bf16", fused_softmax_cross_entropy_bf16_cpu_wrapper),
+    fep!("fused_softmax_cross_entropy_cpu_f16",  fused_softmax_cross_entropy_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
 /// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
@@ -972,28 +1034,32 @@ impl LinkRegistry for CpuLinkRegistry {
 
     fn resolve_fused(&self, symbol: &str) -> Option<KernelRef> {
         // FUSED (`fused_op`) resolution — the live fused import seam. Chains the
-        // per-family fused entry-point tables (today: the norm/softmax family,
-        // `CPU_FUSED_NORM_ENTRY_POINTS`). Unresolved → `None`, which the importer
-        // turns into a typed `UnknownEntryPoint` (never a panic, never a
+        // per-family fused entry-point tables (the norm/softmax family,
+        // `CPU_FUSED_NORM_ENTRY_POINTS`, and the linear/quant-matmul family,
+        // `CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS`). Unresolved → `None`, which the
+        // importer turns into a typed `UnknownEntryPoint` (never a panic, never a
         // fabricated pointer — FKC P9).
         //
-        // NOTE on the OTHER fused corpora. The `fused/linear-quant.fkc.md` and
-        // `fused/conv-rope.fkc.md` bundles are NOT wired here yet:
-        //   - linear-quant is precision-clean (`audited: true`) but its
-        //     REGISTRABLE `nf4_matmul` section declares `fdx.quant.family:
-        //     AFFINE_BLOCK`, which `validate_file` fails as `MxNotYetRegistrable`
-        //     (consumer-ahead, §6) — so the whole bundle does not import until
-        //     that section is marked describe-only or the FDX quant codes land.
-        //   - conv-rope declares `audited: false`, so its imported precision
-        //     lowers to `PrecisionGuarantee::UNAUDITED` (bit_stable=false),
-        //     which would WEAKEN the F32 impl's hand-written bit-stable claim on
-        //     migration.
+        // The `fused/linear-quant.fkc.md` bundle (`audited: true`) is now WIRED
+        // (its FUSED_LINEAR / QMATMUL / INPLACE_AFFINE / FUSED_SOFTMAX_CROSS_ENTROPY
+        // sections resolve through `CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS` and are
+        // PRODUCTION-migrated in `register_default_fused_kernels`); its fifth
+        // section `nf4_matmul` is `registrable: false` (its `fdx.quant.family:
+        // AFFINE_BLOCK` is consumer-ahead, §6) so it never lowers/resolves and
+        // NF4's hand-written regs stay authoritative.
+        //
+        // Still NOT wired: `fused/conv-rope.fkc.md` declares `audited: false`, so
+        // its imported precision lowers to `PrecisionGuarantee::UNAUDITED`
+        // (bit_stable=false), which would WEAKEN the hand-written bit-stable claim
+        // on migration. The norm/softmax bundle is SEAM-proven but not
+        // production-migrated (its `audited: false` would likewise downgrade).
         // The `cpu/*.fkc.md` corpora are all primitive `op_kind` contracts (the
         // "fused" in FusedLinear / FusedSoftmaxCrossEntropy names an intra-op
         // fusion, NOT a graph `FusedOpId`); their separate `FusedOps::*` registry
         // seams stay hand-written in `register_default_fused_kernels`.
         CPU_FUSED_NORM_ENTRY_POINTS
             .iter()
+            .chain(CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }

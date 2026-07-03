@@ -1623,7 +1623,11 @@ cpu_rope_wrapper!(rope_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::rope_f6
 /// activations (F32) and quantized weight bytes (U32-typed).
 /// `OpParams::QMatMul` carries the quant_type + (batch, m, n, k);
 /// the wrapper picks the right typed kernel based on quant_type.
-fn qmatmul_f32_cpu_wrapper(
+///
+/// `pub(crate)` so the FKC `CpuLinkRegistry` can resolve the linear-quant fused
+/// bundle's `qmatmul_cpu` `entry_point` symbol to this wrapper
+/// (`CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS`).
+pub(crate) fn qmatmul_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -6468,6 +6472,60 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
     bump_topology_generation();
 }
 
+/// The authored linear / quant-matmul FUSED kernel bundle, embedded into the
+/// binary (the PRODUCTION `include_str!`). `register_cpu_linear_quant_fused_from_contract`
+/// parses + lowers it and registers the MIGRATED subset FROM THE CONTRACT.
+const FUSED_LINEAR_QUANT_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/fused/linear-quant.fkc.md");
+
+/// Register the linear / quant-matmul FUSED family — `FUSED_LINEAR` (4 dtypes,
+/// key `[T, T, T, T]`) + `QMATMUL` (1 impl, key `[F32, U32, F32]`) +
+/// `INPLACE_AFFINE` (4 dtypes, key `[T, T]`) + `FUSED_SOFTMAX_CROSS_ENTROPY`
+/// (4 dtypes, key `[T, I64, F32]`) = **13 CPU `BackendImpl`s** — into the
+/// [`crate::fused::FusedKernelRegistry`] by IMPORTING its `audited: true` FKC
+/// contract (`docs/kernel-contracts/fused/linear-quant.fkc.md`), resolved
+/// through the production [`crate::fkc::CpuLinkRegistry`] (chaining
+/// [`crate::fkc::CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS`]). FKC is unconditional
+/// core infrastructure, so this is the ONE registration path for these four
+/// fused ops — every hand-written `register_fused!(FUSED_LINEAR / QMATMUL /
+/// INPLACE_AFFINE / FUSED_SOFTMAX_CROSS_ENTROPY, …)` call is DELETED.
+///
+/// The bundle's fifth section `nf4_matmul` is `registrable: false` (its
+/// `fdx.quant.family: AFFINE_BLOCK` is consumer-ahead, §6), so it never
+/// lowers/registers and NF4's hand-written `FusedOps::NF4_MATMUL` regs (below,
+/// unchanged) stay authoritative. QMATMUL's contract keys its weight operand the
+/// LOGICAL dispatch dtype `U32` (the physical GGML block byte-honesty rides the
+/// `fdx.quant: GGML_BLOCK` block), so the fanned key is `[F32, U32, F32]` —
+/// byte-for-byte the deleted `QM_F32` reg. FSCE's `logits` fans over
+/// `{F32,F64,BF16,F16}` (targets I64, output always F32), matching the four
+/// deleted `FSCE_<dt>` regs exactly.
+///
+/// The bundle is fused-only, so `register_into`'s required binding-table
+/// argument is a local throwaway that provably stays empty. Behavior-preserving
+/// vs. the deleted hand-written path: identical per-dtype kernels (bound by
+/// pointer through the link registry), the contract's bit-stable `audited: true`
+/// precision (same shape as the deleted `*_CPU_PRECISION` consts — no downgrade),
+/// and the real `compute_revision` hash (hand-written stamped `UNTRACKED`). Cost
+/// stays the Judge-bootstrapped `fused_unknown_cost` sentinel ([consumer-ahead]:
+/// the fused cost trampoline is a follow-up slice — the same posture the primitive
+/// FKC imports take before `fill_unset_cpu_cost`).
+fn register_cpu_linear_quant_fused_from_contract(r: &mut crate::fused::FusedKernelRegistry) {
+    let provider =
+        crate::fkc::import_bundle_str(FUSED_LINEAR_QUANT_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored linear-quant fused contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.primitives.is_empty(),
+        "linear-quant bundle declares only fused ops",
+    );
+    let mut table = KernelBindingTable::new();
+    provider
+        .register_into(&mut table, r)
+        .expect("linear-quant fused contract must register into the fused registry");
+}
+
 /// Phase 7.6 step 6 — register the always-built fused-op kernels into
 /// the [`crate::fused::FusedKernelRegistry`]. Called by
 /// [`crate::fused::default_kernel_registry`]; kept here so the
@@ -6475,7 +6533,11 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
 /// registration.
 ///
 /// Today's coverage (Phase 7.6 step 6 + backward-helper follow-up — 2026-05-11):
-/// - `FUSED_LINEAR` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
+/// - `FUSED_LINEAR` × `Cpu` × {F32, F64, BF16, F16} — 4 impls (IMPORTED from
+///   the `audited: true` linear-quant FKC contract via
+///   `register_cpu_linear_quant_fused_from_contract`, alongside `QMATMUL` (1),
+///   `INPLACE_AFFINE` (4), `FUSED_SOFTMAX_CROSS_ENTROPY` (4) — 13 total;
+///   `NF4_MATMUL` stays hand-written, its contract section is `registrable: false`)
 /// - `CONV2D` × `Cpu` × {F32, F64, BF16, F16} × {no-bias, with-bias} — 8 impls
 /// - `SOFTMAX_LAST_DIM` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
 /// - `RMS_NORM_LAST_DIM` × `Cpu` × {F32, F64, BF16, F16} — 4 impls
@@ -6504,36 +6566,35 @@ pub fn extend_global_bindings(register: impl FnOnce(&mut KernelBindingTable)) {
 /// composing against the registry from their own startup paths or via
 /// the step-9 binding-table refactor.
 pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry) {
+    // NOTE: FUSED_LINEAR / QMATMUL / INPLACE_AFFINE / FUSED_SOFTMAX_CROSS_ENTROPY
+    // cost fns + precision consts are no longer imported here — those four fused
+    // ops are registered by `register_cpu_linear_quant_fused_from_contract`
+    // (imported from the linear-quant FKC contract).
     use crate::fused::{
         cost_attn_backward_cpu, cost_attn_cpu, cost_causal_conv1d_cpu,
         cost_conv2d_cpu,
-        cost_conv_transpose2d_cpu, cost_fused_linear_cpu,
-        cost_fused_softmax_cross_entropy_cpu,
-        cost_inplace_affine_cpu, cost_nf4_matmul_cpu,
+        cost_conv_transpose2d_cpu,
+        cost_nf4_matmul_cpu,
         cost_norm_family_cpu, cost_powi_backward_cpu,
-        cost_qmatmul_cpu, cost_reduce_max_to_backward_cpu, cost_rope_cpu,
+        cost_reduce_max_to_backward_cpu, cost_rope_cpu,
         cost_selective_scan_cpu, cost_ssd_chunk_scan_cpu,
         ATTN_BACKWARD_CPU_PRECISION,
         ATTN_CPU_PRECISION, CAUSAL_CONV1D_CPU_PRECISION,
         CONV2D_CPU_PRECISION,
-        CONV_TRANSPOSE2D_CPU_PRECISION, FUSED_LINEAR_CPU_PRECISION,
-        FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION,
-        INPLACE_AFFINE_CPU_PRECISION, NF4_MATMUL_CPU_PRECISION,
+        CONV_TRANSPOSE2D_CPU_PRECISION,
+        NF4_MATMUL_CPU_PRECISION,
         NORM_FAMILY_CPU_PRECISION,
         POWI_BACKWARD_CPU_PRECISION,
-        QMATMUL_CPU_PRECISION, REDUCE_MAX_TO_BACKWARD_CPU_PRECISION,
+        REDUCE_MAX_TO_BACKWARD_CPU_PRECISION,
         ROPE_CPU_PRECISION, SELECTIVE_SCAN_CPU_PRECISION,
         SSD_CHUNK_SCAN_CPU_PRECISION,
     };
     use crate::register_fused;
     use fuel_graph::registry::FusedOps;
 
-    // Dtype tuples mirror the binding-table shape:
-    //   FusedLinear: (lhs, rhs, bias, out) — all four agree.
-    const FL_F32:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32];
-    const FL_F64:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64];
-    const FL_BF16: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16];
-    const FL_F16:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16];
+    // Dtype tuples mirror the binding-table shape.
+    // (FusedLinear's `(lhs, rhs, bias, out)` tuples are gone — FUSED_LINEAR is
+    // now imported from the linear-quant FKC contract.)
 
     // Conv2D: two shapes per dtype — no-bias (x, w, out) and
     // with-bias (x, w, bias, out). The CPU wrapper handles both.
@@ -6591,9 +6652,8 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
     const PA_F16_NOA:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::U32, DType::U32, DType::F16];
     const PA_F16_A:    &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::U32, DType::U32, DType::F16,  DType::F16];
 
-    // QMatMul: (a:F32 activations, w_q:U32 bytes, out:F32). Only F32
-    // is wired today.
-    const QM_F32: &[DType] = &[DType::F32, DType::U32, DType::F32];
+    // (QMatMul's `(a:F32, w_q:U32, out:F32)` tuple is gone — QMATMUL is now
+    // imported from the linear-quant FKC contract.)
 
     // Backward helpers — `[T, T, T]` for the binary (input0, input1, out)
     // shape. SoftmaxBackward, LayerNormBackward, RmsNormBackward,
@@ -6604,22 +6664,15 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
     const BW_F16:  &[DType] = &[DType::F16,  DType::F16,  DType::F16];
 
     let cpu = BackendId::Cpu;
-    register_fused!(r, FusedOps::FUSED_LINEAR, cpu, FL_F32,
-        fused_linear_f32_cpu_wrapper,
-        cost = cost_fused_linear_cpu,
-        precision = FUSED_LINEAR_CPU_PRECISION);
-    register_fused!(r, FusedOps::FUSED_LINEAR, cpu, FL_F64,
-        fused_linear_f64_cpu_wrapper,
-        cost = cost_fused_linear_cpu,
-        precision = FUSED_LINEAR_CPU_PRECISION);
-    register_fused!(r, FusedOps::FUSED_LINEAR, cpu, FL_BF16,
-        fused_linear_bf16_cpu_wrapper,
-        cost = cost_fused_linear_cpu,
-        precision = FUSED_LINEAR_CPU_PRECISION);
-    register_fused!(r, FusedOps::FUSED_LINEAR, cpu, FL_F16,
-        fused_linear_f16_cpu_wrapper,
-        cost = cost_fused_linear_cpu,
-        precision = FUSED_LINEAR_CPU_PRECISION);
+
+    // FUSED_LINEAR (4) + QMATMUL (1) + INPLACE_AFFINE (4) +
+    // FUSED_SOFTMAX_CROSS_ENTROPY (4) = 13 CPU impls are IMPORTED from the
+    // `audited: true` linear-quant FKC contract (resolved through the production
+    // CpuLinkRegistry). This REPLACES the deleted hand-written register_fused!
+    // entries for those four fused ops. The bundle's fifth section, nf4_matmul,
+    // is `registrable: false` (AFFINE_BLOCK consumer-ahead, §6), so NF4's
+    // hand-written FusedOps::NF4_MATMUL regs below stay authoritative.
+    register_cpu_linear_quant_fused_from_contract(r);
 
     // Conv2D — eight registrations: {F32,F64,BF16,F16} × {no-bias, with-bias}.
     // The same wrapper handles both shapes; the dtype tuple distinguishes
@@ -6935,12 +6988,8 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         cost = cost_attn_cpu,
         precision = ATTN_CPU_PRECISION);
 
-    // QMatMul × F32 activations × U32 weights (1 impl — only F32 is
-    // wired in the legacy executor today).
-    register_fused!(r, FusedOps::QMATMUL, cpu, QM_F32,
-        qmatmul_f32_cpu_wrapper,
-        cost = cost_qmatmul_cpu,
-        precision = QMATMUL_CPU_PRECISION);
+    // (QMATMUL × F32 activations × U32 weights — 1 impl — is now IMPORTED from
+    // the linear-quant FKC contract, above.)
 
     // Phase 7.6 step 6 follow-up — backward helpers gain CPU
     // BackendImpls now that byte-level wrappers exist. Each takes
@@ -7034,53 +7083,9 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
         cost = cost_powi_backward_cpu,
         precision = POWI_BACKWARD_CPU_PRECISION);
 
-    // INPLACE_AFFINE — `x = mul · x + add`, single-input + same-dtype
-    // output. The binding-table key shape is `[T, T]` (mirrors the
-    // non-inplace Affine OpKind so `build_lookup_dtypes` produces the
-    // same canonical key). 4 dtypes: f32, f64, bf16, f16.
-    register_fused!(r, FusedOps::INPLACE_AFFINE, cpu, UNARY_F32,
-        inplace_affine_f32_cpu_wrapper,
-        cost = cost_inplace_affine_cpu,
-        precision = INPLACE_AFFINE_CPU_PRECISION);
-    register_fused!(r, FusedOps::INPLACE_AFFINE, cpu, UNARY_F64,
-        inplace_affine_f64_cpu_wrapper,
-        cost = cost_inplace_affine_cpu,
-        precision = INPLACE_AFFINE_CPU_PRECISION);
-    register_fused!(r, FusedOps::INPLACE_AFFINE, cpu, UNARY_BF16,
-        inplace_affine_bf16_cpu_wrapper,
-        cost = cost_inplace_affine_cpu,
-        precision = INPLACE_AFFINE_CPU_PRECISION);
-    register_fused!(r, FusedOps::INPLACE_AFFINE, cpu, UNARY_F16,
-        inplace_affine_f16_cpu_wrapper,
-        cost = cost_inplace_affine_cpu,
-        precision = INPLACE_AFFINE_CPU_PRECISION);
-
-    // FUSED_SOFTMAX_CROSS_ENTROPY — three-tuple (logits T, targets
-    // I64, out F32). T ∈ {F32, F64, BF16, F16}; output dtype stays
-    // F32 across all variants (the FSCE declared dtype — losses
-    // accumulate in F64 and narrow to F32). The cost model + precision
-    // guarantee are shared: per-row work is dtype-agnostic and the F64
-    // accumulator gives the same precision contract for every T.
-    const FSCE_F32:  &[DType] = &[DType::F32,  DType::I64, DType::F32];
-    const FSCE_F64:  &[DType] = &[DType::F64,  DType::I64, DType::F32];
-    const FSCE_BF16: &[DType] = &[DType::BF16, DType::I64, DType::F32];
-    const FSCE_F16:  &[DType] = &[DType::F16,  DType::I64, DType::F32];
-    register_fused!(r, FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY, cpu, FSCE_F32,
-        fused_softmax_cross_entropy_f32_cpu_wrapper,
-        cost = cost_fused_softmax_cross_entropy_cpu,
-        precision = FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION);
-    register_fused!(r, FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY, cpu, FSCE_F64,
-        fused_softmax_cross_entropy_f64_cpu_wrapper,
-        cost = cost_fused_softmax_cross_entropy_cpu,
-        precision = FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION);
-    register_fused!(r, FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY, cpu, FSCE_BF16,
-        fused_softmax_cross_entropy_bf16_cpu_wrapper,
-        cost = cost_fused_softmax_cross_entropy_cpu,
-        precision = FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION);
-    register_fused!(r, FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY, cpu, FSCE_F16,
-        fused_softmax_cross_entropy_f16_cpu_wrapper,
-        cost = cost_fused_softmax_cross_entropy_cpu,
-        precision = FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION);
+    // (INPLACE_AFFINE — `x = mul · x + add`, key `[T, T]`, 4 dtypes — and
+    // FUSED_SOFTMAX_CROSS_ENTROPY — key `[T, I64, F32]`, 4 dtypes — are now
+    // IMPORTED from the linear-quant FKC contract, above.)
 
     // CAUSAL_CONV1D — four-tuple (x, weight, bias, out), 4 dtype
     // variants. F32/F64 accumulate natively; F16/BF16 use F32
@@ -7176,6 +7181,134 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// BORN-RED → GREEN: the `audited: true` linear-quant FUSED bundle is
+    /// PRODUCTION-migrated into the `FusedKernelRegistry` FROM its FKC contract.
+    ///
+    /// `register_default_fused_kernels` now imports
+    /// `docs/kernel-contracts/fused/linear-quant.fkc.md` through the production
+    /// `CpuLinkRegistry` (chaining `CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS`) INSTEAD
+    /// of the hand-written `register_fused!(FUSED_LINEAR / QMATMUL / INPLACE_AFFINE
+    /// / FUSED_SOFTMAX_CROSS_ENTROPY, …)` entries (deleted). Each migrated
+    /// `(FusedOpId, Cpu, dtypes)` resolves to the EXACT per-dtype production
+    /// wrapper (pointer identity) AND carries the contract's REAL revision hash.
+    ///
+    /// **Discriminator = `revision != UNTRACKED`.** Both the deleted hand-written
+    /// regs and the imported impls bind the SAME wrapper fn-pointer, so pointer
+    /// identity holds in BOTH states — it is not the red discriminator. The
+    /// hand-written `register_fused!` path stamps `KernelRevisionHash::UNTRACKED`
+    /// (the macro default); only the FKC import path stamps the contract's real
+    /// `compute_revision` hash. RED (before the import wired + hand-written still
+    /// present): `lookup_by_dtypes` returns the first-registered (hand-written)
+    /// impl → `revision == UNTRACKED` → `assert_ne!` fails. GREEN (hand-written
+    /// deleted, import wired): the imported impl is the sole source → real
+    /// revision → passes.
+    ///
+    /// Guards: the unmigrated `FLASH_ATTN` still resolves its hand-written impl
+    /// (UNTRACKED, unchanged); the DEFERRED `NF4_MATMUL` (contract section
+    /// `registrable: false`, `AFFINE_BLOCK` consumer-ahead) also stays
+    /// hand-written (UNTRACKED) — proving the migration is scoped to exactly the
+    /// four registrable sections.
+    #[test]
+    fn linear_quant_fused_family_migrated_to_fkc_contract() {
+        use crate::fused::{FusedKernelRegistry, KernelRevisionHash};
+        use fuel_graph::registry::FusedOps;
+
+        let mut r = FusedKernelRegistry::new();
+        register_default_fused_kernels(&mut r);
+
+        // --- FUSED_LINEAR: 4 dtypes, key [T, T, T, T] ---
+        for (dt, expected) in [
+            (DType::F32,  fused_linear_f32_cpu_wrapper as usize),
+            (DType::F64,  fused_linear_f64_cpu_wrapper as usize),
+            (DType::BF16, fused_linear_bf16_cpu_wrapper as usize),
+            (DType::F16,  fused_linear_f16_cpu_wrapper as usize),
+        ] {
+            let got = r
+                .lookup_by_dtypes(FusedOps::FUSED_LINEAR, BackendId::Cpu, &[dt, dt, dt, dt])
+                .unwrap_or_else(|| panic!("FUSED_LINEAR {dt:?} migrated impl present"));
+            assert_eq!(
+                got.kernel as usize, expected,
+                "FUSED_LINEAR {dt:?} binds its exact per-dtype production wrapper",
+            );
+            assert_ne!(
+                got.revision, KernelRevisionHash::UNTRACKED,
+                "FKC-imported FUSED_LINEAR {dt:?} carries the contract's real revision \
+                 (hand-written register_fused! stamps UNTRACKED)",
+            );
+        }
+
+        // --- QMATMUL: 1 impl, key [F32, U32, F32] (logical dispatch dtype U32) ---
+        let qm = r
+            .lookup_by_dtypes(
+                FusedOps::QMATMUL,
+                BackendId::Cpu,
+                &[DType::F32, DType::U32, DType::F32],
+            )
+            .expect("QMATMUL migrated impl present at [F32, U32, F32]");
+        assert_eq!(qm.kernel as usize, qmatmul_f32_cpu_wrapper as usize);
+        assert_ne!(qm.revision, KernelRevisionHash::UNTRACKED);
+
+        // --- INPLACE_AFFINE: 4 dtypes, key [T, T] ---
+        for (dt, expected) in [
+            (DType::F32,  inplace_affine_f32_cpu_wrapper as usize),
+            (DType::F64,  inplace_affine_f64_cpu_wrapper as usize),
+            (DType::BF16, inplace_affine_bf16_cpu_wrapper as usize),
+            (DType::F16,  inplace_affine_f16_cpu_wrapper as usize),
+        ] {
+            let got = r
+                .lookup_by_dtypes(FusedOps::INPLACE_AFFINE, BackendId::Cpu, &[dt, dt])
+                .unwrap_or_else(|| panic!("INPLACE_AFFINE {dt:?} migrated impl present"));
+            assert_eq!(got.kernel as usize, expected);
+            assert_ne!(got.revision, KernelRevisionHash::UNTRACKED);
+        }
+
+        // --- FUSED_SOFTMAX_CROSS_ENTROPY: 4 dtypes, key [T, I64, F32] ---
+        for (dt, expected) in [
+            (DType::F32,  fused_softmax_cross_entropy_f32_cpu_wrapper as usize),
+            (DType::F64,  fused_softmax_cross_entropy_f64_cpu_wrapper as usize),
+            (DType::BF16, fused_softmax_cross_entropy_bf16_cpu_wrapper as usize),
+            (DType::F16,  fused_softmax_cross_entropy_f16_cpu_wrapper as usize),
+        ] {
+            let got = r
+                .lookup_by_dtypes(
+                    FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY,
+                    BackendId::Cpu,
+                    &[dt, DType::I64, DType::F32],
+                )
+                .unwrap_or_else(|| panic!("FSCE {dt:?} migrated impl present"));
+            assert_eq!(got.kernel as usize, expected);
+            assert_ne!(got.revision, KernelRevisionHash::UNTRACKED);
+        }
+
+        // --- GUARD: unmigrated FLASH_ATTN still resolves its hand-written impl ---
+        let fa = r
+            .lookup_by_dtypes(
+                FusedOps::FLASH_ATTN,
+                BackendId::Cpu,
+                &[DType::F32, DType::F32, DType::F32, DType::F32],
+            )
+            .expect("FLASH_ATTN hand-written impl present");
+        assert_eq!(fa.kernel as usize, flash_attn_f32_cpu_wrapper as usize);
+        assert_eq!(
+            fa.revision, KernelRevisionHash::UNTRACKED,
+            "unmigrated FLASH_ATTN keeps its hand-written UNTRACKED revision",
+        );
+
+        // --- GUARD: DEFERRED NF4_MATMUL stays hand-written (registrable: false) ---
+        let nf4 = r
+            .lookup_by_dtypes(
+                FusedOps::NF4_MATMUL,
+                BackendId::Cpu,
+                &[DType::F32, DType::U8, DType::F32, DType::F32],
+            )
+            .expect("NF4_MATMUL hand-written impl present (AFFINE_BLOCK deferred)");
+        assert_eq!(nf4.kernel as usize, nf4_matmul_f32_cpu_wrapper as usize);
+        assert_eq!(
+            nf4.revision, KernelRevisionHash::UNTRACKED,
+            "deferred NF4_MATMUL keeps its hand-written UNTRACKED revision",
+        );
+    }
 
     /// Phase 7.6 step 7b — the architecture v1.0 §05 "always-built
     /// backend bit-stable coverage commitment" lint, extended from

@@ -162,12 +162,14 @@ One-line: Quantized matmul of dense F32 activations against a GGUF/llama.cpp blo
 
 `FusedOps::QMATMUL` (id 14; `fuel-graph/src/registry/qmatmul.rs:40`). Quantized-family fused op
 `C = A @ dequant(W_Q)`: dense **F32** activations `A` `[..., M, K]` contracted against a packed GGML
-block-quant weight `W_Q`. Two inputs: `a` (F32 activations) and `w_q_bytes` (an opaque packed block
-**byte** stream — the FDX **U8** honesty stand-in for an opaque byte buffer, FDX §3 / §3.4 —
-reinterpreted internally as `&[BlockQ*]`). The as-built dispatch tuple `QM_F32 = [F32, U32, F32]`
-is **F32 only** (activations and output F32) and uses **U32** in the weight slot; the FDX operand
-dtype is the honest **U8** byte stand-in, with the 32-bit internal reinterpretation
-(`&[BlockQ*]` over a U32-typed buffer) documented here in prose, never in the operand dtype. The
+block-quant weight `W_Q`. Two inputs: `a` (F32 activations) and `w_q_bytes` (an opaque packed GGML
+block stream reinterpreted internally as `&[BlockQ*]`). The as-built dispatch tuple
+`QM_F32 = [F32, U32, F32]` is **F32 only** (activations and output F32) and keys **U32** in the weight
+slot. Per the **DType-logical / SType-physical split** (`docs/specs/storage-encoding.md`), the operand
+`dtypes` carries the **LOGICAL dispatch dtype `U32`** — exactly what the fused binding key and
+`BackendImpl.dtypes` use (the hand-written `FusedOps::QMATMUL` reg + the `QMatMul` primitive
+binding-table reg both key U32) — while the **physical** byte-honesty (the opaque GGML block byte
+buffer, `kDLUInt bits:8`) is carried by the `fdx.quant` GGML_BLOCK block below, not the operand dtype. The
 quant format (`QuantType ∈ Q4_0..Q6K`) is carried by `FusedOpParams::QMatMul { quant_type, k, n }`,
 and `k` MUST be a multiple of the format's block size. The kernel dequantizes each block on the fly
 and **accumulates in f32**; the only lossy step is the (pre-baked) weight quantization, fixed at
@@ -213,7 +215,7 @@ accept:
       rank: "2.."                     # [..., M, K]
       shape_constraint: "dim[-1]=k"
     - name: w_q_bytes
-      dtypes: [U8]                    # FDX honesty stand-in for an opaque packed GGML block BYTE stream (kDLUInt bits:8; FDX §3 / §3.4); reinterpreted internally as &[BlockQ*]. As-built dispatch tuple QM_F32 = [F32, U32, F32] uses U32 in the weight slot; the 32-bit internal reinterpretation rides prose, not the operand dtype.
+      dtypes: [U32]                   # LOGICAL dispatch dtype (DType-logical / SType-physical split, docs/specs/storage-encoding.md): accept.dtypes carries the dtype the fused binding key + BackendImpl.dtypes actually use — QM_F32 = [F32, U32, F32] keys U32 in the weight slot. The PHYSICAL byte-honesty (opaque packed GGML block BYTE stream, kDLUInt bits:8; FDX §3 / §3.4; reinterpreted internally as &[BlockQ*]) rides the fdx.quant GGML_BLOCK block below, NOT the operand dtype.
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: 2                         # [n, k/block_elems] blocks
       shape_constraint: "divisible(k, block_elems)"   # block_elems = 32 (Q4_0..Q8_1) or 256 (K-quants)
@@ -305,6 +307,16 @@ quant codes land returns the `MxNotYetRegistrable`-class "AFFINE_BLOCK not yet r
 The dedicated-op path makes the kernel dispatchable in v1; the `AFFINE_BLOCK` family + `block_shape`
 is advertised for when the FDX quant descriptor lands.
 
+**Registrability: `registrable: false` (describe-only, §3.10).** Because this section declares
+`fdx.quant.family: AFFINE_BLOCK`, `validate_file` returns `MxNotYetRegistrable` for it (no block-quant
+descriptor target type yet, §6). A registrable section that trips that consumer-ahead gate would fail
+the WHOLE bundle import; so — matching the corpus's describe-only posture — this one section is marked
+`registrable: false`, which makes the gate non-blocking (a documentation section, excluded from
+lowering/registration) and lets the rest of this bundle (`fused_linear` / `qmatmul` /
+`fused_softmax_cross_entropy` / `inplace_affine`) import into the production `FusedKernelRegistry`.
+NF4's hand-written `FusedOps::NF4_MATMUL` CPU registrations (F32/F16/BF16) therefore stay authoritative
+until the FDX `AFFINE_BLOCK` quant codes land and this section becomes registrable.
+
 Dispatch key: `(Nf4Matmul, [act, <NF4 weight>, F32 absmax, out] dtypes, Cpu, "portable-cpu")` — the
 weight slot carries `family=AFFINE_BLOCK, block_shape=[64]` (no granularity code); the separate
 `absmax` is its own operand slot in the key.
@@ -317,6 +329,7 @@ fabricated).
 ```fkc
 kernel: nf4_matmul
 fused_op: NF4_MATMUL
+registrable: false                    # describe-only (§3.10): fdx.quant.family AFFINE_BLOCK trips MxNotYetRegistrable (consumer-ahead, §6). Marked non-registrable so the gate is non-blocking and the rest of the bundle imports; NF4's hand-written FusedOps::NF4_MATMUL CPU regs stay authoritative until the FDX AFFINE_BLOCK codes land.
 blurb: "bitsandbytes NF4 4-bit LUT quantized matmul with a separate per-block F32 absmax scale; dequant+accumulate in f32, dtype = activations output."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -398,7 +411,10 @@ One-line: Fused softmax + negative-log-likelihood over class-index targets; logi
 `FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY` (id 17;
 `fuel-graph/src/registry/fused_softmax_cross_entropy.rs:68`). Forward-family fused op combining a
 softmax with a negative-log-likelihood reduction over integer class-index targets. Two inputs:
-`logits` `[..., V]` (**F32**) and `targets` `[...]` (**I64** class indices). Params
+`logits` `[..., V]` (float — **F32/F64/BF16/F16**; the fanned dispatch dtype) and `targets` `[...]`
+(**I64** class indices). Half/F64 logits accumulate through the same stable F64 log-sum-exp and the
+output is **always F32** (`dtype_rule: fixed(F32)`), so the `logits` dtype fans to exactly the four
+hand-written CPU registrations (`[F32|F64|BF16|F16, I64, F32]`). Params
 `FusedOpParams::FusedSoftmaxCrossEntropy { reduction: Reduction(Mean|Sum|None), ignore_index: i64 }`.
 Numerics: a **stable log-sum-exp computed in F64** (max-subtract, exp, sum, log), narrowed to F32 on
 store (`FUSED_SOFTMAX_CROSS_ENTROPY_CPU_PRECISION`). The output **dtype is always F32 regardless of
@@ -411,7 +427,8 @@ primitive backward (re-introducing `[..., V]` intermediates). `decompose` lowers
 lowered form** (only the forward CPU kernel masks). Pattern: stub `None` (explicit builder opt-in).
 Limitation: contiguous, zero-offset, row-major only.
 
-Dispatch key: `(FusedSoftmaxCrossEntropy, [F32 logits, I64 targets, F32 out], Cpu, "portable-cpu")`.
+Dispatch key: `(FusedSoftmaxCrossEntropy, [<float> logits, I64 targets, F32 out], Cpu, "portable-cpu")`
+— the `logits` dtype fans over `{F32, F64, BF16, F16}`; `targets` stays I64 and the output stays F32.
 
 FLOPs/bandwidth hint: the softmax over the vocab axis is `≈ N` log-sum-exp work over the
 `prod(targets.shape) * V` logit elements (a few transcendental ops per element); bandwidth ≈ read
@@ -431,7 +448,7 @@ kernel_revision_hash: auto
 accept:
   inputs:
     - name: logits
-      dtypes: [F32]
+      dtypes: [F32, F64, BF16, F16]   # logits dtype fans to EXACTLY the 4 hand-written FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY CPU regs (FSCE_F32/F64/BF16/F16 = [T, I64, F32]); BF16/F16/F64 logits accumulate through the same stable F64 log-sum-exp, output ALWAYS F32. Mirrors the ssm.fkc.md primitive FSCE section's 4-dtype logits set.
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: "1.."                     # [..., V]; last axis = vocab/class dimension
     - name: targets
