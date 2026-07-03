@@ -1,6 +1,6 @@
 # Baracuda bug report: cutlass-kernels-sys build failure under CUDA 13.3 (+ swallowed nvcc stderr)
 
-**Status:** SENT 2026-07-03 (relayed by CireSnave). Two findings from Fuel's side, one repro.
+**Status:** ANSWERED 2026-07-03 — both findings fixed baracuda-side (297a3aa, next alpha); root cause was cl.exe-not-on-PATH (NOT CUDA 13.3/CUTLASS), masked by the swallowed stderr. Workaround today: NVCC_CCBIN or a VS dev shell. See `baracuda-cutlass-cuda13-build-failure-reply.md`. Two findings from Fuel's side, one repro.
 **Severity for Fuel:** blocks every `--features cuda` build of the workspace — the
 FKC cost-unification Part A cuda-gated line remains uncompiled/unverified, and the
 Baracuda-backed `StructureKeyProvider` impl (the last piece of the pinned
