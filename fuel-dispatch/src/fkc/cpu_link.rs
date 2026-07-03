@@ -39,6 +39,27 @@ macro_rules! ep_dispatch {
     };
 }
 
+/// One `(FUSED-contract entry_point symbol, production wrapper)` pair for a
+/// `fused_op` section. Unlike the primitive [`ep!`] / [`ep_dispatch!`] pairs, a
+/// fused contract's `entry_point` is a specific, **dtype-agnostic** symbol
+/// `fuel_dispatch::dispatch::<op>_cpu` (e.g. `…::softmax_last_dim_cpu`), NOT a
+/// byte-kernel `<op>_<dt>` base. [`crate::fkc::lower::lower_fused`] resolves it
+/// AS-IS — fused sections do **not** dtype-fan yet (§3.4 fan-out is
+/// primitive-only), so a multi-dtype fused section registers only its
+/// **representative** (first) dtype variant. That representative is the F32
+/// variant, so the symbol binds the `<op>_f32_cpu_wrapper` — the exact kernel fn
+/// the hand-written `register_default_fused_kernels` seam registers for the F32
+/// dtype tuple. The `<op>_cpu` symbol base differs from the
+/// `<op>_f32_cpu_wrapper` fn-name, so the mapping is spelled out per row.
+macro_rules! fep {
+    ($symbol:literal, $wrapper:ident) => {
+        (
+            concat!("fuel_dispatch::dispatch::", $symbol),
+            crate::dispatch::$wrapper as KernelRef,
+        )
+    };
+}
+
 /// The CPU elementwise-binary family's `symbol → production wrapper` map
 /// (8 ops × 4 dtypes). The chassis umbrella section is `registrable: false`
 /// (§3.10 describe-only), so it never reaches resolution and is absent here.
@@ -847,6 +868,38 @@ pub static CPU_INPLACE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("powi_inplace", "f16",  powi_inplace_f16_cpu_wrapper),
 ];
 
+/// The CPU norm/softmax **FUSED** family's `symbol → production wrapper` map —
+/// the FIRST fused-registry link table (the `fused_op` analogue of the
+/// primitive `CPU_*_ENTRY_POINTS`). Contract:
+/// `docs/kernel-contracts/fused/norm-softmax.fkc.md`.
+///
+/// Eight `fused_op` sections — three forward (`SOFTMAX_LAST_DIM` /
+/// `RMS_NORM_LAST_DIM` / `LAYER_NORM_LAST_DIM`) plus five backward helpers
+/// (`SOFTMAX_LAST_DIM_BACKWARD` / `LAYER_NORM_LAST_DIM_BACKWARD` /
+/// `RMS_NORM_LAST_DIM_BACKWARD` / `REDUCE_MAX_TO_BACKWARD` / `POWI_BACKWARD`).
+/// Each declares a dtype-agnostic `entry_point` `…::<op>_cpu`, resolved AS-IS by
+/// [`crate::fkc::lower::lower_fused`] to the F32-**representative** production
+/// wrapper (fused sections do not dtype-fan yet — see [`fep!`]). That is the
+/// exact kernel fn the hand-written `register_default_fused_kernels` seam
+/// registers for each op's F32 dtype tuple, so an imported impl binds the SAME
+/// executable kernel.
+///
+/// This map serves the SEPARATE [`crate::fused::FusedKernelRegistry`] seam (the
+/// join target `register_default_fused_kernels` populates), NOT the primitive
+/// `KernelBindingTable`. It is the live resolution behind the fused import seam:
+/// an authored `fused_op` bundle imported through [`CpuLinkRegistry`] binds the
+/// real CPU fused kernels (FKC P9 — no raw pointers in the serialized contract).
+pub static CPU_FUSED_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    fep!("softmax_last_dim_cpu",             softmax_last_dim_f32_cpu_wrapper),
+    fep!("rms_norm_last_dim_cpu",            rms_norm_last_dim_f32_cpu_wrapper),
+    fep!("layer_norm_last_dim_cpu",          layer_norm_last_dim_f32_cpu_wrapper),
+    fep!("softmax_last_dim_backward_cpu",    softmax_last_dim_backward_f32_cpu_wrapper),
+    fep!("layer_norm_last_dim_backward_cpu", layer_norm_last_dim_backward_f32_cpu_wrapper),
+    fep!("rms_norm_last_dim_backward_cpu",   rms_norm_last_dim_backward_f32_cpu_wrapper),
+    fep!("reduce_max_to_backward_cpu",       reduce_max_to_backward_f32_cpu_wrapper),
+    fep!("powi_backward_cpu",                powi_backward_f32_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
 /// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
@@ -885,26 +938,31 @@ impl LinkRegistry for CpuLinkRegistry {
             .map(|(_, k)| *k)
     }
 
-    fn resolve_fused(&self, _symbol: &str) -> Option<KernelRef> {
-        // No fused-op contracts in the elementwise-binary, affine/clamp/powi,
-        // elementwise-unary, compare/where, reduce, reduce-to, norm,
-        // norm-backward, rope, ssm, conv, padding, shape-ops, or matmul corpora.
-        // The padding ops
-        // are all primitive `op_kind: Pad`/`PadBackward` contracts (no
-        // `fused_op`). The ssm ops are all
-        // primitive `op_kind` contracts ("fused" in FusedSoftmaxCrossEntropy
-        // names an intra-op softmax+NLL fusion, NOT a graph `FusedOpId`); the
-        // conv contract's sections are all `op_kind: Conv2D/ConvTranspose2D`
-        // primitives (the SEPARATE FusedOps::{CONV2D, CONV_TRANSPOSE2D} registry
-        // seam is hand-written, not FKC-imported). The matmul contract's
-        // sections are all `op_kind: MatMul`/`FusedLinear` primitives ("fused" in
-        // FusedLinear names an intra-op matmul+bias fusion, NOT a graph
-        // `FusedOpId`; the SEPARATE FusedOps::FUSED_LINEAR registry seam is
-        // hand-written, not FKC-imported). The attention contract's sections are
-        // all `op_kind: FlashAttn`/`FlashAttnBackward{Q,K,V}` primitives (bound on
-        // the KernelBindingTable) plus describe-only PagedAttn; the SEPARATE
-        // FusedOps::{FLASH_ATTN, FLASH_ATTN_BACKWARD_*, PAGED_ATTN} registry seam
-        // (`register_default_fused_kernels`) is hand-written, not FKC-imported.
-        None
+    fn resolve_fused(&self, symbol: &str) -> Option<KernelRef> {
+        // FUSED (`fused_op`) resolution — the live fused import seam. Chains the
+        // per-family fused entry-point tables (today: the norm/softmax family,
+        // `CPU_FUSED_NORM_ENTRY_POINTS`). Unresolved → `None`, which the importer
+        // turns into a typed `UnknownEntryPoint` (never a panic, never a
+        // fabricated pointer — FKC P9).
+        //
+        // NOTE on the OTHER fused corpora. The `fused/linear-quant.fkc.md` and
+        // `fused/conv-rope.fkc.md` bundles are NOT wired here yet:
+        //   - linear-quant is precision-clean (`audited: true`) but its
+        //     REGISTRABLE `nf4_matmul` section declares `fdx.quant.family:
+        //     AFFINE_BLOCK`, which `validate_file` fails as `MxNotYetRegistrable`
+        //     (consumer-ahead, §6) — so the whole bundle does not import until
+        //     that section is marked describe-only or the FDX quant codes land.
+        //   - conv-rope declares `audited: false`, so its imported precision
+        //     lowers to `PrecisionGuarantee::UNAUDITED` (bit_stable=false),
+        //     which would WEAKEN the F32 impl's hand-written bit-stable claim on
+        //     migration.
+        // The `cpu/*.fkc.md` corpora are all primitive `op_kind` contracts (the
+        // "fused" in FusedLinear / FusedSoftmaxCrossEntropy names an intra-op
+        // fusion, NOT a graph `FusedOpId`); their separate `FusedOps::*` registry
+        // seams stay hand-written in `register_default_fused_kernels`.
+        CPU_FUSED_NORM_ENTRY_POINTS
+            .iter()
+            .find(|(s, _)| *s == symbol)
+            .map(|(_, k)| *k)
     }
 }
