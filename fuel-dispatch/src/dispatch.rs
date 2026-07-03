@@ -3371,7 +3371,9 @@ cpu_nf4_matmul_wrapper!(nf4_matmul_bf16_cpu_wrapper, fuel_cpu_backend::byte_kern
 /// through `OpParams::FlashAttn`.
 macro_rules! cpu_flash_attn_wrapper {
     ($wrapper:ident, $kernel:path) => {
-        fn $wrapper(
+        // `pub(crate)` so the FKC `CpuLinkRegistry` can resolve the attention
+        // contract's forward-FlashAttn `entry_point` symbols to these wrappers.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -3444,7 +3446,9 @@ cpu_flash_attn_wrapper!(flash_attn_f16_cpu_wrapper,  fuel_cpu_backend::byte_kern
 /// only persists the requested one.
 macro_rules! cpu_flash_attn_backward_wrapper {
     ($wrapper:ident, $kernel:path, $which:expr) => {
-        fn $wrapper(
+        // `pub(crate)` so the FKC `CpuLinkRegistry` can resolve the attention
+        // contract's FlashAttnBackward{Q,K,V} `entry_point` symbols to these wrappers.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -4856,6 +4860,75 @@ fn register_cpu_matmul_from_contract(table: &mut KernelBindingTable) {
     );
 }
 
+/// The authored CPU **attention** kernel contract, embedded into the binary (the
+/// PRODUCTION `include_str!`). `register_cpu_attention_from_contract` parses +
+/// lowers it and binds the MIGRATED (`KernelBindingTable`) subset FROM THE
+/// CONTRACT.
+const CPU_ATTENTION_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/attention.fkc.md");
+
+/// Register the CPU **attention** family's `KernelBindingTable` path FROM its FKC
+/// kernel contract, the fifteenth production FKC consumer: forward `FlashAttn`
+/// (4 dtypes) + `FlashAttnBackward{Q,K,V}` (3 selectors × 4 dtypes), each
+/// `alibi_slopes`-optional section fanning into BOTH the no-alibi and with-alibi
+/// keys = 4 × 4 × 2 = 32 bindings. FKC is unconditional core infrastructure, so
+/// this is the ONE registration path for the migrated subset: the hand-written
+/// `table.register(FlashAttn / FlashAttnBackward{Q,K,V}, …)` regs (both alibi
+/// keys) are DELETED.
+///
+/// Each per-(op, dtype) section (`## flash_attn_f32`,
+/// `## flash_attn_backward_q_f32`, …) declares a SPECIFIC single-dtype
+/// `entry_point`, so none of them dtype-fan — the importer resolves each declared
+/// symbol AS-IS through the production [`crate::fkc::CpuLinkRegistry`] (now
+/// chaining [`crate::fkc::CPU_ATTENTION_ENTRY_POINTS`]) to the exact wrapper
+/// fn-pointer. Because the contract marks `alibi_slopes` as `optional: true` (the
+/// LAST input), the importer's key-builder (`fkc/lower.rs`
+/// `assemble_dtype_variants`) fans each section into BOTH the no-alibi key
+/// (`[q,k,v,out]` forward / `[q,k,v,do,out]` backward) and the with-alibi key
+/// (`+alibi`) — both resolving the SAME `entry_point`/wrapper (the CPU wrapper
+/// handles the presence/absence of the alibi operand). Forward FlashAttn AND the
+/// three backward selectors share the single `OpParams::FlashAttn` carrier (there
+/// is NO dedicated backward `OpParams` variant), so every softmax/mask geometry
+/// knob rides in `OpParams`, NOT the dtype-list.
+///
+/// **PagedAttn is DESCRIBE-ONLY (`registrable: false`) and stays hand-written.**
+/// Its paged KV pool carries an `fdx.gather: paged_blocks` sidecar (§3.9.1) whose
+/// FDX gather codes are [consumer-ahead] — the importer's VALIDATE pass returns
+/// `GatherNotYetSupported` for such an operand — so its four sections are
+/// documentation, excluded from lowering/registration (and the importer's
+/// validate pass SKIPS describe-only sections so they do not block this bundle's
+/// importable FlashAttn sections). The production PagedAttn regs stay below.
+///
+/// Behavior-preserving vs. the deleted hand-written path (both alibi keys):
+/// identical kernels + caps (contiguous-only); the binding's `kernel_source`
+/// becomes the contract's `"portable-cpu"` tag and its precision the contract's
+/// bit-stable claim. Cost is preserved because this runs BEFORE
+/// `fill_unset_cpu_cost`, which upgrades the imported entries' `unknown_cost`
+/// sentinel to the same OpKind cost fn every CPU primitive gets (the CPU cost
+/// dispatcher has `FlashAttn`/`PagedAttn` arms; the backward selectors keep
+/// `unknown_cost`, exactly as under the deleted hand-written regs — they are not
+/// on the cost-coverage lint's enumerated set). The family declares NO fused ops
+/// (all sections are `op_kind:` or describe-only PagedAttn), so `register_into`'s
+/// required fused argument is a local throwaway that provably stays empty. The
+/// SEPARATE `FusedKernelRegistry` FLASH_ATTN* / PAGED_ATTN seam
+/// (`register_default_fused_kernels`) is hand-written and stays untouched.
+fn register_cpu_attention_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_ATTENTION_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU attention contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "attention contract declares no fused ops (all op_kind or describe-only PagedAttn)",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU attention contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -4894,10 +4967,10 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // importer from docs/kernel-contracts/cpu/matmul.fkc.md — see
     // register_cpu_matmul_from_contract; the hand-written `fused_linear` closure
     // was removed with its regs.)
-    let flash_attn_no_alibi   = |t: DType| [t, t, t, t];        // (q, k, v, out)
-    let flash_attn_with_alibi = |t: DType| [t, t, t, t, t];     // (q, k, v, alibi, out)
-    let fa_bw_no_alibi   = |t: DType| [t, t, t, t, t];          // (q, k, v, do, out)
-    let fa_bw_with_alibi = |t: DType| [t, t, t, t, t, t];       // (q, k, v, do, alibi, out)
+    // FlashAttn / FlashAttnBackward{Q,K,V} key-shape closures were DELETED with
+    // the migration to FKC-contract registration (the importer's optional-operand
+    // fan builds both alibi keys from the contract). PagedAttn stays hand-written
+    // (describe-only in the contract), so its key-shape closures remain below.
     let paged_attn_no_alibi   = |t: DType| [t, t, t, u32_dt, u32_dt, t];      // q,kc,vc,bt,cl,out
     let paged_attn_with_alibi = |t: DType| [t, t, t, u32_dt, u32_dt, t, t];   // +alibi
     let index_select  = |t: DType| [t, u32_dt, t];              // (data, indices, out)
@@ -5121,6 +5194,21 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // hand-written below.
     register_cpu_matmul_from_contract(table);
 
+    // The CPU ATTENTION family's KernelBindingTable path — forward FlashAttn (4
+    // dtypes) + FlashAttnBackward{Q,K,V} (3 selectors × 4 dtypes), each
+    // alibi-optional section fanning into BOTH the no-alibi and with-alibi keys =
+    // 32 bindings — is now registered FROM docs/kernel-contracts/cpu/attention.fkc.md
+    // by register_cpu_attention_from_contract. The contract marks `alibi_slopes`
+    // as `optional: true`, so the importer's key-builder fans each (op, dtype)
+    // section into both operand-count keys; FKC is the SOLE path for the migrated
+    // subset. All hand-written FlashAttn + FlashAttnBackward{Q,K,V} regs (both
+    // alibi keys) were DELETED. PagedAttn is DESCRIBE-ONLY in the contract (its
+    // fdx.gather pool is [consumer-ahead]) and stays hand-written below; the
+    // SEPARATE FusedKernelRegistry FLASH_ATTN*/PAGED_ATTN seam
+    // (register_default_fused_kernels) is untouched. Placed BEFORE the
+    // `fill_unset_cpu_*` passes so the imported entries pick up the CPU cost fill.
+    register_cpu_attention_from_contract(table);
+
     // (bf16 + f16 reductions are now registered from the reduce contract above,
     // alongside the f32/f64 variants — accumulate in f32 for stability.)
 
@@ -5277,47 +5365,20 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // FusedKernelRegistry FusedOps::FUSED_LINEAR seam
     // (`register_default_fused_kernels`) is hand-written and stays untouched.
 
-    // FlashAttn — register both 3-input (q,k,v) and 4-input
-    // (q,k,v,alibi) shapes per dtype.
-    for (dt, w) in [
-        (f32_dt,  flash_attn_f32_cpu_wrapper  as KernelRef),
-        (f64_dt,  flash_attn_f64_cpu_wrapper),
-        (bf16_dt, flash_attn_bf16_cpu_wrapper),
-        (f16_dt,  flash_attn_f16_cpu_wrapper),
-    ] {
-        table.register(FlashAttn, &flash_attn_no_alibi(dt),   cpu, w);
-        table.register(FlashAttn, &flash_attn_with_alibi(dt), cpu, w);
-    }
-
-    // FlashAttn backward — three OpKinds (Q/K/V), four dtypes, two
-    // alibi shapes each. The CPU wrapper computes all three gradients
-    // every call and copies the requested one into `out`; expect ~3×
-    // the cost of a single-gradient backward kernel until a fused
-    // multi-output variant lands.
-    for (dt, wq, wk, wv) in [
-        (f32_dt,  flash_attn_backward_q_f32_cpu_wrapper  as KernelRef,
-                  flash_attn_backward_k_f32_cpu_wrapper  as KernelRef,
-                  flash_attn_backward_v_f32_cpu_wrapper  as KernelRef),
-        (f64_dt,  flash_attn_backward_q_f64_cpu_wrapper,
-                  flash_attn_backward_k_f64_cpu_wrapper,
-                  flash_attn_backward_v_f64_cpu_wrapper),
-        (bf16_dt, flash_attn_backward_q_bf16_cpu_wrapper,
-                  flash_attn_backward_k_bf16_cpu_wrapper,
-                  flash_attn_backward_v_bf16_cpu_wrapper),
-        (f16_dt,  flash_attn_backward_q_f16_cpu_wrapper,
-                  flash_attn_backward_k_f16_cpu_wrapper,
-                  flash_attn_backward_v_f16_cpu_wrapper),
-    ] {
-        table.register(FlashAttnBackwardQ, &fa_bw_no_alibi(dt),   cpu, wq);
-        table.register(FlashAttnBackwardQ, &fa_bw_with_alibi(dt), cpu, wq);
-        table.register(FlashAttnBackwardK, &fa_bw_no_alibi(dt),   cpu, wk);
-        table.register(FlashAttnBackwardK, &fa_bw_with_alibi(dt), cpu, wk);
-        table.register(FlashAttnBackwardV, &fa_bw_no_alibi(dt),   cpu, wv);
-        table.register(FlashAttnBackwardV, &fa_bw_with_alibi(dt), cpu, wv);
-    }
+    // FlashAttn (forward) + FlashAttnBackward{Q,K,V} — both the no-alibi and
+    // with-alibi keys per dtype — are now registered FROM the attention FKC
+    // contract (`register_cpu_attention_from_contract`, near the top of this fn).
+    // The contract marks `alibi_slopes` as `optional: true`, so the importer's
+    // key-builder fans each (op, dtype) section into both operand-count keys — FKC
+    // is the SOLE path for the migrated attention subset (32 bindings). All
+    // hand-written FlashAttn + FlashAttnBackward{Q,K,V} regs (both alibi keys)
+    // were DELETED.
 
     // PagedAttn — block_table + ctx_lens are always U32; alibi is
-    // optional.
+    // optional. DESCRIBE-ONLY in the FKC contract (`registrable: false` — its
+    // fdx.gather paged_blocks pool is [consumer-ahead], §3.9.1), so the importer
+    // does NOT register it; these hand-written regs stay authoritative until the
+    // FDX gather codes land.
     for (dt, w) in [
         (f32_dt,  paged_attn_f32_cpu_wrapper  as KernelRef),
         (f64_dt,  paged_attn_f64_cpu_wrapper),
@@ -8935,6 +8996,137 @@ mod tests {
             6 + 4,
             "matmul(6) + fused_linear(4) contract-sourced bindings",
         );
+    }
+
+    /// Gate for the CPU **attention** family's `KernelBindingTable` path migrated
+    /// to FKC-contract registration. FlashAttn (forward) + the three
+    /// FlashAttnBackward{Q,K,V} selectors — 4 ops × 4 dtypes × {no-alibi,
+    /// with-alibi} = 32 bindings — are IMPORTED from
+    /// `docs/kernel-contracts/cpu/attention.fkc.md` (the `op_kind:` sections).
+    /// Each section declares `alibi_slopes` as an `optional: true` LAST input, so
+    /// the importer's optional-operand fan registers BOTH the no-alibi key
+    /// (`[q,k,v(,do),out]`) and the with-alibi key (`+alibi`), both resolving the
+    /// SAME wrapper — byte-for-byte the deleted hand-written `no_alibi`/`with_alibi`
+    /// regs. Forward FlashAttn and the three backward selectors share the single
+    /// `OpParams::FlashAttn` carrier (no dedicated backward variant).
+    ///
+    /// **PagedAttn is DESCRIBE-ONLY in the contract** (`registrable: false` — its
+    /// `fdx.gather: paged_blocks` pool is [consumer-ahead], §3.9.1), so it is NOT
+    /// migrated and stays hand-written; its bindings keep the hand-written (empty)
+    /// `kernel_source` and are asserted separately below to remain PRESENT (the
+    /// reframe did not touch them). The SEPARATE `FusedKernelRegistry` FLASH_ATTN*
+    /// seam (`register_default_fused_kernels`) is likewise untouched.
+    ///
+    /// For each of the 32 flash keys: resolves to the EXACT production wrapper
+    /// with `kernel_source == "portable-cpu"` (the contract provenance tag), caps
+    /// contiguous, and the contract's bit-stable precision riding through.
+    #[test]
+    fn global_bindings_registers_attention_family_from_contract() {
+        let table = global_bindings();
+        let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+
+        // Forward FlashAttn wrappers (order matches `dts`); the same wrapper
+        // serves both the no-alibi [q,k,v,out] and with-alibi [q,k,v,alibi,out] keys.
+        let fa_wrappers: [crate::kernel::KernelRef; 4] = [
+            flash_attn_f32_cpu_wrapper,
+            flash_attn_f64_cpu_wrapper,
+            flash_attn_bf16_cpu_wrapper,
+            flash_attn_f16_cpu_wrapper,
+        ];
+        // FlashAttnBackward{Q,K,V} wrappers (order matches `dts`).
+        let fabq: [crate::kernel::KernelRef; 4] = [
+            flash_attn_backward_q_f32_cpu_wrapper,
+            flash_attn_backward_q_f64_cpu_wrapper,
+            flash_attn_backward_q_bf16_cpu_wrapper,
+            flash_attn_backward_q_f16_cpu_wrapper,
+        ];
+        let fabk: [crate::kernel::KernelRef; 4] = [
+            flash_attn_backward_k_f32_cpu_wrapper,
+            flash_attn_backward_k_f64_cpu_wrapper,
+            flash_attn_backward_k_bf16_cpu_wrapper,
+            flash_attn_backward_k_f16_cpu_wrapper,
+        ];
+        let fabv: [crate::kernel::KernelRef; 4] = [
+            flash_attn_backward_v_f32_cpu_wrapper,
+            flash_attn_backward_v_f64_cpu_wrapper,
+            flash_attn_backward_v_bf16_cpu_wrapper,
+            flash_attn_backward_v_f16_cpu_wrapper,
+        ];
+
+        // Assert `op`/`key` resolves to `expected` with the contract provenance,
+        // FINDING it among any alternatives at the key (never single-alternative).
+        let check = |op: OpKind, key: &[DType], expected: crate::kernel::KernelRef, label: &str| {
+            let alts = table.lookup_alternatives(op, key, BackendId::Cpu);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{op:?}/{label}/Cpu: the production wrapper must be bound \
+                         FROM the attention contract in global_bindings() — found {} \
+                         alternative(s) with sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "portable-cpu",
+                "{op:?}/{label}: family must be contract-sourced \
+                 (kernel_source=\"portable-cpu\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                !entry.caps.strided_input,
+                "{op:?}/{label}: caps preserved (contiguous-only)",
+            );
+            assert!(
+                entry.precision.bit_stable_on_same_hardware,
+                "{op:?}/{label}: contract's bit-stable claim rode through",
+            );
+        };
+
+        let mut checked = 0usize;
+        for (i, dt) in dts.iter().enumerate() {
+            // Forward: no-alibi [q,k,v,out] + with-alibi [q,k,v,alibi,out].
+            let fa_noa: &[DType] = &[*dt, *dt, *dt, *dt];
+            let fa_a: &[DType] = &[*dt, *dt, *dt, *dt, *dt];
+            check(OpKind::FlashAttn, fa_noa, fa_wrappers[i], "flash no-alibi");
+            check(OpKind::FlashAttn, fa_a, fa_wrappers[i], "flash with-alibi");
+            checked += 2;
+
+            // Backward Q/K/V: no-alibi [q,k,v,do,out] + with-alibi [q,k,v,do,alibi,out].
+            let bw_noa: &[DType] = &[*dt, *dt, *dt, *dt, *dt];
+            let bw_a: &[DType] = &[*dt, *dt, *dt, *dt, *dt, *dt];
+            for (op, ws) in [
+                (OpKind::FlashAttnBackwardQ, &fabq),
+                (OpKind::FlashAttnBackwardK, &fabk),
+                (OpKind::FlashAttnBackwardV, &fabv),
+            ] {
+                check(op, bw_noa, ws[i], "backward no-alibi");
+                check(op, bw_a, ws[i], "backward with-alibi");
+                checked += 2;
+            }
+        }
+        assert_eq!(
+            checked, 32,
+            "FlashAttn(8) + FlashAttnBackward{{Q,K,V}}(24) = 32 contract-sourced bindings",
+        );
+
+        // PagedAttn stays HAND-WRITTEN (describe-only in the contract): its
+        // bindings remain present (both alibi shapes) — proving the reframe did
+        // NOT migrate them (they keep the hand-written registration).
+        for dt in dts {
+            let pa_noa: &[DType] = &[dt, dt, dt, DType::U32, DType::U32, dt];
+            let pa_a: &[DType] = &[dt, dt, dt, DType::U32, DType::U32, dt, dt];
+            assert!(
+                table.lookup(OpKind::PagedAttn, pa_noa, BackendId::Cpu).is_ok(),
+                "PagedAttn/{dt:?} no-alibi stays registered (hand-written)",
+            );
+            assert!(
+                table.lookup(OpKind::PagedAttn, pa_a, BackendId::Cpu).is_ok(),
+                "PagedAttn/{dt:?} with-alibi stays registered (hand-written)",
+            );
+        }
     }
 
     /// Lookup miss returns NoBackendForOp with diagnostic data.

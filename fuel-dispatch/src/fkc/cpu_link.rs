@@ -24,6 +24,21 @@ macro_rules! ep {
     };
 }
 
+/// Like [`ep!`] but for a wrapper whose contract `entry_point` symbol is its
+/// FULLY-QUALIFIED `fuel_dispatch::dispatch::<wrapper>` path. The FlashAttn
+/// BACKWARD wrappers live in the dispatch layer (they select which gradient the
+/// shared byte-kernel writes via a `FaBackwardWhich` selector), so their
+/// contract `entry_point` carries the `fuel_dispatch::dispatch::` prefix — NOT
+/// `ep!`'s `fuel_cpu_backend::byte_kernels::<op>_<dt>` byte-kernel shape.
+macro_rules! ep_dispatch {
+    ($wrapper:ident) => {
+        (
+            concat!("fuel_dispatch::dispatch::", stringify!($wrapper)),
+            crate::dispatch::$wrapper as KernelRef,
+        )
+    };
+}
+
 /// The CPU elementwise-binary family's `symbol → production wrapper` map
 /// (8 ops × 4 dtypes). The chassis umbrella section is `registrable: false`
 /// (§3.10 describe-only), so it never reaches resolution and is absent here.
@@ -621,6 +636,58 @@ pub static CPU_MATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("fused_linear", "f16",  fused_linear_f16_cpu_wrapper),
 ];
 
+/// The CPU **attention** family's `symbol → production wrapper` map — the
+/// MIGRATED (`KernelBindingTable`) subset: forward `FlashAttn` (4 dtypes) +
+/// `FlashAttnBackward{Q,K,V}` (3 selectors × 4 dtypes) = 16 entry points.
+/// Contract: `docs/kernel-contracts/cpu/attention.fkc.md`.
+///
+/// Each per-(op, dtype) section (`## flash_attn_f32`, `## flash_attn_backward_q_f32`,
+/// …) declares a SPECIFIC single-dtype `entry_point`, so none of them dtype-fan
+/// — the importer resolves that symbol AS-IS. Because the contract marks
+/// `alibi_slopes` as `optional: true` (the LAST input), the importer's
+/// key-builder fans each section into BOTH the no-alibi key (`[q,k,v,out]` /
+/// `[q,k,v,do,out]`) and the with-alibi key (`+alibi`) — both resolving this
+/// SAME symbol/wrapper (the CPU wrapper handles the presence/absence of the
+/// alibi operand). The softmax/mask geometry rides in `OpParams::FlashAttn`
+/// (shared by the forward op AND the three backward selectors — there is no
+/// dedicated backward `OpParams` variant), NOT the dtype-list.
+///
+/// Two symbol shapes:
+/// - **Forward FlashAttn** kernels are byte-kernel symbols
+///   (`fuel_cpu_backend::byte_kernels::flash_attn_<dt>`, the `ep!` shape).
+/// - **FlashAttnBackward{Q,K,V}** wrappers live in the dispatch layer (they pin
+///   which gradient the shared byte-kernel writes via a `FaBackwardWhich`
+///   selector), so their symbol is the fully-qualified
+///   `fuel_dispatch::dispatch::<wrapper>` path (the `ep_dispatch!` shape).
+///
+/// **PagedAttn is DESCRIBE-ONLY** (`registrable: false` in the contract — its
+/// `fdx.gather: paged_blocks` pool is [consumer-ahead], §3.9.1), so its four
+/// sections never lower/resolve and are ABSENT here; the production `PagedAttn`
+/// binding stays hand-written. The SEPARATE `FusedKernelRegistry` FLASH_ATTN*
+/// seam (`register_default_fused_kernels`) is likewise a distinct registry and
+/// stays untouched; this map only serves the `KernelBindingTable` primitive path.
+pub static CPU_ATTENTION_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // Forward FlashAttn — byte-kernel symbols; keys [T,T,T,T] / [T,T,T,T,T].
+    ep!("flash_attn", "f32",  flash_attn_f32_cpu_wrapper),
+    ep!("flash_attn", "f64",  flash_attn_f64_cpu_wrapper),
+    ep!("flash_attn", "bf16", flash_attn_bf16_cpu_wrapper),
+    ep!("flash_attn", "f16",  flash_attn_f16_cpu_wrapper),
+    // FlashAttnBackward{Q,K,V} — dispatch-layer wrapper symbols;
+    // keys [T,T,T,T,T] / [T,T,T,T,T,T].
+    ep_dispatch!(flash_attn_backward_q_f32_cpu_wrapper),
+    ep_dispatch!(flash_attn_backward_q_f64_cpu_wrapper),
+    ep_dispatch!(flash_attn_backward_q_bf16_cpu_wrapper),
+    ep_dispatch!(flash_attn_backward_q_f16_cpu_wrapper),
+    ep_dispatch!(flash_attn_backward_k_f32_cpu_wrapper),
+    ep_dispatch!(flash_attn_backward_k_f64_cpu_wrapper),
+    ep_dispatch!(flash_attn_backward_k_bf16_cpu_wrapper),
+    ep_dispatch!(flash_attn_backward_k_f16_cpu_wrapper),
+    ep_dispatch!(flash_attn_backward_v_f32_cpu_wrapper),
+    ep_dispatch!(flash_attn_backward_v_f64_cpu_wrapper),
+    ep_dispatch!(flash_attn_backward_v_bf16_cpu_wrapper),
+    ep_dispatch!(flash_attn_backward_v_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
 /// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
@@ -629,7 +696,8 @@ pub static CPU_MATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// [`CPU_NORM_ENTRY_POINTS`], [`CPU_NORM_BACKWARD_ENTRY_POINTS`],
 /// [`CPU_ROPE_ENTRY_POINTS`], [`CPU_SSM_ENTRY_POINTS`],
 /// [`CPU_CONV_ENTRY_POINTS`], [`CPU_PADDING_ENTRY_POINTS`],
-/// [`CPU_SHAPE_OPS_ENTRY_POINTS`], and [`CPU_MATMUL_ENTRY_POINTS`].
+/// [`CPU_SHAPE_OPS_ENTRY_POINTS`], [`CPU_MATMUL_ENTRY_POINTS`], and
+/// [`CPU_ATTENTION_ENTRY_POINTS`].
 /// Unresolved → `None`, which the importer turns into a typed
 /// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;
@@ -652,6 +720,7 @@ impl LinkRegistry for CpuLinkRegistry {
             .chain(CPU_PADDING_ENTRY_POINTS.iter())
             .chain(CPU_SHAPE_OPS_ENTRY_POINTS.iter())
             .chain(CPU_MATMUL_ENTRY_POINTS.iter())
+            .chain(CPU_ATTENTION_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
@@ -671,7 +740,11 @@ impl LinkRegistry for CpuLinkRegistry {
         // sections are all `op_kind: MatMul`/`FusedLinear` primitives ("fused" in
         // FusedLinear names an intra-op matmul+bias fusion, NOT a graph
         // `FusedOpId`; the SEPARATE FusedOps::FUSED_LINEAR registry seam is
-        // hand-written, not FKC-imported).
+        // hand-written, not FKC-imported). The attention contract's sections are
+        // all `op_kind: FlashAttn`/`FlashAttnBackward{Q,K,V}` primitives (bound on
+        // the KernelBindingTable) plus describe-only PagedAttn; the SEPARATE
+        // FusedOps::{FLASH_ATTN, FLASH_ATTN_BACKWARD_*, PAGED_ATTN} registry seam
+        // (`register_default_fused_kernels`) is hand-written, not FKC-imported.
         None
     }
 }
