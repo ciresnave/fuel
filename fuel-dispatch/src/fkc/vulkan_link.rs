@@ -247,6 +247,315 @@ pub static VULKAN_CONV_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     vk_ep!("conv2d_f16",  crate::vulkan_dispatch::conv2d::conv2d_f16),
 ];
 
+/// The Vulkan **select** family's `symbol → production wrapper` map — the FULL
+/// family: 16 (op, dtype) keys across IndexSelect (4), Gather (6), MaskedFill
+/// (6). Contract: `docs/kernel-contracts/vulkan/select.fkc.md`, authored per-op
+/// (the conv/matmul per-combo precedent, with dtype fan-out §3.4). Each section
+/// declares a BASE `entry_point` fanned over its dtype list, so the importer
+/// resolves `<base>_<suffix>` and keys `[data, index, out]` (data dtype + fixed
+/// index dtype + passthrough(data) output), byte-for-byte the deleted hand-written
+/// `register_with_precision(OpKind::{IndexSelect,Gather,MaskedFill}, …)` regs.
+///
+/// IndexSelect fans to FOUR distinct per-dtype wrappers
+/// (`indexing::index_select_{f32,f16,bf16,f64}`). Gather + MaskedFill each dispatch
+/// through ONE dtype-agnostic wrapper (`gather::gather`, `masked_fill::masked_fill`)
+/// that picks its element byte-width from the output dtype — so every fanned dtype
+/// symbol maps to the SAME `KernelRef` (a synthetic-base umbrella, the pad_cpu
+/// precedent; distinct dtype keys ⇒ legal sibling registrations of one wrapper).
+/// Caps ride through contiguous-only (`requires_contiguous` ⇒ `strided_input ==
+/// false`) — byte-level data movers read/write own-shape flat buffers; a strided
+/// operand is auto-Contiguized first.
+pub static VULKAN_SELECT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // IndexSelect: 4 distinct per-dtype wrappers.
+    vk_ep!("index_select_f32",  crate::vulkan_dispatch::indexing::index_select_f32),
+    vk_ep!("index_select_f16",  crate::vulkan_dispatch::indexing::index_select_f16),
+    vk_ep!("index_select_bf16", crate::vulkan_dispatch::indexing::index_select_bf16),
+    vk_ep!("index_select_f64",  crate::vulkan_dispatch::indexing::index_select_f64),
+    // Gather: 6 dtype symbols → the ONE dtype-agnostic gather wrapper.
+    vk_ep!("gather_f32",  crate::vulkan_dispatch::gather::gather),
+    vk_ep!("gather_f16",  crate::vulkan_dispatch::gather::gather),
+    vk_ep!("gather_bf16", crate::vulkan_dispatch::gather::gather),
+    vk_ep!("gather_f64",  crate::vulkan_dispatch::gather::gather),
+    vk_ep!("gather_u8",   crate::vulkan_dispatch::gather::gather),
+    vk_ep!("gather_u32",  crate::vulkan_dispatch::gather::gather),
+    // MaskedFill: 6 dtype symbols → the ONE dtype-agnostic masked_fill wrapper.
+    vk_ep!("masked_fill_f32",  crate::vulkan_dispatch::masked_fill::masked_fill),
+    vk_ep!("masked_fill_f16",  crate::vulkan_dispatch::masked_fill::masked_fill),
+    vk_ep!("masked_fill_bf16", crate::vulkan_dispatch::masked_fill::masked_fill),
+    vk_ep!("masked_fill_f64",  crate::vulkan_dispatch::masked_fill::masked_fill),
+    vk_ep!("masked_fill_u8",   crate::vulkan_dispatch::masked_fill::masked_fill),
+    vk_ep!("masked_fill_u32",  crate::vulkan_dispatch::masked_fill::masked_fill),
+];
+
+/// The Vulkan **scatter** family's `symbol → production wrapper` map — the FULL
+/// family: 8 (op, dtype) keys across IndexAdd (4) + ScatterAdd (4). Contract:
+/// `docs/kernel-contracts/vulkan/scatter.fkc.md`, authored per-op with dtype
+/// fan-out (§3.4). Each section declares a BASE `entry_point` fanned over
+/// `[F32, F64, BF16, F16]` (the `base` + `src` operands SHARE that list ⇒ they
+/// fan together), so the importer resolves `<base>_<suffix>` and keys the 4-slot
+/// `[base, U32, src, out]` (`passthrough(base)` output), byte-for-byte the deleted
+/// hand-written `register_with_precision(OpKind::{IndexAdd,ScatterAdd}, …)` regs.
+///
+/// Each fanned symbol resolves to its distinct per-dtype wrapper
+/// (`index_add::index_add_*`, `scatter_add::scatter_add_*`). Caps ride through
+/// contiguous-only (`requires_contiguous` ⇒ `strided_input == false`); precision is
+/// the contract's audited nondeterministic `none(reason)` seed (bounded-CAS atomic
+/// accumulate, scheduler-dependent order).
+pub static VULKAN_SCATTER_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // IndexAdd: 4 distinct per-dtype wrappers.
+    vk_ep!("index_add_f32",  crate::vulkan_dispatch::index_add::index_add_f32),
+    vk_ep!("index_add_f64",  crate::vulkan_dispatch::index_add::index_add_f64),
+    vk_ep!("index_add_bf16", crate::vulkan_dispatch::index_add::index_add_bf16),
+    vk_ep!("index_add_f16",  crate::vulkan_dispatch::index_add::index_add_f16),
+    // ScatterAdd: 4 distinct per-dtype wrappers.
+    vk_ep!("scatter_add_f32",  crate::vulkan_dispatch::scatter_add::scatter_add_f32),
+    vk_ep!("scatter_add_f64",  crate::vulkan_dispatch::scatter_add::scatter_add_f64),
+    vk_ep!("scatter_add_bf16", crate::vulkan_dispatch::scatter_add::scatter_add_bf16),
+    vk_ep!("scatter_add_f16",  crate::vulkan_dispatch::scatter_add::scatter_add_f16),
+];
+
+/// The Vulkan **movement** family's `symbol → production wrapper` map — the FULL
+/// family: 8 (op, dtype) keys across Concat (4) + CumSum (4). Contract:
+/// `docs/kernel-contracts/vulkan/movement.fkc.md`, authored per-op with dtype
+/// fan-out (§3.4). Each section declares a BASE `entry_point` fanned over its dtype
+/// list, resolving `<base>_<suffix>` to each distinct per-dtype wrapper and keying
+/// `[T, T]` (`passthrough(input)` output), byte-for-byte the deleted hand-written
+/// `register_with_caps_and_precision(OpKind::{Concat,CumSum}, …, strided, …)` regs.
+///
+/// Both are STRIDE-AWARE (`strided: accepted` ⇒ `strided_input == true`) — the
+/// caps-through-import proof for this family. Concat precision is byte-exact
+/// (bitwise); CumSum takes the conservative UNAUDITED author seed (the elementwise
+/// pointwise precedent).
+pub static VULKAN_MOVEMENT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // Concat: 4 distinct per-dtype wrappers.
+    vk_ep!("concat_f32",  crate::vulkan_dispatch::concat::concat_f32),
+    vk_ep!("concat_f16",  crate::vulkan_dispatch::concat::concat_f16),
+    vk_ep!("concat_bf16", crate::vulkan_dispatch::concat::concat_bf16),
+    vk_ep!("concat_f64",  crate::vulkan_dispatch::concat::concat_f64),
+    // CumSum: 4 distinct per-dtype wrappers.
+    vk_ep!("cumsum_f32",  crate::vulkan_dispatch::cumsum::cumsum_f32),
+    vk_ep!("cumsum_f64",  crate::vulkan_dispatch::cumsum::cumsum_f64),
+    vk_ep!("cumsum_f16",  crate::vulkan_dispatch::cumsum::cumsum_f16),
+    vk_ep!("cumsum_bf16", crate::vulkan_dispatch::cumsum::cumsum_bf16),
+];
+
+/// The Vulkan **shape** family's `symbol → production wrapper` map — the FULL
+/// family: 28 (op, dtype) keys across Triu (7) + Tril (7) + Flip (7) + Roll (7)
+/// over `[F32, F16, BF16, F64, I32, U32, I64]`. Contract:
+/// `docs/kernel-contracts/vulkan/shape.fkc.md`, authored per-op with dtype fan-out
+/// (§3.4). Each op is ONE dtype-agnostic wrapper (`triangular::triu` /
+/// `triangular::tril` / `flip::flip` / `roll::roll`) that picks its byte-width from
+/// the dtype — so every fanned `<base>_<suffix>` symbol maps to the SAME `KernelRef`
+/// (a synthetic-base umbrella, the pad_cpu precedent). Distinct dtype keys ⇒ legal
+/// sibling registrations of one wrapper, byte-for-byte the deleted hand-written
+/// regs.
+///
+/// Caps split by op: Triu/Tril `requires_contiguous` (`strided_input == false`),
+/// Flip/Roll `strided: accepted` (`strided_input == true`) — the caps-through-import
+/// proof. All are byte-exact (bitwise, `max_ulp: 0`).
+pub static VULKAN_SHAPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // Triu: 7 dtype symbols → the ONE dtype-agnostic triu wrapper.
+    vk_ep!("triu_f32",  crate::vulkan_dispatch::triangular::triu),
+    vk_ep!("triu_f16",  crate::vulkan_dispatch::triangular::triu),
+    vk_ep!("triu_bf16", crate::vulkan_dispatch::triangular::triu),
+    vk_ep!("triu_f64",  crate::vulkan_dispatch::triangular::triu),
+    vk_ep!("triu_i32",  crate::vulkan_dispatch::triangular::triu),
+    vk_ep!("triu_u32",  crate::vulkan_dispatch::triangular::triu),
+    vk_ep!("triu_i64",  crate::vulkan_dispatch::triangular::triu),
+    // Tril: 7 dtype symbols → the ONE dtype-agnostic tril wrapper.
+    vk_ep!("tril_f32",  crate::vulkan_dispatch::triangular::tril),
+    vk_ep!("tril_f16",  crate::vulkan_dispatch::triangular::tril),
+    vk_ep!("tril_bf16", crate::vulkan_dispatch::triangular::tril),
+    vk_ep!("tril_f64",  crate::vulkan_dispatch::triangular::tril),
+    vk_ep!("tril_i32",  crate::vulkan_dispatch::triangular::tril),
+    vk_ep!("tril_u32",  crate::vulkan_dispatch::triangular::tril),
+    vk_ep!("tril_i64",  crate::vulkan_dispatch::triangular::tril),
+    // Flip: 7 dtype symbols → the ONE dtype-agnostic flip wrapper (stride-aware).
+    vk_ep!("flip_f32",  crate::vulkan_dispatch::flip::flip),
+    vk_ep!("flip_f16",  crate::vulkan_dispatch::flip::flip),
+    vk_ep!("flip_bf16", crate::vulkan_dispatch::flip::flip),
+    vk_ep!("flip_f64",  crate::vulkan_dispatch::flip::flip),
+    vk_ep!("flip_i32",  crate::vulkan_dispatch::flip::flip),
+    vk_ep!("flip_u32",  crate::vulkan_dispatch::flip::flip),
+    vk_ep!("flip_i64",  crate::vulkan_dispatch::flip::flip),
+    // Roll: 7 dtype symbols → the ONE dtype-agnostic roll wrapper (stride-aware).
+    vk_ep!("roll_f32",  crate::vulkan_dispatch::roll::roll),
+    vk_ep!("roll_f16",  crate::vulkan_dispatch::roll::roll),
+    vk_ep!("roll_bf16", crate::vulkan_dispatch::roll::roll),
+    vk_ep!("roll_f64",  crate::vulkan_dispatch::roll::roll),
+    vk_ep!("roll_i32",  crate::vulkan_dispatch::roll::roll),
+    vk_ep!("roll_u32",  crate::vulkan_dispatch::roll::roll),
+    vk_ep!("roll_i64",  crate::vulkan_dispatch::roll::roll),
+];
+
+/// The Vulkan **pad-copy** family's `symbol → production wrapper` map — the FULL
+/// family: 21 (op, dtype) keys across Pad (6) + PadBackward (6) + Copy (9).
+/// Contract: `docs/kernel-contracts/vulkan/pad-copy.fkc.md`, authored per-op with
+/// dtype fan-out (§3.4). Each op is ONE dtype-agnostic wrapper (`pad::pad_const` /
+/// `pad::pad_backward` / `copy_to_cpu_vulkan`) that picks its byte-width from the
+/// dtype — so every fanned `<base>_<suffix>` symbol maps to the SAME `KernelRef`
+/// (a synthetic-base umbrella, the pad_cpu precedent). Distinct dtype keys ⇒ legal
+/// sibling registrations of one wrapper, byte-for-byte the deleted hand-written
+/// regs. Caps ride through contiguous-only (`requires_contiguous` ⇒
+/// `strided_input == false`); precision byte-exact (bitwise, `max_ulp: 0`).
+pub static VULKAN_PAD_COPY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // Pad: 6 dtype symbols → the ONE dtype-agnostic pad_const wrapper.
+    vk_ep!("pad_f32",  crate::vulkan_dispatch::pad::pad_const),
+    vk_ep!("pad_f16",  crate::vulkan_dispatch::pad::pad_const),
+    vk_ep!("pad_bf16", crate::vulkan_dispatch::pad::pad_const),
+    vk_ep!("pad_f64",  crate::vulkan_dispatch::pad::pad_const),
+    vk_ep!("pad_u8",   crate::vulkan_dispatch::pad::pad_const),
+    vk_ep!("pad_u32",  crate::vulkan_dispatch::pad::pad_const),
+    // PadBackward: 6 dtype symbols → the ONE dtype-agnostic pad_backward wrapper.
+    vk_ep!("pad_backward_f32",  crate::vulkan_dispatch::pad::pad_backward),
+    vk_ep!("pad_backward_f16",  crate::vulkan_dispatch::pad::pad_backward),
+    vk_ep!("pad_backward_bf16", crate::vulkan_dispatch::pad::pad_backward),
+    vk_ep!("pad_backward_f64",  crate::vulkan_dispatch::pad::pad_backward),
+    vk_ep!("pad_backward_u8",   crate::vulkan_dispatch::pad::pad_backward),
+    vk_ep!("pad_backward_u32",  crate::vulkan_dispatch::pad::pad_backward),
+    // Copy: 9 dtype symbols → the ONE dtype-agnostic D2H copy wrapper.
+    vk_ep!("copy_f32",  crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_f16",  crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_bf16", crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_f64",  crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_u32",  crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_u8",   crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_i16",  crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_i32",  crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_i64",  crate::vulkan_dispatch::copy_to_cpu_vulkan),
+];
+
+/// The Vulkan **write-slice** family's `symbol → production wrapper` map — the
+/// FULL family: 18 (op, dtype) keys across WriteSlice (9) + WriteSliceRotating (9).
+/// Contract: `docs/kernel-contracts/vulkan/write-slice.fkc.md`, authored per-op
+/// with dtype fan-out (§3.4). BYTE-WIDTH-keyed: each op's 9 dtype symbols collapse
+/// to FOUR wrappers by element size (`b1/b2/b4/b8`) — the cast family's "several
+/// sections share one wrapper" precedent. The link registry maps each fanned
+/// `<base>_<suffix>` symbol to the byte-width wrapper for that dtype's size, keying
+/// `[T, T]` byte-for-byte the deleted hand-written
+/// `register_with_precision(OpKind::{WriteSlice,WriteSliceRotating}, …)` regs. Caps
+/// ride through contiguous-only (`requires_contiguous` ⇒ `strided_input == false`);
+/// precision byte-exact (bitwise, `max_ulp: 0`).
+pub static VULKAN_WRITE_SLICE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // WriteSlice: 9 dtype symbols → 4 byte-width wrappers (b4/b2/b8/b1).
+    vk_ep!("write_slice_f32",  crate::vulkan_dispatch::write_slice::write_slice_b4),
+    vk_ep!("write_slice_i32",  crate::vulkan_dispatch::write_slice::write_slice_b4),
+    vk_ep!("write_slice_u32",  crate::vulkan_dispatch::write_slice::write_slice_b4),
+    vk_ep!("write_slice_f16",  crate::vulkan_dispatch::write_slice::write_slice_b2),
+    vk_ep!("write_slice_bf16", crate::vulkan_dispatch::write_slice::write_slice_b2),
+    vk_ep!("write_slice_f64",  crate::vulkan_dispatch::write_slice::write_slice_b8),
+    vk_ep!("write_slice_i64",  crate::vulkan_dispatch::write_slice::write_slice_b8),
+    vk_ep!("write_slice_u8",   crate::vulkan_dispatch::write_slice::write_slice_b1),
+    vk_ep!("write_slice_i8",   crate::vulkan_dispatch::write_slice::write_slice_b1),
+    // WriteSliceRotating: 9 dtype symbols → 4 byte-width rotating wrappers.
+    vk_ep!("write_slice_rotating_f32",  crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b4),
+    vk_ep!("write_slice_rotating_i32",  crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b4),
+    vk_ep!("write_slice_rotating_u32",  crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b4),
+    vk_ep!("write_slice_rotating_f16",  crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b2),
+    vk_ep!("write_slice_rotating_bf16", crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b2),
+    vk_ep!("write_slice_rotating_f64",  crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b8),
+    vk_ep!("write_slice_rotating_i64",  crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b8),
+    vk_ep!("write_slice_rotating_u8",   crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b1),
+    vk_ep!("write_slice_rotating_i8",   crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b1),
+];
+
+/// The Vulkan **rope** family's `symbol → production wrapper` map — the FULL
+/// family: 4 (Rope, [x, cos, sin, out]) per-dtype bindings. Contract:
+/// `docs/kernel-contracts/vulkan/rope.fkc.md`, authored with dtype fan-out (§3.4):
+/// the single section declares a BASE `entry_point` fanned over `[F32, F16, F64,
+/// BF16]` (the `x` + `cos` + `sin` operands SHARE that list ⇒ they fan together),
+/// resolving `rope_<suffix>` to each distinct per-dtype wrapper and keying the
+/// 4-slot `[x, cos, sin, out]` (`passthrough(x)` output), byte-for-byte the deleted
+/// hand-written `register_with_caps_and_precision(OpKind::Rope, …, strided, …)`
+/// regs. STRIDE-AWARE (`strided: accepted` ⇒ `strided_input == true`) — the
+/// caps-through-import proof; precision is the conservative UNAUDITED author seed
+/// (the elementwise pointwise precedent).
+pub static VULKAN_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    vk_ep!("rope_f32",  crate::vulkan_dispatch::attention::rope_f32),
+    vk_ep!("rope_f16",  crate::vulkan_dispatch::attention::rope_f16),
+    vk_ep!("rope_f64",  crate::vulkan_dispatch::attention::rope_f64),
+    vk_ep!("rope_bf16", crate::vulkan_dispatch::attention::rope_bf16),
+];
+
+/// The Vulkan **reduce** family's `symbol → production wrapper` map — the FULL
+/// family: 24 (op, dtype) keys across SumReduce / MaxReduce / MinReduce /
+/// MeanReduce (16, key `[T, T]`) + ArgMaxDim / ArgMinDim (8, key `[T, U32]`).
+/// Contract: `docs/kernel-contracts/vulkan/reduce-prims.fkc.md`, authored per-op
+/// with dtype fan-out (§3.4) — the production per-(op, dtype) binding model that
+/// supersedes the aspirational `vulkan/reduce.fkc.md` op-id-selector corpus. Each
+/// section fans a BASE `entry_point` over `[F32, F16, BF16, F64]` to the DISTINCT
+/// per-dtype wrapper, byte-for-byte the deleted hand-written
+/// `register_with_precision(OpKind::{SumReduce,…,ArgMinDim}, …)` regs. Caps ride
+/// through contiguous-only (`requires_contiguous` ⇒ `strided_input == false`);
+/// value reduces are audited nondeterministic none(reason), arg reduces bitwise
+/// exact.
+pub static VULKAN_REDUCE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // Value reduces: 4 ops × 4 dtypes → 16 distinct wrappers.
+    vk_ep!("reduce_sum_f32",  crate::vulkan_dispatch::reduce::sum_f32),
+    vk_ep!("reduce_sum_f16",  crate::vulkan_dispatch::reduce::sum_f16),
+    vk_ep!("reduce_sum_bf16", crate::vulkan_dispatch::reduce::sum_bf16),
+    vk_ep!("reduce_sum_f64",  crate::vulkan_dispatch::reduce::sum_f64),
+    vk_ep!("reduce_max_f32",  crate::vulkan_dispatch::reduce::max_f32),
+    vk_ep!("reduce_max_f16",  crate::vulkan_dispatch::reduce::max_f16),
+    vk_ep!("reduce_max_bf16", crate::vulkan_dispatch::reduce::max_bf16),
+    vk_ep!("reduce_max_f64",  crate::vulkan_dispatch::reduce::max_f64),
+    vk_ep!("reduce_min_f32",  crate::vulkan_dispatch::reduce::min_f32),
+    vk_ep!("reduce_min_f16",  crate::vulkan_dispatch::reduce::min_f16),
+    vk_ep!("reduce_min_bf16", crate::vulkan_dispatch::reduce::min_bf16),
+    vk_ep!("reduce_min_f64",  crate::vulkan_dispatch::reduce::min_f64),
+    vk_ep!("reduce_mean_f32",  crate::vulkan_dispatch::reduce::mean_f32),
+    vk_ep!("reduce_mean_f16",  crate::vulkan_dispatch::reduce::mean_f16),
+    vk_ep!("reduce_mean_bf16", crate::vulkan_dispatch::reduce::mean_bf16),
+    vk_ep!("reduce_mean_f64",  crate::vulkan_dispatch::reduce::mean_f64),
+    // Index reduces: 2 ops × 4 dtypes → 8 distinct wrappers.
+    vk_ep!("arg_max_f32",  crate::vulkan_dispatch::arg_reduce::argmax_f32),
+    vk_ep!("arg_max_f16",  crate::vulkan_dispatch::arg_reduce::argmax_f16),
+    vk_ep!("arg_max_bf16", crate::vulkan_dispatch::arg_reduce::argmax_bf16),
+    vk_ep!("arg_max_f64",  crate::vulkan_dispatch::arg_reduce::argmax_f64),
+    vk_ep!("arg_min_f32",  crate::vulkan_dispatch::arg_reduce::argmin_f32),
+    vk_ep!("arg_min_f16",  crate::vulkan_dispatch::arg_reduce::argmin_f16),
+    vk_ep!("arg_min_bf16", crate::vulkan_dispatch::arg_reduce::argmin_bf16),
+    vk_ep!("arg_min_f64",  crate::vulkan_dispatch::arg_reduce::argmin_f64),
+];
+
+/// The Vulkan **norm** family's `symbol → production wrapper` map — the FULL
+/// family: 20 (op, dtype) keys across SoftmaxLastDim (4) + SoftmaxLastDimBackward
+/// (4) + LayerNormLastDim (4) + LayerNormLastDimBackward (4) + RmsNormLastDim (4).
+/// Contract: `docs/kernel-contracts/vulkan/norm.fkc.md`, authored per-op with dtype
+/// fan-out (§3.4). Each section fans a BASE `entry_point` over `[F32, F16, BF16,
+/// F64]` to the DISTINCT per-dtype wrapper (`softmax::*`, `norm::*`), keying forward
+/// families `[T, T]` and backward families `[T, T, T]` (`[y,g,dx]` / `[x,g,dx]`,
+/// both inputs sharing the fanned list), byte-for-byte the deleted hand-written
+/// `register_with_precision(OpKind::{SoftmaxLastDim,…,RmsNormLastDim}, …)` regs.
+/// Caps ride through contiguous-only (`requires_contiguous` ⇒ `strided_input ==
+/// false`); precision is the audited nondeterministic none(reason) seed
+/// (per-row subgroup-tree FADD order).
+pub static VULKAN_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // Softmax forward + backward.
+    vk_ep!("softmax_last_dim_f32",  crate::vulkan_dispatch::softmax::softmax_f32),
+    vk_ep!("softmax_last_dim_f16",  crate::vulkan_dispatch::softmax::softmax_f16),
+    vk_ep!("softmax_last_dim_bf16", crate::vulkan_dispatch::softmax::softmax_bf16),
+    vk_ep!("softmax_last_dim_f64",  crate::vulkan_dispatch::softmax::softmax_f64),
+    vk_ep!("softmax_last_dim_backward_f32",  crate::vulkan_dispatch::softmax::softmax_last_dim_backward_f32),
+    vk_ep!("softmax_last_dim_backward_f16",  crate::vulkan_dispatch::softmax::softmax_last_dim_backward_f16),
+    vk_ep!("softmax_last_dim_backward_bf16", crate::vulkan_dispatch::softmax::softmax_last_dim_backward_bf16),
+    vk_ep!("softmax_last_dim_backward_f64",  crate::vulkan_dispatch::softmax::softmax_last_dim_backward_f64),
+    // LayerNorm forward + backward.
+    vk_ep!("layer_norm_last_dim_f32",  crate::vulkan_dispatch::norm::layer_norm_f32),
+    vk_ep!("layer_norm_last_dim_f16",  crate::vulkan_dispatch::norm::layer_norm_f16),
+    vk_ep!("layer_norm_last_dim_bf16", crate::vulkan_dispatch::norm::layer_norm_bf16),
+    vk_ep!("layer_norm_last_dim_f64",  crate::vulkan_dispatch::norm::layer_norm_f64),
+    vk_ep!("layer_norm_last_dim_backward_f32",  crate::vulkan_dispatch::norm::layer_norm_backward_f32),
+    vk_ep!("layer_norm_last_dim_backward_f16",  crate::vulkan_dispatch::norm::layer_norm_backward_f16),
+    vk_ep!("layer_norm_last_dim_backward_bf16", crate::vulkan_dispatch::norm::layer_norm_backward_bf16),
+    vk_ep!("layer_norm_last_dim_backward_f64",  crate::vulkan_dispatch::norm::layer_norm_backward_f64),
+    // RmsNorm forward.
+    vk_ep!("rms_norm_last_dim_f32",  crate::vulkan_dispatch::norm::rms_f32),
+    vk_ep!("rms_norm_last_dim_f16",  crate::vulkan_dispatch::norm::rms_f16),
+    vk_ep!("rms_norm_last_dim_bf16", crate::vulkan_dispatch::norm::rms_bf16),
+    vk_ep!("rms_norm_last_dim_f64",  crate::vulkan_dispatch::norm::rms_f64),
+];
+
 /// The built-in Vulkan backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`VULKAN_CAST_ENTRY_POINTS`] +
 /// [`VULKAN_ELEMENTWISE_ENTRY_POINTS`] + [`VULKAN_MATMUL_ENTRY_POINTS`] +
@@ -266,6 +575,15 @@ impl LinkRegistry for VulkanLinkRegistry {
             .chain(VULKAN_ELEMENTWISE_ENTRY_POINTS.iter())
             .chain(VULKAN_MATMUL_ENTRY_POINTS.iter())
             .chain(VULKAN_CONV_ENTRY_POINTS.iter())
+            .chain(VULKAN_SELECT_ENTRY_POINTS.iter())
+            .chain(VULKAN_SCATTER_ENTRY_POINTS.iter())
+            .chain(VULKAN_MOVEMENT_ENTRY_POINTS.iter())
+            .chain(VULKAN_SHAPE_ENTRY_POINTS.iter())
+            .chain(VULKAN_PAD_COPY_ENTRY_POINTS.iter())
+            .chain(VULKAN_WRITE_SLICE_ENTRY_POINTS.iter())
+            .chain(VULKAN_ROPE_ENTRY_POINTS.iter())
+            .chain(VULKAN_REDUCE_ENTRY_POINTS.iter())
+            .chain(VULKAN_NORM_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
