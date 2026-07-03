@@ -688,6 +688,143 @@ pub static CPU_ATTENTION_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep_dispatch!(flash_attn_backward_v_f16_cpu_wrapper),
 ];
 
+/// The CPU **in-place scalar-param** family's `symbol → production wrapper`
+/// map — the FULL family: 21 in-place unary ops (`<op>_inplace`, each fanned
+/// ×4 dtypes = 84) + `InplaceAffine` / `ClampInplace` / `PowIInplace`
+/// (`affine_inplace` / `clamp_inplace` / `powi_inplace`, 4 dtypes each = 12) =
+/// 96 entry points. Contract:
+/// `docs/kernel-contracts/cpu/inplace-unary-affine.fkc.md`.
+///
+/// - **In-place unary** (`relu_inplace` … `gelu_erf_inplace`): each per-op
+///   section declares a BASE `entry_point` (`…::relu_inplace`) + enumerates
+///   `dtypes: [F32,F64,BF16,F16]`, so the importer's §3.4 multi-dtype fan-out
+///   resolves `<base>_<dtype>` (`relu_inplace_f32`) against this table — the
+///   `$op` literals below are the byte-kernel BASES (`<op>_inplace`), NOT the
+///   OpKind names. The two GELU flavors stay distinct: `gelu_inplace`
+///   (`OpKind::GeluInplace`, the canonical tanh GELU) vs `gelu_erf_inplace`
+///   (`OpKind::GeluErfInplace`).
+/// - **InplaceAffine / ClampInplace / PowIInplace** are per-dtype SINGLE
+///   sections (one enumerated dtype each), so they do NOT fan — the importer
+///   resolves their specific `<op>_inplace_<dt>` symbol AS-IS. The affine rows
+///   carry the THREE-WAY naming skew: the byte-kernel/entry_point suffix is
+///   `affine_inplace_<dt>` while the production wrapper fn is
+///   `inplace_affine_<dt>_cpu_wrapper` (words swapped) — the `ep!` symbol is
+///   built from the `$op`/`$dt` literals (`affine_inplace`), so the mapping
+///   still binds the correct contract symbol to the swapped-name wrapper
+///   (mirrors the clamp/powi/log_softmax fn-vs-symbol cases). Clamp/powi
+///   wrapper fn-names match their symbols directly.
+///
+/// Every binding keys `[T, T]` (the single `out` operand + its
+/// `passthrough(out)` mirror; the executor's `WorkItemKind::InplaceKernel` arm
+/// passes the target as `outputs[0]`, so the wrapper takes 0 inputs + 1 output,
+/// but the binding-table KEY is `[T, T]`). Scalar params (affine `mul`/`add`,
+/// clamp `min`/`max`, powi `exp`) ride in `OpParams::{Affine, Clamp, PowI}`, NOT
+/// the dtype-list. The `## unary_inplace` chassis umbrella is `registrable: false`
+/// (§3.10 describe-only) and never resolves, so it is absent here.
+pub static CPU_INPLACE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // In-place unary — 21 ops × 4 dtypes, base `<op>_inplace` fanned per dtype.
+    ep!("relu_inplace", "f32",  relu_inplace_f32_cpu_wrapper),
+    ep!("relu_inplace", "f64",  relu_inplace_f64_cpu_wrapper),
+    ep!("relu_inplace", "bf16", relu_inplace_bf16_cpu_wrapper),
+    ep!("relu_inplace", "f16",  relu_inplace_f16_cpu_wrapper),
+    ep!("silu_inplace", "f32",  silu_inplace_f32_cpu_wrapper),
+    ep!("silu_inplace", "f64",  silu_inplace_f64_cpu_wrapper),
+    ep!("silu_inplace", "bf16", silu_inplace_bf16_cpu_wrapper),
+    ep!("silu_inplace", "f16",  silu_inplace_f16_cpu_wrapper),
+    ep!("gelu_inplace", "f32",  gelu_inplace_f32_cpu_wrapper),
+    ep!("gelu_inplace", "f64",  gelu_inplace_f64_cpu_wrapper),
+    ep!("gelu_inplace", "bf16", gelu_inplace_bf16_cpu_wrapper),
+    ep!("gelu_inplace", "f16",  gelu_inplace_f16_cpu_wrapper),
+    ep!("tanh_inplace", "f32",  tanh_inplace_f32_cpu_wrapper),
+    ep!("tanh_inplace", "f64",  tanh_inplace_f64_cpu_wrapper),
+    ep!("tanh_inplace", "bf16", tanh_inplace_bf16_cpu_wrapper),
+    ep!("tanh_inplace", "f16",  tanh_inplace_f16_cpu_wrapper),
+    ep!("sigmoid_inplace", "f32",  sigmoid_inplace_f32_cpu_wrapper),
+    ep!("sigmoid_inplace", "f64",  sigmoid_inplace_f64_cpu_wrapper),
+    ep!("sigmoid_inplace", "bf16", sigmoid_inplace_bf16_cpu_wrapper),
+    ep!("sigmoid_inplace", "f16",  sigmoid_inplace_f16_cpu_wrapper),
+    ep!("neg_inplace", "f32",  neg_inplace_f32_cpu_wrapper),
+    ep!("neg_inplace", "f64",  neg_inplace_f64_cpu_wrapper),
+    ep!("neg_inplace", "bf16", neg_inplace_bf16_cpu_wrapper),
+    ep!("neg_inplace", "f16",  neg_inplace_f16_cpu_wrapper),
+    ep!("abs_inplace", "f32",  abs_inplace_f32_cpu_wrapper),
+    ep!("abs_inplace", "f64",  abs_inplace_f64_cpu_wrapper),
+    ep!("abs_inplace", "bf16", abs_inplace_bf16_cpu_wrapper),
+    ep!("abs_inplace", "f16",  abs_inplace_f16_cpu_wrapper),
+    ep!("sqr_inplace", "f32",  sqr_inplace_f32_cpu_wrapper),
+    ep!("sqr_inplace", "f64",  sqr_inplace_f64_cpu_wrapper),
+    ep!("sqr_inplace", "bf16", sqr_inplace_bf16_cpu_wrapper),
+    ep!("sqr_inplace", "f16",  sqr_inplace_f16_cpu_wrapper),
+    ep!("sqrt_inplace", "f32",  sqrt_inplace_f32_cpu_wrapper),
+    ep!("sqrt_inplace", "f64",  sqrt_inplace_f64_cpu_wrapper),
+    ep!("sqrt_inplace", "bf16", sqrt_inplace_bf16_cpu_wrapper),
+    ep!("sqrt_inplace", "f16",  sqrt_inplace_f16_cpu_wrapper),
+    ep!("rsqrt_inplace", "f32",  rsqrt_inplace_f32_cpu_wrapper),
+    ep!("rsqrt_inplace", "f64",  rsqrt_inplace_f64_cpu_wrapper),
+    ep!("rsqrt_inplace", "bf16", rsqrt_inplace_bf16_cpu_wrapper),
+    ep!("rsqrt_inplace", "f16",  rsqrt_inplace_f16_cpu_wrapper),
+    ep!("recip_inplace", "f32",  recip_inplace_f32_cpu_wrapper),
+    ep!("recip_inplace", "f64",  recip_inplace_f64_cpu_wrapper),
+    ep!("recip_inplace", "bf16", recip_inplace_bf16_cpu_wrapper),
+    ep!("recip_inplace", "f16",  recip_inplace_f16_cpu_wrapper),
+    ep!("exp_inplace", "f32",  exp_inplace_f32_cpu_wrapper),
+    ep!("exp_inplace", "f64",  exp_inplace_f64_cpu_wrapper),
+    ep!("exp_inplace", "bf16", exp_inplace_bf16_cpu_wrapper),
+    ep!("exp_inplace", "f16",  exp_inplace_f16_cpu_wrapper),
+    ep!("log_inplace", "f32",  log_inplace_f32_cpu_wrapper),
+    ep!("log_inplace", "f64",  log_inplace_f64_cpu_wrapper),
+    ep!("log_inplace", "bf16", log_inplace_bf16_cpu_wrapper),
+    ep!("log_inplace", "f16",  log_inplace_f16_cpu_wrapper),
+    ep!("sin_inplace", "f32",  sin_inplace_f32_cpu_wrapper),
+    ep!("sin_inplace", "f64",  sin_inplace_f64_cpu_wrapper),
+    ep!("sin_inplace", "bf16", sin_inplace_bf16_cpu_wrapper),
+    ep!("sin_inplace", "f16",  sin_inplace_f16_cpu_wrapper),
+    ep!("cos_inplace", "f32",  cos_inplace_f32_cpu_wrapper),
+    ep!("cos_inplace", "f64",  cos_inplace_f64_cpu_wrapper),
+    ep!("cos_inplace", "bf16", cos_inplace_bf16_cpu_wrapper),
+    ep!("cos_inplace", "f16",  cos_inplace_f16_cpu_wrapper),
+    ep!("sign_inplace", "f32",  sign_inplace_f32_cpu_wrapper),
+    ep!("sign_inplace", "f64",  sign_inplace_f64_cpu_wrapper),
+    ep!("sign_inplace", "bf16", sign_inplace_bf16_cpu_wrapper),
+    ep!("sign_inplace", "f16",  sign_inplace_f16_cpu_wrapper),
+    ep!("floor_inplace", "f32",  floor_inplace_f32_cpu_wrapper),
+    ep!("floor_inplace", "f64",  floor_inplace_f64_cpu_wrapper),
+    ep!("floor_inplace", "bf16", floor_inplace_bf16_cpu_wrapper),
+    ep!("floor_inplace", "f16",  floor_inplace_f16_cpu_wrapper),
+    ep!("ceil_inplace", "f32",  ceil_inplace_f32_cpu_wrapper),
+    ep!("ceil_inplace", "f64",  ceil_inplace_f64_cpu_wrapper),
+    ep!("ceil_inplace", "bf16", ceil_inplace_bf16_cpu_wrapper),
+    ep!("ceil_inplace", "f16",  ceil_inplace_f16_cpu_wrapper),
+    ep!("round_inplace", "f32",  round_inplace_f32_cpu_wrapper),
+    ep!("round_inplace", "f64",  round_inplace_f64_cpu_wrapper),
+    ep!("round_inplace", "bf16", round_inplace_bf16_cpu_wrapper),
+    ep!("round_inplace", "f16",  round_inplace_f16_cpu_wrapper),
+    ep!("erf_inplace", "f32",  erf_inplace_f32_cpu_wrapper),
+    ep!("erf_inplace", "f64",  erf_inplace_f64_cpu_wrapper),
+    ep!("erf_inplace", "bf16", erf_inplace_bf16_cpu_wrapper),
+    ep!("erf_inplace", "f16",  erf_inplace_f16_cpu_wrapper),
+    ep!("gelu_erf_inplace", "f32",  gelu_erf_inplace_f32_cpu_wrapper),
+    ep!("gelu_erf_inplace", "f64",  gelu_erf_inplace_f64_cpu_wrapper),
+    ep!("gelu_erf_inplace", "bf16", gelu_erf_inplace_bf16_cpu_wrapper),
+    ep!("gelu_erf_inplace", "f16",  gelu_erf_inplace_f16_cpu_wrapper),
+    // InplaceAffine — symbol `affine_inplace_<dt>`, wrapper `inplace_affine_<dt>_cpu_wrapper`
+    // (words swapped); resolved AS-IS (single-dtype sections).
+    ep!("affine_inplace", "f32",  inplace_affine_f32_cpu_wrapper),
+    ep!("affine_inplace", "f64",  inplace_affine_f64_cpu_wrapper),
+    ep!("affine_inplace", "bf16", inplace_affine_bf16_cpu_wrapper),
+    ep!("affine_inplace", "f16",  inplace_affine_f16_cpu_wrapper),
+    // ClampInplace — symbol == wrapper base; resolved AS-IS.
+    ep!("clamp_inplace", "f32",  clamp_inplace_f32_cpu_wrapper),
+    ep!("clamp_inplace", "f64",  clamp_inplace_f64_cpu_wrapper),
+    ep!("clamp_inplace", "bf16", clamp_inplace_bf16_cpu_wrapper),
+    ep!("clamp_inplace", "f16",  clamp_inplace_f16_cpu_wrapper),
+    // PowIInplace — symbol == wrapper base; resolved AS-IS.
+    ep!("powi_inplace", "f32",  powi_inplace_f32_cpu_wrapper),
+    ep!("powi_inplace", "f64",  powi_inplace_f64_cpu_wrapper),
+    ep!("powi_inplace", "bf16", powi_inplace_bf16_cpu_wrapper),
+    ep!("powi_inplace", "f16",  powi_inplace_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
 /// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
@@ -696,8 +833,8 @@ pub static CPU_ATTENTION_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// [`CPU_NORM_ENTRY_POINTS`], [`CPU_NORM_BACKWARD_ENTRY_POINTS`],
 /// [`CPU_ROPE_ENTRY_POINTS`], [`CPU_SSM_ENTRY_POINTS`],
 /// [`CPU_CONV_ENTRY_POINTS`], [`CPU_PADDING_ENTRY_POINTS`],
-/// [`CPU_SHAPE_OPS_ENTRY_POINTS`], [`CPU_MATMUL_ENTRY_POINTS`], and
-/// [`CPU_ATTENTION_ENTRY_POINTS`].
+/// [`CPU_SHAPE_OPS_ENTRY_POINTS`], [`CPU_MATMUL_ENTRY_POINTS`],
+/// [`CPU_ATTENTION_ENTRY_POINTS`], and [`CPU_INPLACE_ENTRY_POINTS`].
 /// Unresolved → `None`, which the importer turns into a typed
 /// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;
@@ -721,6 +858,7 @@ impl LinkRegistry for CpuLinkRegistry {
             .chain(CPU_SHAPE_OPS_ENTRY_POINTS.iter())
             .chain(CPU_MATMUL_ENTRY_POINTS.iter())
             .chain(CPU_ATTENTION_ENTRY_POINTS.iter())
+            .chain(CPU_INPLACE_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
