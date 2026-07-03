@@ -174,6 +174,35 @@ pub fn project_kernel_caps(operand_layouts: &[ResolvedLayout]) -> KernelCaps {
     KernelCaps { strided_input }
 }
 
+/// Is this contract the GENERIC (fully-permissive strided) one — admissible
+/// anywhere because it imposes no structure tightness?
+///
+/// Reads the retained FKC five-flag layout set: a generic contract accepts
+/// strided + broadcast on **every** operand and requires contiguity on none.
+/// A structure-specialized contract requires contiguity on some operand (or,
+/// forward, a tighter vec/inner-div predicate the as-built five-flag set does
+/// not yet carry). An empty operand set is not generic (no contract to fall
+/// back to).
+///
+/// This is the classifier the Baracuda **miss** telemetry keys on (FKC §4.12):
+/// the FKC importer computes it once from a kernel's retained
+/// [`ResolvedLayout`] set at registration time and stamps the resulting bit
+/// onto its [`crate::kernel::BindingEntry`], so the live dispatch pick site
+/// reads a precomputed bool rather than re-deriving genericity from the lossy
+/// single-bool [`KernelCaps`]. It lives here (not in the feature-gated
+/// `telemetry` module) because genericity is a pure property of the
+/// always-compiled `ResolvedLayout`, and the always-compiled FKC importer must
+/// reach it without the `telemetry` feature. The `telemetry` module re-exports
+/// it for the detector's own use.
+pub fn is_generic_contract(layouts: &[ResolvedLayout]) -> bool {
+    !layouts.is_empty()
+        && layouts.iter().all(|l| {
+            l.strided.is_accepted()
+                && l.broadcast_stride0.is_accepted()
+                && l.contiguous != Tri::Required
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,5 +339,20 @@ mod tests {
         assert!(project_kernel_caps(&[strided, strided]).strided_input);
         // Mixed ⇒ false (conservative collapse).
         assert!(!project_kernel_caps(&[strided, contig]).strided_input);
+    }
+
+    #[test]
+    fn is_generic_contract_classifies_permissive_vs_specialized() {
+        // Fully-permissive strided (accepts strided + broadcast, no contiguity
+        // demand) ⇒ generic.
+        let generic = resolve(&spec(Some("n/a"), Some("accepted"), Some("accepted"), None, None));
+        assert!(is_generic_contract(&[generic, generic]));
+        // A contiguity-requiring operand ⇒ specialized, even if a sibling is
+        // permissive (all operands must be permissive).
+        let contig = resolve(&spec(Some("required"), Some("rejected"), Some("rejected"), None, None));
+        assert!(!is_generic_contract(&[generic, contig]));
+        assert!(!is_generic_contract(&[contig, contig]));
+        // Empty is not generic (no contract to fall back to).
+        assert!(!is_generic_contract(&[]));
     }
 }
