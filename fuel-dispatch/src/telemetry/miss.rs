@@ -28,25 +28,13 @@
 use super::impl_id::ImplId;
 use super::record::{HwStamp, MissRecord, TELEMETRY_SCHEMA_VERSION};
 use super::structure_key::{FdxOperandDesc, StructureKeyProvider};
-use crate::fkc::{ResolvedLayout, Tri};
+use crate::fkc::ResolvedLayout;
 
-/// Is this contract the GENERIC (fully-permissive strided) one — admissible
-/// anywhere because it imposes no structure tightness?
-///
-/// Reads the retained FKC five-flag layout set: a generic contract accepts
-/// strided + broadcast on **every** operand and requires contiguity on none.
-/// A structure-specialized contract requires contiguity on some operand (or,
-/// forward, a tighter vec/inner-div predicate the as-built five-flag set does
-/// not yet carry — see module docs). An empty operand set is not generic (no
-/// contract to fall back to).
-pub fn is_generic_contract(layouts: &[ResolvedLayout]) -> bool {
-    !layouts.is_empty()
-        && layouts.iter().all(|l| {
-            l.strided.is_accepted()
-                && l.broadcast_stride0.is_accepted()
-                && l.contiguous != Tri::Required
-        })
-}
+// The genericity classifier lives in `fkc::caps_map` (always compiled — a
+// pure `ResolvedLayout` property the always-compiled FKC importer must reach
+// without the `telemetry` feature). Re-exported here so the detector and the
+// telemetry public API keep using it under this name.
+pub use crate::fkc::is_generic_contract;
 
 /// One admitted contract as the miss detector reads it: its stable identity
 /// plus the retained per-operand layout predicate set. Built at the matching
@@ -83,8 +71,43 @@ pub fn detect_miss(
     provider: &dyn StructureKeyProvider,
     hw: HwStamp,
 ) -> Option<MissRecord> {
+    // Read genericity off the winning contract's own retained layouts, then
+    // share the one emission core with the live pick site.
+    detect_miss_precomputed(
+        is_generic_contract(&best.layouts),
+        best.impl_id.clone(),
+        op_class,
+        operands,
+        arch,
+        provider,
+        hw,
+    )
+}
+
+/// The emission core, reading a **precomputed** genericity bit rather than
+/// re-deriving it from layouts.
+///
+/// This is the entry point the live dispatch pick site calls: the FKC importer
+/// stamped `is_generic` onto the winning kernel's
+/// [`crate::kernel::BindingEntry`] at registration time (via
+/// [`is_generic_contract`] over its retained [`ResolvedLayout`] set), so the
+/// pick site has the bit in hand and passes `fallback` = the winning kernel's
+/// [`ImplId`] directly. Semantics match [`detect_miss`] exactly: a miss iff
+/// the winning contract is generic AND the provider yields a token (no token,
+/// e.g. the unlinked [`super::structure_key::NullStructureKeyProvider`], ⇒ no
+/// fabricated demand signal). Each record carries `count = 1`; the
+/// [`super::sink::TelemetrySink`] aggregates by `(wanted, fallback, hw)`.
+pub fn detect_miss_precomputed(
+    is_generic: bool,
+    fallback: ImplId,
+    op_class: &str,
+    operands: &[FdxOperandDesc],
+    arch: &str,
+    provider: &dyn StructureKeyProvider,
+    hw: HwStamp,
+) -> Option<MissRecord> {
     // A specialized contract is admissible ⇒ no miss.
-    if !is_generic_contract(&best.layouts) {
+    if !is_generic {
         return None;
     }
     // The best admissible match is generic. Ask Baracuda for the structure key
@@ -94,7 +117,7 @@ pub fn detect_miss(
     Some(MissRecord {
         schema: TELEMETRY_SCHEMA_VERSION,
         wanted,
-        fallback: best.impl_id.clone(),
+        fallback,
         count: 1,
         hw,
     })
@@ -103,6 +126,7 @@ pub fn detect_miss(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fkc::Tri;
     use crate::telemetry::structure_key::{Contiguity, StructureKeyToken};
     use fuel_ir::dispatch::OpKind;
     use fuel_ir::{BackendId, DType};

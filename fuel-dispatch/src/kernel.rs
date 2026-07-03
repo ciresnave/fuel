@@ -758,6 +758,32 @@ pub struct BindingEntry {
     /// diagnostic-only — never used for dispatch routing (the kernel
     /// function pointer is the dispatch identifier).
     pub kernel_source: &'static str,
+    /// Whether this kernel's FKC accept-contract is the **GENERIC**
+    /// (fully-permissive strided) one — admissible anywhere because it
+    /// imposes no structure tightness (FKC §4.12). This is the
+    /// structural-**miss** fallback bit: when the winning contract at a
+    /// dispatch cell is generic, a structure-specialized kernel would have
+    /// fit but none is registered, and the Baracuda miss telemetry records
+    /// the demand.
+    ///
+    /// Computed **once at registration** by the FKC importer from the
+    /// kernel's retained `ResolvedLayout` set
+    /// ([`crate::fkc::is_generic_contract`]) and stamped here, so
+    /// the live dispatch pick site reads a precomputed bool rather than
+    /// re-deriving genericity from the lossy single-bool [`KernelCaps`].
+    ///
+    /// **Hand-written registrations default `false`.** Every non-FKC
+    /// `register*` path routes through
+    /// [`KernelBindingTable::register_full_with_source`], which sets this
+    /// `false`: genericity is a claim about being the FKC generic-fallback
+    /// contract in Baracuda's structure-key specialization space, and a
+    /// hand-written kernel makes no such claim. This holds even for a
+    /// hand-written strided kernel (`register_with_caps(strided_input=true)`):
+    /// strided-capability is not the same as being the generic fallback, and
+    /// conflating them would fabricate a miss demand signal for cells that are
+    /// not part of Baracuda's matrix. Only the FKC importer, which computed
+    /// genericity from the declared contract, ever sets this `true`.
+    pub is_generic: bool,
 }
 
 #[derive(Default)]
@@ -903,8 +929,40 @@ impl KernelBindingTable {
         cost: CostFn,
         kernel_source: &'static str,
     ) {
+        // Hand-written registrations make no FKC generic-fallback claim —
+        // see [`BindingEntry::is_generic`]. The FKC importer uses
+        // [`Self::register_full_with_source_generic`] to stamp the computed
+        // bit.
+        self.register_full_with_source_generic(
+            op, dtypes, backend, kernel, caps, precision, cost, kernel_source, false,
+        );
+    }
+
+    /// Full-form register with the FKC structural-fallback `is_generic` bit
+    /// (see [`BindingEntry::is_generic`]). The FKC importer computes the bit
+    /// once from a kernel's retained `ResolvedLayout` set
+    /// ([`crate::fkc::is_generic_contract`]) and stamps it here;
+    /// every hand-written path routes through
+    /// [`Self::register_full_with_source`], which passes `false`.
+    ///
+    /// Otherwise identical to [`Self::register_full_with_source`]:
+    /// append-only, never-panic; the same `KernelRef` on one key is caught by
+    /// [`Self::finalize`], not an inline panic.
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_full_with_source_generic(
+        &mut self,
+        op: OpKind,
+        dtypes: &[DType],
+        backend: BackendId,
+        kernel: KernelRef,
+        caps: KernelCaps,
+        precision: crate::fused::PrecisionGuarantee,
+        cost: CostFn,
+        kernel_source: &'static str,
+        is_generic: bool,
+    ) {
         let key = (op, SmallVec::from_slice(dtypes), backend);
-        let entry = BindingEntry { kernel, caps, precision, cost, kernel_source };
+        let entry = BindingEntry { kernel, caps, precision, cost, kernel_source, is_generic };
         // Append-only (never-panic): distinct `KernelRef`s compose as
         // sibling alternatives at one decision point; the *same*
         // function pointer registered twice is NOT rejected inline.

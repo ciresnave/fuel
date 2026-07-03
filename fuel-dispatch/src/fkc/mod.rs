@@ -53,7 +53,7 @@ mod validate;
 #[cfg(feature = "vulkan")]
 mod vulkan_link;
 
-pub use caps_map::{ResolvedLayout, Tri};
+pub use caps_map::{is_generic_contract, ResolvedLayout, Tri};
 pub use cost_expr::{
     bind_cost_symbols, cost_estimate, eval as eval_cost, CompiledCostExpr, CostEvalError, CostNode,
 };

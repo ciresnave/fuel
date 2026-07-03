@@ -291,6 +291,15 @@ pub struct PlanOptions<'env> {
     /// delta nodes (acceptable drift — placement correctness is
     /// re-stitched per realize by the bridge's residency passes).
     pub reuse_plan: Option<&'env ExecutionPlan>,
+    /// Baracuda dispatch-telemetry hooks (behind the `telemetry` cargo
+    /// feature). When `Some` AND the config's mode is not `Off`,
+    /// `compile_plan` runs a post-plan pass that emits a structural
+    /// **miss** for every node whose winning kernel is the FKC generic
+    /// fallback (see [`crate::telemetry::TelemetryHooks`]). `None` (the
+    /// default) makes the pass a no-op — the branch-predictable off gate,
+    /// so a default realize never touches the sink or the provider.
+    #[cfg(feature = "telemetry")]
+    pub telemetry: Option<&'env crate::telemetry::TelemetryHooks<'env>>,
 }
 
 impl Default for PlanOptions<'_> {
@@ -306,6 +315,8 @@ impl Default for PlanOptions<'_> {
             transfer_estimator: None,
             input_residency: None,
             reuse_plan: None,
+            #[cfg(feature = "telemetry")]
+            telemetry: None,
         }
     }
 }
@@ -405,6 +416,20 @@ impl<'env> PlanOptions<'env> {
     /// 4). See the [`Self::reuse_plan`] field docs.
     pub fn with_reuse_plan(mut self, base: &'env ExecutionPlan) -> Self {
         self.reuse_plan = Some(base);
+        self
+    }
+
+    /// Attach Baracuda dispatch-telemetry hooks (behind the `telemetry`
+    /// cargo feature). With them set and the config not `Off`,
+    /// `compile_plan`'s post-plan pass emits a structural miss per node
+    /// whose winning kernel is the FKC generic fallback. See the
+    /// [`Self::telemetry`] field docs.
+    #[cfg(feature = "telemetry")]
+    pub fn with_telemetry(
+        mut self,
+        hooks: &'env crate::telemetry::TelemetryHooks<'env>,
+    ) -> Self {
+        self.telemetry = Some(hooks);
         self
     }
 }
@@ -764,11 +789,111 @@ pub fn compile_plan(
         }
     }
 
+    // Baracuda structural-miss telemetry (opt-in, behind the `telemetry`
+    // feature). Post-plan pass over the finalized winners; a no-op unless
+    // hooks are threaded AND enabled — the emission never perturbs the plan.
+    #[cfg(feature = "telemetry")]
+    emit_structural_misses(graph, &alternatives_map, bindings_table, options);
+
     Ok(ExecutionPlan {
         order: order.to_vec(),
         alternatives: alternatives_map,
         generation,
     })
+}
+
+/// Post-plan Baracuda structural-**miss** emission (behind the `telemetry`
+/// feature). For every kernel-bearing node, resolve the winning kernel back to
+/// its [`crate::kernel::BindingEntry`] and — when that entry is the FKC
+/// generic fallback (`is_generic`) — ask the structure-key provider for the
+/// live operands' demand token and aggregate a
+/// [`crate::telemetry::MissRecord`] into the sink.
+///
+/// The **Off gate is first and branch-predictable**: no hooks (the default)
+/// or a disabled config returns before touching the graph, so a default
+/// realize pays nothing. Emission is best-effort and can never break dispatch
+/// — the sink lock poisoning is swallowed to a no-op, and a missing provider
+/// token forms no signal (never a fabricated one). The plan itself is never
+/// mutated here, so a run with telemetry on is byte-identical to one with it
+/// off save for the sink's contents.
+#[cfg(feature = "telemetry")]
+fn emit_structural_misses(
+    graph: &Graph,
+    alternatives: &HashMap<NodeId, AlternativeSet>,
+    bindings_table: &KernelBindingTable,
+    options: &PlanOptions<'_>,
+) {
+    use crate::telemetry::{detect_miss_precomputed, FdxOperandDesc, ImplId};
+
+    // Off gate (branch-predictable, first): no hooks or disabled ⇒ nothing.
+    let Some(hooks) = options.telemetry else {
+        return;
+    };
+    if !hooks.config.is_enabled() {
+        return;
+    }
+    let arch = hooks.arch_tag();
+
+    for (&id, set) in alternatives {
+        let Some(winner) = set.winner() else {
+            continue;
+        };
+        let node = graph.node(id);
+        let Some(op_kind) = op_to_op_kind(&node.op) else {
+            continue;
+        };
+        let dtypes = build_lookup_dtypes(graph, node);
+
+        // Resolve the chosen kernel back to its binding entry to read the
+        // registration-time `is_generic` bit (the winning ENTRY is in hand
+        // here — the finalize gate guarantees distinct fn-pointers per key,
+        // so the pointer match is unambiguous).
+        let winner_ptr = winner.kernel as *const () as usize;
+        let is_generic = bindings_table
+            .lookup_alternatives(op_kind, &dtypes, winner.backend)
+            .iter()
+            .find(|e| e.kernel as *const () as usize == winner_ptr)
+            .is_some_and(|e| e.is_generic);
+        if !is_generic {
+            continue;
+        }
+
+        // Build the demand descriptor from the LIVE operand layouts + dtypes.
+        let operands: Vec<FdxOperandDesc> = node
+            .inputs
+            .iter()
+            .map(|&input_id| {
+                FdxOperandDesc::from_layout(&graph.layout(input_id), graph.node(input_id).dtype)
+            })
+            .collect();
+        let op_class = format!("{op_kind:?}");
+        // The fallback identity: the winning generic kernel's `ImplId`. The
+        // revision hash is untracked (`0`) until FKC revision threading reaches
+        // the binding table (see `telemetry::impl_id`).
+        let fallback = ImplId {
+            backend: winner.backend,
+            op: op_kind,
+            dtypes: dtypes.clone(),
+            kernel_source: winner.kernel_source.to_string(),
+            kernel_revision_hash: 0,
+        };
+
+        if let Some(miss) = detect_miss_precomputed(
+            is_generic,
+            fallback,
+            &op_class,
+            &operands,
+            &arch,
+            hooks.provider,
+            hooks.hw.clone(),
+        ) {
+            // Never break dispatch: a poisoned sink lock is swallowed to a
+            // no-op (best-effort telemetry). `record_miss` itself cannot fail.
+            if let Ok(mut sink) = hooks.sink.lock() {
+                sink.record_miss(miss);
+            }
+        }
+    }
 }
 
 /// Does this op receive an `AlternativeSet` entry from
@@ -3753,5 +3878,201 @@ mod tests {
             );
         }
         assert!(plan.alternatives(r).is_none(), "Reshape carries no plan entry");
+    }
+
+    // =====================================================================
+    // Baracuda structural-miss telemetry: the LIVE wire-in at the dispatch
+    // pick site (behind the `telemetry` feature).
+    // =====================================================================
+    #[cfg(feature = "telemetry")]
+    mod telemetry_wiring {
+        use super::*;
+        use crate::telemetry::{
+            FdxOperandDesc, HwStamp, StructureKeyProvider, StructureKeyToken, TelemetryConfig,
+            TelemetryHooks, TelemetryMode, TelemetrySink,
+        };
+        use std::sync::Mutex;
+
+        /// A stub provider that echoes the `op_class` + the LIVE operand count
+        /// into the token, so a test can prove the live operands reached the
+        /// provider verbatim (Fuel returns the token as-is).
+        struct StubProvider;
+        impl StructureKeyProvider for StubProvider {
+            fn structure_key(
+                &self,
+                op_class: &str,
+                operands: &[FdxOperandDesc],
+                _arch: &str,
+            ) -> Option<StructureKeyToken> {
+                Some(StructureKeyToken(format!(
+                    "{op_class}:stub:n={}",
+                    operands.len()
+                )))
+            }
+        }
+
+        fn cpu_hw() -> HwStamp {
+            HwStamp {
+                compute_capability: None,
+                hardware_sku: "test-cpu".into(),
+                driver_version: "n/a".into(),
+            }
+        }
+
+        /// A table with ONLY a generic-fallback Add binding at
+        /// `(AddElementwise, [F32;3], Cpu)` — a generic-only cell. The
+        /// `is_generic = true` bit is exactly what an FKC import of a
+        /// generic-strided contract would stamp.
+        fn generic_only_add_table() -> KernelBindingTable {
+            let mut table = KernelBindingTable::new();
+            table.register_full_with_source_generic(
+                OpKind::AddElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cpu,
+                noop_kernel,
+                KernelCaps::strided_input(),
+                PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+                unknown_cost,
+                "baracuda-generic-strided",
+                true, // the FKC-computed generic-fallback bit
+            );
+            table
+        }
+
+        /// BORN-RED: a generic-only cell + a stub provider + a sink threaded
+        /// through `PlanOptions` ⇒ the realize/compile-plan path leaves the
+        /// sink holding exactly ONE aggregated `MissRecord` whose `wanted`
+        /// token reflects the LIVE operands, whose `fallback` is the generic
+        /// binding's `ImplId`, and whose `hw` is the dispatching device's
+        /// stamp.
+        ///
+        /// This was RED before the wire-in: `compile_plan` never called
+        /// `detect_miss`, so the sink stayed empty. GREEN once the post-plan
+        /// emission pass resolves each winner back to its binding entry and
+        /// emits for the generic ones.
+        #[test]
+        fn generic_only_cell_emits_one_aggregated_miss_through_compile_plan() {
+            let table = generic_only_add_table();
+            let (g, add_id) = build_add_graph();
+            let order = topo_order(&g, add_id);
+
+            let sink = Mutex::new(TelemetrySink::new());
+            let provider = StubProvider;
+            let config = TelemetryConfig {
+                mode: TelemetryMode::Coarse,
+                out_path: None,
+            };
+            let hooks = TelemetryHooks {
+                config: &config,
+                sink: &sink,
+                provider: &provider,
+                hw: cpu_hw(),
+            };
+            let opts = PlanOptions::new()
+                .without_cost_population()
+                .with_telemetry(&hooks);
+            let _plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+
+            let sink = sink.into_inner().expect("sink lock");
+            assert_eq!(
+                sink.miss_cell_count(),
+                1,
+                "a generic-only cell must emit exactly one aggregated miss cell",
+            );
+            let recs = sink.miss_records();
+            assert_eq!(recs.len(), 1);
+            // OpKind Debug = "AddElementwise"; the Add node has TWO operands,
+            // both of which flowed to the provider as FDX descriptors.
+            assert_eq!(
+                recs[0].wanted,
+                StructureKeyToken("AddElementwise:stub:n=2".into()),
+                "the wanted token must reflect the live op_class + operands",
+            );
+            assert_eq!(recs[0].fallback.kernel_source, "baracuda-generic-strided");
+            assert_eq!(recs[0].fallback.op, OpKind::AddElementwise);
+            assert_eq!(recs[0].fallback.backend, BackendId::Cpu);
+            assert_eq!(
+                recs[0].fallback.dtypes,
+                vec![DType::F32, DType::F32, DType::F32],
+            );
+            assert_eq!(recs[0].count, 1);
+            assert_eq!(recs[0].hw, cpu_hw());
+        }
+
+        /// GUARD: telemetry `Off` ⇒ zero emission and no behavior change. The
+        /// same generic-only cell, but the config is the default (`Off`): the
+        /// sink stays empty and the plan is unchanged (the Add still carries
+        /// its single generic alternative). The Off gate is the first,
+        /// branch-predictable check in the emission pass.
+        #[test]
+        fn telemetry_off_emits_nothing_and_does_not_change_the_plan() {
+            let table = generic_only_add_table();
+            let (g, add_id) = build_add_graph();
+            let order = topo_order(&g, add_id);
+
+            let sink = Mutex::new(TelemetrySink::new());
+            let provider = StubProvider;
+            let config = TelemetryConfig::default(); // Off
+            let hooks = TelemetryHooks {
+                config: &config,
+                sink: &sink,
+                provider: &provider,
+                hw: cpu_hw(),
+            };
+            let opts = PlanOptions::new()
+                .without_cost_population()
+                .with_telemetry(&hooks);
+            let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+
+            assert!(
+                sink.into_inner().expect("sink lock").is_empty(),
+                "Off mode must emit nothing",
+            );
+            // No behavior change: the Add still carries its generic alternative.
+            let alts = plan.alternatives(add_id).expect("Add alternatives present");
+            assert_eq!(alts.len(), 1);
+            assert_eq!(alts.winner().unwrap().backend, BackendId::Cpu);
+        }
+
+        /// A specialized (non-generic) winner emits NO miss: the same Add
+        /// cell, but the binding carries `is_generic = false` (what a
+        /// hand-written or structure-specialized registration stamps). The
+        /// pick site reads the precomputed bool and skips emission.
+        #[test]
+        fn specialized_winner_emits_no_miss() {
+            let mut table = KernelBindingTable::new();
+            // Default (hand-written) registration ⇒ is_generic = false.
+            register_add_f32(
+                &mut table,
+                BackendId::Cpu,
+                noop_kernel,
+                PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            );
+            let (g, add_id) = build_add_graph();
+            let order = topo_order(&g, add_id);
+
+            let sink = Mutex::new(TelemetrySink::new());
+            let provider = StubProvider;
+            let config = TelemetryConfig {
+                mode: TelemetryMode::Coarse,
+                out_path: None,
+            };
+            let hooks = TelemetryHooks {
+                config: &config,
+                sink: &sink,
+                provider: &provider,
+                hw: cpu_hw(),
+            };
+            let opts = PlanOptions::new()
+                .without_cost_population()
+                .with_telemetry(&hooks);
+            let _plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+
+            assert!(
+                sink.into_inner().expect("sink lock").is_empty(),
+                "a specialized (is_generic=false) winner must emit no miss",
+            );
+            let _ = add_id;
+        }
     }
 }

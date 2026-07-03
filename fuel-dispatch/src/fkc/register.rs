@@ -205,7 +205,13 @@ impl ImportedProvider {
             // bootstraps all imported costs for now. A follow-up slice
             // adds the cost trampoline (plan §2.3 strategy A).
             let kernel_source: &'static str = intern(&p.kernel_source);
-            table.register_full_with_source(
+            // Structural-miss fallback bit (FKC §4.12): compute genericity
+            // ONCE from the retained five-flag `ResolvedLayout` set and stamp
+            // it onto the binding so the live dispatch pick site reads a
+            // precomputed bool (never re-derives it from the lossy
+            // single-bool `KernelCaps`). Baracuda's miss telemetry keys on it.
+            let is_generic = crate::fkc::is_generic_contract(&p.layouts);
+            table.register_full_with_source_generic(
                 p.op,
                 &p.dtypes,
                 p.backend,
@@ -214,6 +220,7 @@ impl ImportedProvider {
                 p.precision,
                 unknown_cost,
                 kernel_source,
+                is_generic,
             );
         }
 
