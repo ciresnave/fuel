@@ -4935,6 +4935,81 @@ fn register_vulkan_norm_from_contract(table: &mut KernelBindingTable) {
         .expect("Vulkan norm contract must register into the binding table");
 }
 
+/// The authored Vulkan FlashAttention kernel contract (6 sections — forward
+/// f32/bf16/f16 + backward Q/K/V f32, each fanning a no-alibi + a with-alibi
+/// key ⇒ 12 bindings), embedded via `include_str!` (the PRODUCTION contract).
+/// Parsed + lowered by [`register_vulkan_attention_from_contract`].
+const VULKAN_ATTENTION_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/vulkan/attention.fkc.md");
+
+/// Register the Vulkan FlashAttention family (12 bindings — forward
+/// `OpKind::FlashAttn` at f32/bf16/f16 + backward `OpKind::FlashAttnBackward{Q,K,V}`
+/// at f32, each with a no-alibi AND a with-alibi binding shape) by IMPORTING its
+/// AUTHORED FKC kernel contract — the FIFTEENTH (and LAST) Vulkan-backend FKC
+/// consumer. FKC is unconditional core infrastructure, so this is the ONE
+/// registration path for the family: the hand-written
+/// `table.register_with_precision(OpKind::{FlashAttn,FlashAttnBackwardQ,
+/// FlashAttnBackwardK,FlashAttnBackwardV}, …)` regs are DELETED. This was the
+/// LAST hand-written `table.register*` call in `register_vulkan_kernels`, so the
+/// Vulkan backend is now 100% contract-sourced.
+///
+/// The corpus's `vulkan/conv-attn-rope.fkc.md` models this family as aspirational
+/// `fused_op: FLASH_ATTN` / `FLASH_ATTN_BACKWARD_*` decompositions (plus the tiled
+/// FA-2 `flash_attention`), a SEPARATE future FUSED-registry seam that does NOT
+/// register the primitive `OpKind::FlashAttn*` bindings production wires (the same
+/// primitive-vs-fused split conv2d / matmul draw). So the migration authors SIX
+/// faithful single-dtype-per-operand `op_kind:` sections in the new production
+/// `docs/kernel-contracts/vulkan/attention.fkc.md`:
+///  - **Forward wrappers are DISTINCT per dtype** (`flash_attn::flash_attn_{f32,
+///    bf16,f16}`), so — like conv2d's `conv2d_{f32,bf16,f16}` and the CPU attention
+///    contract's per-dtype `flash_attn_*` sections — each dtype is its OWN
+///    single-dtype section resolving its `entry_point` AS-IS (no dtype-fan
+///    umbrella); backward is three f32-only sections.
+///  - **`alibi_slopes` is an `optional: true` LAST input**, so the importer's
+///    optional-last fan (§3.4) keys EACH section TWICE (with + without the
+///    operand), byte-for-byte the deleted regs' dual `[q,k,v,out]` /
+///    `[q,k,v,alibi,out]` (forward) and `[q,k,v,do,out]` / `[q,k,v,do,alibi,out]`
+///    (backward) shapes. The forward + all three backward selectors share the ONE
+///    `OpParams::FlashAttn` carrier (`op_params.variant: FlashAttn` — the CPU
+///    precedent; no dedicated backward variant).
+///
+/// **Caps ride through truthfully.** Each section's `requires_contiguous` layout
+/// projects `strided_input == false` — byte-for-byte the deleted plain
+/// `register_with_precision` regs (the kernels read canonical row-major q/k/v/do;
+/// a strided operand is auto-Contiguized by the planner first). Precision becomes
+/// the contract's corrected audited seed (`bit_stable_on_same_hardware: false`,
+/// audited `none(reason)`, `determinism: nondeterministic`): the naive single-pass
+/// kernel does its softmax over the `[Sk]` score row with a per-`(b,h,q)` workgroup
+/// shared-memory reduction whose FADD order is scheduler-dependent, so the retired
+/// hand-written `VULKAN_FLOAT_POINTWISE_PRECISION` / `VULKAN_HALF_POINTWISE_PRECISION`
+/// consts (which mis-declared `bit_stable_on_same_hardware: true` + `max_ulp: 1`,
+/// a per-thread-pointwise claim) OVER-CLAIMED bit-stability — the aspirational
+/// `conv-attn-rope.fkc.md` already carries this honest posture; the consts are
+/// retired from this seam (their `pub const` defs stay in `fused.rs`). Cost is
+/// preserved because this runs BEFORE `fill_unset_cost_for_backend`, which upgrades
+/// the imported `unknown_cost` sentinels to the same OpKind cost fn.
+///
+/// The family declares NO fused ops (the FUSED flash decompositions register
+/// separately via the fused registry). Init-boundary fail-fast: a parse/lower/link
+/// failure of the embedded, authored contract is a programmer error surfaced once
+/// here via `expect`.
+fn register_vulkan_attention_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(VULKAN_ATTENTION_CONTRACT, &crate::fkc::VulkanLinkRegistry)
+            .expect(
+                "authored Vulkan attention contract must import \
+                 (embedded via include_str!, resolved through VulkanLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "vulkan attention contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("Vulkan attention contract must register into the binding table");
+}
+
 /// Register every Vulkan kernel wrapper against its `(OpKind, dtypes,
 /// BackendId::Vulkan)` decision-point key in the shared
 /// `KernelBindingTable`. Each wrapper appears as an alternative
@@ -4947,44 +5022,25 @@ fn register_vulkan_norm_from_contract(table: &mut KernelBindingTable) {
 /// SPIR-V kernels; V.3 adds new Slang for the kernel families CUDA
 /// has and Vulkan doesn't.
 pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
-    use crate::fused::{
-        PrecisionGuarantee,
-        // NB: VULKAN_BYTE_LEVEL_PRECISION is intentionally NO LONGER imported — its
-        // byte-level consumers (IndexSelect/Gather/MaskedFill/Pad/PadBackward/Copy/
-        // WriteSlice/WriteSliceRotating/Triu/Tril/Flip/Roll/Concat) have all migrated
-        // to their FKC contracts (select / pad-copy / write-slice / shape / movement),
-        // which carry per-section byte-exact precision. Retired from this seam.
-        VULKAN_FLOAT_POINTWISE_PRECISION, VULKAN_HALF_POINTWISE_PRECISION,
-        // NB: VULKAN_QMATMUL_PRECISION is intentionally NO LONGER imported — the
-        // Vulkan QMatMul binding now registers from its FKC contract (see
-        // `register_vulkan_qmatmul_from_contract`), which carries the corrected
-        // nondeterministic per-section precision (the const over-claimed
-        // bit-stability, like the retired VULKAN_MATMUL_PRECISION). The `pub const`
-        // def stays in `fused.rs`, mirroring VULKAN_TRANSCENDENTAL. Retired here.
-        // NB: VULKAN_TRANSCENDENTAL_PRECISION is intentionally NOT imported — the
-        // whole unary family (its only user) now registers from the FKC
-        // elementwise contract, which carries per-section precision. Retired here.
-        // NB: VULKAN_MATMUL_PRECISION / VULKAN_MATMUL_TENSORCORE_PRECISION are
-        // likewise NOT imported — the Vulkan conv2d family was their LAST code
-        // user, and it now registers from the FKC conv contract (see
-        // `register_vulkan_conv_from_contract`), which carries the corrected
-        // nondeterministic per-section precision. Retired from this seam (the
-        // `pub const` defs stay in `fused.rs`, mirroring VULKAN_TRANSCENDENTAL).
-    };
-    // NB: `VULKAN_CAST_PRECISION` is intentionally NOT imported — the whole
-    // `OpKind::Cast` family now registers from its FKC contract (see
-    // `register_vulkan_cast_from_contract`), which carries the contract's
-    // per-section precision. The const is retired from this seam.
-    // NB: `KernelCaps` is no longer imported here — every strided Vulkan family
-    // (movement / shape / rope) now projects `strided_input` from its FKC
-    // contract's `strided: accepted` layout, so no hand-written `KernelCaps` seam
-    // remains in this fn.
+    // NB: the `use crate::fused::{ PrecisionGuarantee, VULKAN_FLOAT_POINTWISE_PRECISION,
+    // VULKAN_HALF_POINTWISE_PRECISION }` seam is RETIRED — the FlashAttention family was
+    // their LAST code user, and it now registers from the FKC attention contract (see
+    // `register_vulkan_attention_from_contract`), which carries the corrected
+    // audited-nondeterministic per-section precision (the two POINTWISE consts
+    // over-claimed `bit_stable_on_same_hardware: true` + `max_ulp: 1` for a shared-mem
+    // softmax reduction). With the FlashAttn regs gone there are NO hand-written
+    // `table.register*` calls left, so NO `PrecisionGuarantee` / precision-const import
+    // is needed. The `pub const` defs stay in `fused.rs`, mirroring VULKAN_TRANSCENDENTAL.
+    // (VULKAN_BYTE_LEVEL_PRECISION / VULKAN_QMATMUL_PRECISION / VULKAN_TRANSCENDENTAL_PRECISION
+    // / VULKAN_MATMUL_PRECISION / VULKAN_MATMUL_TENSORCORE_PRECISION / VULKAN_CAST_PRECISION
+    // were retired by the earlier family migrations; KernelCaps likewise — every strided
+    // Vulkan family projects `strided_input` from its FKC contract's layout.)
     let vk = BackendId::Vulkan;
-    // NB: the top-level `f32` binding + the `u(t) = [t, t]` (in, out) key helper are
-    // retired — every family that keyed via them (softmax / rms / layernorm / reduce
-    // / concat / cumsum / triu / tril / pad / write-slice / etc.) now registers from
-    // its FKC contract. The remaining hand-written regs (QMatMul / FlashAttn) key
-    // with `DType::*` literals directly.
+    // NB: EVERY Vulkan family now registers from its FKC contract (the
+    // `register_vulkan_*_from_contract` calls at the END of this fn are the SOLE
+    // registration path). There are ZERO hand-written `table.register*` calls remaining
+    // — the Vulkan backend is 100% contract-sourced. `vk` is used only by the
+    // `fill_unset_cost_for_backend` pass below.
 
     // Phase 7.6 step 9c follow-up (2026-05-23 + 2026-05-24):
     // - Per-kernel `PrecisionGuarantee` + cost (session 1, shipped).
@@ -5273,104 +5329,24 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // retired VULKAN_MATMUL_PRECISION / VULKAN_MATMUL_TENSORCORE_PRECISION consts
     // over-claimed bit-stability). -----
 
-    // ----- FlashAttn f32 (V.3 attention) — naive single-pass kernel
-    // (NOT tiled FA-2). Supports GQA, causal mask, softmax_scale,
-    // alibi. window_left/window_right/softcap bail at the wrapper
-    // for now. Both 3-input (q,k,v) and 4-input (q,k,v,alibi)
-    // binding shapes register. -----
-    table.register_with_precision(
-        OpKind::FlashAttn,
-        &[DType::F32, DType::F32, DType::F32, DType::F32],
-        vk,
-        flash_attn::flash_attn_f32,
-        VULKAN_FLOAT_POINTWISE_PRECISION,
-    );
-    table.register_with_precision(
-        OpKind::FlashAttn,
-        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
-        vk,
-        flash_attn::flash_attn_f32,
-        VULKAN_FLOAT_POINTWISE_PRECISION,
-    );
-    {
-        let bf16_d = DType::BF16;
-        let f16_d = DType::F16;
-        table.register_with_precision(
-            OpKind::FlashAttn,
-            &[bf16_d, bf16_d, bf16_d, bf16_d],
-            vk,
-            flash_attn::flash_attn_bf16,
-            VULKAN_HALF_POINTWISE_PRECISION,
-        );
-        table.register_with_precision(
-            OpKind::FlashAttn,
-            &[bf16_d, bf16_d, bf16_d, bf16_d, bf16_d],
-            vk,
-            flash_attn::flash_attn_bf16,
-            VULKAN_HALF_POINTWISE_PRECISION,
-        );
-        table.register_with_precision(
-            OpKind::FlashAttn,
-            &[f16_d, f16_d, f16_d, f16_d],
-            vk,
-            flash_attn::flash_attn_f16,
-            VULKAN_HALF_POINTWISE_PRECISION,
-        );
-        table.register_with_precision(
-            OpKind::FlashAttn,
-            &[f16_d, f16_d, f16_d, f16_d, f16_d],
-            vk,
-            flash_attn::flash_attn_f16,
-            VULKAN_HALF_POINTWISE_PRECISION,
-        );
-    }
-
-    // ----- FlashAttn backward Q/K/V, f32. Vulkan kernels for the
-    // three OpKinds added at 3fd33aae. Same window/softcap caveats as
-    // forward; bf16/f16 backward kernels are own session. Binding key
-    // shape: 4-input (q,k,v,do,out) + 5-input (q,k,v,do,alibi,out). -----
-    table.register_with_precision(
-        OpKind::FlashAttnBackwardQ,
-        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
-        vk,
-        flash_attn::flash_attn_backward_q_f32,
-        VULKAN_FLOAT_POINTWISE_PRECISION,
-    );
-    table.register_with_precision(
-        OpKind::FlashAttnBackwardQ,
-        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
-        vk,
-        flash_attn::flash_attn_backward_q_f32,
-        VULKAN_FLOAT_POINTWISE_PRECISION,
-    );
-    table.register_with_precision(
-        OpKind::FlashAttnBackwardK,
-        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
-        vk,
-        flash_attn::flash_attn_backward_k_f32,
-        VULKAN_FLOAT_POINTWISE_PRECISION,
-    );
-    table.register_with_precision(
-        OpKind::FlashAttnBackwardK,
-        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
-        vk,
-        flash_attn::flash_attn_backward_k_f32,
-        VULKAN_FLOAT_POINTWISE_PRECISION,
-    );
-    table.register_with_precision(
-        OpKind::FlashAttnBackwardV,
-        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
-        vk,
-        flash_attn::flash_attn_backward_v_f32,
-        VULKAN_FLOAT_POINTWISE_PRECISION,
-    );
-    table.register_with_precision(
-        OpKind::FlashAttnBackwardV,
-        &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32],
-        vk,
-        flash_attn::flash_attn_backward_v_f32,
-        VULKAN_FLOAT_POINTWISE_PRECISION,
-    );
+    // ----- FlashAttn (forward f32/bf16/f16) + FlashAttnBackward{Q,K,V} (f32)
+    // — MIGRATED to FKC contract import. The hand-written
+    // `table.register_with_precision(OpKind::{FlashAttn,FlashAttnBackwardQ,
+    // FlashAttnBackwardK,FlashAttnBackwardV}, …)` regs (naive single-pass SDPA;
+    // both the no-alibi [q,k,v,(do,)out] and with-alibi [q,k,v,(do,)alibi,out]
+    // binding shapes) are DELETED; the whole FlashAttention family now registers
+    // from `docs/kernel-contracts/vulkan/attention.fkc.md` via
+    // `register_vulkan_attention_from_contract` (called at the END of this fn,
+    // before the cost-fill pass). Forward is THREE distinct per-dtype wrappers
+    // (per-dtype sections, the conv2d + CPU-attention precedent); backward is
+    // f32-only. `alibi_slopes` is an optional-LAST input (dual-key fan);
+    // op_params.variant: FlashAttn shared across forward + backward. Caps stay
+    // contiguous-only (`requires_contiguous` ⇒ strided_input=false); precision
+    // becomes the contract's corrected audited-nondeterministic none(reason) seed
+    // (single-pass shared-mem softmax reduction is scheduler-dependent — the
+    // retired VULKAN_{FLOAT,HALF}_POINTWISE_PRECISION consts over-claimed
+    // bit-stability). This was the LAST hand-written table.register* call — the
+    // Vulkan backend is now 100% contract-sourced. -----
 
     // ----- Conv2D bf16 + f16 (V.3.I extended) — im2col + cooperative-matrix
     // GEMM — MIGRATED to FKC contract import (deleted; now registered from
@@ -5506,6 +5482,20 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // precision is the audited nondeterministic none(reason) seed (the retired
     // VULKAN_QMATMUL_PRECISION over-claimed bit-stability). -----
     register_vulkan_qmatmul_from_contract(table);
+
+    // ----- FlashAttention family (forward FlashAttn f32/bf16/f16 + backward
+    // FlashAttnBackward{Q,K,V} f32, 12 bindings) — registered FROM its AUTHORED
+    // FKC kernel contract, the SOLE path (the LAST hand-written table.register*
+    // calls, all deleted above). Runs BEFORE the cost-fill pass so its imported
+    // `unknown_cost` sentinels are upgraded to the same OpKind cost fn every other
+    // Vulkan primitive gets. Forward is three distinct per-dtype wrappers
+    // (per-dtype sections); backward is f32-only; `alibi_slopes` optional-LAST
+    // (dual-key fan). Contiguous-only (`requires_contiguous` ⇒ strided_input=false);
+    // precision is the corrected audited-nondeterministic none(reason) seed
+    // (single-pass shared-mem softmax reduction). With this call the Vulkan backend
+    // is 100% contract-sourced: `register_vulkan_kernels` contains ZERO hand-written
+    // `table.register*` calls. -----
+    register_vulkan_attention_from_contract(table);
 
     // ----- Bulk-fill cost functions for every Vulkan registration above.
     // The CPU dispatcher (`default_cost_for_op_kind`) captures the
@@ -6682,5 +6672,109 @@ mod qmatmul_contract_tests {
             !entry.caps.strided_input,
             "QMatMul {key:?}: caps preserved (contiguous-only, strided_input=false)",
         );
+    }
+}
+
+// ===========================================================================
+// FKC contract-migration tests (born-red gate for the Vulkan FlashAttn family)
+// ===========================================================================
+//
+// Same `#![cfg(feature = "vulkan")]` file gate as the cast/…/qmatmul tests
+// above: this module compiles only under `--features vulkan` and touches NO
+// device (registration is pure binding-table population).
+
+#[cfg(test)]
+mod attention_contract_tests {
+    use super::*;
+    use crate::kernel::{KernelBindingTable, KernelRef};
+
+    /// FIFTEENTH (and LAST) VULKAN-BACKEND FKC CONSUMER (born-red gate).
+    /// `register_vulkan_kernels` registers the whole Vulkan **FlashAttention**
+    /// family (12 `KernelRef`s: forward `OpKind::FlashAttn` at f32/bf16/f16 +
+    /// backward `OpKind::FlashAttnBackward{Q,K,V}` at f32, each with a
+    /// no-alibi AND a with-alibi binding shape) FROM ITS AUTHORED FKC KERNEL
+    /// CONTRACT (`docs/kernel-contracts/vulkan/attention.fkc.md`) via
+    /// `register_vulkan_attention_from_contract` — the sole registration path
+    /// now that the hand-written `table.register_with_precision(OpKind::{FlashAttn,
+    /// FlashAttnBackwardQ,FlashAttnBackwardK,FlashAttnBackwardV}, …)` regs are
+    /// DELETED. This was the LAST hand-written `table.register*` call in
+    /// `register_vulkan_kernels`, so the Vulkan backend is now 100%
+    /// contract-sourced.
+    ///
+    /// The forward wrappers are DISTINCT per dtype
+    /// (`flash_attn::flash_attn_{f32,bf16,f16}`), so the contract authors THREE
+    /// single-dtype-per-operand forward sections (the conv2d + CPU-attention
+    /// per-dtype-section precedent) rather than one dtype-fanned umbrella; the
+    /// three backward selectors are f32-only single sections. In every section
+    /// `alibi_slopes` is an `optional: true` LAST input, so the importer's
+    /// optional-last fan (§3.4) registers EACH as TWO keys (with + without the
+    /// operand) — byte-for-byte the deleted regs' dual `[q,k,v,out]` /
+    /// `[q,k,v,alibi,out]` (forward) and `[q,k,v,do,out]` / `[q,k,v,do,alibi,out]`
+    /// (backward) shapes.
+    ///
+    /// For each `(OpKind, [T..], Vulkan)` key this asserts: the binding resolves
+    /// to the EXACT production wrapper fn-pointer (behavior-preserving);
+    /// `kernel_source == "vulkan-slang"` (the RED discriminator — the deleted
+    /// hand path stamped `""`, so before the import is wired this assert fails on
+    /// the empty source); and `caps.strided_input == false` — the contiguous-only
+    /// truth of the deleted plain `register_with_precision` regs. Precision is
+    /// contract-sourced (the retired `VULKAN_{FLOAT,HALF}_POINTWISE_PRECISION`
+    /// consts over-claimed `bit_stable_on_same_hardware: true` for a shared-mem
+    /// softmax reduction; the contract seeds the truthful audited-nondeterministic
+    /// posture, matching the aspirational `conv-attn-rope.fkc.md`) and NOT
+    /// asserted here.
+    #[test]
+    fn register_vulkan_kernels_binds_flash_attn_family_from_contract() {
+        let mut table = KernelBindingTable::new();
+        register_vulkan_kernels(&mut table);
+        let vk = BackendId::Vulkan;
+
+        // (OpKind, key dtypes [inputs.., out], expected production wrapper). Both the
+        // no-alibi and the with-alibi (one extra pre-output slot) shapes per op/dtype.
+        // Every FlashAttn binding is contiguous-only (strided_input == false), checked
+        // uniformly below.
+        let cases: &[(OpKind, &[DType], KernelRef)] = &[
+            // ---- Forward FlashAttn: f32 / bf16 / f16, no-alibi [q,k,v,out] + with-alibi [q,k,v,alibi,out]. ----
+            (OpKind::FlashAttn, &[DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_f32 as KernelRef),
+            (OpKind::FlashAttn, &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_f32 as KernelRef),
+            (OpKind::FlashAttn, &[DType::BF16, DType::BF16, DType::BF16, DType::BF16], flash_attn::flash_attn_bf16 as KernelRef),
+            (OpKind::FlashAttn, &[DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16], flash_attn::flash_attn_bf16 as KernelRef),
+            (OpKind::FlashAttn, &[DType::F16, DType::F16, DType::F16, DType::F16], flash_attn::flash_attn_f16 as KernelRef),
+            (OpKind::FlashAttn, &[DType::F16, DType::F16, DType::F16, DType::F16, DType::F16], flash_attn::flash_attn_f16 as KernelRef),
+            // ---- Backward Q/K/V f32: no-alibi [q,k,v,do,out] + with-alibi [q,k,v,do,alibi,out]. ----
+            (OpKind::FlashAttnBackwardQ, &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_backward_q_f32 as KernelRef),
+            (OpKind::FlashAttnBackwardQ, &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_backward_q_f32 as KernelRef),
+            (OpKind::FlashAttnBackwardK, &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_backward_k_f32 as KernelRef),
+            (OpKind::FlashAttnBackwardK, &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_backward_k_f32 as KernelRef),
+            (OpKind::FlashAttnBackwardV, &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_backward_v_f32 as KernelRef),
+            (OpKind::FlashAttnBackwardV, &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32, DType::F32], flash_attn::flash_attn_backward_v_f32 as KernelRef),
+        ];
+
+        let mut checked = 0usize;
+        for (op, key, expected) in cases {
+            let alts = table.lookup_alternatives(*op, key, vk);
+            let entry = alts.iter().find(|e| e.kernel as usize == *expected as usize);
+            let entry = match entry {
+                Some(e) => e,
+                None => panic!(
+                    "{op:?} {key:?}/Vulkan: production wrapper must be bound FROM the vulkan \
+                     attention contract in register_vulkan_kernels; found {} alt(s) with sources {:?}",
+                    alts.len(),
+                    alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                ),
+            };
+            assert_eq!(
+                entry.kernel_source, "vulkan-slang",
+                "{op:?} {key:?}: FlashAttn family must be contract-sourced \
+                 (kernel_source=\"vulkan-slang\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                !entry.caps.strided_input,
+                "{op:?} {key:?}: caps preserved (contiguous-only, strided_input=false)",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 12, "all 12 FlashAttn family bindings (6 forward + 6 backward) checked");
     }
 }
