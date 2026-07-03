@@ -71,10 +71,14 @@ width and the accumulate/narrow rule, never in the contract shape.
 `bit_stable_on_same_hardware: true` with no static ULP/relative/absolute bound, accumulating in a
 wider type than its element dtype: `rope` / `conv2d` / `conv_transpose2d` / `causal_conv1d` widen
 BF16/F16 to **f32** (F64 native for F64 input), and the two scans accumulate the recurrent hidden
-state in **f64** regardless of element dtype, narrowing to T on store. As CPU fused kernels these
-declare `audited: false` and pick up the as-built CPU family default
-(`*_CPU_PRECISION` → bit-stable, no static bound; §4.8 / §12.4). The Judge audits/refines these
-seeds (§4.8); cost is `judge_measured` and the Judge bootstraps it (§4.4).
+state in **f64** regardless of element dtype, narrowing to T on store. Per the **2026-07-03
+maintainer decision (CireSnave)**, every section here declares `audited: true`: the FKC import is now
+the production registration path (`register_cpu_conv_rope_fused_from_contract`), so each kernel's
+bit-stable claim **relocates** from its `*_CPU_PRECISION` const onto the contract — same author, same
+guarantee (bit-stable, no static bound; §4.8 / §12.4), so the flip moves the evidentiary bar, it does
+not lower it. Without the flip the import would lower to `UNAUDITED` and DOWNGRADE production
+metadata. The Judge still audits/refines these bit-stable seeds (§4.8); cost is `judge_measured` and
+the Judge bootstraps it (§4.4).
 
 **Backward / decompose (informational; not advertised in these forward contracts).** All six are
 `NotDifferentiable` in the registry (real grads, where present, are emitted by `Tensor::backward`),
@@ -161,7 +165,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                         # CPU fused fallback: family default (ROPE_CPU_PRECISION) applies (§4.8/§12.4)
+  audited: true                          # 2026-07-03 maintainer flip (CireSnave): relocates the ROPE_CPU_PRECISION bit-stable claim onto the contract (same author, same guarantee); FKC import is now production — false would DOWNGRADE to UNAUDITED (§4.8/§12.4)
   notes: "rotate_half; f32/f64 native, bf16/f16 widen to f32 then narrow on store. Deterministic; not bit-stable cross-hardware (FMA contraction may differ)."
 
 determinism: same_hardware_bitwise
@@ -250,7 +254,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                         # CPU fused fallback: family default (CONV2D_CPU_PRECISION) applies (§4.8/§12.4)
+  audited: true                          # 2026-07-03 maintainer flip (CireSnave): relocates the CONV2D_CPU_PRECISION bit-stable claim onto the contract (same author, same guarantee); FKC import is now production — false would DOWNGRADE to UNAUDITED (§4.8/§12.4)
   notes: "cross-correlation; f32/f64 native, bf16/f16 widen to f32 then narrow on store. Deterministic; not bit-stable cross-hardware (FMA/reduction order may differ)."
 
 determinism: same_hardware_bitwise
@@ -258,23 +262,26 @@ determinism: same_hardware_bitwise
 
 ---
 
-## conv_transpose2d  (2-D transposed / fractionally-strided convolution, no bias, fused)
+## conv_transpose2d  (2-D transposed / fractionally-strided convolution, optional bias, fused)
 
-Fused 2-D transposed (fractionally-strided) convolution. Two inputs (no bias): `x [N, Cin, H, W]`
-and `weight [Cin, Cout/groups, Kh, Kw]` (note the transposed weight layout — `Cin` leads, unlike
-`conv2d`). Carries the full `stride` / `padding` / `output_padding` / `dilation` / `groups` bundle
+Fused 2-D transposed (fractionally-strided) convolution. Two or three inputs: `x [N, Cin, H, W]`,
+`weight [Cin, Cout/groups, Kh, Kw]` (note the transposed weight layout — `Cin` leads, unlike
+`conv2d`), and an optional `bias [Cout]` (the with-bias and without-bias forms are distinct
+registered dtype tuples, mirroring `conv2d`; the CPU scatter kernel **seeds the output with
+`bias[co]`** — or `0` when the bias is absent — then scatter-accumulates, `byte_kernels.rs`, the
+same kernel the primitive `cpu/conv.fkc.md` `conv_transpose2d_f32` section documents). Carries the
+full `stride` / `padding` / `output_padding` / `dilation` / `groups` bundle
 (`FusedOpParams::ConvTranspose2D`, `registry.rs:210`). Output is rank-4 with
 `Hout = (H − 1)·sh − 2·ph + dh·(Kh − 1) + out_pad_h + 1` (saturating; `Wout` analogous) and
 `Cout = (Cout/groups)·groups`, dtype = `x`. Compute widens BF16/F16 to f32 (F64 native), narrowing
 on store. Forward is `NotDifferentiable` in the registry (the `Tensor::backward` forward arm panics
 — no autograd through transposed conv); `decompose` panics, so backends without a native kernel use
-`cpu_fallback`. Known limitations: contiguous zero-offset only; no bias (a separate add is a
-distinct op); no in-place.
+`cpu_fallback`. Known limitations: contiguous zero-offset only; no in-place.
 
 ```fkc
 kernel: conv_transpose2d
 fused_op: CONV_TRANSPOSE2D
-blurb: "Fused 2-D transposed (fractionally-strided) convolution, no bias; x[N,Cin,H,W], weight[Cin,Cout/g,Kh,Kw]; stride/padding/output_padding/dilation/groups."
+blurb: "Fused 2-D transposed (fractionally-strided) convolution, optional bias; x[N,Cin,H,W], weight[Cin,Cout/g,Kh,Kw], optional bias[Cout]; stride/padding/output_padding/dilation/groups."
 backend: Cpu
 kernel_source: "portable-cpu"
 entry_point: "fuel_dispatch::dispatch::conv_transpose2d_cpu"
@@ -291,6 +298,12 @@ accept:
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: 4                              # [Cin, Cout/groups, Kh, Kw] (transposed layout: Cin leads)
       shape_constraint: "dim[0]=x"         # weight.dim[0] (Cin) matches x.dim[1]
+    - name: bias
+      dtypes: [F32, F64, BF16, F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: 1                              # [Cout]; kernel seeds the output with bias[co] (or 0 when absent), NOT a stride-0 view
+      shape_constraint: "out.dim[1] == bias.dim[0]"   # Cout = (Cout/groups)*groups
+      optional: true                       # 2-input (no-bias) vs 3-input (with-bias) registered tuples — same CPU wrapper; the optional operand rides op-params, not a distinct entry_point
   op_params:
     variant: ConvTranspose2D               # FusedOpParams::ConvTranspose2D (fused namespace; §3.7)
     fields:
@@ -331,7 +344,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                         # CPU fused fallback: family default (CONV_TRANSPOSE2D_CPU_PRECISION) applies (§4.8/§12.4)
+  audited: true                          # 2026-07-03 maintainer flip (CireSnave): relocates the CONV_TRANSPOSE2D_CPU_PRECISION bit-stable claim onto the contract (same author, same guarantee); FKC import is now production — false would DOWNGRADE to UNAUDITED (§4.8/§12.4)
   notes: "fractionally-strided conv (saturating output geometry); f32/f64 native, bf16/f16 widen to f32 then narrow. Deterministic; not bit-stable cross-hardware."
 
 determinism: same_hardware_bitwise
@@ -417,7 +430,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                         # CPU fused fallback: family default (CAUSAL_CONV1D_CPU_PRECISION) applies (§4.8/§12.4)
+  audited: true                          # 2026-07-03 maintainer flip (CireSnave): relocates the CAUSAL_CONV1D_CPU_PRECISION bit-stable claim onto the contract (same author, same guarantee); FKC import is now production — false would DOWNGRADE to UNAUDITED (§4.8/§12.4)
   notes: "depthwise conv + bias + optional fused SiLU; f32/f64 native, bf16/f16 widen to f32 then narrow. Deterministic; not bit-stable cross-hardware (FMA contraction may differ)."
 
 determinism: same_hardware_bitwise
@@ -513,7 +526,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                         # CPU fused fallback: family default (SELECTIVE_SCAN_CPU_PRECISION) applies (§4.8/§12.4)
+  audited: true                          # 2026-07-03 maintainer flip (CireSnave): relocates the SELECTIVE_SCAN_CPU_PRECISION bit-stable claim onto the contract (same author, same guarantee); FKC import is now production — false would DOWNGRADE to UNAUDITED (§4.8/§12.4)
   notes: "f64 hidden-state accumulator regardless of T (narrowed on store); stable softplus. Deterministic; not bit-stable cross-hardware (exp/FMA contraction may differ)."
 
 determinism: same_hardware_bitwise
@@ -605,7 +618,7 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                         # CPU fused fallback: family default (SSD_CHUNK_SCAN_CPU_PRECISION) applies (§4.8/§12.4)
+  audited: true                          # 2026-07-03 maintainer flip (CireSnave): relocates the SSD_CHUNK_SCAN_CPU_PRECISION bit-stable claim onto the contract (same author, same guarantee); FKC import is now production — false would DOWNGRADE to UNAUDITED (§4.8/§12.4)
   notes: "f64 per-head state accumulator regardless of T (narrowed on store); chunk_size does not affect the result. Deterministic; not bit-stable cross-hardware."
 
 determinism: same_hardware_bitwise
