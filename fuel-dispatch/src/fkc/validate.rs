@@ -122,7 +122,25 @@ pub fn validate_file(file: &FkcFile) -> Result<(), FkcError> {
         });
     }
     for kernel in &file.kernels {
-        validate_kernel(kernel)?;
+        match validate_kernel(kernel) {
+            Ok(()) => {}
+            // §3.10 + §14/§6: a describe-only (`registrable: false`) section is
+            // documentation — it carries no dispatch target and is excluded from
+            // lowering/registration (`lower_file` filters it). It may legitimately
+            // trip a CONSUMER-AHEAD gate — an `fdx.gather` operand
+            // (`GatherNotYetSupported`, rule 14) or an MX/AFFINE_BLOCK quant
+            // (`MxNotYetRegistrable`, rule 6) — which is a CORRECT
+            // "describable-but-not-yet-registrable" outcome, NOT a defect. Such a
+            // describe-only gate MUST NOT block a bundle's importable sections, so
+            // it is swallowed HERE (the same "deferred" posture the corpus CI lint
+            // takes). Every OTHER error still fails import — a describe-only
+            // section's DESCRIPTIVE checks (bad dtype, incoherent layout, …) are
+            // still enforced, and a REGISTRABLE section's consumer-ahead gate still
+            // fails (it WOULD try to register).
+            Err(FkcError::GatherNotYetSupported { .. } | FkcError::MxNotYetRegistrable { .. })
+                if !kernel.registrable => {}
+            Err(e) => return Err(e),
+        }
     }
     Ok(())
 }

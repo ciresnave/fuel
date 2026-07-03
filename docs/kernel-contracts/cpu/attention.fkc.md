@@ -18,23 +18,39 @@ SDPA over a fixed-capacity KV cache), FlashAttn backward (recompute-based dQ/dK/
 accumulation/narrowing rule (half floats `bf16`/`f16` widen each operand to **f32**, do the dot
 product / softmax / output accumulation in f32, then narrow on store; `f32`/`f64` are native).
 
-All three families are **fused ops**, not primitives: `FLASH_ATTN = FusedOpId(12)`,
-`PAGED_ATTN = FusedOpId(13)`, and the three FlashAttn-backward variants
-`FLASH_ATTN_BACKWARD_Q/K/V` (`fuel-graph/src/registry.rs:885-887` and the backward block; the
-`OpKind::PagedAttn` / `OpKind::FlashAttn` tags at `fuel-core-types/src/dispatch.rs` exist as op-kind
-labels but are **not** the param carrier). Their param carriers are the
-`fuel_graph::registry::FusedOpParams` variants `FlashAttn` (`registry.rs:231`), `PagedAttn`
-(`registry.rs:241`), and `FlashAttnBackward` (`registry.rs:295`) — the fused namespace (§3.7), so
-each contract declares `fused_op:` and an `op_params.variant` in the `FusedOpParams` namespace and
-its cost compiles to the **fused** cost-fn shape `fn(&[Shape], &FusedOpParams,
-&BackendCapabilities)` — there is **no `&[DType]` arg** (§4.4 / §12.3).
+These contracts model the **`KernelBindingTable` dispatch path**: each is a primitive `op_kind:`
+section — `OpKind::FlashAttn`, the three `OpKind::FlashAttnBackward{Q,K,V}` selectors, and
+`OpKind::PagedAttn` (`fuel-ir/src/dispatch.rs`) — bound at a per-operand dtype key with the
+softmax/mask/geometry knobs riding in the matching `OpParams` variant (the primitive namespace,
+§3.7). The forward FlashAttn AND the three backward selectors share the single **`OpParams::FlashAttn`**
+param carrier (`fuel-dispatch/src/kernel.rs:299`, `{b, hq, hkv, sq, sk, d, softmax_scale, causal,
+window_size_left, window_size_right, softcap, k_len}` — there is no dedicated backward variant, so
+each backward section names `op_params.variant: FlashAttn` too); PagedAttn uses **`OpParams::PagedAttn`**
+(`kernel.rs:320`, `{b, hq, sq, d, softmax_scale, block_size, softcap, num_blocks}`). A primitive
+contract compiles its cost to the **primitive** cost-fn shape `fn(&[Shape], &OpParams,
+&BackendCapabilities)` — the shape the CPU cost dispatcher (`default_cost_for_op_kind`, arms
+`FlashAttn`/`PagedAttn`) fills via `fill_unset_cpu_cost` (§4.4 / §12.3).
+
+These families ALSO have a **separate** `FusedKernelRegistry` seam — `FLASH_ATTN = FusedOpId(12)`,
+`PAGED_ATTN = FusedOpId(13)`, and `FLASH_ATTN_BACKWARD_{Q,K,V}` (`fuel-graph/src/registry.rs`),
+dispatched when the graph carries an `Op::Fused(FLASH_ATTN*)` node and hand-registered in
+`register_default_fused_kernels`. That seam is **not** described here; it stays hand-written and can
+be FKC-modeled later when the fused import seam goes live (the importer registers primitive
+`op_kind:` sections onto the binding table, not the fused registry). The per-section prose below may
+still name the `FLASH_ATTN*` fused id — that refers to this separate seam, not to how the section
+registers.
 
 A load-bearing distinction: the **shape geometry** (`b, hq, hkv, sq, sk, d`, block sizes) is carried
-by the operand shapes / `KernelRef` payload, NOT by the `FusedOpParams` variant — the
-`FusedOpParams::FlashAttn` variant carries only `{softmax_scale, causal, window_size_left,
-window_size_right, softcap, k_len}` and `FusedOpParams::PagedAttn` only `{softmax_scale, block_size,
-softcap}` (`registry.rs:231-245`). The cost/shape symbols below name those geometry dims by role for
+by the operand shapes / `KernelRef` payload, NOT by the `OpParams` variant beyond the geometry
+fields the carrier already holds. The cost/shape symbols below name those geometry dims by role for
 the importer to bind from the shapes.
+
+**PagedAttn is DESCRIBE-ONLY here (`registrable: false`, §3.10).** Its paged KV pool carries an
+`fdx.gather: paged_blocks` sidecar (§3.9.1) whose FDX gather codes are [consumer-ahead] — the
+importer's VALIDATE pass returns `GatherNotYetSupported` for such an operand — so the four paged
+sections are documentation, not a registration target; the production `PagedAttn` binding stays
+hand-written until the FDX gather codes land. (The importer's validate pass SKIPS describe-only
+sections, so these four do not block the bundle's importable FlashAttn sections.)
 
 These kernels are the production `CpuStorageBytes` path the dispatch wrapper
 (`fuel_dispatch::dispatch::cpu_wrappers`) extracts and calls; they consume flat contiguous,
@@ -68,7 +84,7 @@ in-place; `k_len ≤ sk` enforced at runtime.
 
 ```fkc
 kernel: flash_attn_f32
-fused_op: FLASH_ATTN
+op_kind: FlashAttn
 blurb: "Naive multi-head SDPA over a fixed-capacity KV cache, f32 native; attends live prefix k_len <= Sk; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -101,7 +117,7 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttn                     # FusedOpParams::FlashAttn (fused namespace; §3.7)
+    variant: FlashAttn                     # OpParams::FlashAttn (primitive namespace; §3.7)
     fields:
       # geometry (b,hq,hkv,sq,sk,d) is carried by the operand SHAPES / KernelRef, not this variant.
       softmax_scale:     { kind: f32 }
@@ -161,7 +177,7 @@ Limitations match `flash_attn_f32`: contiguous zero-offset only, not tiled, no i
 
 ```fkc
 kernel: flash_attn_f64
-fused_op: FLASH_ATTN
+op_kind: FlashAttn
 blurb: "Naive multi-head SDPA over a fixed-capacity KV cache, f64 native; attends live prefix k_len <= Sk; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -251,7 +267,7 @@ in-place, `k_len ≤ sk` enforced at runtime.
 
 ```fkc
 kernel: flash_attn_bf16
-fused_op: FLASH_ATTN
+op_kind: FlashAttn
 blurb: "Naive multi-head SDPA over a fixed-capacity KV cache, bf16 I/O with f32 compute; attends live prefix k_len <= Sk; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -339,7 +355,7 @@ the IEEE half-precision storage format (10-bit mantissa vs bf16's 7-bit, narrowe
 
 ```fkc
 kernel: flash_attn_f16
-fused_op: FLASH_ATTN
+op_kind: FlashAttn
 blurb: "Naive multi-head SDPA over a fixed-capacity KV cache, f16 I/O with f32 compute; attends live prefix k_len <= Sk; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -437,7 +453,7 @@ Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
 kernel: flash_attn_backward_q_f32
-fused_op: FLASH_ATTN_BACKWARD_Q
+op_kind: FlashAttnBackwardQ
 blurb: "FlashAttn backward dQ from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dQ (= q shape); native f32 throughout; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -471,10 +487,10 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    variant: FlashAttn                     # OpParams::FlashAttn — shared by the Q/K/V selectors (primitive namespace; §3.7)
     fields:
       # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
-      # FusedOpId (FLASH_ATTN_BACKWARD_Q), NOT a variant field. No k_len in backward (full sk extent).
+      # OpKind (FlashAttnBackwardQ), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -540,7 +556,7 @@ Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
 kernel: flash_attn_backward_k_f32
-fused_op: FLASH_ATTN_BACKWARD_K
+op_kind: FlashAttnBackwardK
 blurb: "FlashAttn backward dK from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dK (= k shape); native f32 throughout; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -574,10 +590,10 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    variant: FlashAttn                     # OpParams::FlashAttn — shared by the Q/K/V selectors (primitive namespace; §3.7)
     fields:
       # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
-      # FusedOpId (FLASH_ATTN_BACKWARD_K), NOT a variant field. No k_len in backward (full sk extent).
+      # OpKind (FlashAttnBackwardK), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -643,7 +659,7 @@ Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
 kernel: flash_attn_backward_v_f32
-fused_op: FLASH_ATTN_BACKWARD_V
+op_kind: FlashAttnBackwardV
 blurb: "FlashAttn backward dV from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dV (= v shape); native f32 throughout; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -677,10 +693,10 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    variant: FlashAttn                     # OpParams::FlashAttn — shared by the Q/K/V selectors (primitive namespace; §3.7)
     fields:
       # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
-      # FusedOpId (FLASH_ATTN_BACKWARD_V), NOT a variant field. No k_len in backward (full sk extent).
+      # OpKind (FlashAttnBackwardV), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -746,7 +762,7 @@ Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
 kernel: flash_attn_backward_q_f64
-fused_op: FLASH_ATTN_BACKWARD_Q
+op_kind: FlashAttnBackwardQ
 blurb: "FlashAttn backward dQ from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dQ (= q shape); native f64 throughout; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -780,10 +796,10 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    variant: FlashAttn                     # OpParams::FlashAttn — shared by the Q/K/V selectors (primitive namespace; §3.7)
     fields:
       # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
-      # FusedOpId (FLASH_ATTN_BACKWARD_Q), NOT a variant field. No k_len in backward (full sk extent).
+      # OpKind (FlashAttnBackwardQ), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -849,7 +865,7 @@ Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
 kernel: flash_attn_backward_k_f64
-fused_op: FLASH_ATTN_BACKWARD_K
+op_kind: FlashAttnBackwardK
 blurb: "FlashAttn backward dK from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dK (= k shape); native f64 throughout; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -883,10 +899,10 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    variant: FlashAttn                     # OpParams::FlashAttn — shared by the Q/K/V selectors (primitive namespace; §3.7)
     fields:
       # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
-      # FusedOpId (FLASH_ATTN_BACKWARD_K), NOT a variant field. No k_len in backward (full sk extent).
+      # OpKind (FlashAttnBackwardK), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -952,7 +968,7 @@ Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
 kernel: flash_attn_backward_v_f64
-fused_op: FLASH_ATTN_BACKWARD_V
+op_kind: FlashAttnBackwardV
 blurb: "FlashAttn backward dV from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dV (= v shape); native f64 throughout; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -986,10 +1002,10 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    variant: FlashAttn                     # OpParams::FlashAttn — shared by the Q/K/V selectors (primitive namespace; §3.7)
     fields:
       # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
-      # FusedOpId (FLASH_ATTN_BACKWARD_V), NOT a variant field. No k_len in backward (full sk extent).
+      # OpKind (FlashAttnBackwardV), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -1055,7 +1071,7 @@ Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
 kernel: flash_attn_backward_q_bf16
-fused_op: FLASH_ATTN_BACKWARD_Q
+op_kind: FlashAttnBackwardQ
 blurb: "FlashAttn backward dQ from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dQ (= q shape); bf16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -1089,10 +1105,10 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    variant: FlashAttn                     # OpParams::FlashAttn — shared by the Q/K/V selectors (primitive namespace; §3.7)
     fields:
       # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
-      # FusedOpId (FLASH_ATTN_BACKWARD_Q), NOT a variant field. No k_len in backward (full sk extent).
+      # OpKind (FlashAttnBackwardQ), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -1158,7 +1174,7 @@ Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
 kernel: flash_attn_backward_k_bf16
-fused_op: FLASH_ATTN_BACKWARD_K
+op_kind: FlashAttnBackwardK
 blurb: "FlashAttn backward dK from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dK (= k shape); bf16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -1192,10 +1208,10 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    variant: FlashAttn                     # OpParams::FlashAttn — shared by the Q/K/V selectors (primitive namespace; §3.7)
     fields:
       # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
-      # FusedOpId (FLASH_ATTN_BACKWARD_K), NOT a variant field. No k_len in backward (full sk extent).
+      # OpKind (FlashAttnBackwardK), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -1261,7 +1277,7 @@ Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
 kernel: flash_attn_backward_v_bf16
-fused_op: FLASH_ATTN_BACKWARD_V
+op_kind: FlashAttnBackwardV
 blurb: "FlashAttn backward dV from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dV (= v shape); bf16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -1295,10 +1311,10 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    variant: FlashAttn                     # OpParams::FlashAttn — shared by the Q/K/V selectors (primitive namespace; §3.7)
     fields:
       # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
-      # FusedOpId (FLASH_ATTN_BACKWARD_V), NOT a variant field. No k_len in backward (full sk extent).
+      # OpKind (FlashAttnBackwardV), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -1364,7 +1380,7 @@ Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
 kernel: flash_attn_backward_q_f16
-fused_op: FLASH_ATTN_BACKWARD_Q
+op_kind: FlashAttnBackwardQ
 blurb: "FlashAttn backward dQ from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dQ (= q shape); f16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -1398,10 +1414,10 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    variant: FlashAttn                     # OpParams::FlashAttn — shared by the Q/K/V selectors (primitive namespace; §3.7)
     fields:
       # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
-      # FusedOpId (FLASH_ATTN_BACKWARD_Q), NOT a variant field. No k_len in backward (full sk extent).
+      # OpKind (FlashAttnBackwardQ), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -1467,7 +1483,7 @@ Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
 kernel: flash_attn_backward_k_f16
-fused_op: FLASH_ATTN_BACKWARD_K
+op_kind: FlashAttnBackwardK
 blurb: "FlashAttn backward dK from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dK (= k shape); f16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -1501,10 +1517,10 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    variant: FlashAttn                     # OpParams::FlashAttn — shared by the Q/K/V selectors (primitive namespace; §3.7)
     fields:
       # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
-      # FusedOpId (FLASH_ATTN_BACKWARD_K), NOT a variant field. No k_len in backward (full sk extent).
+      # OpKind (FlashAttnBackwardK), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -1570,7 +1586,7 @@ Limitations: contiguous zero-offset only; 3x recompute cost on CPU; no in-place.
 
 ```fkc
 kernel: flash_attn_backward_v_f16
-fused_op: FLASH_ATTN_BACKWARD_V
+op_kind: FlashAttnBackwardV
 blurb: "FlashAttn backward dV from (q, k, v, do_grad, [alibi_slopes]); recomputes softmax state; writes dV (= v shape); f16 I/O with f32 compute; GQA; causal/window/softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -1604,10 +1620,10 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: FlashAttnBackward             # FusedOpParams::FlashAttnBackward — shared by the Q/K/V ids (fused namespace; §3.7)
+    variant: FlashAttn                     # OpParams::FlashAttn — shared by the Q/K/V selectors (primitive namespace; §3.7)
     fields:
       # geometry (b,hq,hkv,sq,sk,d) carried by operand SHAPES / KernelRef; the Q/K/V distinction is the
-      # FusedOpId (FLASH_ATTN_BACKWARD_V), NOT a variant field. No k_len in backward (full sk extent).
+      # OpKind (FlashAttnBackwardV), NOT a variant field. No k_len in backward (full sk extent).
       softmax_scale:     { kind: f32 }
       causal:            { kind: bool }
       window_size_left:  { kind: "Option<usize>" }
@@ -1689,7 +1705,8 @@ fabricating a descriptor.
 
 ```fkc
 kernel: paged_attn_f32
-fused_op: PAGED_ATTN
+registrable: false                     # DESCRIBE-ONLY: fdx.gather paged_blocks is [consumer-ahead] (§3.9.1); the production PagedAttn binding stays hand-written
+op_kind: PagedAttn
 blurb: "Naive attention over a paged/blocked KV cache, f32 native; per-seq block_table + context_lens; implicit causal; GQA; softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -1738,7 +1755,7 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: PagedAttn                     # FusedOpParams::PagedAttn (fused namespace; §3.7)
+    variant: PagedAttn                     # OpParams::PagedAttn (primitive namespace; §3.7)  [describe-only: rule-7 namespace check skipped for registrable:false]
     fields:
       # geometry (b,hq,hkv,sq,d,max_blocks_per_seq,num_blocks) carried by operand SHAPES / KernelRef.
       softmax_scale: { kind: f32 }
@@ -1794,7 +1811,8 @@ zero-offset only, naive per-row allocation, no in-place, `Sq ≤ ctx_len`.
 
 ```fkc
 kernel: paged_attn_f64
-fused_op: PAGED_ATTN
+registrable: false                     # DESCRIBE-ONLY: fdx.gather paged_blocks is [consumer-ahead] (§3.9.1); the production PagedAttn binding stays hand-written
+op_kind: PagedAttn
 blurb: "Naive attention over a paged/blocked KV cache, f64 native; per-seq block_table + context_lens; implicit causal; GQA; softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -1894,7 +1912,8 @@ Limitations match the family: contiguous zero-offset only, naive per-row allocat
 
 ```fkc
 kernel: paged_attn_bf16
-fused_op: PAGED_ATTN
+registrable: false                     # DESCRIBE-ONLY: fdx.gather paged_blocks is [consumer-ahead] (§3.9.1); the production PagedAttn binding stays hand-written
+op_kind: PagedAttn
 blurb: "Naive attention over a paged/blocked KV cache, bf16 I/O with f32 compute; per-seq block_table + context_lens; implicit causal; GQA; softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -1993,7 +2012,8 @@ Limitations match the family: contiguous zero-offset only, naive per-row allocat
 
 ```fkc
 kernel: paged_attn_f16
-fused_op: PAGED_ATTN
+registrable: false                     # DESCRIBE-ONLY: fdx.gather paged_blocks is [consumer-ahead] (§3.9.1); the production PagedAttn binding stays hand-written
+op_kind: PagedAttn
 blurb: "Naive attention over a paged/blocked KV cache, f16 I/O with f32 compute; per-seq block_table + context_lens; implicit causal; GQA; softcap/alibi."
 backend: Cpu
 kernel_source: "portable-cpu"

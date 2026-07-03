@@ -269,7 +269,13 @@ pub fn import_bundle_str(
     // structurally / coherence-bad contract fails import before any lowering or
     // registration touches the dispatch surface. Validation runs over EVERY
     // section, including describe-only ones (§3.10) — their descriptive checks
-    // still apply; only their dispatch-resolution checks are skipped.
+    // (dtype, layout, cost, precision) still apply; only their dispatch-resolution
+    // checks are skipped. The ONE relaxation: a describe-only section's
+    // CONSUMER-AHEAD gate (`GatherNotYetSupported` / `MxNotYetRegistrable`) is a
+    // correct "describable-but-not-yet-registrable" outcome, so `validate_file`
+    // treats it as non-blocking (the same "deferred" posture the corpus CI lint
+    // takes) — a describe-only documentation section must not block a bundle's
+    // importable sections.
     crate::fkc::validate::validate_file(&file)?;
     // `lower_file` then EXCLUDES describe-only sections from the registered set
     // (§3.10): they never become a Resolved* record and are never registered.
@@ -1087,6 +1093,142 @@ determinism: same_hardware_bitwise
         provider
             .register_into(&mut table, &mut fused)
             .expect("register_into succeeds (no describe-only section reaches the table)");
+        assert!(table
+            .lookup(
+                OpKind::AddElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cpu
+            )
+            .is_ok());
+    }
+
+    // =====================================================================
+    // DESCRIBE-ONLY GATHER (§3.10 + §14): a `registrable: false` section that
+    // trips a consumer-ahead validator (FDX gather → GatherNotYetSupported)
+    // must NOT block a bundle's importable sections. The valid sibling still
+    // imports + registers; the describe-only gather section is documentation.
+    // =====================================================================
+
+    #[test]
+    fn describe_only_gather_section_does_not_block_bundle_import() {
+        // A bundle with (a) one VALID registrable op_kind section (add_f32) and
+        // (b) a `registrable: false` section whose operand carries an
+        // `fdx.gather: paged_blocks` block — which the VALIDATE pass flags
+        // `GatherNotYetSupported` (§14, consumer-ahead). Import must SKIP the
+        // describe-only section's validation (it is documentation, carries no
+        // dispatch target) and still register the valid sibling.
+        //
+        // **Born-red**: before the validate-skip fix, `validate_file` walked
+        // EVERY section (incl. describe-only) and `validate_kernel` ran the gather
+        // coherence check on the describe-only section → the whole
+        // `import_bundle_str` returned `GatherNotYetSupported` (RED). After the
+        // fix (`validate_file` skips `registrable: false` sections) → the valid
+        // section imports + registers (GREEN).
+        let src = r#"---
+fkc_version: 1
+provider:
+  name: gather-describe-provider
+  backend: Cpu
+  kernel_source: "gather-cpu"
+---
+
+# describe-only gather bundle
+
+## add_f32
+
+The real F32 addition thunk (registrable).
+
+```fkc
+kernel: add_f32
+op_kind: AddElementwise
+blurb: "F32 add"
+entry_point: "x::add_f32"
+accept:
+  inputs:
+    - name: lhs
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+    - name: rhs
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+  op_params: { variant: None }
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(lhs)
+cost:
+  provenance: declared
+  class: cheap_elementwise
+  flops: "n"
+precision:
+  bit_stable_on_same_hardware: true
+  audited: true
+determinism: same_hardware_bitwise
+```
+
+## paged_gather
+
+Describe-only: a paged KV pool with an FDX gather sidecar (consumer-ahead).
+
+```fkc
+kernel: paged_gather
+registrable: false
+op_kind: PagedAttn
+blurb: "describe-only paged gather"
+entry_point: "x::paged_gather"
+accept:
+  inputs:
+    - name: q
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+    - name: k_cache
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+      fdx:
+        requires_ext: true
+        symbolic_extent: required
+        gather: { kind: paged_blocks, block_table: block_table, context_lens: context_lens }
+    - name: block_table
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected }
+    - name: context_lens
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected }
+  op_params: { variant: PagedAttn }
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(q)
+cost:
+  provenance: declared
+  class: attention
+  flops: "n"
+precision:
+  bit_stable_on_same_hardware: true
+  audited: true
+determinism: same_hardware_bitwise
+```
+"#;
+        let link = DistinctLink::new();
+        let provider = import_bundle_str(src, &link).expect(
+            "a describe-only gather section must NOT block the bundle's importable sections",
+        );
+
+        // Only the registrable add_f32 lowered; the describe-only gather section
+        // is documentation (excluded from the registered set).
+        assert_eq!(
+            provider.primitives.len(),
+            1,
+            "exactly one registrable primitive (the gather section is describe-only)",
+        );
+        assert_eq!(provider.primitives[0].op, OpKind::AddElementwise);
+
+        // The valid sibling registers end-to-end.
+        let mut table = KernelBindingTable::new();
+        let mut fused = FusedKernelRegistry::new();
+        provider
+            .register_into(&mut table, &mut fused)
+            .expect("the valid sibling registers end-to-end");
         assert!(table
             .lookup(
                 OpKind::AddElementwise,
