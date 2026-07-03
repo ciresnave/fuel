@@ -575,6 +575,52 @@ pub static CPU_SHAPE_OPS_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("cumsum", "f16",  cumsum_f16_cpu_wrapper),
 ];
 
+/// The CPU **matmul** family's `symbol → production wrapper` map — the FULL
+/// portable family: bare batched `MatMul` (6 dtypes) + fused `FusedLinear`
+/// (matmul + bias-add, 4 dtypes) = 10 entry points. Contract:
+/// `docs/kernel-contracts/cpu/matmul.fkc.md`.
+///
+/// Each per-(op, dtype) section (`## matmul_f32`, `## fused_linear_f32`, …)
+/// declares a SPECIFIC single-dtype `entry_point` (`…::matmul_f32`), so none of
+/// them dtype-fan — the importer resolves that symbol AS-IS. Binding keys:
+/// - **MatMul** `[T, T, T]` (lhs, rhs + `passthrough(lhs)` output); the batch
+///   geometry (lhs_batch_dims/rhs_batch_dims/m/n/k) rides in `OpParams::Matmul`,
+///   NOT the dtype-list. Float variants (F32/F64/BF16/F16) accumulate in
+///   f32/native and narrow on store; integer variants (I8/U8) accumulate in i32
+///   and SATURATE on store.
+/// - **FusedLinear** `[T, T, T, T]` (a, b, bias + `passthrough(a)` output);
+///   `bias` is a REQUIRED 1-D `[N]` operand (NOT `optional`, so no optional
+///   {absent, present} fan — a single 4-slot key per dtype). Reuses
+///   `OpParams::Matmul` for shape; the kernel seeds the accumulator with the
+///   bias then accumulates over `k`.
+///
+/// This map covers ONLY the portable (`kernel_source: "portable-cpu"`) kernels
+/// this contract declares. The MKL / AOCL BLAS siblings live in SEPARATE
+/// external backend crates (`fuel-mkl-cpu-backend` / `fuel-aocl-cpu-backend`),
+/// register through the exported dispatch helpers with their own
+/// `"mkl"`/`"aocl"` `kernel_source` tags as ranked ALTERNATIVES at the SAME
+/// keys, and are out of scope here (untouched). The quant `QMatMul` /
+/// `Nf4Matmul` OpKinds have their own contracts and stay hand-written. These
+/// sections have NO `##` chassis umbrella, so there is no `registrable: false`
+/// describe-only entry to omit; the SEPARATE `FusedKernelRegistry`
+/// `FusedOps::FUSED_LINEAR` seam (`register_default_fused_kernels`) is
+/// hand-written (the matmul contract declares no `fused_op`), and stays
+/// untouched — this map only serves the `KernelBindingTable` primitive path.
+pub static CPU_MATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // Bare batched MatMul — key [T, T, T].
+    ep!("matmul", "f32",  matmul_f32_cpu_wrapper),
+    ep!("matmul", "f64",  matmul_f64_cpu_wrapper),
+    ep!("matmul", "bf16", matmul_bf16_cpu_wrapper),
+    ep!("matmul", "f16",  matmul_f16_cpu_wrapper),
+    ep!("matmul", "i8",   matmul_i8_cpu_wrapper),
+    ep!("matmul", "u8",   matmul_u8_cpu_wrapper),
+    // Fused matmul + bias-add — key [T, T, T, T].
+    ep!("fused_linear", "f32",  fused_linear_f32_cpu_wrapper),
+    ep!("fused_linear", "f64",  fused_linear_f64_cpu_wrapper),
+    ep!("fused_linear", "bf16", fused_linear_bf16_cpu_wrapper),
+    ep!("fused_linear", "f16",  fused_linear_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
 /// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
@@ -582,8 +628,8 @@ pub static CPU_SHAPE_OPS_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// [`CPU_REDUCE_ENTRY_POINTS`], [`CPU_REDUCE_TO_ENTRY_POINTS`],
 /// [`CPU_NORM_ENTRY_POINTS`], [`CPU_NORM_BACKWARD_ENTRY_POINTS`],
 /// [`CPU_ROPE_ENTRY_POINTS`], [`CPU_SSM_ENTRY_POINTS`],
-/// [`CPU_CONV_ENTRY_POINTS`], [`CPU_PADDING_ENTRY_POINTS`], and
-/// [`CPU_SHAPE_OPS_ENTRY_POINTS`].
+/// [`CPU_CONV_ENTRY_POINTS`], [`CPU_PADDING_ENTRY_POINTS`],
+/// [`CPU_SHAPE_OPS_ENTRY_POINTS`], and [`CPU_MATMUL_ENTRY_POINTS`].
 /// Unresolved → `None`, which the importer turns into a typed
 /// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;
@@ -605,6 +651,7 @@ impl LinkRegistry for CpuLinkRegistry {
             .chain(CPU_CONV_ENTRY_POINTS.iter())
             .chain(CPU_PADDING_ENTRY_POINTS.iter())
             .chain(CPU_SHAPE_OPS_ENTRY_POINTS.iter())
+            .chain(CPU_MATMUL_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
@@ -612,14 +659,19 @@ impl LinkRegistry for CpuLinkRegistry {
     fn resolve_fused(&self, _symbol: &str) -> Option<KernelRef> {
         // No fused-op contracts in the elementwise-binary, affine/clamp/powi,
         // elementwise-unary, compare/where, reduce, reduce-to, norm,
-        // norm-backward, rope, ssm, conv, or padding corpora. The padding ops
+        // norm-backward, rope, ssm, conv, padding, shape-ops, or matmul corpora.
+        // The padding ops
         // are all primitive `op_kind: Pad`/`PadBackward` contracts (no
         // `fused_op`). The ssm ops are all
         // primitive `op_kind` contracts ("fused" in FusedSoftmaxCrossEntropy
         // names an intra-op softmax+NLL fusion, NOT a graph `FusedOpId`); the
         // conv contract's sections are all `op_kind: Conv2D/ConvTranspose2D`
         // primitives (the SEPARATE FusedOps::{CONV2D, CONV_TRANSPOSE2D} registry
-        // seam is hand-written, not FKC-imported).
+        // seam is hand-written, not FKC-imported). The matmul contract's
+        // sections are all `op_kind: MatMul`/`FusedLinear` primitives ("fused" in
+        // FusedLinear names an intra-op matmul+bias fusion, NOT a graph
+        // `FusedOpId`; the SEPARATE FusedOps::FUSED_LINEAR registry seam is
+        // hand-written, not FKC-imported).
         None
     }
 }

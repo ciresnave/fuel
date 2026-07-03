@@ -3005,7 +3005,9 @@ cpu_reduce_max_to_wrapper!(reduce_max_to_f16_cpu_wrapper,  fuel_cpu_backend::byt
 /// (lhs, rhs, bias). Reuses `OpParams::Matmul` for shape.
 macro_rules! cpu_fused_linear_wrapper {
     ($wrapper:ident, $kernel:path) => {
-        fn $wrapper(
+        // `pub(crate)` so the FKC `CpuLinkRegistry` can resolve the matmul
+        // contract's `fused_linear_<dt>` `entry_point` symbols to these wrappers.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -3802,7 +3804,11 @@ cpu_cast_wrapper!(
 /// `OpParams::Matmul { m, n, k }` and forwards to the typed
 /// kernel. Both inputs are guaranteed contiguous f32 by the
 /// executor's auto-Contiguize pass.
-fn matmul_f32_cpu_wrapper(
+///
+/// `pub(crate)` so the FKC `CpuLinkRegistry` (`fkc::cpu_link`,
+/// [`crate::fkc::CPU_MATMUL_ENTRY_POINTS`]) can resolve the matmul contract's
+/// `entry_point` symbol to this exact wrapper fn-pointer.
+pub(crate) fn matmul_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -3857,7 +3863,9 @@ fn matmul_f32_cpu_wrapper(
 /// rhs_batch_dims, m, n, k) -> Result<()>` signature.
 macro_rules! cpu_matmul_wrapper {
     ($wrapper:ident, $kernel:path, $type_name:literal) => {
-        fn $wrapper(
+        // `pub(crate)` so the FKC `CpuLinkRegistry` can resolve the matmul
+        // contract's `entry_point` symbols to these wrapper fn-pointers.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -3909,7 +3917,10 @@ cpu_matmul_wrapper!(matmul_u8_cpu_wrapper,   fuel_cpu_backend::byte_kernels::mat
 /// f64 mirror of [`matmul_f32_cpu_wrapper`]. Same OpKind
 /// (MatMul); the binding-table key picks this entry when the
 /// node's dtype is F64.
-fn matmul_f64_cpu_wrapper(
+///
+/// `pub(crate)` so the FKC `CpuLinkRegistry` can resolve the matmul contract's
+/// `entry_point` symbol to this exact wrapper fn-pointer.
+pub(crate) fn matmul_f64_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -4778,6 +4789,73 @@ fn register_cpu_shape_ops_from_contract(table: &mut KernelBindingTable) {
     );
 }
 
+/// The authored CPU **matmul** kernel contract, embedded into the binary (the
+/// PRODUCTION `include_str!`). `register_cpu_matmul_from_contract` parses +
+/// lowers it and binds the FULL portable family FROM THE CONTRACT.
+const CPU_MATMUL_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/matmul.fkc.md");
+
+/// Register the CPU **matmul** family FULLY — bare batched `MatMul` (6 dtypes,
+/// key `[T, T, T]`) + fused `FusedLinear` (matmul + bias-add, 4 dtypes, key
+/// `[T, T, T, T]`) = 10 bindings — by IMPORTING its FKC kernel contract, the
+/// fourteenth production FKC consumer. FKC is unconditional core infrastructure,
+/// so this is the ONE registration path for the PORTABLE kernels: every
+/// hand-written `table.register(MatMul / FusedLinear, …)` portable-CPU call is
+/// DELETED.
+///
+/// Each per-(op, dtype) section (`## matmul_f32`, `## fused_linear_f32`, …) is a
+/// SPECIFIC single-dtype contract with a concrete `entry_point`
+/// (`…::matmul_f32`), so none of them dtype-fan — the importer resolves each
+/// declared symbol AS-IS through the production [`crate::fkc::CpuLinkRegistry`]
+/// (now chaining [`crate::fkc::CPU_MATMUL_ENTRY_POINTS`]) to the exact wrapper
+/// fn-pointer the CPU backend exposes. MatMul is 2-input (lhs, rhs) →
+/// `passthrough(lhs)` output; FusedLinear is 3-input (a, b, bias) →
+/// `passthrough(a)` output with `bias` a REQUIRED 1-D `[N]` operand (NOT
+/// `optional`, so a single 4-slot key per dtype — no optional {absent, present}
+/// fan). Both reuse `OpParams::Matmul` for shape, so every batch-geometry knob
+/// (lhs_batch_dims/rhs_batch_dims/m/n/k) rides in `OpParams`, NOT the dtype-list.
+/// The float variants (F32/F64/BF16/F16) accumulate in f32/native; the integer
+/// MatMul variants (I8/U8) accumulate in i32 and SATURATE on store.
+///
+/// **Alternatives at the same key.** The binding table supports MULTIPLE ranked
+/// kernels per `(op, dtypes, backend)` key. This importer registers ONLY the
+/// portable (`kernel_source: "portable-cpu"`) kernels the contract covers; the
+/// MKL / AOCL BLAS siblings live in SEPARATE external backend crates
+/// (`fuel-mkl-cpu-backend` / `fuel-aocl-cpu-backend`), register through the
+/// exported dispatch helpers with their own `"mkl"`/`"aocl"` `kernel_source`
+/// tags as ranked alternatives at these SAME keys, and are out of scope here
+/// (untouched — never registered in this crate's default build).
+///
+/// Behavior-preserving vs. the deleted hand-written path: identical kernels +
+/// caps (contiguous-only, GQA-divisible batch); the binding's `kernel_source`
+/// becomes the contract's `"portable-cpu"` tag and its precision the contract's
+/// bit-stable claim. Cost is preserved because this runs BEFORE
+/// `fill_unset_cpu_cost`, which upgrades the imported entries' `unknown_cost`
+/// sentinel to the same OpKind cost fn every CPU primitive gets. The family
+/// declares NO fused ops (the SEPARATE `FusedKernelRegistry`
+/// `FusedOps::FUSED_LINEAR` seam is hand-written, in
+/// `register_default_fused_kernels`, and stays untouched — "fused" in
+/// `FusedLinear` names an intra-op matmul+bias fusion, NOT a graph `FusedOpId`),
+/// so `register_into`'s required fused argument is a local throwaway that
+/// provably stays empty. The quant `QMatMul` / `Nf4Matmul` OpKinds have their
+/// own contracts and stay hand-written.
+fn register_cpu_matmul_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_MATMUL_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU matmul contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "matmul contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU matmul contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -4797,7 +4875,10 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // Variadic Concat uses the `unary` shape as a canonical
     // shorthand for "uniform-dtype across N inputs + output."
     let unary  = |t: DType| [t, t];                             // (in, out)
-    let binary = |t: DType| [t, t, t];                          // (lhs, rhs, out)
+    // (MatMul's (lhs, rhs, out) key shape is now built by the FKC importer from
+    // docs/kernel-contracts/cpu/matmul.fkc.md — see
+    // register_cpu_matmul_from_contract; the hand-written `binary` closure was
+    // removed with its regs.)
     let u8_dt  = DType::U8;
     // (Rope's (x, cos, sin, out) key shape is now built by the FKC importer
     // from docs/kernel-contracts/cpu/rope.fkc.md — see
@@ -4809,7 +4890,10 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // now emits BOTH the no-bias (x, w, out) and with-bias (x, w, bias, out) keys
     // per (op, dtype); the hand-written `conv2d_with_bias` / `conv2d_no_bias`
     // closures + their regs were all removed.)
-    let fused_linear     = |t: DType| [t, t, t, t];             // (lhs, rhs, bias, out)
+    // (FusedLinear's (lhs, rhs, bias, out) key shape is now built by the FKC
+    // importer from docs/kernel-contracts/cpu/matmul.fkc.md — see
+    // register_cpu_matmul_from_contract; the hand-written `fused_linear` closure
+    // was removed with its regs.)
     let flash_attn_no_alibi   = |t: DType| [t, t, t, t];        // (q, k, v, out)
     let flash_attn_with_alibi = |t: DType| [t, t, t, t, t];     // (q, k, v, alibi, out)
     let fa_bw_no_alibi   = |t: DType| [t, t, t, t, t];          // (q, k, v, do, out)
@@ -5015,14 +5099,27 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // passes so the imported entries pick up the CPU cost fill.
     register_cpu_shape_ops_from_contract(table);
 
-    table.register(MatMul,             &binary(f32_dt),  cpu, matmul_f32_cpu_wrapper);
-    table.register(MatMul,             &binary(f64_dt),  cpu, matmul_f64_cpu_wrapper);
-    table.register(MatMul,             &binary(bf16_dt), cpu, matmul_bf16_cpu_wrapper);
-    table.register(MatMul,             &binary(f16_dt),  cpu, matmul_f16_cpu_wrapper);
-    // Integer MatMul — i32 accumulator, saturating cast back to T on
-    // store. Mirrors baracuda's `gemm_{s8,u8}_rrr_sm80_run` contract.
-    table.register(MatMul,             &binary(DType::I8), cpu, matmul_i8_cpu_wrapper);
-    table.register(MatMul,             &binary(u8_dt),     cpu, matmul_u8_cpu_wrapper);
+    // CPU matmul family — FULLY contract-sourced (PORTABLE kernels): bare
+    // batched MatMul (6 dtypes F32/F64/BF16/F16/I8/U8, key [T, T, T]) + fused
+    // FusedLinear (matmul + bias-add, 4 dtypes F32/F64/BF16/F16, key
+    // [T, T, T, T]) = 10 bindings. Fourteenth production FKC-contract consumer:
+    // IMPORTED from docs/kernel-contracts/cpu/matmul.fkc.md via the same
+    // `CpuLinkRegistry`. Each per-(op,dtype) section carries a SPECIFIC
+    // single-dtype entry_point (`matmul_f32`, `fused_linear_f32`, …) resolved
+    // AS-IS (no fan-out); the batch geometry (lhs_batch_dims/rhs_batch_dims/
+    // m/n/k) rides in OpParams::Matmul (FusedLinear reuses it). Integer MatMul
+    // (I8/U8) accumulates in i32 and saturates on store. Every hand-written
+    // portable `table.register(MatMul / FusedLinear, …)` call is DELETED — this
+    // is the sole registration path for the portable family. Placed BEFORE the
+    // `fill_unset_cpu_*` passes so the imported entries pick up the CPU cost
+    // fill. ALTERNATIVES-AT-KEY: the MKL/AOCL BLAS siblings register at these
+    // SAME keys from SEPARATE external crates with their own `"mkl"`/`"aocl"`
+    // kernel_source tags — SEPARATE and untouched (not registered in this build).
+    // The SEPARATE FusedKernelRegistry FusedOps::FUSED_LINEAR seam
+    // (register_default_fused_kernels) is hand-written and stays untouched; the
+    // quant QMatMul/Nf4Matmul OpKinds have their own contracts and stay
+    // hand-written below.
+    register_cpu_matmul_from_contract(table);
 
     // (bf16 + f16 reductions are now registered from the reduce contract above,
     // alongside the f32/f64 variants — accumulate in f32 for stability.)
@@ -5173,11 +5270,12 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // above) — the hand-written regs were DELETED (FKC is the sole path). The
     // ReduceMaxToBackward regs (key [T, T, T]) below were likewise deleted.
 
-    // FusedLinear: 3 inputs (lhs, rhs, bias) → out.
-    table.register(FusedLinear, &fused_linear(f32_dt),  cpu, fused_linear_f32_cpu_wrapper);
-    table.register(FusedLinear, &fused_linear(f64_dt),  cpu, fused_linear_f64_cpu_wrapper);
-    table.register(FusedLinear, &fused_linear(bf16_dt), cpu, fused_linear_bf16_cpu_wrapper);
-    table.register(FusedLinear, &fused_linear(f16_dt),  cpu, fused_linear_f16_cpu_wrapper);
+    // FusedLinear (3 inputs lhs, rhs, bias → out; key [T, T, T, T]) is now
+    // registered FROM the matmul FKC contract
+    // (`register_cpu_matmul_from_contract`, above) — the hand-written regs were
+    // DELETED (FKC is the sole path for the portable family). The SEPARATE
+    // FusedKernelRegistry FusedOps::FUSED_LINEAR seam
+    // (`register_default_fused_kernels`) is hand-written and stays untouched.
 
     // FlashAttn — register both 3-input (q,k,v) and 4-input
     // (q,k,v,alibi) shapes per dtype.
@@ -8726,6 +8824,116 @@ mod tests {
             checked,
             6 + 6 + 6 + 4 + 9,
             "flip(6) + roll(6) + masked_fill(6) + cumsum(4) + concat(9) contract-sourced bindings",
+        );
+    }
+
+    /// Gate for the CPU **matmul** family moved to FKC-contract registration.
+    /// IMPORTED from `docs/kernel-contracts/cpu/matmul.fkc.md` via the production
+    /// `CpuLinkRegistry` (chaining `CPU_MATMUL_ENTRY_POINTS`):
+    /// - **MatMul** — bare batched matmul (`OpKind::MatMul`), key `[T, T, T]`
+    ///   (lhs, rhs + `passthrough(lhs)` output). Each per-dtype section
+    ///   (`## matmul_f32`, …) carries a SPECIFIC single-dtype `entry_point`
+    ///   resolved AS-IS (no fan), 6 dtypes (F32/F64/BF16/F16 with an f32/native
+    ///   accumulator + I8/U8 with an i32 accumulator + saturating store).
+    /// - **FusedLinear** — fused matmul + bias-add (`OpKind::FusedLinear`), key
+    ///   `[T, T, T, T]` (a, b, bias + `passthrough(a)` output). Reuses
+    ///   `OpParams::Matmul` for shape; bias is a REQUIRED 1-D `[N]` operand (no
+    ///   optional fan). 4 dtypes (F32/F64/BF16/F16).
+    ///
+    /// This family exercises the CRITICAL alternatives-at-the-same-key path: the
+    /// binding table supports MULTIPLE ranked kernels per `(op, dtypes, backend)`
+    /// key, and the MKL/AOCL BLAS siblings (external `fuel-mkl-cpu-backend` /
+    /// `fuel-aocl-cpu-backend` crates, registered through the exported dispatch
+    /// helpers with their own `"mkl"`/`"aocl"` `kernel_source` tags) may register
+    /// at these SAME keys — SEPARATE and out of scope here. So this gate does NOT
+    /// assert the portable wrapper is the SOLE alternative; it `find`s the
+    /// portable `"portable-cpu"`-sourced entry among the alternatives.
+    ///
+    /// SEPARATE seams left untouched: the `FusedKernelRegistry`
+    /// `FusedOps::FUSED_LINEAR` registration (`register_default_fused_kernels`) is
+    /// hand-written and not FKC-imported (the matmul contract declares NO
+    /// `fused_op` sections); the quant `QMatMul` / `Nf4Matmul` OpKinds have their
+    /// own contracts and stay hand-written.
+    ///
+    /// For each migrated key: the portable wrapper is bound with
+    /// `kernel_source == "portable-cpu"` (the contract provenance tag), caps
+    /// contiguous, and the contract's bit-stable precision riding through.
+    #[test]
+    fn global_bindings_registers_matmul_family_from_contract() {
+        let table = global_bindings();
+        let mut checked = 0usize;
+
+        // Assert a (op, key) resolves to `expected` (the portable wrapper) with
+        // the contract provenance — `find`ing it among any BLAS-sibling
+        // alternatives at the same key (never asserting single-alternative).
+        let mut check = |op: OpKind, key: &[DType], expected: crate::kernel::KernelRef, label: &str| {
+            let alts = table.lookup_alternatives(op, key, BackendId::Cpu);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{op:?}/{label}/Cpu: the portable wrapper must be bound \
+                         FROM the matmul contract in global_bindings() — found {} \
+                         alternative(s) with sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "portable-cpu",
+                "{op:?}/{label}: portable kernel must be contract-sourced \
+                 (kernel_source=\"portable-cpu\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                !entry.caps.strided_input,
+                "{op:?}/{label}: caps preserved (contiguous-only)",
+            );
+            assert!(
+                entry.precision.bit_stable_on_same_hardware,
+                "{op:?}/{label}: contract's bit-stable claim rode through",
+            );
+            checked += 1;
+        };
+
+        // MatMul — key [T, T, T], per-dtype wrapper resolved AS-IS. 6 dtypes.
+        let mm_dts = [
+            DType::F32, DType::F64, DType::BF16, DType::F16, DType::I8, DType::U8,
+        ];
+        let mm_wrappers: [crate::kernel::KernelRef; 6] = [
+            matmul_f32_cpu_wrapper,
+            matmul_f64_cpu_wrapper,
+            matmul_bf16_cpu_wrapper,
+            matmul_f16_cpu_wrapper,
+            matmul_i8_cpu_wrapper,
+            matmul_u8_cpu_wrapper,
+        ];
+        for (i, dt) in mm_dts.iter().enumerate() {
+            check(OpKind::MatMul, &[*dt, *dt, *dt], mm_wrappers[i], "matmul");
+        }
+
+        // FusedLinear — key [T, T, T, T], per-dtype wrapper resolved AS-IS. 4 dtypes.
+        let fl_dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+        let fl_wrappers: [crate::kernel::KernelRef; 4] = [
+            fused_linear_f32_cpu_wrapper,
+            fused_linear_f64_cpu_wrapper,
+            fused_linear_bf16_cpu_wrapper,
+            fused_linear_f16_cpu_wrapper,
+        ];
+        for (i, dt) in fl_dts.iter().enumerate() {
+            check(
+                OpKind::FusedLinear,
+                &[*dt, *dt, *dt, *dt],
+                fl_wrappers[i],
+                "fused_linear",
+            );
+        }
+
+        assert_eq!(
+            checked,
+            6 + 4,
+            "matmul(6) + fused_linear(4) contract-sourced bindings",
         );
     }
 
