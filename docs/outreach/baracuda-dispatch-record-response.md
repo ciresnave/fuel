@@ -1,6 +1,9 @@
 # Fuel → Baracuda: dispatch/miss record schema + variants — grounded answers
 
-**Status:** FINAL (2026-07-03), approved for send. Replies to the inbound
+**Status:** SENT 2026-07-03 (relayed by CireSnave). The wire vocabulary below is
+therefore PINNED on both sides; Fuel-side follow-up commitments are tracked at the
+bottom (1 = envelope fingerprint and 2 = `variant:` field in flight as of send; 3 =
+emission wiring and 4 = workspace-in-caps queued). Replies to the inbound
 "dispatch/miss record schema + kernel variants on the wire" ask (your design
 `kernel-specialization.md` §7–§8; dispatch-table schema in
 `baracuda-kernels-types::dispatch`, alpha.72+ `feat/kernel-specialization`).
