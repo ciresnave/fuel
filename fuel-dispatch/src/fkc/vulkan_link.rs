@@ -577,6 +577,37 @@ pub static VULKAN_QMATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     vk_ep!("qmatmul_vk", crate::vulkan_dispatch::qmatmul::qmatmul_vk),
 ];
 
+/// The Vulkan **FlashAttention** family's `symbol → production wrapper` map —
+/// the FULL family: 6 sections resolving to 6 distinct wrappers, keyed as 12
+/// bindings (each section's `alibi_slopes` optional-last fan doubles it). The
+/// forward `OpKind::FlashAttn` at THREE per-dtype wrappers
+/// (`flash_attn::flash_attn_{f32,bf16,f16}`) + the three backward selectors
+/// `OpKind::FlashAttnBackward{Q,K,V}` at f32-only wrappers
+/// (`flash_attn::flash_attn_backward_{q,k,v}_f32`). Contract:
+/// `docs/kernel-contracts/vulkan/attention.fkc.md`, authored per-(op, dtype)
+/// (the conv2d + CPU-attention per-dtype-section precedent).
+///
+/// Because the forward wrappers are DISTINCT per dtype, each section is
+/// SINGLE-dtype-per-operand and names its `entry_point` in FULL (no dtype-fan
+/// suffix), so the importer resolves the symbol AS-IS — the cast-family
+/// precedent. The importer keys `[q,k,v,(alibi,)out]` (forward) and
+/// `[q,k,v,do,(alibi,)out]` (backward), byte-for-byte the deleted hand-written
+/// `register_with_precision(OpKind::{FlashAttn,FlashAttnBackward{Q,K,V}}, …)`
+/// regs. Caps ride through contiguous-only (`requires_contiguous` ⇒
+/// `strided_input == false`); precision is the corrected audited-nondeterministic
+/// `none(reason)` seed (single-pass shared-mem softmax reduction; the retired
+/// `VULKAN_{FLOAT,HALF}_POINTWISE_PRECISION` consts over-claimed bit-stability).
+pub static VULKAN_ATTENTION_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // Forward: 3 distinct per-dtype wrappers.
+    vk_ep!("flash_attn_f32",  crate::vulkan_dispatch::flash_attn::flash_attn_f32),
+    vk_ep!("flash_attn_bf16", crate::vulkan_dispatch::flash_attn::flash_attn_bf16),
+    vk_ep!("flash_attn_f16",  crate::vulkan_dispatch::flash_attn::flash_attn_f16),
+    // Backward Q/K/V: f32-only distinct per-selector wrappers.
+    vk_ep!("flash_attn_backward_q_f32", crate::vulkan_dispatch::flash_attn::flash_attn_backward_q_f32),
+    vk_ep!("flash_attn_backward_k_f32", crate::vulkan_dispatch::flash_attn::flash_attn_backward_k_f32),
+    vk_ep!("flash_attn_backward_v_f32", crate::vulkan_dispatch::flash_attn::flash_attn_backward_v_f32),
+];
+
 /// The built-in Vulkan backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`VULKAN_CAST_ENTRY_POINTS`] +
 /// [`VULKAN_ELEMENTWISE_ENTRY_POINTS`] + [`VULKAN_MATMUL_ENTRY_POINTS`] +
@@ -606,6 +637,7 @@ impl LinkRegistry for VulkanLinkRegistry {
             .chain(VULKAN_REDUCE_ENTRY_POINTS.iter())
             .chain(VULKAN_NORM_ENTRY_POINTS.iter())
             .chain(VULKAN_QMATMUL_ENTRY_POINTS.iter())
+            .chain(VULKAN_ATTENTION_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
