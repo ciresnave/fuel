@@ -10153,6 +10153,411 @@ mod generate_tests {
         // NO timing assertion — perf is a verify-after gate, not a CI gate.
     }
 
+    // ===================================================================
+    // Phase D · persistent-decode WALL-CLOCK benchmark on a REAL model.
+    //
+    // The scaffold above proves the A/B shape on a tiny synthetic model
+    // (CPU understates the win). These entries run the SAME A/B — D1
+    // replan-every-token vs. D2 plan-once persistent — on a realistic
+    // model (TinyLlama-1.1B) loaded from `FUEL_BENCH_MODEL_DIR`, and
+    // print a per-token wall-clock table + the ratio. `#[ignore]`'d
+    // (manual, needs a multi-GB checkpoint on disk); NOT a CI gate.
+    //
+    //   CPU:    FUEL_BENCH_MODEL_DIR=... cargo test -p fuel-core --lib \
+    //             bench_persistent_decode_real_model_cpu -- --ignored --nocapture
+    //   Vulkan: FUEL_BENCH_MODEL_DIR=... cargo test -p fuel-core --lib \
+    //             --features vulkan \
+    //             bench_persistent_decode_real_model_vulkan -- --ignored --nocapture
+    //
+    // Weights are force-upcast to F32 (see `force_weights_f32`) so the
+    // forward graph is pure-F32 — both the CPU and Vulkan F32 matmul
+    // kernels handle it, sidestepping any mixed-precision (F32×BF16)
+    // CPU-matmul gap. This is a TIMING benchmark, not a precision test.
+    // ===================================================================
+
+    /// Upcast every BF16 projection weight to F32 (norms/embeddings are
+    /// already F32) so the forward graph is homogeneously F32.
+    fn force_weights_f32(mut w: LlamaWeights) -> LlamaWeights {
+        fn to_f32(ws: &WeightStorage) -> WeightStorage {
+            match ws {
+                WeightStorage::BF16(a) => {
+                    let v: Vec<f32> = a.iter().map(|x| x.to_f32()).collect();
+                    WeightStorage::F32(Arc::from(v))
+                }
+                other => other.clone(),
+            }
+        }
+        for l in w.layers.iter_mut() {
+            l.attn_q = to_f32(&l.attn_q);
+            l.attn_k = to_f32(&l.attn_k);
+            l.attn_v = to_f32(&l.attn_v);
+            l.attn_o = to_f32(&l.attn_o);
+            l.ffn_gate = to_f32(&l.ffn_gate);
+            l.ffn_up = to_f32(&l.ffn_up);
+            l.ffn_down = to_f32(&l.ffn_down);
+        }
+        w.output = to_f32(&w.output);
+        w
+    }
+
+    /// Load `LlamaModel` from `FUEL_BENCH_MODEL_DIR` (config.json +
+    /// model.safetensors). `force_f32` upcasts BF16 projections to F32
+    /// (used on CPU, where matmul is F32×F32); `false` keeps the
+    /// checkpoint's native BF16 on the projections (used on Vulkan —
+    /// the backend's mixed `matmul_f32_bf16_b` path — halving weight
+    /// VRAM, which matters because the D1 replan baseline re-uploads
+    /// the full weight set every realize). Returns `(model, load_secs)`,
+    /// or `None` (with a logged reason) if the env var is unset — so
+    /// the `#[ignore]`'d test skips cleanly without a checkpoint.
+    fn load_real_llama(force_f32: bool) -> Option<(LlamaModel, f64)> {
+        let dir = match std::env::var("FUEL_BENCH_MODEL_DIR") {
+            Ok(d) => std::path::PathBuf::from(d),
+            Err(_) => {
+                eprintln!(
+                    "FUEL_BENCH_MODEL_DIR not set — skipping real-model persistent-decode bench.",
+                );
+                return None;
+            }
+        };
+        let config_path = dir.join("config.json");
+        let config_str = std::fs::read_to_string(&config_path)
+            .unwrap_or_else(|e| panic!("read {config_path:?}: {e}"));
+        let cfg = LlamaConfig::from_hf_json_str(&config_str).expect("parse config.json");
+        eprintln!(
+            "model config: vocab={} dim={} layers={} q_heads={} kv_heads={} head_dim={} ffn={}",
+            cfg.vocab_size, cfg.dim, cfg.n_layers, cfg.n_heads, cfg.n_kv_heads,
+            cfg.head_dim, cfg.ffn_dim,
+        );
+        let weights_path = dir.join("model.safetensors");
+        let t0 = std::time::Instant::now();
+        let st = unsafe { crate::safetensors::MmapedSafetensors::new(&weights_path) }
+            .unwrap_or_else(|e| panic!("mmap {weights_path:?}: {e}"));
+        // Report the source dtype of a representative projection so the
+        // deviation (bf16 source → f32 in-memory) is visible in the log.
+        if let Ok(v) = st.get("model.layers.0.self_attn.q_proj.weight") {
+            eprintln!("source safetensors dtype (q_proj.weight): {:?}", v.dtype());
+        }
+        let raw = LlamaWeights::load_from_mmapped(&st, &cfg).expect("load weights");
+        let weights = if force_f32 { force_weights_f32(raw) } else { raw };
+        let load_secs = t0.elapsed().as_secs_f64();
+        eprintln!(
+            "weights loaded in {load_secs:.2}s (projections {})",
+            if force_f32 { "upcast to F32" } else { "kept at source dtype" },
+        );
+        Some((LlamaModel { config: cfg, weights }, load_secs))
+    }
+
+    /// Summarize a slice of per-token durations as (mean, min, max) in ms.
+    fn ms_stats(times: &[std::time::Duration]) -> (f64, f64, f64) {
+        let ms: Vec<f64> = times.iter().map(|d| d.as_secs_f64() * 1e3).collect();
+        let mean = ms.iter().sum::<f64>() / ms.len().max(1) as f64;
+        let mut min = f64::INFINITY;
+        let mut max = f64::NEG_INFINITY;
+        for &x in &ms {
+            if x < min { min = x; }
+            if x > max { max = x; }
+        }
+        (mean, min, max)
+    }
+
+    /// The shared A/B benchmark body (device-agnostic). Runs D1 (replan
+    /// every token) and D2 (plan-once persistent) over `n` decode tokens
+    /// from a fixed hard-coded prompt, times each per-token step
+    /// (prefill excluded + reported separately), checks byte-exactness
+    /// between the two paths, and prints a compact table.
+    ///
+    /// `post_token` (if given) runs after EVERY forward step in BOTH
+    /// loops, OUTSIDE the timed window. The Vulkan bench passes a
+    /// `synchronize_pending` drain here: the D1 replan path re-uploads
+    /// the full weight set every realize, and without a forced sync the
+    /// deferred-destruction batches let several realize-generations of
+    /// weight buffers coexist → `ERROR_OUT_OF_DEVICE_MEMORY` on a 12 GB
+    /// card by decode token 3. Excluding the drain from the timer is
+    /// conservative (it charges D1 nothing for the reclaim it needs).
+    fn run_persistent_decode_bench(
+        model: &LlamaModel,
+        device: &Device,
+        dev_label: &str,
+        load_secs: f64,
+        n: usize,
+        post_token: Option<&dyn Fn()>,
+    ) {
+        let after_step = || { if let Some(f) = post_token { f(); } };
+        use std::time::Instant;
+        let cfg = model.config.clone();
+        // Fixed prompt token IDs (all < vocab_size = 32000). We measure
+        // time, not quality, so exact tokens are immaterial — 1 is BOS.
+        let prompt: [u32; 8] = [1, 15043, 29892, 590, 1024, 338, 6033, 5077];
+        let max_seq_len = prompt.len() + n + 1;
+        let strategy = SamplingStrategy::Greedy;
+
+        // Which loops to run: FUEL_BENCH_PATHS=both|d1|d2 (default both).
+        // The split modes exist for constrained-VRAM GPUs: each D1
+        // (replan) realize re-uploads the full weight set and (observed
+        // on Vulkan) those uploads are NOT reclaimed across realizes, so
+        // at 1.1B scale a 12 GB card cannot complete both loops in one
+        // process. Run `d2` (full N) and `d1` (graceful truncation) in
+        // separate processes; the printed greedy token sequences give
+        // the cross-path token-level check.
+        let paths_env = std::env::var("FUEL_BENCH_PATHS").unwrap_or_else(|_| "both".to_string());
+        let run_d1 = paths_env != "d2";
+        let run_d2 = paths_env != "d1";
+
+        // ---------------- D2: plan-once persistent decode ----------------
+        // D2 runs FIRST: it uploads the weights once (held in the session's
+        // base_cache) and re-binds only the 4 small data Consts per token, so
+        // it has a flat device-memory profile (proven by N=48 on a 12 GB
+        // card). D1 runs second because its per-token full-weight re-upload
+        // accumulates device memory on Vulkan — running it last means an
+        // early D1 abort still leaves complete D2 numbers.
+        let mut d2_prefill = std::time::Duration::ZERO;
+        let mut d2_tokens: Vec<u32> = Vec::with_capacity(n);
+        let mut d2_logits: Vec<Vec<f32>> = Vec::with_capacity(n);
+        let mut d2_times: Vec<std::time::Duration> = Vec::with_capacity(n);
+        let mut opt_prefill_delta = 0usize;
+        let mut opt_decode_delta = 0usize;
+        if run_d2 {
+            let opt_before_prefill = crate::pipelined_bridge::optimize_calls_thread_local();
+            let mut cache2 = KvCache::with_capacity(
+                cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, device,
+            ).expect("d2 with_capacity");
+            let mut ctx2 = InferenceContext::new(device.clone());
+            let mut session: Option<crate::inference_context::DecodeSession> = None;
+            let t_pre2 = Instant::now();
+            let mut last2 = model
+                .forward_with_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
+                .expect("d2 prefill");
+            d2_prefill = t_pre2.elapsed();
+            after_step();
+            eprintln!("  D2 prefill: {:.1} ms", d2_prefill.as_secs_f64() * 1e3);
+            assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+            let opt_after_prefill = crate::pipelined_bridge::optimize_calls_thread_local();
+            let mut rng2 = 0u64;
+            for i in 0..n {
+                let next = sample_logits(&last2, strategy, &mut rng2);
+                d2_tokens.push(next);
+                let t = Instant::now();
+                last2 = model
+                    .forward_with_kv_context_persistent(&[next], &mut cache2, &mut ctx2, &mut session)
+                    .expect("d2 decode");
+                let dt = t.elapsed();
+                after_step();
+                d2_times.push(dt);
+                d2_logits.push(last2.clone());
+                eprintln!("  D2 tok {}/{n}: {:.1} ms", i + 1, dt.as_secs_f64() * 1e3);
+            }
+            assert!(session.is_some(), "held session survives the decode loop");
+            let opt_after_decode = crate::pipelined_bridge::optimize_calls_thread_local();
+            opt_prefill_delta = opt_after_prefill.wrapping_sub(opt_before_prefill);
+            opt_decode_delta = opt_after_decode.wrapping_sub(opt_after_prefill);
+            // cache2/ctx2/session drop here (end of scope): frees D2's
+            // device-resident state (base_cache holds the full weight set
+            // on non-CPU devices) before the D1 loop starts allocating.
+        }
+        after_step();
+
+        // ---------------- D1: rebuild + re-optimize every token ----------------
+        // The D1 loop tolerates a mid-run device-OOM: each D1 realize
+        // re-uploads the full weight set, and (observed on Vulkan/12 GB)
+        // buffers from prior realizes are not reclaimed in time, so the
+        // loop can die after a few tokens. We keep whatever per-token
+        // timings succeeded and report the truncation honestly.
+        let mut d1_prefill = std::time::Duration::ZERO;
+        let mut d1_tokens: Vec<u32> = Vec::with_capacity(n);
+        let mut d1_logits: Vec<Vec<f32>> = Vec::with_capacity(n);
+        let mut d1_times: Vec<std::time::Duration> = Vec::with_capacity(n);
+        let mut d1_abort: Option<String> = None;
+        if run_d1 {
+            let mut cache1 = KvCache::with_capacity(
+                cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, device,
+            ).expect("d1 with_capacity");
+            let mut ctx1 = InferenceContext::new(device.clone());
+            let t_pre1 = Instant::now();
+            let mut last1 = model
+                .forward_with_kv_context(&prompt, &mut cache1, &mut ctx1)
+                .expect("d1 prefill");
+            d1_prefill = t_pre1.elapsed();
+            after_step();
+            eprintln!("  D1 prefill: {:.1} ms", d1_prefill.as_secs_f64() * 1e3);
+            let mut rng1 = 0u64;
+            for i in 0..n {
+                let next = sample_logits(&last1, strategy, &mut rng1);
+                let t = Instant::now();
+                match model.forward_with_kv_context(&[next], &mut cache1, &mut ctx1) {
+                    Ok(l) => last1 = l,
+                    Err(e) => {
+                        d1_abort = Some(format!(
+                            "D1 replan loop ABORTED at token {}: {e:?}", i + 1,
+                        ));
+                        eprintln!("  {}", d1_abort.as_ref().unwrap());
+                        break;
+                    }
+                }
+                let dt = t.elapsed();
+                after_step();
+                d1_tokens.push(next);
+                d1_times.push(dt);
+                d1_logits.push(last1.clone());
+                eprintln!("  D1 tok {}/{n}: {:.1} ms", i + 1, dt.as_secs_f64() * 1e3);
+            }
+        }
+        let n1 = d1_times.len();
+        let n2 = d2_times.len();
+
+        // ---------------- byte-exactness between the two paths ----------------
+        // Compared over the overlapping completed prefix (n1 == n2 == n
+        // unless a loop was skipped or the D1 loop aborted early).
+        let cmp = n1.min(n2);
+        let tokens_match = d1_tokens[..cmp] == d2_tokens[..cmp];
+        let mut max_abs_diff = 0.0f32;
+        for (a, b) in d1_logits[..cmp].iter().zip(d2_logits[..cmp].iter()) {
+            for (&x, &y) in a.iter().zip(b.iter()) {
+                let d = (x - y).abs();
+                if d > max_abs_diff { max_abs_diff = d; }
+            }
+        }
+        let logits_bit_exact = d1_logits[..cmp] == d2_logits[..cmp];
+
+        // ---------------- stats ----------------
+        // D1: mean over all completed tokens, and over the "steady" window
+        // (tokens 2..) to match D2's steady window (D2 token 1 is the build).
+        let (d1_mean_all, d1_min, d1_max) = ms_stats(&d1_times);
+        let d1_steady = if n1 > 1 { &d1_times[1..] } else { &d1_times[..] };
+        let (d1_mean_steady, _, _) = ms_stats(d1_steady);
+        // D2: token 1 is the plan-once BUILD; tokens 2..N are the reuse.
+        let d2_build_ms = if n2 > 0 { d2_times[0].as_secs_f64() * 1e3 } else { 0.0 };
+        let d2_reuse = if n2 > 1 { &d2_times[1..] } else { &d2_times[..] };
+        let (d2_mean_reuse, d2_min_reuse, d2_max_reuse) = ms_stats(d2_reuse);
+        let (d2_mean_all, _, _) = ms_stats(&d2_times);
+
+        let ratio_steady = d1_mean_steady / d2_mean_reuse.max(1e-9);
+        let ratio_all = d1_mean_all / d2_mean_all.max(1e-9);
+
+        eprintln!("\n============================================================");
+        eprintln!(" Persistent-decode wall-clock benchmark — {dev_label}");
+        eprintln!("============================================================");
+        eprintln!(
+            " model: TinyLlama-1.1B  (layers={}, q/kv heads={}/{}, dim={}, vocab={})",
+            cfg.n_layers, cfg.n_heads, cfg.n_kv_heads, cfg.dim, cfg.vocab_size,
+        );
+        eprintln!(" weight load: {load_secs:.2}s");
+        eprintln!(" paths run: {paths_env}   N decode tokens = {n}   prompt len = {}   max_seq_len = {}",
+            prompt.len(), max_seq_len);
+        eprintln!(" prefill (excluded from per-token):  D1 = {:.1} ms   D2 = {:.1} ms",
+            d1_prefill.as_secs_f64() * 1e3, d2_prefill.as_secs_f64() * 1e3);
+        if run_d2 {
+            eprintln!(" optimize_graph calls: prefill-fallback +{opt_prefill_delta}, \
+                       decode-loop +{opt_decode_delta} (plan-once ⇒ expect +1)");
+        }
+        eprintln!("------------------------------------------------------------");
+        if let Some(msg) = &d1_abort {
+            eprintln!(" !! {msg}");
+            eprintln!(" !! D1 stats below cover the {n1} token(s) that completed.");
+        }
+        eprintln!(" per-token wall-clock (ms):");
+        if n1 > 0 {
+            eprintln!("   D1 replan   : mean({n1} toks)  = {d1_mean_all:8.2}   [min {d1_min:.2}, max {d1_max:.2}]");
+            eprintln!("   D1 replan   : mean(tok 2..)  = {d1_mean_steady:8.2}");
+        } else if run_d1 {
+            eprintln!("   D1 replan   : NO tokens completed");
+        }
+        if n2 > 0 {
+            eprintln!("   D2 plan-once: build (tok 1)  = {d2_build_ms:8.2}");
+            eprintln!("   D2 plan-once: mean(tok 2..N) = {d2_mean_reuse:8.2}   [min {d2_min_reuse:.2}, max {d2_max_reuse:.2}]");
+        }
+        eprintln!("------------------------------------------------------------");
+        if n1 > 0 && n2 > 1 {
+            eprintln!(" RATIO (D1/D2), steady windows  : {ratio_steady:.3}x");
+            eprintln!(" RATIO (D1/D2), all-token means : {ratio_all:.3}x");
+        }
+        eprintln!("------------------------------------------------------------");
+        // Greedy token sequences — lets a d1-only and a d2-only run (in
+        // separate processes) be cross-checked at the token level.
+        eprintln!(" D1 greedy tokens ({n1}): {d1_tokens:?}");
+        eprintln!(" D2 greedy tokens ({n2}): {d2_tokens:?}");
+        if run_d1 && run_d2 {
+            eprintln!(" byte-exact D1 vs D2 (over {cmp} tokens): tokens_match={tokens_match}  \
+                       logits_bit_exact={logits_bit_exact}  max_abs_logit_diff={max_abs_diff:.3e}");
+        } else {
+            eprintln!(" byte-exact D1 vs D2: n/a (single-path run — compare the token \
+                       sequences across processes)");
+        }
+        eprintln!("============================================================\n");
+
+        // Sanity (not perf) assertions — these SHOULD hold and catch a
+        // broken persistent path even in this ignored bench.
+        if run_d1 && run_d2 {
+            assert!(tokens_match, "D1 and D2 must generate the same greedy token sequence");
+        }
+        if run_d2 {
+            assert_eq!(
+                opt_decode_delta, 1,
+                "plan-once: the decode loop must optimize exactly ONCE (the build), \
+                 regardless of N",
+            );
+        }
+    }
+
+    /// CPU persistent-decode wall-clock benchmark on TinyLlama-1.1B.
+    /// N defaults to 12 (override with `FUEL_BENCH_N`); CPU is
+    /// seconds/token at 1.1B on portable kernels.
+    #[test]
+    #[ignore = "real-model wall-clock bench — needs FUEL_BENCH_MODEL_DIR + a multi-GB checkpoint"]
+    fn bench_persistent_decode_real_model_cpu() {
+        let n = std::env::var("FUEL_BENCH_N").ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(12);
+        let (model, load_secs) = match load_real_llama(true) {
+            Some(m) => m,
+            None => return,
+        };
+        run_persistent_decode_bench(&model, &Device::cpu(), "CPU", load_secs, n, None);
+    }
+
+    /// Vulkan (live-GPU) persistent-decode wall-clock benchmark on
+    /// TinyLlama-1.1B. N defaults to 48 (override with `FUEL_BENCH_N`).
+    /// Skips cleanly if no Vulkan device is available.
+    #[test]
+    #[cfg(feature = "vulkan")]
+    #[ignore = "live-GPU wall-clock bench — needs FUEL_BENCH_MODEL_DIR + a Vulkan device"]
+    fn bench_persistent_decode_real_model_vulkan() {
+        use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
+        let n = std::env::var("FUEL_BENCH_N").ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(48);
+        // Keep the checkpoint's native BF16 projections: the D1 replan
+        // baseline re-uploads the full weight set every realize, and the
+        // F32 upcast (4.4 GB) OOMs a 12 GB card when two realize
+        // lifetimes overlap. BF16 (2.2 GB) is also the intended Vulkan
+        // path (mixed `matmul_f32_bf16_b` kernels).
+        let (model, load_secs) = match load_real_llama(false) {
+            Some(m) => m,
+            None => return,
+        };
+        let vk_backend = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("no Vulkan device; skipping: {e:?}");
+                return;
+            }
+        };
+        let vk_arc = std::sync::Arc::new(vk_backend);
+        let vk_device: Device = std::sync::Arc::clone(&vk_arc).into();
+        // Per-token forced drain (outside the timers): retires the
+        // deferred-destruction batches so the D1 replan path's per-token
+        // full-weight re-upload doesn't pile up realize-generations of
+        // buffers and OOM the 12 GB card (observed at decode token 3
+        // without this).
+        let drain = move || {
+            if let Err(e) = vk_arc.synchronize_pending() {
+                eprintln!("synchronize_pending failed: {e:?}");
+            }
+        };
+        run_persistent_decode_bench(
+            &model, &vk_device, "Vulkan (RTX 4070)", load_secs, n, Some(&drain),
+        );
+    }
+
     /// Phase D · D3 — concurrency isolation. N threads each run a full
     /// plan-once persistent greedy generation from the SAME shared `&model`,
     /// each with its OWN internal `KvCache` + `InferenceContext` + loop-held
