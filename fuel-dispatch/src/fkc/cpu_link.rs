@@ -648,6 +648,62 @@ pub static CPU_SHAPE_OPS_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("write_slice_rotating_cpu", "u8",   write_slice_rotating_cpu_wrapper),
 ];
 
+/// The CPU **indexing / gather / scatter** family's `symbol → production
+/// wrapper` map — the FULL family (IndexSelect + Gather dtype-fanned, IndexAdd +
+/// ScatterAdd per-dtype). Contract: `docs/kernel-contracts/cpu/indexing.fkc.md`.
+///
+/// - **IndexSelect** / **Gather** are **dtype-agnostic byte copies** (parameter-
+///   ized `dtype_size`, one copy per selected/gathered element) with a SINGLE
+///   production wrapper each. Their contract sections declare a BASE `entry_point`
+///   (`…::index_select_cpu` / `…::gather_cpu`) + an enumerated `dtypes` list, so
+///   the importer's §3.4 fan-out resolves `<base>_<dtype>` (`index_select_cpu_f32`,
+///   …) — a FABRICATED per-dtype symbol (there is no real `index_select_cpu_f32`
+///   fn) that every dtype variant maps to the ONE dtype-agnostic wrapper. The
+///   `indices` operand is the FIXED U32 slot and `out: passthrough(source)`, so
+///   the fan emits key `[T, U32, T]`. The contract's `dtypes` list was trimmed to
+///   production's 9 wired dtypes (F32/F64/BF16/F16/U32/U8/I16/I32/I64) — I8 is
+///   describable (byte-agnostic) but NOT wired — so the fan emits BYTE-FOR-BYTE
+///   the deleted hand-written `table.register(IndexSelect/Gather, …)` regs.
+/// - **IndexAdd** / **ScatterAdd** are **per-dtype** (typed accumulation — f32/f64
+///   native, bf16/f16 widen to an f32 accumulator; out seeded from `base` then
+///   `+= src`), so each `index_add_<dt>` / `scatter_add_<dt>` section declares a
+///   SPECIFIC single-dtype `entry_point` resolved AS-IS (no fan), key
+///   `[T, U32, T, T]` (`base`, U32 `indices`, `src`, `passthrough(base)` output),
+///   mapping to its OWN typed wrapper — 4 dtypes each (F32/F64/BF16/F16).
+pub static CPU_INDEXING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // IndexSelect — dtype-agnostic byte copy; the fabricated
+    // `index_select_cpu_<dt>` symbol maps to the ONE `index_select_cpu_wrapper`.
+    ep!("index_select_cpu", "f32",  index_select_cpu_wrapper),
+    ep!("index_select_cpu", "f64",  index_select_cpu_wrapper),
+    ep!("index_select_cpu", "bf16", index_select_cpu_wrapper),
+    ep!("index_select_cpu", "f16",  index_select_cpu_wrapper),
+    ep!("index_select_cpu", "u32",  index_select_cpu_wrapper),
+    ep!("index_select_cpu", "u8",   index_select_cpu_wrapper),
+    ep!("index_select_cpu", "i16",  index_select_cpu_wrapper),
+    ep!("index_select_cpu", "i32",  index_select_cpu_wrapper),
+    ep!("index_select_cpu", "i64",  index_select_cpu_wrapper),
+    // Gather — dtype-agnostic byte copy.
+    ep!("gather_cpu", "f32",  gather_cpu_wrapper),
+    ep!("gather_cpu", "f64",  gather_cpu_wrapper),
+    ep!("gather_cpu", "bf16", gather_cpu_wrapper),
+    ep!("gather_cpu", "f16",  gather_cpu_wrapper),
+    ep!("gather_cpu", "u32",  gather_cpu_wrapper),
+    ep!("gather_cpu", "u8",   gather_cpu_wrapper),
+    ep!("gather_cpu", "i16",  gather_cpu_wrapper),
+    ep!("gather_cpu", "i32",  gather_cpu_wrapper),
+    ep!("gather_cpu", "i64",  gather_cpu_wrapper),
+    // IndexAdd — per-dtype typed accumulation; resolved AS-IS (no fan).
+    ep!("index_add", "f32",  index_add_f32_cpu_wrapper),
+    ep!("index_add", "f64",  index_add_f64_cpu_wrapper),
+    ep!("index_add", "bf16", index_add_bf16_cpu_wrapper),
+    ep!("index_add", "f16",  index_add_f16_cpu_wrapper),
+    // ScatterAdd — per-dtype typed accumulation; resolved AS-IS (no fan).
+    ep!("scatter_add", "f32",  scatter_add_f32_cpu_wrapper),
+    ep!("scatter_add", "f64",  scatter_add_f64_cpu_wrapper),
+    ep!("scatter_add", "bf16", scatter_add_bf16_cpu_wrapper),
+    ep!("scatter_add", "f16",  scatter_add_f16_cpu_wrapper),
+];
+
 /// The CPU **matmul** family's `symbol → production wrapper` map — the FULL
 /// portable family: bare batched `MatMul` (6 dtypes) + fused `FusedLinear`
 /// (matmul + bias-add, 4 dtypes) = 10 entry points. Contract:
@@ -1243,7 +1299,8 @@ pub static CPU_FUSED_CONV_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// [`CPU_NORM_ENTRY_POINTS`], [`CPU_NORM_BACKWARD_ENTRY_POINTS`],
 /// [`CPU_ROPE_ENTRY_POINTS`], [`CPU_SSM_ENTRY_POINTS`],
 /// [`CPU_CONV_ENTRY_POINTS`], [`CPU_PADDING_ENTRY_POINTS`],
-/// [`CPU_SHAPE_OPS_ENTRY_POINTS`], [`CPU_MATMUL_ENTRY_POINTS`],
+/// [`CPU_SHAPE_OPS_ENTRY_POINTS`], [`CPU_INDEXING_ENTRY_POINTS`],
+/// [`CPU_MATMUL_ENTRY_POINTS`],
 /// [`CPU_ATTENTION_ENTRY_POINTS`], [`CPU_INPLACE_ENTRY_POINTS`], and
 /// [`CPU_CAST_ENTRY_POINTS`].
 /// Unresolved → `None`, which the importer turns into a typed
@@ -1267,6 +1324,7 @@ impl LinkRegistry for CpuLinkRegistry {
             .chain(CPU_CONV_ENTRY_POINTS.iter())
             .chain(CPU_PADDING_ENTRY_POINTS.iter())
             .chain(CPU_SHAPE_OPS_ENTRY_POINTS.iter())
+            .chain(CPU_INDEXING_ENTRY_POINTS.iter())
             .chain(CPU_MATMUL_ENTRY_POINTS.iter())
             .chain(CPU_ATTENTION_ENTRY_POINTS.iter())
             .chain(CPU_INPLACE_ENTRY_POINTS.iter())

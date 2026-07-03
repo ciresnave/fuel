@@ -48,7 +48,7 @@ kernel_revision_hash: auto
 accept:
   inputs:
     - name: source
-      dtypes: [U8, I8, U32, I16, I32, I64, BF16, F16, F32, F64]   # dtype-agnostic: copied by byte width
+      dtypes: [U8, U32, I16, I32, I64, BF16, F16, F32, F64]   # dtype-agnostic byte copy; I8 describable but NOT wired in production (trimmed to the 9 registered dtypes)
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "notes: flat [outer_count, source_dim_size, inner_count]; bytes == outer*source_dim*inner*dtype_size"
@@ -127,7 +127,7 @@ kernel_revision_hash: auto
 accept:
   inputs:
     - name: source
-      dtypes: [U8, I8, U32, I16, I32, I64, BF16, F16, F32, F64]   # dtype-agnostic: copied by byte width
+      dtypes: [U8, U32, I16, I32, I64, BF16, F16, F32, F64]   # dtype-agnostic byte copy; I8 describable but NOT wired in production (trimmed to the 9 registered dtypes)
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "notes: source_shape; bytes == prod(source_shape)*dtype_size"

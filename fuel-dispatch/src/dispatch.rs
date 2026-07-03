@@ -1215,7 +1215,9 @@ cpu_arg_dim_wrapper!(
 
 /// Dispatch wrapper for `(IndexAdd, F32, Cpu)`. Three inputs:
 /// `(base, indices, src)` (rank-1 U32 indices). Output shape == base.
-fn index_add_f32_cpu_wrapper(
+/// `pub(crate)` so the FKC `CpuLinkRegistry` can bind this symbol from the
+/// indexing contract.
+pub(crate) fn index_add_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -1262,7 +1264,9 @@ fn index_add_f32_cpu_wrapper(
 
 /// Dispatch wrapper for `(ScatterAdd, F32, Cpu)`. Three inputs:
 /// `(base, indices, src)` (same-rank U32 indices). Output shape == base.
-fn scatter_add_f32_cpu_wrapper(
+/// `pub(crate)` so the FKC `CpuLinkRegistry` can bind this symbol from the
+/// indexing contract.
+pub(crate) fn scatter_add_f32_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -1349,7 +1353,9 @@ pub(crate) fn rope_f32_cpu_wrapper(
 
 /// Dispatch wrapper for `(Gather, *, Cpu)`. Dtype-agnostic at
 /// the byte level — `dtype_size` flows from the output Storage.
-fn gather_cpu_wrapper(
+/// `pub(crate)` so the FKC `CpuLinkRegistry` can bind this symbol from the
+/// indexing contract (the fabricated `gather_cpu_<dt>` symbols all resolve here).
+pub(crate) fn gather_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -1396,7 +1402,9 @@ fn gather_cpu_wrapper(
 /// Dispatch wrapper for `(IndexSelect, *, Cpu)`. Dtype-agnostic
 /// at the byte level — `dtype_size` flows from the output Storage.
 /// Indices are always U32 (validated at runtime).
-fn index_select_cpu_wrapper(
+/// `pub(crate)` so the FKC `CpuLinkRegistry` can bind this symbol from the
+/// indexing contract (the fabricated `index_select_cpu_<dt>` symbols resolve here).
+pub(crate) fn index_select_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -1854,7 +1862,9 @@ pub(crate) fn concat_cpu_wrapper(
 /// only the underlying typed kernel differs.
 macro_rules! cpu_index_add_wrapper {
     ($wrapper:ident, $kernel:path, $idx_ck:literal) => {
-        fn $wrapper(
+        // `pub(crate)` so the FKC `CpuLinkRegistry` (`fkc::cpu_link`) can bind
+        // these symbols from the indexing contract.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -1907,7 +1917,8 @@ cpu_index_add_wrapper!(index_add_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernel
 /// Generate a CPU ScatterAdd wrapper.
 macro_rules! cpu_scatter_add_wrapper {
     ($wrapper:ident, $kernel:path, $name_str:literal) => {
-        fn $wrapper(
+        // `pub(crate)` so the FKC `CpuLinkRegistry` can bind these symbols.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -5068,6 +5079,68 @@ fn register_cpu_cast_from_contract(table: &mut KernelBindingTable) {
     );
 }
 
+/// The authored CPU **indexing / gather / scatter** kernel contract, embedded
+/// into the binary (the PRODUCTION `include_str!`).
+/// `register_cpu_indexing_from_contract` parses + lowers it and binds the FULL
+/// family (IndexSelect + Gather + IndexAdd + ScatterAdd) FROM THE CONTRACT.
+const CPU_INDEXING_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/indexing.fkc.md");
+
+/// Register the FULL CPU indexing family — IndexSelect (9 dtypes, key
+/// `[T, U32, T]`) + Gather (9 dtypes, key `[T, U32, T]`) + IndexAdd (4 dtypes,
+/// key `[T, U32, T, T]`) + ScatterAdd (4 dtypes, key `[T, U32, T, T]`) = 26
+/// bindings — by IMPORTING its FKC kernel contract, the eighteenth production
+/// FKC consumer.
+///
+/// - **IndexSelect** / **Gather** — the ONE section each declares a BASE
+///   `entry_point` (`…::index_select_cpu` / `…::gather_cpu`, a dtype-agnostic
+///   byte copy) + an enumerated `dtypes` list, so the importer's §3.4 fan-out
+///   resolves `<base>_<dtype>` — every dtype variant mapping to the ONE
+///   dtype-agnostic `index_select_cpu_wrapper` / `gather_cpu_wrapper` through the
+///   production [`crate::fkc::CpuLinkRegistry`] (chaining
+///   [`crate::fkc::cpu_link::CPU_INDEXING_ENTRY_POINTS`]). The `indices` operand
+///   is the FIXED U32 slot and `out: passthrough(source)`, so the fan emits key
+///   `[T, U32, T]` — byte-for-byte the deleted hand-written
+///   `table.register(IndexSelect/Gather, &index_select(dt)/&gather_dts(dt), …)`
+///   regs. The contract's dtype list was trimmed to production's 9 wired dtypes
+///   (F32/F64/BF16/F16/U32/U8/I16/I32/I64); I8 is describable (byte-agnostic) but
+///   NOT wired in production, so it is dropped from the contract.
+/// - **IndexAdd** / **ScatterAdd** — per-dtype typed accumulation (f32/f64
+///   native, bf16/f16 widen to an f32 accumulator; out seeded from `base` then
+///   `+= src`), so each `index_add_<dt>` / `scatter_add_<dt>` section carries a
+///   SPECIFIC single-dtype `entry_point` resolved AS-IS (no fan), key
+///   `[T, U32, T, T]` (`base`, U32 `indices`, `src`, `passthrough(base)` output)
+///   — byte-for-byte the deleted `table.register(IndexAdd/ScatterAdd, …)` regs.
+///
+/// The `indices` slot being a FIXED single-dtype (U32) in every section means
+/// there is NO independent index-dtype axis and no multi-axis
+/// `FanoutDtypeMismatch` deferral — the whole family migrates (unlike the metal
+/// indexing situation).
+///
+/// Behavior-preserving vs. the deleted hand-written path: identical kernels +
+/// caps (contiguous-only); the binding's `kernel_source` becomes the contract's
+/// `"portable-cpu"` tag and its precision the contract's bit-stable claim. Cost
+/// is preserved because this runs BEFORE `fill_unset_cpu_cost`, which upgrades
+/// the imported entries' `unknown_cost` sentinel to the same OpKind cost fn every
+/// CPU primitive gets. The family declares NO fused ops, so `register_into`'s
+/// required fused argument is a local throwaway that provably stays empty.
+fn register_cpu_indexing_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_INDEXING_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU indexing contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "indexing contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU indexing contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -5109,10 +5182,12 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // FlashAttn / FlashAttnBackward{Q,K,V} / PagedAttn key-shape closures were
     // DELETED with the migration to FKC-contract registration (the importer's
     // optional-operand fan builds both alibi keys from the contract).
-    let index_select  = |t: DType| [t, u32_dt, t];              // (data, indices, out)
-    let gather_dts    = |t: DType| [t, u32_dt, t];              // (data, indices, out)
-    let index_add_dts = |t: DType| [t, u32_dt, t, t];           // (base, indices, src, out)
-    let scatter_add   = |t: DType| [t, u32_dt, t, t];           // (base, indices, src, out)
+    // (IndexSelect/Gather's (data, indices, out) = [T, U32, T] and IndexAdd/
+    // ScatterAdd's (base, indices, src, out) = [T, U32, T, T] key shapes are now
+    // built by the FKC importer from docs/kernel-contracts/cpu/indexing.fkc.md —
+    // see register_cpu_indexing_from_contract; the hand-written `index_select` /
+    // `gather_dts` / `index_add_dts` / `scatter_add` closures were removed with
+    // their regs.)
 
     // Elementwise binary family (8 ops × 4 dtypes = 32 bindings:
     // Add/Sub/Mul/Div/Maximum/Minimum/Pow/Rem × F32/F64/BF16/F16).
@@ -5387,6 +5462,23 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // cost/precision fill.
     register_cpu_cast_from_contract(table);
 
+    // CPU indexing / gather / scatter family — IndexSelect + Gather
+    // (dtype-agnostic byte copies fanned per dtype: 9 dtypes each, key
+    // [T, U32, T], the fabricated `<base>_<dt>` symbol resolving to the ONE
+    // wrapper) + IndexAdd + ScatterAdd (per-dtype typed accumulation: 4 dtypes
+    // each, key [T, U32, T, T], `<op>_<dt>` resolved AS-IS). Eighteenth
+    // production FKC consumer: IMPORTED from
+    // docs/kernel-contracts/cpu/indexing.fkc.md via the same `CpuLinkRegistry`.
+    // The `indices` slot is a FIXED U32 operand in every section (no independent
+    // index-dtype axis), so there is no multi-axis fan-out deferral — the whole
+    // family migrates. The contract's index_select/gather dtype list is trimmed
+    // to production's 9 wired dtypes (I8 describable but NOT wired). ALL
+    // hand-written `table.register(IndexSelect/Gather/IndexAdd/ScatterAdd, …)`
+    // regs are DELETED — this is their sole registration path. Placed BEFORE the
+    // `fill_unset_cpu_*` passes so the imported entries pick up the CPU
+    // cost/precision fill.
+    register_cpu_indexing_from_contract(table);
+
     // Conv2D / ConvTranspose2D — BOTH the no-bias key [T, T, T] (x, weight, out)
     // AND the with-bias key [T, T, T, T] (x, weight, bias, out) are now registered
     // FROM the conv FKC contract (`register_cpu_conv_from_contract`, above). The
@@ -5572,14 +5664,10 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // Their SEPARATE FusedKernelRegistry seam and the norm-backward regs stay
     // hand-written.)
 
-    // IndexSelect / Gather: data + U32 indices → data.
-    for dt in [
-        DType::F32, DType::F64, DType::BF16, DType::F16,
-        DType::U32, DType::U8, DType::I16, DType::I32, DType::I64,
-    ] {
-        table.register(IndexSelect, &index_select(dt), cpu, index_select_cpu_wrapper);
-        table.register(Gather,      &gather_dts(dt),   cpu, gather_cpu_wrapper);
-    }
+    // (IndexSelect / Gather × 9 dtypes (key [T, U32, T]) are now registered FROM
+    // the indexing FKC contract via register_cpu_indexing_from_contract above —
+    // one dtype-agnostic wrapper each, fanned per dtype from a BASE entry_point.
+    // The hand-written loop was DELETED — FKC is the sole path.)
 
     // (Rope × 4 dtypes is now registered FROM the rope FKC contract via
     // register_cpu_rope_from_contract near the top of this fn — key
@@ -5590,15 +5678,10 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // QMatMul: F32 activations, U32 weight blocks, F32 output.
     table.register(QMatMul, &[f32_dt, u32_dt, f32_dt], cpu, qmatmul_f32_cpu_wrapper);
 
-    // IndexAdd / ScatterAdd: base + U32 indices + src → out (base shape).
-    table.register(IndexAdd,   &index_add_dts(f32_dt),  cpu, index_add_f32_cpu_wrapper);
-    table.register(IndexAdd,   &index_add_dts(f64_dt),  cpu, index_add_f64_cpu_wrapper);
-    table.register(IndexAdd,   &index_add_dts(bf16_dt), cpu, index_add_bf16_cpu_wrapper);
-    table.register(IndexAdd,   &index_add_dts(f16_dt),  cpu, index_add_f16_cpu_wrapper);
-    table.register(ScatterAdd, &scatter_add(f32_dt),    cpu, scatter_add_f32_cpu_wrapper);
-    table.register(ScatterAdd, &scatter_add(f64_dt),    cpu, scatter_add_f64_cpu_wrapper);
-    table.register(ScatterAdd, &scatter_add(bf16_dt),   cpu, scatter_add_bf16_cpu_wrapper);
-    table.register(ScatterAdd, &scatter_add(f16_dt),    cpu, scatter_add_f16_cpu_wrapper);
+    // (IndexAdd / ScatterAdd × 4 dtypes (key [T, U32, T, T]) are now registered
+    // FROM the indexing FKC contract via register_cpu_indexing_from_contract
+    // above — each per-dtype `<op>_<dt>` entry_point resolved AS-IS to its OWN
+    // typed wrapper. The hand-written regs were DELETED — FKC is the sole path.)
 
     // ArgMax/ArgMin: input dtype varies, output is U32. The dispatch
     // wrapper still does its internal input-dtype match (preserves
@@ -9147,6 +9230,131 @@ mod tests {
             6 + 6 + 6 + 4 + 9 + 6 + 6,
             "flip(6) + roll(6) + masked_fill(6) + cumsum(4) + concat(9) + \
              write_slice(6) + write_slice_rotating(6) contract-sourced bindings",
+        );
+    }
+
+    /// Gate for the CPU **indexing / gather / scatter** family moved to
+    /// FKC-contract registration. IMPORTED from
+    /// `docs/kernel-contracts/cpu/indexing.fkc.md` via the production
+    /// `CpuLinkRegistry` (chaining `CPU_INDEXING_ENTRY_POINTS`):
+    /// - **IndexSelect** / **Gather** — dtype-agnostic byte copy, key
+    ///   `[T, U32, T]` (`source`, fixed-U32 `indices`, `passthrough(source)`
+    ///   output). One `index_select_cpu_wrapper` / `gather_cpu_wrapper` per dtype
+    ///   (the contract's ONE section declares a BASE `entry_point`
+    ///   (`…::index_select_cpu` / `…::gather_cpu`) fanned over its dtype list, the
+    ///   fabricated `<base>_<dt>` symbol resolving to the ONE wrapper — the
+    ///   pad/flip umbrella precedent). The contract's dtype list is trimmed to
+    ///   production's 9 wired dtypes (F32/F64/BF16/F16/U32/U8/I16/I32/I64); I8 is
+    ///   describable (byte-agnostic) but NOT wired in production, so it is dropped
+    ///   from the contract, NOT the kernel's full byte-agnostic set.
+    /// - **IndexAdd** / **ScatterAdd** — per-dtype typed accumulation (f32/f64
+    ///   native, bf16/f16 via an f32 accumulator; out seeded from `base` then
+    ///   `+= src`), key `[T, U32, T, T]` (`base`, fixed-U32 `indices`, `src`,
+    ///   `passthrough(base)` output). Each `index_add_<dt>` / `scatter_add_<dt>`
+    ///   section carries a SPECIFIC single-dtype `entry_point` resolved AS-IS (no
+    ///   fan), 4 dtypes each, mapping to its OWN typed wrapper.
+    ///
+    /// The `indices` operand is a FIXED single-dtype (U32) slot in every section
+    /// (like compare's U8 mask / paged's U32 block-table), so there is NO
+    /// independent index-dtype axis and no multi-axis `FanoutDtypeMismatch`
+    /// deferral — the whole family migrates.
+    ///
+    /// For each migrated key: resolves to the EXACT production wrapper with
+    /// `kernel_source == "portable-cpu"` (the contract provenance tag), caps
+    /// contiguous, and the contract's bit-stable precision riding through.
+    #[test]
+    fn global_bindings_registers_indexing_family_from_contract() {
+        let table = global_bindings();
+        let mut checked = 0usize;
+
+        // Assert a (op, key) resolves to `expected` with the contract provenance.
+        let mut check = |op: OpKind, key: &[DType], expected: crate::kernel::KernelRef, label: &str| {
+            let alts = table.lookup_alternatives(op, key, BackendId::Cpu);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{op:?}/{label}/Cpu: the production wrapper must be bound \
+                         FROM the indexing contract in global_bindings() — found {} \
+                         alternative(s) with sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "portable-cpu",
+                "{op:?}/{label}: family must be contract-sourced \
+                 (kernel_source=\"portable-cpu\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                !entry.caps.strided_input,
+                "{op:?}/{label}: caps preserved (contiguous-only)",
+            );
+            assert!(
+                entry.precision.bit_stable_on_same_hardware,
+                "{op:?}/{label}: contract's bit-stable claim rode through",
+            );
+            checked += 1;
+        };
+
+        // IndexSelect / Gather — dtype-agnostic byte copy, key [T, U32, T], one
+        // wrapper fanned per dtype (9 production dtypes; I8 trimmed).
+        let byte_dts = [
+            DType::F32, DType::F64, DType::BF16, DType::F16,
+            DType::U32, DType::U8, DType::I16, DType::I32, DType::I64,
+        ];
+        for dt in byte_dts {
+            check(
+                OpKind::IndexSelect,
+                &[dt, DType::U32, dt],
+                index_select_cpu_wrapper,
+                "index_select",
+            );
+            check(
+                OpKind::Gather,
+                &[dt, DType::U32, dt],
+                gather_cpu_wrapper,
+                "gather",
+            );
+        }
+
+        // IndexAdd / ScatterAdd — per-dtype typed accumulation, key
+        // [T, U32, T, T], each `<op>_<dt>` symbol resolved AS-IS (no fan).
+        let acc_dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+        let index_add_wrappers: [crate::kernel::KernelRef; 4] = [
+            index_add_f32_cpu_wrapper,
+            index_add_f64_cpu_wrapper,
+            index_add_bf16_cpu_wrapper,
+            index_add_f16_cpu_wrapper,
+        ];
+        let scatter_add_wrappers: [crate::kernel::KernelRef; 4] = [
+            scatter_add_f32_cpu_wrapper,
+            scatter_add_f64_cpu_wrapper,
+            scatter_add_bf16_cpu_wrapper,
+            scatter_add_f16_cpu_wrapper,
+        ];
+        for (i, dt) in acc_dts.iter().enumerate() {
+            check(
+                OpKind::IndexAdd,
+                &[*dt, DType::U32, *dt, *dt],
+                index_add_wrappers[i],
+                "index_add",
+            );
+            check(
+                OpKind::ScatterAdd,
+                &[*dt, DType::U32, *dt, *dt],
+                scatter_add_wrappers[i],
+                "scatter_add",
+            );
+        }
+
+        assert_eq!(
+            checked,
+            9 + 9 + 4 + 4,
+            "index_select(9) + gather(9) + index_add(4) + scatter_add(4) \
+             contract-sourced bindings",
         );
     }
 
