@@ -39,6 +39,8 @@ fuel-metal-backend = { workspace = true, optional = true }
 fuel-quantized = { workspace = true }
 # Conv2D live-GPU tests compare against fuel-conv's CPU reference.
 fuel-conv = { workspace = true }
+# Telemetry sink tests write JSONL to a scratch dir (atomic tmp+rename).
+tempfile = { workspace = true }
 
 [features]
 # FKC is NOT a feature — it is unconditional core infrastructure. serde /

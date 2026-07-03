@@ -15,10 +15,18 @@
 //! `fuel-core` (it has the concrete oracle + cache dir); this crate owns the
 //! record types and the key derivation.
 
+pub mod config;
 pub mod impl_id;
+pub mod miss;
 pub mod record;
+pub mod sink;
 pub mod structure_key;
 
+pub use config::{TelemetryConfig, TelemetryMode};
 pub use impl_id::ImplId;
-pub use record::{Candidate, DispatchRecord, HwStamp, MissRecord};
-pub use structure_key::StructureKeyToken;
+pub use miss::{detect_miss, is_generic_contract, AdmittedContract};
+pub use record::{Candidate, DispatchRecord, HwStamp, MissRecord, TELEMETRY_SCHEMA_VERSION};
+pub use sink::TelemetrySink;
+pub use structure_key::{
+    Contiguity, FdxOperandDesc, NullStructureKeyProvider, StructureKeyProvider, StructureKeyToken,
+};
