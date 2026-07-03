@@ -139,7 +139,12 @@ kernel_revision_hash: auto
 accept:
   inputs:
     - name: input
-      dtypes: [U8, I8, U32, I16, I32, I64, BF16, F16, F32, F64, F8E4M3]
+      # Byte-dtype-agnostic (only dtype_size matters), but the REGISTRATION covers
+      # the 6 dtypes the executor actually materializes flips for — the fan builds
+      # one `[T, T]` binding per dtype, ALL resolving `flip_cpu_wrapper`. Trimmed
+      # from the kernel's full byte-agnostic set to match production truthfully
+      # (byte-for-byte the deleted `table.register(Flip, &unary(t), …)` regs).
+      dtypes: [F32, F64, BF16, F16, U32, U8]
       # Contiguous-only: the kernel walks flat bytes, axis factored as (outer,dim,inner) usize params.
       # It does NOT walk a Layout's negative strides — it MATERIALIZES the reversal into the output.
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
@@ -212,7 +217,10 @@ kernel_revision_hash: auto
 accept:
   inputs:
     - name: input
-      dtypes: [U8, I8, U32, I16, I32, I64, BF16, F16, F32, F64, F8E4M3]
+      # Byte-dtype-agnostic; REGISTRATION trimmed to the 6 production dtypes (fan →
+      # one `[T, T]` binding per dtype, ALL → `roll_cpu_wrapper`). Matches the
+      # deleted `table.register(Roll, &unary(t), …)` regs.
+      dtypes: [F32, F64, BF16, F16, U32, U8]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
   op_params:
@@ -288,7 +296,12 @@ accept:
   inputs:
     # Variadic: N>=1 operands, all the same dtype; per-input axis size = input_dim_sizes[i].
     - name: inputs
-      dtypes: [U8, I8, U32, I16, I32, I64, BF16, F16, F32, F64, F8E4M3]
+      # Byte-dtype-agnostic; REGISTRATION trimmed to the 9 production dtypes. The
+      # importer treats the variadic list as ONE representative input, so the fan
+      # builds the `[T, T]` shorthand key per dtype (the lookup site collapses the
+      # actual N+1 dtype list to it), ALL → `concat_cpu_wrapper`. Matches the
+      # deleted `table.register(Concat, &unary(dt), …)` loop.
+      dtypes: [F32, F64, BF16, F16, U32, U8, I16, I32, I64]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: "same_rank=out; all inputs agree on every axis except the concatenated dim"
@@ -356,6 +369,15 @@ in that no other bytes change — no read of dest content occurs).
 
 ```fkc
 kernel: write_slice
+registrable: false            # §3.10 describe-only DEFERRAL: the in-place `dest` operand
+                             # (read-modify-written, aliased by `out`) makes the importer's
+                             # binding key `[source, dest, out]` = `[T, T, T]`, but production
+                             # canonicalizes WriteSlice lookup to `[T_src, T_out]` = `[T, T]`
+                             # (dest IS the output slot, not a separate key operand). The importer
+                             # does not collapse an in_place-aliased operand into the output, so a
+                             # faithful import keys `[T, T, T]` and would never be found at the
+                             # 2-slot runtime key. The hand-written
+                             # `table.register(WriteSlice, &unary(t), …)` regs stay authoritative.
 op_kind: WriteSlice
 blurb: "In-place rectangular scatter of source into a per-axis half-open slab of dest; dtype-agnostic; aliases dest."
 backend: Cpu
@@ -444,6 +466,15 @@ Perf: bandwidth-bound in the slab volume (one or two slab copies).
 
 ```fkc
 kernel: write_slice_rotating
+registrable: false            # §3.10 describe-only DEFERRAL: like write_slice, the in-place `dest`
+                             # PLUS the `position` (U32) operand make the importer key
+                             # `[source, U32, dest, out]` = `[T, U32, T, T]`, but production
+                             # canonicalizes WriteSliceRotating lookup to `[T_src, T_out]` = `[T, T]`
+                             # (position rides as a separate kernel input, dest IS the output). The
+                             # importer cannot drop the position slot nor fold dest into out, so a
+                             # faithful import would never be found at the 2-slot runtime key. The
+                             # hand-written `table.register(WriteSliceRotating, &unary(t), …)` regs
+                             # stay authoritative.
 op_kind: WriteSliceRotating
 blurb: "In-place ring-buffer scatter: write source into a dest slab whose axis wraps mod modulus; dynamic start from position operand."
 backend: Cpu
@@ -618,7 +649,12 @@ kernel_revision_hash: auto
 accept:
   inputs:
     - name: input
-      dtypes: [U8, I8, U32, I16, I32, I64, BF16, F16, F32, F64, F8E4M3]
+      # Byte-dtype-agnostic data; REGISTRATION trimmed to the 6 production dtypes.
+      # `input` is the sole varying operand, so it drives the fan; `mask` stays the
+      # fixed U8 slot and `out` is passthrough(input) — key `[T, U8, T]` per dtype,
+      # ALL → `masked_fill_cpu_wrapper`. Matches the deleted
+      # `table.register(MaskedFill, &masked_dtypes(t), …)` regs.
+      dtypes: [F32, F64, BF16, F16, U32, U8]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: any
       shape_constraint: same_as=out

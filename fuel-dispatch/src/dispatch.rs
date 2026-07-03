@@ -584,7 +584,7 @@ cpu_binary_wrapper!(rem_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kern
 /// level — `dtype_size` flows from the output Storage. Geometry
 /// (`outer_count`, `dim_size`, `inner_count`) is precomputed by
 /// `op_to_op_params` from the input shape + flip dim.
-fn flip_cpu_wrapper(
+pub(crate) fn flip_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -623,7 +623,7 @@ fn flip_cpu_wrapper(
 /// invocation; geometry comes from `OpParams::CumSum`.
 macro_rules! cpu_cumsum_wrapper {
     ($wrapper:ident, $kernel:path, $op_name:literal) => {
-        fn $wrapper(
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -968,7 +968,7 @@ cpu_reduce_max_to_backward_wrapper!(
 
 /// Single dtype-agnostic MaskedFill wrapper. Reads `fill_bytes`
 /// (pre-encoded by `op_to_op_params`) and dtype_size from the output.
-fn masked_fill_cpu_wrapper(
+pub(crate) fn masked_fill_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -1109,7 +1109,7 @@ cpu_pad_backward_wrapper!(pad_backward_f16_cpu_wrapper, fuel_cpu_backend::byte_k
 
 /// Dispatch wrapper for `(Roll, *, Cpu)`. Dtype-agnostic at the byte
 /// level. Same shape as Flip plus a signed `shift`.
-fn roll_cpu_wrapper(
+pub(crate) fn roll_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -1781,7 +1781,7 @@ fn write_slice_rotating_cpu_wrapper(
     )
 }
 
-fn concat_cpu_wrapper(
+pub(crate) fn concat_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -4715,6 +4715,69 @@ fn register_cpu_padding_from_contract(table: &mut KernelBindingTable) {
     );
 }
 
+/// The authored CPU **shape-ops** kernel contract, embedded into the binary (the
+/// PRODUCTION `include_str!`). `register_cpu_shape_ops_from_contract` parses +
+/// lowers it and binds the MIGRATED subset of the family FROM THE CONTRACT.
+const CPU_SHAPE_OPS_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/shape-ops.fkc.md");
+
+/// Register the MIGRATED CPU shape-ops subset — Flip + Roll + Concat +
+/// MaskedFill (dtype-agnostic byte kernels, fanned per production dtype) and the
+/// four per-dtype CumSum kernels — by IMPORTING its FKC kernel contract, the
+/// thirteenth production FKC consumer.
+///
+/// - **Flip** / **Roll** (key `[T, T]`, 6 dtypes each) and **Concat** (key
+///   `[T, T]`, 9 dtypes) and **MaskedFill** (key `[T, U8, T]`, 6 dtypes) are ONE
+///   dtype-agnostic wrapper each. Their sections declare a BASE `entry_point`
+///   (`…::flip_cpu`, …) + an enumerated `dtypes` list trimmed to the wired set,
+///   so the §3.4 fan-out resolves `<base>_<dtype>` (`flip_cpu_f32`, …) — a
+///   fabricated per-dtype symbol that every variant maps to the SAME wrapper via
+///   [`crate::fkc::CPU_SHAPE_OPS_ENTRY_POINTS`]. MaskedFill's `input` is the sole
+///   varying operand; `mask` stays the fixed U8 slot and `out: passthrough(input)`,
+///   so the fan emits `[T, U8, T]` — byte-for-byte the deleted
+///   `table.register(MaskedFill, &masked_dtypes(t), …)` regs.
+/// - **CumSum** (key `[T, T]`, 4 dtypes) is per-dtype typed accumulation, so each
+///   `cumsum_<dt>` section carries a SPECIFIC single-dtype `entry_point` resolved
+///   AS-IS (no fan) to its OWN typed wrapper.
+///
+/// **DEFERRED (hand-written / describe-only, NOT imported).** `contiguize` and
+/// `triangular` are `registrable: false` chassis/describe-only sections (no
+/// `OpKind::Contiguize` — it is an executor materialize pass; `triangular` is the
+/// umbrella backing the two hand-written `Triu`/`Tril` OpKinds with distinct
+/// wrappers, not a keyable section). `write_slice` / `write_slice_rotating` are
+/// ALSO `registrable: false`: their in-place `dest` (and rotating's `position`
+/// U32) operands make a faithful import key `[T, T, T]` / `[T, U32, T, T]`, but
+/// production canonicalizes the lookup to `[T_src, T_out]` = `[T, T]` (dest IS
+/// the output slot, position rides as a separate kernel input); the importer
+/// cannot collapse an in-place-aliased operand into the output nor drop the
+/// position slot, so a faithful import would never be found at the 2-slot runtime
+/// key. The hand-written `WriteSlice` / `WriteSliceRotating` / `Triu` / `Tril`
+/// regs stay authoritative until the importer models the in-place/scalar seam.
+///
+/// Behavior-preserving vs. the deleted hand-written path: identical kernels +
+/// caps (contiguous-only); the binding's `kernel_source` becomes the contract's
+/// `"portable-cpu"` tag and its precision the contract's bit-stable claim. Cost
+/// is preserved because this runs BEFORE `fill_unset_cpu_cost`, which upgrades
+/// the imported entries' `unknown_cost` sentinel to the same OpKind cost fn every
+/// CPU primitive gets. The family declares NO fused ops, so `register_into`'s
+/// required fused argument is a local throwaway that provably stays empty.
+fn register_cpu_shape_ops_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_SHAPE_OPS_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU shape-ops contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "shape-ops contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU shape-ops contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -4933,6 +4996,24 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // stay authoritative. Placed BEFORE the `fill_unset_cpu_*` passes so the
     // imported entries pick up the CPU cost fill.
     register_cpu_padding_from_contract(table);
+
+    // CPU shape-ops family (migratable subset) — Flip + Roll + Concat +
+    // MaskedFill (dtype-agnostic byte kernels fanned per production dtype: Flip/
+    // Roll/MaskedFill 6 dtypes, Concat 9) + the four per-dtype CumSum kernels.
+    // Thirteenth production FKC-contract consumer: IMPORTED from
+    // docs/kernel-contracts/cpu/shape-ops.fkc.md via the same `CpuLinkRegistry`.
+    // Flip/Roll/Concat/MaskedFill sections declare a BASE entry_point + a dtypes
+    // list trimmed to the wired set, so the fan resolves `<base>_<dtype>` (all →
+    // the one dtype-agnostic wrapper); CumSum's per-dtype sections resolve their
+    // SPECIFIC `cumsum_<dt>` symbol AS-IS. Keys: Flip/Roll/Concat/CumSum [T, T],
+    // MaskedFill [T, U8, T]. The migrated hand-written regs are DELETED — this is
+    // their sole registration path. DEFERRED (hand-written kept): WriteSlice /
+    // WriteSliceRotating (in-place `dest`/`position` operands → key-shape mismatch
+    // with production's canonicalized [T_src, T_out]) + Triu/Tril (the contract
+    // carries only the `triangular` describe-only chassis) + Contiguize (no
+    // OpKind — an executor materialize pass). Placed BEFORE the `fill_unset_cpu_*`
+    // passes so the imported entries pick up the CPU cost fill.
+    register_cpu_shape_ops_from_contract(table);
 
     table.register(MatMul,             &binary(f32_dt),  cpu, matmul_f32_cpu_wrapper);
     table.register(MatMul,             &binary(f64_dt),  cpu, matmul_f64_cpu_wrapper);
@@ -5276,29 +5357,12 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // gelu_erf/rsqrt × F32/F64/BF16/F16) are registered from the elementwise-unary
     // FKC contract via register_cpu_unary_from_contract (near the top of this fn).
 
-    // Flip and Roll are dtype-agnostic at the byte level — the
-    // wrappers read `dtype_size` from the output Storage. Register
-    // one wrapper per dtype so the binding-table key matches the
-    // execute-time dtype list.
-    table.register(Flip, &unary(f32_dt),  cpu, flip_cpu_wrapper);
-    table.register(Flip, &unary(f64_dt),  cpu, flip_cpu_wrapper);
-    table.register(Flip, &unary(bf16_dt), cpu, flip_cpu_wrapper);
-    table.register(Flip, &unary(f16_dt),  cpu, flip_cpu_wrapper);
-    table.register(Flip, &unary(u32_dt),  cpu, flip_cpu_wrapper);
-    table.register(Flip, &unary(u8_dt),   cpu, flip_cpu_wrapper);
-
-    table.register(Roll, &unary(f32_dt),  cpu, roll_cpu_wrapper);
-    table.register(Roll, &unary(f64_dt),  cpu, roll_cpu_wrapper);
-    table.register(Roll, &unary(bf16_dt), cpu, roll_cpu_wrapper);
-    table.register(Roll, &unary(f16_dt),  cpu, roll_cpu_wrapper);
-    table.register(Roll, &unary(u32_dt),  cpu, roll_cpu_wrapper);
-    table.register(Roll, &unary(u8_dt),   cpu, roll_cpu_wrapper);
-
-    // CumSum is per-dtype (typed accumulation, not byte copy).
-    table.register(CumSum, &unary(f32_dt),  cpu, cumsum_f32_cpu_wrapper);
-    table.register(CumSum, &unary(f64_dt),  cpu, cumsum_f64_cpu_wrapper);
-    table.register(CumSum, &unary(bf16_dt), cpu, cumsum_bf16_cpu_wrapper);
-    table.register(CumSum, &unary(f16_dt),  cpu, cumsum_f16_cpu_wrapper);
+    // (Flip / Roll × 6 dtypes [T, T] and CumSum × 4 dtypes [T, T] are now
+    // registered FROM the shape-ops FKC contract via
+    // register_cpu_shape_ops_from_contract near the top of this fn — Flip/Roll are
+    // one dtype-agnostic wrapper fanned per dtype; CumSum's per-dtype typed
+    // sections resolve AS-IS. The hand-written regs were DELETED — FKC is the sole
+    // path.)
 
     // WriteSlice — Phase 7.6 step 9c E.3.2. The kernel is dtype-
     // agnostic at the byte level (it just memcpy's slabs); per-dtype
@@ -5354,15 +5418,12 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // reduce-to FKC contract (`register_cpu_reduce_to_from_contract`); the
     // hand-written regs were DELETED (FKC is the sole path).
 
-    // MaskedFill — dtype-agnostic byte kernel; binding-table key is
-    // [T, U8, T] (x dtype, mask U8, output == x).
-    let masked_dtypes = |t: DType| [t, DType::U8, t];
-    table.register(MaskedFill, &masked_dtypes(f32_dt),  cpu, masked_fill_cpu_wrapper);
-    table.register(MaskedFill, &masked_dtypes(f64_dt),  cpu, masked_fill_cpu_wrapper);
-    table.register(MaskedFill, &masked_dtypes(bf16_dt), cpu, masked_fill_cpu_wrapper);
-    table.register(MaskedFill, &masked_dtypes(f16_dt),  cpu, masked_fill_cpu_wrapper);
-    table.register(MaskedFill, &masked_dtypes(u32_dt),  cpu, masked_fill_cpu_wrapper);
-    table.register(MaskedFill, &masked_dtypes(u8_dt),   cpu, masked_fill_cpu_wrapper);
+    // (MaskedFill × 6 dtypes, key [T, U8, T] — x dtype, mask U8, output == x — is
+    // now registered FROM the shape-ops FKC contract via
+    // register_cpu_shape_ops_from_contract near the top of this fn: `input` is the
+    // sole varying operand that drives the fan, `mask` is the fixed U8 slot, and
+    // `out: passthrough(input)`. The hand-written regs + the `masked_dtypes`
+    // closure were DELETED — FKC is the sole path.)
 
     // Pad forward (Constant / Reflect / Replicate). One dtype-agnostic
     // `pad_cpu_wrapper` dispatches all three modes at runtime via `mode_tag`;
@@ -5392,16 +5453,13 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // dtypes. The binary bf16/f16 ops likewise come from the elementwise-binary
     // contract.)
 
-    // Concat is a variadic uniform-dtype op (N inputs, all the same
-    // dtype, plus output). Register the canonical `[T, T]` shorthand
-    // per supported dtype; the lookup site collapses the actual N+1
-    // dtype list to this same shorthand.
-    for dt in [
-        DType::F32, DType::F64, DType::BF16, DType::F16,
-        DType::U32, DType::U8, DType::I16, DType::I32, DType::I64,
-    ] {
-        table.register(Concat, &unary(dt), cpu, concat_cpu_wrapper);
-    }
+    // (Concat — a variadic uniform-dtype op (N inputs, all the same dtype, plus
+    // output) — is now registered FROM the shape-ops FKC contract via
+    // register_cpu_shape_ops_from_contract near the top of this fn: the importer
+    // treats the variadic list as ONE representative input, so the fan builds the
+    // canonical `[T, T]` shorthand key per supported dtype (9 dtypes; the lookup
+    // site collapses the actual N+1 dtype list to this same shorthand). The
+    // hand-written loop was DELETED — FKC is the sole path.)
 
     // (SoftmaxLastDim / RmsNormLastDim / LayerNormLastDim × 4 dtypes are now
     // registered FROM the norm FKC contract via register_cpu_norm_from_contract
@@ -8558,6 +8616,116 @@ mod tests {
         assert_eq!(
             checked, 4,
             "4 PadBackward dtypes checked (contract-sourced bindings)"
+        );
+    }
+
+    /// Gate for the CPU **shape-ops** family's migratable subset moved to
+    /// FKC-contract registration. IMPORTED from
+    /// `docs/kernel-contracts/cpu/shape-ops.fkc.md` via the production
+    /// `CpuLinkRegistry` (chaining `CPU_SHAPE_OPS_ENTRY_POINTS`):
+    /// - **Flip** / **Roll** — dtype-agnostic byte reorder, key `[T, T]`, one
+    ///   `flip_cpu_wrapper` / `roll_cpu_wrapper` per dtype (fan over the 6
+    ///   production dtypes F32/F64/BF16/F16/U32/U8; the contract's dtype list is
+    ///   trimmed to match production, NOT the kernel's full byte-agnostic set).
+    /// - **CumSum** — per-dtype typed accumulation (f32/f64 native, bf16/f16 with
+    ///   an f32 accumulator), key `[T, T]`, its SPECIFIC `cumsum_<dt>` symbol
+    ///   resolved AS-IS (no fan), 4 dtypes.
+    /// - **MaskedFill** — dtype-agnostic data + U8 mask, key `[T, U8, T]`, one
+    ///   `masked_fill_cpu_wrapper` per dtype (fan over the same 6 dtypes).
+    /// - **Concat** — variadic uniform-dtype join collapsed to the `[T, T]`
+    ///   shorthand key, one `concat_cpu_wrapper` per dtype (fan over the 9
+    ///   production dtypes F32/F64/BF16/F16/U32/U8/I16/I32/I64).
+    ///
+    /// DEFERRED (hand-written / describe-only, NOT checked here): `Contiguize`
+    /// (no `OpKind` — an executor materialize pass), `Triu`/`Tril` (the contract
+    /// carries only the `triangular` chassis umbrella, `registrable: false`, not
+    /// two per-OpKind sections), and `WriteSlice`/`WriteSliceRotating` (their
+    /// in-place `dest` — and `WriteSliceRotating`'s `position` — operands make the
+    /// contract key `[src, dest, out]` / `[src, U32, dest, out]`, which the
+    /// importer cannot collapse to production's canonicalized `[T_src, T_out]`
+    /// lookup key). See `register_cpu_shape_ops_from_contract`.
+    ///
+    /// For each migrated key: resolves to the EXACT production wrapper with
+    /// `kernel_source == "portable-cpu"` (the contract provenance tag), caps
+    /// contiguous, and the contract's bit-stable precision riding through.
+    #[test]
+    fn global_bindings_registers_shape_ops_family_from_contract() {
+        let table = global_bindings();
+        let mut checked = 0usize;
+
+        // Assert a (op, key) resolves to `expected` with the contract provenance.
+        let mut check = |op: OpKind, key: &[DType], expected: crate::kernel::KernelRef, label: &str| {
+            let alts = table.lookup_alternatives(op, key, BackendId::Cpu);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{op:?}/{label}/Cpu: the production wrapper must be bound \
+                         FROM the shape-ops contract in global_bindings() — found {} \
+                         alternative(s) with sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "portable-cpu",
+                "{op:?}/{label}: family must be contract-sourced \
+                 (kernel_source=\"portable-cpu\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                !entry.caps.strided_input,
+                "{op:?}/{label}: caps preserved (contiguous-only)",
+            );
+            assert!(
+                entry.precision.bit_stable_on_same_hardware,
+                "{op:?}/{label}: contract's bit-stable claim rode through",
+            );
+            checked += 1;
+        };
+
+        // Flip / Roll — key [T, T], one dtype-agnostic wrapper fanned per dtype.
+        let byte_dts = [
+            DType::F32, DType::F64, DType::BF16, DType::F16, DType::U32, DType::U8,
+        ];
+        for dt in byte_dts {
+            check(OpKind::Flip, &[dt, dt], flip_cpu_wrapper, "flip");
+            check(OpKind::Roll, &[dt, dt], roll_cpu_wrapper, "roll");
+            // MaskedFill — key [T, U8, T].
+            check(
+                OpKind::MaskedFill,
+                &[dt, DType::U8, dt],
+                masked_fill_cpu_wrapper,
+                "masked_fill",
+            );
+        }
+
+        // CumSum — per-dtype typed wrappers, key [T, T], resolved AS-IS.
+        let cumsum_dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+        let cumsum_wrappers: [crate::kernel::KernelRef; 4] = [
+            cumsum_f32_cpu_wrapper,
+            cumsum_f64_cpu_wrapper,
+            cumsum_bf16_cpu_wrapper,
+            cumsum_f16_cpu_wrapper,
+        ];
+        for (i, dt) in cumsum_dts.iter().enumerate() {
+            check(OpKind::CumSum, &[*dt, *dt], cumsum_wrappers[i], "cumsum");
+        }
+
+        // Concat — variadic uniform-dtype collapsed to [T, T], 9 dtypes.
+        let concat_dts = [
+            DType::F32, DType::F64, DType::BF16, DType::F16,
+            DType::U32, DType::U8, DType::I16, DType::I32, DType::I64,
+        ];
+        for dt in concat_dts {
+            check(OpKind::Concat, &[dt, dt], concat_cpu_wrapper, "concat");
+        }
+
+        assert_eq!(
+            checked,
+            6 + 6 + 6 + 4 + 9,
+            "flip(6) + roll(6) + masked_fill(6) + cumsum(4) + concat(9) contract-sourced bindings",
         );
     }
 

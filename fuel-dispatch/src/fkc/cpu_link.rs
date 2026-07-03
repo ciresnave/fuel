@@ -507,6 +507,74 @@ pub static CPU_PADDING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("pad_backward", "f16",  pad_backward_f16_cpu_wrapper),
 ];
 
+/// The CPU **shape-ops** family's `symbol → production wrapper` map — the
+/// MIGRATED subset (Flip + Roll + Concat + MaskedFill dtype-fanned + CumSum
+/// per-dtype). Contract: `docs/kernel-contracts/cpu/shape-ops.fkc.md`.
+///
+/// - **Flip** / **Roll** / **Concat** / **MaskedFill** are **dtype-agnostic
+///   byte kernels** with a SINGLE production wrapper each. Their contract
+///   sections declare a BASE `entry_point` (`…::flip_cpu`, `…::roll_cpu`,
+///   `…::concat_cpu`, `…::masked_fill_cpu`) + an enumerated `dtypes` list, so
+///   the importer's §3.4 multi-dtype fan-out resolves `<base>_<dtype>`
+///   (`flip_cpu_f32`, …) — a FABRICATED per-dtype symbol (there is no real
+///   `flip_cpu_f32` fn) that every dtype variant maps to the ONE dtype-agnostic
+///   wrapper. The contract's `dtypes` list was trimmed to production's wired
+///   set (Flip/Roll/MaskedFill 6: F32/F64/BF16/F16/U32/U8; Concat 9: +I16/I32/I64)
+///   so the fan emits BYTE-FOR-BYTE the deleted hand-written regs — Flip/Roll/
+///   Concat key `[T, T]`, MaskedFill key `[T, U8, T]` (`input` is the sole
+///   varying operand; `mask` stays the fixed U8 slot; `out: passthrough(input)`).
+/// - **CumSum** is per-dtype (typed accumulation, NOT a byte copy — f32/f64
+///   native, bf16/f16 widen to an f32 accumulator), so each `cumsum_<dt>`
+///   section declares a SPECIFIC single-dtype `entry_point` resolved AS-IS (no
+///   fan), key `[T, T]`, mapping to its OWN typed wrapper.
+///
+/// DEFERRED (absent here — never resolved): `contiguize` and `triangular` are
+/// `registrable: false` chassis/describe-only sections (no `OpKind::Contiguize`;
+/// `triangular` is the umbrella backing the two hand-written `Triu`/`Tril`
+/// OpKinds, not a keyable section). `write_slice` / `write_slice_rotating` are
+/// ALSO `registrable: false`: their in-place `dest` (and rotating's `position`)
+/// operands make a faithful import key `[T, T, T]` / `[T, U32, T, T]`, which the
+/// importer cannot collapse to production's canonicalized `[T_src, T_out]`
+/// lookup key — the hand-written regs for all four stay authoritative.
+pub static CPU_SHAPE_OPS_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // Flip — dtype-agnostic byte reorder; one wrapper fanned per dtype.
+    ep!("flip_cpu", "f32",  flip_cpu_wrapper),
+    ep!("flip_cpu", "f64",  flip_cpu_wrapper),
+    ep!("flip_cpu", "bf16", flip_cpu_wrapper),
+    ep!("flip_cpu", "f16",  flip_cpu_wrapper),
+    ep!("flip_cpu", "u32",  flip_cpu_wrapper),
+    ep!("flip_cpu", "u8",   flip_cpu_wrapper),
+    // Roll — dtype-agnostic cyclic shift.
+    ep!("roll_cpu", "f32",  roll_cpu_wrapper),
+    ep!("roll_cpu", "f64",  roll_cpu_wrapper),
+    ep!("roll_cpu", "bf16", roll_cpu_wrapper),
+    ep!("roll_cpu", "f16",  roll_cpu_wrapper),
+    ep!("roll_cpu", "u32",  roll_cpu_wrapper),
+    ep!("roll_cpu", "u8",   roll_cpu_wrapper),
+    // Concat — variadic uniform-dtype join collapsed to the [T, T] shorthand.
+    ep!("concat_cpu", "f32",  concat_cpu_wrapper),
+    ep!("concat_cpu", "f64",  concat_cpu_wrapper),
+    ep!("concat_cpu", "bf16", concat_cpu_wrapper),
+    ep!("concat_cpu", "f16",  concat_cpu_wrapper),
+    ep!("concat_cpu", "u32",  concat_cpu_wrapper),
+    ep!("concat_cpu", "u8",   concat_cpu_wrapper),
+    ep!("concat_cpu", "i16",  concat_cpu_wrapper),
+    ep!("concat_cpu", "i32",  concat_cpu_wrapper),
+    ep!("concat_cpu", "i64",  concat_cpu_wrapper),
+    // MaskedFill — dtype-agnostic data + fixed U8 mask; key [T, U8, T].
+    ep!("masked_fill_cpu", "f32",  masked_fill_cpu_wrapper),
+    ep!("masked_fill_cpu", "f64",  masked_fill_cpu_wrapper),
+    ep!("masked_fill_cpu", "bf16", masked_fill_cpu_wrapper),
+    ep!("masked_fill_cpu", "f16",  masked_fill_cpu_wrapper),
+    ep!("masked_fill_cpu", "u32",  masked_fill_cpu_wrapper),
+    ep!("masked_fill_cpu", "u8",   masked_fill_cpu_wrapper),
+    // CumSum — per-dtype typed kernels, resolved AS-IS (no fan).
+    ep!("cumsum", "f32",  cumsum_f32_cpu_wrapper),
+    ep!("cumsum", "f64",  cumsum_f64_cpu_wrapper),
+    ep!("cumsum", "bf16", cumsum_bf16_cpu_wrapper),
+    ep!("cumsum", "f16",  cumsum_f16_cpu_wrapper),
+];
+
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`CPU_BINARY_ENTRY_POINTS`],
 /// [`CPU_AFFINE_CLAMP_POWI_ENTRY_POINTS`], [`CPU_UNARY_ENTRY_POINTS`],
@@ -514,7 +582,8 @@ pub static CPU_PADDING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// [`CPU_REDUCE_ENTRY_POINTS`], [`CPU_REDUCE_TO_ENTRY_POINTS`],
 /// [`CPU_NORM_ENTRY_POINTS`], [`CPU_NORM_BACKWARD_ENTRY_POINTS`],
 /// [`CPU_ROPE_ENTRY_POINTS`], [`CPU_SSM_ENTRY_POINTS`],
-/// [`CPU_CONV_ENTRY_POINTS`], and [`CPU_PADDING_ENTRY_POINTS`].
+/// [`CPU_CONV_ENTRY_POINTS`], [`CPU_PADDING_ENTRY_POINTS`], and
+/// [`CPU_SHAPE_OPS_ENTRY_POINTS`].
 /// Unresolved → `None`, which the importer turns into a typed
 /// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;
@@ -535,6 +604,7 @@ impl LinkRegistry for CpuLinkRegistry {
             .chain(CPU_SSM_ENTRY_POINTS.iter())
             .chain(CPU_CONV_ENTRY_POINTS.iter())
             .chain(CPU_PADDING_ENTRY_POINTS.iter())
+            .chain(CPU_SHAPE_OPS_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
