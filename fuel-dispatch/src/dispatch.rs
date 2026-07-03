@@ -1705,10 +1705,14 @@ fn qmatmul_f32_cpu_wrapper(
     }
 }
 
-/// Dispatch wrapper for `(Concat, *, Cpu)`. Dtype-agnostic — the
-/// underlying kernel is `concat_cpu(... dtype_size)`. The wrapper
-/// reads dtype_size from the output Storage's dtype tag.
-fn write_slice_cpu_wrapper(
+/// Dispatch wrapper for `(WriteSlice, *, Cpu)`. Dtype-agnostic — the
+/// underlying kernel is `write_slice_cpu(... dtype_size)`. The wrapper
+/// reads dtype_size from the output (dest) Storage's dtype tag. Takes
+/// 1 input (source) + 1 output (dest, mutated in place); the slab
+/// offset rides in `OpParams::WriteSlice`. `pub(crate)` so the
+/// shape-ops FKC contract can resolve its `write_slice_cpu` entry point
+/// to this fn via [`crate::fkc::CPU_SHAPE_OPS_ENTRY_POINTS`].
+pub(crate) fn write_slice_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -1743,8 +1747,12 @@ fn write_slice_cpu_wrapper(
 
 /// Dispatch wrapper for `(WriteSliceRotating, *, Cpu)`. Same shape
 /// as `write_slice_cpu_wrapper` plus a second input carrying the
-/// dynamic position scalar.
-fn write_slice_rotating_cpu_wrapper(
+/// dynamic position scalar (a runtime U32 operand, NOT part of the
+/// binding-table lookup key — see `build_lookup_dtypes`). `pub(crate)`
+/// so the shape-ops FKC contract can resolve its
+/// `write_slice_rotating_cpu` entry point to this fn via
+/// [`crate::fkc::CPU_SHAPE_OPS_ENTRY_POINTS`].
+pub(crate) fn write_slice_rotating_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     _layouts: &[Layout],
@@ -4737,37 +4745,37 @@ const CPU_SHAPE_OPS_CONTRACT: &str =
     include_str!("../../docs/kernel-contracts/cpu/shape-ops.fkc.md");
 
 /// Register the MIGRATED CPU shape-ops subset — Flip + Roll + Concat +
-/// MaskedFill (dtype-agnostic byte kernels, fanned per production dtype) and the
-/// four per-dtype CumSum kernels — by IMPORTING its FKC kernel contract, the
-/// thirteenth production FKC consumer.
+/// MaskedFill + WriteSlice + WriteSliceRotating (dtype-agnostic byte kernels,
+/// fanned per production dtype) and the four per-dtype CumSum kernels — by
+/// IMPORTING its FKC kernel contract, the thirteenth production FKC consumer.
 ///
 /// - **Flip** / **Roll** (key `[T, T]`, 6 dtypes each) and **Concat** (key
-///   `[T, T]`, 9 dtypes) and **MaskedFill** (key `[T, U8, T]`, 6 dtypes) are ONE
-///   dtype-agnostic wrapper each. Their sections declare a BASE `entry_point`
+///   `[T, T]`, 9 dtypes) and **MaskedFill** (key `[T, U8, T]`, 6 dtypes) and
+///   **WriteSlice** / **WriteSliceRotating** (key `[T, T]`, 6 dtypes each) are
+///   ONE dtype-agnostic wrapper each. Their sections declare a BASE `entry_point`
 ///   (`…::flip_cpu`, …) + an enumerated `dtypes` list trimmed to the wired set,
 ///   so the §3.4 fan-out resolves `<base>_<dtype>` (`flip_cpu_f32`, …) — a
 ///   fabricated per-dtype symbol that every variant maps to the SAME wrapper via
 ///   [`crate::fkc::CPU_SHAPE_OPS_ENTRY_POINTS`]. MaskedFill's `input` is the sole
 ///   varying operand; `mask` stays the fixed U8 slot and `out: passthrough(input)`,
 ///   so the fan emits `[T, U8, T]` — byte-for-byte the deleted
-///   `table.register(MaskedFill, &masked_dtypes(t), …)` regs.
+///   `table.register(MaskedFill, &masked_dtypes(t), …)` regs. **WriteSlice /
+///   WriteSliceRotating** model `dest` as the in-place OUTPUT slot (not a key
+///   input) and — for the rotating op — the U32 `position` as a NON-KEY runtime
+///   operand (both handled by the executor's dedicated `Op::WriteSlice{,Rotating}`
+///   arms), so a source-only + `out: passthrough(source)` section keys
+///   `[T_source, T_out]` = `[T, T]` — byte-for-byte the deleted
+///   `table.register(WriteSlice{,Rotating}, &unary(t), …)` regs and matching
+///   `build_lookup_dtypes`' canonicalization exactly.
 /// - **CumSum** (key `[T, T]`, 4 dtypes) is per-dtype typed accumulation, so each
 ///   `cumsum_<dt>` section carries a SPECIFIC single-dtype `entry_point` resolved
 ///   AS-IS (no fan) to its OWN typed wrapper.
 ///
-/// **DEFERRED (hand-written / describe-only, NOT imported).** `contiguize` and
-/// `triangular` are `registrable: false` chassis/describe-only sections (no
-/// `OpKind::Contiguize` — it is an executor materialize pass; `triangular` is the
-/// umbrella backing the two hand-written `Triu`/`Tril` OpKinds with distinct
-/// wrappers, not a keyable section). `write_slice` / `write_slice_rotating` are
-/// ALSO `registrable: false`: their in-place `dest` (and rotating's `position`
-/// U32) operands make a faithful import key `[T, T, T]` / `[T, U32, T, T]`, but
-/// production canonicalizes the lookup to `[T_src, T_out]` = `[T, T]` (dest IS
-/// the output slot, position rides as a separate kernel input); the importer
-/// cannot collapse an in-place-aliased operand into the output nor drop the
-/// position slot, so a faithful import would never be found at the 2-slot runtime
-/// key. The hand-written `WriteSlice` / `WriteSliceRotating` / `Triu` / `Tril`
-/// regs stay authoritative until the importer models the in-place/scalar seam.
+/// **DEFERRED (describe-only, NOT imported).** `contiguize` and `triangular` are
+/// `registrable: false` chassis/describe-only sections (no `OpKind::Contiguize` —
+/// it is an executor materialize pass; `triangular` is the umbrella backing the
+/// two hand-written `Triu`/`Tril` OpKinds with distinct wrappers, not a keyable
+/// section). Those hand-written `Triu`/`Tril` regs stay authoritative.
 ///
 /// Behavior-preserving vs. the deleted hand-written path: identical kernels +
 /// caps (contiguous-only); the binding's `kernel_source` becomes the contract's
@@ -5217,21 +5225,24 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     register_cpu_padding_from_contract(table);
 
     // CPU shape-ops family (migratable subset) — Flip + Roll + Concat +
-    // MaskedFill (dtype-agnostic byte kernels fanned per production dtype: Flip/
-    // Roll/MaskedFill 6 dtypes, Concat 9) + the four per-dtype CumSum kernels.
+    // MaskedFill + WriteSlice + WriteSliceRotating (dtype-agnostic byte kernels
+    // fanned per production dtype: Flip/Roll/MaskedFill/WriteSlice/
+    // WriteSliceRotating 6 dtypes, Concat 9) + the four per-dtype CumSum kernels.
     // Thirteenth production FKC-contract consumer: IMPORTED from
     // docs/kernel-contracts/cpu/shape-ops.fkc.md via the same `CpuLinkRegistry`.
-    // Flip/Roll/Concat/MaskedFill sections declare a BASE entry_point + a dtypes
-    // list trimmed to the wired set, so the fan resolves `<base>_<dtype>` (all →
-    // the one dtype-agnostic wrapper); CumSum's per-dtype sections resolve their
-    // SPECIFIC `cumsum_<dt>` symbol AS-IS. Keys: Flip/Roll/Concat/CumSum [T, T],
-    // MaskedFill [T, U8, T]. The migrated hand-written regs are DELETED — this is
-    // their sole registration path. DEFERRED (hand-written kept): WriteSlice /
-    // WriteSliceRotating (in-place `dest`/`position` operands → key-shape mismatch
-    // with production's canonicalized [T_src, T_out]) + Triu/Tril (the contract
-    // carries only the `triangular` describe-only chassis) + Contiguize (no
-    // OpKind — an executor materialize pass). Placed BEFORE the `fill_unset_cpu_*`
-    // passes so the imported entries pick up the CPU cost fill.
+    // Flip/Roll/Concat/MaskedFill/WriteSlice/WriteSliceRotating sections declare a
+    // BASE entry_point + a dtypes list trimmed to the wired set, so the fan
+    // resolves `<base>_<dtype>` (all → the one dtype-agnostic wrapper); CumSum's
+    // per-dtype sections resolve their SPECIFIC `cumsum_<dt>` symbol AS-IS. Keys:
+    // Flip/Roll/Concat/CumSum/WriteSlice/WriteSliceRotating [T, T], MaskedFill
+    // [T, U8, T]. WriteSlice/WriteSliceRotating model `dest` as the in-place
+    // OUTPUT slot (and rotating's `position` as a non-key runtime operand), so the
+    // imported key matches build_lookup_dtypes' canonicalized [T_src, T_out]. The
+    // migrated hand-written regs are DELETED — this is their sole registration
+    // path. DEFERRED (hand-written kept): Triu/Tril (the contract carries only the
+    // `triangular` describe-only chassis) + Contiguize (no OpKind — an executor
+    // materialize pass). Placed BEFORE the `fill_unset_cpu_*` passes so the
+    // imported entries pick up the CPU cost fill.
     register_cpu_shape_ops_from_contract(table);
 
     // CPU matmul family — FULLY contract-sourced (PORTABLE kernels): bare
@@ -5538,30 +5549,13 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // sections resolve AS-IS. The hand-written regs were DELETED — FKC is the sole
     // path.)
 
-    // WriteSlice — Phase 7.6 step 9c E.3.2. The kernel is dtype-
-    // agnostic at the byte level (it just memcpy's slabs); per-dtype
-    // entries exist so the binding-table lookup matches the executor's
-    // `[T_src, T_out]` canonicalized key. Coverage: every dtype the
-    // KV cache might hold today + integer dtypes for future index-
-    // table use cases.
-    table.register(WriteSlice, &unary(f32_dt),  cpu, write_slice_cpu_wrapper);
-    table.register(WriteSlice, &unary(f64_dt),  cpu, write_slice_cpu_wrapper);
-    table.register(WriteSlice, &unary(bf16_dt), cpu, write_slice_cpu_wrapper);
-    table.register(WriteSlice, &unary(f16_dt),  cpu, write_slice_cpu_wrapper);
-    table.register(WriteSlice, &unary(u32_dt),  cpu, write_slice_cpu_wrapper);
-    table.register(WriteSlice, &unary(u8_dt),   cpu, write_slice_cpu_wrapper);
-
-    // WriteSliceRotating — Phase C. Sliding-window KV cache writes.
-    // Same dtype surface as WriteSlice; the binding-table key is
-    // `[T_src, T_out]` (position scalar is a separate kernel input,
-    // not part of the lookup key — see PipelinedExecutor's
-    // WriteSliceRotating arm).
-    table.register(WriteSliceRotating, &unary(f32_dt),  cpu, write_slice_rotating_cpu_wrapper);
-    table.register(WriteSliceRotating, &unary(f64_dt),  cpu, write_slice_rotating_cpu_wrapper);
-    table.register(WriteSliceRotating, &unary(bf16_dt), cpu, write_slice_rotating_cpu_wrapper);
-    table.register(WriteSliceRotating, &unary(f16_dt),  cpu, write_slice_rotating_cpu_wrapper);
-    table.register(WriteSliceRotating, &unary(u32_dt),  cpu, write_slice_rotating_cpu_wrapper);
-    table.register(WriteSliceRotating, &unary(u8_dt),   cpu, write_slice_rotating_cpu_wrapper);
+    // (WriteSlice + WriteSliceRotating × 6 dtypes, key [T, T], are now registered
+    // FROM the shape-ops FKC contract via register_cpu_shape_ops_from_contract
+    // near the top of this fn — one dtype-agnostic wrapper each, fanned per dtype.
+    // Both model `dest` as the in-place OUTPUT slot (and rotating's `position` as a
+    // non-key runtime operand), so the imported key matches build_lookup_dtypes'
+    // canonicalized `[T_src, T_out]`. The hand-written regs were DELETED — FKC is
+    // the sole path.)
 
     // Triu / Tril share one byte-level kernel (dtype-agnostic).
     table.register(Triu, &unary(f32_dt),  cpu, triu_cpu_wrapper);
@@ -8809,15 +8803,17 @@ mod tests {
     /// - **Concat** — variadic uniform-dtype join collapsed to the `[T, T]`
     ///   shorthand key, one `concat_cpu_wrapper` per dtype (fan over the 9
     ///   production dtypes F32/F64/BF16/F16/U32/U8/I16/I32/I64).
+    /// - **WriteSlice** / **WriteSliceRotating** — in-place rectangular / ring
+    ///   scatter, key `[T, T]`, one dtype-agnostic wrapper each (fan over the same
+    ///   6 dtypes). `dest` is the in-place OUTPUT slot (not a key input); for the
+    ///   rotating op the U32 `position` is a NON-KEY runtime operand — so the
+    ///   contract's source-only + `out: passthrough(source)` section keys
+    ///   `[T_source, T_out]` = `[T, T]`, matching `build_lookup_dtypes` exactly.
     ///
     /// DEFERRED (hand-written / describe-only, NOT checked here): `Contiguize`
-    /// (no `OpKind` — an executor materialize pass), `Triu`/`Tril` (the contract
+    /// (no `OpKind` — an executor materialize pass) and `Triu`/`Tril` (the contract
     /// carries only the `triangular` chassis umbrella, `registrable: false`, not
-    /// two per-OpKind sections), and `WriteSlice`/`WriteSliceRotating` (their
-    /// in-place `dest` — and `WriteSliceRotating`'s `position` — operands make the
-    /// contract key `[src, dest, out]` / `[src, U32, dest, out]`, which the
-    /// importer cannot collapse to production's canonicalized `[T_src, T_out]`
-    /// lookup key). See `register_cpu_shape_ops_from_contract`.
+    /// two per-OpKind sections). See `register_cpu_shape_ops_from_contract`.
     ///
     /// For each migrated key: resolves to the EXACT production wrapper with
     /// `kernel_source == "portable-cpu"` (the contract provenance tag), caps
@@ -8896,10 +8892,35 @@ mod tests {
             check(OpKind::Concat, &[dt, dt], concat_cpu_wrapper, "concat");
         }
 
+        // WriteSlice / WriteSliceRotating — in-place rectangular / ring-buffer
+        // scatter, key [T, T] (dest IS the output slot via in-place adoption;
+        // WriteSliceRotating's `position` is a NON-KEY runtime U32 operand — see
+        // `build_lookup_dtypes`). One dtype-agnostic wrapper each, fanned over the
+        // 6 production dtypes (F32/F64/BF16/F16/U32/U8). The offset/modulus/axis/
+        // ranges ride in OpParams::{WriteSlice,WriteSliceRotating}.
+        let scatter_dts = [
+            DType::F32, DType::F64, DType::BF16, DType::F16, DType::U32, DType::U8,
+        ];
+        for dt in scatter_dts {
+            check(
+                OpKind::WriteSlice,
+                &[dt, dt],
+                write_slice_cpu_wrapper,
+                "write_slice",
+            );
+            check(
+                OpKind::WriteSliceRotating,
+                &[dt, dt],
+                write_slice_rotating_cpu_wrapper,
+                "write_slice_rotating",
+            );
+        }
+
         assert_eq!(
             checked,
-            6 + 6 + 6 + 4 + 9,
-            "flip(6) + roll(6) + masked_fill(6) + cumsum(4) + concat(9) contract-sourced bindings",
+            6 + 6 + 6 + 4 + 9 + 6 + 6,
+            "flip(6) + roll(6) + masked_fill(6) + cumsum(4) + concat(9) + \
+             write_slice(6) + write_slice_rotating(6) contract-sourced bindings",
         );
     }
 

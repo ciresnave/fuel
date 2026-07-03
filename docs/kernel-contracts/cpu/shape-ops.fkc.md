@@ -367,50 +367,51 @@ and dest/source byte sizes; empty slab is a no-op. Pure byte copy — bit-exact,
 bandwidth-bound in the slab volume (`slab_elems * dtype_size` bytes written; dest is read-modify only
 in that no other bytes change — no read of dest content occurs).
 
+**Key modeling (re-author 2026-07-03).** `dest` is the OUTPUT slot, not a key input: the executor's
+`Op::WriteSlice` arm adopts `dest`'s Storage Arc as the kernel's output and passes only `source` as a
+kernel input, so `build_lookup_dtypes` canonicalizes the binding key to `[T_source, T_out]` = `[T, T]`
+(`pipelined.rs`). This section therefore models `source` as the SINGLE input and `dest` as the `out`
+output (`aliasing: in_place(dest)`) — exactly the in-place template — so the importer keys `[T, T]`
+byte-for-byte the deleted `table.register(WriteSlice, &unary(t), …)` regs. (The earlier deferral
+mis-assumed the importer would key `[source, dest, out]`; the aliased `dest` is the output, never a
+second key operand.)
+
 ```fkc
 kernel: write_slice
-registrable: false            # §3.10 describe-only DEFERRAL: the in-place `dest` operand
-                             # (read-modify-written, aliased by `out`) makes the importer's
-                             # binding key `[source, dest, out]` = `[T, T, T]`, but production
-                             # canonicalizes WriteSlice lookup to `[T_src, T_out]` = `[T, T]`
-                             # (dest IS the output slot, not a separate key operand). The importer
-                             # does not collapse an in_place-aliased operand into the output, so a
-                             # faithful import keys `[T, T, T]` and would never be found at the
-                             # 2-slot runtime key. The hand-written
-                             # `table.register(WriteSlice, &unary(t), …)` regs stay authoritative.
 op_kind: WriteSlice
-blurb: "In-place rectangular scatter of source into a per-axis half-open slab of dest; dtype-agnostic; aliases dest."
+blurb: "In-place rectangular scatter of source into a per-axis half-open slab of dest; dtype-agnostic; dest is the in-place output slot."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::write_slice_cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::write_slice_cpu"   # base; §3.4 fans write_slice_cpu_{f32,f64,bf16,f16,u32,u8}; §12.6
 kernel_revision_hash: auto
 
 accept:
   inputs:
     - name: source
-      dtypes: [U8, I8, U32, I16, I32, I64, BF16, F16, F32, F64, F8E4M3]
+      # Byte-dtype-agnostic (only dtype_size matters); REGISTRATION trimmed to the
+      # 6 production dtypes — the fan builds one `[T, T]` binding per dtype, ALL
+      # resolving `write_slice_cpu_wrapper`. `dest` is NOT a key input: it is the
+      # OUTPUT slot (the executor adopts its Arc in place), so a faithful contract
+      # models `source` as the SINGLE input + `dest` as the `out` output, keying
+      # `[T_source, T_out]` = `[T, T]` byte-for-byte the deleted hand-written regs.
+      dtypes: [F32, F64, BF16, F16, U32, U8]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: "1..=8"                   # source rank == dest rank; slab dim i = ranges[i].end-ranges[i].start
       shape_constraint: "dim[i] == ranges[i].end - ranges[i].start"
-    - name: dest
-      dtypes: [U8, I8, U32, I16, I32, I64, BF16, F16, F32, F64, F8E4M3]
-      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: "1..=8"                   # rank >= 1 (scalar dest rejected — no slab)
-      shape_constraint: "same_as=out; this operand is read-modify-written in place (the output)"
   op_params:
-    variant: WriteSlice               # OpParams::WriteSlice — dest_shape + per-axis ranges + dtype_size
+    variant: WriteSlice               # OpParams::WriteSlice — dest_shape + per-axis ranges
     fields:
       dest_shape: { kind: "Vec<usize>", constraint: "rank >= 1" }
       ranges:     { kind: "Vec<(usize,usize)>", constraint: "len == rank; 0 <= start <= end <= dest_shape[i]" }
-      dtype_size: { kind: usize, constraint: "> 0" }
+      dtype_size: { kind: usize, constraint: "> 0", note: "read from the dest output Storage's dtype tag at dispatch, not a serialized OpParams field" }
 
 return:
   outputs:
     - name: out
-      dtype_rule: passthrough(dest)
-      shape_rule: same_as(dest)
-      layout_guarantee: same_as(dest)        # dest's contiguous layout preserved; only slab bytes change
-      aliasing: in_place(dest)               # output IS dest's buffer; partial (slab-only) overwrite
+      dtype_rule: passthrough(source)        # out IS dest's buffer; dest's dtype == source's (T in, T out)
+      shape_rule: "from_params(write_slice: dest_shape)"   # out adopts dest's shape (== dest_shape)
+      layout_guarantee: contiguous           # dest's contiguous layout preserved; only slab bytes change
+      aliasing: in_place(dest)               # output IS dest's buffer (executor adopts dest's Arc); partial (slab-only) overwrite
 
 caps:
   awkward_layout_strategy: requires_contiguous
@@ -464,58 +465,56 @@ overwrite. The `position` is a **runtime dynamic scalar** (the write offset is d
 token) read from its operand, not a compile-time param. Pure byte copy — bit-exact, deterministic.
 Perf: bandwidth-bound in the slab volume (one or two slab copies).
 
+**Key modeling (re-author 2026-07-03).** Like `write_slice`, `dest` is the OUTPUT slot (the executor
+adopts its Arc in place). The `position` operand is a **non-key runtime input**: the executor's
+`Op::WriteSliceRotating` arm reads it as a separate kernel input, but `build_lookup_dtypes`
+canonicalizes the binding key to `[T_source, T_out]` = `[T, T]` (position is EXCLUDED, `pipelined.rs`).
+So this section models `source` as the SINGLE key input and `dest` as the `out` output — position is
+documented in the `op_params` note, NOT an `accept.inputs` key slot — so the importer keys `[T, T]`
+byte-for-byte the deleted `table.register(WriteSliceRotating, &unary(t), …)` regs. (The earlier
+deferral mis-assumed the importer would key `[source, U32, dest, out]`; neither the aliased `dest` nor
+the non-key `position` is a key operand.)
+
 ```fkc
 kernel: write_slice_rotating
-registrable: false            # §3.10 describe-only DEFERRAL: like write_slice, the in-place `dest`
-                             # PLUS the `position` (U32) operand make the importer key
-                             # `[source, U32, dest, out]` = `[T, U32, T, T]`, but production
-                             # canonicalizes WriteSliceRotating lookup to `[T_src, T_out]` = `[T, T]`
-                             # (position rides as a separate kernel input, dest IS the output). The
-                             # importer cannot drop the position slot nor fold dest into out, so a
-                             # faithful import would never be found at the 2-slot runtime key. The
-                             # hand-written `table.register(WriteSliceRotating, &unary(t), …)` regs
-                             # stay authoritative.
 op_kind: WriteSliceRotating
-blurb: "In-place ring-buffer scatter: write source into a dest slab whose axis wraps mod modulus; dynamic start from position operand."
+blurb: "In-place ring-buffer scatter: write source into a dest slab whose axis wraps mod modulus; dest is the in-place output slot; dynamic start from a non-key position operand."
 backend: Cpu
 kernel_source: "portable-cpu"
-entry_point: "fuel_cpu_backend::byte_kernels::write_slice_rotating_cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::write_slice_rotating_cpu"   # base; §3.4 fans write_slice_rotating_cpu_{f32,f64,bf16,f16,u32,u8}; §12.6
 kernel_revision_hash: auto
 
 accept:
   inputs:
     - name: source
-      dtypes: [U8, I8, U32, I16, I32, I64, BF16, F16, F32, F64, F8E4M3]
+      # Byte-dtype-agnostic (only dtype_size matters); REGISTRATION trimmed to the
+      # 6 production dtypes — the fan builds one `[T, T]` binding per dtype, ALL
+      # resolving `write_slice_rotating_cpu_wrapper`. `dest` is the OUTPUT slot
+      # (in-place adoption) and `position` is a NON-KEY runtime U32 operand (read
+      # by the kernel, excluded from the key by build_lookup_dtypes), so a faithful
+      # contract models `source` as the SINGLE key input, keying `[T_source, T_out]`
+      # = `[T, T]` byte-for-byte the deleted hand-written regs.
+      dtypes: [F32, F64, BF16, F16, U32, U8]
       layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
       rank: "1..=8"
       shape_constraint: "dim[i] == ranges[i].end - ranges[i].start; dim[axis] <= modulus"
-    - name: position
-      dtypes: [U32]
-      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: 1                         # first u32 is the dynamic write position (native-endian, read host-side)
-      shape_constraint: "byte length >= 4"
-    - name: dest
-      dtypes: [U8, I8, U32, I16, I32, I64, BF16, F16, F32, F64, F8E4M3]
-      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
-      rank: "1..=8"
-      shape_constraint: "same_as=out; read-modify-written in place (the output)"
   op_params:
-    variant: WriteSliceRotating       # OpParams::WriteSliceRotating
+    variant: WriteSliceRotating       # OpParams::WriteSliceRotating — dest_shape + axis + modulus + ranges
     fields:
       dest_shape: { kind: "Vec<usize>", constraint: "rank >= 1" }
       axis:       { kind: usize, constraint: "< rank; v1 supports axis == 0 (leading dim)" }
       modulus:    { kind: usize, constraint: "0 < modulus <= dest_shape[axis]" }
       ranges:     { kind: "Vec<(usize,usize)>", constraint: "len == rank; rotating-axis slab <= modulus; off-axis end <= dest_shape[i]" }
-      dtype_size: { kind: usize, constraint: "> 0" }
-      position:   { kind: DynScalar, note: "read from the `position` operand's first u32; data-determined write offset (not a compile-time param)" }
+      dtype_size: { kind: usize, constraint: "> 0", note: "read from the dest output Storage's dtype tag at dispatch, not a serialized OpParams field" }
+      position:   { kind: DynScalar, note: "the dynamic write offset — read host-side from a SEPARATE runtime rank-1 U32 `position` operand (the executor passes it as a second kernel input; it is NOT part of the binding key, NOT an OpParams field). Data-determined per token." }
 
 return:
   outputs:
     - name: out
-      dtype_rule: passthrough(dest)
-      shape_rule: same_as(dest)
-      layout_guarantee: same_as(dest)
-      aliasing: in_place(dest)               # output IS dest's buffer; partial (ring-slab) overwrite
+      dtype_rule: passthrough(source)        # out IS dest's buffer; dest's dtype == source's (T in, T out)
+      shape_rule: "from_params(write_slice_rotating: dest_shape)"   # out adopts dest's shape (== dest_shape)
+      layout_guarantee: contiguous           # dest's contiguous layout preserved; only ring-slab bytes change
+      aliasing: in_place(dest)               # output IS dest's buffer (executor adopts dest's Arc); partial (ring-slab) overwrite
 
 caps:
   awkward_layout_strategy: requires_contiguous

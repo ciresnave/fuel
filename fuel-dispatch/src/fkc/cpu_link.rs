@@ -523,21 +523,28 @@ pub static CPU_PADDING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ];
 
 /// The CPU **shape-ops** family's `symbol → production wrapper` map — the
-/// MIGRATED subset (Flip + Roll + Concat + MaskedFill dtype-fanned + CumSum
-/// per-dtype). Contract: `docs/kernel-contracts/cpu/shape-ops.fkc.md`.
+/// MIGRATED subset (Flip + Roll + Concat + MaskedFill + WriteSlice +
+/// WriteSliceRotating dtype-fanned + CumSum per-dtype). Contract:
+/// `docs/kernel-contracts/cpu/shape-ops.fkc.md`.
 ///
-/// - **Flip** / **Roll** / **Concat** / **MaskedFill** are **dtype-agnostic
-///   byte kernels** with a SINGLE production wrapper each. Their contract
-///   sections declare a BASE `entry_point` (`…::flip_cpu`, `…::roll_cpu`,
-///   `…::concat_cpu`, `…::masked_fill_cpu`) + an enumerated `dtypes` list, so
-///   the importer's §3.4 multi-dtype fan-out resolves `<base>_<dtype>`
-///   (`flip_cpu_f32`, …) — a FABRICATED per-dtype symbol (there is no real
-///   `flip_cpu_f32` fn) that every dtype variant maps to the ONE dtype-agnostic
-///   wrapper. The contract's `dtypes` list was trimmed to production's wired
-///   set (Flip/Roll/MaskedFill 6: F32/F64/BF16/F16/U32/U8; Concat 9: +I16/I32/I64)
-///   so the fan emits BYTE-FOR-BYTE the deleted hand-written regs — Flip/Roll/
-///   Concat key `[T, T]`, MaskedFill key `[T, U8, T]` (`input` is the sole
-///   varying operand; `mask` stays the fixed U8 slot; `out: passthrough(input)`).
+/// - **Flip** / **Roll** / **Concat** / **MaskedFill** / **WriteSlice** /
+///   **WriteSliceRotating** are **dtype-agnostic byte kernels** with a SINGLE
+///   production wrapper each. Their contract sections declare a BASE
+///   `entry_point` (`…::flip_cpu`, `…::roll_cpu`, `…::concat_cpu`,
+///   `…::masked_fill_cpu`, `…::write_slice_cpu`, `…::write_slice_rotating_cpu`) +
+///   an enumerated `dtypes` list, so the importer's §3.4 multi-dtype fan-out
+///   resolves `<base>_<dtype>` (`flip_cpu_f32`, …) — a FABRICATED per-dtype
+///   symbol (there is no real `flip_cpu_f32` fn) that every dtype variant maps to
+///   the ONE dtype-agnostic wrapper. The contract's `dtypes` list was trimmed to
+///   production's wired set (Flip/Roll/MaskedFill/WriteSlice/WriteSliceRotating 6:
+///   F32/F64/BF16/F16/U32/U8; Concat 9: +I16/I32/I64) so the fan emits
+///   BYTE-FOR-BYTE the deleted hand-written regs — Flip/Roll/Concat/WriteSlice/
+///   WriteSliceRotating key `[T, T]`, MaskedFill key `[T, U8, T]` (`input` is the
+///   sole varying operand; `mask` stays the fixed U8 slot; `out:
+///   passthrough(input)`). **WriteSlice / WriteSliceRotating** model `dest` as the
+///   in-place OUTPUT slot (not a key input) and — for the rotating op — the U32
+///   `position` as a NON-KEY runtime operand, so the importer keys `[T_src, T_out]`
+///   = `[T, T]`, matching `build_lookup_dtypes`' canonicalization exactly.
 /// - **CumSum** is per-dtype (typed accumulation, NOT a byte copy — f32/f64
 ///   native, bf16/f16 widen to an f32 accumulator), so each `cumsum_<dt>`
 ///   section declares a SPECIFIC single-dtype `entry_point` resolved AS-IS (no
@@ -546,11 +553,7 @@ pub static CPU_PADDING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// DEFERRED (absent here — never resolved): `contiguize` and `triangular` are
 /// `registrable: false` chassis/describe-only sections (no `OpKind::Contiguize`;
 /// `triangular` is the umbrella backing the two hand-written `Triu`/`Tril`
-/// OpKinds, not a keyable section). `write_slice` / `write_slice_rotating` are
-/// ALSO `registrable: false`: their in-place `dest` (and rotating's `position`)
-/// operands make a faithful import key `[T, T, T]` / `[T, U32, T, T]`, which the
-/// importer cannot collapse to production's canonicalized `[T_src, T_out]`
-/// lookup key — the hand-written regs for all four stay authoritative.
+/// OpKinds, not a keyable section).
 pub static CPU_SHAPE_OPS_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // Flip — dtype-agnostic byte reorder; one wrapper fanned per dtype.
     ep!("flip_cpu", "f32",  flip_cpu_wrapper),
@@ -588,6 +591,25 @@ pub static CPU_SHAPE_OPS_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("cumsum", "f64",  cumsum_f64_cpu_wrapper),
     ep!("cumsum", "bf16", cumsum_bf16_cpu_wrapper),
     ep!("cumsum", "f16",  cumsum_f16_cpu_wrapper),
+    // WriteSlice — in-place rectangular scatter; dtype-agnostic byte copy, one
+    // wrapper fanned per dtype. `dest` is the in-place OUTPUT slot, so the key is
+    // `[T_src, T_out]` = [T, T]; the fabricated `write_slice_cpu_<dt>` symbol maps
+    // to the ONE dtype-agnostic wrapper.
+    ep!("write_slice_cpu", "f32",  write_slice_cpu_wrapper),
+    ep!("write_slice_cpu", "f64",  write_slice_cpu_wrapper),
+    ep!("write_slice_cpu", "bf16", write_slice_cpu_wrapper),
+    ep!("write_slice_cpu", "f16",  write_slice_cpu_wrapper),
+    ep!("write_slice_cpu", "u32",  write_slice_cpu_wrapper),
+    ep!("write_slice_cpu", "u8",   write_slice_cpu_wrapper),
+    // WriteSliceRotating — in-place ring-buffer scatter; same [T, T] key (dest =
+    // output slot; the runtime `position` U32 operand is NOT a key slot). One
+    // dtype-agnostic wrapper fanned per dtype.
+    ep!("write_slice_rotating_cpu", "f32",  write_slice_rotating_cpu_wrapper),
+    ep!("write_slice_rotating_cpu", "f64",  write_slice_rotating_cpu_wrapper),
+    ep!("write_slice_rotating_cpu", "bf16", write_slice_rotating_cpu_wrapper),
+    ep!("write_slice_rotating_cpu", "f16",  write_slice_rotating_cpu_wrapper),
+    ep!("write_slice_rotating_cpu", "u32",  write_slice_rotating_cpu_wrapper),
+    ep!("write_slice_rotating_cpu", "u8",   write_slice_rotating_cpu_wrapper),
 ];
 
 /// The CPU **matmul** family's `symbol → production wrapper` map — the FULL
