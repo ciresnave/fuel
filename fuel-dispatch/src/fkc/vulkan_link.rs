@@ -219,23 +219,53 @@ pub static VULKAN_MATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     vk_ep!("matmul_f16_f16_f32",   crate::vulkan_dispatch::matmul::matmul_f16_f16_f32),
 ];
 
+/// The Vulkan conv2d family's `symbol → production wrapper` map — the FULL
+/// family: 3 per-(op, dtype) `(Conv2D, [x, weight, out])` wrapper bindings.
+/// Contract: `docs/kernel-contracts/vulkan/conv.fkc.md`, re-authored per-(op,
+/// dtype) (the matmul family's per-combo precedent). Each section declares a
+/// single dtype per operand + a `passthrough(x)` output, so none of them
+/// dtype-fan — the importer keys `[x, weight, out]` (inputs-then-output),
+/// byte-for-byte the deleted hand-written
+/// `table.register_with_precision(OpKind::Conv2D, &[T, T, T], …)` regs.
+///
+/// Each symbol is one production wrapper (`conv2d::conv2d_f32/bf16/f16`) that
+/// runs the WHOLE conv internally (`VulkanBackend::conv2d_*_bytes`: NCHW im2col
+/// → GEMM, the coop tensor-core GEMM for bf16/f16) — the two-stage pipeline is
+/// NOT a table binding, so there is exactly one `KernelRef` per key. NO bias key
+/// is mapped: the wrappers bail on a 3-input (bias) call, so the contract
+/// declares no optional bias operand and each section keys only `[x, weight,
+/// out]` (unlike the CPU conv family's optional-bias dual key). Caps ride
+/// through contiguous-only (`requires_contiguous` ⇒ `strided_input == false`) —
+/// conv2d_im2col reads canonical row-major NCHW, so a strided operand is
+/// auto-Contiguized first.
+pub static VULKAN_CONV_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // f32 conv (im2col + f32 GEMM route-pick).
+    vk_ep!("conv2d_f32",  crate::vulkan_dispatch::conv2d::conv2d_f32),
+    // bf16 conv (im2col_bf16 + cooperative-matrix bf16 GEMM).
+    vk_ep!("conv2d_bf16", crate::vulkan_dispatch::conv2d::conv2d_bf16),
+    // f16 conv (im2col + cooperative-matrix f16 GEMM).
+    vk_ep!("conv2d_f16",  crate::vulkan_dispatch::conv2d::conv2d_f16),
+];
+
 /// The built-in Vulkan backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`VULKAN_CAST_ENTRY_POINTS`] +
-/// [`VULKAN_ELEMENTWISE_ENTRY_POINTS`] (and the future Vulkan families as they
-/// migrate off their hand-written regs). Unresolved → `None`, which the importer
-/// turns into a typed `UnknownEntryPoint` error (never a panic, never a
-/// fabricated pointer).
+/// [`VULKAN_ELEMENTWISE_ENTRY_POINTS`] + [`VULKAN_MATMUL_ENTRY_POINTS`] +
+/// [`VULKAN_CONV_ENTRY_POINTS`] (and the future Vulkan families as they migrate
+/// off their hand-written regs). Unresolved → `None`, which the importer turns
+/// into a typed `UnknownEntryPoint` error (never a panic, never a fabricated
+/// pointer).
 pub struct VulkanLinkRegistry;
 
 impl LinkRegistry for VulkanLinkRegistry {
     fn resolve_primitive(&self, symbol: &str) -> Option<KernelRef> {
         // Chain every migrated Vulkan family's table; each symbol is unique
-        // across families (cast_*, per-op elementwise, matmul_*), so order is
-        // immaterial.
+        // across families (cast_*, per-op elementwise, matmul_*, conv2d_*), so
+        // order is immaterial.
         VULKAN_CAST_ENTRY_POINTS
             .iter()
             .chain(VULKAN_ELEMENTWISE_ENTRY_POINTS.iter())
             .chain(VULKAN_MATMUL_ENTRY_POINTS.iter())
+            .chain(VULKAN_CONV_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }

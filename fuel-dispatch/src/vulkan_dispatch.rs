@@ -4378,9 +4378,11 @@ const VULKAN_MATMUL_CONTRACT: &str =
 /// — the corrected 2026-06-18 posture, honest about scheduler-dependent
 /// FADD/subgroup order) rather than the retired hand-written
 /// `VULKAN_MATMUL_PRECISION` / `VULKAN_MATMUL_TENSORCORE_PRECISION` consts (which
-/// mis-declared `bit_stable_on_same_hardware: true`); those consts are still used
-/// by the Vulkan conv2d family, so they are NOT deleted, only dropped from this
-/// seam. Cost is preserved because this runs BEFORE `fill_unset_cost_for_backend`,
+/// mis-declared `bit_stable_on_same_hardware: true`). At the matmul migration
+/// those consts were left in use by the Vulkan conv2d family; conv2d has since
+/// migrated to its own FKC contract, so they are now dropped from this seam too
+/// (the `pub const` defs stay in `fused.rs`, mirroring VULKAN_TRANSCENDENTAL).
+/// Cost is preserved because this runs BEFORE `fill_unset_cost_for_backend`,
 /// which upgrades the imported `unknown_cost` sentinels to the same OpKind cost fn.
 ///
 /// The family declares NO fused ops. Init-boundary fail-fast: a parse/lower/link
@@ -4403,6 +4405,69 @@ fn register_vulkan_matmul_from_contract(table: &mut KernelBindingTable) {
         .expect("Vulkan matmul contract must register into the binding table");
 }
 
+/// The authored Vulkan conv2d kernel contract (3 per-(op, dtype) Conv2D
+/// bindings), embedded via `include_str!` (the PRODUCTION contract). Parsed +
+/// lowered by [`register_vulkan_conv_from_contract`].
+const VULKAN_CONV_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/vulkan/conv.fkc.md");
+
+/// Register the Vulkan conv2d family (3 `(Conv2D, [x, weight, out])` bindings —
+/// f32 / bf16 / f16) by IMPORTING its RE-AUTHORED FKC kernel contract — the
+/// FOURTH Vulkan-backend FKC consumer after cast + elementwise + matmul. FKC is
+/// unconditional core infrastructure, so this is the ONE registration path for
+/// the family: the hand-written `table.register_with_precision(OpKind::Conv2D,
+/// …)` regs (f32 + the bf16 / f16 cooperative-matrix combos) are DELETED.
+///
+/// The contract was RE-AUTHORED per-(op, dtype) (the matmul family's per-combo
+/// precedent): the corpus's `vulkan/conv-attn-rope.fkc.md` describes conv2d as an
+/// ASPIRATIONAL `fused_op: CONV2D` **im2col STAGE** (`conv2d_im2col_f32` /
+/// `conv2d_im2col_bf16`, whose output is the intermediate patches matrix, NOT the
+/// conv output) — that future *fused* decomposition is a SEPARATE concern and does
+/// NOT register the primitive `OpKind::Conv2D` binding production actually wires,
+/// whose wrapper (`conv2d::conv2d_f32` → `VulkanBackend::conv2d_*_bytes`) runs the
+/// WHOLE conv (im2col + GEMM internally). So the migration authors THREE faithful
+/// single-dtype-per-operand `op_kind: Conv2D` sections in the new production
+/// `docs/kernel-contracts/vulkan/conv.fkc.md`, each `entry_point` resolving through
+/// [`crate::fkc::VulkanLinkRegistry`] to the exact production wrapper.
+///
+/// **No bias key.** The Vulkan conv wrappers BAIL on a 3-input (bias) call, so —
+/// UNLIKE the CPU conv contract's `optional: true` bias that fans a `[T,T,T,T]`
+/// with-bias key — the sections declare NO bias operand and each keys ONLY the
+/// 3-slot `[x, weight, out]`, byte-for-byte the deleted hand-written regs.
+///
+/// **Caps ride through truthfully.** Each section's `requires_contiguous` layout
+/// projects `strided_input == false` — byte-for-byte the deleted
+/// `register_with_precision` regs (conv2d_im2col reads canonical row-major NCHW;
+/// a strided / transposed / offset operand is auto-Contiguized by the planner
+/// first). Precision becomes the contract's audited seed (nondeterministic,
+/// `bit_stable_on_same_hardware: false`, audited `none(reason)` — the corrected,
+/// honest posture) rather than the retired hand-written `VULKAN_MATMUL_PRECISION`
+/// / `VULKAN_MATMUL_TENSORCORE_PRECISION` consts (which mis-declared
+/// `bit_stable_on_same_hardware: true`; conv was their LAST code user, so they are
+/// dropped from this seam — the matmul migration deferred that retirement to here).
+/// Cost is preserved because this runs BEFORE `fill_unset_cost_for_backend`, which
+/// upgrades the imported `unknown_cost` sentinels to the same OpKind cost fn.
+///
+/// The family declares NO fused ops. Init-boundary fail-fast: a parse/lower/link
+/// failure of the embedded, authored contract is a programmer error surfaced once
+/// here via `expect`.
+fn register_vulkan_conv_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(VULKAN_CONV_CONTRACT, &crate::fkc::VulkanLinkRegistry)
+            .expect(
+                "authored Vulkan conv contract must import \
+                 (embedded via include_str!, resolved through VulkanLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "vulkan conv contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("Vulkan conv contract must register into the binding table");
+}
+
 /// Register every Vulkan kernel wrapper against its `(OpKind, dtypes,
 /// BackendId::Vulkan)` decision-point key in the shared
 /// `KernelBindingTable`. Each wrapper appears as an alternative
@@ -4418,11 +4483,16 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     use crate::fused::{
         PrecisionGuarantee, VULKAN_BYTE_LEVEL_PRECISION,
         VULKAN_FLOAT_POINTWISE_PRECISION, VULKAN_HALF_POINTWISE_PRECISION,
-        VULKAN_MATMUL_PRECISION, VULKAN_MATMUL_TENSORCORE_PRECISION,
         VULKAN_QMATMUL_PRECISION,
         // NB: VULKAN_TRANSCENDENTAL_PRECISION is intentionally NOT imported — the
         // whole unary family (its only user) now registers from the FKC
         // elementwise contract, which carries per-section precision. Retired here.
+        // NB: VULKAN_MATMUL_PRECISION / VULKAN_MATMUL_TENSORCORE_PRECISION are
+        // likewise NOT imported — the Vulkan conv2d family was their LAST code
+        // user, and it now registers from the FKC conv contract (see
+        // `register_vulkan_conv_from_contract`), which carries the corrected
+        // nondeterministic per-section precision. Retired from this seam (the
+        // `pub const` defs stay in `fused.rs`, mirroring VULKAN_TRANSCENDENTAL).
     };
     // NB: `VULKAN_CAST_PRECISION` is intentionally NOT imported — the whole
     // `OpKind::Cast` family now registers from its FKC contract (see
@@ -4757,9 +4827,11 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // the vulkan matmul contract via `register_vulkan_matmul_from_contract`
     // (called at the END of this fn, before the cost fill pass). Caps stay
     // contiguous-only (`requires_contiguous` ⇒ strided_input=false); precision
-    // becomes the contract's audited-none(reason) seed (the retired
-    // VULKAN_MATMUL_PRECISION / VULKAN_MATMUL_TENSORCORE_PRECISION consts stay in
-    // use for the Vulkan conv2d family). See
+    // becomes the contract's audited-none(reason) seed. The
+    // VULKAN_MATMUL_PRECISION / VULKAN_MATMUL_TENSORCORE_PRECISION consts the
+    // matmul migration left in use for the Vulkan conv2d family are now ALSO
+    // retired — conv2d migrated to its own FKC contract
+    // (`register_vulkan_conv_from_contract`). See
     // `docs/kernel-contracts/vulkan/matmul.fkc.md`.
 
     // ----- Affine / Clamp / PowI — MIGRATED to FKC contract import.
@@ -4873,20 +4945,18 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         VULKAN_QMATMUL_PRECISION,
     );
 
-    // ----- Conv2D f32 (V.3.I) — im2col + matmul. Numerical character
-    // matches f32 matmul (per-output deterministic FMA accumulation).
-    // CONTIGUOUS-ONLY: conv2d_im2col reads NCHW with the kernel's
-    // assumed canonical stride layout. The im2col view materializes
-    // a contiguous buffer for the matmul stage; a strided input
-    // would require either an explicit pre-Contiguize or an
-    // im2col-with-strides variant (significant kernel work). -----
-    table.register_with_precision(
-        OpKind::Conv2D,
-        &[DType::F32, DType::F32, DType::F32],
-        vk,
-        conv2d::conv2d_f32,
-        VULKAN_MATMUL_PRECISION,
-    );
+    // ----- Conv2D (f32 + bf16/f16 cooperative-matrix) — MIGRATED to FKC
+    // contract import. The hand-written `table.register_with_precision(
+    // OpKind::Conv2D, …)` regs (f32 here + the bf16/f16 coop combos further
+    // below) are DELETED; the whole family now registers from
+    // `docs/kernel-contracts/vulkan/conv.fkc.md` via
+    // `register_vulkan_conv_from_contract` (called at the END of this fn, before
+    // the cost-fill pass). Caps stay contiguous-only (`requires_contiguous` ⇒
+    // strided_input=false); no bias key (the wrappers bail on a 3-input call);
+    // precision becomes the contract's corrected nondeterministic seed (the
+    // retired VULKAN_MATMUL_PRECISION / VULKAN_MATMUL_TENSORCORE_PRECISION consts
+    // over-claimed bit-stability). -----
+
     // ----- FlashAttn f32 (V.3 attention) — naive single-pass kernel
     // (NOT tiled FA-2). Supports GQA, causal mask, softmax_scale,
     // alibi. window_left/window_right/softcap bail at the wrapper
@@ -4986,29 +5056,10 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         VULKAN_FLOAT_POINTWISE_PRECISION,
     );
 
-    // ----- Conv2D bf16 (V.3.I extended) — im2col_bf16 + cooperative-
-    // matrix bf16 matmul (matmul_coop_bf16_bf16_bf16). Activations,
-    // weights, and output all bf16. COOP-ONLY shape constraints:
-    // c_out % 16 == 0 && (h_out * w_out) % 16 == 0. Wider ULP than
-    // f32 conv2d due to bf16→f16 downcast on matmul inputs; the
-    // tensor-core precision tag reflects that. -----
-    table.register_with_precision(
-        OpKind::Conv2D,
-        &[DType::BF16, DType::BF16, DType::BF16],
-        vk,
-        conv2d::conv2d_bf16,
-        VULKAN_MATMUL_TENSORCORE_PRECISION,
-    );
-    // ----- Conv2D f16 — sibling of bf16. Reuses the bf16 im2col
-    // shader (2-byte dtype-opaque shuffle) + matmul_coop_f16_f16_f16.
-    // Same shape constraints. -----
-    table.register_with_precision(
-        OpKind::Conv2D,
-        &[DType::F16, DType::F16, DType::F16],
-        vk,
-        conv2d::conv2d_f16,
-        VULKAN_MATMUL_TENSORCORE_PRECISION,
-    );
+    // ----- Conv2D bf16 + f16 (V.3.I extended) — im2col + cooperative-matrix
+    // GEMM — MIGRATED to FKC contract import (deleted; now registered from
+    // `docs/kernel-contracts/vulkan/conv.fkc.md` via
+    // `register_vulkan_conv_from_contract`, alongside the f32 combo above). -----
 
     // ----- Cast F8E4M3 ↔ {F32, F16, BF16} — MIGRATED to FKC contract
     // import (`register_vulkan_cast_from_contract`, called below). The six
@@ -5054,6 +5105,15 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // Vulkan primitive gets. Caps ride through contiguous-only
     // (`requires_contiguous` ⇒ strided_input=false). -----
     register_vulkan_matmul_from_contract(table);
+
+    // ----- Conv2D family (f32 + bf16/f16 cooperative-matrix, 3 (Conv2D,
+    // [x, weight, out]) bindings) — registered FROM its RE-AUTHORED FKC kernel
+    // contract, the SOLE path (all hand-written Conv2D regs deleted above). Runs
+    // BEFORE the cost-fill pass so its imported `unknown_cost` sentinels are
+    // upgraded to the same OpKind cost fn every other Vulkan primitive gets. Caps
+    // ride through contiguous-only (`requires_contiguous` ⇒ strided_input=false);
+    // no bias key (the wrappers bail on a 3-input call). -----
+    register_vulkan_conv_from_contract(table);
 
     // ----- Bulk-fill cost functions for every Vulkan registration above.
     // The CPU dispatcher (`default_cost_for_op_kind`) captures the
@@ -5406,5 +5466,91 @@ mod matmul_contract_tests {
             checked += 1;
         }
         assert_eq!(checked, 6, "all 6 (MatMul, [lhs,rhs,out]) Vulkan combos checked");
+    }
+}
+
+// ===========================================================================
+// FKC contract-migration tests (born-red gate for the Vulkan conv2d family)
+// ===========================================================================
+//
+// Same `#![cfg(feature = "vulkan")]` file gate as the cast/elementwise/matmul
+// tests above: this module compiles only under `--features vulkan` and touches
+// NO device (registration is pure binding-table population).
+
+#[cfg(test)]
+mod conv_contract_tests {
+    use super::*;
+    use crate::kernel::{KernelBindingTable, KernelRef};
+
+    /// FOURTH VULKAN-BACKEND FKC CONSUMER (born-red gate). `register_vulkan_kernels`
+    /// registers the whole Vulkan conv2d family (3 per-(op, dtype) `(Conv2D,
+    /// [x, weight, out])` bindings) FROM ITS RE-AUTHORED KERNEL CONTRACT
+    /// (`docs/kernel-contracts/vulkan/conv.fkc.md`) via
+    /// `register_vulkan_conv_from_contract` — the sole registration path, now that
+    /// the hand-written `table.register_with_precision(OpKind::Conv2D, …)` regs
+    /// (f32 / bf16 / f16) are DELETED.
+    ///
+    /// The corpus's `vulkan/conv-attn-rope.fkc.md` describes conv2d as an
+    /// ASPIRATIONAL `fused_op: CONV2D` **im2col STAGE** (`conv2d_im2col_f32` /
+    /// `conv2d_im2col_bf16`, output = the patches matrix), which is NOT what
+    /// production registers: production registers a PRIMITIVE `OpKind::Conv2D`
+    /// binding whose wrapper (`conv2d::conv2d_f32` → `VulkanBackend::conv2d_*_bytes`)
+    /// runs the WHOLE conv (im2col + matmul internally). This mirrors the matmul
+    /// migration (aspirational `matmul_mixed_precision` chassis superseded by
+    /// EXPLICIT per-combo `op_kind` sections in the production `vulkan/matmul.fkc.md`).
+    ///
+    /// For each `(Conv2D, [x, weight, out], Vulkan)` key this asserts: the binding
+    /// resolves to the EXACT production wrapper fn-pointer (behavior-preserving);
+    /// `kernel_source == "vulkan-slang"` (the RED discriminator — the deleted hand
+    /// path stamped `""`, so before the import is wired this assert fails on the
+    /// empty source); and `caps.strided_input == false` — the contiguous-only truth
+    /// of the deleted `register_with_precision` regs (conv2d_im2col reads NCHW with
+    /// canonical strides, so a strided operand is auto-Contiguized first). No bias
+    /// key is registered: the Vulkan wrappers bail on a 3-input (bias) call, so the
+    /// contract declares NO optional bias operand and each section keys ONLY the
+    /// 3-slot `[x, weight, out]` (unlike the CPU conv contract's optional-bias dual
+    /// key). Precision is contract-sourced (the cast/elementwise/matmul precedent)
+    /// and NOT asserted here.
+    #[test]
+    fn register_vulkan_kernels_binds_conv_family_from_contract() {
+        let mut table = KernelBindingTable::new();
+        register_vulkan_kernels(&mut table);
+        let vk = BackendId::Vulkan;
+
+        // (key dtypes [x, weight, out], expected production wrapper). Every conv
+        // binding is contiguous-only (strided_input == false), so that is checked
+        // uniformly below rather than per-row.
+        let cases: &[(&[DType], KernelRef)] = &[
+            (&[DType::F32,  DType::F32,  DType::F32],  conv2d::conv2d_f32 as KernelRef),
+            (&[DType::BF16, DType::BF16, DType::BF16], conv2d::conv2d_bf16 as KernelRef),
+            (&[DType::F16,  DType::F16,  DType::F16],  conv2d::conv2d_f16 as KernelRef),
+        ];
+
+        let mut checked = 0usize;
+        for (key, expected) in cases {
+            let alts = table.lookup_alternatives(OpKind::Conv2D, key, vk);
+            let entry = alts.iter().find(|e| e.kernel as usize == *expected as usize);
+            let entry = match entry {
+                Some(e) => e,
+                None => panic!(
+                    "Conv2D {key:?}/Vulkan: production wrapper must be bound FROM the vulkan \
+                     conv contract in register_vulkan_kernels; found {} alt(s) with sources {:?}",
+                    alts.len(),
+                    alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                ),
+            };
+            assert_eq!(
+                entry.kernel_source, "vulkan-slang",
+                "Conv2D {key:?}: conv family must be contract-sourced \
+                 (kernel_source=\"vulkan-slang\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                !entry.caps.strided_input,
+                "Conv2D {key:?}: caps preserved (contiguous-only, strided_input=false)",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 3, "all 3 (Conv2D, [x, weight, out]) Vulkan combos checked");
     }
 }
