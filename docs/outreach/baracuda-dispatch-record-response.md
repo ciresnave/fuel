@@ -1,9 +1,15 @@
 # Fuel → Baracuda: dispatch/miss record schema + variants — grounded answers
 
-**Status:** DRAFT for CireSnave review (2026-07-03), not sent. Replies to the inbound
-"dispatch/miss record schema + kernel variants on the wire" ask (their design
-`kernel-specialization.md` §7–§8). Every answer below is grounded in as-built Fuel
-code with file:line; nothing is aspirational unless marked.
+**Status:** FINAL (2026-07-03), approved for send. Replies to the inbound
+"dispatch/miss record schema + kernel variants on the wire" ask (your design
+`kernel-specialization.md` §7–§8; dispatch-table schema in
+`baracuda-kernels-types::dispatch`, alpha.72+ `feat/kernel-specialization`).
+Every answer below is grounded in as-built Fuel code with file:line; nothing is
+aspirational unless marked. TL;DR: **A confirmed** (per-candidate timings, we add
+the arch stamp), **B all-clear** (no ≤1-per-cell assumption, `variant:` parses
+today, wire identity is `(structure_key, ImplId)`), **C selectable-now iff
+self-contained** (planned workspace rides our queued caps growth), **D opaque
+today + field welcomed**, **ownership split confirmed**.
 
 ---
 
