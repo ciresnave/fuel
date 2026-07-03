@@ -2738,7 +2738,9 @@ macro_rules! cpu_cast_wrapper {
         $target_name:literal,
         { $( $source:pat => $kernel:path ),+ $(,)? } $(,)?
     ) => {
-        fn $wrapper(
+        // `pub(crate)` so the FKC `link_registry` (`fkc::cpu_link`) can name the
+        // real production wrapper and the importer can bind it FROM the contract.
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -5001,6 +5003,58 @@ fn register_cpu_inplace_from_contract(table: &mut KernelBindingTable) {
     );
 }
 
+/// The authored CPU **cast** kernel contract, embedded into the binary (the
+/// PRODUCTION `include_str!`). `register_cpu_cast_from_contract` parses + lowers
+/// it and binds the FULL directed-pair matrix FROM THE CONTRACT.
+const CPU_CAST_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/cast.fkc.md");
+
+/// Register the CPU **cast** family FULLY — the COMPLETE directed-pair matrix,
+/// every ordered pair of the 11 real numeric dtypes
+/// {F32,F64,F16,BF16,F8E4M3,U8,I8,U32,I16,I32,I64} with identity excluded =
+/// 11 × 10 = 110 bindings (all key `[SRC, DST]`) — by IMPORTING its FKC kernel
+/// contract.
+///
+/// Each per-pair section (`## cast_f64_to_f32`, …) declares a SPECIFIC
+/// single-dtype `src` input + a `fixed(DST)` output, so none of them dtype-fan —
+/// the importer's key-builder emits `[SRC, DST]` (the src input dtype + the
+/// `fixed(DST)` output dtype, byte-for-byte the deleted hand-written
+/// `table.register(Cast, &[SRC, DST], …)` regs) and resolves the section's
+/// SPECIFIC `cast_<src>_to_<dst>` byte-kernel `entry_point` AS-IS through the
+/// production [`crate::fkc::CpuLinkRegistry`] (chaining
+/// [`crate::fkc::CPU_CAST_ENTRY_POINTS`]). Because the binding lookup is keyed on
+/// the TARGET dtype, all 10 of a target's source pairs bind the SAME per-target
+/// `cast_to_<dst>_cpu_wrapper` (which `match`es on the source dtype internally) —
+/// 10 distinct real byte-kernel entry_points → 1 wrapper (the synthetic-umbrella
+/// precedent). This is the SOLE registration path for the whole family; every
+/// hand-written `table.register(Cast, …)` reg is DELETED. Identity pairs
+/// (`[T, T]`) are never registered — the optimizer elides identity `Cast` before
+/// dispatch, and the per-target wrappers carry no identity arm.
+///
+/// Behavior-preserving vs. the deleted hand-written path: identical kernels +
+/// caps (contiguous-only); the binding's `kernel_source` becomes the contract's
+/// `"portable-cpu"` tag and its precision the contract's bit-stable claim. Cost
+/// is preserved because this runs BEFORE `fill_unset_cpu_cost`, which upgrades
+/// the imported entries' `unknown_cost` sentinel to the same OpKind cost fn every
+/// CPU primitive gets. The family declares NO fused ops, so `register_into`'s
+/// required fused argument is a local throwaway that provably stays empty.
+fn register_cpu_cast_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_CAST_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU cast contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cast contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU cast contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -5302,138 +5356,23 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // (bf16 + f16 reductions are now registered from the reduce contract above,
     // alongside the f32/f64 variants — accumulate in f32 for stability.)
 
-    // Cast — the complete closed cast basis. Every ordered pair of the 11
-    // real numeric dtypes {F32,F64,F16,BF16,F8E4M3,U8,I8,U32,I16,I32,I64}
-    // has a registered CPU kernel: 11×10 = 110 directed pairs. The MX dummy
-    // dtypes (F6E2M3,F6E3M2,F4,F8E8M0) have no Rust scalar type and are
-    // excluded. Each per-target wrapper dispatches by source dtype via a
-    // `match`; the binding-table key is keyed on the actual dtypes the
-    // executor produces (`[src_dt, dst_dt]`).
-    //
-    // Identity pairs (`[T, T]`) are not registered here because the
-    // wrappers' internal match doesn't include the identity arm —
-    // Fuel's graph optimizer elides identity Cast before dispatch.
-    // -> F32
-    table.register(Cast, &[DType::F64, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F16, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::BF16, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F8E4M3, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U8, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I8, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U32, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I16, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I32, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I64, DType::F32], cpu, cast_to_f32_cpu_wrapper as KernelRef);
-    // -> F64
-    table.register(Cast, &[DType::F32, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F16, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::BF16, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F8E4M3, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U8, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I8, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U32, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I16, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I32, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I64, DType::F64], cpu, cast_to_f64_cpu_wrapper as KernelRef);
-    // -> F16
-    table.register(Cast, &[DType::F32, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F64, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::BF16, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F8E4M3, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U8, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I8, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U32, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I16, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I32, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I64, DType::F16], cpu, cast_to_f16_cpu_wrapper as KernelRef);
-    // -> BF16
-    table.register(Cast, &[DType::F32, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F64, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F16, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F8E4M3, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U8, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I8, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U32, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I16, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I32, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I64, DType::BF16], cpu, cast_to_bf16_cpu_wrapper as KernelRef);
-    // -> F8E4M3
-    table.register(Cast, &[DType::F32, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F64, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F16, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::BF16, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U8, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I8, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U32, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I16, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I32, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I64, DType::F8E4M3], cpu, cast_to_f8e4m3_cpu_wrapper as KernelRef);
-    // -> U8
-    table.register(Cast, &[DType::F32, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F64, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F16, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::BF16, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F8E4M3, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I8, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U32, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I16, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I32, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I64, DType::U8], cpu, cast_to_u8_cpu_wrapper as KernelRef);
-    // -> I8
-    table.register(Cast, &[DType::F32, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F64, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F16, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::BF16, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F8E4M3, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U8, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U32, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I16, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I32, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I64, DType::I8], cpu, cast_to_i8_cpu_wrapper as KernelRef);
-    // -> U32
-    table.register(Cast, &[DType::F32, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F64, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F16, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::BF16, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F8E4M3, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U8, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I8, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I16, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I32, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I64, DType::U32], cpu, cast_to_u32_cpu_wrapper as KernelRef);
-    // -> I16
-    table.register(Cast, &[DType::F32, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F64, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F16, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::BF16, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F8E4M3, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U8, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I8, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U32, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I32, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I64, DType::I16], cpu, cast_to_i16_cpu_wrapper as KernelRef);
-    // -> I32
-    table.register(Cast, &[DType::F32, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F64, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F16, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::BF16, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F8E4M3, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U8, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I8, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U32, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I16, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I64, DType::I32], cpu, cast_to_i32_cpu_wrapper as KernelRef);
-    // -> I64
-    table.register(Cast, &[DType::F32, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F64, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F16, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::BF16, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::F8E4M3, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U8, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I8, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::U32, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I16, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
-    table.register(Cast, &[DType::I32, DType::I64], cpu, cast_to_i64_cpu_wrapper as KernelRef);
+    // Cast — the COMPLETE directed-pair matrix: every ordered pair of the 11
+    // real numeric dtypes {F32,F64,F16,BF16,F8E4M3,U8,I8,U32,I16,I32,I64} with
+    // identity excluded = 11 × 10 = 110 bindings (all key `[SRC, DST]`) — is now
+    // registered FROM docs/kernel-contracts/cpu/cast.fkc.md by
+    // register_cpu_cast_from_contract. Each per-pair section declares a
+    // single-dtype `src` input + a `fixed(DST)` output (no dtype fan), so the
+    // importer keys `[SRC, DST]` and resolves the SPECIFIC `cast_<src>_to_<dst>`
+    // byte-kernel entry_point AS-IS; because the lookup is keyed on the TARGET
+    // dtype, all 10 of a target's source pairs bind the SAME per-target
+    // `cast_to_<dst>_cpu_wrapper` (10 real entry_points → 1 wrapper). FKC is the
+    // SOLE path for the whole family; all hand-written `table.register(Cast, …)`
+    // regs were DELETED. Identity pairs are never registered — the optimizer
+    // elides identity Cast before dispatch. The MX dummy dtypes
+    // (F6E2M3,F6E3M2,F4,F8E8M0) have no Rust scalar type and are excluded. Placed
+    // BEFORE the `fill_unset_cpu_*` passes so the imported entries pick up the CPU
+    // cost/precision fill.
+    register_cpu_cast_from_contract(table);
 
     // Conv2D / ConvTranspose2D — BOTH the no-bias key [T, T, T] (x, weight, out)
     // AND the with-bias key [T, T, T, T] (x, weight, bias, out) are now registered
@@ -9435,6 +9374,93 @@ mod tests {
             checked, 96,
             "21 in-place unary (×4) + InplaceAffine/ClampInplace/PowIInplace (×4) = 96 \
              contract-sourced bindings",
+        );
+    }
+
+    /// Gate for the CPU **cast** family migrated to FKC-contract registration.
+    /// The FULL directed-pair matrix — every ordered pair of the 11 real numeric
+    /// dtypes {F32,F64,F16,BF16,F8E4M3,U8,I8,U32,I16,I32,I64}, identity excluded =
+    /// 11 × 10 = 110 pairs — is IMPORTED from
+    /// `docs/kernel-contracts/cpu/cast.fkc.md` (see
+    /// `register_cpu_cast_from_contract`). Each per-pair section declares a
+    /// single-dtype `src` input + `fixed(DST)` output, so it does NOT dtype-fan —
+    /// the importer keys `[SRC, DST]` (byte-for-byte the deleted hand-written
+    /// `table.register(Cast, &[SRC, DST], …)` regs) and resolves the SPECIFIC
+    /// `cast_<src>_to_<dst>` byte-kernel symbol AS-IS through the production
+    /// `CpuLinkRegistry` (chaining `CPU_CAST_ENTRY_POINTS`). Because the binding
+    /// lookup is keyed on the TARGET dtype, every one of a target's 10 source
+    /// pairs resolves to the SAME per-target `cast_to_<dst>_cpu_wrapper` (which
+    /// dispatches on source internally) — the fanned byte-kernel symbols are the
+    /// synthetic-umbrella precedent (10 distinct entry_points → 1 wrapper).
+    ///
+    /// For each of the 110 pairs: resolves to the EXACT production per-target
+    /// wrapper with `kernel_source == "portable-cpu"` (the contract provenance
+    /// tag), caps contiguous-only, and the contract's bit-stable precision riding
+    /// through. FKC is the SOLE registration path for the whole family.
+    #[test]
+    fn global_bindings_registers_cast_family_from_contract() {
+        let table = global_bindings();
+
+        // Per-target wrapper (the binding-table key is keyed on the TARGET dtype;
+        // each wrapper dispatches on the source dtype internally).
+        let targets: [(DType, crate::kernel::KernelRef); 11] = [
+            (DType::F32, cast_to_f32_cpu_wrapper),
+            (DType::F64, cast_to_f64_cpu_wrapper),
+            (DType::F16, cast_to_f16_cpu_wrapper),
+            (DType::BF16, cast_to_bf16_cpu_wrapper),
+            (DType::F8E4M3, cast_to_f8e4m3_cpu_wrapper),
+            (DType::U8, cast_to_u8_cpu_wrapper),
+            (DType::I8, cast_to_i8_cpu_wrapper),
+            (DType::U32, cast_to_u32_cpu_wrapper),
+            (DType::I16, cast_to_i16_cpu_wrapper),
+            (DType::I32, cast_to_i32_cpu_wrapper),
+            (DType::I64, cast_to_i64_cpu_wrapper),
+        ];
+        let all_dts: [DType; 11] = [
+            DType::F32, DType::F64, DType::F16, DType::BF16, DType::F8E4M3,
+            DType::U8, DType::I8, DType::U32, DType::I16, DType::I32, DType::I64,
+        ];
+
+        let mut checked = 0usize;
+        for (dst, expected) in targets {
+            for src in all_dts {
+                if src == dst {
+                    continue; // identity pairs are elided by the optimizer, not registered
+                }
+                let key: &[DType] = &[src, dst];
+                let alts = table.lookup_alternatives(OpKind::Cast, key, BackendId::Cpu);
+                let entry = alts
+                    .iter()
+                    .find(|e| e.kernel as usize == expected as usize)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "Cast {src:?}->{dst:?}/Cpu: the production per-target wrapper must be \
+                             bound FROM the cast contract in global_bindings() — found {} \
+                             alternative(s) with sources {:?}",
+                            alts.len(),
+                            alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                        )
+                    });
+                assert_eq!(
+                    entry.kernel_source, "portable-cpu",
+                    "Cast {src:?}->{dst:?}: family must be contract-sourced \
+                     (kernel_source=\"portable-cpu\"); got {:?}",
+                    entry.kernel_source,
+                );
+                assert!(
+                    !entry.caps.strided_input,
+                    "Cast {src:?}->{dst:?}: caps preserved (contiguous-only)",
+                );
+                assert!(
+                    entry.precision.bit_stable_on_same_hardware,
+                    "Cast {src:?}->{dst:?}: contract's bit-stable claim rode through",
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(
+            checked, 110,
+            "11 target dtypes × 10 sources each = 110 directed cast pairs (identity excluded)"
         );
     }
 

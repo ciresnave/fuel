@@ -883,6 +883,151 @@ pub static CPU_INPLACE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("powi_inplace", "f16",  powi_inplace_f16_cpu_wrapper),
 ];
 
+/// The CPU **cast** family's `symbol → production wrapper` map — the FULL
+/// directed-pair matrix: every ordered pair of the 11 real numeric dtypes
+/// {F32,F64,F16,BF16,F8E4M3,U8,I8,U32,I16,I32,I64}, identity excluded =
+/// 11 × 10 = 110 entry points. Contract: `docs/kernel-contracts/cpu/cast.fkc.md`.
+///
+/// Each per-pair section (`## cast_f64_to_f32`, …) declares a SPECIFIC
+/// single-dtype `src` input + a `fixed(DST)` output, so it does NOT dtype-fan —
+/// the importer keys `[SRC, DST]` (byte-for-byte the deleted hand-written
+/// `table.register(Cast, &[SRC, DST], …)` regs) and resolves the section's
+/// SPECIFIC `cast_<src>_to_<dst>` byte-kernel `entry_point` AS-IS. Because the
+/// binding lookup is keyed on the **target** dtype (the Node's dtype), all 10 of
+/// a target's source pairs bind the SAME per-target `cast_to_<dst>_cpu_wrapper`
+/// (which `match`es on the source dtype internally to pick the right byte
+/// kernel) — the synthetic-umbrella precedent (10 distinct real byte-kernel
+/// entry_points → 1 wrapper, like `pad_cpu`'s fabricated per-dtype symbols → the
+/// one `pad_cpu_wrapper`, except here every entry_point IS a real distinct byte
+/// kernel). This map is the SOLE registration path for the whole family: every
+/// hand-written `table.register(Cast, …)` reg is DELETED. Identity pairs
+/// (`[T, T]`) are never registered — the optimizer elides identity `Cast` before
+/// dispatch. These sections have NO `##` chassis umbrella, so there is no
+/// `registrable: false` describe-only entry to omit.
+pub static CPU_CAST_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // -> F32
+    ep!("cast", "f64_to_f32", cast_to_f32_cpu_wrapper),
+    ep!("cast", "f16_to_f32", cast_to_f32_cpu_wrapper),
+    ep!("cast", "bf16_to_f32", cast_to_f32_cpu_wrapper),
+    ep!("cast", "f8e4m3_to_f32", cast_to_f32_cpu_wrapper),
+    ep!("cast", "u8_to_f32", cast_to_f32_cpu_wrapper),
+    ep!("cast", "i8_to_f32", cast_to_f32_cpu_wrapper),
+    ep!("cast", "u32_to_f32", cast_to_f32_cpu_wrapper),
+    ep!("cast", "i16_to_f32", cast_to_f32_cpu_wrapper),
+    ep!("cast", "i32_to_f32", cast_to_f32_cpu_wrapper),
+    ep!("cast", "i64_to_f32", cast_to_f32_cpu_wrapper),
+    // -> F64
+    ep!("cast", "f32_to_f64", cast_to_f64_cpu_wrapper),
+    ep!("cast", "f16_to_f64", cast_to_f64_cpu_wrapper),
+    ep!("cast", "bf16_to_f64", cast_to_f64_cpu_wrapper),
+    ep!("cast", "f8e4m3_to_f64", cast_to_f64_cpu_wrapper),
+    ep!("cast", "u8_to_f64", cast_to_f64_cpu_wrapper),
+    ep!("cast", "i8_to_f64", cast_to_f64_cpu_wrapper),
+    ep!("cast", "u32_to_f64", cast_to_f64_cpu_wrapper),
+    ep!("cast", "i16_to_f64", cast_to_f64_cpu_wrapper),
+    ep!("cast", "i32_to_f64", cast_to_f64_cpu_wrapper),
+    ep!("cast", "i64_to_f64", cast_to_f64_cpu_wrapper),
+    // -> F16
+    ep!("cast", "f32_to_f16", cast_to_f16_cpu_wrapper),
+    ep!("cast", "f64_to_f16", cast_to_f16_cpu_wrapper),
+    ep!("cast", "bf16_to_f16", cast_to_f16_cpu_wrapper),
+    ep!("cast", "f8e4m3_to_f16", cast_to_f16_cpu_wrapper),
+    ep!("cast", "u8_to_f16", cast_to_f16_cpu_wrapper),
+    ep!("cast", "i8_to_f16", cast_to_f16_cpu_wrapper),
+    ep!("cast", "u32_to_f16", cast_to_f16_cpu_wrapper),
+    ep!("cast", "i16_to_f16", cast_to_f16_cpu_wrapper),
+    ep!("cast", "i32_to_f16", cast_to_f16_cpu_wrapper),
+    ep!("cast", "i64_to_f16", cast_to_f16_cpu_wrapper),
+    // -> BF16
+    ep!("cast", "f32_to_bf16", cast_to_bf16_cpu_wrapper),
+    ep!("cast", "f64_to_bf16", cast_to_bf16_cpu_wrapper),
+    ep!("cast", "f16_to_bf16", cast_to_bf16_cpu_wrapper),
+    ep!("cast", "f8e4m3_to_bf16", cast_to_bf16_cpu_wrapper),
+    ep!("cast", "u8_to_bf16", cast_to_bf16_cpu_wrapper),
+    ep!("cast", "i8_to_bf16", cast_to_bf16_cpu_wrapper),
+    ep!("cast", "u32_to_bf16", cast_to_bf16_cpu_wrapper),
+    ep!("cast", "i16_to_bf16", cast_to_bf16_cpu_wrapper),
+    ep!("cast", "i32_to_bf16", cast_to_bf16_cpu_wrapper),
+    ep!("cast", "i64_to_bf16", cast_to_bf16_cpu_wrapper),
+    // -> F8E4M3
+    ep!("cast", "f32_to_f8e4m3", cast_to_f8e4m3_cpu_wrapper),
+    ep!("cast", "f64_to_f8e4m3", cast_to_f8e4m3_cpu_wrapper),
+    ep!("cast", "f16_to_f8e4m3", cast_to_f8e4m3_cpu_wrapper),
+    ep!("cast", "bf16_to_f8e4m3", cast_to_f8e4m3_cpu_wrapper),
+    ep!("cast", "u8_to_f8e4m3", cast_to_f8e4m3_cpu_wrapper),
+    ep!("cast", "i8_to_f8e4m3", cast_to_f8e4m3_cpu_wrapper),
+    ep!("cast", "u32_to_f8e4m3", cast_to_f8e4m3_cpu_wrapper),
+    ep!("cast", "i16_to_f8e4m3", cast_to_f8e4m3_cpu_wrapper),
+    ep!("cast", "i32_to_f8e4m3", cast_to_f8e4m3_cpu_wrapper),
+    ep!("cast", "i64_to_f8e4m3", cast_to_f8e4m3_cpu_wrapper),
+    // -> U8
+    ep!("cast", "f32_to_u8", cast_to_u8_cpu_wrapper),
+    ep!("cast", "f64_to_u8", cast_to_u8_cpu_wrapper),
+    ep!("cast", "f16_to_u8", cast_to_u8_cpu_wrapper),
+    ep!("cast", "bf16_to_u8", cast_to_u8_cpu_wrapper),
+    ep!("cast", "f8e4m3_to_u8", cast_to_u8_cpu_wrapper),
+    ep!("cast", "i8_to_u8", cast_to_u8_cpu_wrapper),
+    ep!("cast", "u32_to_u8", cast_to_u8_cpu_wrapper),
+    ep!("cast", "i16_to_u8", cast_to_u8_cpu_wrapper),
+    ep!("cast", "i32_to_u8", cast_to_u8_cpu_wrapper),
+    ep!("cast", "i64_to_u8", cast_to_u8_cpu_wrapper),
+    // -> I8
+    ep!("cast", "f32_to_i8", cast_to_i8_cpu_wrapper),
+    ep!("cast", "f64_to_i8", cast_to_i8_cpu_wrapper),
+    ep!("cast", "f16_to_i8", cast_to_i8_cpu_wrapper),
+    ep!("cast", "bf16_to_i8", cast_to_i8_cpu_wrapper),
+    ep!("cast", "f8e4m3_to_i8", cast_to_i8_cpu_wrapper),
+    ep!("cast", "u8_to_i8", cast_to_i8_cpu_wrapper),
+    ep!("cast", "u32_to_i8", cast_to_i8_cpu_wrapper),
+    ep!("cast", "i16_to_i8", cast_to_i8_cpu_wrapper),
+    ep!("cast", "i32_to_i8", cast_to_i8_cpu_wrapper),
+    ep!("cast", "i64_to_i8", cast_to_i8_cpu_wrapper),
+    // -> U32
+    ep!("cast", "f32_to_u32", cast_to_u32_cpu_wrapper),
+    ep!("cast", "f64_to_u32", cast_to_u32_cpu_wrapper),
+    ep!("cast", "f16_to_u32", cast_to_u32_cpu_wrapper),
+    ep!("cast", "bf16_to_u32", cast_to_u32_cpu_wrapper),
+    ep!("cast", "f8e4m3_to_u32", cast_to_u32_cpu_wrapper),
+    ep!("cast", "u8_to_u32", cast_to_u32_cpu_wrapper),
+    ep!("cast", "i8_to_u32", cast_to_u32_cpu_wrapper),
+    ep!("cast", "i16_to_u32", cast_to_u32_cpu_wrapper),
+    ep!("cast", "i32_to_u32", cast_to_u32_cpu_wrapper),
+    ep!("cast", "i64_to_u32", cast_to_u32_cpu_wrapper),
+    // -> I16
+    ep!("cast", "f32_to_i16", cast_to_i16_cpu_wrapper),
+    ep!("cast", "f64_to_i16", cast_to_i16_cpu_wrapper),
+    ep!("cast", "f16_to_i16", cast_to_i16_cpu_wrapper),
+    ep!("cast", "bf16_to_i16", cast_to_i16_cpu_wrapper),
+    ep!("cast", "f8e4m3_to_i16", cast_to_i16_cpu_wrapper),
+    ep!("cast", "u8_to_i16", cast_to_i16_cpu_wrapper),
+    ep!("cast", "i8_to_i16", cast_to_i16_cpu_wrapper),
+    ep!("cast", "u32_to_i16", cast_to_i16_cpu_wrapper),
+    ep!("cast", "i32_to_i16", cast_to_i16_cpu_wrapper),
+    ep!("cast", "i64_to_i16", cast_to_i16_cpu_wrapper),
+    // -> I32
+    ep!("cast", "f32_to_i32", cast_to_i32_cpu_wrapper),
+    ep!("cast", "f64_to_i32", cast_to_i32_cpu_wrapper),
+    ep!("cast", "f16_to_i32", cast_to_i32_cpu_wrapper),
+    ep!("cast", "bf16_to_i32", cast_to_i32_cpu_wrapper),
+    ep!("cast", "f8e4m3_to_i32", cast_to_i32_cpu_wrapper),
+    ep!("cast", "u8_to_i32", cast_to_i32_cpu_wrapper),
+    ep!("cast", "i8_to_i32", cast_to_i32_cpu_wrapper),
+    ep!("cast", "u32_to_i32", cast_to_i32_cpu_wrapper),
+    ep!("cast", "i16_to_i32", cast_to_i32_cpu_wrapper),
+    ep!("cast", "i64_to_i32", cast_to_i32_cpu_wrapper),
+    // -> I64
+    ep!("cast", "f32_to_i64", cast_to_i64_cpu_wrapper),
+    ep!("cast", "f64_to_i64", cast_to_i64_cpu_wrapper),
+    ep!("cast", "f16_to_i64", cast_to_i64_cpu_wrapper),
+    ep!("cast", "bf16_to_i64", cast_to_i64_cpu_wrapper),
+    ep!("cast", "f8e4m3_to_i64", cast_to_i64_cpu_wrapper),
+    ep!("cast", "u8_to_i64", cast_to_i64_cpu_wrapper),
+    ep!("cast", "i8_to_i64", cast_to_i64_cpu_wrapper),
+    ep!("cast", "u32_to_i64", cast_to_i64_cpu_wrapper),
+    ep!("cast", "i16_to_i64", cast_to_i64_cpu_wrapper),
+    ep!("cast", "i32_to_i64", cast_to_i64_cpu_wrapper),
+];
+
 /// The CPU norm/softmax **FUSED** family's `symbol → production wrapper` map —
 /// the FIRST fused-registry link table (the `fused_op` analogue of the
 /// primitive `CPU_*_ENTRY_POINTS`). Contract:
@@ -1017,7 +1162,8 @@ pub static CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// [`CPU_ROPE_ENTRY_POINTS`], [`CPU_SSM_ENTRY_POINTS`],
 /// [`CPU_CONV_ENTRY_POINTS`], [`CPU_PADDING_ENTRY_POINTS`],
 /// [`CPU_SHAPE_OPS_ENTRY_POINTS`], [`CPU_MATMUL_ENTRY_POINTS`],
-/// [`CPU_ATTENTION_ENTRY_POINTS`], and [`CPU_INPLACE_ENTRY_POINTS`].
+/// [`CPU_ATTENTION_ENTRY_POINTS`], [`CPU_INPLACE_ENTRY_POINTS`], and
+/// [`CPU_CAST_ENTRY_POINTS`].
 /// Unresolved → `None`, which the importer turns into a typed
 /// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;
@@ -1042,6 +1188,7 @@ impl LinkRegistry for CpuLinkRegistry {
             .chain(CPU_MATMUL_ENTRY_POINTS.iter())
             .chain(CPU_ATTENTION_ENTRY_POINTS.iter())
             .chain(CPU_INPLACE_ENTRY_POINTS.iter())
+            .chain(CPU_CAST_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
