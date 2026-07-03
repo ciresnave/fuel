@@ -4468,6 +4468,79 @@ fn register_vulkan_conv_from_contract(table: &mut KernelBindingTable) {
         .expect("Vulkan conv contract must register into the binding table");
 }
 
+/// The authored Vulkan QMatMul kernel contract (ONE `(QMatMul, [F32, U32, F32])`
+/// binding), embedded via `include_str!` (the PRODUCTION contract). Parsed +
+/// lowered by [`register_vulkan_qmatmul_from_contract`].
+const VULKAN_QMATMUL_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/vulkan/qmatmul.fkc.md");
+
+/// Register the Vulkan QMatMul binding (ONE `(QMatMul, [F32, U32, F32])` key) by
+/// IMPORTING its RE-AUTHORED FKC kernel contract — the FOURTEENTH Vulkan-backend
+/// FKC consumer. FKC is unconditional core infrastructure, so this is the ONE
+/// registration path for the family: the hand-written
+/// `table.register_with_precision(OpKind::QMatMul, &[F32, U32, F32], …)` reg is
+/// DELETED.
+///
+/// The corpus `vulkan/quantized.fkc.md` models QMATMUL as TWO aspirational
+/// `fused_op: QMATMUL` Q4_0 sections (`qmatvec_q4_0` gemv + `matmul_q4_0_tiled`
+/// prefill), which mismatch production on BOTH axes: production registers the
+/// PRIMITIVE `OpKind::QMatMul` (not the fused op) at a key whose weight slot is the
+/// LOGICAL `U32` dispatch dtype (not the physical `U8` block stream). So the
+/// migration authors ONE faithful single-dtype-per-operand `op_kind: QMatMul`
+/// section in the new production `docs/kernel-contracts/vulkan/qmatmul.fkc.md`
+/// (the CPU quant-matmul primitive precedent), applying the maintainer-approved
+/// CPU linear-quant reconciliation:
+///  - **weight U8 → U32**: `accept.dtypes` carries the LOGICAL dispatch dtype the
+///    binding key + `BackendImpl.dtypes` actually use (`[F32, U32, F32]`, per the
+///    DType-logical / SType-physical split in `docs/specs/storage-encoding.md`);
+///    the `fdx.quant` GGML_BLOCK block keeps the physical byte-honesty
+///    (`quant_coherence` does not pin the operand base dtype for GGML_BLOCK).
+/// and flips the two corpus fused sections to `registrable: false` describe-only
+/// cross-referencing it (the matmul_mixed_precision precedent).
+///
+/// The section's `entry_point` resolves through [`crate::fkc::VulkanLinkRegistry`]
+/// to the exact production wrapper `qmatmul::qmatmul_vk`, which route-picks the
+/// per-format kernels (`qmatvec_q4_0` / `matmul_q4_0_tiled` for Q4_0;
+/// dequant-then-`matmul_f32` for Q4_K_M / Q8_0) at dispatch time by
+/// `OpParams::QMatMul.quant_type` — that route-pick is NOT a binding, so there is
+/// exactly ONE `KernelRef` at the key.
+///
+/// **Caps ride through truthfully.** The section's `requires_contiguous` layout
+/// projects `strided_input == false` — byte-for-byte the deleted
+/// `register_with_precision` reg (the GGML weight stream has a fixed per-block
+/// layout; a strided / transposed / offset operand is auto-Contiguized by the
+/// planner first). Precision becomes the contract's audited seed (nondeterministic,
+/// `bit_stable_on_same_hardware: false`, audited `none(reason)` — the corrected,
+/// honest posture: the Q4_0 kernels reduce over K with a scheduler-dependent
+/// subgroup / tiled reduction, and the Q4_K_M / Q8_0 routes contract through the
+/// same `matmul_f32` GEMM) rather than the retired hand-written
+/// `VULKAN_QMATMUL_PRECISION` const (which mis-declared
+/// `bit_stable_on_same_hardware: true`, the same over-claim the retired
+/// `VULKAN_MATMUL_PRECISION` made; the `pub const` def stays in `fused.rs`,
+/// mirroring VULKAN_TRANSCENDENTAL). Cost is preserved because this runs BEFORE
+/// `fill_unset_cost_for_backend`, which upgrades the imported `unknown_cost`
+/// sentinel to the same OpKind cost fn.
+///
+/// The family declares NO fused ops. Init-boundary fail-fast: a parse/lower/link
+/// failure of the embedded, authored contract is a programmer error surfaced once
+/// here via `expect`.
+fn register_vulkan_qmatmul_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(VULKAN_QMATMUL_CONTRACT, &crate::fkc::VulkanLinkRegistry)
+            .expect(
+                "authored Vulkan qmatmul contract must import \
+                 (embedded via include_str!, resolved through VulkanLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "vulkan qmatmul contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("Vulkan qmatmul contract must register into the binding table");
+}
+
 /// The authored Vulkan select (IndexSelect / Gather / MaskedFill) kernel
 /// contract, embedded via `include_str!` (the PRODUCTION contract). Parsed +
 /// lowered by [`register_vulkan_select_from_contract`].
@@ -4882,7 +4955,12 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         // to their FKC contracts (select / pad-copy / write-slice / shape / movement),
         // which carry per-section byte-exact precision. Retired from this seam.
         VULKAN_FLOAT_POINTWISE_PRECISION, VULKAN_HALF_POINTWISE_PRECISION,
-        VULKAN_QMATMUL_PRECISION,
+        // NB: VULKAN_QMATMUL_PRECISION is intentionally NO LONGER imported — the
+        // Vulkan QMatMul binding now registers from its FKC contract (see
+        // `register_vulkan_qmatmul_from_contract`), which carries the corrected
+        // nondeterministic per-section precision (the const over-claimed
+        // bit-stability, like the retired VULKAN_MATMUL_PRECISION). The `pub const`
+        // def stays in `fused.rs`, mirroring VULKAN_TRANSCENDENTAL. Retired here.
         // NB: VULKAN_TRANSCENDENTAL_PRECISION is intentionally NOT imported — the
         // whole unary family (its only user) now registers from the FKC
         // elementwise contract, which carries per-section precision. Retired here.
@@ -5165,20 +5243,23 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // seed (the elementwise pointwise precedent; the retired
     // VULKAN_{FLOAT,HALF}_POINTWISE_PRECISION consts are not re-asserted). -----
 
-    // ----- QMatMul (Q4_0 / Q4_K_M / Q8_0) — F32 × U32-quant → F32.
-    // CONTIGUOUS-ONLY: the quantized weight stream has a fixed block
-    // layout (per-block scale + N quantized lanes); arbitrary strides
-    // on the weight buffer would break the dequant kernel's block
-    // walk. Activations could in principle be strided but are
-    // contiguous in practice — extending is a follow-up if profiles
-    // show repeated auto-Contiguize hits on the activation side. -----
-    table.register_with_precision(
-        OpKind::QMatMul,
-        &[DType::F32, DType::U32, DType::F32],
-        vk,
-        qmatmul::qmatmul_vk,
-        VULKAN_QMATMUL_PRECISION,
-    );
+    // ----- QMatMul (Q4_0 / Q4_K_M / Q8_0) — F32 × U32-quant → F32 —
+    // MIGRATED to FKC contract import. The hand-written
+    // `table.register_with_precision(OpKind::QMatMul, &[F32, U32, F32], …)` reg is
+    // DELETED; the single binding now registers from
+    // `docs/kernel-contracts/vulkan/qmatmul.fkc.md` via
+    // `register_vulkan_qmatmul_from_contract` (called at the END of this fn, before
+    // the cost-fill pass). ONE wrapper `qmatmul_vk` route-picks Q4_0 (fused
+    // gemv/tiled) / Q4_K_M / Q8_0 (dequant-then-matmul_f32) by
+    // `OpParams::QMatMul.quant_type` — the contract keys the weight slot with the
+    // LOGICAL `U32` dispatch dtype (the CPU linear-quant U8→U32 reconciliation; the
+    // physical GGML block-byte honesty rides `fdx.quant`). CONTIGUOUS-ONLY: the
+    // quantized weight stream has a fixed block layout (per-block scale + N
+    // quantized lanes); arbitrary strides on the weight buffer would break the
+    // dequant kernel's block walk (`requires_contiguous` ⇒ strided_input=false).
+    // Precision becomes the contract's corrected nondeterministic seed (the retired
+    // `VULKAN_QMATMUL_PRECISION` const over-claimed bit-stability, like the retired
+    // `VULKAN_MATMUL_PRECISION`; the const def stays in `fused.rs`). -----
 
     // ----- Conv2D (f32 + bf16/f16 cooperative-matrix) — MIGRATED to FKC
     // contract import. The hand-written `table.register_with_precision(
@@ -5412,6 +5493,19 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // pass. Contiguous-only; audited nondeterministic none(reason) (per-row
     // subgroup-tree FADD order). -----
     register_vulkan_norm_from_contract(table);
+
+    // ----- QMatMul family (ONE (QMatMul, [F32, U32, F32]) binding) — registered
+    // FROM its RE-AUTHORED FKC kernel contract, the SOLE path (the hand-written
+    // `register_with_precision(OpKind::QMatMul, …)` reg deleted above). Runs BEFORE
+    // the cost-fill pass so its imported `unknown_cost` sentinel is upgraded to the
+    // same OpKind cost fn every other Vulkan primitive gets. ONE wrapper
+    // (`qmatmul::qmatmul_vk`) route-picks Q4_0 / Q4_K_M / Q8_0 by
+    // `OpParams::QMatMul.quant_type`; weight slot keyed with the LOGICAL U32 dtype
+    // (the CPU linear-quant U8→U32 reconciliation; physical GGML block-byte honesty
+    // on `fdx.quant`). Contiguous-only (`requires_contiguous` ⇒ strided_input=false);
+    // precision is the audited nondeterministic none(reason) seed (the retired
+    // VULKAN_QMATMUL_PRECISION over-claimed bit-stability). -----
+    register_vulkan_qmatmul_from_contract(table);
 
     // ----- Bulk-fill cost functions for every Vulkan registration above.
     // The CPU dispatcher (`default_cost_for_op_kind`) captures the
@@ -6511,5 +6605,82 @@ mod norm_contract_tests {
             for (i, &dt) in dts.iter().enumerate() { check(*op, &[dt, dt, dt], wraps[i]); }
         }
         assert_eq!(checked, 20, "all 20 (Softmax/SoftmaxBwd/LayerNorm/LayerNormBwd/RmsNorm × 4 dtypes) norm keys checked");
+    }
+}
+
+// ===========================================================================
+// FKC contract-migration tests (born-red gate for the Vulkan QMatMul family)
+// ===========================================================================
+//
+// Same `#![cfg(feature = "vulkan")]` file gate as the cast/…/norm tests above:
+// this module compiles only under `--features vulkan` and touches NO device
+// (registration is pure binding-table population).
+
+#[cfg(test)]
+mod qmatmul_contract_tests {
+    use super::*;
+    use crate::kernel::{KernelBindingTable, KernelRef};
+
+    /// FOURTEENTH VULKAN-BACKEND FKC CONSUMER (born-red gate). `register_vulkan_kernels`
+    /// registers the single Vulkan **QMatMul** binding (`(QMatMul, [F32, U32, F32],
+    /// Vulkan)` — F32 activation × U32-typed GGML block-quant weight → F32 output, the
+    /// one wrapper `qmatmul::qmatmul_vk` route-picking Q4_0 / Q4_K_M / Q8_0 internally
+    /// by `OpParams::QMatMul.quant_type`) FROM ITS RE-AUTHORED FKC KERNEL CONTRACT
+    /// (`docs/kernel-contracts/vulkan/qmatmul.fkc.md`) via
+    /// `register_vulkan_qmatmul_from_contract` — the sole registration path now that
+    /// the hand-written `table.register_with_precision(OpKind::QMatMul, …)` reg is
+    /// DELETED.
+    ///
+    /// The corpus's `vulkan/quantized.fkc.md` models QMATMUL as TWO aspirational
+    /// `fused_op: QMATMUL` Q4_0 sections (`qmatvec_q4_0` gemv + `matmul_q4_0_tiled`),
+    /// which mismatch production on BOTH axes: production registers the PRIMITIVE
+    /// `OpKind::QMatMul` (not the fused op) keyed with the LOGICAL U32 weight dtype
+    /// (not the physical U8 block stream). So the migration authors ONE faithful
+    /// single-dtype-per-operand `op_kind: QMatMul` section in the new production
+    /// `docs/kernel-contracts/vulkan/qmatmul.fkc.md` (weight `U32`, `fdx.quant`
+    /// GGML_BLOCK keeping byte-honesty — the CPU linear-quant U8→U32 precedent), and
+    /// flips the two corpus fused sections to `registrable: false` describe-only
+    /// cross-referencing it (the matmul_mixed_precision precedent).
+    ///
+    /// This asserts: the `(QMatMul, [F32, U32, F32], Vulkan)` key resolves to the
+    /// EXACT production wrapper fn-pointer `qmatmul::qmatmul_vk` (behavior-preserving);
+    /// `kernel_source == "vulkan-slang"` (the RED discriminator — the deleted hand
+    /// path stamped `""`, so before the import is wired this assert fails on the empty
+    /// source); and `caps.strided_input == false` — the contiguous-only truth of the
+    /// deleted `register_with_precision` reg (the GGML block stream has a fixed block
+    /// layout; a strided operand is auto-Contiguized first). Precision is
+    /// contract-sourced (the matmul/conv precedent: the hand-written
+    /// `VULKAN_QMATMUL_PRECISION` over-claimed `bit_stable_on_same_hardware: true`; the
+    /// contract seeds the truthful audited-nondeterministic posture) and NOT asserted
+    /// here.
+    #[test]
+    fn register_vulkan_kernels_binds_qmatmul_from_contract() {
+        let mut table = KernelBindingTable::new();
+        register_vulkan_kernels(&mut table);
+        let vk = BackendId::Vulkan;
+
+        let key: &[DType] = &[DType::F32, DType::U32, DType::F32];
+        let expected = qmatmul::qmatmul_vk as KernelRef;
+        let alts = table.lookup_alternatives(OpKind::QMatMul, key, vk);
+        let entry = alts.iter().find(|e| e.kernel as usize == expected as usize);
+        let entry = match entry {
+            Some(e) => e,
+            None => panic!(
+                "QMatMul {key:?}/Vulkan: production wrapper (qmatmul_vk) must be bound FROM the \
+                 vulkan qmatmul contract in register_vulkan_kernels; found {} alt(s) with sources {:?}",
+                alts.len(),
+                alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+            ),
+        };
+        assert_eq!(
+            entry.kernel_source, "vulkan-slang",
+            "QMatMul {key:?}: qmatmul must be contract-sourced \
+             (kernel_source=\"vulkan-slang\"); got {:?}",
+            entry.kernel_source,
+        );
+        assert!(
+            !entry.caps.strided_input,
+            "QMatMul {key:?}: caps preserved (contiguous-only, strided_input=false)",
+        );
     }
 }

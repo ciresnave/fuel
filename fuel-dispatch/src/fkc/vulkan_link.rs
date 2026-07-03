@@ -556,6 +556,27 @@ pub static VULKAN_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     vk_ep!("rms_norm_last_dim_f64",  crate::vulkan_dispatch::norm::rms_f64),
 ];
 
+/// The Vulkan **QMatMul** family's `symbol → production wrapper` map — the FULL
+/// family: ONE `(QMatMul, [F32, U32, F32])` binding. Contract:
+/// `docs/kernel-contracts/vulkan/qmatmul.fkc.md`, authored as a single primitive
+/// `op_kind: QMatMul` section (the CPU quant-matmul primitive precedent + the
+/// linear-quant U8→U32 logical-weight reconciliation). The section declares a
+/// single dtype per operand (`activations` F32, `weight` U32) + a `fixed(F32)`
+/// output, so it does NOT dtype-fan — the importer keys `[F32, U32, F32]`
+/// (inputs-then-output), byte-for-byte the deleted hand-written
+/// `table.register_with_precision(OpKind::QMatMul, &[F32, U32, F32], …)` reg.
+///
+/// The ONE `qmatmul_vk` wrapper route-picks its per-format Vulkan kernels
+/// (`qmatvec_q4_0` / `matmul_q4_0_tiled` for Q4_0; dequant-then-`matmul_f32` for
+/// Q4_K_M / Q8_0) at dispatch time by `OpParams::QMatMul.quant_type` — that
+/// route-pick is NOT a table binding, so there is exactly one `KernelRef` at the
+/// key. Caps ride through contiguous-only (`requires_contiguous` ⇒
+/// `strided_input == false`): the GGML weight stream has a fixed per-block layout,
+/// so a strided operand is auto-Contiguized first.
+pub static VULKAN_QMATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    vk_ep!("qmatmul_vk", crate::vulkan_dispatch::qmatmul::qmatmul_vk),
+];
+
 /// The built-in Vulkan backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`VULKAN_CAST_ENTRY_POINTS`] +
 /// [`VULKAN_ELEMENTWISE_ENTRY_POINTS`] + [`VULKAN_MATMUL_ENTRY_POINTS`] +
@@ -584,6 +605,7 @@ impl LinkRegistry for VulkanLinkRegistry {
             .chain(VULKAN_ROPE_ENTRY_POINTS.iter())
             .chain(VULKAN_REDUCE_ENTRY_POINTS.iter())
             .chain(VULKAN_NORM_ENTRY_POINTS.iter())
+            .chain(VULKAN_QMATMUL_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
