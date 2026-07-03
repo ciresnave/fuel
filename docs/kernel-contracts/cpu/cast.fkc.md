@@ -18,17 +18,35 @@ differ, so the output byte size differs from the input. The binding-table lookup
 **target** dtype (= the Node's dtype, `fuel-dispatch/src/kernel.rs:115-116`); the per-operand
 ordered (src, dst) dtype slots make each direction a distinct dispatch key (§12.1).
 
-Two implementation families back these twelve kernels:
+This contract covers the **COMPLETE directed-pair matrix**: every ordered pair of the 11 real
+numeric dtypes {F32, F64, F16, BF16, F8E4M3, U8, I8, U32, I16, I32, I64}, identity pairs excluded
+(the optimizer elides `Cast` where src == dst), = **11 × 10 = 110 kernels**. The MX dummy dtypes
+(F6E2M3, F6E3M2, F4, F8E8M0) have no Rust scalar type and are out of scope. The first twelve sections
+below (the float/fp8 f32-hub + f8-spoke pairs) were authored first; the remaining ninety-eight (all
+integer casts + the non-f32-hub float pairs) complete the matrix and retire the last hand-written
+`table.register(Cast, …)` regs — the family is now **fully contract-sourced**.
 
-- **`cast_kernel!`** (`byte_kernels.rs:3393-3469`) — `bytemuck::Pod`-to-`Pod` element conversion
-  (`f32↔f64`, `f32↔bf16`, `f32↔f16`). Validates `input.len_bytes() % in_elem_size == 0` and
-  `out.len_bytes() == elem_count * out_elem_size`, then walks `out[i] = convert(in[i])`.
+Three implementation families back these 110 kernels:
+
+- **`cast_kernel!`** (`byte_kernels.rs:3392-3469`, +3578-…) — `bytemuck::Pod`-to-`Pod` element
+  conversion (all float↔float and all int↔int / int↔float / float↔int pairs whose element types are
+  `Pod`). Validates `input.len_bytes() % in_elem_size == 0` and
+  `out.len_bytes() == elem_count * out_elem_size`, then walks `out[i] = convert(in[i])`. Integer
+  conversions use Rust's `as` (float→int truncates toward zero and **saturates** out-of-range
+  magnitudes; int→int narrowing wraps two's-complement; widening is exact). Anything touching a
+  half or F8E4M3 format pivots through f32 (`half::{f16,bf16}::from_f32` / `.to_f32()`).
 - **`cast_kernel_to_fp8!` / `cast_kernel_from_fp8!`** (`byte_kernels.rs:3481-3570`) — `float8::F8E4M3`
   is 1 byte and does **not** implement `bytemuck::Pod`, so these handle F8E4M3 as raw `u8` via
   `from_bits` / `to_bits`. `to_fp8` validates `out.len_bytes() == elem_count` (1 byte/elem);
-  `from_fp8` validates `out.len_bytes() == elem_count * out_elem_size`. The `f16↔F8E4M3` and
-  `bf16↔F8E4M3` directions **pivot through f32** (`float8::F8E4M3` only exposes `from_f32`/`to_f32`);
-  the f32 pivot leg is lossless for both f16 and bf16 (each is a strict subset of f32).
+  `from_fp8` validates `out.len_bytes() == elem_count * out_elem_size`. Every direction touching
+  F8E4M3 **pivots through f32** (`float8::F8E4M3` only exposes `from_f32`/`to_f32`); the f32 pivot
+  leg is lossless for both f16 and bf16 (each is a strict subset of f32).
+- **Per-TARGET dispatch wrappers** (`fuel-dispatch/src/dispatch.rs`, the `cpu_cast_wrapper!` macro —
+  `cast_to_{f32,f64,f16,bf16,f8e4m3,u8,i8,u32,i16,i32,i64}_cpu_wrapper`). The binding-table lookup is
+  keyed on the **target** dtype, so all 10 of a target's source pairs resolve to the SAME per-target
+  wrapper, which `match`es on the source dtype to pick the right byte kernel. Each contract section's
+  specific `cast_<src>_to_<dst>` `entry_point` maps to its target's wrapper in the `link_registry`
+  (`CPU_CAST_ENTRY_POINTS`) — the synthetic-umbrella precedent: 10 distinct entry_points → 1 wrapper.
 
 **Cross-cutting facts (inventory §"Cross-cutting facts" / §"Cast"):** every cast operates on a flat
 `CpuStorageBytes` slice via `as_slice()` / `bytes()`, validates **byte length only**, and never
@@ -808,3 +826,5702 @@ precision:
 
 determinism: same_hardware_bitwise
 ```
+
+## cast_u8_to_f32  (u8 → f32)
+
+Convert `u8` → `f32`. **Exact** — every U8 value lands on a representable F32 value.
+
+Walks a contiguous, zero-offset, row-major `u8` buffer and writes `in[i] as f32` into a contiguous `f32` output, element count preserved (output widens the input: 4 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u8_to_f32
+op_kind: Cast
+blurb: "Cast u8 -> f32; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u8_to_f32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 4)"          # read N*1 (u8) + write N*4 (f32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every U8 value is representable in F32; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i8_to_f32  (i8 → f32)
+
+Convert `i8` → `f32`. **Exact** — every I8 value lands on a representable F32 value.
+
+Walks a contiguous, zero-offset, row-major `i8` buffer and writes `in[i] as f32` into a contiguous `f32` output, element count preserved (output widens the input: 4 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i8_to_f32
+op_kind: Cast
+blurb: "Cast i8 -> f32; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i8_to_f32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 4)"          # read N*1 (i8) + write N*4 (f32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every I8 value is representable in F32; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u32_to_f32  (u32 → f32)
+
+Convert `u32` → `f32`. **Lossy** — large-magnitude U32 values round to the nearest F32 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `u32` buffer and writes `in[i] as f32` into a contiguous `f32` output, element count preserved (output same-width the input: 4 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u32_to_f32
+op_kind: Cast
+blurb: "Cast u32 -> f32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u32_to_f32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 4)"          # read N*4 (u32) + write N*4 (f32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large U32 magnitudes round to nearest F32; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i16_to_f32  (i16 → f32)
+
+Convert `i16` → `f32`. **Exact** — every I16 value lands on a representable F32 value.
+
+Walks a contiguous, zero-offset, row-major `i16` buffer and writes `in[i] as f32` into a contiguous `f32` output, element count preserved (output widens the input: 4 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i16_to_f32
+op_kind: Cast
+blurb: "Cast i16 -> f32; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i16_to_f32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 4)"          # read N*2 (i16) + write N*4 (f32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every I16 value is representable in F32; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i32_to_f32  (i32 → f32)
+
+Convert `i32` → `f32`. **Lossy** — large-magnitude I32 values round to the nearest F32 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `i32` buffer and writes `in[i] as f32` into a contiguous `f32` output, element count preserved (output same-width the input: 4 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i32_to_f32
+op_kind: Cast
+blurb: "Cast i32 -> f32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i32_to_f32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 4)"          # read N*4 (i32) + write N*4 (f32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large I32 magnitudes round to nearest F32; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i64_to_f32  (i64 → f32)
+
+Convert `i64` → `f32`. **Lossy** — large-magnitude I64 values round to the nearest F32 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `i64` buffer and writes `in[i] as f32` into a contiguous `f32` output, element count preserved (output narrows the input: 4 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i64_to_f32
+op_kind: Cast
+blurb: "Cast i64 -> f32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i64_to_f32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 4)"          # read N*8 (i64) + write N*4 (f32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large I64 magnitudes round to nearest F32; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f16_to_f64  (f16 → f64)
+
+Convert `f16` → `f64`. **Lossless widening** — F16 is a strict value-subset of F64.
+
+Walks a contiguous, zero-offset, row-major `f16` buffer and writes `in[i] as f64` into a contiguous `f64` output, element count preserved (output widens the input: 8 vs 2 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f16_to_f64
+op_kind: Cast
+blurb: "Cast f16 -> f64; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f16_to_f64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 8)"          # read N*2 (f16) + write N*8 (f64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every F16 value is representable in F64; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bf16_to_f64  (bf16 → f64)
+
+Convert `bf16` → `f64`. **Lossless widening** — BF16 is a strict value-subset of F64.
+
+Walks a contiguous, zero-offset, row-major `bf16` buffer and writes `in[i] as f64` into a contiguous `f64` output, element count preserved (output widens the input: 8 vs 2 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_bf16_to_f64
+op_kind: Cast
+blurb: "Cast bf16 -> f64; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bf16_to_f64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 8)"          # read N*2 (bf16) + write N*8 (f64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every BF16 value is representable in F64; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f8e4m3_to_f64  (f8e4m3 → f64)
+
+Convert `f8e4m3` → `f64`. **Lossless widening** — F8E4M3 is a strict value-subset of F64.
+
+Walks a contiguous, zero-offset, row-major `f8e4m3` buffer and writes `F8E4M3::from_bits(in[i]).to_f32() as f64` into a contiguous `f64` output, element count preserved (output widens the input: 8 vs 1 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f8e4m3_to_f64
+op_kind: Cast
+blurb: "Cast f8e4m3 -> f64; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_f64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F8E4M3]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      fdx:
+        sub_byte: F8E4M3              # 1-byte opaque fp8; bit-width/packing owned by FDX (§3.4)
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 8)"          # read N*1 (f8e4m3) + write N*8 (f64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every F8E4M3 value is representable in F64; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u8_to_f64  (u8 → f64)
+
+Convert `u8` → `f64`. **Exact** — every U8 value lands on a representable F64 value.
+
+Walks a contiguous, zero-offset, row-major `u8` buffer and writes `in[i] as f64` into a contiguous `f64` output, element count preserved (output widens the input: 8 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u8_to_f64
+op_kind: Cast
+blurb: "Cast u8 -> f64; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u8_to_f64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 8)"          # read N*1 (u8) + write N*8 (f64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every U8 value is representable in F64; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i8_to_f64  (i8 → f64)
+
+Convert `i8` → `f64`. **Exact** — every I8 value lands on a representable F64 value.
+
+Walks a contiguous, zero-offset, row-major `i8` buffer and writes `in[i] as f64` into a contiguous `f64` output, element count preserved (output widens the input: 8 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i8_to_f64
+op_kind: Cast
+blurb: "Cast i8 -> f64; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i8_to_f64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 8)"          # read N*1 (i8) + write N*8 (f64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every I8 value is representable in F64; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u32_to_f64  (u32 → f64)
+
+Convert `u32` → `f64`. **Exact** — every U32 value lands on a representable F64 value.
+
+Walks a contiguous, zero-offset, row-major `u32` buffer and writes `in[i] as f64` into a contiguous `f64` output, element count preserved (output widens the input: 8 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u32_to_f64
+op_kind: Cast
+blurb: "Cast u32 -> f64; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u32_to_f64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 8)"          # read N*4 (u32) + write N*8 (f64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every U32 value is representable in F64; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i16_to_f64  (i16 → f64)
+
+Convert `i16` → `f64`. **Exact** — every I16 value lands on a representable F64 value.
+
+Walks a contiguous, zero-offset, row-major `i16` buffer and writes `in[i] as f64` into a contiguous `f64` output, element count preserved (output widens the input: 8 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i16_to_f64
+op_kind: Cast
+blurb: "Cast i16 -> f64; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i16_to_f64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 8)"          # read N*2 (i16) + write N*8 (f64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every I16 value is representable in F64; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i32_to_f64  (i32 → f64)
+
+Convert `i32` → `f64`. **Exact** — every I32 value lands on a representable F64 value.
+
+Walks a contiguous, zero-offset, row-major `i32` buffer and writes `in[i] as f64` into a contiguous `f64` output, element count preserved (output widens the input: 8 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i32_to_f64
+op_kind: Cast
+blurb: "Cast i32 -> f64; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i32_to_f64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 8)"          # read N*4 (i32) + write N*8 (f64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every I32 value is representable in F64; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i64_to_f64  (i64 → f64)
+
+Convert `i64` → `f64`. **Lossy** — large-magnitude I64 values round to the nearest F64 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `i64` buffer and writes `in[i] as f64` into a contiguous `f64` output, element count preserved (output same-width the input: 8 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i64_to_f64
+op_kind: Cast
+blurb: "Cast i64 -> f64; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i64_to_f64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 8)"          # read N*8 (i64) + write N*8 (f64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large I64 magnitudes round to nearest F64; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f64_to_f16  (f64 → f16)
+
+Convert `f64` → `f16`. **Lossy narrowing** per IEEE-754 round-to-nearest-even (out-of-range saturates, NaN preserved).
+
+Walks a contiguous, zero-offset, row-major `f64` buffer and writes `in[i] as f16` into a contiguous `f16` output, element count preserved (output narrows the input: 2 vs 8 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f64_to_f16
+op_kind: Cast
+blurb: "Cast f64 -> f16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f64_to_f16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 2)"          # read N*8 (f64) + write N*2 (f16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy narrowing (IEEE round-to-nearest-even, out-of-range saturates, NaN preserved); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bf16_to_f16  (bf16 → f16)
+
+Convert `bf16` → `f16`. **Lossy narrowing** per IEEE-754 round-to-nearest-even (out-of-range saturates, NaN preserved).
+
+Walks a contiguous, zero-offset, row-major `bf16` buffer and writes `in[i] as f16` into a contiguous `f16` output, element count preserved (output same-width the input: 2 vs 2 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_bf16_to_f16
+op_kind: Cast
+blurb: "Cast bf16 -> f16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bf16_to_f16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 2)"          # read N*2 (bf16) + write N*2 (f16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy narrowing (IEEE round-to-nearest-even, out-of-range saturates, NaN preserved); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u8_to_f16  (u8 → f16)
+
+Convert `u8` → `f16`. **Exact** — every U8 value lands on a representable F16 value.
+
+Walks a contiguous, zero-offset, row-major `u8` buffer and writes `in[i] as f16` into a contiguous `f16` output, element count preserved (output widens the input: 2 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u8_to_f16
+op_kind: Cast
+blurb: "Cast u8 -> f16; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u8_to_f16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 2)"          # read N*1 (u8) + write N*2 (f16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every U8 value is representable in F16; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i8_to_f16  (i8 → f16)
+
+Convert `i8` → `f16`. **Exact** — every I8 value lands on a representable F16 value.
+
+Walks a contiguous, zero-offset, row-major `i8` buffer and writes `in[i] as f16` into a contiguous `f16` output, element count preserved (output widens the input: 2 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i8_to_f16
+op_kind: Cast
+blurb: "Cast i8 -> f16; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i8_to_f16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 2)"          # read N*1 (i8) + write N*2 (f16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every I8 value is representable in F16; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u32_to_f16  (u32 → f16)
+
+Convert `u32` → `f16`. **Lossy** — large-magnitude U32 values round to the nearest F16 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `u32` buffer and writes `in[i] as f16` into a contiguous `f16` output, element count preserved (output narrows the input: 2 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u32_to_f16
+op_kind: Cast
+blurb: "Cast u32 -> f16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u32_to_f16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 2)"          # read N*4 (u32) + write N*2 (f16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large U32 magnitudes round to nearest F16; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i16_to_f16  (i16 → f16)
+
+Convert `i16` → `f16`. **Lossy** — large-magnitude I16 values round to the nearest F16 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `i16` buffer and writes `in[i] as f16` into a contiguous `f16` output, element count preserved (output same-width the input: 2 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i16_to_f16
+op_kind: Cast
+blurb: "Cast i16 -> f16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i16_to_f16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 2)"          # read N*2 (i16) + write N*2 (f16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large I16 magnitudes round to nearest F16; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i32_to_f16  (i32 → f16)
+
+Convert `i32` → `f16`. **Lossy** — large-magnitude I32 values round to the nearest F16 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `i32` buffer and writes `in[i] as f16` into a contiguous `f16` output, element count preserved (output narrows the input: 2 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i32_to_f16
+op_kind: Cast
+blurb: "Cast i32 -> f16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i32_to_f16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 2)"          # read N*4 (i32) + write N*2 (f16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large I32 magnitudes round to nearest F16; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i64_to_f16  (i64 → f16)
+
+Convert `i64` → `f16`. **Lossy** — large-magnitude I64 values round to the nearest F16 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `i64` buffer and writes `in[i] as f16` into a contiguous `f16` output, element count preserved (output narrows the input: 2 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i64_to_f16
+op_kind: Cast
+blurb: "Cast i64 -> f16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i64_to_f16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 2)"          # read N*8 (i64) + write N*2 (f16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large I64 magnitudes round to nearest F16; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f64_to_bf16  (f64 → bf16)
+
+Convert `f64` → `bf16`. **Lossy narrowing** per IEEE-754 round-to-nearest-even (out-of-range saturates, NaN preserved).
+
+Walks a contiguous, zero-offset, row-major `f64` buffer and writes `in[i] as bf16` into a contiguous `bf16` output, element count preserved (output narrows the input: 2 vs 8 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f64_to_bf16
+op_kind: Cast
+blurb: "Cast f64 -> bf16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f64_to_bf16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BF16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 2)"          # read N*8 (f64) + write N*2 (bf16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy narrowing (IEEE round-to-nearest-even, out-of-range saturates, NaN preserved); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f16_to_bf16  (f16 → bf16)
+
+Convert `f16` → `bf16`. **Lossy narrowing** per IEEE-754 round-to-nearest-even (out-of-range saturates, NaN preserved).
+
+Walks a contiguous, zero-offset, row-major `f16` buffer and writes `in[i] as bf16` into a contiguous `bf16` output, element count preserved (output same-width the input: 2 vs 2 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f16_to_bf16
+op_kind: Cast
+blurb: "Cast f16 -> bf16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f16_to_bf16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BF16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 2)"          # read N*2 (f16) + write N*2 (bf16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy narrowing (IEEE round-to-nearest-even, out-of-range saturates, NaN preserved); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u8_to_bf16  (u8 → bf16)
+
+Convert `u8` → `bf16`. **Exact** — every U8 value lands on a representable BF16 value.
+
+Walks a contiguous, zero-offset, row-major `u8` buffer and writes `in[i] as bf16` into a contiguous `bf16` output, element count preserved (output widens the input: 2 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u8_to_bf16
+op_kind: Cast
+blurb: "Cast u8 -> bf16; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u8_to_bf16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BF16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 2)"          # read N*1 (u8) + write N*2 (bf16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every U8 value is representable in BF16; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i8_to_bf16  (i8 → bf16)
+
+Convert `i8` → `bf16`. **Exact** — every I8 value lands on a representable BF16 value.
+
+Walks a contiguous, zero-offset, row-major `i8` buffer and writes `in[i] as bf16` into a contiguous `bf16` output, element count preserved (output widens the input: 2 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i8_to_bf16
+op_kind: Cast
+blurb: "Cast i8 -> bf16; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i8_to_bf16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BF16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 2)"          # read N*1 (i8) + write N*2 (bf16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every I8 value is representable in BF16; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u32_to_bf16  (u32 → bf16)
+
+Convert `u32` → `bf16`. **Lossy** — large-magnitude U32 values round to the nearest BF16 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `u32` buffer and writes `in[i] as bf16` into a contiguous `bf16` output, element count preserved (output narrows the input: 2 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u32_to_bf16
+op_kind: Cast
+blurb: "Cast u32 -> bf16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u32_to_bf16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BF16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 2)"          # read N*4 (u32) + write N*2 (bf16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large U32 magnitudes round to nearest BF16; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i16_to_bf16  (i16 → bf16)
+
+Convert `i16` → `bf16`. **Lossy** — large-magnitude I16 values round to the nearest BF16 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `i16` buffer and writes `in[i] as bf16` into a contiguous `bf16` output, element count preserved (output same-width the input: 2 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i16_to_bf16
+op_kind: Cast
+blurb: "Cast i16 -> bf16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i16_to_bf16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BF16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 2)"          # read N*2 (i16) + write N*2 (bf16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large I16 magnitudes round to nearest BF16; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i32_to_bf16  (i32 → bf16)
+
+Convert `i32` → `bf16`. **Lossy** — large-magnitude I32 values round to the nearest BF16 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `i32` buffer and writes `in[i] as bf16` into a contiguous `bf16` output, element count preserved (output narrows the input: 2 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i32_to_bf16
+op_kind: Cast
+blurb: "Cast i32 -> bf16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i32_to_bf16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BF16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 2)"          # read N*4 (i32) + write N*2 (bf16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large I32 magnitudes round to nearest BF16; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i64_to_bf16  (i64 → bf16)
+
+Convert `i64` → `bf16`. **Lossy** — large-magnitude I64 values round to the nearest BF16 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `i64` buffer and writes `in[i] as bf16` into a contiguous `bf16` output, element count preserved (output narrows the input: 2 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i64_to_bf16
+op_kind: Cast
+blurb: "Cast i64 -> bf16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i64_to_bf16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(BF16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 2)"          # read N*8 (i64) + write N*2 (bf16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large I64 magnitudes round to nearest BF16; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f64_to_f8e4m3  (f64 → f8e4m3)
+
+Convert `f64` → `f8e4m3`. **Lossy narrowing** per IEEE-754 round-to-nearest-even (out-of-range saturates, NaN preserved).
+
+Walks a contiguous, zero-offset, row-major `f64` buffer and writes `in[i] as f8e4m3` into a contiguous `f8e4m3` output, element count preserved (output narrows the input: 1 vs 8 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f64_to_f8e4m3
+op_kind: Cast
+blurb: "Cast f64 -> f8e4m3; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f64_to_f8e4m3"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F8E4M3)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 1)"          # read N*8 (f64) + write N*1 (f8e4m3)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy narrowing (IEEE round-to-nearest-even, out-of-range saturates, NaN preserved); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u8_to_f8e4m3  (u8 → f8e4m3)
+
+Convert `u8` → `f8e4m3`. **Lossy** — large-magnitude U8 values round to the nearest F8E4M3 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `u8` buffer and writes `in[i] as f8e4m3` into a contiguous `f8e4m3` output, element count preserved (output same-width the input: 1 vs 1 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u8_to_f8e4m3
+op_kind: Cast
+blurb: "Cast u8 -> f8e4m3; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u8_to_f8e4m3"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F8E4M3)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 1)"          # read N*1 (u8) + write N*1 (f8e4m3)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large U8 magnitudes round to nearest F8E4M3; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i8_to_f8e4m3  (i8 → f8e4m3)
+
+Convert `i8` → `f8e4m3`. **Lossy** — large-magnitude I8 values round to the nearest F8E4M3 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `i8` buffer and writes `in[i] as f8e4m3` into a contiguous `f8e4m3` output, element count preserved (output same-width the input: 1 vs 1 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i8_to_f8e4m3
+op_kind: Cast
+blurb: "Cast i8 -> f8e4m3; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i8_to_f8e4m3"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F8E4M3)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 1)"          # read N*1 (i8) + write N*1 (f8e4m3)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large I8 magnitudes round to nearest F8E4M3; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u32_to_f8e4m3  (u32 → f8e4m3)
+
+Convert `u32` → `f8e4m3`. **Lossy** — large-magnitude U32 values round to the nearest F8E4M3 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `u32` buffer and writes `in[i] as f8e4m3` into a contiguous `f8e4m3` output, element count preserved (output narrows the input: 1 vs 4 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u32_to_f8e4m3
+op_kind: Cast
+blurb: "Cast u32 -> f8e4m3; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u32_to_f8e4m3"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F8E4M3)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 1)"          # read N*4 (u32) + write N*1 (f8e4m3)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large U32 magnitudes round to nearest F8E4M3; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i16_to_f8e4m3  (i16 → f8e4m3)
+
+Convert `i16` → `f8e4m3`. **Lossy** — large-magnitude I16 values round to the nearest F8E4M3 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `i16` buffer and writes `in[i] as f8e4m3` into a contiguous `f8e4m3` output, element count preserved (output narrows the input: 1 vs 2 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i16_to_f8e4m3
+op_kind: Cast
+blurb: "Cast i16 -> f8e4m3; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i16_to_f8e4m3"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F8E4M3)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 1)"          # read N*2 (i16) + write N*1 (f8e4m3)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large I16 magnitudes round to nearest F8E4M3; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i32_to_f8e4m3  (i32 → f8e4m3)
+
+Convert `i32` → `f8e4m3`. **Lossy** — large-magnitude I32 values round to the nearest F8E4M3 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `i32` buffer and writes `in[i] as f8e4m3` into a contiguous `f8e4m3` output, element count preserved (output narrows the input: 1 vs 4 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i32_to_f8e4m3
+op_kind: Cast
+blurb: "Cast i32 -> f8e4m3; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i32_to_f8e4m3"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F8E4M3)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 1)"          # read N*4 (i32) + write N*1 (f8e4m3)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large I32 magnitudes round to nearest F8E4M3; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i64_to_f8e4m3  (i64 → f8e4m3)
+
+Convert `i64` → `f8e4m3`. **Lossy** — large-magnitude I64 values round to the nearest F8E4M3 (mantissa too narrow for the full integer range).
+
+Walks a contiguous, zero-offset, row-major `i64` buffer and writes `in[i] as f8e4m3` into a contiguous `f8e4m3` output, element count preserved (output narrows the input: 1 vs 8 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i64_to_f8e4m3
+op_kind: Cast
+blurb: "Cast i64 -> f8e4m3; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i64_to_f8e4m3"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(F8E4M3)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 1)"          # read N*8 (i64) + write N*1 (f8e4m3)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy: large I64 magnitudes round to nearest F8E4M3; deterministic round-to-nearest-even per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f32_to_u8  (f32 → u8)
+
+Convert `f32` → `u8`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the U8 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f32` buffer and writes `in[i] as u8` into a contiguous `u8` output, element count preserved (output narrows the input: 1 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f32_to_u8
+op_kind: Cast
+blurb: "Cast f32 -> u8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f32_to_u8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 1)"          # read N*4 (f32) + write N*1 (u8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f64_to_u8  (f64 → u8)
+
+Convert `f64` → `u8`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the U8 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f64` buffer and writes `in[i] as u8` into a contiguous `u8` output, element count preserved (output narrows the input: 1 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f64_to_u8
+op_kind: Cast
+blurb: "Cast f64 -> u8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f64_to_u8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 1)"          # read N*8 (f64) + write N*1 (u8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f16_to_u8  (f16 → u8)
+
+Convert `f16` → `u8`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the U8 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f16` buffer and writes `in[i].to_f32() as u8` into a contiguous `u8` output, element count preserved (output narrows the input: 1 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f16_to_u8
+op_kind: Cast
+blurb: "Cast f16 -> u8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f16_to_u8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 1)"          # read N*2 (f16) + write N*1 (u8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bf16_to_u8  (bf16 → u8)
+
+Convert `bf16` → `u8`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the U8 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `bf16` buffer and writes `in[i].to_f32() as u8` into a contiguous `u8` output, element count preserved (output narrows the input: 1 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_bf16_to_u8
+op_kind: Cast
+blurb: "Cast bf16 -> u8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bf16_to_u8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 1)"          # read N*2 (bf16) + write N*1 (u8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f8e4m3_to_u8  (f8e4m3 → u8)
+
+Convert `f8e4m3` → `u8`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the U8 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f8e4m3` buffer and writes `F8E4M3::from_bits(in[i]).to_f32() as u8` into a contiguous `u8` output, element count preserved (output same-width the input: 1 vs 1 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f8e4m3_to_u8
+op_kind: Cast
+blurb: "Cast f8e4m3 -> u8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_u8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F8E4M3]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      fdx:
+        sub_byte: F8E4M3              # 1-byte opaque fp8; bit-width/packing owned by FDX (§3.4)
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 1)"          # read N*1 (f8e4m3) + write N*1 (u8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i8_to_u8  (i8 → u8)
+
+Convert `i8` → `u8`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `i8` buffer and writes `in[i] as u8` into a contiguous `u8` output, element count preserved (output same-width the input: 1 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i8_to_u8
+op_kind: Cast
+blurb: "Cast i8 -> u8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i8_to_u8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 1)"          # read N*1 (i8) + write N*1 (u8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u32_to_u8  (u32 → u8)
+
+Convert `u32` → `u8`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `u32` buffer and writes `in[i] as u8` into a contiguous `u8` output, element count preserved (output narrows the input: 1 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u32_to_u8
+op_kind: Cast
+blurb: "Cast u32 -> u8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u32_to_u8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 1)"          # read N*4 (u32) + write N*1 (u8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i16_to_u8  (i16 → u8)
+
+Convert `i16` → `u8`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `i16` buffer and writes `in[i] as u8` into a contiguous `u8` output, element count preserved (output narrows the input: 1 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i16_to_u8
+op_kind: Cast
+blurb: "Cast i16 -> u8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i16_to_u8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 1)"          # read N*2 (i16) + write N*1 (u8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i32_to_u8  (i32 → u8)
+
+Convert `i32` → `u8`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `i32` buffer and writes `in[i] as u8` into a contiguous `u8` output, element count preserved (output narrows the input: 1 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i32_to_u8
+op_kind: Cast
+blurb: "Cast i32 -> u8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i32_to_u8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 1)"          # read N*4 (i32) + write N*1 (u8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i64_to_u8  (i64 → u8)
+
+Convert `i64` → `u8`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `i64` buffer and writes `in[i] as u8` into a contiguous `u8` output, element count preserved (output narrows the input: 1 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i64_to_u8
+op_kind: Cast
+blurb: "Cast i64 -> u8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i64_to_u8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 1)"          # read N*8 (i64) + write N*1 (u8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f32_to_i8  (f32 → i8)
+
+Convert `f32` → `i8`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I8 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f32` buffer and writes `in[i] as i8` into a contiguous `i8` output, element count preserved (output narrows the input: 1 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f32_to_i8
+op_kind: Cast
+blurb: "Cast f32 -> i8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f32_to_i8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 1)"          # read N*4 (f32) + write N*1 (i8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f64_to_i8  (f64 → i8)
+
+Convert `f64` → `i8`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I8 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f64` buffer and writes `in[i] as i8` into a contiguous `i8` output, element count preserved (output narrows the input: 1 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f64_to_i8
+op_kind: Cast
+blurb: "Cast f64 -> i8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f64_to_i8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 1)"          # read N*8 (f64) + write N*1 (i8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f16_to_i8  (f16 → i8)
+
+Convert `f16` → `i8`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I8 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f16` buffer and writes `in[i].to_f32() as i8` into a contiguous `i8` output, element count preserved (output narrows the input: 1 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f16_to_i8
+op_kind: Cast
+blurb: "Cast f16 -> i8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f16_to_i8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 1)"          # read N*2 (f16) + write N*1 (i8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bf16_to_i8  (bf16 → i8)
+
+Convert `bf16` → `i8`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I8 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `bf16` buffer and writes `in[i].to_f32() as i8` into a contiguous `i8` output, element count preserved (output narrows the input: 1 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_bf16_to_i8
+op_kind: Cast
+blurb: "Cast bf16 -> i8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bf16_to_i8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 1)"          # read N*2 (bf16) + write N*1 (i8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f8e4m3_to_i8  (f8e4m3 → i8)
+
+Convert `f8e4m3` → `i8`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I8 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f8e4m3` buffer and writes `F8E4M3::from_bits(in[i]).to_f32() as i8` into a contiguous `i8` output, element count preserved (output same-width the input: 1 vs 1 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f8e4m3_to_i8
+op_kind: Cast
+blurb: "Cast f8e4m3 -> i8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_i8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F8E4M3]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      fdx:
+        sub_byte: F8E4M3              # 1-byte opaque fp8; bit-width/packing owned by FDX (§3.4)
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 1)"          # read N*1 (f8e4m3) + write N*1 (i8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u8_to_i8  (u8 → i8)
+
+Convert `u8` → `i8`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `u8` buffer and writes `in[i] as i8` into a contiguous `i8` output, element count preserved (output same-width the input: 1 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u8_to_i8
+op_kind: Cast
+blurb: "Cast u8 -> i8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u8_to_i8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 1)"          # read N*1 (u8) + write N*1 (i8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u32_to_i8  (u32 → i8)
+
+Convert `u32` → `i8`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `u32` buffer and writes `in[i] as i8` into a contiguous `i8` output, element count preserved (output narrows the input: 1 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u32_to_i8
+op_kind: Cast
+blurb: "Cast u32 -> i8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u32_to_i8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 1)"          # read N*4 (u32) + write N*1 (i8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i16_to_i8  (i16 → i8)
+
+Convert `i16` → `i8`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `i16` buffer and writes `in[i] as i8` into a contiguous `i8` output, element count preserved (output narrows the input: 1 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i16_to_i8
+op_kind: Cast
+blurb: "Cast i16 -> i8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i16_to_i8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 1)"          # read N*2 (i16) + write N*1 (i8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i32_to_i8  (i32 → i8)
+
+Convert `i32` → `i8`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `i32` buffer and writes `in[i] as i8` into a contiguous `i8` output, element count preserved (output narrows the input: 1 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i32_to_i8
+op_kind: Cast
+blurb: "Cast i32 -> i8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i32_to_i8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 1)"          # read N*4 (i32) + write N*1 (i8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i64_to_i8  (i64 → i8)
+
+Convert `i64` → `i8`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `i64` buffer and writes `in[i] as i8` into a contiguous `i8` output, element count preserved (output narrows the input: 1 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i64_to_i8
+op_kind: Cast
+blurb: "Cast i64 -> i8; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i64_to_i8"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I8)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 1)"          # read N*8 (i64) + write N*1 (i8)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 1", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f32_to_u32  (f32 → u32)
+
+Convert `f32` → `u32`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the U32 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f32` buffer and writes `in[i] as u32` into a contiguous `u32` output, element count preserved (output same-width the input: 4 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f32_to_u32
+op_kind: Cast
+blurb: "Cast f32 -> u32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f32_to_u32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 4)"          # read N*4 (f32) + write N*4 (u32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f64_to_u32  (f64 → u32)
+
+Convert `f64` → `u32`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the U32 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f64` buffer and writes `in[i] as u32` into a contiguous `u32` output, element count preserved (output narrows the input: 4 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f64_to_u32
+op_kind: Cast
+blurb: "Cast f64 -> u32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f64_to_u32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 4)"          # read N*8 (f64) + write N*4 (u32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f16_to_u32  (f16 → u32)
+
+Convert `f16` → `u32`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the U32 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f16` buffer and writes `in[i].to_f32() as u32` into a contiguous `u32` output, element count preserved (output widens the input: 4 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f16_to_u32
+op_kind: Cast
+blurb: "Cast f16 -> u32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f16_to_u32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 4)"          # read N*2 (f16) + write N*4 (u32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bf16_to_u32  (bf16 → u32)
+
+Convert `bf16` → `u32`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the U32 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `bf16` buffer and writes `in[i].to_f32() as u32` into a contiguous `u32` output, element count preserved (output widens the input: 4 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_bf16_to_u32
+op_kind: Cast
+blurb: "Cast bf16 -> u32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bf16_to_u32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 4)"          # read N*2 (bf16) + write N*4 (u32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f8e4m3_to_u32  (f8e4m3 → u32)
+
+Convert `f8e4m3` → `u32`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the U32 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f8e4m3` buffer and writes `F8E4M3::from_bits(in[i]).to_f32() as u32` into a contiguous `u32` output, element count preserved (output widens the input: 4 vs 1 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f8e4m3_to_u32
+op_kind: Cast
+blurb: "Cast f8e4m3 -> u32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_u32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F8E4M3]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      fdx:
+        sub_byte: F8E4M3              # 1-byte opaque fp8; bit-width/packing owned by FDX (§3.4)
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 4)"          # read N*1 (f8e4m3) + write N*4 (u32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u8_to_u32  (u8 → u32)
+
+Convert `u8` → `u32`. **Exact** — U8 is a value-subset of U32.
+
+Walks a contiguous, zero-offset, row-major `u8` buffer and writes `in[i] as u32` into a contiguous `u32` output, element count preserved (output widens the input: 4 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u8_to_u32
+op_kind: Cast
+blurb: "Cast u8 -> u32; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u8_to_u32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 4)"          # read N*1 (u8) + write N*4 (u32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every U8 value is representable in U32; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i8_to_u32  (i8 → u32)
+
+Convert `i8` → `u32`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `i8` buffer and writes `in[i] as u32` into a contiguous `u32` output, element count preserved (output widens the input: 4 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i8_to_u32
+op_kind: Cast
+blurb: "Cast i8 -> u32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i8_to_u32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 4)"          # read N*1 (i8) + write N*4 (u32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i16_to_u32  (i16 → u32)
+
+Convert `i16` → `u32`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `i16` buffer and writes `in[i] as u32` into a contiguous `u32` output, element count preserved (output widens the input: 4 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i16_to_u32
+op_kind: Cast
+blurb: "Cast i16 -> u32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i16_to_u32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 4)"          # read N*2 (i16) + write N*4 (u32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i32_to_u32  (i32 → u32)
+
+Convert `i32` → `u32`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `i32` buffer and writes `in[i] as u32` into a contiguous `u32` output, element count preserved (output same-width the input: 4 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i32_to_u32
+op_kind: Cast
+blurb: "Cast i32 -> u32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i32_to_u32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 4)"          # read N*4 (i32) + write N*4 (u32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i64_to_u32  (i64 → u32)
+
+Convert `i64` → `u32`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `i64` buffer and writes `in[i] as u32` into a contiguous `u32` output, element count preserved (output narrows the input: 4 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i64_to_u32
+op_kind: Cast
+blurb: "Cast i64 -> u32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i64_to_u32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(U32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 4)"          # read N*8 (i64) + write N*4 (u32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f32_to_i16  (f32 → i16)
+
+Convert `f32` → `i16`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I16 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f32` buffer and writes `in[i] as i16` into a contiguous `i16` output, element count preserved (output narrows the input: 2 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f32_to_i16
+op_kind: Cast
+blurb: "Cast f32 -> i16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f32_to_i16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 2)"          # read N*4 (f32) + write N*2 (i16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f64_to_i16  (f64 → i16)
+
+Convert `f64` → `i16`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I16 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f64` buffer and writes `in[i] as i16` into a contiguous `i16` output, element count preserved (output narrows the input: 2 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f64_to_i16
+op_kind: Cast
+blurb: "Cast f64 -> i16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f64_to_i16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 2)"          # read N*8 (f64) + write N*2 (i16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f16_to_i16  (f16 → i16)
+
+Convert `f16` → `i16`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I16 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f16` buffer and writes `in[i].to_f32() as i16` into a contiguous `i16` output, element count preserved (output same-width the input: 2 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f16_to_i16
+op_kind: Cast
+blurb: "Cast f16 -> i16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f16_to_i16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 2)"          # read N*2 (f16) + write N*2 (i16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bf16_to_i16  (bf16 → i16)
+
+Convert `bf16` → `i16`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I16 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `bf16` buffer and writes `in[i].to_f32() as i16` into a contiguous `i16` output, element count preserved (output same-width the input: 2 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_bf16_to_i16
+op_kind: Cast
+blurb: "Cast bf16 -> i16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bf16_to_i16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 2)"          # read N*2 (bf16) + write N*2 (i16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f8e4m3_to_i16  (f8e4m3 → i16)
+
+Convert `f8e4m3` → `i16`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I16 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f8e4m3` buffer and writes `F8E4M3::from_bits(in[i]).to_f32() as i16` into a contiguous `i16` output, element count preserved (output widens the input: 2 vs 1 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f8e4m3_to_i16
+op_kind: Cast
+blurb: "Cast f8e4m3 -> i16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_i16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F8E4M3]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      fdx:
+        sub_byte: F8E4M3              # 1-byte opaque fp8; bit-width/packing owned by FDX (§3.4)
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 2)"          # read N*1 (f8e4m3) + write N*2 (i16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u8_to_i16  (u8 → i16)
+
+Convert `u8` → `i16`. **Exact** — U8 is a value-subset of I16.
+
+Walks a contiguous, zero-offset, row-major `u8` buffer and writes `in[i] as i16` into a contiguous `i16` output, element count preserved (output widens the input: 2 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u8_to_i16
+op_kind: Cast
+blurb: "Cast u8 -> i16; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u8_to_i16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 2)"          # read N*1 (u8) + write N*2 (i16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every U8 value is representable in I16; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i8_to_i16  (i8 → i16)
+
+Convert `i8` → `i16`. **Exact** — I8 is a value-subset of I16.
+
+Walks a contiguous, zero-offset, row-major `i8` buffer and writes `in[i] as i16` into a contiguous `i16` output, element count preserved (output widens the input: 2 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i8_to_i16
+op_kind: Cast
+blurb: "Cast i8 -> i16; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i8_to_i16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 2)"          # read N*1 (i8) + write N*2 (i16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every I8 value is representable in I16; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u32_to_i16  (u32 → i16)
+
+Convert `u32` → `i16`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `u32` buffer and writes `in[i] as i16` into a contiguous `i16` output, element count preserved (output narrows the input: 2 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u32_to_i16
+op_kind: Cast
+blurb: "Cast u32 -> i16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u32_to_i16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 2)"          # read N*4 (u32) + write N*2 (i16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i32_to_i16  (i32 → i16)
+
+Convert `i32` → `i16`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `i32` buffer and writes `in[i] as i16` into a contiguous `i16` output, element count preserved (output narrows the input: 2 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i32_to_i16
+op_kind: Cast
+blurb: "Cast i32 -> i16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i32_to_i16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 2)"          # read N*4 (i32) + write N*2 (i16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i64_to_i16  (i64 → i16)
+
+Convert `i64` → `i16`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `i64` buffer and writes `in[i] as i16` into a contiguous `i16` output, element count preserved (output narrows the input: 2 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i64_to_i16
+op_kind: Cast
+blurb: "Cast i64 -> i16; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i64_to_i16"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I16)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 2)"          # read N*8 (i64) + write N*2 (i16)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 2", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f32_to_i32  (f32 → i32)
+
+Convert `f32` → `i32`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I32 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f32` buffer and writes `in[i] as i32` into a contiguous `i32` output, element count preserved (output same-width the input: 4 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f32_to_i32
+op_kind: Cast
+blurb: "Cast f32 -> i32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f32_to_i32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 4)"          # read N*4 (f32) + write N*4 (i32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f64_to_i32  (f64 → i32)
+
+Convert `f64` → `i32`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I32 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f64` buffer and writes `in[i] as i32` into a contiguous `i32` output, element count preserved (output narrows the input: 4 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f64_to_i32
+op_kind: Cast
+blurb: "Cast f64 -> i32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f64_to_i32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 4)"          # read N*8 (f64) + write N*4 (i32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f16_to_i32  (f16 → i32)
+
+Convert `f16` → `i32`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I32 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f16` buffer and writes `in[i].to_f32() as i32` into a contiguous `i32` output, element count preserved (output widens the input: 4 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f16_to_i32
+op_kind: Cast
+blurb: "Cast f16 -> i32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f16_to_i32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 4)"          # read N*2 (f16) + write N*4 (i32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bf16_to_i32  (bf16 → i32)
+
+Convert `bf16` → `i32`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I32 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `bf16` buffer and writes `in[i].to_f32() as i32` into a contiguous `i32` output, element count preserved (output widens the input: 4 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_bf16_to_i32
+op_kind: Cast
+blurb: "Cast bf16 -> i32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bf16_to_i32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 4)"          # read N*2 (bf16) + write N*4 (i32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f8e4m3_to_i32  (f8e4m3 → i32)
+
+Convert `f8e4m3` → `i32`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I32 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f8e4m3` buffer and writes `F8E4M3::from_bits(in[i]).to_f32() as i32` into a contiguous `i32` output, element count preserved (output widens the input: 4 vs 1 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f8e4m3_to_i32
+op_kind: Cast
+blurb: "Cast f8e4m3 -> i32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_i32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F8E4M3]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      fdx:
+        sub_byte: F8E4M3              # 1-byte opaque fp8; bit-width/packing owned by FDX (§3.4)
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 4)"          # read N*1 (f8e4m3) + write N*4 (i32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u8_to_i32  (u8 → i32)
+
+Convert `u8` → `i32`. **Exact** — U8 is a value-subset of I32.
+
+Walks a contiguous, zero-offset, row-major `u8` buffer and writes `in[i] as i32` into a contiguous `i32` output, element count preserved (output widens the input: 4 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u8_to_i32
+op_kind: Cast
+blurb: "Cast u8 -> i32; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u8_to_i32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 4)"          # read N*1 (u8) + write N*4 (i32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every U8 value is representable in I32; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i8_to_i32  (i8 → i32)
+
+Convert `i8` → `i32`. **Exact** — I8 is a value-subset of I32.
+
+Walks a contiguous, zero-offset, row-major `i8` buffer and writes `in[i] as i32` into a contiguous `i32` output, element count preserved (output widens the input: 4 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i8_to_i32
+op_kind: Cast
+blurb: "Cast i8 -> i32; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i8_to_i32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 4)"          # read N*1 (i8) + write N*4 (i32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every I8 value is representable in I32; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u32_to_i32  (u32 → i32)
+
+Convert `u32` → `i32`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `u32` buffer and writes `in[i] as i32` into a contiguous `i32` output, element count preserved (output same-width the input: 4 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u32_to_i32
+op_kind: Cast
+blurb: "Cast u32 -> i32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u32_to_i32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 4)"          # read N*4 (u32) + write N*4 (i32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i16_to_i32  (i16 → i32)
+
+Convert `i16` → `i32`. **Exact** — I16 is a value-subset of I32.
+
+Walks a contiguous, zero-offset, row-major `i16` buffer and writes `in[i] as i32` into a contiguous `i32` output, element count preserved (output widens the input: 4 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i16_to_i32
+op_kind: Cast
+blurb: "Cast i16 -> i32; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i16_to_i32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 4)"          # read N*2 (i16) + write N*4 (i32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every I16 value is representable in I32; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i64_to_i32  (i64 → i32)
+
+Convert `i64` → `i32`. **Lossy** integer narrowing — out-of-range values wrap (two's-complement truncation, Rust `as`).
+
+Walks a contiguous, zero-offset, row-major `i64` buffer and writes `in[i] as i32` into a contiguous `i32` output, element count preserved (output narrows the input: 4 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i64_to_i32
+op_kind: Cast
+blurb: "Cast i64 -> i32; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i64_to_i32"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I32)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 4)"          # read N*8 (i64) + write N*4 (i32)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 4", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy integer narrowing (two's-complement wrap on overflow); deterministic per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f32_to_i64  (f32 → i64)
+
+Convert `f32` → `i64`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I64 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f32` buffer and writes `in[i] as i64` into a contiguous `i64` output, element count preserved (output widens the input: 8 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f32_to_i64
+op_kind: Cast
+blurb: "Cast f32 -> i64; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f32_to_i64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 8)"          # read N*4 (f32) + write N*8 (i64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f64_to_i64  (f64 → i64)
+
+Convert `f64` → `i64`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I64 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f64` buffer and writes `in[i] as i64` into a contiguous `i64` output, element count preserved (output same-width the input: 8 vs 8 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f64_to_i64
+op_kind: Cast
+blurb: "Cast f64 -> i64; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f64_to_i64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F64]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (8 + 8)"          # read N*8 (f64) + write N*8 (i64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f16_to_i64  (f16 → i64)
+
+Convert `f16` → `i64`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I64 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f16` buffer and writes `in[i].to_f32() as i64` into a contiguous `i64` output, element count preserved (output widens the input: 8 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f16_to_i64
+op_kind: Cast
+blurb: "Cast f16 -> i64; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f16_to_i64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 8)"          # read N*2 (f16) + write N*8 (i64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_bf16_to_i64  (bf16 → i64)
+
+Convert `bf16` → `i64`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I64 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `bf16` buffer and writes `in[i].to_f32() as i64` into a contiguous `i64` output, element count preserved (output widens the input: 8 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_bf16_to_i64
+op_kind: Cast
+blurb: "Cast bf16 -> i64; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_bf16_to_i64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [BF16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 8)"          # read N*2 (bf16) + write N*8 (i64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_f8e4m3_to_i64  (f8e4m3 → i64)
+
+Convert `f8e4m3` → `i64`. **Lossy** float→integer conversion: truncates toward zero and saturates out-of-range magnitudes to the I64 bounds (Rust `as` saturating cast).
+
+Walks a contiguous, zero-offset, row-major `f8e4m3` buffer and writes `F8E4M3::from_bits(in[i]).to_f32() as i64` into a contiguous `i64` output, element count preserved (output widens the input: 8 vs 1 bytes/elem). The conversion pivots through f32 (the only widening/narrowing bridge these formats expose). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_f8e4m3_to_i64
+op_kind: Cast
+blurb: "Cast f8e4m3 -> i64; contiguous; lossy."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_f8e4m3_to_i64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [F8E4M3]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      fdx:
+        sub_byte: F8E4M3              # 1-byte opaque fp8; bit-width/packing owned by FDX (§3.4)
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 8)"          # read N*1 (f8e4m3) + write N*8 (i64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Lossy float->integer (truncate toward zero, saturating); deterministic single conversion per element."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u8_to_i64  (u8 → i64)
+
+Convert `u8` → `i64`. **Exact** — U8 is a value-subset of I64.
+
+Walks a contiguous, zero-offset, row-major `u8` buffer and writes `in[i] as i64` into a contiguous `i64` output, element count preserved (output widens the input: 8 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u8_to_i64
+op_kind: Cast
+blurb: "Cast u8 -> i64; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u8_to_i64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 8)"          # read N*1 (u8) + write N*8 (i64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every U8 value is representable in I64; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i8_to_i64  (i8 → i64)
+
+Convert `i8` → `i64`. **Exact** — I8 is a value-subset of I64.
+
+Walks a contiguous, zero-offset, row-major `i8` buffer and writes `in[i] as i64` into a contiguous `i64` output, element count preserved (output widens the input: 8 vs 1 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i8_to_i64
+op_kind: Cast
+blurb: "Cast i8 -> i64; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i8_to_i64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (1 + 8)"          # read N*1 (i8) + write N*8 (i64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every I8 value is representable in I64; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_u32_to_i64  (u32 → i64)
+
+Convert `u32` → `i64`. **Exact** — U32 is a value-subset of I64.
+
+Walks a contiguous, zero-offset, row-major `u32` buffer and writes `in[i] as i64` into a contiguous `i64` output, element count preserved (output widens the input: 8 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_u32_to_i64
+op_kind: Cast
+blurb: "Cast u32 -> i64; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_u32_to_i64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 8)"          # read N*4 (u32) + write N*8 (i64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every U32 value is representable in I64; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i16_to_i64  (i16 → i64)
+
+Convert `i16` → `i64`. **Exact** — I16 is a value-subset of I64.
+
+Walks a contiguous, zero-offset, row-major `i16` buffer and writes `in[i] as i64` into a contiguous `i64` output, element count preserved (output widens the input: 8 vs 2 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i16_to_i64
+op_kind: Cast
+blurb: "Cast i16 -> i64; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i16_to_i64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I16]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (2 + 8)"          # read N*2 (i16) + write N*8 (i64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every I16 value is representable in I64; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
+## cast_i32_to_i64  (i32 → i64)
+
+Convert `i32` → `i64`. **Exact** — I32 is a value-subset of I64.
+
+Walks a contiguous, zero-offset, row-major `i32` buffer and writes `in[i] as i64` into a contiguous `i64` output, element count preserved (output widens the input: 8 vs 4 bytes/elem). Validates byte lengths only, returns a typed `Result` on a size mismatch (never panics). Bandwidth-bound elementwise op; deterministic on the same hardware; contiguous-only (any strided/broadcast/offset operand is contiguized first).
+
+```fkc
+kernel: cast_i32_to_i64
+op_kind: Cast
+blurb: "Cast i32 -> i64; contiguous; lossless."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::cast_i32_to_i64"
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: src
+      dtypes: [I32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+  op_params: { variant: Cast }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: fixed(I64)          # target dtype lives on the output Storage; key-pinned (§5.1)
+      shape_rule: same_as(src)        # element count preserved
+      layout_guarantee: contiguous
+      aliasing: none
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # planner inserts Op::Contiguize (an FKC kernel) + sums its cost
+  fast_paths:
+    - { when: "all_inputs_contiguous", class: cheap_elementwise }
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: declared                # author prior (overhead_ns launch cost); Judge refines (§4.4)
+  class: cheap_elementwise
+  flops: "0"                          # pure copy/convert; no arithmetic
+  bytes_moved: "n * (4 + 8)"          # read N*4 (i32) + write N*8 (i64)
+  overhead_ns: 40
+  memory: { device_bytes: 0, host_bytes: "n * 8", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: 0
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Exact/deterministic conversion; every I32 value is representable in I64; bit-stable on the same hardware."
+
+determinism: same_hardware_bitwise
+```
+
