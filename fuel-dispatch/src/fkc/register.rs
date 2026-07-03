@@ -766,6 +766,81 @@ mod tests {
     }
 
     // =====================================================================
+    // FUSED SEAM: the production CpuLinkRegistry resolves a REAL authored
+    // `fused_op` bundle's entry_point symbols to the live CPU fused wrappers
+    // (the fused analogue of the elementwise-binary live-kernel test above).
+    // =====================================================================
+
+    /// The authored norm/softmax FUSED bundle — every section declares
+    /// `fused_op:` (a `FusedOps::*` id), not `op_kind:`.
+    const FUSED_NORM_SOFTMAX: &str =
+        include_str!("../../../docs/kernel-contracts/fused/norm-softmax.fkc.md");
+
+    #[test]
+    fn cpu_link_registry_binds_norm_softmax_fused_ops_to_live_kernels() {
+        // BORN-RED → GREEN: before `CpuLinkRegistry::resolve_fused` was wired to
+        // the fused entry-point table it returned `None` unconditionally, so
+        // `lower_fused` failed every `fused_op` section with `UnknownEntryPoint`
+        // and this import errored (RED). With `resolve_fused` real, the authored
+        // norm/softmax bundle imports through the PRODUCTION link registry and
+        // every `fused_op` binds the ACTUAL production CPU fused wrapper (GREEN).
+        let provider = import_bundle_str(FUSED_NORM_SOFTMAX, &crate::fkc::CpuLinkRegistry).expect(
+            "authored norm-softmax fused bundle imports through the production CpuLinkRegistry",
+        );
+        // A fused-only bundle: no primitive `op_kind` sections.
+        assert!(
+            provider.primitives.is_empty(),
+            "norm-softmax declares only fused ops",
+        );
+        assert!(!provider.fused.is_empty(), "norm-softmax yields fused ops");
+
+        let mut table = KernelBindingTable::new();
+        let mut fused = FusedKernelRegistry::new();
+        provider
+            .register_into(&mut table, &mut fused)
+            .expect("register_into fresh registries succeeds");
+
+        // The representative (F32) SOFTMAX_LAST_DIM impl IS the exact live
+        // production wrapper — proven by pointer identity — and carries the
+        // contract's REAL revision hash (hand-written regs stamp UNTRACKED).
+        let got = fused
+            .lookup_by_dtypes(
+                FusedOps::SOFTMAX_LAST_DIM,
+                BackendId::Cpu,
+                &[DType::F32, DType::F32],
+            )
+            .expect("SOFTMAX_LAST_DIM F32 fused impl bound from the contract");
+        assert_eq!(
+            got.kernel as usize,
+            crate::dispatch::softmax_last_dim_f32_cpu_wrapper as usize,
+            "the imported fused impl IS the live production softmax wrapper",
+        );
+        assert_ne!(
+            got.revision,
+            KernelRevisionHash::UNTRACKED,
+            "FKC import stamps the contract's real revision (hand-written stamps UNTRACKED)",
+        );
+
+        // Every forward + backward `fused_op` in the bundle resolved to a live
+        // kernel through the production link registry.
+        for id in [
+            FusedOps::SOFTMAX_LAST_DIM,
+            FusedOps::RMS_NORM_LAST_DIM,
+            FusedOps::LAYER_NORM_LAST_DIM,
+            FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
+            FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
+            FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
+            FusedOps::REDUCE_MAX_TO_BACKWARD,
+            FusedOps::POWI_BACKWARD,
+        ] {
+            assert!(
+                fused.lookup(id, BackendId::Cpu).is_some(),
+                "{id:?} fused impl bound from the contract",
+            );
+        }
+    }
+
+    // =====================================================================
     // DUPLICATE: two sections at the same key+pointer → DuplicateKernelRef
     // =====================================================================
 
