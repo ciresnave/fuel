@@ -514,30 +514,44 @@ pub static CPU_CONV_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("conv_transpose2d", "f16",  conv_transpose2d_f16_cpu_wrapper),
 ];
 
-/// The CPU **padding** family's `symbol → production wrapper` map — the
-/// MIGRATED subset: `PadBackward` × 4 dtypes = 4 kernels (key `[T, T]`).
-/// Contract: `docs/kernel-contracts/cpu/padding.fkc.md`. Each per-dtype section
-/// (`## pad_backward_f32`, …) declares a SPECIFIC single-dtype `entry_point`
-/// (`…::pad_backward_f32`), so none of them fan — the importer resolves that
-/// symbol AS-IS. The binding key is `[T, T]` (grad_out + `passthrough(grad_out)`
-/// grad_in; the in_shape/out_shape/padding/mode_tag ride in
-/// `OpParams::PadBackward`, NOT the dtype-list), identical to the deleted
-/// `&unary(t)` regs. `PadBackward` is per-dtype (unlike the dtype-agnostic
-/// forward `Pad`) because gradient accumulation is typed (bf16/f16/f32 widen the
-/// scratch accumulator to f64).
+/// The CPU **padding** family's `symbol → production wrapper` map — the FULL
+/// family: mode-unified forward `Pad` × 6 dtypes = 6 + `PadBackward` × 4 dtypes
+/// = 4 (all key `[T, T]`). Contract: `docs/kernel-contracts/cpu/padding.fkc.md`.
 ///
-/// **The FORWARD `Pad` half is DEFERRED** (its four multi-dtype sections —
-/// `pad_const_cpu` / `pad_reflect_cpu` / `pad_replicate_cpu` / `pad_walk_cpu` —
-/// are `registrable: false`, §3.10 describe-only, so they never resolve and are
-/// absent here): the three forward modes (Constant/Reflect/Replicate) collapse
-/// to ONE `(Pad, [t,t])` binding per dtype served by the SINGLE mode-dispatching
-/// `pad_cpu_wrapper` (mode chosen at runtime via `mode_tag`), so the contract's
-/// three independent forward sections would collide on the shared key
-/// (`DuplicateKernelRef`), and production wires only 6 dtypes
-/// (`U8/U32/BF16/F16/F32/F64`) vs the contract's dtype-agnostic 10. The
-/// hand-written forward `Pad` regs stay authoritative until the contract models
-/// the unified wrapper as a single registrable section.
+/// - **Forward `Pad`** is a dtype-agnostic byte kernel with a SINGLE production
+///   wrapper — the mode-dispatching `pad_cpu_wrapper` (dispatch layer), which
+///   selects `pad_const_cpu` / `pad_reflect_cpu` / `pad_replicate_cpu` at runtime
+///   via `mode_tag` (incl. the reflect `before/after <= n-1` validation). The
+///   contract's ONE registrable `## pad` section declares a BASE `entry_point`
+///   (`…::pad_cpu`, a SYNTHETIC umbrella — there is no real `pad_cpu` byte kernel;
+///   the three real mode kernels are `pad_{const,reflect,replicate}_cpu`) + an
+///   enumerated `dtypes` list trimmed to production's wired 6
+///   (`U8/U32/BF16/F16/F32/F64`), so the importer's §3.4 multi-dtype fan-out
+///   resolves `pad_cpu_<dtype>` (a FABRICATED per-dtype symbol) — every dtype
+///   variant mapping to the ONE `pad_cpu_wrapper`, exactly the Flip/Roll/Concat
+///   pattern. The fan emits BYTE-FOR-BYTE the deleted hand-written
+///   `table.register(Pad, &unary(t), …)` regs (key `[T, T]`, `out:
+///   passthrough(input)`; the in_shape/out_shape/padding/mode_tag/fill_bytes ride
+///   in `OpParams::Pad`, NOT the dtype-list). The three per-mode sections
+///   (`pad_const_cpu` / `pad_reflect_cpu` / `pad_replicate_cpu`) and the
+///   `pad_walk_cpu` helper are `registrable: false` (§3.10 describe-only mode
+///   documentation) and never resolve, so they are ABSENT here.
+/// - **`PadBackward`** is per-dtype (typed gradient accumulation — bf16/f16/f32
+///   widen the scratch accumulator to f64, unlike the dtype-agnostic forward
+///   copy). Each per-dtype section (`## pad_backward_f32`, …) declares a SPECIFIC
+///   single-dtype `entry_point` (`…::pad_backward_f32`) resolved AS-IS (no fan),
+///   key `[T, T]` (grad_out + `passthrough(grad_out)` grad_in; in_shape/out_shape/
+///   padding/mode_tag ride in `OpParams::PadBackward`).
 pub static CPU_PADDING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // Forward Pad — mode-unified dtype-agnostic byte kernel; the fabricated
+    // `pad_cpu_<dt>` symbol maps to the ONE mode-dispatching `pad_cpu_wrapper`.
+    ep!("pad_cpu", "u8",   pad_cpu_wrapper),
+    ep!("pad_cpu", "u32",  pad_cpu_wrapper),
+    ep!("pad_cpu", "bf16", pad_cpu_wrapper),
+    ep!("pad_cpu", "f16",  pad_cpu_wrapper),
+    ep!("pad_cpu", "f32",  pad_cpu_wrapper),
+    ep!("pad_cpu", "f64",  pad_cpu_wrapper),
+    // PadBackward — per-dtype typed accumulation; resolved AS-IS (no fan).
     ep!("pad_backward", "f32",  pad_backward_f32_cpu_wrapper),
     ep!("pad_backward", "f64",  pad_backward_f64_cpu_wrapper),
     ep!("pad_backward", "bf16", pad_backward_bf16_cpu_wrapper),

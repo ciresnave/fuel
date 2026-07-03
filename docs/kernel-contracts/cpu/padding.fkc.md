@@ -29,6 +29,108 @@ Cost on every kernel is `provenance: judge_measured` — the Judge bootstraps it
 formula hint is given where derivable (these are pure byte movers / accumulators, bandwidth-bound
 over element counts); no FLOPs/latency numbers are fabricated.
 
+**Re-author note (2026-07-03).** The forward half was originally authored as THREE per-mode sections
+(`pad_const_cpu` / `pad_reflect_cpu` / `pad_replicate_cpu`) plus the shared `pad_walk_cpu` helper,
+all `registrable: false` (DEFERRED). That could not model production truthfully: all three modes are
+served by the SINGLE mode-dispatching `pad_cpu_wrapper` (mode chosen at runtime via `mode_tag`, incl.
+the reflect `before/after <= n-1` validation) at ONE `(Pad, [T, T])` binding per dtype, so three
+independent same-key registrations would collide (`DuplicateKernelRef`); and the sections enumerated
+10 byte-agnostic dtypes while production wires only 6. The forward half is now modeled by ONE
+mode-unified registrable **`## pad`** section (below) over the 6 production-wired dtypes
+(`U8/U32/BF16/F16/F32/F64`) on a dtype-agnostic BASE `entry_point` (`…::pad_cpu`) that the importer's
+§3.4 fan-out expands to `pad_cpu_{u8,u32,bf16,f16,f32,f64}`, ALL resolving the one `pad_cpu_wrapper`
+(the Flip/Roll/Concat pattern — a fabricated per-dtype symbol onto one dtype-agnostic wrapper). The
+three per-mode sections + `pad_walk_cpu` are RETAINED below, converted to **`registrable: false`**
+describe-only mode documentation (§3.10) — their const/reflect/replicate semantics and the reflect
+bound validation are the load-bearing prose the unified section points back at. Backward
+(`PadBackward`, per-dtype) is unaffected.
+
+## pad  (mode-unified forward pad — the registrable forward entry point)
+
+One-line: mode-unified multi-dim forward pad; ONE `(Pad, [T, T])` binding per dtype dispatches Constant/Reflect/Replicate at runtime via `mode_tag`.
+
+The single registrable forward-`Pad` section, modeling production's `pad_cpu_wrapper` truthfully.
+The wrapper takes ONE input + ONE output and selects the byte-kernel at runtime from `mode_tag`:
+`0` → `pad_const_cpu` (two-pass constant fill; see the `pad_const_cpu` describe-only section below),
+`1` → `pad_reflect_cpu` (reflect index map, edge NOT repeated; the wrapper enforces the load-bearing
+`before <= n-1 AND after <= n-1` per-axis validity BEFORE calling the kernel), `2` →
+`pad_replicate_cpu` (replicate / edge-clamp index map). All three are dtype-agnostic byte copies —
+per-element byte width is carried by `dtype_size` (read from the output dtype) + pre-encoded
+`fill_bytes`, so ONE logical binding per dtype covers every mode. The dtype list is trimmed to the 6
+dtypes production materializes forward pads for (`U8/U32/BF16/F16/F32/F64`), NOT the kernel's full
+byte-agnostic set, so the §3.4 fan emits BYTE-FOR-BYTE the deleted hand-written
+`table.register(Pad, &unary(t), …)` regs (key `[T, T]`, `out: passthrough(input)`). Numerics: none —
+pure byte copy, bit-exact for any dtype. Perf: bandwidth-bound (Constant: two output passes + one
+input pass; Reflect/Replicate: one output pass). Contiguous + offset-0 only (the executor's
+auto-Contiguize pass realizes any strided/broadcast/offset producer first). Validates rank agreement,
+byte lengths, and `out_shape[i] == in_shape[i] + before + after` per axis, returning `Result` (no
+panic).
+
+```fkc
+kernel: pad
+op_kind: Pad
+blurb: "Mode-unified multi-dim forward pad; one (Pad,[T,T]) binding per dtype dispatches Constant/Reflect/Replicate at runtime via mode_tag."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::pad_cpu"   # BASE (synthetic umbrella over the three mode byte-kernels pad_{const,reflect,replicate}_cpu); §3.4 fans pad_cpu_{u8,u32,bf16,f16,f32,f64}, ALL → the one dispatch-layer pad_cpu_wrapper (mode chosen at runtime); §12.6
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: input
+      # Byte-dtype-agnostic (only dtype_size matters), but the REGISTRATION covers
+      # the 6 dtypes the executor actually materializes forward pads for — the fan
+      # builds one `[T, T]` binding per dtype, ALL resolving `pad_cpu_wrapper`.
+      # Trimmed from the kernel's full byte-agnostic set to match production
+      # truthfully (byte-for-byte the deleted `table.register(Pad, &unary(t), …)`).
+      dtypes: [U8, U32, BF16, F16, F32, F64]
+      dtype_class: any
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: any
+      shape_constraint: "same_rank=out"
+  op_params:
+    variant: Pad                    # OpParams::Pad (fuel-dispatch::kernel) — primitive namespace
+    fields:
+      in_shape:  { kind: "Vec<usize>" }
+      out_shape: { kind: "Vec<usize>", constraint: "out_shape[i] == in_shape[i] + padding[i].0 + padding[i].1" }
+      padding:   { kind: "Vec<(usize,usize)>", constraint: "len == in_shape.len(); for Reflect (mode_tag==1) also before <= in_shape[i]-1 AND after <= in_shape[i]-1 (wrapper-enforced)" }
+      mode_tag:  { kind: u8, constraint: "in {0 Constant, 1 Reflect, 2 Replicate} — selects the byte-kernel at runtime" }
+      fill_bytes: { kind: "Vec<u8>", constraint: "Constant: len == dtype_size (one element pre-encoded); ignored for Reflect/Replicate" }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(input)        # byte width preserved; dtype = input dtype
+      shape_rule: from_params(out_shape)     # per-axis in_shape[i] + before + after
+      layout_guarantee: contiguous           # fresh dense row-major; executor pre-allocates
+      aliasing: none                         # full overwrite
+
+caps:
+  awkward_layout_strategy: requires_contiguous   # ← planner inserts Op::Contiguize (itself an FKC kernel) + sums its cost
+  fast_paths: []
+  in_place: false
+  alignment_bytes: 64
+  access_granularity_bits: 8                  # byte-granular copy (dtype-agnostic)
+
+cost:
+  provenance: judge_measured                 # Judge bootstraps; bandwidth-bound byte mover
+  class: cheap_elementwise
+  flops: "0"                                  # pure copy, no arithmetic
+  bytes_moved: "(2 * out_elem + 2 * in_elem) * dtype_bytes"   # Constant worst case (fill + copy); Reflect/Replicate move 2*out_elem
+  overhead_ns: ~                              # judge_measured
+  memory: { device_bytes: 0, host_bytes: "out_elem * dtype_bytes", disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true          # byte copy: bit-exact for any dtype, any hardware
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Pure byte copy (constant fill / reflect / replicate index map); no arithmetic, bit-exact for every dtype."
+
+determinism: bitwise                         # exact byte shuffle/copy, hardware-independent
+```
+
 ## pad_const_cpu  (multi-dim Constant pad)
 
 One-line: multi-dim constant-fill pad; tiles the output with one constant element then copies the input region in.
@@ -51,7 +153,7 @@ guarantees this).
 ```fkc
 kernel: pad_const_cpu
 op_kind: Pad                        # mode_tag = 0 distinguishes Constant from Reflect/Replicate
-registrable: false          # DEFERRED: the three forward modes (Constant/Reflect/Replicate) collapse to ONE (Pad,[t,t]) binding per dtype served by the SINGLE mode-dispatching pad_cpu_wrapper (mode chosen at runtime via mode_tag), so these three sections cannot each register — they collide on the shared (Pad,[t,t]) key (DuplicateKernelRef). This section also enumerates 10 dtypes while production wires only 6 {U8,U32,BF16,F16,F32,F64}. Reconcile the contract (a single registrable forward section over the 6 wired dtypes, entry_point resolving to the unified pad_cpu_wrapper) before importing; the hand-written forward Pad regs stay authoritative until then.
+registrable: false          # DESCRIBE-ONLY (§3.10): the `mode_tag = 0` (Constant) branch of the mode-unified `## pad` section above. Retained for its constant-fill semantics (two-pass tile-then-copy); it does NOT register independently — the SINGLE `## pad` binding (served by `pad_cpu_wrapper`, mode chosen at runtime) is the registrable forward entry point. An independent reg would collide on the shared `(Pad, [T, T])` key (DuplicateKernelRef).
 blurb: "Multi-dim constant-fill pad; tiles the output with one constant element then copies the input region in."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -126,7 +228,7 @@ Contiguous + offset-0 only.
 ```fkc
 kernel: pad_reflect_cpu
 op_kind: Pad                        # mode_tag = 1 distinguishes Reflect
-registrable: false          # DEFERRED: same as pad_const_cpu — the forward modes share ONE (Pad,[t,t]) binding served by the single mode-dispatching pad_cpu_wrapper (mode_tag selects Reflect at runtime, plus its before/after <= n-1 validation); an independent reg collides on the shared key (DuplicateKernelRef). Hand-written forward Pad regs stay authoritative.
+registrable: false          # DESCRIBE-ONLY (§3.10): the `mode_tag = 1` (Reflect) branch of the mode-unified `## pad` section above. Retained for its reflect index-map semantics (edge NOT repeated) and the load-bearing `before/after <= n-1` per-axis validity the wrapper enforces before calling the kernel; it does NOT register independently — the SINGLE `## pad` binding is the registrable forward entry point. An independent reg would collide on the shared `(Pad, [T, T])` key (DuplicateKernelRef).
 blurb: "Multi-dim reflect pad (edge not repeated); delegates to the generic pad walker with the reflect index map."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -198,7 +300,7 @@ Contiguous + offset-0 only.
 ```fkc
 kernel: pad_replicate_cpu
 op_kind: Pad                        # mode_tag = 2 distinguishes Replicate
-registrable: false          # DEFERRED: same as pad_const_cpu — the forward modes share ONE (Pad,[t,t]) binding served by the single mode-dispatching pad_cpu_wrapper (mode_tag selects Replicate at runtime); an independent reg collides on the shared key (DuplicateKernelRef). Hand-written forward Pad regs stay authoritative.
+registrable: false          # DESCRIBE-ONLY (§3.10): the `mode_tag = 2` (Replicate) branch of the mode-unified `## pad` section above. Retained for its replicate / edge-clamp index-map semantics (boundary element repeated outward, no pad-width restriction); it does NOT register independently — the SINGLE `## pad` binding is the registrable forward entry point. An independent reg would collide on the shared `(Pad, [T, T])` key (DuplicateKernelRef).
 blurb: "Multi-dim replicate pad (edge repeated); delegates to the generic pad walker with the replicate index map."
 backend: Cpu
 kernel_source: "portable-cpu"
@@ -280,7 +382,7 @@ wrappers, not as a third independent binding. Its `op_kind`/key are therefore th
 ```fkc
 kernel: pad_walk_cpu
 op_kind: Pad                        # internal core for Reflect (mode_tag=1) / Replicate (mode_tag=2)
-registrable: false          # DEFERRED: internal helper — NOT a standalone dispatch entry point (generic over the index-map fn pointer, instantiated as reflect_index/replicate_index; bound by the pad_reflect/pad_replicate mode wrappers, themselves served by the unified pad_cpu_wrapper). Describe-only per the Registrability note above.
+registrable: false          # DESCRIBE-ONLY (§3.10): internal helper — NOT a standalone dispatch entry point (generic over the index-map fn pointer, instantiated as reflect_index/replicate_index; backs the Reflect/Replicate branches of the mode-unified `## pad` section, themselves dispatched by pad_cpu_wrapper). Documented for completeness per the Registrability note above; it does NOT register independently.
 blurb: "Generic dtype-agnostic pad walker; copies each output element from its mapped input position via a per-axis index function."
 backend: Cpu
 kernel_source: "portable-cpu"
