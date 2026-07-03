@@ -1068,7 +1068,7 @@ fn pad_cpu_wrapper(
 /// backward kernel does typed addition (accumulation per input slot).
 macro_rules! cpu_pad_backward_wrapper {
     ($wrapper:ident, $kernel:path, $op_name:literal) => {
-        fn $wrapper(
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -4654,6 +4654,67 @@ fn register_cpu_conv_from_contract(table: &mut KernelBindingTable) {
     );
 }
 
+/// The authored CPU **padding** kernel contract, embedded into the binary (the
+/// PRODUCTION `include_str!`). `register_cpu_padding_from_contract` parses +
+/// lowers it and binds the MIGRATED (backward) subset of the family FROM THE
+/// CONTRACT.
+const CPU_PADDING_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/padding.fkc.md");
+
+/// Register the MIGRATED CPU padding subset — `PadBackward` × 4 dtypes = 4
+/// bindings (key `[T, T]`) — by IMPORTING its FKC kernel contract, the twelfth
+/// production FKC consumer. Each per-dtype backward section (`## pad_backward_f32`,
+/// …) carries a SPECIFIC single-dtype `entry_point` (`…::pad_backward_f32`)
+/// resolved AS-IS (no dtype fan-out) through the production
+/// [`crate::fkc::CpuLinkRegistry`] (now chaining
+/// [`crate::fkc::CPU_PADDING_ENTRY_POINTS`]) to the exact wrapper fn-pointer the
+/// CPU backend exposes. The binding key is `[T, T]` (grad_out +
+/// `passthrough(grad_out)` grad_in; the in_shape/out_shape/padding/mode_tag ride
+/// in `OpParams::PadBackward`, NOT the dtype-list) — byte-for-byte the deleted
+/// hand-written `table.register(PadBackward, &unary(t), …)` regs. `PadBackward`
+/// is per-dtype (unlike the dtype-agnostic forward `Pad`) because gradient
+/// accumulation is typed (bf16/f16/f32 widen the scratch accumulator to f64).
+///
+/// **The FORWARD `Pad` half is DEFERRED (hand-written regs kept).** Its four
+/// multi-dtype sections (`pad_const_cpu` / `pad_reflect_cpu` /
+/// `pad_replicate_cpu` / `pad_walk_cpu`) are marked `registrable: false` (§3.10
+/// describe-only) in the contract, so importing this file registers ONLY the
+/// backward subset. The three forward modes (Constant/Reflect/Replicate)
+/// collapse to ONE `(Pad, [t,t])` binding per dtype served by the SINGLE
+/// mode-dispatching `pad_cpu_wrapper` (mode chosen at runtime via `mode_tag`),
+/// so the contract's three independent forward sections would collide on the
+/// shared key (`DuplicateKernelRef`); production also wires only 6 dtypes
+/// (`U8/U32/BF16/F16/F32/F64`) vs the contract's dtype-agnostic 10, and
+/// `pad_walk_cpu` is an internal helper (not a standalone dispatch entry point).
+/// Migrating the forward half faithfully needs a contract that models the
+/// unified wrapper as a SINGLE registrable section over the 6 wired dtypes — the
+/// 6 hand-written forward `Pad` regs stay authoritative until then.
+///
+/// Behavior-preserving vs. the deleted hand-written backward path: identical
+/// kernels + caps (contiguous-only); the binding's `kernel_source` becomes the
+/// contract's `"portable-cpu"` tag and its precision the contract's bit-stable
+/// claim. Cost is preserved because this runs BEFORE `fill_unset_cpu_cost`,
+/// which upgrades the imported entries' `unknown_cost` sentinel to the same
+/// OpKind cost fn every CPU primitive gets. The family declares NO fused ops, so
+/// `register_into`'s required fused argument is a local throwaway that provably
+/// stays empty.
+fn register_cpu_padding_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_PADDING_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU padding contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "padding contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU padding contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -4856,6 +4917,22 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // (register_default_fused_kernels, FusedOps::{CONV2D, CONV_TRANSPOSE2D}) stays
     // untouched.
     register_cpu_conv_from_contract(table);
+
+    // CPU padding family (BACKWARD subset) — PadBackward × 4 dtypes = 4 bindings
+    // (key [T, T]). Twelfth production FKC-contract consumer: IMPORTED from
+    // docs/kernel-contracts/cpu/padding.fkc.md via the same `CpuLinkRegistry`.
+    // Each per-dtype backward section carries a SPECIFIC single-dtype entry_point
+    // (`pad_backward_f32`, …) resolved AS-IS (no fan-out); in_shape/out_shape/
+    // padding/mode_tag ride in OpParams::PadBackward. The migrated backward
+    // `table.register(PadBackward, …)` regs are DELETED — this is their sole
+    // registration path. The FORWARD `Pad` half (Constant/Reflect/Replicate) is
+    // DEFERRED: its four contract sections are `registrable: false`, so importing
+    // registers ONLY the backward subset; the three forward modes share ONE
+    // (Pad,[t,t]) binding served by the single mode-dispatching pad_cpu_wrapper
+    // (would collide on the shared key), so the 6 hand-written forward Pad regs
+    // stay authoritative. Placed BEFORE the `fill_unset_cpu_*` passes so the
+    // imported entries pick up the CPU cost fill.
+    register_cpu_padding_from_contract(table);
 
     table.register(MatMul,             &binary(f32_dt),  cpu, matmul_f32_cpu_wrapper);
     table.register(MatMul,             &binary(f64_dt),  cpu, matmul_f64_cpu_wrapper);
@@ -5287,9 +5364,15 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(MaskedFill, &masked_dtypes(u32_dt),  cpu, masked_fill_cpu_wrapper);
     table.register(MaskedFill, &masked_dtypes(u8_dt),   cpu, masked_fill_cpu_wrapper);
 
-    // Pad (Constant mode wired; Reflect/Replicate fall through to a
-    // clean error inside the wrapper). Single dtype-agnostic wrapper
-    // registered per dtype — kernel reads dtype_size from output.
+    // Pad forward (Constant / Reflect / Replicate). One dtype-agnostic
+    // `pad_cpu_wrapper` dispatches all three modes at runtime via `mode_tag`;
+    // registered per dtype — the kernel reads dtype_size from the output. This
+    // FORWARD half stays hand-written: it is DEFERRED from the FKC migration
+    // because the three forward modes collapse to this ONE (Pad, [t,t]) binding
+    // per dtype, so the padding contract's three independent forward sections
+    // (pad_const_cpu / pad_reflect_cpu / pad_replicate_cpu, + the pad_walk_cpu
+    // helper) are `registrable: false` — registering them would collide on the
+    // shared key (DuplicateKernelRef). See register_cpu_padding_from_contract.
     table.register(Pad, &unary(f32_dt),  cpu, pad_cpu_wrapper);
     table.register(Pad, &unary(f64_dt),  cpu, pad_cpu_wrapper);
     table.register(Pad, &unary(bf16_dt), cpu, pad_cpu_wrapper);
@@ -5297,11 +5380,11 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     table.register(Pad, &unary(u32_dt),  cpu, pad_cpu_wrapper);
     table.register(Pad, &unary(u8_dt),   cpu, pad_cpu_wrapper);
 
-    // PadBackward — per-dtype since accumulation is typed.
-    table.register(PadBackward, &unary(f32_dt),  cpu, pad_backward_f32_cpu_wrapper);
-    table.register(PadBackward, &unary(f64_dt),  cpu, pad_backward_f64_cpu_wrapper);
-    table.register(PadBackward, &unary(bf16_dt), cpu, pad_backward_bf16_cpu_wrapper);
-    table.register(PadBackward, &unary(f16_dt),  cpu, pad_backward_f16_cpu_wrapper);
+    // (PadBackward × 4 dtypes — key [T, T], typed accumulation — is now
+    // registered FROM the padding FKC contract via
+    // register_cpu_padding_from_contract near the top of this fn; the
+    // hand-written regs were DELETED — FKC is the sole path for the backward
+    // half.)
 
     // (Elementwise unary BF16 + F16 — like F32/F64 — are registered from the
     // elementwise-unary FKC contract via register_cpu_unary_from_contract near
@@ -8404,6 +8487,77 @@ mod tests {
         assert_eq!(
             checked, 16,
             "2 ops × 4 dtypes × 2 operand-counts checked (16 contract-sourced bindings)"
+        );
+    }
+
+    /// Gate for the CPU **padding** family's BACKWARD half migrated to
+    /// FKC-contract registration. The four `PadBackward` per-dtype kernels
+    /// (key `[T, T]` — grad_out + `passthrough(grad_out)` grad_in, T ∈
+    /// {F32,F64,BF16,F16}) are IMPORTED from
+    /// `docs/kernel-contracts/cpu/padding.fkc.md` — the `pad_backward_<dt>`
+    /// single-dtype sections, each resolved AS-IS (no dtype fan-out) through the
+    /// production `CpuLinkRegistry` (chaining `CPU_PADDING_ENTRY_POINTS`).
+    ///
+    /// The FORWARD `Pad` half (Constant/Reflect/Replicate) stays hand-written
+    /// (DEFERRED — the three modes collapse to ONE `(Pad, [t,t])` binding per
+    /// dtype served by the single mode-dispatching `pad_cpu_wrapper`, so the
+    /// contract's three independent forward sections cannot each register
+    /// without colliding on the shared key; see
+    /// `register_cpu_padding_from_contract` + the `registrable: false`
+    /// forward sections in the contract).
+    ///
+    /// For each of the 4 backward keys: resolves to the EXACT production wrapper
+    /// with `kernel_source == "portable-cpu"` (the contract provenance tag),
+    /// caps contiguous, and the contract's bit-stable precision riding through.
+    #[test]
+    fn global_bindings_registers_padding_family_from_contract() {
+        let table = global_bindings();
+        let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+        // PadBackward wrappers, indexed to match `dts` order.
+        let pad_backward: [crate::kernel::KernelRef; 4] = [
+            pad_backward_f32_cpu_wrapper,
+            pad_backward_f64_cpu_wrapper,
+            pad_backward_bf16_cpu_wrapper,
+            pad_backward_f16_cpu_wrapper,
+        ];
+
+        let mut checked = 0usize;
+        for (i, dt) in dts.iter().enumerate() {
+            // PadBackward: [grad_out T, grad_in T] = [T, T] (passthrough(grad_out)).
+            let key: &[DType] = &[*dt, *dt];
+            let expected = pad_backward[i];
+            let alts = table.lookup_alternatives(OpKind::PadBackward, key, BackendId::Cpu);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "PadBackward/{dt:?}/Cpu: the production wrapper must be bound \
+                         FROM the padding contract in global_bindings() — found {} \
+                         alternative(s) with sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "portable-cpu",
+                "PadBackward/{dt:?}: family must be contract-sourced \
+                 (kernel_source=\"portable-cpu\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                !entry.caps.strided_input,
+                "PadBackward/{dt:?}: caps preserved (contiguous-only)",
+            );
+            assert!(
+                entry.precision.bit_stable_on_same_hardware,
+                "PadBackward/{dt:?}: contract's bit-stable claim rode through",
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            checked, 4,
+            "4 PadBackward dtypes checked (contract-sourced bindings)"
         );
     }
 
