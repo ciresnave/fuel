@@ -718,12 +718,19 @@ pub static CPU_MATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 ///   selector), so their symbol is the fully-qualified
 ///   `fuel_dispatch::dispatch::<wrapper>` path (the `ep_dispatch!` shape).
 ///
-/// **PagedAttn is DESCRIBE-ONLY** (`registrable: false` in the contract — its
-/// `fdx.gather: paged_blocks` pool is [consumer-ahead], §3.9.1), so its four
-/// sections never lower/resolve and are ABSENT here; the production `PagedAttn`
-/// binding stays hand-written. The SEPARATE `FusedKernelRegistry` FLASH_ATTN*
-/// seam (`register_default_fused_kernels`) is likewise a distinct registry and
-/// stays untouched; this map only serves the `KernelBindingTable` primitive path.
+/// **PagedAttn is REGISTRABLE** (`registrable: true` in the contract). Its
+/// `fdx.gather: paged_blocks` pool is import METADATA (§3.9.1: the block_table /
+/// context_lens ride as ordinary U32 operands + `OpParams::PagedAttn`, so
+/// registration does not depend on the FDX gather VIEW, which stays
+/// [consumer-ahead]), so the importer validates the gather block for coherence
+/// and resolves the four paged `byte_kernels::paged_attn_<dt>` symbols here. The
+/// contract marks `alibi_slopes` as `optional: true` (last input), so the
+/// key-builder fans each paged section into BOTH the no-alibi key
+/// `[q,kc,vc,bt:U32,cl:U32,out]` and the with-alibi key `+alibi` — both resolving
+/// the SAME wrapper (the CPU `paged_attn_<dt>_cpu_wrapper` handles 5 or 6 inputs).
+/// The SEPARATE `FusedKernelRegistry` FLASH_ATTN* / PAGED_ATTN seam
+/// (`register_default_fused_kernels`) is a distinct registry and stays untouched;
+/// this map only serves the `KernelBindingTable` primitive path.
 pub static CPU_ATTENTION_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // Forward FlashAttn — byte-kernel symbols; keys [T,T,T,T] / [T,T,T,T,T].
     ep!("flash_attn", "f32",  flash_attn_f32_cpu_wrapper),
@@ -744,6 +751,12 @@ pub static CPU_ATTENTION_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep_dispatch!(flash_attn_backward_v_f64_cpu_wrapper),
     ep_dispatch!(flash_attn_backward_v_bf16_cpu_wrapper),
     ep_dispatch!(flash_attn_backward_v_f16_cpu_wrapper),
+    // PagedAttn — byte-kernel symbols; keys [T,T,T,U32,U32,T] (+[T] with-alibi).
+    // The optional-operand fan resolves both keys to the same per-dtype wrapper.
+    ep!("paged_attn", "f32",  paged_attn_f32_cpu_wrapper),
+    ep!("paged_attn", "f64",  paged_attn_f64_cpu_wrapper),
+    ep!("paged_attn", "bf16", paged_attn_bf16_cpu_wrapper),
+    ep!("paged_attn", "f16",  paged_attn_f16_cpu_wrapper),
 ];
 
 /// The CPU **in-place scalar-param** family's `symbol → production wrapper`

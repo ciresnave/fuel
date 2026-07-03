@@ -728,14 +728,26 @@ fn gather_coherence(
                     }
                 }
             }
-            // The FDX gather codes are the 2026-06-17 addition (no code yet):
-            // a gather-bearing operand is describable but not yet registrable.
-            // We surface this at validate time (the lint treats it as a
-            // describable-now / register-later finding, like MX).
-            Err(FkcError::GatherNotYetSupported {
-                section: section.to_string(),
-                operand: operand.to_string(),
-            })
+            // IMPORT-SIDE LIFT (FDX gather-sidecar arc, slice A). The `gather`
+            // block is boundary METADATA that DESCRIBES what an FDX view of this
+            // operand will someday carry (`FDXIndexedResidency`, FDX §6.9 —
+            // "Description only: no cost, no decision"). Registration/dispatch of
+            // the consuming op (`OpKind::PagedAttn`) does NOT depend on it: the
+            // as-built ABI passes `block_table` / `context_lens` as ORDINARY U32
+            // graph inputs (named by the coherence check above) + the geometry in
+            // `OpParams::PagedAttn`; the kernel reads them directly, never through
+            // an FDX gather view. So a COHERENT `paged_blocks` operand is
+            // registrable NOW — we validated its internal coherence (kind /
+            // requires_ext / symbolic_extent / real block_table+context_lens
+            // roles); nothing further is a build-time gate. What remains
+            // [consumer-ahead] is the FDX VIEW layer that would MATERIALIZE this
+            // descriptor at the kernel boundary (`view_with_gather` +
+            // `Capability::DlpackExtGather` direct-admission, FKC §3.9.1) — a
+            // separate seam with no consumer yet, NOT the import gate. An
+            // INCOHERENT gather still errors above (`GatherIncoherent`), never a
+            // silent pass. (`GatherNotYetSupported` stays a reserved variant for
+            // a future ragged/CSR `kind >= 2` that FKC cannot yet key.)
+            Ok(())
         }
         other => Err(FkcError::UnknownAdmissibilityEnum {
             section: section.to_string(),
@@ -1591,6 +1603,126 @@ determinism: nondeterministic
         assert!(
             matches!(err, FkcError::MissingRequiredField { ref field, .. } if field == "accept.inputs (≥1)"),
             "got {err:?}"
+        );
+    }
+
+    // =====================================================================
+    // Rule 14 — gather (paged_blocks) coherence + the IMPORT-SIDE LIFT
+    // (FDX gather-sidecar arc, slice A).
+    // =====================================================================
+
+    /// A minimal but COHERENT `registrable: true` paged_blocks bundle: the
+    /// PagedAttn-shaped operand carries `fdx.gather: paged_blocks` naming the
+    /// separate `block_table` / `context_lens` U32 input roles (the as-built
+    /// ABI). `__GATHER__` marks the pool operand's `fdx` block so the negative
+    /// tests can mutate it into an incoherent form.
+    fn paged_blocks_bundle() -> String {
+        r#"---
+fkc_version: 1
+provider:
+  name: test-provider
+  backend: Cpu
+  kernel_source: "test-cpu"
+---
+
+# paged bundle
+
+## paged_demo
+
+A paged attention blurb.
+
+```fkc
+kernel: paged_demo
+op_kind: PagedAttn
+blurb: "naive paged attention over a blocked KV cache"
+entry_point: "x::paged_demo"
+accept:
+  inputs:
+    - name: q
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+    - name: k_cache
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      fdx:
+        requires_ext: true
+        symbolic_extent: required
+        gather: { kind: paged_blocks, block_table: block_table, context_lens: context_lens }
+    - name: block_table
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+    - name: context_lens
+      dtypes: [U32]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+  op_params: { variant: PagedAttn }
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(q)
+cost:
+  provenance: declared
+  class: attention
+  flops: "4 * b * hq * sq * ctx * d"
+  bytes_moved: "2 * b * hq * sq * d * 4"
+precision:
+  bit_stable_on_same_hardware: true
+  audited: true
+determinism: same_hardware_bitwise
+```
+"#
+        .to_string()
+    }
+
+    #[test]
+    fn coherent_registrable_paged_blocks_validates() {
+        // BORN-RED → GREEN (slice A). Before the import-side lift, a REGISTRABLE
+        // section whose operand carries `fdx.gather: paged_blocks` failed import
+        // with `GatherNotYetSupported` (validate_file re-raises it for a
+        // registrable section — only describe-only ones are swallowed). After the
+        // lift, the gather block is validated for COHERENCE (kind / requires_ext /
+        // symbolic_extent / real block_table+context_lens roles) and then ACCEPTED
+        // — registration of `OpKind::PagedAttn` does not depend on the FDX gather
+        // descriptor (the block_table/context_lens ride as ordinary U32 operands).
+        validate_str(&paged_blocks_bundle())
+            .expect("a coherent registrable paged_blocks section validates + is registrable");
+    }
+
+    #[test]
+    fn incoherent_gather_missing_requires_ext_still_errors() {
+        // GUARD: the lift must NOT be a blanket pass. An INCOHERENT gather (here:
+        // no `requires_ext: true`) still fails with the typed `GatherIncoherent`,
+        // never a silent pass (never-panic, no-silent-fixup).
+        let src = paged_blocks_bundle().replace("        requires_ext: true\n", "");
+        let err = validate_str(&src).expect_err("gather without requires_ext must error");
+        assert!(
+            matches!(err, FkcError::GatherIncoherent { ref reason, .. } if reason.contains("requires_ext")),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn incoherent_gather_dangling_block_table_role_still_errors() {
+        // GUARD: `gather.block_table` naming a role that is not a real
+        // `accept.inputs` name is `GatherIncoherent` — the coherence cross-check
+        // (a table is described in exactly one place + a consistency check, FDX
+        // §6.9.3) is preserved by the lift.
+        let src = paged_blocks_bundle().replace("block_table: block_table,", "block_table: nope,");
+        let err = validate_str(&src).expect_err("dangling block_table role must error");
+        assert!(
+            matches!(err, FkcError::GatherIncoherent { ref reason, .. } if reason.contains("block_table")),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn unknown_gather_kind_is_unknown_admissibility_enum() {
+        // GUARD: an unknown `gather.kind` (a future ragged/CSR kind FKC cannot yet
+        // key) is a typed `UnknownAdmissibilityEnum`, never a silent default.
+        let src = paged_blocks_bundle().replace("kind: paged_blocks,", "kind: ragged_csr,");
+        let err = validate_str(&src).expect_err("unknown gather kind must error");
+        assert!(
+            matches!(err, FkcError::UnknownAdmissibilityEnum { ref value, .. } if value == "ragged_csr"),
+            "got {err:?}",
         );
     }
 

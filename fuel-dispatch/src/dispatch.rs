@@ -3546,7 +3546,10 @@ cpu_flash_attn_backward_wrapper!(flash_attn_backward_v_f16_cpu_wrapper,  fuel_cp
 /// k_cache, v_cache, block_table, context_lens, optional alibi_slopes).
 macro_rules! cpu_paged_attn_wrapper {
     ($wrapper:ident, $kernel:path) => {
-        fn $wrapper(
+        // `pub(crate)` so the FKC `CpuLinkRegistry` (`CPU_ATTENTION_ENTRY_POINTS`)
+        // can resolve the paged sections' `byte_kernels::paged_attn_<dt>` symbols
+        // to these wrappers (the attention family is contract-sourced; §3.9.1).
+        pub(crate) fn $wrapper(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -4903,13 +4906,22 @@ const CPU_ATTENTION_CONTRACT: &str =
 /// is NO dedicated backward `OpParams` variant), so every softmax/mask geometry
 /// knob rides in `OpParams`, NOT the dtype-list.
 ///
-/// **PagedAttn is DESCRIBE-ONLY (`registrable: false`) and stays hand-written.**
-/// Its paged KV pool carries an `fdx.gather: paged_blocks` sidecar (§3.9.1) whose
-/// FDX gather codes are [consumer-ahead] — the importer's VALIDATE pass returns
-/// `GatherNotYetSupported` for such an operand — so its four sections are
-/// documentation, excluded from lowering/registration (and the importer's
-/// validate pass SKIPS describe-only sections so they do not block this bundle's
-/// importable FlashAttn sections). The production PagedAttn regs stay below.
+/// **PagedAttn is REGISTRABLE (`registrable: true`) and contract-sourced too.**
+/// Its paged KV pool carries an `fdx.gather: paged_blocks` operand (§3.9.1), but
+/// that block is import METADATA describing what an FDX view of the pool will
+/// someday carry (FDX §6.9: "Description only: no cost, no decision"), NOT a
+/// registration dependency: the as-built ABI passes `block_table` /
+/// `context_lens` as ordinary U32 graph inputs + the geometry in
+/// `OpParams::PagedAttn`, and the kernel reads them directly. So the importer
+/// validates the gather block for COHERENCE (kind / requires_ext /
+/// symbolic_extent / real block_table+context_lens roles) and registers the four
+/// paged sections onto the `KernelBindingTable` at `(OpKind::PagedAttn,
+/// [T,T,T,U32,U32,T](+[T]), Cpu)` — the optional-operand fan builds both alibi
+/// keys, byte-for-byte the deleted hand-written `paged_attn_{no,with}_alibi`
+/// regs. What remains [consumer-ahead] is only the FDX VIEW/materialize seam
+/// (`view_with_gather` + `Capability::DlpackExtGather`), which has no consumer
+/// yet. (The SEPARATE `FusedKernelRegistry` `PAGED_ATTN` seam stays hand-written,
+/// exactly like `FLASH_ATTN`.)
 ///
 /// Behavior-preserving vs. the deleted hand-written path (both alibi keys):
 /// identical kernels + caps (contiguous-only); the binding's `kernel_source`
@@ -4920,8 +4932,9 @@ const CPU_ATTENTION_CONTRACT: &str =
 /// dispatcher has `FlashAttn`/`PagedAttn` arms; the backward selectors keep
 /// `unknown_cost`, exactly as under the deleted hand-written regs — they are not
 /// on the cost-coverage lint's enumerated set). The family declares NO fused ops
-/// (all sections are `op_kind:` or describe-only PagedAttn), so `register_into`'s
-/// required fused argument is a local throwaway that provably stays empty. The
+/// (all sections are `op_kind:`, incl. the now-registrable PagedAttn), so
+/// `register_into`'s required fused argument is a local throwaway that provably
+/// stays empty. The
 /// SEPARATE `FusedKernelRegistry` FLASH_ATTN* / PAGED_ATTN seam
 /// (`register_default_fused_kernels`) is hand-written and stays untouched.
 fn register_cpu_attention_from_contract(table: &mut KernelBindingTable) {
@@ -4933,7 +4946,7 @@ fn register_cpu_attention_from_contract(table: &mut KernelBindingTable) {
             );
     debug_assert!(
         provider.fused.is_empty(),
-        "attention contract declares no fused ops (all op_kind or describe-only PagedAttn)",
+        "attention contract declares no fused ops (all op_kind, incl. PagedAttn)",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider.register_into(table, &mut fused).expect(
@@ -5093,12 +5106,9 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // importer from docs/kernel-contracts/cpu/matmul.fkc.md — see
     // register_cpu_matmul_from_contract; the hand-written `fused_linear` closure
     // was removed with its regs.)
-    // FlashAttn / FlashAttnBackward{Q,K,V} key-shape closures were DELETED with
-    // the migration to FKC-contract registration (the importer's optional-operand
-    // fan builds both alibi keys from the contract). PagedAttn stays hand-written
-    // (describe-only in the contract), so its key-shape closures remain below.
-    let paged_attn_no_alibi   = |t: DType| [t, t, t, u32_dt, u32_dt, t];      // q,kc,vc,bt,cl,out
-    let paged_attn_with_alibi = |t: DType| [t, t, t, u32_dt, u32_dt, t, t];   // +alibi
+    // FlashAttn / FlashAttnBackward{Q,K,V} / PagedAttn key-shape closures were
+    // DELETED with the migration to FKC-contract registration (the importer's
+    // optional-operand fan builds both alibi keys from the contract).
     let index_select  = |t: DType| [t, u32_dt, t];              // (data, indices, out)
     let gather_dts    = |t: DType| [t, u32_dt, t];              // (data, indices, out)
     let index_add_dts = |t: DType| [t, u32_dt, t, t];           // (base, indices, src, out)
@@ -5325,18 +5335,21 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     register_cpu_matmul_from_contract(table);
 
     // The CPU ATTENTION family's KernelBindingTable path — forward FlashAttn (4
-    // dtypes) + FlashAttnBackward{Q,K,V} (3 selectors × 4 dtypes), each
-    // alibi-optional section fanning into BOTH the no-alibi and with-alibi keys =
-    // 32 bindings — is now registered FROM docs/kernel-contracts/cpu/attention.fkc.md
-    // by register_cpu_attention_from_contract. The contract marks `alibi_slopes`
+    // dtypes) + FlashAttnBackward{Q,K,V} (3 selectors × 4 dtypes) + PagedAttn (4
+    // dtypes), each alibi-optional section fanning into BOTH the no-alibi and
+    // with-alibi keys = 40 bindings — is now registered FROM
+    // docs/kernel-contracts/cpu/attention.fkc.md by
+    // register_cpu_attention_from_contract. The contract marks `alibi_slopes`
     // as `optional: true`, so the importer's key-builder fans each (op, dtype)
     // section into both operand-count keys; FKC is the SOLE path for the migrated
-    // subset. All hand-written FlashAttn + FlashAttnBackward{Q,K,V} regs (both
-    // alibi keys) were DELETED. PagedAttn is DESCRIBE-ONLY in the contract (its
-    // fdx.gather pool is [consumer-ahead]) and stays hand-written below; the
-    // SEPARATE FusedKernelRegistry FLASH_ATTN*/PAGED_ATTN seam
-    // (register_default_fused_kernels) is untouched. Placed BEFORE the
-    // `fill_unset_cpu_*` passes so the imported entries pick up the CPU cost fill.
+    // family. All hand-written FlashAttn + FlashAttnBackward{Q,K,V} + PagedAttn
+    // regs (both alibi keys) were DELETED. PagedAttn's fdx.gather pool is import
+    // METADATA (§3.9.1: it dispatches via ordinary U32 block_table/context_lens
+    // operands + OpParams::PagedAttn), so it registers here too; only the FDX VIEW
+    // seam stays [consumer-ahead]. The SEPARATE FusedKernelRegistry
+    // FLASH_ATTN*/PAGED_ATTN seam (register_default_fused_kernels) is untouched.
+    // Placed BEFORE the `fill_unset_cpu_*` passes so the imported entries pick up
+    // the CPU cost fill.
     register_cpu_attention_from_contract(table);
 
     // The CPU IN-PLACE scalar-param family's KernelBindingTable path — 21 in-place
@@ -5394,29 +5407,18 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // FusedKernelRegistry FusedOps::FUSED_LINEAR seam
     // (`register_default_fused_kernels`) is hand-written and stays untouched.
 
-    // FlashAttn (forward) + FlashAttnBackward{Q,K,V} — both the no-alibi and
-    // with-alibi keys per dtype — are now registered FROM the attention FKC
-    // contract (`register_cpu_attention_from_contract`, near the top of this fn).
-    // The contract marks `alibi_slopes` as `optional: true`, so the importer's
-    // key-builder fans each (op, dtype) section into both operand-count keys — FKC
-    // is the SOLE path for the migrated attention subset (32 bindings). All
-    // hand-written FlashAttn + FlashAttnBackward{Q,K,V} regs (both alibi keys)
-    // were DELETED.
-
-    // PagedAttn — block_table + ctx_lens are always U32; alibi is
-    // optional. DESCRIBE-ONLY in the FKC contract (`registrable: false` — its
-    // fdx.gather paged_blocks pool is [consumer-ahead], §3.9.1), so the importer
-    // does NOT register it; these hand-written regs stay authoritative until the
-    // FDX gather codes land.
-    for (dt, w) in [
-        (f32_dt,  paged_attn_f32_cpu_wrapper  as KernelRef),
-        (f64_dt,  paged_attn_f64_cpu_wrapper),
-        (bf16_dt, paged_attn_bf16_cpu_wrapper),
-        (f16_dt,  paged_attn_f16_cpu_wrapper),
-    ] {
-        table.register(PagedAttn, &paged_attn_no_alibi(dt),   cpu, w);
-        table.register(PagedAttn, &paged_attn_with_alibi(dt), cpu, w);
-    }
+    // FlashAttn (forward) + FlashAttnBackward{Q,K,V} + PagedAttn — both the
+    // no-alibi and with-alibi keys per dtype — are now registered FROM the
+    // attention FKC contract (`register_cpu_attention_from_contract`, near the top
+    // of this fn). The contract marks `alibi_slopes` as `optional: true`, so the
+    // importer's key-builder fans each (op, dtype) section into both operand-count
+    // keys — FKC is the SOLE path for the migrated attention family (40 bindings:
+    // FlashAttn 8 + FlashAttnBackward{Q,K,V} 24 + PagedAttn 8). All hand-written
+    // FlashAttn + FlashAttnBackward{Q,K,V} + PagedAttn regs (both alibi keys) were
+    // DELETED. PagedAttn's `fdx.gather: paged_blocks` pool is import METADATA
+    // (§3.9.1): block_table/context_lens ride as ordinary U32 operands +
+    // OpParams::PagedAttn, so registration does not depend on the FDX gather VIEW
+    // (that stays [consumer-ahead]).
 
     // (Affine F32 is now registered from the affine-clamp-powi contract above.)
 
@@ -9260,25 +9262,32 @@ mod tests {
 
     /// Gate for the CPU **attention** family's `KernelBindingTable` path migrated
     /// to FKC-contract registration. FlashAttn (forward) + the three
-    /// FlashAttnBackward{Q,K,V} selectors — 4 ops × 4 dtypes × {no-alibi,
-    /// with-alibi} = 32 bindings — are IMPORTED from
+    /// FlashAttnBackward{Q,K,V} selectors + PagedAttn — 5 ops × 4 dtypes ×
+    /// {no-alibi, with-alibi} = 40 bindings — are IMPORTED from
     /// `docs/kernel-contracts/cpu/attention.fkc.md` (the `op_kind:` sections).
     /// Each section declares `alibi_slopes` as an `optional: true` LAST input, so
     /// the importer's optional-operand fan registers BOTH the no-alibi key
-    /// (`[q,k,v(,do),out]`) and the with-alibi key (`+alibi`), both resolving the
-    /// SAME wrapper — byte-for-byte the deleted hand-written `no_alibi`/`with_alibi`
-    /// regs. Forward FlashAttn and the three backward selectors share the single
-    /// `OpParams::FlashAttn` carrier (no dedicated backward variant).
+    /// (`[q,k,v(,do),out]` / `[q,kc,vc,bt,cl,out]`) and the with-alibi key
+    /// (`+alibi`), both resolving the SAME wrapper — byte-for-byte the deleted
+    /// hand-written `no_alibi`/`with_alibi` regs. Forward FlashAttn and the three
+    /// backward selectors share the single `OpParams::FlashAttn` carrier (no
+    /// dedicated backward variant); PagedAttn uses `OpParams::PagedAttn`.
     ///
-    /// **PagedAttn is DESCRIBE-ONLY in the contract** (`registrable: false` — its
-    /// `fdx.gather: paged_blocks` pool is [consumer-ahead], §3.9.1), so it is NOT
-    /// migrated and stays hand-written; its bindings keep the hand-written (empty)
-    /// `kernel_source` and are asserted separately below to remain PRESENT (the
-    /// reframe did not touch them). The SEPARATE `FusedKernelRegistry` FLASH_ATTN*
-    /// seam (`register_default_fused_kernels`) is likewise untouched.
+    /// **PagedAttn is now REGISTRABLE + contract-sourced (FDX gather-sidecar arc,
+    /// slice A).** Its `fdx.gather: paged_blocks` pool is import METADATA (§3.9.1):
+    /// the block_table / context_lens ride as ordinary U32 operands +
+    /// `OpParams::PagedAttn`, so registration does not depend on the FDX gather
+    /// VIEW (which stays [consumer-ahead]). Its bindings are asserted
+    /// contract-sourced alongside FlashAttn below — BORN-RED discriminator: the
+    /// deleted hand-written regs stamped an empty `kernel_source`, so the
+    /// `kernel_source == "portable-cpu"` assertion failed until the four paged
+    /// sections were flipped `registrable: true` + wired into
+    /// `CPU_ATTENTION_ENTRY_POINTS`. The SEPARATE `FusedKernelRegistry`
+    /// FLASH_ATTN* / PAGED_ATTN seam (`register_default_fused_kernels`) is
+    /// untouched (stays hand-written, exactly as before).
     ///
-    /// For each of the 32 flash keys: resolves to the EXACT production wrapper
-    /// with `kernel_source == "portable-cpu"` (the contract provenance tag), caps
+    /// For each of the 40 keys: resolves to the EXACT production wrapper with
+    /// `kernel_source == "portable-cpu"` (the contract provenance tag), caps
     /// contiguous, and the contract's bit-stable precision riding through.
     #[test]
     fn global_bindings_registers_attention_family_from_contract() {
@@ -9311,6 +9320,14 @@ mod tests {
             flash_attn_backward_v_f64_cpu_wrapper,
             flash_attn_backward_v_bf16_cpu_wrapper,
             flash_attn_backward_v_f16_cpu_wrapper,
+        ];
+        // PagedAttn wrappers (order matches `dts`); the same wrapper serves both
+        // the no-alibi [q,kc,vc,bt,cl,out] and with-alibi (+alibi) keys.
+        let pa_wrappers: [crate::kernel::KernelRef; 4] = [
+            paged_attn_f32_cpu_wrapper,
+            paged_attn_f64_cpu_wrapper,
+            paged_attn_bf16_cpu_wrapper,
+            paged_attn_f16_cpu_wrapper,
         ];
 
         // Assert `op`/`key` resolves to `expected` with the contract provenance,
@@ -9366,27 +9383,26 @@ mod tests {
                 check(op, bw_a, ws[i], "backward with-alibi");
                 checked += 2;
             }
+
+            // PagedAttn (FDX gather-sidecar arc, slice A): now CONTRACT-SOURCED
+            // like FlashAttn. no-alibi [q,kc,vc,bt:U32,cl:U32,out] + with-alibi
+            // (+alibi). BORN-RED discriminator: before the migration the paged
+            // bindings were hand-written (`kernel_source == ""`); `check` requires
+            // `kernel_source == "portable-cpu"`, so it fails until the four paged
+            // sections are flipped `registrable: true` + resolved via
+            // CPU_ATTENTION_ENTRY_POINTS. Proves the gather block is import
+            // metadata, not a registration blocker.
+            let pa_noa: &[DType] = &[*dt, *dt, *dt, DType::U32, DType::U32, *dt];
+            let pa_a: &[DType] = &[*dt, *dt, *dt, DType::U32, DType::U32, *dt, *dt];
+            check(OpKind::PagedAttn, pa_noa, pa_wrappers[i], "paged no-alibi");
+            check(OpKind::PagedAttn, pa_a, pa_wrappers[i], "paged with-alibi");
+            checked += 2;
         }
         assert_eq!(
-            checked, 32,
-            "FlashAttn(8) + FlashAttnBackward{{Q,K,V}}(24) = 32 contract-sourced bindings",
+            checked, 40,
+            "FlashAttn(8) + FlashAttnBackward{{Q,K,V}}(24) + PagedAttn(8) = 40 \
+             contract-sourced bindings",
         );
-
-        // PagedAttn stays HAND-WRITTEN (describe-only in the contract): its
-        // bindings remain present (both alibi shapes) — proving the reframe did
-        // NOT migrate them (they keep the hand-written registration).
-        for dt in dts {
-            let pa_noa: &[DType] = &[dt, dt, dt, DType::U32, DType::U32, dt];
-            let pa_a: &[DType] = &[dt, dt, dt, DType::U32, DType::U32, dt, dt];
-            assert!(
-                table.lookup(OpKind::PagedAttn, pa_noa, BackendId::Cpu).is_ok(),
-                "PagedAttn/{dt:?} no-alibi stays registered (hand-written)",
-            );
-            assert!(
-                table.lookup(OpKind::PagedAttn, pa_a, BackendId::Cpu).is_ok(),
-                "PagedAttn/{dt:?} with-alibi stays registered (hand-written)",
-            );
-        }
     }
 
     /// The CPU **in-place scalar-param** family is registered FROM its FKC
