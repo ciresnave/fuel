@@ -45,12 +45,18 @@ by the operand shapes / `KernelRef` payload, NOT by the `OpParams` variant beyon
 fields the carrier already holds. The cost/shape symbols below name those geometry dims by role for
 the importer to bind from the shapes.
 
-**PagedAttn is DESCRIBE-ONLY here (`registrable: false`, §3.10).** Its paged KV pool carries an
-`fdx.gather: paged_blocks` sidecar (§3.9.1) whose FDX gather codes are [consumer-ahead] — the
-importer's VALIDATE pass returns `GatherNotYetSupported` for such an operand — so the four paged
-sections are documentation, not a registration target; the production `PagedAttn` binding stays
-hand-written until the FDX gather codes land. (The importer's validate pass SKIPS describe-only
-sections, so these four do not block the bundle's importable FlashAttn sections.)
+**PagedAttn is REGISTRABLE (`registrable: true`).** Its paged KV pool carries an
+`fdx.gather: paged_blocks` operand (§3.9.1) — but that block is **import METADATA describing what an
+FDX view of the pool will someday carry** (`FDXIndexedResidency`, FDX §6.9: "Description only: no
+cost, no decision"), NOT a registration dependency. The as-built ABI passes `block_table` /
+`context_lens` as **ordinary U32 graph inputs** (named by `fdx.gather.{block_table,context_lens}`) +
+the geometry in `OpParams::PagedAttn`; the kernel reads them directly, never through an FDX gather
+view. So the importer VALIDATES the gather block for coherence (kind / `requires_ext` /
+`symbolic_extent` / real block_table+context_lens roles) and then registers the four paged sections
+onto the `KernelBindingTable` at `(OpKind::PagedAttn, [T,T,T,U32,U32,T](+[T]), Cpu)` exactly like the
+FlashAttn sections. What remains **[consumer-ahead]** is the FDX VIEW layer that would MATERIALIZE
+this descriptor at the kernel boundary (`view_with_gather` + `Capability::DlpackExtGather`
+direct-admission) — a separate seam with no consumer yet.
 
 These kernels are the production `CpuStorageBytes` path the dispatch wrapper
 (`fuel_dispatch::dispatch::cpu_wrappers`) extracts and calls; they consume flat contiguous,
@@ -1698,14 +1704,16 @@ Per the FDX gather single-place rule (§3.9.1), the paged KV pool is described a
 `FDX_GATHER_PAGED_BLOCKS` operand and the `block_table` / `context_lens` are **separate
 `accept.inputs`** (the as-built ABI passes them as their own graph inputs); the pool operand's
 `fdx.gather.{block_table,context_lens}` name those input roles rather than duplicating the data.
-Direct admission of the paged operand is gated on `Capability::DlpackExtGather` and is
-**[consumer-ahead]** — the FDX gather codes are the 2026-06-17 addition with no code yet, so an
-importer reaching the `gather` block before they land returns `GatherNotYetSupported` rather than
-fabricating a descriptor.
+Registration keys on `(OpKind::PagedAttn, [q,k_cache,v_cache,block_table,context_lens,(alibi?),out]
+dtypes, Cpu)` and the kernel reads those U32 operands directly — the `gather` block is describe-time
+METADATA, not a registration dependency, so this section is `registrable: true`. Only **direct FDX
+admission** of the paged operand at the kernel boundary (a consumer reading the `FDXIndexedResidency`
+sidecar via an FDX view) is gated on `Capability::DlpackExtGather` and stays **[consumer-ahead]** —
+the FDX view/materialize seam (`view_with_gather`) has no consumer yet.
 
 ```fkc
 kernel: paged_attn_f32
-registrable: false                     # DESCRIBE-ONLY: fdx.gather paged_blocks is [consumer-ahead] (§3.9.1); the production PagedAttn binding stays hand-written
+registrable: true                      # fdx.gather paged_blocks is import METADATA (§3.9.1): the PagedAttn binding dispatches via ordinary U32 block_table/context_lens operands + OpParams::PagedAttn — registration does not depend on the FDX gather view (that stays [consumer-ahead])
 op_kind: PagedAttn
 blurb: "Naive attention over a paged/blocked KV cache, f32 native; per-seq block_table + context_lens; implicit causal; GQA; softcap/alibi."
 backend: Cpu
@@ -1755,7 +1763,7 @@ accept:
       rank: 1                              # [Hq]
       optional: true
   op_params:
-    variant: PagedAttn                     # OpParams::PagedAttn (primitive namespace; §3.7)  [describe-only: rule-7 namespace check skipped for registrable:false]
+    variant: PagedAttn                     # OpParams::PagedAttn (primitive namespace; §3.7)
     fields:
       # geometry (b,hq,hkv,sq,d,max_blocks_per_seq,num_blocks) carried by operand SHAPES / KernelRef.
       softmax_scale: { kind: f32 }
@@ -1811,7 +1819,7 @@ zero-offset only, naive per-row allocation, no in-place, `Sq ≤ ctx_len`.
 
 ```fkc
 kernel: paged_attn_f64
-registrable: false                     # DESCRIBE-ONLY: fdx.gather paged_blocks is [consumer-ahead] (§3.9.1); the production PagedAttn binding stays hand-written
+registrable: true                      # fdx.gather paged_blocks is import METADATA (§3.9.1): the PagedAttn binding dispatches via ordinary U32 block_table/context_lens operands + OpParams::PagedAttn — registration does not depend on the FDX gather view (that stays [consumer-ahead])
 op_kind: PagedAttn
 blurb: "Naive attention over a paged/blocked KV cache, f64 native; per-seq block_table + context_lens; implicit causal; GQA; softcap/alibi."
 backend: Cpu
@@ -1912,7 +1920,7 @@ Limitations match the family: contiguous zero-offset only, naive per-row allocat
 
 ```fkc
 kernel: paged_attn_bf16
-registrable: false                     # DESCRIBE-ONLY: fdx.gather paged_blocks is [consumer-ahead] (§3.9.1); the production PagedAttn binding stays hand-written
+registrable: true                      # fdx.gather paged_blocks is import METADATA (§3.9.1): the PagedAttn binding dispatches via ordinary U32 block_table/context_lens operands + OpParams::PagedAttn — registration does not depend on the FDX gather view (that stays [consumer-ahead])
 op_kind: PagedAttn
 blurb: "Naive attention over a paged/blocked KV cache, bf16 I/O with f32 compute; per-seq block_table + context_lens; implicit causal; GQA; softcap/alibi."
 backend: Cpu
@@ -2012,7 +2020,7 @@ Limitations match the family: contiguous zero-offset only, naive per-row allocat
 
 ```fkc
 kernel: paged_attn_f16
-registrable: false                     # DESCRIBE-ONLY: fdx.gather paged_blocks is [consumer-ahead] (§3.9.1); the production PagedAttn binding stays hand-written
+registrable: true                      # fdx.gather paged_blocks is import METADATA (§3.9.1): the PagedAttn binding dispatches via ordinary U32 block_table/context_lens operands + OpParams::PagedAttn — registration does not depend on the FDX gather view (that stays [consumer-ahead])
 op_kind: PagedAttn
 blurb: "Naive attention over a paged/blocked KV cache, f16 I/O with f32 compute; per-seq block_table + context_lens; implicit causal; GQA; softcap/alibi."
 backend: Cpu

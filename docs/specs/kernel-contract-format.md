@@ -682,10 +682,18 @@ job, FDX carries none). `paged_attn` is its own kernel-contract section (the att
 §9.2); a contract that declares `fdx.gather.kind: paged_blocks` and `extent_kind: affine` is the
 canonical paged-attention advertisement.
 
-**[consumer-ahead].** `OpKind::PagedAttn` exists today; the FDX gather descriptor and
-`Capability::DlpackExtGather` are the 2026-06-17 FDX addition (no code yet). An importer that
-reaches a `gather`-bearing operand before the FDX gather codes land returns `GatherNotYetSupported`
-rather than fabricating a descriptor — exactly the `MxNotYetRegistrable` discipline (§6).
+**Import-side lift (2026-07-03) — a `gather` operand is REGISTRABLE.** `OpKind::PagedAttn` exists
+today and dispatches via the ordinary U32 `block_table` / `context_lens` graph inputs + the geometry
+in `OpParams::PagedAttn` — it reads them directly, never through an FDX gather view. The `fdx.gather`
+block is therefore describe-time **METADATA** (FDX §6.9: "Description only: no cost, no decision")
+describing what an FDX view of the pool will someday carry, **not a registration dependency**. So the
+importer VALIDATES the gather block for coherence (`kind` / `requires_ext` / `symbolic_extent` / real
+`block_table`+`context_lens` roles) and then REGISTERS the section — a coherent `paged_blocks` operand
+no longer trips `GatherNotYetSupported`. What remains **[consumer-ahead]** is only the FDX VIEW /
+materialize seam that would hand the kernel an `FDXIndexedResidency` sidecar (`view_with_gather` +
+`Capability::DlpackExtGather` direct-admission, FDX gather addition §8/§12) — a distinct seam with no
+consumer yet. (An INCOHERENT gather still errors with `GatherIncoherent`; `GatherNotYetSupported`
+stays reserved for a future ragged/CSR `gather.kind >= 2` that FKC cannot yet key.)
 
 #### 3.9.2 Affine live extents on an operand
 
