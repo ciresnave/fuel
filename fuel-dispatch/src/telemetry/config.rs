@@ -17,11 +17,13 @@ pub enum TelemetryMode {
     #[default]
     Off,
     /// `(structure_key, chosen)` + aggregated counts and the miss histogram;
-    /// **no** `candidates[]` (no Judge-oracle reads). This is all the miss
-    /// half needs — it does not depend on Judge timings at all.
+    /// **no** `candidates[]` (no Judge-oracle reads). Emits a `DispatchRecord`
+    /// for every planned cell (the `chosen` signal) with an empty
+    /// `candidates[]`, plus the miss histogram — which needs no Judge timings.
     Coarse,
-    /// Coarse **plus** `candidates[]` with per-candidate Judge timings (the
-    /// dispatch-record half; not built by the miss-first slice).
+    /// Coarse **plus** `candidates[]` with per-candidate Judge timings: each
+    /// admitted alternative's own measured latency from the plan-time Judge
+    /// oracle (`None` for unmeasured cells — never a fabricated `0`).
     Detailed,
 }
 

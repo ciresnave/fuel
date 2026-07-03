@@ -1,37 +1,58 @@
 //! The batch/offline JSONL sink — in-memory aggregation, flushed at run cadence.
 //!
-//! A process accumulates aggregated [`MissRecord`] counts in memory (keyed by
-//! `(wanted, fallback, hw)`), then flushes them to a JSONL artifact (one compact
-//! JSON object per line) via an atomic tmp+rename at process end / explicit
-//! [`TelemetrySink::flush`]. This mirrors how the Judge's `ProfileReport` is
-//! written once, but append-friendly JSONL so a long run streams without
+//! A process accumulates aggregated [`MissRecord`] counts (keyed by `(wanted,
+//! fallback, hw)`) **and** aggregated [`DispatchRecord`] counts (keyed by
+//! `(structure_key, chosen, hw)`) in memory, then flushes them to JSONL
+//! artifacts (one compact JSON object per line) via an atomic tmp+rename at
+//! process end / explicit flush. This mirrors how the Judge's `ProfileReport`
+//! is written once, but append-friendly JSONL so a long run streams without
 //! rewriting.
+//!
+//! # File layout — the two record kinds go to SEPARATE files (documented choice)
+//!
+//! The pinned wire schema (`docs/outreach/baracuda-dispatch-record-response.md`)
+//! defines the record *shapes* but does not mandate a file layout, and the
+//! records carry no `kind` discriminant field. Rather than tag a mixed stream,
+//! this sink writes each kind to its own homogeneous JSONL file so a consumer
+//! parses one file as `DispatchRecord`s and the other as `MissRecord`s without
+//! a per-line type probe: [`TelemetrySink::flush`] writes the misses,
+//! [`TelemetrySink::flush_dispatches`] the dispatch records, and
+//! [`TelemetrySink::flush_all`] writes both as `misses.jsonl` +
+//! `dispatches.jsonl` beside each other in a directory.
+//!
+//! # Dispatch-record aggregation (candidates from the latest observation)
+//!
+//! A dispatch cell aggregates by `(structure_key, chosen, hw)` with the summed
+//! `count`; its `candidates[]` are taken from the **latest** observation that
+//! carried any (a subsequent Coarse re-observation, whose `candidates` is
+//! empty, does not erase a prior Detailed fill). Within one run every
+//! observation of a cell shares one mode, so this only matters across modes; it
+//! keeps the richest `candidates[]` seen.
 //!
 //! # Crate placement (divergence from the plan's step 7, justified)
 //!
-//! The plan puts the sink in `fuel-core` because it needs the concrete
-//! `ProfileJudgeOracle` (to fill `candidates[]`) + the hardware-keyed cache dir
-//! (`default_report_path`). **The MISS half needs neither** — it aggregates
-//! records and writes JSONL to a caller-supplied path, with **no Judge read**.
-//! So the miss-first sink lives in `fuel-dispatch`, alongside the record types
-//! it aggregates: the whole miss slice stays in one crate (one cargo
-//! invocation, no premature `fuel-core` oracle machinery). When the
-//! dispatch-record / `candidates[]` half lands, its Detailed-mode fill (which
-//! *does* need the oracle) is what pulls a writer into `fuel-core`; the
-//! aggregation shape here is a strict subset that half extends.
+//! The plan puts the sink in `fuel-core` because filling `candidates[]` at
+//! flush time would need the concrete `ProfileJudgeOracle` + the hardware-keyed
+//! cache dir. **This sink needs neither**: `candidates[]` are filled at the
+//! plan pick site (which already threads an `Option<&dyn JudgeOracle>`) and
+//! handed in on the [`DispatchRecord`]; the sink only aggregates + writes JSONL
+//! to a caller-supplied path. So the whole dispatch/miss aggregation stays in
+//! `fuel-dispatch`, one cargo invocation, no premature `fuel-core` machinery.
+//! The `fuel-core` seam is only path resolution + hook installation.
 //!
 //! # Never-panic posture
 //!
-//! Emission must never break dispatch. [`TelemetrySink::record_miss`] cannot
-//! fail (pure in-memory aggregation). [`TelemetrySink::flush`] returns
-//! `io::Result` so a caller logs a write failure to telemetry rather than
-//! letting it propagate into the dispatch path — the sink never `panic!`s.
+//! Emission must never break dispatch. [`TelemetrySink::record_miss`] /
+//! [`TelemetrySink::record_dispatch`] cannot fail (pure in-memory aggregation).
+//! The flush methods return `io::Result` so a caller logs a write failure to
+//! telemetry rather than letting it propagate into the dispatch path — the sink
+//! never `panic!`s.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::impl_id::ImplId;
-use super::record::{HwStamp, MissRecord};
+use super::record::{Candidate, DispatchRecord, HwStamp, MissRecord};
 use super::structure_key::StructureKeyToken;
 
 /// The aggregation key for a miss cell: `(wanted, fallback, hw)`. The hardware
@@ -45,17 +66,37 @@ struct MissKey {
     hw: HwStamp,
 }
 
+/// The aggregation key for a dispatch cell: `(structure_key, chosen, hw)`. The
+/// `structure_key` is `Option` (`None` when the Baracuda callable is unlinked),
+/// so unlinked-provider records still aggregate by `(chosen, hw)`; the hardware
+/// stamp keeps rows from different silicon / driver revisions from pooling.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DispatchKey {
+    structure_key: Option<StructureKeyToken>,
+    chosen: ImplId,
+    hw: HwStamp,
+}
+
+/// The aggregated value for a dispatch cell: summed hit `count` plus the
+/// `candidates[]` from the latest observation that carried any (see module
+/// docs — a later Coarse re-observation does not erase a Detailed fill).
+#[derive(Debug, Clone, Default)]
+struct DispatchAgg {
+    count: u64,
+    candidates: Vec<Candidate>,
+}
+
 /// In-memory aggregation of emitted telemetry, flushed to JSONL at run/release
 /// cadence (batch/offline v1). Miss records aggregate by `(wanted, fallback,
-/// hw)`, so a long run collapses to a histogram rather than one line per
-/// dispatch.
-///
-/// The dispatch-record half (`DispatchRecord` aggregation + `candidates[]`
-/// fill) is **not** built here yet — see the module docs.
+/// hw)` and dispatch records by `(structure_key, chosen, hw)`, so a long run
+/// collapses to a histogram rather than one line per dispatch.
 #[derive(Debug, Default)]
 pub struct TelemetrySink {
     /// Aggregated miss observations: cell → summed count.
     misses: HashMap<MissKey, u64>,
+    /// Aggregated dispatch observations: cell → (summed count, latest
+    /// candidates).
+    dispatches: HashMap<DispatchKey, DispatchAgg>,
 }
 
 impl TelemetrySink {
@@ -80,6 +121,59 @@ impl TelemetrySink {
     /// Number of distinct aggregated miss cells (observability / test helper).
     pub fn miss_cell_count(&self) -> usize {
         self.misses.len()
+    }
+
+    /// Record one observed dispatch decision, aggregating into the
+    /// `(structure_key, chosen, hw)` cell. A record's own `count` (≥ 1) is
+    /// added, so pre-aggregated records merge correctly. The `candidates[]`
+    /// overwrite the cell's retained list **only when non-empty** — a Detailed
+    /// observation's per-candidate timings survive a later Coarse
+    /// re-observation (see module docs). **Never fails** — pure in-memory
+    /// aggregation, so emission can never break dispatch.
+    pub fn record_dispatch(&mut self, rec: DispatchRecord) {
+        let key = DispatchKey {
+            structure_key: rec.structure_key,
+            chosen: rec.chosen,
+            hw: rec.hw,
+        };
+        let agg = self.dispatches.entry(key).or_default();
+        agg.count += rec.count.max(1);
+        if !rec.candidates.is_empty() {
+            agg.candidates = rec.candidates;
+        }
+    }
+
+    /// Number of distinct aggregated dispatch cells (observability / test).
+    pub fn dispatch_cell_count(&self) -> usize {
+        self.dispatches.len()
+    }
+
+    /// Materialize the aggregated dispatch decisions as [`DispatchRecord`]s —
+    /// one per cell, `count` = summed observations, `candidates` = the latest
+    /// non-empty fill. Sorted for a deterministic, diff-friendly feed (by
+    /// `structure_key`, then the chosen impl's source + revision).
+    pub fn dispatch_records(&self) -> Vec<DispatchRecord> {
+        let mut recs: Vec<DispatchRecord> = self
+            .dispatches
+            .iter()
+            .map(|(key, agg)| DispatchRecord {
+                schema: super::record::TELEMETRY_SCHEMA_VERSION,
+                structure_key: key.structure_key.clone(),
+                chosen: key.chosen.clone(),
+                candidates: agg.candidates.clone(),
+                count: agg.count,
+                hw: key.hw.clone(),
+            })
+            .collect();
+        recs.sort_by(|a, b| {
+            a.structure_key
+                .as_ref()
+                .map(|t| &t.0)
+                .cmp(&b.structure_key.as_ref().map(|t| &t.0))
+                .then_with(|| a.chosen.kernel_source.cmp(&b.chosen.kernel_source))
+                .then_with(|| a.chosen.kernel_revision_hash.cmp(&b.chosen.kernel_revision_hash))
+        });
+        recs
     }
 
     /// Materialize the aggregated misses as [`MissRecord`]s — one per cell,
@@ -107,33 +201,57 @@ impl TelemetrySink {
         recs
     }
 
-    /// Whether the sink holds anything to flush.
+    /// Whether the sink holds anything to flush (neither misses nor dispatch
+    /// records).
     pub fn is_empty(&self) -> bool {
-        self.misses.is_empty()
+        self.misses.is_empty() && self.dispatches.is_empty()
     }
 
-    /// Drain the aggregated records to a JSONL file — one compact JSON object
-    /// per line — via an atomic tmp+rename. Returns the number of lines
+    /// Drain the aggregated **miss** records to a JSONL file — one compact JSON
+    /// object per line — via an atomic tmp+rename. Returns the number of lines
     /// written. The `io::Result` surfaces a write failure to the caller (a
     /// telemetry log); it never propagates into dispatch.
     pub fn flush(&self, path: &Path) -> std::io::Result<usize> {
-        let records = self.miss_records();
-        let mut body = String::new();
-        for r in &records {
-            // These record types are plain data; serialization cannot fail,
-            // but map the error rather than unwrap to keep the path panic-free.
-            let line = serde_json::to_string(r).map_err(std::io::Error::other)?;
-            body.push_str(&line);
-            body.push('\n');
-        }
-        // Atomic write: stage to a sibling tmp file, then rename over the
-        // target (atomic on the same directory / filesystem).
-        let mut tmp: PathBuf = path.to_path_buf();
-        tmp.as_mut_os_string().push(".tmp");
-        std::fs::write(&tmp, body.as_bytes())?;
-        std::fs::rename(&tmp, path)?;
-        Ok(records.len())
+        write_jsonl(path, &self.miss_records())
     }
+
+    /// Drain the aggregated **dispatch** records to a JSONL file (sibling of
+    /// [`Self::flush`]). Same atomic tmp+rename, one compact JSON object per
+    /// line; returns the number of lines written.
+    pub fn flush_dispatches(&self, path: &Path) -> std::io::Result<usize> {
+        write_jsonl(path, &self.dispatch_records())
+    }
+
+    /// Flush both record kinds into `dir` as the separate, homogeneous files
+    /// `misses.jsonl` + `dispatches.jsonl` (see module docs). Creates `dir` if
+    /// needed. Returns `(miss_lines, dispatch_lines)`.
+    pub fn flush_all(&self, dir: &Path) -> std::io::Result<(usize, usize)> {
+        std::fs::create_dir_all(dir)?;
+        let misses = self.flush(&dir.join("misses.jsonl"))?;
+        let dispatches = self.flush_dispatches(&dir.join("dispatches.jsonl"))?;
+        Ok((misses, dispatches))
+    }
+}
+
+/// Write `records` as JSONL (one compact JSON object per line) via an atomic
+/// tmp+rename. Shared by the miss + dispatch flush paths; never panics
+/// (serialization errors map to `io::Error`).
+fn write_jsonl<T: serde::Serialize>(path: &Path, records: &[T]) -> std::io::Result<usize> {
+    let mut body = String::new();
+    for r in records {
+        // These record types are plain data; serialization cannot fail, but
+        // map the error rather than unwrap to keep the path panic-free.
+        let line = serde_json::to_string(r).map_err(std::io::Error::other)?;
+        body.push_str(&line);
+        body.push('\n');
+    }
+    // Atomic write: stage to a sibling tmp file, then rename over the target
+    // (atomic on the same directory / filesystem).
+    let mut tmp: PathBuf = path.to_path_buf();
+    tmp.as_mut_os_string().push(".tmp");
+    std::fs::write(&tmp, body.as_bytes())?;
+    std::fs::rename(&tmp, path)?;
+    Ok(records.len())
 }
 
 #[cfg(test)]
@@ -279,5 +397,93 @@ mod tests {
         let n = sink.flush(&path).expect("flush empty");
         assert_eq!(n, 0);
         assert_eq!(std::fs::read_to_string(&path).expect("read").len(), 0);
+    }
+
+    // --- Dispatch-record aggregation (the sibling of the miss half) ---
+
+    fn dispatch_rec(
+        structure_key: Option<&str>,
+        chosen_source: &str,
+        candidates: Vec<Candidate>,
+    ) -> DispatchRecord {
+        DispatchRecord {
+            schema: super::super::record::TELEMETRY_SCHEMA_VERSION,
+            structure_key: structure_key.map(|s| StructureKeyToken(s.into())),
+            chosen: impl_id(chosen_source),
+            candidates,
+            count: 1,
+            hw: cpu_hw(),
+        }
+    }
+
+    /// Two dispatches at the same `(structure_key, chosen, hw)` cell aggregate
+    /// to ONE cell with `count == 2`, and the cell keeps the latest non-empty
+    /// `candidates[]` (a subsequent Coarse re-observation with empty candidates
+    /// does not erase the Detailed fill).
+    #[test]
+    fn dispatch_records_aggregate_by_cell_and_keep_candidates() {
+        let mut sink = TelemetrySink::new();
+        // First: a Detailed observation carrying a candidate with a latency.
+        let detailed = dispatch_rec(
+            Some("mm:innerdiv16"),
+            "baracuda",
+            vec![Candidate { impl_id: impl_id("baracuda"), latency_ns: Some(41_230) }],
+        );
+        sink.record_dispatch(detailed);
+        // Second: a Coarse re-observation of the SAME cell — empty candidates.
+        let coarse = dispatch_rec(Some("mm:innerdiv16"), "baracuda", vec![]);
+        sink.record_dispatch(coarse);
+
+        assert_eq!(sink.dispatch_cell_count(), 1, "same cell ⇒ one aggregated cell");
+        let recs = sink.dispatch_records();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].count, 2, "two observations sum in the cell count");
+        assert_eq!(
+            recs[0].candidates,
+            vec![Candidate { impl_id: impl_id("baracuda"), latency_ns: Some(41_230) }],
+            "the Detailed candidates survive a later empty Coarse observation",
+        );
+    }
+
+    /// Distinct `chosen` impls stay separate dispatch cells (aggregation keys
+    /// on the full `(structure_key, chosen, hw)` tuple).
+    #[test]
+    fn distinct_chosen_are_distinct_dispatch_cells() {
+        let mut sink = TelemetrySink::new();
+        sink.record_dispatch(dispatch_rec(Some("mm"), "baracuda", vec![]));
+        sink.record_dispatch(dispatch_rec(Some("mm"), "cublas", vec![]));
+        assert_eq!(sink.dispatch_cell_count(), 2, "two chosen impls ⇒ two cells");
+    }
+
+    /// `flush_all` writes the two record kinds to SEPARATE homogeneous files —
+    /// `misses.jsonl` (parses as `MissRecord`) and `dispatches.jsonl` (parses
+    /// as `DispatchRecord`).
+    #[test]
+    fn flush_all_writes_separate_files() {
+        let provider = CannedProvider("innerdiv16:f16".into());
+        let best = generic_best();
+        let mut sink = TelemetrySink::new();
+        let miss = detect_miss(&best, "matmul", &[operand()], "sm_89", &provider, cpu_hw())
+            .expect("miss");
+        sink.record_miss(miss);
+        sink.record_dispatch(dispatch_rec(
+            Some("mm:innerdiv16"),
+            "baracuda",
+            vec![Candidate { impl_id: impl_id("baracuda"), latency_ns: Some(41_230) }],
+        ));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (m, d) = sink.flush_all(dir.path()).expect("flush_all");
+        assert_eq!((m, d), (1, 1), "one miss + one dispatch line");
+
+        let miss_body = std::fs::read_to_string(dir.path().join("misses.jsonl")).expect("misses");
+        let disp_body =
+            std::fs::read_to_string(dir.path().join("dispatches.jsonl")).expect("dispatches");
+        let _: MissRecord =
+            serde_json::from_str(miss_body.lines().next().expect("miss line")).expect("MissRecord");
+        let back: DispatchRecord = serde_json::from_str(disp_body.lines().next().expect("disp line"))
+            .expect("DispatchRecord");
+        assert_eq!(back.chosen, impl_id("baracuda"));
+        assert_eq!(back.candidates[0].latency_ns, Some(41_230));
     }
 }
