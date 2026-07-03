@@ -2202,7 +2202,7 @@ pub(crate) fn affine_f32_cpu_wrapper(
 /// single write lock.
 macro_rules! cpu_affine_inplace_wrapper {
     ($name:ident, $kernel:ident, $T:ty) => {
-        fn $name(
+        pub(crate) fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -2232,7 +2232,7 @@ macro_rules! cpu_affine_inplace_wrapper {
         }
     };
     ($name:ident, $kernel:ident, $T:ty, half) => {
-        fn $name(
+        pub(crate) fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -2273,7 +2273,7 @@ cpu_affine_inplace_wrapper!(inplace_affine_f16_cpu_wrapper,  affine_inplace_f16,
 /// but pulls `(min, max)` from `OpParams::Clamp`.
 macro_rules! cpu_clamp_inplace_wrapper {
     ($name:ident, $kernel:ident, $T:ty) => {
-        fn $name(
+        pub(crate) fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -2303,7 +2303,7 @@ macro_rules! cpu_clamp_inplace_wrapper {
         }
     };
     ($name:ident, $kernel:ident, $T:ty, half) => {
-        fn $name(
+        pub(crate) fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -2343,7 +2343,7 @@ cpu_clamp_inplace_wrapper!(clamp_inplace_f16_cpu_wrapper,  clamp_inplace_f16,  f
 /// `OpParams::PowI`.
 macro_rules! cpu_powi_inplace_wrapper {
     ($name:ident, $kernel:ident) => {
-        fn $name(
+        pub(crate) fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -2385,7 +2385,7 @@ cpu_powi_inplace_wrapper!(powi_inplace_f16_cpu_wrapper,  powi_inplace_f16);
 /// scalar params — just the target buffer.
 macro_rules! cpu_unary_inplace_wrapper {
     ($name:ident, $kernel:ident) => {
-        fn $name(
+        pub(crate) fn $name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
             _layouts: &[Layout],
@@ -4929,6 +4929,68 @@ fn register_cpu_attention_from_contract(table: &mut KernelBindingTable) {
     );
 }
 
+/// The authored CPU **in-place scalar-param** kernel contract, embedded into the
+/// binary (the PRODUCTION `include_str!`). `register_cpu_inplace_from_contract`
+/// parses + lowers it and binds the WHOLE family FROM THE CONTRACT.
+const CPU_INPLACE_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cpu/inplace-unary-affine.fkc.md");
+
+/// Register the CPU **in-place scalar-param** family's `KernelBindingTable` path
+/// FROM its FKC kernel contract, the sixteenth production FKC consumer: 21
+/// in-place unary ops (`<Op>Inplace`, each per-op section fanning `[F32,F64,
+/// BF16,F16]` = 84 bindings) + `InplaceAffine` / `ClampInplace` / `PowIInplace`
+/// (per-dtype single sections, 4 each = 12) = 96 bindings. FKC is unconditional
+/// core infrastructure, so this is the ONE registration path for the whole
+/// family: the hand-written `table.register(<Op>Inplace / InplaceAffine /
+/// ClampInplace / PowIInplace, &unary(dt), …)` regs are DELETED.
+///
+/// Each per-op unary section (`## relu_inplace`, …) declares a BASE `entry_point`
+/// (`…::relu_inplace`) + enumerates `dtypes: [F32,F64,BF16,F16]`, so the
+/// importer's §3.4 multi-dtype fan-out resolves `<base>_<dtype>`
+/// (`relu_inplace_f32`) through the production [`crate::fkc::CpuLinkRegistry`]
+/// (now chaining [`crate::fkc::CPU_INPLACE_ENTRY_POINTS`]) to the exact wrapper
+/// fn-pointer. The affine / clamp / powi sections are per-dtype SINGLE sections,
+/// so they do NOT fan — their specific `<op>_inplace_<dt>` symbol resolves AS-IS
+/// (the affine rows carry the three-way naming skew: symbol `affine_inplace_<dt>`
+/// → wrapper `inplace_affine_<dt>_cpu_wrapper`, words swapped). Every binding
+/// keys `[T, T]` (the single `out` operand + its `passthrough(out)` mirror; the
+/// executor's `WorkItemKind::InplaceKernel` arm passes the target as
+/// `outputs[0]`), byte-for-byte the deleted `&unary(dt)` regs. Scalar params
+/// (affine `mul`/`add`, clamp `min`/`max`, powi `exp`) ride in
+/// `OpParams::{Affine, Clamp, PowI}`, NOT the dtype-list.
+///
+/// The `## unary_inplace` chassis umbrella is `registrable: false` (§3.10
+/// describe-only) — it binds no OpKind (each named op pins its own distinct
+/// `<Op>Inplace`), so it never lowers/resolves and is excluded from
+/// registration.
+///
+/// Behavior-preserving vs. the deleted hand-written path: identical kernels +
+/// caps (contiguous-only, empty caps); the binding's `kernel_source` becomes the
+/// contract's `"portable-cpu"` tag and its precision the contract's bit-stable
+/// claim. Cost is preserved because this runs BEFORE `fill_unset_cpu_cost`: the
+/// in-place OpKinds are NOT on the CPU cost-coverage lint's enumerated set and
+/// have no arm in `default_cost_for_op_kind`, so they keep the `unknown_cost`
+/// sentinel exactly as under the deleted hand-written regs. The family declares
+/// NO fused ops (all sections are `op_kind:` or the describe-only umbrella), so
+/// `register_into`'s required fused argument is a local throwaway that provably
+/// stays empty.
+fn register_cpu_inplace_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CPU_INPLACE_CONTRACT, &crate::fkc::CpuLinkRegistry)
+            .expect(
+                "authored CPU in-place contract must import \
+                 (embedded via include_str!, resolved through CpuLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "in-place contract declares no fused ops (all op_kind or describe-only umbrella)",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider.register_into(table, &mut fused).expect(
+        "CPU in-place contract must register into the binding table",
+    );
+}
+
 /// Register CPU dispatch wrappers in the binding table. Call once
 /// at process startup or on first table creation. The CPU backend
 /// is the universal fallback; its bindings cover every standard
@@ -5209,6 +5271,20 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // `fill_unset_cpu_*` passes so the imported entries pick up the CPU cost fill.
     register_cpu_attention_from_contract(table);
 
+    // The CPU IN-PLACE scalar-param family's KernelBindingTable path — 21 in-place
+    // unary ops (each per-op section fanning [F32,F64,BF16,F16] = 84) +
+    // InplaceAffine / ClampInplace / PowIInplace (per-dtype single sections, 4 each
+    // = 12) = 96 bindings, all keyed [T, T] — is now registered FROM
+    // docs/kernel-contracts/cpu/inplace-unary-affine.fkc.md by
+    // register_cpu_inplace_from_contract. FKC is the SOLE path for the whole
+    // family; all hand-written <Op>Inplace / InplaceAffine / ClampInplace /
+    // PowIInplace regs were DELETED. The `unary_inplace` chassis section is
+    // describe-only (registrable: false). Placed BEFORE the `fill_unset_cpu_*`
+    // passes; the in-place OpKinds keep the `unknown_cost` sentinel (no arm in
+    // default_cost_for_op_kind, not on the cost-coverage lint set) — identical to
+    // the deleted hand-written regs.
+    register_cpu_inplace_from_contract(table);
+
     // (bf16 + f16 reductions are now registered from the reduce contract above,
     // alongside the f32/f64 variants — accumulate in f32 for stability.)
 
@@ -5391,30 +5467,13 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
 
     // (Affine F32 is now registered from the affine-clamp-powi contract above.)
 
-    // In-place affine — Phase 3c of in-place ops infrastructure.
-    // Binding-table key shape mirrors the non-inplace Affine ([T, T])
-    // because `build_lookup_dtypes` produces that for an Op::Fused
-    // INPLACE_AFFINE node with 1 input + 1 output of the same dtype.
-    // The wrapper rejects non-empty `inputs` (the executor's
-    // InplaceKernel arm passes the target as `outputs[0]` instead),
-    // but the binding-table KEY is what matters for lookup.
-    table.register(InplaceAffine, &unary(f32_dt),  cpu, inplace_affine_f32_cpu_wrapper);
-    table.register(InplaceAffine, &unary(f64_dt),  cpu, inplace_affine_f64_cpu_wrapper);
-    table.register(InplaceAffine, &unary(bf16_dt), cpu, inplace_affine_bf16_cpu_wrapper);
-    table.register(InplaceAffine, &unary(f16_dt),  cpu, inplace_affine_f16_cpu_wrapper);
-
-    // ClampInplace + PowIInplace — Phase 3e scalar-param family. Same
-    // [T, T] key shape as InplaceAffine; OpParams::{Clamp, PowI} carry
-    // the scalars to the wrapper.
-    table.register(ClampInplace, &unary(f32_dt),  cpu, clamp_inplace_f32_cpu_wrapper);
-    table.register(ClampInplace, &unary(f64_dt),  cpu, clamp_inplace_f64_cpu_wrapper);
-    table.register(ClampInplace, &unary(bf16_dt), cpu, clamp_inplace_bf16_cpu_wrapper);
-    table.register(ClampInplace, &unary(f16_dt),  cpu, clamp_inplace_f16_cpu_wrapper);
-
-    table.register(PowIInplace, &unary(f32_dt),  cpu, powi_inplace_f32_cpu_wrapper);
-    table.register(PowIInplace, &unary(f64_dt),  cpu, powi_inplace_f64_cpu_wrapper);
-    table.register(PowIInplace, &unary(bf16_dt), cpu, powi_inplace_bf16_cpu_wrapper);
-    table.register(PowIInplace, &unary(f16_dt),  cpu, powi_inplace_f16_cpu_wrapper);
+    // The in-place scalar-param family — InplaceAffine / ClampInplace /
+    // PowIInplace (each key [T, T], scalars in OpParams::{Affine, Clamp, PowI}) —
+    // is now registered FROM docs/kernel-contracts/cpu/inplace-unary-affine.fkc.md
+    // by register_cpu_inplace_from_contract near the top of this fn (alongside the
+    // 21 in-place unary ops). The affine sections' op_kind was corrected from the
+    // out-of-place `Affine` to `InplaceAffine`; all hand-written in-place scalar
+    // regs were DELETED with the migration.
 
     // The ENTIRE CPU SSM / Mamba family — FusedSoftmaxCrossEntropy (key
     // [T, I64, F32]), CausalConv1d (key [T, T, T, T]), and the two SCAN ops
@@ -5448,60 +5507,16 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
         nf4_matmul_bf16_cpu_wrapper,
     );
 
-    // In-place unary activations — Phase 3e of in-place ops. Same
-    // `[T, T]` key shape as the non-inplace cousins (the natural
-    // shape build_lookup_dtypes produces for a 1-input + 1-output
-    // node with matching dtypes). Full 4-dtype coverage (f32/f64/bf16/
-    // f16); bf16+f16 route through the chassis's f32-pivot blanket
-    // impls so the numerics match the non-inplace cousins bit-for-bit.
-    table.register(ReluInplace,    &unary(f32_dt), cpu, relu_inplace_f32_cpu_wrapper);
-    table.register(SiluInplace,    &unary(f32_dt), cpu, silu_inplace_f32_cpu_wrapper);
-    table.register(GeluInplace,    &unary(f32_dt), cpu, gelu_inplace_f32_cpu_wrapper);
-    table.register(TanhInplace,    &unary(f32_dt), cpu, tanh_inplace_f32_cpu_wrapper);
-    table.register(SigmoidInplace, &unary(f32_dt), cpu, sigmoid_inplace_f32_cpu_wrapper);
-
-    table.register(ReluInplace,    &unary(f64_dt), cpu, relu_inplace_f64_cpu_wrapper);
-    table.register(SiluInplace,    &unary(f64_dt), cpu, silu_inplace_f64_cpu_wrapper);
-    table.register(GeluInplace,    &unary(f64_dt), cpu, gelu_inplace_f64_cpu_wrapper);
-    table.register(TanhInplace,    &unary(f64_dt), cpu, tanh_inplace_f64_cpu_wrapper);
-    table.register(SigmoidInplace, &unary(f64_dt), cpu, sigmoid_inplace_f64_cpu_wrapper);
-
-    table.register(ReluInplace,    &unary(bf16_dt), cpu, relu_inplace_bf16_cpu_wrapper);
-    table.register(SiluInplace,    &unary(bf16_dt), cpu, silu_inplace_bf16_cpu_wrapper);
-    table.register(GeluInplace,    &unary(bf16_dt), cpu, gelu_inplace_bf16_cpu_wrapper);
-    table.register(TanhInplace,    &unary(bf16_dt), cpu, tanh_inplace_bf16_cpu_wrapper);
-    table.register(SigmoidInplace, &unary(bf16_dt), cpu, sigmoid_inplace_bf16_cpu_wrapper);
-
-    table.register(ReluInplace,    &unary(f16_dt), cpu, relu_inplace_f16_cpu_wrapper);
-    table.register(SiluInplace,    &unary(f16_dt), cpu, silu_inplace_f16_cpu_wrapper);
-    table.register(GeluInplace,    &unary(f16_dt), cpu, gelu_inplace_f16_cpu_wrapper);
-    table.register(TanhInplace,    &unary(f16_dt), cpu, tanh_inplace_f16_cpu_wrapper);
-    table.register(SigmoidInplace, &unary(f16_dt), cpu, sigmoid_inplace_f16_cpu_wrapper);
-
-    // In-place unary op family expansion (2026-05-30) — 16 new ops
-    // × 4 dtypes = 64 new (OpKind, [T, T], Cpu) entries.
-    for (op, regs) in [
-        (NegInplace,    [neg_inplace_f32_cpu_wrapper,    neg_inplace_f64_cpu_wrapper,    neg_inplace_bf16_cpu_wrapper,    neg_inplace_f16_cpu_wrapper]),
-        (AbsInplace,    [abs_inplace_f32_cpu_wrapper,    abs_inplace_f64_cpu_wrapper,    abs_inplace_bf16_cpu_wrapper,    abs_inplace_f16_cpu_wrapper]),
-        (SqrInplace,    [sqr_inplace_f32_cpu_wrapper,    sqr_inplace_f64_cpu_wrapper,    sqr_inplace_bf16_cpu_wrapper,    sqr_inplace_f16_cpu_wrapper]),
-        (SqrtInplace,   [sqrt_inplace_f32_cpu_wrapper,   sqrt_inplace_f64_cpu_wrapper,   sqrt_inplace_bf16_cpu_wrapper,   sqrt_inplace_f16_cpu_wrapper]),
-        (RsqrtInplace,  [rsqrt_inplace_f32_cpu_wrapper,  rsqrt_inplace_f64_cpu_wrapper,  rsqrt_inplace_bf16_cpu_wrapper,  rsqrt_inplace_f16_cpu_wrapper]),
-        (RecipInplace,  [recip_inplace_f32_cpu_wrapper,  recip_inplace_f64_cpu_wrapper,  recip_inplace_bf16_cpu_wrapper,  recip_inplace_f16_cpu_wrapper]),
-        (ExpInplace,    [exp_inplace_f32_cpu_wrapper,    exp_inplace_f64_cpu_wrapper,    exp_inplace_bf16_cpu_wrapper,    exp_inplace_f16_cpu_wrapper]),
-        (LogInplace,    [log_inplace_f32_cpu_wrapper,    log_inplace_f64_cpu_wrapper,    log_inplace_bf16_cpu_wrapper,    log_inplace_f16_cpu_wrapper]),
-        (SinInplace,    [sin_inplace_f32_cpu_wrapper,    sin_inplace_f64_cpu_wrapper,    sin_inplace_bf16_cpu_wrapper,    sin_inplace_f16_cpu_wrapper]),
-        (CosInplace,    [cos_inplace_f32_cpu_wrapper,    cos_inplace_f64_cpu_wrapper,    cos_inplace_bf16_cpu_wrapper,    cos_inplace_f16_cpu_wrapper]),
-        (SignInplace,   [sign_inplace_f32_cpu_wrapper,   sign_inplace_f64_cpu_wrapper,   sign_inplace_bf16_cpu_wrapper,   sign_inplace_f16_cpu_wrapper]),
-        (FloorInplace,  [floor_inplace_f32_cpu_wrapper,  floor_inplace_f64_cpu_wrapper,  floor_inplace_bf16_cpu_wrapper,  floor_inplace_f16_cpu_wrapper]),
-        (CeilInplace,   [ceil_inplace_f32_cpu_wrapper,   ceil_inplace_f64_cpu_wrapper,   ceil_inplace_bf16_cpu_wrapper,   ceil_inplace_f16_cpu_wrapper]),
-        (RoundInplace,  [round_inplace_f32_cpu_wrapper,  round_inplace_f64_cpu_wrapper,  round_inplace_bf16_cpu_wrapper,  round_inplace_f16_cpu_wrapper]),
-        (ErfInplace,    [erf_inplace_f32_cpu_wrapper,    erf_inplace_f64_cpu_wrapper,    erf_inplace_bf16_cpu_wrapper,    erf_inplace_f16_cpu_wrapper]),
-        (GeluErfInplace,[gelu_erf_inplace_f32_cpu_wrapper, gelu_erf_inplace_f64_cpu_wrapper, gelu_erf_inplace_bf16_cpu_wrapper, gelu_erf_inplace_f16_cpu_wrapper]),
-    ] {
-        for (dt, wrapper) in [f32_dt, f64_dt, bf16_dt, f16_dt].into_iter().zip(regs.into_iter()) {
-            table.register(op, &unary(dt), cpu, wrapper);
-        }
-    }
+    // The 21 in-place unary activations (Relu/Silu/Gelu/Tanh/Sigmoid/Neg/Abs/
+    // Sqr/Sqrt/Rsqrt/Recip/Exp/Log/Sin/Cos/Sign/Floor/Ceil/Round/Erf/GeluErf ×
+    // F32/F64/BF16/F16 = 84 bindings, each key [T, T]) are now registered FROM
+    // docs/kernel-contracts/cpu/inplace-unary-affine.fkc.md by
+    // register_cpu_inplace_from_contract near the top of this fn: each per-op
+    // section declares a BASE entry_point `<op>_inplace` + enumerates
+    // [F32,F64,BF16,F16], so the importer's §3.4 dtype fan resolves
+    // `<op>_inplace_<dt>` to the exact wrapper. All hand-written in-place unary
+    // regs (the 5-op starter set + the 16-op expansion loop) were DELETED with
+    // the migration; the shared `unary_inplace` chassis section is describe-only.
 
     // (ClampElementwise / PowIElementwise F32 are now registered from the
     // affine-clamp-powi contract above.)
@@ -9127,6 +9142,107 @@ mod tests {
                 "PagedAttn/{dt:?} with-alibi stays registered (hand-written)",
             );
         }
+    }
+
+    /// The CPU **in-place scalar-param** family is registered FROM its FKC
+    /// contract (`docs/kernel-contracts/cpu/inplace-unary-affine.fkc.md`) via
+    /// `register_cpu_inplace_from_contract`, NOT the deleted hand-written
+    /// `table.register(<Op>Inplace / InplaceAffine / ClampInplace / PowIInplace,
+    /// &unary(dt), …)` regs. 21 in-place unary ops (each fanning `[F32,F64,BF16,
+    /// F16]` = 84) + `InplaceAffine` / `ClampInplace` / `PowIInplace` (4 dtypes
+    /// each = 12) = 96 bindings, all keyed `[T, T]` (the single `out` operand +
+    /// its `passthrough(out)` mirror; the executor's `InplaceKernel` arm passes
+    /// the target as `outputs[0]`, so the wrapper takes 0 inputs + 1 output, but
+    /// the binding-table KEY is `[T, T]`).
+    ///
+    /// For each of the 96 keys: resolves to the EXACT production wrapper with
+    /// `kernel_source == "portable-cpu"` (the contract provenance tag), caps
+    /// contiguous, and the contract's bit-stable precision riding through.
+    #[test]
+    fn global_bindings_registers_inplace_family_from_contract() {
+        let table = global_bindings();
+        let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
+
+        // Assert `op`/`[dt,dt]` resolves to `expected` with the contract
+        // provenance, FINDING it among any alternatives at the key.
+        let check = |op: OpKind, dt: DType, expected: crate::kernel::KernelRef, label: &str| {
+            let key: &[DType] = &[dt, dt];
+            let alts = table.lookup_alternatives(op, key, BackendId::Cpu);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{op:?}/{label}/{dt:?}/Cpu: the production wrapper must be bound \
+                         FROM the in-place contract in global_bindings() — found {} \
+                         alternative(s) with sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "portable-cpu",
+                "{op:?}/{label}/{dt:?}: family must be contract-sourced \
+                 (kernel_source=\"portable-cpu\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                !entry.caps.strided_input,
+                "{op:?}/{label}/{dt:?}: caps preserved (contiguous-only)",
+            );
+            assert!(
+                entry.precision.bit_stable_on_same_hardware,
+                "{op:?}/{label}/{dt:?}: contract's bit-stable claim rode through",
+            );
+        };
+
+        // 21 in-place unary ops × 4 dtypes (wrapper order matches `dts`).
+        // Each row: (OpKind, label, [f32, f64, bf16, f16] wrappers).
+        let unary_family: &[(OpKind, &str, [crate::kernel::KernelRef; 4])] = &[
+            (OpKind::ReluInplace, "relu", [relu_inplace_f32_cpu_wrapper, relu_inplace_f64_cpu_wrapper, relu_inplace_bf16_cpu_wrapper, relu_inplace_f16_cpu_wrapper]),
+            (OpKind::SiluInplace, "silu", [silu_inplace_f32_cpu_wrapper, silu_inplace_f64_cpu_wrapper, silu_inplace_bf16_cpu_wrapper, silu_inplace_f16_cpu_wrapper]),
+            (OpKind::GeluInplace, "gelu", [gelu_inplace_f32_cpu_wrapper, gelu_inplace_f64_cpu_wrapper, gelu_inplace_bf16_cpu_wrapper, gelu_inplace_f16_cpu_wrapper]),
+            (OpKind::TanhInplace, "tanh", [tanh_inplace_f32_cpu_wrapper, tanh_inplace_f64_cpu_wrapper, tanh_inplace_bf16_cpu_wrapper, tanh_inplace_f16_cpu_wrapper]),
+            (OpKind::SigmoidInplace, "sigmoid", [sigmoid_inplace_f32_cpu_wrapper, sigmoid_inplace_f64_cpu_wrapper, sigmoid_inplace_bf16_cpu_wrapper, sigmoid_inplace_f16_cpu_wrapper]),
+            (OpKind::NegInplace, "neg", [neg_inplace_f32_cpu_wrapper, neg_inplace_f64_cpu_wrapper, neg_inplace_bf16_cpu_wrapper, neg_inplace_f16_cpu_wrapper]),
+            (OpKind::AbsInplace, "abs", [abs_inplace_f32_cpu_wrapper, abs_inplace_f64_cpu_wrapper, abs_inplace_bf16_cpu_wrapper, abs_inplace_f16_cpu_wrapper]),
+            (OpKind::SqrInplace, "sqr", [sqr_inplace_f32_cpu_wrapper, sqr_inplace_f64_cpu_wrapper, sqr_inplace_bf16_cpu_wrapper, sqr_inplace_f16_cpu_wrapper]),
+            (OpKind::SqrtInplace, "sqrt", [sqrt_inplace_f32_cpu_wrapper, sqrt_inplace_f64_cpu_wrapper, sqrt_inplace_bf16_cpu_wrapper, sqrt_inplace_f16_cpu_wrapper]),
+            (OpKind::RsqrtInplace, "rsqrt", [rsqrt_inplace_f32_cpu_wrapper, rsqrt_inplace_f64_cpu_wrapper, rsqrt_inplace_bf16_cpu_wrapper, rsqrt_inplace_f16_cpu_wrapper]),
+            (OpKind::RecipInplace, "recip", [recip_inplace_f32_cpu_wrapper, recip_inplace_f64_cpu_wrapper, recip_inplace_bf16_cpu_wrapper, recip_inplace_f16_cpu_wrapper]),
+            (OpKind::ExpInplace, "exp", [exp_inplace_f32_cpu_wrapper, exp_inplace_f64_cpu_wrapper, exp_inplace_bf16_cpu_wrapper, exp_inplace_f16_cpu_wrapper]),
+            (OpKind::LogInplace, "log", [log_inplace_f32_cpu_wrapper, log_inplace_f64_cpu_wrapper, log_inplace_bf16_cpu_wrapper, log_inplace_f16_cpu_wrapper]),
+            (OpKind::SinInplace, "sin", [sin_inplace_f32_cpu_wrapper, sin_inplace_f64_cpu_wrapper, sin_inplace_bf16_cpu_wrapper, sin_inplace_f16_cpu_wrapper]),
+            (OpKind::CosInplace, "cos", [cos_inplace_f32_cpu_wrapper, cos_inplace_f64_cpu_wrapper, cos_inplace_bf16_cpu_wrapper, cos_inplace_f16_cpu_wrapper]),
+            (OpKind::SignInplace, "sign", [sign_inplace_f32_cpu_wrapper, sign_inplace_f64_cpu_wrapper, sign_inplace_bf16_cpu_wrapper, sign_inplace_f16_cpu_wrapper]),
+            (OpKind::FloorInplace, "floor", [floor_inplace_f32_cpu_wrapper, floor_inplace_f64_cpu_wrapper, floor_inplace_bf16_cpu_wrapper, floor_inplace_f16_cpu_wrapper]),
+            (OpKind::CeilInplace, "ceil", [ceil_inplace_f32_cpu_wrapper, ceil_inplace_f64_cpu_wrapper, ceil_inplace_bf16_cpu_wrapper, ceil_inplace_f16_cpu_wrapper]),
+            (OpKind::RoundInplace, "round", [round_inplace_f32_cpu_wrapper, round_inplace_f64_cpu_wrapper, round_inplace_bf16_cpu_wrapper, round_inplace_f16_cpu_wrapper]),
+            (OpKind::ErfInplace, "erf", [erf_inplace_f32_cpu_wrapper, erf_inplace_f64_cpu_wrapper, erf_inplace_bf16_cpu_wrapper, erf_inplace_f16_cpu_wrapper]),
+            (OpKind::GeluErfInplace, "gelu_erf", [gelu_erf_inplace_f32_cpu_wrapper, gelu_erf_inplace_f64_cpu_wrapper, gelu_erf_inplace_bf16_cpu_wrapper, gelu_erf_inplace_f16_cpu_wrapper]),
+        ];
+
+        // Affine / clamp / powi — scalar-param single sections. Note the affine
+        // wrapper name is `inplace_affine_<dt>_cpu_wrapper` (words swapped vs the
+        // `affine_inplace_<dt>` symbol).
+        let scalar_family: &[(OpKind, &str, [crate::kernel::KernelRef; 4])] = &[
+            (OpKind::InplaceAffine, "affine", [inplace_affine_f32_cpu_wrapper, inplace_affine_f64_cpu_wrapper, inplace_affine_bf16_cpu_wrapper, inplace_affine_f16_cpu_wrapper]),
+            (OpKind::ClampInplace, "clamp", [clamp_inplace_f32_cpu_wrapper, clamp_inplace_f64_cpu_wrapper, clamp_inplace_bf16_cpu_wrapper, clamp_inplace_f16_cpu_wrapper]),
+            (OpKind::PowIInplace, "powi", [powi_inplace_f32_cpu_wrapper, powi_inplace_f64_cpu_wrapper, powi_inplace_bf16_cpu_wrapper, powi_inplace_f16_cpu_wrapper]),
+        ];
+
+        let mut checked = 0usize;
+        for (op, label, ws) in unary_family.iter().chain(scalar_family.iter()) {
+            for (i, dt) in dts.iter().enumerate() {
+                check(*op, *dt, ws[i], label);
+                checked += 1;
+            }
+        }
+        assert_eq!(
+            checked, 96,
+            "21 in-place unary (×4) + InplaceAffine/ClampInplace/PowIInplace (×4) = 96 \
+             contract-sourced bindings",
+        );
     }
 
     /// Lookup miss returns NoBackendForOp with diagnostic data.
