@@ -31,7 +31,7 @@ pub const TELEMETRY_SCHEMA_VERSION: u32 = 2;
 /// `None` is exactly the one a structure-key merge should DROP, never guess — so
 /// "no CC ⇒ dropped, not fabricated" composes with the same posture as an
 /// unmeasured `Candidate::latency_ns`. `None` is omitted from the wire.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct HwStamp {
     /// CUDA compute capability `(major, minor)` — e.g. `(8, 9)` for sm_89.
     /// `None` on non-CUDA backends; omitted from the wire when `None`.
@@ -43,6 +43,22 @@ pub struct HwStamp {
     /// Driver version string (probe `driver_version`) — an arch-gate axis the
     /// Judge's `EquivalenceKey` already splits on.
     pub driver_version: String,
+}
+
+impl HwStamp {
+    /// Build a hardware fingerprint from the device probe descriptor
+    /// (`fuel-ir` [`DeviceDescriptor`](fuel_ir::probe::DeviceDescriptor)) for
+    /// the dispatching device. A CPU-only path yields
+    /// `compute_capability: None` — fine: Baracuda's `merge` drops stampless
+    /// CUDA rows, and CPU rows are retained for Fuel's own analysis. The field
+    /// names + types mirror the probe exactly, so this is a pure projection.
+    pub fn from_descriptor(desc: &fuel_ir::probe::DeviceDescriptor) -> Self {
+        Self {
+            compute_capability: desc.compute_capability,
+            hardware_sku: desc.hardware_sku.clone(),
+            driver_version: desc.driver_version.clone(),
+        }
+    }
 }
 
 /// One emitted dispatch decision. Serialized as a single compact JSON line.
@@ -241,5 +257,46 @@ mod tests {
     #[test]
     fn telemetry_schema_version_is_v2_for_hw_stamp() {
         assert_eq!(TELEMETRY_SCHEMA_VERSION, 2);
+    }
+
+    /// `HwStamp::from_descriptor` is a pure projection of the device probe.
+    /// A CUDA descriptor carries its compute capability; a CPU-only
+    /// descriptor yields `compute_capability: None` (the stampless-CUDA-row
+    /// case Baracuda's merge drops, CPU rows kept for our own analysis).
+    #[test]
+    fn hw_stamp_from_descriptor_projects_probe_fields() {
+        use fuel_ir::probe::DeviceDescriptor;
+        use fuel_ir::{BackendId, DeviceLocation};
+
+        let cuda = DeviceDescriptor {
+            backend: BackendId::Cuda,
+            device_index: 0,
+            hardware_sku: "NVIDIA GeForce RTX 4070".into(),
+            vendor_id: 0x10DE,
+            device_id: 0x2786,
+            compute_capability: Some((8, 9)),
+            driver_version: "552.44".into(),
+            total_memory_bytes: 12 * 1024 * 1024 * 1024,
+            location: DeviceLocation::Cuda { gpu_id: 0 },
+        };
+        let stamp = HwStamp::from_descriptor(&cuda);
+        assert_eq!(stamp.compute_capability, Some((8, 9)));
+        assert_eq!(stamp.hardware_sku, "NVIDIA GeForce RTX 4070");
+        assert_eq!(stamp.driver_version, "552.44");
+
+        let cpu = DeviceDescriptor {
+            backend: BackendId::Cpu,
+            device_index: 0,
+            hardware_sku: "Intel(R) Core(TM) i9-14900K".into(),
+            vendor_id: 0,
+            device_id: 0,
+            compute_capability: None,
+            driver_version: "n/a".into(),
+            total_memory_bytes: 0,
+            location: DeviceLocation::Cpu,
+        };
+        let stamp = HwStamp::from_descriptor(&cpu);
+        assert_eq!(stamp.compute_capability, None, "CPU path ⇒ no compute capability");
+        assert_eq!(stamp.hardware_sku, "Intel(R) Core(TM) i9-14900K");
     }
 }
