@@ -41,16 +41,17 @@ macro_rules! ep_dispatch {
 
 /// One `(FUSED-contract entry_point symbol, production wrapper)` pair for a
 /// `fused_op` section. Unlike the primitive [`ep!`] / [`ep_dispatch!`] pairs, a
-/// fused contract's `entry_point` is a specific, **dtype-agnostic** symbol
-/// `fuel_dispatch::dispatch::<op>_cpu` (e.g. `…::softmax_last_dim_cpu`), NOT a
-/// byte-kernel `<op>_<dt>` base. [`crate::fkc::lower::lower_fused`] resolves it
-/// AS-IS — fused sections do **not** dtype-fan yet (§3.4 fan-out is
-/// primitive-only), so a multi-dtype fused section registers only its
-/// **representative** (first) dtype variant. That representative is the F32
-/// variant, so the symbol binds the `<op>_f32_cpu_wrapper` — the exact kernel fn
-/// the hand-written `register_default_fused_kernels` seam registers for the F32
-/// dtype tuple. The `<op>_cpu` symbol base differs from the
-/// `<op>_f32_cpu_wrapper` fn-name, so the mapping is spelled out per row.
+/// fused contract declares a **dtype-agnostic BASE** `entry_point`
+/// `fuel_dispatch::dispatch::<op>_cpu` (e.g. `…::softmax_last_dim_cpu`) plus a
+/// per-input `dtypes: [F32, F64, BF16, F16]` list, so [`crate::fkc::lower::lower_fused`]
+/// **dtype-fans** it (§3.4, the fused analogue of the primitive fan-out): per
+/// fanned `dt` it resolves `<base>_<dt>` (e.g. `…::softmax_last_dim_cpu_f32`)
+/// through this table. Each such fanned symbol binds the `<op>_<dt>_cpu_wrapper`
+/// — the exact kernel fn the hand-written `register_default_fused_kernels` seam
+/// registers for that op's `dt` dtype tuple. Note the naming skew: the FANNED
+/// symbol is `<op>_cpu_<dt>` (base `…_cpu` + `_<dt>` suffix), while the wrapper
+/// fn is `<op>_<dt>_cpu_wrapper` (`_cpu` after `_<dt>`), so the mapping is
+/// spelled out per (op, dtype) row.
 macro_rules! fep {
     ($symbol:literal, $wrapper:ident) => {
         (
@@ -874,15 +875,19 @@ pub static CPU_INPLACE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// `docs/kernel-contracts/fused/norm-softmax.fkc.md`.
 ///
 /// Eight `fused_op` sections — three forward (`SOFTMAX_LAST_DIM` /
-/// `RMS_NORM_LAST_DIM` / `LAYER_NORM_LAST_DIM`) plus five backward helpers
-/// (`SOFTMAX_LAST_DIM_BACKWARD` / `LAYER_NORM_LAST_DIM_BACKWARD` /
-/// `RMS_NORM_LAST_DIM_BACKWARD` / `REDUCE_MAX_TO_BACKWARD` / `POWI_BACKWARD`).
-/// Each declares a dtype-agnostic `entry_point` `…::<op>_cpu`, resolved AS-IS by
-/// [`crate::fkc::lower::lower_fused`] to the F32-**representative** production
-/// wrapper (fused sections do not dtype-fan yet — see [`fep!`]). That is the
-/// exact kernel fn the hand-written `register_default_fused_kernels` seam
-/// registers for each op's F32 dtype tuple, so an imported impl binds the SAME
-/// executable kernel.
+/// `RMS_NORM_LAST_DIM` / `LAYER_NORM_LAST_DIM`, key `[T, T]`) plus five backward
+/// helpers (`SOFTMAX_LAST_DIM_BACKWARD` / `LAYER_NORM_LAST_DIM_BACKWARD` /
+/// `RMS_NORM_LAST_DIM_BACKWARD` / `REDUCE_MAX_TO_BACKWARD` / `POWI_BACKWARD`,
+/// key `[T, T, T]`). Each declares a dtype-agnostic BASE `entry_point`
+/// `…::<op>_cpu` **plus a per-input `dtypes: [F32, F64, BF16, F16]` list**, so
+/// [`crate::fkc::lower::lower_fused`] **dtype-fans** it (§3.4, see [`fep!`]) into
+/// four per-dtype impls: per fanned `dt` it resolves `<base>_<dt>`
+/// (`…::<op>_cpu_f32`, `…_f64`, `…_bf16`, `…_f16`) against this table (8 ops ×
+/// 4 dtypes = 32 rows). Each row binds the `<op>_<dt>_cpu_wrapper` — the exact
+/// kernel fn the hand-written `register_default_fused_kernels` seam registers
+/// for that op's `dt` dtype tuple — so an imported impl binds the SAME
+/// executable kernel per dtype (a 1:1 replacement for the hand-written per-dtype
+/// registrations, not just the F32 representative).
 ///
 /// This map serves the SEPARATE [`crate::fused::FusedKernelRegistry`] seam (the
 /// join target `register_default_fused_kernels` populates), NOT the primitive
@@ -890,14 +895,41 @@ pub static CPU_INPLACE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// an authored `fused_op` bundle imported through [`CpuLinkRegistry`] binds the
 /// real CPU fused kernels (FKC P9 — no raw pointers in the serialized contract).
 pub static CPU_FUSED_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    fep!("softmax_last_dim_cpu",             softmax_last_dim_f32_cpu_wrapper),
-    fep!("rms_norm_last_dim_cpu",            rms_norm_last_dim_f32_cpu_wrapper),
-    fep!("layer_norm_last_dim_cpu",          layer_norm_last_dim_f32_cpu_wrapper),
-    fep!("softmax_last_dim_backward_cpu",    softmax_last_dim_backward_f32_cpu_wrapper),
-    fep!("layer_norm_last_dim_backward_cpu", layer_norm_last_dim_backward_f32_cpu_wrapper),
-    fep!("rms_norm_last_dim_backward_cpu",   rms_norm_last_dim_backward_f32_cpu_wrapper),
-    fep!("reduce_max_to_backward_cpu",       reduce_max_to_backward_f32_cpu_wrapper),
-    fep!("powi_backward_cpu",                powi_backward_f32_cpu_wrapper),
+    // Forward (key [T, T]) — SoftmaxLastDim / RmsNormLastDim / LayerNormLastDim.
+    fep!("softmax_last_dim_cpu_f32",  softmax_last_dim_f32_cpu_wrapper),
+    fep!("softmax_last_dim_cpu_f64",  softmax_last_dim_f64_cpu_wrapper),
+    fep!("softmax_last_dim_cpu_bf16", softmax_last_dim_bf16_cpu_wrapper),
+    fep!("softmax_last_dim_cpu_f16",  softmax_last_dim_f16_cpu_wrapper),
+    fep!("rms_norm_last_dim_cpu_f32",  rms_norm_last_dim_f32_cpu_wrapper),
+    fep!("rms_norm_last_dim_cpu_f64",  rms_norm_last_dim_f64_cpu_wrapper),
+    fep!("rms_norm_last_dim_cpu_bf16", rms_norm_last_dim_bf16_cpu_wrapper),
+    fep!("rms_norm_last_dim_cpu_f16",  rms_norm_last_dim_f16_cpu_wrapper),
+    fep!("layer_norm_last_dim_cpu_f32",  layer_norm_last_dim_f32_cpu_wrapper),
+    fep!("layer_norm_last_dim_cpu_f64",  layer_norm_last_dim_f64_cpu_wrapper),
+    fep!("layer_norm_last_dim_cpu_bf16", layer_norm_last_dim_bf16_cpu_wrapper),
+    fep!("layer_norm_last_dim_cpu_f16",  layer_norm_last_dim_f16_cpu_wrapper),
+    // Backward (key [T, T, T]) — Softmax / LayerNorm / RmsNorm backward.
+    fep!("softmax_last_dim_backward_cpu_f32",  softmax_last_dim_backward_f32_cpu_wrapper),
+    fep!("softmax_last_dim_backward_cpu_f64",  softmax_last_dim_backward_f64_cpu_wrapper),
+    fep!("softmax_last_dim_backward_cpu_bf16", softmax_last_dim_backward_bf16_cpu_wrapper),
+    fep!("softmax_last_dim_backward_cpu_f16",  softmax_last_dim_backward_f16_cpu_wrapper),
+    fep!("layer_norm_last_dim_backward_cpu_f32",  layer_norm_last_dim_backward_f32_cpu_wrapper),
+    fep!("layer_norm_last_dim_backward_cpu_f64",  layer_norm_last_dim_backward_f64_cpu_wrapper),
+    fep!("layer_norm_last_dim_backward_cpu_bf16", layer_norm_last_dim_backward_bf16_cpu_wrapper),
+    fep!("layer_norm_last_dim_backward_cpu_f16",  layer_norm_last_dim_backward_f16_cpu_wrapper),
+    fep!("rms_norm_last_dim_backward_cpu_f32",  rms_norm_last_dim_backward_f32_cpu_wrapper),
+    fep!("rms_norm_last_dim_backward_cpu_f64",  rms_norm_last_dim_backward_f64_cpu_wrapper),
+    fep!("rms_norm_last_dim_backward_cpu_bf16", rms_norm_last_dim_backward_bf16_cpu_wrapper),
+    fep!("rms_norm_last_dim_backward_cpu_f16",  rms_norm_last_dim_backward_f16_cpu_wrapper),
+    // Backward of primitives (key [T, T, T]) — ReduceMaxTo / PowI backward.
+    fep!("reduce_max_to_backward_cpu_f32",  reduce_max_to_backward_f32_cpu_wrapper),
+    fep!("reduce_max_to_backward_cpu_f64",  reduce_max_to_backward_f64_cpu_wrapper),
+    fep!("reduce_max_to_backward_cpu_bf16", reduce_max_to_backward_bf16_cpu_wrapper),
+    fep!("reduce_max_to_backward_cpu_f16",  reduce_max_to_backward_f16_cpu_wrapper),
+    fep!("powi_backward_cpu_f32",  powi_backward_f32_cpu_wrapper),
+    fep!("powi_backward_cpu_f64",  powi_backward_f64_cpu_wrapper),
+    fep!("powi_backward_cpu_bf16", powi_backward_bf16_cpu_wrapper),
+    fep!("powi_backward_cpu_f16",  powi_backward_f16_cpu_wrapper),
 ];
 
 /// The built-in CPU backend's [`LinkRegistry`] — resolves a contract's

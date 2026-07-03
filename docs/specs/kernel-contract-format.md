@@ -498,8 +498,16 @@ rules the importer applies (`fuel-dispatch/src/fkc/lower.rs::assemble_dtype_vari
   section keeps its specific `entry_point` and resolves it AS-IS (so a per-`(op,dtype)` thunk like
   `add_f32` stays `add_f32`). Revision/cost/precision/caps are per-section (shared across variants);
   only the per-variant `dtypes` + resolved kernel differ.
-- Fused (`fused_op`) sections do **not** fan out in this slice: a multi-dtype fused section
-  registers only its representative (first) dtype today (a follow-up fans the fused registry).
+- Fused (`fused_op`) sections **fan out the same way**: a multi-dtype fused section fans into one
+  `ResolvedFused` per fanned dtype (`fuel-dispatch/src/fkc/lower.rs::lower_fused`, the fused
+  analogue of `lower_primitive`), each resolving its per-variant `<base>_<dtype_suffix>` through
+  the `LinkRegistry`'s `resolve_fused` and registering a per-dtype `BackendImpl` on the
+  `FusedKernelRegistry` — 1:1 with the hand-written per-dtype fused registrations it replaces (so a
+  `SOFTMAX_LAST_DIM` section with `dtypes: [F32, F64, BF16, F16]` registers four per-dtype impls
+  keyed `[dt, dt]`). A single-dtype fused section resolves its `entry_point` AS-IS and yields
+  exactly one impl (byte-identical to before). Revision/cost/precision/caps are per-section
+  (shared across variants); only the per-variant `dtypes` + resolved kernel differ — identical to
+  the primitive rules above.
 
 **GGML dtype names are the as-built `GgmlDType` variant names, matched by numeric code.** The
 canonical set (`fuel-core-types/src/quantized.rs`) is:

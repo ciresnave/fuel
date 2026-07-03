@@ -778,21 +778,30 @@ mod tests {
 
     #[test]
     fn cpu_link_registry_binds_norm_softmax_fused_ops_to_live_kernels() {
-        // BORN-RED → GREEN: before `CpuLinkRegistry::resolve_fused` was wired to
-        // the fused entry-point table it returned `None` unconditionally, so
-        // `lower_fused` failed every `fused_op` section with `UnknownEntryPoint`
-        // and this import errored (RED). With `resolve_fused` real, the authored
-        // norm/softmax bundle imports through the PRODUCTION link registry and
-        // every `fused_op` binds the ACTUAL production CPU fused wrapper (GREEN).
+        // BORN-RED → GREEN (fused dtype-fan, §3.4). Each `fused_op` section
+        // enumerates `dtypes: [F32, F64, BF16, F16]` on a BASE `entry_point`, so
+        // `lower_fused` now FANS it into 4 per-dtype impls, each resolving
+        // `<base>_<dt>` through `CPU_FUSED_NORM_ENTRY_POINTS`. Before the table
+        // grew to its 32 per-dtype rows, the fanned symbols (e.g.
+        // `…::softmax_last_dim_cpu_f32`) resolved to `None` → `UnknownEntryPoint`
+        // and this import errored (RED). With the 32-row table every fanned
+        // symbol binds the ACTUAL per-dtype production wrapper (GREEN) — a 1:1
+        // replacement for the hand-written `register_default_fused_kernels`
+        // per-dtype registrations, not just the F32 representative.
         let provider = import_bundle_str(FUSED_NORM_SOFTMAX, &crate::fkc::CpuLinkRegistry).expect(
             "authored norm-softmax fused bundle imports through the production CpuLinkRegistry",
         );
-        // A fused-only bundle: no primitive `op_kind` sections.
+        // A fused-only bundle: no primitive `op_kind` sections. The 8 sections
+        // each fan over 4 dtypes ⇒ 32 fused impls.
         assert!(
             provider.primitives.is_empty(),
             "norm-softmax declares only fused ops",
         );
-        assert!(!provider.fused.is_empty(), "norm-softmax yields fused ops");
+        assert_eq!(
+            provider.fused.len(),
+            32,
+            "8 fused sections × 4 dtypes = 32 per-dtype impls (fused dtype-fan)",
+        );
 
         let mut table = KernelBindingTable::new();
         let mut fused = FusedKernelRegistry::new();
@@ -800,43 +809,116 @@ mod tests {
             .register_into(&mut table, &mut fused)
             .expect("register_into fresh registries succeeds");
 
-        // The representative (F32) SOFTMAX_LAST_DIM impl IS the exact live
-        // production wrapper — proven by pointer identity — and carries the
-        // contract's REAL revision hash (hand-written regs stamp UNTRACKED).
-        let got = fused
-            .lookup_by_dtypes(
-                FusedOps::SOFTMAX_LAST_DIM,
-                BackendId::Cpu,
-                &[DType::F32, DType::F32],
-            )
-            .expect("SOFTMAX_LAST_DIM F32 fused impl bound from the contract");
-        assert_eq!(
-            got.kernel as usize,
-            crate::dispatch::softmax_last_dim_f32_cpu_wrapper as usize,
-            "the imported fused impl IS the live production softmax wrapper",
-        );
-        assert_ne!(
-            got.revision,
-            KernelRevisionHash::UNTRACKED,
-            "FKC import stamps the contract's real revision (hand-written stamps UNTRACKED)",
-        );
+        let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
 
-        // Every forward + backward `fused_op` in the bundle resolved to a live
-        // kernel through the production link registry.
-        for id in [
-            FusedOps::SOFTMAX_LAST_DIM,
-            FusedOps::RMS_NORM_LAST_DIM,
-            FusedOps::LAYER_NORM_LAST_DIM,
-            FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
-            FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
-            FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
-            FusedOps::REDUCE_MAX_TO_BACKWARD,
-            FusedOps::POWI_BACKWARD,
-        ] {
-            assert!(
-                fused.lookup(id, BackendId::Cpu).is_some(),
-                "{id:?} fused impl bound from the contract",
-            );
+        // Each FORWARD op (key `[dt, dt]`) binds all 4 dtypes to the EXACT
+        // per-dtype production wrapper — proven by pointer identity — and carries
+        // the contract's REAL revision hash (hand-written regs stamp UNTRACKED).
+        let forward = [
+            (
+                FusedOps::SOFTMAX_LAST_DIM,
+                [
+                    crate::dispatch::softmax_last_dim_f32_cpu_wrapper as usize,
+                    crate::dispatch::softmax_last_dim_f64_cpu_wrapper as usize,
+                    crate::dispatch::softmax_last_dim_bf16_cpu_wrapper as usize,
+                    crate::dispatch::softmax_last_dim_f16_cpu_wrapper as usize,
+                ],
+            ),
+            (
+                FusedOps::RMS_NORM_LAST_DIM,
+                [
+                    crate::dispatch::rms_norm_last_dim_f32_cpu_wrapper as usize,
+                    crate::dispatch::rms_norm_last_dim_f64_cpu_wrapper as usize,
+                    crate::dispatch::rms_norm_last_dim_bf16_cpu_wrapper as usize,
+                    crate::dispatch::rms_norm_last_dim_f16_cpu_wrapper as usize,
+                ],
+            ),
+            (
+                FusedOps::LAYER_NORM_LAST_DIM,
+                [
+                    crate::dispatch::layer_norm_last_dim_f32_cpu_wrapper as usize,
+                    crate::dispatch::layer_norm_last_dim_f64_cpu_wrapper as usize,
+                    crate::dispatch::layer_norm_last_dim_bf16_cpu_wrapper as usize,
+                    crate::dispatch::layer_norm_last_dim_f16_cpu_wrapper as usize,
+                ],
+            ),
+        ];
+        for (id, wrappers) in forward {
+            for (dt, expected) in dts.iter().zip(wrappers) {
+                let got = fused
+                    .lookup_by_dtypes(id, BackendId::Cpu, &[*dt, *dt])
+                    .unwrap_or_else(|| panic!("{id:?} {dt:?} fused impl bound from the contract"));
+                assert_eq!(
+                    got.kernel as usize, expected,
+                    "{id:?} {dt:?} binds its exact per-dtype production wrapper",
+                );
+                assert_ne!(
+                    got.revision,
+                    KernelRevisionHash::UNTRACKED,
+                    "FKC import stamps the contract's real revision (hand-written stamps UNTRACKED)",
+                );
+            }
+        }
+
+        // Each BACKWARD op (key `[dt, dt, dt]`) binds all 4 dtypes to the EXACT
+        // per-dtype production wrapper.
+        let backward = [
+            (
+                FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
+                [
+                    crate::dispatch::softmax_last_dim_backward_f32_cpu_wrapper as usize,
+                    crate::dispatch::softmax_last_dim_backward_f64_cpu_wrapper as usize,
+                    crate::dispatch::softmax_last_dim_backward_bf16_cpu_wrapper as usize,
+                    crate::dispatch::softmax_last_dim_backward_f16_cpu_wrapper as usize,
+                ],
+            ),
+            (
+                FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
+                [
+                    crate::dispatch::layer_norm_last_dim_backward_f32_cpu_wrapper as usize,
+                    crate::dispatch::layer_norm_last_dim_backward_f64_cpu_wrapper as usize,
+                    crate::dispatch::layer_norm_last_dim_backward_bf16_cpu_wrapper as usize,
+                    crate::dispatch::layer_norm_last_dim_backward_f16_cpu_wrapper as usize,
+                ],
+            ),
+            (
+                FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
+                [
+                    crate::dispatch::rms_norm_last_dim_backward_f32_cpu_wrapper as usize,
+                    crate::dispatch::rms_norm_last_dim_backward_f64_cpu_wrapper as usize,
+                    crate::dispatch::rms_norm_last_dim_backward_bf16_cpu_wrapper as usize,
+                    crate::dispatch::rms_norm_last_dim_backward_f16_cpu_wrapper as usize,
+                ],
+            ),
+            (
+                FusedOps::REDUCE_MAX_TO_BACKWARD,
+                [
+                    crate::dispatch::reduce_max_to_backward_f32_cpu_wrapper as usize,
+                    crate::dispatch::reduce_max_to_backward_f64_cpu_wrapper as usize,
+                    crate::dispatch::reduce_max_to_backward_bf16_cpu_wrapper as usize,
+                    crate::dispatch::reduce_max_to_backward_f16_cpu_wrapper as usize,
+                ],
+            ),
+            (
+                FusedOps::POWI_BACKWARD,
+                [
+                    crate::dispatch::powi_backward_f32_cpu_wrapper as usize,
+                    crate::dispatch::powi_backward_f64_cpu_wrapper as usize,
+                    crate::dispatch::powi_backward_bf16_cpu_wrapper as usize,
+                    crate::dispatch::powi_backward_f16_cpu_wrapper as usize,
+                ],
+            ),
+        ];
+        for (id, wrappers) in backward {
+            for (dt, expected) in dts.iter().zip(wrappers) {
+                let got = fused
+                    .lookup_by_dtypes(id, BackendId::Cpu, &[*dt, *dt, *dt])
+                    .unwrap_or_else(|| panic!("{id:?} {dt:?} fused impl bound from the contract"));
+                assert_eq!(
+                    got.kernel as usize, expected,
+                    "{id:?} {dt:?} binds its exact per-dtype production wrapper",
+                );
+            }
         }
     }
 
