@@ -318,8 +318,17 @@ As-built: this is one implementation of the **fused op** `QMATMUL` (`FusedOpId(1
 argument; §4.4). Routed by `matmul_q4_0_bytes` `:4001` when `m == 1`; wrapper
 `qmatvec_q4_0` `:10064`, `_slice` `:10105`.
 
+**This section is now `registrable: false` (§3.10 describe-only).** It documents the aspirational
+*fused* `FusedOps::QMATMUL` Q4_0 gemv decomposition, but production does NOT register the fused op
+here — it registers the PRIMITIVE `OpKind::QMatMul` binding (the ONE `qmatmul_vk` wrapper route-picks
+Q4_0 / Q4_K_M / Q8_0 by `quant_type`) whose registrable section lives in the production
+`docs/kernel-contracts/vulkan/qmatmul.fkc.md` (imported by `register_vulkan_qmatmul_from_contract`).
+This mirrors the matmul_mixed_precision precedent (`dispatch/matmul.fkc.md`): the aspirational fused
+chassis is describe-only, the registrable binding is elsewhere.
+
 ```fkc
 kernel: qmatvec_q4_0
+registrable: false               # §3.10 describe-only: aspirational fused QMATMUL Q4_0 gemv; the registrable PRIMITIVE OpKind::QMatMul binding lives in vulkan/qmatmul.fkc.md (production registers the primitive, not the fused op)
 fused_op: QMATMUL                # FusedOpId(14); FusedOpParams::QMatMul
 blurb: "Fused Q4_0-weight x f32 gemv (M==1, decode hot path); INLINE Q4_0 scales; K % 32 == 0."
 backend: Vulkan
@@ -410,8 +419,15 @@ sibling alternative to `qmatvec_q4_0` at the `QMATMUL` key, distinguished by its
 fast-path predicate (the picker, not the contract, makes the M==1-vs-M>1 choice; both
 contracts are admissible and the planner ranks them on cost — §12.5).
 
+**This section is now `registrable: false` (§3.10 describe-only).** Like its `qmatvec_q4_0` sibling,
+it documents the aspirational *fused* `FusedOps::QMATMUL` Q4_0 prefill decomposition; production
+registers the PRIMITIVE `OpKind::QMatMul` binding (`qmatmul_vk`, route-picking by `quant_type`) whose
+registrable section lives in `docs/kernel-contracts/vulkan/qmatmul.fkc.md` (the matmul_mixed_precision
+precedent — the aspirational fused chassis is describe-only, the registrable binding is elsewhere).
+
 ```fkc
 kernel: matmul_q4_0_tiled
+registrable: false              # §3.10 describe-only: aspirational fused QMATMUL Q4_0 tiled prefill; the registrable PRIMITIVE OpKind::QMatMul binding lives in vulkan/qmatmul.fkc.md (production registers the primitive, not the fused op)
 fused_op: QMATMUL               # FusedOpId(14); FusedOpParams::QMatMul
 blurb: "Fused Q4_0-weight x f32 tiled matmul (M>1 prefill; TM=8); INLINE Q4_0 scales; K % 32 == 0."
 backend: Vulkan
