@@ -186,6 +186,39 @@ pub static VULKAN_ELEMENTWISE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     vk_ep!("powi_f32",  crate::vulkan_dispatch::powi::powi_f32),
 ];
 
+/// The Vulkan matmul family's `symbol → production wrapper` map — the FULL
+/// family: 6 per-combo `(MatMul, [lhs,rhs,out])` wrapper bindings. Contract:
+/// `docs/kernel-contracts/vulkan/matmul.fkc.md`, re-authored per-combo (the cast
+/// family's per-pair precedent). Each section declares a single dtype per operand
+/// + a `fixed(OUT)` / `passthrough(lhs)` output, so none of them dtype-fan — the
+/// importer keys `[lhs, rhs, out]` (inputs-then-output), byte-for-byte the deleted
+/// hand-written `table.register_with_precision(OpKind::MatMul, &[lhs, rhs, out], …)`
+/// regs.
+///
+/// Each symbol is one production wrapper that route-picks its internal Slang
+/// kernels (matvec / reg-tile / tiled for f32; matvec_bf16_b / matmul_tiled_bf16_b
+/// / matmul_coop* + matmul_small_* fallbacks for the mixed combos) at dispatch
+/// time — the route-pick is NOT a table binding, so there is exactly one
+/// `KernelRef` per key (no duplicate-at-key which `finalize` would reject). Caps
+/// ride through contiguous-only (`awkward_layout_strategy: requires_contiguous`
+/// ⇒ `strided_input == false`), byte-for-byte the deleted `register_with_precision`
+/// regs (the coop / vec4 loads require canonical row-major; a strided operand is
+/// auto-Contiguized first).
+pub static VULKAN_MATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // f32 GEMM/GEMV wrapper (matvec / reg-tile / tiled route-pick).
+    vk_ep!("matmul_f32",           crate::vulkan_dispatch::matmul::matmul_f32),
+    // Mixed-precision f32 × bf16 → f32 (matvec_bf16_b / matmul_tiled_bf16_b / coop).
+    vk_ep!("matmul_f32_bf16_b",    crate::vulkan_dispatch::matmul::matmul_f32_bf16_b),
+    // Cooperative-matrix bf16 × bf16 → f32 (coop + matmul_small_bf16_bf16_f32).
+    vk_ep!("matmul_bf16_bf16_f32", crate::vulkan_dispatch::matmul::matmul_bf16_bf16_f32),
+    // Cooperative-matrix bf16 × bf16 → bf16, downcast store (coop + small).
+    vk_ep!("matmul_bf16_bf16_bf16", crate::vulkan_dispatch::matmul::matmul_bf16_bf16_bf16),
+    // Cooperative-matrix f16 × f16 → f16, downcast store (coop + small).
+    vk_ep!("matmul_f16_f16_f16",   crate::vulkan_dispatch::matmul::matmul_f16_f16_f16),
+    // Cooperative-matrix f16 × f16 → f32 (coop + matmul_small_f16_f16_f32).
+    vk_ep!("matmul_f16_f16_f32",   crate::vulkan_dispatch::matmul::matmul_f16_f16_f32),
+];
+
 /// The built-in Vulkan backend's [`LinkRegistry`] — resolves a contract's
 /// `entry_point` symbols against [`VULKAN_CAST_ENTRY_POINTS`] +
 /// [`VULKAN_ELEMENTWISE_ENTRY_POINTS`] (and the future Vulkan families as they
@@ -197,10 +230,12 @@ pub struct VulkanLinkRegistry;
 impl LinkRegistry for VulkanLinkRegistry {
     fn resolve_primitive(&self, symbol: &str) -> Option<KernelRef> {
         // Chain every migrated Vulkan family's table; each symbol is unique
-        // across families (cast_*, per-op elementwise), so order is immaterial.
+        // across families (cast_*, per-op elementwise, matmul_*), so order is
+        // immaterial.
         VULKAN_CAST_ENTRY_POINTS
             .iter()
             .chain(VULKAN_ELEMENTWISE_ENTRY_POINTS.iter())
+            .chain(VULKAN_MATMUL_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }

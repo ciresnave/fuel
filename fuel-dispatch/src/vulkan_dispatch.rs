@@ -4344,6 +4344,65 @@ fn register_vulkan_elementwise_from_contract(table: &mut KernelBindingTable) {
         .expect("Vulkan elementwise contract must register into the binding table");
 }
 
+/// The authored Vulkan matmul kernel contract (6 per-combo GEMM/GEMV wrapper
+/// bindings), embedded via `include_str!` (the PRODUCTION contract). Parsed +
+/// lowered by [`register_vulkan_matmul_from_contract`].
+const VULKAN_MATMUL_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/vulkan/matmul.fkc.md");
+
+/// Register the Vulkan matmul family (6 (MatMul, [lhs,rhs,out]) bindings) by
+/// IMPORTING its RE-AUTHORED FKC kernel contract — the THIRD Vulkan-backend FKC
+/// consumer after cast + elementwise. FKC is unconditional core infrastructure,
+/// so this is the ONE registration path for the family: the hand-written
+/// `table.register_with_precision(OpKind::MatMul, …)` regs (the f32 GEMM +
+/// the five mixed-precision / tensor-core combos) are DELETED.
+///
+/// The contract was re-authored per-combo (the cast family's per-pair
+/// precedent): the aspirational multi-dtype `dispatch/matmul.fkc.md ::
+/// matmul_mixed_precision` section (lhs `[F32,BF16,F16]` vs rhs `[BF16,F16]` —
+/// DIFFERENT lists, a `FanoutDtypeMismatch` the uniform fan-out importer cannot
+/// key) is SUPERSEDED by six single-dtype-per-operand sections, each declaring a
+/// specific `entry_point` symbol that resolves through
+/// [`crate::fkc::VulkanLinkRegistry`] to the exact production wrapper. Each
+/// wrapper route-picks its internal Slang kernels (matvec / reg-tile / tiled for
+/// f32; matvec_bf16_b / matmul_tiled_bf16_b / matmul_coop* + matmul_small_*
+/// fallbacks for the mixed combos) at dispatch time — that route-pick is NOT a
+/// binding, so there is exactly ONE `KernelRef` per key.
+///
+/// **Caps ride through truthfully.** Each section's `requires_contiguous`
+/// layout projects `strided_input == false` — byte-for-byte the deleted
+/// `register_with_precision` regs (the coop / vec4 loads require canonical
+/// row-major; a strided / transposed / offset operand is auto-Contiguized by the
+/// planner first). Precision becomes the contract's audited seed
+/// (nondeterministic, `bit_stable_on_same_hardware: false`, audited `none(reason)`
+/// — the corrected 2026-06-18 posture, honest about scheduler-dependent
+/// FADD/subgroup order) rather than the retired hand-written
+/// `VULKAN_MATMUL_PRECISION` / `VULKAN_MATMUL_TENSORCORE_PRECISION` consts (which
+/// mis-declared `bit_stable_on_same_hardware: true`); those consts are still used
+/// by the Vulkan conv2d family, so they are NOT deleted, only dropped from this
+/// seam. Cost is preserved because this runs BEFORE `fill_unset_cost_for_backend`,
+/// which upgrades the imported `unknown_cost` sentinels to the same OpKind cost fn.
+///
+/// The family declares NO fused ops. Init-boundary fail-fast: a parse/lower/link
+/// failure of the embedded, authored contract is a programmer error surfaced once
+/// here via `expect`.
+fn register_vulkan_matmul_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(VULKAN_MATMUL_CONTRACT, &crate::fkc::VulkanLinkRegistry)
+            .expect(
+                "authored Vulkan matmul contract must import \
+                 (embedded via include_str!, resolved through VulkanLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "vulkan matmul contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("Vulkan matmul contract must register into the binding table");
+}
+
 /// Register every Vulkan kernel wrapper against its `(OpKind, dtypes,
 /// BackendId::Vulkan)` decision-point key in the shared
 /// `KernelBindingTable`. Each wrapper appears as an alternative
@@ -4373,7 +4432,6 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     let vk = BackendId::Vulkan;
     let f32 = DType::F32;
     let u = |t: DType| [t, t];     // (in, out)
-    let b = |t: DType| [t, t, t];  // (lhs, rhs, out)
 
     // Phase 7.6 step 9c follow-up (2026-05-23 + 2026-05-24):
     // - Per-kernel `PrecisionGuarantee` + cost (session 1, shipped).
@@ -4692,44 +4750,17 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
         table.register_with_caps_and_precision(OpKind::Concat, &u(f64_d), vk, concat::concat_f64,  strided, VULKAN_BYTE_LEVEL_PRECISION);
     }
 
-    // ----- MatMul f32 (V.2.D) — deterministic per-output-element FMA
-    // accumulation. CONTIGUOUS-ONLY: tiled / reg-tile / matvec
-    // kernels load via vec4 / cooperative loads that require
-    // contiguous row-major layout; strided inputs go through
-    // auto-Contiguize. -----
-    table.register_with_precision(OpKind::MatMul, &b(f32), vk, matmul::matmul_f32, VULKAN_MATMUL_PRECISION);
-
-    // ----- MatMul mixed f32 × bf16 → f32 (V.3.D) — tensor cores via
-    // matvec_bf16_b / matmul_tiled_bf16_b / matmul_coop. Wider ULP than
-    // pure f32 matmul because bf16 inputs lose 16 mantissa bits.
-    // CONTIGUOUS-ONLY: tensor-core cooperative-matrix kernels
-    // require canonical row-major tile layout. -----
-    let bf16 = DType::BF16;
-    table.register_with_precision(OpKind::MatMul, &[f32, bf16, f32], vk, matmul::matmul_f32_bf16_b, VULKAN_MATMUL_TENSORCORE_PRECISION);
-    // ----- MatMul pure bf16 × bf16 → f32 (V.3 coop-matrix). Both
-    // operands stored as bf16, downcast bf16→f16 on shared-mem load,
-    // f32 accumulator. COOP-ONLY (M%16==0, N%16==0, K>=16); route
-    // picker falls through to cast+f32-matmul on small shapes. -----
-    table.register_with_precision(OpKind::MatMul, &[bf16, bf16, f32], vk, matmul::matmul_bf16_bf16_f32, VULKAN_MATMUL_TENSORCORE_PRECISION);
-    // ----- MatMul pure bf16 × bf16 → bf16 (downcast store). Same
-    // coop[3] tile, but the f32 accumulator is staged to shared mem
-    // and packed to bf16 lanes on store. Closes the end-to-end bf16
-    // inference chain (next layer can consume bf16 activations). -----
-    table.register_with_precision(OpKind::MatMul, &[bf16, bf16, bf16], vk, matmul::matmul_bf16_bf16_bf16, VULKAN_MATMUL_TENSORCORE_PRECISION);
-    // ----- MatMul pure f16 × f16 → f16 (downcast store). Sibling
-    // of bf16→bf16; native float16_t inputs + `float16BitsToUint16`
-    // on the pack step. Closes the f16 inference chain. -----
-    {
-        let f16_d = DType::F16;
-        table.register_with_precision(OpKind::MatMul, &[f16_d, f16_d, f16_d], vk, matmul::matmul_f16_f16_f16, VULKAN_MATMUL_TENSORCORE_PRECISION);
-    }
-    // ----- MatMul pure f16 × f16 → f32 (V.3 coop-matrix). Native
-    // float16_t inputs (no downcast); same coop[3] tile + f32
-    // accumulator. Same shape constraints as the bf16 variant. -----
-    {
-        let f16_d = DType::F16;
-        table.register_with_precision(OpKind::MatMul, &[f16_d, f16_d, f32], vk, matmul::matmul_f16_f16_f32, VULKAN_MATMUL_TENSORCORE_PRECISION);
-    }
+    // ----- MatMul (f32 GEMM + the five mixed-precision / tensor-core combos)
+    // — MIGRATED to FKC contract import. The hand-written
+    // `table.register_with_precision(OpKind::MatMul, …)` regs (f32, f32×bf16→f32,
+    // bf16×bf16→{f32,bf16}, f16×f16→{f16,f32}) are DELETED; they now register from
+    // the vulkan matmul contract via `register_vulkan_matmul_from_contract`
+    // (called at the END of this fn, before the cost fill pass). Caps stay
+    // contiguous-only (`requires_contiguous` ⇒ strided_input=false); precision
+    // becomes the contract's audited-none(reason) seed (the retired
+    // VULKAN_MATMUL_PRECISION / VULKAN_MATMUL_TENSORCORE_PRECISION consts stay in
+    // use for the Vulkan conv2d family). See
+    // `docs/kernel-contracts/vulkan/matmul.fkc.md`.
 
     // ----- Affine / Clamp / PowI — MIGRATED to FKC contract import.
     // The hand-written Affine (f32/f16/f64 strided + bf16 contiguous-only),
@@ -5015,6 +5046,15 @@ pub fn register_vulkan_kernels(table: &mut KernelBindingTable) {
     // `strided_input=true`, the bf16-unary / affine_bf16 sections' `false`. -----
     register_vulkan_elementwise_from_contract(table);
 
+    // ----- MatMul family (f32 GEMM + the five mixed-precision / tensor-core
+    // combos, 6 (MatMul, [lhs,rhs,out]) bindings) — registered FROM its
+    // RE-AUTHORED FKC kernel contract, the SOLE path (all hand-written MatMul regs
+    // deleted above). Runs BEFORE the cost-fill pass so its imported
+    // `unknown_cost` sentinels are upgraded to the same OpKind cost fn every other
+    // Vulkan primitive gets. Caps ride through contiguous-only
+    // (`requires_contiguous` ⇒ strided_input=false). -----
+    register_vulkan_matmul_from_contract(table);
+
     // ----- Bulk-fill cost functions for every Vulkan registration above.
     // The CPU dispatcher (`default_cost_for_op_kind`) captures the
     // FLOP/bandwidth model; backend-specific kernel_overhead_ns
@@ -5282,5 +5322,89 @@ mod elementwise_contract_tests {
             checked += 1;
         }
         assert_eq!(checked, 94, "all 94 (op, dtype) elementwise bindings checked");
+    }
+}
+
+// ===========================================================================
+// FKC contract-migration tests (born-red gate for the Vulkan matmul family)
+// ===========================================================================
+//
+// Same `#![cfg(feature = "vulkan")]` file gate as the cast / elementwise tests
+// above: this module compiles only under `--features vulkan` and touches NO
+// device (registration is pure binding-table population).
+
+#[cfg(test)]
+mod matmul_contract_tests {
+    use super::*;
+    use crate::kernel::{KernelBindingTable, KernelRef};
+
+    /// THIRD VULKAN-BACKEND FKC CONSUMER (born-red gate). `register_vulkan_kernels`
+    /// registers the whole Vulkan matmul family (6 per-combo `(MatMul, [lhs,rhs,out])`
+    /// bindings) FROM ITS RE-AUTHORED KERNEL CONTRACT
+    /// (`docs/kernel-contracts/vulkan/matmul.fkc.md`) via
+    /// `register_vulkan_matmul_from_contract` — the sole registration path, now
+    /// that the hand-written `table.register_with_precision(OpKind::MatMul, …)`
+    /// regs (the f32 GEMM + the five mixed-precision / tensor-core combos) are
+    /// DELETED.
+    ///
+    /// This ALSO dissolves the `dispatch/matmul.fkc.md :: matmul_mixed_precision`
+    /// multi-axis `FanoutDtypeMismatch` corpus deferral: the aspirational single
+    /// multi-dtype section (lhs `[F32,BF16,F16]` vs rhs `[BF16,F16]`) is replaced
+    /// by EXPLICIT single-dtype-per-operand per-combo sections, exactly the cast
+    /// family's per-pair precedent.
+    ///
+    /// For each `(MatMul, [lhs,rhs,out], Vulkan)` key this asserts: the binding
+    /// resolves to the EXACT production wrapper fn-pointer (behavior-preserving);
+    /// `kernel_source == "vulkan-slang"` (the RED discriminator — the deleted hand
+    /// path stamped `""`, so before the import is wired this assert fails on the
+    /// empty source); and `caps.strided_input == false` — the contiguous-only
+    /// truth of the deleted `register_with_precision` regs (the coop / vec4 loads
+    /// require canonical row-major, so a strided operand is auto-Contiguized
+    /// first). Precision is contract-sourced (the cast/elementwise precedent) and
+    /// NOT asserted here.
+    #[test]
+    fn register_vulkan_kernels_binds_matmul_family_from_contract() {
+        let mut table = KernelBindingTable::new();
+        register_vulkan_kernels(&mut table);
+        let vk = BackendId::Vulkan;
+
+        // (key dtypes [lhs, rhs, out], expected production wrapper). Every matmul
+        // binding is contiguous-only (strided_input == false), so that is checked
+        // uniformly below rather than per-row.
+        let cases: &[(&[DType], KernelRef)] = &[
+            (&[DType::F32,  DType::F32,  DType::F32],  matmul::matmul_f32 as KernelRef),
+            (&[DType::F32,  DType::BF16, DType::F32],  matmul::matmul_f32_bf16_b as KernelRef),
+            (&[DType::BF16, DType::BF16, DType::F32],  matmul::matmul_bf16_bf16_f32 as KernelRef),
+            (&[DType::BF16, DType::BF16, DType::BF16], matmul::matmul_bf16_bf16_bf16 as KernelRef),
+            (&[DType::F16,  DType::F16,  DType::F16],  matmul::matmul_f16_f16_f16 as KernelRef),
+            (&[DType::F16,  DType::F16,  DType::F32],  matmul::matmul_f16_f16_f32 as KernelRef),
+        ];
+
+        let mut checked = 0usize;
+        for (key, expected) in cases {
+            let alts = table.lookup_alternatives(OpKind::MatMul, key, vk);
+            let entry = alts.iter().find(|e| e.kernel as usize == *expected as usize);
+            let entry = match entry {
+                Some(e) => e,
+                None => panic!(
+                    "MatMul {key:?}/Vulkan: production wrapper must be bound FROM the vulkan \
+                     matmul contract in register_vulkan_kernels; found {} alt(s) with sources {:?}",
+                    alts.len(),
+                    alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                ),
+            };
+            assert_eq!(
+                entry.kernel_source, "vulkan-slang",
+                "MatMul {key:?}: matmul family must be contract-sourced \
+                 (kernel_source=\"vulkan-slang\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                !entry.caps.strided_input,
+                "MatMul {key:?}: caps preserved (contiguous-only, strided_input=false)",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 6, "all 6 (MatMul, [lhs,rhs,out]) Vulkan combos checked");
     }
 }

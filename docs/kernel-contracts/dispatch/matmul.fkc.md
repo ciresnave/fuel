@@ -193,7 +193,7 @@ precision:
 determinism: bitwise
 ```
 
-## matmul_mixed_precision  (Vulkan tensor-core / cooperative-matrix GEMM, per-combo kernels)
+## matmul_mixed_precision  (Vulkan tensor-core / cooperative-matrix GEMM — describe-only chassis)
 
 Vulkan-only mixed-precision tensor-core matmul: a **family of distinct kernels**, one per
 input/output dtype combination, each with its own dispatch key under `OpKind::MatMul`. The five
@@ -202,14 +202,27 @@ as-built combos (inventory §"MatMul mixed-precision"): `[f32,bf16→f32]`, `[bf
 `→bf16` / `→f16` variants downcast on store. Cooperative-matrix variants require canonical
 row-major tiles with `M%16==0`, `N%16==0`, `K>=16`; the route picker falls back to a cast +
 f32-matmul candidate on shapes that miss the tile constraint (a separate route, not this kernel's
-concern). Precision is `VULKAN_MATMUL_TENSORCORE_PRECISION` (wider ULP — bf16/f16 inputs lose
-mantissa). This single contract describes the combo family; the per-combo `KernelRef`s register at
-their own `(MatMul, [in,in,out], Vulkan)` keys.
+concern).
+
+**This section is now `registrable: false` (§3.10 describe-only chassis).** It enumerates the
+mixed-precision combo family for documentation, but it is NOT a dispatch target: its `accept` inputs
+vary over **different** dtype lists per operand (lhs `[F32,BF16,F16]` vs rhs `[BF16,F16]`), which the
+uniform multi-dtype fan-out importer cannot key (`FanoutDtypeMismatch`, §3.4 — a legal-but-not-fannable
+multi-axis contract, never a silent pick). The registrable per-combo bindings — each single-dtype per
+operand, one `entry_point` symbol per production wrapper — live in
+**`docs/kernel-contracts/vulkan/matmul.fkc.md`** (`matmul_f32_bf16_b`, `matmul_bf16_bf16_f32`,
+`matmul_bf16_bf16_bf16`, `matmul_f16_f16_f16`, `matmul_f16_f16_f32`), which is the file
+`register_vulkan_matmul_from_contract` imports into the binding table. Keeping this describe-only
+chassis clears the `FanoutDtypeMismatch` corpus-lint deferral for this section (a describe-only
+section is excluded from lowering, §3.10) without discarding the combo-family overview. Precision is
+the corrected `VULKAN_MATMUL_TENSORCORE_PRECISION` posture (audited `none(reason)`; the tensor-core
+FADD/subgroup order is scheduler-dependent, so `bit_stable_on_same_hardware: false`).
 
 ```fkc
 kernel: matmul_mixed_precision
+registrable: false                # §3.10 describe-only: multi-axis combo-family chassis (lhs/rhs enumerate different dtype lists — FanoutDtypeMismatch, §3.4); the registrable per-combo bindings live in vulkan/matmul.fkc.md
 op_kind: MatMul
-blurb: "Vulkan tensor-core mixed-precision GEMM; f32 accumulate; per-combo (bf16/f16 in, f32/half out)."
+blurb: "Vulkan tensor-core mixed-precision GEMM chassis; per-combo bindings in vulkan/matmul.fkc.md; f32 accumulate; bf16/f16 in, f32/half out."
 backend: Vulkan
 kernel_source: "vulkan-slang"
 entry_point: "fuel_vulkan_backend::matmul_bf16_bf16_f32"   # one symbol per combo; §12.6
@@ -275,11 +288,12 @@ precision:
 determinism: same_hardware_bitwise
 ```
 
-> **Per-combo `KernelRef`s.** Each of the five combos is a distinct `entry_point` resolving to a
-> distinct `KernelRef` at a distinct `(MatMul, [in,in,out], Vulkan)` key — legal sibling/peer
-> registrations, not duplicates (§10.10). The `dtype_rule`/out-slot of each is pinned by its own
-> key; this single contract section documents the shared algorithm and the cooperative-matrix
-> tile constraint that gates the fast path.
+> **Per-combo `KernelRef`s (registrable — in `vulkan/matmul.fkc.md`).** Each combo is a distinct
+> `entry_point` resolving to a distinct production wrapper `KernelRef` at a distinct
+> `(MatMul, [lhs,rhs,out], Vulkan)` key. Those single-dtype-per-operand registrable sections live in
+> `docs/kernel-contracts/vulkan/matmul.fkc.md` (the file `register_vulkan_matmul_from_contract`
+> imports); the `dtype_rule`/out-slot of each is pinned by its own key. This describe-only chassis
+> documents the shared algorithm and the cooperative-matrix tile constraint that gates the fast path.
 
 ## qmatmul  (GGUF block-quant matmul, dequantize-on-the-fly)
 
