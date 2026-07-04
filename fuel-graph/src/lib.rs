@@ -1703,6 +1703,23 @@ impl Graph {
         self.node_output_views.len()
     }
 
+    /// Whether some node in this graph *produces* (binds mid-realize) the
+    /// runtime value `sym` — i.e. `sym` is **data-determined**, computed by
+    /// an op during the pass rather than supplied up front. Used to tell a
+    /// data-determined `DynScalar::Sym` (which is legitimately unbound in
+    /// the compile-time `SymEnv` and must be resolved at *execute* time)
+    /// apart from a caller error (a truly-unbound input-determined sym,
+    /// which must surface as an error at realize). Today the only producer
+    /// of a data-determined symbol is [`Op::NonZeroIndices`] (its
+    /// `count_sym`); extend this match as more data-determined producers
+    /// land.
+    pub fn binds_data_determined_sym(&self, sym: SymId) -> bool {
+        self.nodes.iter().any(|n| match &n.op {
+            Op::NonZeroIndices { count_sym } => *count_sym == sym,
+            _ => false,
+        })
+    }
+
     /// Look up the realized storage for a node, if any has been
     /// registered. Returns an Arc clone — the slot stays in the map
     /// after this call.

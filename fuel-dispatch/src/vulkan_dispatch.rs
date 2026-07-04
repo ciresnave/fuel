@@ -1134,7 +1134,7 @@ pub mod write_slice {
                     )).bt());
                 }
                 let (dest_shape, ranges) = match params {
-                    OpParams::WriteSlice { dest_shape, ranges } => (dest_shape, ranges),
+                    OpParams::WriteSlice { dest_shape, ranges, .. } => (dest_shape, ranges),
                     other => {
                         return Err(Error::Msg(format!(
                             "vulkan_dispatch::write_slice::{}: expected OpParams::WriteSlice, got {:?}",

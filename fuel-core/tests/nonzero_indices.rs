@@ -54,3 +54,43 @@ fn nonzero_indices_all_nonzero() {
     assert_eq!(count.realize_u32(), vec![4], "every element nonzero");
     assert_eq!(indices.realize_u32(), vec![0, 1, 2, 3], "identity index map");
 }
+
+/// Increment 2b — the consumer half, end-to-end: a **data-determined**
+/// `WriteSlice` offset. `NonZeroIndices` produces `count` mid-pass, and a
+/// `WriteSlice` writes at `dyn_offset = count_sym`. Because the WriteSlice
+/// consumes a producer output (`count`), the producer is an ancestor and
+/// executes first — binding `count_sym` into `produced_syms` — so the
+/// executor resolves the offset at execute time (not compile). This closes
+/// the data-dependent dynamic-shapes loop: producer count → consumer extent.
+#[test]
+fn nonzero_indices_drives_data_determined_write_slice() {
+    use fuel_ir::DynScalar;
+    let dev = fuel_core::Device::cpu();
+    // flat [0,1,0,1,1,0] → 3 nonzeros → count = 3.
+    let x = LazyTensor::from_f32(
+        vec![0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+        Shape::from_dims(&[6]),
+        &dev,
+    );
+    let mut symgen = SymGen::new();
+    let count_sym = symgen.fresh();
+    let (_indices, count) = x.nonzero_indices_bundled(count_sym).unwrap();
+
+    // dest [16] U32 zeros; write the 1-element `count` slab at the
+    // data-determined offset `count_sym`. WriteSlice consumes `count` (a
+    // producer output), so NonZeroIndices runs — binding count_sym = 3 —
+    // before WriteSlice resolves the offset from produced_syms. `dest` must
+    // live on the SAME graph as `count` (const_*_like), not a fresh graph.
+    let dest = count.const_u32_like(vec![0u32; 16], Shape::from_dims(&[16]));
+    let written = dest
+        .write_slice_dyn(&count, vec![(0, 1)], 0, DynScalar::Sym(count_sym))
+        .expect("build data-determined write_slice_dyn");
+
+    let out = written.realize_u32();
+    let mut expected = vec![0u32; 16];
+    expected[3] = 3; // the count value (3) lands at the data-determined index 3
+    assert_eq!(
+        out, expected,
+        "count(=3) must be written at the data-determined offset 3",
+    );
+}
