@@ -717,6 +717,31 @@ impl SizeClass {
         SizeClass((mn << 16) | (ml << 8) | kl)
     }
 
+    /// Aspect-carrying dispatch key for a decode attention op
+    /// ([`OpKind::FlashAttn`]): `q = [B, Hq, Sq, D]`, K/V attended
+    /// length `k_len`, head dim `d`.
+    ///
+    /// THE single source of attention-key derivation, mirroring
+    /// [`SizeClass::matmul`]: both the Judge (producer, from its native
+    /// `OpSize::Attention` `(hq, k_len, d)`) and the flash-vs-decomposed
+    /// bake (consumer, via [`SizeClass::for_op`] from the flash node's
+    /// operand shapes) call this, so both sides agree for every shape.
+    /// Packs `(log2(hq·k_len·d) << 16) | (log2(k_len) << 8) | log2(d)`:
+    /// the high 16 bits track total attention work (`O(Hq·k_len·D)` for
+    /// the QKᵀ + PV matmuls at seq_q=1), so [`DispatchTable::pick_nearest`]'s
+    /// magnitude ordering still follows problem size, while the low bytes
+    /// carry the `k_len` (context-length / bandwidth regime) and head-dim
+    /// aspects — so two decode shapes that differ only in `k_len` (short
+    /// vs capacity context) never collide onto one cell. Each `log2` fits
+    /// a byte (≤ 63 for any `usize`).
+    pub fn attention(hq: usize, k_len: usize, d: usize) -> Self {
+        let work = hq.saturating_mul(k_len).saturating_mul(d);
+        let mag = Self::from_elem_count(work).0 & 0xff;
+        let kl = Self::from_elem_count(k_len).0 & 0xff;
+        let dl = Self::from_elem_count(d).0 & 0xff;
+        SizeClass((mag << 16) | (kl << 8) | dl)
+    }
+
     /// Derive the dispatch key for `op` from its input operand shapes —
     /// the single entry point every consumer uses. A [`OpKind::MatMul`]
     /// reads `(m,n,k)` from `lhs=[…,m,k]` / `rhs=[…,k,n]` (trailing two
@@ -733,6 +758,23 @@ impl SizeClass {
                     let k = ld[ld.len() - 1];
                     let n = rd[rd.len() - 1];
                     return Self::matmul(m, n, k);
+                }
+            }
+        }
+        if op == OpKind::FlashAttn {
+            // Operand layout: q = [B, Hq, Sq, D], k = [B, Hkv, k_len, D]
+            // (v matches k). Read `hq`/`d` from q and the attended length
+            // `k_len` from k's length axis — the leading B batch dim and
+            // k's Hkv don't affect the key (mirrors matmul's batch-blind
+            // trailing-dim read), so a 2D per-head profile and the batched
+            // op agree.
+            if let (Some(q), Some(k)) = (input_shapes.first(), input_shapes.get(1)) {
+                let (qd, kd) = (q.dims(), k.dims());
+                if qd.len() >= 4 && kd.len() >= 2 {
+                    let hq = qd[1];
+                    let d = qd[qd.len() - 1];
+                    let k_len = kd[kd.len() - 2];
+                    return Self::attention(hq, k_len, d);
                 }
             }
         }
@@ -1165,5 +1207,78 @@ mod size_class_tests {
         let sc = SizeClass::for_op(OpKind::AddElementwise, &[Shape::from_dims(&[1024])]);
         assert_eq!(sc, SizeClass::from_elem_count(1024));
         assert_eq!(sc.0, 10); // log2(1024)
+    }
+
+    /// FlashAttn: the shared `attention` key derivation gives
+    /// producer == consumer (Judge Layer-2 coverage arc, slice 3).
+    ///
+    /// The Judge (producer) keys a decode-attention cell via
+    /// `SizeClass::attention(hq, k_len, d)` from its native
+    /// `OpSize::Attention`; slice-4's bake (consumer) keys via
+    /// `SizeClass::for_op(FlashAttn, [q_shape, k_shape])` from the flash
+    /// node's operand shapes. Both must derive one identical key so the
+    /// bake's lookup HITS the profiled cell.
+    #[test]
+    fn attention_key_producer_equals_consumer() {
+        // TinyLlama-ish decode: Hq=32, Hkv=4, D=64, k_len=128, seq_q=1.
+        let (b, hq, hkv, d, k_len) = (1usize, 32usize, 4usize, 64usize, 128usize);
+
+        // Producer derives from its native (hq, k_len, d).
+        let producer = SizeClass::attention(hq, k_len, d);
+        // Consumer derives from the flash node's operand shapes
+        // q=[B,Hq,Sq,D] / k=[B,Hkv,k_len,D] through the shared `for_op`.
+        let consumer = SizeClass::for_op(
+            OpKind::FlashAttn,
+            &[
+                Shape::from_dims(&[b, hq, 1, d]),
+                Shape::from_dims(&[b, hkv, k_len, d]),
+                Shape::from_dims(&[b, hkv, k_len, d]),
+            ],
+        );
+        assert_eq!(
+            producer, consumer,
+            "producer (native hq,k_len,d) and consumer (operand shapes) must \
+             derive one identical attention key",
+        );
+    }
+
+    /// Two decode attention shapes that differ only in `k_len` (short
+    /// vs capacity context) must key to DISTINCT buckets — the oracle
+    /// keeps the MIN latency across a colliding key, which would let the
+    /// short-context cell poison the capacity cell's cost.
+    #[test]
+    fn attention_decode_shapes_distinct_by_klen() {
+        let small = SizeClass::attention(32, 128, 64);
+        let cap = SizeClass::attention(32, 4096, 64);
+        assert_ne!(
+            small, cap,
+            "short-context and capacity-context decode attention must not \
+             share a dispatch cell",
+        );
+    }
+
+    /// `for_op(FlashAttn)` reads `hq`/`d` from q and `k_len` from k's
+    /// length axis; the leading batch dim and k's Hkv (GQA) don't affect
+    /// the key — so a per-head 2D-ish profile and the batched op agree,
+    /// exactly like the matmul batch-blind trailing-dim read.
+    #[test]
+    fn attention_key_ignores_batch_and_hkv() {
+        let base = SizeClass::for_op(
+            OpKind::FlashAttn,
+            &[
+                Shape::from_dims(&[1, 32, 1, 64]),
+                Shape::from_dims(&[1, 4, 128, 64]),
+            ],
+        );
+        // Different B and different Hkv, same Hq/k_len/D → same key.
+        let other = SizeClass::for_op(
+            OpKind::FlashAttn,
+            &[
+                Shape::from_dims(&[8, 32, 1, 64]),
+                Shape::from_dims(&[8, 8, 128, 64]),
+            ],
+        );
+        assert_eq!(base, other);
+        assert_eq!(base, SizeClass::attention(32, 128, 64));
     }
 }
