@@ -86,15 +86,17 @@ pub struct SynthArtifact {
     pub contract: String,
 }
 
-/// Provenance of a [`SynthArtifact::artifact`].
+/// Provenance of a [`SynthArtifact::artifact`] — always a **loadable** artifact.
+/// A synthesizer that can't produce a loadable kernel returns
+/// [`JitResponse::Declined`], never a `Synthesized` carrying a non-loadable
+/// placeholder (Baracuda, 2026-07-04: a non-loadable/stub synth declines; no
+/// unloadable sentinel crosses the seam, so a loader never has to refuse one).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ArtifactKind {
-    /// PTX text/bytes (loaded via the driver JIT).
+    /// PTX (loaded via the driver JIT).
     Ptx,
     /// A pre-linked cubin.
     Cubin,
-    /// Kernel source (compiled on Fuel's side).
-    Source,
 }
 
 /// The runtime binding row for a synthesized kernel — the JIT analog of one row
