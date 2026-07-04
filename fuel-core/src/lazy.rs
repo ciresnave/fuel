@@ -1715,6 +1715,250 @@ mod tests {
         flash_decompose_vs_reference(2, 2, true, None, true);
     }
 
+    /// Plain-Rust reference for **capacity-K decode attention**: attend `q`
+    /// (`Sq` queries at absolute positions `[kl−Sq, kl)`) against the first
+    /// `kl` keys/values of a `cap`-capacity KV buffer, with bottom-right
+    /// causal masking (query `i` attends keys `j ≤ (kl−Sq)+i`). GQA folds
+    /// `h → h/(Hq/Hkv)`.
+    #[allow(clippy::too_many_arguments)]
+    fn ref_decode_attn(
+        q: &[f32], k: &[f32], v: &[f32],
+        hq: usize, hkv: usize, sq: usize, cap: usize, kl: usize, d: usize,
+        scale: f32, causal: bool,
+    ) -> Vec<f32> {
+        let g = hq / hkv;
+        let offset = kl - sq;
+        let mut out = vec![0f32; hq * sq * d];
+        for h in 0..hq {
+            let hk = h / g;
+            for i in 0..sq {
+                let qh = &q[((h * sq) + i) * d..][..d];
+                let mut scores = vec![f32::NEG_INFINITY; kl];
+                for j in 0..kl {
+                    if causal && j > offset + i {
+                        continue;
+                    }
+                    let kh = &k[((hk * cap) + j) * d..][..d];
+                    let s: f32 = (0..d).map(|l| qh[l] * kh[l]).sum();
+                    scores[j] = scale * s;
+                }
+                let m = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let mut sum = 0f32;
+                let exps: Vec<f32> = scores
+                    .iter()
+                    .map(|&s| {
+                        let e = (s - m).exp();
+                        sum += e;
+                        e
+                    })
+                    .collect();
+                for l in 0..d {
+                    let mut o = 0f32;
+                    for j in 0..kl {
+                        o += (exps[j] / sum) * v[((hk * cap) + j) * d + l];
+                    }
+                    out[(h * sq + i) * d + l] = o;
+                }
+            }
+        }
+        out
+    }
+
+    /// Recipe principle (G2): a **concrete** `k_len` FlashAttn is a *static*
+    /// config that used to return self (`k_len.is_some()` short-circuit). It
+    /// now decomposes: `Slice` K/V to the live prefix and run the SDPA recipe
+    /// bottom-right-aligned (`q_pos_offset = kl − Sq`). RED before the fix (an
+    /// `Op::Fused(FLASH_ATTN)` island survives lowering); GREEN after, matching
+    /// the decode-attention reference. Uses GQA (Hq=2, Hkv=1), Sq=2 (so the
+    /// offset causal band is exercised, not a Sq=1 no-op), capacity 4, kl=3.
+    #[test]
+    fn flash_attn_decompose_concrete_klen() {
+        use fuel_graph::registry::FusedOps;
+        use fuel_graph::Op;
+        use fuel_ir::DynScalar;
+        let dev = Device::cpu();
+        let (hq, hkv, sq, cap, kl, d) = (2usize, 1usize, 2usize, 4usize, 3usize, 2usize);
+        let scale = 0.7071f32;
+        let causal = true;
+        let q_data: Vec<f32> = (0..hq * sq * d).map(|i| (i as f32 * 0.1).sin()).collect();
+        let k_data: Vec<f32> = (0..hkv * cap * d).map(|i| (i as f32 * 0.13).cos()).collect();
+        let v_data: Vec<f32> = (0..hkv * cap * d).map(|i| i as f32 * 0.07 + 1.0).collect();
+        let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev);
+        let k = q.inner.const_f32_like(k_data.clone(), Shape::from_dims(&[1, hkv, cap, d]));
+        let v = q.inner.const_f32_like(v_data.clone(), Shape::from_dims(&[1, hkv, cap, d]));
+        // Concrete k_len — the fused node that formerly returned self.
+        let attn = q.inner.flash_attn_dyn(
+            &k, &v, None, scale, causal, None, None, None, DynScalar::Concrete(kl),
+        );
+
+        let graph = attn.graph().clone();
+        let id = attn.id();
+        let roots = fuel_graph::opt::RuleRegistry::lowering_only()
+            .optimize_to_fixpoint(&graph, &[id]);
+        assert_eq!(roots.len(), 1, "lowering should keep a single root");
+
+        // Born-red discriminator: no Op::Fused(FLASH_ATTN) reachable from the root.
+        {
+            let g = graph.read().unwrap();
+            let mut stack = vec![roots[0]];
+            let mut seen = std::collections::HashSet::new();
+            while let Some(nid) = stack.pop() {
+                if !seen.insert(nid) {
+                    continue;
+                }
+                let node = g.node(nid);
+                assert!(
+                    !matches!(node.op, Op::Fused(fid, _) if fid == FusedOps::FLASH_ATTN),
+                    "concrete-k_len FlashAttn still fused after lowering (self-return)",
+                );
+                for &inp in &node.inputs {
+                    stack.push(inp);
+                }
+            }
+        }
+
+        let got = crate::pipelined_bridge::realize_one_as::<f32>(&graph, roots[0], &dev)
+            .expect("realize decomposed concrete-k_len FlashAttn on CPU");
+        let expected = ref_decode_attn(
+            &q_data, &k_data, &v_data, hq, hkv, sq, cap, kl, d, scale, causal,
+        );
+        assert_eq!(got.len(), expected.len());
+        for (i, (&gv, &ev)) in got.iter().zip(&expected).enumerate() {
+            assert!(
+                (gv - ev).abs() < 1e-4,
+                "concrete-k_len decode mismatch at {i}: got {gv}, expected {ev}",
+            );
+        }
+    }
+
+    /// Recipe principle (G2/G3): SelectiveScan is the constitution's canonical
+    /// **basis gap** (a higher-order `Scan` primitive Fuel lacks; the CumSum
+    /// closed-form overflows for `a < 0`). Its `decompose` must be the
+    /// never-crash fixpoint — return self, leaving an `Op::Fused` surfaced gap
+    /// — and the driver must **terminate** (not spin on the self-return). This
+    /// locks that posture: `lowering_only` returns and the node stays
+    /// `Op::Fused(SELECTIVE_SCAN)`; the fused CPU kernel still realizes it end
+    /// to end (never a crash). Contrast NF4 / concrete-k_len FlashAttn above,
+    /// which now carry real recipes.
+    #[test]
+    fn selective_scan_decompose_is_surfaced_gap_not_a_crash() {
+        use fuel_graph::registry::FusedOps;
+        use fuel_graph::Op;
+        let dev = Device::cpu();
+        // B=1, T=1, dim=1, dstate=1. h = d·b·u; y = h·c (no softplus).
+        let u = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev);
+        let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
+        let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]));
+        let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]));
+        let c = u.const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1]));
+        let y = u.selective_scan(&delta, &a, &b, &c, /* delta_softplus */ false);
+
+        // Fixpoint termination + surfaced-gap posture. If the self-return ever
+        // spun the lowering loop, this call would hang (the test would time
+        // out) rather than return.
+        let graph = y.inner.graph().clone();
+        let id = y.inner.id();
+        let roots = fuel_graph::opt::RuleRegistry::lowering_only()
+            .optimize_to_fixpoint(&graph, &[id]);
+        assert_eq!(roots.len(), 1);
+        {
+            // The `y` slot is an Op::View over the fused node; the gap posture
+            // is that the SELECTIVE_SCAN node *survives* lowering (undecomposed),
+            // still reachable from the root — a surfaced gap, not a silent drop.
+            let g = graph.read().unwrap();
+            let mut stack = vec![roots[0]];
+            let mut seen = std::collections::HashSet::new();
+            let mut gap_present = false;
+            while let Some(nid) = stack.pop() {
+                if !seen.insert(nid) {
+                    continue;
+                }
+                let node = g.node(nid);
+                if matches!(node.op, Op::Fused(fid, _) if fid == FusedOps::SELECTIVE_SCAN) {
+                    gap_present = true;
+                }
+                for &inp in &node.inputs {
+                    stack.push(inp);
+                }
+            }
+            assert!(
+                gap_present,
+                "SelectiveScan is a documented basis gap: decompose returns self \
+                 (node survives lowering as Op::Fused) — a surfaced gap, never \
+                 crashed away or silently dropped",
+            );
+        }
+
+        // Never-crash end to end: the fused CPU kernel realizes it. h = 0.5·3·2
+        // = 3; y = 3·4 = 12.
+        let got = y.realize_f32();
+        assert_eq!(got.len(), 1);
+        assert!((got[0] - 12.0).abs() < 1e-4, "selective_scan y: {}", got[0]);
+    }
+
+    /// Recipe principle (G2): Nf4Matmul must decompose to a **fused-free**
+    /// primitive subgraph whose realize matches the fused kernel. RED before
+    /// the total decompose landed (the self-return left an
+    /// `Op::Fused(NF4_MATMUL)` opaque island in the base map); GREEN after.
+    /// Uses the hand-computed two-outputs / two-blocks case (expected `[10,
+    /// 50]`) shared with `fuel_cpu_backend`'s byte-kernel test, so the
+    /// indicator-sum codebook + nibble unpack + per-block scale are checked
+    /// against the same numbers the fused CPU kernel produces.
+    #[test]
+    fn nf4_matmul_decompose_matches_kernel() {
+        use fuel_graph::registry::FusedOps;
+        use fuel_graph::Op;
+        let dev = Device::cpu();
+        // n=2, k=4, block_size=2; w_packed [2, 2] U8, absmax [2, 2] F32.
+        let weight = crate::nf4::nf4_from_bytes(
+            vec![247_u8, 247, 127, 127],
+            vec![1.0_f32, 2.0, 10.0, 20.0],
+            2, 4, 2, &dev,
+        )
+        .expect("nf4_from_bytes");
+        let act = LazyTensor::from_graph_tensor(
+            weight.w_packed.graph_tensor().const_f32_like(
+                vec![1.0_f32, 2.0, 2.0, 4.0],
+                Shape::from_dims(&[1, 4]),
+            ),
+        );
+        let y = weight.matmul(&act);
+
+        // Decompose explicitly, then realize the primitive subgraph.
+        let graph = y.inner.graph().clone();
+        let id = y.inner.id();
+        let roots = fuel_graph::opt::RuleRegistry::lowering_only()
+            .optimize_to_fixpoint(&graph, &[id]);
+        assert_eq!(roots.len(), 1, "lowering should keep a single root");
+
+        // Born-red discriminator: no Op::Fused(NF4_MATMUL) reachable from the
+        // realized root — a self-returning decompose fails exactly here.
+        {
+            let g = graph.read().unwrap();
+            let mut stack = vec![roots[0]];
+            let mut seen = std::collections::HashSet::new();
+            while let Some(nid) = stack.pop() {
+                if !seen.insert(nid) {
+                    continue;
+                }
+                let node = g.node(nid);
+                assert!(
+                    !matches!(node.op, Op::Fused(fid, _) if fid == FusedOps::NF4_MATMUL),
+                    "decomposed graph still contains an Op::Fused(NF4_MATMUL) island",
+                );
+                for &inp in &node.inputs {
+                    stack.push(inp);
+                }
+            }
+        }
+
+        let got = crate::pipelined_bridge::realize_one_as::<f32>(&graph, roots[0], &dev)
+            .expect("realize decomposed Nf4Matmul on CPU");
+        assert_eq!(got.len(), 2);
+        assert!((got[0] - 10.0).abs() < 1e-4, "out 0: {}", got[0]);
+        assert!((got[1] - 50.0).abs() < 1e-4, "out 1: {}", got[1]);
+    }
+
     /// Build a one-output fused-op node directly on `anchor`'s graph, lower it
     /// to primitives, realize on CPU, and return the F32 values. The decompose
     /// parity tests for backward helpers use this — those ops have no public

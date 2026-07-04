@@ -166,7 +166,7 @@ fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
 
     let rc = super::flash_attn::recompute_probs(
         graph, q_id, k_id, v_id, alibi_id, b, hq, sq, sk, d, hkv, scale, causal, window_l,
-        window_r, softcap, dtype,
+        window_r, softcap, /* q_pos_offset */ 0, dtype,
     );
     let scores_shape = rc.scores_shape.clone();
 
