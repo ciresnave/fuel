@@ -500,6 +500,7 @@ impl PipelinedExecutor {
         inputs: StorageCache,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
         Self::realize_inner(graph, target, inputs, OrderSource::Default, SymEnv::default())
+            .map(|(s, l, _produced)| (s, l))
     }
 
     /// Env-carrying sibling of [`realize`]: realize `target` with a
@@ -520,6 +521,24 @@ impl PipelinedExecutor {
         inputs: StorageCache,
         sym_env: SymEnv,
     ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
+        Self::realize_inner(graph, target, inputs, OrderSource::Default, sym_env)
+            .map(|(s, l, _produced)| (s, l))
+    }
+
+    /// Producing sibling of [`realize_with_env`]: realize `target` and
+    /// ALSO return the [`SymEnv`] of symbols BOUND BY PRODUCERS during the
+    /// pass — data-determined dynamic shapes (`Op::NonZeroIndices`'s
+    /// runtime count, etc.). The returned env is disjoint from the input
+    /// `sym_env` (which is input-determined). Empty when the graph has no
+    /// data-determined producer. This is the observation point for the
+    /// increment-2a bind seam; a downstream pass consumes these bindings
+    /// as dynamic extents.
+    pub fn realize_with_env_producing(
+        graph: Arc<RwLock<Graph>>,
+        target: NodeId,
+        inputs: StorageCache,
+        sym_env: SymEnv,
+    ) -> Result<(Arc<RwLock<Storage>>, Layout, SymEnv)> {
         Self::realize_inner(graph, target, inputs, OrderSource::Default, sym_env)
     }
 
@@ -547,6 +566,7 @@ impl PipelinedExecutor {
             OrderSource::Optimized { optimized, route: None },
             SymEnv::default(),
         )
+        .map(|(s, l, _produced)| (s, l))
     }
 
     /// Env-carrying sibling of [`realize_with_optimized`]: same
@@ -569,6 +589,7 @@ impl PipelinedExecutor {
             OrderSource::Optimized { optimized, route: None },
             sym_env,
         )
+        .map(|(s, l, _produced)| (s, l))
     }
 
     /// PR-C1 entry: realize `target` driven from `optimized`'s in-place
@@ -594,6 +615,7 @@ impl PipelinedExecutor {
             OrderSource::Optimized { optimized, route: Some(route) },
             SymEnv::default(),
         )
+        .map(|(s, l, _produced)| (s, l))
     }
 
     /// Env-carrying sibling of [`realize_with_optimized_route`] — the
@@ -614,6 +636,7 @@ impl PipelinedExecutor {
             OrderSource::Optimized { optimized, route: Some(route) },
             sym_env,
         )
+        .map(|(s, l, _produced)| (s, l))
     }
 
     /// Cleanup Step C/D entry: the executor OWNS `Op::Branch` arm-selection.
@@ -651,7 +674,8 @@ impl PipelinedExecutor {
                 inputs,
                 OrderSource::Streaming { optimized, pick: &pick },
                 sym_env,
-            ),
+            )
+            .map(|(s, l, _produced)| (s, l)),
             None => Self::realize_with_optimized_env(
                 graph, target, inputs, optimized, sym_env,
             ),
@@ -695,7 +719,7 @@ impl PipelinedExecutor {
         inputs: StorageCache,
         order_source: OrderSource<'_>,
         sym_env: SymEnv,
-    ) -> Result<(Arc<RwLock<Storage>>, Layout)> {
+    ) -> Result<(Arc<RwLock<Storage>>, Layout, SymEnv)> {
         // Auto-insert safety copies for in-place ops whose target
         // has additional readers in this realize set (residual-
         // connection cycle break). No-op when no destructive ops
@@ -766,6 +790,12 @@ impl PipelinedExecutor {
         let plan_generation: Option<u64> = generation_for(&order_source);
         let mut current_chunk_backend: Option<BackendId> = None;
         let mut cache: StorageCache = inputs;
+        // Data-dependent dynamic-shapes: symbols BOUND BY PRODUCERS during
+        // this pass (e.g. `Op::NonZeroIndices`'s runtime count). Distinct
+        // from the compile-time `sym_env` (input-determined, moved into the
+        // compiler thread): these become known only as ops execute. Returned
+        // to the caller so a downstream pass can consume them.
+        let mut produced_syms = SymEnv::new();
         // Step E A4b-1: per-node async-completion handles. Each producing node's
         // `execute_compiled` returns a `CompletionHandle` (CUDA → a recorded
         // `Event`; CPU/Vulkan → `Ready`) instead of being `wait`ed inline. We
@@ -870,7 +900,7 @@ impl PipelinedExecutor {
                     wait_producer_handle(&mut handles, producer)?;
                 }
             }
-            let handle = execute_work_item(&item, &mut cache, &mut layout_cache)
+            let handle = execute_work_item(&item, &mut cache, &mut layout_cache, &mut produced_syms)
                 .map_err(|e| with_node_location(&graph, item.node_id, e))?;
             store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input {
@@ -953,7 +983,7 @@ impl PipelinedExecutor {
             ))
             .bt()
         })?;
-        Ok((storage, layout))
+        Ok((storage, layout, produced_syms))
     }
 
     /// Realize multiple targets in one walk. Each target's transitive
@@ -1146,6 +1176,11 @@ impl PipelinedExecutor {
         let plan_generation: Option<u64> = generation_for(&order_source);
         let mut current_chunk_backend: Option<BackendId> = None;
         let mut cache: StorageCache = inputs;
+        // Data-dependent dynamic-shapes producer-bound symbols (see
+        // `realize_inner`). `realize_many` does not expose them today; the
+        // env is dropped at pass end (producers still publish, keeping the
+        // seam uniform across both realize loops).
+        let mut produced_syms = SymEnv::new();
         // Step E A4b-1/A4b-3: per-node async-completion handles (see realize_inner
         // for the full rationale). Map drained at realize-end; the cross-device
         // copy waits the SOURCE producer's handle (A4b-3).
@@ -1211,7 +1246,7 @@ impl PipelinedExecutor {
                     wait_producer_handle(&mut handles, producer)?;
                 }
             }
-            let handle = execute_work_item(&item, &mut cache, &mut layout_cache)
+            let handle = execute_work_item(&item, &mut cache, &mut layout_cache, &mut produced_syms)
                 .map_err(|e| with_node_location(&graph, item.node_id, e))?;
             store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input {
@@ -4026,10 +4061,61 @@ fn with_node_location(
 /// handle map and drains at realize-end. Non-producing arms (const adopt, view,
 /// slot projection, release marker, contiguize) are pure Arc-clones / host
 /// allocs whose work is already complete → [`CompletionHandle::Ready`].
+/// Read a data-determined runtime count from bundle slot 1 of a
+/// just-realized producer and bind it into the per-pass `SymEnv` under
+/// `count_sym` — the data-dependent dynamic-shapes seam (increment 2a).
+/// The producer's bundle is `[indices [capacity] U32 ; count [1] U32]`;
+/// slot 1's single U32 starts at byte `capacity * 4` (after the
+/// `capacity`-element U32 primary slot). CPU only for now — device
+/// backends need a D2H after the completion handle is waited (a documented
+/// follow-up; the whole data-dependent path is CPU-first). Called AFTER
+/// `execute_compiled`, whose CPU path returns a `Ready` handle, so the
+/// bytes are already valid.
+fn bind_data_determined_count(
+    arc: &Arc<RwLock<Storage>>,
+    capacity: usize,
+    count_sym: fuel_ir::SymId,
+    produced_syms: &mut SymEnv,
+) -> Result<()> {
+    let guard = arc.read().map_err(|_| poisoned("NonZeroIndices output storage"))?;
+    let count_byte_off = capacity * std::mem::size_of::<u32>();
+    let end = count_byte_off + std::mem::size_of::<u32>();
+    let count = match &guard.inner {
+        fuel_memory::BackendStorage::Cpu(cpu_bytes) => {
+            let bytes = cpu_bytes.bytes();
+            if end > bytes.len() {
+                return Err(Error::Msg(format!(
+                    "NonZeroIndices: count slot byte range [{count_byte_off}..{end}) \
+                     exceeds bundle byte length {}",
+                    bytes.len(),
+                ))
+                .bt());
+            }
+            u32::from_le_bytes(
+                bytes[count_byte_off..end]
+                    .try_into()
+                    .expect("4 bytes → u32"),
+            )
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "NonZeroIndices: data-determined count read is CPU-only today; got \
+                 BackendStorage::{:?} (device backends need a D2H after the completion \
+                 handle is waited — a documented follow-up)",
+                std::mem::discriminant(other),
+            ))
+            .bt());
+        }
+    };
+    produced_syms.bind(count_sym, count as usize)?;
+    Ok(())
+}
+
 fn execute_work_item(
     item: &WorkItem,
     cache: &mut StorageCache,
     layout_cache: &mut HashMap<NodeId, Layout>,
+    produced_syms: &mut SymEnv,
 ) -> Result<CompletionHandle> {
     match &item.kind {
         WorkItemKind::ConstAdopt => {
@@ -4996,6 +5082,20 @@ fn execute_work_item(
                 execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
 
             let arc = output_arcs.into_iter().next().expect("one output");
+
+            // Data-determined dynamic-shapes seam (increment 2a): a
+            // producer that computes a runtime count publishes it into the
+            // per-pass `SymEnv` so downstream ops can consume it as a
+            // dynamic extent. `Op::NonZeroIndices` writes its count into
+            // bundle slot 1; read it back and bind `count_sym`. This is the
+            // FIRST op to bind a *data-determined* symbol mid-realize (all
+            // prior binds are host-known before realize). Single-threaded:
+            // the executor runs items topologically, so this bind precedes
+            // any consumer's execute-time resolution.
+            if let OpParams::NonZeroIndices { capacity, count_sym } = &compiled.op_params {
+                bind_data_determined_count(&arc, *capacity, *count_sym, produced_syms)?;
+            }
+
             cache.insert(item.node_id, arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(handle)
@@ -11368,6 +11468,74 @@ mod tests {
         assert_eq!(
             out, &[0.0, 0.0, 0.0, 7.0, 8.0, 0.0],
             "slab must land at the SymEnv-bound offset 3, not the static placeholder 0",
+        );
+    }
+
+    /// Increment 2a — the data-determined bind seam. After
+    /// `Op::NonZeroIndices` realizes, the executor reads its runtime count
+    /// from bundle slot 1 and PUBLISHES it into the produced `SymEnv` under
+    /// `count_sym`. This is the first op to bind a *data-determined* symbol
+    /// mid-realize (all prior binds are host-known before realize) — the
+    /// keystone capability for SSM decode / MoE sparsity / MLA KV.
+    #[test]
+    fn pipelined_realize_nonzero_indices_publishes_count() {
+        use fuel_ir::storage::{compose_bundle, OutputViewSpec};
+        use fuel_ir::SymId;
+        // flat [0,1,0,1,1,0] → 3 nonzeros at 1,3,4; capacity 6.
+        let x_storage = fuel_memory::from_slice_cpu(&[0.0_f32, 1.0, 0.0, 1.0, 1.0, 0.0]);
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let count_sym = SymId(0);
+        let (x_id, nzi_id) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[2, 3]),
+                dtype: DType::F32,
+            });
+            let capacity = 6usize;
+            let idx_shape = Shape::from_dims(&[capacity]);
+            let cnt_shape = Shape::from_dims(&[1]);
+            let specs = vec![
+                OutputViewSpec {
+                    dtype: DType::U32,
+                    shape: idx_shape.clone(),
+                    layout: Layout::contiguous(idx_shape.clone()),
+                    name: Some("indices"),
+                },
+                OutputViewSpec {
+                    dtype: DType::U32,
+                    shape: cnt_shape.clone(),
+                    layout: Layout::contiguous(cnt_shape),
+                    name: Some("count"),
+                },
+            ];
+            let (_bytes, views) = compose_bundle(&specs).unwrap();
+            let nzi = g.push(Node {
+                op: Op::NonZeroIndices { count_sym },
+                inputs: vec![x],
+                shape: idx_shape,
+                dtype: DType::U32,
+            });
+            g.set_output_views(nzi, Arc::from(views.into_boxed_slice())).unwrap();
+            g.set_target_backend(nzi, BackendId::Cpu);
+            (x, nzi)
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(x_id, Arc::new(RwLock::new(x_storage)));
+
+        let (_arc, _layout, produced) = PipelinedExecutor::realize_with_env_producing(
+            graph,
+            nzi_id,
+            inputs,
+            SymEnv::new(),
+        )
+        .expect("realize_with_env_producing");
+
+        assert_eq!(
+            produced.get(count_sym),
+            Some(3),
+            "the executor must publish the data-determined nonzero count into the SymEnv",
         );
     }
 
