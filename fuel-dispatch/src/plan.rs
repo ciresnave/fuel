@@ -872,14 +872,18 @@ fn emit_plan_telemetry(
         let winner_revision = winner_entry.map_or(0, |e| e.kernel_revision_hash);
 
         // The demand descriptor for the LIVE operands (shared by the structure
-        // key + the miss detector).
-        let operands: Vec<FdxOperandDesc> = node
+        // key + the miss detector). Baracuda's `structure_key` keys on operands
+        // in inputs-THEN-OUTPUT order (its `OperandDesc` convention / reply), so
+        // the node's own output operand is folded in after the inputs — derived
+        // from the node's output layout + dtype exactly as the inputs are.
+        let mut operands: Vec<FdxOperandDesc> = node
             .inputs
             .iter()
             .map(|&input_id| {
                 FdxOperandDesc::from_layout(&graph.layout(input_id), graph.node(input_id).dtype)
             })
             .collect();
+        operands.push(FdxOperandDesc::from_layout(&graph.layout(id), node.dtype));
         let op_class = format!("{op_kind:?}");
 
         // The structure key for the LIVE operands (Fuel CALLS the provider,
@@ -3982,8 +3986,8 @@ mod tests {
     mod telemetry_wiring {
         use super::*;
         use crate::telemetry::{
-            FdxOperandDesc, HwStamp, StructureKeyProvider, StructureKeyToken, TelemetryConfig,
-            TelemetryHooks, TelemetryMode, TelemetrySink,
+            Contiguity, FdxOperandDesc, HwStamp, StructureKeyProvider, StructureKeyToken,
+            TelemetryConfig, TelemetryHooks, TelemetryMode, TelemetrySink,
         };
         use std::sync::Mutex;
 
@@ -4076,11 +4080,12 @@ mod tests {
             );
             let recs = sink.miss_records();
             assert_eq!(recs.len(), 1);
-            // OpKind Debug = "AddElementwise"; the Add node has TWO operands,
-            // both of which flowed to the provider as FDX descriptors.
+            // OpKind Debug = "AddElementwise"; the Add node has TWO inputs plus
+            // its OUTPUT operand (inputs-then-output), all of which flowed to
+            // the provider as FDX descriptors ⇒ n=3.
             assert_eq!(
                 recs[0].wanted,
-                StructureKeyToken("AddElementwise:stub:n=2".into()),
+                StructureKeyToken("AddElementwise:stub:n=3".into()),
                 "the wanted token must reflect the live op_class + operands",
             );
             assert_eq!(recs[0].fallback.kernel_source, "baracuda-generic-strided");
@@ -4278,10 +4283,11 @@ mod tests {
             assert_eq!(rec.chosen.kernel_revision_hash, 0, "hand-written ⇒ untracked");
             assert_eq!(rec.count, 1);
             assert_eq!(rec.hw, cpu_hw());
-            // structure_key from the stub provider (2 live operands reached it).
+            // structure_key from the stub provider (2 inputs + the output
+            // operand reached it, inputs-then-output ⇒ n=3).
             assert_eq!(
                 rec.structure_key,
-                Some(StructureKeyToken("AddElementwise:stub:n=2".into())),
+                Some(StructureKeyToken("AddElementwise:stub:n=3".into())),
             );
             // candidates: BOTH siblings, each with its OWN latency (a loser
             // keeps its own number, never the winner's).
@@ -4360,6 +4366,80 @@ mod tests {
             assert!(
                 sink.into_inner().expect("sink lock").is_empty(),
                 "Off emits neither dispatch nor miss",
+            );
+            let _ = add_id;
+        }
+
+        // -----------------------------------------------------------------
+        // OUTPUT operand folded into the structure-key slice (Baracuda's
+        // inputs-THEN-output OperandDesc convention).
+        // -----------------------------------------------------------------
+
+        /// A recording provider: captures the exact `FdxOperandDesc` slice it
+        /// was handed, so a test can prove the node's OUTPUT operand was folded
+        /// in AFTER the inputs (baracuda keys on inputs-then-output).
+        struct RecordingProvider {
+            seen: Mutex<Vec<FdxOperandDesc>>,
+        }
+        impl StructureKeyProvider for RecordingProvider {
+            fn structure_key(
+                &self,
+                op_class: &str,
+                operands: &[FdxOperandDesc],
+                _arch: &str,
+            ) -> Option<StructureKeyToken> {
+                *self.seen.lock().expect("record lock") = operands.to_vec();
+                Some(StructureKeyToken(format!("{op_class}:n={}", operands.len())))
+            }
+        }
+
+        /// BORN-RED: the operand slice handed to the structure-key provider at
+        /// the emission site must be node INPUTS followed by the node's own
+        /// OUTPUT operand (baracuda's inputs-THEN-output `OperandDesc`
+        /// convention). The Add cell has two inputs, so the slice must be
+        /// length 3 with the trailing operand describing the output tensor.
+        ///
+        /// RED before the fix: the emission site built the slice from
+        /// `node.inputs` only ⇒ length 2, no output operand. GREEN once the
+        /// output desc (from the node's own layout/dtype) is appended.
+        #[test]
+        fn structure_key_operand_slice_folds_in_the_output() {
+            let table = generic_only_add_table();
+            let (g, add_id) = build_add_graph();
+            let order = topo_order(&g, add_id);
+
+            let sink = Mutex::new(TelemetrySink::new());
+            let provider = RecordingProvider { seen: Mutex::new(Vec::new()) };
+            let config = TelemetryConfig {
+                mode: TelemetryMode::Coarse,
+                out_path: None,
+            };
+            let hooks = TelemetryHooks {
+                config: &config,
+                sink: &sink,
+                provider: &provider,
+                hw: cpu_hw(),
+            };
+            let opts = PlanOptions::new()
+                .without_cost_population()
+                .with_telemetry(&hooks);
+            let _plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+
+            let seen = provider.seen.into_inner().expect("record lock");
+            // 2 inputs + 1 output ⇒ 3 operands, output LAST.
+            assert_eq!(
+                seen.len(),
+                3,
+                "operand slice must be node inputs (2) then the output (1)",
+            );
+            let out = seen.last().expect("output operand present");
+            // The Add output is a contiguous [3] F32 tensor.
+            assert_eq!(out.dtype, DType::F32, "output operand carries the node dtype");
+            assert_eq!(out.shape, vec![3i64], "output operand carries the node shape");
+            assert_eq!(
+                out.contiguity,
+                Contiguity::Contiguous,
+                "the Add output is contiguous",
             );
             let _ = add_id;
         }

@@ -143,6 +143,11 @@ pub struct CudaDevice {
     curand: Arc<Mutex<CudaRng>>,
     pub(crate) blas: Arc<CublasHandle>,
     custom_modules: Arc<std::sync::RwLock<HashMap<String, Arc<baracuda_driver::Module>>>>,
+    // Grow-only per-device kernel-scratch cache (flash_decoding's decode-step
+    // workspace, sized once at KV capacity). Declared BEFORE `stream` /
+    // `context` so its device buffer's stream-ordered free is enqueued while
+    // this device's stream is still alive on Drop.
+    flash_ws: Arc<crate::baracuda::scratch::WorkspaceCache>,
     stream: Arc<baracuda_driver::Stream>,
     context: Arc<baracuda_driver::Context>,
 }
@@ -433,6 +438,14 @@ impl CudaDevice {
     pub fn context_ref(&self) -> &baracuda_driver::Context {
         &self.context
     }
+
+    /// Borrow this device's grow-only kernel-scratch workspace cache. Shared
+    /// across `CudaDevice` clones (an `Arc`), so it is genuinely per-device.
+    /// The flash_decoding decode wrapper sizes its workspace once at KV
+    /// capacity and reuses it every step through this cache.
+    pub fn flash_workspace(&self) -> &crate::baracuda::scratch::WorkspaceCache {
+        &self.flash_ws
+    }
 }
 
 impl CudaDevice {
@@ -479,6 +492,7 @@ impl CudaDevice {
             blas: Arc::new(CublasHandle(blas)),
             curand: Arc::new(Mutex::new(CudaRng(curand))),
             custom_modules: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            flash_ws: Arc::new(crate::baracuda::scratch::WorkspaceCache::new()),
             seed_value: Arc::new(RwLock::new(299792458)),
         })
     }
