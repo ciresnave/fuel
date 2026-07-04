@@ -264,9 +264,17 @@ pub fn optimize_graph(
         // variant branch — every CPU/Vulkan build today, since no CUDA flash
         // arm is offered there — is a strict no-op. Ties / unknown costs /
         // capability-missing default to arm 0 (the decomposed oracle).
+        // The cost provider consults the Judge's MEASURED latency (Layer-2)
+        // FIRST per arm node, falling back to the Layer-1 composite where the
+        // Judge has no cell (the hybrid sum). With `opts.judge == None` this is
+        // byte-identical to the Layer-1-only provider, so the no-Judge path is
+        // unchanged. The same oracle `cost.rs`/`plan.rs` read is threaded here.
+        let judge = opts.judge;
         crate::variant_bake::bake_variant_branches(graph, roots, &|g, branch, arm, interior| {
             let backend = g.target_backend(g.node(branch).inputs.first().copied()?)?;
-            crate::variant_bake::decode_arm_composite_ns(g, branch, arm, interior, backend)
+            crate::variant_bake::decode_arm_composite_ns_judged(
+                g, branch, arm, interior, backend, judge,
+            )
         });
         // Cleanup Step B (residency): the optimizer-side cross-device copy pass
         // (was the bridge's `insert_resident_input_copies`). Runs AFTER stamping

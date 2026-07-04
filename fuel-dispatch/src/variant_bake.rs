@@ -65,6 +65,7 @@ use std::collections::HashSet;
 use fuel_graph::registry::{FusedOpParams, FusedOps};
 use fuel_graph::{branches_in_topo_order, Graph, NodeId, Op};
 use fuel_ir::backend::{BackendCapabilities, SubstrateClass, TransferPath};
+use fuel_ir::dispatch::SizeClass;
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, DeviceLocation, DynScalar, Shape};
 
@@ -73,6 +74,7 @@ use crate::fused::CostEstimate;
 use crate::kernel::OpParams;
 use crate::pipelined::op_to_op_kind;
 use crate::ranker::cost::{composite_ns, default_backend_rates};
+use crate::ranker::judge::JudgeOracle;
 use crate::runtime_fused_kernels::fused_kernel_available;
 
 /// The composite-nanosecond cost of a branch arm, or `None` when it is
@@ -264,6 +266,115 @@ pub fn decode_arm_composite_ns(
     Some(total_ns)
 }
 
+/// The **Layer-2-aware** cost provider — the slice-4 payoff. Consults the Judge
+/// oracle (empirical measured latency, 06-optimization Layer-2) **first** per
+/// interior node, falling back to the [`decode_arm_composite_ns`] Layer-1
+/// composite for any node the Judge hasn't measured. Summed per arm exactly as
+/// the Layer-1 provider does, so the comparison stays apples-to-apples:
+///
+/// - **arm 0** (the decomposed region) = `Σ` over its primitives of
+///   `measured(op, dtype, size_class, backend) ?? layer1(op)`;
+/// - **arm 1** (the fused flash node) = `measured(FlashAttn, …) ?? layer1(flash)`.
+///
+/// A measured latency is used **directly** (it is already a wall-clock ns, the
+/// same convention [`crate::ranker::cost::compute_static_costs`] uses when it
+/// folds the Judge cell into `kernel_overhead_ns`), so flash's real
+/// algorithm-changing win (no materialized attention matrix, one launch —
+/// smaller measured latency than the region's `N` measured launches) becomes
+/// visible where Layer-1 alone saw a FLOP-for-FLOP tie and the conservative
+/// bake kept arm 0.
+///
+/// **A Judge measurement is evidence of capability.** A cell exists only
+/// because the kernel was actually profiled (it ran), so a measured flash cell
+/// is used even when the Layer-1 capability gate ([`fused_kernel_available`])
+/// would decline it — the gate only guards the *fallback* Layer-1 path (no
+/// measurement + unbound kernel ⇒ `None` ⇒ the oracle stands, unchanged).
+///
+/// **Hybrid sum.** When some of an arm's nodes are Judge-covered and others are
+/// not, measured cells and Layer-1 estimates are summed together — directionally
+/// better than an all-Layer-1 fold, and the conservative tie-break in
+/// [`bake_variant_branches`] (strictly-cheaper-or-arm-0) still protects against
+/// a bad partial.
+///
+/// **`kernel_source`.** The bake has no per-node candidate in hand, so it
+/// queries the legacy / default (`""`) cell — where a single-impl flash/matmul
+/// kernel registers. Threading a per-arm `kernel_source` is a follow-up; `""`
+/// keeps the born-red and single-impl production apples-to-apples.
+///
+/// With `judge == None` this is **byte-identical** to [`decode_arm_composite_ns`]
+/// (it delegates), so the no-Judge production path and the persistent
+/// byte-exact suites are unaffected by construction.
+pub fn decode_arm_composite_ns_judged(
+    graph: &Graph,
+    branch: NodeId,
+    arm_idx: usize,
+    interior: &[NodeId],
+    backend: BackendId,
+    judge: Option<&dyn JudgeOracle>,
+) -> Option<u64> {
+    // No oracle ⇒ the Layer-1-only provider, byte-identical to today. The
+    // no-Judge production path + the persistent byte-exact suites are
+    // unaffected by construction.
+    let Some(judge) = judge else {
+        return decode_arm_composite_ns(graph, branch, arm_idx, interior, backend);
+    };
+
+    // Layer-2 FIRST, per interior node, with a Layer-1 fallback (the hybrid
+    // sum): a measured wall-clock latency is used directly (same convention as
+    // `compute_static_costs`'s `kernel_overhead_ns` fold); an unmeasured node
+    // falls back to its Layer-1 composite. Summed as sequential launches so the
+    // fused arm's single measured launch is compared against the region's `N`
+    // measured/Layer-1 launches apples-to-apples.
+    let (compute_rate, mem_bw) = default_backend_rates(backend);
+    let caps = neutral_caps(backend, compute_rate, mem_bw);
+    let mut total_ns: u64 = 0;
+    let mut any = false;
+    for &nid in interior {
+        // A Judge measurement is evidence of capability (a cell exists only
+        // because the kernel ran), so a measured node is admissible even if the
+        // Layer-1 capability gate would decline it. The gate guards only the
+        // fallback below.
+        let ns = match node_measured_ns(graph, nid, backend, judge) {
+            Some(measured) => Some(measured),
+            None => node_layer1_cost(graph, nid, backend, &caps)
+                .map(|cost| composite_ns(&cost, compute_rate, mem_bw)),
+        };
+        if let Some(ns) = ns {
+            any = true;
+            total_ns = total_ns.saturating_add(ns);
+        }
+    }
+    if !any || total_ns == 0 {
+        return None; // nothing costable ⇒ oracle stands (no spurious zero win)
+    }
+    Some(total_ns)
+}
+
+/// The measured (Layer-2) latency for one interior node's Judge cell, keyed the
+/// SAME way the ranker + Judge producer key it: `(op, principal_dtype,
+/// SizeClass::for_op(op, input_shapes), backend, "")`. `None` when the node has
+/// no [`op_to_op_kind`] mapping (a view/leaf) or the Judge hasn't measured that
+/// cell. The principal dtype is the first operand's dtype (the
+/// [`crate::ranker::cost::compute_static_costs`] convention), so a matmul /
+/// flash cell the Judge profiled is found by the SAME `for_op` key here.
+fn node_measured_ns(
+    graph: &Graph,
+    nid: NodeId,
+    backend: BackendId,
+    judge: &dyn JudgeOracle,
+) -> Option<u64> {
+    let node = graph.node(nid);
+    let kind = op_to_op_kind(&node.op)?;
+    let principal_dtype = match node.inputs.first() {
+        Some(&i) => graph.node(i).dtype,
+        None => node.dtype, // nullary — has no OpKind mapping anyway
+    };
+    let input_shapes: Vec<Shape> =
+        node.inputs.iter().map(|&i| graph.node(i).shape.clone()).collect();
+    let size_class = SizeClass::for_op(kind, &input_shapes);
+    judge.measured_latency_ns(kind, principal_dtype, size_class, backend, "")
+}
+
 /// Layer-1 [`CostEstimate`] for one interior node (see [`decode_arm_composite_ns`]).
 /// `None` for a node that carries no priceable compute (a view/leaf, or a
 /// flash arm whose kernel is not bound — the capability gate).
@@ -397,7 +508,9 @@ fn neutral_caps(backend: BackendId, compute: f64, mem_bw: f64) -> BackendCapabil
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ranker::judge::HashMapJudge;
     use fuel_graph::{lower_runs_arm0, Node};
+    use fuel_ir::dispatch::OpKind;
     use fuel_ir::Shape;
 
     fn node(g: &mut Graph, op: Op, inputs: Vec<NodeId>, dims: &[usize], dt: DType) -> NodeId {
@@ -732,5 +845,255 @@ mod tests {
             }
             _ => panic!("expected FlashAttn params"),
         }
+    }
+
+    // ===================================================================
+    // SLICE 4 (THE PAYOFF): the variant bake consults the Judge's MEASURED
+    // latency (Layer-2) per arm, so the CUDA flash arm WINS the
+    // decode-flash-vs-decomposed bake where it merely TIES on Layer-1. With
+    // an injected oracle this proves the SELECTION logic on a CPU build (no
+    // live GPU): the born-red flips arm 0 → arm 1 the moment the provider
+    // reads the Judge.
+    // ===================================================================
+
+    /// A same-device (CUDA) 2-arm DECODE variant branch mirroring the real
+    /// decode-flash bake: arm 0 is the decomposed attention region
+    /// (`Permute` → `MatMul` QKᵀ → `MatMul` PV), arm 1 is the fused
+    /// `FlashAttn` node. `q` is a `Relu` over a const so a single Op::Branch
+    /// diverge point dominates both arm exits; both arm exits are stamped
+    /// CUDA (same-device). Returns
+    /// `(graph, branch, region_exit, flash_exit, reconverge, post)`.
+    fn flash_variant_diamond() -> (Graph, NodeId, NodeId, NodeId, NodeId, NodeId) {
+        let (b, hq, d, sk) = (1usize, 8, 128, 512);
+        let dt = DType::F16;
+        let mut g = Graph::new();
+        let qc = node(&mut g, Op::Const, vec![], &[b, hq, 1, d], dt);
+        let k = node(&mut g, Op::Const, vec![], &[b, hq, sk, d], dt);
+        let v = node(&mut g, Op::Const, vec![], &[b, hq, sk, d], dt);
+        // The single DIVERGE point both arms read as their `q` operand.
+        let q = node(&mut g, Op::Relu, vec![qc], &[b, hq, 1, d], dt);
+        // arm 0 — the decomposed attention region (two matmuls dominate).
+        let kt = node(&mut g, Op::Permute(vec![0, 1, 3, 2]), vec![k], &[b, hq, d, sk], dt);
+        let scores = node(&mut g, Op::MatMul, vec![q, kt], &[b, hq, 1, sk], dt);
+        let attn = node(&mut g, Op::MatMul, vec![scores, v], &[b, hq, 1, d], dt);
+        // arm 1 — the fused flash node (same exit shape & dtype as the region).
+        let flash = node(
+            &mut g,
+            Op::Fused(
+                FusedOps::FLASH_ATTN,
+                FusedOpParams::FlashAttn {
+                    softmax_scale: 0.1,
+                    causal: true,
+                    window_size_left: None,
+                    window_size_right: None,
+                    softcap: None,
+                    k_len: Some(DynScalar::Concrete(sk)),
+                },
+            ),
+            vec![q, k, v],
+            &[b, hq, 1, d],
+            dt,
+        );
+        // Same-device stamps — the bake's same-device gate reads the arm exits.
+        g.set_target_backend(kt, BackendId::Cuda);
+        g.set_target_backend(scores, BackendId::Cuda);
+        g.set_target_backend(attn, BackendId::Cuda);
+        g.set_target_backend(flash, BackendId::Cuda);
+        let reconverge = node(&mut g, Op::Relu, vec![attn], &[b, hq, 1, d], dt);
+        let mut br = g.open_branch(q);
+        br.add_arm(attn);
+        br.add_arm(flash);
+        let branch = br
+            .finalize_branches(&mut g, reconverge)
+            .expect("well-formed 2-arm decode branch")
+            .expect("2 arms survive");
+        let post = node(&mut g, Op::Tanh, vec![reconverge], &[b, hq, 1, d], dt);
+        (g, branch, attn, flash, reconverge, post)
+    }
+
+    /// The decode-shape Judge keys, single-sourced through the SAME helpers
+    /// the bake's `for_op` derivation and the fuel-core Judge producer use:
+    /// scores QKᵀ = `matmul(m=1, n=sk, k=d)`, attn PV = `matmul(m=1, n=d,
+    /// k=sk)`, flash = `attention(hq, k_len=sk, d)`.
+    fn decode_keys() -> (SizeClass, SizeClass, SizeClass) {
+        let (hq, d, sk) = (8usize, 128, 512);
+        (
+            SizeClass::matmul(1, sk, d), // scores
+            SizeClass::matmul(1, d, sk), // attn
+            SizeClass::attention(hq, sk, d),
+        )
+    }
+
+    /// **BORN-RED (the arc headline).** A measured flash cell that is strictly
+    /// cheaper than the region's summed measured primitives flips the bake from
+    /// arm 0 to arm 1. RED before the Layer-2 wiring (the flash arm ties / is
+    /// gated on Layer-1 ⇒ arm 0 kept); GREEN after (measured flash wins).
+    #[test]
+    fn judge_measured_flash_wins_the_decode_bake() {
+        let (mut g, branch, attn, flash, reconverge, post) = flash_variant_diamond();
+        let dt = DType::F16;
+        let (k_scores, k_attn, k_flash) = decode_keys();
+
+        // (RED anchor) the default lowering realizes the decomposed region.
+        let before = lower_runs_arm0(&g, &[post]);
+        assert!(
+            before.contains(&attn) && !before.contains(&flash),
+            "before the bake the decomposed region wins (arm 0); order={before:?}",
+        );
+
+        // Injected Judge: flash measures CHEAPER (400 ns) than the region's two
+        // measured matmuls (500 + 500 = 1000 ns) — flash's algorithm-changing
+        // win Layer-1 can't see (FLOP tie / CPU-build capability gate).
+        let mut judge = HashMapJudge::new();
+        judge.insert(OpKind::MatMul, dt, k_scores, BackendId::Cuda, "", 500);
+        judge.insert(OpKind::MatMul, dt, k_attn, BackendId::Cuda, "", 500);
+        judge.insert(OpKind::FlashAttn, dt, k_flash, BackendId::Cuda, "", 400);
+
+        let cost = |g: &Graph, b: NodeId, arm: usize, i: &[NodeId]| -> Option<u64> {
+            decode_arm_composite_ns_judged(g, b, arm, i, BackendId::Cuda, Some(&judge))
+        };
+        let baked = bake_variant_branches(&mut g, &[post], &cost);
+
+        assert_eq!(baked, 1, "measured flash is strictly cheaper ⇒ the branch bakes to it");
+        assert_eq!(g.node(branch).inputs, vec![flash], "branch collapsed to the flash arm");
+        assert!(g.node(reconverge).inputs.contains(&flash), "merge rewired to flash");
+
+        let after = lower_runs_arm0(&g, &[post]);
+        assert!(after.contains(&flash), "flash realized after the bake; order={after:?}");
+        assert!(!after.contains(&attn), "the decomposed region is pruned; order={after:?}");
+    }
+
+    /// GUARD: the Judge says flash is SLOWER than the region ⇒ arm 0 (the
+    /// conservative oracle default holds — a measurement never optimistically
+    /// commits a losing variant).
+    #[test]
+    fn judge_measured_flash_slower_keeps_the_region() {
+        let (mut g, branch, attn, flash, _recon, post) = flash_variant_diamond();
+        let dt = DType::F16;
+        let (k_scores, k_attn, k_flash) = decode_keys();
+        let mut judge = HashMapJudge::new();
+        judge.insert(OpKind::MatMul, dt, k_scores, BackendId::Cuda, "", 500);
+        judge.insert(OpKind::MatMul, dt, k_attn, BackendId::Cuda, "", 500);
+        judge.insert(OpKind::FlashAttn, dt, k_flash, BackendId::Cuda, "", 2000);
+        let cost = |g: &Graph, b: NodeId, arm: usize, i: &[NodeId]| -> Option<u64> {
+            decode_arm_composite_ns_judged(g, b, arm, i, BackendId::Cuda, Some(&judge))
+        };
+        let baked = bake_variant_branches(&mut g, &[post], &cost);
+        assert_eq!(baked, 0, "measured flash is slower ⇒ arm 0 (the region) stands");
+        assert_eq!(g.node(branch).inputs, vec![attn], "branch collapsed to arm 0");
+        let after = lower_runs_arm0(&g, &[post]);
+        assert!(after.contains(&attn) && !after.contains(&flash), "region realized (oracle)");
+    }
+
+    /// GUARD: with `judge == None` the judged provider is **byte-identical** to
+    /// the Layer-1-only provider per arm (the no-Judge production path + the
+    /// persistent byte-exact suites stay untouched by construction), and the
+    /// bake keeps arm 0.
+    #[test]
+    fn no_oracle_is_byte_identical_to_layer1() {
+        let (mut g, branch, attn, flash, _recon, post) = flash_variant_diamond();
+        let interiors = arm_interiors(&g, branch);
+        for (arm, interior) in interiors.iter().enumerate() {
+            assert_eq!(
+                decode_arm_composite_ns_judged(&g, branch, arm, interior, BackendId::Cuda, None),
+                decode_arm_composite_ns(&g, branch, arm, interior, BackendId::Cuda),
+                "judged(None) must equal the Layer-1 provider for arm {arm}",
+            );
+        }
+        let cost = |g: &Graph, b: NodeId, arm: usize, i: &[NodeId]| -> Option<u64> {
+            decode_arm_composite_ns_judged(g, b, arm, i, BackendId::Cuda, None)
+        };
+        let baked = bake_variant_branches(&mut g, &[post], &cost);
+        assert_eq!(baked, 0, "no oracle ⇒ Layer-1 path ⇒ arm 0 (flash unbound on a CPU build)");
+        assert_eq!(g.node(branch).inputs, vec![attn]);
+        let _ = flash;
+    }
+
+    /// GUARD (capability-missing, via the hybrid fallback): the Judge measured
+    /// the region's matmuls but NOT the flash cell, so the flash arm falls back
+    /// to Layer-1 where the capability gate (no bound CUDA flash kernel on a CPU
+    /// build) makes it inadmissible ⇒ arm 0. A measurement is required to make
+    /// an unbound-on-this-build variant admissible.
+    #[test]
+    fn judge_without_flash_cell_falls_to_capability_gate() {
+        let (mut g, branch, attn, flash, _recon, post) = flash_variant_diamond();
+        let dt = DType::F16;
+        let (k_scores, k_attn, _k_flash) = decode_keys();
+        let mut judge = HashMapJudge::new();
+        judge.insert(OpKind::MatMul, dt, k_scores, BackendId::Cuda, "", 1);
+        judge.insert(OpKind::MatMul, dt, k_attn, BackendId::Cuda, "", 1);
+        let cost = |g: &Graph, b: NodeId, arm: usize, i: &[NodeId]| -> Option<u64> {
+            decode_arm_composite_ns_judged(g, b, arm, i, BackendId::Cuda, Some(&judge))
+        };
+        let baked = bake_variant_branches(&mut g, &[post], &cost);
+        if !fused_kernel_available(FusedOps::FLASH_ATTN, BackendId::Cuda) {
+            assert_eq!(baked, 0, "no flash measurement + unbound kernel ⇒ arm 0");
+            assert_eq!(g.node(branch).inputs, vec![attn]);
+        }
+        let _ = flash;
+    }
+
+    /// GUARD (the hybrid sum): when only SOME of an arm's nodes are
+    /// Judge-covered, measured cells and Layer-1 estimates are summed together.
+    /// Here only the `scores` matmul is measured (500 ns); `attn` falls back to
+    /// Layer-1. The region cost is exactly `500 + Layer-1(attn)`, and a cheaper
+    /// measured flash still wins.
+    #[test]
+    fn hybrid_sum_mixes_measured_and_layer1_for_the_region() {
+        let (mut g, branch, attn, flash, _recon, post) = flash_variant_diamond();
+        let dt = DType::F16;
+        let (k_scores, _k_attn, k_flash) = decode_keys();
+        let mut judge = HashMapJudge::new();
+        judge.insert(OpKind::MatMul, dt, k_scores, BackendId::Cuda, "", 500); // scores only
+        judge.insert(OpKind::FlashAttn, dt, k_flash, BackendId::Cuda, "", 400);
+
+        // The region arm's hybrid cost == measured scores (500) + Layer-1 attn.
+        let region = arm_interiors(&g, branch)[0].clone();
+        let hybrid = decode_arm_composite_ns_judged(
+            &g, branch, 0, &region, BackendId::Cuda, Some(&judge),
+        )
+        .expect("region prices");
+        let layer1_attn = decode_arm_composite_ns(&g, branch, 0, &[attn], BackendId::Cuda)
+            .expect("attn prices on Layer-1");
+        assert_eq!(
+            hybrid,
+            500 + layer1_attn,
+            "hybrid region = measured scores (500) + Layer-1 attn ({layer1_attn})",
+        );
+
+        // Flash (measured 400) is cheaper than the hybrid region ⇒ it wins.
+        let cost = |g: &Graph, b: NodeId, arm: usize, i: &[NodeId]| -> Option<u64> {
+            decode_arm_composite_ns_judged(g, b, arm, i, BackendId::Cuda, Some(&judge))
+        };
+        let baked = bake_variant_branches(&mut g, &[post], &cost);
+        assert_eq!(baked, 1, "measured flash beats the hybrid region ⇒ bakes to flash");
+        assert_eq!(g.node(branch).inputs, vec![flash]);
+    }
+
+    /// GUARD: a **placement** branch (arm exits on DIFFERENT backends) is never
+    /// touched by the bake — even with a flash-loving Judge — because the
+    /// same-device gate in `bake_variant_branches` skips it BEFORE the cost
+    /// provider (and thus the Judge) is ever consulted. It stays a live 2-arm
+    /// decision point for the runtime route picker.
+    #[test]
+    fn judge_does_not_touch_a_placement_branch() {
+        let (mut g, branch, attn, flash, _recon, post) = flash_variant_diamond();
+        // Re-stamp the flash arm onto a DIFFERENT backend ⇒ placement branch.
+        g.set_target_backend(flash, BackendId::Cpu);
+        let dt = DType::F16;
+        let (_ks, _ka, k_flash) = decode_keys();
+        let mut judge = HashMapJudge::new();
+        judge.insert(OpKind::FlashAttn, dt, k_flash, BackendId::Cpu, "", 1);
+        let cost = |g: &Graph, b: NodeId, arm: usize, i: &[NodeId]| -> Option<u64> {
+            let backend = g.target_backend(g.node(b).inputs.first().copied()?)?;
+            decode_arm_composite_ns_judged(g, b, arm, i, backend, Some(&judge))
+        };
+        let baked = bake_variant_branches(&mut g, &[post], &cost);
+        assert_eq!(baked, 0, "a placement branch is never baked, even with a flash-loving judge");
+        assert_eq!(
+            g.node(branch).inputs,
+            vec![attn, flash],
+            "placement branch stays a live 2-arm decision point (runtime picker owns it)",
+        );
     }
 }
