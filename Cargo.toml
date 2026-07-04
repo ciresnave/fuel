@@ -85,7 +85,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.10.2"
+version = "0.10.3"
 edition = "2024"
 description = "Minimalist ML framework."
 repository = "https://github.com/ciresnave/fuel"
@@ -113,37 +113,37 @@ aocl-types = "0.1"
 onemkl = "0.2"
 anyhow = { version = "1", features = ["backtrace"] }
 byteorder = "1.4.3"
-fuel = { path = "./fuel-core", package = "fuel-core", version = "0.10.2" }
-fuel-aocl-cpu-backend = { path = "./fuel-aocl-cpu-backend", version = "0.10.2" }
-fuel-conv = { path = "./fuel-conv", version = "0.10.2" }
-fuel-ir = { path = "./fuel-ir", version = "0.10.2" }
-fuel-backend-contract = { path = "./fuel-backend-contract", version = "0.10.2" }
-fuel-cpu-kernels = { path = "./fuel-cpu-kernels", version = "0.10.2" }
-fuel-hardware = { path = "./fuel-hardware", version = "0.10.2" }
-fuel-correctness-fixtures = { path = "./fuel-correctness-fixtures", version = "0.10.2" }
-fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.10.2" }
-fuel-mkl-cpu-backend = { path = "./fuel-mkl-cpu-backend", version = "0.10.2" }
-fuel-graph = { path = "./fuel-graph", version = "0.10.2" }
-fuel-kernel-seam-types = { path = "./fuel-kernel-seam-types", version = "0.10.2" }
-fuel-kernel-seam = { path = "./fuel-kernel-seam", version = "0.10.2" }
-fuel-cuda-backend = { path = "./fuel-cuda-backend", version = "0.10.2" }
-fuel-dispatch = { path = "./fuel-dispatch", version = "0.10.2" }
-fuel-vulkan-backend = { path = "./fuel-vulkan-backend", version = "0.10.2" }
-fuel-kernels-source = { path = "./fuel-kernels-source", version = "0.10.2" }
-fuel-vulkan-kernels = { path = "./fuel-vulkan-kernels", version = "0.10.2" }
-fuel-datasets = { path = "./fuel-datasets", version = "0.10.2" }
-fuel-formats = { path = "./fuel-formats", version = "0.10.2" }
-fuel-inference = { path = "./fuel-inference", version = "0.10.2" }
-fuel-metal-backend = { path = "./fuel-metal-backend", version = "0.10.2" }
-fuel-metal-kernels = { path = "./fuel-metal-kernels", version = "0.10.2" }
-fuel-onnx = { path = "./fuel-onnx", version = "0.10.2" }
-fuel-parallel = { path = "./fuel-parallel", version = "0.10.2" }
-fuel-quantized = { path = "./fuel-quantized", version = "0.10.2" }
-fuel-reference-backend = { path = "./fuel-reference-backend", version = "0.10.2" }
-fuel-memory = { path = "./fuel-memory", version = "0.10.2" }
-fuel-training = { path = "./fuel-training", version = "0.10.2" }
-fuel-transformers = { path = "./fuel-transformers", version = "0.10.2" }
-fuel-ug = { path = "./fuel-ug", version = "0.10.2" }
+fuel = { path = "./fuel-core", package = "fuel-core", version = "0.10.3" }
+fuel-aocl-cpu-backend = { path = "./fuel-aocl-cpu-backend", version = "0.10.3" }
+fuel-conv = { path = "./fuel-conv", version = "0.10.3" }
+fuel-ir = { path = "./fuel-ir", version = "0.10.3" }
+fuel-backend-contract = { path = "./fuel-backend-contract", version = "0.10.3" }
+fuel-cpu-kernels = { path = "./fuel-cpu-kernels", version = "0.10.3" }
+fuel-hardware = { path = "./fuel-hardware", version = "0.10.3" }
+fuel-correctness-fixtures = { path = "./fuel-correctness-fixtures", version = "0.10.3" }
+fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.10.3" }
+fuel-mkl-cpu-backend = { path = "./fuel-mkl-cpu-backend", version = "0.10.3" }
+fuel-graph = { path = "./fuel-graph", version = "0.10.3" }
+fuel-kernel-seam-types = { path = "./fuel-kernel-seam-types", version = "0.10.3" }
+fuel-kernel-seam = { path = "./fuel-kernel-seam", version = "0.10.3" }
+fuel-cuda-backend = { path = "./fuel-cuda-backend", version = "0.10.3" }
+fuel-dispatch = { path = "./fuel-dispatch", version = "0.10.3" }
+fuel-vulkan-backend = { path = "./fuel-vulkan-backend", version = "0.10.3" }
+fuel-kernels-source = { path = "./fuel-kernels-source", version = "0.10.3" }
+fuel-vulkan-kernels = { path = "./fuel-vulkan-kernels", version = "0.10.3" }
+fuel-datasets = { path = "./fuel-datasets", version = "0.10.3" }
+fuel-formats = { path = "./fuel-formats", version = "0.10.3" }
+fuel-inference = { path = "./fuel-inference", version = "0.10.3" }
+fuel-metal-backend = { path = "./fuel-metal-backend", version = "0.10.3" }
+fuel-metal-kernels = { path = "./fuel-metal-kernels", version = "0.10.3" }
+fuel-onnx = { path = "./fuel-onnx", version = "0.10.3" }
+fuel-parallel = { path = "./fuel-parallel", version = "0.10.3" }
+fuel-quantized = { path = "./fuel-quantized", version = "0.10.3" }
+fuel-reference-backend = { path = "./fuel-reference-backend", version = "0.10.3" }
+fuel-memory = { path = "./fuel-memory", version = "0.10.3" }
+fuel-training = { path = "./fuel-training", version = "0.10.3" }
+fuel-transformers = { path = "./fuel-transformers", version = "0.10.3" }
+fuel-ug = { path = "./fuel-ug", version = "0.10.3" }
 clap = { version = "4", features = ["derive"] }
 criterion = { version = "0.8", default-features = false }
 # --- CUDA FFI layer: baracuda -----------------------------------------------
