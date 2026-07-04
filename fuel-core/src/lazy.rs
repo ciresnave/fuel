@@ -1061,6 +1061,25 @@ impl LazyTensor {
         Ok((Self { inner: y }, Self { inner: last_state }))
     }
 
+    /// Data-determined nonzero-index extraction — the keystone primitive
+    /// for **data-dependent dynamic shapes**. Returns `(indices, count)`:
+    /// `indices` is `[capacity]` U32 (`capacity == self.elem_count()`),
+    /// the first `count` entries being the ascending flat indices of
+    /// `self`'s nonzero elements; `count` is `[1]` U32, the runtime
+    /// nonzero count. Both are `Op::View` projections of one bundled
+    /// producer. The executor also publishes `count`'s realized value into
+    /// the per-pass `SymEnv` under `count_sym`, so downstream ops can
+    /// consume it as a dynamic extent (the KV-cache `cached_len` pattern,
+    /// generalized to a data-determined count). `count_sym` is allocated
+    /// by the caller (from a [`fuel_ir::SymGen`]).
+    pub fn nonzero_indices_bundled(
+        &self,
+        count_sym: fuel_ir::SymId,
+    ) -> std::result::Result<(Self, Self), fuel_ir::Error> {
+        let (indices, count) = self.inner.nonzero_indices_bundled(count_sym)?;
+        Ok((Self { inner: indices }, Self { inner: count }))
+    }
+
     /// Depthwise 1-D causal convolution + bias + optional fused SiLU
     /// — the Mamba-1 / Mamba-2 prefill convolution fusion. See
     /// [`fuel_graph::Tensor::causal_conv1d`] for the full shape

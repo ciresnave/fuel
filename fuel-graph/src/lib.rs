@@ -59,7 +59,7 @@ pub use run::{
 };
 
 use crate::registry::{FusedOpId, FusedOpParams};
-use fuel_ir::{DeviceLocation, DType, DynScalar, Layout, Scalar, Shape, probe::BackendId};
+use fuel_ir::{DeviceLocation, DType, DynScalar, Layout, Scalar, Shape, SymId, probe::BackendId};
 use fuel_backend_contract::Storage;
 use half::{bf16, f16};
 use std::collections::{HashMap, HashSet};
@@ -742,6 +742,34 @@ pub enum Op {
     /// indices[p]] += src[p]`.
     ScatterAdd { dim: usize },
 
+    /// Data-determined nonzero-index extraction — the keystone primitive
+    /// for **data-dependent dynamic shapes** (SSM autoregressive decode,
+    /// MoE sparse dispatch, MLA compressed-KV). Given an input value
+    /// tensor, produces the flat indices of its nonzero elements over a
+    /// **fixed-capacity buffer** plus the true runtime count, using the
+    /// multi-output bundle mechanism ([12-multi-output]):
+    ///
+    /// - slot 0 (primary): `indices`, shape `[capacity]`, dtype `U32`,
+    ///   where `capacity = input.elem_count()` (the static worst-case
+    ///   bound). The first `count` entries are the flat (row-major)
+    ///   indices of the input's nonzero elements in ascending order; the
+    ///   tail `[count..capacity]` is unspecified padding.
+    /// - slot 1: `count`, shape `[1]`, dtype `U32` — the number of
+    ///   nonzero elements found.
+    ///
+    /// "Nonzero" means `!= 0` in the input dtype's arithmetic (a `0.0`
+    /// float, an all-zero integer). The runtime `count` is published into
+    /// the per-pass [`SymEnv`](fuel_ir::SymEnv) under `count_sym` by the
+    /// executor *after* this op realizes, so downstream ops consume it as
+    /// a [`DynScalar::Sym`] / dynamic [`Extent`](fuel_ir::shape::Extent) —
+    /// the same host-scalar-extent pattern the KV-cache `cached_len`
+    /// uses. This is the **first op whose output length is determined by
+    /// its input data**, not by build-time shapes (the [`SymEnv`] bind is
+    /// the one net-new realize-time seam). Primitive (in the base map by
+    /// construction — no `decompose`). Non-differentiable: discrete
+    /// indices, backward drops gradient like `Op::Gather`'s index path.
+    NonZeroIndices { count_sym: SymId },
+
     // --- 2-D convolution + fused linear ---
     //
     // Phase 7.6 step 5 (2026-05-11): `Conv2D { stride, padding, groups }`
@@ -1255,6 +1283,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Gather{..}           => "Gather",
         Op::IndexAdd{..}         => "IndexAdd",
         Op::ScatterAdd{..}       => "ScatterAdd",
+        Op::NonZeroIndices{..}   => "NonZeroIndices",
         Op::Copy{..}             => "Copy",
         Op::Release              => "Release",
         Op::Move{..}             => "Move",
@@ -5913,6 +5942,71 @@ impl Tensor {
         Ok((y, last_state))
     }
 
+    /// Append an [`Op::NonZeroIndices`] producer node — the keystone
+    /// primitive for **data-dependent dynamic shapes**. Returns the
+    /// bundled producer `Tensor` (a `[capacity]` U32 tensor); callers
+    /// usually want [`Self::nonzero_indices_bundled`] to also get the
+    /// runtime count slot.
+    ///
+    /// `capacity = self.elem_count()` is the static worst-case bound
+    /// (every element nonzero). `count_sym` is the [`SymId`] the executor
+    /// binds to the realized nonzero count in the per-pass `SymEnv`; the
+    /// caller allocates it from their `SymGen` and threads it into any
+    /// downstream op that consumes the count as a dynamic extent /
+    /// `DynScalar::Sym` (the KV-cache `cached_len` pattern, generalized to
+    /// a data-determined count).
+    pub fn nonzero_indices_producer(&self, count_sym: SymId) -> Tensor {
+        let capacity = self.shape().elem_count();
+        let indices_shape = Shape::from_dims(&[capacity]);
+        let count_shape = Shape::from_dims(&[1]);
+        let specs = vec![
+            fuel_ir::storage::OutputViewSpec {
+                dtype:  DType::U32,
+                shape:  indices_shape.clone(),
+                layout: Layout::contiguous(indices_shape.clone()),
+                name:   Some("indices"),
+            },
+            fuel_ir::storage::OutputViewSpec {
+                dtype:  DType::U32,
+                shape:  count_shape.clone(),
+                layout: Layout::contiguous(count_shape),
+                name:   Some("count"),
+            },
+        ];
+        let (_total_bytes, views) = fuel_ir::storage::compose_bundle(&specs)
+            .expect("NonZeroIndices compose_bundle");
+        let mut g = self.graph.write().unwrap();
+        let id = g.push(Node {
+            op:     Op::NonZeroIndices { count_sym },
+            inputs: vec![self.id],
+            shape:  indices_shape,
+            dtype:  DType::U32,
+        });
+        g.set_output_views(id, Arc::from(views.into_boxed_slice()))
+            .expect("NonZeroIndices set_output_views");
+        drop(g);
+        Self {
+            graph: self.graph.clone(),
+            id,
+        }
+    }
+
+    /// Multi-output [`Op::NonZeroIndices`]: returns `(indices, count)` —
+    /// both `Op::View` projections of the shared bundled producer.
+    /// `indices` is `[capacity]` U32 (first `count` entries valid, in
+    /// ascending flat order); `count` is `[1]` U32, the runtime nonzero
+    /// count. The executor also publishes `count`'s value into the
+    /// per-pass `SymEnv` under the producer's `count_sym`.
+    pub fn nonzero_indices_bundled(
+        &self,
+        count_sym: SymId,
+    ) -> std::result::Result<(Tensor, Tensor), fuel_ir::Error> {
+        let producer = self.nonzero_indices_producer(count_sym);
+        let indices = producer.view(0)?;
+        let count = producer.view(1)?;
+        Ok((indices, count))
+    }
+
     /// Append a `FusedSoftmaxCrossEntropy` node. Two inputs:
     /// - `self` (logits): `[..., V]` F32 / F64 / BF16 / F16
     /// - `targets`: `[...]` I64 (class indices; matches PyTorch /
@@ -6792,6 +6886,13 @@ impl Tensor {
                 Op::Iota { .. } => {
                     // Leaf, non-differentiable: a constant position
                     // generator with no inputs — no gradient to propagate.
+                }
+                Op::NonZeroIndices { .. } => {
+                    // Produces discrete indices + a runtime count; both
+                    // are integer/non-differentiable. No gradient flows to
+                    // the input. (A differentiated graph that reaches this
+                    // op surfaces as a usage error in the grad-emitting
+                    // pass, matching the ArgMaxDim/ArgMinDim precedent.)
                 }
                 Op::Add => {
                     // d(a + b)/da = 1, d(a + b)/db = 1.
