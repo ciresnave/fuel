@@ -31,7 +31,10 @@ fn cuda_present() -> bool {
 /// this file carried is gone; `realize_f32` / `realize_f32_cuda` are
 /// the PipelinedExecutor entries).
 fn realize_both(t: &LazyTensor) -> (Vec<f32>, Vec<f32>) {
-    let reference = t.realize_f32();
+    // Hard-CPU reference: `realize_f32_reference` suppresses cost-based
+    // cross-device placement so the reference isn't offloaded onto (and
+    // crashed by / made non-independent of) the CUDA device under test.
+    let reference = t.realize_f32_reference();
     let cuda_device = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 should be available");
     let cuda = t.realize_f32_cuda(&cuda_device);

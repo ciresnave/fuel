@@ -23,11 +23,20 @@ use fuel_core::lazy_convnext::ConvNextModel;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
-/// Compare CPU-executor forward against textbook reference. Tight
-/// tolerance — both are deterministic CPU code; differences are
-/// gemm sum-order drift only.
+/// Compare the production realize (`realize_f32`) against the hard-CPU
+/// reference oracle (`realize_f32_reference`). Tight tolerance — both are
+/// deterministic CPU code; differences are gemm sum-order drift only.
+///
+/// The reference side uses [`LazyTensor::realize_f32_reference`] (cost-based
+/// cross-device placement suppressed — a genuine all-CPU realize on the CPU
+/// backend's bit-stable kernels). The `cpu` side is the ordinary production
+/// `realize_f32`. On a CPU-only host the two paths coincide; on a host with a
+/// GPU visible, this validates that the optimizer's placement (which may
+/// offload nodes) still matches the CPU oracle. Replaces the prior
+/// `realize_f32()`-vs-`realize_f32()` tautology and the retiring
+/// `fuel-reference-backend` textbook oracle.
 fn assert_cpu_oracle(t: &LazyTensor, atol: f32, rtol: f32) {
-    let reference = t.realize_f32();
+    let reference = t.realize_f32_reference();
     let cpu = t.realize_f32();
     assert_eq!(reference.len(), cpu.len(), "length mismatch");
     fuel_core::test_utils::assert_allclose_f32(&cpu, &reference, atol, rtol);

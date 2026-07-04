@@ -291,6 +291,25 @@ pub struct PlanOptions<'env> {
     /// delta nodes (acceptable drift — placement correctness is
     /// re-stitched per realize by the bridge's residency passes).
     pub reuse_plan: Option<&'env ExecutionPlan>,
+    /// Gate for the Stage-2 relaxed **cross-device** placement (cost-based
+    /// off-device enumeration). Default: `true` — a node without an explicit
+    /// `Graph::placement` may be priced onto (and moved to) a cheaper sibling
+    /// device, the "plan IS the graph" auto-placement.
+    ///
+    /// Set `false` to keep every node on its pinned/decision device: the
+    /// relaxed branch is suppressed, so no off-device candidate is enumerated
+    /// on cost grounds.
+    ///
+    /// This is what a **reference / single-device realize** wants. A CPU-pinned
+    /// oracle must genuinely run on CPU — never cost-relocated to the very
+    /// backend it validates — and by the always-built coverage commitment
+    /// (fuel-cpu-backend ships a `bit_stable_on_same_hardware` kernel for every
+    /// primitive op) the CPU decision device can always supply a kernel, so
+    /// suppressing off-device placement never strands a node. A single-op
+    /// parity probe pinned to backend B likewise stays on B regardless of op
+    /// size. Explicit `Graph::placement` is a hard pin either way; this flag
+    /// governs only the *un-pinned* nodes.
+    pub allow_cost_placement: bool,
     /// Baracuda dispatch-telemetry hooks (behind the `telemetry` cargo
     /// feature). When `Some` AND the config's mode is not `Off`,
     /// `compile_plan` runs a post-plan pass that emits a structural
@@ -315,6 +334,7 @@ impl Default for PlanOptions<'_> {
             transfer_estimator: None,
             input_residency: None,
             reuse_plan: None,
+            allow_cost_placement: true,
             #[cfg(feature = "telemetry")]
             telemetry: None,
         }
@@ -357,6 +377,15 @@ impl<'env> PlanOptions<'env> {
     /// Picker-arc step 4a.
     pub fn with_pinned_device(mut self, device: DeviceLocation) -> Self {
         self.pinned_device = Some(device);
+        self
+    }
+
+    /// Suppress the Stage-2 relaxed cross-device placement (see
+    /// [`Self::allow_cost_placement`]): every un-pinned node stays on its
+    /// decision device; only the missing-impl fallback may still go
+    /// off-device. Use for a reference / single-device realize.
+    pub fn without_cost_placement(mut self) -> Self {
+        self.allow_cost_placement = false;
         self
     }
 
@@ -1314,8 +1343,10 @@ fn build_node_draft(
         && options.capabilities_for.is_some();
     let fallback_allowed = node.op.destructive_input().is_none()
         && options.fallback_placements_for.is_some();
-    let relaxed =
-        pricing_active && fallback_allowed && graph.placement(id).is_none();
+    let relaxed = options.allow_cost_placement
+        && pricing_active
+        && fallback_allowed
+        && graph.placement(id).is_none();
 
     let mut set;
     let mut from_fallback = false;
@@ -2985,6 +3016,82 @@ mod tests {
              dwarfs the 200 ns transfer → move to CUDA. RED under the \
              fixed 1-FLOP/ns prior (equal compute-ns → the transfer \
              always loses the GPU the placement)",
+        );
+    }
+
+    /// `without_cost_placement()` (the reference / single-device realize
+    /// gate) keeps a large, GPU-favorable op on the pinned CPU device. Same
+    /// setup as `..._large_compute_on_gpu_small_on_cpu_by_throughput`, whose
+    /// LARGE case moves the op to CUDA — here that exact op stays on CPU
+    /// because the relaxed cross-device enumeration is suppressed.
+    ///
+    /// This is the unit-level guard for the phase6b oracle crash: a CPU-pinned
+    /// reference realize must not spill onto the present (unseeded) GPU. Born
+    /// red before `PlanOptions::allow_cost_placement` existed — the large op
+    /// would have moved to CUDA.
+    #[test]
+    fn compile_plan_without_cost_placement_keeps_large_op_on_cpu() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+        let mut table = KernelBindingTable::new();
+        table.register_full(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            noop_kernel,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            cost_10_000_000,
+        );
+        table.register_full(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cuda,
+            noop_kernel_b,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            cost_10_000_000,
+        );
+
+        let (g, add_id) = build_add_graph();
+        let order = topo_order(&g, add_id);
+        let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
+            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![] }
+        };
+        let fallback_fn = move |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
+            vec![(BackendId::Cuda, cuda0)]
+        };
+        let residency_fn =
+            |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
+        let est = FlatEstimator { latency_ns: 100 };
+        let cpu_caps_val = cpu_caps();
+        let cuda_caps_val =
+            crate::dispatch::derive_backend_caps(BackendId::Cuda, cuda0, &table);
+        let caps_fn = |b: BackendId| -> Option<&BackendCapabilities> {
+            match b {
+                BackendId::Cpu => Some(&cpu_caps_val),
+                BackendId::Cuda => Some(&cuda_caps_val),
+                _ => None,
+            }
+        };
+        let opts = PlanOptions::new()
+            .with_pinned_device(DeviceLocation::Cpu)
+            .with_placements_for_device(&placements_fn)
+            .with_fallback_placements_for(&fallback_fn)
+            .with_capabilities_for(&caps_fn)
+            .with_transfer_estimator(&est)
+            .with_input_residency(&residency_fn)
+            .without_cost_placement();
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
+        let set = plan.alternatives(add_id).unwrap();
+        assert_eq!(
+            set.winner().unwrap().device,
+            DeviceLocation::Cpu,
+            "without_cost_placement: the large GPU-favorable op stays on the \
+             pinned CPU device (no relaxed cross-device enumeration)",
+        );
+        assert!(
+            set.alternatives().iter().all(|c| c.device == DeviceLocation::Cpu),
+            "no off-device candidate enumerated at all",
         );
     }
 
