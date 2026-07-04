@@ -4196,6 +4196,40 @@ pub fn matmul_f32(
     n: usize,
     k: usize,
 ) -> Result<()> {
+    // Static M: compute every row (`m_compute == m_capacity == m`).
+    matmul_f32_capacity(lhs, rhs, out, lhs_batch_dims, rhs_batch_dims, m, m, n, k)
+}
+
+/// Data-determined-M matmul (the dropless-MoE / capacity-buffer atom). The
+/// LHS and OUTPUT are **capacity buffers** with `m_capacity` rows each; only
+/// the first `m_compute` rows (`m_compute <= m_capacity`) are computed, the
+/// rest of the output left zero. This is what lets a sparse-MoE expert FFN
+/// process exactly its `count_e` routed tokens (a runtime `Extent` resolved
+/// at execute) inside a statically-`m_capacity`-sized buffer — the compute
+/// saving that makes sparse dispatch worth it. Row `i`'s LHS/OUTPUT offsets
+/// use `m_capacity` for striding (buffer layout), so the untouched tail rows
+/// keep their (zeroed) capacity slots. `matmul_f32` is the `m_compute ==
+/// m_capacity` special case.
+#[allow(clippy::too_many_arguments)]
+pub fn matmul_f32_capacity(
+    lhs: &CpuStorageBytes,
+    rhs: &CpuStorageBytes,
+    out: &mut CpuStorageBytes,
+    lhs_batch_dims: &[usize],
+    rhs_batch_dims: &[usize],
+    m_capacity: usize,
+    m_compute: usize,
+    n: usize,
+    k: usize,
+) -> Result<()> {
+    if m_compute > m_capacity {
+        return Err(Error::Msg(format!(
+            "matmul_f32_capacity: m_compute ({m_compute}) must not exceed \
+             m_capacity ({m_capacity})",
+        ))
+        .bt());
+    }
+    let m = m_capacity;
     if lhs_batch_dims.len() != rhs_batch_dims.len() {
         return Err(Error::Msg(format!(
             "matmul_f32: batch ranks must match (lhs={}, rhs={}); fuel-graph's \
@@ -4288,7 +4322,10 @@ pub fn matmul_f32(
         let lhs_off = b * lhs_per_batch;
         let rhs_off = rhs_b * rhs_per_batch;
         let out_off = b * out_per_batch;
-        for i in 0..m {
+        // Compute only the first `m_compute` rows; the tail
+        // (`m_compute..m_capacity`) stays zeroed — the capacity slots for
+        // the rows this pass's runtime extent did not fill.
+        for i in 0..m_compute {
             for kk in 0..k {
                 let a = lhs_view[lhs_off + i * k + kk];
                 let rhs_row_off = rhs_off + kk * n;
@@ -12387,5 +12424,48 @@ mod tests {
         let r = out.as_slice::<f16>().unwrap();
         assert_eq!(r[0], f16::from_f32(4.0));
         assert_eq!(r[1], f16::from_f32(9.0));
+    }
+
+    /// The dropless-MoE atom: `matmul_f32_capacity` computes only
+    /// `m_compute` rows of an `m_capacity`-row buffer, leaving the tail
+    /// zeroed. LHS is a capacity buffer `[m_capacity, k]` whose first
+    /// `m_compute` rows are real and whose tail is garbage that must NOT
+    /// affect the output.
+    #[test]
+    fn matmul_f32_capacity_computes_only_m_compute_rows() {
+        // rhs [k=2, n=3]
+        let rhs = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        // lhs capacity [m_capacity=4, k=2]: rows 0,1 real; rows 2,3 garbage
+        // (huge values that would blow up the output if computed).
+        let lhs = CpuStorageBytes::from_slice(&[
+            1.0_f32, 0.0, // row 0
+            0.0, 1.0, // row 1
+            9.9e30, 9.9e30, // row 2 (garbage — must be ignored)
+            9.9e30, 9.9e30, // row 3 (garbage)
+        ]);
+        let mut out = CpuStorageBytes::from_slice(&[7.0_f32; 4 * 3]); // pre-dirtied
+        matmul_f32_capacity(&lhs, &rhs, &mut out, &[], &[], 4, 2, 3, 2)
+            .expect("capacity matmul");
+        let got = out.as_slice::<f32>().unwrap();
+        // row 0 = rhs row 0 = [1,2,3]; row 1 = rhs row 1 = [4,5,6];
+        // rows 2,3 = zero (not computed — the tail is zero-filled, NOT the
+        // garbage product).
+        assert_eq!(
+            got,
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "only the first m_compute=2 rows computed; tail zeroed",
+        );
+    }
+
+    /// `matmul_f32` (the static delegate) is byte-identical to computing
+    /// every row via the capacity kernel with `m_compute == m_capacity`.
+    #[test]
+    fn matmul_f32_delegates_to_capacity_all_rows() {
+        let lhs = CpuStorageBytes::from_slice(&[1.0_f32, 2.0, 3.0, 4.0]); // [2,2]
+        let rhs = CpuStorageBytes::from_slice(&[5.0_f32, 6.0, 7.0, 8.0]); // [2,2]
+        let mut out = CpuStorageBytes::from_slice(&[0.0_f32; 4]);
+        matmul_f32(&lhs, &rhs, &mut out, &[], &[], 2, 2, 2).expect("static matmul");
+        // [[1,2],[3,4]] @ [[5,6],[7,8]] = [[19,22],[43,50]]
+        assert_eq!(out.as_slice::<f32>().unwrap(), &[19.0, 22.0, 43.0, 50.0]);
     }
 }
