@@ -45,6 +45,7 @@ pub mod baracuda_dispatch;
 pub mod cast_fusion;
 pub mod compiled;
 pub mod cost;
+pub mod decode_flash;
 pub mod dispatch;
 pub mod driver;
 pub mod fkc;
