@@ -1313,6 +1313,29 @@ impl LazyTensor {
             .expect("realize_f32 via PipelinedExecutor")
     }
 
+    /// Realize on CPU as an **independent correctness oracle**: like
+    /// [`Self::realize_f32`] but with cost-based cross-device placement
+    /// suppressed, so the whole graph runs on the CPU backend's bit-stable
+    /// kernels and is never relocated to a GPU by the optimizer.
+    ///
+    /// [`Self::realize_f32`] pins CPU only as a *soft* host anchor — since the
+    /// Step-E cost-based auto-placement, its optimizer may price model nodes
+    /// onto a present GPU and insert an H2D `Op::Copy`, which both defeats the
+    /// oracle's independence (it would validate a backend against itself) and,
+    /// on a single-device realize, crashes for lack of a seeded GPU handle.
+    /// This entry hard-pins CPU (`allow_cost_placement = false`); by the
+    /// always-built coverage commitment the CPU backend supplies a kernel for
+    /// every primitive op, so nothing is ever stranded. This is the
+    /// pairwise-consensus oracle that replaces the retiring
+    /// `fuel-reference-backend`.
+    pub fn realize_f32_reference(&self) -> Vec<f32> {
+        let graph = self.inner.graph().clone();
+        let target = self.inner.id();
+        let device = crate::Device::cpu();
+        crate::pipelined_bridge::realize_one_reference_as::<f32>(&graph, target, &device)
+            .expect("realize_f32_reference via PipelinedExecutor")
+    }
+
     /// Realize as an `f64` `Vec`.
     ///
     /// Routes through the [`PipelinedExecutor`] like

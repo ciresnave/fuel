@@ -88,16 +88,28 @@ pub fn assert_allclose_f32(a: &[f32], b: &[f32], atol: f32, rtol: f32) {
     }
 }
 
-/// Phase 6b CUDA oracle gate: realize `t` through the CUDA backend
-/// and the reference backend, assert allclose. Skips silently when no
-/// CUDA device is visible (so the same test passes on headless CI
-/// hosts and dev rigs alike).
+/// Per-op / per-graph CUDA parity gate — the pairwise-consensus oracle that
+/// replaces the retiring `fuel-reference-backend`. Realizes `t` on the CUDA
+/// backend and on the **hard-CPU reference** ([`crate::lazy::LazyTensor::realize_f32_reference`]),
+/// asserting they agree within tolerance. Skips silently when no CUDA device
+/// is visible (so the same test passes on headless CI hosts and dev rigs).
 ///
-/// Tolerance defaults are deliberately a little looser than the CPU
-/// oracle's 1e-4: a multi-op CUDA forward through cublas accumulates
-/// gemm sum-order drift that's larger than the CPU fast path's, and
-/// 5e-3 is the cliff beyond which we'd suspect an actual algorithmic
-/// divergence rather than rounding.
+/// Build `t` as a small single-op graph to validate ONE kernel in isolation
+/// (the "single-node graph, hard-pinned per backend" probe — CPU vs CUDA for
+/// that op), or as a composed graph for an end-to-end anchor.
+///
+/// The reference side MUST be `realize_f32_reference`, NOT `realize_f32`:
+/// since the Step-E cost-based auto-placement, `realize_f32` pins CPU only as
+/// a soft host anchor and its optimizer may offload nodes onto the present
+/// CUDA device — which both defeats the oracle (it would validate CUDA against
+/// itself) and, on a single-device realize, panics for lack of a seeded CUDA
+/// handle. `realize_f32_reference` hard-pins CPU so the oracle genuinely runs
+/// on the CPU backend's bit-stable kernels.
+///
+/// Tolerance defaults are deliberately a little looser than the CPU oracle's
+/// 1e-4: a multi-op CUDA forward through cublas accumulates gemm sum-order
+/// drift larger than the CPU path's, and 5e-3 is the cliff beyond which we'd
+/// suspect an actual algorithmic divergence rather than rounding.
 #[cfg(feature = "cuda")]
 pub fn assert_cuda_matches_reference(
     t: &crate::lazy::LazyTensor,
@@ -110,7 +122,7 @@ pub fn assert_cuda_matches_reference(
         eprintln!("assert_cuda_matches_reference: no CUDA device, skipping");
         return;
     }
-    let reference = t.realize_f32();
+    let reference = t.realize_f32_reference();
     let dev = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 available since probe found one");
     let cuda = t.realize_f32_cuda(&dev);

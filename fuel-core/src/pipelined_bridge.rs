@@ -326,6 +326,36 @@ pub fn realize_one_as_with_initial_reporting<T: bytemuck::Pod>(
     initial: StorageCache,
     sym_env: &SymEnv,
 ) -> Result<(Vec<T>, Option<&'static str>)> {
+    // Production realize: cost-based cross-device auto-placement enabled.
+    realize_one_as_reporting_impl::<T>(graph, target, device, initial, sym_env, true)
+}
+
+/// Reference realize: single-device, cost-based cross-device placement
+/// **suppressed** (`allow_cost_placement = false`). Every un-pinned node
+/// stays on `device`, so a CPU-pinned call is a genuine all-CPU oracle —
+/// never cost-relocated onto the very backend it's meant to validate. See
+/// [`fuel_dispatch::plan::PlanOptions::allow_cost_placement`]. Backs
+/// [`crate::lazy::LazyTensor::realize_f32_reference`] + the per-op parity
+/// harness; the replacement for the retiring `fuel-reference-backend` oracle.
+pub fn realize_one_reference_as<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    target: NodeId,
+    device: &Device,
+) -> Result<Vec<T>> {
+    realize_one_as_reporting_impl::<T>(
+        graph, target, device, StorageCache::new(), &SymEnv::default(), false,
+    )
+    .map(|(bytes, _root_kernel_source)| bytes)
+}
+
+fn realize_one_as_reporting_impl<T: bytemuck::Pod>(
+    graph: &Arc<RwLock<Graph>>,
+    target: NodeId,
+    device: &Device,
+    initial: StorageCache,
+    sym_env: &SymEnv,
+    allow_cost_placement: bool,
+) -> Result<(Vec<T>, Option<&'static str>)> {
     let (cache, _backend_id, mut effective_targets) =
         prepare(graph, &[target], device, initial)?;
     let Some(cpu_target) = effective_targets.pop() else {
@@ -350,7 +380,7 @@ pub fn realize_one_as_with_initial_reporting<T: bytemuck::Pod>(
     // `MAX_PLAN_REBUILDS` to prevent infinite spin under genuinely
     // persistent churn.
     let (storage, root_kernel_source) = dispatch_with_plan_retry(
-        graph, cpu_target, cache, device, target, sym_env,
+        graph, cpu_target, cache, device, target, sym_env, allow_cost_placement,
     )?;
     Ok((extract_cpu_bytes_typed::<T>(&storage)?, root_kernel_source))
 }
@@ -507,7 +537,7 @@ fn dispatch_with_plan_retry_capturing(
     let mut retry = TopologyRetryState::new();
     loop {
         let optimized =
-            build_optimized_graph(graph, &[cpu_target], pinned_loc, &cache)?;
+            build_optimized_graph(graph, &[cpu_target], pinned_loc, &cache, true)?;
         let (selector, lookup) = match production_selector_for(device) {
             Some((s, l)) => (Some(s), Some(l)),
             None => (None, None),
@@ -638,6 +668,7 @@ fn build_optimized_graph(
     roots: &[NodeId],
     pinned_device: DeviceLocation,
     cache: &StorageCache,
+    allow_cost_placement: bool,
 ) -> Result<OptimizedGraph> {
     // D2a telemetry: one bump per real optimize (the expensive placement DP
     // + cost composer + Judge + in-place residency/layout mutation). The
@@ -691,6 +722,12 @@ fn build_optimized_graph(
         .with_fallback_placements_for(&fallback_for)
         .with_transfer_estimator(&*topology)
         .with_input_residency(&input_residency);
+    // Reference / single-device realize: suppress cost-based cross-device
+    // placement so every un-pinned node stays on the pinned device (the CPU
+    // oracle must run on CPU, not be relocated to the backend it validates).
+    if !allow_cost_placement {
+        options = options.without_cost_placement();
+    }
     if let Some(oracle) = judge_oracle.as_deref() {
         options = options.with_judge(oracle);
     }
@@ -713,6 +750,7 @@ fn dispatch_with_plan_retry(
     device: &Device,
     report_node: NodeId,
     sym_env: &SymEnv,
+    allow_cost_placement: bool,
 ) -> Result<(Arc<RwLock<Storage>>, Option<&'static str>)> {
     let pinned_loc = device.location();
     let mut retry = TopologyRetryState::new();
@@ -728,7 +766,7 @@ fn dispatch_with_plan_retry(
         // `ExecutionPlan`, which is not returned (Step D). Build-time
         // validation (missing binding / no device) fires inside `optimize_graph`.
         let optimized =
-            build_optimized_graph(graph, &[cpu_target], pinned_loc, &cache)?;
+            build_optimized_graph(graph, &[cpu_target], pinned_loc, &cache, allow_cost_placement)?;
         // Residency (cross-device `Op::Copy`) and layout-fixup
         // (`Op::Contiguize`) are now optimizer passes inside `optimize_graph`
         // (cleanup Step B) — driven by the graph stamps + the `input_residency`
@@ -749,7 +787,14 @@ fn dispatch_with_plan_retry(
             Some((s, l)) => (Some(s), Some(l)),
             None => (None, None),
         };
-        let cache_for_attempt = cache.clone();
+        let mut cache_for_attempt = cache.clone();
+        // Option B — post-optimize device seed. If the plan offloaded any node
+        // to a GPU the pinned-device const upload didn't seed (the CPU-pinned
+        // mixed realize), give the executor a device-handle anchor per placed
+        // backend so its H2D `Op::Copy`/`Op::Alloc` device-handle search
+        // succeeds. No-op for a single-device realize (incl. the reference
+        // oracle, which suppresses cross-device placement outright).
+        seed_placed_device_handles(graph, cpu_target, pinned_loc, &mut cache_for_attempt)?;
         // Dispatch the "plan IS the graph" form: the executor recomputes its
         // run/`lower_run` dispatch order from the (now fully-stamped) graph,
         // resolves each branch's arm at the frontier (streaming), then
@@ -888,7 +933,7 @@ fn dispatch_many_with_plan_retry(
         // Step B); the executor recomputes its run/`lower_run` order from the
         // stamped, copy-stitched graph.
         let optimized =
-            build_optimized_graph(graph, effective_targets, pinned_loc, &cache)?;
+            build_optimized_graph(graph, effective_targets, pinned_loc, &cache, true)?;
         // Cleanup Step C: the executor resolves each branch's arm at dispatch
         // (was the bridge's `resolve_runtime_route`); the bridge just builds +
         // hands over the Device/Judge-derived selector + live lookup. PR C1:
@@ -1653,6 +1698,130 @@ fn cached_storage_location(storage: &Storage) -> Option<DeviceLocation> {
     }
 }
 
+/// The distinct non-CPU device locations an optimized graph's cross-device
+/// residency nodes (`Op::Copy`/`Op::Move`/`Op::Alloc { target }`) place work
+/// on, EXCLUDING `pinned_loc` and any location already backed by a storage in
+/// `cache`. Scans only the nodes reachable from `root`.
+///
+/// This is the detection half of Option B (the post-optimize device seed): a
+/// CPU-pinned realize whose plan offloaded nodes to a GPU has H2D copies whose
+/// destination device the executor must derive from the cache — but a
+/// single-device realize's const upload only seeded the pinned device. The
+/// returned locations are exactly those needing a [`device_seed_storage`]
+/// anchor. Empty for a pure single-device realize (the reference oracle, or any
+/// plan that didn't cross devices).
+fn placed_device_locations_needing_seed(
+    graph: &Arc<RwLock<Graph>>,
+    root: NodeId,
+    pinned_loc: DeviceLocation,
+    cache: &StorageCache,
+) -> Result<Vec<DeviceLocation>> {
+    // Locations already represented by a cached storage — no seed needed.
+    let already: Vec<DeviceLocation> = cache
+        .values()
+        .filter_map(|arc| {
+            let guard = arc.read().ok()?;
+            cached_storage_location(&guard)
+        })
+        .collect();
+    let g = graph
+        .read()
+        .map_err(|_| Error::Msg("graph lock poisoned during device-seed scan".into()).bt())?;
+    let mut needed: Vec<DeviceLocation> = Vec::new();
+    for id in topo_order_multi(&g, &[root]) {
+        let loc = match g.node(id).op {
+            Op::Copy { target } | Op::Move { target } | Op::Alloc { target } => target,
+            _ => continue,
+        };
+        if loc == DeviceLocation::Cpu || loc == pinned_loc {
+            continue;
+        }
+        if already.contains(&loc) || needed.contains(&loc) {
+            continue;
+        }
+        needed.push(loc);
+    }
+    Ok(needed)
+}
+
+/// Construct a `Device` handle for `loc`. CUDA maps ordinal → a fresh
+/// [`fuel_cuda_backend::CudaDevice`]; CPU is the host device. Vulkan can't be
+/// built from a bare ordinal (it needs an explicit `DeviceSelection`), so a
+/// Vulkan target reached here surfaces an actionable error pointing at the
+/// explicit multi-device seed entry rather than the executor's later cryptic
+/// "no Vulkan storage in input cache" — callers wanting a mixed Vulkan realize
+/// use [`realize_one_as_multi_device`], which seeds the Vulkan handle up front.
+fn device_for_location(loc: DeviceLocation) -> Result<Device> {
+    match loc {
+        DeviceLocation::Cpu => Ok(Device::cpu()),
+        DeviceLocation::Cuda { gpu_id } => crate::cuda_backend::new_device(gpu_id),
+        DeviceLocation::Vulkan { gpu_id } => Err(Error::Msg(format!(
+            "post-optimize device seed: the plan placed nodes on Vulkan \
+             {{ gpu_id: {gpu_id} }} but this single-device realize has no \
+             Vulkan handle to seed, and a Vulkan device can't be derived from \
+             an ordinal alone (it needs an explicit DeviceSelection). Realize \
+             the mixed graph via `realize_one_as_multi_device` with the Vulkan \
+             device in `extra_devices`.",
+        ))
+        .bt()),
+        other => Err(Error::Msg(format!(
+            "post-optimize device seed: target {other:?} not wired (CPU + CUDA \
+             auto-seed today; Vulkan via realize_one_as_multi_device).",
+        ))
+        .bt()),
+    }
+}
+
+/// Option B — the post-optimize device seed. After `optimize_graph` stamps
+/// placements and inserts cross-device residency `Op::Copy`/`Op::Alloc` nodes,
+/// a CPU-pinned realize whose plan offloaded work to a GPU needs a device-
+/// handle anchor for each such backend in the executor's cache: the executor
+/// derives the per-backend device handle by searching the cache
+/// (`find_cuda_device_in_cache`), and a single-device realize's const upload
+/// only seeded the pinned device. Without this the first H2D
+/// `Op::Copy { target: Cuda }` panics ("no CUDA storage in input cache … seed
+/// via device_seed_storage").
+///
+/// For each location in [`placed_device_locations_needing_seed`] this pushes a
+/// fresh unreachable `Op::Const` anchor node and inserts that backend's
+/// [`device_seed_storage`] into `cache` at the anchor's NodeId — the same
+/// mechanism as [`seed_extra_device_handles`], but driven by the *plan's actual
+/// placements* rather than a caller-supplied device list. A strict no-op for a
+/// single-device realize (the reference oracle, or any plan that stayed put),
+/// so `realize_f32` / `realize_f32_reference` on a CPU-only host are unaffected.
+///
+/// Known minor: a repeated realize of the SAME graph that keeps crossing to the
+/// same GPU accumulates one unreachable anchor `Op::Const` per call (graph
+/// growth; harmless — never dispatched). Amortize via the persistent-cache
+/// (InferenceContext) path when that matters.
+fn seed_placed_device_handles(
+    graph: &Arc<RwLock<Graph>>,
+    root: NodeId,
+    pinned_loc: DeviceLocation,
+    cache: &mut StorageCache,
+) -> Result<()> {
+    let needed = placed_device_locations_needing_seed(graph, root, pinned_loc, cache)?;
+    for loc in needed {
+        let dev = device_for_location(loc)?;
+        let Some(seed) = device_seed_storage(&dev)? else {
+            continue; // CPU (unreachable given the filter) — no handle needed.
+        };
+        let anchor_id = {
+            let mut g = graph.write().map_err(|_| {
+                Error::Msg("graph lock poisoned during placed-device seed".into()).bt()
+            })?;
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: fuel_ir::Shape::from_dims(&[4]),
+                dtype: fuel_ir::DType::U8,
+            })
+        };
+        cache.insert(anchor_id, Arc::new(RwLock::new(seed)));
+    }
+    Ok(())
+}
+
 /// Allocate a small "device anchor" storage on `device` — enough bytes
 /// to carry the device handle into the [`StorageCache`] so the
 /// pipelined executor's [`WorkItemKind::Alloc`] arm can derive the
@@ -1743,6 +1912,53 @@ mod tests {
         _p: &fuel_dispatch::kernel::OpParams,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// Option B detection: `placed_device_locations_needing_seed` reports the
+    /// non-CPU device an `Op::Copy { target }` places on when the realize is
+    /// pinned to CPU (the CPU-pinned mixed realize that panicked in phase6b),
+    /// and reports nothing when the realize is pinned to that same device or
+    /// the graph never crosses off CPU. This is the CPU-observable half of
+    /// Option B — the actual CUDA seeding needs `--features cuda` + a GPU.
+    #[test]
+    fn option_b_detects_offloaded_device_only_when_cpu_pinned() {
+        let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
+
+        // Graph: Const → Copy{ target: Cuda0 } (an H2D offload), root = Copy.
+        let mut g = Graph::new();
+        let c = push_node(&mut g, Op::Const, vec![]);
+        let copy = push_node(&mut g, Op::Copy { target: cuda0 }, vec![c]);
+        let graph = Arc::new(RwLock::new(g));
+        let empty = StorageCache::new();
+
+        // CPU-pinned realize: the Cuda offload needs a seed.
+        assert_eq!(
+            placed_device_locations_needing_seed(&graph, copy, DeviceLocation::Cpu, &empty)
+                .unwrap(),
+            vec![cuda0],
+            "CPU-pinned realize with a Copy→Cuda must flag Cuda for seeding",
+        );
+
+        // Cuda-pinned realize (realize_f32_cuda): the target IS the pinned
+        // device — const upload already seeded it, so nothing to add.
+        assert!(
+            placed_device_locations_needing_seed(&graph, copy, cuda0, &empty)
+                .unwrap()
+                .is_empty(),
+            "a Copy to the pinned device needs no extra seed",
+        );
+
+        // Pure CPU graph: no cross-device node → no seed.
+        let mut g2 = Graph::new();
+        let a = push_node(&mut g2, Op::Const, vec![]);
+        let cpu_copy = push_node(&mut g2, Op::Copy { target: DeviceLocation::Cpu }, vec![a]);
+        let graph2 = Arc::new(RwLock::new(g2));
+        assert!(
+            placed_device_locations_needing_seed(&graph2, cpu_copy, DeviceLocation::Cpu, &empty)
+                .unwrap()
+                .is_empty(),
+            "an all-CPU graph never needs a device seed",
+        );
     }
 
     /// Step E Phase C / B1 honesty contract: a CPU `DeviceRuntimeHandle` is
@@ -2244,7 +2460,7 @@ mod tests {
         // residency + layout-fixup passes (cleanup A1 + Step B). The bridge
         // just dispatches the stamped, copy-stitched graph.
         let optimized =
-            build_optimized_graph(&graph, &[cpu_target], pinned, &cache)
+            build_optimized_graph(&graph, &[cpu_target], pinned, &cache, true)
                 .expect("optimize_graph");
 
         let (storage, _layout) = PipelinedExecutor::realize_with_optimized(

@@ -49,8 +49,17 @@ fn cuda_executor() -> fuel_cuda_backend::CudaDevice {
 }
 
 /// Realize `t` on both reference and CUDA backends, assert allclose.
+///
+/// The reference side uses [`LazyTensor::realize_f32_reference`] — a
+/// **hard-CPU** realize (cost-based cross-device placement suppressed), NOT
+/// `realize_f32()`. Since the Step-E cost-based auto-placement, `realize_f32`
+/// pins CPU only as a soft host anchor and its optimizer may price model nodes
+/// onto the present CUDA device, insert an H2D `Op::Copy`, and (on a
+/// single-device realize) panic for lack of a seeded CUDA handle — and even
+/// when it doesn't, an oracle that runs on CUDA can't independently validate
+/// CUDA. The reference must genuinely run on CPU.
 fn assert_cuda_oracle(t: &LazyTensor, atol: f32, rtol: f32) {
-    let reference = t.realize_f32();
+    let reference = t.realize_f32_reference();
     let exe = cuda_executor();
     let cuda = t.realize_f32_cuda(&exe);
     assert_eq!(reference.len(), cuda.len());
@@ -77,7 +86,9 @@ fn single_matmul_cuda_matches_reference_within_tolerance() -> Result<()> {
     let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
     let c = a.matmul(&b)?;
 
-    let reference = c.realize_f32();
+    // Hard-CPU reference (see `assert_cuda_oracle`): never cost-relocated onto
+    // the CUDA device under test.
+    let reference = c.realize_f32_reference();
 
     let cuda_device = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 should be available");
@@ -154,7 +165,9 @@ fn llama_2layer_cuda_matches_reference() {
     let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
     let logits: LazyTensor = model.forward(&tokens, 0).unwrap();
 
-    let reference = logits.realize_f32();
+    // Hard-CPU reference (see `assert_cuda_oracle`): the 2-layer model must be
+    // realized entirely on CPU, not offloaded onto the CUDA device it validates.
+    let reference = logits.realize_f32_reference();
 
     let cuda_device = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 should be available");
