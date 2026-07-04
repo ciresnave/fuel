@@ -116,6 +116,7 @@ pub use cuda_link::{
     CUDA_CAUSAL_CONV1D_ENTRY_POINTS,
     CUDA_GEMM_DENSE_ENTRY_POINTS,
     CUDA_GEMM_INT_ENTRY_POINTS,
+    CUDA_INDEXING_ENTRY_POINTS,
 };
 #[cfg(feature = "vulkan")]
 pub use vulkan_link::{

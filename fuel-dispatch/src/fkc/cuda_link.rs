@@ -626,6 +626,35 @@ pub static CUDA_GEMM_INT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("gemm_u8", crate::baracuda_dispatch::gemm_int::gemm_u8_rrr),
 ];
 
+/// CUDA `indexing` family (IndexSelect / Gather / MaskedFill data-dtype fan +
+/// ScatterAdd per-dtype): fanned `<op>_<dtype>` symbol -> production wrapper.
+/// Contract: `docs/kernel-contracts/cuda/indexing.fkc.md`. Unlike the CPU
+/// indexing family (a dtype-agnostic byte-copy umbrella), each CUDA symbol
+/// resolves to its OWN per-dtype baracuda wrapper (the binary/unary precedent).
+/// The `U32` index / `U8` mask slot is a FIXED single-dtype operand (not a fan
+/// axis) — the compare-mask / paged block-table precedent — so keys are
+/// `[T, U32, T]` (IndexSelect/Gather), `[T, U8, T]` (MaskedFill), and
+/// `[T, U32, T, T]` (ScatterAdd). Contiguous-only (default caps ⇒
+/// `strided_input == false`), byte-for-byte the deleted hand-written
+/// `table.register(...)` regs.
+pub static CUDA_INDEXING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    // IndexSelect — data-dtype fan {F32, F64, I32}; distinct per-dtype wrappers.
+    cuda_ep!("index_select_f32", crate::baracuda_dispatch::indexing::index_select_f32),
+    cuda_ep!("index_select_f64", crate::baracuda_dispatch::indexing::index_select_f64),
+    cuda_ep!("index_select_i32", crate::baracuda_dispatch::indexing::index_select_i32),
+    // Gather — data-dtype fan {F32, F64, I32}; distinct per-dtype wrappers.
+    cuda_ep!("gather_f32", crate::baracuda_dispatch::indexing::gather_f32),
+    cuda_ep!("gather_f64", crate::baracuda_dispatch::indexing::gather_f64),
+    cuda_ep!("gather_i32", crate::baracuda_dispatch::indexing::gather_i32),
+    // MaskedFill — data-dtype fan {F32, F64, I32}; fixed U8 mask slot.
+    cuda_ep!("masked_fill_f32", crate::baracuda_dispatch::indexing::masked_fill_f32),
+    cuda_ep!("masked_fill_f64", crate::baracuda_dispatch::indexing::masked_fill_f64),
+    cuda_ep!("masked_fill_i32", crate::baracuda_dispatch::indexing::masked_fill_i32),
+    // ScatterAdd — per-dtype {F32, F64}; single-dtype entry_point resolved AS-IS.
+    cuda_ep!("scatter_add_f32", crate::baracuda_dispatch::indexing::scatter_add_f32),
+    cuda_ep!("scatter_add_f64", crate::baracuda_dispatch::indexing::scatter_add_f64),
+];
+
 /// The built-in CUDA (baracuda) backend's [`LinkRegistry`] — resolves a
 /// contract's `entry_point` symbols against [`CUDA_CAST_ENTRY_POINTS`] (and the
 /// future CUDA families as they migrate off their hand-written regs). Unresolved
@@ -669,6 +698,7 @@ impl LinkRegistry for CudaLinkRegistry {
             .chain(CUDA_CAUSAL_CONV1D_ENTRY_POINTS.iter())
             .chain(CUDA_GEMM_DENSE_ENTRY_POINTS.iter())
             .chain(CUDA_GEMM_INT_ENTRY_POINTS.iter())
+            .chain(CUDA_INDEXING_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }

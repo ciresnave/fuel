@@ -3004,6 +3004,34 @@ fn register_cuda_gemm_int_from_contract(table: &mut KernelBindingTable) {
         .expect("CUDA gemm_int contract must register into the binding table");
 }
 
+/// The authored CUDA (baracuda) indexing kernel contract (`include_str!`), imported by
+/// [`register_cuda_indexing_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_INDEXING_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/indexing.fkc.md");
+
+/// Register the CUDA indexing family (IndexSelect / Gather / MaskedFill over
+/// `{F32, F64, I32}` = 9 keys + ScatterAdd over `{F32, F64}` = 2 keys = 11
+/// bindings) FROM its FKC contract — the LAST clean CUDA family, closing the
+/// CUDA FKC arc. IndexSelect / Gather / MaskedFill fan their DATA operand
+/// (§3.4 base `entry_point` → `<op>_<dtype>`) with the `U32` index / `U8` mask
+/// as a FIXED single-dtype slot (no independent fan axis, no
+/// `FanoutDtypeMismatch`), each fanned symbol resolving to its OWN per-dtype
+/// baracuda wrapper via [`crate::fkc::CudaLinkRegistry`]; ScatterAdd is
+/// per-dtype (single-dtype `entry_point` resolved AS-IS). Keys `[T, U32, T]` /
+/// `[T, U8, T]` / `[T, U32, T, T]` — byte-for-byte the deleted hand-written
+/// `table.register(IndexSelect/Gather/MaskedFill/ScatterAdd, …)` regs. Runs
+/// BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; contiguous-only caps
+/// (`requires_contiguous` ⇒ `strided_input == false`) + UNAUDITED precision seed
+/// ride through the import.
+fn register_cuda_indexing_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_INDEXING_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA indexing contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda indexing contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA indexing contract must register into the binding table");
+}
+
 /// Register every baracuda-backed CUDA kernel into the binding table
 /// as an alternative at its `(OpKind, dtypes, Cuda)` decision point.
 /// Sits alongside the PTX-backed `register_cuda_kernels` — both can
@@ -3019,10 +3047,11 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     use OpKind::*;
     let cuda = BackendId::Cuda;
 
-    let f32 = DType::F32;
+    // FlashDecoding (below) is the only remaining hand-written registration; it
+    // keys on f16/bf16. (f32/f64 were dropped with the indexing regs, now
+    // contract-sourced.)
     let f16 = DType::F16;
     let bf16 = DType::BF16;
-    let f64 = DType::F64;
 
     // `strided_input` caps for the remaining hand-written registrations that
     // advertise it (the FlashDecoding arm below consumes per-tensor capacity
@@ -3064,34 +3093,14 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
         strided, flash_precision, crate::cost::cost_flash_decoding_cuda,
     );
 
-    // ----- IndexSelect / Gather / MaskedFill / ScatterAdd
-    // Dtype keys mirror the existing CPU registrations:
-    //   IndexSelect: [data, U32, data]
-    //   Gather:      [data, U32, data]
-    //   MaskedFill:  [data, U8,  data]
-    //   ScatterAdd:  [data, U32, data, data] (base, idx, src, out — Fuel folds out into the table's per-key shape)
-    let u32_dt = DType::U32;
-    let u8_dt = DType::U8;
-    let i32_dt = DType::I32;
-    let index_select_dts = |dt: DType| [dt, u32_dt, dt];
-    let gather_dts = |dt: DType| [dt, u32_dt, dt];
-    let masked_dts = |dt: DType| [dt, u8_dt, dt];
-    let scatter_dts = |dt: DType| [dt, u32_dt, dt, dt];
-
-    table.register(IndexSelect, &index_select_dts(f32), cuda, indexing::index_select_f32);
-    table.register(IndexSelect, &index_select_dts(f64), cuda, indexing::index_select_f64);
-    table.register(IndexSelect, &index_select_dts(i32_dt), cuda, indexing::index_select_i32);
-
-    table.register(Gather, &gather_dts(f32), cuda, indexing::gather_f32);
-    table.register(Gather, &gather_dts(f64), cuda, indexing::gather_f64);
-    table.register(Gather, &gather_dts(i32_dt), cuda, indexing::gather_i32);
-
-    table.register(MaskedFill, &masked_dts(f32), cuda, indexing::masked_fill_f32);
-    table.register(MaskedFill, &masked_dts(f64), cuda, indexing::masked_fill_f64);
-    table.register(MaskedFill, &masked_dts(i32_dt), cuda, indexing::masked_fill_i32);
-
-    table.register(ScatterAdd, &scatter_dts(f32), cuda, indexing::scatter_add_f32);
-    table.register(ScatterAdd, &scatter_dts(f64), cuda, indexing::scatter_add_f64);
+    // ----- IndexSelect / Gather / MaskedFill / ScatterAdd are now registered
+    // FROM the cuda indexing FKC contract (docs/kernel-contracts/cuda/indexing.fkc.md)
+    // via register_cuda_indexing_from_contract in the GROUP 5 block below — the
+    // SOLE path. The hand-written table.register(IndexSelect/Gather/MaskedFill/
+    // ScatterAdd, …) regs (keys [T,U32,T] / [T,U8,T] / [T,U32,T,T], plain
+    // default caps) are DELETED. IndexSelect/Gather/MaskedFill fan their DATA
+    // operand with the U32 index / U8 mask a FIXED single-dtype slot (no fan
+    // axis); ScatterAdd is per-dtype (entry_point AS-IS).
 
     // ----- Cast — the FULL 70-pair family (8×8 over {F32,F64,F16,BF16,I32,
     // U32,I64,U8} + F8E4M3 ↔ {F32,F16,BF16}) — registered FROM its FKC kernel
@@ -3143,14 +3152,18 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     register_cuda_write_slice_rotating_from_contract(table);
 
     // ----- GROUP 5 multi-operand / param-ride families (concat/affine +
-    // inplace_affine/pad/pad_backward/causal_conv1d); replace the deleted
-    // hand-written blocks. (indexing DEFERRED - mixed fan/fixed-index.) -----
+    // inplace_affine/pad/pad_backward/causal_conv1d + indexing); replace the
+    // deleted hand-written blocks. Indexing (IndexSelect/Gather/MaskedFill
+    // data-dtype fan + ScatterAdd per-dtype) models the U32 index / U8 mask as
+    // a FIXED single-dtype slot (no independent fan axis), so it migrates
+    // cleanly — the LAST clean CUDA family. -----
     register_cuda_concat_from_contract(table);
     register_cuda_affine_from_contract(table);
     register_cuda_inplace_affine_from_contract(table);
     register_cuda_pad_from_contract(table);
     register_cuda_pad_backward_from_contract(table);
     register_cuda_causal_conv1d_from_contract(table);
+    register_cuda_indexing_from_contract(table);
 
     // ----- GROUP 6 MatMul facades (gemm_dense f32/f64/f16/bf16 + gemm_int
     // s8/u8) at the shared OpKind::MatMul; replace the deleted regs. -----
@@ -3856,5 +3869,70 @@ mod cast_contract_tests {
             checked += 1;
         }
         assert_eq!(checked, 6, "all 6 group6 keys checked");
+    }
+
+    /// INDEXING (born-red gate). The LAST clean CUDA family — IndexSelect /
+    /// Gather / MaskedFill over `{F32, F64, I32}` (9 keys) + ScatterAdd over
+    /// `{F32, F64}` (2 keys) = 11 bindings — is registered FROM its FKC contract
+    /// (`docs/kernel-contracts/cuda/indexing.fkc.md`) via
+    /// `register_cuda_indexing_from_contract` — the SOLE path, now that the
+    /// hand-written `table.register(IndexSelect/Gather/MaskedFill/ScatterAdd, …)`
+    /// regs are DELETED.
+    ///
+    /// IndexSelect / Gather / MaskedFill fan their DATA operand (§3.4 base
+    /// `entry_point` → `<op>_<dtype>`) with the `U32` index / `U8` mask a FIXED
+    /// single-dtype slot (no fan axis), each fanned symbol resolving to its OWN
+    /// per-dtype baracuda wrapper; ScatterAdd is per-dtype (entry_point AS-IS).
+    /// Keys `[T, U32, T]` / `[T, U8, T]` / `[T, U32, T, T]`. Asserts the EXACT
+    /// production wrapper is bound, `kernel_source == "baracuda"` (RED while the
+    /// deleted hand-written regs stamp `""`), and `caps.strided_input == false`
+    /// (contiguous-only, plain-register default caps).
+    #[test]
+    fn register_baracuda_binds_indexing_from_contract() {
+        let mut table = KernelBindingTable::new();
+        register_baracuda_cuda_kernels(&mut table);
+        let cuda = BackendId::Cuda;
+        let u32 = DType::U32;
+        let u8 = DType::U8;
+        let cases: &[(OpKind, &[DType], KernelRef)] = &[
+        (OpKind::IndexSelect, &[DType::F32, u32, DType::F32][..], indexing::index_select_f32 as KernelRef),
+        (OpKind::IndexSelect, &[DType::F64, u32, DType::F64][..], indexing::index_select_f64 as KernelRef),
+        (OpKind::IndexSelect, &[DType::I32, u32, DType::I32][..], indexing::index_select_i32 as KernelRef),
+        (OpKind::Gather, &[DType::F32, u32, DType::F32][..], indexing::gather_f32 as KernelRef),
+        (OpKind::Gather, &[DType::F64, u32, DType::F64][..], indexing::gather_f64 as KernelRef),
+        (OpKind::Gather, &[DType::I32, u32, DType::I32][..], indexing::gather_i32 as KernelRef),
+        (OpKind::MaskedFill, &[DType::F32, u8, DType::F32][..], indexing::masked_fill_f32 as KernelRef),
+        (OpKind::MaskedFill, &[DType::F64, u8, DType::F64][..], indexing::masked_fill_f64 as KernelRef),
+        (OpKind::MaskedFill, &[DType::I32, u8, DType::I32][..], indexing::masked_fill_i32 as KernelRef),
+        (OpKind::ScatterAdd, &[DType::F32, u32, DType::F32, DType::F32][..], indexing::scatter_add_f32 as KernelRef),
+        (OpKind::ScatterAdd, &[DType::F64, u32, DType::F64, DType::F64][..], indexing::scatter_add_f64 as KernelRef),
+        ];
+        let mut checked = 0usize;
+        for (op, key, expected) in cases {
+            let alts = table.lookup_alternatives(*op, key, cuda);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{op:?} {key:?}/Cuda: the production wrapper must be bound FROM the cuda \
+                         indexing contract in register_baracuda_cuda_kernels - found {} alternative(s) \
+                         with sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "baracuda",
+                "{op:?} {key:?}: family must be contract-sourced (kernel_source=\"baracuda\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert_eq!(
+                entry.caps.strided_input, false,
+                "{op:?} {key:?}: caps preserved (strided_input == false)",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 11, "all 11 indexing keys checked");
     }
 }
