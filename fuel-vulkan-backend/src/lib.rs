@@ -720,22 +720,7 @@ impl VulkanBackend {
             ).bt()
         })?;
         let size = len_bytes as u64;
-        let (dst_buf, dst_alloc) = self
-            .allocator
-            .create_buffer(
-                BufferCreateInfo {
-                    size,
-                    usage: BufferUsage::STORAGE_BUFFER
-                        | BufferUsage::TRANSFER_SRC
-                        | BufferUsage::TRANSFER_DST
-                        | BufferUsage::SHADER_DEVICE_ADDRESS,
-                },
-                AllocationCreateInfo {
-                    usage: AllocationUsage::DeviceLocal,
-                    ..Default::default()
-                },
-            )
-            .map_err(vk_err)?;
+        let (dst_buf, dst_alloc) = self.take_or_alloc_device_buffer(size)?;
         self.queue
             .one_shot(&self.device, self.queue_family, |cmd| {
                 cmd.copy_buffer(
@@ -819,22 +804,7 @@ impl VulkanBackend {
             ).bt()
         })?;
         let size = dest_total as u64;
-        let (dst_buf, dst_alloc) = self
-            .allocator
-            .create_buffer(
-                BufferCreateInfo {
-                    size,
-                    usage: BufferUsage::STORAGE_BUFFER
-                        | BufferUsage::TRANSFER_SRC
-                        | BufferUsage::TRANSFER_DST
-                        | BufferUsage::SHADER_DEVICE_ADDRESS,
-                },
-                AllocationCreateInfo {
-                    usage: AllocationUsage::DeviceLocal,
-                    ..Default::default()
-                },
-            )
-            .map_err(vk_err)?;
+        let (dst_buf, dst_alloc) = self.take_or_alloc_device_buffer(size)?;
         let regions: Vec<BufferCopy> = (0..outer_count)
             .map(|t| BufferCopy {
                 src_offset: (t * stride_bytes + offset_in_outer) as u64,
@@ -874,22 +844,10 @@ impl VulkanBackend {
     pub fn alloc_bytes(&self, byte_count: usize) -> fuel_ir::Result<VulkanStorageBytes> {
         let size = (byte_count as u64).max(1);
         let _span = debug_span!("vk_alloc_bytes", bytes = byte_count).entered();
-        let (gpu_buf, gpu_alloc) = self
-            .allocator
-            .create_buffer(
-                BufferCreateInfo {
-                    size,
-                    usage: BufferUsage::STORAGE_BUFFER
-                        | BufferUsage::TRANSFER_SRC
-                        | BufferUsage::TRANSFER_DST
-                        | BufferUsage::SHADER_DEVICE_ADDRESS,
-                },
-                AllocationCreateInfo {
-                    usage: AllocationUsage::DeviceLocal,
-                    ..Default::default()
-                },
-            )
-            .map_err(vk_err)?;
+        // Route through the shared recycler choke point so freed buffers
+        // are reused and the pool stays bounded (see
+        // `take_or_alloc_device_buffer` — closes the byte-path leak).
+        let (gpu_buf, gpu_alloc) = self.take_or_alloc_device_buffer(size)?;
         Ok(VulkanStorageBytes::from_device(
             std::sync::Arc::new(VulkanBuffer {
                 buffer: Some(gpu_buf),
@@ -936,22 +894,10 @@ impl VulkanBackend {
                 );
             }
         }
-        let (gpu_buf, gpu_alloc) = self
-            .allocator
-            .create_buffer(
-                BufferCreateInfo {
-                    size: byte_size.max(1),
-                    usage: BufferUsage::STORAGE_BUFFER
-                        | BufferUsage::TRANSFER_SRC
-                        | BufferUsage::TRANSFER_DST
-                        | BufferUsage::SHADER_DEVICE_ADDRESS,
-                },
-                AllocationCreateInfo {
-                    usage: AllocationUsage::DeviceLocal,
-                    ..Default::default()
-                },
-            )
-            .map_err(vk_err)?;
+        // Destination device buffer via the shared recycler choke point
+        // (reuse + bounded pool). The staging buffer above stays a fresh
+        // host-visible alloc — only device-local buffers are pooled.
+        let (gpu_buf, gpu_alloc) = self.take_or_alloc_device_buffer(byte_size.max(1))?;
         self.queue
             .one_shot(&self.device, self.queue_family, |cmd| {
                 cmd.copy_buffer(
@@ -1217,23 +1163,9 @@ impl VulkanBackend {
                 byte_size as usize,
             );
         }
-        // Device-local target.
-        let (gpu_buf, gpu_alloc) = self
-            .allocator
-            .create_buffer(
-                BufferCreateInfo {
-                    size: byte_size.max(1),
-                    usage: BufferUsage::STORAGE_BUFFER
-                        | BufferUsage::TRANSFER_SRC
-                        | BufferUsage::TRANSFER_DST
-                        | BufferUsage::SHADER_DEVICE_ADDRESS,
-                },
-                AllocationCreateInfo {
-                    usage: AllocationUsage::DeviceLocal,
-                    ..Default::default()
-                },
-            )
-            .map_err(vk_err)?;
+        // Device-local target via the shared recycler choke point
+        // (reuse + bounded pool — this buffer is pool-returned on drop).
+        let (gpu_buf, gpu_alloc) = self.take_or_alloc_device_buffer(byte_size.max(1))?;
         // One-shot copy staging -> device. This syncs on its own
         // fence, so when it returns the GPU has fully processed
         // the copy.
@@ -1304,18 +1236,39 @@ impl VulkanBackend {
         Ok(out)
     }
 
-    fn alloc_device(&self, byte_size: u64, n: usize, dtype: DType) -> fuel_ir::Result<VulkanStorage> {
-        let size = byte_size.max(1);
-        // Best-fit recycle via BTreeMap: smallest pooled size ≥ requested,
-        // capped at 2× to avoid wasting VRAM on oversized leftovers.
-        // Three eviction levers keep the pool bounded on long generations:
-        //   1. `MAX_BUCKETS`: cap distinct size buckets (evict smallest)
-        //   2. `MAX_PER_BUCKET`: cap duplicate buffers in a single bucket
-        //      (matters for KV-cache where N layers × 2 (K+V) buffers
-        //      all arrive at the same size each step)
-        //   3. `MAX_POOL_BYTES`: total-bytes cap as a backstop (evict
-        //      smallest sizes until under), so the pool can never hoard
-        //      more VRAM than needed
+    /// Single choke point for device-local buffer supply: reuse a pooled
+    /// buffer of at least `size` bytes when one fits, else allocate fresh
+    /// from VMA — and run the pool-bounding eviction sweep on every call.
+    ///
+    /// `alloc_device` (legacy typed path) AND the byte-storage substrate
+    /// (`alloc_bytes` / `upload_bytes` / the slot-extract handles) all
+    /// route through here. Routing the byte path through it is what
+    /// closes the recycler-growth leak: [`VulkanBuffer::drop`] pushes
+    /// *every* freed buffer back into `buffer_pool`, but before this
+    /// change only `alloc_device` ever consulted OR trimmed the pool.
+    /// The production pipelined-executor realize path is built entirely
+    /// on the byte-storage substrate, so it pushed freed buffers in and
+    /// never took any back out or trimmed — the pool grew by one weight
+    /// working-set per full realize (the D1 replan decode path re-uploads
+    /// ~2.2 GB of weights every token) until `ERROR_OUT_OF_DEVICE_MEMORY`.
+    ///
+    /// Reuse: best-fit — smallest pooled size in `[size, 2*size]` (the
+    /// 2× cap keeps an oversized leftover from wasting VRAM). Bounding:
+    /// three levers keep the pool from ever hoarding VRAM without bound
+    /// on a long generation:
+    ///   1. `MAX_BUCKETS`: cap distinct size buckets (evict smallest)
+    ///   2. `MAX_PER_BUCKET`: cap duplicate buffers in a single bucket
+    ///      (matters for KV-cache where N layers × 2 (K+V) buffers all
+    ///      arrive at the same size each step)
+    ///   3. `MAX_POOL_BYTES`: total-bytes backstop (evict smallest sizes
+    ///      until under), so the pool can never hoard more VRAM than needed
+    ///
+    /// Evicted buckets drop their `(Buffer, Allocation)` back to VMA,
+    /// which can then recycle the underlying `VkDeviceMemory` for the next
+    /// fresh allocation — so a working set larger than `MAX_POOL_BYTES`
+    /// (a 2.2 GB weight set) stays bounded rather than leaking, even
+    /// though it can't all be pooled for reuse.
+    fn take_or_alloc_device_buffer(&self, size: u64) -> fuel_ir::Result<(Buffer, Allocation)> {
         const MAX_BUCKETS: usize = 64;
         const MAX_PER_BUCKET: usize = 4;
         const MAX_POOL_BYTES: u64 = 512 * 1024 * 1024; // 512 MB cap
@@ -1361,8 +1314,8 @@ impl VulkanBackend {
             }
             picked
         };
-        let (buffer, allocation) = if let Some((b, a)) = recycled {
-            (b, a)
+        if let Some((b, a)) = recycled {
+            Ok((b, a))
         } else {
             self.allocator.create_buffer(
                 BufferCreateInfo {
@@ -1376,8 +1329,27 @@ impl VulkanBackend {
                     usage: AllocationUsage::DeviceLocal,
                     ..Default::default()
                 },
-            ).map_err(vk_err)?
-        };
+            ).map_err(vk_err)
+        }
+    }
+
+    /// Total bytes currently parked in the buffer recycler pool
+    /// (Σ size×count over all buckets). Diagnostic / regression-guard
+    /// surface — the recycler-reclaim live test asserts this returns to
+    /// a bounded steady state across repeated full realizes instead of
+    /// growing linearly (the reclaim-leak signature).
+    pub fn recycler_pooled_bytes(&self) -> u64 {
+        self.buffer_pool
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(&sz, v)| sz * v.len() as u64)
+            .sum()
+    }
+
+    fn alloc_device(&self, byte_size: u64, n: usize, dtype: DType) -> fuel_ir::Result<VulkanStorage> {
+        let size = byte_size.max(1);
+        let (buffer, allocation) = self.take_or_alloc_device_buffer(size)?;
         Ok(VulkanStorage {
             backing: StorageBacking::Device(std::sync::Arc::new(VulkanBuffer {
                 buffer: Some(buffer),
