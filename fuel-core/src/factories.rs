@@ -39,7 +39,7 @@
 
 use crate::lazy::LazyTensor;
 use fuel_ir::probe::BackendId;
-use fuel_ir::{Error, Result};
+use fuel_ir::{DType, Error, Result};
 use fuel_dispatch::pipelined::StorageCache;
 
 /// Object-safe realize seam used by judge.rs. Realizes the tensor's
@@ -51,6 +51,26 @@ use fuel_dispatch::pipelined::StorageCache;
 /// the Judge logs and skips the cell.
 pub trait LazyRealizer {
     fn realize_f32(&mut self, tensor: &LazyTensor) -> Result<Vec<f32>>;
+
+    /// Realize `tensor` and return the output numerically converted to
+    /// `Vec<f32>`, dispatching the byte-readback on the tensor's ROOT
+    /// dtype. `realize_f32` byte-reinterprets the output storage as
+    /// f32 (4 bytes/elem); that is only correct for an F32 root — an
+    /// F16/BF16 root produces a 2-byte-per-elem storage that must be
+    /// read back at its native width and then *numerically* converted
+    /// to f32 (not byte-reinterpreted) so the Judge's cross-backend
+    /// consensus can compare it against F32/other-dtype peers.
+    ///
+    /// The dtype axis (Judge Layer-2 coverage, 2026-07-04): the Judge
+    /// times the native-dtype kernel (the f16/bf16 realize) and keeps
+    /// the f32-converted output only for the correctness verdict.
+    ///
+    /// Defaulted to [`Self::realize_f32`] so test stubs (which only
+    /// exercise F32) stay one-method; the production
+    /// [`BridgeRealizer`] overrides it with the per-dtype readback.
+    fn realize_capture_f32(&mut self, tensor: &LazyTensor) -> Result<Vec<f32>> {
+        self.realize_f32(tensor)
+    }
 
     /// `kernel_source` of the alternative the picker dispatched for
     /// the most recent [`Self::realize_f32`]'s root node (Session 3
@@ -88,10 +108,17 @@ impl BridgeRealizer {
     fn new(device: crate::Device) -> Self {
         Self { device, cache: StorageCache::new(), last_kernel_source: None }
     }
-}
 
-impl LazyRealizer for BridgeRealizer {
-    fn realize_f32(&mut self, tensor: &LazyTensor) -> Result<Vec<f32>> {
+    /// Realize `tensor` on the pinned device, reading the output
+    /// storage back as `Vec<T>` (a byte-reinterpret — `T` must match
+    /// the root node's dtype width). Shared body for the per-dtype
+    /// realize seams: [`LazyRealizer::realize_f32`] is `T = f32`;
+    /// [`LazyRealizer::realize_capture_f32`] picks `T` from the root
+    /// dtype (F16 → `half::f16`, BF16 → `half::bf16`) and converts.
+    ///
+    /// Sets `last_kernel_source` from the picker's dispatched sibling
+    /// for the realize root.
+    fn realize_as<T: bytemuck::Pod>(&mut self, tensor: &LazyTensor) -> Result<Vec<T>> {
         let graph = tensor.graph_tensor().graph().clone();
         let target = tensor.graph_tensor().id();
 
@@ -131,7 +158,7 @@ impl LazyRealizer for BridgeRealizer {
         }
 
         let (bytes, root_kernel_source) =
-            crate::pipelined_bridge::realize_one_as_with_initial_reporting::<f32>(
+            crate::pipelined_bridge::realize_one_as_with_initial_reporting::<T>(
                 &graph,
                 target,
                 &self.device,
@@ -140,6 +167,38 @@ impl LazyRealizer for BridgeRealizer {
             )?;
         self.last_kernel_source = root_kernel_source;
         Ok(bytes)
+    }
+}
+
+impl LazyRealizer for BridgeRealizer {
+    fn realize_f32(&mut self, tensor: &LazyTensor) -> Result<Vec<f32>> {
+        self.realize_as::<f32>(tensor)
+    }
+
+    fn realize_capture_f32(&mut self, tensor: &LazyTensor) -> Result<Vec<f32>> {
+        // Read the output back at the root's native width, then
+        // NUMERICALLY convert to f32 (half::f16/bf16 → f32) so the
+        // Judge's cross-backend consensus compares like-for-like. A
+        // byte-reinterpret (`realize_as::<f32>` on an f16 root) would
+        // splice adjacent 2-byte elements into bogus 4-byte floats.
+        match tensor.dtype() {
+            DType::F32 => self.realize_as::<f32>(tensor),
+            DType::F16 => Ok(self
+                .realize_as::<half::f16>(tensor)?
+                .into_iter()
+                .map(|x| x.to_f32())
+                .collect()),
+            DType::BF16 => Ok(self
+                .realize_as::<half::bf16>(tensor)?
+                .into_iter()
+                .map(|x| x.to_f32())
+                .collect()),
+            other => Err(Error::Msg(format!(
+                "judge: realize_capture_f32 has no readback path for root dtype \
+                 {other:?} — only F32/F16/BF16 are wired into the Judge dtype axis",
+            ))
+            .bt()),
+        }
     }
 
     fn last_kernel_source(&self) -> Option<&'static str> {

@@ -34,8 +34,24 @@
 //!   - parametric one-input: Affine / Clamp / PowI
 //!   - 28 OpKind variants total, 84 (op, size) cells per backend
 //!     class.
-//! - **Dtypes**: f32 for now. f64 / bf16 / f16 are a mechanical
-//!   extension once the dispatch table surfaces the dtype axis.
+//! - **Dtypes**: `{f32, f16, bf16}` (see [`PROFILED_DTYPES`]). The
+//!   dispatch key always carried a `dtype` axis
+//!   ([`ProfileEntry::dtype`]); the 2026-07-04 dtype slice made the
+//!   *runner* iterate it rather than hard-coding f32. Each profiled
+//!   op/size is now measured once per dtype, so the report carries
+//!   `3 ×` the cells it did in the f32-only era. Inputs are generated
+//!   as deterministic f32 and down-converted to the cell's dtype at
+//!   graph-build time; the realizer times the native-dtype kernel and
+//!   reads the output back at its native width, converting to f32
+//!   only for the cross-backend correctness verdict
+//!   ([`crate::factories::LazyRealizer::realize_capture_f32`]). A cell
+//!   whose backend has no kernel for the requested dtype is skipped
+//!   cleanly (logged), never fatal — CPU currently carries
+//!   f16/bf16 kernels for the elementwise/matmul/reduction families
+//!   (FKC `[F32,F64,BF16,F16]` fan-out). f64 stays OUT of the matrix:
+//!   decode/inference is f16/bf16, and f64's only consumer is
+//!   correctness reference paths that don't route through the ranked
+//!   dispatch table.
 //! - **Backends**: every backend in the [`crate::factories`] registry.
 //!   A backend that doesn't implement an op is skipped per cell with
 //!   a stderr note (the realize call is wrapped in `catch_unwind`),
@@ -157,6 +173,26 @@ const PROFILED_OPS: &[OpKind] = &[
     OpKind::ClampElementwise,
     OpKind::PowIElementwise,
 ];
+
+/// Dtypes the Judge profiles for every op in [`PROFILED_OPS`]. The
+/// dispatch key ([`ProfileEntry::dtype`]) always carried this axis;
+/// this list is what the *runner* iterates (2026-07-04 dtype slice).
+///
+/// - **F32** — the correctness/reference baseline and the widest
+///   kernel coverage.
+/// - **F16 / BF16** — the decode/inference dtypes. Flash-attention,
+///   skinny GQA matmuls, and the elementwise glue in a transformer
+///   forward all run in half precision, so the ranked dispatch table
+///   needs their measured per-dtype/per-backend latencies (the coarse
+///   Layer-1 model can't tell an f16 kernel from an f32 one).
+///
+/// **F64 is intentionally excluded**: it has no inference consumer and
+/// its only routing path is the correctness-reference backend, which
+/// the ranked table never picks. Adding it would triple-count cold
+/// cells for no ranking benefit. A cell whose backend lacks a kernel
+/// for one of these dtypes is skipped cleanly, so listing a dtype here
+/// is safe even on backends with partial coverage.
+const PROFILED_DTYPES: &[DType] = &[DType::F32, DType::F16, DType::BF16];
 
 pub fn default_report_path() -> Option<std::path::PathBuf> {
     crate::probe::default_report_path()
@@ -462,103 +498,112 @@ impl Judge {
             for sz in self.size_plan(op) {
                 let size_class = SizeClass::from_elem_count(sz.total_elements());
 
-                // First pass: per equivalence-class representative,
-                // measure latency + capture the kernel's output for
-                // consensus comparison. The realizer path measures
-                // whichever alternative the picker dispatches; its
-                // CellRun already carries that sibling's
-                // `kernel_source` (the bridge's post-realize report,
-                // filled in by `time_op_capturing` — Session 3 rider).
-                let mut cell_runs: Vec<CellRun> = Vec::with_capacity(class_keys.len());
-                for key in &class_keys {
-                    let devs = &classes[key];
-                    let rep = devs[0];
-                    if let Some(run) = self.measure_on_device_capturing(op, DType::F32, &sz, rep) {
-                        let dispatched_source = run.kernel_source.clone();
-                        cell_runs.push(run);
+                // Dtype axis (2026-07-04): measure each (op, size) cell
+                // once per profiled dtype. The size_class is dtype-
+                // independent (element count, not byte count), so it's
+                // computed once outside this loop. Consensus is per
+                // (op, dtype, size) — f16 outputs cluster against f16
+                // peers, never against the f32 measurement of the same
+                // op — because `cell_runs` is rebuilt inside the loop.
+                for &dtype in PROFILED_DTYPES {
+                    // First pass: per equivalence-class representative,
+                    // measure latency + capture the kernel's output for
+                    // consensus comparison. The realizer path measures
+                    // whichever alternative the picker dispatches; its
+                    // CellRun already carries that sibling's
+                    // `kernel_source` (the bridge's post-realize report,
+                    // filled in by `time_op_capturing` — Session 3 rider).
+                    let mut cell_runs: Vec<CellRun> = Vec::with_capacity(class_keys.len());
+                    for key in &class_keys {
+                        let devs = &classes[key];
+                        let rep = devs[0];
+                        if let Some(run) = self.measure_on_device_capturing(op, dtype, &sz, rep) {
+                            let dispatched_source = run.kernel_source.clone();
+                            cell_runs.push(run);
 
-                        // Per-alternative measurement: walk the
-                        // REMAINING alternatives at the same
-                        // `(op_kind, dtypes, backend)` binding-table
-                        // cell and time each via a direct
-                        // kernel-pointer call. The dispatched
-                        // alternative is already covered by the
-                        // realizer measurement above.
-                        if let Some(extra_runs) =
-                            self.measure_extra_alternatives(op, &sz, rep, &dispatched_source)
-                        {
-                            for extra in extra_runs {
-                                cell_runs.push(extra);
+                            // Per-alternative measurement: walk the
+                            // REMAINING alternatives at the same
+                            // `(op_kind, dtypes, backend)` binding-table
+                            // cell and time each via a direct
+                            // kernel-pointer call. The dispatched
+                            // alternative is already covered by the
+                            // realizer measurement above.
+                            if let Some(extra_runs) =
+                                self.measure_extra_alternatives(op, dtype, &sz, rep, &dispatched_source)
+                            {
+                                for extra in extra_runs {
+                                    cell_runs.push(extra);
+                                }
                             }
                         }
                     }
-                }
 
-                // Second pass: pick a correctness verdict for each
-                // CellRun. The fixture fast-path is preferred when a
-                // fixture exists for the cell — that's the
-                // pre-validated multi-backend output captured on a
-                // reference rig, so single-backend systems get the
-                // same correctness signal without needing peers
-                // locally. When no fixture is present, fall back to
-                // pairwise consensus across the CellRuns at this
-                // cell.
-                let expected_elem_count = cell_runs.first()
-                    .map(|r| r.output.len())
-                    .unwrap_or(0);
-                let input_elem_count = sz.input_elements(op);
-                let fixture = self.lookup_fixture(
-                    op,
-                    DType::F32,
-                    size_class,
-                    expected_elem_count,
-                    input_elem_count,
-                );
-                let consensus = if fixture.is_none() {
-                    compute_pairwise_consensus(&cell_runs)
-                } else {
-                    Vec::new() // unused on the fixture path
-                };
-
-                // Third pass: emit one ProfileEntry per (run, device).
-                // The first alternative's CellRun replicates across
-                // each equivalence-class device; per-alternative
-                // CellRuns from the binding-table direct path
-                // record on the representative's device_index only
-                // (the cross-device sharing convention applies to
-                // backend-level equivalence, not within-cell kernel
-                // sibling differentiation — siblings are
-                // hardware-agnostic at the binding-table layer).
-                for (i, run) in cell_runs.iter().enumerate() {
-                    let rel_err = if let Some(f) = fixture {
-                        max_rel_err_vs_fixture(&run.output, f)
+                    // Second pass: pick a correctness verdict for each
+                    // CellRun. The fixture fast-path is preferred when a
+                    // fixture exists for the cell — that's the
+                    // pre-validated multi-backend output captured on a
+                    // reference rig, so single-backend systems get the
+                    // same correctness signal without needing peers
+                    // locally. When no fixture is present, fall back to
+                    // pairwise consensus across the CellRuns at this
+                    // cell.
+                    let expected_elem_count = cell_runs.first()
+                        .map(|r| r.output.len())
+                        .unwrap_or(0);
+                    let input_elem_count = sz.input_elements(op);
+                    let fixture = self.lookup_fixture(
+                        op,
+                        dtype,
+                        size_class,
+                        expected_elem_count,
+                        input_elem_count,
+                    );
+                    let consensus = if fixture.is_none() {
+                        compute_pairwise_consensus(&cell_runs)
                     } else {
-                        max_rel_err_vs_consensus(&cell_runs, &consensus, i)
+                        Vec::new() // unused on the fixture path
                     };
-                    // Find the equivalence class this run belongs to
-                    // (its representative's backend matches `run.backend`).
-                    let class_devs = classes.iter().find_map(|(k, devs)| {
-                        if k.backend == run.backend
-                            && devs[0].device_index == run.device_index
-                        {
-                            Some(devs)
+
+                    // Third pass: emit one ProfileEntry per (run, device).
+                    // The first alternative's CellRun replicates across
+                    // each equivalence-class device; per-alternative
+                    // CellRuns from the binding-table direct path
+                    // record on the representative's device_index only
+                    // (the cross-device sharing convention applies to
+                    // backend-level equivalence, not within-cell kernel
+                    // sibling differentiation — siblings are
+                    // hardware-agnostic at the binding-table layer).
+                    for (i, run) in cell_runs.iter().enumerate() {
+                        let rel_err = if let Some(f) = fixture {
+                            max_rel_err_vs_fixture(&run.output, f)
                         } else {
-                            None
-                        }
-                    });
-                    if let Some(devs) = class_devs {
-                        for d in devs {
-                            entries.push(ProfileEntry {
-                                op,
-                                dtype: DType::F32,
-                                size_class,
-                                backend: run.backend,
-                                device_index: d.device_index,
-                                latency_ns: run.latency_ns,
-                                iterations: run.iterations,
-                                max_rel_error: rel_err,
-                                kernel_source: run.kernel_source.clone(),
-                            });
+                            max_rel_err_vs_consensus(&cell_runs, &consensus, i)
+                        };
+                        // Find the equivalence class this run belongs to
+                        // (its representative's backend matches `run.backend`).
+                        let class_devs = classes.iter().find_map(|(k, devs)| {
+                            if k.backend == run.backend
+                                && devs[0].device_index == run.device_index
+                            {
+                                Some(devs)
+                            } else {
+                                None
+                            }
+                        });
+                        if let Some(devs) = class_devs {
+                            for d in devs {
+                                entries.push(ProfileEntry {
+                                    op,
+                                    dtype,
+                                    size_class,
+                                    backend: run.backend,
+                                    device_index: d.device_index,
+                                    latency_ns: run.latency_ns,
+                                    iterations: run.iterations,
+                                    max_rel_error: rel_err,
+                                    kernel_source: run.kernel_source.clone(),
+                                });
+                            }
                         }
                     }
                 }
@@ -591,6 +636,7 @@ impl Judge {
     fn measure_extra_alternatives(
         &self,
         op: OpKind,
+        dtype: DType,
         size: &OpSize,
         device: &DeviceDescriptor,
         dispatched_kernel_source: &str,
@@ -601,6 +647,19 @@ impl Judge {
         // doesn't expose a stand-alone "build CUDA storage from f32
         // slice" entry point at the binding-table layer.
         if device.backend != BackendId::Cpu {
+            return None;
+        }
+
+        // Dtype axis (2026-07-04): the direct-call input builder
+        // (`prepare_direct_call_inputs`) materializes f32 CPU storage
+        // only, and `read_output_f32` reads it back as f32. For F16/
+        // BF16 cells the realizer-measured primary alternative is the
+        // sole entry until the direct-call path grows a typed input
+        // builder. This is a coverage gap, not a correctness hazard:
+        // AOCL/MKL half-precision siblings (the direct-call path's
+        // reason to exist) are feature-gated off in the born-red CPU
+        // build anyway, so today no sibling is silently dropped.
+        if dtype != DType::F32 {
             return None;
         }
 
@@ -727,8 +786,6 @@ impl Judge {
         size: &OpSize,
         device: &DeviceDescriptor,
     ) -> Option<CellRun> {
-        assert_eq!(dtype, DType::F32, "judge: only f32 wired for now");
-
         // Native-implementation gate (executor-unification Session 2):
         // the bridge realizer dispatches through the picker, whose
         // off-device fallback (picker-arc step 4b) would silently run
@@ -747,11 +804,11 @@ impl Judge {
         // baracuda CUDA registrations are untagged), so an empty tag
         // does not mean an empty cell.
         if device.backend != BackendId::Cpu
-            && !has_binding_alternative(op, device.backend)
+            && !has_binding_alternative(op, dtype, device.backend)
         {
             eprintln!(
-                "judge: skipping {op}@{size:?} on {}:{} — no binding-table \
-                 alternative registered for this backend",
+                "judge: skipping {op}@{size:?} ({dtype:?}) on {}:{} — no binding-table \
+                 alternative registered for this backend/dtype",
                 device.backend, device.device_index,
             );
             return None;
@@ -782,7 +839,7 @@ impl Judge {
             }
         };
 
-        let cell = self.time_op_capturing(op, size, device, realizer.as_mut());
+        let cell = self.time_op_capturing(op, dtype, size, device, realizer.as_mut());
         drop(realizer);
         cell
     }
@@ -803,12 +860,13 @@ impl Judge {
     fn time_op_capturing(
         &self,
         op: OpKind,
+        dtype: DType,
         size: &OpSize,
         device: &DeviceDescriptor,
         realizer: &mut dyn crate::factories::LazyRealizer,
     ) -> Option<CellRun> {
         let tensor = match std::panic::catch_unwind(AssertUnwindSafe(|| {
-            build_input_graph(op, size)
+            build_input_graph(op, dtype, size)
         })) {
             Ok(t) => t,
             Err(_) => {
@@ -826,7 +884,7 @@ impl Judge {
         // skip the entire (op, backend) cell.
         for _ in 0..self.warmup {
             match std::panic::catch_unwind(AssertUnwindSafe(|| {
-                realizer.realize_f32(&tensor)
+                realizer.realize_capture_f32(&tensor)
             })) {
                 Ok(Ok(_)) => {}
                 Ok(Err(e)) => {
@@ -856,7 +914,7 @@ impl Judge {
         for _ in 0..self.iterations {
             let t0 = Instant::now();
             let out = match std::panic::catch_unwind(AssertUnwindSafe(|| {
-                realizer.realize_f32(&tensor)
+                realizer.realize_capture_f32(&tensor)
             })) {
                 Ok(Ok(v)) => v,
                 Ok(Err(e)) => {
@@ -896,7 +954,7 @@ impl Judge {
         // executor's `compile_node` fallback dispatches in that case.
         let kernel_source = match realizer.last_kernel_source() {
             Some(src) => src.to_string(),
-            None => primary_kernel_source(op, device.backend).to_string(),
+            None => primary_kernel_source(op, dtype, device.backend).to_string(),
         };
 
         Some(CellRun {
@@ -943,8 +1001,8 @@ struct PreparedDirectCall {
 /// and the executor's `compile_node` fallback dispatched the
 /// first-registered binding). Returns `""` when no alternative is
 /// registered at all.
-fn primary_kernel_source(op: OpKind, backend: BackendId) -> &'static str {
-    let dtypes = match canonical_binding_dtypes_for(op) {
+fn primary_kernel_source(op: OpKind, dtype: DType, backend: BackendId) -> &'static str {
+    let dtypes = match canonical_binding_dtypes_for(op, dtype) {
         Some(d) => d,
         None => return "",
     };
@@ -965,8 +1023,8 @@ fn primary_kernel_source(op: OpKind, backend: BackendId) -> &'static str {
 /// then skips the (non-CPU) cell rather than risk recording an
 /// off-device-fallback measurement under the wrong backend label.
 /// Unreachable for today's [`PROFILED_OPS`] (all are mapped).
-fn has_binding_alternative(op: OpKind, backend: BackendId) -> bool {
-    let dtypes = match canonical_binding_dtypes_for(op) {
+fn has_binding_alternative(op: OpKind, dtype: DType, backend: BackendId) -> bool {
+    let dtypes = match canonical_binding_dtypes_for(op, dtype) {
         Some(d) => d,
         None => return false,
     };
@@ -982,7 +1040,10 @@ fn direct_call_alternatives(
     op: OpKind,
     dispatched_kernel_source: &str,
 ) -> Vec<DirectCallAlternative> {
-    let dtypes = match canonical_binding_dtypes_for(op) {
+    // Direct-call path is F32-only (see `measure_extra_alternatives`'s
+    // dtype gate + `prepare_direct_call_inputs`), so the binding key is
+    // always the F32 tuple here.
+    let dtypes = match canonical_binding_dtypes_for(op, DType::F32) {
         Some(d) => d,
         None => return Vec::new(),
     };
@@ -1013,16 +1074,25 @@ fn direct_call_alternatives(
 }
 
 /// Map an `OpKind` to its binding-table dtype list (inputs + outputs)
-/// for the F32 single-dtype Judge profile. Returns `None` for op
-/// families the direct-call path doesn't yet support — caller falls
-/// back to first-alternative-only measurement at the cell.
-fn canonical_binding_dtypes_for(op: OpKind) -> Option<Vec<DType>> {
+/// at the profiled `dtype`. Every profiled family is uniform-dtype, so
+/// the list is just `dtype` repeated per operand slot. Returns `None`
+/// for op families the native-implementation gate / direct-call path
+/// don't yet support — caller falls back to first-alternative-only
+/// measurement at the cell (or skips the non-CPU cell).
+fn canonical_binding_dtypes_for(op: OpKind, dtype: DType) -> Option<Vec<DType>> {
     // Most elementwise ops follow `[input..., output]`. Reductions
     // and reduce-to follow `[input, output]`. MatMul is 3 inputs
-    // (no — 2 inputs + 1 output): `[lhs, rhs, out] = [F32, F32, F32]`.
-    let f32 = DType::F32;
+    // (no — 2 inputs + 1 output): `[lhs, rhs, out] = [T, T, T]`.
+    //
+    // Dtype axis (2026-07-04): every profiled family in this map is
+    // uniform-dtype (all operands share `dtype`), so substituting the
+    // profiled dtype `T` for the former hard-coded F32 gives the right
+    // binding-table key for F16/BF16 cells too. The mixed-dtype ops
+    // (Cast, QMatMul, comparisons with a U8 mask) are not in
+    // PROFILED_OPS and fall through to the `None` arm.
+    let t = dtype;
     Some(match op {
-        OpKind::MatMul => vec![f32, f32, f32],
+        OpKind::MatMul => vec![t, t, t],
         // Binary elementwise: 2 inputs + 1 output.
         OpKind::AddElementwise
         | OpKind::SubElementwise
@@ -1031,7 +1101,7 @@ fn canonical_binding_dtypes_for(op: OpKind) -> Option<Vec<DType>> {
         | OpKind::MaximumElementwise
         | OpKind::MinimumElementwise
         | OpKind::PowElementwise
-        | OpKind::RemElementwise => vec![f32, f32, f32],
+        | OpKind::RemElementwise => vec![t, t, t],
         // Unary elementwise: 1 input + 1 output.
         OpKind::NegElementwise
         | OpKind::SqrElementwise
@@ -1057,14 +1127,14 @@ fn canonical_binding_dtypes_for(op: OpKind) -> Option<Vec<DType>> {
         | OpKind::RsqrtElementwise
         | OpKind::Affine
         | OpKind::ClampElementwise
-        | OpKind::PowIElementwise => vec![f32, f32],
+        | OpKind::PowIElementwise => vec![t, t],
         // Reductions: 1 input + 1 output.
         OpKind::SumReduce
         | OpKind::MaxReduce
         | OpKind::MinReduce
         | OpKind::MeanReduce
         | OpKind::ReduceSumTo
-        | OpKind::ReduceMaxTo => vec![f32, f32],
+        | OpKind::ReduceMaxTo => vec![t, t],
         // All others: not yet wired into the direct-call path. The
         // realizer-measured first alternative is the only entry for
         // the cell until this list expands.
@@ -1274,23 +1344,72 @@ impl OpSize {
     }
 }
 
-/// Build a 1-node graph for the given (op, size) that takes constant
-/// inputs. The inputs are deterministic so precision comparisons
-/// across backends are meaningful.
-fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
+/// Build a leaf [`LazyTensor`] at `dtype` from f32 source `data`. F16/
+/// BF16 down-convert the deterministic f32 domain element-wise
+/// (`half::f16/bf16::from_f32`) so the same input distribution is
+/// exercised at every precision — the cross-dtype comparison stays
+/// apples-to-apples modulo the dtype's own rounding. Panics only on a
+/// dtype outside the profiled `{F32, F16, BF16}` set (never reached:
+/// [`PROFILED_DTYPES`] is the sole caller of `build_input_graph`).
+fn make_leaf(dtype: DType, data: Vec<f32>, shape: Shape) -> crate::lazy::LazyTensor {
     use crate::lazy::LazyTensor;
+    let dev = crate::Device::cpu();
+    match dtype {
+        DType::F32 => LazyTensor::from_f32(data, shape, &dev),
+        DType::F16 => LazyTensor::from_f16(
+            data.iter().map(|&x| half::f16::from_f32(x)).collect::<Vec<_>>(),
+            shape,
+            &dev,
+        ),
+        DType::BF16 => LazyTensor::from_bf16(
+            data.iter().map(|&x| half::bf16::from_f32(x)).collect::<Vec<_>>(),
+            shape,
+            &dev,
+        ),
+        other => panic!("build_input_graph: unsupported profiled dtype {other:?}"),
+    }
+}
+
+/// Build a same-graph const sibling of `a` at `dtype` from f32 source
+/// `data`. Mirrors [`make_leaf`] but through the `const_*_like`
+/// constructors so the second operand shares `a`'s graph.
+fn make_const_like(
+    a: &crate::lazy::LazyTensor,
+    dtype: DType,
+    data: Vec<f32>,
+    shape: Shape,
+) -> crate::lazy::LazyTensor {
+    match dtype {
+        DType::F32 => a.const_f32_like(data, shape),
+        DType::F16 => a.const_f16_like(
+            data.iter().map(|&x| half::f16::from_f32(x)).collect::<Vec<_>>(),
+            shape,
+        ),
+        DType::BF16 => a.const_bf16_like(
+            data.iter().map(|&x| half::bf16::from_f32(x)).collect::<Vec<_>>(),
+            shape,
+        ),
+        other => panic!("build_input_graph: unsupported profiled dtype {other:?}"),
+    }
+}
+
+/// Build a 1-node graph for the given (op, dtype, size) that takes
+/// constant inputs. The inputs are deterministic (generated in f32 and
+/// down-converted to `dtype`) so precision comparisons across backends
+/// are meaningful.
+fn build_input_graph(op: OpKind, dtype: DType, size: &OpSize) -> crate::lazy::LazyTensor {
     match (op, *size) {
         (OpKind::MatMul, OpSize::MatMul { m, n, k }) => {
             let a_data: Vec<f32> = (0..(m * k)).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
             let b_data: Vec<f32> = (0..(k * n)).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-            let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[m, k]), &crate::Device::cpu());
-            let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
+            let a = make_leaf(dtype, a_data, Shape::from_dims(&[m, k]));
+            let b = make_const_like(&a, dtype, b_data, Shape::from_dims(&[k, n]));
             a.matmul(&b).unwrap()
         }
         (op, OpSize::Elementwise(n)) if is_binary_elementwise(op) => {
             let (a_data, b_data) = binary_inputs(op, n);
-            let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[n]), &crate::Device::cpu());
-            let b = a.const_f32_like(b_data, Shape::from_dims(&[n]));
+            let a = make_leaf(dtype, a_data, Shape::from_dims(&[n]));
+            let b = make_const_like(&a, dtype, b_data, Shape::from_dims(&[n]));
             apply_binary(op, &a, &b)
         }
         // -------- elementwise unary fanout --------
@@ -1313,11 +1432,7 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
         (op, OpSize::Reduce { rows, cols }) if is_reduction(op) => {
             let n = rows * cols;
             let data: Vec<f32> = (0..n).map(|i| ((i as f32) * 1.7e-3).sin()).collect();
-            let a = LazyTensor::from_f32(
-                data,
-                Shape::from_dims(&[rows, cols]),
-                &crate::Device::cpu(),
-            );
+            let a = make_leaf(dtype, data, Shape::from_dims(&[rows, cols]));
             apply_reduction(op, &a)
         }
         // -------- reduce-to-broadcast-target --------
@@ -1326,11 +1441,7 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
         (op, OpSize::ReduceTo { rows, cols }) if is_reduce_to(op) => {
             let n = rows * cols;
             let data: Vec<f32> = (0..n).map(|i| ((i as f32) * 1.7e-3).sin()).collect();
-            let a = LazyTensor::from_f32(
-                data,
-                Shape::from_dims(&[rows, cols]),
-                &crate::Device::cpu(),
-            );
+            let a = make_leaf(dtype, data, Shape::from_dims(&[rows, cols]));
             let target = Shape::from_dims(&[1, cols]);
             match op {
                 OpKind::ReduceSumTo => a.reduce_sum_to(target),
@@ -1348,7 +1459,7 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
         // to sqr/identity.
         (op, OpSize::Elementwise(n)) if is_scalar_op(op) => {
             let data: Vec<f32> = unary_input(n);
-            let a = LazyTensor::from_f32(data, Shape::from_dims(&[n]), &crate::Device::cpu());
+            let a = make_leaf(dtype, data, Shape::from_dims(&[n]));
             match op {
                 OpKind::Affine           => a.mul_scalar(2.0),
                 OpKind::ClampElementwise => a.clamp(-0.5, 0.5),
@@ -1374,7 +1485,7 @@ fn build_input_graph(op: OpKind, size: &OpSize) -> crate::lazy::LazyTensor {
             } else {
                 raw
             };
-            let a = LazyTensor::from_f32(data, Shape::from_dims(&[n]), &crate::Device::cpu());
+            let a = make_leaf(dtype, data, Shape::from_dims(&[n]));
             apply_unary(op, &a)
         }
         (op, sz) => panic!("build_input_graph: op {op:?} size {sz:?} not implemented"),
@@ -1907,18 +2018,18 @@ mod tests {
         // verbatim, regardless of registration order at the cell.
         let mut reporting = StubRealizer { src: Some("stub-sibling") };
         let run = judge
-            .time_op_capturing(op, &size, &device, &mut reporting)
+            .time_op_capturing(op, DType::F32, &size, &device, &mut reporting)
             .expect("stub realize succeeds");
         assert_eq!(run.kernel_source, "stub-sibling");
 
         // No report → first-registered fallback attribution.
         let mut silent = StubRealizer { src: None };
         let run = judge
-            .time_op_capturing(op, &size, &device, &mut silent)
+            .time_op_capturing(op, DType::F32, &size, &device, &mut silent)
             .expect("stub realize succeeds");
         assert_eq!(
             run.kernel_source,
-            primary_kernel_source(op, BackendId::Cpu),
+            primary_kernel_source(op, DType::F32, BackendId::Cpu),
             "no realizer report → first-registered binding-table tag",
         );
     }
@@ -2125,6 +2236,105 @@ mod tests {
         }
     }
 
+    /// Dtype-axis slice (Judge Layer-2 coverage arc, 2026-07-04).
+    ///
+    /// **Born-red history**: before this slice the Judge hard-coded
+    /// `DType::F32` in every measurement call, so `run()` emitted ONLY
+    /// f32 `ProfileEntry`s. This test asserts the measurement matrix
+    /// now covers f16 AND bf16 for the profiled families, that each
+    /// entry is keyed by the dtype it was measured at, and that the
+    /// measured latencies are positive. CPU-only shrunk ladder — no
+    /// live GPU needed (CPU carries f16/bf16 kernels for the
+    /// elementwise + matmul families via the FKC `[F32,F64,BF16,F16]`
+    /// fan-out). A live CUDA/Vulkan profile would ADD the per-dtype
+    /// GPU rows the ranker ultimately compares flash-vs-decomposed
+    /// against, but the axis mechanics are fully exercised on CPU.
+    #[test]
+    fn judge_profiles_f16_and_bf16_cells() {
+        let probe = ProbeReport::probe_all();
+        let judge = Judge {
+            iterations: 3,
+            warmup: 1,
+            size_plan_override: Some(vec![
+                (OpKind::AddElementwise, OpSize::Elementwise(1 << 8)),
+                (OpKind::MulElementwise, OpSize::Elementwise(1 << 8)),
+                (OpKind::MatMul, OpSize::MatMul { m: 16, n: 16, k: 16 }),
+            ]),
+            fixtures: None,
+        };
+        let report = judge.run(&probe);
+
+        // The half-precision dtypes must each produce ≥1 CPU entry per
+        // profiled op, keyed by that dtype, with a positive latency.
+        for dtype in [DType::F16, DType::BF16] {
+            for op in [
+                OpKind::AddElementwise,
+                OpKind::MulElementwise,
+                OpKind::MatMul,
+            ] {
+                let cells: Vec<_> = report
+                    .entries
+                    .iter()
+                    .filter(|e| {
+                        e.op == op && e.dtype == dtype && e.backend == BackendId::Cpu
+                    })
+                    .collect();
+                assert!(
+                    !cells.is_empty(),
+                    "dtype-axis: expected ≥1 CPU {dtype:?} entry for {op}, got 0 \
+                     (is the {dtype:?} kernel registered for this op?)",
+                );
+                for e in &cells {
+                    assert_eq!(
+                        e.dtype, dtype,
+                        "entry must be keyed by the dtype it was measured at",
+                    );
+                    assert!(
+                        e.latency_ns > 0,
+                        "{op} {dtype:?} latency must be > 0, got {e:?}",
+                    );
+                    // Single-backend CPU cell → trivial consensus → the
+                    // rel_err is 0.0 (no peers). Half-precision rounding
+                    // shows up only against a differing peer, which the
+                    // CPU-only born-red doesn't have.
+                    assert!(
+                        e.max_rel_error.is_finite(),
+                        "{op} {dtype:?} rel_err must be finite, got {}",
+                        e.max_rel_error,
+                    );
+                }
+            }
+        }
+
+        // Regression guard: the f32 rows the pre-slice Judge produced
+        // are still present — the dtype loop ADDS f16/bf16, it doesn't
+        // displace f32.
+        assert!(
+            report.entries.iter().any(|e| e.dtype == DType::F32
+                && e.op == OpKind::AddElementwise
+                && e.backend == BackendId::Cpu),
+            "dtype-axis: f32 coverage regressed — expected f32 AddElementwise entry",
+        );
+
+        // Cross-check: exactly the three profiled dtypes appear, none
+        // else (no f64 or stray dtype leaked into the matrix).
+        let mut dtypes: Vec<DType> =
+            report.entries.iter().map(|e| e.dtype).collect();
+        dtypes.sort_by_key(|d| format!("{d:?}"));
+        dtypes.dedup();
+        assert_eq!(
+            dtypes.len(),
+            PROFILED_DTYPES.len(),
+            "expected exactly the profiled dtype set {PROFILED_DTYPES:?}, saw {dtypes:?}",
+        );
+        for d in PROFILED_DTYPES {
+            assert!(
+                dtypes.contains(d),
+                "profiled dtype {d:?} missing from the report",
+            );
+        }
+    }
+
     #[test]
     fn dispatch_table_built_from_expanded_report_serves_multiple_kinds() {
         // Confirms the DispatchTable's O(1) lookup path handles the
@@ -2292,11 +2502,19 @@ mod tests {
             fixtures: Some(map),
         };
         let report = judge.run(&probe);
+        // Dtype-axis note (2026-07-04): the planted fixture is keyed
+        // `(AddElementwise, F32, sc)`, so only the F32 cells hit the
+        // fixture fast-path. The f16/bf16 cells the dtype loop now also
+        // emits have NO fixture → they take the consensus path → lone
+        // CPU backend → rel_err 0.0. Scope this assertion to the F32
+        // entries the fixture actually governs.
         let cpu_entries: Vec<_> = report.entries.iter()
-            .filter(|e| e.op == OpKind::AddElementwise && e.backend == BackendId::Cpu)
+            .filter(|e| e.op == OpKind::AddElementwise
+                && e.dtype == DType::F32
+                && e.backend == BackendId::Cpu)
             .collect();
         assert!(!cpu_entries.is_empty(),
-            "expected ≥1 cpu entry for AddElementwise, got 0");
+            "expected ≥1 cpu f32 entry for AddElementwise, got 0");
         // The bogus all-zeros fixture is wildly wrong vs the honest
         // sin+cos output, so every cpu entry's max_rel_error should
         // be very large (≥ 1.0 — relative error vs ~zero expected is
