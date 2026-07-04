@@ -15,6 +15,12 @@
 //! `fuel-core` (it has the concrete oracle + cache dir); this crate owns the
 //! record types and the key derivation.
 
+// The Baracuda-backed provider is the live wire into Baracuda's shipped
+// `structure_key`. It needs `baracuda-kernels-types` (pulled by the `cuda`
+// feature) and is meaningful only for a CUDA target arch, so it is gated on
+// `cuda`; a CPU-only build keeps the `NullStructureKeyProvider`.
+#[cfg(feature = "cuda")]
+pub mod baracuda_provider;
 pub mod config;
 pub mod hooks;
 pub mod impl_id;
@@ -23,6 +29,8 @@ pub mod record;
 pub mod sink;
 pub mod structure_key;
 
+#[cfg(feature = "cuda")]
+pub use baracuda_provider::BaracudaStructureKeyProvider;
 pub use config::{TelemetryConfig, TelemetryMode};
 pub use hooks::TelemetryHooks;
 pub use impl_id::ImplId;

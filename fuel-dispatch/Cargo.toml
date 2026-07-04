@@ -17,6 +17,10 @@ fuel-cuda-backend = { workspace = true, optional = true }
 fuel-graph = { workspace = true }
 fuel-memory = { workspace = true }
 fuel-vulkan-backend = { workspace = true, optional = true }
+# Baracuda's shipped `structure_key` keyer (pure-Rust types crate — no nvcc).
+# Pulled by the `cuda` feature so the telemetry `BaracudaStructureKeyProvider`
+# can call it; already present transitively via fuel-cuda-backend.
+baracuda-kernels-types = { workspace = true, optional = true }
 bytemuck = { workspace = true }
 half = { workspace = true }
 smallvec = { workspace = true }
@@ -53,7 +57,7 @@ default = []
 # Per-backend dispatch wrappers. Feature flags propagate the same shape
 # fuel-memory used: each GPU backend's registration entry-point is
 # gated behind its feature.
-cuda = ["dep:fuel-cuda-backend", "fuel-memory/cuda", "fuel-hardware/cuda"]
+cuda = ["dep:fuel-cuda-backend", "dep:baracuda-kernels-types", "fuel-memory/cuda", "fuel-hardware/cuda"]
 vulkan = ["dep:fuel-vulkan-backend", "fuel-memory/vulkan", "fuel-hardware/vulkan"]
 metal = ["dep:fuel-metal-backend", "fuel-memory/metal"]
 # Baracuda dispatch-telemetry / miss-reporting emission (docs/session-prompts/
