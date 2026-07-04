@@ -3278,6 +3278,55 @@ cpu_selective_scan_wrapper!(selective_scan_f64_cpu_wrapper,  fuel_cpu_backend::b
 cpu_selective_scan_wrapper!(selective_scan_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::selective_scan_bf16);
 cpu_selective_scan_wrapper!(selective_scan_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::selective_scan_f16);
 
+/// Per-input-dtype NonZeroIndices dispatch wrapper. One input `x`
+/// (the value tensor) → one bundled output `[indices [capacity] U32 ;
+/// count [1] U32]`. `capacity` flows through `OpParams::NonZeroIndices`;
+/// the binding-table key is `[input_dtype, U32]` (input + the primary
+/// output-slot dtype). The `count_sym` field is consumed by the executor
+/// after the kernel runs (the SymEnv bind seam), not here.
+macro_rules! cpu_nonzero_indices_wrapper {
+    ($wrapper:ident, $kernel:path) => {
+        pub(crate) fn $wrapper(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "nonzero_indices wrapper expects 1 input, got {}",
+                    inputs.len(),
+                ))
+                .bt());
+            }
+            if outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "nonzero_indices wrapper expects 1 output, got {}",
+                    outputs.len(),
+                ))
+                .bt());
+            }
+            let capacity = match params {
+                OpParams::NonZeroIndices { capacity, .. } => *capacity,
+                other => {
+                    return Err(Error::Msg(format!(
+                        "nonzero_indices wrapper expects OpParams::NonZeroIndices, got {other:?}",
+                    ))
+                    .bt());
+                }
+            };
+            let x_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let x_cpu = cpu_input(&x_guard)?;
+            let out_cpu = cpu_output(&mut out_guard)?;
+            $kernel(x_cpu, out_cpu, capacity)
+        }
+    };
+}
+
+cpu_nonzero_indices_wrapper!(nonzero_indices_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::nonzero_indices_f32);
+cpu_nonzero_indices_wrapper!(nonzero_indices_u32_cpu_wrapper, fuel_cpu_backend::byte_kernels::nonzero_indices_u32);
+
 /// Per-dtype SsdChunkScan dispatch wrapper. Five inputs (x, dt, a,
 /// b, c) → one output (y). Geometry + `chunk_size` flow through
 /// `OpParams::SsdChunkScan`. All six tensors share dtype `T`; the
@@ -5329,6 +5378,21 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // sole registration path. Placed BEFORE the `fill_unset_cpu_*` passes so the
     // imported entries pick up the CPU cost fill.
     register_cpu_ssm_from_contract(table);
+
+    // NonZeroIndices — the keystone primitive for data-dependent dynamic
+    // shapes (SSM decode / MoE sparsity / MLA KV compression). One input
+    // `x` → one bundled output `[indices [capacity] U32 ; count [1] U32]`;
+    // the binding key is `[input_dtype, U32]` (input + primary output-slot
+    // dtype). Registered DIRECTLY (not yet FKC-contract-sourced): the
+    // op's U32 output slot is a *constant* dtype, not a `passthrough` of a
+    // T input, which the current contract key-builder does not express —
+    // so this bring-up primitive registers by hand and is a candidate to
+    // migrate once a data-dependent-ops contract family grows. Placed
+    // BEFORE the `fill_unset_cpu_*` passes so the entries pick up the CPU
+    // precision + cost fill (UNAUDITED → PRIMITIVE_DETERMINISTIC_CPU,
+    // unknown_cost → the OpKind cost fn).
+    table.register(NonZeroIndices, &[f32_dt, u32_dt], cpu, nonzero_indices_f32_cpu_wrapper);
+    table.register(NonZeroIndices, &[u32_dt, u32_dt], cpu, nonzero_indices_u32_cpu_wrapper);
 
     // CPU 2D-convolution family — FULLY contract-sourced: Conv2D +
     // ConvTranspose2D at BOTH the no-bias key [T, T, T] (x, weight, out) AND the

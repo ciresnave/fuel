@@ -6229,6 +6229,65 @@ selective_scan_kernel!(selective_scan_f16, half::f16,
     |v: f64| half::f16::from_f32(v as f32));
 
 // =============================================================================
+// NonZeroIndices — data-determined nonzero-index extraction (the keystone
+// primitive for data-dependent dynamic shapes)
+// =============================================================================
+
+/// NonZeroIndices CPU kernel (multi-output, Option C). One input `x`
+/// (read flat, contiguous — `capacity` elements); one bundled output
+/// `[indices [capacity] U32 ; count [1] U32]` (both slots U32, so the
+/// whole bundle reads as `capacity + 1` `u32`s and `split_at_mut` divides
+/// it). Writes the ascending flat indices of `x`'s nonzero elements into
+/// slot 0 (first `count` entries) and the runtime `count` into slot 1;
+/// the tail `indices[count..]` is left as the bundle allocator
+/// initialized it (zeros). `capacity == x.elem_count()` is the static
+/// worst-case bound (every element nonzero).
+macro_rules! nonzero_indices_kernel {
+    ($name:ident, $T:ty, $is_nonzero:expr) => {
+        pub fn $name(
+            x: &CpuStorageBytes,
+            out: &mut CpuStorageBytes,
+            capacity: usize,
+        ) -> Result<()> {
+            let x_view: &[$T] = x.as_slice()?;
+            if x_view.len() != capacity {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($name), ": input len {} != capacity {}"),
+                    x_view.len(),
+                    capacity,
+                ))
+                .bt());
+            }
+            let out_view: &mut [u32] = out.as_slice_mut()?;
+            if out_view.len() != capacity + 1 {
+                return Err(Error::Msg(format!(
+                    concat!(
+                        stringify!($name),
+                        ": bundled output len {} != capacity+1 ({})",
+                    ),
+                    out_view.len(),
+                    capacity + 1,
+                ))
+                .bt());
+            }
+            let (indices_out, count_out) = out_view.split_at_mut(capacity);
+            let mut count: u32 = 0;
+            for (i, v) in x_view.iter().enumerate() {
+                if ($is_nonzero)(v) {
+                    indices_out[count as usize] = i as u32;
+                    count += 1;
+                }
+            }
+            count_out[0] = count;
+            Ok(())
+        }
+    };
+}
+
+nonzero_indices_kernel!(nonzero_indices_f32, f32, |v: &f32| *v != 0.0);
+nonzero_indices_kernel!(nonzero_indices_u32, u32, |v: &u32| *v != 0);
+
+// =============================================================================
 // SsdChunkScan — Mamba-2's State-Space Duality chunked scan (forward)
 // =============================================================================
 //

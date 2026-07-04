@@ -532,6 +532,12 @@ pub enum OpKind {
     /// `OpKind`-keyed binding table. Exists so a `CompiledNode` for such an op
     /// has an honest `op` tag; no binding-table registration may use it.
     RuntimeFused,
+    /// Data-determined nonzero-index extraction — the keystone primitive
+    /// for data-dependent dynamic shapes. One input `x`; one bundled
+    /// output `[indices [capacity] U32 ; count [1] U32]`. Geometry +
+    /// `count_sym` flow through `OpParams::NonZeroIndices`. See
+    /// [`Op::NonZeroIndices`](fuel_graph::Op::NonZeroIndices).
+    NonZeroIndices,
 }
 
 impl OpKind {
@@ -653,7 +659,8 @@ impl OpKind {
             OpKind::SelectiveScan       => "selective_scan",
             OpKind::SsdChunkScan        => "ssd_chunk_scan",
             OpKind::Nf4Matmul           => "nf4_matmul",
-            OpKind::RuntimeFused     => "runtime_fused",
+            OpKind::RuntimeFused        => "runtime_fused",
+            OpKind::NonZeroIndices      => "nonzero_indices",
         }
     }
 }

@@ -692,6 +692,20 @@ pub enum OpParams {
         /// carrier); the CUDA launch narrows each to `f32` per the ABI.
         scalars: Vec<f64>,
     },
+
+    /// NonZeroIndices execution parameters. 1 input `x` (the value
+    /// tensor); one bundled output `[indices [capacity] U32 ; count
+    /// [1] U32]` where `capacity == x.elem_count()`. The kernel writes
+    /// the ascending flat indices of `x`'s nonzero elements into slot 0
+    /// (first `count` entries) and the runtime `count` into slot 1.
+    ///
+    /// `count_sym` is the [`SymId`] the executor binds to the realized
+    /// `count` in the per-pass `SymEnv` *after* this op runs — the
+    /// data-determined dynamic-shape seam. The kernel itself ignores it.
+    NonZeroIndices {
+        capacity:  usize,
+        count_sym: fuel_ir::SymId,
+    },
 }
 
 // =============================================================================

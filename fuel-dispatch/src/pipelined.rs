@@ -2464,6 +2464,7 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         }
         Op::IndexAdd { .. } => Some(OpKind::IndexAdd),
         Op::ScatterAdd { .. } => Some(OpKind::ScatterAdd),
+        Op::NonZeroIndices { .. } => Some(OpKind::NonZeroIndices),
         Op::ArgMaxDim(_) => Some(OpKind::ArgMaxDim),
         Op::ArgMinDim(_) => Some(OpKind::ArgMinDim),
         // Phase 7.6 step 5 (final): legacy `Op::QMatMul` arm dropped.
@@ -3447,6 +3448,23 @@ fn op_to_op_params(
                 source_shape,
                 output_shape,
                 dim: *dim,
+            }
+        }
+        Op::NonZeroIndices { count_sym } => {
+            // inputs[0] = x (the value tensor). capacity == x.elem_count();
+            // the bundled output is [indices [capacity] U32 ; count [1] U32].
+            if node.inputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    "Op::NonZeroIndices expects 1 input, got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let x_layout = input_layout(node.inputs[0]);
+            let capacity = x_layout.shape().elem_count();
+            OpParams::NonZeroIndices {
+                capacity,
+                count_sym: *count_sym,
             }
         }
         Op::IndexSelect { dim } => {
