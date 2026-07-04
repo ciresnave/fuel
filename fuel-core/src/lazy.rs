@@ -5887,6 +5887,7 @@ impl LlamaModel {
         k_cache_const: &LazyTensor,
         v_cache_const: &LazyTensor,
         cached_len_sym: fuel_ir::SymId,
+        attended_len_sym: fuel_ir::SymId,
         rope_cos: &LazyTensor,
         rope_sin: &LazyTensor,
         mask: &LazyTensor,
@@ -5955,8 +5956,34 @@ impl LlamaModel {
         let attn = scores_masked.softmax_last_dim().unwrap();
         let attn_v = attn.matmul(&full_v).unwrap();
 
-        let merged = attn_v
-            .permute([0, 2, 1, 3_usize]).unwrap()
+        // The sole consumer of `attn_v` — the branch reconverge / merge
+        // point. Split out of the `merged` chain so we hold its NodeId for
+        // the flash-arm offer below (arm-0 runnability requires the merge to
+        // read arm 0 = `attn_v`).
+        let attn_v_permuted = attn_v.permute([0, 2, 1, 3_usize]).unwrap();
+
+        // Optimizer-owned CUDA flash-decode arm offer (gated). On f32 /
+        // prefill (`seq_q != 1`) / non-CUDA topologies the emitter's gate
+        // declines (`Ok(None)`) and leaves the graph byte-identical to
+        // today; only a supported bf16/f16 decode shape on a CUDA topology
+        // gets an `Op::Branch { arm0 = decomposed attn_v, arm1 = CUDA-pinned
+        // FlashAttn }` recorded (collapsed at optimize time by the variant
+        // bake). `k_len` is the live attended prefix `cached_len + seq`,
+        // carried as `Sym(attended_len_sym)` and resolved per-token through
+        // the `SymEnv`.
+        offer_flash_decode_arm_for_region(
+            q_r.inner.graph(),
+            q_r.inner.id(),
+            full_k.inner.id(),
+            full_v.inner.id(),
+            attn_v.inner.id(),
+            attn_v_permuted.inner.id(),
+            scale as f32,
+            attended_len_sym,
+            fuel_dispatch::decode_flash::FlashArmCapability::production(),
+        )?;
+
+        let merged = attn_v_permuted
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim);
 
@@ -6092,6 +6119,12 @@ impl LlamaModel {
         // pass) keeps the decode-step graph structurally identical across
         // tokens — the prerequisite for plan-once persistent decode.
         let cached_len_sym = fuel_ir::SymId(0);
+        // The live attended-prefix length (`cached_len + seq`) — the CUDA
+        // flash decode arm's `k_len`. A SECOND fixed symbol bound alongside
+        // `cached_len_sym` each pass (the `DecodeFlashSpec`-endorsed option:
+        // no `DynScalar` arithmetic extension). Unreferenced on the f32
+        // decode graph (no flash arm offered) — a harmless extra binding.
+        let attended_len_sym = fuel_ir::SymId(1);
 
         // Phase D · D2b: the causal mask is hoisted to ONE Const built
         // here (was one Const per layer) and shared across all layers
@@ -6141,6 +6174,7 @@ impl LlamaModel {
                 &k_cache_node,
                 &v_cache_node,
                 cached_len_sym,
+                attended_len_sym,
                 &rope_cos,
                 &rope_sin,
                 &mask,
@@ -6182,6 +6216,7 @@ impl LlamaModel {
         // reads the post-write full-capacity buffers.
         let mut sym_env = fuel_ir::SymEnv::new();
         sym_env.bind(cached_len_sym, cached_len).map_err(crate::Error::from)?;
+        sym_env.bind(attended_len_sym, cached_len + seq).map_err(crate::Error::from)?;
         let logits_vec = ctx.realize_one_as_with_env::<f32>(
             logits_root.inner.graph(),
             logits_root.inner.id(),
@@ -6371,6 +6406,12 @@ impl LlamaModel {
         let mask_node = mask.inner.id();
 
         let cached_len_sym = fuel_ir::SymId(0);
+        // The live attended-prefix length (`cached_len + seq`) — the CUDA
+        // flash decode arm's `k_len`. A SECOND fixed symbol bound alongside
+        // `cached_len_sym`, stored on the held `DecodeSession` and re-bound
+        // per token (see `DecodeSession::per_token_sym_env`). Unreferenced on
+        // the f32 decode graph (no flash arm offered) — a harmless binding.
+        let attended_len_sym = fuel_ir::SymId(1);
         let cache_shape = Shape::from_dims(
             &[batch, cfg.n_kv_heads, max_seq_len, cfg.head_dim],
         );
@@ -6404,6 +6445,7 @@ impl LlamaModel {
                 &k_cache_node,
                 &v_cache_node,
                 cached_len_sym,
+                attended_len_sym,
                 &rope_cos,
                 &rope_sin,
                 &mask,
@@ -6433,6 +6475,7 @@ impl LlamaModel {
 
         let mut sym_env = fuel_ir::SymEnv::new();
         sym_env.bind(cached_len_sym, cached_len).map_err(crate::Error::from)?;
+        sym_env.bind(attended_len_sym, cached_len + seq).map_err(crate::Error::from)?;
 
         let (effective_target, optimized, base_cache, logits_vec) =
             ctx.prebuild_optimized_capturing_as_with_env::<f32>(&graph, logits_node, &sym_env)?;
@@ -6460,6 +6503,7 @@ impl LlamaModel {
             mask_node,
             kv_nodes,
             cached_len_sym,
+            attended_len_sym,
             base_cache,
             seq,
             max_seq_len,
@@ -6503,8 +6547,9 @@ impl LlamaModel {
         let data = self.build_token_rope_mask_arcs(
             &device, cached_len, tokens, s.max_seq_len(),
         )?;
-        let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env.bind(s.cached_len_sym(), cached_len).map_err(crate::Error::from)?;
+        // Bind BOTH per-token symbols: `cached_len` (the KV-write offset)
+        // AND `attended_len = cached_len + seq` (the flash-arm `k_len`).
+        let sym_env = s.per_token_sym_env(cached_len)?;
         let logits_vec = s.realize_token(&device, data, &sym_env)?;
 
         // Bump cache state (identical to the D1 path).
@@ -6611,6 +6656,61 @@ fn build_decode_causal_mask(cached_len: usize, seq: usize, max_seq_len: usize) -
         }
     }
     mask_data
+}
+
+/// Build a [`fuel_dispatch::decode_flash::DecodeFlashSpec`] from a decode
+/// attention region's tensor handles and offer the optimizer-owned CUDA
+/// flash-decode arm on the shared graph.
+///
+/// This is the model-layer WIRING for [`offer_decode_flash_arm`]: it supplies
+/// the region's tensor handles + the live attended-prefix `k_len` (as
+/// `Sym(attended_len_sym)`, resolved per-token via the `SymEnv`) — data the
+/// model alone knows — while every strategic decision (the shape/dtype/config
+/// gate, the capability gate, the CUDA pin, the `Op::Branch` construction)
+/// stays in the dispatch layer. The region is always **causal** with no
+/// window / softcap / ALiBi (the LlamaModel decode shape).
+///
+/// - `q` — the RoPE'd query (`[B, Hq, 1, D]` in decode), also the branch
+///   diverge point;
+/// - `k` / `v` — the post-`WriteSlice` capacity KV buffers (`[B, Hkv,
+///   capacity, D]`);
+/// - `decomposed_out` — the region's attention output (arm 0 / the oracle);
+/// - `reconverge` — the sole consumer of `decomposed_out` (the merge).
+///
+/// Returns `Ok(None)` (graph untouched, byte-identical to today) whenever the
+/// emitter's gate declines — f32/f64 dtype, `seq_q != 1` (prefill),
+/// `head_dim > 128`, or a non-CUDA / kernel-absent topology. Never panics.
+#[allow(clippy::too_many_arguments)]
+fn offer_flash_decode_arm_for_region(
+    graph: &fuel_graph::SharedGraph,
+    q: fuel_graph::NodeId,
+    k: fuel_graph::NodeId,
+    v: fuel_graph::NodeId,
+    decomposed_out: fuel_graph::NodeId,
+    reconverge: fuel_graph::NodeId,
+    softmax_scale: f32,
+    attended_len_sym: fuel_ir::SymId,
+    cap: fuel_dispatch::decode_flash::FlashArmCapability,
+) -> crate::Result<Option<fuel_graph::NodeId>> {
+    use fuel_dispatch::decode_flash::{offer_decode_flash_arm, DecodeFlashSpec};
+    let spec = DecodeFlashSpec {
+        q,
+        k,
+        v,
+        alibi: None,
+        softmax_scale,
+        causal: true,
+        window_size_left: None,
+        window_size_right: None,
+        softcap: None,
+        k_len: fuel_ir::DynScalar::Sym(attended_len_sym),
+        decomposed_out,
+        reconverge,
+    };
+    let mut g = graph.write().map_err(|_| {
+        fuel_ir::Error::Msg("graph lock poisoned during flash-arm offer".into()).bt()
+    })?;
+    offer_decode_flash_arm(&mut g, &spec, cap)
 }
 
 fn apply_affine_rms_norm(
@@ -8306,6 +8406,11 @@ impl PhiModel {
             mask_node,
             kv_nodes,
             cached_len_sym,
+            // PhiModel decode does not offer the CUDA flash-decode arm yet
+            // (only LlamaModel is wired), so this attended-length symbol is
+            // carried for API parity but never referenced/bound in Phi's
+            // per-token env — a placeholder distinct from `cached_len_sym`.
+            fuel_ir::SymId(1),
             base_cache,
             seq,
             max_seq_len,
@@ -9844,6 +9949,217 @@ mod generate_tests {
             via_wrapper, ref_tokens,
             "generate_with_kv_context (wired to the persistent path) must \
              produce the byte-identical token sequence as the D1 reference",
+        );
+    }
+
+    // =======================================================================
+    // Decode-builder ↔ CUDA flash-arm WIRING (feat/kernel-contracts-dlpack).
+    //
+    // These prove the model-layer wiring of `offer_decode_flash_arm`:
+    //   (A) the wiring builds a correct `DecodeFlashSpec` from a real decode
+    //       attention region + calls offer (k_len = Sym(attended_len_sym),
+    //       CUDA-pinned FLASH_ATTN arm 1, decomposed oracle arm 0);
+    //   (B) `DecodeSession` allocates + carries the attended-length symbol
+    //       distinct from `cached_len`, and binds it to `cached_len + seq`
+    //       each token;
+    //   (C) GUARD: on the real f32 decode graph NO arm is offered (the dtype
+    //       gate) so the held graph carries ZERO `Op::Branch` — dormant, the
+    //       byte-exact suite is untouched by construction.
+    // The emitter's own admission logic is exhaustively tested in
+    // `fuel-dispatch/src/decode_flash.rs`; these prove the WIRING, not the
+    // emitter.
+    // =======================================================================
+
+    /// (A) The wiring builds a `DecodeFlashSpec` from a synthetic — but
+    /// structurally real — f16 decode attention region and offers the CUDA
+    /// flash arm: arm 0 stays the decomposed oracle, arm 1 is a CUDA-pinned
+    /// `Fused(FLASH_ATTN, { k_len: Some(Sym(attended_len_sym)) })` reading
+    /// `[q, k, v]`. This is the plumbing the f32 production path keeps
+    /// dormant; an injected all-available capability drives it on CPU.
+    #[test]
+    fn flash_arm_wiring_offers_for_f16_region_with_attended_len_sym() {
+        use std::sync::RwLock;
+        use fuel_graph::{Graph, Node, Op};
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::{DType, DynScalar, Shape, SymId};
+        use fuel_dispatch::decode_flash::FlashArmCapability;
+
+        let (h, d, sk) = (4usize, 64usize, 37usize);
+        let dt = DType::F16;
+        let mut g = Graph::new();
+        let leaf = |g: &mut Graph, dims: &[usize]| {
+            g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(dims), dtype: dt })
+        };
+        // q [1,H,1,D], k/v capacity buffers [1,H,SK,D], mask [1,H,1,SK].
+        let q = leaf(&mut g, &[1, h, 1, d]);
+        let k = leaf(&mut g, &[1, h, sk, d]);
+        let v = leaf(&mut g, &[1, h, sk, d]);
+        let mask = leaf(&mut g, &[1, h, 1, sk]);
+        // Decomposed region: scores → scale → +mask → softmax → attn_v.
+        let kt = g.push(Node {
+            op: Op::Permute(vec![0, 1, 3, 2]), inputs: vec![k],
+            shape: Shape::from_dims(&[1, h, d, sk]), dtype: dt,
+        });
+        let scores = g.push(Node {
+            op: Op::MatMul, inputs: vec![q, kt],
+            shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+        });
+        let scaled = g.push(Node {
+            op: Op::MulScalar(0.125), inputs: vec![scores],
+            shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+        });
+        let masked = g.push(Node {
+            op: Op::Add, inputs: vec![scaled, mask],
+            shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+        });
+        let probs = g.push(Node {
+            op: Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim),
+            inputs: vec![masked], shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+        });
+        // decomposed_out — the region's attention output (arm 0 / the oracle).
+        let attn_v = g.push(Node {
+            op: Op::MatMul, inputs: vec![probs, v],
+            shape: Shape::from_dims(&[1, h, 1, d]), dtype: dt,
+        });
+        // reconverge — the SOLE consumer of attn_v (the merge).
+        let reconverge = g.push(Node {
+            op: Op::Permute(vec![0, 2, 1, 3]), inputs: vec![attn_v],
+            shape: Shape::from_dims(&[1, 1, h, d]), dtype: dt,
+        });
+
+        let graph = std::sync::Arc::new(RwLock::new(g));
+        let attended = SymId(1);
+        // An injected all-available capability (the CPU test box has no CUDA
+        // topology, so production() would decline — we drive the gate here).
+        let cap = FlashArmCapability { cuda_flash_kernel: true, cuda_in_topology: true };
+
+        let branch = super::offer_flash_decode_arm_for_region(
+            &graph, q, k, v, attn_v, reconverge, 0.125, attended, cap,
+        )
+        .expect("well-formed region")
+        .expect("supported f16 decode shape + capability ⇒ arm offered");
+
+        let g = graph.read().unwrap();
+        assert!(matches!(g.node(branch).op, Op::Branch { .. }), "an Op::Branch was recorded");
+        let arms = g.node(branch).inputs.clone();
+        assert_eq!(arms.len(), 2, "2-arm branch (decomposed oracle + flash)");
+        assert_eq!(arms[0], attn_v, "arm 0 is the decomposed region output (the oracle)");
+        let flash = arms[1];
+        match &g.node(flash).op {
+            Op::Fused(fid, FusedOpParams::FlashAttn { k_len, causal, softcap, .. }) => {
+                assert_eq!(*fid, FusedOps::FLASH_ATTN, "arm 1 is FLASH_ATTN");
+                // THE headline wiring assertion: k_len is the attended-length
+                // symbol (NOT a concrete value, NOT cached_len_sym).
+                assert_eq!(
+                    *k_len, Some(DynScalar::Sym(attended)),
+                    "arm 1 carries k_len = Sym(attended_len_sym)",
+                );
+                assert!(*causal, "decode region is causal");
+                assert!(softcap.is_none(), "no softcap");
+            }
+            other => panic!("arm 1 must be Fused(FLASH_ATTN, FlashAttn), got {other:?}"),
+        }
+        assert_eq!(g.node(flash).inputs, vec![q, k, v], "flash reads q, k, v");
+        assert_eq!(g.target_backend(flash), Some(BackendId::Cuda), "arm 1 pinned to CUDA");
+        // Arm-0 runnability: the merge still reads the decomposed output.
+        assert!(
+            g.node(reconverge).inputs.contains(&attn_v),
+            "reconverge reads arm 0 ⇒ an unpicked/non-CUDA graph realizes decomposed",
+        );
+    }
+
+    /// (B) A real (f32) persistent decode session allocates the
+    /// attended-length symbol DISTINCT from `cached_len`, and its per-token
+    /// `SymEnv` binds `attended_len = cached_len + seq` (seq == 1 in decode)
+    /// alongside `cached_len`. This is the second symbol the flash arm's
+    /// `k_len` resolves against.
+    #[test]
+    fn decode_session_allocates_and_binds_attended_len_sym() {
+        use fuel_ir::SymId;
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
+            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+
+        let prompt = [1_u32, 2, 3];
+        let max_seq_len = prompt.len() + 2;
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+
+        // Prefill (seq>1 → no session), then the first decode token BUILDS
+        // the held session (cached_len == prompt.len() == 3 at build).
+        let _ = model
+            .forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
+            .expect("prefill");
+        assert!(session.is_none(), "prefill builds no session");
+        let _ = model
+            .forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
+            .expect("first decode token builds the session");
+        let s = session.as_ref().expect("session built on first decode token");
+
+        // The two symbols are distinct (cached_len = SymId(0), attended = SymId(1)).
+        assert_eq!(s.cached_len_sym(), SymId(0), "cached_len symbol");
+        assert_eq!(s.attended_len_sym(), SymId(1), "attended-length symbol");
+        assert_ne!(
+            s.attended_len_sym(), s.cached_len_sym(),
+            "attended-length is a SECOND symbol, not aliased to cached_len",
+        );
+
+        // The per-token env binds BOTH: cached_len = c, attended = c + seq(1).
+        let env = s.per_token_sym_env(3).expect("per_token_sym_env");
+        assert_eq!(env.get(s.cached_len_sym()), Some(3), "cached_len bound to 3");
+        assert_eq!(
+            env.get(s.attended_len_sym()), Some(4),
+            "attended_len bound to cached_len + seq = 3 + 1 = 4",
+        );
+    }
+
+    /// (C) GUARD: the REAL f32 decode graph offers NO flash arm — the
+    /// emitter's dtype gate declines on f32, so the held session graph
+    /// carries ZERO `Op::Branch`. This is the dormancy that keeps the
+    /// persistent byte-exact suite byte-identical: the wiring is present but
+    /// inert until a bf16/f16 CUDA decode lands.
+    #[test]
+    fn f32_decode_graph_offers_no_flash_arm() {
+        use fuel_graph::{NodeId, Op};
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
+            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+
+        let prompt = [1_u32, 2, 3];
+        let max_seq_len = prompt.len() + 2;
+        let dev = Device::cpu();
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+        ).expect("with_capacity");
+        let mut ctx = InferenceContext::new(dev);
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+        let _ = model
+            .forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
+            .expect("prefill");
+        let _ = model
+            .forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
+            .expect("first decode token builds the session");
+        let s = session.as_ref().expect("session built");
+
+        let g = s.graph().read().unwrap();
+        let branch_count = (0..g.len())
+            .filter(|&i| matches!(g.node(NodeId(i)).op, Op::Branch { .. }))
+            .count();
+        assert_eq!(
+            branch_count, 0,
+            "f32 decode ⇒ the emitter's dtype gate declines ⇒ NO Op::Branch \
+             in the held decode graph (the flash arm stays dormant)",
         );
     }
 

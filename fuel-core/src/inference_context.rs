@@ -458,6 +458,15 @@ pub struct DecodeSession {
     kv_nodes: Vec<(NodeId, NodeId)>,
     /// The symbol the per-pass `SymEnv` binds to `cached_len` each token.
     cached_len_sym: SymId,
+    /// The symbol the per-pass `SymEnv` binds to the live **attended
+    /// prefix length** (`cached_len + seq`) each token. This is the
+    /// `k_len` the optimizer-emitted CUDA flash-decode arm resolves
+    /// against (`decode_flash::DecodeFlashSpec::k_len`); distinct from
+    /// `cached_len_sym` because the flash kernel attends `[0, k_len)`
+    /// (the whole prefix including this token), while the KV-write lands
+    /// at `[cached_len, cached_len + seq)`. Unreferenced on today's f32
+    /// decode graph (no flash arm offered) — a harmless extra binding.
+    attended_len_sym: SymId,
     /// The full realized [`StorageCache`] from the first realize — every
     /// reachable `Op::Const` (weights + the KV Arcs + the initial data
     /// Consts) that `build_const_cache` uploaded. Held because the
@@ -492,6 +501,7 @@ impl DecodeSession {
         mask_node: NodeId,
         kv_nodes: Vec<(NodeId, NodeId)>,
         cached_len_sym: SymId,
+        attended_len_sym: SymId,
         base_cache: StorageCache,
         seq: usize,
         max_seq_len: usize,
@@ -509,6 +519,7 @@ impl DecodeSession {
             mask_node,
             kv_nodes,
             cached_len_sym,
+            attended_len_sym,
             base_cache,
             seq,
             max_seq_len,
@@ -585,7 +596,23 @@ impl DecodeSession {
     pub fn mask_node(&self) -> NodeId { self.mask_node }
     pub fn kv_nodes(&self) -> &[(NodeId, NodeId)] { &self.kv_nodes }
     pub fn cached_len_sym(&self) -> SymId { self.cached_len_sym }
+    pub fn attended_len_sym(&self) -> SymId { self.attended_len_sym }
     pub fn max_seq_len(&self) -> usize { self.max_seq_len }
+
+    /// Build the per-token [`SymEnv`] for one decode step: bind
+    /// `cached_len_sym = cached_len` (the KV-write offset) AND
+    /// `attended_len_sym = cached_len + seq` (the flash-arm `k_len` — the
+    /// live attended prefix including this token). Both are bound each
+    /// token; the attended-length binding is unreferenced on today's f32
+    /// decode graph (no flash arm) and becomes load-bearing the moment a
+    /// bf16/f16 CUDA decode offers the arm. Write-once per pass (a
+    /// conflicting rebind surfaces a typed error, never a panic).
+    pub fn per_token_sym_env(&self, cached_len: usize) -> Result<SymEnv> {
+        let mut env = SymEnv::new();
+        env.bind(self.cached_len_sym, cached_len)?;
+        env.bind(self.attended_len_sym, cached_len + self.seq)?;
+        Ok(env)
+    }
 
     /// The held graph's node count. The D2b born-red test asserts this
     /// is stable from token 2 onward (no per-token node growth — the
