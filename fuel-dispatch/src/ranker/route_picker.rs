@@ -57,7 +57,7 @@ use std::sync::Arc;
 
 use fuel_ir::dispatch::{OpKind, SizeClass};
 use fuel_ir::probe::BackendId;
-use fuel_ir::{DType, DeviceLocation};
+use fuel_ir::{DType, DeviceLocation, Shape};
 use fuel_graph::{branches_in_topo_order, Graph, NodeId, PickedRoute};
 
 use crate::fused::{CostEstimate, PrecisionGuarantee};
@@ -370,10 +370,12 @@ fn enumerate_fork_set(
     set
 }
 
-/// The fork's [`DecisionContext`] — `(op, principal dtype, size class of the
-/// first input)`, the triple the Judge keys measurements on. Mirrors
-/// `compile_plan`'s stamping (plan.rs) exactly so dispatch-time re-derivation
-/// hits the same Judge entries.
+/// The fork's [`DecisionContext`] — `(op, principal dtype, size class)`,
+/// the triple the Judge keys measurements on. Mirrors `compile_plan`'s
+/// stamping (plan.rs) exactly — `SizeClass::for_op` over the input
+/// operand shapes — so dispatch-time re-derivation hits the same Judge
+/// entries (a matmul keys on its `(m,n,k)` aspect, aligned with the
+/// planner and producer).
 fn fork_decision_context(
     graph: &Graph,
     node: &fuel_graph::Node,
@@ -381,13 +383,12 @@ fn fork_decision_context(
     dtypes: &[DType],
 ) -> Option<DecisionContext> {
     let &principal_dtype = dtypes.first()?;
-    let size_class = node
+    let input_shapes: Vec<Shape> = node
         .inputs
-        .first()
-        .map(|&input_id| {
-            SizeClass::from_elem_count(graph.node(input_id).shape.elem_count())
-        })
-        .unwrap_or(SizeClass(0));
+        .iter()
+        .map(|&input_id| graph.node(input_id).shape.clone())
+        .collect();
+    let size_class = SizeClass::for_op(op_kind, &input_shapes);
     Some(DecisionContext { op: op_kind, principal_dtype, size_class })
 }
 

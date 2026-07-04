@@ -13,6 +13,7 @@
 //! [`Judge`]: https://docs.rs/fuel-core/latest/fuel_core/judge/struct.Judge.html
 
 use crate::DType;
+use crate::Shape;
 use crate::probe::BackendId;
 use std::collections::HashMap;
 
@@ -45,7 +46,24 @@ use serde::{Deserialize, Serialize};
 /// *wrong*, just partial; the empty-oracle version gate in
 /// `ProfileJudgeOracle::from_report` and `ProfileReport::load` both
 /// reject it so no partial data leaks into the cost composer.
-pub const PROFILE_REPORT_VERSION: u32 = 3;
+///
+/// **v4 (2026-07-04)**: matmul [`SizeClass`] repr change — the
+/// aspect-blind `log2(total_elements)` key that keyed a matmul on
+/// `m·n` (output) is replaced, *for matmul only*, by an aspect key
+/// packing `(log2(m·n), log2(m), log2(k))` (see [`SizeClass`]). This
+/// fixes a latent producer/consumer key disagreement: the Judge keyed
+/// matmul cells on `m·n` while the `fuel-dispatch` ranker keyed its
+/// realize-time lookup on `m·k` (LHS input), so every *non-square*
+/// matmul lookup missed the profiled cell. Producer and consumer now
+/// derive the key from the operand shapes through the SAME
+/// [`SizeClass::matmul`] / [`SizeClass::for_op`] helper. The
+/// [`SizeClass`] field also widens `u8 → u32` to hold the packed key.
+/// v3 reports (scalar matmul keys) load as `Ok(None)` — cache miss →
+/// clean re-Judge — the established migration (v1→v2, v2→v3). The
+/// `ProfileReport::load` / `ProfileJudgeOracle::from_report` version
+/// gates reject the older schema so no scalar matmul key leaks into
+/// the aspect-keyed lookup path.
+pub const PROFILE_REPORT_VERSION: u32 = 4;
 
 /// Op kinds the Judge profiles. Adding a variant + a Judge match
 /// arm extends the profile matrix; existing reports parse forward
@@ -638,20 +656,90 @@ impl std::fmt::Display for OpKind {
     }
 }
 
-/// Log2-bucketed total element count. A 256×256 matmul input has
-/// 65,536 elements → `size_class = 16`; a 1024×1024 has 1,048,576 →
-/// `size_class = 20`. Two shapes that round to the same size class
-/// share a profile entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Dispatch size bucket. One `u32` field carries two representations,
+/// disambiguated by the [`OpKind`] that always sits beside it in the
+/// dispatch key (a matmul key is only ever compared to matmul keys):
+///
+/// - **Total-elements key** (every non-matmul op — elementwise,
+///   reduce, cast, …): the value is `log2(total_elements)`. A 256×256
+///   elementwise tensor (65,536 elements) → `16`; a 1024×1024
+///   (1,048,576) → `20`. Built by [`SizeClass::from_elem_count`].
+///   Two shapes that round to the same bucket share a profile entry.
+///
+/// - **MatMul aspect key**: matmul cost is aspect-dependent — a
+///   `[1,K]×[K,N]` GEMV is bandwidth-bound, a square `[S,S]×[S,S]`
+///   GEMM of the *same output size* is compute-bound — so
+///   `log2(total_elements)` alone can't tell them apart. A matmul
+///   packs all three dims: `(log2(m·n) << 16) | (log2(m) << 8) |
+///   log2(k)`, read from `lhs=[…,m,k]` / `rhs=[…,k,n]`. `log2(m·n)`
+///   occupies the high byte so [`DispatchTable::pick_nearest`]'s
+///   magnitude ordering still tracks output size, while the low bytes
+///   distinguish aspect (a GEMV and a same-output-size square never
+///   collide, because their `log2(m)` bytes differ). Built by
+///   [`SizeClass::matmul`].
+///
+/// **Producer/consumer single-sourcing.** The `fuel-core` Judge
+/// (producer) and every consumer (the `fuel-dispatch` ranker at
+/// realize time) derive the key through the SAME helpers —
+/// [`SizeClass::matmul`] from native `(m,n,k)` on the producer side,
+/// [`SizeClass::for_op`] from the operand shapes on the consumer side.
+/// A given matmul shape therefore maps to one identical key on both
+/// sides, so a cell the Judge profiles is found by the ranker at
+/// dispatch time (the bug this repr fixes: the old scalar key had the
+/// producer on `m·n` and the consumer on `m·k`, so non-square matmul
+/// lookups always missed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct SizeClass(pub u8);
+pub struct SizeClass(pub u32);
 
 impl SizeClass {
-    /// Bucket a raw element count. Saturates at `u8::MAX`.
+    /// Bucket a raw element count as `log2(n)` — the total-elements key
+    /// used by every non-matmul op. `n == 0` clamps to `1` (→ `0`).
     pub fn from_elem_count(n: usize) -> Self {
         let n = n.max(1);
-        let log2 = 63 - (n as u64).leading_zeros() as u8;
+        let log2 = 63 - (n as u64).leading_zeros();
         SizeClass(log2)
+    }
+
+    /// Aspect-carrying dispatch key for a matmul `[m,k] × [k,n]`.
+    ///
+    /// THE single source of matmul-key derivation: both the Judge
+    /// (producer, from its native `(m,n,k)`) and the ranker (consumer,
+    /// via [`SizeClass::for_op`] from operand shapes) call this, so both
+    /// sides agree for every shape. Packs `(log2(m·n) << 16) |
+    /// (log2(m) << 8) | log2(k)`; each `log2` fits a byte (≤ 63 for any
+    /// `usize`). A `[1,K]×[K,N]` GEMV (`m = 1`) never collides with a
+    /// square GEMM of equal output size — the `log2(m)` byte differs.
+    pub fn matmul(m: usize, n: usize, k: usize) -> Self {
+        let mn = Self::from_elem_count(m.saturating_mul(n)).0 & 0xff;
+        let ml = Self::from_elem_count(m).0 & 0xff;
+        let kl = Self::from_elem_count(k).0 & 0xff;
+        SizeClass((mn << 16) | (ml << 8) | kl)
+    }
+
+    /// Derive the dispatch key for `op` from its input operand shapes —
+    /// the single entry point every consumer uses. A [`OpKind::MatMul`]
+    /// reads `(m,n,k)` from `lhs=[…,m,k]` / `rhs=[…,k,n]` (trailing two
+    /// dims; leading batch dims don't affect the key) and keys via
+    /// [`SizeClass::matmul`]; every other op keys on the first operand's
+    /// total element count via [`SizeClass::from_elem_count`]. Empty
+    /// shapes (nullary op) → `SizeClass(0)`.
+    pub fn for_op(op: OpKind, input_shapes: &[Shape]) -> Self {
+        if op == OpKind::MatMul {
+            if let (Some(lhs), Some(rhs)) = (input_shapes.first(), input_shapes.get(1)) {
+                let (ld, rd) = (lhs.dims(), rhs.dims());
+                if ld.len() >= 2 && rd.len() >= 2 {
+                    let m = ld[ld.len() - 2];
+                    let k = ld[ld.len() - 1];
+                    let n = rd[rd.len() - 1];
+                    return Self::matmul(m, n, k);
+                }
+            }
+        }
+        match input_shapes.first() {
+            Some(s) => Self::from_elem_count(s.elem_count()),
+            None => SizeClass(0),
+        }
     }
 }
 
@@ -984,5 +1072,98 @@ impl DispatchTable {
                 .then(a.2.0.cmp(&b.2.0))
         });
         out
+    }
+}
+
+#[cfg(test)]
+mod size_class_tests {
+    use super::*;
+
+    /// The shared matmul key derivation gives producer == consumer for a
+    /// NON-SQUARE matmul (SizeClass v4, slice 2.5).
+    ///
+    /// **Born-red**: before v4 `SizeClass` was `log2(total_elements)` and
+    /// matmul keyed on a single scalar — the Judge (producer) on `m·n`,
+    /// the ranker (consumer) on `m·k` (LHS elem count). For a non-square
+    /// matmul those disagree, so the ranker never found the profiled
+    /// cell. The `matmul` / `for_op` helpers now derive one identical
+    /// key on both sides.
+    #[test]
+    fn matmul_key_producer_equals_consumer_non_square() {
+        // FFN-width decode GEMV `[1,2048]×[2048,5632]`: m=1, k=2048, n=5632.
+        let (m, n, k) = (1usize, 5632usize, 2048usize);
+
+        // Producer derives from its native (m, n, k).
+        let producer = SizeClass::matmul(m, n, k);
+        // Consumer derives from the operand shapes lhs=[m,k]/rhs=[k,n]
+        // through the shared `for_op` entry point.
+        let consumer = SizeClass::for_op(
+            OpKind::MatMul,
+            &[Shape::from_dims(&[m, k]), Shape::from_dims(&[k, n])],
+        );
+        assert_eq!(
+            producer, consumer,
+            "producer (native m,n,k) and consumer (operand shapes) must \
+             derive one identical key",
+        );
+
+        // Old-bug witness: the pre-v4 scalar keys the two sides used
+        // (m·n vs m·k) disagree for this non-square shape.
+        assert_ne!(
+            SizeClass::from_elem_count(m * n), // old producer key
+            SizeClass::from_elem_count(m * k), // old consumer key
+            "the non-square shape is exactly where the old scalar keys \
+             diverged",
+        );
+    }
+
+    /// Batched matmul keys the same as its per-head 2D shape — `for_op`
+    /// reads only the trailing two dims, so a Judge that profiles the 2D
+    /// per-head GEMV and a consumer costing the batched op agree.
+    #[test]
+    fn matmul_key_batched_ignores_leading_dims() {
+        let per_head = SizeClass::for_op(
+            OpKind::MatMul,
+            &[Shape::from_dims(&[1, 64]), Shape::from_dims(&[64, 128])],
+        );
+        let batched = SizeClass::for_op(
+            OpKind::MatMul,
+            &[Shape::from_dims(&[32, 1, 64]), Shape::from_dims(&[32, 64, 128])],
+        );
+        assert_eq!(per_head, batched);
+        assert_eq!(per_head, SizeClass::matmul(1, 128, 64));
+    }
+
+    /// A bandwidth-bound GEMV and a compute-bound square GEMM of the SAME
+    /// output size key to DISTINCT buckets — the aspect distinction.
+    /// Under the old scalar `log2(m·n)` key they collided.
+    #[test]
+    fn gemv_and_same_output_square_are_distinct() {
+        // GEMV `[1,2048]×[2048,4096]` → output m·n = 4096.
+        let gemv = SizeClass::matmul(1, 4096, 2048);
+        // Square `[64,64]×[64,64]` → output m·n = 4096 — SAME total.
+        let square = SizeClass::matmul(64, 64, 64);
+
+        // Old scalar key: identical (both log2(4096) = 12) → collision.
+        assert_eq!(
+            SizeClass::from_elem_count(1 * 4096),
+            SizeClass::from_elem_count(64 * 64),
+            "sanity: equal output size → the OLD scalar keys collided",
+        );
+        // v4 aspect key: distinct (the log2(m) byte differs, 0 vs 6).
+        assert_ne!(
+            gemv, square,
+            "a bandwidth-bound GEMV must not share a dispatch cell with a \
+             compute-bound square of equal output size",
+        );
+    }
+
+    /// Non-matmul ops are untouched: `for_op` keys on the first
+    /// operand's total element count, identical to `from_elem_count`.
+    #[test]
+    fn non_matmul_keeps_total_elements_key() {
+        let sc = SizeClass::for_op(OpKind::AddElementwise, &[Shape::from_dims(&[1024])]);
+        assert_eq!(sc, SizeClass::from_elem_count(1024));
+        assert_eq!(sc.0, 10); // log2(1024)
     }
 }

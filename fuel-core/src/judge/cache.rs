@@ -215,7 +215,7 @@ mod tests {
     use fuel_ir::probe::BackendId;
     use fuel_ir::DType;
 
-    fn entry(backend: BackendId, op: OpKind, size: u8, latency: u64, err: f32) -> ProfileEntry {
+    fn entry(backend: BackendId, op: OpKind, size: u32, latency: u64, err: f32) -> ProfileEntry {
         ProfileEntry {
             op,
             dtype:         DType::F32,
@@ -236,7 +236,7 @@ mod tests {
     fn entry_with_source(
         backend: BackendId,
         op: OpKind,
-        size: u8,
+        size: u32,
         latency: u64,
         err: f32,
         kernel_source: &str,

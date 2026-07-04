@@ -209,10 +209,13 @@ pub type CapabilitiesLookup<'a> = dyn Fn(BackendId) -> Option<&'a BackendCapabil
 /// the Layer-1 estimate (silent fallback — no measurement is NOT
 /// the same as "this kernel is fast").
 ///
-/// The size_class is derived from `shapes[0]`'s element count via
-/// [`SizeClass::from_elem_count`]. Matches the Judge profiler's
-/// bucketing convention. If `shapes` is empty (truly nullary op),
-/// `SizeClass(0)` is used as a defensive default.
+/// The size_class is derived via [`SizeClass::for_op`] from the input
+/// operand `shapes` — the single shared derivation the Judge profiler
+/// (producer) also uses, so a profiled cell is found here. A matmul
+/// keys on `(m,n,k)` read from the operand shapes (aspect-aware, so
+/// non-square matmuls agree with the producer); every other op keys on
+/// `shapes[0]`'s element count. Empty `shapes` (nullary op) →
+/// `SizeClass(0)`.
 ///
 /// The caller supplies `shapes` (input operand shapes for the
 /// decision point), the capabilities lookup closure, and optional
@@ -260,10 +263,15 @@ pub fn compute_static_costs(
         Some(&dt) => dt,
         None => return,
     };
-    let size_class = shapes
-        .first()
-        .map(|s| SizeClass::from_elem_count(s.elem_count()))
-        .unwrap_or(SizeClass(0));
+    // Derive the Judge lookup key through the shared `for_op` helper —
+    // the SAME derivation the producer (`fuel-core` Judge) uses. For a
+    // matmul this reads `(m,n,k)` from the operand shapes so the key
+    // agrees with the profiled cell even when the matmul is non-square
+    // (the pre-v4 bug: this consumer keyed on `shapes[0].elem_count() =
+    // m·k` while the producer keyed on the output `m·n`, so non-square
+    // lookups missed). Every other op keys on `shapes[0]`'s element
+    // count exactly as before.
+    let size_class = SizeClass::for_op(op_kind, shapes);
     for i in 0..set.len() {
         let backend = set.alternatives()[i].backend;
         let kernel_source = set.alternatives()[i].kernel_source;
