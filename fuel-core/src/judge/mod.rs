@@ -75,6 +75,52 @@
 //! `size_plan` arm with a representative size ladder, add a
 //! `build_input_graph` arm that constructs the input graph.
 //!
+//! # Decode-shaped ladders (Layer-2 coverage arc, slice 2)
+//!
+//! Alongside the square/general ladder, [`Judge::size_plan`] appends
+//! **decode-representative** cells on the decode-attention path so the
+//! Judge measures the ops at the SKINNY shapes autoregressive decode
+//! (seq_q=1) actually runs:
+//!
+//! - **MatMul** — a `[1,H]×[H,H]` hidden/attention projection GEMV
+//!   (bandwidth-bound), distinct in cost regime from the square
+//!   (compute-bound) cells.
+//! - **MaxReduce / SumReduce** — the row-max and denominator-sum of the
+//!   decomposed softmax, reducing a wide `[Hq, k_len]` score row.
+//! - **Sub / Exp / Div** — the elementwise softmax components over the
+//!   `[Hq, k_len]` score tensor.
+//!
+//! These feed slice-4's flash-vs-decomposed ranking: arm-0 (the
+//! decomposed attention region) is costed from the MEASURED decode
+//! latencies of its primitives, so the CUDA flash arm only wins on a
+//! real comparison.
+//!
+//! ## Decode ladder — SizeClass gap (deferred sub-slice)
+//!
+//! [`SizeClass`] is `log2(total_elements)` — aspect-ratio-blind. Two
+//! constraints bound which decode cells can be added cleanly today:
+//!
+//! 1. **Collision.** Cells sharing a bucket collide; the oracle keeps
+//!    the MIN latency across a collision, poisoning the cell. The
+//!    decode cells here are chosen in FREE buckets within their op
+//!    family (matmul sc11; reduce/elementwise sc12 + sc17).
+//! 2. **Producer/consumer key disagreement for non-square matmul.**
+//!    The Judge keys a matmul cell on `total_elements = m*n` (output),
+//!    but the ranker's realize-time lookup
+//!    ([`fuel_dispatch::ranker::compute_static_costs`]) keys on
+//!    `shapes[0].elem_count() = m*k` (the LHS input). For SQUARE
+//!    matmuls `m*k == m*n` so they agree; the decode GEMV added here is
+//!    kept square-consistent (`m*n == m*k == H`) so slice-4's lookup
+//!    hits it. The genuinely non-square decode matmuls — the FFN-width
+//!    GEMV (`[1,2048]×[2048,5632]`), the QKᵀ score matmul, the
+//!    attention-output matmul — canNOT satisfy both constraints under
+//!    the current key and are DEFERRED to a SizeClass reconciliation
+//!    sub-slice (make the matmul SizeClass carry `(m,n,k)`-derived
+//!    shape structure and derive it identically on both sides). That
+//!    reconciliation is a fuel-ir + fuel-core + fuel-dispatch change
+//!    that bumps `PROFILE_REPORT_VERSION` — out of scope for the
+//!    ladder-only slice.
+//!
 //! # Equivalence-class discipline
 //!
 //! The Judge profiles one device per equivalence class. A rig with
@@ -194,6 +240,65 @@ const PROFILED_OPS: &[OpKind] = &[
 /// is safe even on backends with partial coverage.
 const PROFILED_DTYPES: &[DType] = &[DType::F32, DType::F16, DType::BF16];
 
+// =============================================================
+// Decode-shaped size-ladder constants (Layer-2 coverage arc,
+// slice 2, 2026-07-04)
+// =============================================================
+//
+// The general ladders are square/large — a 1024×1024×1024 matmul,
+// a 2²⁰-element reduction. Decode (seq_q=1 autoregressive) runs
+// SKINNY shapes that live in a different cost regime: a
+// `[1,K]×[K,N]` GEMV is bandwidth-bound, not compute-bound, and the
+// decomposed decode-attention softmax reduces/maps over a `[Hq,
+// k_len]` score row. These constants shape the decode-representative
+// cells the Judge appends so it measures the ops at the shapes decode
+// actually runs (slice-4's flash-vs-decomposed comparison ranks on
+// arm-0's MEASURED decode primitives, not extrapolated square costs).
+//
+// **SizeClass discipline.** [`SizeClass`] is `log2(total_elements)`,
+// aspect-ratio-blind. Every decode cell below is chosen to land in a
+// bucket that is (a) FREE within its op family (no collision with an
+// existing ladder cell — the oracle keeps the MIN latency across a
+// colliding key, which would poison the cell) and (b) consistent
+// between the Judge's producer key (output/​input element count) and
+// the ranker's consumer key (`shapes[0].elem_count()`), so slice-4's
+// realize-time lookup actually hits the measured entry. See the
+// module-level "Decode ladder — SizeClass gap" note for the
+// non-square matmul regimes (FFN width 5632, QKᵀ score, attn-out)
+// that CANNOT satisfy both today and are deferred to a SizeClass
+// reconciliation sub-slice.
+
+/// TinyLlama-class decode attention head count (Hq). The decomposed
+/// decode softmax runs one score row per query head at seq_q=1, so the
+/// decode reduction/elementwise cells are shaped `[DECODE_HEADS,
+/// k_len]`.
+const DECODE_HEADS: usize = 32;
+
+/// Small decode key-length (early decode / short context). Wide enough
+/// (≥128) to be a genuine row-reduction, distinct from the cols=64
+/// general reduction ladder.
+const DECODE_KLEN_SMALL: usize = 128;
+
+/// Capacity-ish decode key-length (long context / near KV-cache cap) —
+/// the bandwidth-bound end of the decode reduction regime.
+const DECODE_KLEN_CAP: usize = 4096;
+
+/// Hidden dim of the decode hidden/attention projection GEMV
+/// (`[1,H]×[H,H]`). Chosen so `m*n == m*k == H`, keeping the producer
+/// (output `m*n`) and consumer (LHS `m*k`) SizeClass keys in agreement
+/// for this cell (H=2048 → both `log2(2048)=11`), distinct from every
+/// square cell (64³/256³/1024³ → sc 12/16/20).
+const DECODE_HIDDEN: usize = 2048;
+
+/// Element count of the `[Hq, k_len]` softmax score tensor at the small
+/// decode key-length (`Hq * k_len` = 4096 → sc12, free in the
+/// elementwise family whose ladder occupies sc {10,16,20}).
+const DECODE_SCORE_SMALL_ELEMS: usize = DECODE_HEADS * DECODE_KLEN_SMALL;
+
+/// Element count of the `[Hq, k_len]` softmax score tensor at the
+/// capacity decode key-length (`Hq * k_len` = 131072 → sc17, free).
+const DECODE_SCORE_CAP_ELEMS: usize = DECODE_HEADS * DECODE_KLEN_CAP;
+
 pub fn default_report_path() -> Option<std::path::PathBuf> {
     crate::probe::default_report_path()
         .and_then(|p| p.parent().map(|parent| parent.join(PROFILE_REPORT_FILENAME)))
@@ -215,8 +320,11 @@ pub struct Judge {
     pub iterations: u32,
     pub warmup:     u32,
     /// Optional shrunk size ladder. `None` = use the full default
-    /// ladder (three sizes per op, up to 1024×1024 matmul / 2²⁰
-    /// elementwise). Tests supply a shrunk ladder to stay fast.
+    /// ladder: three square/general sizes per op (up to 1024×1024
+    /// matmul / 2²⁰ elementwise), PLUS decode-shaped cells on the
+    /// decode-attention path (seq_q=1 matmul GEMV; wide-`k_len`
+    /// MaxReduce/SumReduce; decode-score-row Sub/Exp/Div). Tests supply
+    /// a shrunk ladder to stay fast.
     pub size_plan_override: Option<Vec<(OpKind, OpSize)>>,
     /// Optional pre-validated correctness fixtures keyed by
     /// `(op, dtype, size_class)`. When a fixture covers a profiling
@@ -380,9 +488,19 @@ impl Judge {
         }
         match op {
             OpKind::MatMul => vec![
+                // General square ladder (compute-bound regime).
                 OpSize::MatMul { m: 64,  n: 64,  k: 64  },
                 OpSize::MatMul { m: 256, n: 256, k: 256 },
                 OpSize::MatMul { m: 1024, n: 1024, k: 1024 },
+                // Decode GEMV: seq_q=1 hidden/attn projection
+                // `[1,H]×[H,H]`. Bandwidth-bound; the square ladder
+                // can't expose this regime. output m*n = H = 2048 →
+                // sc11, distinct from every square cell (sc 12/16/20)
+                // and producer/consumer-consistent (m*n == m*k == H).
+                // The wider FFN GEMVs (N=5632) and the non-square QKᵀ/
+                // attn-out score matmuls are deferred — see the
+                // "Decode ladder — SizeClass gap" module note.
+                OpSize::MatMul { m: 1, n: DECODE_HIDDEN, k: DECODE_HIDDEN },
             ],
             // Element-wise binary + unary share one ladder. Three sizes
             // span the regime where launch overhead dominates (1 KiB),
@@ -420,11 +538,25 @@ impl Judge {
             | OpKind::RsqrtElementwise
             | OpKind::Affine
             | OpKind::ClampElementwise
-            | OpKind::PowIElementwise => vec![
-                OpSize::Elementwise(1 << 10),
-                OpSize::Elementwise(1 << 16),
-                OpSize::Elementwise(1 << 20),
-            ],
+            | OpKind::PowIElementwise => {
+                let mut ladder = vec![
+                    OpSize::Elementwise(1 << 10),
+                    OpSize::Elementwise(1 << 16),
+                    OpSize::Elementwise(1 << 20),
+                ];
+                // Decode-score-row cells for the softmax elementwise
+                // components (sub/exp/div over the `[Hq, k_len]` score
+                // tensor). Only these three ops appear on the decomposed
+                // decode-attention softmax path — the rest of the
+                // fanout (sin/cos/tanh/gelu/…) keeps the general ladder.
+                // Element counts 4096 (sc12) / 131072 (sc17) are both
+                // free in this family's occupied buckets {10,16,20}.
+                if is_decode_softmax_elementwise(op) {
+                    ladder.push(OpSize::Elementwise(DECODE_SCORE_SMALL_ELEMS));
+                    ladder.push(OpSize::Elementwise(DECODE_SCORE_CAP_ELEMS));
+                }
+                ladder
+            }
             // Per-axis reductions: probe last-dim reductions over a
             // `[rows, cols]` shape with cols=64 (typical hidden-dim
             // chunk). Total elements 1 KiB / 64 KiB / 1 MiB to align
@@ -433,11 +565,26 @@ impl Judge {
             OpKind::SumReduce
             | OpKind::MaxReduce
             | OpKind::MinReduce
-            | OpKind::MeanReduce => vec![
-                OpSize::Reduce { rows: 1 << 4,  cols: 64 },
-                OpSize::Reduce { rows: 1 << 10, cols: 64 },
-                OpSize::Reduce { rows: 1 << 14, cols: 64 },
-            ],
+            | OpKind::MeanReduce => {
+                let mut ladder = vec![
+                    OpSize::Reduce { rows: 1 << 4,  cols: 64 },
+                    OpSize::Reduce { rows: 1 << 10, cols: 64 },
+                    OpSize::Reduce { rows: 1 << 14, cols: 64 },
+                ];
+                // Decode-row cells for the softmax reductions: MaxReduce
+                // (row max) + SumReduce (denominator). The reduced dim
+                // is the last dim (cols = k_len), so these reduce a WIDE
+                // `[Hq, k_len]` row — a different regime from the
+                // narrow cols=64 general ladder. Total elements
+                // 32*128=4096 (sc12) / 32*4096=131072 (sc17) are both
+                // free in this family's occupied buckets {10,16,20}.
+                // Min/Mean are NOT on the softmax path — no decode cell.
+                if is_decode_softmax_reduction(op) {
+                    ladder.push(OpSize::Reduce { rows: DECODE_HEADS, cols: DECODE_KLEN_SMALL });
+                    ladder.push(OpSize::Reduce { rows: DECODE_HEADS, cols: DECODE_KLEN_CAP });
+                }
+                ladder
+            }
             // Reduce-to-broadcast-target — reduces a `[rows, cols]`
             // input to a `[1, cols]` output (sum/max along leading
             // dim). The canonical autograd-backward shape; broader
@@ -1511,6 +1658,28 @@ fn is_reduce_to(op: OpKind) -> bool {
     matches!(op, OpKind::ReduceSumTo | OpKind::ReduceMaxTo)
 }
 
+/// Elementwise ops on the decomposed decode-attention softmax path
+/// (`exp(x - max) / sum`): Sub, Exp, Div. These get decode-score-row
+/// [`OpSize::Elementwise`] cells appended to their base ladder so the
+/// Judge costs the decomposed softmax at the element counts decode
+/// runs (slice-4's arm-0 flash-vs-decomposed comparison needs the
+/// decomposed primitives' MEASURED decode latencies). Every other
+/// elementwise op is off the decode softmax path and keeps only its
+/// general ladder.
+fn is_decode_softmax_elementwise(op: OpKind) -> bool {
+    matches!(
+        op,
+        OpKind::SubElementwise | OpKind::ExpElementwise | OpKind::DivElementwise,
+    )
+}
+
+/// Reductions on the decomposed decode-attention softmax path:
+/// MaxReduce (row max) and SumReduce (denominator). Min/Mean don't
+/// appear there and keep only their general ladder.
+fn is_decode_softmax_reduction(op: OpKind) -> bool {
+    matches!(op, OpKind::MaxReduce | OpKind::SumReduce)
+}
+
 /// Whether `op` is a per-axis reduction the Judge profiles using the
 /// `Reduce { rows, cols }` size ladder.
 fn is_reduction(op: OpKind) -> bool {
@@ -2234,6 +2403,136 @@ mod tests {
                 e.max_rel_error);
             assert!(e.latency_ns > 0);
         }
+    }
+
+    /// Decode-shaped-ladder slice (Judge Layer-2 coverage arc,
+    /// 2026-07-04, slice 2).
+    ///
+    /// **Born-red**: before this slice the `size_plan` ladders were all
+    /// SQUARE/large — no seq_q=1 matmul, no wide-`k_len` reduction, no
+    /// decode-score-row elementwise cell. The decomposed decode-
+    /// attention softmax (`exp(x-max)/sum`) and the projection/score
+    /// GEMVs run at SKINNY shapes that behave nothing like the square
+    /// ladder (bandwidth-bound vs compute-bound). This asserts the real
+    /// default `size_plan` now carries the decode cells and that the
+    /// decode matmul cell keys to a DISTINCT [`SizeClass`] from every
+    /// square cell (slice-4's arm-0 flash-vs-decomposed comparison
+    /// needs the decomposed primitives measured at decode shapes, keyed
+    /// distinctly so the oracle doesn't collapse them onto a square
+    /// cell). Exercises the production `size_plan`, not an override.
+    #[test]
+    fn size_plan_carries_decode_shaped_cells() {
+        let judge = Judge::default(); // no override → real size_plan
+
+        // -- MatMul: a seq_q=1 (m==1) decode GEMV must be present, and
+        //    its SizeClass must differ from every square cell's. --
+        let mm = judge.size_plan(OpKind::MatMul);
+        let square_scs: Vec<SizeClass> = mm
+            .iter()
+            .filter(|s| matches!(s, OpSize::MatMul { m, n, .. } if m == n))
+            .map(|s| SizeClass::from_elem_count(s.total_elements()))
+            .collect();
+        assert!(
+            !square_scs.is_empty(),
+            "the general square matmul ladder must be preserved",
+        );
+        let decode_mm: Vec<&OpSize> = mm
+            .iter()
+            .filter(|s| matches!(s, OpSize::MatMul { m, .. } if *m == 1))
+            .collect();
+        assert!(
+            !decode_mm.is_empty(),
+            "size_plan(MatMul) must include a seq_q=1 decode GEMV cell",
+        );
+        for d in &decode_mm {
+            let sc = SizeClass::from_elem_count(d.total_elements());
+            assert!(
+                !square_scs.contains(&sc),
+                "decode matmul cell {d:?} SizeClass {sc:?} collides with a \
+                 square cell — arm-0 costing would read the square latency",
+            );
+        }
+
+        // -- Decode-row reductions (softmax row-max + denominator-sum):
+        //    a WIDE reduced dim (cols >= 128 = k_len), distinct from the
+        //    cols=64 general ladder. Min/Mean are NOT on the softmax
+        //    path and must keep only their general ladder. --
+        for op in [OpKind::MaxReduce, OpKind::SumReduce] {
+            let plan = judge.size_plan(op);
+            assert!(
+                plan.iter().any(|s| matches!(s, OpSize::Reduce { cols, .. } if *cols >= 128)),
+                "size_plan({op}) must include a decode-row (wide-cols) reduction cell",
+            );
+        }
+        for op in [OpKind::MinReduce, OpKind::MeanReduce] {
+            let plan = judge.size_plan(op);
+            assert!(
+                plan.iter().all(|s| matches!(s, OpSize::Reduce { cols, .. } if *cols == 64)),
+                "size_plan({op}) is off the decode softmax path — no decode cell expected",
+            );
+        }
+
+        // -- Decode-score-row elementwise (softmax sub/exp/div over the
+        //    [Hq, k_len] score tensor). These three get decode cells
+        //    appended; an off-path elementwise op (e.g. Sin) does not. --
+        for op in [
+            OpKind::SubElementwise,
+            OpKind::ExpElementwise,
+            OpKind::DivElementwise,
+        ] {
+            let plan = judge.size_plan(op);
+            assert!(
+                plan.len() > 3,
+                "size_plan({op}) must append decode cells beyond the 3-size base ladder",
+            );
+        }
+        assert_eq!(
+            judge.size_plan(OpKind::SinElementwise).len(),
+            3,
+            "an off-softmax-path elementwise op must keep only its 3-size base ladder",
+        );
+    }
+
+    /// Slice-2 born-red companion: a fast CPU run over a square + a
+    /// decode matmul cell produces `ProfileEntry`s at TWO distinct
+    /// [`SizeClass`] keys, each with a positive latency. This is the
+    /// end-to-end proof that the decode GEMV is measurable AND
+    /// distinguishable from the square regime through the full run
+    /// path (deliverable 3's "distinguishable from the square cell").
+    #[test]
+    fn judge_measures_decode_matmul_distinct_from_square() {
+        let probe = ProbeReport::probe_all();
+        let judge = Judge {
+            iterations: 3,
+            warmup: 1,
+            size_plan_override: Some(vec![
+                // Square (compute-bound) — small enough to stay fast.
+                (OpKind::MatMul, OpSize::MatMul { m: 256, n: 256, k: 256 }),
+                // Decode GEMV (seq_q=1, bandwidth-bound).
+                (OpKind::MatMul, OpSize::MatMul { m: 1, n: 2048, k: 2048 }),
+            ]),
+            fixtures: None,
+        };
+        let report = judge.run(&probe);
+        let square_sc = SizeClass::from_elem_count(256 * 256);
+        let decode_sc = SizeClass::from_elem_count(1 * 2048);
+        assert_ne!(
+            square_sc, decode_sc,
+            "decode + square matmul must key to different SizeClass",
+        );
+        let measured = |sc: SizeClass| {
+            report.entries.iter().any(|e| {
+                e.op == OpKind::MatMul
+                    && e.backend == BackendId::Cpu
+                    && e.size_class == sc
+                    && e.latency_ns > 0
+            })
+        };
+        assert!(measured(square_sc), "square matmul cell must be measured");
+        assert!(
+            measured(decode_sc),
+            "decode matmul cell must be measured with latency > 0 at its own SizeClass",
+        );
     }
 
     /// Dtype-axis slice (Judge Layer-2 coverage arc, 2026-07-04).
