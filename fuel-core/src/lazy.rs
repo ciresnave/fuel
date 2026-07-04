@@ -10802,6 +10802,55 @@ mod generate_tests {
         );
     }
 
+    /// CUDA (live-GPU) persistent-decode wall-clock benchmark on
+    /// TinyLlama-1.1B. N defaults to 16 (override with `FUEL_BENCH_N`).
+    /// Skips cleanly if no CUDA device is available.
+    ///
+    ///   FUEL_BENCH_MODEL_DIR=... cargo test -p fuel-core --lib --features cuda \
+    ///     bench_persistent_decode_real_model_cuda -- --ignored --nocapture
+    ///
+    /// Weights are force-upcast to F32 (`load_real_llama(true)`, like the
+    /// CPU leg — NOT BF16 like the Vulkan leg). The baracuda CUDA dense
+    /// MatMul family registers only HOMOGENEOUS dtype keys — `[f32;3]`,
+    /// `[bf16;3]`, `[f16;3]`, `[f64;3]` (fuel-dispatch/src/baracuda_dispatch.rs
+    /// `matmul_*`); there is NO mixed `F32×BF16` CUDA matmul kernel (the
+    /// Vulkan path's `matmul_f32_bf16_b` has no CUDA analog). The forward
+    /// graph runs F32 activations (KvCache is F32), so the weights must be
+    /// F32 to hit `(MatMul,[F32,F32,F32],Cuda)`.
+    ///
+    /// F32 weights are ~4.4 GB: in D2 they upload ONCE (held in the
+    /// session base_cache) and fit the 12 GB card with room for the F32
+    /// KV cache + per-token intermediates. The D1 replan path re-uploads
+    /// the full weight set every token; whether CUDA reclaims those across
+    /// realizes (the Vulkan `synchronize_pending` drain is a Vulkan-side
+    /// mechanism) is left to the bench to reveal — `post_token = None`
+    /// here, and a D1 mid-run OOM aborts gracefully + is reported. Run D2
+    /// alone first: `FUEL_BENCH_PATHS=d2 ... --nocapture`.
+    #[test]
+    #[cfg(feature = "cuda")]
+    #[ignore = "live-GPU wall-clock bench — needs FUEL_BENCH_MODEL_DIR + a CUDA device"]
+    fn bench_persistent_decode_real_model_cuda() {
+        let n = std::env::var("FUEL_BENCH_N").ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(16);
+        // Force F32 weights — the CUDA MatMul family is homogeneous-key
+        // only (no F32×BF16 mixed kernel); F32 activations need F32 weights.
+        let (model, load_secs) = match load_real_llama(true) {
+            Some(m) => m,
+            None => return,
+        };
+        let cuda_device = match crate::cuda_backend::new_device(0) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                return;
+            }
+        };
+        run_persistent_decode_bench(
+            &model, &cuda_device, "CUDA (RTX 4070)", load_secs, n, None,
+        );
+    }
+
     /// Phase D · D3 — concurrency isolation. N threads each run a full
     /// plan-once persistent greedy generation from the SAME shared `&model`,
     /// each with its OWN internal `KvCache` + `InferenceContext` + loop-held
