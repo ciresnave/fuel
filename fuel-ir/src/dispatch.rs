@@ -29,7 +29,23 @@ use serde::{Deserialize, Serialize};
 /// cell each get their own measured entry. v1 reports lacked the
 /// field and were ambiguous about which CPU-substrate kernel they
 /// timed; old reports load as `Ok(None)` (cache miss → re-Judge).
-pub const PROFILE_REPORT_VERSION: u32 = 2;
+///
+/// **v3 (2026-07-04)**: dtype-axis coverage landed — the Judge's
+/// measurement matrix now iterates `{F32, F16, BF16}` for every
+/// profiled op/size (Judge Layer-2 coverage arc, dtype slice). The
+/// [`ProfileEntry`] *layout* is unchanged (`dtype` was always a
+/// field), but the *coverage* is: a v3 report carries f16/bf16 cells
+/// a v2 report never had. The bump is deliberate rather than
+/// serde-forced: without it, `populate_dispatch_table`'s idempotence
+/// guard would keep an upgraded install's f32-only v2 profile forever
+/// (the guard no-ops when a cached report exists), silently denying
+/// the ranker the new per-dtype latencies. Bumping makes v2 reports
+/// load as `Ok(None)` (cache miss → clean re-Judge of the full dtype
+/// matrix) — the same migration shape v1→v2 used. A v2 report is not
+/// *wrong*, just partial; the empty-oracle version gate in
+/// `ProfileJudgeOracle::from_report` and `ProfileReport::load` both
+/// reject it so no partial data leaks into the cost composer.
+pub const PROFILE_REPORT_VERSION: u32 = 3;
 
 /// Op kinds the Judge profiles. Adding a variant + a Judge match
 /// arm extends the profile matrix; existing reports parse forward
