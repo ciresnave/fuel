@@ -217,6 +217,10 @@ const PROFILED_OPS: &[OpKind] = &[
     OpKind::Affine,
     OpKind::ClampElementwise,
     OpKind::PowIElementwise,
+    // --- fused decode attention (arm-1 of slice-4's flash-vs-decomposed
+    // ranking; the decomposed arm-0 primitives are already covered at
+    // decode shapes by the elementwise/reduction/matmul families above) ---
+    OpKind::FlashAttn,
 ];
 
 /// Dtypes the Judge profiles for every op in [`PROFILED_OPS`]. The
@@ -310,6 +314,14 @@ const DECODE_SCORE_SMALL_ELEMS: usize = DECODE_HEADS * DECODE_KLEN_SMALL;
 /// Element count of the `[Hq, k_len]` softmax score tensor at the
 /// capacity decode key-length (`Hq * k_len` = 131072 → sc17, free).
 const DECODE_SCORE_CAP_ELEMS: usize = DECODE_HEADS * DECODE_KLEN_CAP;
+
+/// TinyLlama-class decode KV head count (Hkv). GQA folds the 32 query
+/// heads onto 4 KV heads (`Hq / Hkv = 8`). Shapes the fused FlashAttn
+/// op's `k`/`v` operands `[b, DECODE_KV_HEADS, k_len, d]` — the arm-1
+/// half of slice-4's flash-vs-decomposed comparison (arm-0's decomposed
+/// QKᵀ/softmax/PV primitives are already covered by slices 2/2.5 at the
+/// same decode shapes).
+const DECODE_KV_HEADS: usize = 4;
 
 pub fn default_report_path() -> Option<std::path::PathBuf> {
     crate::probe::default_report_path()
@@ -622,6 +634,24 @@ impl Judge {
                 OpSize::ReduceTo { rows: 1 << 10, cols: 64 },
                 OpSize::ReduceTo { rows: 1 << 14, cols: 64 },
             ],
+            // Fused decode attention (arm-1 of slice-4's flash-vs-
+            // decomposed ranking). Two decode-representative GQA cells at
+            // seq_q=1: a short-context and a capacity-ish k_len. Both share
+            // TinyLlama geometry (Hq=32, Hkv=4, D=64) and key to DISTINCT
+            // `SizeClass::attention` buckets (the k_len byte differs), so
+            // the oracle costs the short-context and long-context flash
+            // kernel separately. Measurement-bounded: at k_len=4096 the
+            // naive CPU SDPA is ~Hq·k_len·D ≈ 8.4M MACs per QKᵀ/PV pass.
+            OpKind::FlashAttn => vec![
+                OpSize::Attention {
+                    b: 1, hq: DECODE_HEADS, hkv: DECODE_KV_HEADS,
+                    d: DECODE_HEAD_DIM, k_len: DECODE_KLEN_SMALL,
+                },
+                OpSize::Attention {
+                    b: 1, hq: DECODE_HEADS, hkv: DECODE_KV_HEADS,
+                    d: DECODE_HEAD_DIM, k_len: DECODE_KLEN_CAP,
+                },
+            ],
             // OpKind is `#[non_exhaustive]` — future variants land
             // here until the Judge gets a measurement strategy for
             // them. Empty plan = "Judge skips this op silently."
@@ -679,6 +709,16 @@ impl Judge {
                 // consumer reconciliation, 2026-07-04.)
                 let size_class = match sz {
                     OpSize::MatMul { m, n, k } => SizeClass::matmul(m, n, k),
+                    // FlashAttn keys on the attention aspect `(hq, k_len, d)`
+                    // via the shared `SizeClass::attention` helper that
+                    // slice-4's bake also reaches (through `SizeClass::for_op`
+                    // from the flash node's operand shapes), so a decode
+                    // attention cell this producer profiles is found by the
+                    // consumer at bake time. Every other op keys on total
+                    // element count.
+                    OpSize::Attention { hq, k_len, d, .. } => {
+                        SizeClass::attention(hq, k_len, d)
+                    }
                     _ => SizeClass::from_elem_count(sz.total_elements()),
                 };
 
@@ -1319,6 +1359,17 @@ fn canonical_binding_dtypes_for(op: OpKind, dtype: DType) -> Option<Vec<DType>> 
         | OpKind::MeanReduce
         | OpKind::ReduceSumTo
         | OpKind::ReduceMaxTo => vec![t, t],
+        // Fused decode attention, NO-alibi key `[q, k, v, out]` (the
+        // Judge builds q/k/v without alibi_slopes). This drives the
+        // non-CPU native-implementation gate ([`has_binding_alternative`])
+        // so a live CUDA/Vulkan run finds the flash binding and populates
+        // the GPU arm-1 rows (CUDA flash is f16/bf16-only, so its f32
+        // cell has no binding and is skipped cleanly). The direct-call
+        // path stays disabled for FlashAttn — `prepare_direct_call_inputs`
+        // has no FlashAttn arm, so `measure_extra_alternatives` returns
+        // None regardless; this mapping only powers the existence gate +
+        // the first-registered `kernel_source` fallback.
+        OpKind::FlashAttn => vec![t, t, t, t],
         // All others: not yet wired into the direct-call path. The
         // realizer-measured first alternative is the only entry for
         // the cell until this list expands.
@@ -1491,6 +1542,13 @@ pub enum OpSize {
     /// Reduce-to-broadcast-target from `[rows, cols]` → `[1, cols]`
     /// (sum-reduce-along-rows). Used for `ReduceSumTo` / `ReduceMaxTo`.
     ReduceTo { rows: usize, cols: usize },
+    /// Decode-shaped GQA attention for [`OpKind::FlashAttn`]. seq_q is
+    /// fixed at 1 (autoregressive decode — the regime slice-4's
+    /// flash-vs-decomposed ranking cares about). Builds
+    /// `q = [b, hq, 1, d]`, `k = v = [b, hkv, k_len, d]` (`hq % hkv == 0`,
+    /// GQA), attending the full `k_len` prefix. Keyed via
+    /// [`SizeClass::attention`]`(hq, k_len, d)`.
+    Attention { b: usize, hq: usize, hkv: usize, d: usize, k_len: usize },
 }
 
 impl OpSize {
@@ -1500,6 +1558,10 @@ impl OpSize {
             OpSize::Elementwise(n) => n,
             OpSize::Reduce { rows, cols } => rows * cols,
             OpSize::ReduceTo { rows, cols } => rows * cols,
+            // Output element count of decode attention `[b, hq, 1, d]`.
+            // Attention keys via `SizeClass::attention`, not this — this
+            // is only the Total-key fallback for a non-attention consumer.
+            OpSize::Attention { b, hq, d, .. } => b * hq * d,
         }
     }
 
@@ -1524,6 +1586,12 @@ impl OpSize {
             }
             OpSize::Reduce { rows, cols } => rows * cols,
             OpSize::ReduceTo { rows, cols } => rows * cols,
+            // q + k + v elements. FlashAttn has no capture-tool fixture
+            // (not in the fixture distribution), so this feeds no live
+            // fixture-hash path today; kept consistent for completeness.
+            OpSize::Attention { b, hq, hkv, d, k_len } => {
+                b * hq * 1 * d + 2 * (b * hkv * k_len * d)
+            }
         }
     }
 }
@@ -1671,6 +1739,34 @@ fn build_input_graph(op: OpKind, dtype: DType, size: &OpSize) -> crate::lazy::La
             };
             let a = make_leaf(dtype, data, Shape::from_dims(&[n]));
             apply_unary(op, &a)
+        }
+        // -------- fused decode attention (FlashAttn) --------
+        //
+        // Builds the GQA decode operands q=[b,hq,1,d], k=v=[b,hkv,k_len,d]
+        // and emits `Op::Fused(FLASH_ATTN, FlashAttn{..})` via the
+        // LazyTensor `flash_attn` builder (k_len == the K length axis, so
+        // the whole prefix is attended — the concrete-k_len decode).
+        // seq_q=1 with `causal=true` is a no-op mask (the single query at
+        // the last position attends every key), matching decode. On CPU
+        // the realize path dispatches this to the registered fused CPU
+        // FlashAttn kernel (naive SDPA, `flash_attn_{f32,f16,bf16}` in
+        // fuel-cpu-backend::byte_kernels); f16/bf16 inputs down-convert
+        // the deterministic f32 domain, mirroring the other families.
+        (OpKind::FlashAttn, OpSize::Attention { b, hq, hkv, d, k_len }) => {
+            let scale = 1.0 / (d as f32).sqrt();
+            let q_elems = b * hq * 1 * d;
+            let kv_elems = b * hkv * k_len * d;
+            let q_data: Vec<f32> =
+                (0..q_elems).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
+            let k_data: Vec<f32> =
+                (0..kv_elems).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
+            let v_data: Vec<f32> =
+                (0..kv_elems).map(|i| ((i as f32) * 0.9e-3).sin() + 1.0).collect();
+            let q = make_leaf(dtype, q_data, Shape::from_dims(&[b, hq, 1, d]));
+            let k = make_const_like(&q, dtype, k_data, Shape::from_dims(&[b, hkv, k_len, d]));
+            let v = make_const_like(&q, dtype, v_data, Shape::from_dims(&[b, hkv, k_len, d]));
+            q.flash_attn(&k, &v, None, scale, /*causal=*/ true, None, None, None)
+                .expect("judge: flash_attn shape/GQA invariant")
         }
         (op, sz) => panic!("build_input_graph: op {op:?} size {sz:?} not implemented"),
     }
@@ -2757,6 +2853,106 @@ mod tests {
             assert!(
                 dtypes.contains(d),
                 "profiled dtype {d:?} missing from the report",
+            );
+        }
+    }
+
+    /// FlashAttn-as-profiled-op slice (Judge Layer-2 coverage arc,
+    /// slice 3, 2026-07-04).
+    ///
+    /// **Born-red**: before this slice `OpKind::FlashAttn` was absent from
+    /// [`PROFILED_OPS`], so `run()`'s outer `for &op in PROFILED_OPS` loop
+    /// never processed it — a `size_plan_override` carrying a FlashAttn
+    /// cell was filtered out and the report held ZERO FlashAttn entries.
+    /// This asserts the fused decode-attention op is now MEASURED on CPU:
+    /// the Judge builds q=[b,hq,1,d] / k=v=[b,hkv,k_len,d], emits the
+    /// `Op::Fused(FLASH_ATTN)` node, realizes it (the registered fused CPU
+    /// SDPA kernel), and produces `ProfileEntry`s keyed by the flash
+    /// node's `SizeClass::attention` — arm-1 of slice-4's flash-vs-
+    /// decomposed comparison, whose latency is what THIS slice measures.
+    ///
+    /// Two decode GQA cells (short + capacity k_len) must each land at a
+    /// DISTINCT attention SizeClass with a positive latency; the same
+    /// `attention(hq, k_len, d)` key slice-4's bake derives via `for_op`.
+    /// CPU-only born-red; f32 is asserted (the reference-width kernel),
+    /// f16/bf16 are checked opportunistically (the half kernels exist,
+    /// but a missing dtype cell is skipped cleanly, never fatal).
+    #[test]
+    fn judge_profiles_flash_attn_at_decode_shapes() {
+        let probe = ProbeReport::probe_all();
+        // TinyLlama-ish decode GQA: Hq=32, Hkv=4, D=64. Two k_len cells
+        // (short + capacity) — kept small enough to stay fast.
+        let small = OpSize::Attention { b: 1, hq: 32, hkv: 4, d: 64, k_len: 128 };
+        let cap   = OpSize::Attention { b: 1, hq: 32, hkv: 4, d: 64, k_len: 512 };
+        let judge = Judge {
+            iterations: 3,
+            warmup: 1,
+            size_plan_override: Some(vec![
+                (OpKind::FlashAttn, small),
+                (OpKind::FlashAttn, cap),
+            ]),
+            fixtures: None,
+        };
+        let report = judge.run(&probe);
+
+        // The two decode cells key to DISTINCT attention SizeClasses —
+        // the same helper the producer stamps and slice-4's `for_op`
+        // consumer derives.
+        let sc_small = SizeClass::attention(32, 128, 64);
+        let sc_cap   = SizeClass::attention(32, 512, 64);
+        assert_ne!(
+            sc_small, sc_cap,
+            "short + capacity decode attention must key to different SizeClass",
+        );
+
+        // f32 (reference-width) MUST be measured at BOTH decode cells.
+        for (label, sc) in [("short", sc_small), ("capacity", sc_cap)] {
+            let hit = report.entries.iter().any(|e| {
+                e.op == OpKind::FlashAttn
+                    && e.backend == BackendId::Cpu
+                    && e.dtype == DType::F32
+                    && e.size_class == sc
+                    && e.latency_ns > 0
+            });
+            assert!(
+                hit,
+                "FlashAttn f32 {label} decode cell (SizeClass {sc:?}) must be \
+                 measured with latency > 0 — arm-1 of the flash-vs-decomposed \
+                 comparison",
+            );
+        }
+
+        // Consumer round-trip: the key slice-4's bake derives from the
+        // flash node's operand shapes via `for_op` must EQUAL the
+        // producer's stamped key, so the bake's lookup HITS the cell.
+        let consumer_key = SizeClass::for_op(
+            OpKind::FlashAttn,
+            &[
+                Shape::from_dims(&[1, 32, 1, 64]),
+                Shape::from_dims(&[1, 4, 128, 64]),
+                Shape::from_dims(&[1, 4, 128, 64]),
+            ],
+        );
+        assert_eq!(
+            consumer_key, sc_small,
+            "the flash node's for_op key must equal the producer's attention key",
+        );
+
+        // Half-precision cells exist opportunistically (the CPU flash
+        // kernel carries f16/bf16 variants). Not fatal if a backend
+        // skips one, but on this CPU build they should all measure.
+        for dtype in [DType::F16, DType::BF16] {
+            let hit = report.entries.iter().any(|e| {
+                e.op == OpKind::FlashAttn
+                    && e.backend == BackendId::Cpu
+                    && e.dtype == dtype
+                    && e.size_class == sc_small
+                    && e.latency_ns > 0
+            });
+            assert!(
+                hit,
+                "FlashAttn {dtype:?} short decode cell must be measured (the CPU \
+                 flash kernel has an {dtype:?} variant)",
             );
         }
     }
