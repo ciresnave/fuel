@@ -430,6 +430,29 @@ Cross-references are fine — an architecture-decision-log entry can link to the
 
 ---
 
+## 2026-07-04 — FKC reaches all three backends; contracts can pin a cost fn (trampoline); optimize-time kernel-variant selection reads the Judge
+
+**Sections affected**: 04 (optimization) — MINOR (variant-bake status note); 05 (backend-contract) / the FKC spec — MINOR (the `cost.cost_fn` field). No core-claim change; all three are capability completions along existing commitments.
+**Phase / PR**: FKC program + the Judge Layer-2 arc. Branch `feat/kernel-contracts-dlpack`. Code: `fuel-dispatch/src/fkc/{cuda_link,lower,register,schema}.rs`, `variant_bake.rs`, `telemetry/`, `fuel-core/src/judge/`, `fuel-ir/src/dispatch.rs`.
+
+**What shipped (four related capability completions):**
+
+- **FKC is now 100% across all three real backends.** CPU + Vulkan (13 families) + **CUDA (31/31 families, ~429 keys)** register from `docs/kernel-contracts/**` via the `CudaLinkRegistry` (`cuda_ep!`, the beachhead-then-sweep pattern proven on CPU/Vulkan). Every one-time deferral resolved (WriteSlice, forward-Pad, the fused registry + dtype-fan, cast-110, Vulkan FlashAttn, CUDA flash_decoding). The backends are no longer hand-registered; the contract corpus is the single source of truth for the binding table.
+
+- **The cost-trampoline (Task-F): an FKC contract can pin a real cost fn.** `CostBlock` gains `cost_fn: Option<String>`; `LinkRegistry` gains `resolve_cost_fn(name) -> Option<CostFn>` (the exact analog of `resolve_primitive`'s symbol→`KernelRef`), so a contract names a registered cost fn and the importer stamps *that* (not the `unknown_cost` sentinel) — `fill_unset_cost_for_backend` then leaves it. This is what let `flash_decoding` migrate while preserving its custom `cost_flash_decoding_cuda` infeasibility gate (returns `flops == u64::MAX` for `seq_q != 1` / `head_dim > 128`), which an unconditional `unknown_cost` → fill_unset upgrade would have destroyed. Unresolvable names are a typed `UnknownCostFn` error, never silent. Demotes the general expression-trampoline (adoption-plan §2.3) to an optional refinement.
+
+- **Same-device kernel-variant selection is baked at optimize time, reading the Judge.** `variant_bake.rs` collapses a same-device `Op::Branch` (e.g. the decomposed attention region vs. a CUDA flash arm) to the cheaper arm at optimize time — the runtime route picker resolves *placement* arms only (keyed on arm 0's op), so a same-device kernel-variant choice must be baked, per 04-optimization ("baked at optimize time"). The bake reads **measured** latency (`decode_arm_composite_ns_judged`, Layer-2-first + Layer-1 fallback) so a fused arm that *ties* on Layer-1 FLOPs but wins on measured latency (no materialized attention matrix, one launch) is selected; ties / unknown / capability-missing keep arm 0 (the oracle), so the no-Judge path is byte-identical. A Judge *measurement is capability evidence* (the cell exists only because the kernel ran during profiling), so a measured cell is admissible past the Layer-1 availability gate.
+
+- **The Judge gained decode-shape Layer-2 coverage**, which the bake above consumes: f16/bf16 dtypes, decode-shaped ladders (skinny GEMV + softmax rows), and `OpKind::FlashAttn` as a profiled op (`SizeClass::attention`). This surfaced and fixed **a latent correctness bug**: `SizeClass` was an aspect-blind `log2(total_elements)` and the Judge *producer* keyed a matmul on `m·n` (output) while the ranker *consumer* keyed on `m·k` (LHS input) — square matmuls agreed by accident, **every non-square matmul in every model had an unreachable/poisoned Judge cell**. Fixed via one shared `SizeClass::matmul(m,n,k)` aspect key both sides derive (`SizeClass::for_op`), `PROFILE_REPORT_VERSION` 2→4.
+
+**Why**: these complete the cost-unification program's original intent — a cost model that is *honest* (no zero sentinels, real per-backend throughput, measured Layer-2 where available) and *contract-sourced* (the contract, not hand-written Rust, is the source of truth for bindings **and** their costs) — across every backend Fuel actually runs.
+
+**Alternatives considered**: *a sibling `CostRegistry`* rather than a `resolve_cost_fn` trait method — rejected: one resolution surface (the `LinkRegistry`) is cleaner and already per-backend. *A `SizeClass` enum with a `MatMul` variant* — rejected for blast radius (~120 `SizeClass(N)` literals across four crates); widening `u8→u32` + packing the aspect key kept them compiling. *Wiring the bake into the runtime picker* — rejected: the picker resolves placement only and regenerates each realize (it would clobber a baked variant); collapse-to-winner at optimize time touches the hot path not at all.
+
+**Implications going forward**: (1) A live CUDA flash win now needs only a **bf16 CUDA decode path** (the flash kernel is f16/bf16; today's F32 decode graph gates the arm out) + a live Judge profile — the mechanism (emitter → bake → Judge) is proven end-to-end. (2) The cost-trampoline generalizes: any contract can pin a cost fn; the expression-string trampoline is now optional polish. (3) With all backends contract-sourced, a new kernel's *entire* dispatch surface (binding, caps, precision, cost) is declarative — the FKC program's thesis.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
