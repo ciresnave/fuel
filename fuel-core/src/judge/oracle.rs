@@ -125,7 +125,7 @@ mod tests {
     fn entry(
         backend: BackendId,
         op: OpKind,
-        size: u8,
+        size: u32,
         device_index: u32,
         latency: u64,
         kernel_source: &str,

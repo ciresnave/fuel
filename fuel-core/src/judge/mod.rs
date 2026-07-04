@@ -95,31 +95,30 @@
 //! latencies of its primitives, so the CUDA flash arm only wins on a
 //! real comparison.
 //!
-//! ## Decode ladder — SizeClass gap (deferred sub-slice)
+//! ## Decode ladder — SizeClass aspect key (reconciled, v4)
 //!
-//! [`SizeClass`] is `log2(total_elements)` — aspect-ratio-blind. Two
-//! constraints bound which decode cells can be added cleanly today:
+//! For **non-matmul** ops [`SizeClass`] is still `log2(total_elements)`,
+//! so decode reduction/elementwise cells are placed in buckets that are
+//! FREE within their op family (reduce/elementwise sc12 + sc17) — a
+//! collision would let the oracle keep the MIN latency across the shared
+//! key and poison the cell.
 //!
-//! 1. **Collision.** Cells sharing a bucket collide; the oracle keeps
-//!    the MIN latency across a collision, poisoning the cell. The
-//!    decode cells here are chosen in FREE buckets within their op
-//!    family (matmul sc11; reduce/elementwise sc12 + sc17).
-//! 2. **Producer/consumer key disagreement for non-square matmul.**
-//!    The Judge keys a matmul cell on `total_elements = m*n` (output),
-//!    but the ranker's realize-time lookup
-//!    ([`fuel_dispatch::ranker::compute_static_costs`]) keys on
-//!    `shapes[0].elem_count() = m*k` (the LHS input). For SQUARE
-//!    matmuls `m*k == m*n` so they agree; the decode GEMV added here is
-//!    kept square-consistent (`m*n == m*k == H`) so slice-4's lookup
-//!    hits it. The genuinely non-square decode matmuls — the FFN-width
-//!    GEMV (`[1,2048]×[2048,5632]`), the QKᵀ score matmul, the
-//!    attention-output matmul — canNOT satisfy both constraints under
-//!    the current key and are DEFERRED to a SizeClass reconciliation
-//!    sub-slice (make the matmul SizeClass carry `(m,n,k)`-derived
-//!    shape structure and derive it identically on both sides). That
-//!    reconciliation is a fuel-ir + fuel-core + fuel-dispatch change
-//!    that bumps `PROFILE_REPORT_VERSION` — out of scope for the
-//!    ladder-only slice.
+//! For **matmul** the aspect-blindness that once blocked the non-square
+//! decode cells is FIXED (SizeClass v4, 2026-07-04). The Judge keyed a
+//! matmul cell on `total_elements = m*n` (output) while the ranker's
+//! realize-time lookup ([`fuel_dispatch::ranker::compute_static_costs`])
+//! keyed on `shapes[0].elem_count() = m*k` (the LHS input) — so every
+//! *non-square* matmul lookup missed the profiled cell (square matmuls
+//! agreed by accident, `m*k == m*n`). Both sides now derive the key from
+//! the operand shapes through the shared [`SizeClass::matmul`] /
+//! [`SizeClass::for_op`] helper — packing `(log2(m·n), log2(m),
+//! log2(k))` — so the same shape maps to one identical key on producer
+//! and consumer, and a GEMV never collides with a same-output-size
+//! square (their `log2(m)` bytes differ). The previously DEFERRED decode
+//! matmuls — the FFN-width GEMV (`[1,2048]×[2048,5632]`), the QKᵀ score
+//! GEMV, the attention-output GEMV — are un-deferred into `size_plan`
+//! now that they key correctly. This bumped `PROFILE_REPORT_VERSION`
+//! v3 → v4 (fuel-ir + fuel-core + fuel-dispatch reconciliation).
 //!
 //! # Equivalence-class discipline
 //!
@@ -255,18 +254,16 @@ const PROFILED_DTYPES: &[DType] = &[DType::F32, DType::F16, DType::BF16];
 // actually runs (slice-4's flash-vs-decomposed comparison ranks on
 // arm-0's MEASURED decode primitives, not extrapolated square costs).
 //
-// **SizeClass discipline.** [`SizeClass`] is `log2(total_elements)`,
-// aspect-ratio-blind. Every decode cell below is chosen to land in a
-// bucket that is (a) FREE within its op family (no collision with an
-// existing ladder cell — the oracle keeps the MIN latency across a
-// colliding key, which would poison the cell) and (b) consistent
-// between the Judge's producer key (output/​input element count) and
-// the ranker's consumer key (`shapes[0].elem_count()`), so slice-4's
-// realize-time lookup actually hits the measured entry. See the
-// module-level "Decode ladder — SizeClass gap" note for the
-// non-square matmul regimes (FFN width 5632, QKᵀ score, attn-out)
-// that CANNOT satisfy both today and are deferred to a SizeClass
-// reconciliation sub-slice.
+// **SizeClass discipline.** For non-matmul ops [`SizeClass`] is
+// `log2(total_elements)`, aspect-blind — so each decode reduction/
+// elementwise cell below lands in a bucket that is FREE within its op
+// family (no collision with an existing ladder cell — the oracle keeps
+// the MIN latency across a colliding key, which would poison the cell).
+// For matmul the v4 aspect key `matmul(m,n,k)` is derived identically
+// on the producer (Judge) and consumer (ranker) sides, so the non-square
+// FFN/QKᵀ/attn-output GEMVs are un-deferred (no longer square-consistency
+// constrained). See the module-level "Decode ladder — SizeClass aspect
+// key" note.
 
 /// TinyLlama-class decode attention head count (Hq). The decomposed
 /// decode softmax runs one score row per query head at seq_q=1, so the
@@ -284,11 +281,26 @@ const DECODE_KLEN_SMALL: usize = 128;
 const DECODE_KLEN_CAP: usize = 4096;
 
 /// Hidden dim of the decode hidden/attention projection GEMV
-/// (`[1,H]×[H,H]`). Chosen so `m*n == m*k == H`, keeping the producer
-/// (output `m*n`) and consumer (LHS `m*k`) SizeClass keys in agreement
-/// for this cell (H=2048 → both `log2(2048)=11`), distinct from every
-/// square cell (64³/256³/1024³ → sc 12/16/20).
+/// (`[1,H]×[H,H]`). With the v4 aspect [`SizeClass`] this cell keys as
+/// `matmul(1, H, H)` — distinct from every square cell by the `log2(m)`
+/// byte (`m=1` vs `m=n`). (Pre-v4 this constant was pinned to keep the
+/// old scalar `m·n == m·k` keys in agreement; the aspect key removes
+/// that constraint.)
 const DECODE_HIDDEN: usize = 2048;
+
+/// TinyLlama-class attention head dim (D). The decode QKᵀ score GEMV
+/// contracts over D (`[1,D]×[D,k_len]`), the attention-output GEMV
+/// contracts over k_len back down to D (`[1,k_len]×[k_len,D]`).
+const DECODE_HEAD_DIM: usize = 64;
+
+/// TinyLlama-class FFN intermediate width. The decode up-projection is a
+/// wide GEMV `[1,H]×[H,FFN]` (H=2048 → FFN=5632). Under the *old* scalar
+/// key its output `m·n = 5632` bucketed to sc12 — colliding with the
+/// 64³ square (`m·n = 4096` → sc12) — which is exactly why slice 2
+/// DEFERRED it. The v4 aspect key `matmul(1, 5632, 2048)` no longer
+/// collides (the `log2(m)=0` byte separates it from the square's
+/// `log2(m)=6`), so it is un-deferred here.
+const DECODE_FFN: usize = 5632;
 
 /// Element count of the `[Hq, k_len]` softmax score tensor at the small
 /// decode key-length (`Hq * k_len` = 4096 → sc12, free in the
@@ -492,15 +504,29 @@ impl Judge {
                 OpSize::MatMul { m: 64,  n: 64,  k: 64  },
                 OpSize::MatMul { m: 256, n: 256, k: 256 },
                 OpSize::MatMul { m: 1024, n: 1024, k: 1024 },
-                // Decode GEMV: seq_q=1 hidden/attn projection
-                // `[1,H]×[H,H]`. Bandwidth-bound; the square ladder
-                // can't expose this regime. output m*n = H = 2048 →
-                // sc11, distinct from every square cell (sc 12/16/20)
-                // and producer/consumer-consistent (m*n == m*k == H).
-                // The wider FFN GEMVs (N=5632) and the non-square QKᵀ/
-                // attn-out score matmuls are deferred — see the
-                // "Decode ladder — SizeClass gap" module note.
+                // ---- Decode GEMVs (seq_q=1, bandwidth-bound). ----
+                // With the v4 aspect SizeClass every cell below keys as
+                // `matmul(m,n,k)` and the same operand dims yield the
+                // same key on the ranker's realize-time lookup, so these
+                // are found (no longer square-consistency-constrained).
+                //
+                // Hidden / attention projection `[1,H]×[H,H]`.
                 OpSize::MatMul { m: 1, n: DECODE_HIDDEN, k: DECODE_HIDDEN },
+                // FFN up-projection `[1,H]×[H,FFN]` (wide GEMV). Un-
+                // deferred from slice 2: under the old scalar key its
+                // output `m·n=5632` collided with the 64³ square (both
+                // sc12); the aspect key `matmul(1,5632,2048)` separates
+                // them by the `log2(m)=0` byte.
+                OpSize::MatMul { m: 1, n: DECODE_FFN, k: DECODE_HIDDEN },
+                // QKᵀ score GEMV, per query head `[1,D]×[D,k_len]` (the
+                // leading Hq batch dim doesn't affect the aspect key —
+                // `for_op` reads the trailing two dims). Contracts over
+                // the head dim D; output width is k_len.
+                OpSize::MatMul { m: 1, n: DECODE_KLEN_SMALL, k: DECODE_HEAD_DIM },
+                // Attention-output GEMV, per head `[1,k_len]×[k_len,D]`.
+                // Contracts over k_len back down to D — the (n,k)-swapped
+                // mirror of QKᵀ, and the aspect key keeps them distinct.
+                OpSize::MatMul { m: 1, n: DECODE_HEAD_DIM, k: DECODE_KLEN_SMALL },
             ],
             // Element-wise binary + unary share one ladder. Three sizes
             // span the regime where launch overhead dominates (1 KiB),
@@ -643,7 +669,18 @@ impl Judge {
 
         for &op in PROFILED_OPS {
             for sz in self.size_plan(op) {
-                let size_class = SizeClass::from_elem_count(sz.total_elements());
+                // MatMul keys on shape aspect `(m,n,k)` via the shared
+                // `SizeClass::matmul` helper the `fuel-dispatch` ranker
+                // also reaches (through `SizeClass::for_op`), so a
+                // non-square matmul this producer profiles is found by
+                // the consumer at realize time — the same operand dims
+                // map to one identical key on both sides. Every other op
+                // keys on total element count. (SizeClass v4 producer/
+                // consumer reconciliation, 2026-07-04.)
+                let size_class = match sz {
+                    OpSize::MatMul { m, n, k } => SizeClass::matmul(m, n, k),
+                    _ => SizeClass::from_elem_count(sz.total_elements()),
+                };
 
                 // Dtype axis (2026-07-04): measure each (op, size) cell
                 // once per profiled dtype. The size_class is dtype-
@@ -2425,12 +2462,19 @@ mod tests {
         let judge = Judge::default(); // no override → real size_plan
 
         // -- MatMul: a seq_q=1 (m==1) decode GEMV must be present, and
-        //    its SizeClass must differ from every square cell's. --
+        //    its aspect SizeClass must differ from every square cell's.
+        //    Keys are derived via `SizeClass::matmul(m,n,k)` — the SAME
+        //    helper the producer (`run`) and the ranker consumer reach
+        //    (through `for_op`), so this asserts the real dispatch key. --
         let mm = judge.size_plan(OpKind::MatMul);
+        let sc_of = |s: &OpSize| match *s {
+            OpSize::MatMul { m, n, k } => SizeClass::matmul(m, n, k),
+            _ => unreachable!("size_plan(MatMul) yields only MatMul sizes"),
+        };
         let square_scs: Vec<SizeClass> = mm
             .iter()
             .filter(|s| matches!(s, OpSize::MatMul { m, n, .. } if m == n))
-            .map(|s| SizeClass::from_elem_count(s.total_elements()))
+            .map(sc_of)
             .collect();
         assert!(
             !square_scs.is_empty(),
@@ -2445,7 +2489,7 @@ mod tests {
             "size_plan(MatMul) must include a seq_q=1 decode GEMV cell",
         );
         for d in &decode_mm {
-            let sc = SizeClass::from_elem_count(d.total_elements());
+            let sc = sc_of(d);
             assert!(
                 !square_scs.contains(&sc),
                 "decode matmul cell {d:?} SizeClass {sc:?} collides with a \
@@ -2514,8 +2558,10 @@ mod tests {
             fixtures: None,
         };
         let report = judge.run(&probe);
-        let square_sc = SizeClass::from_elem_count(256 * 256);
-        let decode_sc = SizeClass::from_elem_count(1 * 2048);
+        // v4 aspect keys — the same `matmul(m,n,k)` the producer's
+        // `run` stamps on each entry.
+        let square_sc = SizeClass::matmul(256, 256, 256);
+        let decode_sc = SizeClass::matmul(1, 2048, 2048);
         assert_ne!(
             square_sc, decode_sc,
             "decode + square matmul must key to different SizeClass",
@@ -2533,6 +2579,87 @@ mod tests {
             measured(decode_sc),
             "decode matmul cell must be measured with latency > 0 at its own SizeClass",
         );
+    }
+
+    /// SizeClass v4 producer/consumer round-trip (Judge Layer-2 coverage
+    /// arc, slice 2.5, 2026-07-04).
+    ///
+    /// **Born-red**: this is the round-trip the aspect-blind key broke.
+    /// The Judge (producer) profiled the FFN-width decode GEMV
+    /// `[1,2048]×[2048,5632]` keyed on `m·n = 5632`; the `fuel-dispatch`
+    /// ranker (consumer) keyed its realize-time lookup on
+    /// `shapes[0].elem_count() = m·k = 2048` — a DIFFERENT bucket — so
+    /// the lookup never found the produced cell. This drives the real
+    /// producer path (`run`) to emit the cell, then performs the exact
+    /// consumer key derivation (`SizeClass::for_op` from the operand
+    /// shapes, as `compute_static_costs` does) and asserts the produced
+    /// entry is HIT through the actual `ProfileJudgeOracle`. Pre-v4 this
+    /// asserted-`is_some` lookup returned `None` (miss).
+    #[test]
+    fn ranker_lookup_hits_producer_decode_gemv_cell() {
+        use fuel_dispatch::ranker::JudgeOracle;
+
+        let probe = ProbeReport::probe_all();
+        let judge = Judge {
+            iterations: 3,
+            warmup: 1,
+            // The genuinely non-square FFN-width decode GEMV — the cell
+            // slice 2 had to DEFER because its old m·n key collided with
+            // the 64³ square.
+            size_plan_override: Some(vec![
+                (OpKind::MatMul, OpSize::MatMul { m: 1, n: 5632, k: 2048 }),
+            ]),
+            fixtures: None,
+        };
+        let report = judge.run(&probe);
+
+        // Consumer-side key: derived from the operand shapes
+        // lhs=[m,k]/rhs=[k,n] exactly the way the ranker's
+        // `compute_static_costs` does (`SizeClass::for_op`).
+        let lhs = Shape::from_dims(&[1, 2048]);
+        let rhs = Shape::from_dims(&[2048, 5632]);
+        let ranker_key = SizeClass::for_op(OpKind::MatMul, &[lhs, rhs]);
+
+        // Old-bug witness: for this non-square shape the pre-v4 scalar
+        // keys the two sides used (consumer m·k vs producer m·n) landed
+        // in different buckets — the disagreement this slice fixes.
+        assert_ne!(
+            SizeClass::from_elem_count(1 * 2048), // old consumer key (m·k)
+            SizeClass::from_elem_count(1 * 5632), // old producer key (m·n)
+            "sanity: non-square shape → the OLD scalar keys disagreed",
+        );
+
+        // The produced entry the ranker must now find.
+        let cpu_entry = report
+            .entries
+            .iter()
+            .find(|e| {
+                e.op == OpKind::MatMul
+                    && e.backend == BackendId::Cpu
+                    && e.dtype == DType::F32
+            })
+            .expect("Judge produced a CPU f32 matmul entry for the GEMV");
+        assert_eq!(
+            cpu_entry.size_class, ranker_key,
+            "producer key must EQUAL the consumer's for_op key for the \
+             non-square GEMV (the reconciliation)",
+        );
+
+        // And the real consumer oracle resolves it — the round trip.
+        let oracle = ProfileJudgeOracle::from_report(&report);
+        let hit = oracle.measured_latency_ns(
+            OpKind::MatMul,
+            DType::F32,
+            ranker_key,
+            BackendId::Cpu,
+            cpu_entry.kernel_source.as_str(),
+        );
+        assert!(
+            hit.is_some(),
+            "synthetic ranker lookup at the GEMV shape must HIT the \
+             produced cell (pre-v4 this missed)",
+        );
+        assert!(hit.unwrap() > 0, "measured latency must be positive");
     }
 
     /// Dtype-axis slice (Judge Layer-2 coverage arc, 2026-07-04).
@@ -2661,7 +2788,8 @@ mod tests {
         // Every kind in the plan should yield a Pick at every
         // criterion. SizeClass(8) covers the elementwise plan
         // (256 elems = 2^8) and the reductions (16*16 = 2^8); the
-        // matmul cell is at SizeClass(10) (32*32 = 2^10).
+        // matmul cell keys on its v4 aspect key `matmul(32,32,32)`
+        // (the producer no longer keys it on the scalar 32*32=2^10).
         let elementwise_kinds = [
             OpKind::AddElementwise, OpKind::ReluElementwise,
             OpKind::SumReduce, OpKind::ReduceSumTo, OpKind::Affine,
@@ -2673,7 +2801,9 @@ mod tests {
                     "DispatchTable missing pick for {op}@2^8 / {crit:?}");
             }
         }
-        let matmul_pick = table.pick(OpKind::MatMul, DType::F32, SizeClass(10), Criterion::Fastest);
+        let matmul_pick = table.pick(
+            OpKind::MatMul, DType::F32, SizeClass::matmul(32, 32, 32), Criterion::Fastest,
+        );
         assert!(matmul_pick.is_some(), "DispatchTable missing matmul pick");
 
         // The table's keys() should include every (op, dtype,

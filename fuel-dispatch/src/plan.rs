@@ -1429,17 +1429,19 @@ fn build_node_draft(
     // selectors (Picker 2) can re-query the Judge per candidate.
     // The derivation mirrors `compute_static_costs`'s Layer-2
     // lookup key exactly: principal dtype = first lookup dtype,
-    // size class = first input's element count (SizeClass(0)
-    // for nullary ops). Runs after the filter/fallback resolution
-    // so a filter-rejection fallback set is stamped too.
+    // size class = `SizeClass::for_op` over the input operand shapes
+    // (the shared producer/consumer derivation — matmul keys on its
+    // `(m,n,k)` aspect, every other op on the first operand's element
+    // count; nullary ops → `SizeClass(0)`). Runs after the
+    // filter/fallback resolution so a filter-rejection fallback set is
+    // stamped too.
     if let Some(&principal_dtype) = dtypes.first() {
-        let size_class = node
+        let input_shapes: Vec<Shape> = node
             .inputs
-            .first()
-            .map(|&input_id| {
-                SizeClass::from_elem_count(graph.node(input_id).shape.elem_count())
-            })
-            .unwrap_or(SizeClass(0));
+            .iter()
+            .map(|&input_id| graph.node(input_id).shape.clone())
+            .collect();
+        let size_class = SizeClass::for_op(op_kind, &input_shapes);
         set.set_context(DecisionContext {
             op: op_kind,
             principal_dtype,

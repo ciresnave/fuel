@@ -208,6 +208,20 @@ pub fn recommend_placement(
 /// Single-node recommendation. Public so callers that already have
 /// a node in hand (e.g. during a custom graph rewrite pass) can ask
 /// the dispatch table directly without building the full plan.
+///
+/// **SizeClass note (v4).** This legacy `DispatchTable` placement path
+/// keys every op — including matmul — on the OUTPUT node's
+/// `elem_count()` (`SizeClass::from_elem_count`), which is aspect-blind.
+/// The `fuel-dispatch` ranker and the `fuel-core` Judge now key matmul
+/// on the v4 aspect key (`SizeClass::matmul` / `for_op`, `(m,n,k)`
+/// packed). Matching them here needs the contraction dim `k`, which is
+/// only reachable from the input operand shapes — not the output shape
+/// this graph-less helper receives — so a matmul lookup against an
+/// aspect-keyed profile report misses and falls back to
+/// `pick_nearest` / `fallback_device`. Reconciling this transitional
+/// path (thread the operand shapes and call `SizeClass::for_op`) is a
+/// tracked follow-up; the primary matmul dispatch now flows through the
+/// ranker.
 pub fn recommend_for_node(
     node: &fuel_graph::Node,
     table: &DispatchTable,
@@ -791,7 +805,7 @@ mod tests {
     #[test]
     fn recommend_placement_routes_per_node() {
         // -- 1) hand-craft a profile report with deliberate winners --
-        let mk = |backend: BackendId, size: u8, latency: u64| ProfileEntry {
+        let mk = |backend: BackendId, size: u32, latency: u64| ProfileEntry {
             op: OpKind::MatMul,
             dtype: DType::F32,
             size_class: SizeClass(size),
