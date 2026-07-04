@@ -2446,6 +2446,64 @@ pub mod unary {
     // `unary::<name>` from `register_baracuda_cuda_kernels` below.
 }
 
+/// The authored CUDA (baracuda) cast kernel contract, embedded into the binary
+/// via `include_str!` (the PRODUCTION contract). Parsed + lowered by
+/// [`register_cuda_cast_from_contract`].
+const CUDA_CAST_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/cast.fkc.md");
+
+/// Register the CUDA cast family (70 `(SRC, DST)` pairs → the ONE dtype-agnostic
+/// `cast::cast_baracuda_wrapper`) by IMPORTING its FKC kernel contract — the
+/// **first CUDA-backend FKC consumer**, the baracuda analogue of the CPU
+/// `register_cpu_*_from_contract` / Vulkan `register_vulkan_*_from_contract`
+/// families. FKC is unconditional core infrastructure, so this is the ONE
+/// registration path for the family: the hand-written `table.register(OpKind::Cast,
+/// &[src, dst], …)` calls (the 8×8 double-loop + the F8E4M3 legs) are DELETED.
+///
+/// The contract is authored per-DESTINATION (`## cast_to_<dst>`), each section
+/// fanning its `src` operand over the accepted sources (§3.4 dtype fan-out) and
+/// pinning a `fixed(DST)` output, so the importer resolves
+/// `cast_to_<dst>_<src_suffix>` through the production
+/// [`crate::fkc::CudaLinkRegistry`] and keys `[SRC, DST]` — byte-for-byte the
+/// deleted regs. Because the CUDA cast is a SINGLE wrapper (it reads both dtypes
+/// off the in/out Storage and dispatches into baracuda's 8×8 FFI), every one of
+/// the 70 fanned symbols resolves to the SAME fn-pointer — a synthetic-base
+/// umbrella (the Vulkan shape / pad-copy precedent). Distinct `(Cast, [SRC, DST])`
+/// keys are legal sibling registrations of one wrapper, so `finalize` (which only
+/// rejects the same `KernelRef` twice at ONE key) passes.
+///
+/// Behavior-preserving vs. the deleted hand-written path: identical wrapper +
+/// contiguous-only caps (`awkward_layout_strategy: requires_contiguous` ⇒
+/// `strided_input == false`, matching the deleted plain `table.register` default
+/// caps). The binding's `kernel_source` becomes the contract's `"baracuda"` tag
+/// (the deleted path stamped `""`) and its precision the contract's author seed
+/// (`audited: false` ⇒ `PrecisionGuarantee::UNAUDITED`, byte-for-byte the deleted
+/// regs' default). Cost is preserved because this runs BEFORE the
+/// `fill_unset_cost_for_backend(Cuda, …)` pass in `register_optional_backends`
+/// (`dispatch.rs`), which upgrades the imported `unknown_cost` sentinels to the
+/// same OpKind cost fn every other CUDA primitive gets.
+///
+/// The family declares NO fused ops. Init-boundary fail-fast: a parse/lower/link
+/// failure of the embedded, authored contract is a programmer error surfaced once
+/// here via `expect` (mirroring the CPU / Vulkan convention); it cannot fail for a
+/// runtime-data reason.
+fn register_cuda_cast_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CUDA_CAST_CONTRACT, &crate::fkc::CudaLinkRegistry)
+            .expect(
+                "authored CUDA cast contract must import \
+                 (embedded via include_str!, resolved through CudaLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda cast contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA cast contract must register into the binding table");
+}
+
 /// Register every baracuda-backed CUDA kernel into the binding table
 /// as an alternative at its `(OpKind, dtypes, Cuda)` decision point.
 /// Sits alongside the PTX-backed `register_cuda_kernels` — both can
@@ -2880,41 +2938,20 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
         }
     }
 
-    // ----- Cast — 8×8 baracuda surface less I8/I16/F8/F4 (not in Fuel).
-    // U32 collapses to baracuda i32 at the FFI level (bit-identical for
-    // non-negative values — same trick as IndexSelect's index dtype).
-    // Mirrors the pairs Fuel's PTX cast_cuda_wrapper already registers,
-    // plus a few extras (e.g. F16↔I64, BF16↔I64) that baracuda exposes.
-    let cast_dtypes = [
-        DType::F32, DType::F64, DType::F16, DType::BF16,
-        DType::I32, DType::U32, DType::I64, DType::U8,
-    ];
-    for &src in &cast_dtypes {
-        for &dst in &cast_dtypes {
-            table.register(Cast, &[src, dst], cuda, cast::cast_baracuda_wrapper);
-        }
-    }
-
-    // F8E4M3 ↔ {F32, F16, BF16} — alpha.29's CastSubBytePlan (OCP/NV FP8
-    // family). The same cast_baracuda_wrapper dispatches by inspecting
-    // input + output dtypes via fuel_cuda_backend::baracuda::cast::dispatch.
-    //
-    // Not registered: F8E4M3 ↔ {I32, I64, U8, F64, F8E4M3} (baracuda
-    // alpha.29's CastSubByte surface stops at {F32, F16, BF16} for FP8
-    // — these would compose via an intermediate f32 cast).
-    //
-    // F8E5M2 / S4 / U4 / Bool exist in baracuda alpha.29 but aren't in
-    // Fuel's DType enum yet (would require the I8-style cascade through
-    // every match site before any registration is possible).
-    //
-    // F6E2M3 / F6E3M2 / F4 / F8E8M0 are in Fuel's DType but are MX
-    // (Microscaling) formats — different from baracuda's OCP/NV FP8
-    // family. baracuda alpha.29's CastSubBytePlan doesn't cover them
-    // (separate kernel family with scale tensors); still a real gap.
-    for dst in [DType::F32, DType::F16, DType::BF16] {
-        table.register(Cast, &[DType::F8E4M3, dst], cuda, cast::cast_baracuda_wrapper);
-        table.register(Cast, &[dst, DType::F8E4M3], cuda, cast::cast_baracuda_wrapper);
-    }
+    // ----- Cast — the FULL 70-pair family (8×8 over {F32,F64,F16,BF16,I32,
+    // U32,I64,U8} + F8E4M3 ↔ {F32,F16,BF16}) — registered FROM its FKC kernel
+    // contract, the SOLE path (the hand-written 8×8 double-loop + F8E4M3 legs
+    // are DELETED). The FIRST CUDA-backend FKC consumer. Runs BEFORE the
+    // `fill_unset_cost_for_backend(Cuda, …)` pass in `register_optional_backends`
+    // (dispatch.rs) so its imported `unknown_cost` sentinels are upgraded to the
+    // same OpKind cost fn every other CUDA primitive gets. ONE dtype-agnostic
+    // wrapper (`cast::cast_baracuda_wrapper`, dispatching on the in/out dtype
+    // pair over baracuda's 8×8 FFI) across all 70 (SRC, DST) keys — a
+    // synthetic-base umbrella; contiguous-only (default caps ⇒ strided_input
+    // == false). The full per-destination numeric detail (RNE/saturate,
+    // int↔float, F8E4M3 decode/saturate) is contracted in
+    // `docs/kernel-contracts/cuda/cast.fkc.md`. -----
+    register_cuda_cast_from_contract(table);
 
     // Baracuda unary kernels ship both contig + `<sym>_strided_run`
     // variants; the wrapper in fuel-cuda-backend/src/baracuda/elementwise.rs
@@ -3056,5 +3093,98 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
         (f16,  conv1d::causal_conv1d_f16),
     ] {
         table.register(CausalConv1d, &[dt, dt, dt, dt], cuda, w);
+    }
+}
+
+// ===========================================================================
+// FKC contract-migration tests (born-red gate for the CUDA cast family)
+// ===========================================================================
+//
+// The whole file is `#![cfg(feature = "cuda")]`, so this module is compiled
+// only under `--features cuda` — no device is touched (registration is pure
+// binding-table population; `register_baracuda_cuda_kernels` never probes
+// hardware, and no live GPU / cudnn is required for a registration-only test).
+
+#[cfg(test)]
+mod cast_contract_tests {
+    use super::*;
+    use crate::kernel::{KernelBindingTable, KernelRef};
+
+    /// FIRST CUDA-BACKEND FKC CONSUMER (born-red gate). `register_baracuda_cuda_kernels`
+    /// registers the whole `OpKind::Cast` family (70 `(SRC, DST)` pairs) FROM ITS
+    /// KERNEL CONTRACT (`docs/kernel-contracts/cuda/cast.fkc.md`) via
+    /// `register_cuda_cast_from_contract` — the sole registration path, now that the
+    /// hand-written `table.register(OpKind::Cast, &[src, dst], …)` calls (the 8×8
+    /// double-loop + the F8E4M3 legs) are DELETED.
+    ///
+    /// For each `(Cast, [SRC, DST], Cuda)` key this asserts:
+    ///  - the binding resolves to the EXACT production wrapper fn-pointer
+    ///    (behavior-preserving — the SAME single `cast_baracuda_wrapper` the
+    ///    deleted regs used, every pair sharing it via the synthetic-base umbrella),
+    ///  - `kernel_source == "baracuda"` — the contract's provenance tag (the deleted
+    ///    hand-written path stamped `""`). THIS is the discriminator that makes the
+    ///    test go red: while the hand-written regs are present (kernel_source `""`)
+    ///    OR with them deleted + the import absent (the key missing entirely), the
+    ///    assertion fails,
+    ///  - caps stay contiguous-only (`strided_input == false`), byte-for-byte the
+    ///    deleted plain `table.register` default caps.
+    ///
+    /// Precision is contract-sourced (`audited: false` ⇒ `PrecisionGuarantee::UNAUDITED`,
+    /// the deleted regs' default) and NOT asserted here. The 70 pairs are
+    /// reconstructed exactly as production built them: the 8×8 cross product over
+    /// `{F32, F64, F16, BF16, I32, U32, I64, U8}` + `F8E4M3 → {F32, F16, BF16}` +
+    /// `{F32, F16, BF16} → F8E4M3`.
+    #[test]
+    fn register_baracuda_binds_cast_family_from_contract() {
+        let mut table = KernelBindingTable::new();
+        register_baracuda_cuda_kernels(&mut table);
+        let cuda = BackendId::Cuda;
+        let expected: KernelRef = cast::cast_baracuda_wrapper;
+
+        // Reconstruct production's 70 (src, dst) keys exactly (the deleted
+        // hand-written double-loop + F8E4M3 legs).
+        let base = [
+            DType::F32, DType::F64, DType::F16, DType::BF16,
+            DType::I32, DType::U32, DType::I64, DType::U8,
+        ];
+        let mut pairs: Vec<(DType, DType)> = Vec::new();
+        for &src in &base {
+            for &dst in &base {
+                pairs.push((src, dst));
+            }
+        }
+        for dst in [DType::F32, DType::F16, DType::BF16] {
+            pairs.push((DType::F8E4M3, dst));
+            pairs.push((dst, DType::F8E4M3));
+        }
+
+        let mut checked = 0usize;
+        for (src, dst) in pairs {
+            let alts = table.lookup_alternatives(OpKind::Cast, &[src, dst], cuda);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Cast [{src:?}, {dst:?}]/Cuda: the production wrapper must be bound \
+                         FROM the cuda cast contract in register_baracuda_cuda_kernels — found {} \
+                         alternative(s) with sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "baracuda",
+                "Cast [{src:?}, {dst:?}]: cast family must be contract-sourced \
+                 (kernel_source=\"baracuda\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                !entry.caps.strided_input,
+                "Cast [{src:?}, {dst:?}]: caps preserved (contiguous-only, strided_input=false)",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 70, "all 70 (SRC, DST) cast pairs checked");
     }
 }
