@@ -1836,6 +1836,91 @@ impl Graph {
         }
     }
 
+    /// **Collapse a decision point to a single baked arm** — the graph-side
+    /// half of *optimize-time kernel-variant baking* (04-optimization:
+    /// "kernel-variant choice is largely baked at optimize time"). Given a
+    /// finalized [`Op::Branch`] and the arm the optimizer chose (`winner_arm`,
+    /// an index into the branch's `inputs`), this rewrites the graph so the
+    /// chosen arm is the **realized route** and the branch is no longer a
+    /// decision point:
+    ///
+    /// 1. The `reconverge_at` merge is rewired to read the **winner's exit**
+    ///    (`inputs[winner_arm]`) in place of arm 0's exit (`inputs[0]`). For
+    ///    `winner_arm == 0` this is a no-op (the merge already reads arm 0,
+    ///    the runnability fallback).
+    /// 2. The branch's `inputs` are reduced to `[winner_exit]` — a **single-arm
+    ///    branch**, which [`run::extract_runs_multi`] / `non_chosen_arm_nodes` /
+    ///    the route picker all treat as *no decision* (`arms.len() < 2`), so the
+    ///    winner's region lowers inline and the non-chosen arms become
+    ///    orphaned (pruned from the reachable set — nothing reads them once the
+    ///    merge is rewired). The arm-0 runnability invariant is preserved:
+    ///    after the reduce, `inputs[0]` is the winner and the merge reads it.
+    ///
+    /// This is the "the Branch collapses" resolution the constitution names for
+    /// same-device **kernel-variant** choices (decomposed-region vs. a fused
+    /// kernel on the *same* device), as distinct from **placement** choices
+    /// (arms on *different* devices) which stay live `Op::Branch` decision
+    /// points for the runtime route picker (06-runtime). The optimizer decides
+    /// *which* branches are variant branches and computes `winner_arm`; this
+    /// method only performs the structural collapse.
+    ///
+    /// Never-panic: returns [`fuel_ir::Error::InvalidBranch`] on a
+    /// non-`Op::Branch` node or an out-of-range `winner_arm`, mutating nothing.
+    /// Idempotent on an already-collapsed (single-arm) branch when
+    /// `winner_arm == 0`.
+    pub fn collapse_variant_branch(
+        &mut self,
+        branch: NodeId,
+        winner_arm: usize,
+    ) -> std::result::Result<(), fuel_ir::Error> {
+        let invalid = |reason: String| fuel_ir::Error::InvalidBranch { reason };
+        if branch.0 >= self.nodes.len() {
+            return Err(invalid(format!(
+                "collapse_variant_branch: branch Node#{} is out of bounds \
+                 (graph has {} nodes)",
+                branch.0,
+                self.nodes.len(),
+            )));
+        }
+        let reconverge_at = match self.nodes[branch.0].op {
+            Op::Branch { reconverge_at } => reconverge_at,
+            ref other => {
+                return Err(invalid(format!(
+                    "collapse_variant_branch: Node#{} is not an Op::Branch (got \
+                     {other:?})",
+                    branch.0,
+                )));
+            }
+        };
+        let arms = &self.nodes[branch.0].inputs;
+        if arms.is_empty() {
+            return Err(invalid(format!(
+                "collapse_variant_branch: branch Node#{} has no arms",
+                branch.0,
+            )));
+        }
+        if winner_arm >= arms.len() {
+            return Err(invalid(format!(
+                "collapse_variant_branch: winner_arm {winner_arm} is out of range \
+                 (branch Node#{} has {} arms)",
+                branch.0,
+                arms.len(),
+            )));
+        }
+        let old_arm0 = arms[0];
+        let winner = arms[winner_arm];
+
+        // (1) Rewire the merge to read the winner's exit (no-op for arm 0).
+        if winner != old_arm0 {
+            self.rewrite_input(reconverge_at, old_arm0, winner);
+        }
+        // (2) Reduce the branch to the single winning arm (now arm 0). A
+        //     single-arm branch is inert: the run extractor / picker skip it,
+        //     so the non-chosen arms are pruned and the winner lowers inline.
+        self.nodes[branch.0].inputs = vec![winner];
+        Ok(())
+    }
+
     /// Tag a node with a target device. The executor will validate
     /// (post-Phase-1) that the node's op can be evaluated on that
     /// device. In Phase 1 the tag is informational only.

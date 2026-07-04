@@ -250,6 +250,24 @@ pub fn optimize_graph(
     // re-stamps the identical result; Step A2 removes the bridge copy.)
     if let Some(pinned) = opts.pinned_device {
         stamp_plan_backends(graph, roots, &plan, pinned);
+        // Optimize-time kernel-variant bake: resolve **same-device**
+        // kernel-variant branches (a decomposed region vs. a fused kernel on
+        // the SAME device — e.g. the CUDA flash decode arm) to their cost
+        // winner and COLLAPSE them, so the winning variant is selectable
+        // without a runtime pick (04-optimization: kernel-variant choice is
+        // "largely baked at optimize time"). Runs AFTER `stamp_plan_backends`
+        // (the arms now carry `target_backend`, which the same-device gate
+        // reads) and BEFORE `insert_residency_copies` (so the residency pass
+        // stitches inbound copies only for the surviving winner arm, not a
+        // pruned one). A **placement** branch (arms on ≥2 devices) is left
+        // LIVE for the runtime route picker; a graph with no same-device
+        // variant branch — every CPU/Vulkan build today, since no CUDA flash
+        // arm is offered there — is a strict no-op. Ties / unknown costs /
+        // capability-missing default to arm 0 (the decomposed oracle).
+        crate::variant_bake::bake_variant_branches(graph, roots, &|g, branch, arm, interior| {
+            let backend = g.target_backend(g.node(branch).inputs.first().copied()?)?;
+            crate::variant_bake::decode_arm_composite_ns(g, branch, arm, interior, backend)
+        });
         // Cleanup Step B (residency): the optimizer-side cross-device copy pass
         // (was the bridge's `insert_resident_input_copies`). Runs AFTER stamping
         // (it reads `target_backend`) and BEFORE layout-fixup, preserving the

@@ -61,6 +61,7 @@ pub mod runtime_fused_kernels;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 pub mod topology;
+pub mod variant_bake;
 pub mod vulkan_dispatch;
 
 pub use compiled::{
