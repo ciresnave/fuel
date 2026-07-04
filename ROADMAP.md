@@ -76,6 +76,44 @@ pruning), and Phase 10 (10a as the closed-loop seed).
 
 Retained in detail below under Planned Work: Phase 7.5 C–F (graph-rewrite autograd, in-place-as-optimization, crate fission, layout contracts) + B3–B6 op-method sweep; Phase 7.6 steps 4/5/7/8/10 (fused-op migration sweep, Op-variant drops, PrecisionGuarantee/cost population, Comparison family); Phase 8 (FlashAttention tiers), 8.5 (activation sparsity), 9 (agentic extension hooks), 10 (equivalence-rewrite search); the eager-retirement follow-ups (binary re-migrations, test fixups). Sequenced *after* the active frontier; none is on the current critical path. One open design gap not yet phased: the **RNG / generator seam** — where a `Generator` lives (per-backend / per-device / per-graph), how it threads through realize and autograd, and how backends participate — which blocks dropout, sampling-as-a-graph-op, and stochastic training ops. Another backlog candidate: an **Apache Arrow `Tensor`** import/export leaf — *tensor*-level interchange (not a model format) for the columnar / data-engineering ecosystem (Arrow Flight distributed loading, polars/DuckDB feature pipelines, columnar feature stores). It is the host/serialization boundary, **complementary** to DLPack/FDX (which owns the device/kernel zero-copy boundary, `docs/specs/dlpack-extension.md`), not a competitor — sequence behind a real consumer, and lean on the existing DLPack↔Arrow-`ArrowDeviceArray` bridge first (FDX support already gives partial Arrow reach). Arrow's sparse layouts (COO/CSR/CSF) + `dim_names` are useful references if/when Fuel does sparse / named axes. See [13-interchange](docs/architecture/13-interchange.md) §Format posture.
 
+### Frontier-architecture gaps (research-edge capture, 2026-07-04)
+
+A frontier-readiness audit (six-track sweep against a survey of the 2025–26 research edge:
+hybrid SSM/Transformer, MLA/attention compression, hyper-sparse MoE, test-time compute,
+GRPO/verifiable post-training) cataloged the capabilities Fuel needs to run that frontier.
+Full per-item status + consumers + citations: **[`docs/frontier-architecture-gaps.md`](docs/frontier-architecture-gaps.md)**.
+
+*Already phased* (no new tracking needed, cross-referenced in the catalog): data-dependent
+shapes → Phase 8.5 `Op::NonZeroIndices` + [`data-dependent-shapes-design.md`](docs/session-prompts/data-dependent-shapes-design.md); agentic/search-on-generation hooks → Phase 9;
+graph-rewrite autograd → Phase 7.5 C; symbolic-`k_len` flash + the `Scan` gap are
+*documented* in [10-decisions-log 2026-07-03](docs/architecture/10-decisions-log.md).
+
+*Newly tracked orphans* (had no planning-doc home — lived only in source comments or
+nowhere; now captured so they are not forgotten):
+
+- **Higher-order `Scan` `Op`** (G3 SSM basis gap) — the constitution names the *precise ask*
+  (a build-time associative/chunked-scan enum extension) but nothing **scheduled** it. It is
+  the root unblocker for `selective_scan` + `ssd_chunk_scan`.
+- **SSM autoregressive decode** (`Op::SelectiveScanWithInitState`, feed `last_state` back) +
+  **GPU scan dispatch** (wire the ported baracuda mamba kernels to `OpKind`) — the SSM
+  long-context-decode payoff; plus the **GraniteMoEHybrid** Mamba branch (currently bails).
+- **MoE sparse per-token dispatch** (`Op::TopKRoute` + gather-compute-scatter, the **MoE
+  consumer** of the data-determined-shape primitive — today all MoE models route *densely*,
+  ~32× over-compute) + **MoE load-balancing / aux-loss** + **soft-MoE / dual-softmax**.
+- **MLA decode-time compressed KV cache** + **KV-cache container generalization** (both
+  caches hardwire a symmetric K/V pair — the structural blocker for latent/pruned caching) +
+  **MLA weight-absorption** + **two-projection attention / QKV pruning**.
+- **Batched multi-sequence decode** + **forkable/copy-on-write KV cache** — the substrate a
+  downstream search-on-generation (MCTS/beam) wrapper needs; search orchestration itself
+  stays a Phase-9 downstream concern by design.
+- **GRPO** + **RLVR** verifiable post-training — greenfield on the existing `fuel-training`
+  stack (SGD/AdamW + autodiff + `cross_entropy`); needs the RNG/generator seam (above) for
+  group sampling.
+
+**Keystone:** SSM decode, MoE sparsity, and MLA cache all gate on the *data-determined*
+half of symbolic extents (per-op-produced runtime counts over fixed-capacity buffers) —
+sequence that first; it is also already required by Phase 8.5.
+
 ### Shipped ledger
 
 Phases 0–7 and the shipped portions of 7.5/7.6 + Phase C are complete; full detail is in git history (verbose phase blocks condensed 2026-06-25). Highlights:
@@ -548,7 +586,16 @@ optimizer** (it leaves a blind island in the base map the cover
 search can't enter), not merely a downstream JIT feature. The three
 current panicking decomposes (`nf4_matmul`, `flash_attn`,
 `selective_scan`) are **bugs to fix**, not a permanent "wait for
-fusion partner" category.
+fusion partner" category. *(Update 2026-07-03: this is superseded —
+none actually panicked (a prior G2 pass had already converted them to
+self-returns), and the residual work was supplying the recipe, not
+stopping a crash. `nf4_matmul` + concrete-`k_len` `flash_attn` now
+carry total recipes; symbolic-`k_len` `flash_attn` and `selective_scan`
+are the two remaining **documented basis gaps**, each with a named
+missing primitive (a `DynScalar`-length slice; a higher-order `Scan`
+op) — surfaced never-crash gaps, not "bugs to fix". See the
+[2026-07-03 decisions-log entry](docs/architecture/10-decisions-log.md)
+and [`docs/frontier-architecture-gaps.md`](docs/frontier-architecture-gaps.md).)*
 
 - *Recipe ships now*, primitive intermediates linear in input:
   SoftmaxLastDim, RmsNorm, LayerNorm, NormLastDim, RoPE,

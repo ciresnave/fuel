@@ -415,6 +415,21 @@ Cross-references are fine — an architecture-decision-log entry can link to the
 
 ---
 
+## 2026-07-04 — Frontier-readiness audit: the 2025–26 research-edge gaps cataloged (tracking note)
+
+**Sections affected**: none — MINOR status/tracking note only; no core-claim change. This entry *records where a set of gaps is now tracked*; it decides nothing.
+**Phase / PR**: documentation. Branch `feat/kernel-contracts-dlpack`. Artifact: [`docs/frontier-architecture-gaps.md`](../frontier-architecture-gaps.md); registered in `ROADMAP.md` → Deferred backlog → "Frontier-architecture gaps."
+
+**What / why**: A six-track sweep assessed Fuel against the current ML research frontier — hybrid SSM/Transformer, Multi-head Latent Attention & QKV pruning, hyper-sparse MoE & soft routing, test-time compute (inference-scaling / search-on-generation), and GRPO / verifiable post-training — to answer "how much of the edge is Fuel already built to support," and to ensure no missing capability is forgotten. Recurring finding: Fuel typically has the *expressible* form (often the model itself — MLA is fully built as a lazy DAG; LFM2/Based hybrids port; all six MoE models run) but not the *efficiency payoff*.
+
+**The keystone**: three payoffs — SSM autoregressive decode, MoE sparsity, MLA compressed KV cache — all gate on the **data-determined** half of symbolic extents (per-op-produced runtime counts over fixed-capacity buffers). The input-determined half is shipped (Phase D persistent decode); the data-determined half is designed-not-built ([`data-dependent-shapes-design.md`](../session-prompts/data-dependent-shapes-design.md)) and is *also* already required by Phase 8.5. Highest-leverage unlock.
+
+**Effect on this log's own documented gaps**: the two `decompose` basis gaps from the 2026-07-03 entry above — symbolic-`k_len` `flash_attn` and the SSM `Scan` op (`selective_scan` / `ssd_chunk_scan`) — now have a **scheduled tracking home**; they were documented here but had never been entered on the path. Their posture is unchanged (never-crash surfaced gaps, one named missing primitive each). The stale "bugs to fix" phrasing in `ROADMAP.md`'s Phase 7.5 recipe-principle narrative was corrected in the same pass.
+
+**Implications going forward**: (1) The catalog is a backlog *index*, not a plan — the ROADMAP owns sequencing, the constitution wins on posture. (2) Newly-tracked orphans (no prior planning-doc home): the higher-order `Scan` op; SSM decode init-state + GPU scan dispatch; MoE sparse per-token dispatch + balancing losses + soft-MoE; MLA decode cache + KV-container generalization + weight-absorption + two-projection attention; batched multi-sequence decode + forkable/COW KV cache; and GRPO + RLVR. (3) Test-time-compute *search orchestration* is confirmed **out of layer by design** (a Phase 9 downstream concern), not a gap to close inside Fuel — only its substrate pieces (batched decode, forkable KV) are Fuel's to build.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
