@@ -48,7 +48,7 @@ use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute};
 
 use crate::compiled::{compile_node, execute_compiled, CompiledNode, CompletionHandle};
 use crate::dispatch::global_bindings;
-use crate::kernel::{KernelBindingTable, KernelDTypes, OpParams};
+use crate::kernel::{KernelBindingTable, KernelDTypes, MatmulM, OpParams};
 use crate::optimize::OptimizedGraph;
 use crate::ranker::{pick_route, resolve_branch, BackendRuntimeLookup, RuntimeSelector};
 use fuel_memory::Storage;
@@ -1524,7 +1524,7 @@ fn compiler_thread_body(
 /// the first-registered [`compile_node`] binding-table lookup.
 ///
 /// `op_params` always comes from the executor's
-/// `op_to_op_params(graph, node, layout_cache, sym_env)` — the live
+/// `op_to_op_params(graph, node, id, layout_cache, sym_env)` — the live
 /// OpParams shape (reduce dims, conv geometry, the per-pass
 /// `SymEnv`-resolved `WriteSlice` offset, etc.) derives from the graph
 /// node + its resolved input layouts at execute time.
@@ -1755,7 +1755,7 @@ fn compile_one(
                 ))
                 .bt()
             })?;
-            let op_params = op_to_op_params(graph, node, layout_cache, sym_env)?;
+            let op_params = op_to_op_params(graph, node, id, layout_cache, sym_env)?;
             let dtypes = build_lookup_dtypes(graph, node);
             let compiled = resolve_compiled(
                 op_kind, &dtypes, target_backend, op_params, bindings,
@@ -1798,7 +1798,7 @@ fn compile_one(
             ))
             .bt()
         })?;
-        let op_params = op_to_op_params(graph, node, layout_cache, sym_env)?;
+        let op_params = op_to_op_params(graph, node, id, layout_cache, sym_env)?;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
             OpKind::WriteSlice, &dtypes, target_backend, op_params, bindings,
@@ -1843,7 +1843,7 @@ fn compile_one(
             ))
             .bt()
         })?;
-        let op_params = op_to_op_params(graph, node, layout_cache, sym_env)?;
+        let op_params = op_to_op_params(graph, node, id, layout_cache, sym_env)?;
         let dtypes = build_lookup_dtypes(graph, node);
         let compiled = resolve_compiled(
             OpKind::WriteSliceRotating, &dtypes, target_backend, op_params, bindings,
@@ -2256,7 +2256,7 @@ fn compile_one(
         .bt()
     })?;
 
-    let op_params = op_to_op_params(graph, node, layout_cache, sym_env)?;
+    let op_params = op_to_op_params(graph, node, id, layout_cache, sym_env)?;
     // Build the per-operand dtype list for the binding-table lookup —
     // inputs in order, then outputs. Variadic uniform-dtype ops
     // (Concat) collapse to the canonical `[T_in, T_out]` shorthand to
@@ -2641,6 +2641,7 @@ fn scalar_to_bytes(s: fuel_ir::Scalar) -> Vec<u8> {
 fn op_to_op_params(
     graph: &Graph,
     node: &Node,
+    node_id: NodeId,
     layout_cache: &HashMap<NodeId, Layout>,
     sym_env: &SymEnv,
 ) -> Result<OpParams> {
@@ -2776,12 +2777,47 @@ fn op_to_op_params(
                 ))
                 .bt());
             }
+            // Data-determined-M (sparse-MoE): a side-table row count makes
+            // `m` the capacity and this the compute count. Dual-path,
+            // mirroring WriteSlice: resolve in the compile-time SymEnv
+            // (static / input-determined) now; else DEFER a producer-bound
+            // sym to execute; else it is a genuine caller error.
+            let m_compute = match graph.matmul_row_count(node_id) {
+                None => MatmulM::All,
+                Some(dyn_m) => match dyn_m.resolve(sym_env) {
+                    Some(c) => {
+                        if c > m {
+                            return Err(Error::Msg(format!(
+                                "Op::MatMul: resolved row count {c} exceeds capacity {m}",
+                            ))
+                            .bt());
+                        }
+                        MatmulM::Rows(c)
+                    }
+                    None => match dyn_m {
+                        fuel_ir::DynScalar::Sym(s)
+                            if graph.binds_data_determined_sym(s) =>
+                        {
+                            MatmulM::Deferred(dyn_m)
+                        }
+                        _ => {
+                            return Err(Error::Msg(format!(
+                                "Op::MatMul: dynamic row count {dyn_m:?} is unbound in the \
+                                 SymEnv at compile and no producer binds it (not \
+                                 data-determined)",
+                            ))
+                            .bt());
+                        }
+                    },
+                },
+            };
             OpParams::Matmul {
                 lhs_batch_dims,
                 rhs_batch_dims,
                 m,
                 n,
                 k: k_lhs,
+                m_compute,
             }
         }
         // Phase 7.6 step 4: legacy `Op::FusedLinear` and registry-extended
@@ -2857,6 +2893,8 @@ fn op_to_op_params(
                 m,
                 n,
                 k: k_lhs,
+                // FusedLinear is always static-M (dense linear layer).
+                m_compute: MatmulM::All,
             }
         }
         // FusedSoftmaxCrossEntropy: flatten logits `[..., V]` to
@@ -4197,6 +4235,57 @@ fn resolve_deferred_write_slice(
     Ok(Some(patched))
 }
 
+/// Dynamic-M matmul: when a matmul's row count is DATA-DETERMINED
+/// (`MatmulM::Deferred`, deferred by `op_to_op_params` because a producer
+/// binds its `SymId` mid-pass), resolve it HERE from `produced_syms` and
+/// run the kernel against a patched clone whose `m_compute` is
+/// `MatmulM::Rows(count)`. Mirrors `resolve_deferred_write_slice`. `None`
+/// when nothing is deferred (the common path — no clone). The kernel then
+/// computes exactly `count` rows of the `m`-row capacity buffer.
+fn resolve_deferred_matmul(
+    compiled: &CompiledNode,
+    produced_syms: &SymEnv,
+    node_id: NodeId,
+) -> Result<Option<CompiledNode>> {
+    let OpParams::Matmul {
+        lhs_batch_dims,
+        rhs_batch_dims,
+        m,
+        n,
+        k,
+        m_compute,
+    } = &compiled.op_params
+    else {
+        return Ok(None);
+    };
+    let MatmulM::Deferred(dyn_m) = m_compute else {
+        return Ok(None);
+    };
+    let rows = dyn_m.resolve(produced_syms).ok_or_else(|| {
+        Error::Msg(format!(
+            "Op::MatMul {node_id:?}: data-determined row count {dyn_m:?} is unbound in \
+             produced_syms at execute (its producer did not run / bind it)",
+        ))
+        .bt()
+    })?;
+    if rows > *m {
+        return Err(Error::Msg(format!(
+            "Op::MatMul {node_id:?}: resolved row count {rows} exceeds capacity {m}",
+        ))
+        .bt());
+    }
+    let mut patched = compiled.clone();
+    patched.op_params = OpParams::Matmul {
+        lhs_batch_dims: lhs_batch_dims.clone(),
+        rhs_batch_dims: rhs_batch_dims.clone(),
+        m: *m,
+        n: *n,
+        k: *k,
+        m_compute: MatmulM::Rows(rows),
+    };
+    Ok(Some(patched))
+}
+
 fn execute_work_item(
     item: &WorkItem,
     cache: &mut StorageCache,
@@ -4964,6 +5053,11 @@ fn execute_work_item(
                 ))
                 .bt()
             })?;
+            // Dynamic-M matmul (sparse MoE): resolve a DATA-DETERMINED row
+            // count from the producer-bound `produced_syms` and run against
+            // the patched (resolved-M) node. `None` on the common path.
+            let patched_mm = resolve_deferred_matmul(compiled, produced_syms, item.node_id)?;
+            let compiled = patched_mm.as_ref().unwrap_or(compiled);
             // Gather input Arcs from the cache, auto-contiguizing
             // any input whose layout is non-contiguous (typically
             // produced by an upstream metadata-only view op).

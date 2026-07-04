@@ -156,6 +156,24 @@ pub type KernelRef = fn(
     params: &OpParams,
 ) -> Result<()>;
 
+/// How many rows a [`OpParams::Matmul`] computes — the data-determined-M
+/// state for sparse-MoE / capacity-buffer matmuls. `m` in `OpParams::Matmul`
+/// is always the row **capacity** (buffer/stride/size); this says how many
+/// of those rows to actually compute (`<= m`), the rest left zeroed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MatmulM {
+    /// Compute every one of the `m` rows — the universal static default.
+    All,
+    /// Compute exactly this many rows of the `m`-row capacity buffer. Set
+    /// when the count is known at compile (an input-determined extent) or
+    /// after a [`Self::Deferred`] is resolved at execute.
+    Rows(usize),
+    /// The row count is **data-determined** (a producer binds it mid-pass,
+    /// e.g. `Op::NonZeroIndices`'s per-expert token count) — resolve at
+    /// execute from `produced_syms`, then patch to [`Self::Rows`].
+    Deferred(fuel_ir::DynScalar),
+}
+
 /// Typed extras bag passed to kernels via [`KernelRef`]. One variant
 /// per op family that needs auxiliary parameters; `None` for
 /// parameter-less ops (most elementwise unary and binary).
@@ -202,9 +220,13 @@ pub enum OpParams {
     Matmul {
         lhs_batch_dims: Vec<usize>,
         rhs_batch_dims: Vec<usize>,
+        /// The output/LHS row **capacity** (drives size checks + strides).
         m: usize,
         n: usize,
         k: usize,
+        /// How many of the `m` rows to actually compute (data-determined-M
+        /// sparse-MoE support). `MatmulM::All` for every ordinary matmul.
+        m_compute: MatmulM,
     },
 
     /// 1D convolution geometry (forward path).
@@ -1393,6 +1415,7 @@ mod tests {
             m: 4,
             n: 8,
             k: 16,
+            m_compute: MatmulM::All,
         };
         let _ = OpParams::Slice { dim: 0, start: 0, end: 10, step: 1 };
         let _ = OpParams::Cast;

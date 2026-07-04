@@ -1459,6 +1459,15 @@ pub struct Graph {
     /// inferred default, so every node has a well-defined class.
     /// Phase D substrate (PR-D1); not yet consumed by realize.
     storage_class: HashMap<NodeId, StorageClass>,
+    /// Per-node **data-determined matmul row count** — the sparse-MoE
+    /// capacity-buffer support. Present only on `Op::MatMul` nodes whose
+    /// M (row count) is a runtime value: the node's `Node::shape` carries
+    /// the row **capacity**, and this side-table carries the [`DynScalar`]
+    /// that resolves (at compile if input-determined, else at execute from
+    /// the producer-bound `SymEnv`) to how many rows to actually compute.
+    /// Absent ⇒ a normal, static-M matmul. A side-table (not an `Op::MatMul`
+    /// field) so the dense-matmul enum + its every match arm stay untouched.
+    node_matmul_row_count: HashMap<NodeId, DynScalar>,
 }
 
 impl Graph {
@@ -1473,6 +1482,7 @@ impl Graph {
             layouts: HashMap::new(),
             node_output_views: HashMap::new(),
             storage_class: HashMap::new(),
+            node_matmul_row_count: HashMap::new(),
         }
     }
 
@@ -1718,6 +1728,21 @@ impl Graph {
             Op::NonZeroIndices { count_sym } => *count_sym == sym,
             _ => false,
         })
+    }
+
+    /// Attach a data-determined row count to an `Op::MatMul` node — the
+    /// sparse-MoE capacity-buffer support. The node's `Node::shape` stays
+    /// the row-capacity output shape; `row_count` (a [`DynScalar`]) is how
+    /// many rows to actually compute. See [`Tensor::matmul_dyn_m`].
+    pub fn set_matmul_row_count(&mut self, id: NodeId, row_count: DynScalar) {
+        assert!(id.0 < self.nodes.len(), "set_matmul_row_count: id out of bounds");
+        self.node_matmul_row_count.insert(id, row_count);
+    }
+
+    /// The data-determined row count for `id`, if it carries one (i.e. it
+    /// is a dynamic-M matmul). `None` ⇒ an ordinary static-M matmul.
+    pub fn matmul_row_count(&self, id: NodeId) -> Option<DynScalar> {
+        self.node_matmul_row_count.get(&id).copied()
     }
 
     /// Look up the realized storage for a node, if any has been
@@ -2247,6 +2272,8 @@ impl Graph {
         self.storage_map = remap.rekey(std::mem::take(&mut self.storage_map));
         self.node_output_views = remap.rekey(std::mem::take(&mut self.node_output_views));
         self.storage_class = remap.rekey(std::mem::take(&mut self.storage_class));
+        self.node_matmul_row_count =
+            remap.rekey(std::mem::take(&mut self.node_matmul_row_count));
 
         // Remap the side-effect-roots vector (every entry is live — they
         // were reachability seeds — so each maps).
@@ -3714,6 +3741,35 @@ impl Tensor {
             graph: self.graph.clone(),
             id,
         }
+    }
+
+    /// Data-determined-M matmul: like [`Self::matmul`], but the LHS row
+    /// count `M` is a **runtime** value `row_count` rather than the static
+    /// `lhs.shape[-2]`. The LHS and output are **capacity buffers** of
+    /// `lhs.shape[-2]` rows; only `row_count` rows are computed, the rest
+    /// left zeroed. This is the sparse-MoE expert-FFN primitive — gather an
+    /// expert's `count_e` routed tokens into a capacity buffer, then
+    /// compute exactly `count_e` FFN rows (the FLOP saving). `row_count`
+    /// resolves at compile if input-determined, else at execute from the
+    /// producer-bound `SymEnv` (e.g. `Op::NonZeroIndices`'s count). The
+    /// output shape is the capacity shape `[..., lhs.shape[-2], n]`.
+    pub fn matmul_dyn_m(&self, other: &Tensor, row_count: DynScalar) -> Tensor {
+        // Only the F32 CPU capacity kernel honors a data-determined row
+        // count today; other dtypes/backends compute all capacity rows.
+        // Guard here so a dynamic-M matmul can never be built where it
+        // would silently over-compute.
+        assert_eq!(
+            self.dtype(),
+            DType::F32,
+            "matmul_dyn_m: data-determined-M is F32-only today (got lhs {:?})",
+            self.dtype(),
+        );
+        let out = self.matmul(other);
+        self.graph
+            .write()
+            .unwrap()
+            .set_matmul_row_count(out.id, row_count);
+        out
     }
 
     /// Append a [`Op::QMatMul`] node that multiplies `self` (F32

@@ -1319,6 +1319,7 @@ mod tests {
             m: 3,
             n: 4,
             k: 5,
+            m_compute: crate::kernel::MatmulM::All,
         };
         let est = crate::fkc::cost_estimate(
             &prim.cost,

@@ -426,7 +426,7 @@ macro_rules! cuda_matmul_baracuda_wrapper {
                 )).bt());
             }
             let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-                OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
+                OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
                     (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k)
                 }
                 other => {
