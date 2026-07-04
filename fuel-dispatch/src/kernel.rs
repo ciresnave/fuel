@@ -567,9 +567,20 @@ pub enum OpParams {
     ///
     /// Phase E.3.2: backs `Op::WriteSlice` for persistent KV-cache
     /// writes.
+    ///
+    /// `deferred_dyn_offset` is the **data-determined dynamic-shapes** seam
+    /// (increment 2b). Normally `None` — `ranges` is already resolved at
+    /// compile (static, or an *input-determined* `dyn_offset` bound in the
+    /// per-pass `SymEnv`). It is `Some((axis, sym))` only when the offset is
+    /// *data-determined* — its `SymId` is UNBOUND at compile because a
+    /// producer (e.g. `Op::NonZeroIndices`) computes it mid-pass. The
+    /// `WorkItemKind::WriteSlice` executor arm resolves it from
+    /// `produced_syms` and overrides `ranges[axis]` to `(base, base+width)`
+    /// just before the kernel runs; the kernel wrappers ignore this field.
     WriteSlice {
         dest_shape: Vec<usize>,
         ranges: Vec<(usize, usize)>,
+        deferred_dyn_offset: Option<(usize, fuel_ir::DynScalar)>,
     },
 
     /// In-place ring-buffer scatter write parameters. Like

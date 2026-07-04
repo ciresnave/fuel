@@ -42,7 +42,7 @@ use fuel_memory::Storage;
 /// A graph node plus its resolved kernel function pointer and
 /// op-specific parameters. Produced by [`compile_node`]; consumed
 /// by [`execute_compiled`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompiledNode {
     /// The op family this node implements.
     pub op: OpKind,

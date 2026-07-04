@@ -3938,9 +3938,22 @@ fn op_to_op_params(
             // `ranges[axis].1 - ranges[axis].0`, so the effective range
             // becomes `(base, base + width)`. `None` ⇒ fully static, and
             // the SymEnv is never consulted (empty-env realize unchanged).
-            // The bounds loop below runs on the RESOLVED ranges, so an
-            // out-of-capacity runtime offset surfaces as a typed error.
+            //
+            // DUAL-PATH (increment 2b — data-determined dynamic shapes):
+            //  - The offset resolves in the compile-time `sym_env` (static,
+            //    or an INPUT-determined `cached_len`): bake it into `ranges`
+            //    now, exactly as before.
+            //  - It is UNBOUND at compile AND a producer in this graph binds
+            //    it (`Op::NonZeroIndices`'s count, etc.): it is
+            //    DATA-DETERMINED — leave `ranges[axis]` as the static
+            //    placeholder and DEFER, carrying the `DynScalar` in
+            //    `deferred_dyn_offset`. The `WorkItemKind::WriteSlice`
+            //    executor arm resolves it from `produced_syms` (after the
+            //    producer runs) and bounds-checks the resolved range there.
+            //  - It is unbound AND no producer binds it: a genuine caller
+            //    error → surface it here (preserves the unbound-error path).
             let mut ranges = ranges.clone();
+            let mut deferred_dyn_offset: Option<(usize, fuel_ir::DynScalar)> = None;
             if let Some((axis, off)) = dyn_offset {
                 if *axis >= ranges.len() {
                     return Err(Error::Msg(format!(
@@ -3949,18 +3962,35 @@ fn op_to_op_params(
                     ))
                     .bt());
                 }
-                let base = off.resolve(sym_env).ok_or_else(|| {
-                    Error::Msg(format!(
-                        "Op::WriteSlice: dynamic offset {off:?} on axis {axis} is unbound \
-                         in the SymEnv at realize",
-                    ))
-                    .bt()
-                })?;
-                let (start, end) = ranges[*axis];
-                let width = end - start;
-                ranges[*axis] = (base, base + width);
+                match off.resolve(sym_env) {
+                    Some(base) => {
+                        let (start, end) = ranges[*axis];
+                        let width = end - start;
+                        ranges[*axis] = (base, base + width);
+                    }
+                    None => {
+                        let is_data_determined = matches!(off, fuel_ir::DynScalar::Sym(s)
+                            if graph.binds_data_determined_sym(*s));
+                        if is_data_determined {
+                            deferred_dyn_offset = Some((*axis, *off));
+                        } else {
+                            return Err(Error::Msg(format!(
+                                "Op::WriteSlice: dynamic offset {off:?} on axis {axis} is \
+                                 unbound in the SymEnv at realize (and no producer in the \
+                                 graph binds it, so it is not data-determined)",
+                            ))
+                            .bt());
+                        }
+                    }
+                }
             }
             for (i, &(start, end)) in ranges.iter().enumerate() {
+                // The deferred axis still holds its static placeholder; the
+                // executor bounds-checks the resolved range after producing
+                // the count. Every other axis is fully known now.
+                if deferred_dyn_offset.is_some_and(|(a, _)| a == i) {
+                    continue;
+                }
                 if end < start || end > dest_dims[i] {
                     return Err(Error::Msg(format!(
                         "Op::WriteSlice: ranges[{i}] = ({start}, {end}) invalid \
@@ -3973,6 +4003,7 @@ fn op_to_op_params(
             OpParams::WriteSlice {
                 dest_shape: dest_dims,
                 ranges,
+                deferred_dyn_offset,
             }
         }
         Op::WriteSliceRotating { axis, modulus, ranges } => {
@@ -4080,6 +4111,10 @@ fn bind_data_determined_count(
     let guard = arc.read().map_err(|_| poisoned("NonZeroIndices output storage"))?;
     let count_byte_off = capacity * std::mem::size_of::<u32>();
     let end = count_byte_off + std::mem::size_of::<u32>();
+    // The non-CPU `BackendStorage` variants are cfg-gated; with GPU
+    // features off, `Cpu` is the only variant and the fallback arm is
+    // unreachable (a documented CPU-first limitation, not dead logic).
+    #[allow(unreachable_patterns)]
     let count = match &guard.inner {
         fuel_memory::BackendStorage::Cpu(cpu_bytes) => {
             let bytes = cpu_bytes.bytes();
@@ -4109,6 +4144,57 @@ fn bind_data_determined_count(
     };
     produced_syms.bind(count_sym, count as usize)?;
     Ok(())
+}
+
+/// Increment 2b — the consumer half of data-dependent dynamic shapes. When
+/// a `WriteSlice`'s offset is DATA-DETERMINED (its `SymId` is produced
+/// mid-pass, so `op_to_op_params` deferred it into
+/// `OpParams::WriteSlice::deferred_dyn_offset` instead of baking it at
+/// compile), resolve it HERE from `produced_syms` — populated by the
+/// producer's execute step (single-threaded topological order guarantees
+/// the producer already ran). Returns a patched clone of the `CompiledNode`
+/// with the resolved `ranges` (and `deferred_dyn_offset` cleared) for the
+/// kernel; `None` when there is nothing to defer (the common path — no
+/// clone). Bounds-checks the resolved range (deferred past compile).
+fn resolve_deferred_write_slice(
+    compiled: &CompiledNode,
+    produced_syms: &SymEnv,
+    node_id: NodeId,
+) -> Result<Option<CompiledNode>> {
+    let OpParams::WriteSlice { dest_shape, ranges, deferred_dyn_offset } = &compiled.op_params
+    else {
+        return Ok(None);
+    };
+    let Some((axis, off)) = deferred_dyn_offset else {
+        return Ok(None);
+    };
+    let base = off.resolve(produced_syms).ok_or_else(|| {
+        Error::Msg(format!(
+            "Op::WriteSlice {node_id:?}: data-determined offset {off:?} on axis {axis} is \
+             unbound in produced_syms at execute (its producer did not run / bind it)",
+        ))
+        .bt()
+    })?;
+    let mut ranges = ranges.clone();
+    let (start, end) = ranges[*axis];
+    let width = end - start;
+    let resolved = (base, base + width);
+    if resolved.1 > dest_shape[*axis] {
+        return Err(Error::Msg(format!(
+            "Op::WriteSlice {node_id:?}: resolved data-determined range {resolved:?} on axis \
+             {axis} exceeds destination dim = {}",
+            dest_shape[*axis],
+        ))
+        .bt());
+    }
+    ranges[*axis] = resolved;
+    let mut patched = compiled.clone();
+    patched.op_params = OpParams::WriteSlice {
+        dest_shape: dest_shape.clone(),
+        ranges,
+        deferred_dyn_offset: None,
+    };
+    Ok(Some(patched))
 }
 
 fn execute_work_item(
@@ -4283,6 +4369,11 @@ fn execute_work_item(
                 ))
                 .bt()
             })?;
+            // Increment 2b: if the offset is DATA-DETERMINED, resolve it from
+            // the producer-bound `produced_syms` and run the kernel against
+            // the patched (resolved-range) node. `None` on the common path.
+            let patched_ws = resolve_deferred_write_slice(compiled, produced_syms, item.node_id)?;
+            let compiled = patched_ws.as_ref().unwrap_or(compiled);
             let dest_arc = cache.get(dest).cloned().ok_or_else(|| {
                 Error::Msg(format!(
                     "PipelinedExecutor: WriteSlice destination {:?} of {:?} not realized",

@@ -1080,7 +1080,7 @@ macro_rules! cuda_write_slice_baracuda_wrapper {
                 )).bt());
             }
             let (dest_shape, ranges) = match params {
-                OpParams::WriteSlice { dest_shape, ranges } => (dest_shape, ranges),
+                OpParams::WriteSlice { dest_shape, ranges, .. } => (dest_shape, ranges),
                 other => {
                     return Err(Error::Msg(format!(
                         concat!(stringify!($wrapper_name), ": expected OpParams::WriteSlice, got {:?}"),
