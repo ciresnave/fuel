@@ -14,22 +14,29 @@
 //! provider.register_into(table, fused)       =  the actual registry inserts + finalize gate
 //! ```
 //!
-//! ## Cost decision for this slice ([consumer-ahead])
+//! ## Cost decision for this slice
 //!
-//! [consumer-ahead]: declared cost priors are retained on `Resolved*.cost`
-//! but not yet wired into a `CostFn`; the Judge bootstraps all imported
-//! costs for now. A follow-up slice adds the cost trampoline (plan §2.3
-//! strategy A).
+//! Two cost paths coexist:
 //!
-//! Concretely: [`ImportedProvider::register_into`] registers **every**
-//! imported primitive with the existing [`unknown_cost`] sentinel `CostFn`
-//! and **every** imported fused op with the fused-cost equivalent
-//! ([`fused_unknown_cost`]) — regardless of whether the contract's
-//! [`CompiledCostExpr`](crate::fkc::cost_expr::CompiledCostExpr) is
-//! `Unknown` or a parsed expression. The parsed AST stays on the
-//! `Resolved*` record; only the live `CostFn` wiring is deferred. This is
-//! faithful to the corpus's `judge_measured` cost convention and gets the
-//! importer end-to-end without an fn-pointer trampoline.
+//! 1. **Named cost-fn trampoline (§4.4, Task-F).** A primitive contract whose
+//!    `cost.cost_fn` NAMES a registered cost fn has that name resolved through
+//!    the provider's [`LinkRegistry::resolve_cost_fn`](crate::fkc::LinkRegistry)
+//!    at lower time and the resulting [`CostFn`](crate::kernel::CostFn) pinned
+//!    on the binding by [`ImportedProvider::register_into`]. A pinned cost fn
+//!    is NOT the [`unknown_cost`] sentinel, so the
+//!    [`fill_unset_cost_for_backend`](crate::kernel::KernelBindingTable::fill_unset_cost_for_backend)
+//!    pass leaves it — the mechanism that lets a contract carry a real,
+//!    shape-aware cost model (e.g. the CUDA `flash_decoding` static
+//!    infeasibility gate `cost_flash_decoding_cuda`). An unresolved name is a
+//!    typed [`FkcError::UnknownCostFn`], never a silent fallback.
+//! 2. **Judge-bootstrapped default (the common case, [consumer-ahead]).** A
+//!    contract that names NO cost fn registers with the [`unknown_cost`]
+//!    sentinel `CostFn` (primitives) / [`fused_unknown_cost`] (fused ops);
+//!    the fill pass then upgrades the primitive sentinel to the op/backend
+//!    default, and the Judge refines empirically. The parsed
+//!    [`CompiledCostExpr`](crate::fkc::cost_expr::CompiledCostExpr) stays on
+//!    the `Resolved*` record. Fused ops have no named-cost-fn path yet (the
+//!    fused cost-fn signature differs; no consumer today).
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -200,11 +207,18 @@ impl ImportedProvider {
     ) -> Result<(), FkcError> {
         // --- Primitives → KernelBindingTable (§2.1) ---
         for p in &self.primitives {
-            // [consumer-ahead]: declared cost priors are retained on
-            // Resolved*.cost but not yet wired into a CostFn; the Judge
-            // bootstraps all imported costs for now. A follow-up slice
-            // adds the cost trampoline (plan §2.3 strategy A).
             let kernel_source: &'static str = intern(&p.kernel_source);
+            // §4.4 cost-fn trampoline (Task-F): when the contract PINS a cost
+            // fn (`cost.cost_fn`, resolved through the LinkRegistry at lower
+            // time), stamp THAT `CostFn` — it survives the
+            // `fill_unset_cost_for_backend` pass (which only replaces the
+            // `unknown_cost` sentinel), so a contract can carry a real,
+            // shape-aware cost model (e.g. the CUDA `flash_decoding` static
+            // infeasibility gate). When it does NOT pin one, keep the
+            // `unknown_cost` sentinel so the fill pass upgrades it to the
+            // op/backend default (the Judge-bootstrapped path for every other
+            // imported primitive).
+            let cost_fn = p.cost_fn.unwrap_or(unknown_cost);
             // Structural-miss fallback bit (FKC §4.12): compute genericity
             // ONCE from the retained five-flag `ResolvedLayout` set and stamp
             // it onto the binding so the live dispatch pick site reads a
@@ -222,7 +236,7 @@ impl ImportedProvider {
                 p.kernel,
                 p.caps,
                 p.precision,
-                unknown_cost,
+                cost_fn,
                 kernel_source,
                 is_generic,
                 p.revision.0,
@@ -1889,6 +1903,163 @@ determinism: same_hardware_bitwise
             provider2.primitives[0].dtypes.to_vec(),
             vec![DType::F32, DType::F32, DType::F32],
             "the required-both key [x, bias, out]",
+        );
+    }
+
+    // =====================================================================
+    // COST-FN TRAMPOLINE (§4.4, Task-F): a contract's `cost.cost_fn` NAME
+    // resolves through the LinkRegistry to a real CostFn that is stamped on
+    // the binding and SURVIVES the fill_unset pass. The LinkRegistry analog
+    // of entry_point resolution — a named cost model, not the unknown_cost
+    // sentinel. An unknown name is a typed UnknownCostFn (never silent).
+    // =====================================================================
+
+    /// A distinctive test `CostFn` (distinct fn item ⇒ distinct pointer) that
+    /// the trampoline pins onto a binding. Its 999_999 FLOPs value + its unique
+    /// pointer identity make it observable that the CONTRACT's cost fn — not
+    /// `unknown_cost` and not the op-family default — is what the binding
+    /// carries after `register_into` AND after `fill_unset`.
+    fn test_pinned_cost(
+        _s: &[fuel_ir::Shape],
+        _d: &[DType],
+        _p: &crate::kernel::OpParams,
+        _c: &fuel_ir::backend::BackendCapabilities,
+    ) -> CostEstimate {
+        CostEstimate { flops: 999_999, bytes_moved: 0, kernel_overhead_ns: 0 }
+    }
+
+    /// A `LinkRegistry` that resolves the `cost.cost_fn` name `test_pinned_cost`
+    /// to [`test_pinned_cost`] (and every entry_point to a dummy kernel) — the
+    /// test analog of a provider that pins a real cost fn over its own cost-fn
+    /// table (e.g. the CUDA `CUDA_COST_FNS` table).
+    struct CostPinLink;
+    impl LinkRegistry for CostPinLink {
+        fn resolve_primitive(&self, _symbol: &str) -> Option<KernelRef> {
+            Some(dummy_a)
+        }
+        fn resolve_fused(&self, _symbol: &str) -> Option<KernelRef> {
+            Some(dummy_a)
+        }
+        fn resolve_cost_fn(&self, name: &str) -> Option<crate::kernel::CostFn> {
+            if name == "test_pinned_cost" {
+                Some(test_pinned_cost)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// A one-section bundle naming a cost fn in its `cost:` block. `__COST_FN__`
+    /// is replaced by the test with the real (resolvable) or a bogus name.
+    const COST_PIN_BUNDLE: &str = "\
+---
+fkc_version: 1
+provider:
+  name: cost-pin-provider
+  backend: Cpu
+  kernel_source: \"cost-pin-cpu\"
+---
+
+# cost-pin bundle
+
+## add_pinned
+
+A.
+
+```fkc
+kernel: add_pinned
+op_kind: AddElementwise
+blurb: \"a\"
+entry_point: \"x::add_pinned\"
+accept:
+  inputs:
+    - name: lhs
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+    - name: rhs
+      dtypes: [F32]
+      layout: { contiguous: required, strided: rejected }
+  op_params: { variant: None }
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(lhs)
+cost:
+  provenance: declared
+  class: cheap_elementwise
+  flops: \"n\"
+  cost_fn: \"__COST_FN__\"
+precision:
+  bit_stable_on_same_hardware: true
+  audited: true
+determinism: same_hardware_bitwise
+```
+";
+
+    #[test]
+    fn contract_pinned_cost_fn_survives_fill_unset() {
+        // BORN-RED → GREEN. A contract whose cost block NAMES `test_pinned_cost`
+        // must register the binding with THAT CostFn (resolved through the
+        // LinkRegistry), and the `fill_unset_cost_for_backend` pass must LEAVE it
+        // (that pass only replaces the `unknown_cost` sentinel). RED before the
+        // trampoline wiring: `register_into` stamped `unknown_cost`, so fill_unset
+        // clobbered the cell with the op-family default `cost_elementwise_binary_cpu`.
+        let src = COST_PIN_BUNDLE.replace("__COST_FN__", "test_pinned_cost");
+        let provider = import_bundle_str(&src, &CostPinLink)
+            .expect("a bundle naming a resolvable cost fn imports");
+
+        // (1) Lowering resolved the NAME to the concrete CostFn on the record.
+        assert_eq!(provider.primitives.len(), 1);
+        assert!(
+            provider.primitives[0].cost_fn.is_some(),
+            "lower_primitive must resolve cost.cost_fn through resolve_cost_fn",
+        );
+
+        let mut table = KernelBindingTable::new();
+        let mut fused = FusedKernelRegistry::new();
+        provider
+            .register_into(&mut table, &mut fused)
+            .expect("register_into succeeds");
+
+        let key = [DType::F32, DType::F32, DType::F32];
+
+        // (2) register_into stamped the PINNED cost fn, NOT the unknown_cost sentinel.
+        let cost_before = table.lookup_cost(OpKind::AddElementwise, &key, BackendId::Cpu);
+        assert_eq!(
+            cost_before as usize, test_pinned_cost as usize,
+            "register_into must stamp the contract-pinned CostFn (not unknown_cost)",
+        );
+        assert_ne!(
+            cost_before as usize,
+            crate::kernel::unknown_cost as usize,
+            "the pinned CostFn must not be the unknown_cost sentinel",
+        );
+
+        // (3) THE POINT OF TASK-F: fill_unset must NOT overwrite the pinned cost.
+        table.fill_unset_cpu_cost(crate::cost::default_cost_for_op_kind);
+        let cost_after = table.lookup_cost(OpKind::AddElementwise, &key, BackendId::Cpu);
+        assert_eq!(
+            cost_after as usize, test_pinned_cost as usize,
+            "fill_unset must leave the contract-pinned CostFn untouched",
+        );
+        assert_ne!(
+            cost_after as usize,
+            crate::cost::cost_elementwise_binary_cpu as usize,
+            "the pinned cost must NOT have been clobbered by the op-family default",
+        );
+    }
+
+    #[test]
+    fn unknown_cost_fn_name_is_typed_error() {
+        // A cost block naming a cost fn absent from the link registry's cost-fn
+        // table is a typed UnknownCostFn at import time — never a silent
+        // fallback to unknown_cost.
+        let src = COST_PIN_BUNDLE.replace("__COST_FN__", "no_such_cost_fn");
+        let err = import_bundle_str(&src, &CostPinLink)
+            .expect_err("an unresolved cost_fn name must error");
+        assert!(
+            matches!(err, FkcError::UnknownCostFn { ref cost_fn, .. } if cost_fn == "no_such_cost_fn"),
+            "got {err:?}",
         );
     }
 }

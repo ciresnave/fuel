@@ -179,6 +179,16 @@ pub enum FkcError {
         entry_point: String,
     },
 
+    /// A `cost.cost_fn` NAME was absent from the provider link registry's
+    /// cost-fn table (§4.4 cost-fn trampoline; the cost-model analogue of
+    /// [`Self::UnknownEntryPoint`]). The importer never fabricates a cost-fn
+    /// pointer nor silently falls back to `unknown_cost` — a named-but-unknown
+    /// cost fn is a typed error.
+    #[error(
+        "FKC §4.4: kernel `{section}` cost_fn `{cost_fn}` is not in the link registry's cost-fn table"
+    )]
+    UnknownCostFn { section: String, cost_fn: String },
+
     /// A `layout` tri-state flag carried a value outside the legal set
     /// (`required` / `accepted` / `rejected` / `n/a`); §4.1, §6.
     #[error(

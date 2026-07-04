@@ -1763,6 +1763,22 @@ determinism: same_hardware_bitwise
     impl crate::fkc::lower::LinkRegistry for StubLink {
         fn resolve_primitive(&self, s: &str) -> Option<crate::kernel::KernelRef> { self.resolve(s) }
         fn resolve_fused(&self, s: &str) -> Option<crate::kernel::KernelRef> { self.resolve(s) }
+        fn resolve_cost_fn(&self, _name: &str) -> Option<crate::kernel::CostFn> {
+            // Permissive (§4.4 cost-fn trampoline): the corpus lint checks that a
+            // NAMED `cost.cost_fn` parses + lowers, not that it resolves to a
+            // specific production fn (that is each provider's real link registry's
+            // job). Any name resolves to a dummy CostFn so a cost-fn-pinning
+            // contract lowers cleanly.
+            fn c(
+                _s: &[fuel_ir::Shape],
+                _d: &[fuel_ir::DType],
+                _p: &crate::kernel::OpParams,
+                _c: &fuel_ir::backend::BackendCapabilities,
+            ) -> crate::fused::CostEstimate {
+                crate::fused::CostEstimate::default()
+            }
+            Some(c)
+        }
     }
 
     /// Recursively collect every `*.fkc.md` under `dir`, excluding any path
