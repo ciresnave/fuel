@@ -202,6 +202,9 @@ mod tests {
             contiguity: Contiguity::Contiguous,
             broadcast: false,
             flipped: false,
+            shape: vec![128, 256],
+            strides: vec![256, 1],
+            align_bytes: 256,
         }
     }
 

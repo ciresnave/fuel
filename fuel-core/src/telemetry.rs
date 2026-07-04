@@ -15,22 +15,33 @@
 //! There is no env-var magic and no background writer thread — a flush happens
 //! only when the caller asks for one.
 //!
-//! # v1 provider = Null (honest "unlinked")
+//! # Provider selection (CUDA-gated)
 //!
-//! Baracuda's `structure_key` callable is cuda-gated FFI and not linked in this
-//! environment, so the installed provider is the
-//! [`fuel_dispatch::telemetry::NullStructureKeyProvider`]: dispatch records are
-//! emitted without a structure key and no miss demand signal forms (never a
-//! fabricated token). When Baracuda ships the callable, only the provider swaps.
+//! Baracuda's `structure_key` keyer ships as pure host code in
+//! `baracuda-kernels-types`. When compiled with `cuda`, [`TelemetryInstall`]
+//! installs the
+//! [`fuel_dispatch::telemetry::BaracudaStructureKeyProvider`], which projects
+//! each live operand into Baracuda's `OperandDesc` and CALLS that keyer (Fuel
+//! never derives the token). On any non-CUDA build — or for a CPU realize, whose
+//! `arch` tag the Baracuda provider declines — the effective posture is the
+//! honest "unlinked" one: records carry no structure key and no miss demand
+//! signal forms (never a fabricated token). The non-CUDA build installs the
+//! [`fuel_dispatch::telemetry::NullStructureKeyProvider`] directly.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use fuel_dispatch::telemetry::{
-    HwStamp, NullStructureKeyProvider, TelemetryConfig, TelemetryHooks, TelemetryMode,
-    TelemetrySink,
+    HwStamp, TelemetryConfig, TelemetryHooks, TelemetryMode, TelemetrySink,
 };
+// The concrete `StructureKeyProvider` TelemetryInstall selects between: the
+// Baracuda-backed one when compiled with CUDA (it calls Baracuda's shipped
+// `structure_key` for a live CUDA arch), the Null one everywhere else.
+#[cfg(feature = "cuda")]
+use fuel_dispatch::telemetry::BaracudaStructureKeyProvider;
+#[cfg(not(feature = "cuda"))]
+use fuel_dispatch::telemetry::NullStructureKeyProvider;
 use fuel_ir::DeviceLocation;
 
 const MODE_OFF: u8 = 0;
@@ -173,6 +184,12 @@ pub(crate) fn hw_stamp_for(device: DeviceLocation) -> HwStamp {
 /// plan is byte-identical).
 pub struct TelemetryInstall {
     config: TelemetryConfig,
+    /// The structure-key provider: Baracuda-backed under `cuda`, Null otherwise.
+    /// Concrete (cfg-selected) rather than boxed so the off path stays zero-cost;
+    /// [`Self::hooks`] borrows it as `&dyn StructureKeyProvider`.
+    #[cfg(feature = "cuda")]
+    provider: BaracudaStructureKeyProvider,
+    #[cfg(not(feature = "cuda"))]
     provider: NullStructureKeyProvider,
     hw: HwStamp,
     enabled: bool,
@@ -184,6 +201,9 @@ impl TelemetryInstall {
         let mode = current_mode();
         Self {
             config: TelemetryConfig { mode, out_path: None },
+            #[cfg(feature = "cuda")]
+            provider: BaracudaStructureKeyProvider,
+            #[cfg(not(feature = "cuda"))]
             provider: NullStructureKeyProvider,
             hw: hw_stamp_for(device),
             enabled: mode.is_enabled(),
