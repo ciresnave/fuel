@@ -523,3 +523,289 @@ sdpa_arbmask_can_impl!(sdpa_arbmask_f32_can_implement,  baracuda_kernels_sdpa_f3
 sdpa_arbmask_can_impl!(sdpa_arbmask_f64_can_implement,  baracuda_kernels_sdpa_f64_arbmask_can_implement,  "sdpa_arbmask_f64");
 sdpa_arbmask_can_impl!(sdpa_arbmask_f16_can_implement,  baracuda_kernels_sdpa_f16_arbmask_can_implement,  "sdpa_arbmask_f16");
 sdpa_arbmask_can_impl!(sdpa_arbmask_bf16_can_implement, baracuda_kernels_sdpa_bf16_arbmask_can_implement, "sdpa_arbmask_bf16");
+
+// ─────────────────────── FlashDecoding (decode-flash) ───────────────────────
+//
+// Baracuda `flash_decoding_{f16,bf16}` (alpha.72) — split-K parallel
+// attention for autoregressive **decode** (`seq_q == 1`) over a
+// fixed-capacity KV cache with a runtime live prefix `k_len <= max_seq`.
+// This is the FIRST capacity-K flash binding in Fuel; it maps
+// `OpKind::FlashAttn`'s Phase-D decode shape (`OpParams::FlashAttn`'s
+// `sk` = physical capacity, `k_len` = logical attended length) onto the
+// kernel's per-tensor strides + runtime iteration bound.
+//
+// Load-bearing ABI facts (see docs/outreach/baracuda-flashdecoding-decode-
+// interface-reply.md — a PINNED standing contract):
+//   * Explicit per-tensor strides (element units) DECOUPLED from `k_len`;
+//     `k_len` is only the iteration bound + `num_splits = ceil(k_len/256)`.
+//     A capacity buffer (`k_seq_stride = D`, `k_h_stride = max_seq*D`,
+//     `k_b_stride = Hkv*max_seq*D`, live prefix `k_len < max_seq`) reads
+//     correctly for any `B*Hkv` — NO Contiguize copy. The innermost
+//     (head_dim) axis is assumed contiguous (no head_dim stride arg).
+//   * GQA-native: `num_kv_heads` is a separate parameter; the launcher
+//     enforces `heads % num_kv_heads == 0`.
+//   * `seq_q == 1`; `head_dim` in [1, 128] (`kMaxD`); f16/bf16 only.
+//   * Caller provides `y` (allocated + zero-init here) AND workspace; the
+//     kernel allocates nothing. Workspace bytes are MONOTONIC in `k_len`,
+//     so we size ONCE at capacity (`sk`) — every decode step allocates the
+//     same size, so a per-device grow-only cache is a drop-in follow-up
+//     (the plan-once decode arc; see scratch.rs's deferred-pooling note).
+//   * `k_len == 0` returns 0 (success) WITHOUT touching `y` → the
+//     zero-init output stays zeros.
+//   * Return codes 0 ok / 2 dims|GQA|k_len<0 / 3 head_dim>128 / 4
+//     workspace / 1000+cudaError, mapped to a `fuel_ir::Result` via
+//     `status::check` (never panics).
+//
+// ## Decline-to-decomposed is a STATIC (ranker) decision, not a runtime
+// ## bail
+//
+// Fuel dispatch is FAIL-FAST: a registered kernel that returns `Err`
+// fails `realize` outright — there is NO runtime fallback to the
+// decomposed base map (pipelined.rs "Fail-fast dispatch"). Therefore the
+// unsupported-shape gates (`seq_q != 1`, `head_dim > 128`, window /
+// softcap) are enforced at REGISTRATION/RANKER level (the dtype key gates
+// f16/bf16; `cost::cost_flash_decoding_cuda` returns an infeasible cost
+// outside the supported set so the ranker prefers the decomposed arm).
+// The hard errors below are DEFENSE-IN-DEPTH for states the ranker should
+// have excluded — they signal a routing bug, never a shape the caller is
+// entitled to fall back from.
+
+type FlashDecodingRun = unsafe extern "C" fn(
+    q: *const std::ffi::c_void,
+    k: *const std::ffi::c_void,
+    v: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    batch: i32,
+    heads: i32,
+    num_kv_heads: i32,
+    k_len: i32,
+    head_dim: i32,
+    q_b_stride: i64,
+    q_h_stride: i64,
+    k_b_stride: i64,
+    k_h_stride: i64,
+    k_seq_stride: i64,
+    v_b_stride: i64,
+    v_h_stride: i64,
+    v_seq_stride: i64,
+    y_b_stride: i64,
+    y_h_stride: i64,
+    scale: f32,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+type FlashDecodingCanImpl = unsafe extern "C" fn(
+    batch: i32,
+    heads: i32,
+    num_kv_heads: i32,
+    k_len: i32,
+    head_dim: i32,
+) -> i32;
+
+type FlashDecodingWorkspaceBytes = unsafe extern "C" fn(
+    batch: i32,
+    heads: i32,
+    k_len: i32,
+    head_dim: i32,
+) -> usize;
+
+/// Derive `(b_stride, h_stride, seq_stride)` in ELEMENT units for a rank-4
+/// `[B, H, S, D]` tensor from its `Layout` (decoupled from `k_len` — the
+/// capacity buffer's strides read a live prefix correctly). Requires the
+/// innermost (head_dim) axis to be contiguous (`stride[3] == 1`), matching
+/// the kernel's implicit unit head_dim stride. When no layout is supplied
+/// (executor passed none), falls back to the contiguous strides of `dims`.
+fn flash_decoding_rank4_strides(
+    layout: Option<&Layout>,
+    dims: [usize; 4],
+    op_label: &'static str,
+    tensor: &'static str,
+) -> Result<(i64, i64, i64)> {
+    match layout {
+        Some(l) => {
+            let s = l.stride();
+            if s.len() != 4 {
+                return Err(Error::Msg(format!(
+                    "{op_label}: {tensor} must be rank 4 [B,H,S,D], got stride rank {}",
+                    s.len(),
+                ))
+                .bt());
+            }
+            if s[3] != 1 {
+                return Err(Error::Msg(format!(
+                    "{op_label}: {tensor} head_dim (innermost) axis must be contiguous \
+                     (stride[3] == 1), got {}",
+                    s[3],
+                ))
+                .bt());
+            }
+            Ok((s[0] as i64, s[1] as i64, s[2] as i64))
+        }
+        None => {
+            // Contiguous fallback for [d0, d1, d2, d3].
+            let seq_stride = dims[3] as i64;
+            let h_stride = (dims[2] * dims[3]) as i64;
+            let b_stride = (dims[1] * dims[2] * dims[3]) as i64;
+            Ok((b_stride, h_stride, seq_stride))
+        }
+    }
+}
+
+/// FlashDecoding driver. Allocates a zero-initialized output
+/// `[B, Hq, 1, D]`, sizes workspace at capacity (`sk`), and launches the
+/// baracuda decode kernel. Returns the attention output.
+#[allow(clippy::too_many_arguments)]
+fn flash_decoding_run(
+    q: &CudaStorageBytes,
+    k: &CudaStorageBytes,
+    v: &CudaStorageBytes,
+    q_layout: Option<&Layout>,
+    k_layout: Option<&Layout>,
+    v_layout: Option<&Layout>,
+    b: usize,
+    hq: usize,
+    hkv: usize,
+    sq: usize,
+    sk: usize,
+    d: usize,
+    k_len: usize,
+    scale: f32,
+    run: FlashDecodingRun,
+    can_impl: FlashDecodingCanImpl,
+    ws_bytes: FlashDecodingWorkspaceBytes,
+    op_label: &'static str,
+    dtype_size_bytes: usize,
+) -> Result<CudaStorageBytes> {
+    // ---- Static-shape gates (DEFENSE-IN-DEPTH; the ranker excludes these) ----
+    if sq != 1 {
+        return Err(Error::Msg(format!(
+            "{op_label}: flash_decoding is a decode kernel (seq_q must be 1, got {sq}); \
+             the ranker must route seq_q>1 to the decomposed base map",
+        ))
+        .bt());
+    }
+    if hkv == 0 || hq % hkv != 0 {
+        return Err(Error::Msg(format!(
+            "{op_label}: Hq={hq} must be a positive multiple of Hkv={hkv} (GQA)",
+        ))
+        .bt());
+    }
+    if k_len > sk {
+        return Err(Error::Msg(format!(
+            "{op_label}: logical k_len ({k_len}) exceeds physical K capacity sk ({sk})",
+        ))
+        .bt());
+    }
+
+    let batch_i = i32::try_from(b).map_err(|_| shape_overflow(op_label, 0, b))?;
+    let heads_i = i32::try_from(hq).map_err(|_| shape_overflow(op_label, 1, hq))?;
+    let kv_heads_i = i32::try_from(hkv).map_err(|_| shape_overflow(op_label, 2, hkv))?;
+    let d_i = i32::try_from(d).map_err(|_| shape_overflow(op_label, 3, d))?;
+    let k_len_i = i32::try_from(k_len).map_err(|_| shape_overflow(op_label, 4, k_len))?;
+    let sk_i = i32::try_from(sk).map_err(|_| shape_overflow(op_label, 5, sk))?;
+
+    // No-launch admissibility gate (head_dim<=128, GQA divisibility, k_len>=0).
+    // SAFETY: pure host-side integer check, no pointers.
+    let can = unsafe { can_impl(batch_i, heads_i, kv_heads_i, k_len_i, d_i) };
+    check(can, op_label)?;
+
+    let device = q.device().clone();
+    let out_bytes = b * hq * sq * d * dtype_size_bytes;
+    if out_bytes == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    // Zero-init: covers the `k_len == 0` edge (kernel writes nothing → the
+    // output must already be zeros).
+    let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+
+    // Per-tensor strides (element units), decoupled from k_len.
+    let (q_b, q_h, _q_s) =
+        flash_decoding_rank4_strides(q_layout, [b, hq, sq, d], op_label, "q")?;
+    let (k_b, k_h, k_s) =
+        flash_decoding_rank4_strides(k_layout, [b, hkv, sk, d], op_label, "k")?;
+    let (v_b, v_h, v_s) =
+        flash_decoding_rank4_strides(v_layout, [b, hkv, sk, d], op_label, "v")?;
+    // Output is freshly allocated contiguous [B, Hq, 1, D].
+    let y_b = (hq * sq * d) as i64;
+    let y_h = (sq * d) as i64;
+
+    // Workspace sized at CAPACITY (monotonic in k_len ⇒ covers every step's
+    // live prefix). Per-call alloc for now; a per-device grow-only cache is
+    // the plan-once decode follow-up.
+    // SAFETY: pure host-side size query.
+    let ws_need = unsafe { ws_bytes(batch_i, heads_i, sk_i, d_i) };
+    let scratch = Workspace::alloc(&device, ws_need)?;
+
+    let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+    let q_ptr = q.buffer().as_raw().0 as *const std::ffi::c_void;
+    let k_ptr = k.buffer().as_raw().0 as *const std::ffi::c_void;
+    let v_ptr = v.buffer().as_raw().0 as *const std::ffi::c_void;
+    let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
+
+    // SAFETY: pointers are live device buffers of the checked byte sizes;
+    // strides are element units matching the ABI; workspace >= the kernel's
+    // capacity requirement; stream is this device's stream.
+    let status = unsafe {
+        run(
+            q_ptr, k_ptr, v_ptr, y_ptr,
+            scratch.as_raw(), scratch.bytes(),
+            batch_i, heads_i, kv_heads_i, k_len_i, d_i,
+            q_b, q_h,
+            k_b, k_h, k_s,
+            v_b, v_h, v_s,
+            y_b, y_h,
+            scale,
+            stream,
+        )
+    };
+    check(status, op_label)?;
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out_buf),
+        device,
+        out_bytes,
+    ))
+}
+
+fn shape_overflow(op: &'static str, dim_index: usize, dim_value: usize) -> Error {
+    Error::cuda(crate::error::CudaError::BaracudaShapeOverflow { op, dim_index, dim_value })
+}
+
+macro_rules! flash_decoding_kernel {
+    ($name:ident, $dtype_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
+        ::paste::paste! {
+            #[doc = concat!("Baracuda `flash_decoding_", stringify!($dtype_stem), "` decode-flash kernel (seq_q==1, capacity-K).")]
+            #[allow(clippy::too_many_arguments)]
+            pub fn $name(
+                q: &CudaStorageBytes,
+                k: &CudaStorageBytes,
+                v: &CudaStorageBytes,
+                q_layout: Option<&Layout>,
+                k_layout: Option<&Layout>,
+                v_layout: Option<&Layout>,
+                b: usize,
+                hq: usize,
+                hkv: usize,
+                sq: usize,
+                sk: usize,
+                d: usize,
+                k_len: usize,
+                scale: f32,
+            ) -> Result<CudaStorageBytes> {
+                flash_decoding_run(
+                    q, k, v, q_layout, k_layout, v_layout,
+                    b, hq, hkv, sq, sk, d, k_len, scale,
+                    sys::[<baracuda_kernels_flash_decoding_ $dtype_stem _run>],
+                    sys::[<baracuda_kernels_flash_decoding_ $dtype_stem _can_implement>],
+                    sys::[<baracuda_kernels_flash_decoding_ $dtype_stem _workspace_bytes>],
+                    $op_label,
+                    $dtype_size,
+                )
+            }
+        }
+    };
+}
+
+flash_decoding_kernel!(flash_decoding_f16,  f16,  2, "flash_decoding_f16");
+flash_decoding_kernel!(flash_decoding_bf16, bf16, 2, "flash_decoding_bf16");
