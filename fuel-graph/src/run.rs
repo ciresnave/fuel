@@ -1272,6 +1272,68 @@ mod tests {
         );
     }
 
+    /// **Optimize-time variant bake (collapse) — the graph-side primitive.**
+    /// `Graph::collapse_variant_branch(branch, winner)` rewires the decision
+    /// point so the chosen arm is the realized route WITHOUT any runtime pick
+    /// (kernel-variant choice baked at optimize time):
+    ///
+    /// - collapse to arm 1 ⇒ `reconverge` reads arm 1, the branch is a single
+    ///   inert arm `[arm1]`, and `lower_runs_arm0` (the empty-route lowering)
+    ///   now follows arm 1 and drops arm 0's interior — the mirror image of the
+    ///   default, achieved structurally rather than via a `PickedRoute`;
+    /// - collapse to arm 0 ⇒ the merge is unchanged, the branch reduces to
+    ///   `[arm0]`, and the lowering is byte-identical to today (arm 1 pruned).
+    #[test]
+    fn collapse_variant_branch_bakes_the_winner_into_the_route() {
+        // --- (a) collapse to the variant arm (arm 1) ---
+        let (mut g, _diverge, arm0, arm1, reconverge, branch, post) =
+            diamond_with_branch();
+        // Before: default lowering realizes arm 0 (the finding — a same-device
+        // variant arm is never selected).
+        let before = lower_runs_arm0(&g, &[post]);
+        assert!(before.contains(&arm0) && !before.contains(&arm1),
+            "before the bake the default route is arm 0");
+
+        g.collapse_variant_branch(branch, 1).expect("collapse to arm 1");
+
+        // The merge now reads the winner (arm 1); the branch is a single arm.
+        assert!(g.node(reconverge).inputs.contains(&arm1),
+            "reconverge rewired to read the baked winner (arm 1)");
+        assert!(!g.node(reconverge).inputs.contains(&arm0),
+            "reconverge no longer reads the pruned arm 0");
+        assert_eq!(g.node(branch).inputs, vec![arm1],
+            "the branch collapsed to the single winning arm");
+
+        // The empty-route lowering now follows the baked winner (arm 1) and
+        // drops arm 0's interior — with NO PickedRoute.
+        let after = lower_runs_arm0(&g, &[post]);
+        assert!(after.contains(&arm1),
+            "after the bake the default route follows the winner (arm 1); order={after:?}");
+        assert!(!after.contains(&arm0),
+            "after the bake arm 0's interior is pruned; order={after:?}");
+
+        // --- (b) collapse to arm 0 is byte-identical to today (arm 1 pruned) ---
+        let (mut g2, _d2, a0_2, a1_2, recon2, branch2, post2) = diamond_with_branch();
+        let recon2_inputs_before = g2.node(recon2).inputs.clone();
+        g2.collapse_variant_branch(branch2, 0).expect("collapse to arm 0");
+        assert_eq!(g2.node(recon2).inputs, recon2_inputs_before,
+            "arm-0 collapse leaves the merge unchanged");
+        assert_eq!(g2.node(branch2).inputs, vec![a0_2],
+            "arm-0 collapse reduces the branch to [arm0] (variant arm pruned)");
+        let order2 = lower_runs_arm0(&g2, &[post2]);
+        assert!(order2.contains(&a0_2) && !order2.contains(&a1_2),
+            "arm-0 collapse realizes arm 0 (byte-identical to today)");
+
+        // --- (c) never-panic guards: bad node / out-of-range winner / non-branch ---
+        let (mut g3, _d3, _a0_3, _a1_3, _r3, branch3, post3) = diamond_with_branch();
+        assert!(g3.collapse_variant_branch(NodeId(9999), 0).is_err(),
+            "out-of-bounds branch node ⇒ Err, not panic");
+        assert!(g3.collapse_variant_branch(branch3, 7).is_err(),
+            "out-of-range winner_arm ⇒ Err, not panic");
+        assert!(g3.collapse_variant_branch(post3, 0).is_err(),
+            "non-Op::Branch node ⇒ Err, not panic");
+    }
+
     /// Build two coupled diamonds back-to-back (diamond-2 diverges off
     /// diamond-1's reconverge) so the streaming-walk equality test exercises
     /// upstream-first lazy resolution over more than one branch. Returns the
