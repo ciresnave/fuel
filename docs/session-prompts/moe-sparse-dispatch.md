@@ -1,0 +1,66 @@
+# MoE sparse dispatch — session prompt (continue here)
+
+**Status (2026-07-04):** the data-determined dynamic-shapes SUBSTRATE + the dropless-MoE
+COMPUTE ATOM are shipped and tested on this branch (`feat/data-dependent-shapes`, worktree
+`C:/Projects/fuel-ddshapes`). This doc is the handoff for the two remaining MoE increments.
+CPU-verifiable throughout — no GPU needed. TDD each (born-red first).
+
+Branch base is `839c3ae5`; `main` has since moved to `42fb5a58` — rebase before the eventual
+merge, not required to continue. Build discipline: always `-p <crate>`, never workspace-wide.
+
+## What's already built (the atoms you compose)
+
+- **`Op::NonZeroIndices { count_sym }`** (`677c23af`) — data-determined producer. Bundle output
+  (slot 0 = `indices [capacity] U32`, slot 1 = `count [1] U32`); `Tensor::nonzero_indices_bundled`
+  / `LazyTensor::nonzero_indices_bundled`. CPU kernel `nonzero_indices_{f32,u32}`.
+- **Producer→SymEnv bind (`3dafb8b0`) + consumer resolve-at-execute (`e50ff565`)** — the
+  executor publishes a producer's runtime count into a loop-local `produced_syms: SymEnv`
+  mid-realize; consumers resolve it at execute (single-threaded topo order guarantees producer
+  precedes consumer). Vehicle proven: a data-determined `WriteSlice` offset. Key helpers to
+  mirror: `bind_data_determined_count`, `resolve_deferred_write_slice` (fuel-dispatch/src/
+  pipelined.rs), `Graph::binds_data_determined_sym` (fuel-graph/src/lib.rs).
+- **`Tensor::matmul_dyn_m(rhs, row_count: DynScalar)`** (`f17e0074` + `e19b6973`) — F32-only.
+  A matmul that computes exactly `row_count` rows of an `m`-row CAPACITY buffer (the FLOP
+  saving). Row count rides a GRAPH SIDE-TABLE (`Graph::node_matmul_row_count`), NOT an
+  Op::MatMul field. CPU kernel `matmul_f32_capacity`. Execute-resolve: `resolve_deferred_matmul`.
+  Test: `fuel-core/tests/nonzero_indices.rs::nonzero_count_drives_dynamic_m_matmul`.
+
+## Increment A — gather-by-count op
+
+Gather routed tokens into a capacity buffer, producing the lhs `matmul_dyn_m` consumes.
+- Given a value/token tensor `[N, hidden]` and a data-determined index list (the `indices`
+  slot from `NonZeroIndices`, valid prefix = `count`), gather the selected rows into a
+  `[capacity, hidden]` buffer (first `count` rows valid; tail unspecified/zeroed).
+- The output's leading dim is the same data-determined `count` (`count_sym`) — feed that same
+  sym as `matmul_dyn_m`'s `row_count`. (No shape-level Extent needed if you thread `count_sym`
+  directly to the matmul builder, mirroring how the tests wire it.)
+- Model it on the existing `Op::Gather`/`IndexSelect` end-to-end wiring (Op variant → shape/
+  dtype → CPU kernel → op_to_op_params → OpKind → binding). Gather already exists — this may be
+  expressible as `index_select` over the `indices[..count]` prefix + a capacity pad, OR a small
+  new op. Prefer reusing `index_select` if the count-bounded prefix can be expressed.
+- TDD: mask → NonZeroIndices → gather rows at `indices[..count]` → assert the gathered capacity
+  buffer's first `count` rows equal the selected input rows.
+
+## Increment B — the sparse layer rewrite
+
+`fuel-core/src/lazy_nn/moe.rs` — today `LazyMoeLayer::forward` computes ALL N expert FFNs on
+ALL tokens (dense; ~32× over-compute for 256-expert/top-8). Rewrite to per-expert sparse:
+- For each expert `e`: `mask = (router_indices == e)` → `NonZeroIndices(mask)` → `(sel, count_e)`
+  (which (token,slot) pairs routed to `e`).
+- Gather those tokens' hidden states (Increment A) into a `[capacity, hidden]` buffer.
+- Run expert `e`'s SwiGLU FFN using `matmul_dyn_m(..., count_e)` for the three projections
+  (compute only `count_e` rows).
+- Scale rows by the gate weight, scatter-add back into the `[N, hidden]` output at the token
+  positions.
+- **Bit-exact to the current dense path** is the acceptance test (add a born-red test asserting
+  sparse == dense on a small MoE), plus a note/measurement of the FLOP reduction.
+- Keep `WeightStorage`/`LazyLinear` F32 (matmul_dyn_m is F32-only today).
+
+## After MoE
+
+MLA / KV-cache compression (frontier-architecture-gaps.md §2): generalize `LazyKvCache` /
+`InferenceContext::KvCache` (both hardwire a symmetric K/V pair) to hold an arbitrary latent
+tensor → MLA decode caches only the compressed latent + `k_pe` → weight-absorption. Then Part 2
+(BF16 CUDA decode / the 21× fix — GPU-gated).
+
+See also the machine-local memory `data-dependent-shapes.md` for the same map with more detail.
