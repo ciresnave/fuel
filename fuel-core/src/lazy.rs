@@ -629,6 +629,36 @@ impl LazyTensor {
         Ok(Self { inner: self.inner.matmul(&other.inner) })
     }
 
+    /// Data-determined-M matmul (sparse-MoE / capacity-buffer): like
+    /// [`Self::matmul`], but computes only `row_count` rows of the
+    /// `self.shape[-2]`-row capacity buffer, the rest left zeroed.
+    /// `row_count` is a [`fuel_ir::DynScalar`] resolved at compile if
+    /// input-determined, else at execute from the producer-bound `SymEnv`
+    /// (e.g. `Op::NonZeroIndices`'s per-expert count). F32-only today.
+    pub fn matmul_dyn_m(
+        &self,
+        other: &Self,
+        row_count: fuel_ir::DynScalar,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
+        let a_dims = self.inner.shape().dims().to_vec();
+        let b_dims = other.inner.shape().dims().to_vec();
+        if a_dims.len() < 2 || b_dims.len() < 2 {
+            return Err(fuel_ir::Error::Msg(format!(
+                "matmul_dyn_m: both operands must be rank >= 2, got lhs={a_dims:?} rhs={b_dims:?}",
+            ))
+            .bt());
+        }
+        let a_k = a_dims[a_dims.len() - 1];
+        let b_k = b_dims[b_dims.len() - 2];
+        if a_k != b_k {
+            return Err(fuel_ir::Error::Msg(format!(
+                "matmul_dyn_m: contracting dim mismatch lhs[..., M, {a_k}] vs rhs[..., {b_k}, N]",
+            ))
+            .bt());
+        }
+        Ok(Self { inner: self.inner.matmul_dyn_m(&other.inner, row_count) })
+    }
+
     /// Quantized matmul: `C = self @ dequant(W_Q)`. See
     /// [`fuel_graph::Tensor::qmatmul`] for details. The weight bytes
     /// tensor must be a flat U32 const holding the raw Q-block byte

@@ -29,7 +29,7 @@ use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, DeviceLocation, Error, Layout, Result};
 
-use crate::kernel::{KernelBindingTable, KernelRef, OpParams};
+use crate::kernel::{KernelBindingTable, KernelRef, MatmulM, OpParams};
 #[cfg(feature = "cuda")]
 use crate::kernel::KernelCaps;
 use fuel_memory::{BackendStorage, Storage};
@@ -3053,7 +3053,7 @@ macro_rules! cpu_fused_linear_wrapper {
                 .bt());
             }
             let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-                OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
+                OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
                     (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
                 }
                 other => {
@@ -3909,9 +3909,9 @@ pub(crate) fn matmul_f32_cpu_wrapper(
         ))
         .bt());
     }
-    let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-        OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
-            (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
+    let (lhs_batch_dims, rhs_batch_dims, m, n, k, m_compute) = match params {
+        OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, m_compute } => {
+            (lhs_batch_dims, rhs_batch_dims, *m, *n, *k, m_compute)
         }
         other => {
             return Err(Error::Msg(format!(
@@ -3920,19 +3920,34 @@ pub(crate) fn matmul_f32_cpu_wrapper(
             .bt())
         }
     };
+    // Data-determined-M (sparse MoE): `m` is the row capacity; compute only
+    // `rows`. `Deferred` must have been resolved at execute before the
+    // kernel runs (see resolve_deferred_matmul).
+    let rows = match m_compute {
+        MatmulM::All => m,
+        MatmulM::Rows(c) => *c,
+        MatmulM::Deferred(d) => {
+            return Err(Error::Msg(format!(
+                "matmul_f32 wrapper: unresolved data-determined row count {d:?} \
+                 (must be resolved at execute before the kernel runs)",
+            ))
+            .bt());
+        }
+    };
     let lhs_guard = read_storage(&inputs[0])?;
     let rhs_guard = read_storage(&inputs[1])?;
     let mut out_guard = write_storage(&outputs[0])?;
     let lhs_cpu = cpu_input(&lhs_guard)?;
     let rhs_cpu = cpu_input(&rhs_guard)?;
     let out_cpu = cpu_output(&mut out_guard)?;
-    fuel_cpu_backend::byte_kernels::matmul_f32(
+    fuel_cpu_backend::byte_kernels::matmul_f32_capacity(
         lhs_cpu,
         rhs_cpu,
         out_cpu,
         lhs_batch_dims,
         rhs_batch_dims,
         m,
+        rows,
         n,
         k,
     )
@@ -3965,7 +3980,7 @@ macro_rules! cpu_matmul_wrapper {
                 .bt());
             }
             let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-                OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
+                OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
                     (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
                 }
                 other => {
@@ -4022,7 +4037,7 @@ pub(crate) fn matmul_f64_cpu_wrapper(
         .bt());
     }
     let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-        OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k } => {
+        OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
             (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
         }
         other => {

@@ -1414,6 +1414,8 @@ fn prepare_direct_call_inputs(op: OpKind, size: &OpSize) -> Option<PreparedDirec
                 lhs_batch_dims: Vec::new(),
                 rhs_batch_dims: Vec::new(),
                 m, n, k,
+                // Judge profiles dense static matmuls.
+                m_compute: fuel_dispatch::kernel::MatmulM::All,
             };
             Some(PreparedDirectCall {
                 inputs: vec![lhs, rhs],

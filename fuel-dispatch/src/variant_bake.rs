@@ -434,7 +434,16 @@ fn matmul_op_params(graph: &Graph, node: &fuel_graph::Node) -> Option<OpParams> 
     let n = bd[bd.len() - 1];
     let lhs_batch_dims: Vec<usize> = ad[..ad.len() - 2].to_vec();
     let rhs_batch_dims: Vec<usize> = bd[..bd.len() - 2].to_vec();
-    Some(OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k })
+    // Cost/bake geometry only — the row count is the capacity `m` (a
+    // dynamic-M matmul costs at its capacity, a safe over-estimate).
+    Some(OpParams::Matmul {
+        lhs_batch_dims,
+        rhs_batch_dims,
+        m,
+        n,
+        k,
+        m_compute: crate::kernel::MatmulM::All,
+    })
 }
 
 /// Derive `OpParams::FlashAttn` for the decode cost from the flash node's
