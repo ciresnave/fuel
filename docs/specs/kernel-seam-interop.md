@@ -278,16 +278,36 @@ implement it.
 
 ### 5.2 The request / response shape (protocol v1)
 
-```
-JitRequest  {  region:   partial base map (primitive subgraph, FDX-described operands),
-               target:   (backend, device, shapes, dtypes),
-               budget:   compile-time / resource budget (Fuel sets it) }
+The handover is **two-step** — a light wire response, then a lazy artifact fetch at adopt — so a kernel
+Fuel's cost-gate declines transfers nothing (revised 2026-07-04 to Baracuda's built impl + frozen):
 
-JitResponse {  kernel:   entry_point + binary/PTX (resolved via the provider link_registry),
-               contract: a full FKC contract (accept/return/op_params/cost/precision/determinism),
-               recipe:   the declarative pattern: + decompose for the region — so it registers as a
-                         Tier-2 declarative fused-op identity (decompose total/never-panic/primitive→self) }
 ```
+JitRequest  {  region:   partial base map (primitive subgraph — also the recipe's decompose),
+               operands: [OperandDesc]  (shapes/dtypes of `target`; raw, synthesizer-classified),
+               arch:     ArchSku         (the backend/device of `target`),
+               budget:   JitBudget { max_compile_ms }  (Fuel sets it; coarse — bounds optimizer effort) }
+
+// step 1 — synthesize → a LIGHT handle (or decline); no heavy artifact crosses here:
+JitResponse ::= Synthesized { entry_point }  |  Declined { reason }
+
+// step 2 — after Fuel's cost-gate adopts, take_kernel(entry_point) → the artifact:
+SynthArtifact { artifact: bytes,  kind: Ptx | Cubin  (always loadable — non-loadable ⇒ Declined),
+                link:     LinkEntry { entry_point, symbol, structure_key, revision_hash },
+                contract: full FKC contract markdown  (accept/return/op_params/cost/precision/determinism
+                          + the re-fuse `pattern:`) }
+```
+
+`Synthesizer` is Fuel's trait (the synthesizer `impl`s it, so Fuel is type-decoupled):
+`synthesize(&JitRequest) -> JitResponse` + `take_kernel(&str) -> Option<SynthArtifact>`. The methods are
+**sync**; the impl is `Send + Sync` + interior-mutable, so Fuel drives `synthesize` on a
+**background / idle-time thread** (the G7 background-re-optimization trigger), never the realize path.
+
+**No `recipe` on the wire** — it is byte-reconstructable from `contract`: `recipe.pattern` *is* the
+contract's embedded `pattern:` block, and `recipe.decompose` is that block with `pattern:`→`decompose:`
+swapped. Fuel derives `decompose` by the **string swap on `contract.pattern`**, not by re-serializing the
+region (which risks serializer drift between Fuel's serializer and the synthesizer's). The kernel *body* is
+optimized before codegen, but the contract's `pattern:` is the **un-optimized** region — exactly the
+primitive subgraph the decompose must expand back to.
 
 Adoption is **cost-gated**: the returned kernel enters the binding table as one more multi-sibling
 alternative; the route picker adopts it only if it *wins*. A kernel that never wins is never used (and the
