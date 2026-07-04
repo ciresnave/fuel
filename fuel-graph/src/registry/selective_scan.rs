@@ -50,16 +50,34 @@
 //! - **F32 only**: per-dtype siblings follow the FSCE/CausalConv1d
 //!   precedent.
 //!
-//! ## Architectural note — no primitive decomposition
+//! ## Architectural note — a genuine basis gap (the SSM `Scan` primitive)
 //!
-//! Like CausalConv1d and Conv2D, SelectiveScan has no clean primitive
-//! decomposition in fuel-graph's current Op set. The textbook scan
-//! is a sequential recurrence with per-timestep state updates — even
-//! if we synthesized it from primitives (`MatMul + Exp + Add` chains
-//! per step), the resulting graph would have `O(seqlen)` nodes and
-//! defeat any optimization pass. [`decompose`] panics with a clear
-//! pointer; backends without a native kernel use the executor's
-//! `cpu_fallback` path.
+//! SelectiveScan is the **canonical basis gap** the constitution names:
+//! decisions-log G3 (2026-06-20) calls out "a higher-order `Scan` for SSMs"
+//! as exactly the kind of primitive Fuel lacks and that must be closed by a
+//! **build-time `Op`-enum extension**, not smuggled in at runtime. The
+//! textbook scan is a sequential recurrence with per-timestep state; the two
+//! ways to express it in *today's* basis are both rejected as recipes:
+//!
+//! - **Unroll `O(seqlen)` per-step chains** (`Exp/Mul/Add`). Total, but the
+//!   node count is *shape-dependent and unbounded*, there is no finite
+//!   `pattern` that re-fuses it, and it defeats the very optimization the base
+//!   map exists for — not a recipe, an explosion.
+//! - **Closed-form parallel scan via `CumSum`.** A diagonal SSM *does* have
+//!   one: `h[t] = exp(a·D[t]) ⊙ cumsum_t(exp(−a·D[s]) ⊙ x[s])`, `D =
+//!   cumsum_t(Δ)`. But Mamba's `a = −exp(a_log) < 0`, so `exp(−a·D[s]) =
+//!   exp(|a|·D[s])` **overflows** for any realistic sequence — numerically
+//!   invalid, i.e. *not* IEEE-equivalent to the fused kernel. This is exactly
+//!   why Mamba's kernel uses a segmented/chunked scan, and why a stable
+//!   decomposition needs the missing primitive (a `Scan` / associative-scan,
+//!   or a chunked-scan op), not a cleverer rewrite.
+//!
+//! So per G2 [`decompose`] is total + **never-panic** by returning **self** —
+//! the driver's fixpoint signal — leaving the node `Op::Fused` as a *surfaced
+//! opaque-op gap* the inventory telemetry can find. Backends without a native
+//! kernel use the executor's `cpu_fallback`. The precise ask to close it: add
+//! a higher-order scan primitive to the `Op` basis (a Fuel-side build-time
+//! extension per G3), then this decompose emits `cumsum`-scan-over-`Scan`.
 //!
 //! ## Why `BackwardKind::NotDifferentiable` for v1
 //!
@@ -175,14 +193,20 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// SelectiveScan is a genuine **basis gap**: the textbook scan is a
-/// sequential recurrence, and Fuel lacks the higher-order `Scan` primitive
-/// needed to express it without unrolling to `O(seqlen)` nodes. Per G2
-/// (2026-06-20) `decompose` is total and never panics: with no expressible
-/// recipe it returns **self**, the driver's fixpoint signal ("can't
-/// decompose further"), leaving the node `Op::Fused` — a surfaced opaque-op
-/// gap. It decomposes once a `Scan` primitive lands. Backends without a
-/// native kernel use the executor's `cpu_fallback`.
+/// SelectiveScan is the constitution's canonical **basis gap** (decisions-log
+/// G3: "a higher-order `Scan` for SSMs"). No recipe over today's `Op` basis is
+/// both *total* and *numerically valid* — the `O(seqlen)` unroll is an
+/// unbounded, un-re-fusable explosion, and the `CumSum` closed-form overflows
+/// for Mamba's `a < 0` regime (see the module note). Per G2 (2026-06-20)
+/// `decompose` is therefore total and never panics by returning **self** — the
+/// driver's fixpoint signal ("can't decompose further") — leaving the node
+/// `Op::Fused` as a surfaced opaque-op gap for the inventory telemetry.
+/// Closing it is a build-time `Op`-basis extension (a `Scan` / associative- or
+/// chunked-scan primitive); backends without a native kernel use
+/// `cpu_fallback`. `nf4_matmul_decompose_matches_kernel` and
+/// `flash_attn_decompose_concrete_klen` (fuel-core) are the other two of the
+/// original three panicking-decompose bugs — both now closed with real
+/// recipes; this one remains a *documented* gap, not a bug.
 pub fn decompose(_graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
     id
 }

@@ -392,6 +392,29 @@ Cross-references are fine — an architecture-decision-log entry can link to the
 
 ---
 
+## 2026-07-03 — The three flagged `decompose`s resolved: NF4 + concrete-`k_len` flash recipes land; symbolic-`k_len` flash + SSM scan are documented basis gaps
+
+**Sections affected**: 04 (optimization) — MINOR (status note only); no core-claim change.
+**Phase / PR**: never-panic / recipe-principle backlog (G2). Branch `feat/kernel-contracts-dlpack`. Code: `fuel-graph/src/registry/{nf4_matmul,flash_attn,selective_scan}.rs`; parity + gap-posture tests in `fuel-core/src/lazy.rs`.
+
+**What changed**: The 2026-06-20 G2 entry (and CLAUDE.md, and 04) flagged "three current panicking decomposes (`nf4_matmul.rs:120`, `flash_attn`, `selective_scan`)." **First correction: they were not, in fact, panicking** — a prior G2 pass had already converted every panic to a self-return (the never-crash posture). So the residual work was never "stop the crash"; it was "supply the *recipe* so the base map isn't stranded with an opaque island" (the load-bearing-for-the-optimizer half of G2). That work is now done, per op:
+
+- **`nf4_matmul` → total primitive recipe.** `dequantize(w_packed, absmax) → matmul`, built with **no data-carrying `Const` and no device handle** (a `decompose` fn has neither): `Cast(U8→F32)` + `lower = wf − 16·⌊wf/16⌋` / `upper = ⌊wf/16⌋` nibble-unpack (exact for `1/16 = 2⁻⁴`), `Unsqueeze→Concat→Reshape` interleave to codes `[N, K]`, a **codebook lookup as an indicator sum** `Σᵢ LUTᵢ·relu(1−|c−i|)` (pure elementwise, exact because codes are exact small integers), broadcast per-block `absmax`, `Transpose`, `MatMul`. Parity test matches the fused CPU byte-kernel numerically.
+
+- **`flash_attn` concrete-`k_len` → total recipe; symbolic-`k_len` → documented gap.** `k_len` is `Option<DynScalar>`. `None` (vanilla) already decomposed. **`Some(Concrete(kl))` was static all along but returned self** (the `k_len.is_some()` short-circuit was too coarse); it now `Slice`s K/V to the live prefix and runs the SDPA recipe **bottom-right-aligned** — `q_pos_offset = kl − Sq` threaded through every causal / sliding-window / ALiBi band (`recompute_probs` + `alibi_bias` gained the offset param; the two existing callers pass 0, keeping the backward byte-identical). **`Some(Sym(_))` is a genuine registry-layer basis gap**: slicing to a *symbolic* length needs a primitive the basis lacks (`Op::Slice` carries a static `usize`; nothing materializes a `DynScalar` into a length-mask tensor inside a `decompose`, which never sees the per-realize `SymEnv`). The symbolic decode *oracle* is emitted one layer up by the optimizer's `decode_flash` arm, which **does** hold the `SymEnv` — so returning self here is correct-by-design, not a punt.
+
+- **`selective_scan` → the constitution's canonical basis gap (G3).** No recipe over today's `Op` basis is both total *and* numerically valid: the `O(seqlen)` unroll is an unbounded, un-re-fusable explosion (not a recipe), and the diagonal-SSM `CumSum` closed-form `h[t] = exp(a·D[t]) ⊙ cumsum_t(exp(−a·D[s]) ⊙ x[s])` **overflows** because Mamba's `a = −exp(a_log) < 0` makes `exp(−a·D[s]) = exp(|a|·D[s])` blow up — exactly why the kernel is chunked. Held as a never-crash surfaced gap; the precise ask to close it is a **build-time `Op`-enum extension** (a higher-order `Scan` / associative- or chunked-scan primitive), per G3.
+
+**The signature question (why no `Result`).** G2 demands never-panic but the DecompositionMap signature `fn(&mut Graph, NodeId, &FusedOpParams) -> NodeId` cannot fail. Resolution, consistent across all three: **returning self *is* the typed gap-marker.** The fixpoint driver (`opt.rs` `run_pass` / `LoweringRule::rewrite`) already treats `new_id == id` as "no progress" and records no remap, so the lowering loop **terminates** and the node is left as `Op::Fused` — a surfaced opaque-op gap an inventory pass can find. A primitive→self and a gap→self are byte-identical to the driver and distinguished only by **basis membership** (exactly G2's rule), so **no signature widening is needed** and none was done. The gap-posture test asserts termination + node-survival empirically.
+
+**Why (not force a lowering)**: the recipe is the *math oracle* + the substrate the optimizer covers; a wrong lowering (numerically-unstable cumsum) or an unbounded one (seqlen unroll) is worse than an honest surfaced gap — "partial-with-precise-gaps is valid; never force a wrong lowering."
+
+**Alternatives considered**: *NF4 codebook via `Const`-tensor + `IndexSelect`* — rejected: a `decompose` fn has no device handle to build a data-carrying `Const`, and it adds an integer-index dtype dependency; the indicator sum needs only confirmed elementwise primitives and is provably exact. *Generalize `recompute_probs` vs. inline a second SDPA for the offset case* — chose the shared-function offset param (one code path, backward stays byte-identical). *Widen `decompose` to `Result`* — rejected: G2 makes totality a build-time invariant and self-return already expresses the gap; widening would ripple to every decompose + the fixpoint driver for no gain.
+
+**Implications going forward**: (1) Two of the three flags clear; the remaining `decompose` gaps (`flash_attn` `Sym` `k_len`, `selective_scan`) are now *documented, tested* basis gaps with a named missing primitive each — not backlog bugs. (2) When a `DynScalar`-length `Slice`/mask primitive lands (or the `decode_flash` symbolic oracle is folded into the registry), `flash_attn`'s `Sym` path decomposes with the same offset machinery. (3) The SSM `Scan` `Op` extension (G3) unblocks `selective_scan` (and `ssd_chunk_scan`).
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.

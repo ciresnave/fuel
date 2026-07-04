@@ -157,7 +157,7 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
     if let Some(alibi) = alibi_id {
         // slope[h] · (j - i) over the [Sq, kv_len] grid (same convention as
         // flash_attn's alibi).
-        let bias = super::flash_attn::alibi_bias(graph, alibi, b, hq, sq, kv_len, dtype);
+        let bias = super::flash_attn::alibi_bias(graph, alibi, b, hq, sq, kv_len, /* q_pos_offset */ 0, dtype);
         scaled = graph.push(Node {
             op: Op::Add,
             inputs: vec![scaled, bias],
