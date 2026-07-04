@@ -117,6 +117,8 @@ pub use cuda_link::{
     CUDA_GEMM_DENSE_ENTRY_POINTS,
     CUDA_GEMM_INT_ENTRY_POINTS,
     CUDA_INDEXING_ENTRY_POINTS,
+    CUDA_FLASH_DECODING_ENTRY_POINTS,
+    CUDA_COST_FNS,
 };
 #[cfg(feature = "vulkan")]
 pub use vulkan_link::{

@@ -18,7 +18,7 @@
 //! build never compiles this module (mirroring `vulkan_link`).
 
 use crate::fkc::lower::LinkRegistry;
-use crate::kernel::KernelRef;
+use crate::kernel::{CostFn, KernelRef};
 
 /// One `(contract entry_point symbol, production wrapper)` pair. The symbol
 /// matches the contract's fanned `entry_point`: a section declares a BASE
@@ -655,12 +655,41 @@ pub static CUDA_INDEXING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("scatter_add_f64", crate::baracuda_dispatch::indexing::scatter_add_f64),
 ];
 
+/// CUDA `flash_decoding` family (FlashDecoding decode arm; `OpKind::FlashAttn`,
+/// `seq_q==1`, capacity-K): fanned `flash_decoding_<dtype>` symbol -> production
+/// wrapper. Contract: `docs/kernel-contracts/cuda/flash_decoding.fkc.md`. The
+/// NO-alibi decode arm keyed `[q, k, v, out] = [T; 4]` over `{F16, BF16}` —
+/// byte-for-byte the two DELETED hand-written `register_full(FlashAttn, …)` regs.
+/// Its cost is CONTRACT-PINNED via [`CUDA_COST_FNS`] (the §4.4 trampoline), NOT
+/// the `fill_unset` default — see the module doc + `cost_flash_decoding_cuda`.
+pub static CUDA_FLASH_DECODING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    cuda_ep!("flash_decoding_f16",  crate::baracuda_dispatch::flash_decoding::flash_decoding_f16),
+    cuda_ep!("flash_decoding_bf16", crate::baracuda_dispatch::flash_decoding::flash_decoding_bf16),
+];
+
+/// The built-in CUDA (baracuda) backend's NAMED cost-fn table (§4.4 cost-fn
+/// trampoline, Task-F): maps a contract's `cost.cost_fn` NAME to the production
+/// [`CostFn`] pointer. The cost-model analogue of the `CUDA_*_ENTRY_POINTS`
+/// `entry_point` tables — resolved by [`CudaLinkRegistry::resolve_cost_fn`] so a
+/// contract can PIN a real, shape-aware cost model that SURVIVES the
+/// `fill_unset_cost_for_backend` pass (which only replaces the `unknown_cost`
+/// sentinel). Today it carries the ONE cost fn a CUDA contract pins:
+/// `flash_decoding`'s [`crate::cost::cost_flash_decoding_cuda`] — the static
+/// infeasibility gate that returns an INFEASIBLE cost for `seq_q != 1` /
+/// `head_dim` outside `[1, 128]`, keeping the ranker off unsupported shapes. A
+/// contract that names a cost fn ABSENT here fails import with
+/// [`crate::fkc::FkcError::UnknownCostFn`] (never a silent `unknown_cost`
+/// fallback, never a fabricated pointer — the cost-model P9 analogue).
+pub static CUDA_COST_FNS: &[(&str, CostFn)] = &[
+    ("cost_flash_decoding_cuda", crate::cost::cost_flash_decoding_cuda as CostFn),
+];
+
 /// The built-in CUDA (baracuda) backend's [`LinkRegistry`] — resolves a
 /// contract's `entry_point` symbols against [`CUDA_CAST_ENTRY_POINTS`] (and the
-/// future CUDA families as they migrate off their hand-written regs). Unresolved
-/// → `None`, which the importer turns into a typed `UnknownEntryPoint` error
-/// (never a panic, never a fabricated pointer). Mirrors
-/// [`crate::fkc::VulkanLinkRegistry`].
+/// other migrated CUDA families) and its `cost.cost_fn` names against
+/// [`CUDA_COST_FNS`]. Unresolved → `None`, which the importer turns into a typed
+/// `UnknownEntryPoint` / `UnknownCostFn` error (never a panic, never a
+/// fabricated pointer). Mirrors [`crate::fkc::VulkanLinkRegistry`].
 pub struct CudaLinkRegistry;
 
 impl LinkRegistry for CudaLinkRegistry {
@@ -699,6 +728,7 @@ impl LinkRegistry for CudaLinkRegistry {
             .chain(CUDA_GEMM_DENSE_ENTRY_POINTS.iter())
             .chain(CUDA_GEMM_INT_ENTRY_POINTS.iter())
             .chain(CUDA_INDEXING_ENTRY_POINTS.iter())
+            .chain(CUDA_FLASH_DECODING_ENTRY_POINTS.iter())
             .find(|(s, _)| *s == symbol)
             .map(|(_, k)| *k)
     }
@@ -707,5 +737,13 @@ impl LinkRegistry for CudaLinkRegistry {
         // No fused-op contracts in the CUDA cast corpus — every section is a
         // primitive `op_kind`.
         None
+    }
+
+    fn resolve_cost_fn(&self, name: &str) -> Option<CostFn> {
+        // §4.4 cost-fn trampoline: resolve a contract's `cost.cost_fn` NAME
+        // against the CUDA named cost-fn table (the cost-model analogue of the
+        // entry_point resolution above). Unresolved → None → typed
+        // `UnknownCostFn` at the importer.
+        CUDA_COST_FNS.iter().find(|(s, _)| *s == name).map(|(_, f)| *f)
     }
 }

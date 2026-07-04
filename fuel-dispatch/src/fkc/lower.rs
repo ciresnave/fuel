@@ -28,7 +28,7 @@ use crate::fkc::precision;
 use crate::fkc::revhash;
 use crate::fkc::schema::{CostBlock, FkcKernel};
 use crate::fused::{KernelRevisionHash, PrecisionGuarantee};
-use crate::kernel::{KernelCaps, KernelDTypes, KernelRef};
+use crate::kernel::{CostFn, KernelCaps, KernelDTypes, KernelRef};
 
 // ===========================================================================
 // LinkRegistry — entry_point symbol → KernelRef (P9, §12.6)
@@ -47,6 +47,21 @@ pub trait LinkRegistry {
     fn resolve_primitive(&self, symbol: &str) -> Option<KernelRef>;
     /// Resolve a fused (`fused_op`) kernel's entry point.
     fn resolve_fused(&self, symbol: &str) -> Option<KernelRef>;
+
+    /// Resolve a contract's `cost.cost_fn` NAME into a concrete [`CostFn`]
+    /// pointer — the cost-model analogue of [`Self::resolve_primitive`] (§4.4
+    /// cost-fn trampoline, Task-F). A provider that pins real cost fns exports
+    /// its own `&'static [(&str, CostFn)]` table and overrides this over it
+    /// (exactly as it exports its `entry_point` table); the built-in default
+    /// is `None` (no cost-fn table), so every existing `LinkRegistry` impl and
+    /// test stub compiles unchanged and a section that names no cost fn is
+    /// unaffected. The importer never fabricates a pointer: an unresolved name
+    /// is a typed [`FkcError::UnknownCostFn`], never a silent `unknown_cost`
+    /// fallback (P9 — the resolved cost model is a real registered fn, not a
+    /// serialized pointer).
+    fn resolve_cost_fn(&self, _name: &str) -> Option<CostFn> {
+        None
+    }
 }
 
 // ===========================================================================
@@ -75,6 +90,14 @@ pub struct ResolvedPrimitive {
     pub precision: PrecisionGuarantee,
     /// Parsed cost AST (capacity-eval next slice; `Unknown` ⇒ `unknown_cost`).
     pub cost: CompiledCostExpr,
+    /// A CONTRACT-PINNED [`CostFn`] resolved from `cost.cost_fn` through the
+    /// `LinkRegistry` (§4.4 cost-fn trampoline, Task-F). `Some(fn)` ⇒ the
+    /// register slice stamps THIS `CostFn` on the binding, which SURVIVES the
+    /// `fill_unset_cost_for_backend` pass (that pass only replaces the
+    /// `unknown_cost` sentinel); `None` ⇒ the imported `unknown_cost` sentinel
+    /// (the fill pass upgrades it to the op/backend default). This is how the
+    /// CUDA `flash_decoding` contract keeps its static infeasibility-gate cost.
+    pub cost_fn: Option<CostFn>,
     /// The resolved kernel function pointer.
     pub kernel: KernelRef,
     /// The `kernel_source` tag (`BindingEntry.kernel_source`).
@@ -925,6 +948,20 @@ fn lower_primitive(
     let caps = caps_map::project_kernel_caps(&layouts);
     let precision = precision::lower_precision(kernel.precision.as_ref(), section)?;
     let cost = compile_cost(kernel.cost.as_ref(), section)?;
+    // §4.4 cost-fn trampoline (Task-F): a `cost.cost_fn` NAME pins a real,
+    // shape-aware `CostFn` (per-section, shared by every dtype variant). Resolve
+    // it ONCE through the LinkRegistry; an unresolved name is a typed error, not
+    // a silent `unknown_cost` fallback. `None` ⇒ the register slice keeps the
+    // imported `unknown_cost` sentinel (fill_unset then upgrades it).
+    let cost_fn = match kernel.cost.as_ref().and_then(|c| c.cost_fn.as_deref()) {
+        Some(name) => Some(link.resolve_cost_fn(name).ok_or_else(|| {
+            FkcError::UnknownCostFn {
+                section: section.to_string(),
+                cost_fn: name.to_string(),
+            }
+        })?),
+        None => None,
+    };
 
     let base_entry_point = kernel.entry_point.as_deref().ok_or_else(|| {
         FkcError::MissingRequiredField {
@@ -966,6 +1003,7 @@ fn lower_primitive(
             layouts: layouts.clone(),
             precision,
             cost: cost.clone(),
+            cost_fn,
             kernel: kernel_ref,
             kernel_source: kernel_source.clone(),
             revision,
@@ -1761,6 +1799,7 @@ return:
         let mut block = CostBlock {
             provenance: Some("declared".into()),
             class: None,
+            cost_fn: None,
             flops: Some("2 * * n".into()), // malformed
             bytes_moved: None,
             overhead_ns: None,

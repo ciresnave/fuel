@@ -18,7 +18,7 @@ use fuel_ir::{Layout, Error, Result, probe::BackendId};
 use fuel_ir::dispatch::OpKind;
 use fuel_ir::DType;
 
-use crate::kernel::{KernelBindingTable, KernelCaps, OpParams};
+use crate::kernel::{KernelBindingTable, OpParams};
 use fuel_memory::Storage;
 
 // Re-use the storage-helpers from dispatch.rs so we read/write
@@ -2504,6 +2504,52 @@ fn register_cuda_cast_from_contract(table: &mut KernelBindingTable) {
         .expect("CUDA cast contract must register into the binding table");
 }
 
+/// The authored CUDA (baracuda) FlashDecoding contract, embedded via
+/// `include_str!`. Imported by [`register_cuda_flash_decoding_from_contract`].
+const CUDA_FLASH_DECODING_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/flash_decoding.fkc.md");
+
+/// Register the CUDA FlashDecoding decode arm (`OpKind::FlashAttn`, `[f16;4]` /
+/// `[bf16;4]`, capacity-K) by IMPORTING its FKC kernel contract — the SOLE path,
+/// replacing the two DELETED hand-written `table.register_full(FlashAttn, …)`
+/// regs. The LAST CUDA family to migrate (CUDA now 31/31 contract-sourced).
+///
+/// **This is the §4.4 cost-fn trampoline (Task-F) consumer.** The contract's
+/// `cost.cost_fn: cost_flash_decoding_cuda` is resolved through
+/// [`crate::fkc::CudaLinkRegistry`]'s `CUDA_COST_FNS` table and pinned on the
+/// binding, so the CUSTOM static infeasibility gate (`cost_flash_decoding_cuda`:
+/// INFEASIBLE cost for `seq_q != 1` / `head_dim` outside `[1, 128]`) SURVIVES
+/// the `fill_unset_cost_for_backend(Cuda, …)` pass — exactly the guarantee the
+/// hand-written `register_full` (not `register_with_caps`) previously bought by
+/// stamping the cost fn directly. Without the trampoline an FKC import would
+/// stamp `unknown_cost` → `fill_unset` would clobber it with the shape-blind
+/// shared `FlashAttn` cost fn (`cost_flash_attn_primitive_cpu`) → the gate lost.
+///
+/// Behavior-preserving vs. the deleted regs: the SAME `flash_decoding_{f16,bf16}`
+/// wrappers (resolved through `CUDA_FLASH_DECODING_ENTRY_POINTS`), `strided_input`
+/// caps (each operand accepts strided + broadcast ⇒ the §6 projection yields
+/// `true`, byte-for-byte `KernelCaps::strided_input()`), and UNAUDITED precision
+/// (`audited: false`). `kernel_source` becomes the contract's `"baracuda"` (the
+/// deleted regs stamped `""`). Runs INSIDE `register_baracuda_cuda_kernels`,
+/// BEFORE the `fill_unset_cost_for_backend(Cuda, …)` pass in
+/// `register_optional_backends` (dispatch.rs). Init-boundary fail-fast `expect`.
+fn register_cuda_flash_decoding_from_contract(table: &mut KernelBindingTable) {
+    let provider =
+        crate::fkc::import_bundle_str(CUDA_FLASH_DECODING_CONTRACT, &crate::fkc::CudaLinkRegistry)
+            .expect(
+                "authored CUDA flash_decoding contract must import \
+                 (embedded via include_str!, resolved through CudaLinkRegistry)",
+            );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda flash_decoding contract declares no fused ops",
+    );
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA flash_decoding contract must register into the binding table");
+}
+
 // ===========================================================================
 // GROUP 1 CUDA FKC families (per-(op,dtype) strided) - contract registration.
 // ===========================================================================
@@ -3044,33 +3090,24 @@ fn register_cuda_indexing_from_contract(table: &mut KernelBindingTable) {
 /// 2026-06-11 sweep closed the Judge's cuda:0 elementwise gap:
 /// Rsqrt/Floor/Ceil/Round/Erf unary + Pow/Rem binary.
 pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
-    use OpKind::*;
-    let cuda = BackendId::Cuda;
-
-    // FlashDecoding (below) is the only remaining hand-written registration; it
-    // keys on f16/bf16. (f32/f64 were dropped with the indexing regs, now
-    // contract-sourced.)
-    let f16 = DType::F16;
-    let bf16 = DType::BF16;
-
-    // `strided_input` caps for the remaining hand-written registrations that
-    // advertise it (the FlashDecoding arm below consumes per-tensor capacity
-    // strides directly). Every migrated family now rides its caps through the
-    // FKC import; only FlashDecoding stays hand-written (custom cost gate).
-    let strided = KernelCaps::strided_input();
-
-    // ----- Attention — FlashDecoding (decode-flash, seq_q==1, capacity-K) -----
-    // Baracuda `flash_decoding_{f16,bf16}` (alpha.72): the FIRST capacity-K
-    // CUDA `OpKind::FlashAttn` binding. NO-alibi decode arm keyed
-    // [q, k, v, out] = [T;4] (matching CPU/Vulkan's forward no-alibi key).
-    // `strided_input` caps: the wrapper consumes per-tensor capacity strides
-    // directly (no Contiguize). Registered `register_full` with a CUSTOM
-    // cost fn (`cost_flash_decoding_cuda`) that returns an INFEASIBLE cost
-    // outside the supported set (seq_q!=1, head_dim outside [1,128]) — the
-    // ranker's static gate keeping the decomposed base map for those (dtype
-    // is gated by the f16/bf16 key). `register_full` (not `register_with_caps`)
-    // so the `fill_unset_cost_for_backend` pass does NOT overwrite the gate
-    // with the shape-blind shared FlashAttn cost fn.
+    // ----- Attention — FlashDecoding (decode-flash, seq_q==1, capacity-K):
+    // the LAST CUDA family to migrate off its hand-written regs (CUDA now
+    // 31/31 contract-sourced). Baracuda `flash_decoding_{f16,bf16}` (alpha.72),
+    // NO-alibi decode arm keyed [q, k, v, out] = [T;4] over {F16, BF16}, is now
+    // registered FROM `docs/kernel-contracts/cuda/flash_decoding.fkc.md` via
+    // register_cuda_flash_decoding_from_contract — the SOLE path. The two
+    // hand-written `table.register_full(FlashAttn, [f16;4]/[bf16;4], …,
+    // cost_flash_decoding_cuda)` regs are DELETED.
+    //
+    // The CUSTOM static infeasibility gate (`cost_flash_decoding_cuda`:
+    // INFEASIBLE cost for seq_q!=1 / head_dim outside [1,128], keeping the
+    // ranker off unsupported shapes) is PRESERVED across the migration by the
+    // §4.4 cost-fn trampoline (Task-F): the contract PINS `cost.cost_fn:
+    // cost_flash_decoding_cuda`, resolved through CudaLinkRegistry's
+    // CUDA_COST_FNS table, so the pinned cost fn SURVIVES the
+    // fill_unset_cost_for_backend(Cuda, …) pass (which only replaces
+    // unknown_cost) — where a plain FKC import would have let fill_unset
+    // clobber the gate with the shape-blind shared FlashAttn cost fn.
     //
     // GATING BOUNDARY (see cost_flash_decoding_cuda + attention.rs): the cost
     // gate deprioritizes unsupported shapes at `compile_plan` placement (an
@@ -3081,17 +3118,11 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     // decode shapes: the step-3 fusion pathfinder / lazy.rs decode lowering,
     // symbolic-extents-and-persistent-decode §0 step 2), which owns arm
     // selection — this binding is the implementation that arm resolves to.
-    let flash_precision = crate::fused::PrecisionGuarantee::UNAUDITED;
-    table.register_full(
-        FlashAttn, &[f16, f16, f16, f16], cuda,
-        flash_decoding::flash_decoding_f16,
-        strided, flash_precision, crate::cost::cost_flash_decoding_cuda,
-    );
-    table.register_full(
-        FlashAttn, &[bf16, bf16, bf16, bf16], cuda,
-        flash_decoding::flash_decoding_bf16,
-        strided, flash_precision, crate::cost::cost_flash_decoding_cuda,
-    );
+    //
+    // Runs BEFORE the fill_unset_cost_for_backend(Cuda, …) pass in
+    // register_optional_backends (dispatch.rs), like every other from_contract
+    // family below.
+    register_cuda_flash_decoding_from_contract(table);
 
     // ----- IndexSelect / Gather / MaskedFill / ScatterAdd are now registered
     // FROM the cuda indexing FKC contract (docs/kernel-contracts/cuda/indexing.fkc.md)
@@ -3934,5 +3965,132 @@ mod cast_contract_tests {
             checked += 1;
         }
         assert_eq!(checked, 11, "all 11 indexing keys checked");
+    }
+
+    /// TASK-F born-red gate (the §4.4 cost-fn trampoline consumer). The
+    /// FlashDecoding decode arm (`OpKind::FlashAttn`, `[f16;4]` / `[bf16;4]`,
+    /// Cuda) is now registered FROM its FKC contract
+    /// (`docs/kernel-contracts/cuda/flash_decoding.fkc.md`) via
+    /// `register_cuda_flash_decoding_from_contract` — the SOLE path (the two
+    /// hand-written `register_full(FlashAttn, …)` regs DELETED). CUDA is now
+    /// 31/31 contract-sourced.
+    ///
+    /// For each of the two keys this asserts:
+    ///  - the EXACT production wrapper (`flash_decoding_{f16,bf16}`) is bound,
+    ///  - `kernel_source == "baracuda"` — RED while the hand-written regs (which
+    ///    stamp `""`) are present; GREEN once contract-sourced,
+    ///  - `caps.strided_input == true` (byte-for-byte `KernelCaps::strided_input()`),
+    ///  - **THE INFEASIBILITY GATE IS PRESERVED**: the binding's `CostFn` is the
+    ///    contract-pinned `cost_flash_decoding_cuda` (pointer identity) AND it
+    ///    returns an INFEASIBLE cost (`flops == u64::MAX`) for an unsupported
+    ///    shape (`seq_q != 1` or `head_dim > 128`), while a supported decode
+    ///    shape is feasible. This proves the §4.4 cost-fn trampoline kept the
+    ///    custom gate — a plain FKC import would have stamped `unknown_cost` and
+    ///    `fill_unset_cost_for_backend(Cuda, …)` would have clobbered it with the
+    ///    shape-blind `cost_flash_attn_primitive_cpu` (gate LOST → this assertion
+    ///    RED).
+    #[test]
+    fn register_baracuda_binds_flash_decoding_from_contract_with_cost_gate() {
+        let mut table = KernelBindingTable::new();
+        register_baracuda_cuda_kernels(&mut table);
+        let cuda = BackendId::Cuda;
+
+        // Minimal caps — `cost_flash_decoding_cuda` ignores the caps arg.
+        let caps = fuel_ir::backend::BackendCapabilities {
+            backend_id: BackendId::Cuda,
+            device_location: fuel_ir::DeviceLocation::Cpu,
+            op_dtype_support: std::collections::HashSet::new(),
+            required_alignment: 1,
+            access_granularity_bits: 8,
+            transfer_paths: vec![],
+            storage_substrate: fuel_ir::backend::SubstrateClass::HostBytes,
+            compute_throughput_flops_per_ns: 1.0,
+            mem_bandwidth_bytes_per_ns: 4.0,
+        };
+
+        let cases: &[(&[DType], KernelRef)] = &[
+            (
+                &[DType::F16, DType::F16, DType::F16, DType::F16][..],
+                flash_decoding::flash_decoding_f16 as KernelRef,
+            ),
+            (
+                &[DType::BF16, DType::BF16, DType::BF16, DType::BF16][..],
+                flash_decoding::flash_decoding_bf16 as KernelRef,
+            ),
+        ];
+
+        for (key, expected) in cases {
+            // (1) EXACT wrapper bound + contract-sourced.
+            let alts = table.lookup_alternatives(OpKind::FlashAttn, key, cuda);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "FlashAttn {key:?}/Cuda: the flash_decoding wrapper must be bound FROM the \
+                         cuda flash_decoding contract - found {} alternative(s) with sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "baracuda",
+                "FlashAttn {key:?}: flash_decoding must be contract-sourced \
+                 (kernel_source=\"baracuda\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert!(
+                entry.caps.strided_input,
+                "FlashAttn {key:?}: caps preserved (strided_input == true, capacity-strided)",
+            );
+
+            // (2) THE GATE: the §4.4-pinned cost fn survived fill_unset (pointer
+            // identity) AND still returns INFEASIBLE for unsupported shapes.
+            assert_eq!(
+                entry.cost as usize,
+                crate::cost::cost_flash_decoding_cuda as usize,
+                "FlashAttn {key:?}: the contract-pinned cost_flash_decoding_cuda must survive \
+                 fill_unset (Task-F trampoline) — else fill_unset clobbered the gate",
+            );
+
+            let dt = key[0];
+            let out = fuel_ir::Shape::from_dims(&[1, 8, 1, 64]);
+
+            // seq_q != 1 ⇒ INFEASIBLE (the static gate).
+            let bad_sq = OpParams::FlashAttn {
+                b: 1, hq: 8, hkv: 8, sq: 2, sk: 16, d: 64, k_len: 16,
+                softmax_scale: 1.0, causal: true,
+                window_size_left: None, window_size_right: None, softcap: None,
+            };
+            assert_eq!(
+                (entry.cost)(&[out.clone()], &[dt], &bad_sq, &caps).flops,
+                u64::MAX,
+                "FlashAttn {key:?}: seq_q!=1 must be INFEASIBLE (gate preserved)",
+            );
+
+            // head_dim > 128 ⇒ INFEASIBLE.
+            let bad_d = OpParams::FlashAttn {
+                b: 1, hq: 8, hkv: 8, sq: 1, sk: 16, d: 256, k_len: 16,
+                softmax_scale: 1.0, causal: true,
+                window_size_left: None, window_size_right: None, softcap: None,
+            };
+            assert_eq!(
+                (entry.cost)(&[out.clone()], &[dt], &bad_d, &caps).flops,
+                u64::MAX,
+                "FlashAttn {key:?}: head_dim>128 must be INFEASIBLE (gate preserved)",
+            );
+
+            // Supported decode shape (seq_q==1, head_dim<=128) ⇒ FEASIBLE.
+            let good = OpParams::FlashAttn {
+                b: 1, hq: 8, hkv: 8, sq: 1, sk: 16, d: 64, k_len: 16,
+                softmax_scale: 1.0, causal: true,
+                window_size_left: None, window_size_right: None, softcap: None,
+            };
+            assert_ne!(
+                (entry.cost)(&[out], &[dt], &good, &caps).flops,
+                u64::MAX,
+                "FlashAttn {key:?}: a supported decode shape must be FEASIBLE (real gate, not a constant)",
+            );
+        }
     }
 }

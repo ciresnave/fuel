@@ -405,6 +405,21 @@ pub struct CostBlock {
     /// Coarse relative cost class bucket (§4.4).
     #[serde(default)]
     pub class: Option<String>,
+    /// Names a REGISTERED cost fn to PIN as the binding's `CostFn` (§4.4
+    /// cost-fn trampoline, Task-F). When present the importer resolves this
+    /// name through the provider's `LinkRegistry`
+    /// ([`crate::fkc::LinkRegistry::resolve_cost_fn`]) and registers the
+    /// binding with THAT `CostFn` instead of the `unknown_cost` sentinel — so
+    /// the `fill_unset_cost_for_backend` pass does NOT overwrite it with the
+    /// op/backend default. This is the mechanism that lets a contract pin a
+    /// real, shape-aware cost model (e.g. the CUDA `flash_decoding` static
+    /// infeasibility gate `cost_flash_decoding_cuda`). An unresolved name is a
+    /// typed [`crate::fkc::FkcError::UnknownCostFn`] import error (never a
+    /// silent fallback). The name is opaque here (a String, disarming Norway);
+    /// the coefficient-expression fields below stay independent. Additive
+    /// (§11; no `deny_unknown_fields`). Serde key `cost_fn`.
+    #[serde(default)]
+    pub cost_fn: Option<String>,
     /// Symbolic FLOPs expression over shape/param symbols (§4.4).
     #[serde(default)]
     pub flops: Option<String>,
