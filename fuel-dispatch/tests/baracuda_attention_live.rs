@@ -458,6 +458,77 @@ fn flash_decoding_f16_klen_zero_is_zeros() {
     );
 }
 
+/// Per-device grow-only workspace cache: two decode steps at the SAME KV
+/// capacity must NOT allocate a fresh workspace on the second step, and the
+/// cache's grow-only semantics (fresh ⇒ allocate, same ⇒ reuse, larger ⇒
+/// grow, smaller ⇒ reuse) hold exactly.
+///
+/// Part 1 drives the real flash_decoding wrapper twice at one capacity and
+/// asserts the device's allocation counter does not advance on the second
+/// step (the plan-once decode arc: a fixed-capacity session converges to one
+/// allocation). Part 2 exercises the cache directly on a fresh device for a
+/// deterministic count of the reuse/grow decisions.
+#[test]
+#[ignore]
+fn flash_decoding_reuses_per_device_workspace() {
+    let Some(dev) = dev_or_skip() else { return };
+    let mut table = KernelBindingTable::new();
+    register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
+    let kernel = pick_flash(
+        &table, DType::F16,
+        fuel_dispatch::baracuda_dispatch::flash_decoding::flash_decoding_f16,
+    );
+
+    // Part 1 — end-to-end reuse through the wrapper. Same capacity (cap=384,
+    // 2 splits ⇒ non-trivial combine workspace), two live prefixes.
+    let before = dev.flash_workspace().allocation_count();
+    let f16_up = |d: &CudaDevice, h: &[f32]| {
+        let hv: Vec<f16> = h.iter().map(|&x| f16::from_f32(x)).collect();
+        upload(d, DType::F16, &hv)
+    };
+    let f16_down = |s: &Storage| download::<f16>(s).iter().map(|x| x.to_f32()).collect::<Vec<_>>();
+    run_flash_decode_case(
+        &dev, DType::F16, kernel, |x| f16::from_f32(x).to_f32(),
+        f16_up, f16_down, 2, 8, 2, 64, 384, 300, 3.0e-2, 0xF00D_0001,
+    );
+    let after_first = dev.flash_workspace().allocation_count();
+    run_flash_decode_case(
+        &dev, DType::F16, kernel, |x| f16::from_f32(x).to_f32(),
+        f16_up, f16_down, 2, 8, 2, 64, 384, 250, 3.0e-2, 0xF00D_0002,
+    );
+    let after_second = dev.flash_workspace().allocation_count();
+    eprintln!(
+        "flash ws allocations: before={before} after_first={after_first} after_second={after_second}",
+    );
+    assert_eq!(
+        after_second, after_first,
+        "a second decode step at the SAME capacity must reuse the workspace (no new allocation)",
+    );
+
+    // Part 2 — deterministic grow-only semantics on a fresh device.
+    let dev2 = CudaDevice::new(0).expect("second cuda device");
+    let ws = dev2.flash_workspace();
+    let a0 = ws.allocation_count();
+    assert_eq!(a0, 0, "a fresh device's workspace cache starts empty");
+    ws.with(&dev2, 8192, |ptr, n| { assert!(!ptr.is_null()); assert_eq!(n, 8192); }).unwrap();
+    let a1 = ws.allocation_count();
+    ws.with(&dev2, 8192, |_, n| assert_eq!(n, 8192)).unwrap(); // same ⇒ reuse
+    let a2 = ws.allocation_count();
+    ws.with(&dev2, 16384, |_, _| ()).unwrap();                 // larger ⇒ grow
+    let a3 = ws.allocation_count();
+    ws.with(&dev2, 4096, |_, _| ()).unwrap();                  // smaller ⇒ reuse
+    let a4 = ws.allocation_count();
+    // A zero-byte request touches neither the buffer nor the counter.
+    ws.with(&dev2, 0, |ptr, n| { assert!(ptr.is_null()); assert_eq!(n, 0); }).unwrap();
+    let a5 = ws.allocation_count();
+    assert_eq!(a1, 1, "the first (fresh) request allocates exactly once");
+    assert_eq!(a2, 1, "a same-capacity request reuses — no new allocation");
+    assert_eq!(a3, 2, "a larger request grows — one more allocation");
+    assert_eq!(a4, 2, "a smaller request reuses the larger buffer — no allocation");
+    assert_eq!(a5, 2, "a zero-byte request allocates nothing");
+}
+
 /// Static-gate rejections: the wrapper hard-errors (fail-fast backstop) on
 /// out-of-contract shapes the ranker is expected to have excluded —
 /// seq_q!=1, GQA non-divisibility, and head_dim>128 (via `_can_implement`).

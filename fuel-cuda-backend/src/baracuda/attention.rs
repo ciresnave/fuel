@@ -732,11 +732,13 @@ fn flash_decoding_run(
     let y_h = (sq * d) as i64;
 
     // Workspace sized at CAPACITY (monotonic in k_len ⇒ covers every step's
-    // live prefix). Per-call alloc for now; a per-device grow-only cache is
-    // the plan-once decode follow-up.
+    // live prefix). Served from the device's grow-only per-device cache: a
+    // decode session's capacity is fixed, so after the first step this reuses
+    // one allocation instead of allocating every step (the plan-once decode
+    // arc). The cache holds its lock across the launch (single-stream dispatch
+    // ⇒ no contention), keeping the scratch live for the kernel.
     // SAFETY: pure host-side size query.
     let ws_need = unsafe { ws_bytes(batch_i, heads_i, sk_i, d_i) };
-    let scratch = Workspace::alloc(&device, ws_need)?;
 
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
     let q_ptr = q.buffer().as_raw().0 as *const std::ffi::c_void;
@@ -747,10 +749,10 @@ fn flash_decoding_run(
     // SAFETY: pointers are live device buffers of the checked byte sizes;
     // strides are element units matching the ABI; workspace >= the kernel's
     // capacity requirement; stream is this device's stream.
-    let status = unsafe {
+    let status = device.flash_workspace().with(&device, ws_need, |ws_ptr, ws_len| unsafe {
         run(
             q_ptr, k_ptr, v_ptr, y_ptr,
-            scratch.as_raw(), scratch.bytes(),
+            ws_ptr, ws_len,
             batch_i, heads_i, kv_heads_i, k_len_i, d_i,
             q_b, q_h,
             k_b, k_h, k_s,
@@ -759,7 +761,7 @@ fn flash_decoding_run(
             scale,
             stream,
         )
-    };
+    })?;
     check(status, op_label)?;
     Ok(CudaStorageBytes::from_parts(
         Arc::new(out_buf),
