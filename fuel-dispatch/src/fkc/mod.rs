@@ -42,6 +42,8 @@
 mod caps_map;
 mod cost_expr;
 mod cpu_link;
+#[cfg(feature = "cuda")]
+mod cuda_link;
 mod error;
 mod lower;
 mod parse;
@@ -82,6 +84,8 @@ pub use schema::{
     PrecisionBlock, QuantSpec, ReturnBlock, TensorDesc,
 };
 pub use validate::{validate_file, validate_kernel, FKC_VERSION_MAX};
+#[cfg(feature = "cuda")]
+pub use cuda_link::{CudaLinkRegistry, CUDA_CAST_ENTRY_POINTS};
 #[cfg(feature = "vulkan")]
 pub use vulkan_link::{
     VulkanLinkRegistry, VULKAN_CAST_ENTRY_POINTS, VULKAN_ELEMENTWISE_ENTRY_POINTS,
