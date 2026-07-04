@@ -494,6 +494,61 @@ pub fn cost_flash_attn_primitive_cpu(
     }
 }
 
+/// Cost for the CUDA `flash_decoding` decode arm (binding-table form).
+///
+/// Doubles as the **static ranker gate** for the decode kernel's supported
+/// set. Fuel dispatch is fail-fast (a registered kernel that returns `Err`
+/// fails `realize`; there is NO runtime fallback to the decomposed base
+/// map — see `pipelined.rs` "Fail-fast dispatch"), so an unsupported shape
+/// must never be PLACED on this kernel. This returns an INFEASIBLE cost
+/// (saturates `composite_ns` to `u64::MAX`) for anything the kernel can't
+/// do — `seq_q != 1`, or `head_dim` outside `[1, 128]` — so the ranker
+/// keeps the decomposed base map / CPU oracle. Inside the supported set it
+/// prices a real decode: work scales with the live prefix `k_len`, not the
+/// physical capacity `sk`.
+///
+/// NOTE (design): cost DEPRIORITIZES but does not HARD-EXCLUDE a candidate
+/// (`composite_ns` ranks; it never drops). For a decode node whose K/V are
+/// already CUDA-resident this is sufficient — the decomposed arm is cheaper
+/// once the infeasible cost saturates. The GUARANTEED clean decline for a
+/// KV-resident *prefill* (`seq_q > 1`) is the `Op::Branch` decode-arm
+/// emission (symbolic-extent persistent decode; D2/D3), which only ever
+/// creates the CUDA flash arm for `seq_q == 1` shapes. See the gating note
+/// in `fuel-cuda-backend/src/baracuda/attention.rs`.
+pub fn cost_flash_decoding_cuda(
+    _shapes: &[Shape],
+    dtypes: &[DType],
+    params: &OpParams,
+    _caps: &BackendCapabilities,
+) -> CostEstimate {
+    let (b, hq, sq, d, k_len) = match params {
+        OpParams::FlashAttn { b, hq, sq, d, k_len, .. } => {
+            (*b as u64, *hq as u64, *sq as u64, *d as u64, *k_len as u64)
+        }
+        _ => return CostEstimate::default(),
+    };
+    // Out-of-support shapes → infeasible (ranker never places here).
+    if sq != 1 || d == 0 || d > 128 {
+        return CostEstimate {
+            flops: u64::MAX,
+            bytes_moved: u64::MAX,
+            kernel_overhead_ns: u32::MAX,
+        };
+    }
+    let dsize = dtypes.first().map(|dt| dtype_bytes(*dt)).unwrap_or(2);
+    // Decode (seq_q == 1): QK^T + softmax·V over the live prefix.
+    let kl = k_len.max(1);
+    let mm_flops = 4 * b * hq * kl * d;
+    let sm_flops = 5 * b * hq * kl;
+    // Read q [b,hq,d] + k,v live prefix (hq upper bound) + write out.
+    let elems = 2 * b * hq * d + 2 * b * hq * kl * d;
+    CostEstimate {
+        flops: mm_flops + sm_flops,
+        bytes_moved: elems * dsize,
+        kernel_overhead_ns: 200,
+    }
+}
+
 /// Cost for `PagedAttn` (binding-table form). Reads geometry from
 /// `OpParams::PagedAttn`; treats `num_blocks · block_size` as the
 /// effective `Sk` upper bound.

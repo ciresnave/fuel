@@ -1917,6 +1917,113 @@ pub mod attention {
     cuda_rope_baracuda_wrapper!(rope_f64, bk::rope_f64);
 }
 
+// ===========================================================================
+// Attention — FlashDecoding (decode-flash, seq_q==1, capacity-K)
+// ===========================================================================
+//
+// The FIRST capacity-K CUDA `OpKind::FlashAttn` binding. Adapts the
+// baracuda `flash_decoding_{f16,bf16}` decode kernel: pulls the geometry +
+// math from `OpParams::FlashAttn` (`sk` = physical K/V capacity, `k_len` =
+// logical attended prefix resolved from the SymEnv in pipelined.rs), and
+// forwards the per-tensor input `Layout`s so the wrapper derives capacity
+// strides directly (no Contiguize). Three inputs (q, k, v) — this is the
+// NO-alibi decode arm; window / softcap / alibi are not implemented by the
+// kernel and must be gated out statically (registered dtype key + cost fn).
+// The `causal` flag is accepted-and-ignored: at `seq_q == 1` the single
+// query attends the whole `[0, k_len)` prefix either way (the reply's
+// "always attends the full prefix" == Fuel's decode model).
+
+/// Generate one CUDA FlashDecoding dispatch wrapper adapting a
+/// `fuel-cuda-backend::baracuda::attention::flash_decoding_*` kernel into
+/// the `KernelRef` signature. The dtype gate is the registration key
+/// (f16/bf16), not a runtime check; the wrapper pulls geometry from
+/// `OpParams::FlashAttn` and forwards the per-tensor input `Layout`s.
+macro_rules! cuda_flash_decoding_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path $(,)?) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            // Decode arm: exactly q, k, v (no alibi) + one output.
+            if inputs.len() != 3 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 3 inputs (q, k, v) + 1 output, got {} + {}",
+                    ),
+                    inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let (b, hq, hkv, sq, sk, d, k_len, scale) = match params {
+                OpParams::FlashAttn {
+                    b, hq, hkv, sq, sk, d, k_len,
+                    softmax_scale, causal: _,
+                    window_size_left, window_size_right, softcap,
+                } => {
+                    // Window / softcap are unimplemented by the decode
+                    // kernel; the ranker must exclude these (cost gate).
+                    // Hard-error defensively (fail-fast dispatch).
+                    if window_size_left.is_some()
+                        || window_size_right.is_some()
+                        || softcap.is_some()
+                    {
+                        return Err(Error::Msg(format!(
+                            concat!(
+                                stringify!($wrapper_name),
+                                ": window/softcap not supported by flash_decoding \
+                                 (window_left={:?}, window_right={:?}, softcap={:?}); \
+                                 the ranker must route these to the decomposed base map",
+                            ),
+                            window_size_left, window_size_right, softcap,
+                        ))
+                        .bt());
+                    }
+                    (*b, *hq, *hkv, *sq, *sk, *d, *k_len, *softmax_scale)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::FlashAttn, got {:?}",
+                        ),
+                        other,
+                    ))
+                    .bt());
+                }
+            };
+            let q_layout = layouts.first();
+            let k_layout = layouts.get(1);
+            let v_layout = layouts.get(2);
+            let q_guard = read_storage(&inputs[0])?;
+            let k_guard = read_storage(&inputs[1])?;
+            let v_guard = read_storage(&inputs[2])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let q_cuda = cuda_input(&q_guard)?;
+            let k_cuda = cuda_input(&k_guard)?;
+            let v_cuda = cuda_input(&v_guard)?;
+            let result = $baracuda_fn(
+                q_cuda, k_cuda, v_cuda,
+                q_layout, k_layout, v_layout,
+                b, hq, hkv, sq, sk, d, k_len, scale,
+            )?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            *out_cuda = result;
+            Ok(())
+        }
+    };
+}
+
+pub mod flash_decoding {
+    use super::*;
+    use fuel_cuda_backend::baracuda::attention as bk;
+
+    cuda_flash_decoding_baracuda_wrapper!(flash_decoding_f16,  bk::flash_decoding_f16);
+    cuda_flash_decoding_baracuda_wrapper!(flash_decoding_bf16, bk::flash_decoding_bf16);
+}
+
 /// Generate a CUDA norm-last-dim dispatch wrapper that pulls
 /// `(outer_count, last_dim, eps)` from `OpParams::NormLastDim`
 /// and forwards to a baracuda last-dim norm kernel.
@@ -2457,6 +2564,40 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register_with_caps(Rope, &u(f16),  cuda, attention::rope_f16,  strided);
     table.register_with_caps(Rope, &u(bf16), cuda, attention::rope_bf16, strided);
     table.register_with_caps(Rope, &u(f64),  cuda, attention::rope_f64,  strided);
+
+    // ----- Attention — FlashDecoding (decode-flash, seq_q==1, capacity-K) -----
+    // Baracuda `flash_decoding_{f16,bf16}` (alpha.72): the FIRST capacity-K
+    // CUDA `OpKind::FlashAttn` binding. NO-alibi decode arm keyed
+    // [q, k, v, out] = [T;4] (matching CPU/Vulkan's forward no-alibi key).
+    // `strided_input` caps: the wrapper consumes per-tensor capacity strides
+    // directly (no Contiguize). Registered `register_full` with a CUSTOM
+    // cost fn (`cost_flash_decoding_cuda`) that returns an INFEASIBLE cost
+    // outside the supported set (seq_q!=1, head_dim outside [1,128]) — the
+    // ranker's static gate keeping the decomposed base map for those (dtype
+    // is gated by the f16/bf16 key). `register_full` (not `register_with_caps`)
+    // so the `fill_unset_cost_for_backend` pass does NOT overwrite the gate
+    // with the shape-blind shared FlashAttn cost fn.
+    //
+    // GATING BOUNDARY (see cost_flash_decoding_cuda + attention.rs): the cost
+    // gate deprioritizes unsupported shapes at `compile_plan` placement (an
+    // unpinned KV-resident node routes to CPU-decompose), but the executor's
+    // binding lookup is key-only + fail-fast — a HARD-PINNED-CUDA prefill node
+    // would still reach this kernel and Err. The guaranteed clean decline is
+    // graph-construction gating (only ever CREATE a CUDA FlashAttn node for
+    // decode shapes: the step-3 fusion pathfinder / lazy.rs decode lowering,
+    // symbolic-extents-and-persistent-decode §0 step 2), which owns arm
+    // selection — this binding is the implementation that arm resolves to.
+    let flash_precision = crate::fused::PrecisionGuarantee::UNAUDITED;
+    table.register_full(
+        FlashAttn, &[f16, f16, f16, f16], cuda,
+        flash_decoding::flash_decoding_f16,
+        strided, flash_precision, crate::cost::cost_flash_decoding_cuda,
+    );
+    table.register_full(
+        FlashAttn, &[bf16, bf16, bf16, bf16], cuda,
+        flash_decoding::flash_decoding_bf16,
+        strided, flash_precision, crate::cost::cost_flash_decoding_cuda,
+    );
 
     // ----- Softmax + LogSoftmax LastDim -----
     // Wrapper now passes the input's true rank-N shape + strides to
