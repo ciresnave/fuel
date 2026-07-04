@@ -2504,6 +2504,506 @@ fn register_cuda_cast_from_contract(table: &mut KernelBindingTable) {
         .expect("CUDA cast contract must register into the binding table");
 }
 
+// ===========================================================================
+// GROUP 1 CUDA FKC families (per-(op,dtype) strided) - contract registration.
+// ===========================================================================
+
+/// The authored CUDA (baracuda) binary kernel contract (`include_str!`), imported by
+/// [`register_cuda_binary_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_BINARY_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/binary.fkc.md");
+
+/// Register the CUDA binary family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_binary_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_BINARY_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA binary contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda binary contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA binary contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) reduce kernel contract (`include_str!`), imported by
+/// [`register_cuda_reduce_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_REDUCE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/reduce.fkc.md");
+
+/// Register the CUDA reduce family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_reduce_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_REDUCE_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA reduce contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda reduce contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA reduce contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) norm kernel contract (`include_str!`), imported by
+/// [`register_cuda_norm_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_NORM_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/norm.fkc.md");
+
+/// Register the CUDA norm family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_norm_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_NORM_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA norm contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda norm contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA norm contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) softmax kernel contract (`include_str!`), imported by
+/// [`register_cuda_softmax_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_SOFTMAX_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/softmax.fkc.md");
+
+/// Register the CUDA softmax family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_softmax_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_SOFTMAX_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA softmax contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda softmax contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA softmax contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) powi kernel contract (`include_str!`), imported by
+/// [`register_cuda_powi_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_POWI_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/powi.fkc.md");
+
+/// Register the CUDA powi family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_powi_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_POWI_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA powi contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda powi contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA powi contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) powi_backward kernel contract (`include_str!`), imported by
+/// [`register_cuda_powi_backward_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_POWI_BACKWARD_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/powi_backward.fkc.md");
+
+/// Register the CUDA powi_backward family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_powi_backward_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_POWI_BACKWARD_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA powi_backward contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda powi_backward contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA powi_backward contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) clamp kernel contract (`include_str!`), imported by
+/// [`register_cuda_clamp_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_CLAMP_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/clamp.fkc.md");
+
+/// Register the CUDA clamp family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_clamp_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_CLAMP_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA clamp contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda clamp contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA clamp contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) flip kernel contract (`include_str!`), imported by
+/// [`register_cuda_flip_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_FLIP_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/flip.fkc.md");
+
+/// Register the CUDA flip family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_flip_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_FLIP_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA flip contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda flip contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA flip contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) roll kernel contract (`include_str!`), imported by
+/// [`register_cuda_roll_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_ROLL_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/roll.fkc.md");
+
+/// Register the CUDA roll family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_roll_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_ROLL_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA roll contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda roll contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA roll contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) cumsum kernel contract (`include_str!`), imported by
+/// [`register_cuda_cumsum_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_CUMSUM_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/cumsum.fkc.md");
+
+/// Register the CUDA cumsum family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_cumsum_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_CUMSUM_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA cumsum contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda cumsum contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA cumsum contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) triangular kernel contract (`include_str!`), imported by
+/// [`register_cuda_triangular_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_TRIANGULAR_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/triangular.fkc.md");
+
+/// Register the CUDA triangular family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_triangular_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_TRIANGULAR_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA triangular contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda triangular contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA triangular contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) arg_reduce kernel contract (`include_str!`), imported by
+/// [`register_cuda_arg_reduce_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_ARG_REDUCE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/arg_reduce.fkc.md");
+
+/// Register the CUDA arg_reduce family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_arg_reduce_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_ARG_REDUCE_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA arg_reduce contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda arg_reduce contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA arg_reduce contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) reduce_to kernel contract (`include_str!`), imported by
+/// [`register_cuda_reduce_to_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_REDUCE_TO_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/reduce_to.fkc.md");
+
+/// Register the CUDA reduce_to family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_reduce_to_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_REDUCE_TO_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA reduce_to contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda reduce_to contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA reduce_to contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) rope kernel contract (`include_str!`), imported by
+/// [`register_cuda_rope_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_ROPE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/rope.fkc.md");
+
+/// Register the CUDA rope family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_rope_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_ROPE_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA rope contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda rope contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA rope contract must register into the binding table");
+}
+
+// ===========================================================================
+// GROUP3 CUDA FKC families - contract registration.
+// ===========================================================================
+
+/// The authored CUDA (baracuda) unary kernel contract (`include_str!`), imported by
+/// [`register_cuda_unary_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_UNARY_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/unary.fkc.md");
+
+/// Register the CUDA unary family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_unary_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_UNARY_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA unary contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda unary contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA unary contract must register into the binding table");
+}
+
+// ===========================================================================
+// GROUP2 CUDA FKC families - contract registration.
+// ===========================================================================
+
+/// The authored CUDA (baracuda) clamp_inplace kernel contract (`include_str!`), imported by
+/// [`register_cuda_clamp_inplace_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_CLAMP_INPLACE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/clamp_inplace.fkc.md");
+
+/// Register the CUDA clamp_inplace family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_clamp_inplace_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_CLAMP_INPLACE_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA clamp_inplace contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda clamp_inplace contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA clamp_inplace contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) powi_inplace kernel contract (`include_str!`), imported by
+/// [`register_cuda_powi_inplace_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_POWI_INPLACE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/powi_inplace.fkc.md");
+
+/// Register the CUDA powi_inplace family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_powi_inplace_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_POWI_INPLACE_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA powi_inplace contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda powi_inplace contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA powi_inplace contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) inplace_unary kernel contract (`include_str!`), imported by
+/// [`register_cuda_inplace_unary_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_INPLACE_UNARY_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/inplace_unary.fkc.md");
+
+/// Register the CUDA inplace_unary family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_inplace_unary_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_INPLACE_UNARY_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA inplace_unary contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda inplace_unary contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA inplace_unary contract must register into the binding table");
+}
+
+// ===========================================================================
+// GROUP4 CUDA FKC families - contract registration.
+// ===========================================================================
+
+/// The authored CUDA (baracuda) write_slice kernel contract (`include_str!`), imported by
+/// [`register_cuda_write_slice_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_WRITE_SLICE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/write_slice.fkc.md");
+
+/// Register the CUDA write_slice family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_write_slice_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_WRITE_SLICE_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA write_slice contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda write_slice contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA write_slice contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) write_slice_rotating kernel contract (`include_str!`), imported by
+/// [`register_cuda_write_slice_rotating_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_WRITE_SLICE_ROTATING_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/write_slice_rotating.fkc.md");
+
+/// Register the CUDA write_slice_rotating family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_write_slice_rotating_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_WRITE_SLICE_ROTATING_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA write_slice_rotating contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda write_slice_rotating contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA write_slice_rotating contract must register into the binding table");
+}
+
+// ===========================================================================
+// GROUP5 CUDA FKC families - contract registration.
+// ===========================================================================
+
+/// The authored CUDA (baracuda) concat kernel contract (`include_str!`), imported by
+/// [`register_cuda_concat_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_CONCAT_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/concat.fkc.md");
+
+/// Register the CUDA concat family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_concat_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_CONCAT_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA concat contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda concat contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA concat contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) affine kernel contract (`include_str!`), imported by
+/// [`register_cuda_affine_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_AFFINE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/affine.fkc.md");
+
+/// Register the CUDA affine family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_affine_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_AFFINE_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA affine contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda affine contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA affine contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) inplace_affine kernel contract (`include_str!`), imported by
+/// [`register_cuda_inplace_affine_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_INPLACE_AFFINE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/inplace_affine.fkc.md");
+
+/// Register the CUDA inplace_affine family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_inplace_affine_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_INPLACE_AFFINE_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA inplace_affine contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda inplace_affine contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA inplace_affine contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) pad kernel contract (`include_str!`), imported by
+/// [`register_cuda_pad_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_PAD_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/pad.fkc.md");
+
+/// Register the CUDA pad family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_pad_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_PAD_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA pad contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda pad contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA pad contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) pad_backward kernel contract (`include_str!`), imported by
+/// [`register_cuda_pad_backward_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_PAD_BACKWARD_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/pad_backward.fkc.md");
+
+/// Register the CUDA pad_backward family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_pad_backward_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_PAD_BACKWARD_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA pad_backward contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda pad_backward contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA pad_backward contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) causal_conv1d kernel contract (`include_str!`), imported by
+/// [`register_cuda_causal_conv1d_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_CAUSAL_CONV1D_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/causal_conv1d.fkc.md");
+
+/// Register the CUDA causal_conv1d family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_causal_conv1d_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_CAUSAL_CONV1D_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA causal_conv1d contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda causal_conv1d contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA causal_conv1d contract must register into the binding table");
+}
+
+// ===========================================================================
+// GROUP6 CUDA FKC families - contract registration.
+// ===========================================================================
+
+/// The authored CUDA (baracuda) gemm_dense kernel contract (`include_str!`), imported by
+/// [`register_cuda_gemm_dense_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_GEMM_DENSE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/gemm_dense.fkc.md");
+
+/// Register the CUDA gemm_dense family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_gemm_dense_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_GEMM_DENSE_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA gemm_dense contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda gemm_dense contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA gemm_dense contract must register into the binding table");
+}
+
+/// The authored CUDA (baracuda) gemm_int kernel contract (`include_str!`), imported by
+/// [`register_cuda_gemm_int_from_contract`] - the SOLE registration path (hand-written regs DELETED).
+const CUDA_GEMM_INT_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/gemm_int.fkc.md");
+
+/// Register the CUDA gemm_int family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_gemm_int_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_GEMM_INT_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA gemm_int contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda gemm_int contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA gemm_int contract must register into the binding table");
+}
+
 /// Register every baracuda-backed CUDA kernel into the binding table
 /// as an alternative at its `(OpKind, dtypes, Cuda)` decision point.
 /// Sits alongside the PTX-backed `register_cuda_kernels` — both can
@@ -2518,110 +3018,17 @@ fn register_cuda_cast_from_contract(table: &mut KernelBindingTable) {
 pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     use OpKind::*;
     let cuda = BackendId::Cuda;
-    let u = |t: DType| [t, t];
-    let b = |t: DType| [t, t, t];
 
     let f32 = DType::F32;
     let f16 = DType::F16;
     let bf16 = DType::BF16;
     let f64 = DType::F64;
 
-    // Baracuda binary kernels ship both contig and strided variants;
-    // the wrapper in fuel-cuda-backend/src/baracuda/binary.rs picks
-    // per-call via `is_contiguous_zero_offset(layout)`. Advertise
-    // `strided_input` so Fuel's auto-Contiguize gate stays out of the
-    // way — the strided FFI is the fallback for non-contig views.
+    // `strided_input` caps for the remaining hand-written registrations that
+    // advertise it (the FlashDecoding arm below consumes per-tensor capacity
+    // strides directly). Every migrated family now rides its caps through the
+    // FKC import; only FlashDecoding stays hand-written (custom cost gate).
     let strided = KernelCaps::strided_input();
-
-    // ----- F32 binary -----
-    table.register_with_caps(AddElementwise,     &b(f32), cuda, binary::add_f32,     strided);
-    table.register_with_caps(SubElementwise,     &b(f32), cuda, binary::sub_f32,     strided);
-    table.register_with_caps(MulElementwise,     &b(f32), cuda, binary::mul_f32,     strided);
-    table.register_with_caps(DivElementwise,     &b(f32), cuda, binary::div_f32,     strided);
-    table.register_with_caps(MaximumElementwise, &b(f32), cuda, binary::maximum_f32, strided);
-    table.register_with_caps(MinimumElementwise, &b(f32), cuda, binary::minimum_f32, strided);
-    // Pow = elementwise tensor^tensor; Rem = PyTorch-convention
-    // remainder (sign of divisor) — bound to baracuda's `binary_mod_*`
-    // (Python-style), NOT `binary_remainder_*` (C99 fmod).
-    table.register_with_caps(PowElementwise,     &b(f32), cuda, binary::pow_f32,     strided);
-    table.register_with_caps(RemElementwise,     &b(f32), cuda, binary::rem_f32,     strided);
-
-    // ----- F16 / BF16 / F64 binary (net-new dtype coverage on CUDA) -----
-    table.register_with_caps(AddElementwise,     &b(f16), cuda, binary::add_f16,     strided);
-    table.register_with_caps(SubElementwise,     &b(f16), cuda, binary::sub_f16,     strided);
-    table.register_with_caps(MulElementwise,     &b(f16), cuda, binary::mul_f16,     strided);
-    table.register_with_caps(DivElementwise,     &b(f16), cuda, binary::div_f16,     strided);
-    table.register_with_caps(MaximumElementwise, &b(f16), cuda, binary::maximum_f16, strided);
-    table.register_with_caps(MinimumElementwise, &b(f16), cuda, binary::minimum_f16, strided);
-    table.register_with_caps(PowElementwise,     &b(f16), cuda, binary::pow_f16,     strided);
-    table.register_with_caps(RemElementwise,     &b(f16), cuda, binary::rem_f16,     strided);
-
-    table.register_with_caps(AddElementwise,     &b(bf16), cuda, binary::add_bf16,     strided);
-    table.register_with_caps(SubElementwise,     &b(bf16), cuda, binary::sub_bf16,     strided);
-    table.register_with_caps(MulElementwise,     &b(bf16), cuda, binary::mul_bf16,     strided);
-    table.register_with_caps(DivElementwise,     &b(bf16), cuda, binary::div_bf16,     strided);
-    table.register_with_caps(MaximumElementwise, &b(bf16), cuda, binary::maximum_bf16, strided);
-    table.register_with_caps(MinimumElementwise, &b(bf16), cuda, binary::minimum_bf16, strided);
-    table.register_with_caps(PowElementwise,     &b(bf16), cuda, binary::pow_bf16,     strided);
-    table.register_with_caps(RemElementwise,     &b(bf16), cuda, binary::rem_bf16,     strided);
-
-    table.register_with_caps(AddElementwise,     &b(f64), cuda, binary::add_f64,     strided);
-    table.register_with_caps(SubElementwise,     &b(f64), cuda, binary::sub_f64,     strided);
-    table.register_with_caps(MulElementwise,     &b(f64), cuda, binary::mul_f64,     strided);
-    table.register_with_caps(DivElementwise,     &b(f64), cuda, binary::div_f64,     strided);
-    table.register_with_caps(MaximumElementwise, &b(f64), cuda, binary::maximum_f64, strided);
-    table.register_with_caps(MinimumElementwise, &b(f64), cuda, binary::minimum_f64, strided);
-    table.register_with_caps(PowElementwise,     &b(f64), cuda, binary::pow_f64,     strided);
-    table.register_with_caps(RemElementwise,     &b(f64), cuda, binary::rem_f64,     strided);
-
-    // ----- Reduce (single dispatch covers all axis configurations;
-    //       the wrapper destructures OpParams::Reduce { dims, keepdim }) -----
-    // Baracuda reduce FFI is fully stride-driven; the wrapper passes
-    // `current_layout.stride()` as `stride_x` each iteration.
-    table.register_with_caps(SumReduce,  &u(f32),  cuda, reduce::sum_f32,  strided);
-    table.register_with_caps(MaxReduce,  &u(f32),  cuda, reduce::max_f32,  strided);
-    table.register_with_caps(MinReduce,  &u(f32),  cuda, reduce::min_f32,  strided);
-    table.register_with_caps(MeanReduce, &u(f32),  cuda, reduce::mean_f32, strided);
-
-    table.register_with_caps(SumReduce,  &u(f16),  cuda, reduce::sum_f16,  strided);
-    table.register_with_caps(MaxReduce,  &u(f16),  cuda, reduce::max_f16,  strided);
-    table.register_with_caps(MinReduce,  &u(f16),  cuda, reduce::min_f16,  strided);
-    table.register_with_caps(MeanReduce, &u(f16),  cuda, reduce::mean_f16, strided);
-
-    table.register_with_caps(SumReduce,  &u(bf16), cuda, reduce::sum_bf16,  strided);
-    table.register_with_caps(MaxReduce,  &u(bf16), cuda, reduce::max_bf16,  strided);
-    table.register_with_caps(MinReduce,  &u(bf16), cuda, reduce::min_bf16,  strided);
-    table.register_with_caps(MeanReduce, &u(bf16), cuda, reduce::mean_bf16, strided);
-
-    table.register_with_caps(SumReduce,  &u(f64),  cuda, reduce::sum_f64,  strided);
-    table.register_with_caps(MaxReduce,  &u(f64),  cuda, reduce::max_f64,  strided);
-    table.register_with_caps(MinReduce,  &u(f64),  cuda, reduce::min_f64,  strided);
-    table.register_with_caps(MeanReduce, &u(f64),  cuda, reduce::mean_f64, strided);
-
-    // ----- Norm LastDim (RmsNorm + LayerNorm) -----
-    // Wrapper now passes the input's true rank-N shape + strides to
-    // baracuda's stride-driven norm FFI; auto-Contiguize skipped.
-    table.register_with_caps(RmsNormLastDim,   &u(f32),  cuda, norm::rms_f32,  strided);
-    table.register_with_caps(RmsNormLastDim,   &u(f16),  cuda, norm::rms_f16,  strided);
-    table.register_with_caps(RmsNormLastDim,   &u(bf16), cuda, norm::rms_bf16, strided);
-    table.register_with_caps(RmsNormLastDim,   &u(f64),  cuda, norm::rms_f64,  strided);
-
-    table.register_with_caps(LayerNormLastDim, &u(f32),  cuda, norm::layer_f32,  strided);
-    table.register_with_caps(LayerNormLastDim, &u(f16),  cuda, norm::layer_f16,  strided);
-    table.register_with_caps(LayerNormLastDim, &u(bf16), cuda, norm::layer_bf16, strided);
-    table.register_with_caps(LayerNormLastDim, &u(f64),  cuda, norm::layer_f64,  strided);
-
-    // ----- Attention — RoPE -----
-    // Baracuda alpha.31 ships a RoPE strided sibling; the wrapper
-    // picks contig vs strided per-call and enforces head_dim
-    // (innermost) stride == 1 on the strided path (the pair-dim
-    // constraint baracuda's plan layer would enforce). BW kernels
-    // exist in alpha.31 but stay unregistered until Fuel-IR grows
-    // a RopeBackward OpKind.
-    table.register_with_caps(Rope, &u(f32),  cuda, attention::rope_f32,  strided);
-    table.register_with_caps(Rope, &u(f16),  cuda, attention::rope_f16,  strided);
-    table.register_with_caps(Rope, &u(bf16), cuda, attention::rope_bf16, strided);
-    table.register_with_caps(Rope, &u(f64),  cuda, attention::rope_f64,  strided);
 
     // ----- Attention — FlashDecoding (decode-flash, seq_q==1, capacity-K) -----
     // Baracuda `flash_decoding_{f16,bf16}` (alpha.72): the FIRST capacity-K
@@ -2657,19 +3064,6 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
         strided, flash_precision, crate::cost::cost_flash_decoding_cuda,
     );
 
-    // ----- Softmax + LogSoftmax LastDim -----
-    // Wrapper now passes the input's true rank-N shape + strides to
-    // baracuda's stride-driven softmax FFI; auto-Contiguize skipped.
-    table.register_with_caps(SoftmaxLastDim,    &u(f32),  cuda, softmax::softmax_f32,  strided);
-    table.register_with_caps(SoftmaxLastDim,    &u(f16),  cuda, softmax::softmax_f16,  strided);
-    table.register_with_caps(SoftmaxLastDim,    &u(bf16), cuda, softmax::softmax_bf16, strided);
-    table.register_with_caps(SoftmaxLastDim,    &u(f64),  cuda, softmax::softmax_f64,  strided);
-
-    table.register_with_caps(LogSoftmaxLastDim, &u(f32),  cuda, softmax::log_softmax_f32,  strided);
-    table.register_with_caps(LogSoftmaxLastDim, &u(f16),  cuda, softmax::log_softmax_f16,  strided);
-    table.register_with_caps(LogSoftmaxLastDim, &u(bf16), cuda, softmax::log_softmax_bf16, strided);
-    table.register_with_caps(LogSoftmaxLastDim, &u(f64),  cuda, softmax::log_softmax_f64,  strided);
-
     // ----- IndexSelect / Gather / MaskedFill / ScatterAdd
     // Dtype keys mirror the existing CPU registrations:
     //   IndexSelect: [data, U32, data]
@@ -2699,245 +3093,6 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     table.register(ScatterAdd, &scatter_dts(f32), cuda, indexing::scatter_add_f32);
     table.register(ScatterAdd, &scatter_dts(f64), cuda, indexing::scatter_add_f64);
 
-    // ----- Int-GEMM — S8/U8 RRR Identity (alpha.28; W8A8 phase 1).
-    // Registers at the MatMul OpKind with the [int, int, int] key.
-    let i8_dt = DType::I8;
-    let u8_dt = DType::U8;
-    table.register(MatMul, &[i8_dt, i8_dt, i8_dt], cuda, gemm_int::gemm_s8_rrr);
-    table.register(MatMul, &[u8_dt, u8_dt, u8_dt], cuda, gemm_int::gemm_u8_rrr);
-
-    // ----- ArgMaxDim / ArgMinDim — U32 output (alpha.28 added u32/i32 outputs).
-    // Net-new dtype coverage on CUDA: PTX path is F32-only.
-    let u32_dt = DType::U32;
-    let arg_dts = |dt: DType| [dt, u32_dt];
-    // arg_reduce wrapper passes `src_layout.stride()` as stride_x.
-    table.register_with_caps(ArgMaxDim, &arg_dts(f32),  cuda, arg_reduce::argmax_dim_u32_f32,  strided);
-    table.register_with_caps(ArgMinDim, &arg_dts(f32),  cuda, arg_reduce::argmin_dim_u32_f32,  strided);
-    table.register_with_caps(ArgMaxDim, &arg_dts(f64),  cuda, arg_reduce::argmax_dim_u32_f64,  strided);
-    table.register_with_caps(ArgMinDim, &arg_dts(f64),  cuda, arg_reduce::argmin_dim_u32_f64,  strided);
-    table.register_with_caps(ArgMaxDim, &arg_dts(f16),  cuda, arg_reduce::argmax_dim_u32_f16,  strided);
-    table.register_with_caps(ArgMinDim, &arg_dts(f16),  cuda, arg_reduce::argmin_dim_u32_f16,  strided);
-    table.register_with_caps(ArgMaxDim, &arg_dts(bf16), cuda, arg_reduce::argmax_dim_u32_bf16, strided);
-    table.register_with_caps(ArgMinDim, &arg_dts(bf16), cuda, arg_reduce::argmin_dim_u32_bf16, strided);
-
-    // ----- PowI — integer-exponent power (alpha.28).
-    // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
-    // Baracuda alpha.31 ships strided FW + BW siblings; the wrappers
-    // pick contig vs strided per-call.
-    table.register_with_caps(PowIElementwise, &u(f32),  cuda, powi::powi_f32,  strided);
-    table.register_with_caps(PowIElementwise, &u(f64),  cuda, powi::powi_f64,  strided);
-    table.register_with_caps(PowIElementwise, &u(f16),  cuda, powi::powi_f16,  strided);
-    table.register_with_caps(PowIElementwise, &u(bf16), cuda, powi::powi_bf16, strided);
-
-    // ----- PowI backward — single-launch alternative to autograd's
-    // 3-node primitive decomposition (PowI(n-1) → MulScalar → Mul).
-    // Two-input shape `(x, upstream) → grad_x`; same dtype on every
-    // operand. Reached from `Op::Fused(POWI_BACKWARD, PowIBackward
-    // { exp })`.
-    let b_same = |t: DType| [t, t, t];
-    table.register_with_caps(PowIElementwiseBackward, &b_same(f32),  cuda, powi_backward::powi_backward_f32,  strided);
-    table.register_with_caps(PowIElementwiseBackward, &b_same(f64),  cuda, powi_backward::powi_backward_f64,  strided);
-    table.register_with_caps(PowIElementwiseBackward, &b_same(f16),  cuda, powi_backward::powi_backward_f16,  strided);
-    table.register_with_caps(PowIElementwiseBackward, &b_same(bf16), cuda, powi_backward::powi_backward_bf16, strided);
-
-    // ----- Clamp — scalar bounds → broadcast-tensor ternary clamp.
-    // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
-    // Wrapper now passes the input's true rank-N shape + strides;
-    // bounds are broadcast (stride 0 on every axis).
-    table.register_with_caps(ClampElementwise, &u(f32),  cuda, clamp::clamp_f32,  strided);
-    table.register_with_caps(ClampElementwise, &u(f64),  cuda, clamp::clamp_f64,  strided);
-    table.register_with_caps(ClampElementwise, &u(f16),  cuda, clamp::clamp_f16,  strided);
-    table.register_with_caps(ClampElementwise, &u(bf16), cuda, clamp::clamp_bf16, strided);
-
-    // ----- Concat — N-ary via chained baracuda concat2.
-    // Net-new dtype coverage on CUDA for F64/F16/BF16; F32 is a sibling.
-    // Wrapper picks per-call: stride-aware path when input layouts are
-    // supplied (the executor's default), synthetic rank-3 reshape
-    // otherwise.
-    table.register_with_caps(Concat, &u(f32),  cuda, concat::concat_f32,  strided);
-    table.register_with_caps(Concat, &u(f64),  cuda, concat::concat_f64,  strided);
-    table.register_with_caps(Concat, &u(f16),  cuda, concat::concat_f16,  strided);
-    table.register_with_caps(Concat, &u(bf16), cuda, concat::concat_bf16, strided);
-
-    // ----- WriteSlice — in-place rectangular slab assign (alpha.29).
-    // Byte-width-keyed kernel (b1/b2/b4/b8); per-dtype entries just
-    // pick the right byte-width wrapper. Unblocks Fuel's persistent
-    // KV-cache integration (Phase 7.6 step 9c E.3.3).
-    table.register(WriteSlice, &u(f32),       cuda, write_slice::write_slice_b4);
-    table.register(WriteSlice, &u(f64),       cuda, write_slice::write_slice_b8);
-    table.register(WriteSlice, &u(f16),       cuda, write_slice::write_slice_b2);
-    table.register(WriteSlice, &u(bf16),      cuda, write_slice::write_slice_b2);
-    table.register(WriteSlice, &u(DType::I32),cuda, write_slice::write_slice_b4);
-    table.register(WriteSlice, &u(DType::I64),cuda, write_slice::write_slice_b8);
-    table.register(WriteSlice, &u(DType::U32),cuda, write_slice::write_slice_b4);
-    table.register(WriteSlice, &u(DType::U8), cuda, write_slice::write_slice_b1);
-    table.register(WriteSlice, &u(DType::I8), cuda, write_slice::write_slice_b1);
-
-    // WriteSliceRotating — Phase C sliding-window KV writes. Same
-    // byte-width-dispatched surface as WriteSlice; the wrapper handles
-    // the position D2H + ring-boundary split before delegating to
-    // baracuda's write_slice kernels.
-    table.register(WriteSliceRotating, &u(f32),       cuda, write_slice_rotating::write_slice_rotating_b4);
-    table.register(WriteSliceRotating, &u(f64),       cuda, write_slice_rotating::write_slice_rotating_b8);
-    table.register(WriteSliceRotating, &u(f16),       cuda, write_slice_rotating::write_slice_rotating_b2);
-    table.register(WriteSliceRotating, &u(bf16),      cuda, write_slice_rotating::write_slice_rotating_b2);
-    table.register(WriteSliceRotating, &u(DType::I32),cuda, write_slice_rotating::write_slice_rotating_b4);
-    table.register(WriteSliceRotating, &u(DType::I64),cuda, write_slice_rotating::write_slice_rotating_b8);
-    table.register(WriteSliceRotating, &u(DType::U32),cuda, write_slice_rotating::write_slice_rotating_b4);
-    table.register(WriteSliceRotating, &u(DType::U8), cuda, write_slice_rotating::write_slice_rotating_b1);
-    table.register(WriteSliceRotating, &u(DType::I8), cuda, write_slice_rotating::write_slice_rotating_b1);
-
-    // ----- Triu / Tril — triangular masks (alpha.29).
-    // 7 dtypes per direction in baracuda; Fuel registers the
-    // float + integer subset that the CPU path already covers.
-    // bool is parked until Fuel adds Bool storage (CPU coverage today
-    // also skips Bool — the kernel exists if/when needed).
-    // Baracuda alpha.31 ships strided siblings for triu/tril. Wrapper
-    // picks contig vs strided per-call; BW reuses FW (mask self-adjoint,
-    // Phase 13.4).
-    table.register_with_caps(Triu, &u(f32),  cuda, triangular::triu_f32,  strided);
-    table.register_with_caps(Triu, &u(f64),  cuda, triangular::triu_f64,  strided);
-    table.register_with_caps(Triu, &u(f16),  cuda, triangular::triu_f16,  strided);
-    table.register_with_caps(Triu, &u(bf16), cuda, triangular::triu_bf16, strided);
-    table.register_with_caps(Triu, &u(DType::I32), cuda, triangular::triu_i32, strided);
-    table.register_with_caps(Triu, &u(DType::I64), cuda, triangular::triu_i64, strided);
-
-    table.register_with_caps(Tril, &u(f32),  cuda, triangular::tril_f32,  strided);
-    table.register_with_caps(Tril, &u(f64),  cuda, triangular::tril_f64,  strided);
-    table.register_with_caps(Tril, &u(f16),  cuda, triangular::tril_f16,  strided);
-    table.register_with_caps(Tril, &u(bf16), cuda, triangular::tril_bf16, strided);
-    table.register_with_caps(Tril, &u(DType::I32), cuda, triangular::tril_i32, strided);
-    table.register_with_caps(Tril, &u(DType::I64), cuda, triangular::tril_i64, strided);
-
-    // ----- Flip — single-axis reverse. 4 float dtypes; integer dtypes
-    // (u8/u32) parked until baracuda extends the symbol set (today's
-    // CPU set covers u8/u32 via the dtype-agnostic byte-level kernel).
-    // Wrapper picks contig (rank-3 reshape) vs strided (rank-N walk
-    // via the axis from OpParams::Flip).
-    table.register_with_caps(Flip, &u(f32),  cuda, flip::flip_f32,  strided);
-    table.register_with_caps(Flip, &u(f64),  cuda, flip::flip_f64,  strided);
-    table.register_with_caps(Flip, &u(f16),  cuda, flip::flip_f16,  strided);
-    table.register_with_caps(Flip, &u(bf16), cuda, flip::flip_bf16, strided);
-
-    // ----- Roll — single-axis cyclic shift. Same 4 float dtypes as Flip.
-    table.register_with_caps(Roll, &u(f32),  cuda, roll::roll_f32,  strided);
-    table.register_with_caps(Roll, &u(f64),  cuda, roll::roll_f64,  strided);
-    table.register_with_caps(Roll, &u(f16),  cuda, roll::roll_f16,  strided);
-    table.register_with_caps(Roll, &u(bf16), cuda, roll::roll_bf16, strided);
-
-    // ----- CumSum — single-axis inclusive prefix sum. 4 float dtypes.
-    // Backward (reverse-cumsum) is expressed upstream as Flip → CumSum →
-    // Flip, so the kernel itself never needs the reverse flag.
-    table.register_with_caps(CumSum, &u(f32),  cuda, cumsum::cumsum_f32,  strided);
-    table.register_with_caps(CumSum, &u(f64),  cuda, cumsum::cumsum_f64,  strided);
-    table.register_with_caps(CumSum, &u(f16),  cuda, cumsum::cumsum_f16,  strided);
-    table.register_with_caps(CumSum, &u(bf16), cuda, cumsum::cumsum_bf16, strided);
-
-    // ----- Pad / PadBackward — multi-dim padding.
-    // Forward: Constant/Reflect/Replicate per dtype (Circular parked
-    // until fuel-graph emits it). Backward: Constant only (other
-    // backwards are sum-accumulating and not shipped in baracuda
-    // alpha.29 — CPU stays the only target for those).
-    table.register(Pad, &u(f32),  cuda, pad::pad_f32);
-    table.register(Pad, &u(f64),  cuda, pad::pad_f64);
-    table.register(Pad, &u(f16),  cuda, pad::pad_f16);
-    table.register(Pad, &u(bf16), cuda, pad::pad_bf16);
-
-    table.register(PadBackward, &u(f32),  cuda, pad::pad_backward_f32);
-    table.register(PadBackward, &u(f64),  cuda, pad::pad_backward_f64);
-    table.register(PadBackward, &u(f16),  cuda, pad::pad_backward_f16);
-    table.register(PadBackward, &u(bf16), cuda, pad::pad_backward_bf16);
-
-    // ----- Affine — `y = mul * x + add` (scalar in OpParams::Affine).
-    // Net-new dtype coverage on CUDA: PTX path is f32 only.
-    // Baracuda alpha.31 ships strided siblings for all 7 dtypes; the
-    // wrapper picks contig vs strided per-call.
-    table.register_with_caps(Affine, &u(f32),  cuda, affine::affine_f32,  strided);
-    table.register_with_caps(Affine, &u(f64),  cuda, affine::affine_f64,  strided);
-    table.register_with_caps(Affine, &u(f16),  cuda, affine::affine_f16,  strided);
-    table.register_with_caps(Affine, &u(bf16), cuda, affine::affine_bf16, strided);
-    table.register_with_caps(Affine, &u(DType::I32), cuda, affine::affine_i32, strided);
-    table.register_with_caps(Affine, &u(DType::I64), cuda, affine::affine_i64, strided);
-    table.register_with_caps(Affine, &u(DType::U8),  cuda, affine::affine_u8,  strided);
-
-    // In-place affine — Phase 3d of in-place ops infrastructure.
-    // alpha.62 ships all 4 FP dtypes (added bf16/f16 in alpha.61 per
-    // Fuel's ask). No strided variant: the executor rejects strided
-    // in-place targets up front, so we register without the `strided`
-    // cap (default KernelCaps).
-    table.register(InplaceAffine, &u(f32),  cuda, affine::affine_inplace_f32);
-    table.register(InplaceAffine, &u(f64),  cuda, affine::affine_inplace_f64);
-    table.register(InplaceAffine, &u(bf16), cuda, affine::affine_inplace_bf16);
-    table.register(InplaceAffine, &u(f16),  cuda, affine::affine_inplace_f16);
-
-    // ClampInplace + PowIInplace — scalar-param family. baracuda
-    // ships all 4 dtypes for both; ClampInplace uses the
-    // ternary_clamp_*_strided_run symbols with same-pointer dispatch
-    // (a == y) + 1-element broadcast bound buffers; PowIInplace uses
-    // the contig unary_powi_*_run symbols with same-pointer dispatch.
-    table.register(ClampInplace, &u(f32),  cuda, clamp_inplace::clamp_inplace_f32);
-    table.register(ClampInplace, &u(f64),  cuda, clamp_inplace::clamp_inplace_f64);
-    table.register(ClampInplace, &u(bf16), cuda, clamp_inplace::clamp_inplace_bf16);
-    table.register(ClampInplace, &u(f16),  cuda, clamp_inplace::clamp_inplace_f16);
-
-    table.register(PowIInplace, &u(f32),  cuda, powi_inplace::powi_inplace_f32);
-    table.register(PowIInplace, &u(f64),  cuda, powi_inplace::powi_inplace_f64);
-    table.register(PowIInplace, &u(bf16), cuda, powi_inplace::powi_inplace_bf16);
-    table.register(PowIInplace, &u(f16),  cuda, powi_inplace::powi_inplace_f16);
-
-    // In-place unary activations — Phase 3e of in-place ops. Same
-    // structural rules as InplaceAffine (no strided cap, contig-only).
-    // Full 4-dtype coverage (f32/f64/bf16/f16); baracuda exposes the
-    // matching `unary_*_run` symbol for every (kind, dtype) entry.
-    table.register(ReluInplace,    &u(f32), cuda, unary::relu_inplace_f32);
-    table.register(SiluInplace,    &u(f32), cuda, unary::silu_inplace_f32);
-    table.register(GeluInplace,    &u(f32), cuda, unary::gelu_inplace_f32);
-    table.register(TanhInplace,    &u(f32), cuda, unary::tanh_inplace_f32);
-    table.register(SigmoidInplace, &u(f32), cuda, unary::sigmoid_inplace_f32);
-
-    table.register(ReluInplace,    &u(f64), cuda, unary::relu_inplace_f64);
-    table.register(SiluInplace,    &u(f64), cuda, unary::silu_inplace_f64);
-    table.register(GeluInplace,    &u(f64), cuda, unary::gelu_inplace_f64);
-    table.register(TanhInplace,    &u(f64), cuda, unary::tanh_inplace_f64);
-    table.register(SigmoidInplace, &u(f64), cuda, unary::sigmoid_inplace_f64);
-
-    table.register(ReluInplace,    &u(bf16), cuda, unary::relu_inplace_bf16);
-    table.register(SiluInplace,    &u(bf16), cuda, unary::silu_inplace_bf16);
-    table.register(GeluInplace,    &u(bf16), cuda, unary::gelu_inplace_bf16);
-    table.register(TanhInplace,    &u(bf16), cuda, unary::tanh_inplace_bf16);
-    table.register(SigmoidInplace, &u(bf16), cuda, unary::sigmoid_inplace_bf16);
-
-    table.register(ReluInplace,    &u(f16), cuda, unary::relu_inplace_f16);
-    table.register(SiluInplace,    &u(f16), cuda, unary::silu_inplace_f16);
-    table.register(GeluInplace,    &u(f16), cuda, unary::gelu_inplace_f16);
-    table.register(TanhInplace,    &u(f16), cuda, unary::tanh_inplace_f16);
-    table.register(SigmoidInplace, &u(f16), cuda, unary::sigmoid_inplace_f16);
-
-    // In-place unary op family expansion (2026-05-30) — 16 new ops
-    // × 4 dtypes = 64 new (OpKind, [T, T], Cuda) entries.
-    for (op, regs) in [
-        (NegInplace,     [unary::neg_inplace_f32,    unary::neg_inplace_f64,    unary::neg_inplace_bf16,    unary::neg_inplace_f16]),
-        (AbsInplace,     [unary::abs_inplace_f32,    unary::abs_inplace_f64,    unary::abs_inplace_bf16,    unary::abs_inplace_f16]),
-        (SqrInplace,     [unary::sqr_inplace_f32,    unary::sqr_inplace_f64,    unary::sqr_inplace_bf16,    unary::sqr_inplace_f16]),
-        (SqrtInplace,    [unary::sqrt_inplace_f32,   unary::sqrt_inplace_f64,   unary::sqrt_inplace_bf16,   unary::sqrt_inplace_f16]),
-        (RsqrtInplace,   [unary::rsqrt_inplace_f32,  unary::rsqrt_inplace_f64,  unary::rsqrt_inplace_bf16,  unary::rsqrt_inplace_f16]),
-        (RecipInplace,   [unary::recip_inplace_f32,  unary::recip_inplace_f64,  unary::recip_inplace_bf16,  unary::recip_inplace_f16]),
-        (ExpInplace,     [unary::exp_inplace_f32,    unary::exp_inplace_f64,    unary::exp_inplace_bf16,    unary::exp_inplace_f16]),
-        (LogInplace,     [unary::log_inplace_f32,    unary::log_inplace_f64,    unary::log_inplace_bf16,    unary::log_inplace_f16]),
-        (SinInplace,     [unary::sin_inplace_f32,    unary::sin_inplace_f64,    unary::sin_inplace_bf16,    unary::sin_inplace_f16]),
-        (CosInplace,     [unary::cos_inplace_f32,    unary::cos_inplace_f64,    unary::cos_inplace_bf16,    unary::cos_inplace_f16]),
-        (SignInplace,    [unary::sign_inplace_f32,   unary::sign_inplace_f64,   unary::sign_inplace_bf16,   unary::sign_inplace_f16]),
-        (FloorInplace,   [unary::floor_inplace_f32,  unary::floor_inplace_f64,  unary::floor_inplace_bf16,  unary::floor_inplace_f16]),
-        (CeilInplace,    [unary::ceil_inplace_f32,   unary::ceil_inplace_f64,   unary::ceil_inplace_bf16,   unary::ceil_inplace_f16]),
-        (RoundInplace,   [unary::round_inplace_f32,  unary::round_inplace_f64,  unary::round_inplace_bf16,  unary::round_inplace_f16]),
-        (ErfInplace,     [unary::erf_inplace_f32,    unary::erf_inplace_f64,    unary::erf_inplace_bf16,    unary::erf_inplace_f16]),
-        (GeluErfInplace, [unary::gelu_erf_inplace_f32, unary::gelu_erf_inplace_f64, unary::gelu_erf_inplace_bf16, unary::gelu_erf_inplace_f16]),
-    ] {
-        for (dt, wrapper) in [f32, f64, bf16, f16].into_iter().zip(regs.into_iter()) {
-            table.register(op, &u(dt), cuda, wrapper);
-        }
-    }
-
     // ----- Cast — the FULL 70-pair family (8×8 over {F32,F64,F16,BF16,I32,
     // U32,I64,U8} + F8E4M3 ↔ {F32,F16,BF16}) — registered FROM its FKC kernel
     // contract, the SOLE path (the hand-written 8×8 double-loop + F8E4M3 legs
@@ -2953,147 +3108,54 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     // `docs/kernel-contracts/cuda/cast.fkc.md`. -----
     register_cuda_cast_from_contract(table);
 
-    // Baracuda unary kernels ship both contig + `<sym>_strided_run`
-    // variants; the wrapper in fuel-cuda-backend/src/baracuda/elementwise.rs
-    // picks per-call via `is_contiguous_zero_offset(layout)`.
+    // ----- GROUP 1 CUDA FKC families (per-(op,dtype) strided): each
+    // replaces its deleted hand-written register_with_caps(..., strided)
+    // block; all run BEFORE fill_unset_cost_for_backend(Cuda, ..) so the
+    // imported unknown_cost sentinels upgrade to the shared per-OpKind cost. -----
+    register_cuda_binary_from_contract(table);
+    register_cuda_reduce_from_contract(table);
+    register_cuda_norm_from_contract(table);
+    register_cuda_softmax_from_contract(table);
+    register_cuda_powi_from_contract(table);
+    register_cuda_powi_backward_from_contract(table);
+    register_cuda_clamp_from_contract(table);
+    register_cuda_flip_from_contract(table);
+    register_cuda_roll_from_contract(table);
+    register_cuda_cumsum_from_contract(table);
+    register_cuda_triangular_from_contract(table);
+    register_cuda_arg_reduce_from_contract(table);
+    register_cuda_reduce_to_from_contract(table);
+    register_cuda_rope_from_contract(table);
 
-    // ----- F32 unary -----
-    table.register_with_caps(NegElementwise,     &u(f32), cuda, unary::neg_f32,     strided);
-    table.register_with_caps(AbsElementwise,     &u(f32), cuda, unary::abs_f32,     strided);
-    table.register_with_caps(SignElementwise,    &u(f32), cuda, unary::sign_f32,    strided);
-    table.register_with_caps(SqrElementwise,     &u(f32), cuda, unary::sqr_f32,     strided);
-    table.register_with_caps(SqrtElementwise,    &u(f32), cuda, unary::sqrt_f32,    strided);
-    table.register_with_caps(RecipElementwise,   &u(f32), cuda, unary::recip_f32,   strided);
-    table.register_with_caps(ExpElementwise,     &u(f32), cuda, unary::exp_f32,     strided);
-    table.register_with_caps(LogElementwise,     &u(f32), cuda, unary::log_f32,     strided);
-    table.register_with_caps(SinElementwise,     &u(f32), cuda, unary::sin_f32,     strided);
-    table.register_with_caps(CosElementwise,     &u(f32), cuda, unary::cos_f32,     strided);
-    table.register_with_caps(TanhElementwise,    &u(f32), cuda, unary::tanh_f32,    strided);
-    table.register_with_caps(ReluElementwise,    &u(f32), cuda, unary::relu_f32,    strided);
-    // GeluElementwise is contractually the TANH approximation (see the
-    // OpKind doc); baracuda's plain `unary_gelu_*` is erf-flavored and
-    // registers under GeluErfElementwise instead. The two were
-    // conflated until the 2026-06-10 live-sweep caught the ~1e-4
-    // divergence vs the CPU kernel.
-    table.register_with_caps(GeluElementwise,    &u(f32), cuda, unary::gelu_tanh_f32, strided);
-    table.register_with_caps(GeluErfElementwise, &u(f32), cuda, unary::gelu_f32,    strided);
-    // StepElementwise — baracuda's native `unary_step_*` (alpha.66
-    // Phase 31): `(x > 0) ? 1 : 0`, NaN → 0, matching the OpKind
-    // contract exactly.
-    table.register_with_caps(StepElementwise,    &u(f32), cuda, unary::step_f32,    strided);
-    table.register_with_caps(SiluElementwise,    &u(f32), cuda, unary::silu_f32,    strided);
-    table.register_with_caps(SigmoidElementwise, &u(f32), cuda, unary::sigmoid_f32, strided);
-    // Judge cuda:0 coverage gap (2026-06-11): Rsqrt's wrapper existed
-    // but was never registered; Floor/Ceil/Round/Erf forward manifests
-    // are net-new. RoundElementwise is banker's rounding on both sides
-    // (CPU `round_ties_even`, baracuda `rint`); ErfElementwise is the
-    // plain error function (`erff`), verified against the .cu functor.
-    table.register_with_caps(RsqrtElementwise,   &u(f32), cuda, unary::rsqrt_f32,   strided);
-    table.register_with_caps(FloorElementwise,   &u(f32), cuda, unary::floor_f32,   strided);
-    table.register_with_caps(CeilElementwise,    &u(f32), cuda, unary::ceil_f32,    strided);
-    table.register_with_caps(RoundElementwise,   &u(f32), cuda, unary::round_f32,   strided);
-    table.register_with_caps(ErfElementwise,     &u(f32), cuda, unary::erf_f32,     strided);
+    // ----- GROUP 3 forward elementwise-unary (strided) - replaces the
+    // deleted hand-written register_with_caps(..., strided) unary block. -----
+    register_cuda_unary_from_contract(table);
 
-    // ----- F16 unary (net-new dtype coverage for CUDA — PTX path is
-    //       f32-only today) -----
-    table.register_with_caps(NegElementwise,     &u(f16), cuda, unary::neg_f16,     strided);
-    table.register_with_caps(AbsElementwise,     &u(f16), cuda, unary::abs_f16,     strided);
-    table.register_with_caps(SqrElementwise,     &u(f16), cuda, unary::sqr_f16,     strided);
-    table.register_with_caps(SqrtElementwise,    &u(f16), cuda, unary::sqrt_f16,    strided);
-    table.register_with_caps(RecipElementwise,   &u(f16), cuda, unary::recip_f16,   strided);
-    table.register_with_caps(ExpElementwise,     &u(f16), cuda, unary::exp_f16,     strided);
-    table.register_with_caps(LogElementwise,     &u(f16), cuda, unary::log_f16,     strided);
-    table.register_with_caps(SinElementwise,     &u(f16), cuda, unary::sin_f16,     strided);
-    table.register_with_caps(CosElementwise,     &u(f16), cuda, unary::cos_f16,     strided);
-    table.register_with_caps(TanhElementwise,    &u(f16), cuda, unary::tanh_f16,    strided);
-    table.register_with_caps(ReluElementwise,    &u(f16), cuda, unary::relu_f16,    strided);
-    table.register_with_caps(GeluElementwise,    &u(f16), cuda, unary::gelu_tanh_f16, strided);
-    table.register_with_caps(GeluErfElementwise, &u(f16), cuda, unary::gelu_f16,    strided);
-    table.register_with_caps(StepElementwise,    &u(f16), cuda, unary::step_f16,    strided);
-    table.register_with_caps(SiluElementwise,    &u(f16), cuda, unary::silu_f16,    strided);
-    table.register_with_caps(SigmoidElementwise, &u(f16), cuda, unary::sigmoid_f16, strided);
-    table.register_with_caps(RsqrtElementwise,   &u(f16), cuda, unary::rsqrt_f16,   strided);
-    table.register_with_caps(FloorElementwise,   &u(f16), cuda, unary::floor_f16,   strided);
-    table.register_with_caps(CeilElementwise,    &u(f16), cuda, unary::ceil_f16,    strided);
-    table.register_with_caps(RoundElementwise,   &u(f16), cuda, unary::round_f16,   strided);
-    table.register_with_caps(ErfElementwise,     &u(f16), cuda, unary::erf_f16,     strided);
+    // ----- GROUP 2 contiguous in-place families - replace the deleted
+    // hand-written table.register(..) in-place blocks (default caps). -----
+    register_cuda_clamp_inplace_from_contract(table);
+    register_cuda_powi_inplace_from_contract(table);
+    register_cuda_inplace_unary_from_contract(table);
 
-    // ----- BF16 unary -----
-    table.register_with_caps(NegElementwise,     &u(bf16), cuda, unary::neg_bf16,     strided);
-    table.register_with_caps(AbsElementwise,     &u(bf16), cuda, unary::abs_bf16,     strided);
-    table.register_with_caps(SqrElementwise,     &u(bf16), cuda, unary::sqr_bf16,     strided);
-    table.register_with_caps(SqrtElementwise,    &u(bf16), cuda, unary::sqrt_bf16,    strided);
-    table.register_with_caps(RecipElementwise,   &u(bf16), cuda, unary::recip_bf16,   strided);
-    table.register_with_caps(ExpElementwise,     &u(bf16), cuda, unary::exp_bf16,     strided);
-    table.register_with_caps(LogElementwise,     &u(bf16), cuda, unary::log_bf16,     strided);
-    table.register_with_caps(SinElementwise,     &u(bf16), cuda, unary::sin_bf16,     strided);
-    table.register_with_caps(CosElementwise,     &u(bf16), cuda, unary::cos_bf16,     strided);
-    table.register_with_caps(TanhElementwise,    &u(bf16), cuda, unary::tanh_bf16,    strided);
-    table.register_with_caps(ReluElementwise,    &u(bf16), cuda, unary::relu_bf16,    strided);
-    table.register_with_caps(GeluElementwise,    &u(bf16), cuda, unary::gelu_tanh_bf16, strided);
-    table.register_with_caps(GeluErfElementwise, &u(bf16), cuda, unary::gelu_bf16,    strided);
-    table.register_with_caps(StepElementwise,    &u(bf16), cuda, unary::step_bf16,    strided);
-    table.register_with_caps(SiluElementwise,    &u(bf16), cuda, unary::silu_bf16,    strided);
-    table.register_with_caps(SigmoidElementwise, &u(bf16), cuda, unary::sigmoid_bf16, strided);
-    table.register_with_caps(RsqrtElementwise,   &u(bf16), cuda, unary::rsqrt_bf16,   strided);
-    table.register_with_caps(FloorElementwise,   &u(bf16), cuda, unary::floor_bf16,   strided);
-    table.register_with_caps(CeilElementwise,    &u(bf16), cuda, unary::ceil_bf16,    strided);
-    table.register_with_caps(RoundElementwise,   &u(bf16), cuda, unary::round_bf16,   strided);
-    table.register_with_caps(ErfElementwise,     &u(bf16), cuda, unary::erf_bf16,     strided);
+    // ----- GROUP 4 byte-width umbrellas (WriteSlice / WriteSliceRotating):
+    // replace the deleted hand-written per-dtype table.register(..) blocks. -----
+    register_cuda_write_slice_from_contract(table);
+    register_cuda_write_slice_rotating_from_contract(table);
 
-    // ----- F64 unary -----
-    table.register_with_caps(NegElementwise,     &u(f64), cuda, unary::neg_f64,     strided);
-    table.register_with_caps(AbsElementwise,     &u(f64), cuda, unary::abs_f64,     strided);
-    table.register_with_caps(SqrElementwise,     &u(f64), cuda, unary::sqr_f64,     strided);
-    table.register_with_caps(SqrtElementwise,    &u(f64), cuda, unary::sqrt_f64,    strided);
-    table.register_with_caps(RecipElementwise,   &u(f64), cuda, unary::recip_f64,   strided);
-    table.register_with_caps(ExpElementwise,     &u(f64), cuda, unary::exp_f64,     strided);
-    table.register_with_caps(LogElementwise,     &u(f64), cuda, unary::log_f64,     strided);
-    table.register_with_caps(SinElementwise,     &u(f64), cuda, unary::sin_f64,     strided);
-    table.register_with_caps(CosElementwise,     &u(f64), cuda, unary::cos_f64,     strided);
-    table.register_with_caps(TanhElementwise,    &u(f64), cuda, unary::tanh_f64,    strided);
-    table.register_with_caps(ReluElementwise,    &u(f64), cuda, unary::relu_f64,    strided);
-    table.register_with_caps(GeluElementwise,    &u(f64), cuda, unary::gelu_tanh_f64, strided);
-    table.register_with_caps(GeluErfElementwise, &u(f64), cuda, unary::gelu_f64,    strided);
-    table.register_with_caps(StepElementwise,    &u(f64), cuda, unary::step_f64,    strided);
-    table.register_with_caps(SiluElementwise,    &u(f64), cuda, unary::silu_f64,    strided);
-    table.register_with_caps(SigmoidElementwise, &u(f64), cuda, unary::sigmoid_f64, strided);
-    table.register_with_caps(RsqrtElementwise,   &u(f64), cuda, unary::rsqrt_f64,   strided);
-    table.register_with_caps(FloorElementwise,   &u(f64), cuda, unary::floor_f64,   strided);
-    table.register_with_caps(CeilElementwise,    &u(f64), cuda, unary::ceil_f64,    strided);
-    table.register_with_caps(RoundElementwise,   &u(f64), cuda, unary::round_f64,   strided);
-    table.register_with_caps(ErfElementwise,     &u(f64), cuda, unary::erf_f64,     strided);
+    // ----- GROUP 5 multi-operand / param-ride families (concat/affine +
+    // inplace_affine/pad/pad_backward/causal_conv1d); replace the deleted
+    // hand-written blocks. (indexing DEFERRED - mixed fan/fixed-index.) -----
+    register_cuda_concat_from_contract(table);
+    register_cuda_affine_from_contract(table);
+    register_cuda_inplace_affine_from_contract(table);
+    register_cuda_pad_from_contract(table);
+    register_cuda_pad_backward_from_contract(table);
+    register_cuda_causal_conv1d_from_contract(table);
 
-    // ----- Dense FP MatMul (Phase 74 gemm_dense; alpha.67) -----
-    // Packed row-major contract (the wrapper validates byte lengths),
-    // so no strided caps — the auto-Contiguize gate stays in front.
-    table.register(MatMul, &b(f32),  cuda, gemm_dense::matmul_f32);
-    table.register(MatMul, &b(f64),  cuda, gemm_dense::matmul_f64);
-    table.register(MatMul, &b(f16),  cuda, gemm_dense::matmul_f16);
-    table.register(MatMul, &b(bf16), cuda, gemm_dense::matmul_bf16);
-
-    // ----- Broadcast-reverse reductions (sys symbols since alpha.46) -----
-    // The FFI is stride-driven on the input side; advertise
-    // strided_input so transposed-view gradients skip Contiguize.
-    table.register_with_caps(ReduceSumTo, &u(f32),  cuda, reduce_to::sum_to_f32,  strided);
-    table.register_with_caps(ReduceSumTo, &u(f64),  cuda, reduce_to::sum_to_f64,  strided);
-    table.register_with_caps(ReduceSumTo, &u(f16),  cuda, reduce_to::sum_to_f16,  strided);
-    table.register_with_caps(ReduceSumTo, &u(bf16), cuda, reduce_to::sum_to_bf16, strided);
-    table.register_with_caps(ReduceMaxTo, &u(f32),  cuda, reduce_to::max_to_f32,  strided);
-    table.register_with_caps(ReduceMaxTo, &u(f64),  cuda, reduce_to::max_to_f64,  strided);
-    table.register_with_caps(ReduceMaxTo, &u(f16),  cuda, reduce_to::max_to_f16,  strided);
-    table.register_with_caps(ReduceMaxTo, &u(bf16), cuda, reduce_to::max_to_bf16, strided);
-
-    // ----- CausalConv1d (baracuda Phase 50 via the Fuel-prepad bridge;
-    //       moved from register_cuda_kernels 2026-06-10) -----
-    for (dt, w) in [
-        (f32,  conv1d::causal_conv1d_f32  as crate::kernel::KernelRef),
-        (f64,  conv1d::causal_conv1d_f64),
-        (bf16, conv1d::causal_conv1d_bf16),
-        (f16,  conv1d::causal_conv1d_f16),
-    ] {
-        table.register(CausalConv1d, &[dt, dt, dt, dt], cuda, w);
-    }
+    // ----- GROUP 6 MatMul facades (gemm_dense f32/f64/f16/bf16 + gemm_int
+    // s8/u8) at the shared OpKind::MatMul; replace the deleted regs. -----
+    register_cuda_gemm_dense_from_contract(table);
+    register_cuda_gemm_int_from_contract(table);
 }
 
 // ===========================================================================
@@ -3186,5 +3248,613 @@ mod cast_contract_tests {
             checked += 1;
         }
         assert_eq!(checked, 70, "all 70 (SRC, DST) cast pairs checked");
+    }
+
+    /// GROUP 1 (born-red gate). Every trivial per-(op,dtype) STRIDED CUDA family
+    /// (binary / reduce / norm / softmax / powi / powi_backward / clamp / flip /
+    /// roll / cumsum / triangular / arg_reduce / reduce_to / rope) is registered
+    /// FROM its FKC contract (`docs/kernel-contracts/cuda/<fam>.fkc.md`) via the
+    /// `register_cuda_<fam>_from_contract` importers - the SOLE path (hand-written
+    /// `register_with_caps(..., strided)` regs DELETED). For each `(op, dtypes,
+    /// Cuda)` key this asserts the EXACT production wrapper is bound,
+    /// `kernel_source == "baracuda"` (RED while the hand-written regs stamp `""`),
+    /// and `caps.strided_input == true` (byte-for-byte the deleted strided caps).
+    #[test]
+    fn register_baracuda_binds_group1_families_from_contract() {
+        let mut table = KernelBindingTable::new();
+        register_baracuda_cuda_kernels(&mut table);
+        let cuda = BackendId::Cuda;
+        let cases: &[(OpKind, &[DType], KernelRef, bool)] = &[
+        (OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::add_f32 as KernelRef, true),
+        (OpKind::AddElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::add_f16 as KernelRef, true),
+        (OpKind::AddElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::add_bf16 as KernelRef, true),
+        (OpKind::AddElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::add_f64 as KernelRef, true),
+        (OpKind::SubElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::sub_f32 as KernelRef, true),
+        (OpKind::SubElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::sub_f16 as KernelRef, true),
+        (OpKind::SubElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::sub_bf16 as KernelRef, true),
+        (OpKind::SubElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::sub_f64 as KernelRef, true),
+        (OpKind::MulElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::mul_f32 as KernelRef, true),
+        (OpKind::MulElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::mul_f16 as KernelRef, true),
+        (OpKind::MulElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::mul_bf16 as KernelRef, true),
+        (OpKind::MulElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::mul_f64 as KernelRef, true),
+        (OpKind::DivElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::div_f32 as KernelRef, true),
+        (OpKind::DivElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::div_f16 as KernelRef, true),
+        (OpKind::DivElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::div_bf16 as KernelRef, true),
+        (OpKind::DivElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::div_f64 as KernelRef, true),
+        (OpKind::MaximumElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::maximum_f32 as KernelRef, true),
+        (OpKind::MaximumElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::maximum_f16 as KernelRef, true),
+        (OpKind::MaximumElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::maximum_bf16 as KernelRef, true),
+        (OpKind::MaximumElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::maximum_f64 as KernelRef, true),
+        (OpKind::MinimumElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::minimum_f32 as KernelRef, true),
+        (OpKind::MinimumElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::minimum_f16 as KernelRef, true),
+        (OpKind::MinimumElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::minimum_bf16 as KernelRef, true),
+        (OpKind::MinimumElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::minimum_f64 as KernelRef, true),
+        (OpKind::PowElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::pow_f32 as KernelRef, true),
+        (OpKind::PowElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::pow_f16 as KernelRef, true),
+        (OpKind::PowElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::pow_bf16 as KernelRef, true),
+        (OpKind::PowElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::pow_f64 as KernelRef, true),
+        (OpKind::RemElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::rem_f32 as KernelRef, true),
+        (OpKind::RemElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::rem_f16 as KernelRef, true),
+        (OpKind::RemElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::rem_bf16 as KernelRef, true),
+        (OpKind::RemElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::rem_f64 as KernelRef, true),
+        (OpKind::SumReduce, &[DType::F32, DType::F32][..], reduce::sum_f32 as KernelRef, true),
+        (OpKind::SumReduce, &[DType::F16, DType::F16][..], reduce::sum_f16 as KernelRef, true),
+        (OpKind::SumReduce, &[DType::BF16, DType::BF16][..], reduce::sum_bf16 as KernelRef, true),
+        (OpKind::SumReduce, &[DType::F64, DType::F64][..], reduce::sum_f64 as KernelRef, true),
+        (OpKind::MaxReduce, &[DType::F32, DType::F32][..], reduce::max_f32 as KernelRef, true),
+        (OpKind::MaxReduce, &[DType::F16, DType::F16][..], reduce::max_f16 as KernelRef, true),
+        (OpKind::MaxReduce, &[DType::BF16, DType::BF16][..], reduce::max_bf16 as KernelRef, true),
+        (OpKind::MaxReduce, &[DType::F64, DType::F64][..], reduce::max_f64 as KernelRef, true),
+        (OpKind::MinReduce, &[DType::F32, DType::F32][..], reduce::min_f32 as KernelRef, true),
+        (OpKind::MinReduce, &[DType::F16, DType::F16][..], reduce::min_f16 as KernelRef, true),
+        (OpKind::MinReduce, &[DType::BF16, DType::BF16][..], reduce::min_bf16 as KernelRef, true),
+        (OpKind::MinReduce, &[DType::F64, DType::F64][..], reduce::min_f64 as KernelRef, true),
+        (OpKind::MeanReduce, &[DType::F32, DType::F32][..], reduce::mean_f32 as KernelRef, true),
+        (OpKind::MeanReduce, &[DType::F16, DType::F16][..], reduce::mean_f16 as KernelRef, true),
+        (OpKind::MeanReduce, &[DType::BF16, DType::BF16][..], reduce::mean_bf16 as KernelRef, true),
+        (OpKind::MeanReduce, &[DType::F64, DType::F64][..], reduce::mean_f64 as KernelRef, true),
+        (OpKind::RmsNormLastDim, &[DType::F32, DType::F32][..], norm::rms_f32 as KernelRef, true),
+        (OpKind::RmsNormLastDim, &[DType::F16, DType::F16][..], norm::rms_f16 as KernelRef, true),
+        (OpKind::RmsNormLastDim, &[DType::BF16, DType::BF16][..], norm::rms_bf16 as KernelRef, true),
+        (OpKind::RmsNormLastDim, &[DType::F64, DType::F64][..], norm::rms_f64 as KernelRef, true),
+        (OpKind::LayerNormLastDim, &[DType::F32, DType::F32][..], norm::layer_f32 as KernelRef, true),
+        (OpKind::LayerNormLastDim, &[DType::F16, DType::F16][..], norm::layer_f16 as KernelRef, true),
+        (OpKind::LayerNormLastDim, &[DType::BF16, DType::BF16][..], norm::layer_bf16 as KernelRef, true),
+        (OpKind::LayerNormLastDim, &[DType::F64, DType::F64][..], norm::layer_f64 as KernelRef, true),
+        (OpKind::SoftmaxLastDim, &[DType::F32, DType::F32][..], softmax::softmax_f32 as KernelRef, true),
+        (OpKind::SoftmaxLastDim, &[DType::F16, DType::F16][..], softmax::softmax_f16 as KernelRef, true),
+        (OpKind::SoftmaxLastDim, &[DType::BF16, DType::BF16][..], softmax::softmax_bf16 as KernelRef, true),
+        (OpKind::SoftmaxLastDim, &[DType::F64, DType::F64][..], softmax::softmax_f64 as KernelRef, true),
+        (OpKind::LogSoftmaxLastDim, &[DType::F32, DType::F32][..], softmax::log_softmax_f32 as KernelRef, true),
+        (OpKind::LogSoftmaxLastDim, &[DType::F16, DType::F16][..], softmax::log_softmax_f16 as KernelRef, true),
+        (OpKind::LogSoftmaxLastDim, &[DType::BF16, DType::BF16][..], softmax::log_softmax_bf16 as KernelRef, true),
+        (OpKind::LogSoftmaxLastDim, &[DType::F64, DType::F64][..], softmax::log_softmax_f64 as KernelRef, true),
+        (OpKind::PowIElementwise, &[DType::F32, DType::F32][..], powi::powi_f32 as KernelRef, true),
+        (OpKind::PowIElementwise, &[DType::F64, DType::F64][..], powi::powi_f64 as KernelRef, true),
+        (OpKind::PowIElementwise, &[DType::F16, DType::F16][..], powi::powi_f16 as KernelRef, true),
+        (OpKind::PowIElementwise, &[DType::BF16, DType::BF16][..], powi::powi_bf16 as KernelRef, true),
+        (OpKind::PowIElementwiseBackward, &[DType::F32, DType::F32, DType::F32][..], powi_backward::powi_backward_f32 as KernelRef, true),
+        (OpKind::PowIElementwiseBackward, &[DType::F64, DType::F64, DType::F64][..], powi_backward::powi_backward_f64 as KernelRef, true),
+        (OpKind::PowIElementwiseBackward, &[DType::F16, DType::F16, DType::F16][..], powi_backward::powi_backward_f16 as KernelRef, true),
+        (OpKind::PowIElementwiseBackward, &[DType::BF16, DType::BF16, DType::BF16][..], powi_backward::powi_backward_bf16 as KernelRef, true),
+        (OpKind::ClampElementwise, &[DType::F32, DType::F32][..], clamp::clamp_f32 as KernelRef, true),
+        (OpKind::ClampElementwise, &[DType::F64, DType::F64][..], clamp::clamp_f64 as KernelRef, true),
+        (OpKind::ClampElementwise, &[DType::F16, DType::F16][..], clamp::clamp_f16 as KernelRef, true),
+        (OpKind::ClampElementwise, &[DType::BF16, DType::BF16][..], clamp::clamp_bf16 as KernelRef, true),
+        (OpKind::Flip, &[DType::F32, DType::F32][..], flip::flip_f32 as KernelRef, true),
+        (OpKind::Flip, &[DType::F16, DType::F16][..], flip::flip_f16 as KernelRef, true),
+        (OpKind::Flip, &[DType::BF16, DType::BF16][..], flip::flip_bf16 as KernelRef, true),
+        (OpKind::Flip, &[DType::F64, DType::F64][..], flip::flip_f64 as KernelRef, true),
+        (OpKind::Roll, &[DType::F32, DType::F32][..], roll::roll_f32 as KernelRef, true),
+        (OpKind::Roll, &[DType::F16, DType::F16][..], roll::roll_f16 as KernelRef, true),
+        (OpKind::Roll, &[DType::BF16, DType::BF16][..], roll::roll_bf16 as KernelRef, true),
+        (OpKind::Roll, &[DType::F64, DType::F64][..], roll::roll_f64 as KernelRef, true),
+        (OpKind::CumSum, &[DType::F32, DType::F32][..], cumsum::cumsum_f32 as KernelRef, true),
+        (OpKind::CumSum, &[DType::F16, DType::F16][..], cumsum::cumsum_f16 as KernelRef, true),
+        (OpKind::CumSum, &[DType::BF16, DType::BF16][..], cumsum::cumsum_bf16 as KernelRef, true),
+        (OpKind::CumSum, &[DType::F64, DType::F64][..], cumsum::cumsum_f64 as KernelRef, true),
+        (OpKind::Triu, &[DType::F32, DType::F32][..], triangular::triu_f32 as KernelRef, true),
+        (OpKind::Triu, &[DType::F64, DType::F64][..], triangular::triu_f64 as KernelRef, true),
+        (OpKind::Triu, &[DType::F16, DType::F16][..], triangular::triu_f16 as KernelRef, true),
+        (OpKind::Triu, &[DType::BF16, DType::BF16][..], triangular::triu_bf16 as KernelRef, true),
+        (OpKind::Triu, &[DType::I32, DType::I32][..], triangular::triu_i32 as KernelRef, true),
+        (OpKind::Triu, &[DType::I64, DType::I64][..], triangular::triu_i64 as KernelRef, true),
+        (OpKind::Tril, &[DType::F32, DType::F32][..], triangular::tril_f32 as KernelRef, true),
+        (OpKind::Tril, &[DType::F64, DType::F64][..], triangular::tril_f64 as KernelRef, true),
+        (OpKind::Tril, &[DType::F16, DType::F16][..], triangular::tril_f16 as KernelRef, true),
+        (OpKind::Tril, &[DType::BF16, DType::BF16][..], triangular::tril_bf16 as KernelRef, true),
+        (OpKind::Tril, &[DType::I32, DType::I32][..], triangular::tril_i32 as KernelRef, true),
+        (OpKind::Tril, &[DType::I64, DType::I64][..], triangular::tril_i64 as KernelRef, true),
+        (OpKind::ArgMaxDim, &[DType::F32, DType::U32][..], arg_reduce::argmax_dim_u32_f32 as KernelRef, true),
+        (OpKind::ArgMaxDim, &[DType::F64, DType::U32][..], arg_reduce::argmax_dim_u32_f64 as KernelRef, true),
+        (OpKind::ArgMaxDim, &[DType::F16, DType::U32][..], arg_reduce::argmax_dim_u32_f16 as KernelRef, true),
+        (OpKind::ArgMaxDim, &[DType::BF16, DType::U32][..], arg_reduce::argmax_dim_u32_bf16 as KernelRef, true),
+        (OpKind::ArgMinDim, &[DType::F32, DType::U32][..], arg_reduce::argmin_dim_u32_f32 as KernelRef, true),
+        (OpKind::ArgMinDim, &[DType::F64, DType::U32][..], arg_reduce::argmin_dim_u32_f64 as KernelRef, true),
+        (OpKind::ArgMinDim, &[DType::F16, DType::U32][..], arg_reduce::argmin_dim_u32_f16 as KernelRef, true),
+        (OpKind::ArgMinDim, &[DType::BF16, DType::U32][..], arg_reduce::argmin_dim_u32_bf16 as KernelRef, true),
+        (OpKind::ReduceSumTo, &[DType::F32, DType::F32][..], reduce_to::sum_to_f32 as KernelRef, true),
+        (OpKind::ReduceSumTo, &[DType::F16, DType::F16][..], reduce_to::sum_to_f16 as KernelRef, true),
+        (OpKind::ReduceSumTo, &[DType::BF16, DType::BF16][..], reduce_to::sum_to_bf16 as KernelRef, true),
+        (OpKind::ReduceSumTo, &[DType::F64, DType::F64][..], reduce_to::sum_to_f64 as KernelRef, true),
+        (OpKind::ReduceMaxTo, &[DType::F32, DType::F32][..], reduce_to::max_to_f32 as KernelRef, true),
+        (OpKind::ReduceMaxTo, &[DType::F16, DType::F16][..], reduce_to::max_to_f16 as KernelRef, true),
+        (OpKind::ReduceMaxTo, &[DType::BF16, DType::BF16][..], reduce_to::max_to_bf16 as KernelRef, true),
+        (OpKind::ReduceMaxTo, &[DType::F64, DType::F64][..], reduce_to::max_to_f64 as KernelRef, true),
+        (OpKind::Rope, &[DType::F32, DType::F32][..], attention::rope_f32 as KernelRef, true),
+        (OpKind::Rope, &[DType::F16, DType::F16][..], attention::rope_f16 as KernelRef, true),
+        (OpKind::Rope, &[DType::BF16, DType::BF16][..], attention::rope_bf16 as KernelRef, true),
+        (OpKind::Rope, &[DType::F64, DType::F64][..], attention::rope_f64 as KernelRef, true),
+        ];
+        let mut checked = 0usize;
+        for (op, key, expected, want_strided) in cases {
+            let alts = table.lookup_alternatives(*op, key, cuda);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{op:?} {key:?}/Cuda: the production wrapper must be bound FROM the cuda \
+                         contract in register_baracuda_cuda_kernels - found {} alternative(s) with \
+                         sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "baracuda",
+                "{op:?} {key:?}: family must be contract-sourced (kernel_source=\"baracuda\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert_eq!(
+                entry.caps.strided_input, *want_strided,
+                "{op:?} {key:?}: caps preserved (strided_input == {want_strided})",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 120, "all 120 Group-1 (op, dtype) keys checked");
+    }
+
+    /// GROUP 3 (born-red gate). The forward elementwise-unary family (21 ops x 4
+    /// dtypes + f32-only Sign = 85 keys) is registered FROM its FKC contract via
+    /// `register_cuda_unary_from_contract` - the SOLE path (hand-written
+    /// `register_with_caps(..., strided)` regs DELETED). The Gelu<->gelu_tanh name
+    /// inversion + f32-only Sign are LINK-TABLE handled (base symbol == wrapper).
+    /// Asserts the EXACT production wrapper is bound, `kernel_source == "baracuda"`
+    /// (RED while hand-written stamps `""`), and `caps.strided_input == true`.
+    #[test]
+    fn register_baracuda_binds_group3_forward_unary_from_contract() {
+        let mut table = KernelBindingTable::new();
+        register_baracuda_cuda_kernels(&mut table);
+        let cuda = BackendId::Cuda;
+        let cases: &[(OpKind, &[DType], KernelRef, bool)] = &[
+        (OpKind::NegElementwise, &[DType::F32, DType::F32][..], unary::neg_f32 as KernelRef, true),
+        (OpKind::NegElementwise, &[DType::F16, DType::F16][..], unary::neg_f16 as KernelRef, true),
+        (OpKind::NegElementwise, &[DType::BF16, DType::BF16][..], unary::neg_bf16 as KernelRef, true),
+        (OpKind::NegElementwise, &[DType::F64, DType::F64][..], unary::neg_f64 as KernelRef, true),
+        (OpKind::AbsElementwise, &[DType::F32, DType::F32][..], unary::abs_f32 as KernelRef, true),
+        (OpKind::AbsElementwise, &[DType::F16, DType::F16][..], unary::abs_f16 as KernelRef, true),
+        (OpKind::AbsElementwise, &[DType::BF16, DType::BF16][..], unary::abs_bf16 as KernelRef, true),
+        (OpKind::AbsElementwise, &[DType::F64, DType::F64][..], unary::abs_f64 as KernelRef, true),
+        (OpKind::SqrElementwise, &[DType::F32, DType::F32][..], unary::sqr_f32 as KernelRef, true),
+        (OpKind::SqrElementwise, &[DType::F16, DType::F16][..], unary::sqr_f16 as KernelRef, true),
+        (OpKind::SqrElementwise, &[DType::BF16, DType::BF16][..], unary::sqr_bf16 as KernelRef, true),
+        (OpKind::SqrElementwise, &[DType::F64, DType::F64][..], unary::sqr_f64 as KernelRef, true),
+        (OpKind::SqrtElementwise, &[DType::F32, DType::F32][..], unary::sqrt_f32 as KernelRef, true),
+        (OpKind::SqrtElementwise, &[DType::F16, DType::F16][..], unary::sqrt_f16 as KernelRef, true),
+        (OpKind::SqrtElementwise, &[DType::BF16, DType::BF16][..], unary::sqrt_bf16 as KernelRef, true),
+        (OpKind::SqrtElementwise, &[DType::F64, DType::F64][..], unary::sqrt_f64 as KernelRef, true),
+        (OpKind::RecipElementwise, &[DType::F32, DType::F32][..], unary::recip_f32 as KernelRef, true),
+        (OpKind::RecipElementwise, &[DType::F16, DType::F16][..], unary::recip_f16 as KernelRef, true),
+        (OpKind::RecipElementwise, &[DType::BF16, DType::BF16][..], unary::recip_bf16 as KernelRef, true),
+        (OpKind::RecipElementwise, &[DType::F64, DType::F64][..], unary::recip_f64 as KernelRef, true),
+        (OpKind::ExpElementwise, &[DType::F32, DType::F32][..], unary::exp_f32 as KernelRef, true),
+        (OpKind::ExpElementwise, &[DType::F16, DType::F16][..], unary::exp_f16 as KernelRef, true),
+        (OpKind::ExpElementwise, &[DType::BF16, DType::BF16][..], unary::exp_bf16 as KernelRef, true),
+        (OpKind::ExpElementwise, &[DType::F64, DType::F64][..], unary::exp_f64 as KernelRef, true),
+        (OpKind::LogElementwise, &[DType::F32, DType::F32][..], unary::log_f32 as KernelRef, true),
+        (OpKind::LogElementwise, &[DType::F16, DType::F16][..], unary::log_f16 as KernelRef, true),
+        (OpKind::LogElementwise, &[DType::BF16, DType::BF16][..], unary::log_bf16 as KernelRef, true),
+        (OpKind::LogElementwise, &[DType::F64, DType::F64][..], unary::log_f64 as KernelRef, true),
+        (OpKind::SinElementwise, &[DType::F32, DType::F32][..], unary::sin_f32 as KernelRef, true),
+        (OpKind::SinElementwise, &[DType::F16, DType::F16][..], unary::sin_f16 as KernelRef, true),
+        (OpKind::SinElementwise, &[DType::BF16, DType::BF16][..], unary::sin_bf16 as KernelRef, true),
+        (OpKind::SinElementwise, &[DType::F64, DType::F64][..], unary::sin_f64 as KernelRef, true),
+        (OpKind::CosElementwise, &[DType::F32, DType::F32][..], unary::cos_f32 as KernelRef, true),
+        (OpKind::CosElementwise, &[DType::F16, DType::F16][..], unary::cos_f16 as KernelRef, true),
+        (OpKind::CosElementwise, &[DType::BF16, DType::BF16][..], unary::cos_bf16 as KernelRef, true),
+        (OpKind::CosElementwise, &[DType::F64, DType::F64][..], unary::cos_f64 as KernelRef, true),
+        (OpKind::TanhElementwise, &[DType::F32, DType::F32][..], unary::tanh_f32 as KernelRef, true),
+        (OpKind::TanhElementwise, &[DType::F16, DType::F16][..], unary::tanh_f16 as KernelRef, true),
+        (OpKind::TanhElementwise, &[DType::BF16, DType::BF16][..], unary::tanh_bf16 as KernelRef, true),
+        (OpKind::TanhElementwise, &[DType::F64, DType::F64][..], unary::tanh_f64 as KernelRef, true),
+        (OpKind::ReluElementwise, &[DType::F32, DType::F32][..], unary::relu_f32 as KernelRef, true),
+        (OpKind::ReluElementwise, &[DType::F16, DType::F16][..], unary::relu_f16 as KernelRef, true),
+        (OpKind::ReluElementwise, &[DType::BF16, DType::BF16][..], unary::relu_bf16 as KernelRef, true),
+        (OpKind::ReluElementwise, &[DType::F64, DType::F64][..], unary::relu_f64 as KernelRef, true),
+        (OpKind::GeluElementwise, &[DType::F32, DType::F32][..], unary::gelu_tanh_f32 as KernelRef, true),
+        (OpKind::GeluElementwise, &[DType::F16, DType::F16][..], unary::gelu_tanh_f16 as KernelRef, true),
+        (OpKind::GeluElementwise, &[DType::BF16, DType::BF16][..], unary::gelu_tanh_bf16 as KernelRef, true),
+        (OpKind::GeluElementwise, &[DType::F64, DType::F64][..], unary::gelu_tanh_f64 as KernelRef, true),
+        (OpKind::GeluErfElementwise, &[DType::F32, DType::F32][..], unary::gelu_f32 as KernelRef, true),
+        (OpKind::GeluErfElementwise, &[DType::F16, DType::F16][..], unary::gelu_f16 as KernelRef, true),
+        (OpKind::GeluErfElementwise, &[DType::BF16, DType::BF16][..], unary::gelu_bf16 as KernelRef, true),
+        (OpKind::GeluErfElementwise, &[DType::F64, DType::F64][..], unary::gelu_f64 as KernelRef, true),
+        (OpKind::StepElementwise, &[DType::F32, DType::F32][..], unary::step_f32 as KernelRef, true),
+        (OpKind::StepElementwise, &[DType::F16, DType::F16][..], unary::step_f16 as KernelRef, true),
+        (OpKind::StepElementwise, &[DType::BF16, DType::BF16][..], unary::step_bf16 as KernelRef, true),
+        (OpKind::StepElementwise, &[DType::F64, DType::F64][..], unary::step_f64 as KernelRef, true),
+        (OpKind::SiluElementwise, &[DType::F32, DType::F32][..], unary::silu_f32 as KernelRef, true),
+        (OpKind::SiluElementwise, &[DType::F16, DType::F16][..], unary::silu_f16 as KernelRef, true),
+        (OpKind::SiluElementwise, &[DType::BF16, DType::BF16][..], unary::silu_bf16 as KernelRef, true),
+        (OpKind::SiluElementwise, &[DType::F64, DType::F64][..], unary::silu_f64 as KernelRef, true),
+        (OpKind::SigmoidElementwise, &[DType::F32, DType::F32][..], unary::sigmoid_f32 as KernelRef, true),
+        (OpKind::SigmoidElementwise, &[DType::F16, DType::F16][..], unary::sigmoid_f16 as KernelRef, true),
+        (OpKind::SigmoidElementwise, &[DType::BF16, DType::BF16][..], unary::sigmoid_bf16 as KernelRef, true),
+        (OpKind::SigmoidElementwise, &[DType::F64, DType::F64][..], unary::sigmoid_f64 as KernelRef, true),
+        (OpKind::RsqrtElementwise, &[DType::F32, DType::F32][..], unary::rsqrt_f32 as KernelRef, true),
+        (OpKind::RsqrtElementwise, &[DType::F16, DType::F16][..], unary::rsqrt_f16 as KernelRef, true),
+        (OpKind::RsqrtElementwise, &[DType::BF16, DType::BF16][..], unary::rsqrt_bf16 as KernelRef, true),
+        (OpKind::RsqrtElementwise, &[DType::F64, DType::F64][..], unary::rsqrt_f64 as KernelRef, true),
+        (OpKind::FloorElementwise, &[DType::F32, DType::F32][..], unary::floor_f32 as KernelRef, true),
+        (OpKind::FloorElementwise, &[DType::F16, DType::F16][..], unary::floor_f16 as KernelRef, true),
+        (OpKind::FloorElementwise, &[DType::BF16, DType::BF16][..], unary::floor_bf16 as KernelRef, true),
+        (OpKind::FloorElementwise, &[DType::F64, DType::F64][..], unary::floor_f64 as KernelRef, true),
+        (OpKind::CeilElementwise, &[DType::F32, DType::F32][..], unary::ceil_f32 as KernelRef, true),
+        (OpKind::CeilElementwise, &[DType::F16, DType::F16][..], unary::ceil_f16 as KernelRef, true),
+        (OpKind::CeilElementwise, &[DType::BF16, DType::BF16][..], unary::ceil_bf16 as KernelRef, true),
+        (OpKind::CeilElementwise, &[DType::F64, DType::F64][..], unary::ceil_f64 as KernelRef, true),
+        (OpKind::RoundElementwise, &[DType::F32, DType::F32][..], unary::round_f32 as KernelRef, true),
+        (OpKind::RoundElementwise, &[DType::F16, DType::F16][..], unary::round_f16 as KernelRef, true),
+        (OpKind::RoundElementwise, &[DType::BF16, DType::BF16][..], unary::round_bf16 as KernelRef, true),
+        (OpKind::RoundElementwise, &[DType::F64, DType::F64][..], unary::round_f64 as KernelRef, true),
+        (OpKind::ErfElementwise, &[DType::F32, DType::F32][..], unary::erf_f32 as KernelRef, true),
+        (OpKind::ErfElementwise, &[DType::F16, DType::F16][..], unary::erf_f16 as KernelRef, true),
+        (OpKind::ErfElementwise, &[DType::BF16, DType::BF16][..], unary::erf_bf16 as KernelRef, true),
+        (OpKind::ErfElementwise, &[DType::F64, DType::F64][..], unary::erf_f64 as KernelRef, true),
+        (OpKind::SignElementwise, &[DType::F32, DType::F32][..], unary::sign_f32 as KernelRef, true),
+        ];
+        let mut checked = 0usize;
+        for (op, key, expected, want_strided) in cases {
+            let alts = table.lookup_alternatives(*op, key, cuda);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{op:?} {key:?}/Cuda: the production wrapper must be bound FROM the cuda \
+                         contract in register_baracuda_cuda_kernels - found {} alternative(s) with \
+                         sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "baracuda",
+                "{op:?} {key:?}: family must be contract-sourced (kernel_source=\"baracuda\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert_eq!(
+                entry.caps.strided_input, *want_strided,
+                "{op:?} {key:?}: caps preserved (strided_input == {want_strided})",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 85, "all 85 group3 keys checked");
+    }
+
+    /// GROUP 2 (born-red gate). Every CONTIGUOUS in-place CUDA family
+    /// (clamp_inplace / powi_inplace / the 5 in-place activations + the 16-op
+    /// in-place unary expansion) is registered FROM its FKC contract via the
+    /// `register_cuda_<fam>_from_contract` importers - the SOLE path (hand-written
+    /// `table.register(..)` regs DELETED). Asserts the EXACT production wrapper is
+    /// bound, `kernel_source == "baracuda"` (RED while hand-written stamps `""`),
+    /// and `caps.strided_input == false` (default caps - contiguous in-place).
+    #[test]
+    fn register_baracuda_binds_group2_inplace_families_from_contract() {
+        let mut table = KernelBindingTable::new();
+        register_baracuda_cuda_kernels(&mut table);
+        let cuda = BackendId::Cuda;
+        let cases: &[(OpKind, &[DType], KernelRef, bool)] = &[
+        (OpKind::ClampInplace, &[DType::F32, DType::F32][..], clamp_inplace::clamp_inplace_f32 as KernelRef, false),
+        (OpKind::ClampInplace, &[DType::F64, DType::F64][..], clamp_inplace::clamp_inplace_f64 as KernelRef, false),
+        (OpKind::ClampInplace, &[DType::BF16, DType::BF16][..], clamp_inplace::clamp_inplace_bf16 as KernelRef, false),
+        (OpKind::ClampInplace, &[DType::F16, DType::F16][..], clamp_inplace::clamp_inplace_f16 as KernelRef, false),
+        (OpKind::PowIInplace, &[DType::F32, DType::F32][..], powi_inplace::powi_inplace_f32 as KernelRef, false),
+        (OpKind::PowIInplace, &[DType::F64, DType::F64][..], powi_inplace::powi_inplace_f64 as KernelRef, false),
+        (OpKind::PowIInplace, &[DType::BF16, DType::BF16][..], powi_inplace::powi_inplace_bf16 as KernelRef, false),
+        (OpKind::PowIInplace, &[DType::F16, DType::F16][..], powi_inplace::powi_inplace_f16 as KernelRef, false),
+        (OpKind::ReluInplace, &[DType::F32, DType::F32][..], unary::relu_inplace_f32 as KernelRef, false),
+        (OpKind::ReluInplace, &[DType::F64, DType::F64][..], unary::relu_inplace_f64 as KernelRef, false),
+        (OpKind::ReluInplace, &[DType::BF16, DType::BF16][..], unary::relu_inplace_bf16 as KernelRef, false),
+        (OpKind::ReluInplace, &[DType::F16, DType::F16][..], unary::relu_inplace_f16 as KernelRef, false),
+        (OpKind::SiluInplace, &[DType::F32, DType::F32][..], unary::silu_inplace_f32 as KernelRef, false),
+        (OpKind::SiluInplace, &[DType::F64, DType::F64][..], unary::silu_inplace_f64 as KernelRef, false),
+        (OpKind::SiluInplace, &[DType::BF16, DType::BF16][..], unary::silu_inplace_bf16 as KernelRef, false),
+        (OpKind::SiluInplace, &[DType::F16, DType::F16][..], unary::silu_inplace_f16 as KernelRef, false),
+        (OpKind::GeluInplace, &[DType::F32, DType::F32][..], unary::gelu_inplace_f32 as KernelRef, false),
+        (OpKind::GeluInplace, &[DType::F64, DType::F64][..], unary::gelu_inplace_f64 as KernelRef, false),
+        (OpKind::GeluInplace, &[DType::BF16, DType::BF16][..], unary::gelu_inplace_bf16 as KernelRef, false),
+        (OpKind::GeluInplace, &[DType::F16, DType::F16][..], unary::gelu_inplace_f16 as KernelRef, false),
+        (OpKind::TanhInplace, &[DType::F32, DType::F32][..], unary::tanh_inplace_f32 as KernelRef, false),
+        (OpKind::TanhInplace, &[DType::F64, DType::F64][..], unary::tanh_inplace_f64 as KernelRef, false),
+        (OpKind::TanhInplace, &[DType::BF16, DType::BF16][..], unary::tanh_inplace_bf16 as KernelRef, false),
+        (OpKind::TanhInplace, &[DType::F16, DType::F16][..], unary::tanh_inplace_f16 as KernelRef, false),
+        (OpKind::SigmoidInplace, &[DType::F32, DType::F32][..], unary::sigmoid_inplace_f32 as KernelRef, false),
+        (OpKind::SigmoidInplace, &[DType::F64, DType::F64][..], unary::sigmoid_inplace_f64 as KernelRef, false),
+        (OpKind::SigmoidInplace, &[DType::BF16, DType::BF16][..], unary::sigmoid_inplace_bf16 as KernelRef, false),
+        (OpKind::SigmoidInplace, &[DType::F16, DType::F16][..], unary::sigmoid_inplace_f16 as KernelRef, false),
+        (OpKind::NegInplace, &[DType::F32, DType::F32][..], unary::neg_inplace_f32 as KernelRef, false),
+        (OpKind::NegInplace, &[DType::F64, DType::F64][..], unary::neg_inplace_f64 as KernelRef, false),
+        (OpKind::NegInplace, &[DType::BF16, DType::BF16][..], unary::neg_inplace_bf16 as KernelRef, false),
+        (OpKind::NegInplace, &[DType::F16, DType::F16][..], unary::neg_inplace_f16 as KernelRef, false),
+        (OpKind::AbsInplace, &[DType::F32, DType::F32][..], unary::abs_inplace_f32 as KernelRef, false),
+        (OpKind::AbsInplace, &[DType::F64, DType::F64][..], unary::abs_inplace_f64 as KernelRef, false),
+        (OpKind::AbsInplace, &[DType::BF16, DType::BF16][..], unary::abs_inplace_bf16 as KernelRef, false),
+        (OpKind::AbsInplace, &[DType::F16, DType::F16][..], unary::abs_inplace_f16 as KernelRef, false),
+        (OpKind::SqrInplace, &[DType::F32, DType::F32][..], unary::sqr_inplace_f32 as KernelRef, false),
+        (OpKind::SqrInplace, &[DType::F64, DType::F64][..], unary::sqr_inplace_f64 as KernelRef, false),
+        (OpKind::SqrInplace, &[DType::BF16, DType::BF16][..], unary::sqr_inplace_bf16 as KernelRef, false),
+        (OpKind::SqrInplace, &[DType::F16, DType::F16][..], unary::sqr_inplace_f16 as KernelRef, false),
+        (OpKind::SqrtInplace, &[DType::F32, DType::F32][..], unary::sqrt_inplace_f32 as KernelRef, false),
+        (OpKind::SqrtInplace, &[DType::F64, DType::F64][..], unary::sqrt_inplace_f64 as KernelRef, false),
+        (OpKind::SqrtInplace, &[DType::BF16, DType::BF16][..], unary::sqrt_inplace_bf16 as KernelRef, false),
+        (OpKind::SqrtInplace, &[DType::F16, DType::F16][..], unary::sqrt_inplace_f16 as KernelRef, false),
+        (OpKind::RsqrtInplace, &[DType::F32, DType::F32][..], unary::rsqrt_inplace_f32 as KernelRef, false),
+        (OpKind::RsqrtInplace, &[DType::F64, DType::F64][..], unary::rsqrt_inplace_f64 as KernelRef, false),
+        (OpKind::RsqrtInplace, &[DType::BF16, DType::BF16][..], unary::rsqrt_inplace_bf16 as KernelRef, false),
+        (OpKind::RsqrtInplace, &[DType::F16, DType::F16][..], unary::rsqrt_inplace_f16 as KernelRef, false),
+        (OpKind::RecipInplace, &[DType::F32, DType::F32][..], unary::recip_inplace_f32 as KernelRef, false),
+        (OpKind::RecipInplace, &[DType::F64, DType::F64][..], unary::recip_inplace_f64 as KernelRef, false),
+        (OpKind::RecipInplace, &[DType::BF16, DType::BF16][..], unary::recip_inplace_bf16 as KernelRef, false),
+        (OpKind::RecipInplace, &[DType::F16, DType::F16][..], unary::recip_inplace_f16 as KernelRef, false),
+        (OpKind::ExpInplace, &[DType::F32, DType::F32][..], unary::exp_inplace_f32 as KernelRef, false),
+        (OpKind::ExpInplace, &[DType::F64, DType::F64][..], unary::exp_inplace_f64 as KernelRef, false),
+        (OpKind::ExpInplace, &[DType::BF16, DType::BF16][..], unary::exp_inplace_bf16 as KernelRef, false),
+        (OpKind::ExpInplace, &[DType::F16, DType::F16][..], unary::exp_inplace_f16 as KernelRef, false),
+        (OpKind::LogInplace, &[DType::F32, DType::F32][..], unary::log_inplace_f32 as KernelRef, false),
+        (OpKind::LogInplace, &[DType::F64, DType::F64][..], unary::log_inplace_f64 as KernelRef, false),
+        (OpKind::LogInplace, &[DType::BF16, DType::BF16][..], unary::log_inplace_bf16 as KernelRef, false),
+        (OpKind::LogInplace, &[DType::F16, DType::F16][..], unary::log_inplace_f16 as KernelRef, false),
+        (OpKind::SinInplace, &[DType::F32, DType::F32][..], unary::sin_inplace_f32 as KernelRef, false),
+        (OpKind::SinInplace, &[DType::F64, DType::F64][..], unary::sin_inplace_f64 as KernelRef, false),
+        (OpKind::SinInplace, &[DType::BF16, DType::BF16][..], unary::sin_inplace_bf16 as KernelRef, false),
+        (OpKind::SinInplace, &[DType::F16, DType::F16][..], unary::sin_inplace_f16 as KernelRef, false),
+        (OpKind::CosInplace, &[DType::F32, DType::F32][..], unary::cos_inplace_f32 as KernelRef, false),
+        (OpKind::CosInplace, &[DType::F64, DType::F64][..], unary::cos_inplace_f64 as KernelRef, false),
+        (OpKind::CosInplace, &[DType::BF16, DType::BF16][..], unary::cos_inplace_bf16 as KernelRef, false),
+        (OpKind::CosInplace, &[DType::F16, DType::F16][..], unary::cos_inplace_f16 as KernelRef, false),
+        (OpKind::SignInplace, &[DType::F32, DType::F32][..], unary::sign_inplace_f32 as KernelRef, false),
+        (OpKind::SignInplace, &[DType::F64, DType::F64][..], unary::sign_inplace_f64 as KernelRef, false),
+        (OpKind::SignInplace, &[DType::BF16, DType::BF16][..], unary::sign_inplace_bf16 as KernelRef, false),
+        (OpKind::SignInplace, &[DType::F16, DType::F16][..], unary::sign_inplace_f16 as KernelRef, false),
+        (OpKind::FloorInplace, &[DType::F32, DType::F32][..], unary::floor_inplace_f32 as KernelRef, false),
+        (OpKind::FloorInplace, &[DType::F64, DType::F64][..], unary::floor_inplace_f64 as KernelRef, false),
+        (OpKind::FloorInplace, &[DType::BF16, DType::BF16][..], unary::floor_inplace_bf16 as KernelRef, false),
+        (OpKind::FloorInplace, &[DType::F16, DType::F16][..], unary::floor_inplace_f16 as KernelRef, false),
+        (OpKind::CeilInplace, &[DType::F32, DType::F32][..], unary::ceil_inplace_f32 as KernelRef, false),
+        (OpKind::CeilInplace, &[DType::F64, DType::F64][..], unary::ceil_inplace_f64 as KernelRef, false),
+        (OpKind::CeilInplace, &[DType::BF16, DType::BF16][..], unary::ceil_inplace_bf16 as KernelRef, false),
+        (OpKind::CeilInplace, &[DType::F16, DType::F16][..], unary::ceil_inplace_f16 as KernelRef, false),
+        (OpKind::RoundInplace, &[DType::F32, DType::F32][..], unary::round_inplace_f32 as KernelRef, false),
+        (OpKind::RoundInplace, &[DType::F64, DType::F64][..], unary::round_inplace_f64 as KernelRef, false),
+        (OpKind::RoundInplace, &[DType::BF16, DType::BF16][..], unary::round_inplace_bf16 as KernelRef, false),
+        (OpKind::RoundInplace, &[DType::F16, DType::F16][..], unary::round_inplace_f16 as KernelRef, false),
+        (OpKind::ErfInplace, &[DType::F32, DType::F32][..], unary::erf_inplace_f32 as KernelRef, false),
+        (OpKind::ErfInplace, &[DType::F64, DType::F64][..], unary::erf_inplace_f64 as KernelRef, false),
+        (OpKind::ErfInplace, &[DType::BF16, DType::BF16][..], unary::erf_inplace_bf16 as KernelRef, false),
+        (OpKind::ErfInplace, &[DType::F16, DType::F16][..], unary::erf_inplace_f16 as KernelRef, false),
+        (OpKind::GeluErfInplace, &[DType::F32, DType::F32][..], unary::gelu_erf_inplace_f32 as KernelRef, false),
+        (OpKind::GeluErfInplace, &[DType::F64, DType::F64][..], unary::gelu_erf_inplace_f64 as KernelRef, false),
+        (OpKind::GeluErfInplace, &[DType::BF16, DType::BF16][..], unary::gelu_erf_inplace_bf16 as KernelRef, false),
+        (OpKind::GeluErfInplace, &[DType::F16, DType::F16][..], unary::gelu_erf_inplace_f16 as KernelRef, false),
+        ];
+        let mut checked = 0usize;
+        for (op, key, expected, want_strided) in cases {
+            let alts = table.lookup_alternatives(*op, key, cuda);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{op:?} {key:?}/Cuda: the production wrapper must be bound FROM the cuda \
+                         contract in register_baracuda_cuda_kernels - found {} alternative(s) with \
+                         sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "baracuda",
+                "{op:?} {key:?}: family must be contract-sourced (kernel_source=\"baracuda\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert_eq!(
+                entry.caps.strided_input, *want_strided,
+                "{op:?} {key:?}: caps preserved (strided_input == {want_strided})",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 92, "all 92 group2 keys checked");
+    }
+
+    /// GROUP 4 (born-red gate). The byte-width-umbrella families (WriteSlice /
+    /// WriteSliceRotating): 9 dtypes each fan to one of b1/b2/b4/b8 wrappers by
+    /// element byte-width, registered FROM their FKC contracts via
+    /// `register_cuda_write_slice{,_rotating}_from_contract` - the SOLE path
+    /// (hand-written `table.register(..)` regs DELETED). Asserts the EXACT
+    /// byte-width wrapper is bound at each dtype key, `kernel_source == "baracuda"`
+    /// (RED while hand-written stamps `""`), and `caps.strided_input == false`.
+    #[test]
+    fn register_baracuda_binds_group4_byte_width_umbrellas_from_contract() {
+        let mut table = KernelBindingTable::new();
+        register_baracuda_cuda_kernels(&mut table);
+        let cuda = BackendId::Cuda;
+        let cases: &[(OpKind, &[DType], KernelRef, bool)] = &[
+        (OpKind::WriteSlice, &[DType::F32, DType::F32][..], write_slice::write_slice_b4 as KernelRef, false),
+        (OpKind::WriteSlice, &[DType::F64, DType::F64][..], write_slice::write_slice_b8 as KernelRef, false),
+        (OpKind::WriteSlice, &[DType::F16, DType::F16][..], write_slice::write_slice_b2 as KernelRef, false),
+        (OpKind::WriteSlice, &[DType::BF16, DType::BF16][..], write_slice::write_slice_b2 as KernelRef, false),
+        (OpKind::WriteSlice, &[DType::I32, DType::I32][..], write_slice::write_slice_b4 as KernelRef, false),
+        (OpKind::WriteSlice, &[DType::I64, DType::I64][..], write_slice::write_slice_b8 as KernelRef, false),
+        (OpKind::WriteSlice, &[DType::U32, DType::U32][..], write_slice::write_slice_b4 as KernelRef, false),
+        (OpKind::WriteSlice, &[DType::U8, DType::U8][..], write_slice::write_slice_b1 as KernelRef, false),
+        (OpKind::WriteSlice, &[DType::I8, DType::I8][..], write_slice::write_slice_b1 as KernelRef, false),
+        (OpKind::WriteSliceRotating, &[DType::F32, DType::F32][..], write_slice_rotating::write_slice_rotating_b4 as KernelRef, false),
+        (OpKind::WriteSliceRotating, &[DType::F64, DType::F64][..], write_slice_rotating::write_slice_rotating_b8 as KernelRef, false),
+        (OpKind::WriteSliceRotating, &[DType::F16, DType::F16][..], write_slice_rotating::write_slice_rotating_b2 as KernelRef, false),
+        (OpKind::WriteSliceRotating, &[DType::BF16, DType::BF16][..], write_slice_rotating::write_slice_rotating_b2 as KernelRef, false),
+        (OpKind::WriteSliceRotating, &[DType::I32, DType::I32][..], write_slice_rotating::write_slice_rotating_b4 as KernelRef, false),
+        (OpKind::WriteSliceRotating, &[DType::I64, DType::I64][..], write_slice_rotating::write_slice_rotating_b8 as KernelRef, false),
+        (OpKind::WriteSliceRotating, &[DType::U32, DType::U32][..], write_slice_rotating::write_slice_rotating_b4 as KernelRef, false),
+        (OpKind::WriteSliceRotating, &[DType::U8, DType::U8][..], write_slice_rotating::write_slice_rotating_b1 as KernelRef, false),
+        (OpKind::WriteSliceRotating, &[DType::I8, DType::I8][..], write_slice_rotating::write_slice_rotating_b1 as KernelRef, false),
+        ];
+        let mut checked = 0usize;
+        for (op, key, expected, want_strided) in cases {
+            let alts = table.lookup_alternatives(*op, key, cuda);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{op:?} {key:?}/Cuda: the production wrapper must be bound FROM the cuda \
+                         contract in register_baracuda_cuda_kernels - found {} alternative(s) with \
+                         sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "baracuda",
+                "{op:?} {key:?}: family must be contract-sourced (kernel_source=\"baracuda\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert_eq!(
+                entry.caps.strided_input, *want_strided,
+                "{op:?} {key:?}: caps preserved (strided_input == {want_strided})",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 18, "all 18 group4 keys checked");
+    }
+
+    /// GROUP 5 (born-red gate). concat + affine (strided) and inplace_affine /
+    /// pad / pad_backward / causal_conv1d (contiguous) are registered FROM their
+    /// FKC contracts via `register_cuda_<fam>_from_contract` - the SOLE path
+    /// (hand-written regs DELETED). Mixed caps: each case carries its own
+    /// `want_strided`. Asserts the EXACT production wrapper is bound,
+    /// `kernel_source == "baracuda"` (RED while hand-written stamps `""`), and
+    /// caps. (indexing is DEFERRED - mixed fan/fixed-index operand.)
+    #[test]
+    fn register_baracuda_binds_group5_multiop_families_from_contract() {
+        let mut table = KernelBindingTable::new();
+        register_baracuda_cuda_kernels(&mut table);
+        let cuda = BackendId::Cuda;
+        let cases: &[(OpKind, &[DType], KernelRef, bool)] = &[
+        (OpKind::Concat, &[DType::F32, DType::F32][..], concat::concat_f32 as KernelRef, true),
+        (OpKind::Concat, &[DType::F16, DType::F16][..], concat::concat_f16 as KernelRef, true),
+        (OpKind::Concat, &[DType::BF16, DType::BF16][..], concat::concat_bf16 as KernelRef, true),
+        (OpKind::Concat, &[DType::F64, DType::F64][..], concat::concat_f64 as KernelRef, true),
+        (OpKind::Affine, &[DType::F32, DType::F32][..], affine::affine_f32 as KernelRef, true),
+        (OpKind::Affine, &[DType::F64, DType::F64][..], affine::affine_f64 as KernelRef, true),
+        (OpKind::Affine, &[DType::F16, DType::F16][..], affine::affine_f16 as KernelRef, true),
+        (OpKind::Affine, &[DType::BF16, DType::BF16][..], affine::affine_bf16 as KernelRef, true),
+        (OpKind::Affine, &[DType::I32, DType::I32][..], affine::affine_i32 as KernelRef, true),
+        (OpKind::Affine, &[DType::I64, DType::I64][..], affine::affine_i64 as KernelRef, true),
+        (OpKind::Affine, &[DType::U8, DType::U8][..], affine::affine_u8 as KernelRef, true),
+        (OpKind::InplaceAffine, &[DType::F32, DType::F32][..], affine::affine_inplace_f32 as KernelRef, false),
+        (OpKind::InplaceAffine, &[DType::F64, DType::F64][..], affine::affine_inplace_f64 as KernelRef, false),
+        (OpKind::InplaceAffine, &[DType::BF16, DType::BF16][..], affine::affine_inplace_bf16 as KernelRef, false),
+        (OpKind::InplaceAffine, &[DType::F16, DType::F16][..], affine::affine_inplace_f16 as KernelRef, false),
+        (OpKind::Pad, &[DType::F32, DType::F32][..], pad::pad_f32 as KernelRef, false),
+        (OpKind::Pad, &[DType::F16, DType::F16][..], pad::pad_f16 as KernelRef, false),
+        (OpKind::Pad, &[DType::BF16, DType::BF16][..], pad::pad_bf16 as KernelRef, false),
+        (OpKind::Pad, &[DType::F64, DType::F64][..], pad::pad_f64 as KernelRef, false),
+        (OpKind::PadBackward, &[DType::F32, DType::F32][..], pad::pad_backward_f32 as KernelRef, false),
+        (OpKind::PadBackward, &[DType::F16, DType::F16][..], pad::pad_backward_f16 as KernelRef, false),
+        (OpKind::PadBackward, &[DType::BF16, DType::BF16][..], pad::pad_backward_bf16 as KernelRef, false),
+        (OpKind::PadBackward, &[DType::F64, DType::F64][..], pad::pad_backward_f64 as KernelRef, false),
+        (OpKind::CausalConv1d, &[DType::F32, DType::F32, DType::F32, DType::F32][..], conv1d::causal_conv1d_f32 as KernelRef, false),
+        (OpKind::CausalConv1d, &[DType::F64, DType::F64, DType::F64, DType::F64][..], conv1d::causal_conv1d_f64 as KernelRef, false),
+        (OpKind::CausalConv1d, &[DType::BF16, DType::BF16, DType::BF16, DType::BF16][..], conv1d::causal_conv1d_bf16 as KernelRef, false),
+        (OpKind::CausalConv1d, &[DType::F16, DType::F16, DType::F16, DType::F16][..], conv1d::causal_conv1d_f16 as KernelRef, false),
+        ];
+        let mut checked = 0usize;
+        for (op, key, expected, want_strided) in cases {
+            let alts = table.lookup_alternatives(*op, key, cuda);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{op:?} {key:?}/Cuda: the production wrapper must be bound FROM the cuda \
+                         contract in register_baracuda_cuda_kernels - found {} alternative(s) with \
+                         sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "baracuda",
+                "{op:?} {key:?}: family must be contract-sourced (kernel_source=\"baracuda\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert_eq!(
+                entry.caps.strided_input, *want_strided,
+                "{op:?} {key:?}: caps preserved (strided_input == {want_strided})",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 27, "all 27 group5 keys checked");
+    }
+
+    /// GROUP 6 (born-red gate). The MatMul facades gemm_dense (f32/f64/f16/bf16)
+    /// + gemm_int (i8->gemm_s8_rrr, u8->gemm_u8_rrr) - 6 combos at the SHARED
+    /// OpKind::MatMul - are registered FROM their FKC contracts via
+    /// `register_cuda_gemm_{dense,int}_from_contract` - the SOLE path (hand-written
+    /// regs DELETED). Asserts the EXACT production wrapper is bound at each dtype
+    /// key, `kernel_source == "baracuda"` (RED while hand-written stamps `""`),
+    /// and `caps.strided_input == false` (packed row-major, default caps).
+    #[test]
+    fn register_baracuda_binds_group6_matmul_facades_from_contract() {
+        let mut table = KernelBindingTable::new();
+        register_baracuda_cuda_kernels(&mut table);
+        let cuda = BackendId::Cuda;
+        let cases: &[(OpKind, &[DType], KernelRef, bool)] = &[
+        (OpKind::MatMul, &[DType::F32, DType::F32, DType::F32][..], gemm_dense::matmul_f32 as KernelRef, false),
+        (OpKind::MatMul, &[DType::F16, DType::F16, DType::F16][..], gemm_dense::matmul_f16 as KernelRef, false),
+        (OpKind::MatMul, &[DType::BF16, DType::BF16, DType::BF16][..], gemm_dense::matmul_bf16 as KernelRef, false),
+        (OpKind::MatMul, &[DType::F64, DType::F64, DType::F64][..], gemm_dense::matmul_f64 as KernelRef, false),
+        (OpKind::MatMul, &[DType::I8, DType::I8, DType::I8][..], gemm_int::gemm_s8_rrr as KernelRef, false),
+        (OpKind::MatMul, &[DType::U8, DType::U8, DType::U8][..], gemm_int::gemm_u8_rrr as KernelRef, false),
+        ];
+        let mut checked = 0usize;
+        for (op, key, expected, want_strided) in cases {
+            let alts = table.lookup_alternatives(*op, key, cuda);
+            let entry = alts
+                .iter()
+                .find(|e| e.kernel as usize == *expected as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{op:?} {key:?}/Cuda: the production wrapper must be bound FROM the cuda \
+                         contract in register_baracuda_cuda_kernels - found {} alternative(s) with \
+                         sources {:?}",
+                        alts.len(),
+                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                    )
+                });
+            assert_eq!(
+                entry.kernel_source, "baracuda",
+                "{op:?} {key:?}: family must be contract-sourced (kernel_source=\"baracuda\"); got {:?}",
+                entry.kernel_source,
+            );
+            assert_eq!(
+                entry.caps.strided_input, *want_strided,
+                "{op:?} {key:?}: caps preserved (strided_input == {want_strided})",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 6, "all 6 group6 keys checked");
     }
 }
