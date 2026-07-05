@@ -4,9 +4,10 @@
 //!
 //! Today most shape mismatches are caught at build time by the
 //! `Tensor::*` builders' assertions. The remaining tail (e.g. dtype
-//! mismatches at op inputs, or panics that bubble up through the
-//! generic executor's eval_node dispatcher) used to surface as bare
-//! `assertion failed: …` panics with no graph location.
+//! mismatches at op inputs, or kernel-time failures like an out-of-bounds
+//! gather index) surface as realize-time errors from the PipelinedExecutor;
+//! `with_node_location` prefixes them with the failing node's graph
+//! coordinate so they're not bare `index out of bounds` with no location.
 //!
 //! This gate ensures the panic message includes "Node#N (Op, shape,
 //! dtype, inputs=…)" — enough to grep-locate the failing op in a
@@ -40,11 +41,11 @@ fn realize_panic_message_has_graph_location() {
     let msg = payload_text(&payload);
 
     // The wrapped panic message should mention the executor's prefix
-    // *and* the offending node's location. Reference backend wraps
-    // with "fuel-reference-backend realize"; the generic executor
-    // wraps with "fuel-graph-executor realize". Either is acceptable;
-    // both should include the Node# marker so a user can navigate
-    // back to the offending op.
+    // *and* the offending node's location. `realize_f32` unwraps with
+    // "realize_f32 via PipelinedExecutor", and the executor's
+    // `with_node_location` prepends the node's `describe_node` — a
+    // "Node#N (op, shape, dtype, inputs=[...])" marker so a user can
+    // navigate back to the offending op in a large graph.
     assert!(
         msg.contains("Node#"),
         "panic message missing graph location:\n{msg}",
