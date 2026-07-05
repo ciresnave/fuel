@@ -26,7 +26,6 @@ bytemuck = { workspace = true }
 fuel-formats = { workspace = true }
 fuel-quantized = { workspace = true }
 fuel-graph = { workspace = true }
-fuel-reference-backend = { workspace = true }
 hf-hub = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

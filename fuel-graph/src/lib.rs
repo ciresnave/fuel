@@ -16,10 +16,12 @@
 //!   Users build computations by calling methods on `Tensor`; each method
 //!   appends a node to the underlying graph and returns a new handle.
 //!
-//! Execution is deliberately not implemented here. A separate executor crate
-//! (today [`fuel_reference_backend::exec`](../fuel_reference_backend/exec/))
-//! walks a `Graph` and produces concrete outputs. Future backends (CPU-fast,
-//! CUDA, Metal, etc.) will plug in via the same pattern.
+//! Execution is deliberately not implemented here. A separate executor —
+//! `fuel-dispatch`'s `PipelinedExecutor`, dispatching to the per-backend
+//! kernels (`fuel-cpu-backend`, `fuel-cuda-backend`, `fuel-vulkan-backend`) —
+//! walks a `Graph` and produces concrete outputs. (The retired
+//! `fuel-reference-backend` textbook walker was the original executor; the
+//! CPU backend's bit-stable kernels are the correctness oracle now.)
 //!
 //! ## Scope of the MVP
 //!
