@@ -22,7 +22,7 @@
 use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_nn::{LazyLinear, LazyModule};
-use fuel_ir::Shape;
+use fuel_ir::{DynScalar, Shape};
 use std::sync::Arc;
 
 const MASK_NEG: f32 = -1.0e30;
@@ -188,6 +188,51 @@ impl LazyMoeExpert {
         let h = g.mul(&u)?;
         self.down.forward(&h)
     }
+
+    /// Data-determined-M forward for sparse MoE dispatch: run the SwiGLU
+    /// FFN over a `[capacity, hidden]` buffer whose first `count` rows are
+    /// the gathered routed tokens, computing **exactly** `count` rows of
+    /// each of the three projections via [`LazyTensor::matmul_dyn_m`] (the
+    /// FLOP saving). The three matmuls each zero their capacity tail, so —
+    /// bias being absent — the whole `[capacity, hidden]` result stays zero
+    /// past row `count`, which the layer relies on for a harmless
+    /// `index_add` scatter-back of the padding rows.
+    ///
+    /// F32-only, and the expert must be **bias-free**: a bias would fill
+    /// the un-computed tail and corrupt the scatter-back. Both surface as
+    /// typed build-time errors.
+    pub fn forward_dyn_m(
+        &self,
+        xs: &LazyTensor,
+        count: fuel_ir::DynScalar,
+    ) -> Result<LazyTensor> {
+        for (name, lin) in [
+            ("gate", &self.gate),
+            ("up", &self.up),
+            ("down", &self.down),
+        ] {
+            if lin.bias().is_some() {
+                return Err(crate::Error::Msg(format!(
+                    "LazyMoeExpert::forward_dyn_m: sparse dispatch requires bias-free \
+                     experts, but the {name} projection has a bias (it would \
+                     contaminate the un-computed capacity tail)",
+                )).bt());
+            }
+        }
+        let g = self
+            .gate
+            .weight()
+            .apply_linear_dyn_m(xs, self.hidden_size, self.intermediate_size, count)?
+            .silu();
+        let u = self
+            .up
+            .weight()
+            .apply_linear_dyn_m(xs, self.hidden_size, self.intermediate_size, count)?;
+        let h = g.mul(&u)?;
+        self.down
+            .weight()
+            .apply_linear_dyn_m(&h, self.intermediate_size, self.hidden_size, count)
+    }
 }
 
 impl LazyModule for LazyMoeExpert {
@@ -229,12 +274,90 @@ impl LazyMoeLayer {
 
     /// Forward `xs: [*, hidden]` through the MoE layer; output has
     /// the same shape as the input.
+    ///
+    /// **Sparse (dropless) dispatch.** Each expert's FFN is computed only
+    /// for the tokens the router sent to it, not for all `N` tokens: per
+    /// expert `e` we take the gate-weight column (nonzero exactly at the
+    /// routed tokens), find those token rows with [`Op::NonZeroIndices`]
+    /// (`LazyTensor::nonzero_indices_bundled`) — which also publishes the
+    /// runtime count `count_e` into the pass's `SymEnv` — gather those rows
+    /// into a `[capacity=N, hidden]` buffer, run the SwiGLU FFN over exactly
+    /// `count_e` rows via [`LazyMoeExpert::forward_dyn_m`], scale each row by
+    /// its gate weight, and scatter-add back to the token positions with
+    /// [`LazyTensor::index_add`]. This is bit-exact to the dense
+    /// enumerate-all path ([`Self::forward_dense`]) — the per-token FFN is
+    /// row-independent, so gathering doesn't change any dot product — while
+    /// cutting the FFN matmul FLOPs from `N·num_experts` token-rows to `N·top_k`.
+    ///
+    /// The FLOP saving needs the F32 [`LazyTensor::matmul_dyn_m`] path, so
+    /// experts must be F32 and bias-free (see [`LazyMoeExpert::forward_dyn_m`]);
+    /// otherwise a typed build-time error surfaces. Callers wanting the
+    /// unconditional dense formulation can use [`Self::forward_dense`].
     pub fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
         let dims = xs.shape().dims().to_vec();
         let hidden = self.router.hidden_size();
         if dims.is_empty() || *dims.last().unwrap() != hidden {
             return Err(crate::Error::Msg(format!(
                 "LazyMoeLayer::forward: input last dim must be {hidden}, got shape {dims:?}",
+            )).bt());
+        }
+        let n: usize = dims[..dims.len() - 1].iter().product();
+        let num_experts = self.router.num_experts();
+        let xs_flat = xs.reshape(Shape::from_dims(&[n, hidden]))?;
+        let (indices, weights) = self.router.route(xs)?;
+
+        // Dense per-(token, expert) gate weights: column `e` is the gating
+        // coefficient token `t` applies to expert `e`, and is exactly 0.0
+        // wherever `t` did NOT route to `e` (softmax weights are strictly
+        // positive) — so a nonzero in that column marks a routed token.
+        let dense_zero = xs_flat.const_f32_like(
+            Arc::from(vec![0.0_f32; n * num_experts]),
+            Shape::from_dims(&[n, num_experts]),
+        );
+        let dense_weights = dense_zero.scatter_add(1usize, &indices, &weights)?;
+
+        let mut acc = xs_flat.const_f32_like(
+            Arc::from(vec![0.0_f32; n * hidden]),
+            Shape::from_dims(&[n, hidden]),
+        );
+        for (e, expert) in self.experts.iter().enumerate() {
+            // Gate-weight column for expert e: [N, 1], nonzero exactly at
+            // the tokens routed to e. `nonzero_indices_bundled` flattens it
+            // ([N,1] → N flat positions == token rows) into `sel[..count_e]`.
+            let gate_col = dense_weights.narrow(1usize, e, 1usize)?; // [N, 1]
+            // Fresh, graph-scoped count sym per expert (re-scanning the
+            // graph each time yields a strictly higher id than the prior
+            // expert's producer — and higher than any earlier stacked
+            // layer's, so nothing collides).
+            let count_sym = xs_flat.fresh_data_determined_sym();
+            let (sel, _count) = gate_col.nonzero_indices_bundled(count_sym)?; // sel [N]
+            let count = DynScalar::Sym(count_sym);
+
+            // Gather this expert's routed token hidden states into the
+            // capacity-buffer prefix, run its FFN over exactly count_e rows.
+            let gathered = xs_flat.index_select(0usize, &sel)?; // [N, hidden]
+            let ffn = expert.forward_dyn_m(&gathered, count)?; // [N, hidden]; tail zero
+            // Scale each gathered row by its gate weight (same gather order).
+            let gate_g = gate_col.index_select(0usize, &sel)?; // [N, 1]
+            let scaled = ffn.broadcast_mul(&gate_g)?; // [N, hidden]; tail zero
+            // Scatter-add back to token positions. The padding tail
+            // (sel==0, scaled==+0.0) adds a harmless +0.0 to row 0.
+            acc = acc.index_add(0usize, &sel, &scaled)?;
+        }
+        acc.reshape(Shape::from_dims(&dims))
+    }
+
+    /// The dense (enumerate-all-experts) formulation of [`Self::forward`]:
+    /// compute every expert's FFN on **all** `N` tokens, then take the
+    /// gating-weighted sum. Kept as the reference the sparse `forward`
+    /// matches bit-for-bit, and as a fallback for weight encodings the
+    /// sparse F32 [`LazyTensor::matmul_dyn_m`] path does not cover.
+    pub fn forward_dense(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+        let dims = xs.shape().dims().to_vec();
+        let hidden = self.router.hidden_size();
+        if dims.is_empty() || *dims.last().unwrap() != hidden {
+            return Err(crate::Error::Msg(format!(
+                "LazyMoeLayer::forward_dense: input last dim must be {hidden}, got shape {dims:?}",
             )).bt());
         }
         let n: usize = dims[..dims.len() - 1].iter().product();
@@ -375,6 +498,132 @@ mod tests {
         for (i, v) in got.iter().enumerate() {
             assert!(v.is_finite(), "out[{i}] = {v} not finite");
         }
+    }
+
+    /// The Increment-B acceptance test: the sparse (dropless) `forward`
+    /// must be **bit-exact** to the dense enumerate-all `forward_dense` on
+    /// a small top-k MoE. The per-token FFN is row-independent, so gathering
+    /// the routed tokens changes no dot product; the gate-weighted
+    /// accumulation happens in the same expert order in both paths (the
+    /// sparse path's untouched tokens add exactly +0.0, matching dense's
+    /// multiply-by-zero contribution). Any mismatch means the sparse
+    /// dispatch dropped, double-counted, or mis-scaled a token.
+    #[test]
+    fn moe_layer_sparse_forward_bit_exact_to_dense() {
+        let hidden = 4;
+        let inter = 6;
+        let num_experts = 4;
+        let top_k = 2;
+        let n = 5;
+
+        let w: Vec<f32> = ramp_f32(hidden * num_experts, 0.03, -0.1);
+        let router = LazyMoeRouter::new(
+            WeightStorage::F32(Arc::from(w)),
+            num_experts, top_k, hidden, 0.0,
+        ).unwrap();
+        let experts: Vec<_> = (0..num_experts)
+            .map(|i| make_expert(hidden, inter, i as f32 * 0.15))
+            .collect();
+        let layer = LazyMoeLayer::new(router, experts).unwrap();
+
+        let x_data: Vec<f32> = ramp_f32(n * hidden, 0.05, -0.2);
+        let xs_sparse = LazyTensor::from_f32(
+            x_data.clone(), Shape::from_dims(&[n, hidden]), &Device::cpu(),
+        );
+        let xs_dense = LazyTensor::from_f32(
+            x_data, Shape::from_dims(&[n, hidden]), &Device::cpu(),
+        );
+
+        let sparse = layer.forward(&xs_sparse).unwrap().realize_f32();
+        let dense = layer.forward_dense(&xs_dense).unwrap().realize_f32();
+
+        assert_eq!(sparse.len(), dense.len());
+        for (i, (s, d)) in sparse.iter().zip(dense.iter()).enumerate() {
+            assert_eq!(
+                s.to_bits(), d.to_bits(),
+                "out[{i}]: sparse {s} != dense {d} (bit-exact required)",
+            );
+        }
+    }
+
+    /// A 3-D input `[batch, seq, hidden]` must route correctly (the layer
+    /// flattens the leading dims) and stay bit-exact to dense — guards the
+    /// gather/scatter row indexing against the `N = batch·seq` flattening.
+    #[test]
+    fn moe_layer_sparse_3d_input_bit_exact_to_dense() {
+        let hidden = 3;
+        let inter = 5;
+        let num_experts = 5;
+        let top_k = 2;
+        let (batch, seq) = (2, 3);
+        let n = batch * seq;
+
+        let w: Vec<f32> = ramp_f32(hidden * num_experts, 0.04, -0.2);
+        let router = LazyMoeRouter::new(
+            WeightStorage::F32(Arc::from(w)),
+            num_experts, top_k, hidden, 0.0,
+        ).unwrap();
+        let experts: Vec<_> = (0..num_experts)
+            .map(|i| make_expert(hidden, inter, i as f32 * 0.11))
+            .collect();
+        let layer = LazyMoeLayer::new(router, experts).unwrap();
+
+        let x_data: Vec<f32> = ramp_f32(n * hidden, 0.06, -0.3);
+        let xs_s = LazyTensor::from_f32(
+            x_data.clone(), Shape::from_dims(&[batch, seq, hidden]), &Device::cpu(),
+        );
+        let xs_d = LazyTensor::from_f32(
+            x_data, Shape::from_dims(&[batch, seq, hidden]), &Device::cpu(),
+        );
+
+        let sparse = layer.forward(&xs_s).unwrap();
+        assert_eq!(sparse.shape().dims(), &[batch, seq, hidden]);
+        let sparse = sparse.realize_f32();
+        let dense = layer.forward_dense(&xs_d).unwrap().realize_f32();
+        for (i, (s, d)) in sparse.iter().zip(dense.iter()).enumerate() {
+            assert_eq!(
+                s.to_bits(), d.to_bits(),
+                "out[{i}]: sparse {s} != dense {d} (bit-exact required)",
+            );
+        }
+    }
+
+    /// Bias-carrying experts can't use the sparse tail-zeroing path — the
+    /// layer must surface a typed build-time error rather than silently
+    /// corrupting the scatter-back.
+    #[test]
+    fn moe_layer_sparse_forward_rejects_biased_experts() {
+        let hidden = 3;
+        let inter = 4;
+        let num_experts = 2;
+
+        let router = LazyMoeRouter::new(
+            WeightStorage::F32(Arc::from(vec![0.1_f32; hidden * num_experts])),
+            num_experts, 1, hidden, 0.0,
+        ).unwrap();
+        // A down projection WITH a bias.
+        let biased_down = LazyLinear::new(
+            WeightStorage::F32(Arc::from(ramp_f32(inter * hidden, 0.02, 0.1))),
+            Some(Arc::from(vec![0.5_f32; hidden])),
+            inter, hidden,
+        ).unwrap();
+        let gate = make_linear(hidden, inter, 0.03, 0.0);
+        let up = make_linear(hidden, inter, 0.04, 0.1);
+        let biased_expert = LazyMoeExpert::new(gate, up, biased_down, hidden, inter).unwrap();
+        let plain_expert = make_expert(hidden, inter, 0.2);
+        let layer = LazyMoeLayer::new(
+            router, vec![biased_expert, plain_expert],
+        ).unwrap();
+
+        let xs = LazyTensor::from_f32(
+            ramp_f32(2 * hidden, 0.05, -0.1), Shape::from_dims(&[2, hidden]), &Device::cpu(),
+        );
+        let err = layer.forward(&xs).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("bias-free"),
+            "expected a bias-free-requirement error, got: {msg}",
+        );
     }
 
     #[test]

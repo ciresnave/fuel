@@ -95,6 +95,53 @@ fn nonzero_indices_drives_data_determined_write_slice() {
     );
 }
 
+/// Increment A — **gather-by-count**, the lhs producer for `matmul_dyn_m`.
+/// A mask over `N` tokens routes a subset to an expert; `NonZeroIndices`
+/// yields their flat positions in `indices[..count]` (capacity = N, tail
+/// zero-padded). `index_select(values, dim=0, indices)` gathers those rows
+/// into a `[capacity, hidden]` buffer — the valid prefix `[..count]` holds
+/// the routed tokens; the tail gathers row 0 (harmless: `matmul_dyn_m`
+/// computes only `count` rows and the scatter-back reads only the prefix).
+/// This proves gather-by-count needs no new op — plain `index_select` over
+/// the capacity-sized index buffer expresses it, with `count_sym` threaded
+/// separately to the downstream matmul.
+#[test]
+fn nonzero_indices_gather_by_count_selects_routed_rows() {
+    let dev = fuel_core::Device::cpu();
+    // values: N=4 tokens, hidden=2. Row r = [10r+0, 10r+1].
+    let values = LazyTensor::from_f32(
+        vec![
+            0.0, 1.0, // token 0
+            10.0, 11.0, // token 1
+            20.0, 21.0, // token 2
+            30.0, 31.0, // token 3
+        ],
+        Shape::from_dims(&[4, 2]),
+        &dev,
+    );
+    // mask [4]: tokens 1 and 3 routed → nonzeros at flat 1, 3.
+    let mask = values.const_f32_like(vec![0.0, 1.0, 0.0, 1.0], Shape::from_dims(&[4]));
+    let mut symgen = SymGen::new();
+    let count_sym = symgen.fresh();
+    let (indices, count) = mask.nonzero_indices_bundled(count_sym).unwrap();
+    assert_eq!(count.realize_u32(), vec![2], "two tokens routed");
+
+    // gather-by-count == index_select over the capacity-sized index buffer.
+    let gathered = values.index_select(0usize, &indices).unwrap();
+    assert_eq!(
+        gathered.shape().dims(),
+        &[4, 2],
+        "gather output is the [capacity, hidden] buffer",
+    );
+    let got = gathered.realize_f32();
+    // indices = [1, 3, 0, 0]; valid prefix (count=2) = rows for tokens 1, 3.
+    assert_eq!(
+        &got[..4],
+        &[10.0, 11.0, 30.0, 31.0],
+        "prefix[..count] holds the routed tokens' rows",
+    );
+}
+
 /// The dropless-MoE payoff, end-to-end: a **data-determined-M matmul**
 /// whose row count is `NonZeroIndices`'s count. The matmul consumes a
 /// producer output (its LHS derives from `indices`), so the producer runs
