@@ -869,7 +869,8 @@ impl PipelinedExecutor {
                     wait_producer_handle(&mut handles, producer)?;
                 }
             }
-            let handle = execute_work_item(&item, &mut cache, &mut layout_cache)?;
+            let handle = execute_work_item(&item, &mut cache, &mut layout_cache)
+                .map_err(|e| with_node_location(&graph, item.node_id, e))?;
             store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
@@ -1209,7 +1210,8 @@ impl PipelinedExecutor {
                     wait_producer_handle(&mut handles, producer)?;
                 }
             }
-            let handle = execute_work_item(&item, &mut cache, &mut layout_cache)?;
+            let handle = execute_work_item(&item, &mut cache, &mut layout_cache)
+                .map_err(|e| with_node_location(&graph, item.node_id, e))?;
             store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
@@ -3888,6 +3890,27 @@ fn op_to_op_params(
 /// - `Kernel` — gather input Arcs, allocate the output, run the
 ///   compiled kernel, store the result; record the contiguous
 ///   layout from the WorkItem.
+/// Best-effort: prefix a realize-time node error with the failing node's graph
+/// location — `Graph::describe_node` renders `Node#N (op, out shape, dtype,
+/// inputs=[...])`, enough to grep-locate the offending op in a large graph. The
+/// legacy per-node executors (`fuel-graph-executor`, the retired
+/// `fuel-reference-backend`) wrapped panics this way; the PipelinedExecutor
+/// surfaces the raw kernel error, so a dtype/shape/OOB failure deep in a model
+/// arrived with no graph coordinate. On a graph read-lock failure the original
+/// error passes through unchanged — the location is a navigation aid, never
+/// worth masking the real error with a lock issue. Zero happy-path cost: only
+/// the error branch touches the graph.
+fn with_node_location(
+    graph: &Arc<RwLock<Graph>>,
+    node_id: NodeId,
+    err: Error,
+) -> Error {
+    match graph.read() {
+        Ok(g) => err.context(g.describe_node(node_id)),
+        Err(_) => err,
+    }
+}
+
 /// Execute one [`WorkItem`] against the cache, returning the node's
 /// [`CompletionHandle`].
 ///
