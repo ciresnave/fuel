@@ -1110,6 +1110,19 @@ impl LazyTensor {
         Ok((Self { inner: indices }, Self { inner: count }))
     }
 
+    /// Allocate a data-determined [`fuel_ir::SymId`] not yet used by any
+    /// producer on this tensor's graph — see
+    /// [`fuel_graph::Graph::next_data_determined_sym`]. Lets a builder that
+    /// emits several [`Self::nonzero_indices_bundled`] producers on one
+    /// graph (per-expert MoE dispatch, stacked layers) claim non-colliding
+    /// count syms without threading a [`fuel_ir::SymGen`]: each call
+    /// reflects the producers already added.
+    pub fn fresh_data_determined_sym(&self) -> fuel_ir::SymId {
+        let graph = self.inner.graph();
+        let g = graph.read().unwrap();
+        g.next_data_determined_sym()
+    }
+
     /// Depthwise 1-D causal convolution + bias + optional fused SiLU
     /// — the Mamba-1 / Mamba-2 prefill convolution fusion. See
     /// [`fuel_graph::Tensor::causal_conv1d`] for the full shape
@@ -5472,6 +5485,42 @@ impl WeightStorage {
                 };
                 base_out.add(&lora_path).unwrap()
             }
+        }
+    }
+
+    /// Data-determined-M variant of [`Self::apply_linear`]: computes only
+    /// `row_count` rows of the capacity-buffer projection `x @ W`, the rest
+    /// left zeroed — the per-expert sparse-MoE FFN path. `x` is a
+    /// `[capacity, in_features]` buffer whose first `row_count` rows are the
+    /// routed tokens; the returned `[capacity, out_features]` buffer's tail
+    /// (rows `row_count..capacity`) stays exactly zero (see
+    /// [`LazyTensor::matmul_dyn_m`]).
+    ///
+    /// F32-only (mirrors `matmul_dyn_m`); other weight encodings surface a
+    /// typed build-time error. No bias is applied — a bias would fill the
+    /// un-computed tail, which the sparse-MoE caller relies on being zero
+    /// for a correct `index_add` scatter-back.
+    pub fn apply_linear_dyn_m(
+        &self,
+        x: &LazyTensor,
+        in_features: usize,
+        out_features: usize,
+        row_count: fuel_ir::DynScalar,
+    ) -> std::result::Result<LazyTensor, fuel_ir::Error> {
+        match self {
+            Self::F32(_) => {
+                // const_like only errors on WithLoRA; the F32 arm is infallible.
+                let w = self
+                    .const_like(x, Shape::from_dims(&[in_features, out_features]))
+                    .expect("apply_linear_dyn_m F32 arm: const_like cannot fail for F32");
+                x.matmul_dyn_m(&w, row_count)
+            }
+            other => Err(fuel_ir::Error::Msg(format!(
+                "apply_linear_dyn_m: sparse-MoE dispatch is F32-only today, got {:?} \
+                 weight (cast the expert weights to F32)",
+                other.dtype(),
+            ))
+            .bt()),
         }
     }
 

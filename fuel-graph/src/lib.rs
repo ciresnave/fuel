@@ -1730,6 +1730,31 @@ impl Graph {
         })
     }
 
+    /// The next data-determined [`SymId`] not yet used by any producer in
+    /// this graph — one past the max `Op::NonZeroIndices` `count_sym`, or
+    /// `SymId(0)` if none exist. Lets a builder that emits several
+    /// data-determined producers (e.g. one `NonZeroIndices` per MoE expert,
+    /// across several stacked layers on the same graph) allocate
+    /// non-colliding count syms without threading an external
+    /// [`fuel_ir::SymGen`]: each call reflects the producers already added,
+    /// so successive layers claim strictly higher ranges.
+    ///
+    /// This covers the data-determined space (the only producers of which
+    /// are `NonZeroIndices` nodes). A graph that *also* mixes
+    /// input-determined symbolic extents in the same low sym range should
+    /// thread a shared `SymGen` instead — those live in a separate
+    /// compile-time `SymEnv` this scan does not see.
+    pub fn next_data_determined_sym(&self) -> SymId {
+        let max = self.nodes.iter().filter_map(|n| match &n.op {
+            Op::NonZeroIndices { count_sym } => Some(count_sym.0),
+            _ => None,
+        }).max();
+        match max {
+            Some(m) => SymId(m + 1),
+            None => SymId(0),
+        }
+    }
+
     /// Attach a data-determined row count to an `Op::MatMul` node — the
     /// sparse-MoE capacity-buffer support. The node's `Node::shape` stays
     /// the row-capacity output shape; `row_count` (a [`DynScalar`]) is how
