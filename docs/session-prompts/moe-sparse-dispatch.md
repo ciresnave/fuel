@@ -25,7 +25,34 @@ merge, not required to continue. Build discipline: always `-p <crate>`, never wo
   Op::MatMul field. CPU kernel `matmul_f32_capacity`. Execute-resolve: `resolve_deferred_matmul`.
   Test: `fuel-core/tests/nonzero_indices.rs::nonzero_count_drives_dynamic_m_matmul`.
 
-## Increment A — gather-by-count op
+## STATUS UPDATE (2026-07-04): Increments A + B SHIPPED (commit `e89fa6b8`)
+
+Both remaining MoE increments are done and CPU-verified. The next frontier is
+**MLA / KV-cache compression** (see "After MoE" below).
+
+- **Increment A — gather-by-count:** needs NO new op. Plain `index_select(values,
+  0, indices)` over the capacity-sized `NonZeroIndices` index buffer gathers the
+  routed rows into a `[capacity, hidden]` prefix; `count_sym` threads separately
+  to `matmul_dyn_m`. Test `nonzero_indices_gather_by_count_selects_routed_rows`.
+- **Increment B — sparse layer rewrite:** `LazyMoeLayer::forward` is now sparse
+  (per-expert `NonZeroIndices(gate_col) → index_select gather → forward_dyn_m
+  FFN (matmul_dyn_m ×3) → broadcast_mul gate → index_add scatter-back`). The old
+  dense path is preserved as `forward_dense` and is the **bit-exact reference**;
+  `moe_layer_sparse_forward_bit_exact_to_dense` (+ a 3-D variant) assert it
+  bit-for-bit (sabotage-verified). Supporting atoms: `WeightStorage::
+  apply_linear_dyn_m`, `LazyMoeExpert::forward_dyn_m` (F32 + bias-free, else typed
+  error), `Graph::next_data_determined_sym` / `LazyTensor::
+  fresh_data_determined_sym` (graph-scoped fresh count-sym so per-expert
+  producers and stacked layers never collide). FLOP note: expert FFN matmuls drop
+  from `N·num_experts` to `N·top_k` token-rows.
+- **Known follow-ups (not blocking MLA):** experts are F32 + bias-free only
+  (matmul_dyn_m is F32-only; a down-bias would contaminate the zeroed tail); the
+  elementwise silu/mul still run over the full capacity buffer (only the matmuls
+  are count-bounded); GPU wiring of the data-determined path is Part 2.
+
+---
+
+## Increment A — gather-by-count op (DONE — see status above)
 
 Gather routed tokens into a capacity buffer, producing the lhs `matmul_dyn_m` consumes.
 - Given a value/token tensor `[N, hidden]` and a data-determined index list (the `indices`
