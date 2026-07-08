@@ -16,7 +16,7 @@ use std::sync::{Arc, RwLock};
 
 use fuel_ir::{dispatch::OpKind, probe::BackendId, DType, Layout, Shape};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::{register_cuda_kernels, register_cpu_kernels}, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::{register_cuda_kernels, register_cpu_kernels}, kernel::{KernelBindingTable, MatmulM, OpParams}};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -1183,6 +1183,7 @@ fn matmul_f32_rank2_through_binding_table() {
         m: 2,
         n: 2,
         k: 3,
+        m_compute: MatmulM::All,
     };
 
     kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
@@ -1245,6 +1246,7 @@ fn matmul_f32_batched_through_binding_table() {
         m: 2,
         n: 2,
         k: 3,
+        m_compute: MatmulM::All,
     };
 
     kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
@@ -1302,6 +1304,7 @@ fn matmul_f32_gqa_through_binding_table() {
         m: 2,
         n: 2,
         k: 3,
+        m_compute: MatmulM::All,
     };
 
     kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
@@ -1409,6 +1412,7 @@ fn matmul_bf16_rank2_through_binding_table() {
         m,
         n,
         k,
+        m_compute: MatmulM::All,
     };
 
     kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
@@ -1485,6 +1489,7 @@ fn matmul_bf16_batched_through_binding_table() {
         m,
         n,
         k,
+        m_compute: MatmulM::All,
     };
 
     kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
@@ -1565,6 +1570,7 @@ fn matmul_f16_rank2_through_binding_table() {
         m,
         n,
         k,
+        m_compute: MatmulM::All,
     };
 
     kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
