@@ -20,8 +20,9 @@
 //! sharing the sequence axis (dim 0).** The standard K/V cache is then just
 //! the two-equal-slots special case; MLA is two-unequal-slots; two-projection
 //! is one slot. This type owns that general shape; `LazyKvCache`'s K/V
-//! surface can later be re-expressed on top of it (a follow-up — it has live
-//! consumers, so it stays as-is for now).
+//! surface can later be re-expressed on top of it — deferred for now because
+//! its unit-test surface and the Phase-B eager-retirement program still
+//! reference it directly.
 //!
 //! # Shape contract
 //!
