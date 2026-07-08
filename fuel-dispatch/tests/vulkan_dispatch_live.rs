@@ -13,7 +13,7 @@
 use std::sync::{Arc, RwLock};
 
 use fuel_ir::{dispatch::OpKind, probe::BackendId, DType, Layout, Shape};
-use fuel_dispatch::{kernel::{KernelBindingTable, OpParams}, vulkan_dispatch::register_vulkan_kernels};
+use fuel_dispatch::{kernel::{MatmulM, KernelBindingTable, OpParams}, vulkan_dispatch::register_vulkan_kernels};
 use fuel_memory::{alloc_cpu_zeroed, BackendStorage, Storage};
 use fuel_vulkan_backend::VulkanBackend;
 
@@ -1185,6 +1185,7 @@ fn vulkan_dispatch_write_slice_b4_1d_f32() {
         &OpParams::WriteSlice {
             dest_shape: vec![8],
             ranges: vec![(2, 5)],
+        deferred_dyn_offset: None,
         },
     ).expect("write_slice dispatch");
 
@@ -1232,6 +1233,7 @@ fn vulkan_dispatch_write_slice_b4_2d_f32() {
         &OpParams::WriteSlice {
             dest_shape: vec![3, 4],
             ranges: vec![(1, 3), (1, 3)],
+        deferred_dyn_offset: None,
         },
     ).expect("write_slice 2d dispatch");
 
@@ -1291,6 +1293,7 @@ fn vulkan_dispatch_write_slice_b2_f16_kv_cache() {
         &OpParams::WriteSlice {
             dest_shape: vec![seq, head_dim],
             ranges: vec![(2, 3), (0, head_dim)],
+        deferred_dyn_offset: None,
         },
     ).expect("write_slice b2 dispatch");
 
@@ -1348,6 +1351,7 @@ fn vulkan_dispatch_write_slice_b8_f64_1d() {
         &OpParams::WriteSlice {
             dest_shape: vec![6],
             ranges: vec![(1, 4)],
+        deferred_dyn_offset: None,
         },
     ).expect("write_slice b8 dispatch");
 
@@ -1400,6 +1404,7 @@ fn vulkan_dispatch_write_slice_b4_kv_cache_shape() {
         &OpParams::WriteSlice {
             dest_shape: vec![seq, head_dim],
             ranges: vec![(2, 3), (0, head_dim)],
+        deferred_dyn_offset: None,
         },
     ).expect("write_slice kv dispatch");
 
@@ -1937,6 +1942,7 @@ fn run_matmul_f32(
             lhs_batch_dims: lhs_batch.to_vec(),
             rhs_batch_dims: rhs_batch.to_vec(),
             m, n, k,
+            m_compute: MatmulM::All,
         },
     ).expect("matmul dispatch");
     download_f32(backend, &out_arc.read().unwrap())
@@ -1997,6 +2003,7 @@ fn vulkan_dispatch_matmul_f32_bf16_b_small_m() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m: 2, n: 2, k: 3,
+            m_compute: MatmulM::All,
         },
     ).expect("mixed-bf16 matmul dispatch");
 
@@ -2072,6 +2079,7 @@ fn vulkan_dispatch_matmul_f32_bf16_b_coop_size() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m, n, k,
+            m_compute: MatmulM::All,
         },
     ).expect("mixed-bf16 coop-size matmul dispatch");
 
@@ -2145,6 +2153,7 @@ fn vulkan_dispatch_matmul_bf16_bf16_f32_coop_size() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m, n, k,
+            m_compute: MatmulM::All,
         },
     ).expect("bf16 coop-size matmul dispatch");
 
@@ -2217,6 +2226,7 @@ fn vulkan_dispatch_matmul_bf16_bf16_f32_multi_tile() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m, n, k,
+            m_compute: MatmulM::All,
         },
     ).expect("bf16 multi-tile matmul dispatch");
 
@@ -2290,6 +2300,7 @@ fn vulkan_dispatch_matmul_bf16_bf16_bf16_coop_size() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m, n, k,
+            m_compute: MatmulM::All,
         },
     ).expect("bf16→bf16 coop-size matmul dispatch");
 
@@ -2362,6 +2373,7 @@ fn vulkan_dispatch_matmul_bf16_bf16_bf16_multi_tile() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m, n, k,
+            m_compute: MatmulM::All,
         },
     ).expect("bf16→bf16 multi-tile matmul dispatch");
 
@@ -2441,6 +2453,7 @@ fn vulkan_dispatch_matmul_bf16_bf16_f32_small() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m, n, k,
+            m_compute: MatmulM::All,
         },
     ).expect("bf16 small-shape matmul dispatch");
 
@@ -2512,6 +2525,7 @@ fn vulkan_dispatch_matmul_bf16_bf16_bf16_small() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m, n, k,
+            m_compute: MatmulM::All,
         },
     ).expect("bf16→bf16 small-shape matmul dispatch");
 
@@ -2582,6 +2596,7 @@ fn vulkan_dispatch_matmul_f16_f16_f32_coop_size() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m, n, k,
+            m_compute: MatmulM::All,
         },
     ).expect("f16 coop-size matmul dispatch");
 
@@ -2653,6 +2668,7 @@ fn vulkan_dispatch_matmul_f16_f16_f32_multi_tile() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m, n, k,
+            m_compute: MatmulM::All,
         },
     ).expect("f16 multi-tile matmul dispatch");
 
@@ -2723,6 +2739,7 @@ fn vulkan_dispatch_matmul_f16_f16_f16_coop_size() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m, n, k,
+            m_compute: MatmulM::All,
         },
     ).expect("f16→f16 coop-size matmul dispatch");
 
@@ -2794,6 +2811,7 @@ fn vulkan_dispatch_matmul_f16_f16_f16_multi_tile() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m, n, k,
+            m_compute: MatmulM::All,
         },
     ).expect("f16→f16 multi-tile matmul dispatch");
 
@@ -2866,6 +2884,7 @@ fn vulkan_dispatch_matmul_f16_f16_f32_small() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m, n, k,
+            m_compute: MatmulM::All,
         },
     ).expect("f16 small-shape matmul dispatch");
 
@@ -2936,6 +2955,7 @@ fn vulkan_dispatch_matmul_f16_f16_f16_small() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m, n, k,
+            m_compute: MatmulM::All,
         },
     ).expect("f16→f16 small-shape matmul dispatch");
 
@@ -3001,6 +3021,7 @@ fn vulkan_dispatch_matmul_f32_bf16_b_matvec() {
             lhs_batch_dims: vec![],
             rhs_batch_dims: vec![],
             m: 1, n: 2, k: 3,
+            m_compute: MatmulM::All,
         },
     ).expect("mixed-bf16 matvec dispatch");
 
@@ -8337,6 +8358,7 @@ fn vulkan_dispatch_write_slice_b1_u8() {
         &OpParams::WriteSlice {
             dest_shape: vec![4, 8],
             ranges: vec![(1, 3), (4, 8)],
+        deferred_dyn_offset: None,
         },
     ).expect("write_slice b1");
 
@@ -8953,7 +8975,7 @@ fn vulkan_dispatch_flash_attn_f32_causal() {
     let mut out_cpu = CpuStorageBytes::from_bytes(&vec![0u8; n_out * 4]);
     flash_attn_f32(
         &q_cpu, &k_cpu, &v_cpu, None, &mut out_cpu,
-        b, hq, hkv, sq, sk, d,
+        b, hq, hkv, sq, sk, d, /* k_len = full K */ sk,
         scale, true, None, None, None,
     ).expect("cpu flash_attn ref");
     let cpu_ref: Vec<f32> = bytemuck::cast_slice::<u8, f32>(out_cpu.bytes()).to_vec();
