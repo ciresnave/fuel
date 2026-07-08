@@ -453,6 +453,21 @@ Cross-references are fine — an architecture-decision-log entry can link to the
 
 ---
 
+## 2026-07-08 — The runtime-fused kernel sidecar is TRANSITIONAL; end-state = a generalized binding key
+
+**Sections affected**: 03 (IR) / 04 (optimization) — none revised yet (the sidecar is implementation, not a claim change); this entry exists to prevent the implementation from silently *becoming* a claim.
+**Phase / PR**: JIT-on-request adoption (branch `jit-integration`). Code: `fuel-dispatch/src/runtime_fused_kernels.rs` (+ `runtime_fused_arm.rs`, `runtime_fused_pathfinder.rs`, `jit_adopt.rs`, `jit_cuda_load.rs`; `fuel-graph/src/runtime_fused.rs`).
+
+**What changed**: adopting a JIT-synthesized (Tier-2) fused op required a place to bind its kernel at runtime. The binding table is keyed by the compile-time `OpKind` enum, which cannot admit a runtime-allocated `FusedOpId` — so the adoption path ships a **parallel `FusedOpId`-keyed kernel sidecar** (`runtime_fused_kernels`), a matching metadata sidecar in `fuel-graph`, a dedicated `is_runtime` resolution arm in `compile_one`, and a separate `PassRegistry::default_passes_with_runtime_fusion()` constructor. **All four are transitional** — the same status `ExecutionPlan` holds — and none of them is licensed to grow new consumers.
+
+**Why**: the standing dispatch-architecture direction is *"registry runtime-mutable (no sidecar); build new dispatch/fusion infra into graph+registry"*. The sidecar is a letter-violation accepted knowingly (flagged by the data-dependent-shapes session at coordination, 2026-07-08) because the alternative — generalizing the binding-table key — is a cross-cutting change to a surface two other active programs are mid-rebuild on, while the JIT loop was already hardware-verified end-to-end against the sidecar.
+
+**Alternatives considered**: *generalize the binding key now* — rejected for sequencing, not correctness (it is the end-state); *a synthetic `OpKind` per adopted op* — rejected: `OpKind` is a closed compile-time enum and faking entries poisons every exhaustive consumer; *keying runtime kernels into the plan* — rejected: the plan is itself being deleted ("plan IS the graph").
+
+**Implications going forward**: the end-state is to **generalize the binding-table key to `{Static(OpKind) | RuntimeFused(FusedOpId)}`** so runtime entries live in the ONE registry. When that lands: the kernel sidecar folds in; `compile_one`'s `is_runtime` arm collapses into the terminal lookup; `default_passes_with_runtime_fusion` collapses back into `default_passes` (the test-hermeticity split exists only because the sidecar is process-global); and `OpKind::RuntimeFused` remains as the key's runtime discriminant. Until then, treat any new code that reads the sidecar directly (rather than through `fused_kernel_available` / the `compile_one` arm) as a review flag.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
