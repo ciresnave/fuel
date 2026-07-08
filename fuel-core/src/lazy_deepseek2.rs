@@ -431,6 +431,66 @@ impl DeepSeek2Weights {
     }
 }
 
+/// Split `kv_b_proj` (row-major `[kv_lora_rank, n_heads * (nope + v_dim)]`
+/// — element `[row j in 0..kvr][col c in 0..H*(nope+v)] = arc[j *
+/// (H*(nope+v)) + c]`) into the two forms the MLA weight-absorption decode
+/// trick needs (see [`DeepSeek2Model::forward_with_latent_cache_absorbed`]
+/// for the math):
+///
+///   - `w_uk_t`: `[H, nope, kvr]` — `w_uk_t[h][i][j] = kv_b[j][h*(nope+v) + i]`
+///     (per-head `W_UK[h]`, **transposed** so it can be matmul'd directly
+///     against `q_nope[h]`: `q_absorbed[h] = q_nope[h] @ w_uk_t[h]`).
+///   - `w_uv`: `[H, kvr, v_dim]` — `w_uv[h][j][i] = kv_b[j][h*(nope+v) + nope + i]`
+///     (per-head `W_UV[h]`, as-is).
+///
+/// F32-only today — any other [`WeightStorage`] variant (BF16, Q4_0,
+/// WithLoRA) is a typed error rather than a silent cast. Also validates
+/// the input length against `kvr * n_heads * (nope + v_dim)`.
+fn absorb_split_kv_b(
+    w: &WeightStorage,
+    kvr: usize,
+    n_heads: usize,
+    nope: usize,
+    v_dim: usize,
+) -> Result<(Vec<f32>, Vec<f32>)> {
+    let arc = match w {
+        WeightStorage::F32(arc) => arc,
+        other => {
+            return Err(crate::Error::Msg(format!(
+                "absorb_split_kv_b: MLA weight absorption is F32-only today, got {:?}",
+                other.dtype(),
+            )).bt());
+        }
+    };
+    let out_features = n_heads * (nope + v_dim);
+    let expected = kvr * out_features;
+    if arc.len() != expected {
+        return Err(crate::Error::Msg(format!(
+            "absorb_split_kv_b: kv_b_proj has {} elements, expected {expected} \
+             (kv_lora_rank={kvr} * n_heads*(nope+v_dim)={out_features})",
+            arc.len(),
+        )).bt());
+    }
+
+    let mut w_uk_t = vec![0.0_f32; n_heads * nope * kvr];
+    let mut w_uv = vec![0.0_f32; n_heads * kvr * v_dim];
+    for j in 0..kvr {
+        let row = &arc[j * out_features..(j + 1) * out_features];
+        for h in 0..n_heads {
+            let base = h * (nope + v_dim);
+            // W_UK[h] transposed: w_uk_t[h][i][j] = kv_b[j][h*(nope+v)+i]
+            for i in 0..nope {
+                w_uk_t[h * nope * kvr + i * kvr + j] = row[base + i];
+            }
+            // W_UV[h] as-is: w_uv[h][j][i] = kv_b[j][h*(nope+v)+nope+i]
+            for i in 0..v_dim {
+                w_uv[h * kvr * v_dim + j * v_dim + i] = row[base + nope + i];
+            }
+        }
+    }
+    Ok((w_uk_t, w_uv))
+}
+
 impl DeepSeek2Model {
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;
@@ -489,6 +549,39 @@ impl DeepSeek2Model {
         &self,
         tokens: &[u32],
         cache: LazyLatentCache,
+    ) -> Result<(LazyTensor, LazyLatentCache)> {
+        self.forward_with_latent_cache_impl(tokens, cache, false)
+    }
+
+    /// Weight-absorption sibling of [`Self::forward_with_latent_cache`] —
+    /// the DeepSeek decode trick. Same cached-decode contract (geometry
+    /// validation, fresh-graph rebind, per-step RoPE tables, shared decode
+    /// mask, cache threading) but attention goes through
+    /// [`Self::mla_attention_cached_absorbed`] instead of
+    /// [`Self::mla_attention_cached`]: rather than up-projecting the whole
+    /// cached latent prefix through `kv_b_proj` every step, `kv_b_proj`'s
+    /// per-head `W_UK`/`W_UV` slices are folded into the query/context
+    /// math so attention reads the compressed latent directly. See
+    /// [`Self::mla_attention_cached_absorbed`]'s doc for the full math and
+    /// the bit-exactness caveat (mathematically equivalent, not
+    /// bit-identical, to the non-absorbed path).
+    pub fn forward_with_latent_cache_absorbed(
+        &self,
+        tokens: &[u32],
+        cache: LazyLatentCache,
+    ) -> Result<(LazyTensor, LazyLatentCache)> {
+        self.forward_with_latent_cache_impl(tokens, cache, true)
+    }
+
+    /// Shared body of [`Self::forward_with_latent_cache`] and
+    /// [`Self::forward_with_latent_cache_absorbed`] — identical everywhere
+    /// except which `mla_attention_cached*` sibling `absorb` routes each
+    /// layer's attention through.
+    fn forward_with_latent_cache_impl(
+        &self,
+        tokens: &[u32],
+        cache: LazyLatentCache,
+        absorb: bool,
     ) -> Result<(LazyTensor, LazyLatentCache)> {
         let cfg = &self.config;
 
@@ -562,7 +655,7 @@ impl DeepSeek2Model {
         let mut x = h;
         for (idx, layer) in self.weights.layers.iter().enumerate() {
             let (x_next, cache_next) = self.apply_layer_cached(
-                &x, layer, idx, &rope_cos, &rope_sin, &mask, cache, cached_len,
+                &x, layer, idx, &rope_cos, &rope_sin, &mask, cache, cached_len, absorb,
             )?;
             x = x_next;
             cache = cache_next;
@@ -747,7 +840,9 @@ impl DeepSeek2Model {
 
     /// Cached-decode sibling of [`Self::apply_layer`]: same norms, same
     /// residuals, same dense/MoE FFN dispatch — only attention goes
-    /// through [`Self::mla_attention_cached`] and the cache threads
+    /// through [`Self::mla_attention_cached`] (or, when `absorb` is set,
+    /// its weight-absorption sibling
+    /// [`Self::mla_attention_cached_absorbed`]) and the cache threads
     /// through functionally.
     fn apply_layer_cached(
         &self,
@@ -759,13 +854,20 @@ impl DeepSeek2Model {
         mask: &LazyTensor,
         cache: LazyLatentCache,
         cached_len: usize,
+        absorb: bool,
     ) -> Result<(LazyTensor, LazyLatentCache)> {
         let cfg = &self.config;
 
         let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
-        let (attn, cache) = self.mla_attention_cached(
-            &x_norm, &layer.mla, rope_cos, rope_sin, mask, cache, layer_idx, cached_len,
-        )?;
+        let (attn, cache) = if absorb {
+            self.mla_attention_cached_absorbed(
+                &x_norm, &layer.mla, rope_cos, rope_sin, mask, cache, layer_idx, cached_len,
+            )?
+        } else {
+            self.mla_attention_cached(
+                &x_norm, &layer.mla, rope_cos, rope_sin, mask, cache, layer_idx, cached_len,
+            )?
+        };
         let h1 = x.add(&attn)?;
 
         let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
@@ -877,6 +979,153 @@ impl DeepSeek2Model {
         let scores_masked = scores_scaled.broadcast_add(mask)?;
         let probs = scores_masked.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?; // (1, H, s, v_dim)
+
+        let merged = ctx.merge_heads()?;
+        let out = w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size);
+        Ok((out, cache))
+    }
+
+    /// Weight-absorption sibling of [`Self::mla_attention_cached`] — the
+    /// DeepSeek decode trick. [`Self::mla_attention_cached`] re-projects
+    /// the WHOLE cached latent prefix through `kv_b_proj` every step
+    /// (cost `O(total · kvr · H · (nope+v))`, growing with context). This
+    /// fn instead folds `kv_b_proj`'s per-head `W_UK`/`W_UV` slices into
+    /// the query/context math and attends DIRECTLY against the cached
+    /// (post-norm) latent `c` — no per-step re-projection of the prefix:
+    ///
+    /// ```text
+    /// k_nope[h] = c @ W_UK[h]                      // [total, nope]
+    /// scores_nope[h] = q_nope[h] @ k_nope[h]^T
+    ///                = q_nope[h] @ (c @ W_UK[h])^T
+    ///                = (q_nope[h] @ W_UK[h]^T) @ c^T
+    ///                = q_absorbed[h] @ c^T          // q_absorbed: [s, kvr]
+    ///
+    /// v[h] = c @ W_UV[h]                            // [total, v_dim]
+    /// ctx[h] = probs[h] @ v[h]
+    ///        = probs[h] @ (c @ W_UV[h])
+    ///        = (probs[h] @ c) @ W_UV[h]
+    ///        = ctx_latent[h] @ W_UV[h]               // ctx_latent: [s, kvr]
+    /// ```
+    ///
+    /// The RoPE half is unchanged (`scores_rope = q_pe_rot @ kpe_all^T`);
+    /// concat-then-matmul on `[q_nope | q_pe]` / `[k_nope | kpe]` (the
+    /// non-absorbed path) is exactly the sum of the two partial matmuls,
+    /// so `scores = (scores_nope + scores_rope) * scale` reproduces the
+    /// same pre-softmax quantity up to summation order.
+    ///
+    /// Per-step cost becomes `O(s·H·nope·kvr) + O(s·total·H·kvr) +
+    /// O(s·H·kvr·v)` — the widest term still scales with `total`, but
+    /// nothing re-touches the prefix through a weight matrix.
+    ///
+    /// **Not bit-identical** to [`Self::mla_attention_cached`]: the
+    /// absorption identity reassociates the matmul
+    /// (`(q·W_UK)·c` vs `q·(W_UK·c)`), and float addition is not
+    /// associative, so summation order differs even though the math is
+    /// exact. Mathematically equivalent, tight-epsilon-verified (see the
+    /// `forward_with_latent_cache_absorbed_matches_*` tests). Prefill-heavy
+    /// callers may prefer the non-absorbed sibling — up-projecting the
+    /// prefix once (compute-bound, small `total`) can beat this path's
+    /// wider per-step matmuls (memory-bound, large `total`); real systems
+    /// switch on sequence length, deferred here as a follow-up.
+    fn mla_attention_cached_absorbed(
+        &self,
+        x: &LazyTensor,
+        w: &DeepSeek2MlaWeights,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+        mask: &LazyTensor,
+        cache: LazyLatentCache,
+        layer_idx: usize,
+        cached_len: usize,
+    ) -> Result<(LazyTensor, LazyLatentCache)> {
+        let cfg = &self.config;
+        let n_heads = cfg.num_attention_heads;
+        let q_head_dim = cfg.q_head_dim();
+        let nope = cfg.qk_nope_head_dim;
+        let rope = cfg.qk_rope_head_dim;
+        let v_dim = cfg.v_head_dim;
+        let kvr = cfg.kv_lora_rank;
+        let s = x.shape().dims()[1];
+
+        // ---- Q projection (plain or LoRA), split + RoPE on the pe half ------
+        // Identical to `mla_attention_cached` up through obtaining
+        // `q_nope`/`q_pe_rot`, the cache append, and the prefix read-back.
+        let q = match &w.q_proj {
+            DeepSeek2QProj::Plain(plain) => {
+                plain.apply_linear(x, cfg.hidden_size, n_heads * q_head_dim)
+            }
+            DeepSeek2QProj::Lora { a, norm_gain, b } => {
+                let lo = a.apply_linear(x, cfg.hidden_size, norm_gain.len());
+                let lo_norm = lo.rms_norm_affine(Arc::clone(norm_gain), cfg.rms_norm_eps)?;
+                b.apply_linear(&lo_norm, norm_gain.len(), n_heads * q_head_dim)
+            }
+        };
+        let q = q.split_heads(n_heads, q_head_dim)?;
+        let q_nope = q.slice(3_usize, 0, nope)?;
+        let q_pe = q.slice(3_usize, nope, rope)?;
+        let q_pe_rot = apply_interleaved_partial_rope(&q_pe, rope_cos, rope_sin, rope, rope)?;
+
+        // ---- New KV latents for this step's tokens only ---------------------
+        let kv_a = w.kv_a_proj_with_mqa.apply_linear(x, cfg.hidden_size, kvr + rope);
+        let compressed_kv = kv_a.slice(2_usize, 0, kvr)?;
+        let k_pe_single = kv_a.slice(2_usize, kvr, rope)?;
+
+        let compressed_kv_norm = compressed_kv.rms_norm_affine(
+            Arc::clone(&w.kv_a_layernorm_gain), cfg.rms_norm_eps,
+        )?;
+
+        let k_pe_single_h = k_pe_single.split_heads(1, rope)?;
+        let k_pe_rot = apply_interleaved_partial_rope(&k_pe_single_h, rope_cos, rope_sin, rope, rope)?;
+
+        // ---- Append to cache (squeeze the batch==1 dim) ----------------------
+        let latent_new = compressed_kv_norm.reshape(Shape::from_dims(&[s, kvr]))?;
+        let kpe_new = k_pe_rot.reshape(Shape::from_dims(&[s, rope]))?;
+        let cache = cache.append(layer_idx, &[&latent_new, &kpe_new])?;
+
+        // ---- Read back the FULL attended prefix (cached + new) ---------------
+        // Do NOT use cache.slot() here — current_seq_len hasn't advanced yet
+        // this step, so it would clip off the tokens just appended. Read the
+        // latent directly as a rank-4 (1, 1, total, kvr) view — the absorbed
+        // path attends against it twice (as K via `c_t`, as V via
+        // `c_broadcast`), both needing the `n_heads`-broadcast shape, so
+        // there is no use for the rank-3 (1, total, kvr) view
+        // `mla_attention_cached` builds for its `kv_b_proj` up-projection.
+        let total = cached_len + s;
+        let latent_all = cache
+            .slot_buffer_full(layer_idx, 0)
+            .slice(0_usize, 0, total)?
+            .reshape(Shape::from_dims(&[1, 1, total, kvr]))?;
+        let kpe_all = cache
+            .slot_buffer_full(layer_idx, 1)
+            .slice(0_usize, 0, total)?
+            .reshape(Shape::from_dims(&[1, 1, total, rope]))?
+            .broadcast_to(Shape::from_dims(&[1, n_heads, total, rope]))?;
+
+        // ---- Absorbed weights: kv_b_proj split into per-head W_UK^T / W_UV --
+        let (w_uk_t_data, w_uv_data) = absorb_split_kv_b(&w.kv_b_proj, kvr, n_heads, nope, v_dim)?;
+        let w_uk_t = x.const_f32_like(w_uk_t_data, Shape::from_dims(&[1, n_heads, nope, kvr]));
+        let w_uv = x.const_f32_like(w_uv_data, Shape::from_dims(&[1, n_heads, kvr, v_dim]));
+
+        // ---- q_absorbed[h] = q_nope[h] @ W_UK[h]^T ---------------------------
+        let q_absorbed = q_nope.matmul(&w_uk_t)?; // (1,H,s,nope) @ (1,H,nope,kvr) -> (1,H,s,kvr)
+
+        // ---- Attend directly against the cached latent (no kv_b_proj) -------
+        let c_broadcast = latent_all.broadcast_to(Shape::from_dims(&[1, n_heads, total, kvr]))?;
+        let c_t = c_broadcast.transpose()?; // (1, H, kvr, total)
+        let scores_nope = q_absorbed.matmul(&c_t)?; // (1, H, s, total)
+
+        let kpe_t = kpe_all.transpose()?; // (1, H, rope, total)
+        let scores_rope = q_pe_rot.matmul(&kpe_t)?; // (1, H, s, total)
+
+        let scale = 1.0_f64 / (q_head_dim as f64).sqrt();
+        let scores = scores_nope.add(&scores_rope)?;
+        let scores_scaled = scores.mul_scalar(scale);
+        let scores_masked = scores_scaled.broadcast_add(mask)?;
+        let probs = scores_masked.softmax_last_dim()?;
+
+        // ---- ctx_latent[h] = probs[h] @ c; ctx[h] = ctx_latent[h] @ W_UV[h] -
+        let ctx_latent = probs.matmul(&c_broadcast)?; // (1, H, s, kvr)
+        let ctx = ctx_latent.matmul(&w_uv)?; // (1, H, s, v_dim)
 
         let merged = ctx.merge_heads()?;
         let out = w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size);
@@ -1443,5 +1692,162 @@ mod tests {
             .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
         assert!(max_diff < 1e-5,
             "DeepSeek-V2 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+    }
+
+    /// Argmax of a logits row (greedy-decode robustness check).
+    fn argmax_row(row: &[f32]) -> usize {
+        row.iter().enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .unwrap().0
+    }
+
+    /// MLA weight-absorption decode trick: `forward_with_latent_cache_absorbed`
+    /// must match the non-absorbed `forward_with_latent_cache` up to a tight
+    /// epsilon, for both cached paths run over the identical incremental
+    /// (prefill 2, decode 1, decode 1) protocol.
+    ///
+    /// Bit-exact equality is impossible **by construction**: the absorption
+    /// identity `(q·W_UK)·c ≡ q·(W_UK·c)` reassociates the matmul, and IEEE
+    /// float addition is not associative, so summation order — and
+    /// therefore the last few ULPs — differs even though the math is exact.
+    /// We instead assert a tight abs-diff tolerance plus per-row argmax
+    /// equality (the greedy-decode-robustness bar the rest of this suite
+    /// uses).
+    ///
+    /// **Tolerance calibration (sabotage-measured):** genuine reassociation
+    /// drift on this fixture is ~1.5e-8; a deliberately corrupted `W_UK`
+    /// (reading the `W_UV` columns) moves the logits by only ~3–5e-5,
+    /// because the tiny ±0.025 LCG weights attenuate the attention path's
+    /// contribution to the residual stream. A 1e-4 tolerance therefore
+    /// MASKS real absorption bugs — 1e-6 sits ~100× above genuine drift
+    /// (platform-robust) and ~30× below the measured corruption signal.
+    #[test]
+    fn forward_with_latent_cache_absorbed_matches_unabsorbed() {
+        for cfg in [tiny_config_plain_q(), tiny_config_lora_q()] {
+            let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+            let vocab = cfg.vocab_size;
+
+            let anchor = LazyTensor::from_f32(
+                vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
+            );
+            let cache_u = LazyLatentCache::new(
+                &anchor, cfg.num_hidden_layers, 8,
+                vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
+                DType::F32,
+            ).unwrap();
+            let cache_a = LazyLatentCache::new(
+                &anchor, cfg.num_hidden_layers, 8,
+                vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
+                DType::F32,
+            ).unwrap();
+
+            let mut max_diff = 0.0_f32;
+            let mut check = |u: &[f32], a: &[f32]| {
+                for (uv, av) in u.iter().zip(a.iter()) {
+                    max_diff = max_diff.max((uv - av).abs());
+                }
+                for row in 0..(u.len() / vocab) {
+                    let urow = &u[row * vocab..(row + 1) * vocab];
+                    let arow = &a[row * vocab..(row + 1) * vocab];
+                    assert_eq!(argmax_row(urow), argmax_row(arow),
+                        "argmax mismatch absorbed vs unabsorbed (q_lora_rank={:?}, row={row})",
+                        cfg.q_lora_rank);
+                }
+            };
+
+            let (logits_a_u, cache_u) = model.forward_with_latent_cache(&[1, 2], cache_u).unwrap();
+            let (logits_a_a, cache_a) = model.forward_with_latent_cache_absorbed(&[1, 2], cache_a).unwrap();
+            check(&logits_a_u.realize_f32(), &logits_a_a.realize_f32());
+
+            let (logits_b_u, cache_u) = model.forward_with_latent_cache(&[3], cache_u).unwrap();
+            let (logits_b_a, cache_a) = model.forward_with_latent_cache_absorbed(&[3], cache_a).unwrap();
+            check(&logits_b_u.realize_f32(), &logits_b_a.realize_f32());
+
+            let (logits_c_u, cache_u) = model.forward_with_latent_cache(&[4], cache_u).unwrap();
+            let (logits_c_a, cache_a) = model.forward_with_latent_cache_absorbed(&[4], cache_a).unwrap();
+            check(&logits_c_u.realize_f32(), &logits_c_a.realize_f32());
+
+            assert_eq!(cache_u.current_seq_len(), 4);
+            assert_eq!(cache_a.current_seq_len(), 4);
+
+            eprintln!(
+                "forward_with_latent_cache_absorbed_matches_unabsorbed: q_lora_rank={:?} \
+                 max abs diff = {max_diff}", cfg.q_lora_rank,
+            );
+            assert!(max_diff < 1e-6,
+                "absorbed vs unabsorbed cached decode diverge beyond tolerance: max_diff={max_diff}");
+        }
+    }
+
+    /// Guards against both cached paths sharing a common bug: the absorbed
+    /// cached-decode path must ALSO reproduce the one-shot `forward`
+    /// reference over the same 4-token protocol.
+    #[test]
+    fn forward_with_latent_cache_absorbed_matches_one_shot() {
+        for cfg in [tiny_config_plain_q(), tiny_config_lora_q()] {
+            let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+            let vocab = cfg.vocab_size;
+            let tokens: Vec<u32> = vec![1, 2, 3, 4];
+
+            let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
+
+            let anchor = LazyTensor::from_f32(
+                vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
+            );
+            let cache = LazyLatentCache::new(
+                &anchor, cfg.num_hidden_layers, 8,
+                vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
+                DType::F32,
+            ).unwrap();
+
+            let (logits_a, cache) = model.forward_with_latent_cache_absorbed(&[1, 2], cache).unwrap();
+            let logits_a = logits_a.realize_f32();
+            let (logits_b, cache) = model.forward_with_latent_cache_absorbed(&[3], cache).unwrap();
+            let logits_b = logits_b.realize_f32();
+            let (logits_c, cache) = model.forward_with_latent_cache_absorbed(&[4], cache).unwrap();
+            let logits_c = logits_c.realize_f32();
+            assert_eq!(cache.current_seq_len(), 4);
+
+            let mut max_diff = 0.0_f32;
+            let mut check_row = |ref_row: &[f32], got: &[f32]| {
+                for (r, g) in ref_row.iter().zip(got.iter()) {
+                    max_diff = max_diff.max((r - g).abs());
+                }
+                assert_eq!(argmax_row(ref_row), argmax_row(got),
+                    "argmax mismatch absorbed cached decode vs one-shot forward \
+                     (q_lora_rank={:?})", cfg.q_lora_rank);
+            };
+            check_row(&logits_ref[0..2 * vocab], &logits_a);
+            check_row(&logits_ref[2 * vocab..3 * vocab], &logits_b);
+            check_row(&logits_ref[3 * vocab..4 * vocab], &logits_c);
+
+            eprintln!(
+                "forward_with_latent_cache_absorbed_matches_one_shot: q_lora_rank={:?} \
+                 max abs diff = {max_diff}", cfg.q_lora_rank,
+            );
+            assert!(max_diff < 1e-6,
+                "forward_with_latent_cache_absorbed vs one-shot forward diverge beyond tolerance: \
+                 max_diff={max_diff}");
+        }
+    }
+
+    /// `absorb_split_kv_b` is F32-only and length-checked — both must
+    /// surface as a typed `Err`, never a panic.
+    #[test]
+    fn absorb_split_kv_b_rejects_non_f32() {
+        let cfg = tiny_config_plain_q();
+        let n_heads = cfg.num_attention_heads;
+        let nope = cfg.qk_nope_head_dim;
+        let v_dim = cfg.v_head_dim;
+        let kvr = cfg.kv_lora_rank;
+        let out_features = n_heads * (nope + v_dim);
+
+        // Non-F32 storage.
+        let bf16_w = WeightStorage::BF16(Arc::from(vec![half::bf16::ZERO; kvr * out_features]));
+        assert!(absorb_split_kv_b(&bf16_w, kvr, n_heads, nope, v_dim).is_err());
+
+        // F32 but wrong length.
+        let bad_len_w = WeightStorage::F32(Arc::from(vec![0.0_f32; kvr * out_features - 1]));
+        assert!(absorb_split_kv_b(&bad_len_w, kvr, n_heads, nope, v_dim).is_err());
     }
 }
