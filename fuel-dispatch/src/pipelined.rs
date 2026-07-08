@@ -12041,4 +12041,252 @@ mod tests {
         let ls_value = typed[last_state_layout.start_offset()];
         assert!((ls_value - 6.0).abs() < 1e-5, "last_state expected 6.0 got {ls_value}");
     }
+
+    // ---- Ordering-defect repros (MLA decode multi-round WriteSlice) -----
+
+    /// DIAGNOSTIC (not a repro by itself): a plain single-hop view chain
+    /// `S = Slice(X); K = Relu(S)` competing with a SECOND destructive
+    /// WriteSlice on `X` (`Y = WriteSlice(X, ...)`) within one
+    /// `realize_many` call. `collect_alias_set` adds `S` to `X`'s alias
+    /// set (Slice IS `is_view_op`), so `derive_ordering` pins `Y` after
+    /// `S`'s reader `K` directly. This form is expected to STAY GREEN —
+    /// recorded here as the control that isolates the Reshape-specific
+    /// gap exercised by the next test.
+    #[test]
+    fn pipelined_write_slice_round2_plain_slice_reader_not_stranded() {
+        let graph: Arc<RwLock<Graph>> = Arc::new(RwLock::new(Graph::new()));
+        let mut cache = StorageCache::new();
+
+        let b_id = cpu_const_f32(&graph, &mut cache, &[0.0, 0.0, 0.0, 0.0], &[4]);
+        let src1_id = cpu_const_f32(&graph, &mut cache, &[1.0, 2.0], &[2]);
+        let src2_id = cpu_const_f32(&graph, &mut cache, &[99.0, 98.0], &[2]);
+
+        let (k_id, y_id) = {
+            let mut g = graph.write().unwrap();
+            let x_id = g.push(Node {
+                op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+                inputs: vec![b_id, src1_id],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            let s_id = g.push(Node {
+                op: Op::Slice { dim: 0, start: 0, len: 2 },
+                inputs: vec![x_id],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let k_id = g.push(Node {
+                op: Op::Relu,
+                inputs: vec![s_id],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            // Round 2 OVERLAPS round 1's [0,2) range so a wrong-order
+            // execution would be numerically visible in K's output.
+            let y_id = g.push(Node {
+                op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+                inputs: vec![x_id, src2_id],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            g.set_target_backend(x_id, BackendId::Cpu);
+            g.set_target_backend(k_id, BackendId::Cpu);
+            g.set_target_backend(y_id, BackendId::Cpu);
+            (k_id, y_id)
+        };
+
+        let plan = fuel_graph::opt::execution_plan(&graph.read().unwrap(), &[k_id, y_id]);
+        eprintln!(
+            "[diagnostic plain-slice] execution_plan = {:?}",
+            plan,
+        );
+
+        let outputs = PipelinedExecutor::realize_many(Arc::clone(&graph), &[k_id, y_id], cache)
+            .expect("realize_many: plain slice reader must not error");
+        let (k_arc, _) = &outputs[0];
+        let guard = k_arc.read().unwrap();
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
+        let out: &[f32] = c.as_slice().unwrap();
+        assert_eq!(
+            out, &[1.0, 2.0],
+            "K = relu(slice(X,0,2)) must read PRE-round-2 bytes; got {:?}", out,
+        );
+    }
+
+    /// CRITICAL SUSPECT #2 repro: `Op::Reshape`/`Op::Contiguize` compile
+    /// to `WorkItemKind::ContiguizeOf`, which zero-copy ADOPTS the
+    /// input's Storage Arc when the input is contiguous at offset 0 —
+    /// but `Op::Reshape` is NOT in `collect_alias_set`'s alias-extending
+    /// predicate (only `Op::is_view_op` + `Op::View{..}`). So for
+    /// `X = write_slice(B, src1); S = X.slice(0, 0, 2) [offset-0
+    /// contiguous]; R = S.reshape([2]); K = relu(R); Y =
+    /// write_slice(X, src2)`, `collect_alias_set(X)` stops at `{X, S}`
+    /// — `R` never enters the alias set, so `derive_ordering` never
+    /// scans `R`'s consumers (`K`) for pinning against `Y`. `K` and `Y`
+    /// become simultaneously "ready" once `R` completes, and
+    /// `execution_plan`'s stable tiebreak (smaller `topo_order_multi`
+    /// position wins) can schedule `Y` (destructive) BEFORE `K` — `K`
+    /// then dereferences `R`'s adopted Arc (== `X`'s Arc, mutated
+    /// in-place by `Y`) and silently reads POST-`Y` bytes. No error;
+    /// wrong numbers.
+    #[test]
+    fn pipelined_write_slice_reshape_adopted_arc_reader_reads_pre_write_bytes() {
+        let graph: Arc<RwLock<Graph>> = Arc::new(RwLock::new(Graph::new()));
+        let mut cache = StorageCache::new();
+
+        let b_id = cpu_const_f32(&graph, &mut cache, &[0.0, 0.0, 0.0, 0.0], &[4]);
+        let src1_id = cpu_const_f32(&graph, &mut cache, &[1.0, 2.0], &[2]);
+        let src2_id = cpu_const_f32(&graph, &mut cache, &[99.0, 98.0], &[2]);
+
+        let (x_id, k_id, y_id) = {
+            let mut g = graph.write().unwrap();
+            let x_id = g.push(Node {
+                op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+                inputs: vec![b_id, src1_id],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            let s_id = g.push(Node {
+                // OFFSET-0 contiguous prefix slice — ContiguizeOf's
+                // zero-copy fast path requires this at execute time.
+                op: Op::Slice { dim: 0, start: 0, len: 2 },
+                inputs: vec![x_id],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let r_id = g.push(Node {
+                op: Op::Reshape(Shape::from_dims(&[2])),
+                inputs: vec![s_id],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let k_id = g.push(Node {
+                op: Op::Relu,
+                inputs: vec![r_id],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            // Round 2 OVERLAPS round 1's [0,2) range (not the [2,4)
+            // tail) so a wrong-order execution is numerically visible
+            // in K's output — a disjoint round 2 would corrupt bytes
+            // K never reads, masking the defect.
+            let y_id = g.push(Node {
+                op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+                inputs: vec![x_id, src2_id],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            g.set_target_backend(x_id, BackendId::Cpu);
+            g.set_target_backend(k_id, BackendId::Cpu);
+            g.set_target_backend(y_id, BackendId::Cpu);
+            (x_id, k_id, y_id)
+        };
+        let _ = x_id;
+
+        let plan = fuel_graph::opt::execution_plan(&graph.read().unwrap(), &[k_id, y_id]);
+        eprintln!(
+            "[diagnostic reshape-adopted-arc] execution_plan = {:?}",
+            plan,
+        );
+
+        let outputs = PipelinedExecutor::realize_many(Arc::clone(&graph), &[k_id, y_id], cache)
+            .expect("realize_many");
+        let (k_arc, _) = &outputs[0];
+        let guard = k_arc.read().unwrap();
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
+        let out: &[f32] = c.as_slice().unwrap();
+        // K = relu(reshape(slice(X,0,2))) must read PRE-round-2 bytes:
+        // relu([1.0, 2.0]) = [1.0, 2.0]. Round 2 overwrites the SAME
+        // [0,2) range with [99.0, 98.0] — if Y (round 2) runs before K
+        // (the ordering defect), K instead observes [99.0, 98.0].
+        assert_eq!(
+            out, &[1.0, 2.0],
+            "K must read PRE-round-2 bytes through the adopted Arc; got {:?} \
+             (post-round-2 corruption if this fails)", out,
+        );
+    }
+
+    /// The MLA-decode shape from `rebind_latent_cache_fresh_graph`'s doc
+    /// (`fuel-core/src/lazy_deepseek2.rs`): layer L's post-append buffer
+    /// `X_L_N` (round N) is read TWICE within one realize call — once
+    /// (non-destructively) through a Slice+Reshape "attention math" view
+    /// chain whose result becomes an ancestor of layer L+1's round-N
+    /// write, and again as the DESTINATION of layer L's round-(N+1)
+    /// append. Reproduces the same Reshape-adoption gap as
+    /// `pipelined_write_slice_reshape_adopted_arc_reader_reads_pre_write_bytes`
+    /// at 2-layer scale, confirming the defect is not an artifact of the
+    /// single-hop minimal form.
+    #[test]
+    fn pipelined_write_slice_mla_two_layer_round2_reshape_reader_not_stranded() {
+        let graph: Arc<RwLock<Graph>> = Arc::new(RwLock::new(Graph::new()));
+        let mut cache = StorageCache::new();
+
+        let b_l_id = cpu_const_f32(&graph, &mut cache, &[0.0, 0.0, 0.0, 0.0], &[4]);
+        let src_l_n_id = cpu_const_f32(&graph, &mut cache, &[1.0, 2.0], &[2]);
+        let b_l1_id = cpu_const_f32(&graph, &mut cache, &[0.0, 0.0, 0.0, 0.0], &[4]);
+        let src_l_n1_id = cpu_const_f32(&graph, &mut cache, &[99.0, 98.0], &[2]);
+
+        let (x_l_n1_id, x_l1_n_id) = {
+            let mut g = graph.write().unwrap();
+            // Round N, layer L: append src_l_n into b_l.
+            let x_l_n = g.push(Node {
+                op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+                inputs: vec![b_l_id, src_l_n_id],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            // "Attention math" for round N at layer L: read the filled
+            // prefix, reshape (head-split-style hop), then a kernel.
+            let s_l_n = g.push(Node {
+                op: Op::Slice { dim: 0, start: 0, len: 2 },
+                inputs: vec![x_l_n],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let rs_l_n = g.push(Node {
+                op: Op::Reshape(Shape::from_dims(&[2])),
+                inputs: vec![s_l_n],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            let r_l_n = g.push(Node {
+                op: Op::Relu,
+                inputs: vec![rs_l_n],
+                shape: Shape::from_dims(&[2]), dtype: DType::F32,
+            });
+            // Round N, layer L+1: append the attention-math result.
+            let x_l1_n = g.push(Node {
+                op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+                inputs: vec![b_l1_id, r_l_n],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            // Round N+1, layer L: append into x_l_n directly (SAME node
+            // s_l_n/rs_l_n/r_l_n read from) — OVERLAPPING range so a
+            // wrong-order execution is numerically visible downstream.
+            let x_l_n1 = g.push(Node {
+                op: Op::WriteSlice { ranges: vec![(0, 2)], dyn_offset: None },
+                inputs: vec![x_l_n, src_l_n1_id],
+                shape: Shape::from_dims(&[4]), dtype: DType::F32,
+            });
+            g.set_target_backend(x_l_n, BackendId::Cpu);
+            g.set_target_backend(r_l_n, BackendId::Cpu);
+            g.set_target_backend(x_l1_n, BackendId::Cpu);
+            g.set_target_backend(x_l_n1, BackendId::Cpu);
+            (x_l_n1, x_l1_n)
+        };
+
+        let plan = fuel_graph::opt::execution_plan(
+            &graph.read().unwrap(), &[x_l1_n_id, x_l_n1_id],
+        );
+        eprintln!("[diagnostic mla-2-layer] execution_plan = {:?}", plan);
+
+        let outputs = PipelinedExecutor::realize_many(
+            Arc::clone(&graph), &[x_l1_n_id, x_l_n1_id], cache,
+        ).expect("realize_many");
+        // outputs[0] = x_l1_n = write_slice(b_l1, relu(reshape(slice(x_l_n))))
+        // Must reflect round-N's PRE-round-(N+1) bytes: relu([1,2]) = [1,2].
+        let (x_l1_n_arc, _) = &outputs[0];
+        let guard = x_l1_n_arc.read().unwrap();
+        let fuel_memory::BackendStorage::Cpu(c) = &guard.inner else {
+            panic!("expected Cpu storage");
+        };
+        let out: &[f32] = c.as_slice().unwrap();
+        assert_eq!(
+            out, &[1.0, 2.0, 0.0, 0.0],
+            "layer L+1's round-N append must reflect PRE-round-(N+1) attention \
+             math output; got {:?} (post-round-(N+1) corruption if this fails)", out,
+        );
+    }
 }
