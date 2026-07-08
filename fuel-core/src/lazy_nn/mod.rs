@@ -19,6 +19,7 @@ pub mod norm;
 pub mod quantizable_linear;
 pub mod sampling;
 pub mod sequential;
+pub mod two_proj_attention;
 
 pub use activation::{
     LazyElu, LazyGelu, LazyGeluPytorchTanh, LazyLeakyRelu, LazyRelu, LazySigmoid, LazySilu,
@@ -32,6 +33,7 @@ pub use moe::{LazyMoeExpert, LazyMoeLayer, LazyMoeRouter};
 pub use norm::{LazyBatchNorm2d, LazyGroupNorm, LazyLayerNorm, LazyRmsNorm};
 pub use quantizable_linear::LazyQuantizableLinear;
 pub use sequential::LazySequential;
+pub use two_proj_attention::LazyTwoProjAttention;
 
 use crate::Result;
 use crate::lazy::LazyTensor;
