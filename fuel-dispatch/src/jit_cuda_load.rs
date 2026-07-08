@@ -53,13 +53,16 @@
 //! `count_unit:` metadata instead of sniffing the symbol suffix; sniffing is
 //! today's honest shortcut (documented, not hidden).
 //!
-//! A second, narrower gap: a region with a runtime scalar `Param` (from
-//! `AddScalar`/`MulScalar`) needs extra trailing launch args this loader has
-//! no channel to supply (`OpParams` carries no JIT scalar-args variant yet) —
-//! undetectable from `SynthArtifact` alone, so it is NOT gated here; a region
-//! with such a Param would currently mis-launch (missing arg) rather than
-//! decline. Flagged for review; the `jit_adopt` seam today only exercises
-//! Param-free regions (e.g. `relu(add(a, b))`) so this has not bitten yet.
+//! Runtime scalar `Param`s (from `AddScalar`/`MulScalar` regions) ARE
+//! supported: `compile_one` maps the fused node's `Runtime { scalars }` to
+//! [`OpParams::JitScalars`], and [`launch_scalar`] appends them as the
+//! kernel's trailing `, float p0, float p1, …` args (the emitter's
+//! `param_args` suffix — always `float`, after `long long n`, ascending),
+//! narrowing each `f64` slot value to `f32` per that ABI. A param-COUNT
+//! mismatch between the node and the kernel signature remains undetectable
+//! from `SynthArtifact` alone (the contract's `op_params` metadata is the
+//! eventual cross-check); the slot machinery keeps them aligned by
+//! construction (one canonical pattern pre-order on both sides).
 
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -203,6 +206,7 @@ fn launch_scalar(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     layouts: &[Layout],
+    params: &OpParams,
     entry_point: &str,
 ) -> Result<()> {
     if outputs.len() != 1 {
@@ -241,15 +245,28 @@ fn launch_scalar(
     builder.arg(out_cuda.buffer());
     let n: i64 = numel as i64;
     builder.arg(&n);
+    // The kernel's runtime scalar params: the emitter's signature suffix is
+    // `, float p0, float p1, …` — ALWAYS `float`, regardless of the kernel's
+    // element dtype, appended after `long long n`, indices ascending (the
+    // synthesizer's `param_args`). `JitScalars` carries the live values in
+    // that same canonical (pattern pre-order) order; narrow each to f32 here.
+    let p32: Vec<f32> = match params {
+        OpParams::JitScalars { scalars } => scalars.iter().map(|&v| v as f32).collect(),
+        _ => Vec::new(),
+    };
+    for p in &p32 {
+        builder.arg(p);
+    }
 
     let cfg = LaunchConfig::for_num_elems(numel as u32);
     // SAFETY: pointer args are live device buffers held alive by `in_guards` /
-    // `out_guard` for the duration of this call. `n` matches the emitted
-    // kernel's `long long n` parameter (the scalar ABI's element count,
-    // pinned by the `_scalar`-suffix gate in `load_synth_kernel`). Argument
-    // count/order matches `emit_scalar`'s signature exactly: one pointer per
-    // input in order, the output pointer, then `n` — no scalar `Param` args
-    // (declined implicitly today; see the module docs' second gap).
+    // `out_guard` for the duration of this call; `p32` outlives the launch.
+    // `n` matches the emitted kernel's `long long n` parameter (the scalar
+    // ABI's element count, pinned by the `_scalar`-suffix gate in
+    // `load_synth_kernel`). Argument count/order matches `emit_scalar`'s
+    // signature exactly: one pointer per input in order, the output pointer,
+    // `n`, then the `float p{i}` params in ascending order (empty for a
+    // param-free kernel).
     unsafe { builder.launch(cfg) }.w()?;
     Ok(())
 }
@@ -262,7 +279,7 @@ fn dispatch_slot<const N: usize>(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
     layouts: &[Layout],
-    _params: &OpParams,
+    params: &OpParams,
 ) -> Result<()> {
     let guard = slots().read().unwrap();
     let slot = guard[N].as_ref().ok_or_else(|| {
@@ -272,7 +289,7 @@ fn dispatch_slot<const N: usize>(
         ))
         .bt()
     })?;
-    launch_scalar(&slot.func, inputs, outputs, layouts, &slot.entry_point)
+    launch_scalar(&slot.func, inputs, outputs, layouts, params, &slot.entry_point)
 }
 
 macro_rules! dispatch_table {
