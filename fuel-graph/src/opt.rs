@@ -522,19 +522,31 @@ impl Rule for FusionRule {
             PatternKind::Callable(f) => (*f)(graph, id)
                 .expect("rewrite called with non-matching id — matcher contract violated"),
             PatternKind::Declarative(tree) => {
-                // match_region returns the region's external inputs in
-                // bind-index order; wrap them (+ the params template) as a
-                // PatternMatch so the shared reconstruction path below applies.
+                // match_region_extract returns the region's external inputs in
+                // bind-index order PLUS the live scalar values its open slots
+                // matched (the `extract:` layer). Wrap them as a PatternMatch
+                // so the shared reconstruction path below applies. For a
+                // Runtime params template the extracted scalars REPLACE the
+                // template's (fusing a scalar region with the template's empty
+                // scalars would silently lose the live values); non-Runtime
+                // templates stamp as-is (their matchers are value-agnostic).
                 let consumers = |n: NodeId| {
                     (0..graph.len())
                         .filter(|&i| graph.node(NodeId(i)).inputs.contains(&n))
                         .count()
                 };
-                let inputs = crate::jit::match_region(graph, id, &tree.root, &consumers)
-                    .expect("rewrite called with non-matching declarative pattern");
+                let (inputs, extracted) =
+                    crate::jit::match_region_extract(graph, id, &tree.root, &consumers)
+                        .expect("rewrite called with non-matching declarative pattern");
+                let params = match &tree.params {
+                    FusedOpParams::Runtime { .. } => {
+                        FusedOpParams::Runtime { scalars: extracted }
+                    }
+                    other => other.clone(),
+                };
                 crate::registry::PatternMatch {
                     bindings: inputs.iter().enumerate().map(|(i, n)| (i, *n)).collect(),
-                    params: tree.params.clone(),
+                    params,
                 }
             }
         };
