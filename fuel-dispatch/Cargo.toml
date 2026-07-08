@@ -21,6 +21,9 @@ fuel-vulkan-backend = { workspace = true, optional = true }
 # Pulled by the `cuda` feature so the telemetry `BaracudaStructureKeyProvider`
 # can call it; already present transitively via fuel-cuda-backend.
 baracuda-kernels-types = { workspace = true, optional = true }
+# The JIT-on-request envelope — only under `jit` (the adopt-glue seam). The core
+# dispatch layer stays free of it (adopt_runtime_fused takes resolved parts).
+fuel-kernel-seam = { workspace = true, optional = true }
 bytemuck = { workspace = true }
 half = { workspace = true }
 smallvec = { workspace = true }
@@ -66,3 +69,7 @@ metal = ["dep:fuel-metal-backend", "fuel-memory/metal"]
 # ImplId basis tuple (OpKind/DType/BackendId) serializes. (serde itself is now
 # an unconditional dep, so it is no longer listed here.)
 telemetry = ["dep:serde_json", "fuel-ir/serde"]
+# JIT-on-request adopt glue (the seam-consumption site): synthesize -> take_kernel
+# -> load kernel (caller-provided CUDA seam) -> adopt_runtime_fused. Pulls the
+# envelope crate + baracuda's OperandDesc (ElementKind). Default OFF.
+jit = ["dep:fuel-kernel-seam", "dep:baracuda-kernels-types"]
