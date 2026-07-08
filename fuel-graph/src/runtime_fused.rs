@@ -106,6 +106,21 @@ pub fn runtime_entries() -> Vec<RuntimeFusedOpEntry> {
     RUNTIME_FUSED_OPS.read().unwrap().clone()
 }
 
+/// **TEST-ONLY.** Clear the metadata sidecar. Because the Vec length *is* the
+/// id allocator (`id = BASE + index`), clearing restarts allocation — any
+/// kernel sidecar keyed by prior runtime ids MUST be cleared in the same
+/// breath or a reused id resolves a stale kernel
+/// (`fuel_dispatch::runtime_fused_kernels::clear_runtime_fused_for_tests`
+/// does both; call that one, not this, from dispatch-level tests). Adopting
+/// tests share one process, so callers must also serialize with any other
+/// adopting test (dd-shapes coordination, 2026-07-08: the hook alone races).
+/// `#[doc(hidden)] pub` rather than `#[cfg(test)]` because adopting tests
+/// live in downstream crates, which compile this crate without `cfg(test)`.
+#[doc(hidden)]
+pub fn clear_runtime_fused_for_tests() {
+    RUNTIME_FUSED_OPS.write().unwrap().clear();
+}
+
 // ---- the region → primitive re-emit (the runtime op's `decompose`) ---------
 
 /// Project a region [`OpTag`] (+ its [`OpAttrs`]) back to a primitive [`Op`].
