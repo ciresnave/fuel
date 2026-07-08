@@ -24,6 +24,10 @@ baracuda-kernels-types = { workspace = true, optional = true }
 # The JIT-on-request envelope — only under `jit` (the adopt-glue seam). The core
 # dispatch layer stays free of it (adopt_runtime_fused takes resolved parts).
 fuel-kernel-seam = { workspace = true, optional = true }
+# NVRTC (crates.io-pinned, no ../baracuda checkout) — only under `cuda`, for the
+# tests/jit_synth_kernel_live.rs on-device JIT-load test, which compiles a
+# scalar-ABI PTX kernel at test time.
+baracuda-nvrtc = { workspace = true, optional = true }
 bytemuck = { workspace = true }
 half = { workspace = true }
 smallvec = { workspace = true }
@@ -60,7 +64,7 @@ default = []
 # Per-backend dispatch wrappers. Feature flags propagate the same shape
 # fuel-memory used: each GPU backend's registration entry-point is
 # gated behind its feature.
-cuda = ["dep:fuel-cuda-backend", "dep:baracuda-kernels-types", "fuel-memory/cuda", "fuel-hardware/cuda"]
+cuda = ["dep:fuel-cuda-backend", "dep:baracuda-kernels-types", "dep:baracuda-nvrtc", "fuel-memory/cuda", "fuel-hardware/cuda"]
 vulkan = ["dep:fuel-vulkan-backend", "fuel-memory/vulkan", "fuel-hardware/vulkan"]
 metal = ["dep:fuel-metal-backend", "fuel-memory/metal"]
 # Baracuda dispatch-telemetry / miss-reporting emission (docs/session-prompts/
