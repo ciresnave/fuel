@@ -55,6 +55,20 @@ pub fn fused_kernel_available(id: FusedOpId, backend: BackendId) -> bool {
         || lookup_runtime_kernel(id, backend).is_some()
 }
 
+/// **TEST-ONLY.** Reset BOTH runtime-fused sidecars — the kernel registry here
+/// and the `fuel-graph` metadata sidecar — together, because clearing metadata
+/// restarts the id allocator and a reused id must never resolve a stale
+/// kernel. Kernels are cleared FIRST so no window exists where a fresh id sees
+/// an old binding. Callers in one test binary share the process: serialize
+/// with every other adopting test (a bare reset races — dd-shapes
+/// coordination, 2026-07-08). `#[doc(hidden)] pub`, not `#[cfg(test)]`:
+/// integration tests compile this crate without `cfg(test)`.
+#[doc(hidden)]
+pub fn clear_runtime_fused_for_tests() {
+    *runtime_kernels().write().unwrap() = FusedKernelRegistry::new();
+    fuel_graph::runtime_fused::clear_runtime_fused_for_tests();
+}
+
 /// Adopt a synthesized/imported runtime fused op: register its recipe (the
 /// `region`) in the `fuel-graph` sidecar **and** bind its `kernel` here, then
 /// return the freshly-allocated runtime [`FusedOpId`]. After this the capability

@@ -192,6 +192,27 @@ impl PassRegistry {
             .with_optimizer(Box::new(FrontierConvergenceOptimizer))
     }
 
+    /// [`Self::default_passes`] **plus runtime fusion**: the
+    /// [`crate::runtime_fused_pathfinder::RuntimeFusedArmPathfinder`] runs
+    /// FIRST (before placement — placement must see the fused arms it emits;
+    /// the fork seed can't double-fork them because `ctx.plan`/`ctx.order`
+    /// predate the drive and don't contain the appended arm nodes).
+    ///
+    /// A separate constructor rather than a change to `default_passes` so the
+    /// bare registry never scans the process-global runtime-fused sidecar —
+    /// non-adopting tests stay hermetic *by construction*, not by reset
+    /// discipline (dd-shapes coordination, 2026-07-08). Transitional, like the
+    /// sidecar itself: both collapse when runtime entries fold into the one
+    /// binding registry (10-decisions-log, runtime-fused-sidecar entry).
+    pub fn default_passes_with_runtime_fusion() -> Self {
+        Self::new()
+            .with_pathfinder(Box::new(
+                crate::runtime_fused_pathfinder::RuntimeFusedArmPathfinder,
+            ))
+            .with_pathfinder(Box::new(PlacementForkPathfinder))
+            .with_optimizer(Box::new(FrontierConvergenceOptimizer))
+    }
+
     /// Number of registered pathfinders.
     pub fn pathfinder_count(&self) -> usize {
         self.pathfinders.len()

@@ -197,6 +197,37 @@ pub fn optimize_graph(
     bindings_table: &KernelBindingTable,
     opts: &PlanOptions<'_>,
 ) -> Result<OptimizedGraph> {
+    optimize_graph_with_passes(graph, roots, bindings_table, opts, PassRegistry::default_passes())
+}
+
+/// [`optimize_graph`] with the runtime-fusion pathfinder registered
+/// ([`PassRegistry::default_passes_with_runtime_fusion`]): adopted (Tier-2 /
+/// JIT-synthesized) fused ops get their gated `Op::Branch` arms emitted before
+/// placement runs. This is the **production realize path's** entry once a
+/// process can adopt runtime kernels; `optimize_graph` stays runtime-op-free so
+/// bare-graph callers and tests never scan the process-global sidecar.
+pub fn optimize_graph_with_runtime_fusion(
+    graph: &mut Graph,
+    roots: &[NodeId],
+    bindings_table: &KernelBindingTable,
+    opts: &PlanOptions<'_>,
+) -> Result<OptimizedGraph> {
+    optimize_graph_with_passes(
+        graph,
+        roots,
+        bindings_table,
+        opts,
+        PassRegistry::default_passes_with_runtime_fusion(),
+    )
+}
+
+fn optimize_graph_with_passes(
+    graph: &mut Graph,
+    roots: &[NodeId],
+    bindings_table: &KernelBindingTable,
+    opts: &PlanOptions<'_>,
+    passes: PassRegistry,
+) -> Result<OptimizedGraph> {
     // (1) The dispatch order today: data-flow topo refined by ordering
     //     edges. `compile_plan` copies this verbatim into
     //     `ExecutionPlan::order`, so it IS the executor's walk order.
@@ -238,7 +269,7 @@ pub fn optimize_graph(
         plan: &plan,
         cycle_guard: &cycle_guard,
     };
-    PassRegistry::default_passes().run_lockstep(graph, &ctx)?;
+    passes.run_lockstep(graph, &ctx)?;
 
     // "Plan IS the graph": commit the placement decision INTO the graph's
     // `target_backend` side-table here, so a fully-optimized graph carries
