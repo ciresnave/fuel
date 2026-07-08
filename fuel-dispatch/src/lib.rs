@@ -61,6 +61,7 @@ pub mod ranker;
 pub mod residency;
 pub mod runtime_fused_arm;
 pub mod runtime_fused_kernels;
+pub mod runtime_fused_pathfinder;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 pub mod topology;
