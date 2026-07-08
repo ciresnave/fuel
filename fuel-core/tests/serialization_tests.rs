@@ -38,7 +38,14 @@ fn npy() -> Result<()> {
 
 #[test]
 fn npz() -> Result<()> {
-    let npz = Tensor::read_npz("tests/test.npz")?;
+    // `tests/test.npz` was lost in an old project rename, so this round-trips the
+    // fixture through `write_npz`/`read_npz` instead of relying on a checked-in file.
+    let tmp_file = TmpFile::create("npz");
+    let x = Tensor::arange(0f32, 10f32, &fuel_core::Device::cpu())?;
+    let x_plus_one = Tensor::arange(1f32, 11f32, &fuel_core::Device::cpu())?;
+    Tensor::write_npz(&[("x", &x), ("x_plus_one", &x_plus_one)], &tmp_file)?;
+
+    let npz = Tensor::read_npz(&tmp_file)?;
     assert_eq!(npz.len(), 2);
     assert_eq!(npz[0].0, "x");
     assert_eq!(npz[1].0, "x_plus_one");
