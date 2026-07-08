@@ -169,6 +169,37 @@ impl LazyTensor {
         }
     }
 
+    /// Build a const tensor on the same graph as `self`, holding
+    /// `data`'s values encoded in `dtype`. Only `F32` (identity copy)
+    /// and `BF16` (host `half::bf16::from_f32` conversion) are
+    /// supported today — the two activation dtypes the BF16-throughout
+    /// decode seam (Phase D increment A: LlamaModel's cached decode
+    /// path) threads through small per-model host constants (norm
+    /// gains, biases, the causal mask) that must track the running
+    /// activation dtype instead of being hardcoded f32. Any other
+    /// dtype is a caller bug (not a data-dependent runtime
+    /// possibility), so it surfaces a typed error rather than silently
+    /// emitting wrong bytes.
+    pub fn const_like_dtype(
+        &self,
+        data: &[f32],
+        shape: impl Into<Shape>,
+        dtype: fuel_ir::DType,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
+        match dtype {
+            fuel_ir::DType::F32 => Ok(self.const_f32_like(data.to_vec(), shape)),
+            fuel_ir::DType::BF16 => {
+                let converted: Vec<half::bf16> =
+                    data.iter().map(|&v| half::bf16::from_f32(v)).collect();
+                Ok(self.const_bf16_like(converted, shape))
+            }
+            other => Err(fuel_ir::Error::Msg(format!(
+                "const_like_dtype: unsupported activation dtype {other:?} \
+                 (expected F32 or BF16)",
+            )).bt()),
+        }
+    }
+
     /// Unwrap the underlying `fuel_graph::Tensor`. Used by callers that
     /// need to drop down to the graph layer for operations the bridge
     /// does not yet expose.
@@ -4031,7 +4062,12 @@ impl LazyTensor {
         &self, bias: std::sync::Arc<[f32]>,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         let n = bias.len();
-        let bias_t = self.const_f32_like(bias, Shape::from_dims(&[n]));
+        // Build the bias const in `self`'s dtype rather than hardcoding
+        // f32: under BF16-throughout decode (Phase D increment A) the
+        // activation stream is BF16 and `broadcast_add` asserts dtype
+        // equality, so an f32 bias would panic. No-op for f32 activations
+        // (every other caller today).
+        let bias_t = self.const_like_dtype(&bias, Shape::from_dims(&[n]), self.dtype())?;
         self.broadcast_add(&bias_t)
     }
 
@@ -5311,9 +5347,15 @@ impl LlamaConfig {
 /// and the output `lm_head` matrix) stay in whatever dtype the
 /// source checkpoint used — f32 when that's how it was saved, bf16
 /// for modern HF checkpoints that ship bf16 to halve weight memory.
-/// Activations in the forward pass always stay f32 regardless; the
-/// matmul kernel handles the mixed precision via
-/// `VulkanBackend::matmul`'s `(A:F32, B:BF16) → F32` routing.
+/// Activations are usually f32, but LlamaModel's cached decode path
+/// (Phase D increment A, "BF16-throughout decode") threads the KV
+/// cache's dtype through the whole activation stream — when that's
+/// BF16, weights must ALSO be BF16 (`matmul`'s dtype gate only allows
+/// same-dtype homogeneous or `(lhs=F32, rhs=BF16)`; a BF16-activation ×
+/// F32-weight matmul is rejected, the opposite direction from the
+/// classic f32-activation-over-bf16-weight quantized-serving case).
+/// F32 activations still route the mixed `(A:F32, B:BF16) → F32`
+/// precision via `VulkanBackend::matmul` unchanged.
 ///
 /// Norm gains and biases are NOT covered by this enum — they're
 /// small and precision-sensitive, so they stay `Arc<[f32]>`.
@@ -5445,7 +5487,13 @@ impl WeightStorage {
 
     /// Produce `X @ W` (with optional bias) for this weight storage.
     /// Dispatches to `matmul` for F32/BF16 weights and to `qmatmul`
-    /// for Q4_0. The activations `x` must be F32.
+    /// for Q4_0. `x`'s dtype must be compatible with this weight's
+    /// dtype per `matmul`'s gate: same-dtype homogeneous (e.g. BF16
+    /// activations × BF16 weights — LlamaModel's BF16-throughout
+    /// decode path, Phase D increment A) or `(x=F32, weight=BF16)`
+    /// (f32-activation quantized-weight serving). `(x=BF16,
+    /// weight=F32)` is NOT supported — cast the weight or the
+    /// activation to match before calling.
     pub fn apply_linear(
         &self,
         x: &LazyTensor,
@@ -6035,6 +6083,11 @@ impl LlamaModel {
         let batch = dims[0];
         let seq = dims[1];
         let kv_dim = cfg.n_kv_heads * cfg.head_dim;
+        // BF16-throughout decode (Phase D increment A): the activation
+        // dtype tracks the KV cache dtype end-to-end, so `x`'s dtype IS
+        // the running activation dtype for this whole layer (every op
+        // below is dtype-preserving except the RoPE cast window).
+        let act_dtype = x.dtype();
 
         let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
 
@@ -6053,8 +6106,19 @@ impl LlamaModel {
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
             .permute([0, 2, 1, 3_usize]).unwrap();
 
-        let q_r = q_h.rope_with_tables(rope_cos, rope_sin).unwrap();
-        let k_r = k_h.rope_with_tables(rope_cos, rope_sin).unwrap();
+        // `rope_with_tables` hard-requires f32 input/tables (see its
+        // build-time check). Under BF16-throughout decode (Phase D
+        // increment A) `q_h`/`k_h` are BF16 — cast to f32 around the
+        // RoPE application (trig math stays f32 for numerical safety,
+        // matching the F32-table design) and back to the running
+        // activation dtype afterward. No-op casts (fast-path clones)
+        // when `act_dtype` is already F32.
+        let q_r = q_h.to_dtype(DType::F32)?
+            .rope_with_tables(rope_cos, rope_sin)?
+            .to_dtype(act_dtype)?;
+        let k_r = k_h.to_dtype(DType::F32)?
+            .rope_with_tables(rope_cos, rope_sin)?
+            .to_dtype(act_dtype)?;
 
         // Write fresh K/V slabs into the pre-allocated cache buffers
         // via Op::WriteSlice at the RUNTIME offset `cached_len`. Source
@@ -6243,6 +6307,11 @@ impl LlamaModel {
         let mut h = embed
             .index_select(0, &token_ids).unwrap()
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
+        // BF16-throughout decode (Phase D increment A): the embedding
+        // table stays f32 (CUDA IndexSelect has no BF16 key), but every
+        // activation downstream of this point tracks the cache dtype.
+        // No-op for f32 caches (the default / today's only path).
+        h = h.to_dtype(cache_dtype)?;
 
         // RoPE cos/sin tables shared across layers.
         let (rope_cos, rope_sin) = h.rope_tables_const(
@@ -6269,10 +6338,14 @@ impl LlamaModel {
         // `cached_len`, `seq`, `max_seq_len`). Fewer nodes + a single
         // per-token re-bind on the persistent path.
         let mask_data = build_decode_causal_mask(cached_len, seq, max_seq_len);
-        let mask = h.const_f32_like(
-            mask_data,
+        // Mask dtype must match the activation dtype it's broadcast-added
+        // onto (`scores_scaled`, which tracks `cache_dtype`) — BF16-
+        // throughout decode (Phase D increment A). No-op for f32 caches.
+        let mask = h.const_like_dtype(
+            &mask_data,
             Shape::from_dims(&[1, 1, seq, max_seq_len]),
-        );
+            cache_dtype,
+        )?;
 
         // Per-layer: bind the cache K + V Arcs to fresh Const NodeIds,
         // dispatch through the WriteSlice variant. Track the NodeIds
@@ -6330,6 +6403,11 @@ impl LlamaModel {
                 .slice(1, last_pos, 1)?
                 .reshape(Shape::from_dims(&[cfg.vocab_size]))?
         };
+        // `realize_one_as_with_env::<f32>` below reinterprets the root's
+        // raw bytes as `[f32]` (no dtype-aware decode) — a BF16 root
+        // would be UB (half the byte width, silently wrong data). Cast
+        // to f32 here, right before realize; no-op under f32 caches.
+        let logits_root = logits_root.to_dtype(DType::F32)?;
 
         // Planner Stage 4a: populate the plan store for this step's
         // graph before realizing — realize's planning half then HITs
@@ -6528,6 +6606,10 @@ impl LlamaModel {
         let mut h = embed
             .index_select(0, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
+        // BF16-throughout decode (Phase D increment A) — see the D1
+        // twin (`forward_with_kv_context_impl`) for the full rationale.
+        // No-op for f32 caches.
+        h = h.to_dtype(cache_dtype)?;
 
         // RoPE cos/sin: STABLE re-bindable placeholder Consts.
         let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
@@ -6537,8 +6619,11 @@ impl LlamaModel {
         let rope_sin_node = rope_sin.inner.id();
 
         // Mask: STABLE re-bindable placeholder Const (hoisted; shared).
+        // Dtype tracks the cache dtype (BF16-throughout decode, Phase D
+        // increment A) — see the D1 twin for the full rationale. No-op
+        // (stays F32) for f32 caches.
         let mask = h.const_placeholder_like(
-            Shape::from_dims(&[1, 1, seq, max_seq_len]), DType::F32,
+            Shape::from_dims(&[1, 1, seq, max_seq_len]), cache_dtype,
         );
         let mask_node = mask.inner.id();
 
@@ -6595,6 +6680,10 @@ impl LlamaModel {
         let logits_root = logits
             .slice(1, last_pos, 1)?
             .reshape(Shape::from_dims(&[cfg.vocab_size]))?;
+        // Same UB hazard as the D1 twin: the realize below is asked for
+        // `<f32>` and reinterprets raw bytes — cast to f32 before this
+        // becomes the held graph's realize root. No-op for f32 caches.
+        let logits_root = logits_root.to_dtype(DType::F32)?;
         let logits_node = logits_root.inner.id();
         let graph = logits_root.inner.graph().clone();
 
@@ -6604,7 +6693,9 @@ impl LlamaModel {
         // KV Arcs were already inserted above. The optimize + realize
         // then runs ONCE, capturing the reusable artifacts + the full
         // realized cache (weights + KV + data) for the held session.
-        let data = self.build_token_rope_mask_arcs(ctx.device(), cached_len, tokens, max_seq_len)?;
+        let data = self.build_token_rope_mask_arcs(
+            ctx.device(), cached_len, tokens, max_seq_len, cache_dtype,
+        )?;
         ctx.insert(token_ids_node, Arc::clone(&data.token_ids));
         ctx.insert(rope_cos_node, Arc::clone(&data.rope_cos));
         ctx.insert(rope_sin_node, Arc::clone(&data.rope_sin));
@@ -6674,6 +6765,7 @@ impl LlamaModel {
         let seq = tokens.len();
         let cached_len = cache.cached_len;
         let device = ctx.device().clone();
+        let cache_dtype = cache.dtype.unwrap_or(DType::F32);
 
         // Session guaranteed Some + valid by the caller. Recompute the
         // per-token data Arcs, then realize the held graph via the
@@ -6682,7 +6774,7 @@ impl LlamaModel {
         // clone of the session's held base_cache, not in ctx.persistent.
         let s = session.as_ref().expect("session is Some");
         let data = self.build_token_rope_mask_arcs(
-            &device, cached_len, tokens, s.max_seq_len(),
+            &device, cached_len, tokens, s.max_seq_len(), cache_dtype,
         )?;
         // Bind BOTH per-token symbols: `cached_len` (the KV-write offset)
         // AND `attended_len = cached_len + seq` (the flash-arm `k_len`).
@@ -6711,6 +6803,7 @@ impl LlamaModel {
         cached_len: usize,
         tokens: &[u32],
         max_seq_len: usize,
+        cache_dtype: DType,
     ) -> crate::Result<crate::inference_context::DecodeTokenData> {
         let cfg = &self.config;
         let seq = tokens.len();
@@ -6723,7 +6816,24 @@ impl LlamaModel {
         let rope_cos = upload(device, fuel_ir::HostBuffer::F32(cos_data))?;
         let rope_sin = upload(device, fuel_ir::HostBuffer::F32(sin_data))?;
         let mask_data = build_decode_causal_mask(cached_len, seq, max_seq_len);
-        let mask = upload(device, fuel_ir::HostBuffer::F32(mask_data))?;
+        // Mask upload dtype tracks the cache dtype (BF16-throughout
+        // decode, Phase D increment A) — the held graph's mask Const
+        // placeholder was minted at `cache_dtype` (see
+        // `build_and_realize_first_decode_token`), and the rebind must
+        // upload bytes matching that placeholder's dtype. No-op (stays
+        // F32) for f32 caches.
+        let mask = match cache_dtype {
+            DType::F32 => upload(device, fuel_ir::HostBuffer::F32(mask_data))?,
+            DType::BF16 => {
+                let bf16_data: Vec<half::bf16> =
+                    mask_data.iter().map(|&v| half::bf16::from_f32(v)).collect();
+                upload(device, fuel_ir::HostBuffer::BF16(bf16_data))?
+            }
+            other => return Err(fuel_ir::Error::Msg(format!(
+                "build_token_rope_mask_arcs: unsupported cache dtype {other:?} \
+                 (expected F32 or BF16)",
+            )).bt()),
+        };
 
         Ok(crate::inference_context::DecodeTokenData {
             token_ids,
@@ -6862,7 +6972,13 @@ fn apply_affine_rms_norm(
 ) -> LazyTensor {
     assert_eq!(gain.len(), dim, "apply_affine_rms_norm: gain length must equal dim");
     let normalized = x.rms_norm_last_dim(eps).unwrap();
-    let gain_t = x.const_f32_like(Arc::clone(gain), Shape::from_dims(&[dim]));
+    // The gain is always stored f32 (norm gains are precision-sensitive —
+    // see `LayerWeights::attn_norm_gain`'s doc) but must be materialized
+    // in `x`'s dtype: under BF16-throughout decode (Phase D increment A)
+    // `x` is BF16 and `broadcast_mul` asserts dtype equality, so an f32
+    // gain would panic. No-op conversion for f32 activations.
+    let gain_t = x.const_like_dtype(gain, Shape::from_dims(&[dim]), x.dtype())
+        .expect("apply_affine_rms_norm: activation dtype must be F32 or BF16");
     normalized.broadcast_mul(&gain_t).unwrap()
 }
 
@@ -9343,6 +9459,53 @@ mod generate_tests {
         w
     }
 
+    /// BF16-weight variant of [`make_tiny_weights`]: every `WeightStorage`
+    /// matrix (Q/K/V/O/gate/up/down/output) is converted to
+    /// `WeightStorage::BF16`. Token embedding + norm gains stay f32 (the
+    /// frozen seams: the embedding `index_select` has no BF16 CUDA key,
+    /// and norm gains are precision-sensitive host-side, converted to the
+    /// running activation dtype at graph-build time — see
+    /// `LazyTensor::const_like_dtype`).
+    ///
+    /// Homogeneous BF16 activations × BF16 weights is the ONLY dtype
+    /// combination `Tensor::matmul`'s gate allows for BF16 activations:
+    /// same-dtype homogeneous, or `(lhs=F32, rhs=BF16)`. A BF16-activation
+    /// × F32-weight matmul (the opposite direction) is rejected — so the
+    /// BF16-throughout decode parity tests need BF16 weights, not the
+    /// F32 weights `make_tiny_weights` produces.
+    fn make_tiny_weights_bf16(cfg: &LlamaConfig) -> LlamaWeights {
+        let f32w = make_tiny_weights(cfg);
+        fn to_bf16(ws: WeightStorage) -> WeightStorage {
+            match ws {
+                WeightStorage::F32(a) => {
+                    let converted: Vec<half::bf16> =
+                        a.iter().map(|&v| half::bf16::from_f32(v)).collect();
+                    WeightStorage::BF16(Arc::from(converted))
+                }
+                other => other,
+            }
+        }
+        LlamaWeights {
+            token_embedding: f32w.token_embedding,
+            layers: f32w.layers.into_iter().map(|l| LayerWeights {
+                attn_q:         to_bf16(l.attn_q),
+                attn_q_bias:    l.attn_q_bias,
+                attn_k:         to_bf16(l.attn_k),
+                attn_k_bias:    l.attn_k_bias,
+                attn_v:         to_bf16(l.attn_v),
+                attn_v_bias:    l.attn_v_bias,
+                attn_o:         to_bf16(l.attn_o),
+                ffn_gate:       to_bf16(l.ffn_gate),
+                ffn_up:         to_bf16(l.ffn_up),
+                ffn_down:       to_bf16(l.ffn_down),
+                attn_norm_gain: l.attn_norm_gain,
+                ffn_norm_gain:  l.ffn_norm_gain,
+            }).collect(),
+            final_norm_gain: f32w.final_norm_gain,
+            output: to_bf16(f32w.output),
+        }
+    }
+
     #[test]
     fn qwen2_style_bias_changes_forward_output_but_keeps_it_finite() {
         // Build two identical tiny LLaMAs: one with all-None biases,
@@ -9924,6 +10087,341 @@ mod generate_tests {
         // Sanity: both caches advanced identically.
         assert_eq!(cache2.cached_len, max_seq_len);
         assert_eq!(cache1.cached_len, max_seq_len);
+    }
+
+    // ---- Phase D increment A: BF16-throughout decode -------------------
+    //
+    // Fix strategy for the CUDA decode 21x-slower-than-Vulkan gap: CUDA
+    // has no mixed F32xBF16 gemm, so an F32 activation stream forces F32
+    // gemm everywhere even with BF16 weights. Running decode activations
+    // BF16 end-to-end (cache dtype drives the whole stream) lets the
+    // homogeneous [bf16;3] CUDA gemm fire. This increment (A) proves the
+    // graph/dtype seams on CPU; a later increment measures the CUDA win.
+
+    /// Born-red gate: BF16-throughout D1 decode
+    /// (`forward_with_kv_context`, BF16 `KvCache`) must produce logits
+    /// close to the F32 reference — same argmax, small abs diff.
+    ///
+    /// Both runs use `forward_with_kv_context` (the D1 rebuild path);
+    /// only the cache dtype (hence the activation dtype end-to-end)
+    /// differs. `matmul`'s dtype gate only allows homogeneous same-dtype
+    /// or `(lhs=F32, rhs=BF16)` — the opposite of BF16-activation ×
+    /// F32-weight — so the BF16 run also needs BF16 weights
+    /// (`make_tiny_weights_bf16`); this is therefore a quantization-
+    /// accuracy check (BOTH weights and activations lose precision vs.
+    /// f32), not a bit-exact one.
+    ///
+    /// Born-red shape: before the dtype seams land (embed cast, RoPE
+    /// cast-around, dtype-aware norm-gain/bias/mask consts, logits cast
+    /// pre-realize), the BF16-cache run panics inside `fuel_graph` —
+    /// `rope_with_tables`'s typed f32-only check surfaces first as a
+    /// typed `Err` (not even a panic) making prefill itself fail, and if
+    /// that were bypassed, `binary_op`'s dtype-equality `assert_eq!`
+    /// (rms-norm gain multiply, mask add) or `write_slice_dyn`'s dtype
+    /// check would panic downstream.
+    #[test]
+    fn bf16_decode_matches_f32_decode_d1() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        16,
+            n_layers:   2,
+            n_heads:    4,
+            n_kv_heads: 2, // exercise GQA (n_rep = 2)
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let prompt = [1_u32, 2, 3];
+        let next_token = 4_u32;
+        let max_seq_len = prompt.len() + 1;
+
+        // F32 reference: F32 weights, F32 cache.
+        let model_f32 = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let dev_f32 = Device::cpu();
+        let mut cache_f32 = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev_f32,
+        ).expect("with_capacity f32");
+        let mut ctx_f32 = InferenceContext::new(dev_f32);
+        let _ = model_f32
+            .forward_with_kv_context(&prompt, &mut cache_f32, &mut ctx_f32)
+            .expect("f32 prefill");
+        let f32_logits = model_f32
+            .forward_with_kv_context(&[next_token], &mut cache_f32, &mut ctx_f32)
+            .expect("f32 decode");
+
+        // BF16-throughout: BF16 weights (the only matmul-gate-legal
+        // pairing with BF16 activations) + BF16 cache.
+        let model_bf16 = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+        let dev_bf16 = Device::cpu();
+        let mut cache_bf16 = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::BF16, &dev_bf16,
+        ).expect("with_capacity bf16");
+        let mut ctx_bf16 = InferenceContext::new(dev_bf16);
+        let _ = model_bf16
+            .forward_with_kv_context(&prompt, &mut cache_bf16, &mut ctx_bf16)
+            .expect("bf16 prefill");
+        let bf16_logits = model_bf16
+            .forward_with_kv_context(&[next_token], &mut cache_bf16, &mut ctx_bf16)
+            .expect("bf16 decode");
+
+        assert_eq!(f32_logits.len(), bf16_logits.len());
+        assert_eq!(f32_logits.len(), cfg.vocab_size);
+
+        let argmax = |v: &[f32]| -> usize {
+            v.iter().enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .map(|(i, _)| i)
+                .unwrap()
+        };
+        assert_eq!(
+            argmax(&f32_logits), argmax(&bf16_logits),
+            "BF16-throughout decode must agree with the F32 reference on argmax: \
+             f32={f32_logits:?} bf16={bf16_logits:?}",
+        );
+
+        let max_abs_diff = f32_logits.iter().zip(bf16_logits.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        println!("bf16_decode_matches_f32_decode_d1: max abs diff = {max_abs_diff}");
+        // Tolerance calibration (sabotage-measured, 2026-07-08): genuine
+        // BF16-vs-F32 max abs diff on this fixture is ~0.00118 (BF16
+        // carries ~2-3 significant decimal digits; BOTH weights AND
+        // activations are BF16-quantized). A deliberately corrupted BF16
+        // leg (const_like_dtype's gain/mask consts scaled by 1.05 — a 5%
+        // error confined to the BF16 path; note common-mode sabotages
+        // like a wrong shared mask offset CANCEL in this differential
+        // test and calibrate nothing) moves the diff to ~0.0159. 5e-3
+        // sits ~4.2x above genuine and ~3.2x below that corruption
+        // signal. Argmax equality above is the scale-robust backstop.
+        assert!(
+            max_abs_diff < 5e-3,
+            "bf16 vs f32 max abs diff {max_abs_diff} exceeds tolerance",
+        );
+    }
+
+    /// Born-red gate: BF16-throughout D2 persistent decode
+    /// (`forward_with_kv_context_persistent`, BF16 `KvCache`) must be
+    /// **bit-exact** vs. the BF16 D1 rebuild path on the same prefix
+    /// (same plan → same kernels — the house bar every D2 test holds,
+    /// see `forward_with_kv_context_persistent_plan_once_matches_d1`),
+    /// AND must plan exactly once across the decode loop.
+    ///
+    /// Unlike test 1 (which compares BF16 against an F32 reference and
+    /// tolerates quantization drift), this test holds BOTH sides to the
+    /// SAME BF16 dtype, so D2 vs. D1 must match exactly — any drift here
+    /// would mean D2's held-graph reuse (not the BF16 seam itself) is
+    /// broken.
+    #[test]
+    fn bf16_decode_matches_f32_decode_d2_plan_once() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        16,
+            n_layers:   2,
+            n_heads:    4,
+            n_kv_heads: 2, // exercise GQA (n_rep = 2)
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+
+        // Two byte-identical BF16-weight models: one drives D2, one D1.
+        let model_d2 = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+        let model_d1 = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+
+        let prompt = [1_u32, 2, 3];
+        let decode_tokens = [4_u32, 5, 6, 7]; // >= 3 decode tokens
+        let max_seq_len = prompt.len() + decode_tokens.len();
+
+        // --- D1 (rebuild) reference FIRST, in its own pass, so its
+        // per-token re-plans do NOT pollute the optimize-count window
+        // measured around the D2 loop. ---
+        let dev1 = Device::cpu();
+        let mut cache1 = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::BF16, &dev1,
+        ).expect("with_capacity d1");
+        let mut ctx1 = InferenceContext::new(dev1);
+        let _ = model_d1
+            .forward_with_kv_context(&prompt, &mut cache1, &mut ctx1)
+            .expect("d1 prefill");
+        let mut d1_expected: Vec<Vec<f32>> = Vec::with_capacity(decode_tokens.len());
+        for &tok in &decode_tokens {
+            d1_expected.push(
+                model_d1
+                    .forward_with_kv_context(&[tok], &mut cache1, &mut ctx1)
+                    .expect("d1 decode"),
+            );
+        }
+
+        // --- D2 (persistent) session state ---
+        let dev2 = Device::cpu();
+        let mut cache2 = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::BF16, &dev2,
+        ).expect("with_capacity d2");
+        let mut ctx2 = InferenceContext::new(dev2);
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+
+        // Prefill (seq>1 falls back to the rebuild path; no session yet).
+        let _ = model_d2
+            .forward_with_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
+            .expect("d2 prefill");
+        assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+
+        let opt_before = crate::pipelined_bridge::optimize_calls_thread_local();
+        let mut len_at_token2: Option<usize> = None;
+
+        for (i, &tok) in decode_tokens.iter().enumerate() {
+            let d2 = model_d2
+                .forward_with_kv_context_persistent(&[tok], &mut cache2, &mut ctx2, &mut session)
+                .expect("d2 decode");
+
+            // Bit-exact vs. the BF16 D1 cached path (same plan → same
+            // kernels), NOT epsilon.
+            assert_eq!(
+                d2, d1_expected[i],
+                "BF16 persistent decode token {i} must be byte-identical to the \
+                 BF16 D1 cached path",
+            );
+
+            let sess = session.as_ref().expect("session built on first decode token");
+            let graph_len = sess.graph_node_count();
+            if i == 1 {
+                len_at_token2 = Some(graph_len);
+            } else if i >= 2 {
+                assert_eq!(
+                    Some(graph_len), len_at_token2,
+                    "held graph must NOT grow from token 2 onward (token {i})",
+                );
+            }
+        }
+
+        // Optimize bumped EXACTLY ONCE across all decode tokens.
+        let opt_after = crate::pipelined_bridge::optimize_calls_thread_local();
+        assert_eq!(
+            opt_after - opt_before, 1,
+            "BF16 persistent decode must optimize EXACTLY ONCE across {} decode \
+             tokens: {opt_before} -> {opt_after}",
+            decode_tokens.len(),
+        );
+
+        assert_eq!(cache2.cached_len, max_seq_len);
+        assert_eq!(cache1.cached_len, max_seq_len);
+    }
+
+    /// Graph-shape guard (no realize): after building one BF16 D1 decode
+    /// step's graph, every `Op::MatMul` node between the post-embed cast
+    /// and the pre-realize logits cast must be BF16 — this is the guard
+    /// against a silent F32-matmul-fallback regression creeping back in
+    /// (e.g. someone drops a `to_dtype` seam and the mixed-dtype matmul
+    /// gate happens to still build, quietly re-introducing an F32 gemm).
+    ///
+    /// Builds the graph by hand (mirroring
+    /// `forward_with_kv_context_impl`'s D1 body up to, but not
+    /// including, the realize call) — this test audits graph SHAPE, so
+    /// it doesn't need a real `KvCache`/`InferenceContext` binding.
+    #[test]
+    fn bf16_decode_graph_dtype_audit() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        16,
+            n_layers:   2,
+            n_heads:    4,
+            n_kv_heads: 2,
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+        let next_token = 4_u32;
+        let cached_len = 3usize; // as if 3 tokens were already prefilled
+        let seq = 1usize;
+        let batch = 1usize;
+        let max_seq_len = cached_len + seq;
+        let cache_dtype = DType::BF16;
+
+        let embed = LazyTensor::from_f32(
+            model.weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &Device::cpu(),
+        );
+        let token_ids = embed.const_u32_like(vec![next_token], Shape::from_dims(&[seq]));
+        let mut h = embed
+            .index_select(0, &token_ids).unwrap()
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
+        h = h.to_dtype(cache_dtype).unwrap();
+
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const(cfg.rope_base, cached_len, seq, cfg.head_dim);
+
+        let mask_data = build_decode_causal_mask(cached_len, seq, max_seq_len);
+        let mask = h.const_like_dtype(
+            &mask_data, Shape::from_dims(&[1, 1, seq, max_seq_len]), cache_dtype,
+        ).unwrap();
+
+        let cached_len_sym = fuel_ir::SymId(0);
+        let attended_len_sym = fuel_ir::SymId(1);
+        let cache_shape = Shape::from_dims(
+            &[batch, cfg.n_kv_heads, max_seq_len, cfg.head_dim],
+        );
+
+        for layer_weights in &model.weights.layers {
+            let k_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
+            let v_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
+            h = model.apply_layer_with_kv_writes(
+                &h,
+                layer_weights,
+                &k_cache_node,
+                &v_cache_node,
+                cached_len_sym,
+                attended_len_sym,
+                &rope_cos,
+                &rope_sin,
+                &mask,
+            ).expect("apply_layer_with_kv_writes");
+        }
+
+        let h_norm =
+            apply_affine_rms_norm(&h, &model.weights.final_norm_gain, cfg.dim, cfg.norm_eps);
+        let logits = model.weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
+        let logits_root = logits
+            .slice(1, seq - 1, 1).unwrap()
+            .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap();
+        // Mirrors the pre-realize cast the production path applies.
+        let logits_root = logits_root.to_dtype(DType::F32).unwrap();
+
+        // Walk the (unrealized) graph and count Op::MatMul nodes by dtype.
+        let graph = logits_root.graph_handle();
+        let g = graph.read().unwrap();
+        let mut bf16_matmuls = 0usize;
+        let mut f32_matmuls = 0usize;
+        let mut other_matmuls = 0usize;
+        for i in 0..g.len() {
+            let node = g.node(fuel_graph::NodeId(i));
+            if matches!(&node.op, fuel_graph::Op::MatMul) {
+                match node.dtype {
+                    DType::BF16 => bf16_matmuls += 1,
+                    DType::F32 => f32_matmuls += 1,
+                    _ => other_matmuls += 1,
+                }
+            }
+        }
+
+        // Expected for this fixture (n_layers=2): per layer — Q/K/V
+        // projections (3) + QK^T scores (1) + attn·V (1) + O projection
+        // (1) + gate/up/down FFN projections (3) = 9 matmuls/layer; 2
+        // layers = 18, plus the lm_head projection = 19 total. ALL must
+        // be BF16 — the RoPE F32-cast window doesn't itself contain a
+        // matmul, so zero F32 (or other-dtype) matmuls are expected
+        // between the post-embed cast and the pre-realize logits cast.
+        assert_eq!(f32_matmuls, 0, "no F32 matmul expected in a BF16-throughout decode graph");
+        assert_eq!(other_matmuls, 0, "no non-BF16/F32 matmul dtype expected");
+        assert_eq!(
+            bf16_matmuls, 9 * cfg.n_layers + 1,
+            "expected 9 matmuls/layer (Q/K/V, QK^T, attn·V, O, gate/up/down) \
+             + 1 lm_head matmul, all BF16 (got {bf16_matmuls})",
+        );
     }
 
     /// Phase D · D2c born-red gate for generate-loop integration.
