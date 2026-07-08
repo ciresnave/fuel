@@ -57,6 +57,7 @@ pub mod pipelined;
 pub mod plan;
 pub mod ranker;
 pub mod residency;
+pub mod runtime_fused_arm;
 pub mod runtime_fused_kernels;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
