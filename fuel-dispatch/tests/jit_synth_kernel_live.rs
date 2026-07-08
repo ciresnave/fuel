@@ -198,3 +198,117 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
     let want: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| (x + y).max(0.0)).collect();
     assert_eq!(got, want, "relu(a + b) via the JIT-loaded CUDA kernel");
 }
+
+// ---- scalar-Param kernel (the trailing `float p{i}` ABI) -------------------
+
+/// `mul_scalar` with ONE runtime param — the emitter's param'd scalar ABI:
+/// `(const float* in0, float* out, long long n, float p0)` (the `p{i}` suffix
+/// rides AFTER `long long n`, always `float`).
+const PARAM_ENTRY: &str = "fuel_test_jit_mul_param_f32_scalar";
+
+fn mul_param_cuda_source() -> String {
+    [
+        format!("extern \"C\" __global__ void {PARAM_ENTRY}("),
+        "    const float* __restrict__ in0,".to_string(),
+        "    float* __restrict__ out,".to_string(),
+        "    long long n,".to_string(),
+        "    float p0) {".to_string(),
+        "    long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;".to_string(),
+        "    long long step = (long long)gridDim.x * blockDim.x;".to_string(),
+        "    for (; i < n; i += step) {".to_string(),
+        "        out[i] = in0[i] * p0;".to_string(),
+        "    }".to_string(),
+        "}".to_string(),
+    ]
+    .join("\n")
+}
+
+/// `mul_scalar(x)` with the value left OPEN (a slot template — the `extract:`
+/// value rides the fused node's `Runtime { scalars }`, not the region).
+fn mul_scalar_slot_region() -> PatternNode {
+    PatternNode::Op {
+        op: OpTag::MulScalar,
+        attrs: OpAttrs::default(),
+        operands: vec![PatternNode::Bind { index: 0 }],
+    }
+}
+
+/// End-to-end scalar-Param launch: adopt a slot-template region whose kernel
+/// takes a trailing `float p0`, then launch with `OpParams::JitScalars` and
+/// verify the device computed `x * p0` with the LIVE value — proving the
+/// `extract:` → `JitScalars` → trailing-`p{i}` marshaling on real hardware.
+#[test]
+#[ignore]
+fn jit_scalar_param_kernel_launches_with_live_value() {
+    let Some(device) = dev_or_skip() else {
+        eprintln!("skipping jit_scalar_param_kernel_launches_with_live_value: no CUDA device");
+        return;
+    };
+
+    let source = mul_param_cuda_source();
+    let opts = CompileOptions::default();
+    let ptx = Program::compile_with(&source, PARAM_ENTRY, &opts)
+        .unwrap_or_else(|e| panic!("nvrtc compile of the mul_param kernel failed: {e}"));
+    let artifact = SynthArtifact {
+        artifact: ptx.into_bytes(),
+        kind: ArtifactKind::Ptx,
+        link: LinkEntry {
+            entry_point: PARAM_ENTRY.into(),
+            symbol: PARAM_ENTRY.into(),
+            structure_key: "elementwise:f32:p1".into(),
+            revision_hash: 2,
+        },
+        contract: "## fused_op: fuel_test_jit_mul_param\ncost: n\n".into(),
+    };
+    struct ParamSynth {
+        art: std::sync::Mutex<Option<SynthArtifact>>,
+    }
+    impl Synthesizer for ParamSynth {
+        fn synthesize(&self, _req: &JitRequest) -> JitResponse {
+            JitResponse::Synthesized { entry_point: PARAM_ENTRY.into() }
+        }
+        fn take_kernel(&self, entry_point: &str) -> Option<SynthArtifact> {
+            if entry_point != PARAM_ENTRY {
+                return None;
+            }
+            self.art.lock().unwrap().take()
+        }
+    }
+    let synth = ParamSynth { art: std::sync::Mutex::new(Some(artifact)) };
+
+    let req = JitRequest {
+        region: mul_scalar_slot_region(),
+        operands: vec![OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256)],
+        arch: ArchSku::Sm89,
+        budget: JitBudget { max_compile_ms: 5_000 },
+    };
+    let id = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
+        load_synth_kernel(art, &device)
+    })
+    .expect("adopt_from_response should not error")
+    .expect("the mock synthesizer always synthesizes");
+    assert!(id.is_runtime());
+
+    let kernel = lookup_runtime_kernel(id, BackendId::Cuda)
+        .expect("kernel bound on Cuda")
+        .kernel;
+    let x = [1.0_f32, -5.0, 2.0, -0.5];
+    let inp = Arc::new(RwLock::new(upload_f32(&device, &x)));
+    let out_bytes = CudaStorageBytes::alloc(&device, x.len() * 4).expect("alloc out");
+    let out = Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(out_bytes), DType::F32)));
+
+    let layout = Layout::contiguous(Shape::from_dims(&[x.len()]));
+    kernel(
+        &[inp],
+        &mut [out.clone()],
+        &[layout.clone(), layout],
+        // The live `extract:` value — exactly what compile_one's is_runtime arm
+        // produces from the fused node's Runtime { scalars }.
+        &OpParams::JitScalars { scalars: vec![2.5] },
+    )
+    .expect("launch with a trailing float p0");
+
+    let got = download_f32(&out.read().unwrap());
+    let want: Vec<f32> = x.iter().map(|v| v * 2.5).collect();
+    assert_eq!(got, want, "x * p0 via the JIT-loaded scalar-Param CUDA kernel");
+}

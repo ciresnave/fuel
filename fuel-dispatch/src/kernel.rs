@@ -678,6 +678,20 @@ pub enum OpParams {
         k:          usize,
         block_size: usize,
     },
+
+    /// A **runtime fused op's** live scalar args (the `extract:` values from
+    /// `FusedOpParams::Runtime { scalars }`), in the region's pattern
+    /// pre-order — the same canonical slot order the synthesized kernel's
+    /// trailing `, float p0, float p1, …` launch parameters are declared in
+    /// (the synthesizer's scalar ABI appends them after `long long n`, always
+    /// `float`-typed regardless of the kernel's element dtype). Only produced
+    /// by `compile_one`'s `is_runtime` arm; a param-free runtime op carries
+    /// `OpParams::None` instead.
+    JitScalars {
+        /// Slot values, pattern pre-order. `f64` at rest (the graph-side
+        /// carrier); the CUDA launch narrows each to `f32` per the ABI.
+        scalars: Vec<f64>,
+    },
 }
 
 // =============================================================================

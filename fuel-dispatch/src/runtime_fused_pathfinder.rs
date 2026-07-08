@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 
-use fuel_graph::jit::match_region;
+use fuel_graph::jit::match_region_extract;
 use fuel_graph::registry::FusedOpId;
 use fuel_graph::runtime_fused::runtime_entries;
 use fuel_graph::{Graph, NodeId};
@@ -41,6 +41,9 @@ use crate::runtime_fused_arm::{RuntimeFusedSpec, offer_runtime_fused_arm};
 struct RegionMatch {
     runtime_id: FusedOpId,
     inputs: Vec<NodeId>,
+    /// Live `extract:` values from the matched region's open scalar slots,
+    /// pattern pre-order (stamped into the arm's `Runtime { scalars }`).
+    scalars: Vec<f64>,
     primitive_sink: NodeId,
     reconverge: NodeId,
 }
@@ -96,7 +99,9 @@ pub fn emit_runtime_fused_arms(graph: &mut Graph) -> Result<usize> {
             if claimed.contains(&root) {
                 continue;
             }
-            let Some(inputs) = match_region(graph, root, &entry.region, &consumers) else {
+            let Some((inputs, scalars)) =
+                match_region_extract(graph, root, &entry.region, &consumers)
+            else {
                 continue;
             };
             // Exactly one consumer of `root` ⇒ a genuine reconverge point.
@@ -107,6 +112,7 @@ pub fn emit_runtime_fused_arms(graph: &mut Graph) -> Result<usize> {
             matches.push(RegionMatch {
                 runtime_id: entry.id,
                 inputs,
+                scalars,
                 primitive_sink: root,
                 reconverge: sole_consumer[&root],
             });
@@ -122,9 +128,9 @@ pub fn emit_runtime_fused_arms(graph: &mut Graph) -> Result<usize> {
             reconverge: m.reconverge,
             // v1: pinned to Cpu — see the module doc's "unsure" note.
             backend: BackendId::Cpu,
-            // v1 runtime regions are parameterless (no `extract:` slots yet;
-            // see `fuel_graph::runtime_fused`'s own v1 scope note).
-            scalars: Vec::new(),
+            // The live `extract:` values (pattern pre-order) — stamped into the
+            // arm's `Runtime { scalars }`, launched as the trailing `p{i}` args.
+            scalars: m.scalars,
         };
         if offer_runtime_fused_arm(graph, &spec)?.is_some() {
             emitted += 1;
@@ -257,5 +263,65 @@ mod tests {
         let emitted = emit_runtime_fused_arms(&mut g).expect("no build-time error");
         assert_eq!(emitted, 0, "no structural match ⇒ no arm emitted");
         assert_eq!(g.len(), before, "graph untouched");
+    }
+
+    /// A slot-template region (`sigmoid(add_scalar(x))`, value open): the
+    /// pathfinder extracts the LIVE scalar from the matched graph node and
+    /// stamps it into the emitted arm's `Runtime { scalars }` — the `extract:`
+    /// round-trip at the arm level. Region shape unique to this test (the
+    /// sidecar is process-global; see `tanh_mul_region`'s rationale).
+    #[test]
+    fn emitted_arm_carries_the_extracted_live_scalar() {
+        let region = PatternNode::Op {
+            op: OpTag::Sigmoid,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Op {
+                op: OpTag::AddScalar,
+                attrs: OpAttrs::default(), // empty = open slot
+                operands: vec![PatternNode::Bind { index: 0 }],
+            }],
+        };
+        let rid = adopt_runtime_fused(
+            "test::pathfinder::sigmoid_add_scalar",
+            region,
+            noop_kernel as crate::kernel::KernelRef,
+            vec![DType::F32, DType::F32],
+            BackendId::Cpu,
+        )
+        .expect("slot template is registrable");
+
+        // sigmoid(add_scalar(x, 7.25)) + a downstream consumer.
+        let mut g = Graph::new();
+        let s = Shape::from_dims(&[4]);
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+        let asn = g.push(Node {
+            op: Op::AddScalar(7.25),
+            inputs: vec![x],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+        let sig = g.push(Node {
+            op: Op::Sigmoid, inputs: vec![asn], shape: s.clone(), dtype: DType::F32,
+        });
+        let _neg = g.push(Node {
+            op: Op::Neg, inputs: vec![sig], shape: s.clone(), dtype: DType::F32,
+        });
+        let before = g.len();
+
+        let emitted = emit_runtime_fused_arms(&mut g).expect("no build-time error");
+        assert_eq!(emitted, 1, "the slot region matched once");
+
+        let mut found = false;
+        for i in before..g.len() {
+            if let Op::Fused(fid, fuel_graph::registry::FusedOpParams::Runtime { scalars }) =
+                &g.node(NodeId(i)).op
+            {
+                if *fid == rid {
+                    assert_eq!(scalars, &vec![7.25], "the LIVE value rode into the arm");
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "an Op::Fused(rid, Runtime) arm was emitted");
     }
 }
