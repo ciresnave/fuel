@@ -82,6 +82,7 @@ pub mod lazy_clip;
 pub mod lazy_conv3d;
 pub mod lazy_colpali;
 pub mod lazy_kv_cache;
+pub mod lazy_latent_cache;
 pub mod lazy_lfm2;
 pub mod lazy_llama2c;
 pub mod lazy_llama_full;
