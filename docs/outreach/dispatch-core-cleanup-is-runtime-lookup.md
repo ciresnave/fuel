@@ -60,4 +60,54 @@ it wherever fits your resolution flow; tell me the spot and I'll put the patch e
 (or hand you the arm to drop in). Until we agree, I'm building everything else — none of it
 blocks on this.
 
+---
+
+# UPDATE (2026-07-08): the stack is now complete + hardware-verified; SECOND coordination item
+
+Since the above was written, the full Fuel-side JIT stack landed on branch `jit-integration`
+(commits `a3d3a9fb…bffe5c47`) and the **on-device test passed on the RTX 4070**
+(`jit_adopt_loads_and_launches_a_synthesized_cuda_kernel` — real nvrtc-compiled PTX through
+`adopt_from_response` → `load_synth_kernel` → live launch → verified results). What exists:
+
+| piece | file (all on `jit-integration`) |
+|---|---|
+| adopt glue (`adopt_from_response`) | `fuel-dispatch/src/jit_adopt.rs` (feature `jit`) |
+| gated arm emitter (`offer_runtime_fused_arm`) | `fuel-dispatch/src/runtime_fused_arm.rs` |
+| pathfinder (`emit_runtime_fused_arms` + `RuntimeFusedArmPathfinder`) | `fuel-dispatch/src/runtime_fused_pathfinder.rs` |
+| live CUDA loader (`load_synth_kernel`, slot-dispatcher bank) | `fuel-dispatch/src/jit_cuda_load.rs` (features `jit,cuda`) |
+
+## Coordination item 2 — registering the pathfinder into `default_passes`
+
+`RuntimeFusedArmPathfinder` implements your `Pathfinder` trait and is ready to register in
+`PassRegistry::default_passes()` (`fuel-dispatch/src/driver.rs:189`, next to
+`PlacementForkPathfinder`). I deliberately did NOT register it yet, for one reason:
+
+**The runtime-fused sidecar is process-global with no test isolation.** `runtime_entries()`
+is a `RwLock<Vec<…>>` shared by every test in the `fuel-dispatch` test binary. The moment the
+pathfinder is in `default_passes`, every test that calls `optimize_graph` will also scan the
+regions other tests happened to adopt (`fused_cost`, `jit_adopt`, `runtime_fused_arm`,
+`runtime_fused_kernels`, `runtime_fused_pathfinder` all adopt ops) — so an
+`optimize_graph` test whose graph *contains* `relu(add(…))` would suddenly grow a branch it
+didn't ask for, nondeterministically by test-registration order.
+
+### Questions for you (answer any way you like; I'll do the work)
+
+1. **Placement**: are you OK with `RuntimeFusedArmPathfinder` joining `default_passes()`
+   directly, or do you want a separate registry-construction seam (e.g. a
+   `default_passes_with_runtime_fusion()` the production bridge uses while bare
+   `default_passes()` stays runtime-op-free for tests)?
+2. **Test isolation**: preference between (a) a `#[cfg(test)]`-only
+   `clear_runtime_fused()` reset hook on the sidecar, (b) scoping the sidecar per-`Graph`
+   (heavier; changes the adopt API), or (c) the separate-constructor approach in Q1, which
+   sidesteps isolation entirely? My lean: **(c) + a `#[cfg(test)]` reset hook** — smallest
+   surface, no production behavior change, tests stay hermetic.
+3. **Ordering**: the pathfinder mutates the graph (appends fused nodes + `Op::Branch`es).
+   In `run_lockstep`, should it run **before** `PlacementForkPathfinder` (so placement sees
+   the new arms) or after? My lean: before.
+4. (Unchanged from above) **the `is_runtime` kernel-resolution arm** — where in your
+   executor flow?
+
+Nothing here blocks your work; when you answer, I wire it in a worktree and we reconcile at
+merge.
+
 — JIT-seam session
