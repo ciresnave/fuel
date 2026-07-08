@@ -1517,7 +1517,15 @@ pub fn fuse_linear(graph: &SharedGraph, roots: &[NodeId]) -> usize {
 /// data-dependency edge (`inputs[0] == producer`), which falls out
 /// of the standard reader analysis below without needing the
 /// alias-set extension. See [`collect_alias_set`] for the full
-/// alias-extension rule.
+/// alias-extension rule — including `Op::Reshape` / `Op::Contiguize`
+/// (conditionally-zero-copy contiguize ops), added to close the MLA
+/// decode multi-round `WriteSlice` ordering defect: a destructive op
+/// on `X` only pins the readers of nodes actually IN the alias set,
+/// so any alias-extending op excluded from that set is a hole a
+/// reader can fall through unpinned. `Op::Reshape`/`Op::Contiguize`
+/// were exactly that hole (see `collect_alias_set`'s doc for the
+/// full mechanism and the shipped workaround this makes unnecessary
+/// for correctness).
 ///
 /// O(V + E). Does not mutate the graph.
 pub fn derive_ordering(graph: &crate::Graph, roots: &[NodeId]) -> OrderingEdges {
@@ -1567,7 +1575,7 @@ pub fn derive_ordering(graph: &crate::Graph, roots: &[NodeId]) -> OrderingEdges 
 /// Collect the alias set of `root`: every node whose realized Storage
 /// is the same `Arc<RwLock<Storage>>` as `root`'s.
 ///
-/// Two families of alias-extending op share the input's Storage Arc
+/// Three families of alias-extending op share the input's Storage Arc
 /// at realize time:
 ///
 /// 1. **Single-input view ops** ([`Op::is_view_op`]): the executor
@@ -1580,6 +1588,39 @@ pub fn derive_ordering(graph: &crate::Graph, roots: &[NodeId]) -> OrderingEdges 
 ///    refcount tracks the consumer's lifetime (Session 1 of the
 ///    multi-output Option C design — see
 ///    [`fuel_ir::storage::OutputView`]).
+/// 3. **Conditionally zero-copy contiguize ops** (`Op::Reshape`,
+///    `Op::Contiguize`): `fuel-dispatch`'s `WorkItemKind::ContiguizeOf`
+///    execution arm ADOPTS the input's Storage Arc verbatim — no
+///    allocation, no copy — whenever the input layout is already
+///    contiguous at offset 0; only a non-contiguous or offset input
+///    forces a fresh `auto_contiguize` allocation. Because that check
+///    is a RUNTIME layout fact `collect_alias_set` cannot evaluate at
+///    graph-build time (offset-0-contiguity depends on the layouts
+///    realized upstream), Reshape/Contiguize are treated as
+///    UNCONDITIONALLY alias-extending here — conservative in the
+///    (rarer) case they materialize a fresh copy, since an extra
+///    ordering pin only serializes two ops that didn't actually need
+///    it; never unsafe, since the alternative (treating them as
+///    alias-opaque) is exactly the ordering defect this variant
+///    fixes: a destructive op's OWN direct alias-set members were
+///    already pinned-after-their-readers correctly, but a
+///    Reshape/Contiguize hop is a graph-visible node in its own right
+///    — if it's excluded from the alias set, its consumers are never
+///    visited by the pin loop below, so a reader on the OTHER side of
+///    an adopted-Arc Reshape/Contiguize has no ordering guarantee
+///    against a destructive op reusing the SAME storage. This is the
+///    MLA decode multi-round `WriteSlice` defect: layer `L`'s
+///    post-append cache buffer is read once (non-destructively)
+///    through a `Slice` → `Reshape` (head-split-style) → kernel chain
+///    that becomes an ancestor of layer `L+1`'s write, and again as
+///    the destination of layer `L`'s NEXT round's append — see
+///    `fuel-core/src/lazy_deepseek2.rs`'s
+///    `DeepSeek2Model::rebind_latent_cache_fresh_graph` doc, whose
+///    graph-rebinding workaround this fix makes unnecessary for
+///    CORRECTNESS (rebinding remains a legitimate memory/perf choice —
+///    it also caps unbounded graph growth across steps — but a
+///    same-graph multi-step decode no longer silently corrupts or
+///    hard-errors without it).
 ///
 /// `Op::ViewOwned` is explicitly NOT alias-extending: at execution
 /// time it allocates a fresh standalone Storage and memcpys the
@@ -1624,9 +1665,13 @@ fn collect_alias_set(
         let node = graph.node(nid);
         // Op::View shares the producer's bundle Arc — it extends the
         // alias set even though it isn't an `is_view_op` in the
-        // narrower single-storage-strided-view sense.
+        // narrower single-storage-strided-view sense. Op::Reshape /
+        // Op::Contiguize are CONDITIONALLY zero-copy (adopt the input
+        // Arc iff contiguous at offset 0 — a runtime fact); treated
+        // unconditionally alias-extending here is the conservative,
+        // always-safe direction (see the function doc).
         let extends_alias = node.op.is_view_op()
-            || matches!(node.op, Op::View { .. });
+            || matches!(node.op, Op::View { .. } | Op::Reshape(_) | Op::Contiguize);
         if !extends_alias { continue }
         if let Some(&inp) = node.inputs.first() {
             if alias.contains(&inp) {
@@ -3124,6 +3169,67 @@ mod tests {
         assert!(
             deps.contains(&z.id()),
             "ReluInplace(x) must be pinned after Relu(Transpose(x)) via view-aware alias set; got deps = {deps:?}",
+        );
+    }
+
+    // ---- Ordering-defect repros (MLA decode multi-round WriteSlice) ----
+
+    /// Control: a single-hop `Slice` reader of a `WriteSlice`
+    /// destination is already correctly pinned before a SECOND
+    /// `WriteSlice` that reuses the same destination —
+    /// `collect_alias_set` finds the `Slice` via `is_view_op`, and its
+    /// reader (`relu`) is not itself an alias member, so
+    /// `derive_ordering` pins the second `WriteSlice` after it
+    /// directly. Baseline for the Reshape-gap test below (confirms the
+    /// gap is Reshape-specific, not a general multi-round WriteSlice
+    /// failure).
+    #[test]
+    fn derive_ordering_write_slice_round2_plain_slice_reader_pinned() {
+        let dest = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let src1 = dest.const_f32_like(vec![1.0_f32, 2.0], Shape::from_dims(&[2]));
+        let src2 = dest.const_f32_like(vec![9.0_f32, 8.0], Shape::from_dims(&[2]));
+        let x = dest.write_slice(&src1, vec![(0, 2)]).expect("write_slice round 1");
+        let s = x.slice(0, 0, 2);
+        let k = s.relu();
+        let y = x.write_slice(&src2, vec![(0, 2)]).expect("write_slice round 2");
+        let ord = derive_ordering(&x.graph().read().unwrap(), &[k.id(), y.id()]);
+        let deps = ord.deps_of(y.id());
+        assert!(
+            deps.contains(&k.id()),
+            "round-2 write_slice must be pinned after the round-1 slice's \
+             reader; got deps = {deps:?}",
+        );
+    }
+
+    /// CRITICAL SUSPECT #2 (MLA decode multi-round `WriteSlice`
+    /// ordering defect): same shape as the control above, but the
+    /// `Slice`'s reader is behind an `Op::Reshape` hop first.
+    /// `Op::Reshape` is NOT in `collect_alias_set`'s alias-extending
+    /// predicate (only `Op::is_view_op` + `Op::View`) even though its
+    /// `WorkItemKind::ContiguizeOf` execution zero-copy ADOPTS the
+    /// input's Storage Arc whenever the input is contiguous at offset
+    /// 0 (`fuel-dispatch/src/pipelined.rs`'s `ContiguizeOf` arm) — so
+    /// the alias walk stops at the `Slice`, and the Reshape's own
+    /// consumer (`relu`) is never scanned for pinning against the
+    /// round-2 `WriteSlice`. Born-red: fails before the fix (Reshape
+    /// missing from the alias-extending set), green after.
+    #[test]
+    fn derive_ordering_write_slice_round2_reshape_reader_pinned() {
+        let dest = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let src1 = dest.const_f32_like(vec![1.0_f32, 2.0], Shape::from_dims(&[2]));
+        let src2 = dest.const_f32_like(vec![9.0_f32, 8.0], Shape::from_dims(&[2]));
+        let x = dest.write_slice(&src1, vec![(0, 2)]).expect("write_slice round 1");
+        let s = x.slice(0, 0, 2);
+        let r = s.reshape(Shape::from_dims(&[2]));
+        let k = r.relu();
+        let y = x.write_slice(&src2, vec![(0, 2)]).expect("write_slice round 2");
+        let ord = derive_ordering(&x.graph().read().unwrap(), &[k.id(), y.id()]);
+        let deps = ord.deps_of(y.id());
+        assert!(
+            deps.contains(&k.id()),
+            "round-2 write_slice must be pinned after the reshape-adopted-arc \
+             reader (CRITICAL SUSPECT #2 gap — Reshape excluded from \
+             collect_alias_set's alias-extending predicate); got deps = {deps:?}",
         );
     }
 

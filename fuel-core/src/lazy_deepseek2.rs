@@ -1060,6 +1060,20 @@ impl DeepSeek2Model {
     /// called (immediately per step or deferred to the end) — it is a
     /// graph-structural hazard, not a call-ordering one.
     ///
+    /// **UPDATE (2026-07-08): the executor gap is FIXED** — the root
+    /// cause was `collect_alias_set` (fuel-graph/src/opt.rs) treating
+    /// `Op::Reshape`/`Op::Contiguize` as alias-opaque while the executor's
+    /// `ContiguizeOf` arm zero-copy ADOPTS the input Arc for contiguous
+    /// offset-0 inputs, leaving readers past a reshape hop unpinned
+    /// against a destructive write (isolated repros:
+    /// `pipelined_write_slice_reshape_adopted_arc_reader_reads_pre_write_bytes`
+    /// + the 2-layer MLA-shaped variant in fuel-dispatch). Same-graph
+    /// multi-step decode is now correct without this rebind. The rebind
+    /// stays because it is independently useful: it caps unbounded graph
+    /// growth across decode steps (each call would otherwise replay every
+    /// prior step's subgraph). Callers wanting device-resident prefixes
+    /// should use [`Self::forward_with_latent_kv_context`] instead.
+    ///
     /// The fix implemented here is the strategy [`LazyLatentCache`]'s own
     /// module doc already names as the alternative to per-call graph
     /// reuse: "re-creates the cache on the new step's graph (rebinding
