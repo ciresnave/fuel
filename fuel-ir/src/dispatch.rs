@@ -525,6 +525,13 @@ pub enum OpKind {
     /// activations' dtype. Geometry + `block_size` flow through
     /// `OpParams::Nf4Matmul`.
     Nf4Matmul,
+    /// A **runtime-registered** (Tier-2, JIT-synthesized / import-time) fused
+    /// op. Carries no static kernel family: the concrete op is named by the
+    /// runtime `FusedOpId` on the graph node, and its kernel resolves from the
+    /// runtime sidecar (`fuel_dispatch::runtime_fused_kernels`), never the
+    /// `OpKind`-keyed binding table. Exists so a `CompiledNode` for such an op
+    /// has an honest `op` tag; no binding-table registration may use it.
+    RuntimeFused,
 }
 
 impl OpKind {
@@ -646,6 +653,7 @@ impl OpKind {
             OpKind::SelectiveScan       => "selective_scan",
             OpKind::SsdChunkScan        => "ssd_chunk_scan",
             OpKind::Nf4Matmul           => "nf4_matmul",
+            OpKind::RuntimeFused     => "runtime_fused",
         }
     }
 }

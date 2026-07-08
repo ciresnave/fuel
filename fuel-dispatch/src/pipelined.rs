@@ -47,7 +47,7 @@ use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute};
 
 use crate::compiled::{compile_node, execute_compiled, CompiledNode, CompletionHandle};
 use crate::dispatch::global_bindings;
-use crate::kernel::{KernelBindingTable, OpParams};
+use crate::kernel::{KernelBindingTable, KernelDTypes, OpParams};
 use crate::optimize::OptimizedGraph;
 use crate::ranker::{pick_route, resolve_branch, BackendRuntimeLookup, RuntimeSelector};
 use fuel_memory::Storage;
@@ -2114,6 +2114,87 @@ fn compile_one(
             destructive_input,
             output_bundle: None,
         });
+    }
+
+    // Runtime fused op — a JIT-adopted (Tier-2) kernel. `Op::Fused(fid, _)`
+    // with `fid.is_runtime()` has no `OpKind` (the op was synthesized after
+    // startup), so its kernel resolves from the `FusedOpId`-keyed runtime
+    // sidecar, never the binding table. This is a deterministic *lookup*, not
+    // a decision: the optimizer's gate emitted the arm only when this kernel
+    // was bound, and pinned `target_backend`
+    // (`docs/specs/runtime-fused-op-registration.md` §6). The `ok_or_else`s
+    // are invariant guards, never live fallbacks.
+    if let Op::Fused(fid, _) = &node.op {
+        if fid.is_runtime() {
+            let target_backend = graph.target_backend(id).ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: runtime fused op {:?} (node {:?}) has no \
+                     target_backend — the arm emitter pins it at emission",
+                    fid, id,
+                ))
+                .bt()
+            })?;
+            let impl_ = crate::runtime_fused_kernels::lookup_runtime_kernel(*fid, target_backend)
+                .ok_or_else(|| {
+                    Error::Msg(format!(
+                        "PipelinedExecutor: runtime fused op {:?} (node {:?}) has no kernel \
+                         bound for {target_backend:?} — the capability gate admitted an arm \
+                         the sidecar no longer backs",
+                        fid, id,
+                    ))
+                    .bt()
+                })?;
+            // Belt-and-suspenders: the node's per-operand dtype tuple must
+            // match the tuple the kernel was adopted for (same key shape the
+            // binding table uses).
+            let dtypes = build_lookup_dtypes(graph, node);
+            if impl_.dtypes != dtypes.as_slice() {
+                return Err(Error::Msg(format!(
+                    "PipelinedExecutor: runtime fused op {:?} (node {:?}) dtype mismatch — \
+                     node is {:?}, kernel was adopted for {:?}",
+                    fid, id, dtypes, impl_.dtypes,
+                ))
+                .bt());
+            }
+            // v1: single-output only. Reject a multi-output bundle explicitly
+            // rather than silently dropping it.
+            if graph.output_views_arc(id).is_some() {
+                return Err(Error::Msg(format!(
+                    "PipelinedExecutor: runtime fused op {:?} (node {:?}) carries a \
+                     multi-output bundle — synthesized kernels are single-output in v1",
+                    fid, id,
+                ))
+                .bt());
+            }
+            let output_layout = Layout::contiguous(node.shape.clone());
+            layout_cache.insert(id, output_layout.clone());
+            let compiled = CompiledNode {
+                op: OpKind::RuntimeFused,
+                dtypes: KernelDTypes::from_slice(&dtypes),
+                backend: target_backend,
+                kernel: impl_.kernel,
+                caps: impl_.caps,
+                // Deliberate, not a fallthrough to `op_to_op_params` (which
+                // doesn't know runtime ops): a v1 synthesized kernel's launch
+                // is layout-driven (pointers + element count) and the loader
+                // rejects scalar-`Param` regions, so `None` is total here. A
+                // `FusedOpParams::Runtime{scalars}` channel is the follow-up
+                // that lands with scalar-Param synthesis support.
+                op_params: OpParams::None,
+            };
+            return Ok(WorkItem {
+                node_id: id,
+                inputs,
+                elem_count,
+                dtype: node.dtype,
+                target_backend,
+                kind: WorkItemKind::Kernel,
+                compiled: Some(compiled),
+                output_layout,
+                destructive_input,
+                output_bundle: None,
+            });
+        }
     }
 
     let target_backend = graph.target_backend(id).ok_or_else(|| {
@@ -10559,6 +10640,157 @@ mod tests {
         assert!(
             item.compiled.is_some(),
             "Move resolves a transfer kernel at (OpKind::Copy, [dt, dt], source backend)",
+        );
+    }
+
+    // --- runtime fused op (JIT-adopted Tier-2 kernel) --------------
+
+    /// `compile_one` resolves an `Op::Fused(fid, Runtime)` node with
+    /// `fid.is_runtime()` from the runtime-kernel sidecar (never the
+    /// binding table): `WorkItemKind::Kernel`, `compiled.op ==
+    /// OpKind::RuntimeFused`, and the kernel pointer is exactly the one
+    /// `adopt_runtime_fused` bound.
+    #[test]
+    fn compile_one_resolves_runtime_fused_from_the_sidecar() {
+        fn sentinel_kernel(
+            _inputs: &[Arc<RwLock<fuel_memory::Storage>>],
+            _outputs: &mut [Arc<RwLock<fuel_memory::Storage>>],
+            _layouts: &[Layout],
+            _params: &crate::kernel::OpParams,
+        ) -> Result<()> {
+            Ok(())
+        }
+        // A region shape unique to this test (process-global sidecar; see
+        // runtime_fused_pathfinder's tests for the collision rationale).
+        let region = fuel_graph::jit::PatternNode::Op {
+            op: fuel_graph::jit::OpTag::Exp,
+            attrs: fuel_graph::jit::OpAttrs::default(),
+            operands: vec![fuel_graph::jit::PatternNode::Op {
+                op: fuel_graph::jit::OpTag::Sub,
+                attrs: fuel_graph::jit::OpAttrs::default(),
+                operands: vec![
+                    fuel_graph::jit::PatternNode::Bind { index: 0 },
+                    fuel_graph::jit::PatternNode::Bind { index: 1 },
+                ],
+            }],
+        };
+        let rid = crate::runtime_fused_kernels::adopt_runtime_fused(
+            "test::compile_one::exp_sub",
+            region,
+            sentinel_kernel as crate::kernel::KernelRef,
+            vec![DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+        )
+        .expect("registrable region");
+
+        let graph_rc = Arc::new(RwLock::new(Graph::new()));
+        let fused_id = {
+            let mut g = graph_rc.write().unwrap();
+            let s = Shape::from_dims(&[4]);
+            let a = g.push(Node {
+                op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32,
+            });
+            let b = g.push(Node {
+                op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32,
+            });
+            let fused = g.push(Node {
+                op: Op::Fused(
+                    rid,
+                    fuel_graph::registry::FusedOpParams::Runtime { scalars: Vec::new() },
+                ),
+                inputs: vec![a, b],
+                shape: s,
+                dtype: DType::F32,
+            });
+            // The arm emitter pins the backend; mirror that here.
+            g.set_target_backend(fused, BackendId::Cpu);
+            fused
+        };
+        let g = graph_rc.read().unwrap();
+        let bindings = crate::dispatch::global_bindings();
+        let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
+        let item = compile_one(&g, fused_id, &mut layout_cache, &bindings, &SymEnv::default())
+            .expect("compile_one runtime fused op");
+        assert!(matches!(item.kind, WorkItemKind::Kernel));
+        let compiled = item.compiled.expect("resolved a kernel");
+        assert_eq!(compiled.op, fuel_ir::dispatch::OpKind::RuntimeFused);
+        assert_eq!(compiled.backend, BackendId::Cpu);
+        assert!(
+            std::ptr::fn_addr_eq(compiled.kernel, sentinel_kernel as crate::kernel::KernelRef),
+            "the kernel pointer is exactly the adopted one",
+        );
+        assert!(layout_cache.contains_key(&fused_id), "output layout cached for consumers");
+    }
+
+    /// The dtype belt-and-suspenders guard: an `Op::Fused(runtime)` node
+    /// whose per-operand dtypes disagree with the adopted kernel's tuple is
+    /// a typed error, not a silent wrong-kernel dispatch.
+    #[test]
+    fn compile_one_rejects_runtime_fused_dtype_mismatch() {
+        fn noop_kernel(
+            _inputs: &[Arc<RwLock<fuel_memory::Storage>>],
+            _outputs: &mut [Arc<RwLock<fuel_memory::Storage>>],
+            _layouts: &[Layout],
+            _params: &crate::kernel::OpParams,
+        ) -> Result<()> {
+            Ok(())
+        }
+        let region = fuel_graph::jit::PatternNode::Op {
+            op: fuel_graph::jit::OpTag::Log,
+            attrs: fuel_graph::jit::OpAttrs::default(),
+            operands: vec![fuel_graph::jit::PatternNode::Op {
+                op: fuel_graph::jit::OpTag::Maximum,
+                attrs: fuel_graph::jit::OpAttrs::default(),
+                operands: vec![
+                    fuel_graph::jit::PatternNode::Bind { index: 0 },
+                    fuel_graph::jit::PatternNode::Bind { index: 1 },
+                ],
+            }],
+        };
+        // Adopted for F32 operands…
+        let rid = crate::runtime_fused_kernels::adopt_runtime_fused(
+            "test::compile_one::log_maximum",
+            region,
+            noop_kernel as crate::kernel::KernelRef,
+            vec![DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+        )
+        .expect("registrable region");
+
+        let graph_rc = Arc::new(RwLock::new(Graph::new()));
+        let fused_id = {
+            let mut g = graph_rc.write().unwrap();
+            let s = Shape::from_dims(&[4]);
+            // …but the node's operands are F64.
+            let a = g.push(Node {
+                op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F64,
+            });
+            let b = g.push(Node {
+                op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F64,
+            });
+            let fused = g.push(Node {
+                op: Op::Fused(
+                    rid,
+                    fuel_graph::registry::FusedOpParams::Runtime { scalars: Vec::new() },
+                ),
+                inputs: vec![a, b],
+                shape: s,
+                dtype: DType::F64,
+            });
+            g.set_target_backend(fused, BackendId::Cpu);
+            fused
+        };
+        let g = graph_rc.read().unwrap();
+        let bindings = crate::dispatch::global_bindings();
+        let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
+        let err = match compile_one(&g, fused_id, &mut layout_cache, &bindings, &SymEnv::default())
+        {
+            Ok(_) => panic!("dtype mismatch must be a typed error"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("dtype mismatch"),
+            "the guard names the failure: {err}",
         );
     }
 
