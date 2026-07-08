@@ -181,12 +181,30 @@ pub fn match_region(
     pattern: &PatternNode,
     consumers: &dyn Fn(NodeId) -> usize,
 ) -> Option<Vec<NodeId>> {
+    match_region_extract(graph, root, pattern, consumers).map(|(binds, _)| binds)
+}
+
+/// [`match_region`] plus the **`extract:` layer** (FKC §5.3): alongside the
+/// bound inputs, return the matched region's live scalar values — one entry per
+/// scalar a **slot** pattern node left open (a scalar-carrying op whose pattern
+/// `attrs.scalars` is empty/wildcard), read from the matched graph node, in
+/// **pattern pre-order** (the canonical slot order the recipe's re-emit and a
+/// synthesized kernel's trailing `p{i}` launch args both use). A pattern node
+/// with *baked* scalars is a constant of the pattern (the attr guard enforced
+/// equality), not a slot, and extracts nothing. A slotless region extracts `[]`.
+pub fn match_region_extract(
+    graph: &Graph,
+    root: NodeId,
+    pattern: &PatternNode,
+    consumers: &dyn Fn(NodeId) -> usize,
+) -> Option<(Vec<NodeId>, Vec<f64>)> {
     let mut binds: BTreeMap<u8, NodeId> = BTreeMap::new();
-    match_node(graph, root, pattern, true, consumers, &mut binds)?;
+    let mut scalars: Vec<f64> = Vec::new();
+    match_node(graph, root, pattern, true, consumers, &mut binds, &mut scalars)?;
     // Bind indices must form a contiguous [0, n) — exactly the region's inputs.
     let n = binds.len() as u8;
     if (0..n).all(|i| binds.contains_key(&i)) {
-        Some((0..n).map(|i| binds[&i]).collect())
+        Some(((0..n).map(|i| binds[&i]).collect(), scalars))
     } else {
         None
     }
@@ -199,6 +217,7 @@ fn match_node(
     is_root: bool,
     consumers: &dyn Fn(NodeId) -> usize,
     binds: &mut BTreeMap<u8, NodeId>,
+    scalars: &mut Vec<f64>,
 ) -> Option<()> {
     match pattern {
         PatternNode::Any => Some(()),
@@ -215,7 +234,7 @@ fn match_node(
         PatternNode::SeeThrough { then } => {
             // The see_through-set skip is a follow-up; for now match `then`
             // against this node directly.
-            match_node(graph, node_id, then, is_root, consumers, binds)
+            match_node(graph, node_id, then, is_root, consumers, binds, scalars)
         }
         PatternNode::Op { op, operands, attrs } => {
             let node = graph.node(node_id);
@@ -226,7 +245,8 @@ fn match_node(
             // projected value; an empty/unset pattern attr is a wildcard, so
             // existing attr-agnostic patterns (all `OpAttrs::default()`) keep
             // matching. Op-tag is checked first, so the projection is meaningful.
-            if !attrs_match(attrs, &op_to_attrs(&node.op)) {
+            let node_attrs = op_to_attrs(&node.op);
+            if !attrs_match(attrs, &node_attrs) {
                 return None;
             }
             // Interior nodes (not the root, not a bind leaf) must be sole-consumer.
@@ -238,23 +258,49 @@ fn match_node(
             if inputs.len() != operands.len() {
                 return None;
             }
+            // The `extract:` layer (§5.3): empty pattern-scalars on a
+            // scalar-carrying op is a SLOT — record the live values from the
+            // matched node, pre-order (before descending into operands).
+            if attrs.scalars.is_empty() && !node_attrs.scalars.is_empty() {
+                scalars.extend_from_slice(&node_attrs.scalars);
+            }
             if is_commutative(*op) && operands.len() == 2 {
                 // Try both orderings; commit the first that fully matches.
+                // Clone-commit covers `scalars` too: a failed first ordering
+                // must not leave partial extractions behind.
                 for (a, b) in [(0usize, 1usize), (1, 0)] {
                     let mut trial = binds.clone();
-                    if match_node(graph, inputs[a], &operands[0], false, consumers, &mut trial)
+                    let mut trial_scalars = scalars.clone();
+                    if match_node(
+                        graph,
+                        inputs[a],
+                        &operands[0],
+                        false,
+                        consumers,
+                        &mut trial,
+                        &mut trial_scalars,
+                    )
+                    .is_some()
+                        && match_node(
+                            graph,
+                            inputs[b],
+                            &operands[1],
+                            false,
+                            consumers,
+                            &mut trial,
+                            &mut trial_scalars,
+                        )
                         .is_some()
-                        && match_node(graph, inputs[b], &operands[1], false, consumers, &mut trial)
-                            .is_some()
                     {
                         *binds = trial;
+                        *scalars = trial_scalars;
                         return Some(());
                     }
                 }
                 return None;
             }
             for (child_pat, &child_id) in operands.iter().zip(inputs.iter()) {
-                match_node(graph, child_id, child_pat, false, consumers, binds)?;
+                match_node(graph, child_id, child_pat, false, consumers, binds, scalars)?;
             }
             Some(())
         }
@@ -432,5 +478,56 @@ mod tests {
             Some(vec![x]),
             "empty-perm (wildcard) pattern must still match (no regression)",
         );
+    }
+
+    // ---- scalar extraction (the `extract:` layer, §5.3) -----------------------
+
+    #[test]
+    fn match_region_extract_reads_live_scalars_in_pattern_pre_order() {
+        // Graph: add_scalar(mul_scalar(x, 2.5), 0.5) — two live scalars.
+        let mut g = Graph::new();
+        let s = fuel_ir::Shape::from_dims(&[2]);
+        let x = leaf(&mut g, &s);
+        let ms = op1(&mut g, Op::MulScalar(2.5), x, &s);
+        let asn = op1(&mut g, Op::AddScalar(0.5), ms, &s);
+        let counts = consumer_counts(&g);
+        let cf = |n: NodeId| *counts.get(&n).unwrap_or(&0);
+
+        // Slot template: both scalar attrs left empty (open slots).
+        let pat = PatternNode::Op {
+            op: OpTag::AddScalar,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Op {
+                op: OpTag::MulScalar,
+                attrs: OpAttrs::default(),
+                operands: vec![PatternNode::Bind { index: 0 }],
+            }],
+        };
+        let (binds, scalars) = match_region_extract(&g, asn, &pat, &cf).expect("matches");
+        assert_eq!(binds, vec![x]);
+        // Pattern PRE-order: the AddScalar (root) slot before the MulScalar slot.
+        assert_eq!(scalars, vec![0.5, 2.5], "live values in pattern pre-order");
+    }
+
+    #[test]
+    fn baked_scalar_is_a_pattern_constant_not_a_slot() {
+        let mut g = Graph::new();
+        let s = fuel_ir::Shape::from_dims(&[2]);
+        let x = leaf(&mut g, &s);
+        let ms = op1(&mut g, Op::MulScalar(2.5), x, &s);
+        let counts = consumer_counts(&g);
+        let cf = |n: NodeId| *counts.get(&n).unwrap_or(&0);
+
+        let baked = |v: f64| PatternNode::Op {
+            op: OpTag::MulScalar,
+            attrs: OpAttrs { scalars: vec![v], ..OpAttrs::default() },
+            operands: vec![PatternNode::Bind { index: 0 }],
+        };
+        // The equal baked value matches and extracts NOTHING…
+        let (binds, scalars) = match_region_extract(&g, ms, &baked(2.5), &cf).expect("matches");
+        assert_eq!(binds, vec![x]);
+        assert!(scalars.is_empty(), "baked value is a constant of the pattern, not a slot");
+        // …and a different baked value refuses to match at all (attr guard).
+        assert!(match_region_extract(&g, ms, &baked(3.0), &cf).is_none());
     }
 }
