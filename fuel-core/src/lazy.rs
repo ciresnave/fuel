@@ -10200,6 +10200,115 @@ mod generate_tests {
         );
     }
 
+    /// Part 2 increment B · live-CUDA gate: BF16-throughout D1 decode must
+    /// agree between the CPU and CUDA devices — the whole point of the
+    /// BF16-throughout seam is that the homogeneous `[bf16;3]` CUDA gemm
+    /// (tensor cores, `CUBLAS_COMPUTE_32F` accumulation) fires instead of
+    /// the F32 gemm that made plain CUDA decode 21x slower than Vulkan
+    /// (commit `d87d2427`). Both legs run the SAME BF16-weight model
+    /// (`make_tiny_weights_bf16`) through the SAME D1 rebuild protocol
+    /// (prefill 3 + decode 1); only the device differs.
+    ///
+    /// This is a cross-device agreement check, not a bit-exact one: CPU and
+    /// CUDA BF16 gemms can accumulate in slightly different order /
+    /// intermediate precision even when both target `CUBLAS_COMPUTE_32F`-
+    /// equivalent F32 accumulation. Tolerance is calibrated empirically
+    /// (see the printed `max abs diff`) with ~5x headroom.
+    ///
+    /// Gated `#[cfg(feature = "cuda")]` + `#[ignore]`; skips cleanly if no
+    /// CUDA device is present. Run:
+    ///   `cargo test -p fuel-core --features cuda --lib \
+    ///    bf16_decode_cuda_matches_cpu -- --ignored --nocapture`
+    #[test]
+    #[cfg(feature = "cuda")]
+    #[ignore = "requires a live CUDA device"]
+    fn bf16_decode_cuda_matches_cpu() {
+        let cfg = LlamaConfig {
+            vocab_size: 16,
+            dim:        16,
+            n_layers:   2,
+            n_heads:    4,
+            n_kv_heads: 2, // exercise GQA (n_rep = 2)
+            head_dim:   4,
+            ffn_dim:    16,
+            norm_eps:   1e-5,
+            rope_base:  10000.0,
+        };
+        let prompt = [1_u32, 2, 3];
+        let next_token = 4_u32;
+        let max_seq_len = prompt.len() + 1;
+
+        // CPU leg: BF16-throughout decode (BF16 weights + BF16 cache), the
+        // same protocol `bf16_decode_matches_f32_decode_d1`'s BF16 side uses.
+        let model_cpu = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+        let dev_cpu = Device::cpu();
+        let mut cache_cpu = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::BF16, &dev_cpu,
+        ).expect("with_capacity cpu bf16");
+        let mut ctx_cpu = InferenceContext::new(dev_cpu);
+        let _ = model_cpu
+            .forward_with_kv_context(&prompt, &mut cache_cpu, &mut ctx_cpu)
+            .expect("cpu bf16 prefill");
+        let cpu_logits = model_cpu
+            .forward_with_kv_context(&[next_token], &mut cache_cpu, &mut ctx_cpu)
+            .expect("cpu bf16 decode");
+
+        // CUDA device or skip cleanly.
+        let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                return;
+            }
+        };
+        let cuda_device: Device = cuda.into();
+
+        // CUDA leg: byte-identical model/protocol, BF16 cache on the CUDA
+        // device — the homogeneous [bf16;3] CUDA gemm path under test.
+        let model_cuda = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+        let mut cache_cuda = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::BF16, &cuda_device,
+        ).expect("with_capacity cuda bf16");
+        let mut ctx_cuda = InferenceContext::new(cuda_device);
+        let _ = model_cuda
+            .forward_with_kv_context(&prompt, &mut cache_cuda, &mut ctx_cuda)
+            .expect("cuda bf16 prefill");
+        let cuda_logits = model_cuda
+            .forward_with_kv_context(&[next_token], &mut cache_cuda, &mut ctx_cuda)
+            .expect("cuda bf16 decode");
+
+        assert_eq!(cpu_logits.len(), cuda_logits.len());
+        assert_eq!(cpu_logits.len(), cfg.vocab_size);
+
+        let argmax = |v: &[f32]| -> usize {
+            v.iter().enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .map(|(i, _)| i)
+                .unwrap()
+        };
+        assert_eq!(
+            argmax(&cpu_logits), argmax(&cuda_logits),
+            "BF16-throughout CUDA decode must agree with the CPU BF16 leg on argmax: \
+             cpu={cpu_logits:?} cuda={cuda_logits:?}",
+        );
+
+        let max_abs_diff = cpu_logits.iter().zip(cuda_logits.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        println!("bf16_decode_cuda_matches_cpu: max abs diff = {max_abs_diff}");
+        // Tolerance calibration (measured 2026-07-08, RTX 4070, CUDA 13.3):
+        // observed max abs diff = 0 exactly — on this tiny fixture the CPU
+        // and CUDA BF16 legs are bit-identical (both gemms accumulate F32
+        // and every intermediate rounds to the same BF16). 5e-3 (the same
+        // band the BF16-vs-F32 D1 test and the CPU-vs-GPU decode twins use)
+        // is therefore pure headroom for larger/less-well-conditioned
+        // fixtures; argmax equality above is the scale-robust backstop.
+        assert!(
+            max_abs_diff < 5e-3,
+            "cpu vs cuda bf16 max abs diff {max_abs_diff} exceeds tolerance",
+        );
+    }
+
     /// Born-red gate: BF16-throughout D2 persistent decode
     /// (`forward_with_kv_context_persistent`, BF16 `KvCache`) must be
     /// **bit-exact** vs. the BF16 D1 rebuild path on the same prefix
@@ -10213,6 +10322,15 @@ mod generate_tests {
     /// would mean D2's held-graph reuse (not the BF16 seam itself) is
     /// broken.
     #[test]
+    #[cfg_attr(
+        feature = "cuda",
+        ignore = "cross-backend placement fallback: under a --features cuda build on a \
+                  CUDA host, the optimizer can stamp a CPU-pinned node (the broadcast \
+                  mask) onto the GPU and fail with 'no CUDA storage in input cache' — \
+                  the documented class generate_persistent_decode_on_cuda_* best-effort \
+                  skips. This CPU test's home is the default-feature build (always runs \
+                  there); the CUDA-side BF16 coverage is bf16_decode_cuda_matches_cpu."
+    )]
     fn bf16_decode_matches_f32_decode_d2_plan_once() {
         let cfg = LlamaConfig {
             vocab_size: 16,
@@ -10800,6 +10918,124 @@ mod generate_tests {
             "f32 decode ⇒ the emitter's dtype gate declines ⇒ NO Op::Branch \
              in the held decode graph (the flash arm stays dormant)",
         );
+    }
+
+    /// Part 2 increment B — the INVERSE of `f32_decode_graph_offers_no_flash_arm`:
+    /// a REAL BF16-throughout persistent decode session, built on a live CUDA
+    /// device, DOES carry the CUDA flash-decode `Op::Branch` — one per layer.
+    ///
+    /// `offer_flash_decode_arm_for_region`'s gate
+    /// (`fuel_dispatch::decode_flash::flash_decode_admissible`) is driven by
+    /// `FlashArmCapability::production()`, which is two independent halves:
+    /// - `cuda_flash_kernel` — a *compiled-in* check (`default_kernel_registry`
+    ///   lookup), true whenever this binary is built `--features cuda`,
+    ///   regardless of whether a live device is ever instantiated;
+    /// - `cuda_in_topology` — a *runtime hardware probe*
+    ///   (`SystemTopology::current().backends()`), true only on a host with a
+    ///   physical CUDA device visible to the process.
+    /// Neither half reads the `Device` the model/cache/ctx happen to be built
+    /// on — the gate is purely (q's graph dtype, global capability). So the
+    /// arm can in principle be offered even for a BF16 graph built on
+    /// `Device::cpu()`, as long as the process is a `--features cuda` build
+    /// running on CUDA-capable hardware. This test still drives the session on
+    /// a live CUDA device (the realistic BF16-CUDA-decode scenario the whole
+    /// program targets) and is `#[ignore]`'d because `cuda_in_topology`
+    /// depends on physical hardware being present — not portable to a
+    /// CUDA-less CI box even though no `CudaDevice` handle is read by the gate
+    /// itself.
+    ///
+    /// Run:
+    ///   `cargo test -p fuel-core --features cuda --lib \
+    ///    bf16_cuda_decode_graph_offers_flash_arm -- --ignored --nocapture`
+    #[test]
+    #[cfg(feature = "cuda")]
+    #[ignore = "requires a live CUDA device (topology probe needs real hardware)"]
+    fn bf16_cuda_decode_graph_offers_flash_arm() {
+        use fuel_graph::{NodeId, Op};
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        use fuel_ir::probe::BackendId;
+
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
+            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+
+        let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                return;
+            }
+        };
+        let cuda_device: Device = cuda.into();
+
+        let prompt = [1_u32, 2, 3];
+        let max_seq_len = prompt.len() + 2;
+        let mut cache = KvCache::with_capacity(
+            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::BF16, &cuda_device,
+        ).expect("with_capacity bf16 cuda");
+        let mut ctx = InferenceContext::new(cuda_device);
+        let mut session: Option<crate::inference_context::DecodeSession> = None;
+        let _ = model
+            .forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
+            .expect("prefill");
+        let _ = model
+            .forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
+            .expect("first decode token builds the session");
+        let s = session.as_ref().expect("session built");
+
+        // Print the two production-capability halves so a failure names the
+        // declining condition directly (2026-07-08 finding: cuda_flash_kernel
+        // is FALSE even in a --features cuda build on live hardware — see the
+        // assert message below for the registry-seam root cause).
+        let cap = fuel_dispatch::decode_flash::FlashArmCapability::production();
+        println!(
+            "FlashArmCapability::production(): cuda_flash_kernel={} cuda_in_topology={}",
+            cap.cuda_flash_kernel, cap.cuda_in_topology,
+        );
+
+        let g = s.graph().read().unwrap();
+        let branches: Vec<NodeId> = (0..g.len())
+            .map(NodeId)
+            .filter(|&n| matches!(g.node(n).op, Op::Branch { .. }))
+            .collect();
+        // PINS CURRENT (defective) BEHAVIOR — the arm does NOT fire, and the
+        // root cause is a REGISTRY SEAM, not shape/dtype (verified live
+        // 2026-07-08, RTX 4070: `FlashArmCapability::production()` printed
+        // cuda_flash_kernel=false, cuda_in_topology=true):
+        // `fused_kernel_available(FLASH_ATTN, Cuda)` consults the
+        // FusedKernelRegistry (static CPU-only defaults + the runtime-adopted
+        // sidecar), but the CUDA flash_decoding binding registers ONLY into
+        // the KernelBindingTable ((OpKind::FlashAttn, [f16|bf16;4], Cuda) via
+        // register_cuda_flash_decoding_from_contract — whose FKC import even
+        // debug_asserts provider.fused.is_empty()). The capability predicate
+        // looks in the wrong registry, so the arm is unreachable on ALL
+        // hosts. FIX (its own increment; coordinate with the runtime-fusion
+        // program, which shares fused_kernel_available): bridge the predicate
+        // to the binding table or mirror the registration — then FLIP this
+        // assert to `branches.len() == cfg.n_layers` (the arm-shape checks
+        // below are already written for that flip and run automatically).
+        assert_eq!(
+            branches.len(), 0,
+            "flash-arm registry seam appears FIXED ({} branch(es) present) — \
+             flip this test: assert one Op::Branch per layer (n_layers={}) \
+             and let the arm-shape checks below validate them",
+            branches.len(), cfg.n_layers,
+        );
+        for branch in branches {
+            let arms = g.node(branch).inputs.clone();
+            assert_eq!(arms.len(), 2, "2-arm branch (decomposed oracle + flash)");
+            let flash = arms[1];
+            match &g.node(flash).op {
+                Op::Fused(fid, FusedOpParams::FlashAttn { .. }) => {
+                    assert_eq!(*fid, FusedOps::FLASH_ATTN, "arm 1 is FLASH_ATTN");
+                }
+                other => panic!("arm 1 must be Fused(FLASH_ATTN, ..), got {other:?}"),
+            }
+            assert_eq!(g.target_backend(flash), Some(BackendId::Cuda), "arm 1 pinned to CUDA");
+        }
     }
 
     /// Phase D · FIRST live-GPU verification of plan-once persistent decode
@@ -11473,6 +11709,13 @@ mod generate_tests {
     /// weight buffers coexist → `ERROR_OUT_OF_DEVICE_MEMORY` on a 12 GB
     /// card by decode token 3. Excluding the drain from the timer is
     /// conservative (it charges D1 nothing for the reclaim it needs).
+    ///
+    /// `cache_dtype` is the `KvCache`'s dtype (hence the activation dtype
+    /// end-to-end — see `LlamaModel::forward_with_kv_context_impl`'s
+    /// `to_dtype(cache_dtype)` cast). `DType::F32` is every pre-Part-2-B
+    /// caller's value (CPU/Vulkan/CUDA F32 baselines); `DType::BF16` opts
+    /// the whole activation stream into BF16-throughout (needs BF16
+    /// weights — pass `load_real_llama(false)`).
     fn run_persistent_decode_bench(
         model: &LlamaModel,
         device: &Device,
@@ -11480,6 +11723,7 @@ mod generate_tests {
         load_secs: f64,
         n: usize,
         post_token: Option<&dyn Fn()>,
+        cache_dtype: DType,
     ) {
         let after_step = || { if let Some(f) = post_token { f(); } };
         use std::time::Instant;
@@ -11518,7 +11762,7 @@ mod generate_tests {
         if run_d2 {
             let opt_before_prefill = crate::pipelined_bridge::optimize_calls_thread_local();
             let mut cache2 = KvCache::with_capacity(
-                cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, device,
+                cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, cache_dtype, device,
             ).expect("d2 with_capacity");
             let mut ctx2 = InferenceContext::new(device.clone());
             let mut session: Option<crate::inference_context::DecodeSession> = None;
@@ -11568,7 +11812,7 @@ mod generate_tests {
         let mut d1_abort: Option<String> = None;
         if run_d1 {
             let mut cache1 = KvCache::with_capacity(
-                cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, device,
+                cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, cache_dtype, device,
             ).expect("d1 with_capacity");
             let mut ctx1 = InferenceContext::new(device.clone());
             let t_pre1 = Instant::now();
@@ -11710,7 +11954,7 @@ mod generate_tests {
             Some(m) => m,
             None => return,
         };
-        run_persistent_decode_bench(&model, &Device::cpu(), "CPU", load_secs, n, None);
+        run_persistent_decode_bench(&model, &Device::cpu(), "CPU", load_secs, n, None, DType::F32);
     }
 
     /// Vulkan (live-GPU) persistent-decode wall-clock benchmark on
@@ -11753,7 +11997,7 @@ mod generate_tests {
             }
         };
         run_persistent_decode_bench(
-            &model, &vk_device, "Vulkan (RTX 4070)", load_secs, n, Some(&drain),
+            &model, &vk_device, "Vulkan (RTX 4070)", load_secs, n, Some(&drain), DType::F32,
         );
     }
 
@@ -11802,7 +12046,51 @@ mod generate_tests {
             }
         };
         run_persistent_decode_bench(
-            &model, &cuda_device, "CUDA (RTX 4070)", load_secs, n, None,
+            &model, &cuda_device, "CUDA (RTX 4070)", load_secs, n, None, DType::F32,
+        );
+    }
+
+    /// CUDA (live-GPU) BF16-throughout persistent-decode wall-clock
+    /// benchmark on TinyLlama-1.1B — Part 2 increment B headline number.
+    /// N defaults to 16 (override with `FUEL_BENCH_N`). Skips cleanly if no
+    /// CUDA device is available.
+    ///
+    ///   FUEL_BENCH_MODEL_DIR=... cargo test -p fuel-core --lib --features cuda \
+    ///     bench_persistent_decode_real_model_cuda_bf16 -- --ignored --nocapture
+    ///
+    /// Unlike `bench_persistent_decode_real_model_cuda` (F32 weights + F32
+    /// cache, because the CUDA MatMul family has no mixed F32×BF16 kernel),
+    /// this leg keeps the checkpoint's native BF16 weights
+    /// (`load_real_llama(false)`) AND runs a BF16 `KvCache` — BF16-throughout
+    /// activations end-to-end — so the graph hits the homogeneous
+    /// `(MatMul, [BF16,BF16,BF16], Cuda)` tensor-core gemm instead of the F32
+    /// gemm, AND the CUDA flash-decode arm (`{F16,BF16}`-only) becomes
+    /// admissible. Compare this bench's ms/tok against
+    /// `bench_persistent_decode_real_model_cuda`'s F32 number (same day, same
+    /// card) for the apples-to-apples BF16-vs-F32 CUDA decode comparison.
+    #[test]
+    #[cfg(feature = "cuda")]
+    #[ignore = "live-GPU wall-clock bench — needs FUEL_BENCH_MODEL_DIR + a CUDA device"]
+    fn bench_persistent_decode_real_model_cuda_bf16() {
+        let n = std::env::var("FUEL_BENCH_N").ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(16);
+        // Keep native BF16 weights — BF16 activations need BF16 weights
+        // (matmul's dtype gate rejects BF16-activation x F32-weight).
+        let (model, load_secs) = match load_real_llama(false) {
+            Some(m) => m,
+            None => return,
+        };
+        let cuda_device = match crate::cuda_backend::new_device(0) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                return;
+            }
+        };
+        run_persistent_decode_bench(
+            &model, &cuda_device, "CUDA (RTX 4070) BF16-throughout", load_secs, n, None,
+            DType::BF16,
         );
     }
 
