@@ -43,6 +43,7 @@ use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, DeviceLocation, Error, Layout, Result, SymEnv};
 use fuel_graph::opt::{execution_plan, insert_safety_copies};
+use fuel_graph::registry::FusedOpParams;
 use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute};
 
 use crate::compiled::{compile_node, execute_compiled, CompiledNode, CompletionHandle};
@@ -2168,19 +2169,25 @@ fn compile_one(
             }
             let output_layout = Layout::contiguous(node.shape.clone());
             layout_cache.insert(id, output_layout.clone());
+            // Deliberate, not a fallthrough to `op_to_op_params` (which doesn't
+            // know runtime ops): the node's `Runtime { scalars }` — the live
+            // `extract:` values, pattern pre-order — becomes `JitScalars` (the
+            // launch appends them as the kernel's trailing `p{i}` args); a
+            // param-free op carries `None` (its launch is layout-driven:
+            // pointers + element count).
+            let op_params = match &node.op {
+                Op::Fused(_, FusedOpParams::Runtime { scalars }) if !scalars.is_empty() => {
+                    OpParams::JitScalars { scalars: scalars.clone() }
+                }
+                _ => OpParams::None,
+            };
             let compiled = CompiledNode {
                 op: OpKind::RuntimeFused,
                 dtypes: KernelDTypes::from_slice(&dtypes),
                 backend: target_backend,
                 kernel: impl_.kernel,
                 caps: impl_.caps,
-                // Deliberate, not a fallthrough to `op_to_op_params` (which
-                // doesn't know runtime ops): a v1 synthesized kernel's launch
-                // is layout-driven (pointers + element count) and the loader
-                // rejects scalar-`Param` regions, so `None` is total here. A
-                // `FusedOpParams::Runtime{scalars}` channel is the follow-up
-                // that lands with scalar-Param synthesis support.
-                op_params: OpParams::None,
+                op_params,
             };
             return Ok(WorkItem {
                 node_id: id,
@@ -10791,6 +10798,74 @@ mod tests {
         assert!(
             err.to_string().contains("dtype mismatch"),
             "the guard names the failure: {err}",
+        );
+    }
+
+    /// A runtime fused node carrying live `Runtime { scalars }` compiles with
+    /// `OpParams::JitScalars` — the launch channel for the kernel's trailing
+    /// `p{i}` args. (A param-free node keeps `OpParams::None`, covered by
+    /// `compile_one_resolves_runtime_fused_from_the_sidecar`.)
+    #[test]
+    fn compile_one_maps_runtime_scalars_to_jit_scalars() {
+        fn noop_kernel(
+            _inputs: &[Arc<RwLock<fuel_memory::Storage>>],
+            _outputs: &mut [Arc<RwLock<fuel_memory::Storage>>],
+            _layouts: &[Layout],
+            _params: &crate::kernel::OpParams,
+        ) -> Result<()> {
+            Ok(())
+        }
+        // Unique slot-template region (process-global sidecar).
+        let region = fuel_graph::jit::PatternNode::Op {
+            op: fuel_graph::jit::OpTag::Floor,
+            attrs: fuel_graph::jit::OpAttrs::default(),
+            operands: vec![fuel_graph::jit::PatternNode::Op {
+                op: fuel_graph::jit::OpTag::MulScalar,
+                attrs: fuel_graph::jit::OpAttrs::default(), // open slot
+                operands: vec![fuel_graph::jit::PatternNode::Bind { index: 0 }],
+            }],
+        };
+        let rid = crate::runtime_fused_kernels::adopt_runtime_fused(
+            "test::compile_one::floor_mul_scalar",
+            region,
+            noop_kernel as crate::kernel::KernelRef,
+            vec![DType::F32, DType::F32],
+            BackendId::Cpu,
+        )
+        .expect("slot template registrable");
+
+        let graph_rc = Arc::new(RwLock::new(Graph::new()));
+        let fused_id = {
+            let mut g = graph_rc.write().unwrap();
+            let s = Shape::from_dims(&[4]);
+            let x = g.push(Node {
+                op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32,
+            });
+            let fused = g.push(Node {
+                op: Op::Fused(
+                    rid,
+                    fuel_graph::registry::FusedOpParams::Runtime { scalars: vec![3.5, -1.25] },
+                ),
+                inputs: vec![x],
+                shape: s,
+                dtype: DType::F32,
+            });
+            g.set_target_backend(fused, BackendId::Cpu);
+            fused
+        };
+        let g = graph_rc.read().unwrap();
+        let bindings = crate::dispatch::global_bindings();
+        let mut layout_cache: HashMap<NodeId, Layout> = HashMap::new();
+        let item = compile_one(&g, fused_id, &mut layout_cache, &bindings, &SymEnv::default())
+            .expect("compile_one runtime fused op with scalars");
+        let compiled = item.compiled.expect("resolved a kernel");
+        assert!(
+            matches!(
+                &compiled.op_params,
+                crate::kernel::OpParams::JitScalars { scalars } if scalars == &vec![3.5, -1.25]
+            ),
+            "Runtime scalars ride into OpParams::JitScalars, got {:?}",
+            compiled.op_params,
         );
     }
 
