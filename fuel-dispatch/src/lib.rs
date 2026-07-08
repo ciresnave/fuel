@@ -53,6 +53,8 @@ pub mod fused;
 pub mod fused_cost;
 #[cfg(feature = "jit")]
 pub mod jit_adopt;
+#[cfg(all(feature = "jit", feature = "cuda"))]
+pub mod jit_cuda_load;
 pub mod kernel;
 pub mod optimize;
 pub mod pipelined;
