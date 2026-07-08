@@ -78,7 +78,7 @@ use fuel_backend_contract::dyn_backend::DynBackendDevice;
 use fuel_graph::{Graph, Node, NodeId, Op, topo_order_multi};
 use fuel_dispatch::dispatch::global_bindings;
 use fuel_dispatch::dispatched_kernel_source;
-use fuel_dispatch::optimize::{optimize_graph, OptimizedGraph};
+use fuel_dispatch::optimize::{optimize_graph_with_runtime_fusion, OptimizedGraph};
 use fuel_dispatch::plan::PlanOptions;
 use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
 use fuel_dispatch::ranker::{
@@ -740,7 +740,12 @@ fn build_optimized_graph(
     let mut g = graph
         .write()
         .map_err(|_| Error::Msg("graph lock poisoned".into()).bt())?;
-    optimize_graph(&mut g, roots, &bindings_guard, &options)
+    // The PRODUCTION optimize entry includes runtime fusion: adopted (Tier-2 /
+    // JIT-synthesized) fused ops get their gated `Op::Branch` arms emitted
+    // before placement. With nothing adopted the sidecar scan is an empty-Vec
+    // early return — byte-identical to the bare `optimize_graph` every test
+    // that doesn't adopt observes (`runtime-fused-op-registration.md` §6).
+    optimize_graph_with_runtime_fusion(&mut g, roots, &bindings_guard, &options)
 }
 
 fn dispatch_with_plan_retry(
