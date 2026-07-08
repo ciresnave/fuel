@@ -170,10 +170,44 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
     })
 }
 
+/// How many scalar values `tag` consumes from `attrs.scalars` when re-emitted.
+/// The slot machinery (extraction, validation dummy-fill, decompose fill) is
+/// keyed on this; extend alongside `tag_to_op` when a new scalar-param op joins
+/// the v1 vocabulary.
+fn scalar_slot_arity(tag: OpTag) -> usize {
+    matches!(tag, OpTag::AddScalar | OpTag::MulScalar) as usize
+}
+
+/// Count the region's open scalar **slots** in pattern pre-order — scalar-param
+/// ops whose `attrs.scalars` is empty (a baked value is a pattern constant, not
+/// a slot). This is the length of the `scalars` vec `match_region_extract`
+/// returns for a match, and of the `FusedOpParams::Runtime { scalars }` the
+/// fused node must carry for [`decompose_region`] to fill the re-emit.
+pub fn count_scalar_slots(node: &PatternNode) -> usize {
+    match node {
+        PatternNode::Op { op, operands, attrs } => {
+            let own = if attrs.scalars.is_empty() { scalar_slot_arity(*op) } else { 0 };
+            own + operands.iter().map(count_scalar_slots).sum::<usize>()
+        }
+        _ => 0,
+    }
+}
+
 fn validate_representable(node: &PatternNode) -> Result<(), RuntimeFusedError> {
     match node {
         PatternNode::Op { op, operands, attrs } => {
-            if tag_to_op(*op, attrs).is_none() {
+            // A scalar-param op with empty scalars is a SLOT template —
+            // validate re-emittability with a dummy fill (the live value is
+            // substituted from the fused node's `Runtime { scalars }` at
+            // decompose time).
+            let representable = if attrs.scalars.is_empty() && scalar_slot_arity(*op) > 0 {
+                let mut filled = attrs.clone();
+                filled.scalars = vec![0.0; scalar_slot_arity(*op)];
+                tag_to_op(*op, &filled).is_some()
+            } else {
+                tag_to_op(*op, attrs).is_some()
+            };
+            if !representable {
                 return Err(RuntimeFusedError::UnRepresentable(*op));
             }
             for o in operands {
@@ -194,24 +228,52 @@ fn validate_representable(node: &PatternNode) -> Result<(), RuntimeFusedError> {
 /// no recipe, G2). The matched node's inputs are the region's bound external
 /// inputs in bind-index order.
 pub fn decompose_region(graph: &mut Graph, node_id: NodeId) -> NodeId {
-    let fid = match &graph.node(node_id).op {
-        Op::Fused(id, _) => *id,
+    let (fid, node_scalars) = match &graph.node(node_id).op {
+        Op::Fused(id, FusedOpParams::Runtime { scalars }) => (*id, scalars.clone()),
+        Op::Fused(id, _) => (*id, Vec::new()),
         _ => return node_id,
     };
     let region = match runtime_region(fid) {
         Some(r) => r,
         None => return node_id,
     };
+    // The node's live scalars must fill the region's slots exactly (pattern
+    // pre-order, the same canon `match_region_extract` produced them in). A
+    // mismatch is a malformed fused node — surfaced as a no-op fixpoint (the
+    // lowering driver records no progress), never a crash (G2).
+    if node_scalars.len() != count_scalar_slots(&region) {
+        return node_id;
+    }
     let inputs = graph.node(node_id).inputs.clone();
-    emit(graph, &region, &inputs)
+    let mut cursor = node_scalars.as_slice();
+    emit(graph, &region, &inputs, &mut cursor)
 }
 
-fn emit(graph: &mut Graph, node: &PatternNode, inputs: &[NodeId]) -> NodeId {
+fn emit(
+    graph: &mut Graph,
+    node: &PatternNode,
+    inputs: &[NodeId],
+    scalars: &mut &[f64],
+) -> NodeId {
     match node {
         PatternNode::Bind { index } => inputs[*index as usize],
         PatternNode::Op { op, operands, attrs } => {
-            let child_ids: Vec<NodeId> = operands.iter().map(|o| emit(graph, o, inputs)).collect();
+            // Fill an open scalar slot from the cursor in PRE-order (before
+            // descending into operands) — the same canonical order
+            // `match_region_extract` recorded the live values in.
+            let arity = scalar_slot_arity(*op);
+            let filled;
+            let attrs = if attrs.scalars.is_empty() && arity > 0 {
+                let (take, rest) = scalars.split_at(arity);
+                *scalars = rest;
+                filled = OpAttrs { scalars: take.to_vec(), ..attrs.clone() };
+                &filled
+            } else {
+                attrs
+            };
             let prim = tag_to_op(*op, attrs).expect("region validated re-emittable at registration");
+            let child_ids: Vec<NodeId> =
+                operands.iter().map(|o| emit(graph, o, inputs, scalars)).collect();
             // v1 same-shape elementwise: a node's shape/dtype = its first
             // operand's (these ops are type-preserving + shape-preserving).
             let s = graph.node(child_ids[0]).shape.clone();
@@ -225,8 +287,9 @@ fn emit(graph: &mut Graph, node: &PatternNode, inputs: &[NodeId]) -> NodeId {
 }
 
 /// A [`crate::opt::LoweringRule`]-shaped `decompose` for runtime ops: re-emit
-/// the region. The params are unused for parameterless regions (v1); the
-/// scalar `extract:` substitution rides here in a follow-up.
+/// the region. The scalar `extract:` substitution rides on the NODE (its
+/// `FusedOpParams::Runtime { scalars }` fills the region's open slots inside
+/// [`decompose_region`]), so the rule-shaped `params` argument stays unused.
 pub fn runtime_lowering_decompose(
     graph: &mut Graph,
     node_id: NodeId,
@@ -312,5 +375,84 @@ mod tests {
         // Shapes propagated from the leaves (same-shape elementwise).
         assert_eq!(g.node(root).shape, s);
         assert_eq!(g.node(add_id).shape, s);
+    }
+
+    // ---- scalar slots (the `extract:` substitution) ---------------------
+
+    /// tanh(mul_scalar(a)) with the scalar left OPEN (a slot template).
+    fn tanh_mul_scalar_slot_region() -> PatternNode {
+        PatternNode::Op {
+            op: OpTag::Tanh,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Op {
+                op: OpTag::MulScalar,
+                attrs: OpAttrs::default(), // empty scalars = an open slot
+                operands: vec![PatternNode::Bind { index: 0 }],
+            }],
+        }
+    }
+
+    #[test]
+    fn slot_template_registers_and_counts() {
+        // Born-red before slot support: validation rejected an AddScalar/
+        // MulScalar pattern node with no baked value.
+        let id = register_runtime_fused(
+            "test::tanh_mul_scalar::slot",
+            tanh_mul_scalar_slot_region(),
+        )
+        .expect("a slot template is registrable");
+        let region = runtime_region(id).unwrap();
+        assert_eq!(count_scalar_slots(&region), 1, "one open slot");
+    }
+
+    #[test]
+    fn decompose_fills_slots_from_the_node_scalars() {
+        let id = register_runtime_fused(
+            "test::tanh_mul_scalar::fill",
+            tanh_mul_scalar_slot_region(),
+        )
+        .unwrap();
+        let mut g = Graph::new();
+        let s = Shape::from_dims(&[4]);
+        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+        let fused = g.push(Node {
+            op: Op::Fused(id, FusedOpParams::Runtime { scalars: vec![2.5] }),
+            inputs: vec![a],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+
+        let root = decompose_region(&mut g, fused);
+
+        // tanh(mul_scalar(a, 2.5)) — the LIVE value filled the slot.
+        assert!(matches!(g.node(root).op, Op::Tanh));
+        let ms = g.node(root).inputs[0];
+        assert!(
+            matches!(g.node(ms).op, Op::MulScalar(v) if v == 2.5),
+            "slot filled with the node's live scalar, got {:?}",
+            g.node(ms).op,
+        );
+        assert_eq!(g.node(ms).inputs, vec![a]);
+    }
+
+    #[test]
+    fn decompose_slot_count_mismatch_is_a_fixpoint_not_a_crash() {
+        let id = register_runtime_fused(
+            "test::tanh_mul_scalar::mismatch",
+            tanh_mul_scalar_slot_region(),
+        )
+        .unwrap();
+        let mut g = Graph::new();
+        let s = Shape::from_dims(&[4]);
+        let a = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+        // One slot, but the node carries NO scalars — malformed; must be a
+        // no-op fixpoint (G2), never a panic.
+        let fused = g.push(Node {
+            op: Op::Fused(id, FusedOpParams::Runtime { scalars: vec![] }),
+            inputs: vec![a],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+        assert_eq!(decompose_region(&mut g, fused), fused, "mismatch ⇒ fixpoint");
     }
 }
