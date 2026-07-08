@@ -6768,7 +6768,11 @@ impl LlamaModel {
 /// Const (was per-layer); the per-token re-bind on the persistent decode
 /// path recomputes exactly this each token (the `-inf` boundary shifts
 /// with `cached_len`).
-fn build_decode_causal_mask(cached_len: usize, seq: usize, max_seq_len: usize) -> Vec<f32> {
+///
+/// `pub(crate)`: also consumed by the DeepSeek-V2 MLA cached-decode path
+/// (`lazy_deepseek2.rs`), which shares this exact mask shape/semantics
+/// across its `LazyLatentCache`-threaded layers.
+pub(crate) fn build_decode_causal_mask(cached_len: usize, seq: usize, max_seq_len: usize) -> Vec<f32> {
     let mut mask_data = vec![0.0_f32; seq * max_seq_len];
     for q_idx in 0..seq {
         let abs_q = cached_len + q_idx;

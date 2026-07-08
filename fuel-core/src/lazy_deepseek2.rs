@@ -49,7 +49,8 @@
 
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_glm4::apply_interleaved_partial_rope;
-use crate::{Device, Result};
+use crate::lazy_latent_cache::LazyLatentCache;
+use crate::{DType, Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -460,6 +461,193 @@ impl DeepSeek2Model {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
+    /// MLA cached-decode entry point: run `tokens` against a
+    /// [`LazyLatentCache`] holding the growing decode state, returning
+    /// the new tokens' logits and the advanced cache.
+    ///
+    /// This is the MLA decode-time compressed-KV payoff. Per layer the
+    /// cache holds two slots: slot 0 is the **post-norm** compressed
+    /// latent (trailing `[kv_lora_rank]`) and slot 1 is the **post-RoPE**
+    /// single-head rope key `k_pe` (trailing `[qk_rope_head_dim]`).
+    ///
+    /// - The latent is cached *after* `kv_a_layernorm` because RMS-norm
+    ///   is per-token — normalizing the whole prefill at once vs one
+    ///   token at a time is mathematically identical — and the
+    ///   weight-absorption decode trick (a later increment) attends
+    ///   directly against the normed latent, so caching it post-norm
+    ///   avoids re-normalizing the prefix on every step.
+    /// - `k_pe` is cached *after* RoPE because the rotation depends only
+    ///   on the absolute token position, so it is fixed the moment it's
+    ///   written — the same reason standard KV caches store the rotated
+    ///   K rather than re-rotating the whole prefix every step.
+    ///
+    /// Mirrors the LlamaModel/PhiModel cached-decode convention: RoPE
+    /// tables are rebuilt each step at `start_pos = cached_len`, the
+    /// decode causal mask is built once and shared across every layer,
+    /// and the cache position is advanced once at the end of the step.
+    pub fn forward_with_latent_cache(
+        &self,
+        tokens: &[u32],
+        cache: LazyLatentCache,
+    ) -> Result<(LazyTensor, LazyLatentCache)> {
+        let cfg = &self.config;
+
+        if tokens.is_empty() {
+            return Err(crate::Error::Msg(
+                "DeepSeek2Model::forward_with_latent_cache: tokens must be non-empty".into(),
+            ).bt());
+        }
+        if cache.n_layers() != cfg.num_hidden_layers {
+            return Err(crate::Error::Msg(format!(
+                "DeepSeek2Model::forward_with_latent_cache: cache n_layers ({}) != model \
+                 num_hidden_layers ({})",
+                cache.n_layers(), cfg.num_hidden_layers,
+            )).bt());
+        }
+        if cache.n_slots() != 2 {
+            return Err(crate::Error::Msg(format!(
+                "DeepSeek2Model::forward_with_latent_cache: MLA latent cache needs exactly 2 \
+                 slots (compressed latent + k_pe), got {}",
+                cache.n_slots(),
+            )).bt());
+        }
+        if cache.slot_trailing(0).to_vec() != vec![cfg.kv_lora_rank] {
+            return Err(crate::Error::Msg(format!(
+                "DeepSeek2Model::forward_with_latent_cache: slot 0 trailing shape {:?} != \
+                 [kv_lora_rank={}]",
+                cache.slot_trailing(0), cfg.kv_lora_rank,
+            )).bt());
+        }
+        if cache.slot_trailing(1).to_vec() != vec![cfg.qk_rope_head_dim] {
+            return Err(crate::Error::Msg(format!(
+                "DeepSeek2Model::forward_with_latent_cache: slot 1 trailing shape {:?} != \
+                 [qk_rope_head_dim={}]",
+                cache.slot_trailing(1), cfg.qk_rope_head_dim,
+            )).bt());
+        }
+
+        let cached_len = cache.current_seq_len();
+        let seq_new = tokens.len();
+        let total_len = cached_len + seq_new;
+        if total_len > cache.max_seq_len() {
+            return Err(crate::Error::Msg(format!(
+                "DeepSeek2Model::forward_with_latent_cache: cached_len ({cached_len}) + \
+                 seq_new ({seq_new}) = {total_len} exceeds cache max_seq_len ({})",
+                cache.max_seq_len(),
+            )).bt());
+        }
+
+        // Re-anchor onto a FRESH graph, rebinding the realized prefix via
+        // const_*_like — see Self::rebind_latent_cache_fresh_graph's doc for
+        // why this is required (a real `PipelinedExecutor` gap, not a style
+        // choice).
+        let cache = self.rebind_latent_cache_fresh_graph(cache, cached_len)?;
+
+        // Anchor this step's graph on the cache's existing buffer.
+        let anchor = cache.slot_buffer_full(0, 0);
+        let h = self.embed_tokens_anchored(&anchor, tokens)?;
+
+        // RoPE tables for THIS step at the absolute start position.
+        let (rope_cos, rope_sin) = h.rope_tables_const(
+            cfg.rope_theta, cached_len, seq_new, cfg.qk_rope_head_dim,
+        );
+
+        // Decode mask, built once and shared across every layer.
+        let mask_data = crate::lazy::build_decode_causal_mask(cached_len, seq_new, total_len);
+        let mask = h
+            .const_f32_like(mask_data, Shape::from_dims(&[seq_new, total_len]))
+            .reshape(Shape::from_dims(&[1, 1, seq_new, total_len]))?;
+
+        let mut cache = cache;
+        let mut x = h;
+        for (idx, layer) in self.weights.layers.iter().enumerate() {
+            let (x_next, cache_next) = self.apply_layer_cached(
+                &x, layer, idx, &rope_cos, &rope_sin, &mask, cache, cached_len,
+            )?;
+            x = x_next;
+            cache = cache_next;
+        }
+
+        let h_norm = x.rms_norm_affine(
+            std::sync::Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps,
+        )?;
+        let logits = self.apply_lm_head(&h_norm)?;
+        let cache = cache.advance_by(seq_new);
+        Ok((logits, cache))
+    }
+
+    /// Re-anchor `cache` onto a brand-new graph, rebinding its filled
+    /// prefix (`[0..cached_len]` of every layer/slot) as fresh `Const`
+    /// nodes. A no-op (returns `cache` untouched) when `cached_len == 0`
+    /// (nothing to carry over — the incoming cache is already a fresh,
+    /// single-generation graph).
+    ///
+    /// # Why this exists
+    ///
+    /// Naively threading `LazyLatentCache` directly across
+    /// `forward_with_latent_cache` calls (no rebind — every call's ops
+    /// land on the SAME ever-growing `Rc<RefCell<Graph>>`) hits a real
+    /// `PipelinedExecutor` gap once the model has ≥ 2 layers AND ≥ 2
+    /// calls: `fuel-dispatch/src/pipelined.rs`'s realize loop evicts a
+    /// `WriteSlice`'s destructive `dest` input from the `StorageCache`
+    /// the moment that `WriteSlice` work item completes (see the
+    /// `destructive_input` handling around line 904), on the assumption
+    /// that a `WriteSlice` destination has exactly one live consumer —
+    /// itself. That assumption breaks here: layer `L`'s post-append
+    /// buffer from call *N* is read TWICE within the ancestor set of
+    /// call *N+1*'s output — once as the (non-destructive) input to
+    /// layer `L`'s OWN attention math from call *N* (an ancestor of
+    /// layer `L+1`'s call-*N* write, which call *N+1* still depends on
+    /// transitively), and again as the *destination* of layer `L`'s
+    /// call-*N+1* append. Whichever the scheduler happens to run first
+    /// wins; if the destructive append runs first, the eviction removes
+    /// the entry before the attention-math view op reads it and realize
+    /// fails with `PipelinedExecutor: view-op input NodeId(..) of
+    /// NodeId(..) not realized`. This reproduces with 2+ layers and 2+
+    /// `forward_with_latent_cache` calls regardless of WHEN `realize` is
+    /// called (immediately per step or deferred to the end) — it is a
+    /// graph-structural hazard, not a call-ordering one.
+    ///
+    /// The fix implemented here is the strategy [`LazyLatentCache`]'s own
+    /// module doc already names as the alternative to per-call graph
+    /// reuse: "re-creates the cache on the new step's graph (rebinding
+    /// realized latents via `const_*_like`)". Each call now starts from
+    /// its OWN fresh graph seeded with the REALIZED (host `f32`) prefix,
+    /// so no `WriteSlice` destination is ever shared across calls — every
+    /// destructive destination has exactly one consumer again, matching
+    /// the executor's assumption. Uses only [`LazyLatentCache`]'s public
+    /// API (`new` + `append` + `advance_by`), no changes to that type.
+    fn rebind_latent_cache_fresh_graph(
+        &self, cache: LazyLatentCache, cached_len: usize,
+    ) -> Result<LazyLatentCache> {
+        if cached_len == 0 {
+            return Ok(cache);
+        }
+        let cfg = &self.config;
+        let fresh_anchor = LazyTensor::from_f32(
+            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
+        );
+        let mut fresh = LazyLatentCache::new(
+            &fresh_anchor,
+            cache.n_layers(),
+            cache.max_seq_len(),
+            vec![cache.slot_trailing(0).to_vec(), cache.slot_trailing(1).to_vec()],
+            DType::F32,
+        )?;
+        for layer in 0..cache.n_layers() {
+            let latent_prefix = cache.slot(layer, 0).realize_f32();
+            let kpe_prefix = cache.slot(layer, 1).realize_f32();
+            let latent_c = fresh_anchor.const_f32_like(
+                latent_prefix, Shape::from_dims(&[cached_len, cfg.kv_lora_rank]),
+            );
+            let kpe_c = fresh_anchor.const_f32_like(
+                kpe_prefix, Shape::from_dims(&[cached_len, cfg.qk_rope_head_dim]),
+            );
+            fresh = fresh.append(layer, &[&latent_c, &kpe_c])?;
+        }
+        Ok(fresh.advance_by(cached_len))
+    }
+
     /// Build per-token embeddings without running the decoder.
     pub fn embed_tokens_anchored(
         &self, anchor: &LazyTensor, tokens: &[u32],
@@ -555,6 +743,144 @@ impl DeepSeek2Model {
             )).bt()),
         };
         h1.add(&mlp_out)
+    }
+
+    /// Cached-decode sibling of [`Self::apply_layer`]: same norms, same
+    /// residuals, same dense/MoE FFN dispatch — only attention goes
+    /// through [`Self::mla_attention_cached`] and the cache threads
+    /// through functionally.
+    fn apply_layer_cached(
+        &self,
+        x: &LazyTensor,
+        layer: &DeepSeek2LayerWeights,
+        layer_idx: usize,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+        mask: &LazyTensor,
+        cache: LazyLatentCache,
+        cached_len: usize,
+    ) -> Result<(LazyTensor, LazyLatentCache)> {
+        let cfg = &self.config;
+
+        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
+        let (attn, cache) = self.mla_attention_cached(
+            &x_norm, &layer.mla, rope_cos, rope_sin, mask, cache, layer_idx, cached_len,
+        )?;
+        let h1 = x.add(&attn)?;
+
+        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
+        let expected_moe = cfg.layer_uses_moe(layer_idx);
+        let mlp_out = match (&layer.ffn, expected_moe) {
+            (DeepSeek2FfnWeights::Dense(w), false) => self.apply_dense_mlp(&h1_norm, w)?,
+            (DeepSeek2FfnWeights::Moe(w), true) => self.apply_moe(&h1_norm, w)?,
+            _ => return Err(crate::Error::Msg(format!(
+                "DeepSeek-V2 layer {layer_idx}: FFN weight kind does not match \
+                 config-derived kind (uses_moe={expected_moe}) — config + weights are inconsistent",
+            )).bt()),
+        };
+        let out = h1.add(&mlp_out)?;
+        Ok((out, cache))
+    }
+
+    /// Cached-decode sibling of [`Self::mla_attention`]. `x` is the
+    /// post-input-norm hidden state for the NEW tokens only, `(1,
+    /// seq_new, hidden)`. `rope_cos`/`rope_sin` are `[seq_new, rope]`
+    /// tables built at the absolute start position `cached_len`. `mask`
+    /// is the shared `(1, 1, seq_new, total_len)` decode causal mask.
+    ///
+    /// Appends this step's post-norm compressed latent and post-RoPE
+    /// `k_pe` to the cache, reads back the FULL attended prefix
+    /// (`cached_len + seq_new` tokens), up-projects it through
+    /// `kv_b_proj`, and attends the new queries against it.
+    fn mla_attention_cached(
+        &self,
+        x: &LazyTensor,
+        w: &DeepSeek2MlaWeights,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+        mask: &LazyTensor,
+        cache: LazyLatentCache,
+        layer_idx: usize,
+        cached_len: usize,
+    ) -> Result<(LazyTensor, LazyLatentCache)> {
+        let cfg = &self.config;
+        let n_heads = cfg.num_attention_heads;
+        let q_head_dim = cfg.q_head_dim();
+        let nope = cfg.qk_nope_head_dim;
+        let rope = cfg.qk_rope_head_dim;
+        let v_dim = cfg.v_head_dim;
+        let kvr = cfg.kv_lora_rank;
+        let s = x.shape().dims()[1];
+
+        // ---- Q projection (plain or LoRA), split + RoPE on the pe half ------
+        let q = match &w.q_proj {
+            DeepSeek2QProj::Plain(plain) => {
+                plain.apply_linear(x, cfg.hidden_size, n_heads * q_head_dim)
+            }
+            DeepSeek2QProj::Lora { a, norm_gain, b } => {
+                let lo = a.apply_linear(x, cfg.hidden_size, norm_gain.len());
+                let lo_norm = lo.rms_norm_affine(Arc::clone(norm_gain), cfg.rms_norm_eps)?;
+                b.apply_linear(&lo_norm, norm_gain.len(), n_heads * q_head_dim)
+            }
+        };
+        let q = q.split_heads(n_heads, q_head_dim)?;
+        let q_nope = q.slice(3_usize, 0, nope)?;
+        let q_pe = q.slice(3_usize, nope, rope)?;
+        let q_pe_rot = apply_interleaved_partial_rope(&q_pe, rope_cos, rope_sin, rope, rope)?;
+
+        // ---- New KV latents for this step's tokens only ---------------------
+        let kv_a = w.kv_a_proj_with_mqa.apply_linear(x, cfg.hidden_size, kvr + rope);
+        let compressed_kv = kv_a.slice(2_usize, 0, kvr)?;
+        let k_pe_single = kv_a.slice(2_usize, kvr, rope)?;
+
+        let compressed_kv_norm = compressed_kv.rms_norm_affine(
+            Arc::clone(&w.kv_a_layernorm_gain), cfg.rms_norm_eps,
+        )?;
+
+        let k_pe_single_h = k_pe_single.split_heads(1, rope)?;
+        let k_pe_rot = apply_interleaved_partial_rope(&k_pe_single_h, rope_cos, rope_sin, rope, rope)?;
+
+        // ---- Append to cache (squeeze the batch==1 dim) ----------------------
+        let latent_new = compressed_kv_norm.reshape(Shape::from_dims(&[s, kvr]))?;
+        let kpe_new = k_pe_rot.reshape(Shape::from_dims(&[s, rope]))?;
+        let cache = cache.append(layer_idx, &[&latent_new, &kpe_new])?;
+
+        // ---- Read back the FULL attended prefix (cached + new) ---------------
+        // Do NOT use cache.slot() here — current_seq_len hasn't advanced yet
+        // this step, so it would clip off the tokens just appended.
+        let total = cached_len + s;
+        let latent_all = cache
+            .slot_buffer_full(layer_idx, 0)
+            .slice(0_usize, 0, total)?
+            .reshape(Shape::from_dims(&[1, total, kvr]))?;
+        let kpe_all = cache
+            .slot_buffer_full(layer_idx, 1)
+            .slice(0_usize, 0, total)?
+            .reshape(Shape::from_dims(&[1, 1, total, rope]))?
+            .broadcast_to(Shape::from_dims(&[1, n_heads, total, rope]))?;
+
+        // ---- Up-project the whole latent prefix (cached + new) ---------------
+        let kv = w.kv_b_proj.apply_linear(&latent_all, kvr, n_heads * (nope + v_dim));
+        let kv = kv.split_heads(n_heads, nope + v_dim)?;
+        let k_nope = kv.slice(3_usize, 0, nope)?;
+        let v = kv.slice(3_usize, nope, v_dim)?;
+
+        // Cat Q and K along the head_dim axis.
+        let q_full = q_nope.concat(&q_pe_rot, 3_usize)?; // (1, H, s, qhd)
+        let k_full = k_nope.concat(&kpe_all, 3_usize)?; // (1, H, total, qhd)
+
+        // ---- Attention --------------------------------------------------------
+        let k_t = k_full.transpose()?;
+        let scale = 1.0_f64 / (q_head_dim as f64).sqrt();
+        let scores = q_full.matmul(&k_t)?; // (1, H, s, total)
+        let scores_scaled = scores.mul_scalar(scale);
+        let scores_masked = scores_scaled.broadcast_add(mask)?;
+        let probs = scores_masked.softmax_last_dim()?;
+        let ctx = probs.matmul(&v)?; // (1, H, s, v_dim)
+
+        let merged = ctx.merge_heads()?;
+        let out = w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size);
+        Ok((out, cache))
     }
 
     fn mla_attention(
@@ -991,6 +1317,115 @@ mod tests {
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
+    }
+
+    /// The MLA cached-decode acceptance test: incremental
+    /// `forward_with_latent_cache` steps (prefill 2, decode 1, decode 1)
+    /// must reproduce the one-shot `forward` over the same 4 tokens,
+    /// row for row. Exercised for both plain-Q and LoRA-Q configs.
+    #[test]
+    fn forward_with_latent_cache_matches_one_shot_forward() {
+        for cfg in [tiny_config_plain_q(), tiny_config_lora_q()] {
+            let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+            let vocab = cfg.vocab_size;
+            let tokens: Vec<u32> = vec![1, 2, 3, 4];
+
+            // One-shot reference over all 4 tokens.
+            let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
+
+            // Cached run: prefill 2 tokens, then two single-token decode
+            // steps, each realized BEFORE the next step is built (true
+            // decode order). This ordering originally hit a real
+            // `PipelinedExecutor` gap — see
+            // `DeepSeek2Model::rebind_latent_cache_fresh_graph`'s doc
+            // comment for the full root-cause writeup — where a
+            // `WriteSlice` cache-append destination shared across calls on
+            // one ever-growing graph got evicted by a later step's append
+            // before an earlier step's own attention math had read it.
+            // `forward_with_latent_cache` now works around it internally
+            // (rebinding each call onto its own fresh graph), so plain
+            // per-step realize works here without any test-side fallback.
+            let anchor = LazyTensor::from_f32(
+                vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
+            );
+            let cache = LazyLatentCache::new(
+                &anchor, cfg.num_hidden_layers, 8,
+                vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
+                DType::F32,
+            ).unwrap();
+
+            let (logits_a, cache) = model.forward_with_latent_cache(&[1, 2], cache).unwrap();
+            assert_eq!(logits_a.shape().dims(), &[1, 2, vocab]);
+            let logits_a = logits_a.realize_f32();
+
+            let (logits_b, cache) = model.forward_with_latent_cache(&[3], cache).unwrap();
+            assert_eq!(logits_b.shape().dims(), &[1, 1, vocab]);
+            let logits_b = logits_b.realize_f32();
+
+            let (logits_c, cache) = model.forward_with_latent_cache(&[4], cache).unwrap();
+            assert_eq!(logits_c.shape().dims(), &[1, 1, vocab]);
+            let logits_c = logits_c.realize_f32();
+
+            assert_eq!(cache.current_seq_len(), 4);
+
+            // Parity: rows 0-1 of one-shot == logits_a; row 2 == logits_b;
+            // row 3 == logits_c. Try bit-exact first; only fall back to a
+            // tight epsilon if small-ulp summation-order drift shows up.
+            let mut bit_exact = true;
+            let mut max_diff = 0.0_f32;
+            let mut check_row = |ref_row: &[f32], got: &[f32]| {
+                for (r, g) in ref_row.iter().zip(got.iter()) {
+                    if r.to_bits() != g.to_bits() {
+                        bit_exact = false;
+                    }
+                    max_diff = max_diff.max((r - g).abs());
+                }
+            };
+            check_row(&logits_ref[0..2 * vocab], &logits_a);
+            check_row(&logits_ref[2 * vocab..3 * vocab], &logits_b);
+            check_row(&logits_ref[3 * vocab..4 * vocab], &logits_c);
+
+            if !bit_exact {
+                eprintln!(
+                    "forward_with_latent_cache_matches_one_shot_forward: not bit-exact \
+                     (q_lora_rank={:?}), max abs diff = {max_diff}", cfg.q_lora_rank,
+                );
+                assert!(max_diff < 1e-5,
+                    "forward_with_latent_cache vs one-shot forward diverge beyond tolerance: \
+                     max_diff={max_diff}");
+            }
+        }
+    }
+
+    /// Bad cache geometry (slot count, trailing shape, or capacity) must
+    /// surface as a typed `Err`, never a panic.
+    #[test]
+    fn forward_with_latent_cache_rejects_bad_cache_geometry() {
+        let cfg = tiny_config_lora_q();
+        let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let anchor = LazyTensor::from_f32(
+            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
+        );
+
+        // Wrong slot count (1 slot instead of 2).
+        let bad_slots = LazyLatentCache::new(
+            &anchor, cfg.num_hidden_layers, 8, vec![vec![cfg.kv_lora_rank]], DType::F32,
+        ).unwrap();
+        assert!(model.forward_with_latent_cache(&[1, 2], bad_slots).is_err());
+
+        // Wrong trailing shape on slot 0.
+        let bad_trailing = LazyLatentCache::new(
+            &anchor, cfg.num_hidden_layers, 8,
+            vec![vec![cfg.kv_lora_rank + 1], vec![cfg.qk_rope_head_dim]], DType::F32,
+        ).unwrap();
+        assert!(model.forward_with_latent_cache(&[1, 2], bad_trailing).is_err());
+
+        // Exceeding capacity: max_seq_len 2, feed 3 tokens.
+        let small_cap = LazyLatentCache::new(
+            &anchor, cfg.num_hidden_layers, 2,
+            vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]], DType::F32,
+        ).unwrap();
+        assert!(model.forward_with_latent_cache(&[1, 2, 3], small_cap).is_err());
     }
 
     #[test]
