@@ -669,6 +669,365 @@ impl DeepSeek2Model {
         Ok((logits, cache))
     }
 
+    /// MLA increment 4 — the persistent (cross-graph) N-slot decode-cache
+    /// entry point. D1-style: a fresh graph per call, but the cache
+    /// storage is a device-resident [`crate::inference_context::
+    /// LatentKvCache`] that survives across calls — **no host round-trip
+    /// of the cached prefix**, unlike [`Self::forward_with_latent_cache`]
+    /// / [`Self::forward_with_latent_cache_absorbed`], whose
+    /// `rebind_latent_cache_fresh_graph` step realizes the whole prefix to
+    /// host `f32` and re-uploads it as fresh Consts every call. Those two
+    /// remain the right choice for single-graph / prefill-only use (no
+    /// `InferenceContext` bookkeeping); a decode loop should use this
+    /// entry point instead. Mirrors [`crate::lazy::LlamaModel::
+    /// forward_with_kv_context_impl`]'s D1 shape: per-layer `Const`
+    /// placeholders bound to the cache's persistent Storage Arcs via
+    /// [`crate::inference_context::InferenceContext::insert`], written in
+    /// place via `Op::WriteSlice` at a `SymEnv`-bound dynamic offset, then
+    /// unbound after realize.
+    ///
+    /// Attention always goes through the **absorbed** (weight-absorption)
+    /// math — see [`Self::mla_attention_latent_kv`]'s doc for why: under
+    /// the full fixed-capacity read this path always performs (no slice to
+    /// `cached_len + seq`), the non-absorbed form would re-run
+    /// `kv_b_proj`'s up-projection over the *entire* `max_seq_len` capacity
+    /// every step; absorption attends directly against the cached latent
+    /// and pays no such cost.
+    ///
+    /// Returns the **last-position** logits, `[vocab_size]` — same shape
+    /// choice as [`crate::lazy::LlamaModel::forward_with_kv_context`].
+    pub fn forward_with_latent_kv_context(
+        &self,
+        tokens: &[u32],
+        cache: &mut crate::inference_context::LatentKvCache,
+        ctx: &mut crate::inference_context::InferenceContext,
+    ) -> Result<Vec<f32>> {
+        let cfg = &self.config;
+        let seq = tokens.len();
+
+        if tokens.is_empty() {
+            return Err(crate::Error::Msg(
+                "DeepSeek2Model::forward_with_latent_kv_context: tokens must be non-empty".into(),
+            ).bt());
+        }
+        if cache.n_layers() != cfg.num_hidden_layers {
+            return Err(crate::Error::Msg(format!(
+                "DeepSeek2Model::forward_with_latent_kv_context: cache n_layers ({}) != model \
+                 num_hidden_layers ({})",
+                cache.n_layers(), cfg.num_hidden_layers,
+            )).bt());
+        }
+        if cache.n_slots() != 2 {
+            return Err(crate::Error::Msg(format!(
+                "DeepSeek2Model::forward_with_latent_kv_context: MLA latent cache needs exactly \
+                 2 slots (compressed latent + k_pe), got {}",
+                cache.n_slots(),
+            )).bt());
+        }
+        if cache.slot_trailing(0).to_vec() != vec![cfg.kv_lora_rank] {
+            return Err(crate::Error::Msg(format!(
+                "DeepSeek2Model::forward_with_latent_kv_context: slot 0 trailing shape {:?} != \
+                 [kv_lora_rank={}]",
+                cache.slot_trailing(0), cfg.kv_lora_rank,
+            )).bt());
+        }
+        if cache.slot_trailing(1).to_vec() != vec![cfg.qk_rope_head_dim] {
+            return Err(crate::Error::Msg(format!(
+                "DeepSeek2Model::forward_with_latent_kv_context: slot 1 trailing shape {:?} != \
+                 [qk_rope_head_dim={}]",
+                cache.slot_trailing(1), cfg.qk_rope_head_dim,
+            )).bt());
+        }
+        if cache.dtype != DType::F32 {
+            return Err(crate::Error::Msg(format!(
+                "DeepSeek2Model::forward_with_latent_kv_context: cache dtype {:?} != F32 \
+                 (MLA weight absorption is F32-only today)",
+                cache.dtype,
+            )).bt());
+        }
+        let cached_len = cache.cached_len;
+        let max_seq_len = cache.max_seq_len;
+        if cached_len + seq > max_seq_len {
+            return Err(crate::Error::Msg(format!(
+                "DeepSeek2Model::forward_with_latent_kv_context: cached_len ({cached_len}) + \
+                 seq ({seq}) > max_seq_len ({max_seq_len})",
+            )).bt());
+        }
+
+        // Bootstrap the fresh graph exactly like run_backbone: token
+        // embedding lookup → (1, seq, hidden).
+        let mut h = LazyTensor::embed_tokens(
+            self.weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens,
+            &Device::cpu(),
+        )?;
+
+        // Phase D: the per-token KV-write offset is a runtime symbol bound
+        // through the per-pass SymEnv at realize, not baked into the
+        // graph. A fixed id (re-bound each pass) — the same convention
+        // `LlamaModel::forward_with_kv_context_impl` uses, even though
+        // this entry point rebuilds a fresh graph every call (no held-
+        // session reuse yet): keeping the offset symbolic rather than a
+        // baked literal keeps this path's graph shape identical to what a
+        // future plan-once session would hold.
+        let cached_len_sym = fuel_ir::SymId(0);
+
+        // RoPE tables at the absolute start position, shared across layers.
+        let (rope_cos, rope_sin) = h.rope_tables_const(
+            cfg.rope_theta, cached_len, seq, cfg.qk_rope_head_dim,
+        );
+
+        // Decode mask, hoisted once and shared across every layer. Width
+        // is max_seq_len (full capacity), NOT cached_len + seq — the
+        // persistent path always attends over the full buffer, relying on
+        // the mask to hide both future positions and the zero-init/stale
+        // tail (same trade LlamaModel's forward_with_kv_context documents).
+        let mask_data = crate::lazy::build_decode_causal_mask(cached_len, seq, max_seq_len);
+        let mask = h
+            .const_f32_like(mask_data, Shape::from_dims(&[seq, max_seq_len]))
+            .reshape(Shape::from_dims(&[1, 1, seq, max_seq_len]))?;
+
+        let kvr = cfg.kv_lora_rank;
+        let rope = cfg.qk_rope_head_dim;
+
+        // Per layer: bind both cache slot Arcs to fresh Const NodeIds,
+        // dispatch through the WriteSlice variant. Track the NodeIds we
+        // insert into ctx so we can clean them up after realize (the
+        // per-step NodeIds reference a graph that drops at the end of
+        // this method; leaving them in ctx.persistent would leak).
+        let mut bound_node_ids: Vec<fuel_graph::NodeId> =
+            Vec::with_capacity(2 * cfg.num_hidden_layers);
+        for (li, layer_weights) in self.weights.layers.iter().enumerate() {
+            let latent_arc = cache.slot_storage(li, 0).ok_or_else(|| crate::Error::Msg(format!(
+                "DeepSeek2Model::forward_with_latent_kv_context: cache layer {li} has no \
+                 latent slot (with_capacity should have populated all layers)",
+            )).bt())?;
+            let kpe_arc = cache.slot_storage(li, 1).ok_or_else(|| crate::Error::Msg(format!(
+                "DeepSeek2Model::forward_with_latent_kv_context: cache layer {li} has no \
+                 k_pe slot",
+            )).bt())?;
+
+            let latent_c = h.const_placeholder_like(Shape::from_dims(&[max_seq_len, kvr]), DType::F32);
+            let kpe_c = h.const_placeholder_like(Shape::from_dims(&[max_seq_len, rope]), DType::F32);
+            let latent_id = latent_c.node_id();
+            let kpe_id = kpe_c.node_id();
+            ctx.insert(latent_id, latent_arc);
+            ctx.insert(kpe_id, kpe_arc);
+            bound_node_ids.push(latent_id);
+            bound_node_ids.push(kpe_id);
+
+            h = self.apply_layer_with_latent_kv_writes(
+                &h, layer_weights, li, &rope_cos, &rope_sin, &mask, &latent_c, &kpe_c, cached_len_sym,
+            )?;
+        }
+
+        let h_norm = h.rms_norm_affine(
+            std::sync::Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps,
+        )?;
+        let logits = self.apply_lm_head(&h_norm)?; // (1, seq, vocab_size)
+        let last_pos = seq - 1;
+        let logits_root = logits
+            .slice(1_usize, last_pos, 1)?
+            .reshape(Shape::from_dims(&[cfg.vocab_size]))?;
+
+        // Realize through InferenceContext. The WriteSlice nodes mutate
+        // the cache buffers in place at the runtime offset `cached_len`,
+        // supplied for this pass via the SymEnv; downstream attention
+        // reads the post-write full-capacity buffers.
+        let mut sym_env = fuel_ir::SymEnv::new();
+        sym_env.bind(cached_len_sym, cached_len).map_err(crate::Error::from)?;
+        let logits_vec = ctx.realize_one_as_with_env::<f32>(
+            logits_root.graph_handle(),
+            logits_root.node_id(),
+            &sym_env,
+        )?;
+
+        // Clean up per-step bindings from ctx so they don't accumulate
+        // across decode steps (each step gets a fresh graph; the previous
+        // step's NodeIds are dead).
+        for id in bound_node_ids {
+            ctx.remove(id);
+        }
+
+        // Bump cache state — once per forward call, not per token.
+        cache.cached_len += seq;
+        for li in 0..cfg.num_hidden_layers {
+            cache.bump_version(li, 0);
+            cache.bump_version(li, 1);
+        }
+
+        Ok(logits_vec)
+    }
+
+    /// Cached-decode sibling of [`Self::apply_layer_cached`] for the
+    /// persistent [`crate::inference_context::LatentKvCache`] path: same
+    /// norms / residuals / dense-or-MoE FFN dispatch, but attention goes
+    /// through [`Self::mla_attention_latent_kv`] and there is no functional
+    /// cache threading — the cache is written in place via the
+    /// `latent_c`/`kpe_c` `Op::WriteSlice` destinations
+    /// [`Self::forward_with_latent_kv_context`] bound into `ctx` before
+    /// calling this fn.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_layer_with_latent_kv_writes(
+        &self,
+        x: &LazyTensor,
+        layer: &DeepSeek2LayerWeights,
+        layer_idx: usize,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+        mask: &LazyTensor,
+        latent_c: &LazyTensor,
+        kpe_c: &LazyTensor,
+        cached_len_sym: fuel_ir::SymId,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+
+        let x_norm = x.rms_norm_affine(Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
+        let attn = self.mla_attention_latent_kv(
+            &x_norm, &layer.mla, rope_cos, rope_sin, mask, latent_c, kpe_c, cached_len_sym,
+        )?;
+        let h1 = x.add(&attn)?;
+
+        let h1_norm = h1.rms_norm_affine(Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
+        let expected_moe = cfg.layer_uses_moe(layer_idx);
+        let mlp_out = match (&layer.ffn, expected_moe) {
+            (DeepSeek2FfnWeights::Dense(w), false) => self.apply_dense_mlp(&h1_norm, w)?,
+            (DeepSeek2FfnWeights::Moe(w), true) => self.apply_moe(&h1_norm, w)?,
+            _ => return Err(crate::Error::Msg(format!(
+                "DeepSeek-V2 layer {layer_idx}: FFN weight kind does not match \
+                 config-derived kind (uses_moe={expected_moe}) — config + weights are inconsistent",
+            )).bt()),
+        };
+        h1.add(&mlp_out)
+    }
+
+    /// Attention core of [`Self::apply_layer_with_latent_kv_writes`] — the
+    /// persistent-cache sibling of [`Self::mla_attention_cached_absorbed`].
+    /// `x` is the post-input-norm hidden state for the NEW tokens only,
+    /// `(1, seq_new, hidden)`. `latent_c`/`kpe_c` are this layer's
+    /// full-capacity `[max_seq_len, kv_lora_rank]` /
+    /// `[max_seq_len, qk_rope_head_dim]` `Const` placeholders, bound by the
+    /// caller to the [`crate::inference_context::LatentKvCache`]'s
+    /// persistent Storage Arcs. `mask` is the shared
+    /// `(1, 1, seq_new, max_seq_len)` decode causal mask.
+    ///
+    /// Always uses the **absorbed** (weight-absorption) math — folding
+    /// `kv_b_proj`'s per-head `W_UK`/`W_UV` slices into the query/context
+    /// math so attention reads the cached latent directly (see
+    /// [`Self::mla_attention_cached_absorbed`]'s doc for the derivation).
+    /// This is not merely the faster of two equally-valid choices here:
+    /// this path reads the **full fixed-capacity buffer every step** (no
+    /// slice to `cached_len + seq_new`, so the graph's shape stays
+    /// token-independent — the same trade [`crate::lazy::
+    /// apply_layer_with_kv_writes`] documents for LlamaModel). Under that
+    /// constraint the non-absorbed form would re-run `kv_b_proj`'s
+    /// up-projection over the *entire* `max_seq_len` capacity
+    /// (`O(max_seq_len · kv_lora_rank · n_heads · (nope + v_dim))`) on
+    /// EVERY decode step, not just the live prefix; the absorbed form's
+    /// widest term (`O(seq_new · max_seq_len · n_heads · kv_lora_rank)`)
+    /// has no such re-projection cost. The zero-init tail beyond
+    /// `cached_len + seq_new` still gets attended (masked to `-inf` before
+    /// softmax, contributing exactly zero) — numerically consistent with
+    /// LlamaModel's identical full-capacity-read trade.
+    #[allow(clippy::too_many_arguments)]
+    fn mla_attention_latent_kv(
+        &self,
+        x: &LazyTensor,
+        w: &DeepSeek2MlaWeights,
+        rope_cos: &LazyTensor,
+        rope_sin: &LazyTensor,
+        mask: &LazyTensor,
+        latent_c: &LazyTensor,
+        kpe_c: &LazyTensor,
+        cached_len_sym: fuel_ir::SymId,
+    ) -> Result<LazyTensor> {
+        let cfg = &self.config;
+        let n_heads = cfg.num_attention_heads;
+        let q_head_dim = cfg.q_head_dim();
+        let nope = cfg.qk_nope_head_dim;
+        let rope = cfg.qk_rope_head_dim;
+        let v_dim = cfg.v_head_dim;
+        let kvr = cfg.kv_lora_rank;
+        let s = x.shape().dims()[1];
+        let max_seq_len = latent_c.shape().dims()[0];
+
+        // ---- Q projection (plain or LoRA), split + RoPE on the pe half ------
+        let q = match &w.q_proj {
+            DeepSeek2QProj::Plain(plain) => {
+                plain.apply_linear(x, cfg.hidden_size, n_heads * q_head_dim)
+            }
+            DeepSeek2QProj::Lora { a, norm_gain, b } => {
+                let lo = a.apply_linear(x, cfg.hidden_size, norm_gain.len());
+                let lo_norm = lo.rms_norm_affine(Arc::clone(norm_gain), cfg.rms_norm_eps)?;
+                b.apply_linear(&lo_norm, norm_gain.len(), n_heads * q_head_dim)
+            }
+        };
+        let q = q.split_heads(n_heads, q_head_dim)?;
+        let q_nope = q.slice(3_usize, 0, nope)?;
+        let q_pe = q.slice(3_usize, nope, rope)?;
+        let q_pe_rot = apply_interleaved_partial_rope(&q_pe, rope_cos, rope_sin, rope, rope)?;
+
+        // ---- New KV latents for this step's tokens only ---------------------
+        let kv_a = w.kv_a_proj_with_mqa.apply_linear(x, cfg.hidden_size, kvr + rope);
+        let compressed_kv = kv_a.slice(2_usize, 0, kvr)?;
+        let k_pe_single = kv_a.slice(2_usize, kvr, rope)?;
+
+        let compressed_kv_norm = compressed_kv.rms_norm_affine(
+            Arc::clone(&w.kv_a_layernorm_gain), cfg.rms_norm_eps,
+        )?;
+
+        let k_pe_single_h = k_pe_single.split_heads(1, rope)?;
+        let k_pe_rot = apply_interleaved_partial_rope(&k_pe_single_h, rope_cos, rope_sin, rope, rope)?;
+
+        // ---- Write this step's slabs into the persistent capacity buffers ---
+        // Destructive on latent_c/kpe_c: the returned tensors are the
+        // post-write reference to the SAME underlying Arc — downstream
+        // reads MUST go through latent_full/kpe_full, not latent_c/kpe_c.
+        let latent_new = compressed_kv_norm.reshape(Shape::from_dims(&[s, kvr]))?; // [s, kvr]
+        let kpe_new = k_pe_rot.reshape(Shape::from_dims(&[s, rope]))?; // [s, rope]
+        let dyn_off = fuel_ir::DynScalar::Sym(cached_len_sym);
+        let latent_full = latent_c.write_slice_dyn(
+            &latent_new, vec![(0, s), (0, kvr)], 0, dyn_off,
+        )?; // [max_seq, kvr]
+        let kpe_full = kpe_c.write_slice_dyn(
+            &kpe_new, vec![(0, s), (0, rope)], 0, dyn_off,
+        )?; // [max_seq, rope]
+
+        // ---- Absorbed weights: kv_b_proj split into per-head W_UK^T / W_UV --
+        let (w_uk_t_data, w_uv_data) = absorb_split_kv_b(&w.kv_b_proj, kvr, n_heads, nope, v_dim)?;
+        let w_uk_t = x.const_f32_like(w_uk_t_data, Shape::from_dims(&[1, n_heads, nope, kvr]));
+        let w_uv = x.const_f32_like(w_uv_data, Shape::from_dims(&[1, n_heads, kvr, v_dim]));
+
+        // ---- q_absorbed[h] = q_nope[h] @ W_UK[h]^T ---------------------------
+        let q_absorbed = q_nope.matmul(&w_uk_t)?; // (1,H,s,nope) @ (1,H,nope,kvr) -> (1,H,s,kvr)
+
+        // ---- Attend over the FULL fixed-capacity buffer (no slice) ----------
+        let c4 = latent_full
+            .reshape(Shape::from_dims(&[1, 1, max_seq_len, kvr]))?
+            .broadcast_to(Shape::from_dims(&[1, n_heads, max_seq_len, kvr]))?;
+        let c_t = c4.transpose()?; // (1, H, kvr, max_seq)
+        let scores_nope = q_absorbed.matmul(&c_t)?; // (1, H, s, max_seq)
+
+        let kpe4 = kpe_full
+            .reshape(Shape::from_dims(&[1, 1, max_seq_len, rope]))?
+            .broadcast_to(Shape::from_dims(&[1, n_heads, max_seq_len, rope]))?;
+        let kpe_t = kpe4.transpose()?; // (1, H, rope, max_seq)
+        let scores_rope = q_pe_rot.matmul(&kpe_t)?; // (1, H, s, max_seq)
+
+        let scale = 1.0_f64 / (q_head_dim as f64).sqrt();
+        let scores = scores_nope.add(&scores_rope)?;
+        let scores_scaled = scores.mul_scalar(scale);
+        let scores_masked = scores_scaled.broadcast_add(mask)?;
+        let probs = scores_masked.softmax_last_dim()?;
+
+        // ---- ctx_latent[h] = probs[h] @ c; ctx[h] = ctx_latent[h] @ W_UV[h] -
+        let ctx_latent = probs.matmul(&c4)?; // (1, H, s, kvr)
+        let ctx = ctx_latent.matmul(&w_uv)?; // (1, H, s, v_dim)
+
+        let merged = ctx.merge_heads()?;
+        let out = w.o_proj.apply_linear(&merged, n_heads * v_dim, cfg.hidden_size);
+        Ok(out)
+    }
+
     /// Re-anchor `cache` onto a brand-new graph, rebinding its filled
     /// prefix (`[0..cached_len]` of every layer/slot) as fresh `Const`
     /// nodes. A no-op (returns `cache` untouched) when `cached_len == 0`
@@ -1849,5 +2208,137 @@ mod tests {
         // F32 but wrong length.
         let bad_len_w = WeightStorage::F32(Arc::from(vec![0.0_f32; kvr * out_features - 1]));
         assert!(absorb_split_kv_b(&bad_len_w, kvr, n_heads, nope, v_dim).is_err());
+    }
+
+    // ---- forward_with_latent_kv_context (MLA increment 4 — persistent -----
+    // ---- cross-graph N-slot decode cache) ----------------------------------
+
+    /// MLA increment 4 — the persistent (cross-graph) N-slot decode cache.
+    /// `forward_with_latent_kv_context` must reproduce a one-shot `forward`
+    /// over the full sequence, run incrementally (prefill 3, decode 1),
+    /// through the device-resident `LatentKvCache` + `InferenceContext` +
+    /// `Op::WriteSlice` path — no host round-trip of the cached prefix
+    /// (contrast with `forward_with_latent_cache` /
+    /// `forward_with_latent_cache_absorbed`, which rebind the realized
+    /// prefix onto a fresh graph every call via
+    /// `rebind_latent_cache_fresh_graph`). Exercised for both plain-Q and
+    /// LoRA-Q configs.
+    #[test]
+    fn forward_with_latent_kv_context_decode_matches_one_shot() {
+        for cfg in [tiny_config_plain_q(), tiny_config_lora_q()] {
+            let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+            let vocab = cfg.vocab_size;
+
+            let prompt = [1_u32, 2, 3];
+            let next_token = 4_u32;
+            let full = [prompt[0], prompt[1], prompt[2], next_token];
+
+            // References: one-shot forward, last-position row, over the
+            // 3-token prompt and the full 4-token sequence.
+            let prefill_logits = model.forward(&prompt, 0).unwrap();
+            let prefill_expected = prefill_logits
+                .slice(1_usize, prompt.len() - 1, 1).unwrap()
+                .reshape(Shape::from_dims(&[vocab])).unwrap()
+                .realize_f32();
+
+            let full_logits = model.forward(&full, 0).unwrap();
+            let full_expected = full_logits
+                .slice(1_usize, full.len() - 1, 1).unwrap()
+                .reshape(Shape::from_dims(&[vocab])).unwrap()
+                .realize_f32();
+
+            // Cached run through the persistent path.
+            let mut cache = crate::inference_context::LatentKvCache::with_capacity(
+                cfg.num_hidden_layers,
+                /* max_seq_len */ 8,
+                vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
+                DType::F32,
+                &Device::cpu(),
+            ).expect("LatentKvCache::with_capacity");
+            let mut ctx = crate::inference_context::InferenceContext::new(Device::cpu());
+
+            let prefill_actual = model
+                .forward_with_latent_kv_context(&prompt, &mut cache, &mut ctx)
+                .expect("prefill");
+            assert_eq!(cache.cached_len, prompt.len());
+
+            let decode_actual = model
+                .forward_with_latent_kv_context(&[next_token], &mut cache, &mut ctx)
+                .expect("decode");
+            assert_eq!(cache.cached_len, full.len());
+
+            let mut max_diff = 0.0_f32;
+            for (a, b) in prefill_actual.iter().zip(prefill_expected.iter()) {
+                max_diff = max_diff.max((a - b).abs());
+            }
+            for (a, b) in decode_actual.iter().zip(full_expected.iter()) {
+                max_diff = max_diff.max((a - b).abs());
+            }
+            eprintln!(
+                "forward_with_latent_kv_context_decode_matches_one_shot: q_lora_rank={:?} \
+                 max abs diff = {max_diff}", cfg.q_lora_rank,
+            );
+            // Tolerance calibration (sabotage-measured, 2026-07-08):
+            // genuine drift is ~7.5e-9 / ~1.5e-8 (plain-Q / LoRA-Q) from
+            // matmul reassociation vs the one-shot reference (same family
+            // as `forward_with_latent_cache_absorbed_matches_*`); a
+            // corrupted dyn write offset (cached_len_sym bound to 0, so a
+            // decode step overwrites the prefix) moves the logits by
+            // ~7.7e-3. 1e-6 sits ~67x above genuine drift and ~7700x
+            // below the corruption signal.
+            assert!(max_diff < 1e-6,
+                "forward_with_latent_kv_context vs one-shot forward diverge beyond tolerance: \
+                 max_diff={max_diff}");
+
+            // Version contract: two forward_with_latent_kv_context calls ⇒
+            // both slots of every layer bumped exactly twice.
+            for li in 0..cfg.num_hidden_layers {
+                let layer = cache.layers[li].as_ref().expect("layer populated");
+                assert_eq!(layer[0].version, 2, "latent slot version (q_lora_rank={:?})", cfg.q_lora_rank);
+                assert_eq!(layer[1].version, 2, "k_pe slot version (q_lora_rank={:?})", cfg.q_lora_rank);
+            }
+        }
+    }
+
+    /// Bad cache geometry (layer count, slot count, trailing shape, or
+    /// capacity overflow) must surface as a typed `Err`, never a panic.
+    #[test]
+    fn forward_with_latent_kv_context_rejects_bad_geometry() {
+        let cfg = tiny_config_lora_q();
+        let model = DeepSeek2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+
+        // Wrong n_layers.
+        let mut bad_layers = crate::inference_context::LatentKvCache::with_capacity(
+            cfg.num_hidden_layers + 1, 8,
+            vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
+            DType::F32, &Device::cpu(),
+        ).unwrap();
+        let mut ctx = crate::inference_context::InferenceContext::new(Device::cpu());
+        assert!(model.forward_with_latent_kv_context(&[1, 2], &mut bad_layers, &mut ctx).is_err());
+
+        // Wrong slot count (1 slot instead of 2).
+        let mut bad_slots = crate::inference_context::LatentKvCache::with_capacity(
+            cfg.num_hidden_layers, 8, vec![vec![cfg.kv_lora_rank]], DType::F32, &Device::cpu(),
+        ).unwrap();
+        let mut ctx = crate::inference_context::InferenceContext::new(Device::cpu());
+        assert!(model.forward_with_latent_kv_context(&[1, 2], &mut bad_slots, &mut ctx).is_err());
+
+        // Wrong trailing shape on slot 0.
+        let mut bad_trailing = crate::inference_context::LatentKvCache::with_capacity(
+            cfg.num_hidden_layers, 8,
+            vec![vec![cfg.kv_lora_rank + 1], vec![cfg.qk_rope_head_dim]],
+            DType::F32, &Device::cpu(),
+        ).unwrap();
+        let mut ctx = crate::inference_context::InferenceContext::new(Device::cpu());
+        assert!(model.forward_with_latent_kv_context(&[1, 2], &mut bad_trailing, &mut ctx).is_err());
+
+        // Capacity overflow: max_seq_len 2, feed 3 tokens.
+        let mut small_cap = crate::inference_context::LatentKvCache::with_capacity(
+            cfg.num_hidden_layers, 2,
+            vec![vec![cfg.kv_lora_rank], vec![cfg.qk_rope_head_dim]],
+            DType::F32, &Device::cpu(),
+        ).unwrap();
+        let mut ctx = crate::inference_context::InferenceContext::new(Device::cpu());
+        assert!(model.forward_with_latent_kv_context(&[1, 2, 3], &mut small_cap, &mut ctx).is_err());
     }
 }

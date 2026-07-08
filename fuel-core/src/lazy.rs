@@ -200,6 +200,22 @@ impl LazyTensor {
         self.inner.dtype()
     }
 
+    /// This tensor's underlying graph handle. Exposed for call sites
+    /// outside this module that need to drive
+    /// [`InferenceContext`](crate::inference_context::InferenceContext)
+    /// directly — e.g. a persistent cross-graph decode cache implemented
+    /// in a sibling model module (`lazy_deepseek2.rs`'s
+    /// `forward_with_latent_kv_context`). Most callers should prefer
+    /// [`Self::realize_f32`] and friends instead.
+    pub fn graph_handle(&self) -> &fuel_graph::SharedGraph {
+        self.inner.graph()
+    }
+
+    /// This tensor's `NodeId` on its graph. See [`Self::graph_handle`].
+    pub fn node_id(&self) -> fuel_graph::NodeId {
+        self.inner.id()
+    }
+
     /// The tensor's rank (number of dimensions).
     pub fn rank(&self) -> usize {
         self.inner.shape().dims().len()

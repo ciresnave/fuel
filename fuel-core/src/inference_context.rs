@@ -381,6 +381,259 @@ impl KvCache {
 }
 
 // ===========================================================================
+// LatentKvCache — N-slot generalization of KvCache (MLA increment 4)
+// ===========================================================================
+
+/// One slot's persistent latent buffer within a [`LatentKvCache`] layer.
+/// The per-slot analogue of [`KvLayer`]'s `k`/`v` pair, generalized to an
+/// arbitrary slot count and independent per-slot trailing shape.
+pub struct LatentSlot {
+    pub storage: Arc<RwLock<Storage>>,
+    /// View layout into `storage`. For the pre-allocated (capacity)
+    /// buffers [`LatentKvCache::with_capacity`] allocates, the layout
+    /// matches the storage's full `[max_seq_len, ...trailing]` shape.
+    pub layout: Layout,
+    /// Monotonic write version. Bumps on every successful
+    /// `Op::WriteSlice` targeting this slot. Placeholder for the future
+    /// multi-device coherence protocol — mirrors [`KvLayer::k_version`] /
+    /// `v_version`.
+    pub version: u64,
+    /// Coherence authority. Placeholder — see [`AuthorityState`].
+    pub authority: AuthorityState,
+}
+
+/// Cross-graph, cross-forward-pass persistent **N-slot** decode cache —
+/// the [`KvCache`] generalization for latent-caching attention
+/// architectures.
+///
+/// [`KvCache`] hardwires a symmetric K/V pair (two buffers per layer,
+/// same shape). That's wrong for compression architectures:
+///
+///   - **Multi-head Latent Attention (DeepSeek-V2 MLA)**: per layer, a
+///     low-rank compressed latent `[kv_lora_rank]` (slot 0) **and** a
+///     single-head RoPE key `[qk_rope_head_dim]` (slot 1) — two slots of
+///     *different* trailing shape, neither a `[n_kv_heads, head_dim]` K/V.
+///   - **Two-projection attention / QKV pruning**: a single retained
+///     projection per layer — one slot.
+///
+/// `LatentKvCache` is this module's counterpart to
+/// [`crate::lazy_latent_cache::LazyLatentCache`] — that type makes the
+/// exact same **per-layer, ordered list of latent buffers with
+/// independent trailing shapes** generalization for the **per-forward-
+/// pass** (single [`fuel_graph::Graph`]-anchored, functional
+/// append-and-thread) lifecycle. `LatentKvCache` is the **persistent**
+/// sibling: device-resident `Arc<RwLock<Storage>>` buffers that survive
+/// across graphs/forward calls and are mutated in place via
+/// `Op::WriteSlice`, exactly the relationship [`KvCache`] has to a plain
+/// per-pass K/V cache. Read both modules' docs together for the two
+/// lifecycles side by side.
+///
+/// # Shape contract
+///
+/// Slot `s` of every layer is a buffer `[max_seq_len, ...slot_trailing[s]]`
+/// — the capacity axis is dim **0**. This differs from [`KvCache`]'s `[1,
+/// n_kv_heads, max_seq_len, head_dim]` convention (capacity axis 2):
+/// a latent is a per-token *vector*, not a per-head *plane*, so there is
+/// no head axis to lead with. Matches [`crate::lazy_latent_cache::
+/// LazyLatentCache`]'s dim-0 convention exactly — this type's per-slot
+/// buffer is byte-for-byte what that type's `slot_buffer_full` realizes,
+/// modulo device residency.
+pub struct LatentKvCache {
+    /// `layers[l]` is `None` until populated; `Some(slots)` holds one
+    /// [`LatentSlot`] per slot index (pipeline-parallel friendly — mirrors
+    /// [`KvCache::layers`]).
+    pub layers: Vec<Option<Vec<LatentSlot>>>,
+    pub cached_len: usize,
+    /// Per-slot trailing shape (past the leading capacity axis); its
+    /// length is the per-layer slot count.
+    pub slot_trailing: Vec<Vec<usize>>,
+    pub max_seq_len: usize,
+    pub dtype: DType,
+}
+
+impl LatentKvCache {
+    /// Pre-allocated N-slot latent cache. Every layer's slot buffers are
+    /// allocated up-front as zero buffers on `device` with `dtype`,
+    /// shaped `[max_seq_len, ...slot_trailing[s]]`. Mirrors [`KvCache::
+    /// with_capacity`]'s `Op::Alloc` → `Op::ZeroFill` graph-emission
+    /// pattern exactly, generalized from a fixed 2-buffer (K, V) layer to
+    /// `slot_trailing.len()` buffers of independent shape.
+    ///
+    /// Returns `Err` for degenerate geometry (`n_layers == 0`,
+    /// `max_seq_len == 0`, or no slots) or if any per-layer allocation
+    /// fails (e.g. CUDA OOM / an unwired device).
+    pub fn with_capacity(
+        n_layers: usize,
+        max_seq_len: usize,
+        slot_trailing: Vec<Vec<usize>>,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<Self> {
+        if n_layers == 0 {
+            return Err(Error::Msg(
+                "LatentKvCache::with_capacity: n_layers must be >= 1".into(),
+            ).bt());
+        }
+        if max_seq_len == 0 {
+            return Err(Error::Msg(
+                "LatentKvCache::with_capacity: max_seq_len must be >= 1".into(),
+            ).bt());
+        }
+        if slot_trailing.is_empty() {
+            return Err(Error::Msg(
+                "LatentKvCache::with_capacity: need at least one slot (slot_trailing empty)".into(),
+            ).bt());
+        }
+        let n_slots = slot_trailing.len();
+        let shapes: Vec<Shape> = slot_trailing.iter().map(|trailing| {
+            let mut dims = Vec::with_capacity(1 + trailing.len());
+            dims.push(max_seq_len);
+            dims.extend_from_slice(trailing);
+            Shape::from_dims(&dims)
+        }).collect();
+        let layouts: Vec<Layout> = shapes.iter().map(|s| Layout::contiguous(s.clone())).collect();
+        let target_loc = device.location();
+
+        // Transient graph, same device-anchor trick + Alloc/ZeroFill
+        // emission pattern as KvCache::with_capacity — see that
+        // constructor's doc for the full rationale.
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let mut cache = StorageCache::new();
+        if let Some(seed) = crate::pipelined_bridge::device_seed_storage(device)? {
+            let anchor_id = {
+                let mut g = graph.write().map_err(|_| {
+                    Error::Msg("graph lock poisoned during LatentKvCache build".into()).bt()
+                })?;
+                g.push(Node {
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&[4]),
+                    dtype: DType::U8,
+                })
+            };
+            cache.insert(anchor_id, Arc::new(RwLock::new(seed)));
+        }
+
+        // Emit (Op::Alloc, Op::ZeroFill) pairs for every (layer, slot),
+        // each shaped per its own slot's shape.
+        let mut zero_fill_ids: Vec<NodeId> = Vec::with_capacity(n_layers * n_slots);
+        {
+            let mut g = graph.write().map_err(|_| {
+                Error::Msg("graph lock poisoned during LatentKvCache build".into()).bt()
+            })?;
+            for _ in 0..n_layers {
+                for shape in &shapes {
+                    let alloc_id = g.push(Node {
+                        op: Op::Alloc { target: target_loc },
+                        inputs: vec![],
+                        shape: shape.clone(),
+                        dtype,
+                    });
+                    let zf_id = g.push(Node {
+                        op: Op::ZeroFill,
+                        inputs: vec![alloc_id],
+                        shape: shape.clone(),
+                        dtype,
+                    });
+                    zero_fill_ids.push(zf_id);
+                }
+            }
+        }
+
+        // Realize all n_layers * n_slots Op::ZeroFill targets in one pass
+        // — see KvCache::with_capacity's doc for why a single realize_many
+        // call is used instead of one realize per buffer.
+        let realized = PipelinedExecutor::realize_many(
+            Arc::clone(&graph), &zero_fill_ids, cache,
+        )?;
+        if realized.len() != n_layers * n_slots {
+            return Err(Error::Msg(format!(
+                "LatentKvCache::with_capacity: realize_many returned {} storages \
+                 for {} Op::ZeroFill targets — internal bug",
+                realized.len(), n_layers * n_slots,
+            )).bt());
+        }
+
+        let mut realized_iter = realized.into_iter();
+        let mut layers: Vec<Option<Vec<LatentSlot>>> = Vec::with_capacity(n_layers);
+        for _ in 0..n_layers {
+            let mut slots = Vec::with_capacity(n_slots);
+            for layout in &layouts {
+                let (arc, _) = realized_iter.next().expect("checked above");
+                slots.push(LatentSlot {
+                    storage: arc,
+                    layout: layout.clone(),
+                    version: 0,
+                    authority: AuthorityState::Host,
+                });
+            }
+            layers.push(Some(slots));
+        }
+
+        Ok(Self {
+            layers,
+            cached_len: 0,
+            slot_trailing,
+            max_seq_len,
+            dtype,
+        })
+    }
+
+    /// Borrow the slot `s` storage Arc for layer `layer_idx`. `None` if
+    /// the layer is unpopulated or either index is out of range. Used by
+    /// the forward path to bind cache storage to per-step Const nodes via
+    /// [`InferenceContext::insert`]. Mirrors [`KvCache::slot_storage`].
+    pub fn slot_storage(&self, layer_idx: usize, slot: usize) -> Option<Arc<RwLock<Storage>>> {
+        let layer = self.layers.get(layer_idx)?.as_ref()?;
+        layer.get(slot).map(|s| Arc::clone(&s.storage))
+    }
+
+    /// Bump slot `s`'s monotonic version counter for `layer_idx`. No-op
+    /// (never panics) if either index is out of range. Mirrors
+    /// [`KvCache::bump_version`].
+    pub fn bump_version(&mut self, layer_idx: usize, slot: usize) {
+        if let Some(Some(layer)) = self.layers.get_mut(layer_idx) {
+            if let Some(s) = layer.get_mut(slot) {
+                s.version += 1;
+            }
+        }
+    }
+
+    pub fn n_layers(&self) -> usize {
+        self.layers.len()
+    }
+
+    /// Number of slots per layer.
+    pub fn n_slots(&self) -> usize {
+        self.slot_trailing.len()
+    }
+
+    /// Trailing shape of slot `s` (past the leading capacity axis).
+    pub fn slot_trailing(&self, s: usize) -> &[usize] {
+        &self.slot_trailing[s]
+    }
+
+    /// Drop every layer; reset `cached_len` to zero. Mirrors [`KvCache::clear`].
+    pub fn clear(&mut self) {
+        for layer in &mut self.layers {
+            *layer = None;
+        }
+        self.cached_len = 0;
+    }
+
+    /// Shrink the cache to `new_len` cached positions — metadata-only,
+    /// same Phase E.3.0 limitation and rationale as [`KvCache::
+    /// truncate_to`]: the underlying storages are not shrunk; the
+    /// pre-allocated buffers' trailing rows simply stop being read until
+    /// overwritten by a later `Op::WriteSlice` at the same positions.
+    pub fn truncate_to(&mut self, new_len: usize) {
+        if new_len < self.cached_len {
+            self.cached_len = new_len;
+        }
+    }
+}
+
+// ===========================================================================
 // DecodeSession (Phase D · D2b — plan-once persistent decode)
 // ===========================================================================
 
@@ -1269,5 +1522,88 @@ mod tests {
         // 2 (n_kv) * 8 (seq) * 4 (head) * 2 (bf16) = 128 bytes per slot.
         assert_eq!(layer.k.read().unwrap().inner.len_bytes(), 128);
         assert_eq!(cache.dtype, Some(DType::BF16));
+    }
+
+    // ---- LatentKvCache (MLA increment 4 — persistent N-slot decode cache) --
+
+    /// `LatentKvCache::with_capacity` allocates `n_layers * n_slots` fresh
+    /// zero-initialized buffers on the CPU device, one per (layer, slot),
+    /// shaped `[max_seq_len, ...slot_trailing[s]]`.
+    #[test]
+    fn latent_kv_cache_with_capacity_allocates_all_layers_on_cpu() {
+        let device = Device::cpu();
+        let cache = LatentKvCache::with_capacity(
+            /* n_layers    */ 3,
+            /* max_seq_len */ 8,
+            // MLA-shaped: slot 0 latent trailing [5], slot 1 k_pe trailing [2].
+            vec![vec![5], vec![2]],
+            DType::F32,
+            &device,
+        ).expect("with_capacity");
+
+        assert_eq!(cache.n_layers(), 3);
+        assert_eq!(cache.n_slots(), 2);
+        assert_eq!(cache.cached_len, 0);
+        assert_eq!(cache.max_seq_len, 8);
+        assert_eq!(cache.dtype, DType::F32);
+        assert_eq!(cache.slot_trailing(0), &[5]);
+        assert_eq!(cache.slot_trailing(1), &[2]);
+
+        for li in 0..3 {
+            let latent = cache.slot_storage(li, 0).expect("latent slot populated");
+            let kpe = cache.slot_storage(li, 1).expect("k_pe slot populated");
+            // 8 (max_seq) * 5 (trailing) * 4 (f32) = 160 bytes.
+            assert_eq!(latent.read().unwrap().inner.len_bytes(), 160);
+            // 8 (max_seq) * 2 (trailing) * 4 (f32) = 64 bytes.
+            assert_eq!(kpe.read().unwrap().inner.len_bytes(), 64);
+            let guard = latent.read().unwrap();
+            if let BackendStorage::Cpu(c) = &guard.inner {
+                let typed: &[f32] = c.as_slice().unwrap();
+                assert!(typed.iter().all(|&x| x == 0.0));
+            } else {
+                panic!("expected CPU storage");
+            }
+        }
+    }
+
+    /// `slot_storage` returns `None` for an out-of-range layer or slot
+    /// index (never panics).
+    #[test]
+    fn latent_kv_cache_slot_storage_returns_none_for_oob() {
+        let device = Device::cpu();
+        let cache = LatentKvCache::with_capacity(2, 4, vec![vec![3]], DType::F32, &device)
+            .expect("with_capacity");
+        assert!(cache.slot_storage(5, 0).is_none()); // layer OOB
+        assert!(cache.slot_storage(0, 5).is_none()); // slot OOB
+    }
+
+    /// `bump_version` advances the per-slot version counter independently
+    /// per slot; out-of-range (layer, slot) is a no-op, never a panic.
+    #[test]
+    fn latent_kv_cache_bump_version_advances_per_slot_and_oob_is_noop() {
+        let device = Device::cpu();
+        let mut cache = LatentKvCache::with_capacity(
+            1, 4, vec![vec![2], vec![1]], DType::F32, &device,
+        ).expect("with_capacity");
+
+        cache.bump_version(0, 0);
+        cache.bump_version(0, 0);
+        cache.bump_version(0, 1);
+        cache.bump_version(99, 0); // layer OOB, no-op
+        cache.bump_version(0, 99); // slot OOB, no-op
+
+        let layer0 = cache.layers[0].as_ref().expect("layer 0 populated");
+        assert_eq!(layer0[0].version, 2);
+        assert_eq!(layer0[1].version, 1);
+    }
+
+    /// Degenerate geometry (`n_layers == 0`, `max_seq_len == 0`, or no
+    /// slots) surfaces as a typed `Err`, never a panic.
+    #[test]
+    fn latent_kv_cache_with_capacity_rejects_bad_geometry() {
+        let device = Device::cpu();
+        assert!(LatentKvCache::with_capacity(0, 4, vec![vec![2]], DType::F32, &device).is_err());
+        assert!(LatentKvCache::with_capacity(1, 0, vec![vec![2]], DType::F32, &device).is_err());
+        assert!(LatentKvCache::with_capacity(1, 4, vec![], DType::F32, &device).is_err());
     }
 }
