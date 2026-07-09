@@ -6044,8 +6044,29 @@ pub fn bump_topology_generation() {
 /// async submit ([`inflight_inc`]), one `-1` per completion-handle
 /// retirement ([`inflight_dec`], fired from the handle's `Drop`).
 ///
+/// **Narrowed by "event only where waited" (A4b open question #4).** A CUDA
+/// node the `pipelined` executor's `WaitSet` pre-scan elides never builds a
+/// `CudaCompletion` at all (`produce_pending` returns `Ready` directly, no
+/// `Event`, no `inc`/`dec`) — see `compiled::execute_compiled_with_wait_hint`.
+/// So on `OrderSource::Default`/`Optimized` realizes this counter now tracks
+/// only WAITED CUDA work (cross-device `Copy`/`Move` producers, plus whatever
+/// handles are still alive when sampled) rather than literally every enqueued
+/// op — same-device-only kernels never touch it, elided or not, on the theory
+/// that they were never individually observable before this change either
+/// (only swept up in the old per-node drain). `OrderSource::Streaming` — the
+/// ONLY order source the production load-aware picker
+/// (`ranker::DeviceLoadSelector` / `ChainedSelector`'s `load_tier` leg)
+/// actually reads THIS counter through — never elides (falls back to
+/// event-every-node), so the picker's own live-load signal is unaffected;
+/// the narrowing only bites a caller reading `inflight_count` for a
+/// *different*, concurrently-running `Default`/`Optimized` realize on the
+/// same device, which would now under-report that realize's true same-device
+/// backlog. No production caller does this today.
+///
 /// **Honesty / correctness.** This is a SCHEDULING HINT, never a
-/// correctness gate — correctness rests entirely on the A4b waits. So
+/// correctness gate — correctness rests entirely on the A4b waits (which for
+/// elided nodes now come from `pipelined::sync_active_cuda_devices`'s
+/// realize-end blanket stream sync instead of a per-node `Event`). So
 /// the atomics are [`Ordering::Relaxed`] (no memory to synchronize) and
 /// [`inflight_dec`] is underflow-saturating: a hint that briefly
 /// mis-reads costs at most a sub-optimal route, never a wrong result.

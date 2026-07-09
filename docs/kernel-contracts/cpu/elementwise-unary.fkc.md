@@ -141,11 +141,14 @@ pinned 2026-07-08 (`docs/architecture/10-decisions-log.md`); deliberately does n
 `x.max(0.0)` (which is NaN-as-missing: `max(NaN, 0)` returns `0`, the non-NaN operand). One cheap
 branchless op per element; bandwidth-bound. Contiguous-only; executor contiguizes any
 strided/broadcast/offset input first.
-NOTE: CUDA `relu` (`fuel-dispatch`'s `baracuda_dispatch.rs` binding to baracuda's
-`unary_relu_fp.cu`) is a **transitional divergence** — it still scrubs (NaN-as-missing, `fmaxf`)
-pending a NaN-propagating rebind in baracuda alpha.76; see
-`docs/kernel-contracts/dispatch/elementwise-unary.fkc.md`'s `relu_elementwise_cuda` section and
-`fuel-core/src/lazy.rs::relu_cuda_still_scrubs_nan_pending_alpha76_rebind`.
+CUDA `relu` (`fuel-dispatch`'s `baracuda_dispatch.rs` binding to baracuda's bespoke
+`unary_relu_propagating_fp.cu`, alpha.76+) is also NaN-propagating — CPU/CUDA agree; see
+`docs/kernel-contracts/dispatch/elementwise-unary.fkc.md`'s `relu` section. Pinned by the
+direct binding-table live test
+`fuel-dispatch/tests/cuda_dispatch_live.rs::cuda_relu_propagates_nan_f32` (+ bf16 sibling),
+which supersedes the `relu_cuda_still_scrubs_nan_pending_alpha76_rebind` transitional pin
+(flipped, then de-scoped to the lazy-realize smoke `relu_nan_convention_lazy_realize_smoke`
+after placement was shown able to route both legs to CPU, 2026-07-08).
 
 ```fkc
 kernel: relu

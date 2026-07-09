@@ -11,7 +11,7 @@
 //! Today's "compile" step is a single binding-table lookup —
 //! roughly nanoseconds per node. The threading delivers no
 //! measurable speedup in this regime. The pipelining infrastructure
-//! exists *now* — built on the [`compile_node`] / [`execute_compiled`]
+//! exists *now* — built on the [`compile_node`] / [`crate::compiled::execute_compiled`]
 //! interface from B5 — so future work that grows the compile step
 //! (residency-aware planning, transfer-cost minimization, kernel
 //! auto-tuning) plugs in without revisiting call sites.
@@ -34,7 +34,7 @@
 //! and `Op::Add` on f32 (mapped to `OpKind::AddElementwise`).
 //! Phase C adds the rest as more (op, dtype) bindings register.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -46,7 +46,9 @@ use fuel_graph::opt::{execution_plan, insert_safety_copies};
 use fuel_graph::registry::FusedOpParams;
 use fuel_graph::{Graph, Node, NodeId, Op, PickedRoute};
 
-use crate::compiled::{compile_node, execute_compiled, CompiledNode, CompletionHandle};
+use crate::compiled::{
+    compile_node, execute_compiled_with_wait_hint, CompiledNode, CompletionHandle,
+};
 use crate::dispatch::global_bindings;
 use crate::kernel::{KernelBindingTable, KernelDTypes, MatmulM, OpParams};
 use crate::optimize::OptimizedGraph;
@@ -739,7 +741,7 @@ impl PipelinedExecutor {
         // integrates `derive_ordering`'s view-aware pinning so
         // destructive ops run AFTER non-destructive readers of
         // their targets.
-        let (compiler_work, mut layout_cache): (CompilerWork, HashMap<NodeId, Layout>) = {
+        let (compiler_work, wait_set, mut layout_cache): (CompilerWork, WaitSet, HashMap<NodeId, Layout>) = {
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, &[target]);
             // PR-A3b-1: the OptimizedGraph path lowers via
@@ -753,12 +755,16 @@ impl PipelinedExecutor {
             // handed to the compiler thread as a `CompilerWork::Streaming`
             // spec so the thread resolves each branch lazily at the
             // frontier (see `compiler_thread_body`).
-            let work = compiler_work_for(&g, &effective_roots, &order_source);
+            //
+            // Step E A4b open question #4: the SAME pass also derives the
+            // `WaitSet` from the materialized order ("event only where
+            // waited" — see `compiler_work_and_wait_set_for`).
+            let (work, wait_set) = compiler_work_and_wait_set_for(&g, &effective_roots, &order_source);
             let mut layouts = HashMap::with_capacity(inputs.len());
             for &id in inputs.keys() {
                 layouts.insert(id, g.layout(id));
             }
-            (work, layouts)
+            (work, wait_set, layouts)
         };
 
         let (tx, rx) = channel::<Result<WorkItem>>();
@@ -900,8 +906,14 @@ impl PipelinedExecutor {
                     wait_producer_handle(&mut handles, producer)?;
                 }
             }
-            let handle = execute_work_item(&item, &mut cache, &mut layout_cache, &mut produced_syms)
-                .map_err(|e| with_node_location(&graph, item.node_id, e))?;
+            let handle = execute_work_item(
+                &item,
+                &mut cache,
+                &mut layout_cache,
+                &mut produced_syms,
+                will_be_waited(&wait_set, item.node_id),
+            )
+            .map_err(|e| with_node_location(&graph, item.node_id, e))?;
             store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
@@ -954,6 +966,13 @@ impl PipelinedExecutor {
         // recorded events (one stream/device ⇒ waiting the latest drains all prior
         // stream work too; see `drain_handles`).
         drain_handles(&mut handles)?;
+        // Step E A4b open question #4 — "event only where waited": most CUDA
+        // nodes in this realize never got an Event (elided per the `WaitSet`),
+        // so `drain_handles` above only retired the (typically few) tracked
+        // handles. This blanket per-device `cuStreamSynchronize` flushes the
+        // elided work too — safe + sufficient because of single-stream-per-
+        // device ordering (see `sync_active_cuda_devices`'s doc).
+        sync_active_cuda_devices(&cache)?;
         // Step E A4b-4: wait every eagerly-submitted (in-flight) Vulkan batch
         // before the cache drops, freeing the data buffers their CBs read. Empty
         // on a single-device realize (nothing was eager-submitted).
@@ -1140,7 +1159,7 @@ impl PipelinedExecutor {
         // reachable from any target. `execution_plan` integrates
         // `derive_ordering`'s view-aware pinning so destructive ops
         // run AFTER non-destructive readers of their targets.
-        let (compiler_work, mut layout_cache): (CompilerWork, HashMap<NodeId, Layout>) = {
+        let (compiler_work, wait_set, mut layout_cache): (CompilerWork, WaitSet, HashMap<NodeId, Layout>) = {
             let g = graph.read().map_err(|_| poisoned("graph lock"))?;
             let effective_roots = extend_with_side_effect_roots(&g, targets);
             // PR-A3b-1: derive from the OptimizedGraph's run lowering
@@ -1149,12 +1168,15 @@ impl PipelinedExecutor {
             //
             // PR-C1: a `Streaming` source is handed to the compiler thread
             // unflattened (resolves branches at the frontier).
-            let work = compiler_work_for(&g, &effective_roots, &order_source);
+            //
+            // Step E A4b open question #4: also derives the `WaitSet`
+            // ("event only where waited") from the same materialized order.
+            let (work, wait_set) = compiler_work_and_wait_set_for(&g, &effective_roots, &order_source);
             let mut layouts = HashMap::with_capacity(inputs.len());
             for &id in inputs.keys() {
                 layouts.insert(id, g.layout(id));
             }
-            (work, layouts)
+            (work, wait_set, layouts)
         };
 
         // Caller's target set — used to gate destructive-input
@@ -1246,8 +1268,14 @@ impl PipelinedExecutor {
                     wait_producer_handle(&mut handles, producer)?;
                 }
             }
-            let handle = execute_work_item(&item, &mut cache, &mut layout_cache, &mut produced_syms)
-                .map_err(|e| with_node_location(&graph, item.node_id, e))?;
+            let handle = execute_work_item(
+                &item,
+                &mut cache,
+                &mut layout_cache,
+                &mut produced_syms,
+                will_be_waited(&wait_set, item.node_id),
+            )
+            .map_err(|e| with_node_location(&graph, item.node_id, e))?;
             store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input {
                 if let Some(&destroyed) = item.inputs.get(d_idx) {
@@ -1288,6 +1316,10 @@ impl PipelinedExecutor {
         // Step E A4b-1: drain every outstanding async handle (CUDA events) before
         // results are read / the cache drops.
         drain_handles(&mut handles)?;
+        // Step E A4b open question #4: blanket per-device stream sync for the
+        // elided nodes `drain_handles` never tracked — see `realize_inner`'s
+        // identical comment / `sync_active_cuda_devices`'s doc for the argument.
+        sync_active_cuda_devices(&cache)?;
         // Step E A4b-4: wait every eagerly-submitted in-flight Vulkan batch before
         // the cache drops. Empty on a single-device realize.
         drain_inflight_vulkan(&mut inflight_vulkan)?;
@@ -1381,24 +1413,83 @@ fn order_for(
     }
 }
 
+/// Step E A4b open question #4 — "event only where waited". The producer
+/// [`NodeId`]s that some later `Op::Copy`/`Op::Move` node in `order` will
+/// `wait_producer_handle` on (the executor's cross-device residency
+/// boundary — see `wait_producer_handle`, whose `item.inputs.first()` read
+/// this mirrors exactly). A CUDA node whose id is absent from the returned
+/// set has NO mid-walk reader: same-device consumers are correct via stream
+/// ordering alone (they never `wait`), and nothing touches its handle before
+/// the realize-end drain, so [`crate::compiled::execute_compiled_with_wait_hint`]
+/// can skip recording an `Event` for it entirely.
+///
+/// Requires a materialized `order` (works for [`OrderSource::Default`] /
+/// [`OrderSource::Optimized`], whose [`CompilerWork::Order`] is a frozen
+/// `Vec<NodeId>` computed up front) — see
+/// [`compiler_work_and_wait_set_for`] for the [`OrderSource::Streaming`]
+/// fallback.
+fn build_wait_set(graph: &Graph, order: &[NodeId]) -> HashSet<NodeId> {
+    let mut set = HashSet::new();
+    for &id in order {
+        let node = graph.node(id);
+        if matches!(node.op, Op::Copy { .. } | Op::Move { .. }) {
+            if let Some(&producer) = node.inputs.first() {
+                set.insert(producer);
+            }
+        }
+    }
+    set
+}
+
+/// Step E A4b open question #4: the executor's per-realize wait-set.
+/// `None` is the CONSERVATIVE fallback — every CUDA node still gets an Event
+/// (today's pre-elision behavior, byte-identical). `Some(set)` restricts
+/// event production to `set`'s members ([`build_wait_set`]'s output);
+/// everything else gets `CompletionHandle::Ready` with no Event recorded.
+type WaitSet = Option<HashSet<NodeId>>;
+
+/// Whether `node_id`'s completion handle must be individually observable
+/// (i.e. `execute_compiled_with_wait_hint`'s `will_be_waited`). `None` (the
+/// [`OrderSource::Streaming`] fallback — never elides) is always `true`.
+#[inline]
+fn will_be_waited(wait_set: &WaitSet, node_id: NodeId) -> bool {
+    match wait_set {
+        None => true,
+        Some(set) => set.contains(&node_id),
+    }
+}
+
 /// Build the [`CompilerWork`] the compiler thread walks for the configured
-/// [`OrderSource`]. The non-streaming sources flatten up front via
-/// [`order_for`] (unchanged); [`OrderSource::Streaming`] is handed to the
-/// compiler thread as a [`CompilerWork::Streaming`] spec — NOT flattened
-/// here — so the thread resolves branches lazily at the frontier (Step E
-/// Phase C, PR C1). Holds the graph read-lock only for the flattening
-/// branches; the streaming branch defers the lock to the compiler thread.
-fn compiler_work_for(
+/// [`OrderSource`], plus the [`WaitSet`] "event only where waited" (open
+/// question #4) consults. The non-streaming sources flatten up front via
+/// [`order_for`] (unchanged) and the SAME materialized order feeds
+/// [`build_wait_set`], so the pre-scan and the dispatch order never
+/// disagree. [`OrderSource::Streaming`] is handed to the compiler thread as
+/// a [`CompilerWork::Streaming`] spec — NOT flattened here — so the thread
+/// resolves branches lazily at the frontier (Step E Phase C, PR C1); the lazy
+/// order can't be pre-scanned without eagerly resolving it (which would
+/// defeat the point of streaming), so it falls back to the conservative
+/// `WaitSet::None` — event every node, unchanged behavior. Holds the graph
+/// read-lock only for the flattening branches; the streaming branch defers
+/// the lock to the compiler thread.
+fn compiler_work_and_wait_set_for(
     graph: &Graph,
     effective_roots: &[NodeId],
     order_source: &OrderSource<'_>,
-) -> CompilerWork {
+) -> (CompilerWork, WaitSet) {
     match order_source {
-        OrderSource::Streaming { pick, .. } => CompilerWork::Streaming {
-            roots: effective_roots.to_vec(),
-            pick: (*pick).clone(),
-        },
-        other => CompilerWork::Order(order_for(graph, effective_roots, other)),
+        OrderSource::Streaming { pick, .. } => (
+            CompilerWork::Streaming {
+                roots: effective_roots.to_vec(),
+                pick: (*pick).clone(),
+            },
+            None,
+        ),
+        other => {
+            let order = order_for(graph, effective_roots, other);
+            let wait_set = build_wait_set(graph, &order);
+            (CompilerWork::Order(order), Some(wait_set))
+        }
     }
 }
 
@@ -4276,6 +4367,12 @@ fn execute_work_item(
     cache: &mut StorageCache,
     layout_cache: &mut HashMap<NodeId, Layout>,
     produced_syms: &mut SymEnv,
+    // Step E A4b open question #4 — "event only where waited": whether
+    // THIS item's node id is in the realize's `WaitSet` (`will_be_waited`
+    // in `pipelined.rs`, computed once per item by the caller). Forwarded
+    // to every `execute_compiled_with_wait_hint` call below so a CUDA
+    // kernel with no mid-walk reader skips its `Event` entirely.
+    will_be_waited: bool,
 ) -> Result<CompletionHandle> {
     match &item.kind {
         WorkItemKind::ConstAdopt => {
@@ -4523,7 +4620,9 @@ fn execute_work_item(
             let kernel_layouts = vec![source_layout_kernel, dest_layout.clone()];
             // A4b-1: defer the wait — return the handle to the realize loop.
             let handle =
-                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+                execute_compiled_with_wait_hint(
+                    compiled, &input_arcs, &mut output_arcs, &kernel_layouts, will_be_waited,
+                )?;
             // Adopt the dest Arc at this WriteSlice node's slot. The
             // realize loop's destructive_input cleanup evicts the
             // dest's own NodeId from the cache afterward — downstream
@@ -4621,7 +4720,9 @@ fn execute_work_item(
             ];
             // A4b-1: defer the wait — return the handle to the realize loop.
             let handle =
-                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+                execute_compiled_with_wait_hint(
+                    compiled, &input_arcs, &mut output_arcs, &kernel_layouts, will_be_waited,
+                )?;
             cache.insert(item.node_id, dest_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(handle)
@@ -4981,7 +5082,9 @@ fn execute_work_item(
                 vec![kernel_input_layout, item.output_layout.clone()];
             // A4b-1: defer the wait — return the handle to the realize loop.
             let handle =
-                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+                execute_compiled_with_wait_hint(
+                    compiled, &input_arcs, &mut output_arcs, &kernel_layouts, will_be_waited,
+                )?;
             let arc = output_arcs.into_iter().next().expect("one output");
             cache.insert(item.node_id, arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
@@ -5249,7 +5352,9 @@ fn execute_work_item(
 
             // A4b-1: defer the wait — return the handle to the realize loop.
             let handle =
-                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+                execute_compiled_with_wait_hint(
+                    compiled, &input_arcs, &mut output_arcs, &kernel_layouts, will_be_waited,
+                )?;
 
             let arc = output_arcs.into_iter().next().expect("one output");
 
@@ -5350,7 +5455,9 @@ fn execute_work_item(
             kernel_layouts.push(target_layout.clone());
             // A4b-1: defer the wait — return the handle to the realize loop.
             let handle =
-                execute_compiled(compiled, &input_arcs, &mut output_arcs, &kernel_layouts)?;
+                execute_compiled_with_wait_hint(
+                    compiled, &input_arcs, &mut output_arcs, &kernel_layouts, will_be_waited,
+                )?;
             // Adopt the target Arc at this node's slot. The realize
             // loop's destructive_input cleanup evicts the target's own
             // NodeId from the cache afterward.
@@ -5432,17 +5539,29 @@ fn wait_producer_handle(
 /// Step E A4b-1: realize-end drain — wait every outstanding async handle, then
 /// clear the map.
 ///
-/// **Event-recording / wait strategy (A4b-1 §1.2, open question #4).** CUDA has
-/// one stream per device, and an `Event` recorded after a node's launch signals
-/// when that node *and all prior stream work* have completed. So once the
+/// **Event-recording / wait strategy (A4b-1 §1.2).** CUDA has one stream per
+/// device, and an `Event` recorded after a node's launch signals when that
+/// node *and all prior stream work* have completed. So once the
 /// latest-recorded event on a device has signalled, every earlier event on that
 /// device is already signalled too: waiting them is a non-blocking
 /// `cuEventQuery` fast-path, not N host stalls. We therefore wait every stored
-/// handle (correct + simple); the only per-node cost is the `cuEventRecord` at
-/// production time (a lightweight stream marker — measured negligible on the
-/// long_chain 32-op stress, see the PR notes). We keep a per-node handle (rather
-/// than a single per-device event) because A4b-3's finer cross-device wait needs
-/// to wait a *specific producer's* completion — the per-node handle is that seam.
+/// handle (correct + simple).
+///
+/// **Open question #4 — "event only where waited" — RESOLVED.** Recording an
+/// `Event` for every node was measured negligible on a 32-op synthetic, but
+/// real decode graphs run 150-200+ ops; `pipelined`'s `WaitSet` pre-scan (see
+/// `compiler_work_and_wait_set_for` / `build_wait_set`) now restricts event
+/// production to the nodes some later cross-device `Copy`/`Move` will
+/// individually wait — same-device-only ("elided") nodes get
+/// `CompletionHandle::Ready` with no `cuEventCreate`/`cuEventRecord` at all
+/// (`execute_compiled_with_wait_hint`). This drain therefore now retires only
+/// the (typically few) wait-set handles that were never consumed mid-walk by
+/// `wait_producer_handle`; it is no longer sufficient on its own to guarantee
+/// every enqueued CUDA kernel has completed — `sync_active_cuda_devices` below
+/// covers the elided remainder. We keep a per-node handle (rather than a
+/// single per-device event) for the wait-set members because A4b-3's finer
+/// cross-device wait needs to wait a *specific producer's* completion — the
+/// per-node handle is that seam.
 fn drain_handles(handles: &mut HashMap<NodeId, CompletionHandle>) -> Result<()> {
     for (_node, handle) in handles.drain() {
         handle.wait()?;
@@ -5453,6 +5572,58 @@ fn drain_handles(handles: &mut HashMap<NodeId, CompletionHandle>) -> Result<()> 
     // here by construction; assert it to catch a future leak (e.g. a new
     // dispatch path that forgets to thread its handle through `store_handle`).
     debug_assert!(handles.is_empty(), "A4b-1: handle map must be empty after drain");
+    Ok(())
+}
+
+/// Step E A4b open question #4 step 3 — the realize-end complement to the
+/// "event only where waited" elision. Because most CUDA nodes in a long
+/// single-device chain no longer record an `Event` (see `drain_handles`'s
+/// doc), this does ONE blanket `cuStreamSynchronize` per CUDA device that
+/// still holds LIVE storage in `cache` — the realize target(s) plus any
+/// surviving intermediates — instead of relying on per-node handles to cover
+/// them.
+///
+/// **Why this is safe + sufficient.** CUDA has one stream per device, and
+/// this executor dispatches strictly sequentially (one work item at a time,
+/// in topological order) — so by the time a live node's own kernel was
+/// launched, every same-device ancestor it depends on was ALREADY enqueued
+/// earlier on the SAME stream. Stream ordering (not a host wait) guarantees
+/// those ancestors run to completion no later than the live node's own
+/// kernel. Syncing the live node's device therefore flushes its entire
+/// same-device dependency chain, elided or not. Cross-device ancestors are
+/// unaffected by elision — they always went through an `Op::Copy`/`Move`,
+/// whose producer is in the `WaitSet` and was already waited explicitly at
+/// the cross-device boundary (`wait_producer_handle`), mid-walk.
+///
+/// **Why evicted (non-live) intermediates don't need this.** A node whose
+/// storage was evicted before realize-end (the `destructive_input` cleanup)
+/// is never read by anything this realize returns; A3's stream-ordered
+/// alloc/free already makes its eventual completion safe without a host
+/// wait (the driver serializes the free after the freeing stream position,
+/// same as any other stream-ordered op) — nothing to synchronize for.
+///
+/// No-op when `cache` holds no CUDA storage (CPU/Vulkan-only realize).
+#[cfg(feature = "cuda")]
+fn sync_active_cuda_devices(cache: &StorageCache) -> Result<()> {
+    let mut devices: HashMap<fuel_ir::DeviceLocation, fuel_cuda_backend::CudaDevice> = HashMap::new();
+    for arc in cache.values() {
+        let guard = arc
+            .read()
+            .map_err(|_| poisoned("cache storage (cuda realize-end sync scan)"))?;
+        if let fuel_memory::BackendStorage::Cuda(c) = &guard.inner {
+            devices.entry(c.device().location()).or_insert_with(|| c.device().clone());
+        }
+    }
+    for dev in devices.values() {
+        dev.synchronize()?;
+    }
+    Ok(())
+}
+
+/// Non-CUDA builds never produce CUDA storage, so there is nothing to sync —
+/// keeps the call site unconditional across both feature configurations.
+#[cfg(not(feature = "cuda"))]
+fn sync_active_cuda_devices(_cache: &StorageCache) -> Result<()> {
     Ok(())
 }
 
@@ -6036,6 +6207,117 @@ mod tests {
     use super::*;
     use fuel_ir::Shape;
     use fuel_graph::Node;
+
+    /// Step E A4b open question #4 — "event only where waited", step 1.
+    /// `build_wait_set` collects exactly the producers of `Op::Copy`/`Move`
+    /// nodes in the order: a same-device-only node (never copied/moved) must
+    /// be ABSENT, and the Copy's own node id must not appear either (it is
+    /// not its own producer).
+    #[test]
+    fn build_wait_set_collects_only_cross_device_copy_producers() {
+        let mut g = Graph::new();
+        let const_id = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[4]),
+            dtype: DType::F32,
+        });
+        // Same-device-only consumer of const_id — never fed into a Copy/Move.
+        let same_device_id = g.push(Node {
+            op: Op::Contiguize,
+            inputs: vec![const_id],
+            shape: Shape::from_dims(&[4]),
+            dtype: DType::F32,
+        });
+        // A cross-device Copy whose producer is `same_device_id`.
+        let copy_id = g.push(Node {
+            op: Op::Copy { target: DeviceLocation::Cuda { gpu_id: 0 } },
+            inputs: vec![same_device_id],
+            shape: Shape::from_dims(&[4]),
+            dtype: DType::F32,
+        });
+        let order = vec![const_id, same_device_id, copy_id];
+
+        let set = build_wait_set(&g, &order);
+        assert!(
+            set.contains(&same_device_id),
+            "the Copy's producer must be in the wait set"
+        );
+        assert!(
+            !set.contains(&const_id),
+            "a node with no Copy/Move consumer must be absent from the wait set"
+        );
+        assert!(
+            !set.contains(&copy_id),
+            "the Copy node itself is not its own producer"
+        );
+        assert_eq!(set.len(), 1, "only the one true cross-device producer is in the set");
+    }
+
+    /// A `Move` producer is collected the same way as a `Copy` producer.
+    #[test]
+    fn build_wait_set_collects_move_producers_too() {
+        let mut g = Graph::new();
+        let const_id = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[4]),
+            dtype: DType::F32,
+        });
+        let move_id = g.push(Node {
+            op: Op::Move { target: DeviceLocation::Cpu },
+            inputs: vec![const_id],
+            shape: Shape::from_dims(&[4]),
+            dtype: DType::F32,
+        });
+        let order = vec![const_id, move_id];
+
+        let set = build_wait_set(&g, &order);
+        assert!(set.contains(&const_id), "the Move's producer must be in the wait set");
+        assert_eq!(set.len(), 1);
+    }
+
+    /// A CPU-only order (no `Op::Copy`/`Op::Move` anywhere) yields an empty
+    /// wait set — every node in it is eligible for elision.
+    #[test]
+    fn build_wait_set_is_empty_for_cpu_only_order() {
+        let mut g = Graph::new();
+        let const_id = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[4]),
+            dtype: DType::F32,
+        });
+        let contig_id = g.push(Node {
+            op: Op::Contiguize,
+            inputs: vec![const_id],
+            shape: Shape::from_dims(&[4]),
+            dtype: DType::F32,
+        });
+        let order = vec![const_id, contig_id];
+
+        let set = build_wait_set(&g, &order);
+        assert!(set.is_empty(), "a CPU-only order (no Copy/Move) yields an empty wait set");
+    }
+
+    /// `will_be_waited`'s two arms: the conservative `None` fallback (the
+    /// `OrderSource::Streaming` case) is always `true`; a `Some(set)` checks
+    /// membership.
+    #[test]
+    fn will_be_waited_none_is_conservative_true_for_any_node() {
+        let ws: WaitSet = None;
+        assert!(will_be_waited(&ws, NodeId(0)));
+        assert!(will_be_waited(&ws, NodeId(12345)));
+    }
+
+    #[test]
+    fn will_be_waited_some_checks_membership() {
+        let mut set = HashSet::new();
+        set.insert(NodeId(3));
+        let ws: WaitSet = Some(set);
+        assert!(will_be_waited(&ws, NodeId(3)), "member must be waited");
+        assert!(!will_be_waited(&ws, NodeId(4)), "non-member must be elided");
+    }
 
     /// A4b-1 test double: a `Completion` whose `wait` flips a shared flag, so a
     /// test can observe whether the drain actually waited it.
