@@ -468,6 +468,23 @@ Cross-references are fine — an architecture-decision-log entry can link to the
 
 ---
 
+## 2026-07-08 — Binding key generalized; the runtime-kernel sidecar is FOLDED
+
+**Sections affected**: none revised (this executes the end-state the previous entry named; the standing "registry runtime-mutable, no sidecar" claim now holds for runtime kernels).
+**Phase / PR**: branch `binding-key-gen` (after the dd-shapes merge freed the `pipelined.rs`/`plan.rs` surface). Code: `fuel-dispatch/src/kernel.rs` (`BindingKey`), `runtime_fused_kernels.rs` (now a facade), `pipelined.rs` (`compile_one`'s arm reads the table).
+
+**What changed**: the binding table's key is now `BindingKey { Static(OpKind) | RuntimeFused(FusedOpId) }` (`From<OpKind>` keeps every existing registration/lookup call site source-unchanged). A runtime kernel registers through `extend_global_bindings` under its `RuntimeFused` id — **the second registry is gone** (and with it the per-adopt `Box::leak` of the dtype tuple; the table owns its `KernelDTypes`). `compile_one`'s `is_runtime` arm resolves through the ordinary `lookup_with_caps`, so an absent kernel and a dtype mismatch are one honest `NoBackendForOp` miss; the arm keeps only the runtime-specific obligations (backend-pin guard, single-output reject, `Runtime{scalars} → JitScalars`). Static-audit iterators (`iter_keys`/`iter_precision`/`iter_cost`) expose Static entries only; `fill_unset_cpu_cost` skips runtime rows (they keep the `unknown_cost` sentinel — never a lying zero).
+
+**What is STILL transitional** (scoped honestly, contra the previous entry's optimism):
+- **The metadata sidecar** (`fuel-graph/src/runtime_fused.rs`, id → region) remains — folding it means a runtime-mutable `FusedOpRegistry`, a separate program.
+- **`default_passes_with_runtime_fusion`** therefore also remains: its hermeticity rationale was always the *metadata* scan (the pathfinder iterates `runtime_entries()`), which is still process-global.
+- **The `compile_one` arm** is thinner but not collapsed: full collapse needs `op_to_binding_key` at the terminal lookup + the plan path (G4).
+- **G4 (plan-path pricing)**: a runtime arm is sparse-skip unpriced in `compile_plan` (safe — arm 0 is the runnability fallback). Pricing derives from the recipe (`decompose_region`) keyed by the `RuntimeFused` id — no stored closure needed; the fused-cost sentinel attachment the sidecar carried is retired with it.
+
+**Implications going forward**: new runtime-kernel consumers go through the binding table (`BindingKey::RuntimeFused`) or the facade — never a new side structure. G4 + the terminal-arm collapse + the metadata-registry fold are the named remainder.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.

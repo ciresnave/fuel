@@ -38,6 +38,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 
 use fuel_ir::conv::{ParamsConv1D, ParamsConvTranspose1D};
+use fuel_graph::registry::FusedOpId;
 use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, Error, Layout, Result};
@@ -856,9 +857,42 @@ pub struct BindingEntry {
     pub kernel_revision_hash: u64,
 }
 
+/// The binding table's op key — generalized so **runtime-registered** fused
+/// ops live in the SAME registry as static kernels (the 2026-07-08
+/// decisions-log end-state; retires the transitional runtime-kernel sidecar).
+///
+/// `Static` is the compile-time `OpKind` family every existing registration
+/// uses (a bare `OpKind` converts via `From`, so those call sites are
+/// unchanged). `RuntimeFused` names a Tier-2 (JIT-synthesized / import-time)
+/// fused op by its runtime `FusedOpId` (`>= RUNTIME_FUSED_BASE`) — the id IS
+/// the op identity, so no fake `OpKind` ever enters the table.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BindingKey {
+    /// A compile-time op family (every static kernel registration).
+    Static(OpKind),
+    /// A runtime-registered fused op, keyed by its runtime id.
+    RuntimeFused(FusedOpId),
+}
+
+impl From<OpKind> for BindingKey {
+    fn from(op: OpKind) -> Self {
+        BindingKey::Static(op)
+    }
+}
+
+impl BindingKey {
+    /// The `Static` op kind, if this is a static-family key.
+    pub fn static_op(self) -> Option<OpKind> {
+        match self {
+            BindingKey::Static(op) => Some(op),
+            BindingKey::RuntimeFused(_) => None,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct KernelBindingTable {
-    bindings: HashMap<(OpKind, KernelDTypes, BackendId), SmallVec<[BindingEntry; 2]>>,
+    bindings: HashMap<(BindingKey, KernelDTypes, BackendId), SmallVec<[BindingEntry; 2]>>,
 }
 
 impl KernelBindingTable {
@@ -888,7 +922,7 @@ impl KernelBindingTable {
     /// pass to opt out of the default.
     pub fn register(
         &mut self,
-        op: OpKind,
+        op: impl Into<BindingKey>,
         dtypes: &[DType],
         backend: BackendId,
         kernel: KernelRef,
@@ -907,7 +941,7 @@ impl KernelBindingTable {
     /// decide whether to auto-Contiguize inputs before kernel call.
     pub fn register_with_caps(
         &mut self,
-        op: OpKind,
+        op: impl Into<BindingKey>,
         dtypes: &[DType],
         backend: BackendId,
         kernel: KernelRef,
@@ -927,7 +961,7 @@ impl KernelBindingTable {
     /// must be false).
     pub fn register_with_precision(
         &mut self,
-        op: OpKind,
+        op: impl Into<BindingKey>,
         dtypes: &[DType],
         backend: BackendId,
         kernel: KernelRef,
@@ -944,7 +978,7 @@ impl KernelBindingTable {
     /// [`Self::register_full`].
     pub fn register_with_caps_and_precision(
         &mut self,
-        op: OpKind,
+        op: impl Into<BindingKey>,
         dtypes: &[DType],
         backend: BackendId,
         kernel: KernelRef,
@@ -968,7 +1002,7 @@ impl KernelBindingTable {
     /// an inline panic (see [`Self::register`]).
     pub fn register_full(
         &mut self,
-        op: OpKind,
+        op: impl Into<BindingKey>,
         dtypes: &[DType],
         backend: BackendId,
         kernel: KernelRef,
@@ -990,7 +1024,7 @@ impl KernelBindingTable {
     /// distinguishes alternatives by function-pointer identity.
     pub fn register_full_with_source(
         &mut self,
-        op: OpKind,
+        op: impl Into<BindingKey>,
         dtypes: &[DType],
         backend: BackendId,
         kernel: KernelRef,
@@ -1031,7 +1065,7 @@ impl KernelBindingTable {
     #[allow(clippy::too_many_arguments)]
     pub fn register_full_with_source_generic(
         &mut self,
-        op: OpKind,
+        op: impl Into<BindingKey>,
         dtypes: &[DType],
         backend: BackendId,
         kernel: KernelRef,
@@ -1042,7 +1076,7 @@ impl KernelBindingTable {
         is_generic: bool,
         kernel_revision_hash: u64,
     ) {
-        let key = (op, SmallVec::from_slice(dtypes), backend);
+        let key = (op.into(), SmallVec::from_slice(dtypes), backend);
         let entry = BindingEntry {
             kernel,
             caps,
@@ -1182,10 +1216,13 @@ impl KernelBindingTable {
         dispatcher: fn(OpKind) -> CostFn,
     ) {
         let sentinel = unknown_cost as usize;
-        for ((op, _, this_backend), alts) in self.bindings.iter_mut() {
+        for ((key, _, this_backend), alts) in self.bindings.iter_mut() {
             if *this_backend != backend {
                 continue;
             }
+            // Runtime-fused entries keep the sentinel: their cost derives from
+            // the op's recipe (keyed by the runtime id), not an OpKind table.
+            let BindingKey::Static(op) = key else { continue };
             for entry in alts.iter_mut() {
                 if (entry.cost as usize) == sentinel {
                     entry.cost = dispatcher(*op);
@@ -1203,11 +1240,11 @@ impl KernelBindingTable {
     /// rather than panicking.
     pub fn lookup_precision(
         &self,
-        op: OpKind,
+        op: impl Into<BindingKey>,
         dtypes: &[DType],
         backend: BackendId,
     ) -> crate::fused::PrecisionGuarantee {
-        let key = (op, SmallVec::from_slice(dtypes), backend);
+        let key = (op.into(), SmallVec::from_slice(dtypes), backend);
         self.bindings
             .get(&key)
             .and_then(|alts| alts.first())
@@ -1223,11 +1260,11 @@ impl KernelBindingTable {
     /// claim."
     pub fn lookup_cost(
         &self,
-        op: OpKind,
+        op: impl Into<BindingKey>,
         dtypes: &[DType],
         backend: BackendId,
     ) -> CostFn {
-        let key = (op, SmallVec::from_slice(dtypes), backend);
+        let key = (op.into(), SmallVec::from_slice(dtypes), backend);
         self.bindings
             .get(&key)
             .and_then(|alts| alts.first())
@@ -1244,9 +1281,13 @@ impl KernelBindingTable {
         &self,
     ) -> impl Iterator<Item = (OpKind, &[DType], BackendId, crate::fused::PrecisionGuarantee)>
     {
-        self.bindings.iter().flat_map(|((op, dtypes, backend), alts)| {
+        self.bindings.iter().filter_map(|((key, dtypes, backend), alts)| {
+            // Static-kernel audit view: runtime-fused entries are outside the
+            // per-OpKind commitments these iterators exist to check.
+            key.static_op().map(|op| (op, dtypes, backend, alts))
+        }).flat_map(|(op, dtypes, backend, alts)| {
             alts.iter()
-                .map(move |e| (*op, dtypes.as_slice(), *backend, e.precision))
+                .map(move |e| (op, dtypes.as_slice(), *backend, e.precision))
         })
     }
 
@@ -1258,9 +1299,11 @@ impl KernelBindingTable {
         &self,
     ) -> impl Iterator<Item = (OpKind, &[DType], BackendId, CostFn)>
     {
-        self.bindings.iter().flat_map(|((op, dtypes, backend), alts)| {
+        self.bindings.iter().filter_map(|((key, dtypes, backend), alts)| {
+            key.static_op().map(|op| (op, dtypes, backend, alts))
+        }).flat_map(|(op, dtypes, backend, alts)| {
             alts.iter()
-                .map(move |e| (*op, dtypes.as_slice(), *backend, e.cost))
+                .map(move |e| (op, dtypes.as_slice(), *backend, e.cost))
         })
     }
 
@@ -1274,7 +1317,44 @@ impl KernelBindingTable {
     ) -> impl Iterator<Item = (OpKind, &[DType], BackendId)> {
         self.bindings
             .keys()
-            .map(|(op, dtypes, backend)| (*op, dtypes.as_slice(), *backend))
+            .filter_map(|(key, dtypes, backend)| {
+                key.static_op().map(|op| (op, dtypes.as_slice(), *backend))
+            })
+    }
+
+    /// Whether ANY runtime-fused entry is bound for `(fid, backend)`,
+    /// regardless of dtype tuple — the coarse capability-gate query (the
+    /// optimizer's fuse/don't-fuse predicate is id-level; the dtype-precise
+    /// check is the dispatch-time [`Self::lookup_with_caps`] itself).
+    pub fn has_runtime_fused(&self, fid: FusedOpId, backend: BackendId) -> bool {
+        self.bindings.keys().any(|(k, _, b)| {
+            *b == backend && matches!(k, BindingKey::RuntimeFused(f) if *f == fid)
+        })
+    }
+
+    /// The first runtime-fused entry for `(fid, backend)` with its dtype
+    /// tuple — a diagnostic/test view (dispatch resolves dtype-precisely via
+    /// [`Self::lookup_with_caps`]).
+    pub fn first_runtime_fused(
+        &self,
+        fid: FusedOpId,
+        backend: BackendId,
+    ) -> Option<(&[DType], &BindingEntry)> {
+        self.bindings.iter().find_map(|((k, dtypes, b), alts)| {
+            (*b == backend && matches!(k, BindingKey::RuntimeFused(f) if *f == fid))
+                .then(|| alts.first().map(|e| (dtypes.as_slice(), e)))
+                .flatten()
+        })
+    }
+
+    /// **TEST-ONLY.** Drop every runtime-fused entry (static entries retained).
+    /// The runtime-fused reset story: the metadata sidecar's Vec length is the
+    /// id allocator, so clearing it MUST clear these bindings in the same
+    /// breath or a reused id resolves a stale kernel
+    /// (`runtime_fused_kernels::clear_runtime_fused_for_tests` does both).
+    #[doc(hidden)]
+    pub fn remove_runtime_fused_for_tests(&mut self) {
+        self.bindings.retain(|(k, _, _), _| matches!(k, BindingKey::Static(_)));
     }
 
     /// Look up the wrapper for `(op, dtypes, backend)`. Returns the
@@ -1283,7 +1363,7 @@ impl KernelBindingTable {
     /// set use [`Self::lookup_alternatives`].
     pub fn lookup(
         &self,
-        op: OpKind,
+        op: impl Into<BindingKey>,
         dtypes: &[DType],
         backend: BackendId,
     ) -> Result<KernelRef> {
@@ -1296,11 +1376,11 @@ impl KernelBindingTable {
     /// (production-correct: no panic).
     pub fn lookup_with_caps(
         &self,
-        op: OpKind,
+        op: impl Into<BindingKey>,
         dtypes: &[DType],
         backend: BackendId,
     ) -> Result<(KernelRef, KernelCaps)> {
-        let key = (op, SmallVec::from_slice(dtypes), backend);
+        let key = (op.into(), SmallVec::from_slice(dtypes), backend);
         self.bindings
             .get(&key)
             .and_then(|alts| alts.first())
@@ -1313,13 +1393,16 @@ impl KernelBindingTable {
                     .collect::<std::collections::HashSet<_>>()
                     .into_iter()
                     .collect();
+                // Diagnostic listing of the STATIC coverage (the useful "what
+                // exists" context); a runtime-fused miss reports the honest
+                // `OpKind::RuntimeFused` tag as its op.
                 let supported_combinations: Vec<(BackendId, OpKind, Vec<DType>)> = self
                     .bindings
                     .keys()
-                    .map(|(o, d, b)| (*b, *o, d.to_vec()))
+                    .filter_map(|(k, d, b)| k.static_op().map(|o| (*b, o, d.to_vec())))
                     .collect();
                 Error::NoBackendForOp {
-                    op,
+                    op: key.0.static_op().unwrap_or(OpKind::RuntimeFused),
                     dtypes: dtypes.to_vec(),
                     available_backends,
                     supported_combinations,
@@ -1341,11 +1424,11 @@ impl KernelBindingTable {
     /// for selection logic).
     pub fn lookup_alternatives(
         &self,
-        op: OpKind,
+        op: impl Into<BindingKey>,
         dtypes: &[DType],
         backend: BackendId,
     ) -> &[BindingEntry] {
-        let key = (op, SmallVec::from_slice(dtypes), backend);
+        let key = (op.into(), SmallVec::from_slice(dtypes), backend);
         self.bindings
             .get(&key)
             .map(|alts| alts.as_slice())
