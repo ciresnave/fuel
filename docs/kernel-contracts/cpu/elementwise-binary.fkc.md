@@ -49,8 +49,9 @@ absolute timing are left for the Judge to populate (no placeholder numbers).
 
 **Precision.** `f32` / `f64` are the native IEEE-754 operation, bit-stable on the same hardware;
 `bf16` / `f16` are bit-stable on the same hardware via the deterministic f32 round-trip
-(widen → op → narrow). Per-op IEEE semantics (Div inf/NaN; Max/Min NaN-as-missing; Pow `powf`;
-Rem floored) are noted per section. All bounds are author-declared seeds the Judge audits.
+(widen → op → narrow). Per-op IEEE semantics (Div inf/NaN; Max/Min NaN-propagating — torch
+parity, pinned 2026-07-08, `docs/architecture/10-decisions-log.md`; Pow `powf`; Rem floored) are
+noted per section. All bounds are author-declared seeds the Judge audits.
 
 ---
 
@@ -1162,14 +1163,15 @@ determinism: same_hardware_bitwise
 
 ## maximum_f32  (elementwise maximum, F32)
 
-`out[i] = lhs[i].max(rhs[i])` via `f32::max` (`chassis/binary.rs:145-148`). NaN-as-missing:
-returns the non-NaN operand when exactly one is NaN, NaN when both are. Thunk `maximum_f32`
-(`byte_kernels.rs:3101`).
+`out[i] = if lhs[i].is_nan() { lhs[i] } else if rhs[i].is_nan() { rhs[i] } else { lhs[i].max(rhs[i]) }`
+(`chassis/binary.rs:145-152`). NaN-propagating (torch parity — `torch.maximum` returns NaN if
+*either* operand is NaN), pinned 2026-07-08 (`docs/architecture/10-decisions-log.md`); deliberately
+does not use bare `f32::max` (which is NaN-as-missing). Thunk `maximum_f32` (`byte_kernels.rs:3101`).
 
 ```fkc
 kernel: maximum_f32
 op_kind: MaximumElementwise
-blurb: "Elementwise F32 maximum (NaN-as-missing); contiguous same-shape."
+blurb: "Elementwise F32 maximum (NaN-propagating, torch parity); contiguous same-shape."
 backend: Cpu
 kernel_source: "portable-cpu"
 entry_point: "fuel_cpu_backend::byte_kernels::maximum_f32"
@@ -1218,7 +1220,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact: returns one of the two operands. f32::max NaN-as-missing — non-NaN operand wins; NaN only if both NaN."
+  notes: "Exact: returns one of the two operands (or a NaN operand unchanged). NaN-propagating (torch parity) — NaN if either operand is NaN; the non-NaN result is otherwise the larger operand."
 
 determinism: same_hardware_bitwise
 ```
@@ -1227,13 +1229,14 @@ determinism: same_hardware_bitwise
 
 ## maximum_f64  (elementwise maximum, F64)
 
-`out[i] = lhs[i].max(rhs[i])` via `f64::max` (`chassis/binary.rs:147`). NaN-as-missing. Thunk
+`out[i] = if lhs[i].is_nan() { lhs[i] } else if rhs[i].is_nan() { rhs[i] } else { lhs[i].max(rhs[i]) }`
+(`chassis/binary.rs:145-152`). NaN-propagating (torch parity), pinned 2026-07-08. Thunk
 `maximum_f64` (`byte_kernels.rs:144`).
 
 ```fkc
 kernel: maximum_f64
 op_kind: MaximumElementwise
-blurb: "Elementwise F64 maximum (NaN-as-missing); contiguous same-shape."
+blurb: "Elementwise F64 maximum (NaN-propagating, torch parity); contiguous same-shape."
 backend: Cpu
 kernel_source: "portable-cpu"
 entry_point: "fuel_cpu_backend::byte_kernels::maximum_f64"
@@ -1282,7 +1285,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact: returns one of the two operands. f64::max NaN-as-missing — non-NaN operand wins; NaN only if both NaN."
+  notes: "Exact: returns one of the two operands (or a NaN operand unchanged). NaN-propagating (torch parity) — NaN if either operand is NaN; the non-NaN result is otherwise the larger operand."
 
 determinism: same_hardware_bitwise
 ```
@@ -1291,14 +1294,14 @@ determinism: same_hardware_bitwise
 
 ## maximum_bf16  (elementwise maximum, BF16 via f32)
 
-`out[i] = bf16(f32(lhs[i]).max(f32(rhs[i])))` (`chassis/binary.rs:57-61`, `Maximum::f32`). The
-max is computed on widened f32 then narrowed; NaN-as-missing per `f32::max`. Thunk `maximum_bf16`
-(`byte_kernels.rs:164`).
+`out[i] = bf16(Maximum::f32(f32(lhs[i]), f32(rhs[i])))` (`chassis/binary.rs:57-61`,
+`Maximum::f32`). The max is computed on widened f32 then narrowed; NaN-propagating (torch parity)
+per `Maximum::f32`, pinned 2026-07-08. Thunk `maximum_bf16` (`byte_kernels.rs:164`).
 
 ```fkc
 kernel: maximum_bf16
 op_kind: MaximumElementwise
-blurb: "Elementwise BF16 maximum via f32 round-trip (NaN-as-missing); contiguous same-shape."
+blurb: "Elementwise BF16 maximum via f32 round-trip (NaN-propagating, torch parity); contiguous same-shape."
 backend: Cpu
 kernel_source: "portable-cpu"
 entry_point: "fuel_cpu_backend::byte_kernels::maximum_bf16"
@@ -1347,7 +1350,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Widen to f32, take f32::max (NaN-as-missing), narrow to bf16 on store (lossless re-narrow of an already-bf16-representable operand). Deterministic; bit-stable on same hardware."
+  notes: "Widen to f32, take Maximum::f32 (NaN-propagating, torch parity), narrow to bf16 on store (lossless re-narrow of an already-bf16-representable operand). Deterministic; bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1356,13 +1359,14 @@ determinism: same_hardware_bitwise
 
 ## maximum_f16  (elementwise maximum, F16 via f32)
 
-`out[i] = f16(f32(lhs[i]).max(f32(rhs[i])))` (`chassis/binary.rs:63-67`, `Maximum::f32`). Thunk
-`maximum_f16` (`byte_kernels.rs:190`).
+`out[i] = f16(Maximum::f32(f32(lhs[i]), f32(rhs[i])))` (`chassis/binary.rs:63-67`,
+`Maximum::f32`). NaN-propagating (torch parity), pinned 2026-07-08. Thunk `maximum_f16`
+(`byte_kernels.rs:190`).
 
 ```fkc
 kernel: maximum_f16
 op_kind: MaximumElementwise
-blurb: "Elementwise F16 maximum via f32 round-trip (NaN-as-missing); contiguous same-shape."
+blurb: "Elementwise F16 maximum via f32 round-trip (NaN-propagating, torch parity); contiguous same-shape."
 backend: Cpu
 kernel_source: "portable-cpu"
 entry_point: "fuel_cpu_backend::byte_kernels::maximum_f16"
@@ -1411,7 +1415,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Widen to f32, take f32::max (NaN-as-missing), narrow to f16 on store. Deterministic; bit-stable on same hardware."
+  notes: "Widen to f32, take Maximum::f32 (NaN-propagating, torch parity), narrow to f16 on store. Deterministic; bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1420,13 +1424,14 @@ determinism: same_hardware_bitwise
 
 ## minimum_f32  (elementwise minimum, F32)
 
-`out[i] = lhs[i].min(rhs[i])` via `f32::min` (`chassis/binary.rs:152-155`). NaN-as-missing,
-mirroring maximum. Thunk `minimum_f32` (`byte_kernels.rs:3102`).
+`out[i] = if lhs[i].is_nan() { lhs[i] } else if rhs[i].is_nan() { rhs[i] } else { lhs[i].min(rhs[i]) }`
+(`chassis/binary.rs:158-165`). NaN-propagating (torch parity), mirroring maximum, pinned
+2026-07-08. Thunk `minimum_f32` (`byte_kernels.rs:3102`).
 
 ```fkc
 kernel: minimum_f32
 op_kind: MinimumElementwise
-blurb: "Elementwise F32 minimum (NaN-as-missing); contiguous same-shape."
+blurb: "Elementwise F32 minimum (NaN-propagating, torch parity); contiguous same-shape."
 backend: Cpu
 kernel_source: "portable-cpu"
 entry_point: "fuel_cpu_backend::byte_kernels::minimum_f32"
@@ -1475,7 +1480,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact: returns one of the two operands. f32::min NaN-as-missing — non-NaN operand wins; NaN only if both NaN."
+  notes: "Exact: returns one of the two operands (or a NaN operand unchanged). NaN-propagating (torch parity) — NaN if either operand is NaN; the non-NaN result is otherwise the smaller operand."
 
 determinism: same_hardware_bitwise
 ```
@@ -1484,13 +1489,14 @@ determinism: same_hardware_bitwise
 
 ## minimum_f64  (elementwise minimum, F64)
 
-`out[i] = lhs[i].min(rhs[i])` via `f64::min` (`chassis/binary.rs:154`). NaN-as-missing. Thunk
+`out[i] = if lhs[i].is_nan() { lhs[i] } else if rhs[i].is_nan() { rhs[i] } else { lhs[i].min(rhs[i]) }`
+(`chassis/binary.rs:158-165`). NaN-propagating (torch parity), pinned 2026-07-08. Thunk
 `minimum_f64` (`byte_kernels.rs:145`).
 
 ```fkc
 kernel: minimum_f64
 op_kind: MinimumElementwise
-blurb: "Elementwise F64 minimum (NaN-as-missing); contiguous same-shape."
+blurb: "Elementwise F64 minimum (NaN-propagating, torch parity); contiguous same-shape."
 backend: Cpu
 kernel_source: "portable-cpu"
 entry_point: "fuel_cpu_backend::byte_kernels::minimum_f64"
@@ -1539,7 +1545,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact: returns one of the two operands. f64::min NaN-as-missing — non-NaN operand wins; NaN only if both NaN."
+  notes: "Exact: returns one of the two operands (or a NaN operand unchanged). NaN-propagating (torch parity) — NaN if either operand is NaN; the non-NaN result is otherwise the smaller operand."
 
 determinism: same_hardware_bitwise
 ```
@@ -1548,13 +1554,14 @@ determinism: same_hardware_bitwise
 
 ## minimum_bf16  (elementwise minimum, BF16 via f32)
 
-`out[i] = bf16(f32(lhs[i]).min(f32(rhs[i])))` (`chassis/binary.rs:57-61`, `Minimum::f32`). Thunk
-`minimum_bf16` (`byte_kernels.rs:165`).
+`out[i] = bf16(Minimum::f32(f32(lhs[i]), f32(rhs[i])))` (`chassis/binary.rs:57-61`,
+`Minimum::f32`). NaN-propagating (torch parity), pinned 2026-07-08. Thunk `minimum_bf16`
+(`byte_kernels.rs:165`).
 
 ```fkc
 kernel: minimum_bf16
 op_kind: MinimumElementwise
-blurb: "Elementwise BF16 minimum via f32 round-trip (NaN-as-missing); contiguous same-shape."
+blurb: "Elementwise BF16 minimum via f32 round-trip (NaN-propagating, torch parity); contiguous same-shape."
 backend: Cpu
 kernel_source: "portable-cpu"
 entry_point: "fuel_cpu_backend::byte_kernels::minimum_bf16"
@@ -1603,7 +1610,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Widen to f32, take f32::min (NaN-as-missing), narrow to bf16 on store. Deterministic; bit-stable on same hardware."
+  notes: "Widen to f32, take Minimum::f32 (NaN-propagating, torch parity), narrow to bf16 on store. Deterministic; bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1612,13 +1619,14 @@ determinism: same_hardware_bitwise
 
 ## minimum_f16  (elementwise minimum, F16 via f32)
 
-`out[i] = f16(f32(lhs[i]).min(f32(rhs[i])))` (`chassis/binary.rs:63-67`, `Minimum::f32`). Thunk
-`minimum_f16` (`byte_kernels.rs:191`).
+`out[i] = f16(Minimum::f32(f32(lhs[i]), f32(rhs[i])))` (`chassis/binary.rs:63-67`,
+`Minimum::f32`). NaN-propagating (torch parity), pinned 2026-07-08. Thunk `minimum_f16`
+(`byte_kernels.rs:191`).
 
 ```fkc
 kernel: minimum_f16
 op_kind: MinimumElementwise
-blurb: "Elementwise F16 minimum via f32 round-trip (NaN-as-missing); contiguous same-shape."
+blurb: "Elementwise F16 minimum via f32 round-trip (NaN-propagating, torch parity); contiguous same-shape."
 backend: Cpu
 kernel_source: "portable-cpu"
 entry_point: "fuel_cpu_backend::byte_kernels::minimum_f16"
@@ -1667,7 +1675,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Widen to f32, take f32::min (NaN-as-missing), narrow to f16 on store. Deterministic; bit-stable on same hardware."
+  notes: "Widen to f32, take Minimum::f32 (NaN-propagating, torch parity), narrow to f16 on store. Deterministic; bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```

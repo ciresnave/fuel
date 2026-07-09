@@ -135,15 +135,22 @@ determinism: same_hardware_bitwise
 
 Elementwise ReLU clamp.
 
-`out[i] = max(0, in[i])` (`chassis/unary.rs:130`, `f32`/`f64` via `x.max(0.0)`). bf16/f16 widen to
-f32, clamp, narrow. NaN propagation follows `f32::max` (NaN-as-missing: `max(NaN, 0)` returns 0,
-the non-NaN operand). One cheap branchless op per element; bandwidth-bound. Contiguous-only;
-executor contiguizes any strided/broadcast/offset input first.
+`out[i] = if in[i].is_nan() { in[i] } else { in[i].max(0.0) }` (`chassis/unary.rs:130-134`).
+bf16/f16 widen to f32, clamp, narrow. NaN-propagating (torch parity — `torch.relu(nan) == nan`),
+pinned 2026-07-08 (`docs/architecture/10-decisions-log.md`); deliberately does not use bare
+`x.max(0.0)` (which is NaN-as-missing: `max(NaN, 0)` returns `0`, the non-NaN operand). One cheap
+branchless op per element; bandwidth-bound. Contiguous-only; executor contiguizes any
+strided/broadcast/offset input first.
+NOTE: CUDA `relu` (`fuel-dispatch`'s `baracuda_dispatch.rs` binding to baracuda's
+`unary_relu_fp.cu`) is a **transitional divergence** — it still scrubs (NaN-as-missing, `fmaxf`)
+pending a NaN-propagating rebind in baracuda alpha.76; see
+`docs/kernel-contracts/dispatch/elementwise-unary.fkc.md`'s `relu_elementwise_cuda` section and
+`fuel-core/src/lazy.rs::relu_cuda_still_scrubs_nan_pending_alpha76_rebind`.
 
 ```fkc
 kernel: relu
 op_kind: ReluElementwise
-blurb: "Elementwise ReLU max(0, x); contiguous same-shape; half via f32."
+blurb: "Elementwise ReLU max(0, x), NaN-propagating (torch parity); contiguous same-shape; half via f32."
 backend: Cpu
 kernel_source: "portable-cpu"
 entry_point: "fuel_cpu_backend::byte_kernels::relu"   # one per (op, dtype): relu_{f32,f64,bf16,f16}; §12.6
@@ -188,7 +195,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: false
-  notes: "max(0, x); exact for f32/f64. bf16/f16 widen to f32 then narrow. NaN-as-missing (f32::max)."
+  notes: "max(0, x); exact for f32/f64. bf16/f16 widen to f32 then narrow. NaN-propagating (torch parity, pinned 2026-07-08) — not f32::max's NaN-as-missing."
 
 determinism: same_hardware_bitwise
 ```

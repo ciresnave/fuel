@@ -20,8 +20,9 @@
 //! runnability fallback).
 
 use fuel_graph::jit::PatternNode;
-use fuel_graph::registry::FusedOpId;
+use fuel_graph::registry::{FusedOpId, FusedOps};
 use fuel_ir::DType;
+use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
 
 use crate::dispatch::{extend_global_bindings, global_bindings};
@@ -71,9 +72,56 @@ pub fn lookup_runtime_kernel(id: FusedOpId, backend: BackendId) -> Option<Runtim
 /// `capability_gated_rules`, so a runtime op fuses only once its kernel is
 /// bound. Id-level (coarse) by design; the dtype-precise check is the
 /// dispatch-time binding lookup itself.
+///
+/// **SHARED-CONSUMER COORDINATION (dd-shapes / flash-arm registry seam,
+/// 2026-07-08; carried through the binding-key fold).** Two independent
+/// callers with different invariants, and any change here must hold both:
+/// - the **Tier-2 runtime-fusion / JIT program** calls this for *runtime* ids
+///   (`id.is_runtime()`, allocated by [`adopt_runtime_fused`]) — those resolve
+///   only through their `BindingKey::RuntimeFused` rows
+///   (`KernelBindingTable::has_runtime_fused`), never the static registry and
+///   never the static-id bridge below (which returns `false` immediately for
+///   a runtime id);
+/// - the **decode flash-arm gate**
+///   (`crate::decode_flash::FlashArmCapability::production`) calls this for
+///   the *static* id `FusedOps::FLASH_ATTN` on `BackendId::Cuda`, whose CUDA
+///   `flash_decoding` kernel registers ONLY into the binding table under
+///   `(OpKind::FlashAttn, [f16|bf16;4], Cuda)` — never
+///   [`default_kernel_registry`] (a frozen CPU-only `OnceLock`). The
+///   [`static_binding_table_bridge`] arm makes that reachable: for a static id
+///   with a known `OpKind` mapping, consult the binding table for ANY entry on
+///   `backend` (dtype-blind — this predicate answers "is *a* kernel bound";
+///   dtype admissibility is a separate gate, e.g.
+///   `crate::decode_flash::flash_decode_admissible`).
 pub fn fused_kernel_available(id: FusedOpId, backend: BackendId) -> bool {
     default_kernel_registry().lookup(id, backend).is_some()
         || global_bindings().has_runtime_fused(id, backend)
+        || static_binding_table_bridge(id, backend)
+}
+
+/// The static-id half of the [`fused_kernel_available`] bridge (see its doc
+/// comment). Returns `false` immediately for a runtime id — purely additive
+/// for the static-id path; a runtime id resolves only via its
+/// `BindingKey::RuntimeFused` rows.
+fn static_binding_table_bridge(id: FusedOpId, backend: BackendId) -> bool {
+    if id.is_runtime() {
+        return false;
+    }
+    let Some(op_kind) = static_fused_id_to_binding_table_op_kind(id) else {
+        return false;
+    };
+    // `iter_keys` is the static-entry view (RuntimeFused rows filtered), which
+    // is exactly the population this bridge should scan.
+    global_bindings().iter_keys().any(|(op, _dtypes, b)| op == op_kind && b == backend)
+}
+
+/// The (deliberately small) set of *static* [`FusedOpId`]s whose kernel is
+/// known to register into the primitive `KernelBindingTable` under a
+/// corresponding [`OpKind`] rather than (only) [`default_kernel_registry`].
+/// See [`fused_kernel_available`]'s doc comment — widen this one id at a
+/// time as each is verified, not speculatively.
+fn static_fused_id_to_binding_table_op_kind(id: FusedOpId) -> Option<OpKind> {
+    if id == FusedOps::FLASH_ATTN { Some(OpKind::FlashAttn) } else { None }
 }
 
 /// **TEST-ONLY.** Reset the runtime-fused world: drop every
@@ -211,6 +259,64 @@ mod tests {
                 )
                 .is_err(),
             "wrong dtype tuple ⇒ NoBackendForOp, not a wrong-kernel bind",
+        );
+    }
+
+    // ---- flash-arm registry-seam bridge (dd-shapes, 2026-07-08) -----------
+
+    /// GREEN target (cuda build only): the CUDA `flash_decoding` kernel
+    /// registers only into `KernelBindingTable`, so before the bridge this was
+    /// unconditionally `false` on every host. Forces `global_bindings()` to
+    /// initialize (which runs the CUDA registration under
+    /// `#[cfg(feature = "cuda")]`) then asserts the static-id bridge sees it.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn fused_kernel_available_bridges_static_flash_attn_from_binding_table_on_cuda() {
+        let _guard = crate::dispatch::global_bindings();
+        drop(_guard);
+        assert!(
+            fused_kernel_available(FusedOps::FLASH_ATTN, BackendId::Cuda),
+            "the CUDA flash_decoding binding registers only into KernelBindingTable; \
+             fused_kernel_available must bridge to it for the static FLASH_ATTN id",
+        );
+    }
+
+    /// GUARD (non-cuda build only): with no CUDA registration ever run, the
+    /// static-id bridge has nothing to find.
+    #[test]
+    #[cfg(not(feature = "cuda"))]
+    fn fused_kernel_available_flash_attn_false_on_cuda_without_cuda_registration() {
+        assert!(
+            !fused_kernel_available(FusedOps::FLASH_ATTN, BackendId::Cuda),
+            "no cuda registration ran in this build; the static bridge finds nothing",
+        );
+    }
+
+    /// COORDINATION GUARD: the static-id bridge must be a strict no-op for
+    /// *runtime* ids — a runtime id resolves ONLY through its
+    /// `BindingKey::RuntimeFused` rows (post-fold; formerly the sidecar), and
+    /// an id adopted on one backend is never "rescued" by the bridge on
+    /// another.
+    #[test]
+    fn fused_kernel_available_runtime_id_still_routes_through_runtime_rows_untouched() {
+        let id = adopt_runtime_fused(
+            "test::adopt::flash_bridge_guard::relu_add",
+            relu_add(),
+            noop_kernel as KernelRef,
+            vec![DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+        )
+        .expect("relu(add) is a registrable region");
+
+        assert!(id.is_runtime(), "allocated a runtime id");
+        assert!(
+            fused_kernel_available(id, BackendId::Cpu),
+            "a runtime id still resolves via its RuntimeFused binding rows",
+        );
+        assert!(
+            !fused_kernel_available(id, BackendId::Cuda),
+            "not adopted on Cuda, and the static-id bridge must never rescue a \
+             runtime id (it returns false immediately for any id.is_runtime())",
         );
     }
 }

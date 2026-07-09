@@ -128,13 +128,15 @@ determinism: same_hardware_bitwise
 ## relu_inplace  (out = max(0, out))
 
 In-place ReLU clamp: `out[i] = max(0, out[i])` over a single contiguous buffer
-(`relu_inplace_<dt>`). f32/f64 native; bf16/f16 widen to f32, clamp, narrow. NaN-as-missing
-(`f32::max`). Numerics identical to the non-in-place `relu` cousin. Contiguous-only.
+(`relu_inplace_<dt>`). f32/f64 native; bf16/f16 widen to f32, clamp, narrow. NaN-propagating
+(torch parity), pinned 2026-07-08 (`docs/architecture/10-decisions-log.md`) — reuses
+`chassis::unary::Relu`, so it flipped in lockstep with the non-in-place `relu` cousin. Numerics
+identical to the non-in-place `relu` cousin. Contiguous-only.
 
 ```fkc
 kernel: relu_inplace
 op_kind: ReluInplace
-blurb: "In-place ReLU out[i]=max(0,out[i]); single contiguous buffer; half via f32; numerics identical to the non-in-place cousin."
+blurb: "In-place ReLU out[i]=max(0,out[i]), NaN-propagating (torch parity); single contiguous buffer; half via f32; numerics identical to the non-in-place cousin."
 backend: Cpu
 kernel_source: "portable-cpu"
 entry_point: "fuel_cpu_backend::byte_kernels::relu_inplace"   # base; §3.4 fans relu_inplace_{f32,f64,bf16,f16}; §12.6
@@ -178,7 +180,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: false
-  notes: "max(0, x); exact f32/f64. bf16/f16 widen to f32 then narrow. NaN-as-missing (f32::max). Identical to the non-in-place relu."
+  notes: "max(0, x); exact f32/f64. bf16/f16 widen to f32 then narrow. NaN-propagating (torch parity, pinned 2026-07-08). Identical to the non-in-place relu."
 
 determinism: same_hardware_bitwise
 ```
