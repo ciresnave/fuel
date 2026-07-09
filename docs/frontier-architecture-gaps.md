@@ -11,6 +11,13 @@ over this doc; the ROADMAP owns *sequencing*. This catalog only *tracks* — it 
 nothing on its own. When an item here gets a phase, update the "Home" column to point at
 it.
 
+**Companion.** This catalog covers the *transformer-adjacent* frontier. For the paradigms
+**beyond** autoregressive transformers — energy-based / Hopfield associative memory,
+neurosymbolic execution, symbolic regression & KAN, gated compute orchestration, and
+tensor-train compression — see [`frontier-paradigms-vision.md`](frontier-paradigms-vision.md),
+which classifies them into the same recipe/encoding/pass/leaf buckets and records two crux
+decisions (a unified bounded `Scan` primitive; a backend-like discrete-solver interface).
+
 **Origin.** A frontier-readiness audit (six-track codebase+docs sweep on 2026-07-04)
 against a survey of the current research edge: hybrid State-Space/Transformer
 architectures, Multi-head Latent Attention & QKV pruning, hyper-sparse Mixture-of-Experts
