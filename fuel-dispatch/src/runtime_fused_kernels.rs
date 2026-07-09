@@ -1,83 +1,107 @@
-//! Tier-2 runtime fused-op **kernel** sidecar
-//! (`docs/specs/runtime-fused-op-registration.md` §6).
+//! Runtime fused-op kernel registration — the **adopt/gate facade** over the
+//! ONE binding registry.
 //!
-//! The static [`crate::fused::FusedKernelRegistry`] is a frozen `OnceLock`, so a
-//! synthesized/adopted runtime kernel cannot register into it. This parallel
-//! `RwLock` registry holds runtime fused-op kernels (keyed by [`FusedOpId`],
-//! exactly like the static one), and [`fused_kernel_available`] is the
-//! capability predicate the optimizer's gate
-//! ([`fuel_graph::opt::RuleRegistry::capability_gated_rules`]) consults —
-//! static **or** runtime.
+//! The transitional `FusedOpId`-keyed kernel *sidecar* that used to live here
+//! is **folded** (the 2026-07-08 decisions-log end-state): a runtime kernel now
+//! registers into the global binding table
+//! ([`crate::dispatch::extend_global_bindings`]) under
+//! [`BindingKey::RuntimeFused`], exactly like a startup kernel registers under
+//! `BindingKey::Static` — same table, same entry shape, same dtype-keyed
+//! dispatch lookup. This module keeps the runtime-op-shaped API
+//! ([`adopt_runtime_fused`], [`fused_kernel_available`],
+//! [`lookup_runtime_kernel`]) so callers stay id-oriented, but there is no
+//! second registry behind it.
 //!
-//! [`adopt_runtime_fused`] is the entry point: it registers the runtime op's
-//! recipe (the `fuel-graph` metadata sidecar) **and** binds its kernel here, so
-//! the gate sees `has_kernel = true` and the op fuses + dispatches like a static
-//! one. The kernel-present half of the design that "already works" because
-//! `FusedKernelRegistry` is `FusedOpId`-keyed — this is the missing extensible
-//! half that lets a *runtime* id participate.
+//! Cost note: a runtime row is stored with the binding-native `unknown_cost`
+//! sentinel (never a lying zero). Deriving its Layer-1 estimate from the op's
+//! recipe (`decompose_region`, keyed by the `RuntimeFused` id in the binding
+//! key — no stored closure needed) is the plan-path pricing follow-up; today a
+//! runtime arm is sparse-skip unpriced there, which is safe (arm 0 stays the
+//! runnability fallback).
 
-use std::sync::{OnceLock, RwLock};
-
-use fuel_ir::{DType, probe::BackendId};
 use fuel_graph::jit::PatternNode;
 use fuel_graph::registry::FusedOpId;
+use fuel_ir::DType;
+use fuel_ir::probe::BackendId;
 
-use crate::fused::{
-    BackendImpl, FusedKernelRegistry, KernelRevisionHash, PrecisionGuarantee,
-    default_kernel_registry,
-};
-use crate::kernel::{KernelCaps, KernelRef};
+use crate::dispatch::{extend_global_bindings, global_bindings};
+use crate::fused::{PrecisionGuarantee, default_kernel_registry};
+use crate::kernel::{BindingKey, KernelCaps, KernelRef};
 
-/// The process-global runtime-kernel registry — append-only, behind a lock
-/// because (unlike the static `OnceLock`) it grows across the run as ops are
-/// adopted. Reads (dispatch/gate, the hot direction) take the read lock.
-fn runtime_kernels() -> &'static RwLock<FusedKernelRegistry> {
-    static R: OnceLock<RwLock<FusedKernelRegistry>> = OnceLock::new();
-    R.get_or_init(|| RwLock::new(FusedKernelRegistry::new()))
+/// A runtime-fused binding row, as [`lookup_runtime_kernel`] returns it — a
+/// diagnostic/test view (dispatch resolves dtype-precisely through the binding
+/// table itself; see `compile_one`'s `is_runtime` arm).
+#[derive(Clone, Debug)]
+pub struct RuntimeKernelBinding {
+    pub kernel: KernelRef,
+    pub caps: KernelCaps,
+    pub precision: PrecisionGuarantee,
+    /// The per-operand dtype tuple the kernel registered for (inputs in
+    /// order, then output) — the binding key's dtype half.
+    pub dtypes: Vec<DType>,
 }
 
-/// Bind a kernel for a runtime fused op (id `>= RUNTIME_FUSED_BASE`).
-pub fn register_runtime_kernel(id: FusedOpId, backend: BackendId, impl_: BackendImpl) {
-    runtime_kernels().write().unwrap().register(id, backend, impl_);
+/// Bind a kernel for a runtime fused op (id `>= RUNTIME_FUSED_BASE`) into the
+/// global binding table under `BindingKey::RuntimeFused(id)`. `dtypes` is the
+/// per-operand tuple (inputs in order, then output) — the same key shape every
+/// static registration uses.
+pub fn register_runtime_kernel(
+    id: FusedOpId,
+    dtypes: &[DType],
+    backend: BackendId,
+    kernel: KernelRef,
+) {
+    extend_global_bindings(|t| t.register(BindingKey::RuntimeFused(id), dtypes, backend, kernel));
 }
 
-/// Look up a runtime fused op's kernel for `backend`.
-pub fn lookup_runtime_kernel(id: FusedOpId, backend: BackendId) -> Option<BackendImpl> {
-    runtime_kernels().read().unwrap().lookup(id, backend)
+/// The first runtime-fused binding for `(id, backend)`, any dtype tuple.
+pub fn lookup_runtime_kernel(id: FusedOpId, backend: BackendId) -> Option<RuntimeKernelBinding> {
+    let table = global_bindings();
+    table.first_runtime_fused(id, backend).map(|(dtypes, e)| RuntimeKernelBinding {
+        kernel: e.kernel,
+        caps: e.caps,
+        precision: e.precision,
+        dtypes: dtypes.to_vec(),
+    })
 }
 
 /// The capability predicate the optimizer's gate consults: is there an
-/// admissible kernel for `(id, backend)` — static **or** runtime-adopted? The
-/// dispatch layer passes `|id| fused_kernel_available(id, backend)` to
-/// `capability_gated_rules`, so a runtime op fuses only once its kernel is bound.
+/// admissible kernel for `(id, backend)` — static **or** runtime-registered?
+/// The dispatch layer passes `|id| fused_kernel_available(id, backend)` to
+/// `capability_gated_rules`, so a runtime op fuses only once its kernel is
+/// bound. Id-level (coarse) by design; the dtype-precise check is the
+/// dispatch-time binding lookup itself.
 pub fn fused_kernel_available(id: FusedOpId, backend: BackendId) -> bool {
     default_kernel_registry().lookup(id, backend).is_some()
-        || lookup_runtime_kernel(id, backend).is_some()
+        || global_bindings().has_runtime_fused(id, backend)
 }
 
-/// **TEST-ONLY.** Reset BOTH runtime-fused sidecars — the kernel registry here
-/// and the `fuel-graph` metadata sidecar — together, because clearing metadata
-/// restarts the id allocator and a reused id must never resolve a stale
-/// kernel. Kernels are cleared FIRST so no window exists where a fresh id sees
-/// an old binding. Callers in one test binary share the process: serialize
-/// with every other adopting test (a bare reset races — dd-shapes
-/// coordination, 2026-07-08). `#[doc(hidden)] pub`, not `#[cfg(test)]`:
-/// integration tests compile this crate without `cfg(test)`.
+/// **TEST-ONLY.** Reset the runtime-fused world: drop every
+/// `BindingKey::RuntimeFused` row from the global binding table AND clear the
+/// `fuel-graph` metadata sidecar — together, because clearing metadata restarts
+/// the id allocator and a reused id must never resolve a stale kernel. Bindings
+/// are cleared FIRST so no window exists where a fresh id sees an old row.
+/// Callers in one test binary share the process: serialize with every other
+/// adopting test (a bare reset races — dd-shapes coordination, 2026-07-08).
+/// `#[doc(hidden)] pub`, not `#[cfg(test)]`: integration tests compile this
+/// crate without `cfg(test)`.
 #[doc(hidden)]
 pub fn clear_runtime_fused_for_tests() {
-    *runtime_kernels().write().unwrap() = FusedKernelRegistry::new();
+    extend_global_bindings(|t| t.remove_runtime_fused_for_tests());
     fuel_graph::runtime_fused::clear_runtime_fused_for_tests();
 }
 
 /// Adopt a synthesized/imported runtime fused op: register its recipe (the
-/// `region`) in the `fuel-graph` sidecar **and** bind its `kernel` here, then
-/// return the freshly-allocated runtime [`FusedOpId`]. After this the capability
-/// gate sees the op as fusable on `backend`.
+/// `region`) in the `fuel-graph` metadata sidecar **and** bind its kernel in
+/// the global binding table, then return the freshly-allocated runtime
+/// [`FusedOpId`]. After this the capability gate sees the op as fusable on
+/// `backend`, and the executor's `is_runtime` arm resolves it dtype-precisely
+/// from the same table every static kernel lives in.
 ///
 /// Takes the *resolved* parts (the region + the bound `KernelRef`), not a
-/// `JitResponse` — the `JitResponse`/`SynthesizedKernel` destructuring (+ the
-/// `entry_point → KernelRef` link-registry resolution) happens at the seam-call
-/// site, so `fuel-dispatch` stays free of the `fuel-kernel-seam` envelope crate.
+/// `JitResponse` — the `JitResponse`/`SynthArtifact` destructuring (+ the
+/// artifact-load step) happens at the seam-call site (`jit_adopt`), so the
+/// core dispatch layer stays free of the `fuel-kernel-seam` envelope crate.
 /// Returns `None` if the region is not registrable (non-decomposable / bad
 /// binds — surfaced by `register_runtime_fused`).
 pub fn adopt_runtime_fused(
@@ -88,33 +112,15 @@ pub fn adopt_runtime_fused(
     backend: BackendId,
 ) -> Option<FusedOpId> {
     let id = fuel_graph::runtime_fused::register_runtime_fused(name, region).ok()?;
-    // `BackendImpl` is `Copy` / `&'static [DType]`; a runtime op lives for the
-    // process, so leaking its dtype tuple to `'static` is sound (not a per-call
-    // leak — one per adopted op).
-    let dtypes: &'static [DType] = Box::leak(dtypes.into_boxed_slice());
-    // The fused-op cost sentinel (not a private zero-cost twin): so the
-    // adopted op's Layer-1 cost is composed from its recipe
-    // (`crate::fused_cost::fused_layer1_cost` → `cost_from_decompose`)
-    // rather than pricing at a spurious zero. A `cost_expr`/Judge override
-    // still supersedes it (measured › declared › composed › zero). This is
-    // the runtime-fused case spec §6 flags as most sentinel-zero-prone.
-    let impl_ = BackendImpl {
-        kernel,
-        dtypes,
-        cost: crate::fkc::fused_unknown_cost,
-        precision: PrecisionGuarantee::UNAUDITED,
-        caps: KernelCaps::empty(),
-        revision: KernelRevisionHash::UNTRACKED,
-    };
-    register_runtime_kernel(id, backend, impl_);
+    register_runtime_kernel(id, &dtypes, backend, kernel);
     Some(id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_ir::Layout;
     use fuel_graph::jit::{OpAttrs, OpTag};
+    use fuel_ir::Layout;
     use std::sync::{Arc, RwLock as StdRwLock};
 
     fn noop_kernel(
@@ -150,7 +156,12 @@ mod tests {
         .expect("relu(add) is a registrable region");
 
         assert!(id.is_runtime(), "allocated a runtime id");
-        assert!(lookup_runtime_kernel(id, BackendId::Cpu).is_some(), "kernel bound on Cpu");
+        let row = lookup_runtime_kernel(id, BackendId::Cpu).expect("row bound on Cpu");
+        assert_eq!(
+            row.dtypes,
+            vec![DType::F32, DType::F32, DType::F32],
+            "the binding key carries the per-operand dtype tuple",
+        );
         assert!(
             fused_kernel_available(id, BackendId::Cpu),
             "the capability predicate sees the adopted op on Cpu",
@@ -161,28 +172,45 @@ mod tests {
         );
         assert!(
             fuel_graph::runtime_fused::runtime_region(id).is_some(),
-            "the recipe (region) is registered in the fuel-graph sidecar",
+            "the recipe (region) is registered in the fuel-graph metadata sidecar",
         );
     }
 
+    /// The fold invariant: a runtime kernel lives in the SAME global binding
+    /// table as static kernels — resolvable through the ordinary dtype-keyed
+    /// `lookup_with_caps` under its `RuntimeFused` key, with the exact adopted
+    /// kernel pointer. (No second registry behind the facade.)
     #[test]
-    fn adopted_runtime_op_carries_the_cost_from_decompose_sentinel() {
-        // The adopted op's cost is the fused sentinel — so its Layer-1 cost
-        // is composed from its recipe (`fused_cost::fused_layer1_cost`),
-        // never a spurious zero (spec §6: runtime-fused ops are the most
-        // sentinel-zero-prone).
+    fn adopted_kernel_lives_in_the_one_binding_table() {
         let id = adopt_runtime_fused(
-            "test::adopt::relu_add::cost_sentinel",
+            "test::adopt::relu_add::one_registry",
             relu_add(),
             noop_kernel as KernelRef,
             vec![DType::F32, DType::F32, DType::F32],
             BackendId::Cpu,
         )
-        .expect("relu(add) is a registrable region");
-        let impl_ = lookup_runtime_kernel(id, BackendId::Cpu).expect("kernel bound");
+        .expect("registrable region");
+        let (kernel, _caps) = global_bindings()
+            .lookup_with_caps(
+                BindingKey::RuntimeFused(id),
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cpu,
+            )
+            .expect("resolves through the ordinary binding lookup");
         assert!(
-            crate::fused_cost::is_fused_cost_sentinel(impl_.cost),
-            "adopted runtime op carries the fused cost sentinel (→ cost-from-decompose)",
+            std::ptr::fn_addr_eq(kernel, noop_kernel as KernelRef),
+            "the exact adopted kernel, from the one registry",
+        );
+        // …and the dtype-precise lookup is an honest miss on a wrong tuple.
+        assert!(
+            global_bindings()
+                .lookup_with_caps(
+                    BindingKey::RuntimeFused(id),
+                    &[DType::F64, DType::F64, DType::F64],
+                    BackendId::Cpu,
+                )
+                .is_err(),
+            "wrong dtype tuple ⇒ NoBackendForOp, not a wrong-kernel bind",
         );
     }
 }

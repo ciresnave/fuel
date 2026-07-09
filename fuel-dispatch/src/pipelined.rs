@@ -2154,12 +2154,13 @@ fn compile_one(
 
     // Runtime fused op — a JIT-adopted (Tier-2) kernel. `Op::Fused(fid, _)`
     // with `fid.is_runtime()` has no `OpKind` (the op was synthesized after
-    // startup), so its kernel resolves from the `FusedOpId`-keyed runtime
-    // sidecar, never the binding table. This is a deterministic *lookup*, not
-    // a decision: the optimizer's gate emitted the arm only when this kernel
-    // was bound, and pinned `target_backend`
-    // (`docs/specs/runtime-fused-op-registration.md` §6). The `ok_or_else`s
-    // are invariant guards, never live fallbacks.
+    // startup): its kernel resolves from the SAME binding table as every
+    // static kernel, under `BindingKey::RuntimeFused(fid)` — the dtype tuple
+    // is the key, so an absent kernel AND a dtype mismatch are one honest
+    // `NoBackendForOp` miss. A deterministic *lookup*, not a decision: the
+    // optimizer's gate emitted the arm only when this kernel was bound, and
+    // pinned `target_backend` (`runtime-fused-op-registration.md` §6). The
+    // guards are invariant checks, never live fallbacks.
     if let Op::Fused(fid, _) = &node.op {
         if fid.is_runtime() {
             let target_backend = graph.target_backend(id).ok_or_else(|| {
@@ -2170,28 +2171,6 @@ fn compile_one(
                 ))
                 .bt()
             })?;
-            let impl_ = crate::runtime_fused_kernels::lookup_runtime_kernel(*fid, target_backend)
-                .ok_or_else(|| {
-                    Error::Msg(format!(
-                        "PipelinedExecutor: runtime fused op {:?} (node {:?}) has no kernel \
-                         bound for {target_backend:?} — the capability gate admitted an arm \
-                         the sidecar no longer backs",
-                        fid, id,
-                    ))
-                    .bt()
-                })?;
-            // Belt-and-suspenders: the node's per-operand dtype tuple must
-            // match the tuple the kernel was adopted for (same key shape the
-            // binding table uses).
-            let dtypes = build_lookup_dtypes(graph, node);
-            if impl_.dtypes != dtypes.as_slice() {
-                return Err(Error::Msg(format!(
-                    "PipelinedExecutor: runtime fused op {:?} (node {:?}) dtype mismatch — \
-                     node is {:?}, kernel was adopted for {:?}",
-                    fid, id, dtypes, impl_.dtypes,
-                ))
-                .bt());
-            }
             // v1: single-output only. Reject a multi-output bundle explicitly
             // rather than silently dropping it.
             if graph.output_views_arc(id).is_some() {
@@ -2202,6 +2181,12 @@ fn compile_one(
                 ))
                 .bt());
             }
+            let dtypes = build_lookup_dtypes(graph, node);
+            let (kernel, caps) = bindings.lookup_with_caps(
+                crate::kernel::BindingKey::RuntimeFused(*fid),
+                &dtypes,
+                target_backend,
+            )?;
             let output_layout = Layout::contiguous(node.shape.clone());
             layout_cache.insert(id, output_layout.clone());
             // Deliberate, not a fallthrough to `op_to_op_params` (which doesn't
@@ -2220,8 +2205,8 @@ fn compile_one(
                 op: OpKind::RuntimeFused,
                 dtypes: KernelDTypes::from_slice(&dtypes),
                 backend: target_backend,
-                kernel: impl_.kernel,
-                caps: impl_.caps,
+                kernel,
+                caps,
                 op_params,
             };
             return Ok(WorkItem {
@@ -11098,9 +11083,15 @@ mod tests {
             Ok(_) => panic!("dtype mismatch must be a typed error"),
             Err(e) => e,
         };
+        // Post-fold, the dtype tuple IS the binding key: a mismatch is the
+        // same honest `NoBackendForOp` miss as an absent kernel — reported
+        // with the `RuntimeFused` diagnostic op tag, never a wrong-kernel bind.
         assert!(
-            err.to_string().contains("dtype mismatch"),
-            "the guard names the failure: {err}",
+            matches!(
+                err,
+                fuel_ir::Error::NoBackendForOp { op: fuel_ir::dispatch::OpKind::RuntimeFused, .. }
+            ),
+            "a dtype mismatch is an honest binding miss: {err}",
         );
     }
 
