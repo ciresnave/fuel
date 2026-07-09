@@ -299,17 +299,33 @@ bin_op!(Add, "add", |v1, v2| v1 + v2, vs_add, vd_add);
 bin_op!(Sub, "sub", |v1, v2| v1 - v2, vs_sub, vd_sub);
 bin_op!(Mul, "mul", |v1, v2| v1 * v2, vs_mul, vd_mul);
 bin_op!(Div, "div", |v1, v2| v1 / v2, vs_div, vd_div);
+// NaN-propagating (torch parity), pinned 2026-07-08
+// (`docs/architecture/10-decisions-log.md`). `v1 != v1` / `v2 != v2` are a
+// dtype-generic `is_nan()` stand-in — `bin_op!` applies the same closure to
+// every dtype including the integer ones (`u8`/`u32`/`i16`/`i32`/`i64`),
+// which don't carry an `is_nan()` method; `!=` is always false for them, so
+// the extra branches are no-ops there and NaN-propagating for the floats.
+//
+// NOTE: as of this pin, `unary_dispatch`/`binary_dispatch`
+// (`fuel-cpu-backend/src/ops.rs`) — the only callers generic over
+// `UnaryOpT`/`BinaryOpT` that would invoke these scalar methods — have no
+// callers themselves; `Tensor::maximum`/`minimum` route through
+// `Storage::binary_impl`, which reads `B::NAME` to redispatch by the
+// `BinaryOp` enum (`fuel-backend-contract/src/storage.rs`), landing on
+// `fuel-cpu-backend/src/dyn_impl.rs::cpu_binary_op` — NOT these `f32`/`f64`
+// bodies. Flipped anyway so a future `Map1`/`Map2`-style CPU blanket impl
+// (as CUDA/Metal already have) doesn't silently inherit stale scrubbing.
 bin_op!(
     Minimum,
     "minimum",
-    |v1, v2| if v1 > v2 { v2 } else { v1 },
+    |v1, v2| if v1 != v1 { v1 } else if v2 != v2 { v2 } else if v1 > v2 { v2 } else { v1 },
     vs_min,
     vd_min
 );
 bin_op!(
     Maximum,
     "maximum",
-    |v1, v2| if v1 < v2 { v2 } else { v1 },
+    |v1, v2| if v1 != v1 { v1 } else if v2 != v2 { v2 } else if v1 < v2 { v2 } else { v1 },
     vs_max,
     vd_max
 );
@@ -927,25 +943,32 @@ impl UnaryOpT for GeluErf {
     }
 }
 
+// NaN-propagating (torch parity: `torch.relu(nan) == nan`), pinned
+// 2026-07-08 (`docs/architecture/10-decisions-log.md`). See the note above
+// `impl BinaryOpT for Minimum`/`Maximum` — this trait impl is currently
+// unreachable for real computation (`Tensor::relu` routes through
+// `Storage::unary_impl` → `dyn_impl.rs::all_unary_relu` by op name, not
+// through `Relu::f32` etc.), flipped anyway to avoid landmining a future
+// CPU `Map1`-style blanket impl.
 impl UnaryOpT for Relu {
     const NAME: &'static str = "relu";
     const KERNEL: &'static str = "urelu";
     const V: Self = Relu;
     #[inline(always)]
     fn bf16(v: bf16) -> bf16 {
-        v.max(bf16::ZERO)
+        if v.is_nan() { v } else { v.max(bf16::ZERO) }
     }
     #[inline(always)]
     fn f16(v: f16) -> f16 {
-        v.max(f16::ZERO)
+        if v.is_nan() { v } else { v.max(f16::ZERO) }
     }
     #[inline(always)]
     fn f32(v: f32) -> f32 {
-        v.max(0f32)
+        if v.is_nan() { v } else { v.max(0f32) }
     }
     #[inline(always)]
     fn f64(v: f64) -> f64 {
-        v.max(0f64)
+        if v.is_nan() { v } else { v.max(0f64) }
     }
     #[inline(always)]
     fn u8(v: u8) -> u8 {
@@ -969,7 +992,7 @@ impl UnaryOpT for Relu {
     }
     #[inline(always)]
     fn f8e4m3(v: f8e4m3) -> f8e4m3 {
-        v.max(f8e4m3::ZERO)
+        if v.is_nan() { v } else { v.max(f8e4m3::ZERO) }
     }
 }
 

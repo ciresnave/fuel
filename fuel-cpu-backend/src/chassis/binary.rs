@@ -138,20 +138,33 @@ impl BinaryOpCore for Div {
     fn f64(a: f64, b: f64) -> f64 { a / b }
 }
 
-/// Elementwise maximum. NaN handling follows `f32::max` /
-/// `f64::max` (NaN as missing data — returns the non-NaN operand
-/// when one is NaN, NaN when both are).
+/// Elementwise maximum. NaN-propagating (torch parity —
+/// `torch.maximum` returns NaN if *either* operand is NaN), pinned
+/// 2026-07-08 (`docs/architecture/10-decisions-log.md`). Deliberately
+/// does *not* use `f32::max`/`f64::max` (those are NaN-as-missing —
+/// they return the non-NaN operand instead). Payload-preserving: the
+/// NaN operand is returned as-is (`a` checked before `b`, matching
+/// `torch.maximum`'s lhs-first tie-break).
 pub struct Maximum;
 impl BinaryOpCore for Maximum {
-    fn f32(a: f32, b: f32) -> f32 { a.max(b) }
-    fn f64(a: f64, b: f64) -> f64 { a.max(b) }
+    fn f32(a: f32, b: f32) -> f32 {
+        if a.is_nan() { a } else if b.is_nan() { b } else { a.max(b) }
+    }
+    fn f64(a: f64, b: f64) -> f64 {
+        if a.is_nan() { a } else if b.is_nan() { b } else { a.max(b) }
+    }
 }
 
-/// Elementwise minimum. NaN handling mirrors [`Maximum`].
+/// Elementwise minimum. NaN handling mirrors [`Maximum`] (NaN-propagating,
+/// torch parity).
 pub struct Minimum;
 impl BinaryOpCore for Minimum {
-    fn f32(a: f32, b: f32) -> f32 { a.min(b) }
-    fn f64(a: f64, b: f64) -> f64 { a.min(b) }
+    fn f32(a: f32, b: f32) -> f32 {
+        if a.is_nan() { a } else if b.is_nan() { b } else { a.min(b) }
+    }
+    fn f64(a: f64, b: f64) -> f64 {
+        if a.is_nan() { a } else if b.is_nan() { b } else { a.min(b) }
+    }
 }
 
 /// Elementwise binary power: `a ^ b` via `f32::powf` / `f64::powf`.

@@ -68,6 +68,7 @@ fn baracuda_write_slice_f32_kv_append() {
     let params = OpParams::WriteSlice {
         dest_shape: vec![4, 3, 2],
         ranges: vec![(2, 3), (0, 3), (0, 2)],
+        deferred_dyn_offset: None,
     };
     let inputs = vec![src_arc];
     let mut outputs = vec![dest_arc.clone()];
@@ -114,6 +115,7 @@ fn baracuda_write_slice_f32_interior_2d() {
     let params = OpParams::WriteSlice {
         dest_shape: vec![3, 4],
         ranges: vec![(0, 2), (1, 3)],
+        deferred_dyn_offset: None,
     };
     let inputs = vec![src_arc];
     let mut outputs = vec![dest_arc.clone()];
@@ -155,6 +157,7 @@ fn baracuda_write_slice_f16_1d() {
     let params = OpParams::WriteSlice {
         dest_shape: vec![5],
         ranges: vec![(2, 4)],
+        deferred_dyn_offset: None,
     };
     let inputs = vec![src_arc];
     let mut outputs = vec![dest_arc.clone()];
