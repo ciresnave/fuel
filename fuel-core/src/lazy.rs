@@ -1657,6 +1657,42 @@ mod tests {
     }
 
     #[test]
+    fn realize_f32_relu_and_maximum_propagate_nan_end_to_end() {
+        // Pinned NaN-semantics convention (2026-07-08,
+        // docs/architecture/10-decisions-log.md): Relu/Maximum/Minimum are
+        // NaN-propagating (torch parity). This guards the full lazy path
+        // (graph build -> optimize -> dispatch -> CPU kernel -> realize),
+        // not just the scalar-kernel unit tests in fuel-cpu-backend.
+        let a = LazyTensor::from_f32(
+            vec![f32::NAN, -2.0, 3.0],
+            Shape::from_dims(&[3]),
+            &Device::cpu(),
+        );
+        let relu_result = a.relu().realize_f32();
+        assert!(
+            relu_result[0].is_nan(),
+            "relu(NaN) must propagate NaN through realize, got {}",
+            relu_result[0]
+        );
+        assert_eq!(relu_result[1], 0.0, "relu(-2) must clip to 0");
+        assert_eq!(relu_result[2], 3.0, "relu(3) must pass through");
+
+        let b = a.const_f32_like(vec![1.0, f32::NAN, 2.0], Shape::from_dims(&[3]));
+        let max_result = a.maximum(&b).unwrap().realize_f32();
+        assert!(
+            max_result[0].is_nan(),
+            "maximum(NaN, 1) must propagate NaN through realize, got {}",
+            max_result[0]
+        );
+        assert!(
+            max_result[1].is_nan(),
+            "maximum(-2, NaN) must propagate NaN through realize, got {}",
+            max_result[1]
+        );
+        assert_eq!(max_result[2], 3.0, "maximum(3, 2) non-NaN sanity");
+    }
+
+    #[test]
     fn realize_f32_matmul_hand_computed() {
         // Classic 2x3 @ 3x2 matmul through the bridge.
         let a = LazyTensor::from_f32(
@@ -2533,6 +2569,115 @@ mod tests {
         let executor = fuel_cuda_backend::CudaDevice::new(0).unwrap();
         let cuda_result = c.realize_f32_cuda(&executor);
         assert_eq!(cpu_result, cuda_result);
+    }
+
+    /// Live parity check: CPU and CUDA `maximum`/`minimum` now agree on
+    /// NaN-containing inputs — both are NaN-propagating (pinned 2026-07-08,
+    /// `docs/architecture/10-decisions-log.md`). CUDA's baracuda
+    /// `binary_maximum_fp.cu` / `binary_minimum_fp.cu` were already
+    /// NaN-propagating *before* this change; the CPU side
+    /// (`fuel-cpu-backend/src/chassis/binary.rs::{Maximum,Minimum}`) was the
+    /// one that diverged (`f32::max`/`f32::min`, NaN-as-missing) and is what
+    /// this test guards against regressing back to.
+    ///
+    /// Gated `#[cfg(feature = "cuda")]` + `#[ignore]`; skips cleanly if no
+    /// CUDA device is present. Run:
+    ///   `cargo test -p fuel-core --features cuda --lib \
+    ///    maximum_minimum_cuda_matches_cpu_on_nan -- --ignored --nocapture`
+    #[test]
+    #[cfg(feature = "cuda")]
+    #[ignore = "requires a live CUDA device"]
+    fn maximum_minimum_cuda_matches_cpu_on_nan() {
+        let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                return;
+            }
+        };
+        let a = LazyTensor::from_f32(
+            vec![f32::NAN, -2.0, 3.0, f32::NAN],
+            Shape::from_dims(&[4]),
+            &Device::cpu(),
+        );
+        let b = a.const_f32_like(vec![1.0, f32::NAN, 2.0, f32::NAN], Shape::from_dims(&[4]));
+
+        let max_lazy = a.maximum(&b).unwrap();
+        let cpu_max = max_lazy.realize_f32();
+        let cuda_max = max_lazy.realize_f32_cuda(&cuda);
+        for i in 0..4 {
+            assert_eq!(
+                cpu_max[i].is_nan(), cuda_max[i].is_nan(),
+                "maximum[{i}] NaN-ness must match: cpu={}, cuda={}", cpu_max[i], cuda_max[i],
+            );
+            if !cpu_max[i].is_nan() {
+                assert_eq!(cpu_max[i], cuda_max[i], "maximum[{i}]");
+            }
+        }
+
+        let min_lazy = a.minimum(&b).unwrap();
+        let cpu_min = min_lazy.realize_f32();
+        let cuda_min = min_lazy.realize_f32_cuda(&cuda);
+        for i in 0..4 {
+            assert_eq!(
+                cpu_min[i].is_nan(), cuda_min[i].is_nan(),
+                "minimum[{i}] NaN-ness must match: cpu={}, cuda={}", cpu_min[i], cuda_min[i],
+            );
+            if !cpu_min[i].is_nan() {
+                assert_eq!(cpu_min[i], cuda_min[i], "minimum[{i}]");
+            }
+        }
+    }
+
+    /// Pins the CURRENT transitional divergence: CUDA `relu` still scrubs
+    /// NaN (baracuda's `unary_relu_fp.cu` uses `fmaxf`, which is
+    /// NaN-as-missing) while CPU `relu` is now NaN-propagating (pinned
+    /// 2026-07-08, `docs/architecture/10-decisions-log.md`). This is a
+    /// deliberate, dated, documented gap — NOT a bug — until Baracuda ships
+    /// a NaN-propagating relu kernel in alpha.76.
+    ///
+    /// FLIP INSTRUCTIONS for the alpha.76 rebind: once
+    /// `baracuda-kernels-sys` exposes a NaN-propagating `unary_relu_f32`
+    /// (grep for it per `CLAUDE.md`'s FFI-surface rule, not the plan
+    /// facade), (1) invert the "still scrubs" assertion below into a
+    /// same-shape NaN-ness-must-match assertion mirroring
+    /// `maximum_minimum_cuda_matches_cpu_on_nan`, and (2) delete this doc
+    /// comment's transitional framing.
+    ///
+    /// Gated `#[cfg(feature = "cuda")]` + `#[ignore]`; skips cleanly if no
+    /// CUDA device is present. Run:
+    ///   `cargo test -p fuel-core --features cuda --lib \
+    ///    relu_cuda_still_scrubs_nan_pending_alpha76_rebind -- --ignored --nocapture`
+    #[test]
+    #[cfg(feature = "cuda")]
+    #[ignore = "requires a live CUDA device"]
+    fn relu_cuda_still_scrubs_nan_pending_alpha76_rebind() {
+        let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                return;
+            }
+        };
+        let a = LazyTensor::from_f32(
+            vec![f32::NAN, -2.0, 3.0],
+            Shape::from_dims(&[3]),
+            &Device::cpu(),
+        );
+        let relu_lazy = a.relu();
+        let cpu_result = relu_lazy.realize_f32();
+        let cuda_result = relu_lazy.realize_f32_cuda(&cuda);
+
+        assert!(cpu_result[0].is_nan(), "CPU relu(NaN) must propagate (the pinned convention)");
+        assert!(
+            !cuda_result[0].is_nan(),
+            "CUDA relu(NaN) is expected to still SCRUB to a non-NaN value \
+             (transitional divergence pending the alpha.76 rebind) — if this \
+             now fails because it IS NaN, baracuda has shipped the \
+             propagating relu; see this test's FLIP INSTRUCTIONS doc comment.",
+        );
+        assert_eq!(cpu_result[1], cuda_result[1], "relu(-2) non-NaN sanity must still agree");
+        assert_eq!(cpu_result[2], cuda_result[2], "relu(3) non-NaN sanity must still agree");
     }
 
     #[test]

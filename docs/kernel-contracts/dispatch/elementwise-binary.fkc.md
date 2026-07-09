@@ -877,21 +877,26 @@ determinism: same_hardware_bitwise
 
 ---
 
-## maximum_elementwise_cpu  (MaximumElementwise — out = max(lhs, rhs), NaN-as-missing, broadcast)
+## maximum_elementwise_cpu  (MaximumElementwise — out = max(lhs, rhs), NaN-propagating, broadcast)
 
-Elementwise maximum `out = max(lhs, rhs)` with NaN-as-missing semantics and broadcasting; one
-section per backend.
+Elementwise maximum `out = max(lhs, rhs)`; one section per backend, semantics noted per block —
+CPU and CUDA are NaN-propagating (torch parity, pinned 2026-07-08,
+`docs/architecture/10-decisions-log.md`), Vulkan's NaN handling is a separate, unaudited-by-this-
+change concern (see the `maximum_elementwise_vulkan` block below).
 
 `MaximumElementwise` is registered on CPU (`maximum_elementwise_f32_cpu_wrapper` and f64/bf16/f16
 siblings, `dispatch.rs:4264/4481/4503`), CUDA via baracuda (`binary::maximum_f32` …, strided,
 `baracuda_dispatch.rs:2376`), and Vulkan (`binary::maximum_f32` …, strided,
-`vulkan_dispatch.rs:4297`). NaN-as-missing (`f32::max`/`f64::max`): returns the non-NaN operand
-when exactly one is NaN, NaN when both are. Output dtype = T; broadcast shape; not in-place.
+`vulkan_dispatch.rs:4297`). CPU thunks route through `fuel_cpu_backend::chassis::binary::Maximum`
+(NaN-propagating as of 2026-07-08 — was NaN-as-missing via bare `f32::max`/`f64::max` before this
+pin); CUDA's baracuda kernel was already NaN-propagating (this doc previously mislabeled it
+NaN-as-missing — see the `maximum_elementwise_cuda` block). Output dtype = T; broadcast shape;
+not in-place.
 
 ```fkc
 kernel: maximum_elementwise_cpu
 op_kind: MaximumElementwise
-blurb: "Elementwise maximum out=max(lhs,rhs) NaN-as-missing (broadcast); one block per backend (CPU contiguous, CUDA/Vulkan strided)."
+blurb: "Elementwise maximum out=max(lhs,rhs), NaN-propagating (torch parity) on CPU/CUDA (broadcast); one block per backend (CPU contiguous, CUDA/Vulkan strided)."
 backend: Cpu
 kernel_source: "dispatch-cpu"
 entry_point: "fuel_dispatch::dispatch::maximum_elementwise_f32_cpu_wrapper"
@@ -940,7 +945,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact: returns one of the two operands. f32/f64::max NaN-as-missing (non-NaN wins; NaN only if both NaN). bf16/f16 compute max on widened f32 then narrow. Bit-stable on same hardware."
+  notes: "Exact: returns one of the two operands (or a NaN operand unchanged). NaN-propagating (torch parity, pinned 2026-07-08) — NaN if either operand is NaN. bf16/f16 compute max on widened f32 then narrow. Bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -950,11 +955,13 @@ determinism: same_hardware_bitwise
 ## maximum_elementwise_cuda  (MaximumElementwise — CUDA/baracuda strided sibling)
 
 CUDA (baracuda) registration of `MaximumElementwise` — stride-driven, broadcast via stride-0.
+NaN-propagating (torch parity) — baracuda's kernel was already NaN-propagating prior to the
+2026-07-08 CPU pin; this section previously (incorrectly) documented it as NaN-as-missing.
 
 ```fkc
 kernel: maximum_elementwise_cuda
 op_kind: MaximumElementwise
-blurb: "Elementwise maximum out=max(lhs,rhs) NaN-as-missing (broadcast); one block per backend (CPU contiguous, CUDA/Vulkan strided)."
+blurb: "Elementwise maximum out=max(lhs,rhs), NaN-propagating (torch parity) (broadcast); one block per backend (CPU contiguous, CUDA/Vulkan strided)."
 backend: Cuda
 kernel_source: "baracuda"
 entry_point: "fuel_dispatch::baracuda_dispatch::binary::maximum_f32"
@@ -1005,7 +1012,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "baracuda elementwise maximum; returns one of the two operands (NaN-as-missing). Bit-stable on same hardware."
+  notes: "baracuda elementwise maximum; NaN-propagating (torch parity) — NaN if either operand is NaN. Corrected 2026-07-08: this note previously said NaN-as-missing, which did not match the shipped baracuda kernel. Bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1077,21 +1084,22 @@ determinism: same_hardware_bitwise
 
 ---
 
-## minimum_elementwise_cpu  (MinimumElementwise — out = min(lhs, rhs), NaN-as-missing, broadcast)
+## minimum_elementwise_cpu  (MinimumElementwise — out = min(lhs, rhs), NaN-propagating, broadcast)
 
-Elementwise minimum `out = min(lhs, rhs)` with NaN-as-missing semantics and broadcasting; one
-section per backend.
+Elementwise minimum `out = min(lhs, rhs)`; one section per backend, semantics noted per block —
+CPU and CUDA are NaN-propagating (torch parity, pinned 2026-07-08,
+`docs/architecture/10-decisions-log.md`), mirroring maximum. Vulkan's NaN handling is a separate,
+unaudited-by-this-change concern (see the `minimum_elementwise_vulkan` block below).
 
 `MinimumElementwise` is registered on CPU (`minimum_elementwise_f32_cpu_wrapper` and f64/bf16/f16
 siblings, `dispatch.rs:4265/4481/4503`), CUDA via baracuda (`binary::minimum_f32` …, strided,
 `baracuda_dispatch.rs:2377`), and Vulkan (`binary::minimum_f32` …, strided,
-`vulkan_dispatch.rs:4298`). NaN-as-missing, mirroring maximum. Output dtype = T; broadcast shape;
-not in-place.
+`vulkan_dispatch.rs:4298`). Output dtype = T; broadcast shape; not in-place.
 
 ```fkc
 kernel: minimum_elementwise_cpu
 op_kind: MinimumElementwise
-blurb: "Elementwise minimum out=min(lhs,rhs) NaN-as-missing (broadcast); one block per backend (CPU contiguous, CUDA/Vulkan strided)."
+blurb: "Elementwise minimum out=min(lhs,rhs), NaN-propagating (torch parity) on CPU/CUDA (broadcast); one block per backend (CPU contiguous, CUDA/Vulkan strided)."
 backend: Cpu
 kernel_source: "dispatch-cpu"
 entry_point: "fuel_dispatch::dispatch::minimum_elementwise_f32_cpu_wrapper"
@@ -1140,7 +1148,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact: returns one of the two operands. f32/f64::min NaN-as-missing (non-NaN wins; NaN only if both NaN). bf16/f16 compute min on widened f32 then narrow. Bit-stable on same hardware."
+  notes: "Exact: returns one of the two operands (or a NaN operand unchanged). NaN-propagating (torch parity, pinned 2026-07-08) — NaN if either operand is NaN. bf16/f16 compute min on widened f32 then narrow. Bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1150,11 +1158,13 @@ determinism: same_hardware_bitwise
 ## minimum_elementwise_cuda  (MinimumElementwise — CUDA/baracuda strided sibling)
 
 CUDA (baracuda) registration of `MinimumElementwise` — stride-driven, broadcast via stride-0.
+NaN-propagating (torch parity) — baracuda's kernel was already NaN-propagating prior to the
+2026-07-08 CPU pin; this section previously (incorrectly) documented it as NaN-as-missing.
 
 ```fkc
 kernel: minimum_elementwise_cuda
 op_kind: MinimumElementwise
-blurb: "Elementwise minimum out=min(lhs,rhs) NaN-as-missing (broadcast); one block per backend (CPU contiguous, CUDA/Vulkan strided)."
+blurb: "Elementwise minimum out=min(lhs,rhs), NaN-propagating (torch parity) (broadcast); one block per backend (CPU contiguous, CUDA/Vulkan strided)."
 backend: Cuda
 kernel_source: "baracuda"
 entry_point: "fuel_dispatch::baracuda_dispatch::binary::minimum_f32"
@@ -1205,7 +1215,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "baracuda elementwise minimum; returns one of the two operands (NaN-as-missing). Bit-stable on same hardware."
+  notes: "baracuda elementwise minimum; NaN-propagating (torch parity) — NaN if either operand is NaN. Corrected 2026-07-08: this note previously said NaN-as-missing, which did not match the shipped baracuda kernel. Bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```
