@@ -148,6 +148,40 @@ pub fn execute_compiled(
     outputs: &mut [Arc<RwLock<Storage>>],
     layouts: &[Layout],
 ) -> Result<CompletionHandle> {
+    // Conservative default: `true` reproduces the pre-"event only where
+    // waited" behavior byte-for-byte (every CUDA node gets an Event). Callers
+    // that know a node will never be individually waited mid-walk (the
+    // `pipelined` executor's wait-set pre-scan) should call
+    // [`execute_compiled_with_wait_hint`] instead.
+    execute_compiled_with_wait_hint(compiled, inputs, outputs, layouts, true)
+}
+
+/// Step E A4b open question #4 — "event only where waited". Identical to
+/// [`execute_compiled`] except the caller supplies `will_be_waited`: whether
+/// ANY later step in this realize will individually wait this node's
+/// completion handle before the realize-end drain (today: the cross-device
+/// `Copy`/`Move` producer wait, `wait_producer_handle` in `pipelined.rs`).
+///
+/// `will_be_waited == false` lets [`produce_pending`] skip the CUDA
+/// `Event`/in-flight-counter machinery entirely and return
+/// [`CompletionHandle::Ready`] immediately — the kernel is still launched on
+/// the device stream exactly as before; only the completion-observation
+/// bookkeeping is elided. Same-device consumers stay correct because CUDA has
+/// one stream per device: stream order alone guarantees a later same-device
+/// kernel doesn't start before this one's writes land, with no host-side wait
+/// required. Cutting the event is safe PROVIDED the caller's wait-set is
+/// conservative (a producer that turns out to be waited must always pass
+/// `true`) — `pipelined.rs`'s pre-scan is exactly that: built from the SAME
+/// Copy/Move nodes the mid-walk wait consults.
+///
+/// `will_be_waited == true` is byte-identical to the pre-elision path.
+pub fn execute_compiled_with_wait_hint(
+    compiled: &CompiledNode,
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    layouts: &[Layout],
+    will_be_waited: bool,
+) -> Result<CompletionHandle> {
     (compiled.kernel)(inputs, outputs, layouts, &compiled.op_params)?;
     // Step E A4b-1: the kernel has *enqueued* its work (CUDA: launched on the
     // device stream and returned without a per-op sync, per A3; CPU/Vulkan: see
@@ -156,16 +190,26 @@ pub fn execute_compiled(
     // output's `BackendStorage` is where we find the device/stream to record a
     // signal on. The executor stores this handle and defers the wait to a
     // dependency / realize-end boundary instead of `wait`ing inline here.
-    produce_pending(compiled.backend, outputs)
+    produce_pending(compiled.backend, outputs, will_be_waited)
 }
 
 /// Step E A4b-1: build the [`CompletionHandle`] for a just-launched kernel by
 /// inspecting `outputs[0]`'s backend storage.
 ///
-/// - **CUDA** → [`CompletionHandle::Pending`] wrapping an [`Event`] recorded on
-///   the output's device stream (signals when this kernel + all prior stream
-///   work completes; one stream per device makes a per-node event a sufficient
-///   stream marker — A4b-1 §1.2).
+/// - **CUDA, `will_be_waited`** → [`CompletionHandle::Pending`] wrapping an
+///   [`Event`] recorded on the output's device stream (signals when this
+///   kernel + all prior stream work completes; one stream per device makes a
+///   per-node event a sufficient stream marker — A4b-1 §1.2).
+/// - **CUDA, NOT `will_be_waited`** (A4b open question #4 — "event only
+///   where waited") → [`CompletionHandle::Ready`], with NO `cuEventCreate` /
+///   `cuEventRecord` and NO in-flight-counter increment. The kernel already
+///   launched (line above); only the completion-observation bookkeeping is
+///   skipped, because nothing will ever individually wait THIS node's
+///   handle — the realize-end drain now does one blanket
+///   `cuStreamSynchronize` per active CUDA device instead
+///   (`pipelined::sync_active_cuda_devices`), which flushes elided work too
+///   (single stream per device ⇒ stream order already makes it complete by
+///   then).
 /// - **CPU** → [`CompletionHandle::Ready`] (the kernel computed in-process; the
 ///   work is already done).
 /// - **Vulkan** → [`CompletionHandle::Ready`]. The per-op compute path keeps
@@ -182,29 +226,32 @@ pub fn execute_compiled(
 fn produce_pending(
     _backend: BackendId,
     outputs: &[Arc<RwLock<Storage>>],
+    will_be_waited: bool,
 ) -> Result<CompletionHandle> {
     // `_backend` (= `compiled.backend`) records the *intent*; we read the
     // device truth off the output storage's variant instead, which is robust
     // even where the backend stamp and the realized storage could ever diverge.
     #[cfg(not(feature = "cuda"))]
-    let _ = outputs;
+    let _ = (outputs, will_be_waited);
     #[cfg(feature = "cuda")]
     {
-        if let Some(out0) = outputs.first() {
-            let guard = out0
-                .read()
-                .map_err(|_| Error::Msg("output storage lock poisoned recording completion".into()).bt())?;
-            if let fuel_memory::BackendStorage::Cuda(cuda_bytes) = &guard.inner {
-                // Step E B1: this is the single CUDA async-submit site — the kernel
-                // was just enqueued on the device stream. The completion handle's
-                // lifetime IS the in-flight window, so `CudaCompletion::new`
-                // increments the per-device in-flight counter here and the handle's
-                // `Drop` decrements it (covering wait, drain, AND the eviction-drop
-                // path uniformly — see the type docs). The device location keys the
-                // counter.
-                let loc = cuda_bytes.device().location();
-                let ev = cuda_bytes.record_completion_event()?;
-                return Ok(CompletionHandle::Pending(Box::new(CudaCompletion::new(ev, loc))));
+        if will_be_waited {
+            if let Some(out0) = outputs.first() {
+                let guard = out0
+                    .read()
+                    .map_err(|_| Error::Msg("output storage lock poisoned recording completion".into()).bt())?;
+                if let fuel_memory::BackendStorage::Cuda(cuda_bytes) = &guard.inner {
+                    // Step E B1: this is the single CUDA async-submit site — the kernel
+                    // was just enqueued on the device stream. The completion handle's
+                    // lifetime IS the in-flight window, so `CudaCompletion::new`
+                    // increments the per-device in-flight counter here and the handle's
+                    // `Drop` decrements it (covering wait, drain, AND the eviction-drop
+                    // path uniformly — see the type docs). The device location keys the
+                    // counter.
+                    let loc = cuda_bytes.device().location();
+                    let ev = cuda_bytes.record_completion_event()?;
+                    return Ok(CompletionHandle::Pending(Box::new(CudaCompletion::new(ev, loc))));
+                }
             }
         }
     }
@@ -385,6 +432,50 @@ mod tests {
             "CPU execute_compiled must return Ready (A4b-1 behavior-preserving)",
         );
         handle.wait().expect("wait");
+    }
+
+    /// A4b open question #4 — "event only where waited": the wait-hint entry
+    /// point computes and returns Ready on CPU under BOTH hints (the hint only
+    /// gates the CUDA event machinery), and the elided (`false`) hint must not
+    /// change the computed bytes.
+    #[test]
+    fn execute_compiled_with_wait_hint_cpu_ready_and_correct_under_both_hints() {
+        let mut bindings = KernelBindingTable::new();
+        register_cpu_kernels(&mut bindings);
+        let compiled = compile_node(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            OpParams::None,
+            &bindings,
+        )
+        .expect("compile");
+
+        for hint in [true, false] {
+            let lhs = fuel_memory::from_slice_cpu(&[1.0_f32, 2.0]);
+            let rhs = fuel_memory::from_slice_cpu(&[3.0_f32, 4.0]);
+            let out = fuel_memory::alloc_cpu_zeroed(DType::F32, 2).unwrap();
+            let inputs = vec![Arc::new(RwLock::new(lhs)), Arc::new(RwLock::new(rhs))];
+            let mut outputs = vec![Arc::new(RwLock::new(out))];
+            let l = Layout::contiguous(fuel_ir::Shape::from(vec![2]));
+            let layouts = vec![l.clone(), l.clone(), l];
+
+            let handle = execute_compiled_with_wait_hint(
+                &compiled, &inputs, &mut outputs, &layouts, hint,
+            )
+            .expect("execute");
+            assert!(
+                matches!(handle, CompletionHandle::Ready),
+                "CPU path returns Ready regardless of the wait hint ({hint})",
+            );
+            handle.wait().expect("wait");
+
+            let out_guard = outputs[0].read().unwrap();
+            if let fuel_memory::BackendStorage::Cpu(c) = &out_guard.inner {
+                let typed: &[f32] = c.as_slice().unwrap();
+                assert_eq!(typed, &[4.0, 6.0], "bytes identical under hint={hint}");
+            }
+        }
     }
 
     /// Step E A1: the completion-handle contract — `Ready.wait()` is a no-op
