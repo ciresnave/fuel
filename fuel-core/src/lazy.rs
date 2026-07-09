@@ -11902,8 +11902,14 @@ mod generate_tests {
         let mut d2_times: Vec<std::time::Duration> = Vec::with_capacity(n);
         let mut opt_prefill_delta = 0usize;
         let mut opt_decode_delta = 0usize;
+        let mut variant_bakes_delta = 0usize;
         if run_d2 {
             let opt_before_prefill = crate::pipelined_bridge::optimize_calls_thread_local();
+            // Variant-bake telemetry: how many same-device fused variants (e.g.
+            // the CUDA flash-decode arm) the optimizer actually PICKED across
+            // the D2 build. > 0 confirms the flash arm fired (was baked to the
+            // fused winner), not merely offered.
+            let vb_before = fuel_dispatch::variant_bake::variant_bakes_thread_local();
             let mut cache2 = KvCache::with_capacity(
                 cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, cache_dtype, device,
             ).expect("d2 with_capacity");
@@ -11934,8 +11940,17 @@ mod generate_tests {
             }
             assert!(session.is_some(), "held session survives the decode loop");
             let opt_after_decode = crate::pipelined_bridge::optimize_calls_thread_local();
+            let vb_after = fuel_dispatch::variant_bake::variant_bakes_thread_local();
             opt_prefill_delta = opt_after_prefill.wrapping_sub(opt_before_prefill);
             opt_decode_delta = opt_after_decode.wrapping_sub(opt_after_prefill);
+            variant_bakes_delta = vb_after.wrapping_sub(vb_before);
+            eprintln!(
+                "  D2 variant-bakes (fused-arm picks, e.g. flash-decode) across the build: {} \
+                 ({})",
+                variant_bakes_delta,
+                if variant_bakes_delta > 0 { "flash arm PICKED" } else { "no fused variant picked \
+                 — decode ran the decomposed base map" },
+            );
             // cache2/ctx2/session drop here (end of scope): frees D2's
             // device-resident state (base_cache holds the full weight set
             // on non-CPU devices) before the D1 loop starts allocating.
