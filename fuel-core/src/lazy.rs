@@ -11146,28 +11146,20 @@ mod generate_tests {
             .map(NodeId)
             .filter(|&n| matches!(g.node(n).op, Op::Branch { .. }))
             .collect();
-        // PINS CURRENT (defective) BEHAVIOR — the arm does NOT fire, and the
-        // root cause is a REGISTRY SEAM, not shape/dtype (verified live
-        // 2026-07-08, RTX 4070: `FlashArmCapability::production()` printed
-        // cuda_flash_kernel=false, cuda_in_topology=true):
-        // `fused_kernel_available(FLASH_ATTN, Cuda)` consults the
-        // FusedKernelRegistry (static CPU-only defaults + the runtime-adopted
-        // sidecar), but the CUDA flash_decoding binding registers ONLY into
-        // the KernelBindingTable ((OpKind::FlashAttn, [f16|bf16;4], Cuda) via
-        // register_cuda_flash_decoding_from_contract — whose FKC import even
-        // debug_asserts provider.fused.is_empty()). The capability predicate
-        // looks in the wrong registry, so the arm is unreachable on ALL
-        // hosts. FIX (its own increment; coordinate with the runtime-fusion
-        // program, which shares fused_kernel_available): bridge the predicate
-        // to the binding table or mirror the registration — then FLIP this
-        // assert to `branches.len() == cfg.n_layers` (the arm-shape checks
-        // below are already written for that flip and run automatically).
+        // FLIPPED (registry seam fixed, dd-shapes 2026-07-08): the flash-arm
+        // capability gate previously consulted the FusedKernelRegistry (static
+        // CPU-only defaults + the runtime-adopted sidecar) for the STATIC
+        // FLASH_ATTN id, but the CUDA flash_decoding binding registers ONLY
+        // into the KernelBindingTable ((OpKind::FlashAttn, [f16|bf16;4], Cuda)
+        // via register_cuda_flash_decoding_from_contract). `fused_kernel_
+        // available` (fuel-dispatch/src/runtime_fused_kernels.rs) now bridges
+        // the static-id path to the binding table (additive; the runtime-
+        // fusion program's runtime-id sidecar lookup is untouched), so the
+        // arm is offered — one `Op::Branch` per layer.
         assert_eq!(
-            branches.len(), 0,
-            "flash-arm registry seam appears FIXED ({} branch(es) present) — \
-             flip this test: assert one Op::Branch per layer (n_layers={}) \
-             and let the arm-shape checks below validate them",
             branches.len(), cfg.n_layers,
+            "one CUDA flash-decode Op::Branch per layer (n_layers={}), found {}",
+            cfg.n_layers, branches.len(),
         );
         for branch in branches {
             let arms = g.node(branch).inputs.clone();
