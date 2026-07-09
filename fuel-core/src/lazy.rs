@@ -2571,23 +2571,27 @@ mod tests {
         assert_eq!(cpu_result, cuda_result);
     }
 
-    /// Live parity check: CPU and CUDA `maximum`/`minimum` now agree on
-    /// NaN-containing inputs — both are NaN-propagating (pinned 2026-07-08,
-    /// `docs/architecture/10-decisions-log.md`). CUDA's baracuda
-    /// `binary_maximum_fp.cu` / `binary_minimum_fp.cu` were already
-    /// NaN-propagating *before* this change; the CPU side
-    /// (`fuel-cpu-backend/src/chassis/binary.rs::{Maximum,Minimum}`) was the
-    /// one that diverged (`f32::max`/`f32::min`, NaN-as-missing) and is what
-    /// this test guards against regressing back to.
+    /// END-TO-END SMOKE ONLY — NOT a CUDA-kernel pin. Verifies the lazy
+    /// realize path produces the NaN-propagating `maximum`/`minimum`
+    /// convention (pinned 2026-07-08,
+    /// `docs/architecture/10-decisions-log.md`) and that a CPU realize and
+    /// a CUDA-device realize of the same graph agree on NaN-ness.
+    ///
+    /// CAVEAT (orchestrator sabotage finding, 2026-07-08): cost-based
+    /// placement may route a tiny elementwise op to CPU on BOTH legs even
+    /// under `realize_f32_cuda`, so this test does NOT guarantee the CUDA
+    /// kernel executed — a wrong CUDA binding can pass it. The real
+    /// CUDA-kernel pin is the direct binding-table invocation test
+    /// `fuel-dispatch/tests/cuda_dispatch_live.rs::cuda_maximum_minimum_propagate_nan_f32`.
     ///
     /// Gated `#[cfg(feature = "cuda")]` + `#[ignore]`; skips cleanly if no
     /// CUDA device is present. Run:
     ///   `cargo test -p fuel-core --features cuda --lib \
-    ///    maximum_minimum_cuda_matches_cpu_on_nan -- --ignored --nocapture`
+    ///    maximum_minimum_nan_convention_lazy_realize_smoke -- --ignored --nocapture`
     #[test]
     #[cfg(feature = "cuda")]
     #[ignore = "requires a live CUDA device"]
-    fn maximum_minimum_cuda_matches_cpu_on_nan() {
+    fn maximum_minimum_nan_convention_lazy_realize_smoke() {
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
             Err(e) => {
@@ -2629,29 +2633,32 @@ mod tests {
         }
     }
 
-    /// Pins the CURRENT transitional divergence: CUDA `relu` still scrubs
-    /// NaN (baracuda's `unary_relu_fp.cu` uses `fmaxf`, which is
-    /// NaN-as-missing) while CPU `relu` is now NaN-propagating (pinned
-    /// 2026-07-08, `docs/architecture/10-decisions-log.md`). This is a
-    /// deliberate, dated, documented gap — NOT a bug — until Baracuda ships
-    /// a NaN-propagating relu kernel in alpha.76.
+    /// END-TO-END SMOKE ONLY — NOT a CUDA-kernel pin. Verifies the lazy
+    /// realize path produces the NaN-propagating `relu` convention (torch
+    /// parity, pinned 2026-07-08, `docs/architecture/10-decisions-log.md`)
+    /// and that a CPU realize and a CUDA-device realize of the same graph
+    /// agree on NaN-ness. Successor of the transitional-divergence pin
+    /// `relu_cuda_still_scrubs_nan_pending_alpha76_rebind`, flipped at the
+    /// alpha.76 `unary_relu_propagating_*` rebind.
     ///
-    /// FLIP INSTRUCTIONS for the alpha.76 rebind: once
-    /// `baracuda-kernels-sys` exposes a NaN-propagating `unary_relu_f32`
-    /// (grep for it per `CLAUDE.md`'s FFI-surface rule, not the plan
-    /// facade), (1) invert the "still scrubs" assertion below into a
-    /// same-shape NaN-ness-must-match assertion mirroring
-    /// `maximum_minimum_cuda_matches_cpu_on_nan`, and (2) delete this doc
-    /// comment's transitional framing.
+    /// CAVEAT (orchestrator sabotage finding, 2026-07-08): cost-based
+    /// placement may route a tiny elementwise op to CPU on BOTH legs even
+    /// under `realize_f32_cuda`, so this test does NOT guarantee the CUDA
+    /// kernel executed — it stayed green with the CUDA binding deliberately
+    /// reverted to the scrubbing stem. The real CUDA-kernel pin (verified
+    /// born-red against that sabotage) is the direct binding-table
+    /// invocation test
+    /// `fuel-dispatch/tests/cuda_dispatch_live.rs::cuda_relu_propagates_nan_f32`
+    /// (+ its bf16 sibling).
     ///
     /// Gated `#[cfg(feature = "cuda")]` + `#[ignore]`; skips cleanly if no
     /// CUDA device is present. Run:
     ///   `cargo test -p fuel-core --features cuda --lib \
-    ///    relu_cuda_still_scrubs_nan_pending_alpha76_rebind -- --ignored --nocapture`
+    ///    relu_nan_convention_lazy_realize_smoke -- --ignored --nocapture`
     #[test]
     #[cfg(feature = "cuda")]
     #[ignore = "requires a live CUDA device"]
-    fn relu_cuda_still_scrubs_nan_pending_alpha76_rebind() {
+    fn relu_nan_convention_lazy_realize_smoke() {
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
             Err(e) => {
@@ -2668,16 +2675,15 @@ mod tests {
         let cpu_result = relu_lazy.realize_f32();
         let cuda_result = relu_lazy.realize_f32_cuda(&cuda);
 
-        assert!(cpu_result[0].is_nan(), "CPU relu(NaN) must propagate (the pinned convention)");
-        assert!(
-            !cuda_result[0].is_nan(),
-            "CUDA relu(NaN) is expected to still SCRUB to a non-NaN value \
-             (transitional divergence pending the alpha.76 rebind) — if this \
-             now fails because it IS NaN, baracuda has shipped the \
-             propagating relu; see this test's FLIP INSTRUCTIONS doc comment.",
-        );
-        assert_eq!(cpu_result[1], cuda_result[1], "relu(-2) non-NaN sanity must still agree");
-        assert_eq!(cpu_result[2], cuda_result[2], "relu(3) non-NaN sanity must still agree");
+        for i in 0..3 {
+            assert_eq!(
+                cpu_result[i].is_nan(), cuda_result[i].is_nan(),
+                "relu[{i}] NaN-ness must match: cpu={}, cuda={}", cpu_result[i], cuda_result[i],
+            );
+            if !cpu_result[i].is_nan() {
+                assert_eq!(cpu_result[i], cuda_result[i], "relu[{i}]");
+            }
+        }
     }
 
     #[test]

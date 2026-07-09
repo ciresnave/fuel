@@ -2547,3 +2547,122 @@ fn rem_elementwise_f32_pytorch_convention_through_binding_table() {
     let expected = [2.0_f32, 1.0, -1.0, -2.0, 1.5];
     assert_close(&got, &expected, 1e-6);
 }
+
+// =============================================================================
+// Elementwise NaN-convention pins (2026-07-08, torch parity —
+// docs/architecture/10-decisions-log.md). These are the REAL CUDA-kernel
+// pins for the NaN-propagating convention: direct binding-table
+// invocation guarantees the CUDA wrapper (and thus baracuda's kernel)
+// actually executed — unlike a lazy `realize_f32_cuda` graph, where
+// cost-based placement may route a tiny op to CPU on both legs (the
+// hole that made the fuel-core end-to-end NaN tests hollow; see
+// `fuel-core/src/lazy.rs::relu_nan_convention_lazy_realize_smoke`'s doc
+// comment).
+// =============================================================================
+
+/// CUDA `relu` is NaN-PROPAGATING (torch parity): `relu(NaN) == NaN`,
+/// payload aside. Pins the baracuda alpha.76 rebind of
+/// `OpKind::ReluElementwise` to `unary_relu_propagating_f32` — under the
+/// old scrubbing `unary_relu_f32` (`fmaxf`) binding this test fails at
+/// index 0 (NaN scrubbed to 0.0), which was verified born-red against a
+/// deliberately sabotaged stem before the rebind shipped.
+#[test]
+#[ignore]
+fn cuda_relu_propagates_nan_f32() {
+    if dev_or_skip().is_none() { return; }
+    let xs = [f32::NAN, -2.0, 3.0];
+    let got = run_unary_f32(OpKind::ReluElementwise, &xs);
+    assert!(
+        got[0].is_nan(),
+        "CUDA relu(NaN) must propagate NaN (torch parity, alpha.76 \
+         unary_relu_propagating_* rebind); got {} — a non-NaN here means \
+         the binding regressed to the scrubbing unary_relu_* family",
+        got[0],
+    );
+    assert_eq!(got[1], 0.0, "relu(-2.0)");
+    assert_eq!(got[2], 3.0, "relu(3.0)");
+}
+
+/// CUDA `relu` NaN propagation, BF16 sibling — same pin as the f32 test
+/// above for the `unary_relu_propagating_bf16` binding.
+#[test]
+#[ignore]
+fn cuda_relu_propagates_nan_bf16() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
+
+    let xs_bf16: Vec<half::bf16> = [f32::NAN, -2.0, 3.0, 0.5]
+        .iter()
+        .map(|&x| half::bf16::from_f32(x))
+        .collect();
+    let src = build_storage_cuda_from_bytes(&dev, bytemuck::cast_slice(&xs_bf16), DType::BF16);
+    let out_bytes = CudaStorageBytes::alloc(&dev, xs_bf16.len() * 2).expect("out alloc");
+    let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::BF16);
+
+    let src_arc = Arc::new(RwLock::new(src));
+    let out_arc = Arc::new(RwLock::new(out));
+
+    let kernel = table
+        .lookup(OpKind::ReluElementwise, &[DType::BF16, DType::BF16], BackendId::Cuda)
+        .expect("lookup (ReluElementwise, BF16, Cuda)");
+
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
+        .expect("kernel call");
+
+    let result_storage = out_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("output not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_bf16: &[half::bf16] = bytemuck::cast_slice(&host);
+    assert!(
+        host_bf16[0].to_f32().is_nan(),
+        "CUDA bf16 relu(NaN) must propagate NaN; got {}",
+        host_bf16[0],
+    );
+    assert_eq!(host_bf16[1].to_f32(), 0.0, "relu(-2.0)");
+    assert_eq!(host_bf16[2].to_f32(), 3.0, "relu(3.0)");
+    assert_eq!(host_bf16[3].to_f32(), 0.5, "relu(0.5)");
+}
+
+/// CUDA `maximum` / `minimum` are NaN-PROPAGATING (torch parity):
+/// either-operand NaN → NaN out. Baracuda's `binary_maximum_fp.cu` /
+/// `binary_minimum_fp.cu` were already propagating before alpha.76 —
+/// this pins that against regression at the actual CUDA binding (the
+/// fuel-core end-to-end test can't guarantee the CUDA leg ran; see the
+/// block comment above).
+#[test]
+#[ignore]
+fn cuda_maximum_minimum_propagate_nan_f32() {
+    if dev_or_skip().is_none() { return; }
+    // Index 0: NaN in lhs only. Index 1: NaN in rhs only. Index 2: NaN
+    // in both. Indices 3-4: non-NaN sanity.
+    let lhs = [f32::NAN, -2.0, f32::NAN, 1.0, -3.0];
+    let rhs = [1.0_f32, f32::NAN, f32::NAN, 4.0, -5.0];
+
+    let max_got = run_binary_f32(OpKind::MaximumElementwise, &lhs, &rhs);
+    for i in 0..3 {
+        assert!(
+            max_got[i].is_nan(),
+            "maximum[{i}] must be NaN (either-operand propagation); got {}",
+            max_got[i],
+        );
+    }
+    assert_eq!(max_got[3], 4.0, "maximum(1, 4)");
+    assert_eq!(max_got[4], -3.0, "maximum(-3, -5)");
+
+    let min_got = run_binary_f32(OpKind::MinimumElementwise, &lhs, &rhs);
+    for i in 0..3 {
+        assert!(
+            min_got[i].is_nan(),
+            "minimum[{i}] must be NaN (either-operand propagation); got {}",
+            min_got[i],
+        );
+    }
+    assert_eq!(min_got[3], 1.0, "minimum(1, 4)");
+    assert_eq!(min_got[4], -5.0, "minimum(-3, -5)");
+}
