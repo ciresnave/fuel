@@ -206,29 +206,38 @@ criterion = { version = "0.8", default-features = false }
 # baracuda-forge build-time nvcc), but the seam surface (seam_hello + a
 # DLPack-consuming kernel + the §5 JIT endpoint) must land in a later Baracuda
 # version before the cross-FFI seam can be tested. Tracked in docs/specs/kernel-seam-interop.md §7.1.
-baracuda-types         = { version = "0.0.1-alpha.75", features = ["half-crate", "f8-crate"] }
-baracuda-core          = { version = "0.0.1-alpha.75" }
-baracuda-cuda-sys      = { version = "0.0.1-alpha.75" }
-baracuda-driver        = { version = "0.0.1-alpha.75" }
-baracuda-runtime       = { version = "0.0.1-alpha.75" }
-baracuda-cublas-sys    = { version = "0.0.1-alpha.75" }
-baracuda-cublas        = { version = "0.0.1-alpha.75" }
-baracuda-cudnn-sys     = { version = "0.0.1-alpha.75" }
-baracuda-cudnn         = { version = "0.0.1-alpha.75", features = ["half-crate"] }
-baracuda-curand-sys    = { version = "0.0.1-alpha.75" }
-baracuda-curand        = { version = "0.0.1-alpha.75" }
-baracuda-nvrtc-sys     = { version = "0.0.1-alpha.75" }
-baracuda-nvrtc         = { version = "0.0.1-alpha.75" }
-baracuda-nccl-sys      = { version = "0.0.1-alpha.75" }
-baracuda-nccl          = { version = "0.0.1-alpha.75", features = ["half-crate"] }
-baracuda-cutlass       = { version = "0.0.1-alpha.75" }
+#
+# alpha.76 (2026-07-08) — bespoke NaN-PROPAGATING `relu` family in
+# baracuda-kernels-sys: `baracuda_kernels_unary_relu_propagating_{f32,f64,f16,bf16}[_strided]_run`
+# + matching `_can_implement` gates, same ABI/feature-gate (sm80/sm89/sm90a) as
+# the incumbent NaN-scrubbing `unary_relu_*` family (which stays, for other
+# consumers). Additive-only vs alpha.75 (verified via crates.io src diff —
+# no signature changes elsewhere, only rustfmt reflow). Fuel rebinds
+# `OpKind::ReluElementwise`'s CUDA path to the propagating family here,
+# closing the CPU/CUDA NaN-convention divergence opened by 772e27a0.
+baracuda-types         = { version = "0.0.1-alpha.76", features = ["half-crate", "f8-crate"] }
+baracuda-core          = { version = "0.0.1-alpha.76" }
+baracuda-cuda-sys      = { version = "0.0.1-alpha.76" }
+baracuda-driver        = { version = "0.0.1-alpha.76" }
+baracuda-runtime       = { version = "0.0.1-alpha.76" }
+baracuda-cublas-sys    = { version = "0.0.1-alpha.76" }
+baracuda-cublas        = { version = "0.0.1-alpha.76" }
+baracuda-cudnn-sys     = { version = "0.0.1-alpha.76" }
+baracuda-cudnn         = { version = "0.0.1-alpha.76", features = ["half-crate"] }
+baracuda-curand-sys    = { version = "0.0.1-alpha.76" }
+baracuda-curand        = { version = "0.0.1-alpha.76" }
+baracuda-nvrtc-sys     = { version = "0.0.1-alpha.76" }
+baracuda-nvrtc         = { version = "0.0.1-alpha.76" }
+baracuda-nccl-sys      = { version = "0.0.1-alpha.76" }
+baracuda-nccl          = { version = "0.0.1-alpha.76", features = ["half-crate"] }
+baracuda-cutlass       = { version = "0.0.1-alpha.76" }
 # baracuda alpha.26 — new ML kernel facade. Fuel uses `baracuda-kernels-sys`
 # (raw extern "C") rather than the safe `baracuda-kernels` Plan-based wrapper
 # so each kernel becomes its own KernelRef in Fuel's binding table — the
 # safe layer's Plan-cached dispatch isn't compatible with Fuel's
 # per-decision-point alternatives composition.
-baracuda-kernels-types = { version = "0.0.1-alpha.75" }
-baracuda-kernels-sys   = { version = "0.0.1-alpha.75", features = [
+baracuda-kernels-types = { version = "0.0.1-alpha.76" }
+baracuda-kernels-sys   = { version = "0.0.1-alpha.76", features = [
     "cudnn",
     "sm89",
     # Phase 48 (Consolidation B) 4-bit weight-only GEMM families.

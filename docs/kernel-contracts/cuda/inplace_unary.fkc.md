@@ -24,7 +24,7 @@ per-OpKind CUDA cost fn); precision is the author-declared `audited: false` -> U
 
 ## relu_inplace  (ReluInplace - {F32, F64, BF16, F16}, contiguous-only, in-place)
 
-x[i]=relu(x[i]) in place Backs `OpKind::ReluInplace`. baracuda unary_*_run same-pointer dispatch (a==y); contiguous target, no params. Output: fresh, contiguous, no aliasing.
+x[i]=relu(x[i]) in place Backs `OpKind::ReluInplace`. baracuda `unary_relu_propagating_*_run` same-pointer dispatch (a==y); contiguous target, no params. **NaN-PROPAGATING** (torch parity, rebound 2026-07-08 to match the forward `ReluElementwise` kernels + CPU; pinned by `cuda_relu_inplace_propagates_nan_f32`). Output: fresh, contiguous, no aliasing.
 
 ```fkc
 kernel: relu_inplace

@@ -477,6 +477,23 @@ Each PR is independently testable; the first lands single-device-safe.
    actually waited mid-walk), and leave same-device-only nodes handle-less (`Ready`-equivalent). This is
    a strict optimization of the proposed design and may be the better default — **recommend evaluating
    "event only where waited" in A4b-1.**
+
+   **RESOLVED (2026-07-08) — "event only where waited" implemented.** For the materialized order
+   sources (`OrderSource::Default` / `Optimized`) the executor pre-scans the frozen dispatch order for
+   `Op::Copy`/`Op::Move` producers (`pipelined::build_wait_set` — exactly the set
+   `wait_producer_handle` can ever consult mid-walk) and passes a per-node `will_be_waited` bit into
+   `compiled::execute_compiled_with_wait_hint`; a CUDA node NOT in the set returns
+   `CompletionHandle::Ready` with no `cuEventCreate`/`cuEventRecord`/`cuEventSynchronize`/
+   `cuEventDestroy` and no B1 in-flight inc/dec (the counter now tracks only waited CUDA work on these
+   sources; `Streaming` — the only source the load-aware picker reads the counter through — never
+   elides). The realize-end `drain_handles` (which now holds only unconsumed wait-set handles) is
+   complemented by ONE `cuStreamSynchronize` per CUDA device still holding live cache storage
+   (`pipelined::sync_active_cuda_devices`) — sufficient because one-stream-per-device order makes every
+   elided same-device ancestor complete no later than the live node's own kernel, and evicted
+   intermediates are A3 stream-ordered-free safe. `OrderSource::Streaming` (lazy order — cannot be
+   pre-scanned without defeating streaming) falls back to event-every-node, byte-identical to the prior
+   behavior. Correctness belt-and-suspenders: cross-device D2H stays race-free independent of any event
+   via `to_cpu_bytes_finer`'s legacy-default-stream ordering (`cuMemcpyDtoH_v2` vs `CU_STREAM_DEFAULT`).
 5. **Multi-GPU CUDA (future).** `find_cuda_device_in_cache` matches the first CUDA storage regardless of
    `gpu_id` (`pipelined.rs:4522` comment "single-GPU setups always match"). The per-node event is
    recorded on the *output storage's own* device/stream, so it is correct for multi-GPU; but the

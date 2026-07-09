@@ -255,7 +255,15 @@ unary_kernel!(unary_log_f32, unary_log_f32, 4, "unary_log_f32");
 unary_kernel!(unary_sin_f32, unary_sin_f32, 4, "unary_sin_f32");
 unary_kernel!(unary_cos_f32, unary_cos_f32, 4, "unary_cos_f32");
 unary_kernel!(unary_tanh_f32, unary_tanh_f32, 4, "unary_tanh_f32");
-unary_kernel!(unary_relu_f32, unary_relu_f32, 4, "unary_relu_f32");
+// NaN-PROPAGATING relu (torch.relu convention, pinned 2026-07-08 —
+// docs/architecture/10-decisions-log.md). Binds baracuda's bespoke
+// `unary_relu_propagating_*` family (alpha.76+), sibling of the
+// NaN-scrubbing `unary_relu_*`/`unary_square_f32`-style Fmax family
+// above, which stays registered for other consumers. Closes the CUDA
+// side of the CPU/CUDA relu NaN-convention divergence opened by
+// 772e27a0 (CPU-only at the time; alpha.76 was the pending Baracuda
+// dependency).
+unary_kernel!(unary_relu_f32, unary_relu_propagating_f32, 4, "unary_relu_propagating_f32");
 unary_kernel!(unary_gelu_f32, unary_gelu_f32, 4, "unary_gelu_f32");
 unary_kernel!(unary_gelu_tanh_f32, unary_gelu_tanh_f32, 4, "unary_gelu_tanh_f32");
 unary_kernel!(unary_silu_f32, unary_silu_f32, 4, "unary_silu_f32");
@@ -318,25 +326,34 @@ macro_rules! unary_inplace_kernel {
 // approximation, while baracuda's plain `unary_gelu_*` is
 // erf-flavored (that family backs `GeluErfElementwise` /
 // `GeluErfInplace` instead).
-unary_inplace_kernel!(unary_inplace_relu_f32,    unary_relu_f32,    4, "unary_inplace_relu_f32");
+//
+// NaN convention (2026-07-08): `OpKind::ReluInplace` binds the
+// NaN-PROPAGATING `unary_relu_propagating_*` family (torch parity),
+// matching the forward `OpKind::ReluElementwise` rebind above and CPU's
+// already-propagating `ReluInplace`. Relu is elementwise, so the
+// same-pointer in-place invocation is safe (each output element depends
+// only on the same-position input). Pinned by the dispatch-level live
+// test `cuda_relu_inplace_propagates_nan_f32` in
+// `fuel-dispatch/tests/cuda_dispatch_live.rs`.
+unary_inplace_kernel!(unary_inplace_relu_f32,    unary_relu_propagating_f32,    4, "unary_inplace_relu_f32");
 unary_inplace_kernel!(unary_inplace_silu_f32,    unary_silu_f32,    4, "unary_inplace_silu_f32");
 unary_inplace_kernel!(unary_inplace_gelu_f32,    unary_gelu_tanh_f32, 4, "unary_inplace_gelu_f32");
 unary_inplace_kernel!(unary_inplace_tanh_f32,    unary_tanh_f32,    4, "unary_inplace_tanh_f32");
 unary_inplace_kernel!(unary_inplace_sigmoid_f32, unary_sigmoid_f32, 4, "unary_inplace_sigmoid_f32");
 
-unary_inplace_kernel!(unary_inplace_relu_f64,    unary_relu_f64,    8, "unary_inplace_relu_f64");
+unary_inplace_kernel!(unary_inplace_relu_f64,    unary_relu_propagating_f64,    8, "unary_inplace_relu_f64");
 unary_inplace_kernel!(unary_inplace_silu_f64,    unary_silu_f64,    8, "unary_inplace_silu_f64");
 unary_inplace_kernel!(unary_inplace_gelu_f64,    unary_gelu_tanh_f64, 8, "unary_inplace_gelu_f64");
 unary_inplace_kernel!(unary_inplace_tanh_f64,    unary_tanh_f64,    8, "unary_inplace_tanh_f64");
 unary_inplace_kernel!(unary_inplace_sigmoid_f64, unary_sigmoid_f64, 8, "unary_inplace_sigmoid_f64");
 
-unary_inplace_kernel!(unary_inplace_relu_bf16,    unary_relu_bf16,    2, "unary_inplace_relu_bf16");
+unary_inplace_kernel!(unary_inplace_relu_bf16,    unary_relu_propagating_bf16,    2, "unary_inplace_relu_bf16");
 unary_inplace_kernel!(unary_inplace_silu_bf16,    unary_silu_bf16,    2, "unary_inplace_silu_bf16");
 unary_inplace_kernel!(unary_inplace_gelu_bf16,    unary_gelu_tanh_bf16, 2, "unary_inplace_gelu_bf16");
 unary_inplace_kernel!(unary_inplace_tanh_bf16,    unary_tanh_bf16,    2, "unary_inplace_tanh_bf16");
 unary_inplace_kernel!(unary_inplace_sigmoid_bf16, unary_sigmoid_bf16, 2, "unary_inplace_sigmoid_bf16");
 
-unary_inplace_kernel!(unary_inplace_relu_f16,    unary_relu_f16,    2, "unary_inplace_relu_f16");
+unary_inplace_kernel!(unary_inplace_relu_f16,    unary_relu_propagating_f16,    2, "unary_inplace_relu_f16");
 unary_inplace_kernel!(unary_inplace_silu_f16,    unary_silu_f16,    2, "unary_inplace_silu_f16");
 unary_inplace_kernel!(unary_inplace_gelu_f16,    unary_gelu_tanh_f16, 2, "unary_inplace_gelu_f16");
 unary_inplace_kernel!(unary_inplace_tanh_f16,    unary_tanh_f16,    2, "unary_inplace_tanh_f16");
@@ -463,9 +480,10 @@ unary_kernel!(unary_tanh_f64, unary_tanh_f64, 8, "unary_tanh_f64");
 unary_kernel!(unary_tanh_f16, unary_tanh_f16, 2, "unary_tanh_f16");
 unary_kernel!(unary_tanh_bf16, unary_tanh_bf16, 2, "unary_tanh_bf16");
 
-unary_kernel!(unary_relu_f64, unary_relu_f64, 8, "unary_relu_f64");
-unary_kernel!(unary_relu_f16, unary_relu_f16, 2, "unary_relu_f16");
-unary_kernel!(unary_relu_bf16, unary_relu_bf16, 2, "unary_relu_bf16");
+// NaN-propagating family — see the f32 relu comment above.
+unary_kernel!(unary_relu_f64, unary_relu_propagating_f64, 8, "unary_relu_propagating_f64");
+unary_kernel!(unary_relu_f16, unary_relu_propagating_f16, 2, "unary_relu_propagating_f16");
+unary_kernel!(unary_relu_bf16, unary_relu_propagating_bf16, 2, "unary_relu_propagating_bf16");
 
 unary_kernel!(unary_gelu_f64, unary_gelu_f64, 8, "unary_gelu_f64");
 unary_kernel!(unary_gelu_f16, unary_gelu_f16, 2, "unary_gelu_f16");

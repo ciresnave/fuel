@@ -504,6 +504,19 @@ Cross-references are fine — an architecture-decision-log entry can link to the
 
 ---
 
+## 2026-07-08 — Baracuda alpha.76: CUDA relu rebound to NaN-propagating, closing the transitional divergence
+
+**Sections affected**: none — this closes item (1) of the "Implications going forward" list in the entry immediately above ("Elementwise NaN conventions pinned to torch parity"); no numbered architecture-doc core claim changes beyond what that entry already recorded.
+**Phase / PR**: baracuda pin bump 0.0.1-alpha.75 → 0.0.1-alpha.76 (all 18 workspace pins). Code: `fuel-cuda-backend/src/baracuda/elementwise.rs` (`unary_kernel!` stems for `unary_relu_{f32,f64,f16,bf16}` rebound from `unary_relu_*` to the bespoke `unary_relu_propagating_*` FFI family). Docs: `docs/kernel-contracts/cuda/unary.fkc.md` (`relu` section), `docs/kernel-contracts/{cpu,dispatch}/elementwise-unary.fkc.md` (transitional-divergence notes removed/collapsed per item (1) above). Tests: the REAL CUDA-kernel pins are new direct binding-table invocation tests in `fuel-dispatch/tests/cuda_dispatch_live.rs` — `cuda_relu_propagates_nan_f32` (verified **born-red** against a deliberately sabotaged scrubbing stem, then green on the rebind), `cuda_relu_propagates_nan_bf16`, and `cuda_maximum_minimum_propagate_nan_f32`. The old `fuel-core/src/lazy.rs::relu_cuda_still_scrubs_nan_pending_alpha76_rebind` was flipped per its embedded instructions but then **de-scoped to an end-to-end smoke** (`relu_nan_convention_lazy_realize_smoke`; sibling `maximum_minimum_cuda_matches_cpu_on_nan` → `maximum_minimum_nan_convention_lazy_realize_smoke`): orchestrator sabotage showed cost-based placement can route a tiny elementwise op to CPU on BOTH legs of a `realize_f32()`-vs-`realize_f32_cuda()` comparison, so a lazy-realize parity test cannot guarantee the CUDA kernel executed — the flipped test stayed green with the CUDA binding deliberately reverted to the scrubbing stem. Their doc comments now say exactly that and point at the dispatch-level pins.
+
+**What changed**: `OpKind::ReluElementwise`'s CUDA binding (all four dtypes, contig + strided) now calls baracuda's bespoke `baracuda_kernels_unary_relu_propagating_{f32,f64,f16,bf16}[_strided]_run` family (verified present via an FFI src diff of the alpha.76 `baracuda-kernels-sys` crate against alpha.75 — additive-only, same ABI and `sm80`/`sm89`/`sm90a` feature gate as the incumbent `unary_relu_*` family, which stays registered — it backs `Sign`/other callers' expectations and is not removed). CPU and CUDA `relu` now agree bit-for-bit on NaN-ness for every dtype; the documented transitional divergence from the entry above is closed.
+
+**Residual gap surfaced — now CLOSED (2026-07-08 follow-up)**: `OpKind::ReluInplace`'s CUDA binding (`unary_inplace_kernel!(unary_inplace_relu_*, ...)` in the same file) originally still reused the NaN-**scrubbing** `unary_relu_*` stem — out of the forward rebind's explicit scope (`OpKind::ReluElementwise` only). It has since been rebound to `unary_relu_propagating_*` (all four dtypes; relu is elementwise so the same-pointer in-place invocation is safe) and pinned by the dispatch-level live test `cuda_relu_inplace_propagates_nan_f32`. CPU's `ReluInplace` already propagated (it inherits the CPU `Relu` blanket from the entry above). No residual gap remains for the relu/max/min family.
+
+**Why**: this was the specific Baracuda deliverable the prior entry's Relu pin was coordinating against ("Baracuda has committed to shipping a NaN-propagating relu kernel in alpha.76") — Baracuda shipped it, so Fuel takes it per the standing "match external convention" norm, same rationale as the entry above.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.

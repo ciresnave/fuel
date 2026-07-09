@@ -88,9 +88,32 @@ use crate::runtime_fused_kernels::fused_kernel_available;
 pub type ArmCostFn<'a> =
     dyn Fn(&Graph, NodeId, usize, &[NodeId]) -> Option<u64> + 'a;
 
+std::thread_local! {
+    /// Per-thread cumulative count of same-device variant branches baked to a
+    /// **variant** arm (arm > 0) — i.e. a fused variant (e.g. the CUDA
+    /// flash-decode arm) that won on cost and collapsed the branch. Bumped by
+    /// [`bake_variant_branches`]'s return value. Lets a downstream realize
+    /// consumer (a live bench / test) confirm the flash arm was actually
+    /// **picked**, not merely offered — the `optimize_graph` call site discards
+    /// the return value, so this is the only observation seam without widening
+    /// that signature. Mirrors `pipelined_bridge::OPTIMIZE_CALLS_TL`.
+    static VARIANT_BAKES_TL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The current thread's cumulative variant-bake count (see [`VARIANT_BAKES_TL`]).
+/// Read it before and after an `optimize_graph`/realize call and diff to learn
+/// how many branches this pass collapsed to a fused variant winner — e.g. a
+/// BF16 CUDA decode step should bake one flash-decode arm per layer once the
+/// flash-arm capability seam is bridged. Thread-local so a single-threaded
+/// realize sequence isn't polluted by concurrent test threads.
+pub fn variant_bakes_thread_local() -> usize {
+    VARIANT_BAKES_TL.with(|c| c.get())
+}
+
 /// Bake same-device kernel-variant branches to their cost winner (see the
 /// module docs). Returns the number of branches collapsed **to a variant arm**
-/// (arm > 0) — a diagnostic the caller / tests assert on. Never panics: a
+/// (arm > 0) — a diagnostic the caller / tests assert on, also accumulated into
+/// the thread-local [`variant_bakes_thread_local`] counter. Never panics: a
 /// structural surprise from [`Graph::collapse_variant_branch`] is ignored
 /// rather than crashing (never-panic on a production path).
 pub fn bake_variant_branches(
@@ -167,6 +190,9 @@ pub fn bake_variant_branches(
             baked_to_variant += 1;
         }
         let _ = graph.collapse_variant_branch(branch, winner);
+    }
+    if baked_to_variant > 0 {
+        VARIANT_BAKES_TL.with(|c| c.set(c.get() + baked_to_variant));
     }
     baked_to_variant
 }
@@ -595,6 +621,36 @@ mod tests {
         let after = lower_runs_arm0(&g, &[post]);
         assert!(after.contains(&arm1), "after the bake the variant is realized; order={after:?}");
         assert!(!after.contains(&arm0), "arm 0's region is pruned; order={after:?}");
+    }
+
+    /// The `variant_bakes_thread_local` telemetry tracks the return value: a
+    /// winning-variant bake bumps the counter by 1, an arm-0 (oracle-wins) bake
+    /// leaves it unchanged. This is the seam a live BF16-CUDA-decode bench/test
+    /// reads to confirm the flash-decode arm was actually PICKED (baked to the
+    /// fused variant), not merely offered.
+    #[test]
+    fn variant_bakes_thread_local_tracks_the_return() {
+        // A winning variant ⇒ +1.
+        let before = variant_bakes_thread_local();
+        let (mut g1, _b1, _a0, _a1, _r1, post1) = variant_diamond(BackendId::Cuda);
+        let win = fixed_costs(vec![Some(1000), Some(400)]); // arm1 strictly cheaper
+        let baked = bake_variant_branches(&mut g1, &[post1], &win);
+        assert_eq!(baked, 1);
+        assert_eq!(
+            variant_bakes_thread_local() - before, 1,
+            "a winning-variant bake bumps the thread-local by its return count",
+        );
+
+        // Arm 0 wins (costlier variant) ⇒ counter unchanged.
+        let mid = variant_bakes_thread_local();
+        let (mut g2, _b2, _a0b, _a1b, _r2, post2) = variant_diamond(BackendId::Cuda);
+        let lose = fixed_costs(vec![Some(400), Some(1000)]); // arm1 costlier
+        let baked2 = bake_variant_branches(&mut g2, &[post2], &lose);
+        assert_eq!(baked2, 0);
+        assert_eq!(
+            variant_bakes_thread_local(), mid,
+            "an oracle-wins bake leaves the thread-local unchanged",
+        );
     }
 
     /// GUARD: a costlier variant ⇒ arm 0 (the oracle). The branch collapses to

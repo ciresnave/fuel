@@ -2571,23 +2571,27 @@ mod tests {
         assert_eq!(cpu_result, cuda_result);
     }
 
-    /// Live parity check: CPU and CUDA `maximum`/`minimum` now agree on
-    /// NaN-containing inputs — both are NaN-propagating (pinned 2026-07-08,
-    /// `docs/architecture/10-decisions-log.md`). CUDA's baracuda
-    /// `binary_maximum_fp.cu` / `binary_minimum_fp.cu` were already
-    /// NaN-propagating *before* this change; the CPU side
-    /// (`fuel-cpu-backend/src/chassis/binary.rs::{Maximum,Minimum}`) was the
-    /// one that diverged (`f32::max`/`f32::min`, NaN-as-missing) and is what
-    /// this test guards against regressing back to.
+    /// END-TO-END SMOKE ONLY — NOT a CUDA-kernel pin. Verifies the lazy
+    /// realize path produces the NaN-propagating `maximum`/`minimum`
+    /// convention (pinned 2026-07-08,
+    /// `docs/architecture/10-decisions-log.md`) and that a CPU realize and
+    /// a CUDA-device realize of the same graph agree on NaN-ness.
+    ///
+    /// CAVEAT (orchestrator sabotage finding, 2026-07-08): cost-based
+    /// placement may route a tiny elementwise op to CPU on BOTH legs even
+    /// under `realize_f32_cuda`, so this test does NOT guarantee the CUDA
+    /// kernel executed — a wrong CUDA binding can pass it. The real
+    /// CUDA-kernel pin is the direct binding-table invocation test
+    /// `fuel-dispatch/tests/cuda_dispatch_live.rs::cuda_maximum_minimum_propagate_nan_f32`.
     ///
     /// Gated `#[cfg(feature = "cuda")]` + `#[ignore]`; skips cleanly if no
     /// CUDA device is present. Run:
     ///   `cargo test -p fuel-core --features cuda --lib \
-    ///    maximum_minimum_cuda_matches_cpu_on_nan -- --ignored --nocapture`
+    ///    maximum_minimum_nan_convention_lazy_realize_smoke -- --ignored --nocapture`
     #[test]
     #[cfg(feature = "cuda")]
     #[ignore = "requires a live CUDA device"]
-    fn maximum_minimum_cuda_matches_cpu_on_nan() {
+    fn maximum_minimum_nan_convention_lazy_realize_smoke() {
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
             Err(e) => {
@@ -2629,29 +2633,32 @@ mod tests {
         }
     }
 
-    /// Pins the CURRENT transitional divergence: CUDA `relu` still scrubs
-    /// NaN (baracuda's `unary_relu_fp.cu` uses `fmaxf`, which is
-    /// NaN-as-missing) while CPU `relu` is now NaN-propagating (pinned
-    /// 2026-07-08, `docs/architecture/10-decisions-log.md`). This is a
-    /// deliberate, dated, documented gap — NOT a bug — until Baracuda ships
-    /// a NaN-propagating relu kernel in alpha.76.
+    /// END-TO-END SMOKE ONLY — NOT a CUDA-kernel pin. Verifies the lazy
+    /// realize path produces the NaN-propagating `relu` convention (torch
+    /// parity, pinned 2026-07-08, `docs/architecture/10-decisions-log.md`)
+    /// and that a CPU realize and a CUDA-device realize of the same graph
+    /// agree on NaN-ness. Successor of the transitional-divergence pin
+    /// `relu_cuda_still_scrubs_nan_pending_alpha76_rebind`, flipped at the
+    /// alpha.76 `unary_relu_propagating_*` rebind.
     ///
-    /// FLIP INSTRUCTIONS for the alpha.76 rebind: once
-    /// `baracuda-kernels-sys` exposes a NaN-propagating `unary_relu_f32`
-    /// (grep for it per `CLAUDE.md`'s FFI-surface rule, not the plan
-    /// facade), (1) invert the "still scrubs" assertion below into a
-    /// same-shape NaN-ness-must-match assertion mirroring
-    /// `maximum_minimum_cuda_matches_cpu_on_nan`, and (2) delete this doc
-    /// comment's transitional framing.
+    /// CAVEAT (orchestrator sabotage finding, 2026-07-08): cost-based
+    /// placement may route a tiny elementwise op to CPU on BOTH legs even
+    /// under `realize_f32_cuda`, so this test does NOT guarantee the CUDA
+    /// kernel executed — it stayed green with the CUDA binding deliberately
+    /// reverted to the scrubbing stem. The real CUDA-kernel pin (verified
+    /// born-red against that sabotage) is the direct binding-table
+    /// invocation test
+    /// `fuel-dispatch/tests/cuda_dispatch_live.rs::cuda_relu_propagates_nan_f32`
+    /// (+ its bf16 sibling).
     ///
     /// Gated `#[cfg(feature = "cuda")]` + `#[ignore]`; skips cleanly if no
     /// CUDA device is present. Run:
     ///   `cargo test -p fuel-core --features cuda --lib \
-    ///    relu_cuda_still_scrubs_nan_pending_alpha76_rebind -- --ignored --nocapture`
+    ///    relu_nan_convention_lazy_realize_smoke -- --ignored --nocapture`
     #[test]
     #[cfg(feature = "cuda")]
     #[ignore = "requires a live CUDA device"]
-    fn relu_cuda_still_scrubs_nan_pending_alpha76_rebind() {
+    fn relu_nan_convention_lazy_realize_smoke() {
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
             Err(e) => {
@@ -2668,16 +2675,15 @@ mod tests {
         let cpu_result = relu_lazy.realize_f32();
         let cuda_result = relu_lazy.realize_f32_cuda(&cuda);
 
-        assert!(cpu_result[0].is_nan(), "CPU relu(NaN) must propagate (the pinned convention)");
-        assert!(
-            !cuda_result[0].is_nan(),
-            "CUDA relu(NaN) is expected to still SCRUB to a non-NaN value \
-             (transitional divergence pending the alpha.76 rebind) — if this \
-             now fails because it IS NaN, baracuda has shipped the \
-             propagating relu; see this test's FLIP INSTRUCTIONS doc comment.",
-        );
-        assert_eq!(cpu_result[1], cuda_result[1], "relu(-2) non-NaN sanity must still agree");
-        assert_eq!(cpu_result[2], cuda_result[2], "relu(3) non-NaN sanity must still agree");
+        for i in 0..3 {
+            assert_eq!(
+                cpu_result[i].is_nan(), cuda_result[i].is_nan(),
+                "relu[{i}] NaN-ness must match: cpu={}, cuda={}", cpu_result[i], cuda_result[i],
+            );
+            if !cpu_result[i].is_nan() {
+                assert_eq!(cpu_result[i], cuda_result[i], "relu[{i}]");
+            }
+        }
     }
 
     #[test]
@@ -11896,8 +11902,14 @@ mod generate_tests {
         let mut d2_times: Vec<std::time::Duration> = Vec::with_capacity(n);
         let mut opt_prefill_delta = 0usize;
         let mut opt_decode_delta = 0usize;
+        let mut variant_bakes_delta = 0usize;
         if run_d2 {
             let opt_before_prefill = crate::pipelined_bridge::optimize_calls_thread_local();
+            // Variant-bake telemetry: how many same-device fused variants (e.g.
+            // the CUDA flash-decode arm) the optimizer actually PICKED across
+            // the D2 build. > 0 confirms the flash arm fired (was baked to the
+            // fused winner), not merely offered.
+            let vb_before = fuel_dispatch::variant_bake::variant_bakes_thread_local();
             let mut cache2 = KvCache::with_capacity(
                 cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, cache_dtype, device,
             ).expect("d2 with_capacity");
@@ -11928,8 +11940,17 @@ mod generate_tests {
             }
             assert!(session.is_some(), "held session survives the decode loop");
             let opt_after_decode = crate::pipelined_bridge::optimize_calls_thread_local();
+            let vb_after = fuel_dispatch::variant_bake::variant_bakes_thread_local();
             opt_prefill_delta = opt_after_prefill.wrapping_sub(opt_before_prefill);
             opt_decode_delta = opt_after_decode.wrapping_sub(opt_after_prefill);
+            variant_bakes_delta = vb_after.wrapping_sub(vb_before);
+            eprintln!(
+                "  D2 variant-bakes (fused-arm picks, e.g. flash-decode) across the build: {} \
+                 ({})",
+                variant_bakes_delta,
+                if variant_bakes_delta > 0 { "flash arm PICKED" } else { "no fused variant picked \
+                 — decode ran the decomposed base map" },
+            );
             // cache2/ctx2/session drop here (end of scope): frees D2's
             // device-resident state (base_cache holds the full weight set
             // on non-CPU devices) before the D1 loop starts allocating.
@@ -12327,7 +12348,15 @@ mod generate_tests {
             .forward_with_kv_context_persistent(&[3], &mut cache, &mut ctx, &mut session)
             .expect("decode 1");
         assert!(session.is_some(), "first decode token builds the session");
-        let graph_ptr_1 = Arc::as_ptr(session.as_ref().unwrap().graph());
+        // Clone the graph Arc so the underlying Graph OBJECT stays alive past
+        // the session drop below — otherwise the allocator can recycle its
+        // freed address for the rebuilt session's graph, making the raw-pointer
+        // identity check below spuriously fail (a ~1-in-8 flake before this).
+        // Holding this clone does not affect the drop being tested: the session
+        // is an `Option` set to `None` by `drop_decode_session` regardless of
+        // the graph's refcount.
+        let graph_1_keepalive = session.as_ref().unwrap().graph().clone();
+        let graph_ptr_1 = Arc::as_ptr(&graph_1_keepalive);
 
         // A seq!=1 all-positions step drops the session (fallback to D1).
         let _ = model
@@ -12350,6 +12379,7 @@ mod generate_tests {
             graph_ptr_1 != graph_ptr_2,
             "the rebuilt session must hold a NEW graph, not the dropped one",
         );
+        drop(graph_1_keepalive); // address no longer needs pinning past here
 
         // Byte-exact vs. a fresh D1 run over the identical token history.
         let mut cache_ref = KvCache::with_capacity(
