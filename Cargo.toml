@@ -228,6 +228,11 @@ baracuda-curand-sys    = { version = "0.0.1-alpha.76" }
 baracuda-curand        = { version = "0.0.1-alpha.76" }
 baracuda-nvrtc-sys     = { version = "0.0.1-alpha.76" }
 baracuda-nvrtc         = { version = "0.0.1-alpha.76" }
+# The live JIT synthesizer (BaracudaSynthesizer, the fuel-kernel-seam Synthesizer
+# impl). EXACT pin: only the `seam` module surface is supported/stable — the
+# generator internals are alpha-fluid, so never auto-upgrade (Baracuda alpha.76
+# landing note). Pulled only under fuel-dispatch's `jit-synth` feature.
+baracuda-kernelgen     = { version = "=0.0.1-alpha.76" }
 baracuda-nccl-sys      = { version = "0.0.1-alpha.76" }
 baracuda-nccl          = { version = "0.0.1-alpha.76", features = ["half-crate"] }
 baracuda-cutlass       = { version = "0.0.1-alpha.76" }
@@ -335,3 +340,16 @@ tokio = "1"
 [profile.release-with-debug]
 inherits = "release"
 debug = true
+
+# Unify the kernel-seam crates across the seam boundary. `baracuda-kernelgen`
+# (crates.io, under fuel-dispatch's `jit-synth` feature) depends on the PUBLISHED
+# fuel-kernel-seam / -types 0.10.3, while the workspace uses its own path members
+# of the same crates — cargo treats path and registry as different sources, so
+# without this patch there would be two incompatible copies and `BaracudaSynthesizer`
+# would impl a `Synthesizer` trait distinct from the one fuel-dispatch calls. The
+# members ARE the source that produced the published 0.10.3 (the envelope is frozen),
+# so redirecting the registry deps to them is the correct unification. Inert unless
+# `jit-synth` pulls kernelgen (no other crate depends on the registry seam crates).
+[patch.crates-io]
+fuel-kernel-seam = { path = "./fuel-kernel-seam" }
+fuel-kernel-seam-types = { path = "./fuel-kernel-seam-types" }
