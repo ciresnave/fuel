@@ -312,3 +312,93 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
     let want: Vec<f32> = x.iter().map(|v| v * 2.5).collect();
     assert_eq!(got, want, "x * p0 via the JIT-loaded scalar-Param CUDA kernel");
 }
+
+// ---- the REAL BaracudaSynthesizer (alpha.76, published) — the milestone -----
+
+/// **THE MILESTONE**: the full JIT-on-request loop end-to-end on PUBLISHED
+/// crates, driving Baracuda's OWN synthesizer (`baracuda-kernelgen` alpha.76's
+/// `seam::BaracudaSynthesizer`) rather than a mock — `synthesize -> take_kernel
+/// -> load_synth_kernel -> launch -> verify`, for a scalar-schedule relu(add).
+///
+/// The operands are declared **element-aligned (4 B)**, so Baracuda's emitter
+/// keys `vec_width = 1` and picks the **Scalar** schedule → a `baracuda_gen_
+/// ..._scalar` kernel that `load_synth_kernel` handles today (the vectorized /
+/// strided ABIs are the documented loader follow-up). Gated behind `jit-synth`
+/// (= jit + cuda + baracuda-kernelgen{seam,nvrtc}); run with
+/// `cargo test -p fuel-dispatch --features jit-synth -- --ignored`.
+#[test]
+#[ignore]
+#[cfg(feature = "jit-synth")]
+fn live_baracuda_synthesizer_full_loop_scalar() {
+    use baracuda_kernelgen::jit::seam::BaracudaSynthesizer;
+    use fuel_kernel_seam::{JitBudget, JitRequest, JitResponse, Synthesizer};
+
+    let Some(device) = dev_or_skip() else {
+        eprintln!("skipping live_baracuda_synthesizer_full_loop_scalar: no CUDA device");
+        return;
+    };
+
+    let synth = BaracudaSynthesizer::new(5_000);
+    // Baracuda's OpDef contract: `operands` holds exactly n_inputs + 1 entries —
+    // the region's inputs (in bind order) THEN the output. relu(add(a,b)) has 2
+    // inputs, so 3 operands ([a, b, out]); this also IS the binding-key dtype
+    // tuple `build_lookup_dtypes` produces (inputs then output). Element-aligned
+    // (4 B) + a non-vector-multiple count → the Scalar schedule our loader handles.
+    let operand = || OperandDesc::new(1, &[7], &[1], ElementKind::F32, 4);
+    let req = JitRequest {
+        region: relu_add_region(),
+        operands: vec![operand(), operand(), operand()],
+        arch: ArchSku::Sm89,
+        budget: JitBudget { max_compile_ms: 5_000 },
+    };
+
+    // (1) The synthesizer accepts + builds the region (independent of our loader).
+    match synth.synthesize(&req) {
+        JitResponse::Synthesized { entry_point } => {
+            eprintln!("BaracudaSynthesizer synthesized: {entry_point}");
+        }
+        JitResponse::Declined { reason } => {
+            panic!("BaracudaSynthesizer declined relu(add): {reason}");
+        }
+    }
+
+    // (2) The full adopt path: (re-)synthesize -> take_kernel -> load_synth_kernel.
+    let id = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
+        eprintln!("synth emitted symbol: {}  (kind {:?})", art.link.symbol, art.kind);
+        load_synth_kernel(art, &device)
+    })
+    .expect("adopt_from_response: the full loop reached adopt")
+    .expect("the real synthesizer produced an adoptable kernel");
+
+    assert!(id.is_runtime(), "adopted a runtime FusedOpId");
+    assert!(
+        fused_kernel_available(id, BackendId::Cuda),
+        "the adopted kernel is visible to the capability gate on Cuda",
+    );
+
+    // (3) Launch Baracuda's generated kernel and verify relu(a + b) on-device.
+    let kernel = lookup_runtime_kernel(id, BackendId::Cuda)
+        .expect("kernel bound on Cuda")
+        .kernel;
+    let a = [1.0_f32, -5.0, 2.0, -0.5, 3.0, -7.0, 0.0];
+    let b = [2.0_f32, 3.0, -10.0, 0.5, -1.0, 7.0, 4.0];
+    let lhs = Arc::new(RwLock::new(upload_f32(&device, &a)));
+    let rhs = Arc::new(RwLock::new(upload_f32(&device, &b)));
+    let out_bytes = CudaStorageBytes::alloc(&device, a.len() * 4).expect("alloc out");
+    let out = Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(out_bytes), DType::F32)));
+    let layout = Layout::contiguous(Shape::from_dims(&[a.len()]));
+    kernel(
+        &[lhs, rhs],
+        &mut [out.clone()],
+        &[layout.clone(), layout.clone(), layout],
+        &OpParams::None,
+    )
+    .expect("launch Baracuda's synthesized relu(add)");
+
+    let got = download_f32(&out.read().unwrap());
+    let want: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| (x + y).max(0.0)).collect();
+    assert_eq!(
+        got, want,
+        "relu(a + b) via Baracuda's OWN alpha.76-synthesized CUDA kernel — the LIVE LOOP",
+    );
+}
