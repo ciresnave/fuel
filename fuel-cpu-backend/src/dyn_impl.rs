@@ -283,18 +283,23 @@ fn all_unary_abs(s: &HostBuffer, layout: &Layout) -> Result<HostBuffer> {
     }
 }
 
+/// NaN-propagating (torch parity), pinned 2026-07-08
+/// (`docs/architecture/10-decisions-log.md`). Float branches check
+/// `is_nan()` before scrubbing to 0 so a NaN input passes through
+/// unchanged (payload-preserving); integer branches are untouched (no
+/// NaN concept).
 fn all_unary_relu(s: &HostBuffer, layout: &Layout) -> Result<HostBuffer> {
     match s {
-        HostBuffer::BF16(d) => Ok(HostBuffer::BF16(unary_map(d, layout, |v: bf16| v.max(bf16::ZERO)))),
-        HostBuffer::F16(d) => Ok(HostBuffer::F16(unary_map(d, layout, |v: f16| v.max(f16::ZERO)))),
-        HostBuffer::F32(d) => Ok(HostBuffer::F32(unary_map(d, layout, |v: f32| v.max(0.0)))),
-        HostBuffer::F64(d) => Ok(HostBuffer::F64(unary_map(d, layout, |v: f64| v.max(0.0)))),
+        HostBuffer::BF16(d) => Ok(HostBuffer::BF16(unary_map(d, layout, |v: bf16| if v.is_nan() { v } else { v.max(bf16::ZERO) }))),
+        HostBuffer::F16(d) => Ok(HostBuffer::F16(unary_map(d, layout, |v: f16| if v.is_nan() { v } else { v.max(f16::ZERO) }))),
+        HostBuffer::F32(d) => Ok(HostBuffer::F32(unary_map(d, layout, |v: f32| if v.is_nan() { v } else { v.max(0.0) }))),
+        HostBuffer::F64(d) => Ok(HostBuffer::F64(unary_map(d, layout, |v: f64| if v.is_nan() { v } else { v.max(0.0) }))),
         HostBuffer::U8(d) => Ok(HostBuffer::U8(unary_map(d, layout, |v: u8| v))),
         HostBuffer::U32(d) => Ok(HostBuffer::U32(unary_map(d, layout, |v: u32| v))),
         HostBuffer::I16(d) => Ok(HostBuffer::I16(unary_map(d, layout, |v: i16| v.max(0)))),
         HostBuffer::I32(d) => Ok(HostBuffer::I32(unary_map(d, layout, |v: i32| v.max(0)))),
         HostBuffer::I64(d) => Ok(HostBuffer::I64(unary_map(d, layout, |v: i64| v.max(0)))),
-        HostBuffer::F8E4M3(d) => Ok(HostBuffer::F8E4M3(unary_map(d, layout, |v: F8E4M3| v.max(F8E4M3::ZERO)))),
+        HostBuffer::F8E4M3(d) => Ok(HostBuffer::F8E4M3(unary_map(d, layout, |v: F8E4M3| if v.is_nan() { v } else { v.max(F8E4M3::ZERO) }))),
         other => Err(Error::UnsupportedDTypeForOp(other.dtype(), "relu").bt()),
     }
 }
@@ -338,8 +343,15 @@ fn cpu_binary_op(
         Sub => all_binary(lhs, rhs, lhs_l, rhs_l, |a, b| a - b, "sub"),
         Mul => all_binary(lhs, rhs, lhs_l, rhs_l, |a, b| a * b, "mul"),
         Div => all_binary(lhs, rhs, lhs_l, rhs_l, |a, b| a / b, "div"),
-        Maximum => all_binary(lhs, rhs, lhs_l, rhs_l, |a, b| if a < b { b } else { a }, "maximum"),
-        Minimum => all_binary(lhs, rhs, lhs_l, rhs_l, |a, b| if a > b { b } else { a }, "minimum"),
+        // NaN-propagating (torch parity), pinned 2026-07-08
+        // (`docs/architecture/10-decisions-log.md`). `all_binary` computes
+        // in f64 for every dtype (including integers, which never produce
+        // NaN), so `.is_nan()` guards are safe generically here — replaces
+        // the prior asymmetric scrub (`a < b` is false whenever either
+        // operand is NaN, so the old code silently propagated only when
+        // `a` was NaN and scrubbed when only `b` was).
+        Maximum => all_binary(lhs, rhs, lhs_l, rhs_l, |a, b| if a.is_nan() { a } else if b.is_nan() { b } else if a < b { b } else { a }, "maximum"),
+        Minimum => all_binary(lhs, rhs, lhs_l, rhs_l, |a, b| if a.is_nan() { a } else if b.is_nan() { b } else if a > b { b } else { a }, "minimum"),
     }
 }
 

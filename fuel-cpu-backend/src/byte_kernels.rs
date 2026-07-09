@@ -9455,6 +9455,21 @@ mod tests {
         assert_eq!(out.as_slice::<f32>().unwrap(), &[0.0, 0.0, 0.5, 0.0, 7.25]);
     }
 
+    /// Pinned NaN-semantics convention (2026-07-08, decisions log): Relu is
+    /// NaN-propagating, torch parity (`torch.relu(nan) == nan`). Also checks
+    /// the non-NaN sanity cases (`relu(-2)=0`, `relu(3)=3`) that motivated
+    /// the convention pin.
+    #[test]
+    fn relu_f32_propagates_nan() {
+        let input = CpuStorageBytes::from_slice(&[f32::NAN, -2.0, 3.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        relu_f32(&input, &mut out).expect("relu");
+        let r: &[f32] = out.as_slice().unwrap();
+        assert!(r[0].is_nan(), "relu(NaN) must propagate NaN, got {}", r[0]);
+        assert_eq!(r[1], 0.0, "relu(-2) must clip to 0");
+        assert_eq!(r[2], 3.0, "relu(3) must pass through");
+    }
+
     #[test]
     fn unary_f32_round_trip() {
         let input = CpuStorageBytes::from_slice(&[1.0_f32, -2.0, 4.0, 0.5]);
@@ -9824,6 +9839,23 @@ mod tests {
         let r: &[half::bf16] = out.as_slice().unwrap();
         let result_f32: Vec<f32> = r.iter().map(|x| x.to_f32()).collect();
         assert_eq!(result_f32, vec![0.0, 0.0, 0.5, 0.0, 7.25]);
+    }
+
+    /// Pinned NaN-semantics convention (2026-07-08): Relu is NaN-propagating
+    /// (torch parity), across the bf16-via-f32 round-trip too.
+    #[test]
+    fn relu_bf16_propagates_nan() {
+        let v: Vec<half::bf16> = [f32::NAN, -2.0, 3.0]
+            .iter()
+            .map(|&x| half::bf16::from_f32(x))
+            .collect();
+        let input = CpuStorageBytes::from_slice(&v);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        relu_bf16(&input, &mut out).expect("relu bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        assert!(r[0].is_nan(), "relu(NaN) must propagate NaN, got {:?}", r[0]);
+        assert_eq!(r[1].to_f32(), 0.0, "relu(-2) must clip to 0");
+        assert_eq!(r[2].to_f32(), 3.0, "relu(3) must pass through");
     }
 
     #[test]
@@ -10572,6 +10604,60 @@ mod tests {
 
         minimum_f32(&lhs, &rhs, &mut out).expect("min");
         assert_eq!(out.as_slice::<f32>().unwrap(), &[1.0, 1.0, -3.0]);
+    }
+
+    /// Pinned NaN-semantics convention (2026-07-08, decisions log): Maximum
+    /// and Minimum are NaN-propagating (torch parity — `torch.maximum` /
+    /// `torch.minimum` return NaN if *either* operand is NaN), not the prior
+    /// `f32::max`/`f32::min` "NaN-as-missing" (non-NaN-operand-wins)
+    /// behavior. Covers NaN in lhs, in rhs, in both, plus non-NaN sanity.
+    #[test]
+    fn maximum_minimum_f32_propagates_nan() {
+        let nan = f32::NAN;
+        let lhs = CpuStorageBytes::from_slice(&[nan, 2.0, nan, 1.0]);
+        let rhs = CpuStorageBytes::from_slice(&[3.0, nan, nan, 2.0]);
+        let mut out = CpuStorageBytes::from_zero_bytes(lhs.len_bytes());
+
+        maximum_f32(&lhs, &rhs, &mut out).expect("max");
+        let r: &[f32] = out.as_slice().unwrap();
+        assert!(r[0].is_nan(), "maximum(NaN, 3) must be NaN, got {}", r[0]);
+        assert!(r[1].is_nan(), "maximum(2, NaN) must be NaN, got {}", r[1]);
+        assert!(r[2].is_nan(), "maximum(NaN, NaN) must be NaN, got {}", r[2]);
+        assert_eq!(r[3], 2.0, "maximum(1, 2) non-NaN sanity");
+
+        minimum_f32(&lhs, &rhs, &mut out).expect("min");
+        let r: &[f32] = out.as_slice().unwrap();
+        assert!(r[0].is_nan(), "minimum(NaN, 3) must be NaN, got {}", r[0]);
+        assert!(r[1].is_nan(), "minimum(2, NaN) must be NaN, got {}", r[1]);
+        assert!(r[2].is_nan(), "minimum(NaN, NaN) must be NaN, got {}", r[2]);
+        assert_eq!(r[3], 1.0, "minimum(1, 2) non-NaN sanity");
+    }
+
+    /// bf16 mirror of `maximum_minimum_f32_propagates_nan` — the
+    /// widen-to-f32 round-trip must not scrub NaN on narrow-back.
+    #[test]
+    fn maximum_minimum_bf16_propagates_nan() {
+        let nan = half::bf16::from_f32(f32::NAN);
+        let two = half::bf16::from_f32(2.0);
+        let three = half::bf16::from_f32(3.0);
+        let one = half::bf16::from_f32(1.0);
+        let lhs = CpuStorageBytes::from_slice(&[nan, two, nan, one]);
+        let rhs = CpuStorageBytes::from_slice(&[three, nan, nan, two]);
+        let mut out = CpuStorageBytes::from_zero_bytes(lhs.len_bytes());
+
+        maximum_bf16(&lhs, &rhs, &mut out).expect("max bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        assert!(r[0].is_nan(), "maximum(NaN, 3) must be NaN");
+        assert!(r[1].is_nan(), "maximum(2, NaN) must be NaN");
+        assert!(r[2].is_nan(), "maximum(NaN, NaN) must be NaN");
+        assert_eq!(r[3].to_f32(), 2.0, "maximum(1, 2) non-NaN sanity");
+
+        minimum_bf16(&lhs, &rhs, &mut out).expect("min bf16");
+        let r: &[half::bf16] = out.as_slice().unwrap();
+        assert!(r[0].is_nan(), "minimum(NaN, 3) must be NaN");
+        assert!(r[1].is_nan(), "minimum(2, NaN) must be NaN");
+        assert!(r[2].is_nan(), "minimum(NaN, NaN) must be NaN");
+        assert_eq!(r[3].to_f32(), 1.0, "minimum(1, 2) non-NaN sanity");
     }
 
     #[test]

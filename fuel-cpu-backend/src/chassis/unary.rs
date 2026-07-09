@@ -125,11 +125,15 @@ where
 // Pre-refactor `unary_kernel!(*_bf16, ..., |x| half::bf16::from_f32(f32_op(x.to_f32())))`
 // invocations all collapse onto the bf16 blanket impl.
 
-/// ReLU: `max(0, x)`.
+/// ReLU: `max(0, x)`. NaN-propagating (torch parity — `torch.relu(nan) ==
+/// nan`), pinned 2026-07-08 (`docs/architecture/10-decisions-log.md`).
+/// Payload-preserving: a NaN input is returned unchanged (the `x.max(0.0)`
+/// scrub is only reached on non-NaN input), so the raw NaN bit pattern
+/// (sign + payload) survives, not just a canonical NaN.
 pub struct Relu;
 impl UnaryOpCore for Relu {
-    fn f32(x: f32) -> f32 { x.max(0.0) }
-    fn f64(x: f64) -> f64 { x.max(0.0) }
+    fn f32(x: f32) -> f32 { if x.is_nan() { x } else { x.max(0.0) } }
+    fn f64(x: f64) -> f64 { if x.is_nan() { x } else { x.max(0.0) } }
 }
 
 /// Negation: `-x`.
