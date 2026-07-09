@@ -584,12 +584,23 @@ determinism: same_hardware_bitwise
 
 ## relu  (ReluElementwise - {F32, F16, BF16, F64}, strided+broadcast)
 
-out[i]=relu(in[i]) Backs `OpKind::ReluElementwise`. baracuda unary_* contig + <sym>_strided_run; wrapper picks per-call. Gelu is the TANH approx (unary::gelu_tanh); GeluErf is erf (unary::gelu); Sign is f32-only. Output: fresh, contiguous, no aliasing.
+out[i]=relu(in[i]), NaN-propagating (torch.relu convention: NaN input passes through; `-0.0`
+stays `-0.0`). Backs `OpKind::ReluElementwise`. Binds baracuda's bespoke
+`unary_relu_propagating_*` family (alpha.76+, `baracuda_kernels_unary_relu_propagating_{f32,f16,bf16,f64}[_strided]_run`)
+— contig + strided_run per dtype; wrapper picks per-call. Sibling of the NaN-SCRUBBING
+`unary_relu_*` (Fmax/`fmaxf`) family, which stays registered for other consumers (and still
+backs `OpKind::ReluInplace` — a residual, not-yet-rebound gap; see
+`fuel-cuda-backend/src/baracuda/elementwise.rs` next to `unary_inplace_relu_f32`). CPU/CUDA now
+agree on NaN handling (pinned 2026-07-08, `docs/architecture/10-decisions-log.md`; live pin:
+`fuel-dispatch/tests/cuda_dispatch_live.rs::cuda_relu_propagates_nan_f32` + bf16 sibling —
+direct binding-table invocation, born-red-verified). Gelu is the TANH approx
+(unary::gelu_tanh); GeluErf is erf (unary::gelu); Sign is f32-only. Output: fresh, contiguous, no
+aliasing.
 
 ```fkc
 kernel: relu
 op_kind: ReluElementwise
-blurb: "out[i]=relu(in[i]) (CUDA/baracuda) {F32, F16, BF16, F64}; strided+broadcast; per-(op,dtype)."
+blurb: "out[i]=relu(in[i]), NaN-propagating (torch parity) (CUDA/baracuda) {F32, F16, BF16, F64}; strided+broadcast; per-(op,dtype)."
 backend: Cuda
 kernel_source: "baracuda"
 entry_point: "fuel_cuda_backend::fkc::relu"
@@ -631,7 +642,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: false
-  notes: "out[i]=relu(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  notes: "out[i]=relu(in[i]), NaN-propagating (torch parity, baracuda alpha.76 rebind, 2026-07-08); author-declared UNAUDITED seed otherwise; pointwise, bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```

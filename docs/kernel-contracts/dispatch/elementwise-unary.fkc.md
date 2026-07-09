@@ -92,18 +92,22 @@ Elementwise ReLU clamp `out[i] = max(0, in[i])`.
 CPU (`relu_elementwise_{f32,f64,bf16,f16}_cpu_wrapper` → `fuel_cpu_backend::byte_kernels::relu_*`
 → `chassis::unary::Relu`): NaN-propagating (torch parity — `torch.relu(nan) == nan`), pinned
 2026-07-08 (`docs/architecture/10-decisions-log.md`); contiguous-only. CUDA
-(`baracuda::unary::relu_*`, strided) f32/f64/bf16/f16 — **transitional divergence**: still
-NaN-as-missing (`fmaxf`, scrubbing) as of baracuda alpha.74; a NaN-propagating rebind is expected
-in alpha.76, at which point this note and the CPU/CUDA split below should collapse back to one
-NaN-propagating claim (see `fuel-core/src/lazy.rs::relu_cuda_still_scrubs_nan_pending_alpha76_rebind`'s
-flip instructions). Vulkan (`unary::relu_f32`, strided, `VULKAN_FLOAT_POINTWISE_PRECISION`) f32
-(+f16/f64 gated) — NaN handling unaudited by this change, left as previously documented. One
+(`baracuda::unary::relu_*`, strided) f32/f64/bf16/f16 — also NaN-propagating as of the baracuda
+alpha.76 rebind (bound to the bespoke `unary_relu_propagating_*` family; the transitional
+NaN-as-missing/`fmaxf` divergence noted through alpha.75 is closed — pinned by the direct
+binding-table live tests
+`fuel-dispatch/tests/cuda_dispatch_live.rs::cuda_relu_propagates_nan_{f32,bf16}`, which
+supersede the `relu_cuda_still_scrubs_nan_pending_alpha76_rebind` lazy-realize pin, de-scoped to
+`fuel-core/src/lazy.rs::relu_nan_convention_lazy_realize_smoke`). Vulkan (`unary::relu_f32`, strided,
+`VULKAN_FLOAT_POINTWISE_PRECISION`) f32 (+f16/f64 gated) — NaN handling unaudited by this change,
+left as previously documented. `ReluInplace` (CUDA) is NOT yet rebound — see the residual-gap
+note in `fuel-cuda-backend/src/baracuda/elementwise.rs` next to `unary_inplace_relu_f32`. One
 cheap branchless op per element; bandwidth-bound.
 
 ```fkc
 kernel: relu
 op_kind: ReluElementwise
-blurb: "Elementwise ReLU max(0, x), NaN-propagating on CPU (torch parity), still NaN-as-missing on CUDA pending alpha.76; CPU contiguous, CUDA/Vulkan strided; half via f32; multi-backend siblings."
+blurb: "Elementwise ReLU max(0, x), NaN-propagating on CPU and CUDA (torch parity, alpha.76+); CPU contiguous, CUDA/Vulkan strided; half via f32; multi-backend siblings."
 backend: Cpu
 kernel_source: "portable-cpu"
 entry_point: "fuel_dispatch::relu_elementwise_f32_cpu_wrapper"   # CPU sibling; CUDA baracuda::unary::relu_f32, VK unary::relu_f32 register at same key; §12.6
@@ -148,7 +152,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: false
-  notes: "max(0, x); exact for f32/f64. bf16/f16 widen to f32 then narrow. CPU: NaN-propagating (torch parity, pinned 2026-07-08). CUDA: still NaN-as-missing (fmaxf) pending the baracuda alpha.76 rebind — transitional divergence, not a bug. CPU bit-stable; Vulkan VULKAN_FLOAT_POINTWISE_PRECISION (NaN handling unaudited by this change)."
+  notes: "max(0, x); exact for f32/f64. bf16/f16 widen to f32 then narrow. CPU + CUDA: NaN-propagating (torch parity, pinned 2026-07-08 CPU / alpha.76 CUDA rebind); CUDA's ReluInplace still uses the NaN-scrubbing symbol (residual gap, not yet rebound). CPU bit-stable; Vulkan VULKAN_FLOAT_POINTWISE_PRECISION (NaN handling unaudited by this change)."
 
 determinism: same_hardware_bitwise
 ```

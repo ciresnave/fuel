@@ -255,7 +255,15 @@ unary_kernel!(unary_log_f32, unary_log_f32, 4, "unary_log_f32");
 unary_kernel!(unary_sin_f32, unary_sin_f32, 4, "unary_sin_f32");
 unary_kernel!(unary_cos_f32, unary_cos_f32, 4, "unary_cos_f32");
 unary_kernel!(unary_tanh_f32, unary_tanh_f32, 4, "unary_tanh_f32");
-unary_kernel!(unary_relu_f32, unary_relu_f32, 4, "unary_relu_f32");
+// NaN-PROPAGATING relu (torch.relu convention, pinned 2026-07-08 —
+// docs/architecture/10-decisions-log.md). Binds baracuda's bespoke
+// `unary_relu_propagating_*` family (alpha.76+), sibling of the
+// NaN-scrubbing `unary_relu_*`/`unary_square_f32`-style Fmax family
+// above, which stays registered for other consumers. Closes the CUDA
+// side of the CPU/CUDA relu NaN-convention divergence opened by
+// 772e27a0 (CPU-only at the time; alpha.76 was the pending Baracuda
+// dependency).
+unary_kernel!(unary_relu_f32, unary_relu_propagating_f32, 4, "unary_relu_propagating_f32");
 unary_kernel!(unary_gelu_f32, unary_gelu_f32, 4, "unary_gelu_f32");
 unary_kernel!(unary_gelu_tanh_f32, unary_gelu_tanh_f32, 4, "unary_gelu_tanh_f32");
 unary_kernel!(unary_silu_f32, unary_silu_f32, 4, "unary_silu_f32");
@@ -318,6 +326,17 @@ macro_rules! unary_inplace_kernel {
 // approximation, while baracuda's plain `unary_gelu_*` is
 // erf-flavored (that family backs `GeluErfElementwise` /
 // `GeluErfInplace` instead).
+//
+// KNOWN RESIDUAL GAP (2026-07-08, alpha.76 rebind): `OpKind::ReluInplace`
+// below still binds the NaN-SCRUBBING `unary_relu_*` stem, unlike the
+// forward `OpKind::ReluElementwise` kernels (rebound to
+// `unary_relu_propagating_*` above). CPU's `ReluInplace` already
+// propagates (inherits the CPU f32 round-trip blanket, 772e27a0); this
+// CUDA in-place path was out of this rebind's explicit scope
+// (`OpKind::ReluElementwise` only) and is not yet pinned by a live test.
+// Flip to `unary_relu_propagating_{f32,f64,bf16,f16}` + update
+// docs/kernel-contracts/cuda/inplace_unary.fkc.md's `relu_inplace`
+// section in the same follow-up.
 unary_inplace_kernel!(unary_inplace_relu_f32,    unary_relu_f32,    4, "unary_inplace_relu_f32");
 unary_inplace_kernel!(unary_inplace_silu_f32,    unary_silu_f32,    4, "unary_inplace_silu_f32");
 unary_inplace_kernel!(unary_inplace_gelu_f32,    unary_gelu_tanh_f32, 4, "unary_inplace_gelu_f32");
@@ -463,9 +482,10 @@ unary_kernel!(unary_tanh_f64, unary_tanh_f64, 8, "unary_tanh_f64");
 unary_kernel!(unary_tanh_f16, unary_tanh_f16, 2, "unary_tanh_f16");
 unary_kernel!(unary_tanh_bf16, unary_tanh_bf16, 2, "unary_tanh_bf16");
 
-unary_kernel!(unary_relu_f64, unary_relu_f64, 8, "unary_relu_f64");
-unary_kernel!(unary_relu_f16, unary_relu_f16, 2, "unary_relu_f16");
-unary_kernel!(unary_relu_bf16, unary_relu_bf16, 2, "unary_relu_bf16");
+// NaN-propagating family — see the f32 relu comment above.
+unary_kernel!(unary_relu_f64, unary_relu_propagating_f64, 8, "unary_relu_propagating_f64");
+unary_kernel!(unary_relu_f16, unary_relu_propagating_f16, 2, "unary_relu_propagating_f16");
+unary_kernel!(unary_relu_bf16, unary_relu_propagating_bf16, 2, "unary_relu_propagating_bf16");
 
 unary_kernel!(unary_gelu_f64, unary_gelu_f64, 8, "unary_gelu_f64");
 unary_kernel!(unary_gelu_f16, unary_gelu_f16, 2, "unary_gelu_f16");
