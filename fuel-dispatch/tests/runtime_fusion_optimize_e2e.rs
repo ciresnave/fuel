@@ -82,9 +82,15 @@ fn cpu_opts() -> PlanOptions<'static> {
 
 #[test]
 fn production_pipeline_emits_the_fused_arm_and_reset_disarms_it() {
-    let bindings = fuel_dispatch::dispatch::global_bindings();
+    // LOCK DISCIPLINE (post binding-key fold): `adopt_runtime_fused` and
+    // `clear_runtime_fused_for_tests` WRITE the global binding table
+    // (`extend_global_bindings`), so a `global_bindings()` read guard must NOT
+    // be held across them — same-thread read-then-write deadlocks. This mirrors
+    // production, where adopt runs on the G7 *background* thread, never the
+    // realize thread that holds read guards. Each optimize call below therefore
+    // scopes its own read guard and drops it before the next adopt/reset.
 
-    // (1) Adopt a runtime op for relu(add) on CPU.
+    // (1) Adopt a runtime op for relu(add) on CPU (no guard held).
     let rid = adopt_runtime_fused(
         "e2e::relu_add",
         relu_add_region(),
@@ -96,8 +102,11 @@ fn production_pipeline_emits_the_fused_arm_and_reset_disarms_it() {
 
     // (2) The PRODUCTION entry emits the gated fused arm.
     let (mut g, root) = graph_with_region();
-    optimize_graph_with_runtime_fusion(&mut g, &[root], &bindings, &cpu_opts())
-        .expect("optimize with runtime fusion");
+    {
+        let bindings = fuel_dispatch::dispatch::global_bindings();
+        optimize_graph_with_runtime_fusion(&mut g, &[root], &bindings, &cpu_opts())
+            .expect("optimize with runtime fusion");
+    }
     let (branches, fused) = arm_census(&g);
     assert_eq!(branches, 1, "one Op::Branch decision point emitted");
     assert_eq!(fused, 1, "one Op::Fused(runtime) arm emitted");
@@ -116,15 +125,22 @@ fn production_pipeline_emits_the_fused_arm_and_reset_disarms_it() {
 
     // (3) The BARE entry never scans the sidecar — hermetic by construction.
     let (mut g2, root2) = graph_with_region();
-    optimize_graph(&mut g2, &[root2], &bindings, &cpu_opts()).expect("bare optimize");
+    {
+        let bindings = fuel_dispatch::dispatch::global_bindings();
+        optimize_graph(&mut g2, &[root2], &bindings, &cpu_opts()).expect("bare optimize");
+    }
     assert_eq!(arm_census(&g2), (0, 0), "bare optimize_graph emits no runtime arms");
 
-    // (4) The reset hook disarms the production entry too (both sidecars
-    // cleared together; the capability gate then sees no kernel).
+    // (4) The reset hook disarms the production entry too (both the binding-table
+    // RuntimeFused rows and the fuel-graph metadata sidecar cleared together; the
+    // capability gate then sees no kernel). No guard held across the reset.
     clear_runtime_fused_for_tests();
     let (mut g3, root3) = graph_with_region();
-    optimize_graph_with_runtime_fusion(&mut g3, &[root3], &bindings, &cpu_opts())
-        .expect("optimize after reset");
+    {
+        let bindings = fuel_dispatch::dispatch::global_bindings();
+        optimize_graph_with_runtime_fusion(&mut g3, &[root3], &bindings, &cpu_opts())
+            .expect("optimize after reset");
+    }
     assert_eq!(arm_census(&g3), (0, 0), "after reset there is nothing to adopt-match");
 
     // (5) Guard: the compile-side lookup census stayed coherent — re-adopting

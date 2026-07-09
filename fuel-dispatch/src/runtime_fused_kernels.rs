@@ -93,6 +93,24 @@ pub fn lookup_runtime_kernel(id: FusedOpId, backend: BackendId) -> Option<Runtim
 ///   `backend` (dtype-blind — this predicate answers "is *a* kernel bound";
 ///   dtype admissibility is a separate gate, e.g.
 ///   `crate::decode_flash::flash_decode_admissible`).
+///
+/// **LOCK DISCIPLINE (post binding-key fold, 2026-07-08).** This re-acquires the
+/// `global_bindings()` READ lock. Two constraints follow:
+/// 1. Never call it — nor `adopt_runtime_fused` / `clear_runtime_fused_for_tests`,
+///    which take the WRITE lock — while holding a `global_bindings()` guard on the
+///    same thread. Same-thread read-then-write (or write-then-anything)
+///    self-deadlocks. (Tests scope their read guards around each optimize call and
+///    never hold one across an adopt/reset; production adopts on the G7 *background*
+///    thread, never the realize thread that holds read guards.)
+/// 2. The optimizer's runtime-fusion pathfinder calls this while `optimize_graph`
+///    holds a *caller-passed* `&KernelBindingTable` derived from a
+///    `global_bindings()` read guard — a **nested read** on the same lock. Safe
+///    today (adopt is single-threaded in tests, not yet wired to a background
+///    thread). **Prerequisite before wiring the G7 background-adopt trigger:**
+///    eliminate the nesting — thread the already-held `&KernelBindingTable` into
+///    the pathfinder via `OptimizationContext`, or key runtime availability off a
+///    non-nesting index — else a background write queued between the pathfinder's
+///    two reads can deadlock a writer-preferring `RwLock`.
 pub fn fused_kernel_available(id: FusedOpId, backend: BackendId) -> bool {
     default_kernel_registry().lookup(id, backend).is_some()
         || global_bindings().has_runtime_fused(id, backend)
