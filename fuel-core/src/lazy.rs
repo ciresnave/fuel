@@ -12333,7 +12333,15 @@ mod generate_tests {
             .forward_with_kv_context_persistent(&[3], &mut cache, &mut ctx, &mut session)
             .expect("decode 1");
         assert!(session.is_some(), "first decode token builds the session");
-        let graph_ptr_1 = Arc::as_ptr(session.as_ref().unwrap().graph());
+        // Clone the graph Arc so the underlying Graph OBJECT stays alive past
+        // the session drop below — otherwise the allocator can recycle its
+        // freed address for the rebuilt session's graph, making the raw-pointer
+        // identity check below spuriously fail (a ~1-in-8 flake before this).
+        // Holding this clone does not affect the drop being tested: the session
+        // is an `Option` set to `None` by `drop_decode_session` regardless of
+        // the graph's refcount.
+        let graph_1_keepalive = session.as_ref().unwrap().graph().clone();
+        let graph_ptr_1 = Arc::as_ptr(&graph_1_keepalive);
 
         // A seq!=1 all-positions step drops the session (fallback to D1).
         let _ = model
@@ -12356,6 +12364,7 @@ mod generate_tests {
             graph_ptr_1 != graph_ptr_2,
             "the rebuilt session must hold a NEW graph, not the dropped one",
         );
+        drop(graph_1_keepalive); // address no longer needs pinning past here
 
         // Byte-exact vs. a fresh D1 run over the identical token history.
         let mut cache_ref = KvCache::with_capacity(
