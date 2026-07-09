@@ -100,8 +100,9 @@ binding-table live tests
 supersede the `relu_cuda_still_scrubs_nan_pending_alpha76_rebind` lazy-realize pin, de-scoped to
 `fuel-core/src/lazy.rs::relu_nan_convention_lazy_realize_smoke`). Vulkan (`unary::relu_f32`, strided,
 `VULKAN_FLOAT_POINTWISE_PRECISION`) f32 (+f16/f64 gated) — NaN handling unaudited by this change,
-left as previously documented. `ReluInplace` (CUDA) is NOT yet rebound — see the residual-gap
-note in `fuel-cuda-backend/src/baracuda/elementwise.rs` next to `unary_inplace_relu_f32`. One
+left as previously documented. `ReluInplace` (CUDA) is ALSO rebound to
+`unary_relu_propagating_*` (2026-07-08 follow-up, pinned by
+`cuda_relu_inplace_propagates_nan_f32`) — no residual gap remains. One
 cheap branchless op per element; bandwidth-bound.
 
 ```fkc
@@ -152,7 +153,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: false
-  notes: "max(0, x); exact for f32/f64. bf16/f16 widen to f32 then narrow. CPU + CUDA: NaN-propagating (torch parity, pinned 2026-07-08 CPU / alpha.76 CUDA rebind); CUDA's ReluInplace still uses the NaN-scrubbing symbol (residual gap, not yet rebound). CPU bit-stable; Vulkan VULKAN_FLOAT_POINTWISE_PRECISION (NaN handling unaudited by this change)."
+  notes: "max(0, x); exact for f32/f64. bf16/f16 widen to f32 then narrow. CPU + CUDA (both ReluElementwise AND ReluInplace): NaN-propagating (torch parity, pinned 2026-07-08 CPU / alpha.76 CUDA rebind). CPU bit-stable; Vulkan VULKAN_FLOAT_POINTWISE_PRECISION (NaN handling unaudited by this change)."
 
 determinism: same_hardware_bitwise
 ```

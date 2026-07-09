@@ -2666,3 +2666,52 @@ fn cuda_maximum_minimum_propagate_nan_f32() {
     assert_eq!(min_got[3], 1.0, "minimum(1, 4)");
     assert_eq!(min_got[4], -5.0, "minimum(-3, -5)");
 }
+
+/// CUDA in-place `relu` (`OpKind::ReluInplace`) is NaN-PROPAGATING too —
+/// the in-place sibling of `cuda_relu_propagates_nan_f32`. Pins the
+/// 2026-07-08 rebind of the `unary_inplace_relu_*` stems to
+/// `unary_relu_propagating_*` (closing the residual gap left by the
+/// forward-only `ReluElementwise` rebind in alpha.76). The in-place
+/// wrapper takes 0 inputs + 1 output — the target the executor adopts —
+/// which the kernel mutates same-pointer; this also exercises that the
+/// propagating kernel is in-place-safe (elementwise, so it is). Under
+/// the old scrubbing `unary_relu_f32` stem this fails at index 0.
+#[test]
+#[ignore]
+fn cuda_relu_inplace_propagates_nan_f32() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
+
+    // The target buffer is both input and output for an in-place op.
+    let xs = [f32::NAN, -2.0_f32, 3.0];
+    let target = build_storage_cuda(&dev, &xs);
+    let target_arc = Arc::new(RwLock::new(target));
+
+    let kernel = table
+        .lookup(OpKind::ReluInplace, &[DType::F32, DType::F32], BackendId::Cuda)
+        .expect("lookup (ReluInplace, F32, Cuda)");
+
+    // In-place contract: 0 inputs, 1 output (the target adopted by the
+    // executor's WorkItemKind::InplaceKernel arm).
+    kernel(&[], &mut [target_arc.clone()], &[], &OpParams::None)
+        .expect("in-place kernel call");
+
+    let result_storage = target_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("target not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let got: &[f32] = bytemuck::cast_slice(&host);
+    assert!(
+        got[0].is_nan(),
+        "CUDA relu_inplace(NaN) must propagate NaN (torch parity); got {} — \
+         a non-NaN means the in-place stem regressed to scrubbing unary_relu_*",
+        got[0],
+    );
+    assert_eq!(got[1], 0.0, "relu_inplace(-2.0)");
+    assert_eq!(got[2], 3.0, "relu_inplace(3.0)");
+}
