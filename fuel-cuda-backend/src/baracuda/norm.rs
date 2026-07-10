@@ -133,6 +133,41 @@ fn rms_norm_last_dim_run(
     dtype_size_bytes: usize,
 ) -> Result<CudaStorageBytes> {
     let device = src.device().clone();
+    let out_bytes = src_layout.shape().elem_count() * dtype_size_bytes;
+    if out_bytes == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+    let out = CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes);
+    rms_norm_last_dim_run_into(src, src_layout, eps, &out, kernel, op_label, dtype_size_bytes)?;
+    Ok(out)
+}
+
+/// Write-into-output RMS-norm driver (CapturedRun executor build-out).
+///
+/// Writes the normalized output into the caller-provided `out` (no output
+/// alloc), and — crucially for capture — draws the per-row RMS scratch from
+/// the device's grow-only [`WorkspaceCache`](crate::baracuda::scratch::WorkspaceCache)
+/// (a FIXED-ADDRESS buffer once warmed) instead of a fresh `alloc_zeros`.
+/// So after a warm pass sizes the cache, the capture + replay passes
+/// allocate nothing — capture-safe (device allocation is illegal inside a
+/// CUDA-graph capture scope).
+///
+/// The RMS scratch is a pure kernel *output* (one value per row, fully
+/// written each launch), so reusing it without re-zeroing is correct;
+/// sequential same-stream norm launches serialize on the single shared
+/// buffer (one stream per device ⇒ each launch's read completes before the
+/// next launch overwrites it).
+fn rms_norm_last_dim_run_into(
+    src: &CudaStorageBytes,
+    src_layout: &Layout,
+    eps: f64,
+    out: &CudaStorageBytes,
+    kernel: RmsNormRun,
+    op_label: &'static str,
+    dtype_size_bytes: usize,
+) -> Result<()> {
+    let device = src.device().clone();
     let dims = src_layout.shape().dims();
     let rank = dims.len();
     let last_dim = *dims.last().ok_or_else(|| fuel_ir::Error::Msg(
@@ -142,10 +177,17 @@ fn rms_norm_last_dim_run(
     let outer_count = (numel as usize) / last_dim.max(1);
     let out_bytes = (numel as usize) * dtype_size_bytes;
     if out_bytes == 0 {
-        return CudaStorageBytes::alloc(&device, 0);
+        return Ok(());
     }
-    let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
-    let rms_buf = device.alloc_zeros::<u8>(outer_count * dtype_size_bytes)?;
+    if out.len_bytes() < out_bytes {
+        return Err(fuel_ir::Error::Msg(format!(
+            "{op_label}: write-into output buffer too small ({} < {} bytes)",
+            out.len_bytes(),
+            out_bytes,
+        ))
+        .bt());
+    }
+    let rms_bytes = (outer_count * dtype_size_bytes).max(1);
     let scratch = Workspace::alloc(&device, 0)?;
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
 
@@ -159,38 +201,37 @@ fn rms_norm_last_dim_run(
     let axes_mask: i32 = 1 << (rank as i32 - 1);
 
     let x_ptr = src.buffer().as_raw().0 as *const std::ffi::c_void;
-    let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
-    let rms_ptr = rms_buf.as_raw().0 as *mut std::ffi::c_void;
+    let y_ptr = out.buffer().as_raw().0 as *mut std::ffi::c_void;
 
-    // SAFETY: pointers + lengths validated; shape/stride buffers
-    // owned through the call.
-    let status = unsafe {
-        kernel(
-            eps as f32,
-            numel,
-            rank as i32,
-            shape_i32.as_ptr(),
-            stride_x.as_ptr(),
-            stride_y.as_ptr(),
-            stride_rms.as_ptr(),
-            axes_mask,
-            ld_i32,
-            x_ptr,
-            std::ptr::null(), // no affine gamma
-            y_ptr,
-            rms_ptr,
-            scratch.as_raw(),
-            scratch.bytes(),
-            stream,
-        )
-    };
+    // Per-row RMS scratch from the fixed-address grow-only WorkspaceCache:
+    // no allocation inside a capture scope once the warm pass has sized it.
+    let status = device.flash_workspace().with(&device, rms_bytes, |rms_ptr, _ws_bytes| {
+        // SAFETY: pointers + lengths validated; shape/stride buffers owned
+        // through the call; `rms_ptr` is the fixed workspace scratch, live
+        // for the launch (the cache lock is held across this closure).
+        unsafe {
+            kernel(
+                eps as f32,
+                numel,
+                rank as i32,
+                shape_i32.as_ptr(),
+                stride_x.as_ptr(),
+                stride_y.as_ptr(),
+                stride_rms.as_ptr(),
+                axes_mask,
+                ld_i32,
+                x_ptr,
+                std::ptr::null(), // no affine gamma
+                y_ptr,
+                rms_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
+            )
+        }
+    })?;
     check(status, op_label)?;
-    drop(rms_buf);
-    Ok(CudaStorageBytes::from_parts(
-        Arc::new(out_buf),
-        device,
-        out_bytes,
-    ))
+    Ok(())
 }
 
 /// Driver for the LastDim LayerNorm shape. Same flattening +
@@ -281,6 +322,27 @@ macro_rules! rms_norm_kernel {
                     src,
                     src_layout,
                     eps,
+                    sys::[<baracuda_kernels_rms_norm_ $dtype_stem _run>],
+                    $op_label,
+                    $dtype_size,
+                )
+            }
+
+            #[doc = concat!(
+                "Write-into-output variant of `rms_norm_", stringify!($dtype_stem),
+                "` (CapturedRun capture mode; RMS scratch from the fixed workspace)."
+            )]
+            pub fn [<$name _into>](
+                src: &CudaStorageBytes,
+                src_layout: &Layout,
+                eps: f64,
+                out: &CudaStorageBytes,
+            ) -> Result<()> {
+                rms_norm_last_dim_run_into(
+                    src,
+                    src_layout,
+                    eps,
+                    out,
                     sys::[<baracuda_kernels_rms_norm_ $dtype_stem _run>],
                     $op_label,
                     $dtype_size,
