@@ -204,22 +204,31 @@ impl PersistentOutputs {
 /// (deterministic, no opaque library state) that have write-into variants
 /// and are verified to replay correctly under capture.
 ///
-/// **`MatMul` is deliberately EXCLUDED.** `gemm_dense` is cuBLAS-backed, and
-/// cuBLAS does NOT replay correctly under CUDA-graph capture — its internal
-/// workspace/algorithm-selection state is not replay-stable (a single
-/// captured GEMM replays a partially-wrong result; passing a user workspace
-/// via the FFI arg does not fix it). This is a baracuda-side blocker
-/// (needs a capture-compatible cuBLAS config or a non-cuBLAS gemm). Until
-/// then, `capture_decode` surfaces any matmul decode graph as an
-/// unsupported-op gap rather than silently mis-replaying it — so full-decode
-/// capture is blocked on that one op. `Op::Contiguize` (a kernel that
-/// allocates) is likewise absent; a well-formed persistent-decode graph
-/// carries views, not materializing contiguizes.
+/// **Two ops are deliberately EXCLUDED**, both surfaced as `capture_decode`
+/// gaps rather than silent mis-replays — and both are full-decode-capture
+/// blockers that need a baracuda-side fix:
+///   - **`MatMul`**: `gemm_dense` is cuBLAS-backed, and cuBLAS does not replay
+///     correctly under CUDA-graph capture — its internal workspace/algorithm
+///     state is not replay-stable (a captured GEMM replays a partially-wrong
+///     result; a user workspace via the FFI arg does not fix it). Baracuda is
+///     building a capture-safe dense GEMV to replace it.
+///   - **`IndexSelect`**: its driver passes HOST-side shape/stride arrays
+///     (`out_shape`/`stride_src`/`stride_out` in `index_select_run_into`)
+///     whose lifetime ends when the driver returns; the captured launch
+///     references that freed host memory at replay → a proven partially-wrong
+///     replay. (rms_norm/softmax pass host arrays too but baracuda evidently
+///     marshals THEIRS capture-safely — verified — so this is kernel-specific,
+///     an index_select marshaling / metadata-persistence fix.)
 ///
-/// The included families' capture-safety is verified: binary by
-/// `capture_decode_binary_chain_...`; rms_norm / silu / softmax by
-/// `capture_decode_norm_silu_softmax_...`. rope + index_select are the same
-/// custom-kernel class (scalar-arg, deterministic).
+/// `Rope` is likewise NOT included: unverified, and its strided path shares
+/// the host-array risk; decode's rope goes through `rope_with_tables`
+/// (decomposed to verified elementwise ops), not this fused kernel.
+/// `Op::Contiguize` (allocates) is absent by the same principle.
+///
+/// LESSON (learned twice — cuBLAS + index_select): "output-only alloc ⇒
+/// capture-safe" is FALSE. Only ops VERIFIED under capture belong here.
+/// Verified: binary by `capture_decode_binary_chain_...`; rms_norm / silu /
+/// softmax by `capture_decode_norm_silu_softmax_...` (two input value-sets).
 ///
 /// [`capture_decode`]: PipelinedExecutor::capture_decode
 fn op_kind_is_capture_writeinto(op: OpKind) -> bool {
@@ -234,11 +243,9 @@ fn op_kind_is_capture_writeinto(op: OpKind) -> bool {
             | OpKind::MinimumElementwise
             | OpKind::PowElementwise
             | OpKind::RemElementwise
-            // Softmax / rope / index_select (custom baracuda kernels).
+            // Softmax (custom baracuda kernel — host arrays marshaled safely).
             | OpKind::SoftmaxLastDim
             | OpKind::LogSoftmaxLastDim
-            | OpKind::IndexSelect
-            | OpKind::Rope
             // RMS-norm: capture-safe via the device's fixed workspace for its
             // per-row RMS scratch (warm pass sizes it; capture + replay reuse
             // the fixed address, no alloc). Verified.
@@ -7289,17 +7296,14 @@ mod tests {
     ///   n1 = rms_norm(x);  s = silu(n1);  p = softmax(s);
     ///   r  = p + x;  n2 = rms_norm(r);  y = n2 + x
     /// Exercises rms_norm (×2 — proves the per-device RMS workspace is reused
-    /// across sequential norms inside ONE captured graph), silu (unary
-    /// write-into), softmax (write-into), and residual adds through the
-    /// executor's persistent-output capture path.
+    /// across sequential norms inside ONE captured graph), silu + softmax
+    /// (write-into), and residual adds through the persistent-output capture
+    /// path. Verified across two input value-sets (robust, not luck).
     ///
-    /// NOTE: deliberately matmul-FREE. cuBLAS-backed `gemm_dense` does NOT
-    /// replay correctly under CUDA-graph capture (its internal
-    /// workspace/algorithm state is not replay-stable; a user workspace via
-    /// the FFI arg does not fix it) — a baracuda-side blocker tracked
-    /// separately. `op_kind_is_capture_writeinto` therefore excludes
-    /// `MatMul`, so `capture_decode` surfaces a matmul decode graph as an
-    /// unsupported-op gap rather than silently mis-replaying it.
+    /// Deliberately EXCLUDES matmul (cuBLAS not graph-replay-safe) and
+    /// index_select (its host-side shape/stride arrays dangle under capture —
+    /// proven to mis-replay). Both are surfaced `capture_decode` gaps, not
+    /// silent mis-replays. See `op_kind_is_capture_writeinto`.
     #[test]
     #[ignore = "requires a live CUDA device"]
     #[cfg(feature = "cuda")]
@@ -7341,8 +7345,7 @@ mod tests {
         };
 
         let up = |v: &[f32]| -> Arc<RwLock<Storage>> {
-            let bytes: &[u8] = bytemuck::cast_slice(v);
-            let cb = CudaStorageBytes::from_cpu_bytes(&dev, bytes).expect("h2d");
+            let cb = CudaStorageBytes::from_cpu_bytes(&dev, bytemuck::cast_slice(v)).expect("h2d");
             Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(cb), DType::F32)))
         };
         let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
@@ -7351,8 +7354,7 @@ mod tests {
             bytemuck::cast_slice(&c.to_cpu_bytes().expect("d2h")).to_vec()
         };
 
-        let x_data: Vec<f32> = (0..H).map(|i| 0.3 + 0.7 * i as f32).collect();
-
+        let x_data: Vec<f32> = (0..H).map(|c| 0.1 * (c as f32 + 1.0)).collect();
         let x_arc = up(&x_data);
         let (graph, x, y) = build();
         let mut inputs = StorageCache::new();
@@ -7382,9 +7384,9 @@ mod tests {
         dev.synchronize().expect("sync");
         assert_eq!(read(&captured.output), expect0, "replay reproduces result");
 
-        // (3) overwrite x in place, replay -> matches an uncaptured realize
-        //     with the new x (fixed-address recompute through the whole chain).
-        let x2: Vec<f32> = (0..H).map(|i| 2.0 - 0.2 * i as f32).collect();
+        // (3) overwrite x in place, replay -> matches uncaptured realize (a
+        //     DIFFERENT value-set — so the chain is robust, not input-lucky).
+        let x2: Vec<f32> = (0..H).map(|c| 0.3 * (c as f32 + 1.0)).collect();
         {
             let g = x_arc.read().unwrap();
             let BackendStorage::Cuda(c) = &g.inner else { panic!("x not cuda") };
@@ -7392,11 +7394,7 @@ mod tests {
         }
         captured.run.replay(&dev).expect("replay 2");
         dev.synchronize().expect("sync 2");
-        assert_eq!(
-            read(&captured.output),
-            realize_ref(&x2),
-            "replay after in-place x update matches uncaptured realize",
-        );
+        assert_eq!(read(&captured.output), realize_ref(&x2), "replay after x update matches realize");
     }
 
     /// PR-C1 behavior contract: `realize_with_optimized_route` with an
