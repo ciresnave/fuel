@@ -200,41 +200,36 @@ impl PersistentOutputs {
 /// any graph whose compute nodes fall outside this set — a surfaced
 /// capability gap (telemetry-worthy), never a silent miscompile.
 ///
-/// The set is deliberately restricted to **custom baracuda CUDA kernels**
-/// (deterministic, no opaque library state) that have write-into variants
-/// and are verified to replay correctly under capture.
+/// The set is the full decode op-set, all VERIFIED to replay bit-exact under
+/// capture (each with a forced-freed-memory-reuse test — see the `diag_*` and
+/// `capture_decode_*` GPU tests).
 ///
-/// **Two ops are deliberately EXCLUDED**, both surfaced as `capture_decode`
-/// gaps rather than silent mis-replays — and both are full-decode-capture
-/// blockers that need a baracuda-side fix:
-///   - **`MatMul`**: `gemm_dense` is cuBLAS-backed, and cuBLAS does not replay
-///     correctly under CUDA-graph capture — its internal workspace/algorithm
-///     state is not replay-stable (a captured GEMM replays a partially-wrong
-///     result; a user workspace via the FFI arg does not fix it). Baracuda is
-///     building a capture-safe dense GEMV to replace it.
-///   - **`IndexSelect`**: its driver passes HOST-side shape/stride arrays
-///     (`out_shape`/`stride_src`/`stride_out` in `index_select_run_into`)
-///     whose lifetime ends when the driver returns; the captured launch
-///     references that freed host memory at replay → a proven partially-wrong
-///     replay. (rms_norm/softmax pass host arrays too but baracuda evidently
-///     marshals THEIRS capture-safely — verified — so this is kernel-specific,
-///     an index_select marshaling / metadata-persistence fix.)
+/// **History / the big correction (2026-07-10):** `MatMul` and `IndexSelect`
+/// were *briefly* excluded on the belief they weren't capture-safe (matmul's
+/// "cuBLAS internal state", index_select's "host arrays / driver anomaly").
+/// That was ALL WRONG — it was a single Fuel-side bug: `capture_decode`
+/// consumed `inputs` and retained only compute OUTPUTS, so any input buffer
+/// (weights, embedding table) the caller didn't independently hold was FREED
+/// after capture, and the captured graph replayed against freed/reused memory
+/// → intermittent partial-wrong output (cuBLAS "split-K columns", index_select
+/// "element 0"). Fixed by `CapturedDecode::retained_inputs`. cuBLAS gemm +
+/// index_select then replay bit-exact (0/50 even with forced reuse), so the
+/// baracuda GEMV + gather_rows are NOT needed for capture-safety.
 ///
-/// `Rope` is likewise NOT included: unverified, and its strided path shares
-/// the host-array risk; decode's rope goes through `rope_with_tables`
-/// (decomposed to verified elementwise ops), not this fused kernel.
-/// `Op::Contiguize` (allocates) is absent by the same principle.
+/// `Rope` is excluded only because decode's rope goes through
+/// `rope_with_tables` (decomposed to verified elementwise ops), not this fused
+/// kernel — not a capture-safety concern; add it with a test if a consumer
+/// appears. `Op::Contiguize` (allocates inside capture) stays out.
 ///
-/// LESSON (learned twice — cuBLAS + index_select): "output-only alloc ⇒
-/// capture-safe" is FALSE. Only ops VERIFIED under capture belong here.
-/// Verified: binary by `capture_decode_binary_chain_...`; rms_norm / silu /
-/// softmax by `capture_decode_norm_silu_softmax_...` (two input value-sets).
+/// LESSON: a bug reproduced through the full harness but not in isolation is
+/// the harness's fault, not the callee's — chase the differentiator (here,
+/// input lifetime), don't conclude "kernel/library not capture-safe" from it.
 ///
 /// [`capture_decode`]: PipelinedExecutor::capture_decode
 fn op_kind_is_capture_writeinto(op: OpKind) -> bool {
     matches!(
         op,
-        // Binary elementwise — residual + gating (verified).
+        // Binary elementwise — residual + gating.
         OpKind::AddElementwise
             | OpKind::SubElementwise
             | OpKind::MulElementwise
@@ -243,15 +238,18 @@ fn op_kind_is_capture_writeinto(op: OpKind) -> bool {
             | OpKind::MinimumElementwise
             | OpKind::PowElementwise
             | OpKind::RemElementwise
-            // Softmax (custom baracuda kernel — host arrays marshaled safely).
+            // Softmax.
             | OpKind::SoftmaxLastDim
             | OpKind::LogSoftmaxLastDim
+            // Dense matmul (cuBLAS gemm_dense — capture-safe; the earlier
+            // "not replay-stable" was the dangling-input bug, now fixed).
+            | OpKind::MatMul
+            // Embedding lookup (was the same dangling-input bug, not a kernel issue).
+            | OpKind::IndexSelect
             // RMS-norm: capture-safe via the device's fixed workspace for its
-            // per-row RMS scratch (warm pass sizes it; capture + replay reuse
-            // the fixed address, no alloc). Verified.
+            // per-row RMS scratch (warm sizes it; capture + replay reuse, no alloc).
             | OpKind::RmsNormLastDim
-            // Unary activations (all unary wrappers are write-into +
-            // workspace-free); silu is the FFN gate, gelu the alternative.
+            // Unary activations (write-into + workspace-free).
             | OpKind::SiluElementwise
             | OpKind::GeluElementwise
             | OpKind::GeluErfElementwise
@@ -279,6 +277,14 @@ pub struct CapturedDecode {
     /// Every compute node's fixed output buffer (the capture-baked
     /// addresses). Retained so they outlive the [`CapturedRun`].
     pub persistent: HashMap<NodeId, Arc<RwLock<Storage>>>,
+    /// EVERY input buffer's Arc (weights, KV, per-token inputs), retained so
+    /// their device addresses — baked into the captured graph — stay valid
+    /// for the life of the capture. Without this, an input buffer the CALLER
+    /// doesn't independently hold is freed when `capture_decode` returns
+    /// (it consumes `inputs`), and replay reads freed/reused memory. This is
+    /// the fix for the "index_select / matmul mis-replay" — a dangling input
+    /// pointer, NOT a kernel/cuBLAS/driver capture issue.
+    pub retained_inputs: Vec<Arc<RwLock<Storage>>>,
 }
 
 /// Warm→capture→replay orchestration over [`capture_decode`] for a
@@ -1165,6 +1171,10 @@ impl PipelinedExecutor {
 
         // ---- Pass 2: capture (reuse) — record the launch sequence ----------
         let mut reuse = PersistentOutputs::reuse(persistent.into_map());
+        // Retain EVERY input buffer before `inputs` is consumed: the captured
+        // graph bakes their device addresses, so they must outlive it even if
+        // the caller doesn't independently hold them.
+        let retained_inputs: Vec<Arc<RwLock<Storage>>> = inputs.values().cloned().collect();
         let mut cap_cache: StorageCache = inputs;
         let mut cap_layouts = seed_layouts;
         let mut cap_syms = SymEnv::new();
@@ -1201,6 +1211,7 @@ impl PipelinedExecutor {
             run,
             output,
             output_layout,
+            retained_inputs,
             persistent: reuse.into_map(),
         })
     }
@@ -7434,6 +7445,144 @@ mod tests {
     ///
     /// Graph (an FFN block + norms, batch=seq=1 like real decode):
     ///   n1 = rms_norm(x);  u = n1 · w_up;  s = silu(u);
+    /// cuBLAS `gemm_dense` matmul IS graph-capturable (regression for the
+    /// dangling-input bug that once masqueraded as "cuBLAS not replay-safe").
+    /// Captures `y = a·w` where the caller does NOT retain `w`, FORCES the
+    /// freed-`w` slot to be reused by garbage buffers, then replays 50× — all
+    /// must equal the uncaptured realize. Passes iff `capture_decode` retains
+    /// its input buffers (`CapturedDecode::retained_inputs`).
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn capture_decode_matmul_replays_bit_exact_cuda() {
+        use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
+        use fuel_ir::Shape;
+        use fuel_memory::BackendStorage;
+        let Ok(dev) = CudaDevice::new(0) else { return };
+        const H: usize = 4;
+        const F: usize = 8;
+        let a_data: Vec<f32> = (0..H).map(|i| 0.5 + i as f32).collect();
+        let w_data: Vec<f32> = (0..H * F).map(|i| 0.01 * (i as f32 + 1.0)).collect();
+        let build = || -> (Arc<RwLock<Graph>>, NodeId, NodeId, NodeId) {
+            let graph = Arc::new(RwLock::new(Graph::new()));
+            let (a, w, y) = {
+                let mut g = graph.write().unwrap();
+                let a = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1, H]), dtype: DType::F32 });
+                let w = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[H, F]), dtype: DType::F32 });
+                let y = g.push(Node { op: Op::MatMul, inputs: vec![a, w], shape: Shape::from_dims(&[1, F]), dtype: DType::F32 });
+                g.set_target_backend(y, BackendId::Cuda);
+                (a, w, y)
+            };
+            (graph, a, w, y)
+        };
+        let up = |v: &[f32]| {
+            let b: Vec<u8> = v.iter().flat_map(|f| f.to_le_bytes()).collect();
+            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(CudaStorageBytes::from_cpu_bytes(&dev, &b).unwrap()), DType::F32)))
+        };
+        let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
+            let g = arc.read().unwrap();
+            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            c.to_cpu_bytes().unwrap().chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+        };
+        // Reference (uncaptured).
+        let (gr, ar, wr, yr) = build();
+        let mut insr = StorageCache::new();
+        insr.insert(ar, up(&a_data));
+        insr.insert(wr, up(&w_data));
+        let (refarc, _) = PipelinedExecutor::realize(gr, yr, insr).unwrap();
+        let expect = read(&refarc);
+        // Capture (a + w NOT retained by caller).
+        let (graph, a, w, y) = build();
+        let mut inputs = StorageCache::new();
+        inputs.insert(a, up(&a_data));
+        inputs.insert(w, up(&w_data));
+        let captured = PipelinedExecutor::capture_decode(Arc::clone(&graph), y, inputs, SymEnv::default()).expect("capture");
+        assert_eq!(read(&captured.output), expect, "warm result after capture");
+        // FORCE freed-memory reuse: same-size (H*F) garbage buffers. If `w`
+        // were dangling, replay would read 999.0s.
+        let mut squatters = Vec::new();
+        for _ in 0..8 {
+            let g: Vec<u8> = (0..H * F).flat_map(|_| 999.0f32.to_le_bytes()).collect();
+            squatters.push(CudaStorageBytes::from_cpu_bytes(&dev, &g).unwrap());
+        }
+        dev.synchronize().unwrap();
+        let mut bad = 0usize;
+        for _ in 0..50 {
+            captured.run.replay(&dev).unwrap();
+            dev.synchronize().unwrap();
+            if read(&captured.output) != expect {
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0, "cuBLAS matmul capture replays bit-exact ({bad}/50 wrong)");
+    }
+
+    /// `index_select` (embedding lookup) IS graph-capturable (regression for
+    /// the dangling-input bug that once looked like "element 0 dropped on
+    /// replay"). Captures `emb = index_select(wte, tok)` with `wte` NOT
+    /// retained by the caller, FORCES the freed-`wte` slot to be reused by
+    /// garbage buffers, then replays 50× — all must be `[1,2,3,4]`. Passes iff
+    /// `capture_decode` retains its input buffers.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn capture_decode_index_select_replays_bit_exact_cuda() {
+        use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
+        use fuel_ir::Shape;
+        use fuel_memory::BackendStorage;
+        let Ok(dev) = CudaDevice::new(0) else { return };
+        const V: usize = 3;
+        const H: usize = 4;
+        let wte_data: Vec<f32> = (0..V)
+            .flat_map(|v| (0..H).map(move |c| 1.0 + 10.0 * v as f32 + c as f32))
+            .collect();
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (tok, wte, emb) = {
+            let mut g = graph.write().unwrap();
+            let tok = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1]), dtype: DType::U32 });
+            let wte = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[V, H]), dtype: DType::F32 });
+            let emb = g.push(Node { op: Op::IndexSelect { dim: 0 }, inputs: vec![wte, tok], shape: Shape::from_dims(&[1, H]), dtype: DType::F32 });
+            g.set_target_backend(emb, BackendId::Cuda);
+            (tok, wte, emb)
+        };
+        let up_f32 = |v: &[f32]| {
+            let b: Vec<u8> = v.iter().flat_map(|f| f.to_le_bytes()).collect();
+            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(CudaStorageBytes::from_cpu_bytes(&dev, &b).unwrap()), DType::F32)))
+        };
+        let up_u32 = |v: &[u32]| {
+            let b: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(CudaStorageBytes::from_cpu_bytes(&dev, &b).unwrap()), DType::U32)))
+        };
+        let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
+            let g = arc.read().unwrap();
+            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            c.to_cpu_bytes().unwrap().chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+        };
+        let tok_arc = up_u32(&[0]);
+        let mut inputs = StorageCache::new();
+        inputs.insert(tok, tok_arc.clone());
+        inputs.insert(wte, up_f32(&wte_data));
+        let captured = PipelinedExecutor::capture_decode(Arc::clone(&graph), emb, inputs, SymEnv::default()).expect("capture");
+        assert_eq!(read(&captured.output), vec![1.0, 2.0, 3.0, 4.0], "warm result after capture");
+        // FORCE freed-memory reuse: same-size (V*H) garbage buffers reclaim
+        // `wte`'s slot if it were dangling — replay would then read 999.0s.
+        let mut squatters = Vec::new();
+        for _ in 0..8 {
+            let g: Vec<u8> = (0..V * H).flat_map(|_| 999.0f32.to_le_bytes()).collect();
+            squatters.push(CudaStorageBytes::from_cpu_bytes(&dev, &g).unwrap());
+        }
+        dev.synchronize().unwrap();
+        let mut bad = 0usize;
+        for _ in 0..50 {
+            captured.run.replay(&dev).unwrap();
+            dev.synchronize().unwrap();
+            if read(&captured.output) != vec![1.0, 2.0, 3.0, 4.0] {
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0, "index_select capture replays bit-exact ({bad}/50 wrong)");
+    }
+
     ///   n1 = rms_norm(x);  s = silu(n1);  p = softmax(s);
     ///   r  = p + x;  n2 = rms_norm(r);  y = n2 + x
     /// Exercises rms_norm (×2 — proves the per-device RMS workspace is reused
