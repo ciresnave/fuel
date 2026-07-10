@@ -281,6 +281,147 @@ pub struct CapturedDecode {
     pub persistent: HashMap<NodeId, Arc<RwLock<Storage>>>,
 }
 
+/// Warm→capture→replay orchestration over [`capture_decode`] for a
+/// persistent decode loop (the CapturedRun build-out, Increment 4a).
+///
+/// Owns the FIXED per-token INPUT buffers — the ones that change each token
+/// (token-id, rope position, mask, KV write offset) — at stable device
+/// addresses, plus the [`CapturedDecode`]. Each generated token is one
+/// [`replay_token`](Self::replay_token): H2D-update the fixed input buffers
+/// IN PLACE (same addresses the captured graph reads), replay the captured
+/// graph (one `cuGraphLaunch`, no per-op launch overhead), then read the
+/// output at its fixed address.
+///
+/// The mechanism is graph-agnostic: [`capture`](Self::capture) runs a
+/// single-device CUDA decode graph through the persistent-output executor;
+/// the model layer (fuel-core's `DecodeSession`) supplies the held graph +
+/// the fixed buffers and drives the per-token updates. Every compute op must
+/// be capture-safe (`op_kind_is_capture_writeinto`) — `capture` surfaces any
+/// that are not (today: matmul, index_select — pending baracuda kernels).
+///
+/// [`capture_decode`]: PipelinedExecutor::capture_decode
+#[cfg(feature = "cuda")]
+pub struct CapturedDecodeSession {
+    device: fuel_cuda_backend::CudaDevice,
+    captured: CapturedDecode,
+    /// Per-token input buffers, keyed by NodeId — fixed device addresses
+    /// updated in place each token (the input addresses the captured graph
+    /// reads). A subset of the `inputs` handed to [`capture`](Self::capture).
+    per_token_inputs: HashMap<NodeId, Arc<RwLock<Storage>>>,
+    /// EVERY input buffer's Arc (weights, KV, per-token), retained so their
+    /// device addresses stay valid for the life of the capture. `capture_decode`
+    /// consumes `inputs` and only `CapturedDecode` retains the compute-output
+    /// buffers, so without this the WEIGHT input buffers would be freed and the
+    /// captured graph would replay against freed memory.
+    _retained_inputs: Vec<Arc<RwLock<Storage>>>,
+}
+
+#[cfg(feature = "cuda")]
+impl CapturedDecodeSession {
+    /// Capture the decode graph once against the given fixed input buffers.
+    ///
+    /// `inputs` are ALL the graph's leaves (weights, KV, per-token data) at
+    /// fixed device addresses; `per_token_input_ids` names the subset that
+    /// changes each token. The per-token Arcs are snapshotted (shared, not
+    /// copied) so overwriting them in place later feeds the captured graph's
+    /// fixed input reads. Returns a session ready for
+    /// [`replay_token`](Self::replay_token). Errors (never panics) if the
+    /// graph carries a capture-unsafe op or a per-token id is not an input.
+    pub fn capture(
+        graph: Arc<RwLock<Graph>>,
+        target: NodeId,
+        inputs: StorageCache,
+        per_token_input_ids: &[NodeId],
+        sym_env: SymEnv,
+    ) -> Result<Self> {
+        use fuel_memory::BackendStorage;
+        // Snapshot the per-token input Arcs + retain EVERY input Arc BEFORE
+        // `inputs` is consumed by capture_decode (so no input buffer's device
+        // address is freed while the captured graph still bakes it).
+        let retained_inputs: Vec<Arc<RwLock<Storage>>> = inputs.values().cloned().collect();
+        let mut per_token_inputs = HashMap::with_capacity(per_token_input_ids.len());
+        for &id in per_token_input_ids {
+            let arc = inputs.get(&id).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "CapturedDecodeSession::capture: per-token input {:?} not in inputs",
+                    id,
+                ))
+                .bt()
+            })?;
+            per_token_inputs.insert(id, arc);
+        }
+        // Derive the CUDA device from any input.
+        let device = {
+            let any = per_token_inputs
+                .values()
+                .next()
+                .or_else(|| inputs.values().next())
+                .ok_or_else(|| {
+                    Error::Msg("CapturedDecodeSession::capture: no inputs".into()).bt()
+                })?;
+            let guard = any.read().map_err(|_| poisoned("input storage"))?;
+            match &guard.inner {
+                BackendStorage::Cuda(c) => c.device().clone(),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "CapturedDecodeSession::capture: input is BackendStorage::{:?}, not Cuda",
+                        std::mem::discriminant(other),
+                    ))
+                    .bt());
+                }
+            }
+        };
+        let captured = PipelinedExecutor::capture_decode(graph, target, inputs, sym_env)?;
+        Ok(Self { device, captured, per_token_inputs, _retained_inputs: retained_inputs })
+    }
+
+    /// Replay one token. For each `(node_id, host_bytes)` in `updates`,
+    /// overwrite that per-token input buffer IN PLACE (H2D, same device
+    /// address), then replay the captured graph and return the output buffer
+    /// (now holding this token's result). `host_bytes.len()` must equal the
+    /// buffer's byte length.
+    pub fn replay_token(&self, updates: &[(NodeId, &[u8])]) -> Result<Arc<RwLock<Storage>>> {
+        use fuel_memory::BackendStorage;
+        for (id, bytes) in updates {
+            let arc = self.per_token_inputs.get(id).ok_or_else(|| {
+                Error::Msg(format!(
+                    "CapturedDecodeSession::replay_token: {:?} is not a per-token input",
+                    id,
+                ))
+                .bt()
+            })?;
+            let guard = arc.read().map_err(|_| poisoned("per-token input"))?;
+            match &guard.inner {
+                BackendStorage::Cuda(c) => c.write_from_host(bytes)?,
+                other => {
+                    return Err(Error::Msg(format!(
+                        "CapturedDecodeSession::replay_token: input {:?} is \
+                         BackendStorage::{:?}, not Cuda",
+                        id,
+                        std::mem::discriminant(other),
+                    ))
+                    .bt());
+                }
+            }
+        }
+        self.captured.run.replay(&self.device)?;
+        self.device.synchronize()?;
+        Ok(Arc::clone(&self.captured.output))
+    }
+
+    /// The fixed output buffer, updated by each
+    /// [`replay_token`](Self::replay_token). Holds the warm-run result until
+    /// the first replay.
+    pub fn output(&self) -> &Arc<RwLock<Storage>> {
+        &self.captured.output
+    }
+
+    /// The output's resolved [`Layout`].
+    pub fn output_layout(&self) -> &Layout {
+        &self.captured.output_layout
+    }
+}
+
 /// What flavor of work item the executor is processing.
 /// Disambiguates the four cases:
 enum WorkItemKind {
@@ -7395,6 +7536,103 @@ mod tests {
         captured.run.replay(&dev).expect("replay 2");
         dev.synchronize().expect("sync 2");
         assert_eq!(read(&captured.output), realize_ref(&x2), "replay after x update matches realize");
+    }
+
+    /// CapturedDecodeSession (Increment 4a): drive the warm→capture→replay
+    /// orchestration over MANY tokens on a synthetic decode-shaped session —
+    /// the real per-token decode pattern. Capture once, then per token
+    /// H2D-update the fixed input buffer IN PLACE + replay, asserting each
+    /// token's output is bit-exact against an independent uncaptured realize.
+    /// A kernel-agnostic proof of the state machine + fixed-buffer mechanics
+    /// (matmul + index_select excluded pending baracuda capture-safe kernels).
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn captured_decode_session_replays_many_tokens_cuda() {
+        use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        use fuel_ir::Shape;
+        use fuel_memory::BackendStorage;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+        const H: usize = 6;
+        let eps = 1e-5f64;
+
+        let build = || -> (Arc<RwLock<Graph>>, NodeId, NodeId) {
+            let graph = Arc::new(RwLock::new(Graph::new()));
+            let (x, y) = {
+                let mut g = graph.write().unwrap();
+                let mk = |g: &mut Graph, op: Op, ins: Vec<NodeId>, dims: &[usize]| {
+                    g.push(Node { op, inputs: ins, shape: Shape::from_dims(dims), dtype: DType::F32 })
+                };
+                let rms = || Op::Fused(FusedOps::RMS_NORM_LAST_DIM, FusedOpParams::RmsNormLastDim { eps });
+                let sm = || Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim);
+                let x = mk(&mut g, Op::Const, vec![], &[1, H]);
+                let n1 = mk(&mut g, rms(), vec![x], &[1, H]);
+                let s = mk(&mut g, Op::Silu, vec![n1], &[1, H]);
+                let p = mk(&mut g, sm(), vec![s], &[1, H]);
+                let r = mk(&mut g, Op::Add, vec![p, x], &[1, H]);
+                let n2 = mk(&mut g, rms(), vec![r], &[1, H]);
+                let y = mk(&mut g, Op::Add, vec![n2, x], &[1, H]);
+                for id in [n1, s, p, r, n2, y] {
+                    g.set_target_backend(id, BackendId::Cuda);
+                }
+                (x, y)
+            };
+            (graph, x, y)
+        };
+        let up = |v: &[f32]| -> Arc<RwLock<Storage>> {
+            let cb = CudaStorageBytes::from_cpu_bytes(&dev, bytemuck::cast_slice(v)).expect("h2d");
+            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(cb), DType::F32)))
+        };
+        let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
+            let g = arc.read().unwrap();
+            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            bytemuck::cast_slice(&c.to_cpu_bytes().expect("d2h")).to_vec()
+        };
+        let realize_ref = |xv: &[f32]| -> Vec<f32> {
+            let (g, xr, yr) = build();
+            let mut ins = StorageCache::new();
+            ins.insert(xr, up(xv));
+            let (arc, _) = PipelinedExecutor::realize(g, yr, ins).expect("ref realize");
+            read(&arc)
+        };
+
+        // 5 distinct "tokens" (distinct per-token input value-sets).
+        let tokens: Vec<Vec<f32>> = (0..5)
+            .map(|t| (0..H).map(|c| 0.1 * (t as f32 + 1.0) * (c as f32 + 1.0)).collect())
+            .collect();
+
+        // Capture ONCE against token 0's fixed input buffer.
+        let x_arc = up(&tokens[0]);
+        let (graph, x, y) = build();
+        let mut inputs = StorageCache::new();
+        inputs.insert(x, x_arc.clone());
+        let session = CapturedDecodeSession::capture(
+            Arc::clone(&graph),
+            y,
+            inputs,
+            &[x],
+            SymEnv::default(),
+        )
+        .expect("capture session");
+
+        // Warm result (token 0) already sits in the output buffer.
+        assert_eq!(read(session.output()), realize_ref(&tokens[0]), "warm token 0");
+
+        // The decode loop: replay every token (incl. re-replaying token 0) via
+        // in-place H2D update of the fixed input + one graph launch.
+        for (t, tok) in tokens.iter().enumerate() {
+            let out = session
+                .replay_token(&[(x, bytemuck::cast_slice(tok))])
+                .expect("replay_token");
+            assert_eq!(read(&out), realize_ref(tok), "replayed token {t} matches uncaptured realize");
+        }
+        // Distinct tokens must give distinct outputs (live recompute, not stale).
+        assert_ne!(realize_ref(&tokens[0]), realize_ref(&tokens[1]), "tokens must differ");
     }
 
     /// PR-C1 behavior contract: `realize_with_optimized_route` with an
