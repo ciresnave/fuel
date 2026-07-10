@@ -263,4 +263,54 @@ mod tests {
 
         assert!(dev.supports_graph_capture());
     }
+
+    /// DIAGNOSTIC (index_select capture bisection, 2026-07-10): capture the
+    /// `index_select` kernel DIRECTLY via `capture_run` — bypassing the
+    /// pipelined executor's `capture_decode` / `execute_work_item` path — on
+    /// the same box/params where `capture_decode` mis-replays output element 0.
+    /// Baracuda's isolated harness replays this exact call clean; if THIS
+    /// Fuel-direct capture also replays clean, the bug is in the executor's
+    /// capture path, not the kernel or `capture_run` itself (the bisection).
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    fn capture_index_select_direct_replays_clean() {
+        use crate::CudaStorageBytes;
+        use crate::baracuda::indexing::index_select_f32_into;
+
+        let Some(dev) = dev_or_skip() else { return };
+        let read_f32 = |b: &[u8]| -> Vec<f32> {
+            b.chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect()
+        };
+
+        // wte [3,4] f32, row v = 1 + 10v + c → rows clearly distinct.
+        let wte_f32: Vec<f32> = (0..3u32)
+            .flat_map(|v| (0..4u32).map(move |c| 1.0 + 10.0 * v as f32 + c as f32))
+            .collect();
+        let wte_bytes: Vec<u8> = wte_f32.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let wte = CudaStorageBytes::from_cpu_bytes(&dev, &wte_bytes).unwrap();
+        let tok = CudaStorageBytes::from_cpu_bytes(&dev, &0u32.to_le_bytes()).unwrap();
+        let emb = CudaStorageBytes::alloc(&dev, 4 * 4).unwrap(); // [1,4], zeroed
+
+        // Eager warm on the zeroed output (exactly baracuda's harness shape),
+        // with Fuel's exact params: outer=1, src_dim=3, n_idx=1, inner=4.
+        index_select_f32_into(&wte, &tok, 1, 3, 1, 4, &emb).unwrap();
+        dev.synchronize().unwrap();
+        let warm = read_f32(&emb.to_cpu_bytes().unwrap());
+        assert_eq!(warm, vec![1.0, 2.0, 3.0, 4.0], "eager warm gathers row 0");
+
+        // Capture the SAME call directly (NO executor), then replay unchanged.
+        let captured = dev
+            .capture_run(|_s| index_select_f32_into(&wte, &tok, 1, 3, 1, 4, &emb))
+            .expect("capture_run");
+        captured.replay(&dev).unwrap();
+        dev.synchronize().unwrap();
+        let replay = read_f32(&emb.to_cpu_bytes().unwrap());
+        assert_eq!(
+            replay, warm,
+            "direct capture_run replays clean ⇒ index_select mis-replay is in the \
+             executor capture path, not the kernel/capture_run",
+        );
+    }
 }
