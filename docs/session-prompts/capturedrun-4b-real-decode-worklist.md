@@ -26,21 +26,29 @@ D2H, no alloc), adopts the fixed KV dest in place. Weights + KV are fixed-addres
    binary/rope), flip the wrapper, add `OpKind::Affine` to `op_kind_is_capture_writeinto`, forced-
    reuse capture test.
 
-2. **`OpKind::Rope`** — RoPE. AMBIGUOUS: `op_to_op_kind` maps `Op::Fused(ROPE)` → `OpKind::Rope`
-   (`pipelined.rs:3134`), but the registered wrapper `attention::rope_f32` is **1-input**
-   (`cuda_rope_baracuda_wrapper`, already write-into from Increment 2), while decode's
-   `rope_with_tables(cos,sin)` is **3-input**. Either the fused node decomposes to elementwise
-   (then NO gap — it's binary ops), or dispatches to a 3-input `rope_apply` kernel (then convert
-   that + add). RESOLVE with a graph dump of the real decode step (or a `capture_decode` attempt —
-   it surfaces the exact op).
+2. **RoPE — RESOLVED 2026-07-10: NOT `OpKind::Rope`, and NOT a Kernel-predicate gap.** The fused
+   3-input `rope_with_tables` (`Op::Fused(ROPE)`, dtypes `[F32,F32,F32,F32]`) has **NO CUDA kernel**
+   — proven by a raw-realize error "no backend supports rope on [F32,F32,F32,F32]". So on CUDA it
+   **decomposes at optimize time** (`rope_with_tables_decomposed`: slice/neg/**concat**/broadcast/
+   mul/add → ~72 dispatches). The decomposed mul/add/neg are affine/binary (✓ capture-safe), but
+   the **`Op::Concat` (`OpKind::Concat`) ALLOCATES its output** — so rope folds into gap #3.
+   (`capture_decode` on a RAW graph errors on the fused rope because it doesn't run the optimizer;
+   the real decode passes an already-OPTIMIZED graph, where rope is already decomposed — so target
+   the optimized graph, and the concat is what needs handling.)
 
-3. **Auto-contiguize allocation** — the attention-merge `reshape` after `permute([0,2,1,3])`
-   (`lazy.rs:6384`) has a STRIDED input, so `WorkItemKind::ContiguizeOf` calls `auto_contiguize`
-   which **allocates** (`pipelined.rs:5827-5831`). Illegal in capture. Two fixes: (a) make the
-   `ContiguizeOf` arm persistent-output-aware (Record: alloc+record its output; Reuse: reuse) +
-   an `auto_contiguize_into(input, layout, out)` write-into variant; OR (b) change the graph to
-   insert an explicit contiguous producer so the reshape is zero-copy. (a) is more general. The
-   logits `slice→reshape` is a second candidate — check if it materializes.
+3. **THE REAL CRUX — allocation of intermediate buffers inside the capture scope.** The persistent-
+   output executor mode currently reuses only KERNEL outputs. But the decode graph allocates
+   intermediates in NON-Kernel arms during capture, which is forbidden:
+   - **`Op::Concat`** (decomposed rope) — allocates its output (`OpKind::Concat` not in predicate).
+   - **Auto-contiguize** — the attention-merge `reshape` after `permute([0,2,1,3])` (`lazy.rs:6384`)
+     has a STRIDED input, so `WorkItemKind::ContiguizeOf` calls `auto_contiguize` → **allocates**
+     (`pipelined.rs:5827-5831`). Logits `slice→reshape` is a second candidate.
+   THE GENERAL FIX: extend the persistent-output mode (Record/Reuse) to cover EVERY allocating work
+   item — `ContiguizeOf`, `Concat`, and any allocating view — not just `Kernel`. In Record, alloc +
+   record the buffer keyed by node; in Reuse, reuse it (+ write-into variants: `auto_contiguize_into`,
+   concat-into). This is a general, careful executor enhancement — the real remaining hard part of 4b.
+   (Alternative per-site: bake contiguous producers / avoid concat in the rope decompose — more
+   surgical but less general.)
 
 ## The wiring gaps
 
