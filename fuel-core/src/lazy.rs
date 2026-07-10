@@ -6249,6 +6249,7 @@ impl LlamaModel {
         v_cache_const: &LazyTensor,
         cached_len_sym: fuel_ir::SymId,
         attended_len_sym: fuel_ir::SymId,
+        offset: Option<&LazyTensor>,
         rope_cos: &LazyTensor,
         rope_sin: &LazyTensor,
         mask: &LazyTensor,
@@ -6311,9 +6312,29 @@ impl LlamaModel {
             (0, seq),                 // axis-2 start is dynamic; width = seq
             (0, cfg.head_dim),
         ];
-        let dyn_off = fuel_ir::DynScalar::Sym(cached_len_sym);
-        let full_k = k_cache_const.write_slice_dyn(&k_r, write_ranges.clone(), 2, dyn_off)?;
-        let full_v = v_cache_const.write_slice_dyn(&v_h, write_ranges, 2, dyn_off)?;
+        // Two structurally-distinct KV-write ops, one per decode path:
+        //   - device-offset (`offset = Some`, CUDA/CPU): `Op::WriteSliceDoff`
+        //     reads `cached_len` from a device-resident I64 buffer at kernel
+        //     launch — no host round-trip, so the decode step is CUDA-graph-
+        //     capturable (CapturedRun). The start on axis 2 is device-only.
+        //   - SymEnv (`offset = None`, Vulkan): `Op::WriteSlice` with a
+        //     `DynScalar::Sym(cached_len_sym)` start resolved host-side each
+        //     token via the per-pass SymEnv (backend-generic; no WriteSliceDoff
+        //     binding needed).
+        // Both land the same slab at the same offset — bit-identical results.
+        let (full_k, full_v) = match offset {
+            Some(off) => {
+                let full_k = k_cache_const.write_slice_doff(&k_r, off, 2, write_ranges.clone())?;
+                let full_v = v_cache_const.write_slice_doff(&v_h, off, 2, write_ranges)?;
+                (full_k, full_v)
+            }
+            None => {
+                let dyn_off = fuel_ir::DynScalar::Sym(cached_len_sym);
+                let full_k = k_cache_const.write_slice_dyn(&k_r, write_ranges.clone(), 2, dyn_off)?;
+                let full_v = v_cache_const.write_slice_dyn(&v_h, write_ranges, 2, dyn_off)?;
+                (full_k, full_v)
+            }
+        };
 
         // Attend over the FULL fixed-capacity buffers (no slice to
         // `total_seq`) so the attention shape is `max_seq_len` every
@@ -6561,6 +6582,10 @@ impl LlamaModel {
                 &v_cache_node,
                 cached_len_sym,
                 attended_len_sym,
+                // D1 rebuild-per-step path: no capture, so keep the
+                // backend-generic SymEnv `Op::WriteSlice` offset. (Bit-
+                // identical KV write to the D2 device-offset path.)
+                None,
                 &rope_cos,
                 &rope_sin,
                 &mask,
@@ -6803,6 +6828,22 @@ impl LlamaModel {
         );
         let mask_node = mask.inner.id();
 
+        // Device-offset (CapturedRun-capturable) KV-write path vs SymEnv
+        // (Vulkan) path. `Op::WriteSliceDoff` has CPU + CUDA bindings only:
+        // on those targets the KV-write start (`cached_len`) is a stable
+        // device-resident rank-0 I64 Const read at kernel launch (no host
+        // round-trip → CUDA-graph-capturable). On Vulkan (no WriteSliceDoff
+        // binding) we keep the backend-generic SymEnv `Op::WriteSlice`
+        // path (offset via `cached_len_sym`). The two produce bit-identical
+        // KV writes; only the offset carrier differs.
+        let use_device_offset = ctx.device().is_cpu() || ctx.device().is_cuda();
+        let offset_tensor = if use_device_offset {
+            Some(h.const_placeholder_like(Shape::from_dims(&[]), DType::I64))
+        } else {
+            None
+        };
+        let offset_node = offset_tensor.as_ref().map(|t| t.inner.id());
+
         let cached_len_sym = fuel_ir::SymId(0);
         // The live attended-prefix length (`cached_len + seq`) — the CUDA
         // flash decode arm's `k_len`. A SECOND fixed symbol bound alongside
@@ -6844,6 +6885,9 @@ impl LlamaModel {
                 &v_cache_node,
                 cached_len_sym,
                 attended_len_sym,
+                // D2 persistent path: device-offset (WriteSliceDoff) on
+                // CUDA/CPU (capture-ready); `None` → SymEnv on Vulkan.
+                offset_tensor.as_ref(),
                 &rope_cos,
                 &rope_sin,
                 &mask,
@@ -6871,11 +6915,17 @@ impl LlamaModel {
         // realized cache (weights + KV + data) for the held session.
         let data = self.build_token_rope_mask_arcs(
             ctx.device(), cached_len, tokens, max_seq_len, cache_dtype,
+            use_device_offset,
         )?;
         ctx.insert(token_ids_node, Arc::clone(&data.token_ids));
         ctx.insert(rope_cos_node, Arc::clone(&data.rope_cos));
         ctx.insert(rope_sin_node, Arc::clone(&data.rope_sin));
         ctx.insert(mask_node, Arc::clone(&data.mask));
+        // Device-offset path: seed the first realize's const-cache with the
+        // KV-write offset Const (the held `Op::WriteSliceDoff` nodes read it).
+        if let (Some(off_node), Some(off_arc)) = (offset_node, data.offset.as_ref()) {
+            ctx.insert(off_node, Arc::clone(off_arc));
+        }
 
         let mut sym_env = fuel_ir::SymEnv::new();
         sym_env.bind(cached_len_sym, cached_len).map_err(crate::Error::from)?;
@@ -6891,6 +6941,9 @@ impl LlamaModel {
         ctx.remove(rope_cos_node);
         ctx.remove(rope_sin_node);
         ctx.remove(mask_node);
+        if let Some(off_node) = offset_node {
+            ctx.remove(off_node);
+        }
         for (k, v) in &kv_nodes {
             ctx.remove(*k);
             ctx.remove(*v);
@@ -6906,6 +6959,7 @@ impl LlamaModel {
             rope_sin_node,
             mask_node,
             kv_nodes,
+            offset_node,
             cached_len_sym,
             attended_len_sym,
             base_cache,
@@ -6949,8 +7003,12 @@ impl LlamaModel {
         // ctx is NOT mutated on the reuse path — the data lands in a
         // clone of the session's held base_cache, not in ctx.persistent.
         let s = session.as_ref().expect("session is Some");
+        // Rebuild the per-token offset only if the held session is on the
+        // device-offset path (`offset_node.is_some()`); Vulkan/SymEnv
+        // sessions skip it (offset rides `cached_len_sym`).
         let data = self.build_token_rope_mask_arcs(
             &device, cached_len, tokens, s.max_seq_len(), cache_dtype,
+            s.offset_node().is_some(),
         )?;
         // Bind BOTH per-token symbols: `cached_len` (the KV-write offset)
         // AND `attended_len = cached_len + seq` (the flash-arm `k_len`).
@@ -6980,6 +7038,7 @@ impl LlamaModel {
         tokens: &[u32],
         max_seq_len: usize,
         cache_dtype: DType,
+        with_device_offset: bool,
     ) -> crate::Result<crate::inference_context::DecodeTokenData> {
         let cfg = &self.config;
         let seq = tokens.len();
@@ -7011,11 +7070,21 @@ impl LlamaModel {
             )).bt()),
         };
 
+        // Device-offset path: upload the KV-write start (`cached_len` as
+        // a rank-0 I64) so the held `Op::WriteSliceDoff` nodes read the
+        // live position device-side. `None` on the SymEnv (Vulkan) path.
+        let offset = if with_device_offset {
+            Some(upload(device, fuel_ir::HostBuffer::I64(vec![cached_len as i64]))?)
+        } else {
+            None
+        };
+
         Ok(crate::inference_context::DecodeTokenData {
             token_ids,
             rope_cos,
             rope_sin,
             mask,
+            offset,
         })
     }
 
@@ -8838,6 +8907,9 @@ impl PhiModel {
             rope_sin_node,
             mask_node,
             kv_nodes,
+            // Phi decode stays on the SymEnv `Op::WriteSlice` path (no
+            // device-offset / CapturedRun yet — sequenced behind Llama).
+            None,
             cached_len_sym,
             // PhiModel decode does not offer the CUDA flash-decode arm yet
             // (only LlamaModel is wired), so this attended-length symbol is
@@ -8925,6 +8997,9 @@ impl PhiModel {
             rope_cos,
             rope_sin,
             mask,
+            // Phi decode stays on the SymEnv `Op::WriteSlice` path for now
+            // (device-offset / CapturedRun is sequenced behind Llama).
+            offset: None,
         })
     }
 
@@ -10670,6 +10745,7 @@ mod generate_tests {
                 &v_cache_node,
                 cached_len_sym,
                 attended_len_sym,
+                None, // dtype-audit test: SymEnv write path (offset carrier irrelevant here)
                 &rope_cos,
                 &rope_sin,
                 &mask,

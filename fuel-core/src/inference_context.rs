@@ -648,6 +648,13 @@ pub struct DecodeTokenData {
     pub rope_cos: Arc<RwLock<Storage>>,
     pub rope_sin: Arc<RwLock<Storage>>,
     pub mask: Arc<RwLock<Storage>>,
+    /// The device-resident KV-write offset (`cached_len` as a rank-0
+    /// `I64`), present ONLY on the device-offset decode path (CUDA/CPU
+    /// targets, where `Op::WriteSliceDoff` reads the start from this
+    /// buffer at kernel launch — capture-ready). `None` on the SymEnv
+    /// path (Vulkan), where the KV write is `Op::WriteSlice` with a
+    /// `DynScalar::Sym(cached_len)` offset resolved host-side per token.
+    pub offset: Option<Arc<RwLock<Storage>>>,
 }
 
 /// Plan-once persistent decode state for one `LlamaModel` + one
@@ -707,8 +714,17 @@ pub struct DecodeSession {
     mask_node: NodeId,
     /// Per-layer `(k_const, v_const)` stable KV placeholder NodeIds. The
     /// KV Arcs are re-bound once at build time and mutated in place by
-    /// `Op::WriteSlice` each token (never re-inserted per token).
+    /// `Op::WriteSlice`/`Op::WriteSliceDoff` each token (never re-inserted
+    /// per token).
     kv_nodes: Vec<(NodeId, NodeId)>,
+    /// The stable rank-0 `I64` KV-write offset Const, present ONLY on the
+    /// **device-offset** decode path (CUDA/CPU — `Op::WriteSliceDoff`
+    /// reads `cached_len` from this buffer device-side at launch, making
+    /// the decode step CUDA-graph-capturable). `None` on the SymEnv path
+    /// (Vulkan — the offset is host-resolved via `cached_len_sym`). When
+    /// `Some`, `realize_token` re-binds the per-token offset Arc into the
+    /// base-cache clone alongside token-ids/RoPE/mask.
+    offset_node: Option<NodeId>,
     /// The symbol the per-pass `SymEnv` binds to `cached_len` each token.
     cached_len_sym: SymId,
     /// The symbol the per-pass `SymEnv` binds to the live **attended
@@ -753,6 +769,7 @@ impl DecodeSession {
         rope_sin_node: NodeId,
         mask_node: NodeId,
         kv_nodes: Vec<(NodeId, NodeId)>,
+        offset_node: Option<NodeId>,
         cached_len_sym: SymId,
         attended_len_sym: SymId,
         base_cache: StorageCache,
@@ -771,6 +788,7 @@ impl DecodeSession {
             rope_sin_node,
             mask_node,
             kv_nodes,
+            offset_node,
             cached_len_sym,
             attended_len_sym,
             base_cache,
@@ -799,6 +817,14 @@ impl DecodeSession {
         cache.insert(self.rope_cos_node, data.rope_cos);
         cache.insert(self.rope_sin_node, data.rope_sin);
         cache.insert(self.mask_node, data.mask);
+        // Device-offset path (CUDA/CPU): re-bind the per-token KV-write
+        // offset (`cached_len` as I64) into the base-cache clone so the
+        // held `Op::WriteSliceDoff` nodes read the live position from a
+        // fixed device buffer. On the SymEnv path both are `None` (the
+        // offset rides `cached_len_sym` in `sym_env` instead).
+        if let (Some(offset_node), Some(offset)) = (self.offset_node, data.offset) {
+            cache.insert(offset_node, offset);
+        }
         crate::pipelined_bridge::realize_one_prebuilt_env::<f32>(
             &self.graph,
             self.effective_target,
@@ -848,6 +874,11 @@ impl DecodeSession {
     pub fn rope_sin_node(&self) -> NodeId { self.rope_sin_node }
     pub fn mask_node(&self) -> NodeId { self.mask_node }
     pub fn kv_nodes(&self) -> &[(NodeId, NodeId)] { &self.kv_nodes }
+    /// The device-resident KV-write offset Const NodeId, `Some` only on
+    /// the device-offset decode path (CUDA/CPU); `None` on Vulkan's
+    /// SymEnv path. Used by the CapturedRun replay wiring (Phase 3) and
+    /// the per-token offset re-bind.
+    pub fn offset_node(&self) -> Option<NodeId> { self.offset_node }
     pub fn cached_len_sym(&self) -> SymId { self.cached_len_sym }
     pub fn attended_len_sym(&self) -> SymId { self.attended_len_sym }
     pub fn max_seq_len(&self) -> usize { self.max_seq_len }
