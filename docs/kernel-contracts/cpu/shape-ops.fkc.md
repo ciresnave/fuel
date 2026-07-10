@@ -546,6 +546,99 @@ determinism: bitwise
 
 ---
 
+## write_slice_doff  (in-place scatter with a device-resident axis start)
+
+In-place scatter: write `source` into a slab of `dest` whose start on `axis` is read from a rank-0
+`I64` `offset` operand, with NO modulo wrap (unlike `write_slice_rotating`).
+
+`write_slice_doff_cpu` (`byte_kernels.rs`) is the CUDA-graph-capturable KV-cache append. The write
+start on `axis` is the first `i64` of the `offset` operand (read host-side here on CPU; the CUDA
+`_doff` kernel reads it device-side so a captured graph replays at the host-updated position). With
+`width = ranges[axis].end - ranges[axis].start`, it overrides `ranges[axis]` to `(offset,
+offset + width)` and delegates to `write_slice_cpu`. Dtype-agnostic. Validates `dtype_size > 0`,
+rank ≥ 1, `ranges.len() == rank`, `axis < rank`, `offset` ≥ 0, `offset_bytes.len ≥ 8`, and — because
+the CPU path reads the start host-side, unlike the non-clamping device kernel — `offset + width ≤
+dest_shape[axis]`, returning a typed error on overflow rather than corrupting memory. **In-place,
+aliases `dest`** (`caps.in_place: true`); partial overwrite. The `offset` is a **runtime dynamic
+scalar** (the append position is per-token) read from its operand, not a compile-time param. Pure
+byte copy — bit-exact, deterministic. Perf: bandwidth-bound in the slab volume (one slab copy).
+
+**Key modeling.** Like `write_slice`/`write_slice_rotating`, `dest` is the OUTPUT slot (the executor
+adopts its Arc in place). The `offset` operand is a **non-key runtime input**: the executor's
+`Op::WriteSliceDoff` arm reads it as a separate kernel input, but `build_lookup_dtypes` canonicalizes
+the binding key to `[T_source, T_out]` = `[T, T]` (offset is EXCLUDED, `pipelined.rs`). So this section
+models `source` as the SINGLE key input and `dest` as the `out` output — offset is documented in the
+`op_params` note, NOT an `accept.inputs` key slot — so the importer keys `[T, T]`.
+
+```fkc
+kernel: write_slice_doff
+op_kind: WriteSliceDoff
+blurb: "In-place scatter: write source into a dest slab whose axis start is a device-resident I64 (no wrap); dest is the in-place output slot; dynamic start from a non-key offset operand."
+backend: Cpu
+kernel_source: "portable-cpu"
+entry_point: "fuel_cpu_backend::byte_kernels::write_slice_doff_cpu"   # base; §3.4 fans write_slice_doff_cpu_{f32,f64,bf16,f16,u32,u8}; §12.6
+kernel_revision_hash: auto
+
+accept:
+  inputs:
+    - name: source
+      # Byte-dtype-agnostic (only dtype_size matters); REGISTRATION trimmed to the
+      # 6 production dtypes — the fan builds one `[T, T]` binding per dtype, ALL
+      # resolving `write_slice_doff_cpu_wrapper`. `dest` is the OUTPUT slot
+      # (in-place adoption) and `offset` is a NON-KEY runtime I64 operand (read
+      # by the kernel, excluded from the key by build_lookup_dtypes), so a faithful
+      # contract models `source` as the SINGLE key input, keying `[T_source, T_out]`
+      # = `[T, T]`.
+      dtypes: [F32, F64, BF16, F16, U32, U8]
+      layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }
+      rank: "1..=8"
+      shape_constraint: "dim[i] == ranges[i].end - ranges[i].start"
+  op_params:
+    variant: WriteSliceDoff       # OpParams::WriteSliceDoff — dest_shape + axis + ranges
+    fields:
+      dest_shape: { kind: "Vec<usize>", constraint: "rank >= 1" }
+      axis:       { kind: usize, constraint: "< rank" }
+      ranges:     { kind: "Vec<(usize,usize)>", constraint: "len == rank; off-axis end <= dest_shape[i]; axis width <= dest_shape[axis]" }
+      dtype_size: { kind: usize, constraint: "> 0", note: "read from the dest output Storage's dtype tag at dispatch, not a serialized OpParams field" }
+      offset:     { kind: DynScalar, note: "the dynamic write start on `axis` — read from a SEPARATE runtime rank-0 I64 `offset` operand (the executor passes it as a second kernel input; it is NOT part of the binding key, NOT an OpParams field). Device-resident under CUDA; per-token." }
+
+return:
+  outputs:
+    - name: out
+      dtype_rule: passthrough(source)        # out IS dest's buffer; dest's dtype == source's (T in, T out)
+      shape_rule: "from_params(write_slice_doff: dest_shape)"   # out adopts dest's shape (== dest_shape)
+      layout_guarantee: contiguous           # dest's contiguous layout preserved; only slab bytes change
+      aliasing: in_place(dest)               # output IS dest's buffer (executor adopts dest's Arc); partial (slab) overwrite
+
+caps:
+  awkward_layout_strategy: requires_contiguous
+  fast_paths:
+    - { when: "dim[0] == 0", class: free, note: "empty slab: no-op early return" }
+  in_place: true
+  alignment_bytes: 64
+  access_granularity_bits: 8
+
+cost:
+  provenance: judge_measured          # hint: bandwidth-bound in slab volume; single slab copy
+  class: strided_elementwise
+  flops: "0"
+  bytes_moved: "2 * source.n * dtype_size"   # source.n = slab element count
+  overhead_ns: ~
+  memory: { device_bytes: 0, host_bytes: 0, disk_bytes: 0 }
+
+precision:
+  bit_stable_on_same_hardware: true
+  max_ulp: ~
+  max_relative: ~
+  max_absolute: ~
+  audited: true
+  notes: "Pure byte copy into a slab; bit-exact, hardware-independent. Bytes outside the written rows are preserved."
+
+determinism: bitwise
+```
+
+---
+
 ## triangular  (Triu / Tril mask)
 
 Upper/lower triangular mask: keep `x[..., i, j]` on one side of a `diagonal` offset, zero elsewhere.

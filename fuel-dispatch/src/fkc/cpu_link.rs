@@ -646,6 +646,15 @@ pub static CPU_SHAPE_OPS_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     ep!("write_slice_rotating_cpu", "f16",  write_slice_rotating_cpu_wrapper),
     ep!("write_slice_rotating_cpu", "u32",  write_slice_rotating_cpu_wrapper),
     ep!("write_slice_rotating_cpu", "u8",   write_slice_rotating_cpu_wrapper),
+    // WriteSliceDoff — in-place scatter with a device-resident I64 start on one
+    // axis (no wrap). Same [T, T] key (dest = output slot; the runtime I64
+    // `offset` operand is NOT a key slot). One dtype-agnostic wrapper per dtype.
+    ep!("write_slice_doff_cpu", "f32",  write_slice_doff_cpu_wrapper),
+    ep!("write_slice_doff_cpu", "f64",  write_slice_doff_cpu_wrapper),
+    ep!("write_slice_doff_cpu", "bf16", write_slice_doff_cpu_wrapper),
+    ep!("write_slice_doff_cpu", "f16",  write_slice_doff_cpu_wrapper),
+    ep!("write_slice_doff_cpu", "u32",  write_slice_doff_cpu_wrapper),
+    ep!("write_slice_doff_cpu", "u8",   write_slice_doff_cpu_wrapper),
 ];
 
 /// The CPU **indexing / gather / scatter** family's `symbol → production

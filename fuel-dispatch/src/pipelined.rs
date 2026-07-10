@@ -216,6 +216,17 @@ enum WorkItemKind {
         source: NodeId,
         position: NodeId,
     },
+    /// `Op::WriteSliceDoff` — like `WriteSlice` but the start on `axis`
+    /// is read from a device-resident rank-0 `I64` scalar (`offset`)
+    /// at kernel launch, not host-baked. Carries `dest`/`source`/
+    /// `offset` NodeIds; the CUDA wrapper threads `offset`'s device
+    /// pointer straight to the kernel (no D2H) so a captured graph
+    /// replays at the host-updated position. No ring wrap.
+    WriteSliceDoff {
+        dest: NodeId,
+        source: NodeId,
+        offset: NodeId,
+    },
     /// `Op::Copy { target }` — produce a fresh Storage on
     /// `target_location`, copying bytes from `inputs[0]`'s residency.
     ///
@@ -1822,7 +1833,7 @@ fn compile_one(
     // structural ops (WriteSlice / ZeroFill / Release / Move) which
     // have their own dedicated WorkItemKind arms in this function.
     if !matches!(node.op,
-        Op::WriteSlice { .. } | Op::WriteSliceRotating { .. } | Op::ZeroFill | Op::Release | Op::Move { .. },
+        Op::WriteSlice { .. } | Op::WriteSliceRotating { .. } | Op::WriteSliceDoff { .. } | Op::ZeroFill | Op::Release | Op::Move { .. },
     ) {
         if let Some(target_idx) = node.op.destructive_input() {
             if inputs.len() <= target_idx {
@@ -1949,6 +1960,49 @@ fn compile_one(
             target_backend,
             kind: WorkItemKind::WriteSliceRotating {
                 dest: inputs[0], source: inputs[1], position: inputs[2],
+            },
+            compiled: Some(compiled),
+            output_layout,
+            destructive_input,
+            output_bundle: None,
+        });
+    }
+
+    if matches!(node.op, Op::WriteSliceDoff { .. }) {
+        // WriteSliceDoff: same shape as WriteSlice but with a third
+        // input (device-resident I64 offset). Dispatch through the
+        // binding table at `OpKind::WriteSliceDoff`; the executor's arm
+        // threads the offset's device pointer straight to the kernel
+        // (no D2H, capture-safe).
+        if inputs.len() != 3 {
+            return Err(Error::Msg(format!(
+                "Op::WriteSliceDoff expects 3 inputs (destination, source, offset), got {}",
+                inputs.len(),
+            ))
+            .bt());
+        }
+        let target_backend = graph.target_backend(id).ok_or_else(|| {
+            Error::Msg(format!(
+                "PipelinedExecutor: WriteSliceDoff node {:?} has no target_backend set",
+                id
+            ))
+            .bt()
+        })?;
+        let op_params = op_to_op_params(graph, node, id, layout_cache, sym_env)?;
+        let dtypes = build_lookup_dtypes(graph, node);
+        let compiled = resolve_compiled(
+            OpKind::WriteSliceDoff, &dtypes, target_backend, op_params, bindings,
+        )?;
+        let output_layout = graph.layout(inputs[0]);
+        layout_cache.insert(id, output_layout.clone());
+        return Ok(WorkItem {
+            node_id: id,
+            inputs: inputs.clone(),
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::WriteSliceDoff {
+                dest: inputs[0], source: inputs[1], offset: inputs[2],
             },
             compiled: Some(compiled),
             output_layout,
@@ -2404,6 +2458,17 @@ pub(crate) fn build_lookup_dtypes(graph: &Graph, node: &Node) -> Vec<DType> {
             .unwrap_or(node.dtype);
         return vec![src_dt, node.dtype];
     }
+    if matches!(node.op, Op::WriteSliceDoff { .. }) {
+        // Same canonicalization as WriteSlice: dest = output slot;
+        // offset (inputs[2], I64) is a non-key runtime operand read by
+        // the kernel via its device pointer, not the binding-table key.
+        let src_dt = node
+            .inputs
+            .get(1)
+            .map(|&id| graph.node(id).dtype)
+            .unwrap_or(node.dtype);
+        return vec![src_dt, node.dtype];
+    }
     let mut dts: Vec<DType> = node
         .inputs
         .iter()
@@ -2584,6 +2649,7 @@ pub(crate) fn op_to_op_kind(op: &Op) -> Option<OpKind> {
         }
         Op::WriteSlice { .. } => Some(OpKind::WriteSlice),
         Op::WriteSliceRotating { .. } => Some(OpKind::WriteSliceRotating),
+        Op::WriteSliceDoff { .. } => Some(OpKind::WriteSliceDoff),
         // Phase 2 of bridge-retirement (post-9c): Op::Copy dispatches
         // through the binding table at OpKind::Copy. The BackendId
         // axis encodes the source backend (the kernel runs there —
@@ -4162,6 +4228,41 @@ fn op_to_op_params(
                 ranges: ranges.clone(),
             }
         }
+        Op::WriteSliceDoff { axis, ranges } => {
+            // inputs[0] = destination, inputs[1] = source slab,
+            // inputs[2] = device-resident I64 offset scalar. The
+            // builder validated rank / dtype / static-width parity; the
+            // exec-time check below mirrors WriteSliceRotating minus the
+            // modulus (no wrap). Bounds on the *dynamic* offset are the
+            // caller's contract (device-only, un-checkable here).
+            if node.inputs.len() != 3 {
+                return Err(Error::Msg(format!(
+                    "Op::WriteSliceDoff expects 3 inputs (destination, source, offset), got {}",
+                    node.inputs.len(),
+                ))
+                .bt());
+            }
+            let dest_dims = node.shape.dims().to_vec();
+            if ranges.len() != dest_dims.len() {
+                return Err(Error::Msg(format!(
+                    "Op::WriteSliceDoff: ranges.len() ({}) must equal destination rank ({})",
+                    ranges.len(), dest_dims.len(),
+                ))
+                .bt());
+            }
+            if *axis >= dest_dims.len() {
+                return Err(Error::Msg(format!(
+                    "Op::WriteSliceDoff: axis {axis} out of bounds for rank {}",
+                    dest_dims.len(),
+                ))
+                .bt());
+            }
+            OpParams::WriteSliceDoff {
+                dest_shape: dest_dims,
+                axis: *axis,
+                ranges: ranges.clone(),
+            }
+        }
         _ => OpParams::None,
     })
 }
@@ -4717,6 +4818,106 @@ fn execute_work_item(
             let mut output_arcs = vec![dest_arc.clone()];
             let kernel_layouts = vec![
                 source_layout_kernel, position_layout, dest_layout.clone(),
+            ];
+            // A4b-1: defer the wait — return the handle to the realize loop.
+            let handle =
+                execute_compiled_with_wait_hint(
+                    compiled, &input_arcs, &mut output_arcs, &kernel_layouts, will_be_waited,
+                )?;
+            cache.insert(item.node_id, dest_arc);
+            layout_cache.insert(item.node_id, item.output_layout.clone());
+            Ok(handle)
+        }
+        WorkItemKind::WriteSliceDoff { dest, source, offset } => {
+            // Same shape as WriteSliceRotating: kernel sees
+            // `[source, offset]` as inputs; `dest` is the pre-allocated
+            // output buffer (in-place adoption). The offset (rank-0
+            // I64) is passed through as a kernel input — the CUDA
+            // wrapper threads its device pointer straight to the kernel
+            // (no D2H), which is what makes a captured graph replay at
+            // the host-updated position.
+            let compiled = item.compiled.as_ref().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSliceDoff work item {:?} has no compiled node",
+                    item.node_id,
+                ))
+                .bt()
+            })?;
+            let dest_arc = cache.get(dest).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSliceDoff destination {:?} of {:?} not realized",
+                    dest, item.node_id,
+                ))
+                .bt()
+            })?;
+            let source_arc = cache.get(source).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSliceDoff source {:?} of {:?} not realized",
+                    source, item.node_id,
+                ))
+                .bt()
+            })?;
+            let offset_arc = cache.get(offset).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSliceDoff offset {:?} of {:?} not realized",
+                    offset, item.node_id,
+                ))
+                .bt()
+            })?;
+            let dest_layout = layout_cache.get(dest).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSliceDoff destination {:?} of {:?} has no cached layout",
+                    dest, item.node_id,
+                ))
+                .bt()
+            })?;
+            let source_layout = layout_cache.get(source).cloned().ok_or_else(|| {
+                Error::Msg(format!(
+                    "PipelinedExecutor: WriteSliceDoff source {:?} of {:?} has no cached layout",
+                    source, item.node_id,
+                ))
+                .bt()
+            })?;
+            // v1: destination contiguous + zero offset (same as WriteSlice).
+            if !dest_layout.is_contiguous() || dest_layout.start_offset() != 0 {
+                return Err(Error::Msg(format!(
+                    "Op::WriteSliceDoff (v1): destination {:?} must be \
+                     contiguous + zero-offset; got Layout {:?}",
+                    dest, dest_layout,
+                ))
+                .bt());
+            }
+            let source_arc_contig = {
+                let s_dtype = source_arc
+                    .read()
+                    .map_err(|_| poisoned("WriteSliceDoff source storage"))?
+                    .dtype;
+                let s_len_bytes = source_arc
+                    .read()
+                    .map_err(|_| poisoned("WriteSliceDoff source storage"))?
+                    .inner
+                    .len_bytes();
+                let layout_bytes =
+                    source_layout.shape().elem_count() * s_dtype.size_in_bytes();
+                let bytes_match_shape = s_len_bytes == layout_bytes;
+                let already_contig = source_layout.is_contiguous()
+                    && source_layout.start_offset() == 0
+                    && bytes_match_shape;
+                if already_contig {
+                    source_arc
+                } else {
+                    auto_contiguize(&source_arc, &source_layout)?
+                }
+            };
+            let source_layout_kernel =
+                fuel_ir::Layout::contiguous(source_layout.shape().clone());
+            let offset_layout = fuel_ir::Layout::contiguous(
+                fuel_ir::Shape::from_dims(&[]),
+            );
+            let input_arcs = vec![source_arc_contig, offset_arc];
+            let mut output_arcs = vec![dest_arc.clone()];
+            let kernel_layouts = vec![
+                source_layout_kernel, offset_layout, dest_layout.clone(),
             ];
             // A4b-1: defer the wait — return the handle to the realize loop.
             let handle =

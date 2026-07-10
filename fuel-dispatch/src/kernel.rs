@@ -623,6 +623,25 @@ pub enum OpParams {
         ranges: Vec<(usize, usize)>,
     },
 
+    /// In-place scatter write whose start on `axis` is read from a
+    /// **device-resident** rank-0 `I64` input (`inputs[2]`) at kernel
+    /// launch — the CUDA-graph-capturable KV-cache append. Like
+    /// `WriteSlice` except `ranges[axis].0` is a placeholder overridden
+    /// device-side by the offset; no modulo wrap. The CUDA wrapper
+    /// passes the offset buffer's device pointer straight through as
+    /// `dyn_start_dev` (NO D2H — that would break capture); the CPU
+    /// wrapper reads it host-side and delegates to `write_slice_cpu`.
+    /// Bounds (`offset + width <= dest_shape[axis]`) are the caller's
+    /// contract; the kernel does not clamp.
+    ///
+    /// CapturedRun (2026-07): backs `Op::WriteSliceDoff` for
+    /// `DecodeSession` decode-step capture/replay.
+    WriteSliceDoff {
+        dest_shape: Vec<usize>,
+        axis: usize,
+        ranges: Vec<(usize, usize)>,
+    },
+
     /// FusedSoftmaxCrossEntropy execution parameters. Inputs:
     /// `logits [n_rows, vocab]` (F32, flattened from the original
     /// `[..., V]` shape) and `targets [n_rows]` (I64). The kernel

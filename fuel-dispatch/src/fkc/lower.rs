@@ -249,6 +249,7 @@ pub(crate) fn lower_op_kind(s: &str, section: &str) -> Result<OpKind, FkcError> 
         "QMatMul" => Some(OpKind::QMatMul),
         "WriteSlice" => Some(OpKind::WriteSlice),
         "WriteSliceRotating" => Some(OpKind::WriteSliceRotating),
+        "WriteSliceDoff" => Some(OpKind::WriteSliceDoff),
         "Copy" => Some(OpKind::Copy),
         "ReluInplace" => Some(OpKind::ReluInplace),
         "SiluInplace" => Some(OpKind::SiluInplace),

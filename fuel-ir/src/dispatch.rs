@@ -404,6 +404,15 @@ pub enum OpKind {
     /// [`Op::WriteSliceRotating`](fuel_graph::Op::WriteSliceRotating)
     /// for the IR contract.
     WriteSliceRotating,
+    /// In-place scatter write whose start on ONE axis is read from a
+    /// device-resident `i64` scalar input (rank-0) at kernel launch,
+    /// not host-baked into the range — the CUDA-graph-capturable
+    /// KV-cache append. Like [`WriteSlice`](Self::WriteSlice) but the
+    /// `ranges[axis].0` placeholder is overridden by `*offset` device-
+    /// side; no modulo wrap. Backs `DecodeSession` / CapturedRun. See
+    /// [`Op::WriteSliceDoff`](fuel_graph::Op::WriteSliceDoff) for the
+    /// IR contract.
+    WriteSliceDoff,
     /// Cross-device copy: produce a fresh tensor on the target
     /// device, copying bytes from the input's residency. Backs
     /// [`Op::Copy`](fuel_graph::Op::Copy) for the bridge-retirement
@@ -629,6 +638,7 @@ impl OpKind {
             OpKind::QMatMul           => "qmatmul",
             OpKind::WriteSlice        => "write_slice",
             OpKind::WriteSliceRotating => "write_slice_rotating",
+            OpKind::WriteSliceDoff    => "write_slice_doff",
             OpKind::Copy              => "copy",
             OpKind::ReluInplace       => "relu_inplace",
             OpKind::SiluInplace       => "silu_inplace",

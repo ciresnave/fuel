@@ -966,6 +966,11 @@ pub fn default_cost_for_op_kind(op: OpKind) -> CostFn {
         // is at most two contiguous memcpys.
         WriteSliceRotating => cost_shape_op_cpu,
 
+        // Op::WriteSliceDoff — WriteSlice with a device-resident start
+        // on one axis (no wrap). Same bandwidth-bound slab walk cost as
+        // WriteSlice; the offset read is a single device deref.
+        WriteSliceDoff => cost_shape_op_cpu,
+
         // OpKind is `#[non_exhaustive]` — new variants get
         // [`unknown_cost`] until an explicit arm is added here.
         // The step-8 lint catches this immediately by asserting
