@@ -72,19 +72,34 @@ pub struct KernelCaps {
     /// `start_offset` still go through auto-Contiguize today (slicing
     /// the device buffer to honor offset is a separate concern).
     pub strided_input: bool,
+    /// This kernel BAKES a specific broadcast pattern into its body — a
+    /// `broadcast_stride0: required` operand it reads as stride-0 (hoisting
+    /// `in[0]` / dropping the bcast-axis stride terms). It is therefore NOT
+    /// a generic dense-safe kernel: a dense operand routed here would be
+    /// read WRONG (element 0 repeatedly). The realize pick
+    /// ([`Self::lookup_with_caps`]) SKIPS such a sibling so a dense operand
+    /// is never routed into a broadcast-baked kernel — the exclusion is
+    /// order-independent (it does not rest on the generic contract being
+    /// registered first). Selecting it CORRECTLY, for an operand genuinely
+    /// stride-0 on exactly the required axes, is the layout-aware follow-on
+    /// (path 1b) that also teaches the contiguize gate; today the safe
+    /// behavior is to exclude it, so a `required`-broadcast contract is a
+    /// present-but-never-mis-selected sibling. Defaults `false` — every
+    /// existing binding is unaffected (the pick stays first-registered).
+    pub requires_broadcast: bool,
 }
 
 impl KernelCaps {
     /// All flags off. Equivalent to `Default::default()`; provided as a
     /// const for use in const-context registration tables.
     pub const fn empty() -> Self {
-        Self { strided_input: false }
+        Self { strided_input: false, requires_broadcast: false }
     }
 
     /// Just `strided_input` on. Ergonomic for binary/unary registrations
     /// that opt in to the wrapper-side broadcast path.
     pub const fn strided_input() -> Self {
-        Self { strided_input: true }
+        Self { strided_input: true, requires_broadcast: false }
     }
 }
 
@@ -1389,10 +1404,17 @@ impl KernelBindingTable {
         self.lookup_with_caps(op, dtypes, backend).map(|(k, _)| k)
     }
 
-    /// Capability-aware lookup. Returns the **first alternative**'s
-    /// wrapper paired with its registered [`KernelCaps`]. Surfaces
-    /// [`Error::NoBackendForOp`] on missing binding
-    /// (production-correct: no panic).
+    /// Capability-aware lookup. Returns the first **dense-safe** alternative
+    /// — the first sibling whose caps do NOT set
+    /// [`KernelCaps::requires_broadcast`] — paired with its registered
+    /// [`KernelCaps`]. A baked-broadcast sibling (`broadcast_stride0:
+    /// required`) is SKIPPED, so a dense operand is never routed into a
+    /// kernel that reads `in[0]`; the exclusion is order-independent (path
+    /// 1a). For every existing binding — none set `requires_broadcast` —
+    /// this is byte-identical to returning the first-registered alternative.
+    /// Surfaces [`Error::NoBackendForOp`] on a missing binding OR when every
+    /// sibling is broadcast-baked (production-correct: a surfaced miss, never
+    /// a wrong read, no panic).
     pub fn lookup_with_caps(
         &self,
         op: impl Into<BindingKey>,
@@ -1402,7 +1424,7 @@ impl KernelBindingTable {
         let key = (op.into(), SmallVec::from_slice(dtypes), backend);
         self.bindings
             .get(&key)
-            .and_then(|alts| alts.first())
+            .and_then(|alts| alts.iter().find(|e| !e.caps.requires_broadcast))
             .map(|e| (e.kernel, e.caps))
             .ok_or_else(|| {
                 let available_backends: Vec<BackendId> = self
@@ -1655,6 +1677,77 @@ mod tests {
         table
             .finalize()
             .expect("distinct sibling kernels must finalize OK");
+    }
+
+    /// Path 1a: a `broadcast_stride0: required` (baked-broadcast) kernel
+    /// reads its operand as stride-0; a dense operand routed there
+    /// miscomputes (reads `in[0]` repeatedly). The realize pick MUST skip
+    /// such a sibling when a generic one exists, and — the load-bearing
+    /// part — that exclusion must NOT rest on the generic being registered
+    /// first. Register the broadcast-baked one FIRST (adversarial: `first()`
+    /// would return it) and assert the pick returns the GENERIC sibling.
+    #[test]
+    fn lookup_with_caps_skips_broadcast_baked_sibling_regardless_of_order() {
+        use fuel_ir::probe::BackendId;
+        let mut table = KernelBindingTable::new();
+        let dts = [DType::F32, DType::F32, DType::F32];
+        // Baked-broadcast sibling registered FIRST.
+        table.register_with_caps(
+            OpKind::AddElementwise,
+            &dts,
+            BackendId::Cpu,
+            ok_kernel,
+            KernelCaps { strided_input: true, requires_broadcast: true },
+        );
+        // Generic dense-safe sibling registered SECOND.
+        table.register_with_caps(
+            OpKind::AddElementwise,
+            &dts,
+            BackendId::Cpu,
+            ok_kernel_alt,
+            KernelCaps { strided_input: true, requires_broadcast: false },
+        );
+
+        let (picked, caps) = table
+            .lookup_with_caps(OpKind::AddElementwise, &dts, BackendId::Cpu)
+            .expect("a dense-safe sibling exists");
+        assert!(
+            !caps.requires_broadcast,
+            "the realize pick must never be a broadcast-baked kernel",
+        );
+        assert_eq!(
+            picked as *const () as usize,
+            ok_kernel_alt as *const () as usize,
+            "lookup_with_caps must skip the broadcast-baked sibling and return the generic \
+             one regardless of registration order",
+        );
+        // Both siblings coexist — the exclusion is at the pick, not at
+        // registration (the baked-broadcast contract is still PRESENT).
+        let alts = table.lookup_alternatives(OpKind::AddElementwise, &dts, BackendId::Cpu);
+        assert_eq!(alts.len(), 2, "both siblings registered; neither is dropped");
+    }
+
+    /// The corner that keeps the exclusion honest: if EVERY sibling is
+    /// broadcast-baked (no dense-safe fallback), the pick is a surfaced
+    /// miss (`NoBackendForOp`), NOT a silent wrong dense read.
+    #[test]
+    fn lookup_with_caps_misses_when_only_broadcast_baked_siblings_exist() {
+        use fuel_ir::probe::BackendId;
+        let mut table = KernelBindingTable::new();
+        let dts = [DType::F32, DType::F32, DType::F32];
+        table.register_with_caps(
+            OpKind::AddElementwise,
+            &dts,
+            BackendId::Cpu,
+            ok_kernel,
+            KernelCaps { strided_input: true, requires_broadcast: true },
+        );
+        assert!(
+            table
+                .lookup_with_caps(OpKind::AddElementwise, &dts, BackendId::Cpu)
+                .is_err(),
+            "no dense-safe sibling ⇒ honest miss, never a wrong read",
+        );
     }
 
     /// Phase 7.6 step 9a: `fill_unset_cpu_precision` upgrades every

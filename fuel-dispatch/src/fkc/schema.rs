@@ -297,6 +297,18 @@ pub struct LayoutSpec {
     /// `accepted` | `rejected`.
     #[serde(default)]
     pub broadcast_stride0: Option<String>,
+    /// The iteration-axis indices on which the operand MUST have stride 0 —
+    /// the §6-additive broadcast-axis mask. Present only with
+    /// `broadcast_stride0: required` (a baked-broadcast cell); absent ⇒
+    /// today's behavior. `validate` (Rule 4) enforces present-iff-required
+    /// and non-empty. The layout check accepts iff the operand's stride-0
+    /// axis set equals this exactly — that exact-match + the routing land in
+    /// path 1b; path 1a parses + validates it and projects only the
+    /// `requires_broadcast` boolean (from `broadcast_stride0: required`) onto
+    /// [`crate::kernel::KernelCaps`], excluding the baked-broadcast kernel
+    /// from dense-operand selection.
+    #[serde(default)]
+    pub broadcast_axes: Option<Vec<i64>>,
     /// `accepted` | `rejected`.
     #[serde(default)]
     pub start_offset: Option<String>,

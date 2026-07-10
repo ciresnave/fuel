@@ -415,6 +415,43 @@ fn layout_coherence(
                 .to_string(),
         });
     }
+
+    // broadcast_axes ⟺ broadcast_stride0: required (§6-additive mask). The
+    // mask names the iteration axes the operand must be stride-0 on; it is
+    // meaningful ONLY for a REQUIRED (baked) broadcast, and REQUIRED needs it
+    // — the shape-blind (op, dtypes, backend) binder can't tell a correctly-
+    // broadcast operand from a wrongly-shaped one without the axis set. So:
+    // present iff required, and non-empty when required.
+    match (&layout.broadcast_axes, matches!(r.broadcast_stride0, Tri::Required)) {
+        (Some(axes), true) if axes.is_empty() => {
+            return Err(FkcError::LayoutIncoherent {
+                section: section.to_string(),
+                operand: operand.to_string(),
+                reason: "`broadcast_stride0: required` with an EMPTY `broadcast_axes` — name the \
+                         iteration axes the operand must be stride-0 on"
+                    .to_string(),
+            });
+        }
+        (Some(_), false) => {
+            return Err(FkcError::LayoutIncoherent {
+                section: section.to_string(),
+                operand: operand.to_string(),
+                reason: "`broadcast_axes` set without `broadcast_stride0: required` — the mask is \
+                         meaningful only for a required (baked) broadcast"
+                    .to_string(),
+            });
+        }
+        (None, true) => {
+            return Err(FkcError::LayoutIncoherent {
+                section: section.to_string(),
+                operand: operand.to_string(),
+                reason: "`broadcast_stride0: required` needs `broadcast_axes` — the shape-blind \
+                         binder can't verify the broadcast without the axis mask"
+                    .to_string(),
+            });
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -1225,6 +1262,53 @@ determinism: same_hardware_bitwise
             "layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: accepted }",
         );
         let err = validate_str(&src).expect_err("reverse w/o strided");
+        assert!(matches!(err, FkcError::LayoutIncoherent { .. }), "got {err:?}");
+    }
+
+    // ===== Rule 4 — broadcast_axes mask (§6-additive, path 1a) =====
+    #[test]
+    fn required_broadcast_with_axes_is_valid() {
+        // Baracuda's §6-additive spelling for a baked bias-add cell.
+        let src = valid_bundle()
+            .replace(
+                "layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }",
+                "layout: { contiguous: accepted, strided: accepted, broadcast_stride0: required, broadcast_axes: [0], start_offset: rejected, reverse_strides: rejected }",
+            )
+            .replace(
+                "awkward_layout_strategy: requires_contiguous",
+                "awkward_layout_strategy: handles_strided",
+            );
+        validate_str(&src)
+            .expect("required broadcast with a non-empty broadcast_axes mask validates");
+    }
+
+    #[test]
+    fn required_broadcast_without_axes_is_incoherent() {
+        let src = valid_bundle().replace(
+            "layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }",
+            "layout: { contiguous: accepted, strided: accepted, broadcast_stride0: required, start_offset: rejected, reverse_strides: rejected }",
+        );
+        let err = validate_str(&src).expect_err("required broadcast needs a broadcast_axes mask");
+        assert!(matches!(err, FkcError::LayoutIncoherent { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn broadcast_axes_without_required_is_incoherent() {
+        let src = valid_bundle().replace(
+            "layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }",
+            "layout: { contiguous: accepted, strided: accepted, broadcast_stride0: accepted, broadcast_axes: [0], start_offset: rejected, reverse_strides: rejected }",
+        );
+        let err = validate_str(&src).expect_err("broadcast_axes is meaningful only with required");
+        assert!(matches!(err, FkcError::LayoutIncoherent { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn required_broadcast_with_empty_axes_is_incoherent() {
+        let src = valid_bundle().replace(
+            "layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }",
+            "layout: { contiguous: accepted, strided: accepted, broadcast_stride0: required, broadcast_axes: [], start_offset: rejected, reverse_strides: rejected }",
+        );
+        let err = validate_str(&src).expect_err("empty broadcast_axes on a required broadcast");
         assert!(matches!(err, FkcError::LayoutIncoherent { .. }), "got {err:?}");
     }
 
