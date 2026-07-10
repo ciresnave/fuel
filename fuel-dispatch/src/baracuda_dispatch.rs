@@ -2227,6 +2227,58 @@ macro_rules! cuda_norm_last_dim_baracuda_wrapper {
     };
 }
 
+/// Write-into-output RMS-norm wrapper (CapturedRun). Same as
+/// `cuda_norm_last_dim_baracuda_wrapper!` but calls the `_into` rms driver
+/// (RMS scratch from the device's fixed workspace), writing the normalized
+/// result into outputs[0] — the capture-safe path. LayerNorm keeps the
+/// allocating wrapper (two scratch buffers; not in the capturable decode set).
+macro_rules! cuda_rms_norm_into_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_into_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 1 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}",
+                    ),
+                    inputs.len(), outputs.len(),
+                ))
+                .bt());
+            }
+            let eps = match params {
+                OpParams::NormLastDim { eps, .. } => *eps,
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::NormLastDim, got {:?}",
+                        ),
+                        other,
+                    ))
+                    .bt());
+                }
+            };
+            let layout = layouts.first().ok_or_else(|| {
+                Error::Msg(concat!(
+                    stringify!($wrapper_name),
+                    ": NormLastDim requires an input layout (call with layouts[0])",
+                ).to_string()).bt()
+            })?;
+            let in_guard = read_storage(&inputs[0])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&in_guard)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            // Write-into-output (CapturedRun): `_into` writes into outputs[0].
+            $baracuda_into_fn(src_cuda, layout, eps, out_cuda)
+        }
+    };
+}
+
 // ===========================================================================
 // Norm-last-dim wrappers (RmsNorm + LayerNorm)
 // ===========================================================================
@@ -2235,10 +2287,10 @@ pub mod norm {
     use super::*;
     use fuel_cuda_backend::baracuda::norm as bk;
 
-    cuda_norm_last_dim_baracuda_wrapper!(rms_f32, bk::rms_norm_last_dim_f32);
-    cuda_norm_last_dim_baracuda_wrapper!(rms_f16, bk::rms_norm_last_dim_f16);
-    cuda_norm_last_dim_baracuda_wrapper!(rms_bf16, bk::rms_norm_last_dim_bf16);
-    cuda_norm_last_dim_baracuda_wrapper!(rms_f64, bk::rms_norm_last_dim_f64);
+    cuda_rms_norm_into_baracuda_wrapper!(rms_f32, bk::rms_norm_last_dim_f32_into);
+    cuda_rms_norm_into_baracuda_wrapper!(rms_f16, bk::rms_norm_last_dim_f16_into);
+    cuda_rms_norm_into_baracuda_wrapper!(rms_bf16, bk::rms_norm_last_dim_bf16_into);
+    cuda_rms_norm_into_baracuda_wrapper!(rms_f64, bk::rms_norm_last_dim_f64_into);
 
     cuda_norm_last_dim_baracuda_wrapper!(layer_f32, bk::layer_norm_last_dim_f32);
     cuda_norm_last_dim_baracuda_wrapper!(layer_f16, bk::layer_norm_last_dim_f16);
