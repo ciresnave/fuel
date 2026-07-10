@@ -3055,6 +3055,31 @@ impl LazyTensor {
         Ok(Self { inner })
     }
 
+    /// Append a [`fuel_graph::Op::WriteSliceDoff`] node — write `source`
+    /// into a slab of `self` whose start on `axis` is read from `offset`
+    /// (a rank-0 `I64` tensor) **device-side** at kernel launch. No
+    /// modulo wrap: `offset` is the raw start on `axis`.
+    /// `ranges[axis].0` is ignored; `ranges[axis].1 - ranges[axis].0`
+    /// is the write width on `axis` and must equal `source`'s `axis`
+    /// dim. Bounds (`offset + width <= dest_dims[axis]`) are the
+    /// caller's contract (device-only at build). Destructive on `self`;
+    /// same scheduling as `write_slice`. Backs the CUDA-graph-
+    /// capturable KV-cache append (CapturedRun / `DecodeSession`).
+    /// Returns `Result`: rank / dtype / axis-bound / static-width /
+    /// offset-dtype mismatches surface as typed errors at build time.
+    pub fn write_slice_doff(
+        &self,
+        source: &Self,
+        offset: &Self,
+        axis: usize,
+        ranges: Vec<(usize, usize)>,
+    ) -> crate::Result<Self> {
+        let inner = self.inner.write_slice_doff(
+            &source.inner, &offset.inner, axis, ranges,
+        ).map_err(crate::Error::from)?;
+        Ok(Self { inner })
+    }
+
     /// Append a [`fuel_graph::Op::Conv2D`] node. See `fuel_graph`'s
     /// `Tensor::conv2d` for the full shape contract: `self` must be
     /// `[N, Cin, H, W]`; `weight` must be `[Cout, Cin/groups, Kh, Kw]`;

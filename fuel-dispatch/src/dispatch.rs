@@ -1801,6 +1801,49 @@ pub(crate) fn write_slice_rotating_cpu_wrapper(
     )
 }
 
+/// Dispatch wrapper for `(WriteSliceDoff, *, Cpu)`. Like
+/// `write_slice_rotating_cpu_wrapper` but the second input is a
+/// rank-0 `I64` offset (the device-resident start on `axis`; read
+/// host-side here on CPU) and there is no modulus/wrap. `pub(crate)`
+/// so the shape-ops FKC contract can resolve its `write_slice_doff_cpu`
+/// entry point to this fn via [`crate::fkc::CPU_SHAPE_OPS_ENTRY_POINTS`].
+pub(crate) fn write_slice_doff_cpu_wrapper(
+    inputs: &[Arc<RwLock<Storage>>],
+    outputs: &mut [Arc<RwLock<Storage>>],
+    _layouts: &[Layout],
+    params: &OpParams,
+) -> Result<()> {
+    if inputs.len() != 2 || outputs.len() != 1 {
+        return Err(Error::Msg(format!(
+            "write_slice_doff wrapper expects 2 inputs (source, offset) + 1 output (dest), \
+             got {} + {}",
+            inputs.len(), outputs.len(),
+        ))
+        .bt());
+    }
+    let (dest_shape, axis, ranges) = match params {
+        OpParams::WriteSliceDoff { dest_shape, axis, ranges } => {
+            (dest_shape, *axis, ranges)
+        }
+        other => {
+            return Err(Error::Msg(format!(
+                "write_slice_doff wrapper expects OpParams::WriteSliceDoff, got {other:?}",
+            ))
+            .bt())
+        }
+    };
+    let src_guard = read_storage(&inputs[0])?;
+    let src_cpu = cpu_input(&src_guard)?;
+    let off_guard = read_storage(&inputs[1])?;
+    let off_cpu = cpu_input(&off_guard)?;
+    let mut dest_guard = write_storage(&outputs[0])?;
+    let dtype_size = dest_guard.dtype.size_in_bytes();
+    let dest_cpu = cpu_output(&mut dest_guard)?;
+    fuel_cpu_backend::byte_kernels::write_slice_doff_cpu(
+        src_cpu, off_cpu, dest_cpu, dest_shape, axis, ranges, dtype_size,
+    )
+}
+
 pub(crate) fn concat_cpu_wrapper(
     inputs: &[Arc<RwLock<Storage>>],
     outputs: &mut [Arc<RwLock<Storage>>],
@@ -9323,13 +9366,21 @@ mod tests {
                 write_slice_rotating_cpu_wrapper,
                 "write_slice_rotating",
             );
+            // WriteSliceDoff — like WriteSliceRotating but the runtime operand is a
+            // NON-KEY I64 `offset` (device-resident under CUDA), no wrap.
+            check(
+                OpKind::WriteSliceDoff,
+                &[dt, dt],
+                write_slice_doff_cpu_wrapper,
+                "write_slice_doff",
+            );
         }
 
         assert_eq!(
             checked,
-            6 + 6 + 6 + 4 + 9 + 6 + 6,
+            6 + 6 + 6 + 4 + 9 + 6 + 6 + 6,
             "flip(6) + roll(6) + masked_fill(6) + cumsum(4) + concat(9) + \
-             write_slice(6) + write_slice_rotating(6) contract-sourced bindings",
+             write_slice(6) + write_slice_rotating(6) + write_slice_doff(6) contract-sourced bindings",
         );
     }
 

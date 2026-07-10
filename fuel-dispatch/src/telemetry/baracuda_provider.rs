@@ -169,7 +169,7 @@ fn map_op_category(op_class: &str, n_inputs: usize) -> Option<OpCategory> {
         "CumSum" | "SelectiveScan" | "SsdChunkScan" => OpCategory::Scan,
         "IndexSelect" | "Gather" | "IndexAdd" | "ScatterAdd" | "MaskedFill" => OpCategory::Indexing,
         "Flip" | "Roll" | "Pad" | "PadBackward" | "Triu" | "Tril" | "Concat" | "Copy"
-        | "WriteSlice" | "WriteSliceRotating" => OpCategory::ShapeLayout,
+        | "WriteSlice" | "WriteSliceRotating" | "WriteSliceDoff" => OpCategory::ShapeLayout,
         "FusedSoftmaxCrossEntropy" => OpCategory::Loss,
         "Where" => OpCategory::TernaryElementwise,
         // Cast / affine are per-element transforms with no dedicated category.

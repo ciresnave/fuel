@@ -1269,6 +1269,106 @@ pub mod write_slice_rotating {
 }
 
 // ===========================================================================
+// WriteSliceDoff — device-resident-offset KV-cache append (CapturedRun)
+// ===========================================================================
+//
+// Like write_slice_rotating's wrapper but WITHOUT the position D2H + host
+// math + ring split (all of which are capture-illegal / capture-baking).
+// The `offset` operand (inputs[1], rank-0 I64) stays on the device: its
+// raw device pointer is threaded straight to baracuda's `_doff` launcher as
+// `dyn_start_dev`, which reads the start device-side at kernel entry. That
+// is exactly what lets a captured CUDA graph replay at the host-updated
+// position (per-token fixed-address H2D bump of *offset). No wrap.
+
+macro_rules! cuda_write_slice_doff_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_fn:path) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": expected 2 inputs (source, offset) + 1 output (dest), got {} + {}"),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (dest_shape, axis, ranges) = match params {
+                OpParams::WriteSliceDoff { dest_shape, axis, ranges } => {
+                    (dest_shape, *axis, ranges)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::WriteSliceDoff, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let rank = dest_shape.len();
+            if ranges.len() != rank {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": ranges.len() {} != dest rank {}"),
+                    ranges.len(), rank,
+                )).bt());
+            }
+            if axis >= rank {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": axis {} out of bounds for rank {}"),
+                    axis, rank,
+                )).bt());
+            }
+            // Derive source_shape (slab widths) + range_start (off-axis
+            // starts; the axis slot is a placeholder — the true start is
+            // read device-side from `offset`).
+            let mut source_shape = Vec::with_capacity(rank);
+            let mut range_start = Vec::with_capacity(rank);
+            for &(start, end) in ranges.iter() {
+                if end < start {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": range ({}, {}) has end < start"),
+                        start, end,
+                    )).bt());
+                }
+                source_shape.push(end - start);
+                range_start.push(start);
+            }
+
+            // Acquire all three guards; hold them across the kernel call
+            // so the device buffers stay live. `offset` is read for its
+            // DEVICE pointer only (no D2H).
+            let src_guard = read_storage(&inputs[0])?;
+            let off_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let src_cuda = cuda_input(&src_guard)?;
+            let off_cuda = cuda_input(&off_guard)?;
+            if off_cuda.len_bytes() < 8 {
+                return Err(Error::Msg(format!(
+                    concat!(stringify!($wrapper_name), ": offset storage has {} bytes, need >= 8 (I64)"),
+                    off_cuda.len_bytes(),
+                )).bt());
+            }
+            let dyn_start_dev = off_cuda.buffer().as_raw().0 as *const i64;
+            let dest_cuda = cuda_output(&mut out_guard)?;
+            $baracuda_fn(
+                dest_cuda, src_cuda, dest_shape, &source_shape, &range_start,
+                axis, dyn_start_dev,
+            )
+        }
+    };
+}
+
+pub mod write_slice_doff {
+    use super::*;
+    use fuel_cuda_backend::baracuda::write_slice as bk;
+
+    cuda_write_slice_doff_baracuda_wrapper!(write_slice_doff_b1, bk::write_slice_doff_b1);
+    cuda_write_slice_doff_baracuda_wrapper!(write_slice_doff_b2, bk::write_slice_doff_b2);
+    cuda_write_slice_doff_baracuda_wrapper!(write_slice_doff_b4, bk::write_slice_doff_b4);
+    cuda_write_slice_doff_baracuda_wrapper!(write_slice_doff_b8, bk::write_slice_doff_b8);
+}
+
+// ===========================================================================
 // Triu / Tril — upper / lower triangular mask (Phase 7.6 step 9c E.3.2.4)
 // ===========================================================================
 //
@@ -2906,6 +3006,23 @@ fn register_cuda_write_slice_rotating_from_contract(table: &mut KernelBindingTab
         .expect("CUDA write_slice_rotating contract must register into the binding table");
 }
 
+/// The authored CUDA (baracuda) write_slice_doff kernel contract (`include_str!`), imported by
+/// [`register_cuda_write_slice_doff_from_contract`] - the SOLE registration path.
+const CUDA_WRITE_SLICE_DOFF_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/write_slice_doff.fkc.md");
+
+/// Register the CUDA write_slice_doff family FROM its FKC contract (per-(op,dtype), fanned
+/// `<op>_<dtype>` -> the b1/b2/b4/b8 production wrappers via [`crate::fkc::CudaLinkRegistry`]).
+/// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
+fn register_cuda_write_slice_doff_from_contract(table: &mut KernelBindingTable) {
+    let provider = crate::fkc::import_bundle_str(CUDA_WRITE_SLICE_DOFF_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect("authored CUDA write_slice_doff contract must import (embedded include_str!, CudaLinkRegistry)");
+    debug_assert!(provider.fused.is_empty(), "cuda write_slice_doff contract declares no fused ops");
+    let mut fused = crate::fused::FusedKernelRegistry::new();
+    provider
+        .register_into(table, &mut fused)
+        .expect("CUDA write_slice_doff contract must register into the binding table");
+}
+
 // ===========================================================================
 // GROUP5 CUDA FKC families - contract registration.
 // ===========================================================================
@@ -3181,6 +3298,7 @@ pub fn register_baracuda_cuda_kernels(table: &mut KernelBindingTable) {
     // replace the deleted hand-written per-dtype table.register(..) blocks. -----
     register_cuda_write_slice_from_contract(table);
     register_cuda_write_slice_rotating_from_contract(table);
+    register_cuda_write_slice_doff_from_contract(table);
 
     // ----- GROUP 5 multi-operand / param-ride families (concat/affine +
     // inplace_affine/pad/pad_backward/causal_conv1d + indexing); replace the
@@ -3753,6 +3871,15 @@ mod cast_contract_tests {
         (OpKind::WriteSliceRotating, &[DType::U32, DType::U32][..], write_slice_rotating::write_slice_rotating_b4 as KernelRef, false),
         (OpKind::WriteSliceRotating, &[DType::U8, DType::U8][..], write_slice_rotating::write_slice_rotating_b1 as KernelRef, false),
         (OpKind::WriteSliceRotating, &[DType::I8, DType::I8][..], write_slice_rotating::write_slice_rotating_b1 as KernelRef, false),
+        (OpKind::WriteSliceDoff, &[DType::F32, DType::F32][..], write_slice_doff::write_slice_doff_b4 as KernelRef, false),
+        (OpKind::WriteSliceDoff, &[DType::F64, DType::F64][..], write_slice_doff::write_slice_doff_b8 as KernelRef, false),
+        (OpKind::WriteSliceDoff, &[DType::F16, DType::F16][..], write_slice_doff::write_slice_doff_b2 as KernelRef, false),
+        (OpKind::WriteSliceDoff, &[DType::BF16, DType::BF16][..], write_slice_doff::write_slice_doff_b2 as KernelRef, false),
+        (OpKind::WriteSliceDoff, &[DType::I32, DType::I32][..], write_slice_doff::write_slice_doff_b4 as KernelRef, false),
+        (OpKind::WriteSliceDoff, &[DType::I64, DType::I64][..], write_slice_doff::write_slice_doff_b8 as KernelRef, false),
+        (OpKind::WriteSliceDoff, &[DType::U32, DType::U32][..], write_slice_doff::write_slice_doff_b4 as KernelRef, false),
+        (OpKind::WriteSliceDoff, &[DType::U8, DType::U8][..], write_slice_doff::write_slice_doff_b1 as KernelRef, false),
+        (OpKind::WriteSliceDoff, &[DType::I8, DType::I8][..], write_slice_doff::write_slice_doff_b1 as KernelRef, false),
         ];
         let mut checked = 0usize;
         for (op, key, expected, want_strided) in cases {
@@ -3780,7 +3907,7 @@ mod cast_contract_tests {
             );
             checked += 1;
         }
-        assert_eq!(checked, 18, "all 18 group4 keys checked");
+        assert_eq!(checked, 27, "all 27 group4 keys checked");
     }
 
     /// GROUP 5 (born-red gate). concat + affine (strided) and inplace_affine /

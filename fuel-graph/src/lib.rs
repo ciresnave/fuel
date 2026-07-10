@@ -922,6 +922,48 @@ pub enum Op {
         ranges: Vec<(usize, usize)>,
     },
 
+    /// Like [`Op::WriteSlice`] but the start offset on `axis` is a
+    /// **device-resident** scalar read from `inputs[2]` (rank-0 `I64`)
+    /// at kernel-launch time — NOT host-resolved. This is the CUDA-
+    /// graph-capturable append: under capture, the offset buffer is
+    /// updated by a per-token fixed-address H2D memcpy before each
+    /// replay, so the captured graph is reused across decode steps
+    /// while the write lands at the live position. No modulo wrap
+    /// (unlike [`Op::WriteSliceRotating`]); the offset is the raw
+    /// start (`cached_len`).
+    ///
+    /// Inputs:
+    /// - `inputs[0]`: destination tensor (the fixed-capacity buffer).
+    /// - `inputs[1]`: source slab. Shape on non-`axis` axes is the slab
+    ///   in `ranges`; shape on `axis` is the write width.
+    /// - `inputs[2]`: device offset, rank-0 `I64` — the start on `axis`.
+    ///   Overrides `ranges[axis].0` (which is a placeholder ignored by
+    ///   the kernel).
+    ///
+    /// `ranges` describes the destination slab on every axis. For the
+    /// dynamic axis, `ranges[axis].0` is ignored (start is device-
+    /// resident) and `ranges[axis].1 - ranges[axis].0` must equal
+    /// `inputs[1].dims()[axis]` (the write width). For other axes the
+    /// same shape contract as [`Op::WriteSlice`] applies.
+    ///
+    /// **Bounds are the caller's contract**: the kernel reads the start
+    /// device-side and does NOT clamp (clamping would perturb the index
+    /// math vs the static path). `offset + width <= dest_dims[axis]`
+    /// must hold — guaranteed by the caller sizing the buffer's
+    /// capacity (`DecodeSession` sizes `max_seq`).
+    ///
+    /// Output adopts `inputs[0]`'s Storage Arc + Layout, post-write.
+    /// Destructive on `inputs[0]`; scheduled like `Op::WriteSlice`.
+    /// Non-differentiable; backward panics.
+    ///
+    /// CapturedRun (the decode-latency lever, 2026-07): the device-
+    /// resident-offset WriteSlice is form-B of baracuda's
+    /// `write_slice_*_doff` launchers.
+    WriteSliceDoff {
+        axis: usize,
+        ranges: Vec<(usize, usize)>,
+    },
+
     /// Allocate a fresh, zero-initialized Storage of the node's shape +
     /// dtype on `target`. Zero inputs — `Op::Alloc` is a *source* op
     /// like [`Op::Const`], but its bytes are computed (zeros) rather
@@ -1078,7 +1120,7 @@ impl Op {
     /// via ordering edges derived by [`opt::derive_ordering`].
     pub fn destructive_input(&self) -> Option<usize> {
         match self {
-            Op::Release | Op::Move { .. } | Op::WriteSlice { .. } | Op::WriteSliceRotating { .. } | Op::ZeroFill => Some(0),
+            Op::Release | Op::Move { .. } | Op::WriteSlice { .. } | Op::WriteSliceRotating { .. } | Op::WriteSliceDoff { .. } | Op::ZeroFill => Some(0),
             // In-place unary ops mutate input 0.
             Op::ReluInplace
             | Op::SiluInplace
@@ -1289,6 +1331,7 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::Move{..}             => "Move",
         Op::WriteSlice{..}       => "WriteSlice",
         Op::WriteSliceRotating{..} => "WriteSliceRotating",
+        Op::WriteSliceDoff{..}   => "WriteSliceDoff",
         Op::Alloc{..}            => "Alloc",
         Op::ZeroFill             => "ZeroFill",
         // Phase 7.6: registry-extended fused ops. Step 3 wires per-id
@@ -1378,7 +1421,7 @@ pub enum StorageClass {
 pub fn infer_storage_class(op: &Op) -> StorageClass {
     match op {
         Op::Const => StorageClass::Shared,
-        Op::WriteSlice { .. } | Op::WriteSliceRotating { .. } => StorageClass::SessionState,
+        Op::WriteSlice { .. } | Op::WriteSliceRotating { .. } | Op::WriteSliceDoff { .. } => StorageClass::SessionState,
         _ => StorageClass::Transient,
     }
 }
@@ -3287,6 +3330,129 @@ impl Tensor {
         let id = self.graph.write().unwrap().push(Node {
             op:     Op::WriteSliceRotating { axis, modulus, ranges },
             inputs: vec![self.id, source.id, position.id],
+            shape:  dest_shape,
+            dtype,
+        });
+        Ok(Tensor { graph: Arc::clone(&self.graph), id })
+    }
+
+    /// Append an [`Op::WriteSliceDoff`] node — copies `source`'s bytes
+    /// into `self` at the rectangular slab defined by `ranges`, with
+    /// the start on `axis` read from `offset` (a rank-0 `I64` tensor)
+    /// **device-side** at kernel launch. No modulo wrap: `offset` is
+    /// the raw start on `axis`.
+    ///
+    /// `ranges[axis].0` is ignored (the dynamic-axis start is device-
+    /// resident). `ranges[axis].1 - ranges[axis].0` is the write width
+    /// on `axis` and must equal `source.dims()[axis]`. On every other
+    /// axis the same shape contract as [`write_slice`](Self::write_slice)
+    /// applies.
+    ///
+    /// **Bounds are the caller's contract**: `offset` is device-only at
+    /// build time, so `offset + width <= dest_dims[axis]` cannot be
+    /// checked here and the kernel does NOT clamp. The caller must size
+    /// `self`'s capacity on `axis` to cover the largest offset (this is
+    /// the CUDA-graph-capturable KV-cache append; `DecodeSession` sizes
+    /// `max_seq`). The static slab width IS checked against capacity.
+    ///
+    /// Destructive on `self`; scheduled like `write_slice`. Backward
+    /// panics — decode-time KV-cache appends are forward-only.
+    ///
+    /// **Returns `Result`**: rank / dtype / axis-bound / static-width /
+    /// offset-dtype mismatches surface as a typed error at build time.
+    pub fn write_slice_doff(
+        &self,
+        source: &Tensor,
+        offset: &Tensor,
+        axis: usize,
+        ranges: Vec<(usize, usize)>,
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
+        let dest_shape = self.shape();
+        let dest_dims = dest_shape.dims();
+        let src_dims = source.shape().dims().to_vec();
+        let rank = dest_dims.len();
+        if ranges.len() != rank {
+            return Err(fuel_ir::Error::Msg(format!(
+                "write_slice_doff: ranges.len() ({}) must equal destination rank ({rank})",
+                ranges.len(),
+            )).bt());
+        }
+        if src_dims.len() != rank {
+            return Err(fuel_ir::Error::Msg(format!(
+                "write_slice_doff: source rank ({}) must equal destination rank ({rank})",
+                src_dims.len(),
+            )).bt());
+        }
+        if axis >= rank {
+            return Err(fuel_ir::Error::Msg(format!(
+                "write_slice_doff: axis {axis} out of bounds for rank {rank}",
+            )).bt());
+        }
+        for (i, &(start, end)) in ranges.iter().enumerate() {
+            if end < start {
+                return Err(fuel_ir::Error::Msg(format!(
+                    "write_slice_doff: ranges[{i}] = ({start}, {end}) has end < start"
+                )).bt());
+            }
+            let slab = end - start;
+            if i == axis {
+                if slab == 0 {
+                    return Err(fuel_ir::Error::Msg(format!(
+                        "write_slice_doff: ranges[axis={axis}] slab is 0",
+                    )).bt());
+                }
+                // The write width can't exceed the buffer capacity on
+                // `axis` even at offset 0 (the offset itself is dynamic
+                // and bounds-checked device-side by the caller's sizing).
+                if slab > dest_dims[axis] {
+                    return Err(fuel_ir::Error::Msg(format!(
+                        "write_slice_doff: dynamic-axis write width ({slab}) > destination dim {axis} ({})",
+                        dest_dims[axis],
+                    )).bt());
+                }
+                if src_dims[i] != slab {
+                    return Err(fuel_ir::Error::Msg(format!(
+                        "write_slice_doff: source dim {i} ({}) must equal slab width ({slab})",
+                        src_dims[i],
+                    )).bt());
+                }
+            } else {
+                if end > dest_dims[i] {
+                    return Err(fuel_ir::Error::Msg(format!(
+                        "write_slice_doff: ranges[{i}].end ({end}) > destination dim {i} ({})",
+                        dest_dims[i],
+                    )).bt());
+                }
+                if src_dims[i] != slab {
+                    return Err(fuel_ir::Error::Msg(format!(
+                        "write_slice_doff: source dim {i} ({}) must equal slab width ({slab})",
+                        src_dims[i],
+                    )).bt());
+                }
+            }
+        }
+        if self.dtype() != source.dtype() {
+            return Err(fuel_ir::Error::Msg(format!(
+                "write_slice_doff: dtype mismatch — destination {:?} vs source {:?}",
+                self.dtype(), source.dtype(),
+            )).bt());
+        }
+        if offset.dtype() != DType::I64 {
+            return Err(fuel_ir::Error::Msg(format!(
+                "write_slice_doff: offset must be I64 (device-resident start), got {:?}",
+                offset.dtype(),
+            )).bt());
+        }
+        if !offset.shape().dims().is_empty() {
+            return Err(fuel_ir::Error::Msg(format!(
+                "write_slice_doff: offset must be rank-0 scalar, got {:?}",
+                offset.shape().dims(),
+            )).bt());
+        }
+        let dtype = self.dtype();
+        let id = self.graph.write().unwrap().push(Node {
+            op:     Op::WriteSliceDoff { axis, ranges },
+            inputs: vec![self.id, source.id, offset.id],
             shape:  dest_shape,
             dtype,
         });
@@ -8789,6 +8955,16 @@ impl Tensor {
                     // is expressible as Gather + IndexAdd in forward.
                     panic!(
                         "Tensor::backward: Op::WriteSliceRotating is non-differentiable. \
+                         Use Gather + IndexAdd if you need a differentiable scatter."
+                    );
+                }
+                Op::WriteSliceDoff { .. } => {
+                    // Forward-only, like WriteSlice/WriteSliceRotating —
+                    // the KV-cache buffer is mutated in place at a
+                    // device-resident offset. Decode-time append; no
+                    // gradient path.
+                    panic!(
+                        "Tensor::backward: Op::WriteSliceDoff is non-differentiable. \
                          Use Gather + IndexAdd if you need a differentiable scatter."
                     );
                 }

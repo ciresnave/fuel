@@ -867,6 +867,7 @@ fn is_op_params_variant(v: &str) -> bool {
             | "Nf4Matmul"
             | "WriteSlice"
             | "WriteSliceRotating"
+            | "WriteSliceDoff"
             | "SelectiveScan"
             | "SsdChunkScan"
             | "CausalConv1d"

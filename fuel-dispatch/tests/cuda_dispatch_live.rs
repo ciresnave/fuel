@@ -2715,3 +2715,144 @@ fn cuda_relu_inplace_propagates_nan_f32() {
     assert_eq!(got[1], 0.0, "relu_inplace(-2.0)");
     assert_eq!(got[2], 3.0, "relu_inplace(3.0)");
 }
+
+/// Build a rank-0 I64 device scalar (the device-resident `_doff`
+/// offset). `from_cpu_bytes` H2D-copies the 8 native-endian bytes.
+fn build_i64_scalar_cuda(dev: &CudaDevice, v: i64) -> Storage {
+    let bytes = v.to_ne_bytes();
+    let cuda_bytes = CudaStorageBytes::from_cpu_bytes(dev, &bytes).expect("h2d i64");
+    Storage::new(BackendStorage::Cuda(cuda_bytes), DType::I64)
+}
+
+/// End-to-end: `OpKind::WriteSliceDoff` F32 through the binding table
+/// with a DEVICE-RESIDENT offset of 1. This is the CapturedRun form-B
+/// KV-cache append — the offset is read device-side (NO D2H), which is
+/// what lets a captured graph replay at the host-updated position.
+///
+/// Sabotage-calibration: the offset is NON-ZERO (1), so the write MUST
+/// land at row 1. If the kernel ignored `dyn_start_dev` and used the
+/// `range_start[axis]` placeholder (0), the result would be
+/// `[7, 8, 0, 0, 0, 0, 0, 0]` — this test distinguishes "device offset
+/// read" from "placeholder baked". Direct dispatch guarantees the CUDA
+/// kernel runs (no cost-based placement routing it to CPU).
+#[test]
+#[ignore]
+fn write_slice_doff_f32_at_device_offset_cuda() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
+
+    // dest [4, 2] zeros; source [1, 2] = [7, 8]; device offset = 1.
+    let dest = build_storage_cuda(&dev, &[0.0_f32; 8]);
+    let source = build_storage_cuda(&dev, &[7.0_f32, 8.0]);
+    let offset = build_i64_scalar_cuda(&dev, 1);
+
+    let source_arc = Arc::new(RwLock::new(source));
+    let offset_arc = Arc::new(RwLock::new(offset));
+    let dest_arc = Arc::new(RwLock::new(dest));
+
+    let kernel = table
+        .lookup(OpKind::WriteSliceDoff, &[DType::F32, DType::F32], BackendId::Cuda)
+        .expect("lookup (WriteSliceDoff, F32, Cuda)");
+
+    let params = OpParams::WriteSliceDoff {
+        dest_shape: vec![4, 2],
+        axis: 0,
+        ranges: vec![(0, 1), (0, 2)],
+    };
+    // Executor passes [source, offset] as inputs, [dest] as output.
+    let layouts = vec![
+        Layout::contiguous(Shape::from_dims(&[1, 2])),
+        Layout::contiguous(Shape::from_dims(&[])),
+        Layout::contiguous(Shape::from_dims(&[4, 2])),
+    ];
+    kernel(
+        &[source_arc.clone(), offset_arc.clone()],
+        &mut [dest_arc.clone()],
+        &layouts,
+        &params,
+    )
+    .expect("write_slice_doff kernel call");
+
+    let result_storage = dest_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("dest not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    assert_eq!(
+        host_f32,
+        &[0.0_f32, 0.0, 7.0, 8.0, 0.0, 0.0, 0.0, 0.0],
+        "write must land at DEVICE offset 1 (row 1); [7,8,0,..] means the \
+         placeholder range_start was used instead of dyn_start_dev",
+    );
+}
+
+/// End-to-end CapturedRun access pattern: a capacity-4 decode loop
+/// appending one token per step at the live `cached_len` offset, all
+/// into the SAME dest buffer (in-place), each append running the
+/// baracuda `_doff` kernel with a device-resident start. Verifies the
+/// full KV history — no wrap, each token at its own row.
+#[test]
+#[ignore]
+fn write_slice_doff_f32_decode_loop_cuda() {
+    let Some(dev) = dev_or_skip() else { return };
+
+    let mut table = KernelBindingTable::new();
+    register_cpu_kernels(&mut table);
+    register_cuda_kernels(&mut table);
+    register_baracuda_cuda_kernels(&mut table);
+
+    // A single persistent [4, 2] cache buffer, appended across 4 steps.
+    let dest = build_storage_cuda(&dev, &[0.0_f32; 8]);
+    let dest_arc = Arc::new(RwLock::new(dest));
+
+    let kernel = table
+        .lookup(OpKind::WriteSliceDoff, &[DType::F32, DType::F32], BackendId::Cuda)
+        .expect("lookup (WriteSliceDoff, F32, Cuda)");
+
+    let tokens = [
+        [1.0_f32, 1.1],
+        [2.0_f32, 2.1],
+        [3.0_f32, 3.1],
+        [4.0_f32, 4.1],
+    ];
+    for (step, token) in tokens.iter().enumerate() {
+        let source = build_storage_cuda(&dev, token);
+        let offset = build_i64_scalar_cuda(&dev, step as i64);
+        let source_arc = Arc::new(RwLock::new(source));
+        let offset_arc = Arc::new(RwLock::new(offset));
+        let params = OpParams::WriteSliceDoff {
+            dest_shape: vec![4, 2],
+            axis: 0,
+            ranges: vec![(0, 1), (0, 2)],
+        };
+        let layouts = vec![
+            Layout::contiguous(Shape::from_dims(&[1, 2])),
+            Layout::contiguous(Shape::from_dims(&[])),
+            Layout::contiguous(Shape::from_dims(&[4, 2])),
+        ];
+        kernel(
+            &[source_arc.clone(), offset_arc.clone()],
+            &mut [dest_arc.clone()],
+            &layouts,
+            &params,
+        )
+        .expect("write_slice_doff decode-step kernel call");
+    }
+
+    let result_storage = dest_arc.read().unwrap();
+    let BackendStorage::Cuda(c) = &result_storage.inner else {
+        panic!("dest not on CUDA");
+    };
+    let host = c.to_cpu_bytes().expect("d2h");
+    let host_f32: &[f32] = bytemuck::cast_slice(&host);
+    assert_eq!(
+        host_f32,
+        &[1.0_f32, 1.1, 2.0, 2.1, 3.0, 3.1, 4.0, 4.1],
+        "each token must land at its own device-offset row (full KV history)",
+    );
+}

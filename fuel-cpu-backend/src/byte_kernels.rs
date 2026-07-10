@@ -9284,6 +9284,98 @@ pub fn write_slice_rotating_cpu(
     Ok(())
 }
 
+/// In-place scatter write with a **device-resident-style** start on
+/// `axis` read from `offset_bytes` (the first `i64`, host-side here on
+/// CPU). Backs [`fuel_graph::Op::WriteSliceDoff`] — the CUDA-graph-
+/// capturable KV-cache append. No modulo wrap (unlike
+/// [`write_slice_rotating_cpu`]): the write lands at
+/// `[offset, offset + width)` on `axis`, where `width` is
+/// `ranges[axis].1 - ranges[axis].0`. On other axes, `ranges` defines
+/// the slab the same way as [`write_slice_cpu`].
+///
+/// Unlike the CUDA `_doff` kernel (which reads the start device-side
+/// and does NOT clamp, delegating bounds to the caller), the CPU path
+/// reads the start host-side and CAN — so it bounds-checks
+/// `offset + width <= dest_shape[axis]` and returns a typed error on
+/// overflow rather than corrupting memory.
+#[allow(clippy::too_many_arguments)]
+pub fn write_slice_doff_cpu(
+    source: &CpuStorageBytes,
+    offset_bytes: &CpuStorageBytes,
+    dest: &mut CpuStorageBytes,
+    dest_shape: &[usize],
+    axis: usize,
+    ranges: &[(usize, usize)],
+    dtype_size: usize,
+) -> Result<()> {
+    if dtype_size == 0 {
+        return Err(Error::Msg("write_slice_doff_cpu: dtype_size must be > 0".to_string()).bt());
+    }
+    let rank = dest_shape.len();
+    if rank == 0 {
+        return Err(Error::Msg(
+            "write_slice_doff_cpu: dest rank must be >= 1".to_string(),
+        )
+        .bt());
+    }
+    if ranges.len() != rank {
+        return Err(Error::Msg(format!(
+            "write_slice_doff_cpu: ranges.len() ({}) != dest rank ({rank})",
+            ranges.len(),
+        ))
+        .bt());
+    }
+    if axis >= rank {
+        return Err(Error::Msg(format!(
+            "write_slice_doff_cpu: axis {axis} out of bounds for rank {rank}",
+        ))
+        .bt());
+    }
+    if offset_bytes.len_bytes() < 8 {
+        return Err(Error::Msg(format!(
+            "write_slice_doff_cpu: offset storage has {} bytes, need >= 8 (I64)",
+            offset_bytes.len_bytes(),
+        ))
+        .bt());
+    }
+    let off_buf = offset_bytes.bytes();
+    let offset_i64 = i64::from_ne_bytes([
+        off_buf[0], off_buf[1], off_buf[2], off_buf[3],
+        off_buf[4], off_buf[5], off_buf[6], off_buf[7],
+    ]);
+    if offset_i64 < 0 {
+        return Err(Error::Msg(format!(
+            "write_slice_doff_cpu: device offset {offset_i64} is negative",
+        ))
+        .bt());
+    }
+    let offset = offset_i64 as usize;
+
+    // The dynamic-axis width is the range span; other axes keep their
+    // ranges. Build the resolved ranges (offset overrides axis start).
+    let width = {
+        let (start, end) = ranges[axis];
+        if end < start {
+            return Err(Error::Msg(format!(
+                "write_slice_doff_cpu: ranges[axis={axis}] = ({start}, {end}) has end < start",
+            ))
+            .bt());
+        }
+        end - start
+    };
+    if offset + width > dest_shape[axis] {
+        return Err(Error::Msg(format!(
+            "write_slice_doff_cpu: offset {offset} + width {width} > dest_shape[{axis}] = {} \
+             (write would overflow the buffer)",
+            dest_shape[axis],
+        ))
+        .bt());
+    }
+    let mut resolved = ranges.to_vec();
+    resolved[axis] = (offset, offset + width);
+    write_slice_cpu(source, dest, dest_shape, &resolved, dtype_size)
+}
+
 /// Extract `outer_count` tiles of `chunk_row_bytes` from `src` into a
 /// fresh contiguous CPU storage. Tile `t` is at byte range
 /// `t * stride_bytes + offset_in_outer .. + chunk_row_bytes`. Used by

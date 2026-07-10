@@ -2554,7 +2554,10 @@ where
         // either preserve strided layouts (view ops, Reshape) or
         // are structural with no kernel to mismatch on (Const,
         // Release, Copy, Move, Alloc, ZeroFill, WriteSlice,
-        // Contiguize).
+        // WriteSliceDoff, Contiguize). WriteSlice/WriteSliceDoff
+        // adopt `dest` in place + auto-contiguize their source in the
+        // execute arm, so a pass-inserted contiguize on `dest` would
+        // break the in-place adoption — skip them here.
         if consumer_op.is_view_op()
             || matches!(
                 consumer_op,
@@ -2567,6 +2570,7 @@ where
                     | Op::Alloc { .. }
                     | Op::ZeroFill
                     | Op::WriteSlice { .. }
+                    | Op::WriteSliceDoff { .. }
             )
         {
             continue;

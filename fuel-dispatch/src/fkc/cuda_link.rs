@@ -553,6 +553,20 @@ pub static CUDA_WRITE_SLICE_ROTATING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("write_slice_rotating_i8", crate::baracuda_dispatch::write_slice_rotating::write_slice_rotating_b1),
 ];
 
+/// CUDA `write_slice_doff` family (device-resident-offset in-place slab assign (WriteSliceDoff; byte-width umbrella)): fanned `<op>_<dtype>` symbol -> production wrapper.
+/// Contract: `docs/kernel-contracts/cuda/write_slice_doff.fkc.md`. b1/b2/b4/b8 only (no b16 — the KV-decode dtype set).
+pub static CUDA_WRITE_SLICE_DOFF_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    cuda_ep!("write_slice_doff_f32", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b4),
+    cuda_ep!("write_slice_doff_f64", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b8),
+    cuda_ep!("write_slice_doff_f16", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b2),
+    cuda_ep!("write_slice_doff_bf16", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b2),
+    cuda_ep!("write_slice_doff_i32", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b4),
+    cuda_ep!("write_slice_doff_i64", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b8),
+    cuda_ep!("write_slice_doff_u32", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b4),
+    cuda_ep!("write_slice_doff_u8", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b1),
+    cuda_ep!("write_slice_doff_i8", crate::baracuda_dispatch::write_slice_doff::write_slice_doff_b1),
+];
+
 /// CUDA `concat` family (N-ary concatenation (Concat; binding [T,T])): fanned `<op>_<dtype>` symbol -> production wrapper.
 /// Contract: `docs/kernel-contracts/cuda/concat.fkc.md`.
 pub static CUDA_CONCAT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
@@ -719,6 +733,7 @@ impl LinkRegistry for CudaLinkRegistry {
             .chain(CUDA_INPLACE_UNARY_ENTRY_POINTS.iter())
             .chain(CUDA_WRITE_SLICE_ENTRY_POINTS.iter())
             .chain(CUDA_WRITE_SLICE_ROTATING_ENTRY_POINTS.iter())
+            .chain(CUDA_WRITE_SLICE_DOFF_ENTRY_POINTS.iter())
             .chain(CUDA_CONCAT_ENTRY_POINTS.iter())
             .chain(CUDA_AFFINE_ENTRY_POINTS.iter())
             .chain(CUDA_INPLACE_AFFINE_ENTRY_POINTS.iter())
