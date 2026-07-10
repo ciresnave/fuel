@@ -1864,10 +1864,9 @@ macro_rules! cuda_affine_baracuda_wrapper {
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, layout, mul, add)?;
             let out_cuda = cuda_output(&mut out_guard)?;
-            *out_cuda = result;
-            Ok(())
+            // Write-into-output (CapturedRun): `_into` writes into outputs[0].
+            $baracuda_fn(src_cuda, layout, mul, add, out_cuda)
         }
     };
 }
@@ -1876,13 +1875,13 @@ pub mod affine {
     use super::*;
     use fuel_cuda_backend::baracuda::affine as bk;
 
-    cuda_affine_baracuda_wrapper!(affine_f32, bk::affine_f32, |v: f64| v as f32);
-    cuda_affine_baracuda_wrapper!(affine_f64, bk::affine_f64, |v: f64| v);
-    cuda_affine_baracuda_wrapper!(affine_f16, bk::affine_f16, |v: f64| v as f32);
-    cuda_affine_baracuda_wrapper!(affine_bf16, bk::affine_bf16, |v: f64| v as f32);
-    cuda_affine_baracuda_wrapper!(affine_i32, bk::affine_i32, |v: f64| v as i32);
-    cuda_affine_baracuda_wrapper!(affine_i64, bk::affine_i64, |v: f64| v as i64);
-    cuda_affine_baracuda_wrapper!(affine_u8, bk::affine_u8, |v: f64| v as u8);
+    cuda_affine_baracuda_wrapper!(affine_f32, bk::affine_f32_into, |v: f64| v as f32);
+    cuda_affine_baracuda_wrapper!(affine_f64, bk::affine_f64_into, |v: f64| v);
+    cuda_affine_baracuda_wrapper!(affine_f16, bk::affine_f16_into, |v: f64| v as f32);
+    cuda_affine_baracuda_wrapper!(affine_bf16, bk::affine_bf16_into, |v: f64| v as f32);
+    cuda_affine_baracuda_wrapper!(affine_i32, bk::affine_i32_into, |v: f64| v as i32);
+    cuda_affine_baracuda_wrapper!(affine_i64, bk::affine_i64_into, |v: f64| v as i64);
+    cuda_affine_baracuda_wrapper!(affine_u8, bk::affine_u8_into, |v: f64| v as u8);
 
     // In-place affine — Phase 3d of the in-place ops infrastructure.
     // baracuda's `affine_inplace_{f32,f64}_run` symbols take a single

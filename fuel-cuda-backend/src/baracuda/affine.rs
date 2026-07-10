@@ -100,25 +100,57 @@ fn build_strided_args(
 /// contig-fn-sym, strided-fn-sym, dtype-size).
 macro_rules! affine_kernel {
     ($name:ident, $scalar:ty, $contig_sym:ident, $strided_sym:ident, $dtype_size:expr, $op_label:expr) => {
+        ::paste::paste! {
         pub fn $name(
             src: &CudaStorageBytes,
             src_layout: Option<&Layout>,
             mul: $scalar,
             add: $scalar,
         ) -> Result<CudaStorageBytes> {
+            let device = src.device().clone();
+            let mut owned: Option<Layout> = None;
+            let layout = resolve_layout(src, src_layout, $dtype_size, &mut owned);
+            let out_bytes = layout.shape().elem_count() * $dtype_size;
+            if out_bytes == 0 {
+                return CudaStorageBytes::alloc(&device, 0);
+            }
+            let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+            let out = CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes);
+            [<$name _into>](src, src_layout, mul, add, &out)?;
+            Ok(out)
+        }
+
+        #[doc = concat!(
+            "Write-into-output variant of `", stringify!($name),
+            "` — writes into `out` (no alloc; CapturedRun capture mode)."
+        )]
+        pub fn [<$name _into>](
+            src: &CudaStorageBytes,
+            src_layout: Option<&Layout>,
+            mul: $scalar,
+            add: $scalar,
+            out: &CudaStorageBytes,
+        ) -> Result<()> {
             let op_label = $op_label;
             let device = src.device().clone();
             let mut owned: Option<Layout> = None;
             let layout = resolve_layout(src, src_layout, $dtype_size, &mut owned);
             let numel = layout.shape().elem_count() as i64;
             if numel == 0 {
-                return CudaStorageBytes::alloc(&device, 0);
+                return Ok(());
             }
             let out_bytes = (numel as usize) * $dtype_size;
-            let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+            if out.len_bytes() < out_bytes {
+                return Err(fuel_ir::Error::Msg(format!(
+                    "{op_label}: write-into output buffer too small ({} < {} bytes)",
+                    out.len_bytes(),
+                    out_bytes,
+                ))
+                .bt());
+            }
             let stream = device.stream().as_raw() as *mut std::ffi::c_void;
             let x_ptr = src.buffer().as_raw().0 as *const std::ffi::c_void;
-            let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
+            let y_ptr = out.buffer().as_raw().0 as *mut std::ffi::c_void;
             let scratch = Workspace::alloc(&device, 0)?;
 
             let status = if is_contiguous_zero_offset(layout) {
@@ -146,9 +178,8 @@ macro_rules! affine_kernel {
                 }
             };
             check(status, op_label)?;
-            Ok(CudaStorageBytes::from_parts(
-                Arc::new(out_buf), device, out_bytes,
-            ))
+            Ok(())
+        }
         }
     };
 }

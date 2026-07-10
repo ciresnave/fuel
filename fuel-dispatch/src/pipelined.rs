@@ -241,6 +241,8 @@ fn op_kind_is_capture_writeinto(op: OpKind) -> bool {
             // Softmax.
             | OpKind::SoftmaxLastDim
             | OpKind::LogSoftmaxLastDim
+            // Affine (mul_scalar/add_scalar — the 1/√d attention scale).
+            | OpKind::Affine
             // Dense matmul (cuBLAS gemm_dense — capture-safe; the earlier
             // "not replay-stable" was the dangling-input bug, now fixed).
             | OpKind::MatMul
@@ -7515,6 +7517,57 @@ mod tests {
             }
         }
         assert_eq!(bad, 0, "cuBLAS matmul capture replays bit-exact ({bad}/50 wrong)");
+    }
+
+    /// `Op::MulScalar` / `OpKind::Affine` (the `1/√d` attention scale) is
+    /// capture-safe (write-into variant + forced-reuse regression).
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn capture_decode_affine_replays_bit_exact_cuda() {
+        use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
+        use fuel_ir::Shape;
+        use fuel_memory::BackendStorage;
+        let Ok(dev) = CudaDevice::new(0) else { return };
+        const N: usize = 6;
+        let x_data: Vec<f32> = (0..N).map(|i| 1.0 + i as f32).collect();
+        let expect: Vec<f32> = x_data.iter().map(|v| v * 0.5).collect();
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (x, y) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1, N]), dtype: DType::F32 });
+            let y = g.push(Node { op: Op::MulScalar(0.5), inputs: vec![x], shape: Shape::from_dims(&[1, N]), dtype: DType::F32 });
+            g.set_target_backend(y, BackendId::Cuda);
+            (x, y)
+        };
+        let up = |v: &[f32]| {
+            let b: Vec<u8> = v.iter().flat_map(|f| f.to_le_bytes()).collect();
+            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(CudaStorageBytes::from_cpu_bytes(&dev, &b).unwrap()), DType::F32)))
+        };
+        let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
+            let g = arc.read().unwrap();
+            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            c.to_cpu_bytes().unwrap().chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+        };
+        let mut inputs = StorageCache::new();
+        inputs.insert(x, up(&x_data));
+        let captured = PipelinedExecutor::capture_decode(Arc::clone(&graph), y, inputs, SymEnv::default()).expect("capture");
+        assert_eq!(read(&captured.output), expect, "warm result after capture");
+        let mut sq = Vec::new();
+        for _ in 0..8 {
+            let g: Vec<u8> = (0..N).flat_map(|_| 999.0f32.to_le_bytes()).collect();
+            sq.push(CudaStorageBytes::from_cpu_bytes(&dev, &g).unwrap());
+        }
+        dev.synchronize().unwrap();
+        let mut bad = 0usize;
+        for _ in 0..50 {
+            captured.run.replay(&dev).unwrap();
+            dev.synchronize().unwrap();
+            if read(&captured.output) != expect {
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0, "affine capture replays bit-exact ({bad}/50 wrong)");
     }
 
     /// `index_select` (embedding lookup) IS graph-capturable (regression for
