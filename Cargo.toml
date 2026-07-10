@@ -215,34 +215,48 @@ criterion = { version = "0.8", default-features = false }
 # no signature changes elsewhere, only rustfmt reflow). Fuel rebinds
 # `OpKind::ReluElementwise`'s CUDA path to the propagating family here,
 # closing the CPU/CUDA NaN-convention divergence opened by 772e27a0.
-baracuda-types         = { version = "0.0.1-alpha.76", features = ["half-crate", "f8-crate"] }
-baracuda-core          = { version = "0.0.1-alpha.76" }
-baracuda-cuda-sys      = { version = "0.0.1-alpha.76" }
-baracuda-driver        = { version = "0.0.1-alpha.76" }
-baracuda-runtime       = { version = "0.0.1-alpha.76" }
-baracuda-cublas-sys    = { version = "0.0.1-alpha.76" }
-baracuda-cublas        = { version = "0.0.1-alpha.76" }
-baracuda-cudnn-sys     = { version = "0.0.1-alpha.76" }
-baracuda-cudnn         = { version = "0.0.1-alpha.76", features = ["half-crate"] }
-baracuda-curand-sys    = { version = "0.0.1-alpha.76" }
-baracuda-curand        = { version = "0.0.1-alpha.76" }
-baracuda-nvrtc-sys     = { version = "0.0.1-alpha.76" }
-baracuda-nvrtc         = { version = "0.0.1-alpha.76" }
+#
+# alpha.77 (2026-07-09) — the `_doff` device-resident-offset WriteSlice family
+# in baracuda-kernels-sys: `baracuda_kernels_write_slice_b{1,2,4,8}_doff_run`
+# (+ `_can_implement`), = the base `_run` plus `dyn_axis: i32` + `dyn_start_dev:
+# *const i64` inserted right after `range_start`; the kernel reads
+# `dyn_start_dev[0]` at entry as the dynamic axis's start, so the offset stays
+# DEVICE-RESIDENT and survives CUDA-graph capture/replay (the CapturedRun decode
+# lever). Additive-only vs alpha.76 (verified: 0 FFI symbols removed, 12 added;
+# 173/173 live CUDA parity). The whole workspace moved to alpha.77 in lockstep
+# (also carries kernelgen breadth: base_offset/where-select/hetero-dropout/
+# argsort/topk/im2col — all off-key, no STRUCTURE_KEY_VERSION bump).
+baracuda-types         = { version = "0.0.1-alpha.77", features = ["half-crate", "f8-crate"] }
+baracuda-core          = { version = "0.0.1-alpha.77" }
+baracuda-cuda-sys      = { version = "0.0.1-alpha.77" }
+baracuda-driver        = { version = "0.0.1-alpha.77" }
+baracuda-runtime       = { version = "0.0.1-alpha.77" }
+baracuda-cublas-sys    = { version = "0.0.1-alpha.77" }
+baracuda-cublas        = { version = "0.0.1-alpha.77" }
+baracuda-cudnn-sys     = { version = "0.0.1-alpha.77" }
+baracuda-cudnn         = { version = "0.0.1-alpha.77", features = ["half-crate"] }
+baracuda-curand-sys    = { version = "0.0.1-alpha.77" }
+baracuda-curand        = { version = "0.0.1-alpha.77" }
+baracuda-nvrtc-sys     = { version = "0.0.1-alpha.77" }
+baracuda-nvrtc         = { version = "0.0.1-alpha.77" }
 # The live JIT synthesizer (BaracudaSynthesizer, the fuel-kernel-seam Synthesizer
 # impl). EXACT pin: only the `seam` module surface is supported/stable — the
-# generator internals are alpha-fluid, so never auto-upgrade (Baracuda alpha.76
-# landing note). Pulled only under fuel-dispatch's `jit-synth` feature.
-baracuda-kernelgen     = { version = "=0.0.1-alpha.76" }
-baracuda-nccl-sys      = { version = "0.0.1-alpha.76" }
-baracuda-nccl          = { version = "0.0.1-alpha.76", features = ["half-crate"] }
-baracuda-cutlass       = { version = "0.0.1-alpha.76" }
+# generator internals are alpha-fluid, so never AUTO-upgrade. Deliberately bumped
+# to alpha.77 in LOCKSTEP with the rest of the baracuda workspace (2026-07-09):
+# baracuda-kernels-sys is a shared extern-C dep, so leaving kernelgen at alpha.76
+# while the rest is alpha.77 would pull two kernels-sys versions and duplicate the
+# FFI symbols. Pulled only under fuel-dispatch's `jit-synth` feature.
+baracuda-kernelgen     = { version = "=0.0.1-alpha.77" }
+baracuda-nccl-sys      = { version = "0.0.1-alpha.77" }
+baracuda-nccl          = { version = "0.0.1-alpha.77", features = ["half-crate"] }
+baracuda-cutlass       = { version = "0.0.1-alpha.77" }
 # baracuda alpha.26 — new ML kernel facade. Fuel uses `baracuda-kernels-sys`
 # (raw extern "C") rather than the safe `baracuda-kernels` Plan-based wrapper
 # so each kernel becomes its own KernelRef in Fuel's binding table — the
 # safe layer's Plan-cached dispatch isn't compatible with Fuel's
 # per-decision-point alternatives composition.
-baracuda-kernels-types = { version = "0.0.1-alpha.76" }
-baracuda-kernels-sys   = { version = "0.0.1-alpha.76", features = [
+baracuda-kernels-types = { version = "0.0.1-alpha.77" }
+baracuda-kernels-sys   = { version = "0.0.1-alpha.77", features = [
     "cudnn",
     "sm89",
     # Phase 48 (Consolidation B) 4-bit weight-only GEMM families.
