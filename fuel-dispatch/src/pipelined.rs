@@ -200,15 +200,21 @@ impl PersistentOutputs {
 /// any graph whose compute nodes fall outside this set — a surfaced
 /// capability gap (telemetry-worthy), never a silent miscompile.
 ///
-/// Increment 1 of the CapturedRun build-out covers binary elementwise.
-/// The set expands as more decode families gain write-into variants
-/// (Increment 2: gemm_dense, rmsnorm, softmax, rope, index_select, silu;
-/// KV writes + in-place unary already write into a fixed buffer).
+/// Increment 1 covered binary elementwise; Increment 2 adds the dense
+/// decode families (matmul, softmax, rope, index_select, and the unary
+/// activations incl. silu). `rms_norm` is intentionally NOT here yet: its
+/// kernel allocates a per-row RMS scratch buffer, which needs the
+/// persistent-scratch handling that lands with the DecodeSession
+/// (Increment 3) — until then it is a surfaced capture gap, not a silent
+/// break. `Op::Contiguize` (a kernel that allocates) is likewise absent;
+/// a well-formed persistent-decode graph should carry views, not
+/// materializing contiguizes, and capture_decode surfaces any it hits.
 ///
 /// [`capture_decode`]: PipelinedExecutor::capture_decode
 fn op_kind_is_capture_writeinto(op: OpKind) -> bool {
     matches!(
         op,
+        // Binary elementwise (Increment 1) — residual + gating.
         OpKind::AddElementwise
             | OpKind::SubElementwise
             | OpKind::MulElementwise
@@ -217,6 +223,18 @@ fn op_kind_is_capture_writeinto(op: OpKind) -> bool {
             | OpKind::MinimumElementwise
             | OpKind::PowElementwise
             | OpKind::RemElementwise
+            // Dense decode families (Increment 2).
+            | OpKind::MatMul
+            | OpKind::SoftmaxLastDim
+            | OpKind::LogSoftmaxLastDim
+            | OpKind::IndexSelect
+            | OpKind::Rope
+            // Unary activations (all unary wrappers are write-into +
+            // workspace-free); silu is the FFN gate, gelu the common
+            // alternative.
+            | OpKind::SiluElementwise
+            | OpKind::GeluElementwise
+            | OpKind::GeluErfElementwise
     )
 }
 

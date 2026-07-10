@@ -82,6 +82,59 @@ fn unary_run(
     op_label: &'static str,
     dtype_size_bytes: usize,
 ) -> Result<CudaStorageBytes> {
+    // Size the output from the caller's layout when supplied, else from
+    // the byte buffer's length (binding-table callers that haven't
+    // migrated to layout-passing). `unary_run_into` re-derives + validates
+    // the same numel against the buffer it's handed.
+    let numel = match src_layout {
+        Some(l) => l.shape().elem_count(),
+        None => src.len_bytes() / dtype_size_bytes.max(1),
+    };
+    let out_bytes = numel * dtype_size_bytes;
+    let device = src.device().clone();
+    if out_bytes == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+    let out = CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes);
+    unary_run_into(
+        src,
+        src_layout,
+        &out,
+        contig_run,
+        strided_run,
+        workspace_size_fn,
+        op_label,
+        dtype_size_bytes,
+    )?;
+    Ok(out)
+}
+
+/// Write-into-output unary driver (CapturedRun executor build-out).
+///
+/// Identical elementwise math to [`unary_run`], but writes into the
+/// caller-provided `out` buffer instead of allocating one — the enabler
+/// for the pipelined executor's persistent-output (capture) mode where a
+/// fixed-address output is written in place so **no device allocation
+/// happens** (mandatory inside a CUDA-graph capture scope). The *scratch
+/// workspace* is still allocated when the kernel needs one (`workspace_size_fn`
+/// returns >0) — that's not the output, and the write-into contract only
+/// bans allocating the output. Byte-identical result to the alloc-and-return
+/// path for a same-sized `out`.
+///
+/// `out` must already hold at least `numel * dtype_size_bytes` bytes; a
+/// smaller buffer is a surfaced error, never an out-of-bounds device write.
+#[allow(clippy::too_many_arguments)]
+fn unary_run_into(
+    src: &CudaStorageBytes,
+    src_layout: Option<&Layout>,
+    out: &CudaStorageBytes,
+    contig_run: UnaryContigRun,
+    strided_run: UnaryStridedRun,
+    workspace_size_fn: Option<WorkspaceSizeFn>,
+    op_label: &'static str,
+    dtype_size_bytes: usize,
+) -> Result<()> {
     // When the caller supplies a layout, trust it. When they don't
     // (binding-table callers that haven't migrated to layout-passing),
     // derive a 1-D contiguous layout from the byte buffer's length —
@@ -99,9 +152,16 @@ fn unary_run(
     let out_bytes = (numel as usize) * dtype_size_bytes;
     let device = src.device().clone();
     if out_bytes == 0 {
-        return CudaStorageBytes::alloc(&device, 0);
+        return Ok(());
     }
-    let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+    if out.len_bytes() < out_bytes {
+        return Err(fuel_ir::Error::Msg(format!(
+            "{op_label}: write-into output buffer too small ({} < {} bytes)",
+            out.len_bytes(),
+            out_bytes,
+        ))
+        .bt());
+    }
     let workspace_bytes = match workspace_size_fn {
         Some(f) => unsafe { f(numel) },
         None => 0,
@@ -109,7 +169,7 @@ fn unary_run(
     let scratch = Workspace::alloc(&device, workspace_bytes)?;
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
     let x_ptr = src.buffer().as_raw().0 as *const std::ffi::c_void;
-    let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
+    let y_ptr = out.buffer().as_raw().0 as *mut std::ffi::c_void;
 
     let contig = is_contiguous_zero_offset(layout);
     let status = if contig {
@@ -149,11 +209,7 @@ fn unary_run(
         }
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(
-        Arc::new(out_buf),
-        device,
-        out_bytes,
-    ))
+    Ok(())
 }
 
 /// True when `layout` represents a contiguous, zero-offset view over
@@ -225,6 +281,27 @@ macro_rules! unary_kernel {
                 unary_run(
                     src,
                     layout,
+                    sys::[<baracuda_kernels_ $sys_stem _run>],
+                    sys::[<baracuda_kernels_ $sys_stem _strided_run>],
+                    None,
+                    $op_label,
+                    $dtype_size,
+                )
+            }
+
+            #[doc = concat!(
+                "Write-into-output variant of baracuda unary `", $op_label,
+                "` — writes into `out` (no output alloc; CapturedRun capture mode)."
+            )]
+            pub fn [<$name _into>](
+                src: &CudaStorageBytes,
+                layout: Option<&Layout>,
+                out: &CudaStorageBytes,
+            ) -> Result<()> {
+                unary_run_into(
+                    src,
+                    layout,
+                    out,
                     sys::[<baracuda_kernels_ $sys_stem _run>],
                     sys::[<baracuda_kernels_ $sys_stem _strided_run>],
                     None,

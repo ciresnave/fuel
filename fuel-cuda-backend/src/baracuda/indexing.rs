@@ -49,6 +49,7 @@ type IndexSelectRun = unsafe extern "C" fn(
 ///
 /// `src_layout` is `[outer_count, source_dim_size, inner_count]`
 /// in elements; the source dim size is the middle one.
+#[allow(clippy::too_many_arguments)]
 fn index_select_run(
     src: &CudaStorageBytes,
     idx: &CudaStorageBytes,
@@ -67,6 +68,61 @@ fn index_select_run(
         return CudaStorageBytes::alloc(&device, 0);
     }
     let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+    let out = CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes);
+    index_select_run_into(
+        src,
+        idx,
+        outer_count,
+        source_dim_size,
+        n_indices,
+        inner_count,
+        &out,
+        kernel,
+        op_label,
+        dtype_size_bytes,
+    )?;
+    Ok(out)
+}
+
+/// Write-into-output IndexSelect driver (CapturedRun executor build-out).
+///
+/// Identical gather-by-index math to [`index_select_run`], but writes into
+/// the caller-provided `out` buffer instead of allocating one — the enabler
+/// for the pipelined executor's persistent-output (capture) mode where a
+/// fixed-address output is written in place so **no device allocation
+/// happens** (mandatory inside a CUDA-graph capture scope). Byte-identical
+/// result to the alloc-and-return path for a same-sized `out`.
+///
+/// `out` must already hold at least
+/// `outer_count * n_indices * inner_count * dtype_size_bytes` bytes; a
+/// smaller buffer is a surfaced error, never an out-of-bounds device write.
+#[allow(clippy::too_many_arguments)]
+fn index_select_run_into(
+    src: &CudaStorageBytes,
+    idx: &CudaStorageBytes,
+    outer_count: usize,
+    source_dim_size: usize,
+    n_indices: usize,
+    inner_count: usize,
+    out: &CudaStorageBytes,
+    kernel: IndexSelectRun,
+    op_label: &'static str,
+    dtype_size_bytes: usize,
+) -> Result<()> {
+    let device = src.device().clone();
+    let out_numel = outer_count * n_indices * inner_count;
+    let out_bytes = out_numel * dtype_size_bytes;
+    if out_bytes == 0 {
+        return Ok(());
+    }
+    if out.len_bytes() < out_bytes {
+        return Err(fuel_ir::Error::Msg(format!(
+            "{op_label}: write-into output buffer too small ({} < {} bytes)",
+            out.len_bytes(),
+            out_bytes,
+        ))
+        .bt());
+    }
     let scratch = Workspace::alloc(&device, 0)?;
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
 
@@ -95,7 +151,7 @@ fn index_select_run(
 
     let src_ptr = src.buffer().as_raw().0 as *const std::ffi::c_void;
     let idx_ptr = idx.buffer().as_raw().0 as *const std::ffi::c_void;
-    let out_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
+    let out_ptr = out.buffer().as_raw().0 as *mut std::ffi::c_void;
 
     let status = unsafe {
         kernel(
@@ -115,11 +171,7 @@ fn index_select_run(
         )
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(
-        Arc::new(out_buf),
-        device,
-        out_bytes,
-    ))
+    Ok(())
 }
 
 macro_rules! index_select_kernel {
@@ -142,6 +194,34 @@ macro_rules! index_select_kernel {
                     source_dim_size,
                     n_indices,
                     inner_count,
+                    sys::[<baracuda_kernels_index_select_ $sys_stem _run>],
+                    $op_label,
+                    $dtype_size,
+                )
+            }
+
+            #[doc = concat!(
+                "Write-into-output variant of baracuda `", $op_label,
+                "` — writes into `out` (no alloc; CapturedRun capture mode)."
+            )]
+            #[allow(clippy::too_many_arguments)]
+            pub fn [<$name _into>](
+                src: &CudaStorageBytes,
+                idx: &CudaStorageBytes,
+                outer_count: usize,
+                source_dim_size: usize,
+                n_indices: usize,
+                inner_count: usize,
+                out: &CudaStorageBytes,
+            ) -> Result<()> {
+                index_select_run_into(
+                    src,
+                    idx,
+                    outer_count,
+                    source_dim_size,
+                    n_indices,
+                    inner_count,
+                    out,
                     sys::[<baracuda_kernels_index_select_ $sys_stem _run>],
                     $op_label,
                     $dtype_size,
