@@ -107,7 +107,8 @@ impl BinaryStrides {
 }
 
 /// Core binary-elementwise driver. Mirrors `unary_run`'s shape but
-/// takes two input pointers + their strides.
+/// takes two input pointers + their strides. Allocates a fresh output
+/// and delegates the launch to [`binary_run_into`].
 fn binary_run(
     lhs: &CudaStorageBytes,
     rhs: &CudaStorageBytes,
@@ -118,6 +119,53 @@ fn binary_run(
     op_label: &'static str,
     dtype_size_bytes: usize,
 ) -> Result<CudaStorageBytes> {
+    // Size the output from lhs (post-broadcast lhs shape == output shape
+    // at this layer — the graph inserts explicit Op::BroadcastTo, so both
+    // operands already carry the output dims). `binary_run_into` re-derives
+    // and validates the same numel against the buffer it's handed.
+    let numel = match lhs_layout {
+        Some(l) => l.shape().elem_count(),
+        None => lhs.len_bytes() / dtype_size_bytes.max(1),
+    };
+    let out_bytes = numel * dtype_size_bytes;
+    let device = lhs.device().clone();
+    if out_bytes == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+    let out = CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes);
+    binary_run_into(
+        lhs, rhs, lhs_layout, rhs_layout, &out, contig_run, strided_run, op_label,
+        dtype_size_bytes,
+    )?;
+    Ok(out)
+}
+
+/// Write-into-output binary driver (CapturedRun executor build-out).
+///
+/// Identical elementwise math to [`binary_run`], but writes into the
+/// caller-provided `out` buffer instead of allocating one. This is the
+/// enabler for the pipelined executor's persistent-output (capture) mode:
+/// a FIXED-ADDRESS output buffer is written in place so **no device
+/// allocation happens** — mandatory inside a CUDA-graph capture scope,
+/// where both alloc and host sync are illegal. Byte-identical result to
+/// the alloc-and-return path for a same-sized `out`.
+///
+/// `out` must already hold at least `numel * dtype_size_bytes` bytes
+/// (the executor pre-sizes it from the node's output shape); a smaller
+/// buffer is a surfaced error, never an out-of-bounds device write.
+#[allow(clippy::too_many_arguments)]
+fn binary_run_into(
+    lhs: &CudaStorageBytes,
+    rhs: &CudaStorageBytes,
+    lhs_layout: Option<&Layout>,
+    rhs_layout: Option<&Layout>,
+    out: &CudaStorageBytes,
+    contig_run: BinaryContigRun,
+    strided_run: BinaryStridedRun,
+    op_label: &'static str,
+    dtype_size_bytes: usize,
+) -> Result<()> {
     let derived_lhs_layout;
     let derived_rhs_layout;
     let lhs_l = match lhs_layout {
@@ -146,14 +194,21 @@ fn binary_run(
         .bt());
     }
     if out_bytes == 0 {
-        return CudaStorageBytes::alloc(&device, 0);
+        return Ok(());
     }
-    let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+    if out.len_bytes() < out_bytes {
+        return Err(fuel_ir::Error::Msg(format!(
+            "{op_label}: write-into output buffer too small ({} < {} bytes)",
+            out.len_bytes(),
+            out_bytes,
+        ))
+        .bt());
+    }
     let scratch = Workspace::alloc(&device, 0)?;
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
     let a_ptr = lhs.buffer().as_raw().0 as *const std::ffi::c_void;
     let b_ptr = rhs.buffer().as_raw().0 as *const std::ffi::c_void;
-    let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
+    let y_ptr = out.buffer().as_raw().0 as *mut std::ffi::c_void;
 
     let contig = lhs_l.is_contiguous()
         && lhs_l.start_offset() == 0
@@ -195,14 +250,14 @@ fn binary_run(
         }
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(
-        Arc::new(out_buf),
-        device,
-        out_bytes,
-    ))
+    Ok(())
 }
 
-/// Manifest macro for one (kind, dtype) binary entry.
+/// Manifest macro for one (kind, dtype) binary entry. Emits BOTH the
+/// allocating entry (`$name` → `Result<CudaStorageBytes>`) and its
+/// write-into sibling (`$name _into` → writes into a caller-provided
+/// `out`, `Result<()>`) — the latter powers the executor's
+/// persistent-output CUDA-graph capture mode (no alloc inside capture).
 macro_rules! binary_kernel {
     ($name:ident, $sys_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
         ::paste::paste! {
@@ -218,6 +273,30 @@ macro_rules! binary_kernel {
                     rhs,
                     lhs_layout,
                     rhs_layout,
+                    sys::[<baracuda_kernels_binary_ $sys_stem _run>],
+                    sys::[<baracuda_kernels_binary_ $sys_stem _strided_run>],
+                    $op_label,
+                    $dtype_size,
+                )
+            }
+
+            #[doc = concat!(
+                "Write-into-output variant of baracuda binary `", $op_label,
+                "` — writes into `out` (no alloc; CapturedRun capture mode)."
+            )]
+            pub fn [<$name _into>](
+                lhs: &CudaStorageBytes,
+                rhs: &CudaStorageBytes,
+                lhs_layout: Option<&Layout>,
+                rhs_layout: Option<&Layout>,
+                out: &CudaStorageBytes,
+            ) -> Result<()> {
+                binary_run_into(
+                    lhs,
+                    rhs,
+                    lhs_layout,
+                    rhs_layout,
+                    out,
                     sys::[<baracuda_kernels_binary_ $sys_stem _run>],
                     sys::[<baracuda_kernels_binary_ $sys_stem _strided_run>],
                     $op_label,
