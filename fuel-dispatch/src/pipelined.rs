@@ -144,6 +144,105 @@ pub(crate) struct StreamingPick {
 /// and as the output cache (built up during execution).
 pub type StorageCache = HashMap<NodeId, Arc<RwLock<Storage>>>;
 
+/// Persistent per-node output buffers for CUDA-graph capture (the
+/// "CapturedRun executor" build-out). Maps each compute node's [`NodeId`]
+/// to a FIXED-ADDRESS output [`Storage`] Arc that survives across realizes,
+/// so a captured graph's baked kernel-argument addresses stay valid on
+/// replay.
+///
+/// Two modes, both driven by the executor's Kernel arm:
+/// - **`Record`** (warm run): the executor allocates each kernel output as
+///   usual AND records the Arc here. Produces the fixed buffers.
+/// - **`Reuse`** (capture / replay run): the executor REUSES the recorded
+///   Arc for each node — no allocation (mandatory inside a capture scope) —
+///   and the kernel's write-into path writes into it in place.
+///
+/// `None` (the param default at every existing realize call site) preserves
+/// byte-identical behavior: fresh alloc every realize, nothing recorded.
+pub struct PersistentOutputs {
+    map: HashMap<NodeId, Arc<RwLock<Storage>>>,
+    mode: PersistentMode,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PersistentMode {
+    /// Warm run: allocate + record each kernel output.
+    Record,
+    /// Capture / replay run: reuse the recorded buffer (no alloc).
+    Reuse,
+}
+
+impl PersistentOutputs {
+    /// A fresh recording map for the warm run.
+    pub fn recording() -> Self {
+        Self { map: HashMap::new(), mode: PersistentMode::Record }
+    }
+
+    /// A reuse map for the capture / replay run, seeded with the buffers
+    /// a prior warm run recorded.
+    pub fn reuse(map: HashMap<NodeId, Arc<RwLock<Storage>>>) -> Self {
+        Self { map, mode: PersistentMode::Reuse }
+    }
+
+    /// Consume, yielding the recorded NodeId→buffer map (to seed a
+    /// [`reuse`](Self::reuse) map for the capture run).
+    pub fn into_map(self) -> HashMap<NodeId, Arc<RwLock<Storage>>> {
+        self.map
+    }
+}
+
+/// Whether a kernel op's CUDA dispatch wrapper writes its result INTO the
+/// executor-provided `outputs[0]` buffer (rather than allocating a fresh
+/// output and replacing it). Only write-into ops are safe in the
+/// executor's Reuse (capture) mode: a replace-the-buffer wrapper would
+/// allocate inside the capture scope AND change the output's device
+/// address, invalidating the captured graph. [`capture_decode`] rejects
+/// any graph whose compute nodes fall outside this set — a surfaced
+/// capability gap (telemetry-worthy), never a silent miscompile.
+///
+/// Increment 1 of the CapturedRun build-out covers binary elementwise.
+/// The set expands as more decode families gain write-into variants
+/// (Increment 2: gemm_dense, rmsnorm, softmax, rope, index_select, silu;
+/// KV writes + in-place unary already write into a fixed buffer).
+///
+/// [`capture_decode`]: PipelinedExecutor::capture_decode
+fn op_kind_is_capture_writeinto(op: OpKind) -> bool {
+    matches!(
+        op,
+        OpKind::AddElementwise
+            | OpKind::SubElementwise
+            | OpKind::MulElementwise
+            | OpKind::DivElementwise
+            | OpKind::MaximumElementwise
+            | OpKind::MinimumElementwise
+            | OpKind::PowElementwise
+            | OpKind::RemElementwise
+    )
+}
+
+/// The product of [`PipelinedExecutor::capture_decode`]: a replayable
+/// CUDA-graph capture of a single-device decode step plus the handle to
+/// the fixed output buffer the captured launches write into.
+///
+/// Replay contract: update the fixed INPUT buffers (the Arcs passed into
+/// `capture_decode`) in place via H2D, call [`run`](Self::run)`.replay()`,
+/// then read [`output`](Self::output) — the captured launches recompute
+/// into it at the same device addresses. `persistent` holds every compute
+/// node's fixed buffer (the same addresses baked into the graph), exposed
+/// so a caller can inspect / retain them across replays.
+#[cfg(feature = "cuda")]
+pub struct CapturedDecode {
+    /// The instantiated, replayable capture.
+    pub run: fuel_cuda_backend::CapturedRun,
+    /// The realize target's fixed output buffer (written by replay).
+    pub output: Arc<RwLock<Storage>>,
+    /// The target's resolved output [`Layout`].
+    pub output_layout: Layout,
+    /// Every compute node's fixed output buffer (the capture-baked
+    /// addresses). Retained so they outlive the [`CapturedRun`].
+    pub persistent: HashMap<NodeId, Arc<RwLock<Storage>>>,
+}
+
 /// What flavor of work item the executor is processing.
 /// Disambiguates the four cases:
 enum WorkItemKind {
@@ -726,6 +825,207 @@ impl PipelinedExecutor {
         Ok(Some(StreamingPick { selector, lookup }))
     }
 
+    /// Capture a single-device CUDA decode step's kernel launches into a
+    /// replayable [`CapturedRun`] (the CapturedRun executor build-out).
+    ///
+    /// Runs the graph TWICE against fixed-address buffers:
+    ///   1. **Warm (record)**: realize normally into a fresh cache cloned
+    ///      from `inputs`, recording every compute node's output Arc as its
+    ///      fixed capture buffer, and synchronizing so the result is stable.
+    ///   2. **Capture (reuse)**: re-issue the same launch sequence — each
+    ///      node writing INTO its recorded buffer via the write-into kernel
+    ///      path (no allocation) — inside [`CudaDevice::capture_run`],
+    ///      producing an instantiated [`CapturedRun`].
+    ///
+    /// Both passes share the SAME input Arcs (cloned map, shared buffers)
+    /// and the SAME recorded output buffers, so every device address the
+    /// captured graph bakes in is stable for replay. To replay a later
+    /// token: overwrite the fixed input buffers in place (H2D), call
+    /// `run.replay(dev)`, then read `output`.
+    ///
+    /// Contract (surfaced as `Err`, never a panic or a mid-capture alloc):
+    ///   - CUDA-only, single device: every compute node targets `Cuda`;
+    ///     no cross-device `Op::Copy`/`Move` in the graph.
+    ///   - Every compute node's op must have a write-into CUDA wrapper
+    ///     (`op_kind_is_capture_writeinto`); an unsupported op surfaces a
+    ///     clear capability gap rather than silently breaking the capture.
+    ///   - Inputs must be contiguous (no auto-Contiguize alloc in capture).
+    #[cfg(feature = "cuda")]
+    pub fn capture_decode(
+        graph: Arc<RwLock<Graph>>,
+        target: NodeId,
+        inputs: StorageCache,
+        sym_env: SymEnv,
+    ) -> Result<CapturedDecode> {
+        use fuel_memory::BackendStorage;
+
+        // Front matter mirrors realize_inner: safety copies + frozen order.
+        {
+            let mut g = graph.write().map_err(|_| poisoned("graph lock"))?;
+            let effective_roots = extend_with_side_effect_roots(&g, &[target]);
+            insert_safety_copies(&mut g, &effective_roots);
+        }
+        let (compiler_work, _wait_set, seed_layouts) = {
+            let g = graph.read().map_err(|_| poisoned("graph lock"))?;
+            let effective_roots = extend_with_side_effect_roots(&g, &[target]);
+            let (work, wait_set) =
+                compiler_work_and_wait_set_for(&g, &effective_roots, &OrderSource::Default);
+            let mut layouts: HashMap<NodeId, Layout> = HashMap::with_capacity(inputs.len());
+            for &id in inputs.keys() {
+                layouts.insert(id, g.layout(id));
+            }
+            (work, wait_set, layouts)
+        };
+
+        // Compile every WorkItem once (one compiler thread) and collect them
+        // so both passes replay the identical sequence.
+        let (tx, rx) = channel::<Result<WorkItem>>();
+        let graph_for_compiler = Arc::clone(&graph);
+        let compiler = thread::spawn(move || {
+            compiler_thread_body(graph_for_compiler, compiler_work, sym_env, tx);
+        });
+        let mut items: Vec<WorkItem> = Vec::new();
+        for item in rx {
+            items.push(item?);
+        }
+        compiler
+            .join()
+            .map_err(|_| Error::Msg("compiler thread panicked".to_string()).bt())?;
+
+        // Capture-safety validation — surface every gap up front, before any
+        // launch, so a capture scope is never entered on an unsupported graph.
+        for item in &items {
+            match &item.kind {
+                WorkItemKind::Copy { .. } | WorkItemKind::Move { .. } => {
+                    return Err(Error::Msg(format!(
+                        "capture_decode: graph has a cross-device copy/move at node {:?}; \
+                         capture requires a single-device CUDA decode step",
+                        item.node_id,
+                    ))
+                    .bt());
+                }
+                WorkItemKind::Kernel => {
+                    if item.target_backend != BackendId::Cuda {
+                        return Err(Error::Msg(format!(
+                            "capture_decode: kernel node {:?} targets {:?}, not Cuda",
+                            item.node_id, item.target_backend,
+                        ))
+                        .bt());
+                    }
+                    let op = item
+                        .compiled
+                        .as_ref()
+                        .map(|c| c.op)
+                        .ok_or_else(|| {
+                            Error::Msg(format!(
+                                "capture_decode: kernel node {:?} has no compiled op",
+                                item.node_id,
+                            ))
+                            .bt()
+                        })?;
+                    if !op_kind_is_capture_writeinto(op) {
+                        return Err(Error::Msg(format!(
+                            "capture_decode: op {:?} (node {:?}) has no write-into CUDA \
+                             wrapper yet — capture unsupported for this op. Extend \
+                             op_kind_is_capture_writeinto once its write-into variant lands.",
+                            op, item.node_id,
+                        ))
+                        .bt());
+                    }
+                }
+                // View / adopt / slot kinds: no alloc, no launch — capture-safe.
+                _ => {}
+            }
+        }
+
+        // ---- Pass 1: warm (record) — fixed buffers + a synchronized result --
+        let mut persistent = PersistentOutputs::recording();
+        let mut warm_cache: StorageCache = inputs.clone();
+        let mut warm_layouts = seed_layouts.clone();
+        let mut warm_syms = SymEnv::new();
+        for item in &items {
+            let _handle = execute_work_item(
+                item,
+                &mut warm_cache,
+                &mut warm_layouts,
+                &mut warm_syms,
+                false,
+                Some(&mut persistent),
+            )
+            .map_err(|e| with_node_location(&graph, item.node_id, e))?;
+        }
+        // Flush all warm launches before capture (device idle; result stable).
+        sync_active_cuda_devices(&warm_cache)?;
+
+        let output = warm_cache.get(&target).cloned().ok_or_else(|| {
+            Error::Msg(format!(
+                "capture_decode: target {:?} not realized in warm run",
+                target,
+            ))
+            .bt()
+        })?;
+        let output_layout = warm_layouts.get(&target).cloned().ok_or_else(|| {
+            Error::Msg(format!("capture_decode: target {:?} has no layout", target)).bt()
+        })?;
+
+        // Derive the CUDA device from the target's storage for capture_run.
+        let device = {
+            let guard = output.read().map_err(|_| poisoned("output storage"))?;
+            match &guard.inner {
+                BackendStorage::Cuda(c) => c.device().clone(),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "capture_decode: target {:?} is BackendStorage::{:?}, not Cuda",
+                        target,
+                        std::mem::discriminant(other),
+                    ))
+                    .bt());
+                }
+            }
+        };
+
+        // ---- Pass 2: capture (reuse) — record the launch sequence ----------
+        let mut reuse = PersistentOutputs::reuse(persistent.into_map());
+        let mut cap_cache: StorageCache = inputs;
+        let mut cap_layouts = seed_layouts;
+        let mut cap_syms = SymEnv::new();
+        let mut inner_err: Option<Error> = None;
+        let items_ref = &items;
+        let graph_ref = &graph;
+        let run = device.capture_run(|_stream| {
+            // Inside the capture scope: NO device alloc, NO host sync. Each
+            // kernel launches on device.stream() (now capturing) and writes
+            // into its reused fixed buffer.
+            for item in items_ref {
+                match execute_work_item(
+                    item,
+                    &mut cap_cache,
+                    &mut cap_layouts,
+                    &mut cap_syms,
+                    false,
+                    Some(&mut reuse),
+                ) {
+                    Ok(_handle) => {}
+                    Err(e) => {
+                        inner_err = Some(with_node_location(graph_ref, item.node_id, e));
+                        break;
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        if let Some(e) = inner_err {
+            return Err(e);
+        }
+
+        Ok(CapturedDecode {
+            run,
+            output,
+            output_layout,
+            persistent: reuse.into_map(),
+        })
+    }
+
     fn realize_inner(
         graph: Arc<RwLock<Graph>>,
         target: NodeId,
@@ -923,6 +1223,9 @@ impl PipelinedExecutor {
                 &mut layout_cache,
                 &mut produced_syms,
                 will_be_waited(&wait_set, item.node_id),
+                // No persistent-output mode on the standard realize paths —
+                // fresh alloc per node, byte-identical to pre-CapturedRun.
+                None,
             )
             .map_err(|e| with_node_location(&graph, item.node_id, e))?;
             store_handle(&mut handles, item.node_id, handle);
@@ -1285,6 +1588,9 @@ impl PipelinedExecutor {
                 &mut layout_cache,
                 &mut produced_syms,
                 will_be_waited(&wait_set, item.node_id),
+                // No persistent-output mode on the standard realize paths —
+                // fresh alloc per node, byte-identical to pre-CapturedRun.
+                None,
             )
             .map_err(|e| with_node_location(&graph, item.node_id, e))?;
             store_handle(&mut handles, item.node_id, handle);
@@ -4474,6 +4780,13 @@ fn execute_work_item(
     // to every `execute_compiled_with_wait_hint` call below so a CUDA
     // kernel with no mid-walk reader skips its `Event` entirely.
     will_be_waited: bool,
+    // CapturedRun executor build-out: persistent-output mode. `None` on
+    // every existing realize path ⇒ byte-identical (fresh alloc, nothing
+    // recorded). `Some(Record)` records each Kernel output's fixed Arc;
+    // `Some(Reuse)` reuses the recorded buffer (no alloc — capture-safe)
+    // and the write-into kernel path writes into it in place. Only the
+    // `Kernel` arm consults it; every other arm ignores it.
+    mut persistent: Option<&mut PersistentOutputs>,
 ) -> Result<CompletionHandle> {
     match &item.kind {
         WorkItemKind::ConstAdopt => {
@@ -5454,6 +5767,29 @@ fn execute_work_item(
                 }
                 None => (item.elem_count, None),
             };
+            // CapturedRun build-out: in Reuse (capture/replay) mode, reuse the
+            // FIXED-ADDRESS buffer recorded during the warm run instead of
+            // allocating — device allocation is illegal inside a capture scope,
+            // and reusing the same address is what makes the captured graph's
+            // baked kernel arguments valid on replay. In Record (warm) or None
+            // mode, allocate as usual (below).
+            let reuse_arc = match &persistent {
+                Some(p) if p.mode == PersistentMode::Reuse => Some(
+                    p.map.get(&item.node_id).cloned().ok_or_else(|| {
+                        Error::Msg(format!(
+                            "PipelinedExecutor: capture (reuse) mode has no persistent \
+                             output buffer for kernel node {:?}; the warm (record) run \
+                             must realize every kernel node before capture",
+                            item.node_id,
+                        ))
+                        .bt()
+                    })?,
+                ),
+                _ => None,
+            };
+            let mut output_arcs = if let Some(arc) = reuse_arc {
+                vec![arc]
+            } else {
             let output = match item.target_backend {
                 BackendId::Cpu => fuel_memory::alloc_cpu_zeroed(item.dtype, alloc_elem_count)?,
                 #[cfg(feature = "cuda")]
@@ -5549,7 +5885,8 @@ fn execute_work_item(
                 Some(bundle) => output.with_bundle(bundle)?,
                 None => output,
             };
-            let mut output_arcs = vec![Arc::new(RwLock::new(output))];
+            vec![Arc::new(RwLock::new(output))]
+            };
 
             // A4b-1: defer the wait — return the handle to the realize loop.
             let handle =
@@ -5558,6 +5895,16 @@ fn execute_work_item(
                 )?;
 
             let arc = output_arcs.into_iter().next().expect("one output");
+
+            // CapturedRun build-out: Record (warm) mode remembers this node's
+            // fixed output buffer so the capture run reuses the identical
+            // device address. No-op in Reuse mode (the buffer came FROM the
+            // map) and in None mode.
+            if let Some(p) = persistent.as_deref_mut() {
+                if p.mode == PersistentMode::Record {
+                    p.map.insert(item.node_id, Arc::clone(&arc));
+                }
+            }
 
             // Data-determined dynamic-shapes seam (increment 2a): a
             // producer that computes a runtime count publishes it into the
@@ -6788,6 +7135,118 @@ mod tests {
         } else {
             panic!("expected CPU output");
         }
+    }
+
+    /// CapturedRun executor build-out (Increment 1): capture a 2-op binary
+    /// chain `z = (a + b) * c` THROUGH the pipelined executor's
+    /// persistent-output mode, then prove the three capture guarantees on a
+    /// live GPU:
+    ///   1. after capture, the fixed output buffer holds the warm-run result
+    ///      (capture RECORDS launches, it does not execute them);
+    ///   2. `replay()` recomputes bit-exactly into the SAME fixed buffer;
+    ///   3. replay reads the FIXED input addresses — overwriting an input
+    ///      buffer in place and replaying yields the new result, matching an
+    ///      independent uncaptured `realize`. This is the whole mechanism:
+    ///      the write-into binary wrapper + the executor's reuse mode +
+    ///      `capture_run` compose into a replayable decode-step graph.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn capture_decode_binary_chain_replays_bit_exact_cuda() {
+        use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
+        use fuel_ir::Shape;
+        use fuel_memory::BackendStorage;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+
+        // z = (a + b) * c, shape [4]. `y = a + b` is a persistent
+        // INTERMEDIATE; `z` is the persistent target — both fixed-address.
+        let build = || -> (Arc<RwLock<Graph>>, NodeId, NodeId, NodeId, NodeId) {
+            let graph = Arc::new(RwLock::new(Graph::new()));
+            let (a, b, c, z) = {
+                let mut g = graph.write().unwrap();
+                let a = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[4]), dtype: DType::F32 });
+                let b = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[4]), dtype: DType::F32 });
+                let c = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[4]), dtype: DType::F32 });
+                let y = g.push(Node { op: Op::Add, inputs: vec![a, b], shape: Shape::from_dims(&[4]), dtype: DType::F32 });
+                let z = g.push(Node { op: Op::Mul, inputs: vec![y, c], shape: Shape::from_dims(&[4]), dtype: DType::F32 });
+                g.set_target_backend(y, BackendId::Cuda);
+                g.set_target_backend(z, BackendId::Cuda);
+                (a, b, c, z)
+            };
+            (graph, a, b, c, z)
+        };
+
+        let up = |v: &[f32]| -> Arc<RwLock<Storage>> {
+            let bytes: &[u8] = bytemuck::cast_slice(v);
+            let cb = CudaStorageBytes::from_cpu_bytes(&dev, bytes).expect("h2d");
+            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(cb), DType::F32)))
+        };
+        let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
+            let g = arc.read().unwrap();
+            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            let host = c.to_cpu_bytes().expect("d2h");
+            bytemuck::cast_slice(&host).to_vec()
+        };
+
+        let a_data = [1.0_f32, 2.0, 3.0, 4.0];
+        let b_data = [10.0_f32, 20.0, 30.0, 40.0];
+        let c_data = [2.0_f32, 2.0, 2.0, 2.0];
+        let expect0 = [22.0_f32, 44.0, 66.0, 88.0]; // (a+b)*c
+
+        // Fixed input Arcs (shared into capture; overwritten in place later).
+        let a_arc = up(&a_data);
+        let b_arc = up(&b_data);
+        let c_arc = up(&c_data);
+
+        let (graph, a, b, c, z) = build();
+        let mut inputs = StorageCache::new();
+        inputs.insert(a, a_arc.clone());
+        inputs.insert(b, b_arc.clone());
+        inputs.insert(c, c_arc.clone());
+
+        let captured = PipelinedExecutor::capture_decode(
+            Arc::clone(&graph),
+            z,
+            inputs,
+            SymEnv::default(),
+        )
+        .expect("capture_decode");
+
+        // (1) warm-run result sits in the captured output buffer.
+        assert_eq!(read(&captured.output), &expect0, "warm-run result after capture");
+
+        // (2) replay with the same inputs recomputes bit-exactly.
+        captured.run.replay(&dev).expect("replay");
+        dev.synchronize().expect("sync");
+        assert_eq!(read(&captured.output), &expect0, "replay reproduces result");
+
+        // (3) overwrite input `a` IN PLACE (same device address), replay ->
+        //     the new result flows from the FIXED input address. Compare to
+        //     an independent uncaptured realize with the same new input.
+        let a2 = [100.0_f32, 200.0, 300.0, 400.0];
+        {
+            let g = a_arc.read().unwrap();
+            let BackendStorage::Cuda(c) = &g.inner else { panic!("a not cuda") };
+            c.write_from_host(bytemuck::cast_slice(&a2)).expect("in-place H2D");
+        }
+        captured.run.replay(&dev).expect("replay 2");
+        dev.synchronize().expect("sync 2");
+        let got = read(&captured.output);
+
+        let (graph_ref, ar, br, cr, zr) = build();
+        let mut inputs_ref = StorageCache::new();
+        inputs_ref.insert(ar, up(&a2));
+        inputs_ref.insert(br, up(&b_data));
+        inputs_ref.insert(cr, up(&c_data));
+        let (ref_arc, _) =
+            PipelinedExecutor::realize(graph_ref, zr, inputs_ref).expect("ref realize");
+        let expect1 = read(&ref_arc); // (a2+b)*c = [220,440,660,880]
+        assert_eq!(got, expect1, "replay after in-place input update matches uncaptured realize");
+        assert_eq!(expect1, vec![220.0, 440.0, 660.0, 880.0]);
     }
 
     /// PR-C1 behavior contract: `realize_with_optimized_route` with an

@@ -96,9 +96,19 @@ macro_rules! cuda_unary_inplace_baracuda_wrapper {
     };
 }
 
-/// Generate one CUDA binary dispatch wrapper.
+/// Generate one CUDA binary dispatch wrapper. Writes the kernel output
+/// directly into the executor-provided `outputs[0]` buffer via the
+/// baracuda `_into` (write-into) driver — no internal alloc + swap.
+///
+/// Byte-identical to the prior alloc-and-replace for normal realizes (the
+/// executor pre-sizes `outputs[0]` from the node's output shape), and it
+/// saves one device allocation per op. Crucially, it is the enabler for
+/// persistent-output CUDA-graph capture: in the executor's capture mode
+/// `outputs[0]` is a FIXED-ADDRESS persistent buffer written in place, so
+/// no device allocation happens inside the capture scope (where both
+/// alloc and host sync are illegal).
 macro_rules! cuda_binary_baracuda_wrapper {
-    ($wrapper_name:ident, $baracuda_fn:path) => {
+    ($wrapper_name:ident, $baracuda_into_fn:path) => {
         pub fn $wrapper_name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
@@ -126,10 +136,8 @@ macro_rules! cuda_binary_baracuda_wrapper {
             let mut out_guard = write_storage(&outputs[0])?;
             let lhs_cuda = cuda_input(&lhs_guard)?;
             let rhs_cuda = cuda_input(&rhs_guard)?;
-            let result = $baracuda_fn(lhs_cuda, rhs_cuda, lhs_layout, rhs_layout)?;
             let out_cuda = cuda_output(&mut out_guard)?;
-            *out_cuda = result;
-            Ok(())
+            $baracuda_into_fn(lhs_cuda, rhs_cuda, lhs_layout, rhs_layout, out_cuda)
         }
     };
 }
@@ -2289,41 +2297,41 @@ pub mod binary {
     use super::*;
     use fuel_cuda_backend::baracuda::binary as bk;
 
-    cuda_binary_baracuda_wrapper!(add_f32, bk::binary_add_f32);
-    cuda_binary_baracuda_wrapper!(sub_f32, bk::binary_sub_f32);
-    cuda_binary_baracuda_wrapper!(mul_f32, bk::binary_mul_f32);
-    cuda_binary_baracuda_wrapper!(div_f32, bk::binary_div_f32);
-    cuda_binary_baracuda_wrapper!(maximum_f32, bk::binary_maximum_f32);
-    cuda_binary_baracuda_wrapper!(minimum_f32, bk::binary_minimum_f32);
-    cuda_binary_baracuda_wrapper!(pow_f32, bk::binary_pow_f32);
-    cuda_binary_baracuda_wrapper!(rem_f32, bk::binary_rem_f32);
+    cuda_binary_baracuda_wrapper!(add_f32, bk::binary_add_f32_into);
+    cuda_binary_baracuda_wrapper!(sub_f32, bk::binary_sub_f32_into);
+    cuda_binary_baracuda_wrapper!(mul_f32, bk::binary_mul_f32_into);
+    cuda_binary_baracuda_wrapper!(div_f32, bk::binary_div_f32_into);
+    cuda_binary_baracuda_wrapper!(maximum_f32, bk::binary_maximum_f32_into);
+    cuda_binary_baracuda_wrapper!(minimum_f32, bk::binary_minimum_f32_into);
+    cuda_binary_baracuda_wrapper!(pow_f32, bk::binary_pow_f32_into);
+    cuda_binary_baracuda_wrapper!(rem_f32, bk::binary_rem_f32_into);
 
-    cuda_binary_baracuda_wrapper!(add_f16, bk::binary_add_f16);
-    cuda_binary_baracuda_wrapper!(sub_f16, bk::binary_sub_f16);
-    cuda_binary_baracuda_wrapper!(mul_f16, bk::binary_mul_f16);
-    cuda_binary_baracuda_wrapper!(div_f16, bk::binary_div_f16);
-    cuda_binary_baracuda_wrapper!(maximum_f16, bk::binary_maximum_f16);
-    cuda_binary_baracuda_wrapper!(minimum_f16, bk::binary_minimum_f16);
-    cuda_binary_baracuda_wrapper!(pow_f16, bk::binary_pow_f16);
-    cuda_binary_baracuda_wrapper!(rem_f16, bk::binary_rem_f16);
+    cuda_binary_baracuda_wrapper!(add_f16, bk::binary_add_f16_into);
+    cuda_binary_baracuda_wrapper!(sub_f16, bk::binary_sub_f16_into);
+    cuda_binary_baracuda_wrapper!(mul_f16, bk::binary_mul_f16_into);
+    cuda_binary_baracuda_wrapper!(div_f16, bk::binary_div_f16_into);
+    cuda_binary_baracuda_wrapper!(maximum_f16, bk::binary_maximum_f16_into);
+    cuda_binary_baracuda_wrapper!(minimum_f16, bk::binary_minimum_f16_into);
+    cuda_binary_baracuda_wrapper!(pow_f16, bk::binary_pow_f16_into);
+    cuda_binary_baracuda_wrapper!(rem_f16, bk::binary_rem_f16_into);
 
-    cuda_binary_baracuda_wrapper!(add_bf16, bk::binary_add_bf16);
-    cuda_binary_baracuda_wrapper!(sub_bf16, bk::binary_sub_bf16);
-    cuda_binary_baracuda_wrapper!(mul_bf16, bk::binary_mul_bf16);
-    cuda_binary_baracuda_wrapper!(div_bf16, bk::binary_div_bf16);
-    cuda_binary_baracuda_wrapper!(maximum_bf16, bk::binary_maximum_bf16);
-    cuda_binary_baracuda_wrapper!(minimum_bf16, bk::binary_minimum_bf16);
-    cuda_binary_baracuda_wrapper!(pow_bf16, bk::binary_pow_bf16);
-    cuda_binary_baracuda_wrapper!(rem_bf16, bk::binary_rem_bf16);
+    cuda_binary_baracuda_wrapper!(add_bf16, bk::binary_add_bf16_into);
+    cuda_binary_baracuda_wrapper!(sub_bf16, bk::binary_sub_bf16_into);
+    cuda_binary_baracuda_wrapper!(mul_bf16, bk::binary_mul_bf16_into);
+    cuda_binary_baracuda_wrapper!(div_bf16, bk::binary_div_bf16_into);
+    cuda_binary_baracuda_wrapper!(maximum_bf16, bk::binary_maximum_bf16_into);
+    cuda_binary_baracuda_wrapper!(minimum_bf16, bk::binary_minimum_bf16_into);
+    cuda_binary_baracuda_wrapper!(pow_bf16, bk::binary_pow_bf16_into);
+    cuda_binary_baracuda_wrapper!(rem_bf16, bk::binary_rem_bf16_into);
 
-    cuda_binary_baracuda_wrapper!(add_f64, bk::binary_add_f64);
-    cuda_binary_baracuda_wrapper!(sub_f64, bk::binary_sub_f64);
-    cuda_binary_baracuda_wrapper!(mul_f64, bk::binary_mul_f64);
-    cuda_binary_baracuda_wrapper!(div_f64, bk::binary_div_f64);
-    cuda_binary_baracuda_wrapper!(maximum_f64, bk::binary_maximum_f64);
-    cuda_binary_baracuda_wrapper!(minimum_f64, bk::binary_minimum_f64);
-    cuda_binary_baracuda_wrapper!(pow_f64, bk::binary_pow_f64);
-    cuda_binary_baracuda_wrapper!(rem_f64, bk::binary_rem_f64);
+    cuda_binary_baracuda_wrapper!(add_f64, bk::binary_add_f64_into);
+    cuda_binary_baracuda_wrapper!(sub_f64, bk::binary_sub_f64_into);
+    cuda_binary_baracuda_wrapper!(mul_f64, bk::binary_mul_f64_into);
+    cuda_binary_baracuda_wrapper!(div_f64, bk::binary_div_f64_into);
+    cuda_binary_baracuda_wrapper!(maximum_f64, bk::binary_maximum_f64_into);
+    cuda_binary_baracuda_wrapper!(minimum_f64, bk::binary_minimum_f64_into);
+    cuda_binary_baracuda_wrapper!(pow_f64, bk::binary_pow_f64_into);
+    cuda_binary_baracuda_wrapper!(rem_f64, bk::binary_rem_f64_into);
 }
 
 // ===========================================================================
