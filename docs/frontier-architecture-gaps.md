@@ -141,10 +141,169 @@ downstream search wrapper would need from Fuel:
 
 | Gap | Status | What's needed | Home |
 | --- | --- | --- | --- |
-| **Batched multi-sequence decode** | Designed | Dynamic batch size + per-sequence lengths (ragged). The persistent decode graph is shape-keyed to `seq==1`, single sequence. Needed so M search hypotheses decode together. | "recorded future" in [symbolic-extents design](session-prompts/symbolic-extents-and-persistent-decode.md) (:369-371) → this doc (make it a work item) |
-| **Forkable / copy-on-write KV cache** | Absent | Cheap COW fork of a shared prefix into M divergent hypotheses. Today only `truncate_to` (rollback) + `cloned_persistent` (whole-map clone) exist. Paged attention gives the block substrate to build on. | orphan → this doc |
+| **Batched multi-sequence decode** | Designed | Dynamic batch size + per-sequence lengths (ragged). The persistent decode graph is shape-keyed to `seq==1`, single sequence. Needed so M search hypotheses decode together. **2026-07-10 audit: the kernel substrate already exists and is unused** — baracuda alpha.72's `flash_decoding_{f16,bf16}` already takes a real batch dim over independent sequences (`blockIdx.z=batch`, per-sequence strides; one shared `k_len` scalar per call, lockstep decode only — a pinned kernel contract, not an oversight); `gemm_dense` already does weight-broadcast batching (used today for GQA); `FlashAttn`'s shape rule is already batch-generic. The gap is graph/session construction — fuel-core/fuel-graph never build a batch>1 call — not kernel research. | "recorded future" in [symbolic-extents design](session-prompts/symbolic-extents-and-persistent-decode.md) (:369-371) → this doc (make it a work item) |
+| **Forkable / copy-on-write KV cache** | Absent | Cheap COW fork of a shared prefix into M divergent hypotheses. Today only `truncate_to` (rollback) + `cloned_persistent` (whole-map clone) exist. Paged attention gives the block substrate to build on. **2026-07-10 audit: confirmed there is no allocator to build on** — `Op::PagedAttn` (`fuel-core/src/lazy.rs:3253-3372`) is a bare compute-kernel signature (decomposes to `IndexSelect` gather + dense attention) with zero pool/refcounting infrastructure behind it — its one test hand-builds a trivial identity block table. The block-pool/COW subsystem (physical allocator, per-block refcounting, a real `BlockTable` type actually consumed by `KvCache`, refcount-aware eviction) is a from-scratch build comparable in scope to vLLM's own memory manager, not a wiring task. See the cross-branch-splicing entry below — its MVP recommendation sidesteps this allocator dependency entirely. | orphan → this doc |
+| **Cross-branch KV content splicing** (new, related but distinct) | Designed (this audit) | Copy KV/residual content between concurrently-decoding, *persistent* branches — not a fork-to-one-winner search, ongoing "trains of thought" that stay alive and can cross-pollinate mid-generation at the orchestrator's choice. Full audit, source citations, and the reevaluation-cost menu below. | this doc (§ below) + memory `parallel-branch-kv-sharing-audit` / `multi-agent-serving-goal` |
 | **Generation wrapper layer** | Absent (placeholder) | `fuel-inference::pipelines` is a literal empty `pub mod pipelines {}`; the decode loops live in `fuel-core` (below where the layer model puts them). A real wrapper ties model + sampler + KV + policy. | Layer model assigns it to `fuel-inference` (ROADMAP layer model); still unbuilt → this doc |
 | **Search-on-generation orchestration (MCTS/beam/self-consistency)** | Absent (out of layer) | *By design a downstream consumer's job*, via Phase 9 hooks (`RuntimeHook`, persistent values). Recorded here so the boundary is explicit, not forgotten. | [Phase 9](../ROADMAP.md) (gated on a consumer) |
+
+### Cross-branch KV content splicing (2026-07-10 audit)
+
+A distinct proposal from the MCTS/beam fork-and-diverge pattern above: **N persistent,
+independently-decoding branches of one loaded model that can explicitly copy KV (and
+optionally residual) content from one branch's cache into another's, mid-generation, at
+the orchestrator's choice** — not a search algorithm forking hypotheses that resolve to
+one winner, but ongoing "trains of thought" that stay alive and can cross-pollinate.
+Originates from a ChatGPT-drafted plan CireSnave brought for review; audited against
+source across four conversation passes rather than taken on faith. Full reasoning trail
+in the memory `parallel-branch-kv-sharing-audit` and `multi-agent-serving-goal` — this
+entry is the durable, in-repo summary a future instance should start from.
+
+**What was ruled out first.** `Op::Branch` is confirmed plan-time backend/kernel-variant
+arm selection only ([`fuel-graph/src/lib.rs:1090`](../fuel-graph/src/lib.rs#L1090),
+restated verbatim at `docs/frontier-paradigms-vision.md:169-171`) — no mechanism forks a
+live sequence into independently-continuing streams, and it should stay that way; this
+feature is a session/`fuel-core` concern, not a graph-IR control-flow change. Live
+cross-branch *attention* (one branch's forward pass reading another's cache in-flight)
+was also considered and ruled out — not what was actually wanted. See below.
+
+**What's actually wanted: a splice, not a fork and not live attention.** Copy a K/V (and
+optionally mid-stack residual) slice from source branch A's cache into destination
+branch B's cache; B's own *unmodified* attention then reads it as ordinary history. This
+sidesteps needing any new attention mechanism entirely.
+
+**Confirmed substrate facts (source-verified, not assumed):**
+- KV cache is batch=1 everywhere today. `KvCache` hardcodes leading shape dim 1
+  ([`fuel-core/src/inference_context.rs:195`](../fuel-core/src/inference_context.rs#L195));
+  `let batch = 1;` is a literal repeated across ~20 per-model `lazy_*.rs` files. No
+  fork/branch/share/`Clone` method exists on `KvCache`/`DecodeSession`/`InferenceContext`.
+- The batched-decode kernel substrate (see the row above) already exists and is unused —
+  none of it is wired into fuel-core/fuel-graph's session path. The gap is graph/session
+  construction, not kernel research.
+- `Op::PagedAttn` IR node exists ([`fuel-core/src/lazy.rs:3253-3372`](../fuel-core/src/lazy.rs#L3253-L3372), real block-table batch semantics: `q:[B,Hq,Sq,D]`,
+  `block_table:[B,max_blocks]`, `context_lens:[B]`) but is exercised by exactly one
+  correctness test and never wired into `KvCache`/`DecodeSession`. **No allocator behind
+  it — see the row above.**
+- `WriteSlice`/`WriteSliceRotating`/`WriteSliceDoff` (the family an early draft plan
+  proposed building branch-offsets on) are destructive-single-owner ops — only the
+  writing op's own `NodeId` may read the result afterward
+  ([`fuel-graph/src/lib.rs:859-861`](../fuel-graph/src/lib.rs#L859-L861)). Two branches
+  destructively targeting shared storage hits an ordering conflict that
+  `derive_ordering`/`insert_safety_copies`
+  ([`fuel-graph/src/opt.rs:1531-1861`](../fuel-graph/src/opt.rs#L1531-L1861)) do **not**
+  currently detect or reject — a silent-corruption risk if used naively for this. Not the
+  right substrate.
+
+**Recommended design: a host-level `KvCache` method, not a graph-routed one.** E.g.
+`splice_from(&mut self, source: &KvCache, token_range, dest_offset)`, sibling to the
+already-existing `truncate_to`/`cloned_persistent` escape hatches
+([`inference_context.rs:376,629,1164`](../fuel-core/src/inference_context.rs#L376)) that
+already reach into `KvCache` internals directly, outside the lazy graph. A real tensor
+copy, not a pointer/shared-block graft — sidesteps the missing-allocator dependency
+entirely and the `WriteSlice` multi-writer hazard (each session stays sole owner/writer
+of its own buffer; the splice is a one-time copy-in, not ongoing shared ownership). Cost:
+a real VRAM duplicate of the spliced slice plus a fast bandwidth-bound copy — cheap
+relative to a forward pass, fine to do live between decode steps. `k_version`/
+`v_version`/`AuthorityState` on `KvLayer` are confirmed-inert placeholders (checked
+independently twice) — a host-level splice doesn't violate any currently-active tracked
+invariant.
+
+**Open integration question, not yet investigated:** whether `DecodeSession`'s
+persistent/plan-once decode graph (shape/length-keyed validity) tolerates a
+non-monotonic `cached_len` jump from a splice, or needs an explicit invalidate-and-rebuild
+afterward.
+
+**The reevaluation spectrum (why "foreign" KV might or might not be usable as-is).** A
+spliced KV entry isn't a context-free fact — it's already a function of everything
+earlier in the *donor's own* trajectory (baked in through however many layers of
+attention mixing happened before the splice point). Whether that's useful signal or
+harmful noise to the recipient is an open empirical question no one can predict from
+architecture alone — and CireSnave is deliberately open to the "clash" between a donor's
+foreign assumptions and the recipient's own being a *feature*, not just a risk to
+engineer away. If it needs mitigating, there's a real graduated menu, cheapest first:
+
+1. **Raw splice** — copy as-is. Zero new compute, position-foreign.
+2. **+ RoPE delta-rotation** — RoPE rotations compose additively, so one delta-rotation
+   `R(pos_B − pos_A)` converts a donor K vector into exactly what the recipient's own
+   RoPE would have produced at the recipient's position — exact, no forward pass, needs
+   one small new op. Fixes positional bookkeeping only, not contextual content. V is
+   untouched (standard RoPE never rotates V).
+3. **+ residual-stream continuation for the upper layers.** The deepest option, and one
+   worth recording precisely because an earlier pass of this same audit stated it
+   imprecisely: donating the donor's *residual stream* (not KV) at some layer L is a
+   genuinely different lever than KV, because a residual — unlike KV — is a valid
+   resumption point for *continuing the forward computation*. Mechanically: the recipient
+   treats the donated tokens as new positions in its own sequence, seeding layer L+1's
+   input with the donated residual instead of computing it the normal way (embedding →
+   layers 1..L); from L+1 onward they're processed exactly like any newly-prefilled
+   token — normed, projected to Q/K/V, attending over the recipient's own real cached K/V
+   at that layer (this is where "combination" with the recipient's context actually
+   happens, through ordinary attention — residuals across different token positions are
+   never merged in a transformer) — producing genuinely recipient-contextualized K/V for
+   layers L+1..N. **This does not replace needing the donor's raw K/V for layers 1..L.**
+   The residual is a transient, single-pass bridge (exactly like any token's residual
+   during ordinary inference — never cached across time steps in any standard
+   transformer implementation); once consumed to seed the upper-layer computation, it's
+   discarded. For the donated tokens to be durably attendable by the recipient's *own
+   future* tokens at every layer (what a KV cache is for), layers 1..L still need real
+   K/V populated — either the donor's raw K/V spliced in directly (rung 1/2, for the
+   lower layers only) or there is nothing there to attend to at those layers at all. So
+   this rung is an **enhancement layered on top of rung 1/2 for the upper portion of the
+   stack, not a standalone cheaper alternative to KV splicing** — it trades real
+   recipient-side compute (proportional to `(N−L)/N` of a forward pass over the donated
+   tokens) for recipient-native upper-layer context. Byte accounting, corrected for
+   needing both pieces: transmitting one layer's residual (size `d_model`) plus K/V for
+   layers 1..L beats transmitting K/V for all N layers whenever you're skipping
+   recomputation of more than roughly 2 layers' worth (worked example, Llama-3-8B-class
+   config: `d_model=4096` ≈ 2 layers' worth of KV at `n_kv_heads=8, head_dim=128`) — a
+   real net win when a meaningful chunk of the upper stack is being recomputed, a wash or
+   worse for shallow (1-2 layer) skips. New capability needed: resume-forward-pass-from-
+   an-arbitrary-layer given a supplied residual, instead of always starting at the
+   embedding layer — well-defined, bounded, **not yet checked against how Fuel's
+   `lazy_*.rs` per-model layer loop is structured** (a real next step if this rung is
+   pursued).
+4. **Seam/crossfade** — reprocess just the last few tokens of the graft (or synthetic
+   bridge tokens) through the recipient's ordinary prefill against the already-spliced
+   cache. Zero new infrastructure (this is already core functionality) — gives a locally
+   recipient-native buffer right where new generation resumes; cost scales with the
+   crossfade window, not the graft size. Orthogonal to and composable with rung 3 (a
+   different axis — which *tokens* get full treatment, vs. which *layers*).
+5. **Full re-prefill** — treat the source as plain text, re-prefill the whole graft
+   through the recipient. The ceiling: 100% recipient-native, also zero new
+   infrastructure (ordinary prefill), cost proportional to the full graft length.
+   Requires carrying the donor's source *text* alongside every KV graft (near-free to do,
+   and not optional — it's what makes rungs 4-5 possible at all).
+
+**Auxiliary lever, cheap and orthogonal to all of the above:** a short textual marker or
+preamble announcing "foreign context follows" at the splice point, run through
+completely ordinary prefill. Invokes the model's trained-in handling of
+quoted/reported speech and multi-document context rather than relying on raw spliced
+activations to convey their own provenance on their own.
+
+**What does *not* need any of this:** forwarding literal "intermediate math results" so a
+branch can skip/guess computation has no separate lever at the tensor level — KV caching
+already *is* transformers' only cross-position reuse mechanism (MLP has no cross-token
+state to cache; the final hidden state has the same foreign-context problem as KV with no
+offsetting benefit). But plain text/symbolic result-passing between branches ("branch A
+already worked out X=Y, let B just use that") is a separate, well-precedented, standard
+multi-agent-LLM pattern — cheap, robust, worth using independent of anything above.
+
+**Sequencing relative to multi-agent serving.** CireSnave has confirmed multi-session /
+multi-agent serving (running several concurrent agent sessions on shared hardware) as a
+genuine near-term personal roadmap goal — get Fuel's basics working well first, then
+multi-agent serving comes very soon after. This upgrades the block-pool allocator above
+from *speculative* to *a real consumer, just not sequenced yet* — worth tracking, not
+worth building before "basics" lands. It also means real multi-session serving will very
+likely need actual session-lifecycle management for N concurrently-live KV caches anyway
+(and plausibly, eventually, the allocator itself, for cheap shared-system-prompt reuse
+across agents — the vLLM/SGLang production case) — building the splice feature's
+implementation *after* that infrastructure exists is probably cheaper than building it
+before, since it may get to piggyback on infra justified by a better, already-committed
+reason. Recommended order: basics → multi-agent serving infra → revisit whether the
+splice feature should upgrade from the plain-copy MVP to allocator-backed
+pointer-sharing. None of that blocks getting an empirical signal on whether foreign-KV
+grafting even produces something useful — rung 1 above needs zero new capability and
+could run as a throwaway experiment at any time.
 
 ---
 

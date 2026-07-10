@@ -105,7 +105,15 @@ nowhere; now captured so they are not forgotten):
   **MLA weight-absorption** + **two-projection attention / QKV pruning**.
 - **Batched multi-sequence decode** + **forkable/copy-on-write KV cache** — the substrate a
   downstream search-on-generation (MCTS/beam) wrapper needs; search orchestration itself
-  stays a Phase-9 downstream concern by design.
+  stays a Phase-9 downstream concern by design. Also the substrate a related-but-distinct
+  2026-07-10 proposal needs — **cross-branch KV content splicing** for persistent parallel
+  "trains of thought" (copy KV/residual content between concurrently-decoding branches, not
+  a fork-to-one-winner search) — recommended as a host-level `KvCache` method, not a
+  graph/`Op::Branch` change. The block-pool allocator both would benefit from is confirmed
+  **absent** (no allocator/refcounting exists behind `Op::PagedAttn` today) — real but
+  deferred, now that multi-agent/multi-session serving is a confirmed near-term personal
+  roadmap goal (get Fuel's basics working first). Full detail + citations + the
+  reevaluation-cost menu: `docs/frontier-architecture-gaps.md` §4.
 - **GRPO** + **RLVR** verifiable post-training — greenfield on the existing `fuel-training`
   stack (SGD/AdamW + autodiff + `cross_entropy`); needs the RNG/generator seam (above) for
   group sampling.
