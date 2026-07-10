@@ -1319,6 +1319,10 @@ impl DeepSeek2Model {
             rope_sin_node,
             mask_node,
             kv_nodes,
+            // DeepSeek-V2 (MLA) decode stays on the SymEnv path — its
+            // latent-cache write differs from the dense KV append; the
+            // device-offset / CapturedRun path is sequenced behind Llama.
+            None,
             cached_len_sym,
             attended_len_sym,
             base_cache,
@@ -1411,6 +1415,8 @@ impl DeepSeek2Model {
             rope_cos,
             rope_sin,
             mask,
+            // MLA decode stays on the SymEnv path (no device-offset yet).
+            offset: None,
         })
     }
 
