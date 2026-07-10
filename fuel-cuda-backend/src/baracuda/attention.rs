@@ -140,10 +140,70 @@ fn rope_run(
         return CudaStorageBytes::alloc(&device, 0);
     }
     let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+    let out = CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes);
+    rope_run_into(
+        src,
+        src_layout,
+        outer_count,
+        seq,
+        head_dim,
+        &out,
+        contig,
+        strided,
+        op_label,
+        dtype_size_bytes,
+    )?;
+    Ok(out)
+}
+
+/// Write-into-output RoPE driver (CapturedRun executor build-out).
+///
+/// Identical rotary-embedding math (contig + strided dispatch) to
+/// [`rope_run`], but writes into the caller-provided `out` buffer instead
+/// of allocating one — the enabler for the pipelined executor's
+/// persistent-output (capture) mode where a fixed-address output is written
+/// in place so **no device allocation happens** (mandatory inside a
+/// CUDA-graph capture scope). Byte-identical result to the alloc-and-return
+/// path for a same-sized `out`.
+///
+/// `out` must already hold at least
+/// `outer_count * seq * head_dim * dtype_size_bytes` bytes; a smaller
+/// buffer is a surfaced error, never an out-of-bounds device write.
+#[allow(clippy::too_many_arguments)]
+fn rope_run_into(
+    src: &CudaStorageBytes,
+    src_layout: Option<&Layout>,
+    outer_count: usize,
+    seq: usize,
+    head_dim: usize,
+    out: &CudaStorageBytes,
+    contig: RopeRun,
+    strided: RopeStridedRun,
+    op_label: &'static str,
+    dtype_size_bytes: usize,
+) -> Result<()> {
+    if head_dim % 2 != 0 {
+        return Err(Error::Msg(format!(
+            "{op_label}: head_dim must be even (got {head_dim})",
+        )).bt());
+    }
+    let device = src.device().clone();
+    let numel = outer_count * seq * head_dim;
+    let out_bytes = numel * dtype_size_bytes;
+    if out_bytes == 0 {
+        return Ok(());
+    }
+    if out.len_bytes() < out_bytes {
+        return Err(Error::Msg(format!(
+            "{op_label}: write-into output buffer too small ({} < {} bytes)",
+            out.len_bytes(),
+            out_bytes,
+        )).bt());
+    }
     let scratch = Workspace::alloc(&device, 0)?;
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
     let x_ptr = src.buffer().as_raw().0 as *const std::ffi::c_void;
-    let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
+    let y_ptr = out.buffer().as_raw().0 as *mut std::ffi::c_void;
 
     let heads_i32 = i32::try_from(outer_count).map_err(|_| {
         Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
@@ -229,11 +289,7 @@ fn rope_run(
         }
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(
-        Arc::new(out_buf),
-        device,
-        out_bytes,
-    ))
+    Ok(())
 }
 
 /// FlashSDPA driver (utility — no Fuel OpKind dispatch yet because
@@ -333,6 +389,33 @@ macro_rules! rope_kernel {
                     outer_count,
                     seq,
                     head_dim,
+                    sys::[<baracuda_kernels_rope_ $dtype_stem _run>],
+                    sys::[<baracuda_kernels_rope_ $dtype_stem _strided_run>],
+                    $op_label,
+                    $dtype_size,
+                )
+            }
+
+            #[doc = concat!(
+                "Write-into-output variant of baracuda `rope_", stringify!($dtype_stem),
+                "` — writes into `out` (no alloc; CapturedRun capture mode)."
+            )]
+            #[allow(clippy::too_many_arguments)]
+            pub fn [<$name _into>](
+                src: &CudaStorageBytes,
+                src_layout: Option<&Layout>,
+                outer_count: usize,
+                seq: usize,
+                head_dim: usize,
+                out: &CudaStorageBytes,
+            ) -> Result<()> {
+                rope_run_into(
+                    src,
+                    src_layout,
+                    outer_count,
+                    seq,
+                    head_dim,
+                    out,
                     sys::[<baracuda_kernels_rope_ $dtype_stem _run>],
                     sys::[<baracuda_kernels_rope_ $dtype_stem _strided_run>],
                     $op_label,

@@ -140,6 +140,7 @@ fn validate_dims(
 /// the f32/f16/bf16 symbols, `f64` for f64), NOT the storage dtype.
 macro_rules! gemm_dense_matmul {
     ($name:ident, $run:path, $scalar:ty, $elem:expr, $label:expr $(,)?) => {
+        ::paste::paste! {
         #[doc = concat!(
             "Dense `", $label, "` matmul via baracuda's Phase 74 ",
             "`gemm_dense` facade (layout 0 = RRR, packed operands). ",
@@ -250,6 +251,126 @@ macro_rules! gemm_dense_matmul {
                 device,
                 dims.need_out,
             ))
+        }
+
+        #[doc = concat!(
+            "Write-into-output variant of dense `", $label, "` matmul — ",
+            "writes into the caller-provided `out` (no output alloc; ",
+            "CapturedRun capture mode). Byte-identical launch(es) to `",
+            stringify!($name), "` for a same-sized `out`; the only ",
+            "difference is the output base pointer comes from `out` and ",
+            "no device allocation happens.",
+        )]
+        #[allow(clippy::too_many_arguments)]
+        pub fn [<$name _into>](
+            lhs: &CudaStorageBytes,
+            rhs: &CudaStorageBytes,
+            lhs_batch_dims: &[usize],
+            rhs_batch_dims: &[usize],
+            m: usize,
+            n: usize,
+            k: usize,
+            out: &CudaStorageBytes,
+        ) -> Result<()> {
+            let elem: usize = $elem;
+            let dims = validate_dims(
+                $label, lhs, rhs, lhs_batch_dims, rhs_batch_dims, m, n, k, elem,
+            )?;
+            let device = lhs.device().clone();
+            if dims.need_out == 0 {
+                return Ok(());
+            }
+            if out.len_bytes() < dims.need_out {
+                return Err(fuel_ir::Error::Msg(format!(
+                    "{}: write-into output buffer too small ({} < {} bytes)",
+                    $label,
+                    out.len_bytes(),
+                    dims.need_out,
+                ))
+                .bt());
+            }
+            let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+            let (lda, ldb, ldd) = (k.max(1) as i64, n.max(1) as i64, n.max(1) as i64);
+            let alpha: $scalar = 1.0;
+            let beta: $scalar = 0.0;
+            let lhs_base = lhs.buffer().as_raw().0;
+            let rhs_base = rhs.buffer().as_raw().0;
+            let out_base = out.buffer().as_raw().0;
+
+            let all_equal = dims.n_rep.iter().all(|&r| r == 1);
+            let broadcast_rhs = dims.rhs_batch_count == 1;
+            if all_equal || broadcast_rhs {
+                // Single strided-batch launch. `stride_b = 0`
+                // broadcasts the lone rhs across every lhs slot.
+                let stride_b = if broadcast_rhs && !all_equal {
+                    0
+                } else {
+                    dims.rhs_per_batch as i64
+                };
+                // SAFETY: pointers validated against the packed
+                // byte-length contract above; `stream` belongs to the
+                // operands' device; α/β passed by value per the
+                // facade ABI. Sync follows (sync KernelRef contract).
+                let status = unsafe {
+                    $run(
+                        m as i32, n as i32, k as i32,
+                        dims.lhs_batch_count as i32,
+                        0, // layout: RRR
+                        alpha, beta,
+                        lhs_base as *const std::ffi::c_void, lda,
+                        dims.lhs_per_batch as i64,
+                        rhs_base as *const std::ffi::c_void, ldb,
+                        stride_b,
+                        out_base as *mut std::ffi::c_void, ldd,
+                        dims.out_per_batch as i64,
+                        std::ptr::null_mut(), 0,
+                        stream,
+                    )
+                };
+                crate::baracuda::status::check(status, $label)?;
+            } else {
+                // General GQA: decode each lhs flat batch index to a
+                // multi-index, map per-axis through n_rep to the rhs
+                // slot, one `batch = 1` launch per slot (strides
+                // ignored at batch == 1). Mirrors the CPU kernel's
+                // per-batch loop.
+                let batch_rank = lhs_batch_dims.len();
+                let mut lhs_multi = vec![0usize; batch_rank];
+                for b in 0..dims.lhs_batch_count {
+                    let mut rem = b;
+                    for d in (0..batch_rank).rev() {
+                        let s = lhs_batch_dims[d];
+                        lhs_multi[d] = rem % s;
+                        rem /= s;
+                    }
+                    let mut rhs_b = 0usize;
+                    for d in 0..batch_rank {
+                        rhs_b = rhs_b * rhs_batch_dims[d] + (lhs_multi[d] / dims.n_rep[d]);
+                    }
+                    let lhs_off = (b * dims.lhs_per_batch * elem) as u64;
+                    let rhs_off = (rhs_b * dims.rhs_per_batch * elem) as u64;
+                    let out_off = (b * dims.out_per_batch * elem) as u64;
+                    // SAFETY: offsets stay within the validated byte
+                    // ranges (b < lhs_batch_count, rhs_b <
+                    // rhs_batch_count by construction).
+                    let status = unsafe {
+                        $run(
+                            m as i32, n as i32, k as i32,
+                            1, // batch
+                            0, // layout: RRR
+                            alpha, beta,
+                            (lhs_base + lhs_off) as *const std::ffi::c_void, lda, 0,
+                            (rhs_base + rhs_off) as *const std::ffi::c_void, ldb, 0,
+                            (out_base + out_off) as *mut std::ffi::c_void, ldd, 0,
+                            std::ptr::null_mut(), 0,
+                            stream,
+                        )
+                    };
+                    crate::baracuda::status::check(status, $label)?;
+                }
+            }
+            Ok(())
+        }
         }
     };
 }

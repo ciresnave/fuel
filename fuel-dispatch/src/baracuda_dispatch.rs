@@ -59,10 +59,10 @@ macro_rules! cuda_unary_baracuda_wrapper {
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, layout)?;
             let out_cuda = cuda_output(&mut out_guard)?;
-            *out_cuda = result;
-            Ok(())
+            // Write-into-output (CapturedRun): the `_into` driver writes into
+            // the executor-provided outputs[0] — no alloc + swap.
+            $baracuda_fn(src_cuda, layout, out_cuda)
         }
     };
 }
@@ -182,10 +182,9 @@ macro_rules! cuda_rope_baracuda_wrapper {
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, layout, outer_count, seq, head_dim)?;
             let out_cuda = cuda_output(&mut out_guard)?;
-            *out_cuda = result;
-            Ok(())
+            // Write-into-output (CapturedRun): `_into` writes into outputs[0].
+            $baracuda_fn(src_cuda, layout, outer_count, seq, head_dim, out_cuda)
         }
     };
 }
@@ -241,12 +240,11 @@ macro_rules! cuda_index_select_baracuda_wrapper {
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&src_guard)?;
             let idx_cuda = cuda_input(&idx_guard)?;
-            let result = $baracuda_fn(
-                src_cuda, idx_cuda, outer_count, source_dim_size, n_indices, inner_count,
-            )?;
             let out_cuda = cuda_output(&mut out_guard)?;
-            *out_cuda = result;
-            Ok(())
+            // Write-into-output (CapturedRun): `_into` writes into outputs[0].
+            $baracuda_fn(
+                src_cuda, idx_cuda, outer_count, source_dim_size, n_indices, inner_count, out_cuda,
+            )
         }
     };
 }
@@ -385,9 +383,9 @@ pub mod indexing {
     use super::*;
     use fuel_cuda_backend::baracuda::indexing as bk;
 
-    cuda_index_select_baracuda_wrapper!(index_select_f32, bk::index_select_f32);
-    cuda_index_select_baracuda_wrapper!(index_select_f64, bk::index_select_f64);
-    cuda_index_select_baracuda_wrapper!(index_select_i32, bk::index_select_i32);
+    cuda_index_select_baracuda_wrapper!(index_select_f32, bk::index_select_f32_into);
+    cuda_index_select_baracuda_wrapper!(index_select_f64, bk::index_select_f64_into);
+    cuda_index_select_baracuda_wrapper!(index_select_i32, bk::index_select_i32_into);
 
     cuda_gather_baracuda_wrapper!(gather_f32, bk::gather_f32);
     cuda_gather_baracuda_wrapper!(gather_f64, bk::gather_f64);
@@ -459,6 +457,53 @@ macro_rules! cuda_matmul_baracuda_wrapper {
     };
 }
 
+/// Write-into-output dense-matmul wrapper (CapturedRun). Same as
+/// `cuda_matmul_baracuda_wrapper!` but calls the `_into` gemm driver,
+/// writing the product into the executor-provided `outputs[0]` — the
+/// capture-safe path (no alloc + swap). Used for the FP dense matmuls
+/// (`matmul_f32/f64/f16/bf16`); the int8 `gemm_int` path keeps the
+/// allocating wrapper (not in the capturable decode set).
+macro_rules! cuda_matmul_into_baracuda_wrapper {
+    ($wrapper_name:ident, $baracuda_into_fn:path $(,)?) => {
+        pub fn $wrapper_name(
+            inputs: &[Arc<RwLock<Storage>>],
+            outputs: &mut [Arc<RwLock<Storage>>],
+            _layouts: &[Layout],
+            params: &OpParams,
+        ) -> Result<()> {
+            if inputs.len() != 2 || outputs.len() != 1 {
+                return Err(Error::Msg(format!(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 2 inputs + 1 output, got {} + {}",
+                    ),
+                    inputs.len(), outputs.len(),
+                )).bt());
+            }
+            let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
+                OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
+                    (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k)
+                }
+                other => {
+                    return Err(Error::Msg(format!(
+                        concat!(stringify!($wrapper_name), ": expected OpParams::Matmul, got {:?}"),
+                        other,
+                    )).bt());
+                }
+            };
+            let lhs_guard = read_storage(&inputs[0])?;
+            let rhs_guard = read_storage(&inputs[1])?;
+            let mut out_guard = write_storage(&outputs[0])?;
+            let lhs_cuda = cuda_input(&lhs_guard)?;
+            let rhs_cuda = cuda_input(&rhs_guard)?;
+            let out_cuda = cuda_output(&mut out_guard)?;
+            $baracuda_into_fn(
+                lhs_cuda, rhs_cuda, &lhs_batch_dims, &rhs_batch_dims, m, n, k, out_cuda,
+            )
+        }
+    };
+}
+
 pub mod gemm_int {
     use super::*;
     use fuel_cuda_backend::baracuda::gemm_int as bk;
@@ -484,10 +529,10 @@ pub mod gemm_dense {
     use super::*;
     use fuel_cuda_backend::baracuda::gemm_dense as bk;
 
-    cuda_matmul_baracuda_wrapper!(matmul_f32,  bk::matmul_f32);
-    cuda_matmul_baracuda_wrapper!(matmul_f64,  bk::matmul_f64);
-    cuda_matmul_baracuda_wrapper!(matmul_f16,  bk::matmul_f16);
-    cuda_matmul_baracuda_wrapper!(matmul_bf16, bk::matmul_bf16);
+    cuda_matmul_into_baracuda_wrapper!(matmul_f32,  bk::matmul_f32_into);
+    cuda_matmul_into_baracuda_wrapper!(matmul_f64,  bk::matmul_f64_into);
+    cuda_matmul_into_baracuda_wrapper!(matmul_f16,  bk::matmul_f16_into);
+    cuda_matmul_into_baracuda_wrapper!(matmul_bf16, bk::matmul_bf16_into);
 }
 
 // ===========================================================================
@@ -1984,10 +2029,9 @@ macro_rules! cuda_softmax_last_dim_baracuda_wrapper {
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, layout)?;
             let out_cuda = cuda_output(&mut out_guard)?;
-            *out_cuda = result;
-            Ok(())
+            // Write-into-output (CapturedRun): `_into` writes into outputs[0].
+            $baracuda_fn(src_cuda, layout, out_cuda)
         }
     };
 }
@@ -2000,15 +2044,15 @@ pub mod softmax {
     use super::*;
     use fuel_cuda_backend::baracuda::softmax as bk;
 
-    cuda_softmax_last_dim_baracuda_wrapper!(softmax_f32, bk::softmax_last_dim_f32);
-    cuda_softmax_last_dim_baracuda_wrapper!(softmax_f16, bk::softmax_last_dim_f16);
-    cuda_softmax_last_dim_baracuda_wrapper!(softmax_bf16, bk::softmax_last_dim_bf16);
-    cuda_softmax_last_dim_baracuda_wrapper!(softmax_f64, bk::softmax_last_dim_f64);
+    cuda_softmax_last_dim_baracuda_wrapper!(softmax_f32, bk::softmax_last_dim_f32_into);
+    cuda_softmax_last_dim_baracuda_wrapper!(softmax_f16, bk::softmax_last_dim_f16_into);
+    cuda_softmax_last_dim_baracuda_wrapper!(softmax_bf16, bk::softmax_last_dim_bf16_into);
+    cuda_softmax_last_dim_baracuda_wrapper!(softmax_f64, bk::softmax_last_dim_f64_into);
 
-    cuda_softmax_last_dim_baracuda_wrapper!(log_softmax_f32, bk::log_softmax_last_dim_f32);
-    cuda_softmax_last_dim_baracuda_wrapper!(log_softmax_f16, bk::log_softmax_last_dim_f16);
-    cuda_softmax_last_dim_baracuda_wrapper!(log_softmax_bf16, bk::log_softmax_last_dim_bf16);
-    cuda_softmax_last_dim_baracuda_wrapper!(log_softmax_f64, bk::log_softmax_last_dim_f64);
+    cuda_softmax_last_dim_baracuda_wrapper!(log_softmax_f32, bk::log_softmax_last_dim_f32_into);
+    cuda_softmax_last_dim_baracuda_wrapper!(log_softmax_f16, bk::log_softmax_last_dim_f16_into);
+    cuda_softmax_last_dim_baracuda_wrapper!(log_softmax_bf16, bk::log_softmax_last_dim_bf16_into);
+    cuda_softmax_last_dim_baracuda_wrapper!(log_softmax_f64, bk::log_softmax_last_dim_f64_into);
 }
 
 // ===========================================================================
@@ -2019,10 +2063,10 @@ pub mod attention {
     use super::*;
     use fuel_cuda_backend::baracuda::attention as bk;
 
-    cuda_rope_baracuda_wrapper!(rope_f32, bk::rope_f32);
-    cuda_rope_baracuda_wrapper!(rope_f16, bk::rope_f16);
-    cuda_rope_baracuda_wrapper!(rope_bf16, bk::rope_bf16);
-    cuda_rope_baracuda_wrapper!(rope_f64, bk::rope_f64);
+    cuda_rope_baracuda_wrapper!(rope_f32, bk::rope_f32_into);
+    cuda_rope_baracuda_wrapper!(rope_f16, bk::rope_f16_into);
+    cuda_rope_baracuda_wrapper!(rope_bf16, bk::rope_bf16_into);
+    cuda_rope_baracuda_wrapper!(rope_f64, bk::rope_f64_into);
 }
 
 // ===========================================================================
@@ -2347,28 +2391,28 @@ pub mod unary {
     use fuel_cuda_backend::baracuda::elementwise as bk;
 
     // f32 surface
-    cuda_unary_baracuda_wrapper!(neg_f32, bk::unary_neg_f32);
-    cuda_unary_baracuda_wrapper!(abs_f32, bk::unary_abs_f32);
-    cuda_unary_baracuda_wrapper!(sign_f32, bk::unary_sign_f32);
-    cuda_unary_baracuda_wrapper!(sqr_f32, bk::unary_sqr_f32);
-    cuda_unary_baracuda_wrapper!(sqrt_f32, bk::unary_sqrt_f32);
-    cuda_unary_baracuda_wrapper!(rsqrt_f32, bk::unary_rsqrt_f32);
-    cuda_unary_baracuda_wrapper!(recip_f32, bk::unary_recip_f32);
-    cuda_unary_baracuda_wrapper!(exp_f32, bk::unary_exp_f32);
-    cuda_unary_baracuda_wrapper!(log_f32, bk::unary_log_f32);
-    cuda_unary_baracuda_wrapper!(sin_f32, bk::unary_sin_f32);
-    cuda_unary_baracuda_wrapper!(cos_f32, bk::unary_cos_f32);
-    cuda_unary_baracuda_wrapper!(tanh_f32, bk::unary_tanh_f32);
-    cuda_unary_baracuda_wrapper!(relu_f32, bk::unary_relu_f32);
-    cuda_unary_baracuda_wrapper!(gelu_f32, bk::unary_gelu_f32);
-    cuda_unary_baracuda_wrapper!(gelu_tanh_f32, bk::unary_gelu_tanh_f32);
-    cuda_unary_baracuda_wrapper!(step_f32, bk::unary_step_f32);
-    cuda_unary_baracuda_wrapper!(silu_f32, bk::unary_silu_f32);
-    cuda_unary_baracuda_wrapper!(sigmoid_f32, bk::unary_sigmoid_f32);
-    cuda_unary_baracuda_wrapper!(floor_f32, bk::unary_floor_f32);
-    cuda_unary_baracuda_wrapper!(ceil_f32, bk::unary_ceil_f32);
-    cuda_unary_baracuda_wrapper!(round_f32, bk::unary_round_f32);
-    cuda_unary_baracuda_wrapper!(erf_f32, bk::unary_erf_f32);
+    cuda_unary_baracuda_wrapper!(neg_f32, bk::unary_neg_f32_into);
+    cuda_unary_baracuda_wrapper!(abs_f32, bk::unary_abs_f32_into);
+    cuda_unary_baracuda_wrapper!(sign_f32, bk::unary_sign_f32_into);
+    cuda_unary_baracuda_wrapper!(sqr_f32, bk::unary_sqr_f32_into);
+    cuda_unary_baracuda_wrapper!(sqrt_f32, bk::unary_sqrt_f32_into);
+    cuda_unary_baracuda_wrapper!(rsqrt_f32, bk::unary_rsqrt_f32_into);
+    cuda_unary_baracuda_wrapper!(recip_f32, bk::unary_recip_f32_into);
+    cuda_unary_baracuda_wrapper!(exp_f32, bk::unary_exp_f32_into);
+    cuda_unary_baracuda_wrapper!(log_f32, bk::unary_log_f32_into);
+    cuda_unary_baracuda_wrapper!(sin_f32, bk::unary_sin_f32_into);
+    cuda_unary_baracuda_wrapper!(cos_f32, bk::unary_cos_f32_into);
+    cuda_unary_baracuda_wrapper!(tanh_f32, bk::unary_tanh_f32_into);
+    cuda_unary_baracuda_wrapper!(relu_f32, bk::unary_relu_f32_into);
+    cuda_unary_baracuda_wrapper!(gelu_f32, bk::unary_gelu_f32_into);
+    cuda_unary_baracuda_wrapper!(gelu_tanh_f32, bk::unary_gelu_tanh_f32_into);
+    cuda_unary_baracuda_wrapper!(step_f32, bk::unary_step_f32_into);
+    cuda_unary_baracuda_wrapper!(silu_f32, bk::unary_silu_f32_into);
+    cuda_unary_baracuda_wrapper!(sigmoid_f32, bk::unary_sigmoid_f32_into);
+    cuda_unary_baracuda_wrapper!(floor_f32, bk::unary_floor_f32_into);
+    cuda_unary_baracuda_wrapper!(ceil_f32, bk::unary_ceil_f32_into);
+    cuda_unary_baracuda_wrapper!(round_f32, bk::unary_round_f32_into);
+    cuda_unary_baracuda_wrapper!(erf_f32, bk::unary_erf_f32_into);
 
     // In-place unary surface — Phase 3e of in-place ops infrastructure.
     // Reuses the same baracuda symbols but the wrapper passes the
@@ -2482,73 +2526,73 @@ pub mod unary {
     cuda_unary_inplace_baracuda_wrapper!(gelu_erf_inplace_f16,  bk::unary_inplace_gelu_erf_f16);
 
     // f16
-    cuda_unary_baracuda_wrapper!(neg_f16, bk::unary_neg_f16);
-    cuda_unary_baracuda_wrapper!(abs_f16, bk::unary_abs_f16);
-    cuda_unary_baracuda_wrapper!(sqr_f16, bk::unary_sqr_f16);
-    cuda_unary_baracuda_wrapper!(sqrt_f16, bk::unary_sqrt_f16);
-    cuda_unary_baracuda_wrapper!(recip_f16, bk::unary_recip_f16);
-    cuda_unary_baracuda_wrapper!(exp_f16, bk::unary_exp_f16);
-    cuda_unary_baracuda_wrapper!(log_f16, bk::unary_log_f16);
-    cuda_unary_baracuda_wrapper!(sin_f16, bk::unary_sin_f16);
-    cuda_unary_baracuda_wrapper!(cos_f16, bk::unary_cos_f16);
-    cuda_unary_baracuda_wrapper!(tanh_f16, bk::unary_tanh_f16);
-    cuda_unary_baracuda_wrapper!(relu_f16, bk::unary_relu_f16);
-    cuda_unary_baracuda_wrapper!(gelu_f16, bk::unary_gelu_f16);
-    cuda_unary_baracuda_wrapper!(gelu_tanh_f16, bk::unary_gelu_tanh_f16);
-    cuda_unary_baracuda_wrapper!(step_f16, bk::unary_step_f16);
-    cuda_unary_baracuda_wrapper!(silu_f16, bk::unary_silu_f16);
-    cuda_unary_baracuda_wrapper!(sigmoid_f16, bk::unary_sigmoid_f16);
-    cuda_unary_baracuda_wrapper!(rsqrt_f16, bk::unary_rsqrt_f16);
-    cuda_unary_baracuda_wrapper!(floor_f16, bk::unary_floor_f16);
-    cuda_unary_baracuda_wrapper!(ceil_f16, bk::unary_ceil_f16);
-    cuda_unary_baracuda_wrapper!(round_f16, bk::unary_round_f16);
-    cuda_unary_baracuda_wrapper!(erf_f16, bk::unary_erf_f16);
+    cuda_unary_baracuda_wrapper!(neg_f16, bk::unary_neg_f16_into);
+    cuda_unary_baracuda_wrapper!(abs_f16, bk::unary_abs_f16_into);
+    cuda_unary_baracuda_wrapper!(sqr_f16, bk::unary_sqr_f16_into);
+    cuda_unary_baracuda_wrapper!(sqrt_f16, bk::unary_sqrt_f16_into);
+    cuda_unary_baracuda_wrapper!(recip_f16, bk::unary_recip_f16_into);
+    cuda_unary_baracuda_wrapper!(exp_f16, bk::unary_exp_f16_into);
+    cuda_unary_baracuda_wrapper!(log_f16, bk::unary_log_f16_into);
+    cuda_unary_baracuda_wrapper!(sin_f16, bk::unary_sin_f16_into);
+    cuda_unary_baracuda_wrapper!(cos_f16, bk::unary_cos_f16_into);
+    cuda_unary_baracuda_wrapper!(tanh_f16, bk::unary_tanh_f16_into);
+    cuda_unary_baracuda_wrapper!(relu_f16, bk::unary_relu_f16_into);
+    cuda_unary_baracuda_wrapper!(gelu_f16, bk::unary_gelu_f16_into);
+    cuda_unary_baracuda_wrapper!(gelu_tanh_f16, bk::unary_gelu_tanh_f16_into);
+    cuda_unary_baracuda_wrapper!(step_f16, bk::unary_step_f16_into);
+    cuda_unary_baracuda_wrapper!(silu_f16, bk::unary_silu_f16_into);
+    cuda_unary_baracuda_wrapper!(sigmoid_f16, bk::unary_sigmoid_f16_into);
+    cuda_unary_baracuda_wrapper!(rsqrt_f16, bk::unary_rsqrt_f16_into);
+    cuda_unary_baracuda_wrapper!(floor_f16, bk::unary_floor_f16_into);
+    cuda_unary_baracuda_wrapper!(ceil_f16, bk::unary_ceil_f16_into);
+    cuda_unary_baracuda_wrapper!(round_f16, bk::unary_round_f16_into);
+    cuda_unary_baracuda_wrapper!(erf_f16, bk::unary_erf_f16_into);
 
     // bf16
-    cuda_unary_baracuda_wrapper!(neg_bf16, bk::unary_neg_bf16);
-    cuda_unary_baracuda_wrapper!(abs_bf16, bk::unary_abs_bf16);
-    cuda_unary_baracuda_wrapper!(sqr_bf16, bk::unary_sqr_bf16);
-    cuda_unary_baracuda_wrapper!(sqrt_bf16, bk::unary_sqrt_bf16);
-    cuda_unary_baracuda_wrapper!(recip_bf16, bk::unary_recip_bf16);
-    cuda_unary_baracuda_wrapper!(exp_bf16, bk::unary_exp_bf16);
-    cuda_unary_baracuda_wrapper!(log_bf16, bk::unary_log_bf16);
-    cuda_unary_baracuda_wrapper!(sin_bf16, bk::unary_sin_bf16);
-    cuda_unary_baracuda_wrapper!(cos_bf16, bk::unary_cos_bf16);
-    cuda_unary_baracuda_wrapper!(tanh_bf16, bk::unary_tanh_bf16);
-    cuda_unary_baracuda_wrapper!(relu_bf16, bk::unary_relu_bf16);
-    cuda_unary_baracuda_wrapper!(gelu_bf16, bk::unary_gelu_bf16);
-    cuda_unary_baracuda_wrapper!(gelu_tanh_bf16, bk::unary_gelu_tanh_bf16);
-    cuda_unary_baracuda_wrapper!(step_bf16, bk::unary_step_bf16);
-    cuda_unary_baracuda_wrapper!(silu_bf16, bk::unary_silu_bf16);
-    cuda_unary_baracuda_wrapper!(sigmoid_bf16, bk::unary_sigmoid_bf16);
-    cuda_unary_baracuda_wrapper!(rsqrt_bf16, bk::unary_rsqrt_bf16);
-    cuda_unary_baracuda_wrapper!(floor_bf16, bk::unary_floor_bf16);
-    cuda_unary_baracuda_wrapper!(ceil_bf16, bk::unary_ceil_bf16);
-    cuda_unary_baracuda_wrapper!(round_bf16, bk::unary_round_bf16);
-    cuda_unary_baracuda_wrapper!(erf_bf16, bk::unary_erf_bf16);
+    cuda_unary_baracuda_wrapper!(neg_bf16, bk::unary_neg_bf16_into);
+    cuda_unary_baracuda_wrapper!(abs_bf16, bk::unary_abs_bf16_into);
+    cuda_unary_baracuda_wrapper!(sqr_bf16, bk::unary_sqr_bf16_into);
+    cuda_unary_baracuda_wrapper!(sqrt_bf16, bk::unary_sqrt_bf16_into);
+    cuda_unary_baracuda_wrapper!(recip_bf16, bk::unary_recip_bf16_into);
+    cuda_unary_baracuda_wrapper!(exp_bf16, bk::unary_exp_bf16_into);
+    cuda_unary_baracuda_wrapper!(log_bf16, bk::unary_log_bf16_into);
+    cuda_unary_baracuda_wrapper!(sin_bf16, bk::unary_sin_bf16_into);
+    cuda_unary_baracuda_wrapper!(cos_bf16, bk::unary_cos_bf16_into);
+    cuda_unary_baracuda_wrapper!(tanh_bf16, bk::unary_tanh_bf16_into);
+    cuda_unary_baracuda_wrapper!(relu_bf16, bk::unary_relu_bf16_into);
+    cuda_unary_baracuda_wrapper!(gelu_bf16, bk::unary_gelu_bf16_into);
+    cuda_unary_baracuda_wrapper!(gelu_tanh_bf16, bk::unary_gelu_tanh_bf16_into);
+    cuda_unary_baracuda_wrapper!(step_bf16, bk::unary_step_bf16_into);
+    cuda_unary_baracuda_wrapper!(silu_bf16, bk::unary_silu_bf16_into);
+    cuda_unary_baracuda_wrapper!(sigmoid_bf16, bk::unary_sigmoid_bf16_into);
+    cuda_unary_baracuda_wrapper!(rsqrt_bf16, bk::unary_rsqrt_bf16_into);
+    cuda_unary_baracuda_wrapper!(floor_bf16, bk::unary_floor_bf16_into);
+    cuda_unary_baracuda_wrapper!(ceil_bf16, bk::unary_ceil_bf16_into);
+    cuda_unary_baracuda_wrapper!(round_bf16, bk::unary_round_bf16_into);
+    cuda_unary_baracuda_wrapper!(erf_bf16, bk::unary_erf_bf16_into);
 
     // f64
-    cuda_unary_baracuda_wrapper!(neg_f64, bk::unary_neg_f64);
-    cuda_unary_baracuda_wrapper!(abs_f64, bk::unary_abs_f64);
-    cuda_unary_baracuda_wrapper!(sqr_f64, bk::unary_sqr_f64);
-    cuda_unary_baracuda_wrapper!(sqrt_f64, bk::unary_sqrt_f64);
-    cuda_unary_baracuda_wrapper!(recip_f64, bk::unary_recip_f64);
-    cuda_unary_baracuda_wrapper!(exp_f64, bk::unary_exp_f64);
-    cuda_unary_baracuda_wrapper!(log_f64, bk::unary_log_f64);
-    cuda_unary_baracuda_wrapper!(sin_f64, bk::unary_sin_f64);
-    cuda_unary_baracuda_wrapper!(cos_f64, bk::unary_cos_f64);
-    cuda_unary_baracuda_wrapper!(tanh_f64, bk::unary_tanh_f64);
-    cuda_unary_baracuda_wrapper!(relu_f64, bk::unary_relu_f64);
-    cuda_unary_baracuda_wrapper!(gelu_f64, bk::unary_gelu_f64);
-    cuda_unary_baracuda_wrapper!(gelu_tanh_f64, bk::unary_gelu_tanh_f64);
-    cuda_unary_baracuda_wrapper!(step_f64, bk::unary_step_f64);
-    cuda_unary_baracuda_wrapper!(silu_f64, bk::unary_silu_f64);
-    cuda_unary_baracuda_wrapper!(sigmoid_f64, bk::unary_sigmoid_f64);
-    cuda_unary_baracuda_wrapper!(rsqrt_f64, bk::unary_rsqrt_f64);
-    cuda_unary_baracuda_wrapper!(floor_f64, bk::unary_floor_f64);
-    cuda_unary_baracuda_wrapper!(ceil_f64, bk::unary_ceil_f64);
-    cuda_unary_baracuda_wrapper!(round_f64, bk::unary_round_f64);
-    cuda_unary_baracuda_wrapper!(erf_f64, bk::unary_erf_f64);
+    cuda_unary_baracuda_wrapper!(neg_f64, bk::unary_neg_f64_into);
+    cuda_unary_baracuda_wrapper!(abs_f64, bk::unary_abs_f64_into);
+    cuda_unary_baracuda_wrapper!(sqr_f64, bk::unary_sqr_f64_into);
+    cuda_unary_baracuda_wrapper!(sqrt_f64, bk::unary_sqrt_f64_into);
+    cuda_unary_baracuda_wrapper!(recip_f64, bk::unary_recip_f64_into);
+    cuda_unary_baracuda_wrapper!(exp_f64, bk::unary_exp_f64_into);
+    cuda_unary_baracuda_wrapper!(log_f64, bk::unary_log_f64_into);
+    cuda_unary_baracuda_wrapper!(sin_f64, bk::unary_sin_f64_into);
+    cuda_unary_baracuda_wrapper!(cos_f64, bk::unary_cos_f64_into);
+    cuda_unary_baracuda_wrapper!(tanh_f64, bk::unary_tanh_f64_into);
+    cuda_unary_baracuda_wrapper!(relu_f64, bk::unary_relu_f64_into);
+    cuda_unary_baracuda_wrapper!(gelu_f64, bk::unary_gelu_f64_into);
+    cuda_unary_baracuda_wrapper!(gelu_tanh_f64, bk::unary_gelu_tanh_f64_into);
+    cuda_unary_baracuda_wrapper!(step_f64, bk::unary_step_f64_into);
+    cuda_unary_baracuda_wrapper!(silu_f64, bk::unary_silu_f64_into);
+    cuda_unary_baracuda_wrapper!(sigmoid_f64, bk::unary_sigmoid_f64_into);
+    cuda_unary_baracuda_wrapper!(rsqrt_f64, bk::unary_rsqrt_f64_into);
+    cuda_unary_baracuda_wrapper!(floor_f64, bk::unary_floor_f64_into);
+    cuda_unary_baracuda_wrapper!(ceil_f64, bk::unary_ceil_f64_into);
+    cuda_unary_baracuda_wrapper!(round_f64, bk::unary_round_f64_into);
+    cuda_unary_baracuda_wrapper!(erf_f64, bk::unary_erf_f64_into);
 
     // Wrappers are `pub fn` (per the macro); accessible as
     // `unary::<name>` from `register_baracuda_cuda_kernels` below.

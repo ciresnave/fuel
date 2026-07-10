@@ -53,6 +53,37 @@ fn softmax_last_dim_run(
     dtype_size_bytes: usize,
 ) -> Result<CudaStorageBytes> {
     let device = src.device().clone();
+    let numel: i64 = src_layout.shape().elem_count() as i64;
+    let out_bytes = (numel as usize) * dtype_size_bytes;
+    if out_bytes == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+    let out = CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes);
+    softmax_last_dim_run_into(src, src_layout, &out, kernel, op_label, dtype_size_bytes)?;
+    Ok(out)
+}
+
+/// Write-into-output softmax driver (CapturedRun executor build-out).
+///
+/// Identical LastDim softmax math to [`softmax_last_dim_run`], but writes
+/// into the caller-provided `out` buffer instead of allocating one — the
+/// enabler for the pipelined executor's persistent-output (capture) mode
+/// where a fixed-address output is written in place so **no device
+/// allocation happens** (mandatory inside a CUDA-graph capture scope).
+/// Byte-identical result to the alloc-and-return path for a same-sized `out`.
+///
+/// `out` must already hold at least `numel * dtype_size_bytes` bytes; a
+/// smaller buffer is a surfaced error, never an out-of-bounds device write.
+fn softmax_last_dim_run_into(
+    src: &CudaStorageBytes,
+    src_layout: &Layout,
+    out: &CudaStorageBytes,
+    kernel: SoftmaxRun,
+    op_label: &'static str,
+    dtype_size_bytes: usize,
+) -> Result<()> {
+    let device = src.device().clone();
     let dims = src_layout.shape().dims();
     let rank = dims.len();
     let last_dim = *dims.last().ok_or_else(|| fuel_ir::Error::Msg(
@@ -61,9 +92,16 @@ fn softmax_last_dim_run(
     let numel: i64 = src_layout.shape().elem_count() as i64;
     let out_bytes = (numel as usize) * dtype_size_bytes;
     if out_bytes == 0 {
-        return CudaStorageBytes::alloc(&device, 0);
+        return Ok(());
     }
-    let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
+    if out.len_bytes() < out_bytes {
+        return Err(fuel_ir::Error::Msg(format!(
+            "{op_label}: write-into output buffer too small ({} < {} bytes)",
+            out.len_bytes(),
+            out_bytes,
+        ))
+        .bt());
+    }
     let scratch = Workspace::alloc(&device, 0)?;
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
 
@@ -77,7 +115,7 @@ fn softmax_last_dim_run(
         })?);
     }
     let stride_x: Vec<i64> = src_layout.stride().iter().map(|&s| s as i64).collect();
-    // Output is freshly allocated contig over the input's shape.
+    // Output is contig over the input's shape.
     let stride_y: Vec<i64> = {
         let mut s = vec![1_i64; rank];
         for d in (0..rank.saturating_sub(1)).rev() {
@@ -95,7 +133,7 @@ fn softmax_last_dim_run(
     let softmax_stride_y: i64 = stride_y[rank - 1];
 
     let x_ptr = src.buffer().as_raw().0 as *const std::ffi::c_void;
-    let y_ptr = out_buf.as_raw().0 as *mut std::ffi::c_void;
+    let y_ptr = out.buffer().as_raw().0 as *mut std::ffi::c_void;
 
     let status = unsafe {
         kernel(
@@ -116,11 +154,7 @@ fn softmax_last_dim_run(
         )
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(
-        Arc::new(out_buf),
-        device,
-        out_bytes,
-    ))
+    Ok(())
 }
 
 macro_rules! softmax_kernel {
@@ -134,6 +168,25 @@ macro_rules! softmax_kernel {
                 softmax_last_dim_run(
                     src,
                     src_layout,
+                    sys::[<baracuda_kernels_ $sys_stem _run>],
+                    $op_label,
+                    $dtype_size,
+                )
+            }
+
+            #[doc = concat!(
+                "Write-into-output variant of baracuda `", $op_label,
+                "` LastDim — writes into `out` (no alloc; CapturedRun capture mode)."
+            )]
+            pub fn [<$name _into>](
+                src: &CudaStorageBytes,
+                src_layout: &Layout,
+                out: &CudaStorageBytes,
+            ) -> Result<()> {
+                softmax_last_dim_run_into(
+                    src,
+                    src_layout,
+                    out,
                     sys::[<baracuda_kernels_ $sys_stem _run>],
                     $op_label,
                     $dtype_size,
