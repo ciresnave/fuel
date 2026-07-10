@@ -124,9 +124,13 @@ pub fn dispatched_kernel_source(
     let op = crate::pipelined::op_to_op_kind(&n.op)?;
     let dtypes = crate::pipelined::build_lookup_dtypes(graph, n);
     let backend = graph.target_backend(node)?;
+    // Mirror `lookup_with_caps`'s dense-safe pick: skip baked-broadcast
+    // siblings so the attribution matches the kernel the executor actually
+    // dispatches (path 1a).
     bindings
         .lookup_alternatives(op, &dtypes, backend)
-        .first()
+        .iter()
+        .find(|e| !e.caps.requires_broadcast)
         .map(|e| e.kernel_source)
 }
 

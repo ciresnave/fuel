@@ -78,6 +78,12 @@ impl Tri {
     pub fn is_accepted(self) -> bool {
         matches!(self, Tri::Accepted)
     }
+
+    /// Whether this flag is `required` (the operand MUST carry the property;
+    /// for `broadcast_stride0` this marks a baked-broadcast kernel).
+    pub fn is_required(self) -> bool {
+        matches!(self, Tri::Required)
+    }
 }
 
 /// The full typed five-flag layout set for one operand — every flag
@@ -106,7 +112,11 @@ impl ResolvedLayout {
     /// `strided_input = (strided == accepted) && (broadcast_stride0 == accepted)`.
     pub fn project(&self) -> KernelCaps {
         let strided_input = self.strided.is_accepted() && self.broadcast_stride0.is_accepted();
-        KernelCaps { strided_input }
+        // `broadcast_stride0: required` marks a baked-broadcast kernel: the
+        // realize pick must exclude it from a dense operand (path 1a). See
+        // [`KernelCaps::requires_broadcast`].
+        let requires_broadcast = self.broadcast_stride0.is_required();
+        KernelCaps { strided_input, requires_broadcast }
     }
 }
 
@@ -171,7 +181,12 @@ pub fn project_kernel_caps(operand_layouts: &[ResolvedLayout]) -> KernelCaps {
         return KernelCaps::empty();
     }
     let strided_input = operand_layouts.iter().all(|l| l.project().strided_input);
-    KernelCaps { strided_input }
+    // If ANY operand must be broadcast (a baked stride-0), the KERNEL is a
+    // baked-broadcast kernel — excluded from generic (dense) selection.
+    let requires_broadcast = operand_layouts
+        .iter()
+        .any(|l| l.broadcast_stride0.is_required());
+    KernelCaps { strided_input, requires_broadcast }
 }
 
 /// Is this contract the GENERIC (fully-permissive strided) one — admissible
@@ -218,6 +233,7 @@ mod tests {
             contiguous: contiguous.map(String::from),
             strided: strided.map(String::from),
             broadcast_stride0: broadcast.map(String::from),
+            broadcast_axes: None,
             start_offset: start_offset.map(String::from),
             reverse_strides: reverse.map(String::from),
             awkward_layout_strategy: None,
@@ -226,6 +242,61 @@ mod tests {
 
     fn resolve(s: &LayoutSpec) -> ResolvedLayout {
         resolve_layout(Some(s), "test", "op").expect("layout resolves")
+    }
+
+    #[test]
+    fn required_broadcast_projects_requires_broadcast_not_strided() {
+        // `broadcast_stride0: required` marks a baked-broadcast kernel: the
+        // projection sets `requires_broadcast` (→ excluded from dense
+        // selection) and does NOT set `strided_input` (Required != Accepted).
+        let caps = resolve(&spec(
+            Some("accepted"),
+            Some("accepted"),
+            Some("required"),
+            Some("rejected"),
+            Some("rejected"),
+        ))
+        .project();
+        assert!(caps.requires_broadcast, "required broadcast → requires_broadcast");
+        assert!(!caps.strided_input, "Required is not Accepted → not strided-generic");
+
+        // A generic (broadcast_stride0: accepted) operand is dense-safe.
+        let generic = resolve(&spec(
+            Some("accepted"),
+            Some("accepted"),
+            Some("accepted"),
+            Some("rejected"),
+            Some("rejected"),
+        ))
+        .project();
+        assert!(!generic.requires_broadcast, "accepted broadcast is generic, not baked");
+        assert!(generic.strided_input);
+    }
+
+    #[test]
+    fn project_kernel_caps_requires_broadcast_if_any_operand_does() {
+        let baked = resolve(&spec(
+            Some("accepted"),
+            Some("accepted"),
+            Some("required"),
+            Some("rejected"),
+            Some("rejected"),
+        ));
+        let generic = resolve(&spec(
+            Some("accepted"),
+            Some("accepted"),
+            Some("accepted"),
+            Some("rejected"),
+            Some("rejected"),
+        ));
+        assert!(
+            project_kernel_caps(&[generic, baked]).requires_broadcast,
+            "any baked operand ⇒ the kernel is baked-broadcast",
+        );
+        assert!(
+            !project_kernel_caps(&[generic, generic]).requires_broadcast,
+            "all-generic ⇒ dense-safe",
+        );
     }
 
     #[test]
