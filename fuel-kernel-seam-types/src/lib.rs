@@ -11,10 +11,10 @@
 //! **re-fuse rule**, and a synthesized op's **`decompose`** (the region
 //! re-emitted). The operand-side projection (`OperandDesc`) is the synthesizer's
 //! `structure_key` input and lives in its types crate — not here.
-
-/// The Kernel-Seam handshake envelope + profile negotiation (§3) — the frozen
-/// `SeamHello` C-ABI envelope, capability bits, and `negotiate`.
-pub mod seam;
+//!
+//! The handshake envelope (`SeamHello`, §3) lives in the sibling
+//! `fuel-kernel-seam-announce` crate, not here — a provider that only speaks
+//! capability negotiation shouldn't need to pull in this region grammar.
 
 // ===========================================================================
 // OpTag — the frozen functional-Op vocabulary (kernel-seam-interop §4.1)
