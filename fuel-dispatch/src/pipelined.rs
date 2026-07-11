@@ -216,10 +216,20 @@ impl PersistentOutputs {
 /// index_select then replay bit-exact (0/50 even with forced reuse), so the
 /// baracuda GEMV + gather_rows are NOT needed for capture-safety.
 ///
-/// `Rope` is excluded only because decode's rope goes through
-/// `rope_with_tables` (decomposed to verified elementwise ops, including
-/// `Concat` — see below), not this fused kernel — not a capture-safety
-/// concern; add it with a test if a consumer appears.
+/// **`Rope` (`OpKind::Rope`, corrected 2026-07-11)**: previously excluded on
+/// the (now-disproven) assumption that decode's rope always goes through
+/// `rope_with_tables` (decomposed to elementwise ops including `Concat`, see
+/// below) rather than this fused single-input kernel. Tracing a real Llama
+/// decode graph's capture_decode rejection (`capture_decode_matches_persistent`
+/// GPU test, `fuel-core`) found `Op::Rope` nodes placed by the optimizer
+/// (`rope_with_tables` is not always selected — shape-dependent). The
+/// dispatch wrapper (`cuda_rope_baracuda_wrapper!` in
+/// `baracuda_dispatch.rs`) already delegates to baracuda's write-into
+/// `rope_*_into` FFI — that mechanism predates this predicate fix, it was
+/// simply never added here. `rope.fkc.md`'s CUDA kernel is audited
+/// (`docs/architecture/10-decisions-log.md`, 2026-07-11): grid-stride,
+/// one thread per output element, reads only its own rotation-pair partner,
+/// no atomics/shared-memory/cross-thread state — genuinely capture-safe.
 ///
 /// **`Concat` (4b-γ) is capture-safe ONLY for N==2 inputs** — baracuda's
 /// `concat2_into` write-into path covers exactly the decode graph's only
@@ -283,6 +293,9 @@ fn op_kind_is_capture_writeinto(op: OpKind) -> bool {
             // above; N>2 is rejected explicitly in capture_decode's
             // validation loop, not by this predicate.
             | OpKind::Concat
+            // Rotary position embedding (fused single-input kernel) — see
+            // the doc comment above.
+            | OpKind::Rope
     )
 }
 
