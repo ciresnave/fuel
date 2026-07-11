@@ -243,7 +243,7 @@ A `Tensor` is a **handle**, not the data. It holds:
   link into a graph-owned slot (node-handle mode, post-Phase-7.5-G).
   Exactly one of the two is set at any time.
 
-`Storage` lives in `fuel-core-types` and is a single typed contiguous
+`Storage` lives in `fuel-memory` and is a single typed contiguous
 buffer on one device. It knows its dtype and device but **does not
 know its logical shape** — that lives in the `Layout` carried by
 the Tensor handle. Multiple Tensors can — and routinely do — share

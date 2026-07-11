@@ -1,5 +1,15 @@
 # Claude handoff — 2026-06-12 (machine wipe evacuation)
 
+> **2026-07-11 update — historical, superseded by MEMORY.md**: the per-machine
+> memory directory this doc was written to backfill has since been rebuilt and
+> is now the current source of truth (`~/.claude/projects/c--Projects-fuel/memory/`,
+> read `MEMORY.md` there first). This doc's point-in-time state is a month
+> stale: it cites `main @ bc5ab384` (current: `847822c9`) and baracuda
+> `alpha.67` (current: `alpha.77`+), and predates Phase D persistent decode,
+> the dispatch-core cleanup, data-dependent-shapes, and the CapturedRun
+> executor work — all shipped since. Kept for historical resume-anchor
+> narrative, not as a current state snapshot.
+
 Written by the outgoing Claude instance for the next one. The dev
 machine was wiped and reinstalled; the per-machine Claude memory
 directory (`~/.claude/projects/.../memory/`) did NOT survive, so
