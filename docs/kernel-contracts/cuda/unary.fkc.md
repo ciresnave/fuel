@@ -17,7 +17,12 @@ each per-operand five-flag layout projects onto
 `KernelCaps.strided_input = (strided==accepted) && (broadcast_stride0==accepted)` (AND-ed across
 operands) - byte-for-byte the deleted hand-written `register_with_caps(..., strided)` regs. Cost is
 `judge_measured` (the fill_unset pass upgrades the imported unknown_cost sentinel to the shared
-per-OpKind CUDA cost fn); precision is the author-declared `audited: false` -> UNAUDITED seed.
+per-OpKind CUDA cost fn); precision is now `audited: true` for all 22 sections (2026-07-11
+precision audit) — every kernel here is a baracuda whitebox elementwise functor instantiated
+through the shared `unary_pointwise_contig_kernel`/`unary_pointwise_strided_kernel` templates
+(one thread per output index, no atomics, no `__shared__`, no cross-thread reduction), so
+`bit_stable_on_same_hardware: true` is reasoned from source, not an unaudited seed. See each
+section's `precision.notes` for the specific source file/functor cited.
 
 
 ---
@@ -70,8 +75,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=neg(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_neg_fp.cu: NegFunctor is a single PTX neg instruction per element, instantiated through the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__, no cross-thread reduction) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -126,8 +131,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=abs(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_abs_fp.cu: AbsFunctor is a single fabsf/fabs (or f16/bf16 f32-detour) per element via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -182,8 +187,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=sqr(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_square_fp.cu: SquareFunctor is a single `x*x` FMUL/HMUL per element via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -238,8 +243,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=sqrt(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_sqrt_fp.cu: SqrtFunctor calls sqrtf/sqrt (f16/bf16 via f32-detour) per element via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -294,8 +299,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=recip(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_reciprocal_fp.cu: ReciprocalFunctor is a single `1/x` division per element (f16/bf16 via f32-detour) via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -350,8 +355,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=exp(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_exp_fp.cu: ExpFunctor calls expf/exp (f16/bf16 via f32-detour) per element via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -406,8 +411,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=log(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_log_fp.cu: LogFunctor calls logf/log (f16/bf16 via f32-detour) per element via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -462,8 +467,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=sin(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_sin_fp.cu: SinFunctor calls sinf/sin (f16/bf16 via f32-detour) per element via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -518,8 +523,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=cos(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_cos_fp.cu: CosFunctor calls cosf/cos (f16/bf16 via f32-detour) per element via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -574,8 +579,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=tanh(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_tanh_fp.cu: TanhFunctor calls tanhf/tanh (f16/bf16 via f32-detour) per element via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -641,8 +646,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=relu(in[i]), NaN-propagating (torch parity, baracuda alpha.76 rebind, 2026-07-08); author-declared UNAUDITED seed otherwise; pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_relu_propagating_fp.cu: ReluPropagatingFunctor is a single `x < 0 ? 0 : x` compare-select per element (f16/bf16 via f32-detour) via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -697,8 +702,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=gelu_tanh(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_gelu_tanh_fp.cu: GeluTanhFunctor computes the tanh-approx GELU (`0.5*x*(1+tanh(...))`, f16/bf16 via f32-detour) per element via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -753,8 +758,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=gelu(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_gelu_fp.cu (the erf-exact GELU, bound to GeluErfElementwise): GeluFunctor computes `0.5*x*(1+erf(x/sqrt(2)))` via erff/erf (f16/bf16 via f32-detour) per element through the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -809,8 +814,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=step(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_step_fp.cu: StepFunctor is a single `x > 0 ? 1 : 0` compare-select per element (f16/bf16 route through f32 compares) via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -865,8 +870,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=silu(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_silu_fp.cu: SiluFunctor computes `x*sigmoid(x)` with a numerically-stable two-branch form (branch is purely a function of x, no cross-thread state; f16/bf16 via f32-detour) via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -921,8 +926,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=sigmoid(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_sigmoid_fp.cu: SigmoidFunctor computes `1/(1+exp(-x))` with a numerically-stable two-branch form (branch is purely a function of x, no cross-thread state; f16/bf16 via f32-detour) via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -977,8 +982,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=rsqrt(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_rsqrt_fp.cu: f32 uses the single-instruction `rsqrtf` intrinsic, f64 composes `1/sqrt(x)`, f16/bf16 detour through f32 — all per-element, no atomics, no __shared__, via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates; the approx PTX instruction is still deterministic same-hardware/same-driver (accuracy, not determinism, is what 'approx' affects) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1033,8 +1038,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=floor(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_floor_fp.cu: FloorFunctor calls floorf/floor (f16/bf16 via f32-detour) per element via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1089,8 +1094,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=ceil(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_ceil_fp.cu: CeilFunctor calls ceilf/ceil (f16/bf16 via f32-detour) per element via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1145,8 +1150,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=round(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_round_fp.cu: RoundFunctor calls rintf/rint (round-half-to-even, f16/bf16 via f32-detour) per element via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1201,8 +1206,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=erf(in[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_erf_fp.cu: ErfFunctor calls erff/erf (f16/bf16 via f32-detour) per element via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1257,8 +1262,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=sign(in[i]) in {-1,0,1} (f32-only); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/elementwise/unary_sign_fp.cu: SignFunctor<float> is a single piecewise compare-select (`x>0 ? 1 : x<0 ? -1 : 0`) per element via the shared unary_pointwise_contig_kernel/unary_pointwise_strided_kernel templates (one thread per output index, no atomics, no __shared__) — bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```

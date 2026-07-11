@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "upper-triangular mask; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda_triu_tril.cuh triu_tril_kernel / triu_tril_strided_kernel: one thread per output element, output[k] = predicate(i,j,diagonal) ? input[k] : 0 with no atomics, no shared memory, and no cross-thread accumulation; predicate depends only on static (i,j) coords and the diagonal param. Bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -126,8 +126,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "lower-triangular mask; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda_triu_tril.cuh triu_tril_kernel / triu_tril_strided_kernel: one thread per output element, output[k] = predicate(i,j,diagonal) ? input[k] : 0 with no atomics, no shared memory, and no cross-thread accumulation; predicate depends only on static (i,j) coords and the diagonal param. Bit-stable on same hardware."
 
 determinism: same_hardware_bitwise
 ```

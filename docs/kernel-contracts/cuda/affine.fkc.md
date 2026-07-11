@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=mul*x[i]+add; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda_affine.cuh affine_contig_kernel/affine_strided_kernel (+f16/bf16 siblings): one thread per output element, grid-stride loop, no atomics/shared-memory/cross-thread reduction; output index and value depend only on the thread's own linear index, so repeat calls with identical inputs on the same hardware are bit-identical."
 
 determinism: same_hardware_bitwise
 ```

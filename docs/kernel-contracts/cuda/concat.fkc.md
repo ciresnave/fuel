@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out=concat(inputs) along axis; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source (baracuda-kernels-sys/kernels/include/baracuda_elementwise.cuh concat2_kernel + launch_concat2, and baracuda-kernels/src/shape_layout/concat.rs ConcatPlan::select): pure data movement, no arithmetic. Fast path (all-contig) issues cudaMemcpy2DAsync (deterministic driver bulk copy); fallback path is a grid-stride loop where each thread computes one unique output linear index and does a single load+store — no atomics, no shared-memory reduction, no cross-thread dependency. ConcatPlan already declares bit_stable_on_same_hardware:true/deterministic:true at the Rust SKU level, consistent with this read."
 
 determinism: same_hardware_bitwise
 ```

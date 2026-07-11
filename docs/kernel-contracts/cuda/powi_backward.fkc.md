@@ -75,8 +75,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "grad_x = upstream * n * x^(n-1); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Source-audited (baracuda-kernels-sys/kernels/elementwise/unary_powi_backward_fp.cu, unary_param_backward_{,strided_}kernel in baracuda_elementwise.cuh): one thread per output element, dx[i]=op(dy[i],x[i],p0,p1); no atomics, no shared-memory reduction — deterministic given identical inputs/scheduling."
 
 determinism: same_hardware_bitwise
 ```

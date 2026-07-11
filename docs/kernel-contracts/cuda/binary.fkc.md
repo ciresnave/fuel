@@ -17,7 +17,10 @@ each per-operand five-flag layout projects onto
 `KernelCaps.strided_input = (strided==accepted) && (broadcast_stride0==accepted)` (AND-ed across
 operands) - byte-for-byte the deleted hand-written `register_with_caps(..., strided)` regs. Cost is
 `judge_measured` (the fill_unset pass upgrades the imported unknown_cost sentinel to the shared
-per-OpKind CUDA cost fn); precision is the author-declared `audited: false` -> UNAUDITED seed.
+per-OpKind CUDA cost fn); precision is `audited: true` for all 8 kernels (2026-07-11 precision
+audit — each op is a pure single-thread-per-element functor over the shared
+`binary_pointwise_{contig,strided}_kernel` in `include/baracuda_elementwise.cuh`, no atomics or
+cross-thread reduction; see each section's `precision.notes` for the source citation).
 
 
 ---
@@ -75,8 +78,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=lhs[i]+rhs[i]; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Audited against baracuda-kernels-sys/kernels/elementwise/binary_add_fp.cu (AddFunctor = `a + b`) over the shared binary_pointwise_{contig,strided}_kernel in include/baracuda_elementwise.cuh: one thread per output element, disjoint writes, no atomics or cross-thread reduction — deterministic given fixed inputs + grid config."
 
 determinism: same_hardware_bitwise
 ```
@@ -136,8 +139,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=lhs[i]-rhs[i]; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Audited against baracuda-kernels-sys/kernels/elementwise/binary_sub_fp.cu (SubFunctor = `a - b`) over the shared binary_pointwise_{contig,strided}_kernel in include/baracuda_elementwise.cuh: one thread per output element, disjoint writes, no atomics or cross-thread reduction — deterministic given fixed inputs + grid config."
 
 determinism: same_hardware_bitwise
 ```
@@ -197,8 +200,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=lhs[i]*rhs[i]; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Audited against baracuda-kernels-sys/kernels/elementwise/binary_mul_fp.cu (MulFunctor = `a * b`) over the shared binary_pointwise_{contig,strided}_kernel in include/baracuda_elementwise.cuh: one thread per output element, disjoint writes, no atomics or cross-thread reduction — deterministic given fixed inputs + grid config. Same seam that previously blocked task 4b-delta (fuel-dispatch placement refusing this kernel unaudited)."
 
 determinism: same_hardware_bitwise
 ```
@@ -258,8 +261,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=lhs[i]/rhs[i]; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Audited against baracuda-kernels-sys/kernels/elementwise/binary_div_fp.cu (DivFunctor = `a / b`) over the shared binary_pointwise_{contig,strided}_kernel in include/baracuda_elementwise.cuh: one thread per output element, disjoint writes, no atomics or cross-thread reduction — deterministic given fixed inputs + grid config."
 
 determinism: same_hardware_bitwise
 ```
@@ -319,8 +322,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=max(lhs[i],rhs[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Audited against baracuda-kernels-sys/kernels/elementwise/binary_maximum_fp.cu (explicit NaN-guard compare-and-select, `a!=a`/`b!=b` checks before `a>b`) over the shared binary_pointwise_{contig,strided}_kernel: one thread per output element, disjoint writes, no atomics or cross-thread reduction — deterministic given fixed inputs + grid config."
 
 determinism: same_hardware_bitwise
 ```
@@ -380,8 +383,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=min(lhs[i],rhs[i]); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Audited against baracuda-kernels-sys/kernels/elementwise/binary_minimum_fp.cu (explicit NaN-guard compare-and-select, `a!=a`/`b!=b` checks before `a<b`) over the shared binary_pointwise_{contig,strided}_kernel: one thread per output element, disjoint writes, no atomics or cross-thread reduction — deterministic given fixed inputs + grid config."
 
 determinism: same_hardware_bitwise
 ```
@@ -441,8 +444,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=lhs[i]^rhs[i] (tensor^tensor); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Audited against baracuda-kernels-sys/kernels/elementwise/binary_pow_fp.cu (`powf`/`pow` libdevice call per element, f16/bf16 via f32-detour) over the shared binary_pointwise_{contig,strided}_kernel: one thread per output element, disjoint writes, no atomics or cross-thread reduction; CUDA libdevice math is deterministic for fixed inputs on fixed hardware/toolchain."
 
 determinism: same_hardware_bitwise
 ```
@@ -502,8 +505,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=rem(lhs[i],rhs[i]) (PyTorch sign-of-divisor; baracuda binary_mod); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Audited against baracuda-kernels-sys/kernels/elementwise/binary_mod_fp.cu (fmodf/fmod + sign-fix add for Python-style modulo) over the shared binary_pointwise_{contig,strided}_kernel: one thread per output element, disjoint writes, no atomics or cross-thread reduction; deterministic given fixed inputs + grid config."
 
 determinism: same_hardware_bitwise
 ```

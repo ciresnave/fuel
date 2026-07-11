@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=in[i]^exp; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Source-audited (baracuda-kernels-sys/kernels/elementwise/unary_powi_fp.cu, unary_param_pointwise_{contig,strided}_kernel in baracuda_elementwise.cuh): one thread per output element, y[i]=op(x[i],p0,p1); no atomics, no shared-memory reduction, no data-dependent control flow — deterministic given identical inputs/scheduling."
 
 determinism: same_hardware_bitwise
 ```
