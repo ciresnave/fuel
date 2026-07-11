@@ -217,9 +217,33 @@ impl PersistentOutputs {
 /// baracuda GEMV + gather_rows are NOT needed for capture-safety.
 ///
 /// `Rope` is excluded only because decode's rope goes through
-/// `rope_with_tables` (decomposed to verified elementwise ops), not this fused
-/// kernel — not a capture-safety concern; add it with a test if a consumer
-/// appears. `Op::Contiguize` (allocates inside capture) stays out.
+/// `rope_with_tables` (decomposed to verified elementwise ops, including
+/// `Concat` — see below), not this fused kernel — not a capture-safety
+/// concern; add it with a test if a consumer appears.
+///
+/// **`Concat` (4b-γ) is capture-safe ONLY for N==2 inputs** — baracuda's
+/// `concat2_into` write-into path covers exactly the decode graph's only
+/// Concat (the rope rotate-half's 2-input `concat(-x2, x1)`, from
+/// `rope_with_tables`'s CUDA decomposition). This predicate alone can't
+/// express the N-arity condition (a pure `OpKind -> bool` fn has no access
+/// to `OpParams`); `capture_decode`'s validation loop adds an explicit N>2
+/// rejection alongside the `op_kind_is_capture_writeinto` check so N>2
+/// Concat is refused at validation time, before the warm pass ever runs —
+/// the write-into wrapper's N>2 fallback (which still allocates internally
+/// for its N-2 intermediates) is therefore provably never invoked while
+/// `persistent.mode == Reuse`. N-ary write-into concat is a real future gap
+/// if a consumer needs it; not built here (no consumer today).
+///
+/// **`Op::Contiguize` (4b-γ)** — `WorkItemKind::ContiguizeOf`, not a
+/// `Kernel` work item, so this predicate never even sees it — became
+/// capture-safe via a separate write-into path (`contiguize_into`) wired
+/// directly into the `ContiguizeOf` executor arm's `PersistentOutputs`
+/// consultation, mirroring how `Kernel` nodes consult this predicate. No
+/// change needed here or in `capture_decode`'s validation loop: a given
+/// `ContiguizeOf` node's allocate-vs-zero-copy branch is a static
+/// layout/stride property, identical across the warm and capture passes
+/// (both replay the same compiled item list), so it's unconditionally safe
+/// once wired to `PersistentOutputs`.
 ///
 /// LESSON: a bug reproduced through the full harness but not in isolation is
 /// the harness's fault, not the callee's — chase the differentiator (here,
@@ -255,6 +279,10 @@ fn op_kind_is_capture_writeinto(op: OpKind) -> bool {
             | OpKind::SiluElementwise
             | OpKind::GeluElementwise
             | OpKind::GeluErfElementwise
+            // N==2 concat only (rope rotate-half) — see the doc comment
+            // above; N>2 is rejected explicitly in capture_decode's
+            // validation loop, not by this predicate.
+            | OpKind::Concat
     )
 }
 
@@ -1099,17 +1127,14 @@ impl PipelinedExecutor {
                         ))
                         .bt());
                     }
-                    let op = item
-                        .compiled
-                        .as_ref()
-                        .map(|c| c.op)
-                        .ok_or_else(|| {
-                            Error::Msg(format!(
-                                "capture_decode: kernel node {:?} has no compiled op",
-                                item.node_id,
-                            ))
-                            .bt()
-                        })?;
+                    let compiled = item.compiled.as_ref().ok_or_else(|| {
+                        Error::Msg(format!(
+                            "capture_decode: kernel node {:?} has no compiled op",
+                            item.node_id,
+                        ))
+                        .bt()
+                    })?;
+                    let op = compiled.op;
                     if !op_kind_is_capture_writeinto(op) {
                         return Err(Error::Msg(format!(
                             "capture_decode: op {:?} (node {:?}) has no write-into CUDA \
@@ -1118,6 +1143,27 @@ impl PipelinedExecutor {
                             op, item.node_id,
                         ))
                         .bt());
+                    }
+                    // Concat's capture-safety is conditional on arity — N==2
+                    // has a write-into path (concat2_into), N>2 does not (its
+                    // wrapper falls back to an allocating N-1 chain). This
+                    // can't be expressed by op_kind_is_capture_writeinto (a
+                    // pure OpKind -> bool predicate with no OpParams access),
+                    // so reject N>2 explicitly here, BEFORE the warm pass —
+                    // see op_kind_is_capture_writeinto's doc comment.
+                    if op == OpKind::Concat {
+                        if let OpParams::Concat { input_dim_sizes, .. } = &compiled.op_params {
+                            if input_dim_sizes.len() != 2 {
+                                return Err(Error::Msg(format!(
+                                    "capture_decode: Concat node {:?} has {} inputs; only \
+                                     2-input concat (the rope rotate-half shape) has a \
+                                     write-into CUDA path today — N-ary (N>2) concat would \
+                                     allocate mid-capture.",
+                                    item.node_id, input_dim_sizes.len(),
+                                ))
+                                .bt());
+                            }
+                        }
                     }
                 }
                 // View / adopt / slot kinds: no alloc, no launch — capture-safe.
@@ -5823,15 +5869,38 @@ fn execute_work_item(
                 ))
                 .bt()
             })?;
-            // Zero-copy when the input is already contiguous + zero
-            // offset; allocate + copy via the contiguize kernel
-            // otherwise.
-            let out_arc =
-                if input_layout.is_contiguous() && input_layout.start_offset() == 0 {
-                    input_arc
-                } else {
-                    auto_contiguize(&input_arc, &input_layout)?
-                };
+            // CapturedRun build-out (4b-γ): in Reuse (capture/replay) mode,
+            // reuse the fixed-address buffer recorded during the warm run —
+            // device allocation is illegal inside a capture scope. Always
+            // write-into when reusing (skip the zero-copy-vs-allocate
+            // branch entirely): a given ContiguizeOf node's zero-copy-ness
+            // is a static layout/stride property, identical across the warm
+            // and capture passes (both replay the same compiled item list
+            // with the same static layouts per capture_decode's own
+            // design), so if this node ever needed the map entry it
+            // allocated on warm too and the entry is guaranteed present.
+            let reuse_arc = match &persistent {
+                Some(p) if p.mode == PersistentMode::Reuse => p.map.get(&item.node_id).cloned(),
+                _ => None,
+            };
+            let out_arc = if let Some(dest_arc) = reuse_arc {
+                contiguize_into(&dest_arc, &input_arc, &input_layout)?;
+                dest_arc
+            } else if input_layout.is_contiguous() && input_layout.start_offset() == 0 {
+                // Zero-copy when the input is already contiguous + zero
+                // offset — never allocates, so Record mode has nothing to
+                // record for this node (no fixed address to reuse).
+                input_arc
+            } else {
+                // Allocate + copy via the contiguize kernel.
+                let arc = auto_contiguize(&input_arc, &input_layout)?;
+                if let Some(p) = persistent.as_deref_mut() {
+                    if p.mode == PersistentMode::Record {
+                        p.map.insert(item.node_id, Arc::clone(&arc));
+                    }
+                }
+                arc
+            };
             cache.insert(item.node_id, out_arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             // A4b-1: a materializing contiguize (CUDA) is same-stream; its
@@ -6942,6 +7011,63 @@ fn auto_contiguize(
     Ok(Arc::new(RwLock::new(new_storage)))
 }
 
+/// Write-into sibling of [`auto_contiguize`] (CapturedRun executor
+/// build-out, 4b-γ): materializes a contiguous copy of `arc` at `layout`
+/// INTO `dest`'s EXISTING buffer instead of allocating a fresh one — the
+/// path `WorkItemKind::ContiguizeOf`'s Reuse-mode branch needs (device
+/// allocation is illegal inside a capture scope). `dest` must already be
+/// sized to the contiguized output's byte count — true by construction,
+/// since the persistent map only ever holds a buffer THIS SAME code path
+/// (the warm-run `auto_contiguize` allocation) sized.
+///
+/// CUDA-only today: `PersistentOutputs::reuse` (Reuse mode) is only ever
+/// constructed inside [`PipelinedExecutor::capture_decode`], which is
+/// `#[cfg(feature = "cuda")]`-gated and validates every compute node
+/// targets `Cuda` — a CPU or Vulkan storage can never actually reach this
+/// function in practice. Per this project's "never panic on production
+/// paths" rule, the other backends still surface a typed gap rather than
+/// silently mishandling it (never a crash).
+#[cfg_attr(not(feature = "cuda"), allow(unused_variables))]
+fn contiguize_into(
+    dest: &Arc<RwLock<Storage>>,
+    arc: &Arc<RwLock<Storage>>,
+    layout: &Layout,
+) -> Result<()> {
+    let in_guard = arc
+        .read()
+        .map_err(|_| poisoned("input storage lock during contiguize_into"))?;
+    match &in_guard.inner {
+        #[cfg(feature = "cuda")]
+        fuel_memory::BackendStorage::Cuda(src_cuda) => {
+            let dtype_size = in_guard.dtype.size_in_bytes();
+            let mut dest_guard = dest
+                .write()
+                .map_err(|_| poisoned("dest storage lock during contiguize_into"))?;
+            let dest_cuda = match &mut dest_guard.inner {
+                fuel_memory::BackendStorage::Cuda(d) => d,
+                other => {
+                    return Err(Error::Msg(format!(
+                        "contiguize_into: dest is BackendStorage::{:?}, not Cuda",
+                        std::mem::discriminant(other),
+                    ))
+                    .bt());
+                }
+            };
+            fuel_cuda_backend::baracuda::contiguize::contiguize_into(
+                src_cuda, layout, dest_cuda, dtype_size,
+            )
+        }
+        #[allow(unreachable_patterns)]
+        _ => Err(Error::Msg(
+            "contiguize_into: only CUDA is wired (PersistentOutputs::reuse / \
+             capture_decode is CUDA-only today — no CPU/Vulkan consumer exists \
+             yet; extend this match if one appears)"
+                .to_string(),
+        )
+        .bt()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7738,6 +7864,133 @@ mod tests {
         captured.run.replay(&dev).expect("replay 2");
         dev.synchronize().expect("sync 2");
         assert_eq!(read(&captured.output), realize_ref(&x2), "replay after x update matches realize");
+    }
+
+    /// CapturedRun executor build-out (Increment 4b-γ): make `ContiguizeOf`
+    /// (a non-contiguous reshape after `Permute` — the real decode graph's
+    /// attention-merge reshape shape) AND a 2-input `Op::Concat` (the shape
+    /// RoPE's CUDA decomposition emits for its rotate-half) BOTH
+    /// capture-safe in ONE graph, so the crux 4b-γ exists for — allocation
+    /// of an INTERMEDIATE, non-final buffer inside a capture scope — is
+    /// actually exercised, not just each gap in isolation.
+    ///
+    /// Graph: `x [2,3,4] --Permute[1,0,2]--> [3,2,4]` (non-contiguous)
+    /// `--Reshape[3,8]--> r` (`ContiguizeOf`, MUST allocate: its input is
+    /// non-contiguous) `--Concat(dim=1, with b [3,8])--> y [3,16]` (target).
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn capture_decode_contiguize_then_concat_replays_bit_exact_cuda() {
+        use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
+        use fuel_ir::Shape;
+        use fuel_memory::BackendStorage;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+
+        let build = || -> (Arc<RwLock<Graph>>, NodeId, NodeId, NodeId) {
+            let graph = Arc::new(RwLock::new(Graph::new()));
+            let (x, b, y) = {
+                let mut g = graph.write().unwrap();
+                let x = g.push(Node {
+                    op: Op::Const, inputs: vec![],
+                    shape: Shape::from_dims(&[2, 3, 4]), dtype: DType::F32,
+                });
+                let p = g.push(Node {
+                    op: Op::Permute(vec![1, 0, 2]), inputs: vec![x],
+                    shape: Shape::from_dims(&[3, 2, 4]), dtype: DType::F32,
+                });
+                let r = g.push(Node {
+                    op: Op::Reshape(Shape::from_dims(&[3, 8])), inputs: vec![p],
+                    shape: Shape::from_dims(&[3, 8]), dtype: DType::F32,
+                });
+                let b = g.push(Node {
+                    op: Op::Const, inputs: vec![],
+                    shape: Shape::from_dims(&[3, 8]), dtype: DType::F32,
+                });
+                let y = g.push(Node {
+                    op: Op::Concat { dim: 1 }, inputs: vec![r, b],
+                    shape: Shape::from_dims(&[3, 16]), dtype: DType::F32,
+                });
+                g.set_target_backend(p, BackendId::Cuda);
+                g.set_target_backend(r, BackendId::Cuda);
+                g.set_target_backend(y, BackendId::Cuda);
+                (x, b, y)
+            };
+            (graph, x, b, y)
+        };
+
+        let up = |v: &[f32]| -> Arc<RwLock<Storage>> {
+            let cb = CudaStorageBytes::from_cpu_bytes(&dev, bytemuck::cast_slice(v)).expect("h2d");
+            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(cb), DType::F32)))
+        };
+        let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
+            let g = arc.read().unwrap();
+            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            bytemuck::cast_slice(&c.to_cpu_bytes().expect("d2h")).to_vec()
+        };
+
+        let x_data: Vec<f32> = (0..24).map(|i| i as f32).collect();
+        let b_data: Vec<f32> = (0..24).map(|i| 100.0 + i as f32).collect();
+        let x_arc = up(&x_data);
+        let (graph, x, b, y) = build();
+        let mut inputs = StorageCache::new();
+        inputs.insert(x, x_arc.clone());
+        // `b` deliberately NOT retained by a local variable — forces
+        // reliance on `capture_decode`'s own `retained_inputs`, mirroring
+        // the matmul/index_select regression precedent.
+        inputs.insert(b, up(&b_data));
+
+        let captured = PipelinedExecutor::capture_decode(
+            Arc::clone(&graph),
+            y,
+            inputs,
+            SymEnv::default(),
+        )
+        .expect("capture_decode contiguize+concat");
+
+        let realize_ref = |xv: &[f32], bv: &[f32]| -> Vec<f32> {
+            let (g, xr, br, yr) = build();
+            let mut ins = StorageCache::new();
+            ins.insert(xr, up(xv));
+            ins.insert(br, up(bv));
+            let (arc, _) = PipelinedExecutor::realize(g, yr, ins).expect("ref realize");
+            read(&arc)
+        };
+        let expect0 = realize_ref(&x_data, &b_data);
+
+        // (1) warm-run result sits in the captured output buffer (capture
+        //     RECORDS launches, it does not execute them at capture time).
+        assert_eq!(read(&captured.output), expect0, "warm result after capture");
+
+        // (2) replay TWICE with unchanged inputs — proves the fixed-address
+        //     reuse (both the ContiguizeOf intermediate and the Concat
+        //     output) holds across multiple replay() calls, not just one.
+        for i in 0..2 {
+            captured.run.replay(&dev).unwrap_or_else(|e| panic!("replay {i}: {e:?}"));
+            dev.synchronize().expect("sync");
+            assert_eq!(read(&captured.output), expect0, "replay {i} reproduces result");
+        }
+
+        // (3) overwrite x in place (a DIFFERENT value-set), replay again ->
+        //     the new result flows from the FIXED input address, through
+        //     the fixed ContiguizeOf intermediate, into the fixed Concat
+        //     output — matches an independent uncaptured realize.
+        let x2: Vec<f32> = (0..24).map(|i| 1000.0 + i as f32).collect();
+        {
+            let g = x_arc.read().unwrap();
+            let BackendStorage::Cuda(c) = &g.inner else { panic!("x not cuda") };
+            c.write_from_host(bytemuck::cast_slice(&x2)).expect("in-place H2D");
+        }
+        captured.run.replay(&dev).expect("replay 3");
+        dev.synchronize().expect("sync 3");
+        assert_eq!(
+            read(&captured.output),
+            realize_ref(&x2, &b_data),
+            "replay after x update matches independent uncaptured realize"
+        );
     }
 
     /// CapturedDecodeSession (Increment 4a): drive the warm→capture→replay
