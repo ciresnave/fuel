@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out=dest with the src slab written at ranges, axis start read device-side from an i64 offset (in place); author-declared UNAUDITED seed; pointwise byte copy, bit-stable same hardware. Bounds on the device-resident start are the caller's contract (the kernel does not clamp)."
+  audited: true
+  notes: "Reasoned from source (baracuda_write_slice.cuh write_slice_byte_doff_kernel): identical structure to write_slice's byte kernel (one thread per source element, no atomics, no cross-thread reduction, bijective source->dest coordinate shift) plus exactly one extra deterministic read of dyn_start_dev[0] at kernel entry, substituted for the dyn_axis's static range_start. Given bit-identical source bytes AND a bit-identical device offset value, the dest write is bit-identical; the offset's own value-over-time is the caller's contract (H2D bump), not this kernel's nondeterminism. Bounds on the device-resident start are the caller's contract (the kernel does not clamp)."
 
 determinism: same_hardware_bitwise
 ```

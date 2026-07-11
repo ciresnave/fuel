@@ -108,8 +108,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                       # author-declared seed; Judge audits (§4.8) — matches the deleted regs' default UNAUDITED
-  notes: "widening (F16/BF16->F32) exact; F64->F32 RNE; int->float per CUDA convert; F8E4M3->F32 exact decode; pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Source-audited (baracuda_cast.cuh cast_contig_kernel<TIn,F32>, baracuda-kernels-sys/kernels/elementwise/cast.cu + cast_subbyte_fp8.cu for the F8E4M3 leg): one thread per output element (grid-stride loop), pure static_cast/cast_value with no atomics, no shared memory, no cross-thread reduction; F8E4M3->F32 goes through the fixed __nv_cvt_fp8_to_halfraw intrinsic, likewise thread-local. Deterministic given identical inputs on the same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -169,8 +169,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "narrowing F32/F64->F16 RNE, overflow to +/-inf; int->float per CUDA convert; F8E4M3->F16 exact-decode then RNE (in-range); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Source-audited (baracuda_cast.cuh cast_contig_kernel<TIn,__half>, cast.cu + cast_subbyte_fp8.cu for the F8E4M3 leg): one thread per output element (grid-stride loop), cast_value<TIn,__half> routes through fixed __float2half/__half2float intrinsics, no atomics/shared-mem/cross-thread reduction; F8E4M3->F16 likewise thread-local via __nv_cvt_fp8_to_halfraw. Deterministic given identical inputs on the same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -229,8 +229,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "narrowing F32/F64->BF16 per CUDA rounding; int->float per CUDA convert; F8E4M3->BF16 exact for in-range E4M3; pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Source-audited (baracuda_cast.cuh cast_contig_kernel<TIn,__nv_bfloat16>, cast.cu + cast_subbyte_fp8.cu for the F8E4M3 leg): one thread per output element (grid-stride loop), cast_value<TIn,__nv_bfloat16> routes through fixed __float2bfloat16/__bfloat162float intrinsics, no atomics/shared-mem/cross-thread reduction; F8E4M3->BF16 likewise thread-local. Deterministic given identical inputs on the same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -289,8 +289,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "widening (F32/F16/BF16->F64) exact; int->float per CUDA convert; pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Source-audited (baracuda_cast.cuh cast_contig_kernel<TIn,double>, cast.cu 8-set instantiations): one thread per output element (grid-stride loop), pure static_cast/cast_value with no atomics, no shared memory, no cross-thread reduction, no data-dependent control flow. Deterministic given identical inputs on the same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -349,8 +349,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "float->int truncates toward zero (CUDA convert); U32->I32 bit reinterpret; pointwise, bit-stable same hardware; integer casts exact."
+  audited: true
+  notes: "Source-audited (baracuda_cast.cuh cast_contig_kernel<TIn,int32_t>, cast.cu 8-set instantiations; U32->I32 is fuel-cuda-backend's fixed bit-reinterpret at the FFI boundary, not a device-side branch): one thread per output element (grid-stride loop), pure static_cast/cast_value, no atomics/shared-mem/cross-thread reduction. Deterministic given identical inputs on the same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -409,8 +409,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "float->int truncates toward zero (CUDA convert); U32 collapses to i32 FFI (bit-identical non-negative); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Source-audited: dst U32 collapses to baracuda's cast_<src>_i32 symbol (fuel_cuda_backend::baracuda::cast::baracuda_dtype_tag), same cast_contig_kernel<TIn,int32_t> as cast_to_i32 — one thread per output element, pure static_cast/cast_value, no atomics/shared-mem/cross-thread reduction. Deterministic given identical inputs on the same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -469,8 +469,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "integer widening (I32/U8->I64) exact; float->int truncates toward zero (CUDA convert); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Source-audited (baracuda_cast.cuh cast_contig_kernel<TIn,int64_t>, cast.cu 8-set instantiations): one thread per output element (grid-stride loop), pure static_cast/cast_value, no atomics/shared-mem/cross-thread reduction, no data-dependent control flow. Deterministic given identical inputs on the same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -529,8 +529,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "narrowing to U8 per CUDA convert (float->int truncate toward zero; integer wrap); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Source-audited (baracuda_cast.cuh cast_contig_kernel<TIn,uint8_t>, cast.cu 8-set instantiations): one thread per output element (grid-stride loop), pure static_cast/cast_value, no atomics/shared-mem/cross-thread reduction, no data-dependent control flow. Deterministic given identical inputs on the same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -591,8 +591,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "narrow to F8E4M3 RNE + SATURATE to E4M3 finite range +/-448 (no inf encoding); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Source-audited (baracuda_cast_subbyte.cuh t_to_fp8_kernel / f32_to_e4m3, cast_subbyte_fp8.cu): one thread per output element (grid-stride loop), F32_TO_FP8_FN is the fixed __nv_cvt_float_to_fp8(x, __NV_SATFINITE, __NV_E4M3) intrinsic, no atomics/shared-mem/cross-thread reduction. Deterministic given identical inputs on the same hardware."
 
 determinism: same_hardware_bitwise
 ```

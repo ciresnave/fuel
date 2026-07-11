@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=clamp(in[i],min,max); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from baracuda-kernels-sys/kernels/elementwise/ternary_clamp_fp.cu + include/baracuda_elementwise.cuh ternary_pointwise_{contig,strided}_kernel: grid-stride loop, one thread per output index, y[i]=op(a[i],b[i],c[i]) with no atomics, no shared-memory reduction, no data-dependent control flow; distinct output addresses per thread. Deterministic same-hardware repeat calls."
 
 determinism: same_hardware_bitwise
 ```

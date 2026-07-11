@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out=dest with the src slab written at ranges mod modulus (in place); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "No dedicated .cu kernel: fuel-dispatch's wrapper (baracuda_dispatch.rs cuda_write_slice_rotating_baracuda_wrapper) D2H-reads the position scalar, computes wrapped_start/first_len/second_len with deterministic host integer math, extracts each chunk via CudaStorageBytes::extract_strided_to_new (sequential cudaMemcpyDtoD per tile on one stream + explicit synchronize, no atomics), then reuses write_slice's own audited write_slice_byte_kernel for each of the (at most two) disjoint dest ranges. Every stage is a pure function of its inputs with no cross-thread reduction; the two chunk writes target non-overlapping dest regions by construction (first_len = min(slab_axis_len, modulus - wrapped_start)) and run in-order on the same stream, so there is no race even though they don't overlap."
 
 determinism: same_hardware_bitwise
 ```
