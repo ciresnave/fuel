@@ -310,7 +310,7 @@ retires eager dispatch.
 ```rust
 use fuel_core::{Tensor, Device};
 use fuel_graph::Tensor as GraphTensor;
-use fuel_core_types::Shape;
+use fuel_ir::Shape;
 
 fn main() -> fuel_core::Result<()> {
     // 1. Build a Const leaf via the public factory. After Phase 7.5

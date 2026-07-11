@@ -10,6 +10,8 @@
 > - **Phase A/B/C/D phasing**: still applicable; resume against the v1.0-aligned target.
 >
 > Where this doc and the architecture set conflict, the architecture set wins. This doc carries the implementation-side detail (Phase A through D migration steps); the architecture set carries the durable architectural commitments.
+>
+> **2026-07-11 update — superseded by self-describing storage**: this doc's core proposal (retire the 14-variant `HostBuffer` for a single bytes-uniform `CpuStorage{bytes, dtype}`) was never executed as written. The actual resolution went a different direction: DType (logical) + SType/Encoding (physical) put the encoding scheme on the tensor, with quant scale as a sibling operand rather than embedded — locked 2026-06-18 (see the self-describing-storage memory note and `docs/session-prompts/self-describing-storage-plan.md`, steps 1-4 shipped). `HostBuffer` remains the canonical CPU storage type today (`fuel-ir/src/cpu_storage.rs`, aliased `pub type CpuStorage = HostBuffer`). Read this doc for the capability-advertisement and backend-contract framing (still accurate, see the 2026-05-09 note above), not for the storage-representation plan.
 
 ## TL;DR
 
