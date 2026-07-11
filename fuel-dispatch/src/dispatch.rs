@@ -5973,11 +5973,16 @@ fn copy_from_cuda_wrapper(
             Ok(())
         }
         BackendStorage::Cuda(_) => {
-            // Device-to-device: replace the pre-allocated output's
-            // bytes with a fresh DtoD copy of the full source buffer.
-            let copied = cuda_src.slot_copy_to_new(0, cuda_src.len_bytes())?;
+            // Device-to-device, write-into (CapturedRun build-out, 4b-ζ):
+            // overwrite the executor-provided output's bytes in place via
+            // `CudaStorageBytes::copy_from_device` — no allocation, so this
+            // branch is capture-safe (mirrors the Affine/Concat/Contiguize
+            // conversions from 4b-α/γ) AND a strict improvement for ordinary
+            // (non-capture) realize: the executor already hands this wrapper
+            // a validly-sized pre-allocated output, so writing into it
+            // produces byte-identical results with one fewer allocation.
             let dst = cuda_output(&mut out_guard)?;
-            *dst = copied;
+            dst.copy_from_device(cuda_src)?;
             Ok(())
         }
         #[allow(unreachable_patterns)]
@@ -10366,5 +10371,86 @@ mod tests {
             .transfer_paths
             .iter()
             .any(|&(dst, path)| dst == DeviceLocation::Cpu && path == TransferPath::HostStaging));
+    }
+
+    /// CapturedRun executor build-out (4b-ζ): `copy_from_cuda_wrapper`'s
+    /// CUDA-output branch converted from allocate-and-replace
+    /// (`slot_copy_to_new` + `*dst = copied`) to write-into
+    /// (`CudaStorageBytes::copy_from_device`). Byte-compares the new
+    /// write-into result against the OLD `slot_copy_to_new`-based behavior
+    /// for a non-trivial (17-element, mixed-value) case, AND confirms the
+    /// destination's buffer identity (device address) is preserved — the
+    /// property capture-safety depends on (allocate-and-replace would swap
+    /// in a fresh `Arc<DeviceBuffer<u8>>`, changing the address; write-into
+    /// must not).
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn copy_from_cuda_wrapper_cuda_output_write_into_matches_old_behavior() {
+        use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+
+        let src_data: Vec<f32> = (0..17).map(|i| i as f32 * 1.5 - 3.0).collect();
+        let src_bytes: Vec<u8> = src_data.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let src_cb = CudaStorageBytes::from_cpu_bytes(&dev, &src_bytes).expect("h2d src");
+        let src_arc: Arc<RwLock<Storage>> =
+            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(src_cb), DType::F32)));
+
+        // Pre-allocated output filled with distinguishable garbage — proves
+        // the write-into path actually overwrites every byte, not just
+        // reads through stale garbage by luck.
+        let garbage: Vec<u8> = vec![0xAAu8; src_bytes.len()];
+        let dst_cb = CudaStorageBytes::from_cpu_bytes(&dev, &garbage).expect("h2d garbage");
+        let dst_arc: Arc<RwLock<Storage>> =
+            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(dst_cb), DType::F32)));
+
+        // Destination buffer identity BEFORE the wrapper runs.
+        let before_ptr = {
+            let g = dst_arc.read().unwrap();
+            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            c.buffer() as *const _ as usize
+        };
+
+        let inputs = vec![Arc::clone(&src_arc)];
+        let mut outputs = vec![Arc::clone(&dst_arc)];
+        copy_from_cuda_wrapper(&inputs, &mut outputs, &[], &OpParams::None)
+            .expect("copy_from_cuda_wrapper (write-into CUDA branch)");
+
+        let after_ptr = {
+            let g = dst_arc.read().unwrap();
+            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            c.buffer() as *const _ as usize
+        };
+        assert_eq!(
+            before_ptr, after_ptr,
+            "write-into must preserve the output's buffer identity (device address)"
+        );
+
+        let new_bytes = {
+            let g = dst_arc.read().unwrap();
+            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            c.to_cpu_bytes().expect("d2h new")
+        };
+
+        // Independently reproduce the OLD allocate-and-replace behavior
+        // (`slot_copy_to_new`) from the SAME source, for comparison.
+        let old_bytes = {
+            let g = src_arc.read().unwrap();
+            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            let copied = c
+                .slot_copy_to_new(0, c.len_bytes())
+                .expect("slot_copy_to_new (old allocate-and-replace path)");
+            copied.to_cpu_bytes().expect("d2h old")
+        };
+
+        assert_eq!(
+            new_bytes, old_bytes,
+            "write-into result must byte-match the old slot_copy_to_new result"
+        );
+        assert_eq!(new_bytes, src_bytes, "and both must match the source bytes");
     }
 }

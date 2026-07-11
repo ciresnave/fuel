@@ -1111,13 +1111,47 @@ impl PipelinedExecutor {
         // launch, so a capture scope is never entered on an unsupported graph.
         for item in &items {
             match &item.kind {
-                WorkItemKind::Copy { .. } | WorkItemKind::Move { .. } => {
+                // Op::Move: the destructive half (releasing the source) is
+                // driven by the realize loop's `destructive_input` cleanup,
+                // which runs once per REALIZE call — not once per `replay()`.
+                // A captured graph's `replay()` re-executes the same baked
+                // launches repeatedly without re-running that surrounding
+                // cleanup between replays, so whether a repeat-replayed Move
+                // is even meaningful is unclear; out of scope here (4b-ζ) —
+                // keep rejecting every Move unconditionally.
+                WorkItemKind::Move { .. } => {
                     return Err(Error::Msg(format!(
-                        "capture_decode: graph has a cross-device copy/move at node {:?}; \
-                         capture requires a single-device CUDA decode step",
+                        "capture_decode: graph has an Op::Move at node {:?}; \
+                         Move's destructive source-release half is driven by \
+                         per-realize cleanup, not per-replay, so capture is \
+                         not supported for Move (out of scope — see the \
+                         `capture_decode` validation loop's Move arm).",
                         item.node_id,
                     ))
                     .bt());
+                }
+                // Op::Copy: a same-device CUDA→CUDA copy (e.g. an
+                // `insert_safety_copies` snapshot) has a write-into wrapper
+                // (`copy_from_cuda_wrapper`'s `BackendStorage::Cuda` branch,
+                // via `CudaStorageBytes::copy_from_device`) and is
+                // capture-safe. A copy whose `target_location` is `Cpu` or
+                // `Vulkan` is a genuine host round-trip / cross-backend
+                // transfer and can never be part of a CUDA graph capture —
+                // keep rejecting those. (`gpu_id` is not cross-checked
+                // against the capture device, matching the `Kernel` arm's
+                // `target_backend` check just above: today's decode graphs
+                // are single-GPU only.)
+                WorkItemKind::Copy { target_location } => {
+                    if !matches!(target_location, DeviceLocation::Cuda { .. }) {
+                        return Err(Error::Msg(format!(
+                            "capture_decode: graph has a cross-device Op::Copy at \
+                             node {:?} (target {:?}); capture requires a \
+                             single-device CUDA decode step — only same-device \
+                             CUDA→CUDA copies are capture-safe.",
+                            item.node_id, target_location,
+                        ))
+                        .bt());
+                    }
                 }
                 WorkItemKind::Kernel => {
                     if item.target_backend != BackendId::Cuda {
@@ -5761,6 +5795,23 @@ fn execute_work_item(
             };
             let kernel_input_layout =
                 fuel_ir::Layout::contiguous(src_layout.shape().clone());
+            // CapturedRun build-out (4b-ζ): in Reuse (capture/replay) mode,
+            // reuse the fixed-address buffer recorded during the warm run
+            // instead of allocating — device allocation is illegal inside a
+            // capture scope. Only a same-device CUDA target_location ever
+            // reaches Reuse mode for a Copy node in practice: capture_decode's
+            // validation loop rejects every Cpu/Vulkan target_location before
+            // a capture scope is ever entered (Move is rejected unconditionally
+            // there too), so this arm trusts that invariant rather than
+            // re-deriving it — the `DeviceLocation::Cuda` guard below is just
+            // belt-and-suspenders for any other Reuse-mode caller.
+            let reuse_arc = match &persistent {
+                Some(p) if p.mode == PersistentMode::Reuse => match target_location {
+                    DeviceLocation::Cuda { .. } => p.map.get(&item.node_id).cloned(),
+                    _ => None,
+                },
+                _ => None,
+            };
             // Allocate the output on `target_location`. Phase 2
             // covered D2H (target=Cpu); Phase 3b extends to H2D
             // (target=Cuda / Vulkan from a CPU source). For non-CPU
@@ -5770,66 +5821,70 @@ fn execute_work_item(
             // (e.g. `pipelined_bridge::device_seed_storage`) before
             // realizing.
             let n_bytes = item.elem_count * item.dtype.size_in_bytes();
-            let output = match target_location {
-                DeviceLocation::Cpu => {
-                    fuel_memory::alloc_cpu_zeroed(item.dtype, item.elem_count)?
-                }
-                #[cfg(feature = "cuda")]
-                DeviceLocation::Cuda { gpu_id } => {
-                    let cuda_dev = find_cuda_device_in_cache(cache, *gpu_id)
-                        .ok_or_else(|| Error::Msg(format!(
-                            "Op::{op_label} on Cuda {{ gpu_id: {} }}: no CUDA \
-                             storage in input cache to derive the device \
-                             handle from. The caller must seed the cache \
-                             (e.g. via `fuel-core::pipelined_bridge::\
-                             device_seed_storage`) before realizing an \
-                             H2D Op::{op_label}.",
-                            gpu_id,
-                        )).bt())?;
-                    let cuda_bytes =
-                        fuel_cuda_backend::CudaStorageBytes::alloc_uninit(&cuda_dev, n_bytes)?;
-                    Storage::new(fuel_memory::BackendStorage::Cuda(cuda_bytes), item.dtype)
-                }
-                #[cfg(not(feature = "cuda"))]
-                DeviceLocation::Cuda { .. } => {
-                    return Err(Error::Msg(format!(
-                        "Op::{op_label} target Cuda but fuel-storage wasn't built \
-                         with --features cuda",
-                    )).bt());
-                }
-                #[cfg(feature = "vulkan")]
-                DeviceLocation::Vulkan { gpu_id } => {
-                    let backend = find_vulkan_backend_in_cache(cache, *gpu_id)
-                        .ok_or_else(|| Error::Msg(format!(
-                            "Op::{op_label} on Vulkan {{ gpu_id: {} }}: no Vulkan \
-                             storage in input cache to derive the backend \
-                             handle from. The caller must seed the cache \
-                             (e.g. via `fuel-core::pipelined_bridge::\
-                             device_seed_storage`) before realizing an \
-                             H2D Op::{op_label}.",
-                            gpu_id,
-                        )).bt())?;
-                    let vk_bytes = backend.alloc_bytes_handle(n_bytes)?;
-                    Storage::new(fuel_memory::BackendStorage::Vulkan(vk_bytes), item.dtype)
-                }
-                #[cfg(not(feature = "vulkan"))]
-                DeviceLocation::Vulkan { .. } => {
-                    return Err(Error::Msg(format!(
-                        "Op::{op_label} target Vulkan but fuel-storage wasn't built \
-                         with --features vulkan",
-                    )).bt());
-                }
-                other => {
-                    return Err(Error::Msg(format!(
-                        "PipelinedExecutor: Op::{op_label} target_location {:?} not yet \
-                         wired (CPU + CUDA + Vulkan covered; Metal extends when \
-                         its byte-storage substrate is ready).",
-                        other
-                    )).bt());
-                }
-            };
             let input_arcs = vec![src_input];
-            let mut output_arcs = vec![Arc::new(RwLock::new(output))];
+            let mut output_arcs = if let Some(arc) = reuse_arc {
+                vec![arc]
+            } else {
+                let output = match target_location {
+                    DeviceLocation::Cpu => {
+                        fuel_memory::alloc_cpu_zeroed(item.dtype, item.elem_count)?
+                    }
+                    #[cfg(feature = "cuda")]
+                    DeviceLocation::Cuda { gpu_id } => {
+                        let cuda_dev = find_cuda_device_in_cache(cache, *gpu_id)
+                            .ok_or_else(|| Error::Msg(format!(
+                                "Op::{op_label} on Cuda {{ gpu_id: {} }}: no CUDA \
+                                 storage in input cache to derive the device \
+                                 handle from. The caller must seed the cache \
+                                 (e.g. via `fuel-core::pipelined_bridge::\
+                                 device_seed_storage`) before realizing an \
+                                 H2D Op::{op_label}.",
+                                gpu_id,
+                            )).bt())?;
+                        let cuda_bytes =
+                            fuel_cuda_backend::CudaStorageBytes::alloc_uninit(&cuda_dev, n_bytes)?;
+                        Storage::new(fuel_memory::BackendStorage::Cuda(cuda_bytes), item.dtype)
+                    }
+                    #[cfg(not(feature = "cuda"))]
+                    DeviceLocation::Cuda { .. } => {
+                        return Err(Error::Msg(format!(
+                            "Op::{op_label} target Cuda but fuel-storage wasn't built \
+                             with --features cuda",
+                        )).bt());
+                    }
+                    #[cfg(feature = "vulkan")]
+                    DeviceLocation::Vulkan { gpu_id } => {
+                        let backend = find_vulkan_backend_in_cache(cache, *gpu_id)
+                            .ok_or_else(|| Error::Msg(format!(
+                                "Op::{op_label} on Vulkan {{ gpu_id: {} }}: no Vulkan \
+                                 storage in input cache to derive the backend \
+                                 handle from. The caller must seed the cache \
+                                 (e.g. via `fuel-core::pipelined_bridge::\
+                                 device_seed_storage`) before realizing an \
+                                 H2D Op::{op_label}.",
+                                gpu_id,
+                            )).bt())?;
+                        let vk_bytes = backend.alloc_bytes_handle(n_bytes)?;
+                        Storage::new(fuel_memory::BackendStorage::Vulkan(vk_bytes), item.dtype)
+                    }
+                    #[cfg(not(feature = "vulkan"))]
+                    DeviceLocation::Vulkan { .. } => {
+                        return Err(Error::Msg(format!(
+                            "Op::{op_label} target Vulkan but fuel-storage wasn't built \
+                             with --features vulkan",
+                        )).bt());
+                    }
+                    other => {
+                        return Err(Error::Msg(format!(
+                            "PipelinedExecutor: Op::{op_label} target_location {:?} not yet \
+                             wired (CPU + CUDA + Vulkan covered; Metal extends when \
+                             its byte-storage substrate is ready).",
+                            other
+                        )).bt());
+                    }
+                };
+                vec![Arc::new(RwLock::new(output))]
+            };
             let kernel_layouts =
                 vec![kernel_input_layout, item.output_layout.clone()];
             // A4b-1: defer the wait — return the handle to the realize loop.
@@ -5838,6 +5893,16 @@ fn execute_work_item(
                     compiled, &input_arcs, &mut output_arcs, &kernel_layouts, will_be_waited,
                 )?;
             let arc = output_arcs.into_iter().next().expect("one output");
+            // CapturedRun build-out (4b-ζ): Record (warm) mode remembers this
+            // node's fixed output buffer so the capture run reuses the
+            // identical device address. No-op in Reuse mode (the buffer came
+            // FROM the map) and in None mode. Mirrors the Kernel arm's
+            // Record-mode snapshot (above) exactly.
+            if let Some(p) = persistent.as_deref_mut() {
+                if p.mode == PersistentMode::Record {
+                    p.map.insert(item.node_id, Arc::clone(&arc));
+                }
+            }
             cache.insert(item.node_id, arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(handle)
@@ -7990,6 +8055,178 @@ mod tests {
             read(&captured.output),
             realize_ref(&x2, &b_data),
             "replay after x update matches independent uncaptured realize"
+        );
+    }
+
+    /// CapturedRun executor build-out (Increment 4b-ζ): a same-device
+    /// CUDA→CUDA `Op::Copy` — the shape `insert_safety_copies` emits for its
+    /// aliasing-hazard snapshots in the real Llama decode graph — is
+    /// capture-safe via `copy_from_cuda_wrapper`'s write-into
+    /// `BackendStorage::Cuda` branch (`CudaStorageBytes::copy_from_device`).
+    ///
+    /// Graph: `x [2,4]`, `b [2,4]` --Copy{target: Cuda{0}}--> `c` (same-device
+    /// snapshot of `x`) --Add(c, b)--> `y`. Capture, replay twice unchanged,
+    /// then update `x` in place and replay again — every step must match an
+    /// independent uncaptured `realize`.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn capture_decode_same_device_copy_replays_bit_exact_cuda() {
+        use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
+        use fuel_ir::Shape;
+        use fuel_memory::BackendStorage;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+
+        let build = || -> (Arc<RwLock<Graph>>, NodeId, NodeId, NodeId) {
+            let graph = Arc::new(RwLock::new(Graph::new()));
+            let (x, b, y) = {
+                let mut g = graph.write().unwrap();
+                let x = g.push(Node {
+                    op: Op::Const, inputs: vec![],
+                    shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+                });
+                let b = g.push(Node {
+                    op: Op::Const, inputs: vec![],
+                    shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+                });
+                // Same-device CUDA->CUDA copy — the write-into-safe case.
+                let c = g.push(Node {
+                    op: Op::Copy { target: DeviceLocation::Cuda { gpu_id: 0 } },
+                    inputs: vec![x],
+                    shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+                });
+                let y = g.push(Node {
+                    op: Op::Add, inputs: vec![c, b],
+                    shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+                });
+                // Copy's target_backend = SOURCE backend (x is Cuda-resident).
+                g.set_target_backend(c, BackendId::Cuda);
+                g.set_target_backend(y, BackendId::Cuda);
+                (x, b, y)
+            };
+            (graph, x, b, y)
+        };
+
+        let up = |v: &[f32]| -> Arc<RwLock<Storage>> {
+            let cb = CudaStorageBytes::from_cpu_bytes(&dev, bytemuck::cast_slice(v)).expect("h2d");
+            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(cb), DType::F32)))
+        };
+        let read = |arc: &Arc<RwLock<Storage>>| -> Vec<f32> {
+            let g = arc.read().unwrap();
+            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            bytemuck::cast_slice(&c.to_cpu_bytes().expect("d2h")).to_vec()
+        };
+
+        let x_data: Vec<f32> = (0..8).map(|i| i as f32).collect();
+        let b_data: Vec<f32> = (0..8).map(|i| 100.0 + i as f32).collect();
+        let x_arc = up(&x_data);
+        let (graph, x, b, y) = build();
+        let mut inputs = StorageCache::new();
+        inputs.insert(x, x_arc.clone());
+        // `b` deliberately NOT retained by a local variable — forces
+        // reliance on `capture_decode`'s own `retained_inputs`.
+        inputs.insert(b, up(&b_data));
+
+        let captured = PipelinedExecutor::capture_decode(
+            Arc::clone(&graph),
+            y,
+            inputs,
+            SymEnv::default(),
+        )
+        .expect("capture_decode same-device copy");
+
+        let realize_ref = |xv: &[f32], bv: &[f32]| -> Vec<f32> {
+            let (g, xr, br, yr) = build();
+            let mut ins = StorageCache::new();
+            ins.insert(xr, up(xv));
+            ins.insert(br, up(bv));
+            let (arc, _) = PipelinedExecutor::realize(g, yr, ins).expect("ref realize");
+            read(&arc)
+        };
+        let expect0 = realize_ref(&x_data, &b_data);
+
+        // (1) warm-run result sits in the captured output buffer.
+        assert_eq!(read(&captured.output), expect0, "warm result after capture");
+
+        // (2) replay TWICE with unchanged inputs — the Copy's write-into
+        //     destination buffer must stay bit-exact across replays.
+        for i in 0..2 {
+            captured.run.replay(&dev).unwrap_or_else(|e| panic!("replay {i}: {e:?}"));
+            dev.synchronize().expect("sync");
+            assert_eq!(read(&captured.output), expect0, "replay {i} reproduces result");
+        }
+
+        // (3) overwrite x in place (a DIFFERENT value-set), replay again ->
+        //     the Copy re-runs on the fixed input address into its fixed
+        //     destination buffer -> matches an independent uncaptured realize.
+        let x2: Vec<f32> = (0..8).map(|i| 1000.0 + i as f32).collect();
+        {
+            let g = x_arc.read().unwrap();
+            let BackendStorage::Cuda(c) = &g.inner else { panic!("x not cuda") };
+            c.write_from_host(bytemuck::cast_slice(&x2)).expect("in-place H2D");
+        }
+        captured.run.replay(&dev).expect("replay 3");
+        dev.synchronize().expect("sync 3");
+        assert_eq!(
+            read(&captured.output),
+            realize_ref(&x2, &b_data),
+            "replay after x update matches independent uncaptured realize"
+        );
+    }
+
+    /// CapturedRun executor build-out (Increment 4b-ζ): a genuinely
+    /// cross-device `Op::Copy` (D2H — `target: DeviceLocation::Cpu` from a
+    /// CUDA-resident source) must still be REJECTED by `capture_decode`'s
+    /// validation loop — a host round-trip can never be part of a CUDA
+    /// graph capture. Fast check: no replay, just confirm the typed `Err`.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn capture_decode_rejects_cross_device_copy_cuda() {
+        use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
+        use fuel_ir::Shape;
+        use fuel_memory::BackendStorage;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (x, y) = {
+            let mut g = graph.write().unwrap();
+            let x = g.push(Node {
+                op: Op::Const, inputs: vec![],
+                shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+            });
+            // Genuinely cross-device: D2H.
+            let y = g.push(Node {
+                op: Op::Copy { target: DeviceLocation::Cpu },
+                inputs: vec![x],
+                shape: Shape::from_dims(&[2, 4]), dtype: DType::F32,
+            });
+            g.set_target_backend(y, BackendId::Cuda); // source backend = Cuda
+            (x, y)
+        };
+
+        let x_data: Vec<f32> = (0..8).map(|i| i as f32).collect();
+        let cb = CudaStorageBytes::from_cpu_bytes(&dev, bytemuck::cast_slice(&x_data)).expect("h2d");
+        let x_arc = Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(cb), DType::F32)));
+        let mut inputs = StorageCache::new();
+        inputs.insert(x, x_arc);
+
+        let result = PipelinedExecutor::capture_decode(graph, y, inputs, SymEnv::default());
+        let msg = match result {
+            Ok(_) => panic!("D2H Op::Copy must be rejected by capture_decode"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("cross-device"),
+            "error should describe the cross-device rejection: {msg}"
         );
     }
 

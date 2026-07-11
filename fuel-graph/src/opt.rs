@@ -1759,6 +1759,24 @@ fn collect_alias_set(
 /// Returns the number of safety copies inserted (for telemetry /
 /// testing).
 pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize {
+    /// Default [`DeviceLocation`] for a `BackendId` when the graph has
+    /// no per-node `placement` set. Single-GPU convention (gpu_id 0) —
+    /// mirrors `fuel_dispatch::plan::default_device_for`, duplicated
+    /// here because `fuel-graph` doesn't depend on `fuel-dispatch`.
+    /// `insert_safety_copies`' own `target_location` fallback is this
+    /// function's sole caller.
+    fn device_location_for_backend(backend: fuel_ir::probe::BackendId) -> DeviceLocation {
+        use fuel_ir::probe::BackendId;
+        match backend {
+            BackendId::Cpu => DeviceLocation::Cpu,
+            BackendId::Cuda => DeviceLocation::Cuda { gpu_id: 0 },
+            BackendId::Vulkan => DeviceLocation::Vulkan { gpu_id: 0 },
+            BackendId::Metal => DeviceLocation::Metal { gpu_id: 0 },
+            _ => DeviceLocation::Cpu,
+        }
+    }
+
+
     let order = topo_order_multi(graph, roots);
 
     // Combined precedence graph: data edges (input → consumer) plus
@@ -1861,12 +1879,32 @@ pub fn insert_safety_copies(graph: &mut crate::Graph, roots: &[NodeId]) -> usize
     for Conflict { destructive_nid, target, target_shape, target_dtype, conflicting_readers } in conflicts {
         // Pick the copy's target_location. Prefer the target's own
         // placement (if any) — that's the device the data lives on.
-        // Fall back to the destructive op's placement, then to Cpu.
-        // The same-device Op::Copy semantic produces a fresh storage
-        // on `target_location` (executor's WorkItemKind::Copy arm
-        // allocates + the wrapper memcpys bytes).
+        // Fall back to the destructive op's placement. Most graphs
+        // populate NEITHER `placement` (a rarely-used explicit pin,
+        // `Graph::set_placement` / `.on_device(..)`) — ordinary
+        // single-device `optimize_graph` only stamps the coarser
+        // `target_backend` (`BackendId`, no gpu_id) — so fall back
+        // further to a same-device location DERIVED from
+        // `target_backend` before ever reaching for `Cpu`. Getting
+        // this wrong silently strands a same-device CUDA/Vulkan
+        // safety snapshot on the host: the (unrelated) reader this
+        // copy exists to protect keeps its original device, so the
+        // optimizer's own backend-follows-data logic then drags the
+        // reader onto CPU too, and — the capture-specific failure
+        // mode a same-device CUDA decode graph hits — an ordinary
+        // same-device snapshot becomes a genuinely cross-device D2H
+        // that can never be part of a CUDA graph capture (see
+        // `fuel_dispatch::pipelined::capture_decode`, which only
+        // ever accepts `Op::Copy` when `target` is same-device Cuda).
+        // Only truly unplaced AND unbackended nodes (neither hint
+        // available anywhere) fall all the way through to `Cpu`.
         let target_location = graph.placement(target)
             .or_else(|| graph.placement(destructive_nid))
+            .or_else(|| {
+                graph.target_backend(target)
+                    .or_else(|| graph.target_backend(destructive_nid))
+                    .map(device_location_for_backend)
+            })
             .unwrap_or(DeviceLocation::Cpu);
         let copy_id = graph.push(crate::Node {
             op: crate::Op::Copy { target: target_location },
@@ -3305,6 +3343,71 @@ mod tests {
         let inplace_pos = pos[&y_id];
         assert!(copy_pos < inplace_pos,
             "Copy must run before ReluInplace; copy={copy_pos} inplace={inplace_pos}");
+    }
+
+    /// CapturedRun executor build-out (4b-ζ follow-up): when a graph has
+    /// `target_backend` stamped (ordinary single-device `optimize_graph`
+    /// output — the common case) but no explicit `placement` (a rarely-
+    /// used pin), the inserted safety copy's `target_location` must be
+    /// derived from `target_backend`, NOT default straight to `Cpu`. A
+    /// same-device CUDA safety snapshot silently landing on `Cpu` strands
+    /// its (unrelated) reader off-device — and, in a CUDA decode graph
+    /// bound for `capture_decode`, turns an ordinary same-device
+    /// snapshot into a genuinely-cross-device D2H that capture must
+    /// reject (capture only ever accepts a same-device CUDA `Op::Copy`).
+    /// Born-red without the `target_backend` fallback (old code:
+    /// `.unwrap_or(DeviceLocation::Cpu)` fires immediately since
+    /// `placement` is never populated here); green with it.
+    #[test]
+    fn insert_safety_copies_derives_target_location_from_target_backend_when_unplaced() {
+        // Same residual shape as `insert_safety_copies_residual_connection_breaks_cycle`
+        // (`y = x.relu_inplace(); z = y + x`), but every node is stamped
+        // `target_backend = Cuda` (the ordinary optimize_graph output for a
+        // single-device CUDA decode graph) and NO node has an explicit
+        // `placement` — the realistic shape of a real Llama decode graph.
+        let x = Tensor::from_f32(
+            vec![1.0_f32, -2.0, 3.0, -4.0], Shape::from_dims(&[4]), cpu_dev(),
+        );
+        let x_shape = x.shape();
+        let x_dtype = x.dtype();
+        let x_id = x.id();
+
+        let (y_id, z_id) = {
+            let mut g = x.graph().write().unwrap();
+            let y_id = g.push(crate::Node {
+                op: crate::Op::ReluInplace,
+                inputs: vec![x_id],
+                shape: x_shape.clone(),
+                dtype: x_dtype,
+            });
+            let z_id = g.push(crate::Node {
+                op: crate::Op::Add,
+                inputs: vec![y_id, x_id],
+                shape: x_shape,
+                dtype: x_dtype,
+            });
+            g.set_target_backend(y_id, fuel_ir::probe::BackendId::Cuda);
+            g.set_target_backend(z_id, fuel_ir::probe::BackendId::Cuda);
+            (y_id, z_id)
+        };
+        assert!(
+            x.graph().read().unwrap().placement(x_id).is_none(),
+            "precondition: x has no explicit placement",
+        );
+
+        let inserted = insert_safety_copies(&mut x.graph().write().unwrap(), &[z_id]);
+        assert_eq!(inserted, 1, "should insert exactly one safety copy");
+
+        let g = x.graph().read().unwrap();
+        let z_node = g.node(z_id);
+        let copy_id = z_node.inputs[1];
+        let copy_node = g.node(copy_id);
+        assert_eq!(
+            copy_node.op,
+            crate::Op::Copy { target: DeviceLocation::Cuda { gpu_id: 0 } },
+            "same-device CUDA safety copy must target Cuda (derived from \
+             target_backend), NOT fall back to Cpu when placement is unset",
+        );
     }
 
     #[test]
