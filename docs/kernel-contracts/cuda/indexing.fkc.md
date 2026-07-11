@@ -343,14 +343,14 @@ cost:
   memory: { device_bytes: "base_total * dtype_bytes", host_bytes: 0, disk_bytes: 0 }
 
 precision:
-  bit_stable_on_same_hardware: true
+  bit_stable_on_same_hardware: false
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f32 accumulation; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); bit-stable same hardware."
+  audited: true
+  notes: "genuinely nondeterministic, NOT a static-bound gap: the kernel accumulates duplicate-index writes via atomicAdd (confirmed baracuda/crates/baracuda-kernels/src/indexing/scatter_add.rs, whose own doc comment states 'Precision guarantee: non-deterministic — atomicAdd ordering varies between launches'). Corrects a prior seed that wrongly carried bit_stable_on_same_hardware: true while audited: false — the false claim predates this audit; per-thread float addition is not associative, so accumulation order varies run-to-run for any index with >1 contributor."
 
-determinism: same_hardware_bitwise
+determinism: nondeterministic
 ```
 
 ---
@@ -419,12 +419,12 @@ cost:
   memory: { device_bytes: "base_total * dtype_bytes", host_bytes: 0, disk_bytes: 0 }
 
 precision:
-  bit_stable_on_same_hardware: true
+  bit_stable_on_same_hardware: false
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f64 accumulation; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); bit-stable same hardware."
+  audited: true
+  notes: "genuinely nondeterministic, NOT a static-bound gap: the kernel accumulates duplicate-index writes via atomicAdd (confirmed baracuda/crates/baracuda-kernels/src/indexing/scatter_add.rs, whose own doc comment states 'Precision guarantee: non-deterministic — atomicAdd ordering varies between launches'). Corrects a prior seed that wrongly carried bit_stable_on_same_hardware: true while audited: false — the false claim predates this audit; per-thread float addition is not associative, so accumulation order varies run-to-run for any index with >1 contributor."
 
-determinism: same_hardware_bitwise
+determinism: nondeterministic
 ```
