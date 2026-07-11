@@ -10856,14 +10856,23 @@ mod generate_tests {
     #[cfg(feature = "cuda")]
     #[ignore = "requires a live CUDA device"]
     fn forward_with_kv_context_captured_matches_persistent() {
+        // Dims bumped from this file's usual tiny fixture (vocab_size:16,
+        // dim:16, ...): at that size the cost-based backend picker
+        // legitimately places a few ops on CPU (a real Cpu<->Cuda
+        // round-trip, not a bug), which `capture_decode` correctly refuses
+        // to span — see task 4b-zeta's report. Large enough that CUDA wins
+        // the per-op cost estimate uniformly, so the decode graph is
+        // genuinely single-device and the capture mechanism (already
+        // proven sound on hand-built graphs by 4b-gamma/4b-zeta) can be
+        // exercised end-to-end here too.
         let cfg = LlamaConfig {
-            vocab_size: 16,
-            dim:        16,
+            vocab_size: 512,
+            dim:        128,
             n_layers:   2,
             n_heads:    4,
             n_kv_heads: 2, // exercise GQA (n_rep = 2)
-            head_dim:   4,
-            ffn_dim:    16,
+            head_dim:   32,
+            ffn_dim:    512,
             norm_eps:   1e-5,
             rope_base:  10000.0,
         };
