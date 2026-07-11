@@ -10,12 +10,14 @@
 //! cross-checked by the size/offset asserts in the tests below — the same
 //! discipline FDX uses for its `#[repr(C)]` structs.
 //!
-//! These are the frozen wire types + their pure negotiation helpers, so they
-//! live in the dependency-free seam-types crate (both halves of the seam depend
-//! on it). The FFI call that obtains a provider's envelope
-//! (`int baracuda_seam_hello(SeamHello* out)`) and the live handshake driver
-//! live in the protocol crate / the backend glue that links the provider; this
-//! module is pure + portable.
+//! These are the frozen wire types + their pure negotiation helpers, kept in
+//! their own dependency-free crate — separate from the region grammar
+//! (`fuel-kernel-seam-types`'s `OpTag`/`OpAttrs`/`PatternNode`) so a provider
+//! that only speaks capability negotiation (KISS-Announce) never needs to pull
+//! in the grammar (KISS-Grammar) to depend on this. The FFI call that obtains a
+//! provider's envelope (`int baracuda_seam_hello(SeamHello* out)`) and the live
+//! handshake driver live in the protocol crate / the backend glue that links
+//! the provider; this crate is pure + portable.
 
 /// `"SEAM"` — the envelope magic; never changes (§3.1).
 pub const SEAM_MAGIC: u32 = 0x5345_414D;

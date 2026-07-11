@@ -21,6 +21,7 @@ members = [
     "fuel-examples",
     "fuel-formats",
     "fuel-graph",
+    "fuel-kernel-seam-announce",
     "fuel-kernel-seam-types",
     "fuel-kernel-seam",
     "fuel-cuda-backend",
@@ -60,6 +61,7 @@ default-members = [
     "fuel-dispatch",
     "fuel-formats",
     "fuel-graph",
+    "fuel-kernel-seam-announce",
     "fuel-kernel-seam-types",
     "fuel-cuda-backend",
     "fuel-vulkan-backend",
@@ -122,6 +124,7 @@ fuel-correctness-fixtures = { path = "./fuel-correctness-fixtures", version = "0
 fuel-cpu-backend = { path = "./fuel-cpu-backend", version = "0.10.3" }
 fuel-mkl-cpu-backend = { path = "./fuel-mkl-cpu-backend", version = "0.10.3" }
 fuel-graph = { path = "./fuel-graph", version = "0.10.3" }
+fuel-kernel-seam-announce = { path = "./fuel-kernel-seam-announce", version = "0.10.3" }
 fuel-kernel-seam-types = { path = "./fuel-kernel-seam-types", version = "0.10.3" }
 fuel-kernel-seam = { path = "./fuel-kernel-seam", version = "0.10.3" }
 fuel-cuda-backend = { path = "./fuel-cuda-backend", version = "0.10.3" }

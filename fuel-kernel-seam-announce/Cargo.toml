@@ -1,0 +1,15 @@
+[package]
+    categories.workspace = true
+    description          = "Frozen kernel-seam handshake envelope: the SeamHello C-ABI capability/profile negotiation shared across the Fuel <-> backend-synthesizer seam"
+    edition.workspace    = true
+    keywords.workspace   = true
+    license.workspace    = true
+    name                 = "fuel-kernel-seam-announce"
+    repository.workspace = true
+    version.workspace    = true
+
+# Intentionally dependency-free: std-only POD handshake types so any provider
+# (a synthesizer backend, a loader/executor, ...) can depend on this crate for
+# capability negotiation alone, without pulling in the region grammar
+# (fuel-kernel-seam-types) or anything Fuel-graph-shaped.
+[dependencies]
