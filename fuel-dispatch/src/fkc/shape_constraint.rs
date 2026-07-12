@@ -4,8 +4,9 @@
 //! `divisible(...)`, `capacity_ge(...)` reuses `cost_expr::parse_expr`.
 use crate::fkc::cost_expr::{parse_expr as parse_cost_expr, CostNode};
 use crate::fkc::error::FkcError;
-#[allow(unused_imports)]
+use crate::fkc::schema::TensorDesc;
 use crate::fkc::ImportWarning;
+use fuel_ir::{DType, Shape};
 
 pub type ProbeCombo = Vec<(String, fuel_ir::Shape, fuel_ir::DType)>;
 
@@ -113,10 +114,112 @@ pub fn parse_shape_constraint(raw: &str, section: &str, operand: &str)
     Ok(out)
 }
 
+#[derive(Clone, Copy)]
+struct SeedProfile { base: i64, odd_last: bool }
+const PROFILES: [SeedProfile; 3] = [
+    SeedProfile { base: 2, odd_last: false }, // A all-2
+    SeedProfile { base: 4, odd_last: true },  // B all-4, last axis ->3
+    SeedProfile { base: 8, odd_last: false }, // C all-8
+];
+
+fn resolve_rank_spec_field(v: Option<&serde_yml::Value>) -> Option<RankSpec> {
+    match v {
+        Some(serde_yml::Value::Number(n)) => n.as_u64().map(|u| RankSpec::Exact(u as usize)),
+        Some(serde_yml::Value::String(s)) => parse_rank_spec(s),
+        _ => None,
+    }
+}
+fn rank_for_probe(spec: Option<RankSpec>) -> usize {
+    match spec {
+        Some(RankSpec::Exact(n)) => n,
+        Some(RankSpec::Range { lo, .. }) => lo,
+        Some(RankSpec::Any) | None => 4, // `any`/absent default rank 4
+    }
+}
+fn seed_axis(profile: SeedProfile, axis: usize, rank: usize) -> i64 {
+    if profile.odd_last && rank > 0 && axis == rank - 1 { 3 } else { profile.base }
+}
+/// First declared dtype, else first `dtype_class` expansion, else F32.
+fn first_probe_dtype(d: &TensorDesc) -> DType {
+    if let Some(tok) = d.dtypes.first() {
+        if let Ok(dt) = crate::fkc::lower::lower_dtype(tok, "", "") { return dt; }
+    }
+    match d.dtype_class.as_deref() {
+        Some("float") => DType::BF16, Some("int") => DType::I8, Some("uint") => DType::U8,
+        _ => DType::F32,
+    }
+}
+
+/// Seed the probe combos for §3.5 shape-solver rank resolution + unconstrained
+/// (all-free-axis) operands. Parses each operand's `shape_constraint` now so a
+/// malformed-vocabulary segment hard-errors here rather than silently later —
+/// Tasks 1.3/1.4 will consume `parsed` to apply the structural atoms; for now
+/// this is SEED-ONLY (no atom is applied to the probe shapes yet).
+pub fn solve_probe_shapes(inputs: &[TensorDesc], section: &str, warnings: &mut Vec<ImportWarning>)
+    -> Result<Vec<ProbeCombo>, FkcError>
+{
+    // Parse each operand's constraint now so a malformed-vocabulary segment is a
+    // hard error before we build any probe (Tasks 1.3/1.4 consume `parsed`).
+    let mut parsed = Vec::with_capacity(inputs.len());
+    for d in inputs {
+        let operand = d.name.as_deref().unwrap_or("<unnamed>");
+        let sc = match &d.shape_constraint {
+            Some(raw) => parse_shape_constraint(raw, section, operand)?,
+            None => ShapeConstraint::default(),
+        };
+        parsed.push(sc);
+    }
+    let mut combos = Vec::with_capacity(PROFILES.len());
+    for profile in PROFILES {
+        let mut combo: ProbeCombo = Vec::with_capacity(inputs.len());
+        for d in inputs {
+            let role = d.name.clone().unwrap_or_default();
+            let rank = rank_for_probe(resolve_rank_spec_field(d.rank.as_ref()));
+            let dims: Vec<usize> = (0..rank).map(|a| seed_axis(profile, a, rank) as usize).collect();
+            combo.push((role, Shape::from_dims(&dims), first_probe_dtype(d)));
+        }
+        combos.push(combo);
+    }
+    let _ = (&parsed, warnings); // consumed by Tasks 1.3/1.4/1.5
+    Ok(combos)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fkc::cost_expr::CostNode;
+
+    fn desc(name: &str, dtypes: &[&str], rank: Option<u64>) -> crate::fkc::schema::TensorDesc {
+        crate::fkc::schema::TensorDesc {
+            name: Some(name.into()), optional: false,
+            dtypes: dtypes.iter().map(|s| s.to_string()).collect(),
+            dtype_class: None, layout: None,
+            rank: rank.map(|r| serde_yml::Value::Number(r.into())),
+            shape_constraint: None, fdx: None, device: None, substrate: None,
+        }
+    }
+
+    #[test]
+    fn seed_unconstrained_operands_over_three_profiles() {
+        use fuel_ir::Shape;
+        let inputs = vec![desc("lhs", &["F32"], Some(2)), desc("rhs", &["F32"], Some(2))];
+        let mut w = Vec::new();
+        let combos = solve_probe_shapes(&inputs, "s", &mut w).unwrap();
+        assert_eq!(combos.len(), 3);
+        assert_eq!(combos[0][0].1, Shape::from_dims(&[2, 2]));  // profile A all-2
+        assert_eq!(combos[1][0].1, Shape::from_dims(&[4, 3]));  // profile B all-4, last->3
+        assert_eq!(combos[2][0].1, Shape::from_dims(&[8, 8]));  // profile C all-8
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn rank_any_defaults_to_4_and_open_range_uses_lo() {
+        let any = desc("a", &["F32"], None); // no rank ⇒ Any ⇒ 4
+        assert_eq!(solve_probe_shapes(&[any], "s", &mut Vec::new()).unwrap()[0][0].1.rank(), 4);
+        let mut open = desc("b", &["F32"], None);
+        open.rank = Some(serde_yml::Value::String("2..".into()));
+        assert_eq!(solve_probe_shapes(&[open], "s", &mut Vec::new()).unwrap()[0][0].1.rank(), 2);
+    }
 
     #[test]
     fn parse_covers_vocab_freetext_and_rejects_malformed_vocab() {
