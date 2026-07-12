@@ -1338,6 +1338,29 @@ impl KernelBindingTable {
         })
     }
 
+    /// Iterate `(op, dtypes, backend, &entry)` over every registered
+    /// alternative — one tuple per `BindingEntry`, mirroring
+    /// [`Self::iter_precision`] but yielding the FULL entry (by reference)
+    /// instead of projecting out just the `precision` field. Used by the
+    /// FKC empirical verification harness (Task 4.4+), which needs the
+    /// whole `BindingEntry` (the `kernel` fn pointer to invoke, `caps`,
+    /// `kernel_revision_hash` for ledger keys, ...), not just one field.
+    /// Runtime-fused/JIT entries are filtered out (`static_op()` returns
+    /// `None` for them) — same "static-kernel audit view" as
+    /// `iter_precision`/`iter_cost`.
+    pub fn iter_entries(
+        &self,
+    ) -> impl Iterator<Item = (OpKind, &[DType], BackendId, &BindingEntry)> {
+        self.bindings
+            .iter()
+            .filter_map(|((key, dtypes, backend), alts)| {
+                key.static_op().map(|op| (op, dtypes, backend, alts))
+            })
+            .flat_map(|(op, dtypes, backend, alts)| {
+                alts.iter().map(move |e| (op, dtypes.as_slice(), *backend, e))
+            })
+    }
+
     /// Iterate `(op, dtypes, backend, cost_fn)` over every registered
     /// alternative — one tuple per `BindingEntry`. Used by the step-8
     /// coverage lint to check the "every primitive op has a
@@ -1673,6 +1696,41 @@ mod tests {
         let alts = table.lookup_alternatives(OpKind::AddElementwise, &dts, BackendId::Cpu);
         assert_eq!(alts.len(), 1);
         assert!(alts[0].cost_expr.is_none(), "hand-written registrations carry no declared cost AST");
+    }
+
+    /// Task 4.4: `iter_entries` mirrors `iter_precision`/`iter_cost` —
+    /// yields one `(op, dtypes, backend, &entry)` tuple per registered
+    /// alternative (both siblings at a shared key show up), and filters
+    /// out `RuntimeFused` keys just like the precision/cost audit
+    /// iterators (a "static-kernel audit view").
+    #[test]
+    fn iter_entries_yields_full_entries_and_filters_runtime_fused() {
+        use fuel_ir::probe::BackendId;
+        let mut table = KernelBindingTable::new();
+        let dts = [DType::F32, DType::F32, DType::F32];
+        table.register(OpKind::AddElementwise, &dts, BackendId::Cpu, ok_kernel);
+        table.register(OpKind::AddElementwise, &dts, BackendId::Cpu, ok_kernel_alt);
+        // A runtime-fused key — must be excluded from `iter_entries`.
+        table.register(
+            BindingKey::RuntimeFused(FusedOpId(FusedOpId::RUNTIME_FUSED_BASE)),
+            &dts,
+            BackendId::Cpu,
+            ok_kernel,
+        );
+
+        let entries: Vec<_> = table.iter_entries().collect();
+        assert_eq!(entries.len(), 2, "both AddElementwise alternatives, RuntimeFused excluded");
+        for (op, dtypes, backend, entry) in &entries {
+            assert_eq!(*op, OpKind::AddElementwise);
+            assert_eq!(*dtypes, dts.as_slice());
+            assert_eq!(*backend, BackendId::Cpu);
+            // Full entry is reachable, not just one projected field.
+            let _ = entry.caps;
+            let _ = entry.kernel_revision_hash;
+        }
+        let fns: Vec<usize> = entries.iter().map(|(_, _, _, e)| e.kernel as *const () as usize).collect();
+        assert!(fns.contains(&(ok_kernel as *const () as usize)));
+        assert!(fns.contains(&(ok_kernel_alt as *const () as usize)));
     }
 
     /// Never-panic (option B): registering the same `KernelRef` twice
