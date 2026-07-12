@@ -278,6 +278,8 @@ mod gate_tests {
         let g = gate_precision(claim(), &q(), &ledger, &mut w);
         assert_eq!(g.notes, PrecisionGuarantee::UNAUDITED.notes);
         assert!(w[0].message.contains("max_ulp"));
+        assert!(!g.bit_stable_on_same_hardware, "whole-collapse: even the backed bit_stable claim is dropped");
+        assert!(g.max_ulp.is_none(), "whole-collapse: the unbacked max_ulp bound is dropped");
     }
     #[test]
     fn stale_hash_downgrades_even_with_a_pass_for_the_old_hash() {
