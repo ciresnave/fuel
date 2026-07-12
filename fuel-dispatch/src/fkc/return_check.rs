@@ -1,5 +1,6 @@
 //! §5 return-contract validation: cross-check a fused contract's declared
 //! shape/dtype rules against the real registered FusedOpEntry fns.
+use fuel_graph::registry::FusedOpParams;
 use fuel_ir::{DType, Shape};
 use crate::fkc::error::FkcError;
 use crate::fkc::lower::lower_dtype;
@@ -27,10 +28,50 @@ pub fn eval_shape_rule(rule: &str, combo: ProbeComboRef, _section: &str) -> Resu
     Ok(None)
 }
 
+/// Synthesize the `FusedOpParams` variant NAMED by the contract's
+/// `op_params.variant` (§3.7), with placeholder field values. The ONLY
+/// correctness requirement is that the returned variant matches the name so
+/// the real registered `shape_rule` fn never hits its wrong-params panic
+/// (`qmatmul.rs:63`, `conv2d.rs:86`). Params-dependent ops (whose declared
+/// return rules are `from_params`-style = not-evaluable, so the real fn is
+/// never called at all) synthesize nothing here and fall through to `None`
+/// — never-panic beats completeness; a foreign variant would be worse than
+/// skipping the probe.
+pub fn synth_probe_params(variant: Option<&str>) -> Result<Option<FusedOpParams>, FkcError> {
+    const EPS: f64 = 1e-5;
+    Ok(match variant {
+        Some("SoftmaxLastDim") => Some(FusedOpParams::SoftmaxLastDim),
+        Some("SoftmaxLastDimBackward") => Some(FusedOpParams::SoftmaxLastDimBackward),
+        Some("RmsNormLastDim") => Some(FusedOpParams::RmsNormLastDim { eps: EPS }),
+        Some("LayerNormLastDim") => Some(FusedOpParams::LayerNormLastDim { eps: EPS }),
+        Some("RmsNormLastDimBackward") => Some(FusedOpParams::RmsNormLastDimBackward { eps: EPS }),
+        Some("LayerNormLastDimBackward") => Some(FusedOpParams::LayerNormLastDimBackward { eps: EPS }),
+        Some("ReduceMaxToBackward") => Some(FusedOpParams::ReduceMaxToBackward),
+        Some("PowIBackward") => Some(FusedOpParams::PowIBackward { exp: 2 }),
+        Some("Rope") => Some(FusedOpParams::Rope),
+        Some("FusedLinear") => Some(FusedOpParams::FusedLinear),
+        _ => None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use fuel_ir::{DType, Shape};
+
+    #[test]
+    fn synth_probe_params_builds_the_matching_variant_or_none() {
+        use fuel_graph::registry::FusedOpParams;
+        assert!(matches!(synth_probe_params(Some("SoftmaxLastDim")).unwrap(), Some(FusedOpParams::SoftmaxLastDim)));
+        assert!(matches!(synth_probe_params(Some("RmsNormLastDim")).unwrap(), Some(FusedOpParams::RmsNormLastDim { .. })));
+        assert!(synth_probe_params(Some("SsdChunkScan")).unwrap().is_none());
+        assert!(synth_probe_params(None).unwrap().is_none());
+        // never-panic invariant: QMatMul synth is EITHER QMatMul OR None, never a foreign variant.
+        match synth_probe_params(Some("QMatMul")).unwrap() {
+            None => {}
+            Some(p) => assert!(matches!(p, FusedOpParams::QMatMul { .. })),
+        }
+    }
 
     #[test]
     fn interpreter_evaluates_supported_vocab_and_skips_the_rest() {
