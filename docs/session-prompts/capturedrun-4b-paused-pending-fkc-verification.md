@@ -8,6 +8,17 @@ program described below exists**. This is not a suggestion — it is the resume 
 you are picking this file up, read it fully before touching `fuel-core`, `fuel-dispatch`, or
 any `docs/kernel-contracts/**/*.fkc.md` file in service of finishing 4b-δ.
 
+**Read `docs/session-prompts/fkc-design-vs-implementation-gap-audit.md` before starting any FKC
+fix work.** That document is the full, exhaustive fingerprint of every gap between FKC's design
+(`kernel-contract-adoption-plan.md`) and its actual implementation — produced by 5 parallel deep
+research passes, ~24 distinct findings, every one with file:line evidence and a red-test sketch.
+The "design sketch" in this file's own §"The prerequisite" section below was written *before* that
+audit and is now the high-level summary; the audit document is the ground-truth detail to build
+against. The single largest findings there: §5's return-contract validation (a fused op's declared
+shape/dtype behavior vs. the real registered function) is entirely unimplemented, and §2.3's
+cost-expression compiler (contract-authored cost formulas actually reaching a live `CostFn`) is
+entirely unimplemented — both independently confirmed by 3 of the 5 research passes.
+
 ## Why we stopped here, not at some other point
 
 This session (CapturedRun executor build-out, continuing from `docs/session-prompts/

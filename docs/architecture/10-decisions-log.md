@@ -627,6 +627,96 @@ is updated to reflect the new blocking dependency in the same change as this ent
 
 ---
 
+## 2026-07-11 — FKC design-vs-implementation gap audit: exhaustive fingerprint, ~24 findings
+
+**Sections affected**: none directly — this entry indexes a standalone audit document, it does not
+itself change a core architecture claim. `docs/session-prompts/kernel-contract-adoption-plan.md`
+(FKC's design doc) itself should be revised to correct several now-confirmed-stale claims (flagged
+individually in the audit document); that revision is future work, not done in this entry.
+**Phase / PR**: user-commissioned follow-on to the CapturedRun-4b pause (previous entry). Full
+document: `docs/session-prompts/fkc-design-vs-implementation-gap-audit.md`.
+
+**What happened**: the prior pause entry found one gap (V-FKC-9, precision) between FKC's design
+and its shipped implementation. The user's explicit instruction was to fingerprint *every* such gap
+"thoroughly enough that any agent reading the description knows it as intimately as the inside of
+their own mind," precise enough to generate red tests against — not to assume V-FKC-9 was the only
+instance. Five parallel deep-research passes, each independently covering a disjoint slice of the
+13-section design doc, cross-checked every specified mechanism against the actual code in
+`fuel-dispatch/src/fkc/`, `fuel-dispatch/src/kernel.rs`, `fuel-ir/src/dlpack/sidecar.rs`,
+`fuel-memory/src/dlpack_view.rs`, and `fuel-graph/src/registry.rs`.
+
+**Result: ~24 distinct findings**, several independently rediscovered by 2-3 of the 5 passes working
+different angles (highest-confidence findings). The two largest, each confirmed by 3 independent
+passes:
+
+1. **§5's return-contract validation is entirely unimplemented.** The design specifies that a fused
+   op's declared `shape_rule`/`dtype_rule` gets cross-checked against the real registered
+   `fuel_graph::registry::FusedOpEntry` function at probe shapes (`ShapeRuleMismatch` on
+   disagreement). `ShapeRuleMismatch` isn't even a defined error variant. Worse: the shipped source
+   contains a comment (`fuel-dispatch/src/fkc/validate.rs:963-966`) that falsely claims this check
+   happens "in the register slice" — it does not exist anywhere in `register.rs` or elsewhere. A
+   fused-op contract's declared return shape/dtype is, today, unverified prose.
+2. **§2.3's cost-expression compiler is entirely unimplemented.** The design specifies an
+   interpreter-backed side-table turning a contract's authored `flops`/`bytes_moved` formulas into a
+   live `CostFn`. No such mechanism exists — a contract's cost formula is parsed, syntax-validated,
+   and then discarded at registration unless the kernel separately pins a hand-written Rust cost
+   function by name (used in 1 of several hundred corpus contracts). Every other imported kernel's
+   registered cost is a generic per-op-family default, never the contract's own claim.
+
+Also confirmed: V-FKC-9's cost half has its own, distinct escape hatch (`PlaceholderCost` is
+vacuous whenever `class:` is non-empty, which is every real corpus contract); V-FKC-2 (blurb
+equality) and V-FKC-3's corpus-wide lint coverage of duplicate-KernelRef detection are both
+effectively absent; V-FKC-5's op-param allowlists and V-FKC-10's FDX-token-subset check are
+unmaintained hand-copied lists with no drift guard; §6's `awkward_layout_strategy` is validated but
+silently discarded before it can be retained as documented; §8's "shared hash function with FDX" is
+actually two independently-written functions that agree only by constant-matching convention, with
+no cross-check test; §8.5's bundle slot-name round-trip side-table doesn't exist on either the FKC
+or FDX side; §9's `import_glob` front-matter-agreement check covers only 3 of the 5 specified
+fields, silently permitting `revision_base` to disagree across a globbed provider's files despite
+that field's entire purpose being revision-hash provenance consistency. Full list, each with
+file:line evidence and a red-test sketch, in the audit document.
+
+**A cross-cutting pattern, not a list of unrelated bugs**: every real gap found shares the same
+shape as the original V-FKC-9 finding — a correctly-named validator/error-variant exists, is
+documented as covering the design's requirement, and either is never invoked on the path that
+matters, is invoked but checks something narrower than its name implies, or (in the worst instances)
+doesn't exist at all despite a source comment claiming it does. The lesson for the eventual fix: a
+validator's *existence* is not evidence of its *enforcement* — every claim needs its call site
+traced to the actual data it inspects.
+
+**Downstream blast-radius verdict** (traced independently, Part IV of the audit doc): narrower than
+"everything built on FKC is broken" — the live, unconditional production effect of the
+precision-verification gap specifically is `BitStablePreferenceFilter` (`fuel-dispatch/src/ranker/
+filters/bit_stable_pref.rs`) deprioritizing (never hard-rejecting) kernels lacking a verified
+bit-stability claim, exactly the already-diagnosed CapturedRun symptom. `PrecisionFloorFilter` (the
+mechanism that could hard-fail) is wired into the default chain but has zero production callers
+setting a non-default requirement — dormant, not misbehaving. Cost claims never reach the runtime
+cost model as raw numbers at all (per finding 2 above), so a wrong contract-declared cost cannot
+currently cause a bad VRAM/placement decision — the mechanism that would consume it doesn't exist.
+The genuinely more serious problem is not behavioral blast radius, it's the integrity gap: several
+validators exist, run, and are named after guarantees they don't provide.
+
+**Provider migration status** (Part III of the audit doc, ground-truthed against git history): the
+bulk of CPU/Vulkan/CUDA's primitive kernel surface is genuinely contract-sourced. CPU's quantized
+matmul (`QMatMul`) has the exact same "contract authored, never wired to registration" bug class as
+the `rope_apply_f32` finding that triggered the original pause — a second, independent instance,
+found on a different backend. MKL, AOCL, and Metal are entirely outside FKC's reach — none of their
+precision/cost claims ever pass through any FKC validator, a known-incomplete rollout (§11 step 8),
+not a new defect, but worth tracking precisely rather than assuming "FKC is done."
+
+**Decision**: no code changes in this entry — this is the exhaustive problem-statement audit the
+pause explicitly required before any fix work. `docs/session-prompts/
+fkc-design-vs-implementation-gap-audit.md` Part VI gives a recommended build/test order for
+whoever picks up the fix work, prioritizing the two largest missing mechanisms first, then the
+escape-hatch/dead-code pattern findings, then the lower-urgency drift/documentation items.
+
+**Implications going forward**: `docs/session-prompts/capturedrun-4b-paused-pending-fkc-verification.md`
+now points to the audit document as the ground-truth detail behind its design sketch. Any future
+session picking up FKC fix work should start from the audit document's Part VI build order, not
+re-derive the gap list from scratch.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
