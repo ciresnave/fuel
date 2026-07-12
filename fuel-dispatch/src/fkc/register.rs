@@ -244,6 +244,13 @@ impl ImportedProvider {
                 kernel_source,
                 is_generic,
                 p.revision.0,
+                // FKC gap-closure Task 2.1: the `cost_expr` handle exists on
+                // `BindingEntry` but this importer doesn't parse/thread a
+                // real `CompiledCostExpr` yet — that's a later Group-2 task
+                // (wiring `ResolvedPrimitive`'s cost block through
+                // `cost_expr::compile_field` to a `'static` arena). `None`
+                // here matches every other registration path today.
+                None,
             );
         }
 
