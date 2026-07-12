@@ -54,6 +54,7 @@ mod revhash;
 mod schema;
 mod shape_constraint;
 mod validate;
+mod verify;
 #[cfg(feature = "vulkan")]
 mod vulkan_link;
 mod warn;
