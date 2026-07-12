@@ -143,6 +143,52 @@ pub fn cross_check_fused_section(
             }
         }
     }
+    // §5.5 (Finding 5.2): a `return.bundle` declares its slot count as a YAML
+    // sequence; that count must agree with the real registered
+    // `FusedOpEntry::output_views` arity, or a multi-output contract could
+    // silently under/over-declare slots relative to what the graph actually
+    // allocates. Same never-panic guard as shape_rule/dtype_rule above:
+    // `output_views` also takes `&FusedOpParams`, so it's only invoked when
+    // `synth_probe_params` produced `Some(params)` for this variant.
+    if let (Some(bundle), Some(output_views), Some(p)) =
+        (ret.bundle.as_ref(), entry.output_views, params.as_ref())
+    {
+        if let Some(combo) = combos.first() {
+            let in_shapes: Vec<Shape> = combo.iter().map(|(_, s, _)| s.clone()).collect();
+            let in_dtypes: Vec<DType> = combo.iter().map(|(_, _, d)| *d).collect();
+            let views = output_views(&in_shapes, &in_dtypes, p);
+            check_bundle_arity(section, views.len(), bundle)?;
+        }
+    }
+    Ok(())
+}
+
+/// §5.5: the declared slot count of a `return.bundle` — a YAML `Sequence`,
+/// one entry per output slot. `None` for a malformed (non-sequence) bundle;
+/// callers treat that as not-evaluable, never a false reject.
+pub fn bundle_slot_count(bundle: &serde_yml::Value) -> Option<usize> {
+    match bundle {
+        serde_yml::Value::Sequence(s) => Some(s.len()),
+        _ => None,
+    }
+}
+
+/// §5.5 (Finding 5.2): the declared `return.bundle` slot count must agree
+/// with the real registered `FusedOpEntry::output_views` arity.
+pub fn check_bundle_arity(
+    section: &str,
+    output_views_arity: usize,
+    bundle: &serde_yml::Value,
+) -> Result<(), FkcError> {
+    if let Some(declared) = bundle_slot_count(bundle) {
+        if declared != output_views_arity {
+            return Err(FkcError::BundleArityMismatch {
+                section: section.into(),
+                expected: output_views_arity,
+                actual: declared,
+            });
+        }
+    }
     Ok(())
 }
 
@@ -163,6 +209,17 @@ mod tests {
             None => {}
             Some(p) => assert!(matches!(p, FusedOpParams::QMatMul { .. })),
         }
+    }
+
+    #[test]
+    fn bundle_slot_count_disagreeing_with_output_views_arity_is_rejected() {
+        let two_slots: serde_yml::Value = serde_yml::from_str(
+            "- { name: y, shape_rule: same_as(u) }\n- { name: last_state, shape_rule: from_params(state) }").unwrap();
+        assert_eq!(bundle_slot_count(&two_slots), Some(2));
+        let err = check_bundle_arity("selective_scan", 3, &two_slots)
+            .expect_err("declared 2 vs 3 real output_views slots must be rejected");
+        assert!(matches!(err, FkcError::BundleArityMismatch { expected: 3, actual: 2, .. }), "got {err:?}");
+        assert!(check_bundle_arity("selective_scan", 2, &two_slots).is_ok());
     }
 
     #[test]
