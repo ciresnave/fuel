@@ -244,7 +244,11 @@ pub fn compute_static_costs(
         let Some(caps) = capabilities_for(backend) else {
             continue;
         };
-        let cost = (entry.cost)(shapes, dtypes, &op_params, caps);
+        let cost = match entry.cost_expr {
+            Some(expr) => crate::fkc::cost_estimate(expr, op_kind, shapes, dtypes, &op_params)
+                .unwrap_or_else(|_| (entry.cost)(shapes, dtypes, &op_params, caps)),
+            None => (entry.cost)(shapes, dtypes, &op_params, caps),
+        };
         set.set_static_cost(i, cost);
     }
 
@@ -519,6 +523,58 @@ mod tests {
 
         assert_eq!(set.alternatives()[0].static_cost.flops, 500);
         let _ = make_cost_fn; // silence unused-warning
+    }
+
+    /// Task 2.3: when a binding carries a declared `cost_expr` AST, the
+    /// ranking site prices the cell via [`crate::fkc::cost_estimate`]
+    /// instead of the registered `CostFn`. `entry.cost` is deliberately
+    /// `unknown_cost` (all-zero) here — if the assertion below passes,
+    /// the AST (not the fn pointer) priced the cell.
+    #[test]
+    fn compute_static_costs_prefers_declared_cost_expr() {
+        let expr = crate::fkc::cost_compile::intern_cost_expr(
+            &crate::fkc::cost_expr::compile_field(Some("2 * n")).unwrap(),
+        )
+        .expect("expr interns");
+
+        let mut bindings = KernelBindingTable::new();
+        let dtypes = [DType::F32, DType::F32, DType::F32];
+        bindings.register_full_with_source_generic(
+            OpKind::AddElementwise,
+            &dtypes,
+            BackendId::Cpu,
+            noop_a,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            unknown_cost,
+            "",
+            false,
+            0,
+            Some(expr),
+        );
+
+        let mut set = AlternativeSet::from_candidates(
+            vec![candidate_with_cost(noop_a, CostEstimate::default())],
+        );
+
+        let cpu_caps = caps_for_test(BackendId::Cpu);
+        let lookup: HashMap<BackendId, BackendCapabilities> =
+            [(BackendId::Cpu, cpu_caps)].into_iter().collect();
+
+        compute_static_costs(
+            &mut set,
+            OpKind::AddElementwise,
+            &dtypes,
+            &[Shape::from(vec![3])],
+            &bindings,
+            &|b| lookup.get(&b),
+            None,
+        );
+
+        assert_eq!(
+            set.alternatives()[0].static_cost.flops, 6,
+            "2 * n with n = elem_count([3]) = 3",
+        );
     }
 
     #[test]
