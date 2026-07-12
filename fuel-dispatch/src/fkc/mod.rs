@@ -39,6 +39,7 @@
 //! - Authored corpus (valid instances): `docs/kernel-contracts/**/*.fkc.md`.
 
 mod caps_map;
+pub(crate) mod cost_compile;
 mod cost_expr;
 mod cpu_link;
 #[cfg(feature = "cuda")]

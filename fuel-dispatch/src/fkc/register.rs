@@ -223,6 +223,11 @@ impl ImportedProvider {
             // op/backend default (the Judge-bootstrapped path for every other
             // imported primitive).
             let cost_fn = p.cost_fn.unwrap_or(unknown_cost);
+            // FKC gap-closure Task 2.2 (§2.3): compile the contract's
+            // declared cost AST (if any, and if no pinned `cost_fn` already
+            // wins — see `stamp_primitive_cost_expr`) into the interned
+            // `'static` handle threaded onto the binding below.
+            let cost_expr = crate::fkc::cost_compile::stamp_primitive_cost_expr(p);
             // Structural-miss fallback bit (FKC §4.12): compute genericity
             // ONCE from the retained five-flag `ResolvedLayout` set and stamp
             // it onto the binding so the live dispatch pick site reads a
@@ -244,13 +249,10 @@ impl ImportedProvider {
                 kernel_source,
                 is_generic,
                 p.revision.0,
-                // FKC gap-closure Task 2.1: the `cost_expr` handle exists on
-                // `BindingEntry` but this importer doesn't parse/thread a
-                // real `CompiledCostExpr` yet — that's a later Group-2 task
-                // (wiring `ResolvedPrimitive`'s cost block through
-                // `cost_expr::compile_field` to a `'static` arena). `None`
-                // here matches every other registration path today.
-                None,
+                // FKC gap-closure Task 2.2: the compiled cost AST (or `None`
+                // when a pinned `cost_fn` already wins, or the contract
+                // declared no cost expression at all).
+                cost_expr,
             );
         }
 
@@ -1048,6 +1050,27 @@ determinism: same_hardware_bitwise
             matches!(err, FkcError::DuplicateKernelRef(_)),
             "got {err:?}"
         );
+    }
+
+    // =====================================================================
+    // COST COMPILER (§2.3, FKC gap-closure Task 2.2): a contract's declared
+    // `cost.flops` expression must reach `BindingEntry.cost_expr` as a
+    // compiled AST, not be dropped in favor of the `unknown_cost` sentinel.
+    // =====================================================================
+
+    #[test]
+    fn imported_contract_declared_cost_reaches_binding_cost_fn() {
+        let src = "---\nfkc_version: 1\nprovider:\n  name: cost-provider\n  backend: Cpu\n  kernel_source: \"cost-cpu\"\n---\n\n# cost bundle\n\n## add_f32\n\nA.\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\nblurb: \"a\"\nentry_point: \"x::add_f32\"\naccept:\n  inputs:\n    - name: lhs\n      dtypes: [F32]\n      layout: { contiguous: required, strided: rejected }\n    - name: rhs\n      dtypes: [F32]\n      layout: { contiguous: required, strided: rejected }\n  op_params: { variant: None }\nreturn:\n  outputs:\n    - name: out\n      dtype_rule: passthrough(lhs)\ncost:\n  provenance: declared\n  class: cheap_elementwise\n  flops: \"n\"\nprecision:\n  bit_stable_on_same_hardware: true\n  audited: true\ndeterminism: same_hardware_bitwise\n```\n";
+        let provider = import_bundle_str(src, &SameLink).expect("declared-cost contract imports");
+        let mut table = KernelBindingTable::new();
+        let mut fused = FusedKernelRegistry::new();
+        provider.register_into(&mut table, &mut fused).expect("registers");
+        let alts = table.lookup_alternatives(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu);
+        let entry = alts.first().expect("binding present");
+        let expr = entry.cost_expr.expect("declared flops formula reaches the binding as a compiled AST");
+        let est = crate::fkc::cost_estimate(expr, OpKind::AddElementwise, &[fuel_ir::Shape::from_dims(&[4])],
+            &[DType::F32, DType::F32, DType::F32], &crate::kernel::OpParams::None).expect("declared cost evaluates");
+        assert_eq!(est.flops, 4, "flops = n = elem_count([4])");
     }
 
     // =====================================================================
@@ -2061,6 +2084,17 @@ determinism: same_hardware_bitwise
             cost_after as usize,
             crate::cost::cost_elementwise_binary_cpu as usize,
             "the pinned cost must NOT have been clobbered by the op-family default",
+        );
+
+        // (4) FKC gap-closure Task 2.2: this contract ALSO declares
+        // `flops: "n"` alongside the pinned `cost_fn` — the pinned fn must
+        // win outright, so the binding's declared-AST slot stays None (the
+        // AST does not compete with a contract-pinned CostFn).
+        let alts = table.lookup_alternatives(OpKind::AddElementwise, &key, BackendId::Cpu);
+        let entry = alts.first().expect("binding present");
+        assert!(
+            entry.cost_expr.is_none(),
+            "a pinned cost_fn wins outright; the declared cost AST must not be stamped alongside it",
         );
     }
 
