@@ -375,6 +375,20 @@ pub enum FkcError {
         rank: usize,
     },
 
+    /// A `fused_op` contract's declared §5.1/§5.2 return rule disagrees with the
+    /// real registered `FusedOpEntry` fn at a probe shape (V-FKC-7, Finding 5.1).
+    /// `expected`/`actual` render either a shape or a dtype.
+    #[error(
+        "FKC §5 (V-FKC-7): kernel `{section}` output `{role}` declared return rule disagrees with \
+         the registered fused fn (declared {expected}, real {actual})"
+    )]
+    ShapeRuleMismatch { section: String, role: String, expected: String, actual: String },
+
+    /// A `return.bundle` slot count disagrees with the registered
+    /// `output_views` arity (V-FKC-7, Finding 5.2).
+    #[error("FKC §5.5 (V-FKC-7): kernel `{section}` declares {actual} bundle slots but output_views has {expected}")]
+    BundleArityMismatch { section: String, expected: usize, actual: usize },
+
     /// A `shape_constraint:` segment committed to §3.5 vocabulary but its
     /// argument is malformed (`rank=banana`, an unclosed `divisible(`, an empty
     /// `dim[0]=`). Non-vocabulary segments degrade to free text (a warning), not
