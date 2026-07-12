@@ -211,7 +211,6 @@ fn eval_dim_expr(node: &CostNode, s: &mut Solve, ranks: &HashMap<String, usize>,
                 Mul => l.checked_mul(r)?,
                 Div => l.checked_div(r)?,
                 Rem => l.checked_rem(r)?,
-                _ => return None,
             })
         }
         CostNode::Index { .. } => {
