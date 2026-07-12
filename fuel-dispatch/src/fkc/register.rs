@@ -149,6 +149,8 @@ pub struct ImportedProvider {
     pub primitives: Vec<ResolvedPrimitive>,
     /// Lowered `fused_op` contracts → the fused registry.
     pub fused: Vec<ResolvedFused>,
+    /// Soft import diagnostics (§3.5 warns, precision downgrades, etc.).
+    pub warnings: Vec<crate::fkc::ImportWarning>,
 }
 
 impl ImportedProvider {
@@ -158,6 +160,7 @@ impl ImportedProvider {
         backend: BackendId,
         kernel_source: &'static str,
         resolved: Vec<Resolved>,
+        warnings: Vec<crate::fkc::ImportWarning>,
     ) -> Self {
         let mut primitives = Vec::new();
         let mut fused = Vec::new();
@@ -173,6 +176,7 @@ impl ImportedProvider {
             kernel_source,
             primitives,
             fused,
+            warnings,
         }
     }
 
@@ -305,7 +309,8 @@ pub fn import_bundle_str(
     crate::fkc::validate::validate_file(&file)?;
     // `lower_file` then EXCLUDES describe-only sections from the registered set
     // (§3.10): they never become a Resolved* record and are never registered.
-    let resolved = lower_file(&file, link)?;
+    let mut warnings: Vec<crate::fkc::ImportWarning> = Vec::new();
+    let resolved = lower_file(&file, link, &mut warnings)?;
     let provider = &file.front_matter.provider;
     let backend = lower_backend_str(&provider.backend)?;
     let kernel_source = intern(&provider.kernel_source);
@@ -314,6 +319,7 @@ pub fn import_bundle_str(
         backend,
         kernel_source,
         resolved,
+        warnings,
     ))
 }
 
@@ -397,6 +403,7 @@ pub fn import_glob(
                 // Agreed — fold this file's kernels into the merged provider.
                 acc.primitives.extend(provider.primitives);
                 acc.fused.extend(provider.fused);
+                acc.warnings.extend(provider.warnings);
             }
         }
     }
@@ -1461,6 +1468,7 @@ determinism: same_hardware_bitwise
             kernel_source: intern("portable-cpu"),
             primitives: Vec::new(),
             fused: vec![f],
+            warnings: Vec::new(),
         };
 
         let mut table = KernelBindingTable::new();
@@ -2061,5 +2069,25 @@ determinism: same_hardware_bitwise
             matches!(err, FkcError::UnknownCostFn { ref cost_fn, .. } if cost_fn == "no_such_cost_fn"),
             "got {err:?}",
         );
+    }
+
+    // =====================================================================
+    // WARNINGS SINK (Task 0.2): ImportedProvider carries a warnings vec.
+    // =====================================================================
+
+    #[test]
+    fn imported_provider_exposes_warnings_field_defaulting_empty() {
+        // Direct struct construction (not via import) so this stays green across
+        // every later component (component 4's gate will make import-path warnings
+        // non-empty for precision-claiming contracts).
+        let p = ImportedProvider {
+            name: "p".into(),
+            backend: fuel_ir::probe::BackendId::Cpu,
+            kernel_source: "ks",
+            primitives: Vec::new(),
+            fused: Vec::new(),
+            warnings: Vec::new(),
+        };
+        assert!(p.warnings.is_empty());
     }
 }

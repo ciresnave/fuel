@@ -2040,6 +2040,6 @@ determinism: same_hardware_bitwise
         // everything; instead lower just this kernel via a one-kernel clone.
         let mut one = file.clone();
         one.kernels = vec![kernel.clone()];
-        crate::fkc::lower::lower_file(&one, link).map(|_| ())
+        crate::fkc::lower::lower_file(&one, link, &mut Vec::new()).map(|_| ())
     }
 }
