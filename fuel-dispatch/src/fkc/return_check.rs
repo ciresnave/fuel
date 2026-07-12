@@ -106,35 +106,39 @@ pub fn cross_check_fused_section(
     for combo in &combos {
         let in_shapes: Vec<Shape> = combo.iter().map(|(_, s, _)| s.clone()).collect();
         let in_dtypes: Vec<DType> = combo.iter().map(|(_, _, d)| *d).collect();
-        for out in &ret.outputs {
-            let role_name = out.name.as_deref().unwrap_or("out");
-            // dtype_rule: only call the real fn when synth produced Some(params)
-            // (mirrors the shape_rule guard below) — never an `unwrap_or`
-            // fallback, since a future params-matching dtype_rule could panic.
-            if let (Some(rule), Some(p)) = (out.dtype_rule.as_deref(), params.as_ref()) {
-                if let Some(declared) = eval_dtype_rule(rule, combo, section)? {
-                    let real = (entry.dtype_rule)(&in_dtypes, p);
-                    if declared != real {
-                        return Err(FkcError::ShapeRuleMismatch {
-                            section: section.into(),
-                            role: role_name.into(),
-                            expected: format!("dtype {declared:?}"),
-                            actual: format!("dtype {real:?}"),
-                        });
-                    }
+        // FusedOpEntry::shape_rule/dtype_rule describe the PRIMARY output (slot 0) only
+        // (registry.rs doc-invariant). Additional bundle slots are validated against
+        // output_views in Task 3.4 — do NOT compare non-primary outputs against these fns,
+        // or a valid multi-output contract whose slot-N rule differs from slot-0 would be
+        // spuriously rejected.
+        let Some(out) = ret.outputs.first() else { continue };
+        let role_name = out.name.as_deref().unwrap_or("out");
+        // dtype_rule: only call the real fn when synth produced Some(params)
+        // (mirrors the shape_rule guard below) — never an `unwrap_or`
+        // fallback, since a future params-matching dtype_rule could panic.
+        if let (Some(rule), Some(p)) = (out.dtype_rule.as_deref(), params.as_ref()) {
+            if let Some(declared) = eval_dtype_rule(rule, combo, section)? {
+                let real = (entry.dtype_rule)(&in_dtypes, p);
+                if declared != real {
+                    return Err(FkcError::ShapeRuleMismatch {
+                        section: section.into(),
+                        role: role_name.into(),
+                        expected: format!("dtype {declared:?}"),
+                        actual: format!("dtype {real:?}"),
+                    });
                 }
             }
-            if let (Some(rule), Some(p)) = (out.shape_rule.as_deref(), params.as_ref()) {
-                if let Some(declared) = eval_shape_rule(rule, combo, section)? {
-                    let real = (entry.shape_rule)(&in_shapes, p);
-                    if declared != real {
-                        return Err(FkcError::ShapeRuleMismatch {
-                            section: section.into(),
-                            role: role_name.into(),
-                            expected: format!("shape {declared:?}"),
-                            actual: format!("shape {real:?}"),
-                        });
-                    }
+        }
+        if let (Some(rule), Some(p)) = (out.shape_rule.as_deref(), params.as_ref()) {
+            if let Some(declared) = eval_shape_rule(rule, combo, section)? {
+                let real = (entry.shape_rule)(&in_shapes, p);
+                if declared != real {
+                    return Err(FkcError::ShapeRuleMismatch {
+                        section: section.into(),
+                        role: role_name.into(),
+                        expected: format!("shape {declared:?}"),
+                        actual: format!("shape {real:?}"),
+                    });
                 }
             }
         }
