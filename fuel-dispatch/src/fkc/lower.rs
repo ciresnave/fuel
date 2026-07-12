@@ -404,7 +404,11 @@ pub(crate) fn lower_dtype(token: &str, section: &str, operand: &str) -> Result<D
 
 /// Expand a `dtype_class` shorthand (§3.4) into its dtype list. `any`
 /// resolves to the operand's enumerated `dtypes` (passed in `enumerated`).
-fn expand_dtype_class(
+///
+/// `pub(crate)`: also the single source of truth for
+/// `shape_constraint::first_probe_dtype`'s dtype-class fallback pick (its
+/// first element), so the §3.4 class -> dtype-list mapping is defined once.
+pub(crate) fn expand_dtype_class(
     class: &str,
     enumerated: &[DType],
     section: &str,
