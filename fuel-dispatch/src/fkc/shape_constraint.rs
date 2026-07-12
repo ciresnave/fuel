@@ -183,19 +183,24 @@ fn eval_dim_expr(node: &CostNode, s: &mut Solve, ranks: &HashMap<String, usize>,
     use crate::fkc::cost_expr::BinOp::*;
     match node {
         CostNode::Lit(v) => Some(*v as i64),
-        CostNode::Neg(i) => eval_dim_expr(i, s, ranks, self_role).map(|x| -x),
+        CostNode::Neg(i) => eval_dim_expr(i, s, ranks, self_role)?.checked_neg(),
         CostNode::Bin { op, lhs, rhs } => {
             let (l, r) = (eval_dim_expr(lhs, s, ranks, self_role)?, eval_dim_expr(rhs, s, ranks, self_role)?);
             // Checked: `overflow-checks = true` under `cargo test` PANICS on
             // unchecked i64 overflow. `?` propagates `None` (genuinely
             // unresolvable) rather than crashing on a huge-but-syntactically-
-            // valid dim expression (review Finding 1).
+            // valid dim expression (review Finding 1). `checked_div`/
+            // `checked_rem` ALSO subsume the zero-divisor guard (both return
+            // `None` for `r == 0`) AND the `i64::MIN / -1` / `i64::MIN % -1`
+            // edge case, which panics unconditionally in ALL profiles
+            // (release included) — that panic is hard-baked into `/`/`%`,
+            // not gated by `overflow-checks` (fix-pass-2 residual finding).
             Some(match op {
                 Add => l.checked_add(r)?,
                 Sub => l.checked_sub(r)?,
                 Mul => l.checked_mul(r)?,
-                Div if r != 0 => l / r,
-                Rem if r != 0 => l % r,
+                Div => l.checked_div(r)?,
+                Rem => l.checked_rem(r)?,
                 _ => return None,
             })
         }
@@ -500,6 +505,45 @@ mod tests {
         let result = solve_probe_shapes(&[a], "s", &mut w);
         assert!(result.is_ok(), "overflow must degrade gracefully, not panic or error");
         assert!(!w.is_empty(), "the unresolved (overflowed) atom should surface an ImportWarning");
+    }
+
+    /// Fix-pass-2 residual: `i64::MIN / -1` (and `% -1`) panics UNCONDITIONALLY
+    /// — in every cargo profile, release included — because that trap is
+    /// hard-baked into the CPU `idiv`/`div` instruction, not gated by
+    /// `overflow-checks`. `-i64::MIN` additionally panics under
+    /// `overflow-checks = true` (the default `cargo test` profile). Both must
+    /// degrade to a warning + the untouched seed shape via `checked_div` /
+    /// `checked_neg` rather than crash the FKC importer at shape-solve time.
+    ///
+    /// The literal `9223372036854775807` (i64::MAX, 19 digits) round-trips
+    /// through `CostNode::Lit(f64)` as `9223372036854775808.0` (nearest
+    /// representable `f64`, = 2^63, since doubles can't represent all
+    /// 19-digit integers exactly) and `as i64`-saturates back down to
+    /// `i64::MAX` — so `-9223372036854775807 - 1` evaluates to EXACTLY
+    /// `i64::MIN` (`checked_sub` sees `-i64::MAX - 1`, which fits). That
+    /// lands the div/rem and neg cases squarely on the target operand:
+    /// `dim[0]=(i64::MIN)/-1` drives the `Div` arm with `l=i64::MIN, r=-1`;
+    /// `dim[0]=-(i64::MIN)` drives the `Neg` arm with `x=i64::MIN`.
+    #[test]
+    fn pathological_int_min_div_and_neg_degrade_without_panic() {
+        use fuel_ir::Shape;
+        let mut a = desc("a", &["F32"], Some(1));
+        a.shape_constraint = Some("dim[0]=(-9223372036854775807-1)/-1".into()); // i64::MIN / -1
+        let mut wa = Vec::new();
+        let ra = solve_probe_shapes(&[a], "s", &mut wa);
+        assert!(ra.is_ok(), "MIN/-1 must degrade, not panic");
+        assert!(!wa.is_empty(), "the unresolved (MIN/-1) atom should surface an ImportWarning");
+        // Degraded ⇒ set_axis was never called ⇒ profile A's rank-1 operand
+        // keeps its seeded shape (base 2; odd_last doesn't apply to profile A).
+        assert_eq!(ra.unwrap()[0][0].1, Shape::from_dims(&[2]));
+
+        let mut b = desc("b", &["F32"], Some(1));
+        b.shape_constraint = Some("dim[0]=-(-9223372036854775807-1)".into()); // -(i64::MIN)
+        let mut wb = Vec::new();
+        let rb = solve_probe_shapes(&[b], "s", &mut wb);
+        assert!(rb.is_ok(), "-(i64::MIN) must degrade, not panic");
+        assert!(!wb.is_empty(), "the unresolved (Neg MIN) atom should surface an ImportWarning");
+        assert_eq!(rb.unwrap()[0][0].1, Shape::from_dims(&[2]));
     }
 
     /// Review Finding 3: `Solve.dims`/`ranks` must be keyed by a unique
