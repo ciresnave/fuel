@@ -142,9 +142,10 @@ pub struct ResolvedFused {
     /// [`ResolvedPrimitive::variant`]).
     pub variant: Option<String>,
     /// §5.5 `return.bundle` slot names, in declared order (empty for a
-    /// single-output section). Set to `Vec::new()` for now — Task 3.6 wires
-    /// the real extraction (`bundle_slot_names(&kernel.return_)`) once that
-    /// helper exists; kept here so this task compiles independently.
+    /// single-output section). Populated by
+    /// [`crate::fkc::return_check::bundle_slot_names`] (Finding 5.4, Task
+    /// 3.6); `register_into` (`register.rs`) threads non-empty values into
+    /// `FusedKernelRegistry::record_bundle_slot_names`.
     pub bundle_slot_names: Vec<String>,
 }
 
@@ -1114,9 +1115,12 @@ fn lower_fused(
             // Retain the opaque `variant:` tag verbatim (per-section, shared by
             // every dtype variant) so it survives to the emission step.
             variant: kernel.variant.clone(),
-            // Task 3.6 wires the real §5.5 bundle-slot-name extraction; empty
-            // for now so this task compiles independently.
-            bundle_slot_names: Vec::new(),
+            // Finding 5.4 (Task 3.6): the real §5.5 bundle-slot-name
+            // extraction. Per-section (same for every dtype variant), so
+            // this recomputes per variant — cheap (a handful of YAML-slot
+            // reads), and keeps this call site a single self-contained
+            // expression rather than hoisting a shared local above the loop.
+            bundle_slot_names: crate::fkc::return_check::bundle_slot_names(&kernel.return_),
         });
     }
     Ok(out)
