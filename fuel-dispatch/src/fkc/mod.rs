@@ -50,6 +50,7 @@ mod precision;
 mod register;
 mod revhash;
 mod schema;
+mod shape_constraint;
 mod validate;
 #[cfg(feature = "vulkan")]
 mod vulkan_link;
@@ -78,6 +79,10 @@ pub use register::{
     fused_unknown_cost, import_bundle, import_bundle_str, import_glob, ImportedProvider,
 };
 pub use revhash::compute_revision;
+pub use shape_constraint::{
+    parse_rank_spec, parse_shape_constraint, AxisIndex, ProbeCombo, RankSpec, ShapeAtom,
+    ShapeConstraint,
+};
 pub use schema::{
     AcceptBlock, CapsBlock, CostBlock, CostMemory, FdxSpec, FkcFile, FkcFrontMatter, FkcKernel,
     FkcProvider, GatherSpec, LayoutSpec, OpParamFieldSpec, OpParamsSchema, OutputDesc,
