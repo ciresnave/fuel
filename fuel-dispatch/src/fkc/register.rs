@@ -258,10 +258,12 @@ impl ImportedProvider {
 
         // --- Fused ops → FusedKernelRegistry (§2.2) ---
         for f in &self.fused {
-            // [consumer-ahead]: declared cost priors are retained on
-            // Resolved*.cost but not yet wired into a CostFn; the Judge
-            // bootstraps all imported costs for now. A follow-up slice
-            // adds the cost trampoline (plan §2.3 strategy A).
+            // FKC gap-closure Task 2.4 (§2.3): compile the contract's
+            // declared cost AST (if any) into the interned `'static` handle
+            // threaded onto `cost_expr` below. `fused_layer1_cost` prefers
+            // it over both the hand-written `cost` fn (still stamped as the
+            // `fused_unknown_cost` sentinel here) and the decompose-derived
+            // fallback.
             let dtypes: &'static [fuel_ir::DType] = intern_dtypes(&f.dtypes);
             fused.register(
                 f.id,
@@ -273,6 +275,7 @@ impl ImportedProvider {
                     precision: f.precision,
                     caps: f.caps,
                     revision: f.revision,
+                    cost_expr: crate::fkc::cost_compile::stamp_fused_cost_expr(f),
                 },
             );
         }

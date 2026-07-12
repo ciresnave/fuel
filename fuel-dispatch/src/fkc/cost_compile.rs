@@ -1,8 +1,11 @@
 //! Compile a contract's parsed cost AST into the live ranking cost path (§2.3).
 //! The parser/evaluator (`cost_expr.rs`) is complete; this only adds wiring.
 use std::sync::{Mutex, OnceLock};
-use crate::fkc::cost_expr::CompiledCostExpr;
+use crate::fkc::cost_expr::{eval, CompiledCostExpr, CostEvalError};
 use crate::fkc::lower::{ResolvedPrimitive, ResolvedFused};
+use crate::fused::CostEstimate;
+use fuel_graph::registry::FusedOpParams;
+use fuel_ir::{DType, Shape};
 
 /// Bounded, dedup'd process-lifetime leak (mirrors `register::intern`). Unknown → None.
 pub fn intern_cost_expr(expr: &CompiledCostExpr) -> Option<&'static CompiledCostExpr> {
@@ -23,10 +26,20 @@ pub fn stamp_primitive_cost_expr(p: &ResolvedPrimitive) -> Option<&'static Compi
     intern_cost_expr(&p.cost)
 }
 /// Intern a fused op's declared cost AST. Consumed by the fused registration
-/// path starting in Task 2.4 (BackendImpl.cost_expr wiring).
-#[allow(dead_code)] // wired in Task 2.4
+/// path (Task 2.4: `BackendImpl.cost_expr` wiring).
 pub fn stamp_fused_cost_expr(f: &ResolvedFused) -> Option<&'static CompiledCostExpr> {
     intern_cost_expr(&f.cost)
+}
+
+/// Minimal fused-cost symbol binder: `n` (last input elem_count) + `dtype_bytes`.
+/// A fused (m,n,k) formula would under-bind and eval-error → the caller falls
+/// back to the compose-from-decompose estimate (already a non-zero cost).
+pub fn fused_cost_estimate(expr: &CompiledCostExpr, input_shapes: &[Shape], input_dtypes: &[DType], _params: &FusedOpParams)
+    -> Result<CostEstimate, CostEvalError> {
+    let mut b = std::collections::HashMap::new();
+    if let Some(s) = input_shapes.last() { b.insert("n".to_string(), s.elem_count() as f64); }
+    if let Some(d) = input_dtypes.last() { b.insert("dtype_bytes".to_string(), d.size_in_bytes() as f64); }
+    Ok(CostEstimate { flops: eval(expr, &b)?.max(0.0) as u64, ..Default::default() })
 }
 
 #[cfg(test)]

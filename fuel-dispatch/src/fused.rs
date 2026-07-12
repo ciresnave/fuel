@@ -70,6 +70,13 @@ pub struct BackendImpl {
     /// drift and invalidate stale cache entries (see
     /// `docs/architecture/11-persistence.md`).
     pub revision: KernelRevisionHash,
+    /// Declared cost AST compiled from the contract's `cost:` field
+    /// (FKC gap-closure §2.3, Task 2.4). `None` when the contract
+    /// declared no cost expression, or for hand-written (non-FKC)
+    /// registrations. When present, [`crate::fused_cost::fused_layer1_cost`]
+    /// prefers it over the [`is_fused_cost_sentinel`](crate::fused_cost::is_fused_cost_sentinel)
+    /// decompose-derived fallback.
+    pub cost_expr: Option<&'static crate::fkc::CompiledCostExpr>,
 }
 
 /// Coarse cost model for one kernel invocation. Layer-1 of the
@@ -394,6 +401,7 @@ macro_rules! register_fused {
                 precision: $precision,
                 caps,
                 revision,
+                cost_expr: None,
             },
         );
     }};
@@ -1612,6 +1620,7 @@ mod tests {
             precision: PrecisionGuarantee::UNAUDITED,
             caps: KernelCaps::empty(),
             revision: KernelRevisionHash::UNTRACKED,
+            cost_expr: None,
         }
     }
 
@@ -1919,6 +1928,7 @@ mod tests {
             precision: PrecisionGuarantee::UNAUDITED,
             caps: KernelCaps::empty(),
             revision: KernelRevisionHash::UNTRACKED,
+            cost_expr: None,
         };
         r.register(id, BackendId::Cpu, weak);
         let has_bit_stable_cpu = r.impls_for(id).iter().any(|(backend, impl_)| {
