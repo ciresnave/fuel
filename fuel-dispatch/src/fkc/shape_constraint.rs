@@ -186,7 +186,18 @@ fn eval_dim_expr(node: &CostNode, s: &mut Solve, ranks: &HashMap<String, usize>,
         CostNode::Neg(i) => eval_dim_expr(i, s, ranks, self_role).map(|x| -x),
         CostNode::Bin { op, lhs, rhs } => {
             let (l, r) = (eval_dim_expr(lhs, s, ranks, self_role)?, eval_dim_expr(rhs, s, ranks, self_role)?);
-            Some(match op { Add => l + r, Sub => l - r, Mul => l * r, Div if r != 0 => l / r, Rem if r != 0 => l % r, _ => return None })
+            // Checked: `overflow-checks = true` under `cargo test` PANICS on
+            // unchecked i64 overflow. `?` propagates `None` (genuinely
+            // unresolvable) rather than crashing on a huge-but-syntactically-
+            // valid dim expression (review Finding 1).
+            Some(match op {
+                Add => l.checked_add(r)?,
+                Sub => l.checked_sub(r)?,
+                Mul => l.checked_mul(r)?,
+                Div if r != 0 => l / r,
+                Rem if r != 0 => l % r,
+                _ => return None,
+            })
         }
         CostNode::Index { .. } => {
             let (role, axis) = as_dim_ref(node)?;
@@ -219,14 +230,10 @@ fn apply_atom(atom: &ShapeAtom, self_role: &str, s: &mut Solve, ranks: &HashMap<
             }
             None => w.push(warn(section, format!("operand `{self_role}` references unknown role `{src}`; using seed shape"))),
         },
-        ShapeAtom::LastDimEq(src) => {
-            if let (Some(sr), Some(src_rank)) = (s.dims.get(src).and_then(|d| d.last().copied()), ranks.get(src)) {
-                let _ = src_rank;
-                set_axis(s, self_role, AxisIndex::FromEnd(1), self_rank, sr);
-            } else {
-                w.push(warn(section, format!("operand `{self_role}` last_dim_eq references unknown role `{src}`; using seed")));
-            }
-        }
+        ShapeAtom::LastDimEq(src) => match s.dims.get(src).and_then(|d| d.last().copied()) {
+            Some(sr) => set_axis(s, self_role, AxisIndex::FromEnd(1), self_rank, sr),
+            None => w.push(warn(section, format!("operand `{self_role}` last_dim_eq references unknown role `{src}`; using seed"))),
+        },
         ShapeAtom::DimEq { axis, expr } => match eval_dim_expr(expr, s, ranks, self_role) {
             Some(v) => set_axis(s, self_role, *axis, self_rank, v),
             None => w.push(warn(section, format!("operand `{self_role}` dim rule unresolved; using seed"))),
@@ -238,13 +245,24 @@ fn apply_atom(atom: &ShapeAtom, self_role: &str, s: &mut Solve, ranks: &HashMap<
                     let trank = *ranks.get(&target).unwrap_or(&0);
                     if let Some(idx) = axis_to_index(axis, trank) {
                         if let Some(cur) = s.dims.get(&target).and_then(|d| d.get(idx).copied()) {
-                            set_axis(s, &target, axis, trank, ((cur + v - 1) / v) * v);
+                            // Checked ceil-round: `cur + (v-1)` then `* v` can each
+                            // overflow i64 on an adversarial-but-parseable input;
+                            // SKIP the round (leave the axis unrounded) rather than
+                            // panic under `overflow-checks = true` (Finding 1).
+                            if let Some(rounded) = cur.checked_add(v - 1).map(|x| x / v).and_then(|q| q.checked_mul(v)) {
+                                set_axis(s, &target, axis, trank, rounded);
+                            }
                         }
                     }
                 }
             } else if let CostNode::Sym(k) = lhs {
                 if let Some(v) = eval_dim_expr(rhs, s, ranks, self_role) {
-                    if v > 0 { let e = s.sym.entry(k.clone()).or_insert(s.base); *e = ((*e + v - 1) / v) * v; }
+                    if v > 0 {
+                        let e = s.sym.entry(k.clone()).or_insert(s.base);
+                        if let Some(rounded) = e.checked_add(v - 1).map(|x| x / v).and_then(|q| q.checked_mul(v)) {
+                            *e = rounded;
+                        }
+                    }
                 }
             }
         }
@@ -265,41 +283,58 @@ pub fn solve_probe_shapes(inputs: &[TensorDesc], section: &str, warnings: &mut V
 {
     // Parse each operand's constraint + compute its rank once (shared across
     // all profiles — the rank spec doesn't vary by profile).
+    //
+    // `Solve.dims`/`ranks` are keyed by a per-operand SOLVE-KEY, not the bare
+    // display role: two operands sharing a role string (most plausibly two
+    // UNNAMED operands, both `name.unwrap_or_default() == ""`) would
+    // otherwise collide — the second insert silently overwrites the first,
+    // and both later read back the same (wrong) entry (review Finding 3).
+    // A named operand's key IS its name (so `same_as=k` / `role.dim[i]`
+    // still resolve against named-operand keys exactly as before); an
+    // unnamed operand gets a unique `#unnamed{i}` key that no `same_as=`
+    // can reference — correct, since an unnamed operand can't be
+    // referenced by name. The DISPLAY role in the returned `ProbeCombo`
+    // stays the plain (possibly empty) name, unchanged.
     let mut parsed = Vec::with_capacity(inputs.len());
     let mut roles = Vec::with_capacity(inputs.len());
+    let mut keys = Vec::with_capacity(inputs.len());
     let mut ranks: HashMap<String, usize> = HashMap::with_capacity(inputs.len());
-    for d in inputs {
+    for (i, d) in inputs.iter().enumerate() {
         let operand = d.name.as_deref().unwrap_or("<unnamed>");
         let sc = match &d.shape_constraint {
             Some(raw) => parse_shape_constraint(raw, section, operand)?,
             None => ShapeConstraint::default(),
         };
         let role = d.name.clone().unwrap_or_default();
+        let key = d.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("#unnamed{i}"));
         let rank = rank_for_probe(resolve_rank_spec_field(d.rank.as_ref()));
-        ranks.insert(role.clone(), rank);
+        ranks.insert(key.clone(), rank);
         roles.push(role);
+        keys.push(key);
         parsed.push(sc);
     }
 
     let mut combos = Vec::with_capacity(PROFILES.len());
     for profile in PROFILES {
-        // 1. Seed every operand's dims into `s.dims`.
+        // 1. Seed every operand's dims into `s.dims`, keyed by its unique SOLVE-KEY.
         let mut s = Solve { dims: HashMap::with_capacity(inputs.len()), sym: HashMap::new(), base: profile.base };
-        for role in &roles {
-            let rank = *ranks.get(role).unwrap_or(&0);
+        for key in &keys {
+            let rank = *ranks.get(key).unwrap_or(&0);
             let dims: Vec<i64> = (0..rank).map(|a| seed_axis(profile, a, rank)).collect();
-            s.dims.insert(role.clone(), dims);
+            s.dims.insert(key.clone(), dims);
         }
         // 2. Apply every operand's atoms, in source order (Task 1.4: topo order).
-        for (i, role) in roles.iter().enumerate() {
+        for (i, key) in keys.iter().enumerate() {
             for atom in &parsed[i].atoms {
-                apply_atom(atom, role, &mut s, &ranks, warnings, section);
+                apply_atom(atom, key, &mut s, &ranks, warnings, section);
             }
         }
-        // 3. Read the solved dims back into Shape, paired with the operand's dtype.
+        // 3. Read the solved dims back into Shape, paired with the operand's
+        //    dtype. Lookup goes through the SOLVE-KEY; the emitted tuple's
+        //    role is the plain DISPLAY name.
         let mut combo: ProbeCombo = Vec::with_capacity(inputs.len());
-        for (d, role) in inputs.iter().zip(roles.iter()) {
-            let dims: Vec<usize> = s.dims.get(role).map(|v| v.iter().map(|&x| x.max(1) as usize).collect()).unwrap_or_default();
+        for ((d, role), key) in inputs.iter().zip(roles.iter()).zip(keys.iter()) {
+            let dims: Vec<usize> = s.dims.get(key).map(|v| v.iter().map(|&x| x.max(1) as usize).collect()).unwrap_or_default();
             combo.push((role.clone(), Shape::from_dims(&dims), first_probe_dtype(d)));
         }
         combos.push(combo);
@@ -426,16 +461,66 @@ mod tests {
         assert_eq!(vs, ks);
     }
 
+    // Replaces `dim_eq_bare_symbol_is_shared_across_operands` (review Finding
+    // 2): that test only ever read the SAME seeded value (profile A seeds
+    // every axis of a rank-2 operand to `2`), so it passed identically
+    // whether or not the `sym` env was actually shared — it never exercised
+    // sharing. This version MUTATES the shared symbol on operand `a`
+    // (`divisible(k, 8)`, bare-symbol lhs, base 2 -> rounds to 8) and reads
+    // it back on operand `b` (`dim[-1]=k`); it only passes if `b` observes
+    // the write `a` made, i.e. if `Solve.sym` is truly one shared `&mut`
+    // table across all operands within a profile, not a fresh env per
+    // operand.
     #[test]
-    fn dim_eq_bare_symbol_is_shared_across_operands() {
+    fn bare_symbol_is_shared_mutably_across_operands() {
+        // operand a bumps the shared symbol k (2 -> 8 via divisible-on-symbol);
+        // operand b then READS k via dim[-1]=k. b sees 8 ONLY if the sym env is
+        // shared. With independent per-operand sym envs, b would seed its own k=2.
         let mut a = desc("a", &["F32"], Some(2));
-        a.shape_constraint = Some("dim[-1]=k".into());
+        a.shape_constraint = Some("divisible(k, 8)".into()); // bumps shared symbol k
         let mut b = desc("b", &["F32"], Some(2));
-        b.shape_constraint = Some("dim[-2]=k".into());
-        let combos = solve_probe_shapes(&[a, b], "linear", &mut Vec::new()).unwrap();
-        let a0 = &combos[0];
-        let ak = a0.iter().find(|(r, _, _)| r == "a").unwrap().1.dims()[1];
-        let bk = a0.iter().find(|(r, _, _)| r == "b").unwrap().1.dims()[0];
-        assert_eq!(ak, bk, "both K axes bind the same seeded symbol `k`");
+        b.shape_constraint = Some("dim[-1]=k".into());       // b.last = shared k
+        let combos = solve_probe_shapes(&[a, b], "s", &mut Vec::new()).unwrap();
+        let a0 = &combos[0]; // profile A, base 2
+        let bk = a0.iter().find(|(r, _, _)| r == "b").unwrap().1.dims()[1];
+        assert_eq!(bk, 8, "b's last axis must observe the SHARED, bumped k (=8), not a fresh k=2");
+    }
+
+    /// Review Finding 1: unchecked i64 arithmetic must not panic under
+    /// `overflow-checks = true` (the default `cargo test` profile) on a
+    /// syntactically-valid-but-huge `dim[i]=<expr>`. The multiply overflows
+    /// i64 (10^6 * 10^6 * 10^6 * 10^6 = 10^24 >> i64::MAX) so `eval_dim_expr`
+    /// must return `None` (checked op propagates via `?`), degrading to a
+    /// warning + the seed shape rather than crashing.
+    #[test]
+    fn dim_expr_overflow_degrades_without_panic() {
+        let mut a = desc("a", &["F32"], Some(2));
+        a.shape_constraint = Some("dim[0]=1000000*1000000*1000000*1000000".into());
+        let mut w = Vec::new();
+        let result = solve_probe_shapes(&[a], "s", &mut w);
+        assert!(result.is_ok(), "overflow must degrade gracefully, not panic or error");
+        assert!(!w.is_empty(), "the unresolved (overflowed) atom should surface an ImportWarning");
+    }
+
+    /// Review Finding 3: `Solve.dims`/`ranks` must be keyed by a unique
+    /// per-operand SOLVE-KEY, not the bare (possibly-empty) role string —
+    /// otherwise two unnamed operands (`name.unwrap_or_default() == ""` for
+    /// both) collide on the same HashMap entry and the second silently
+    /// overwrites the first. Under the pre-fix role-"" keying, BOTH the
+    /// `ranks[""]` entry and the `s.dims[""]` entry are only ever the
+    /// LAST-inserted unnamed operand's — so operand 0 would incorrectly
+    /// read back operand 1's rank-3 shape (first assert below fails: actual
+    /// rank 3, expected 2). With a unique `#unnamed{i}` key per operand,
+    /// each keeps its own rank/dims.
+    #[test]
+    fn two_unnamed_operands_are_not_aliased() {
+        // Two unnamed operands with DIFFERENT ranks must get their own shapes,
+        // not alias to the last-inserted rank.
+        let a = crate::fkc::schema::TensorDesc { name: None, optional: false, dtypes: vec!["F32".into()], dtype_class: None, layout: None, rank: Some(serde_yml::Value::Number(2u64.into())), shape_constraint: None, fdx: None, device: None, substrate: None };
+        let mut b = a.clone();
+        b.rank = Some(serde_yml::Value::Number(3u64.into()));
+        let combos = solve_probe_shapes(&[a, b], "s", &mut Vec::new()).unwrap();
+        assert_eq!(combos[0][0].1.rank(), 2, "first unnamed operand keeps rank 2");
+        assert_eq!(combos[0][1].1.rank(), 3, "second unnamed operand keeps rank 3, not aliased to 2");
     }
 }
