@@ -586,4 +586,14 @@ kernel: demo2
         let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n# Title\n\n```yaml\nexample: true\n```\n\n## add_f32\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
         parse_file(src).expect("a non-fkc intro fence + a real section parses fine");
     }
+
+    #[test]
+    fn indented_pseudo_heading_does_not_hide_a_following_orphan_fkc_block() {
+        // An indented `  ## foo` is NOT a real heading to split_sections (column-0
+        // only), so a ```fkc block after it is still an orphan and must be rejected —
+        // the detector must not treat the indented line as "a section started".
+        let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n# Title\n\n  ## not-a-real-heading (indented)\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
+        let err = parse_file(src).expect_err("an indented pseudo-heading must not hide a following orphan fkc block");
+        assert!(matches!(err, FkcError::OrphanFkcBlock { .. }), "got {err:?}");
+    }
 }

@@ -153,13 +153,21 @@ struct Section {
 /// Only a `` ```fkc `` opener triggers; a `` ```yaml `` (or other) intro fence
 /// is skipped. Line numbers are 1-based within `body` (same convention as
 /// `split_sections`).
+///
+/// The heading test deliberately mirrors `split_sections`'s column-0 `## `
+/// match exactly (`raw.strip_prefix("## ")`, NOT a whitespace-tolerant
+/// `trim_start()`ed check): the two must agree on where "before the first
+/// section" ends, or an indented pseudo-heading (e.g. `  ## foo`, ignored by
+/// `split_sections` because it isn't at column 0) could make this detector
+/// stop scanning early while `split_sections` keeps dropping lines — hiding a
+/// real orphan block that follows.
 fn find_orphan_fkc_fence(body: &str) -> Option<usize> {
     let mut in_fence = false;
     for (idx, raw) in body.lines().enumerate() {
-        let trimmed = raw.trim_start();
-        if !in_fence && trimmed.starts_with("## ") {
+        if !in_fence && raw.strip_prefix("## ").is_some() {
             return None; // first `## ` reached: the rest belongs to sections
         }
+        let trimmed = raw.trim_start();
         if !in_fence {
             if trimmed.trim_end() == "```fkc" {
                 return Some(idx + 1);
