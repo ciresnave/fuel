@@ -7,20 +7,27 @@
 //! backend, dtypes, claim)` tuples have empirically passed, and a later
 //! import-time gate downgrades any precision claim the ledger doesn't cover.
 //!
-//! ## Status — Task 4.1 (this slice)
+//! ## Status — Task 4.2 (this slice)
 //!
-//! Only the ledger foundation: [`LedgerRecord`], [`VerificationLedger`],
-//! its `embedded()` loader, and `has_pass`. Declared here: `mod ledger`
-//! only.
+//! The ledger foundation (Task 4.1: [`LedgerRecord`], [`VerificationLedger`],
+//! its `embedded()` loader, and `has_pass`) plus the import-time gate itself:
+//! [`LedgerQuery`] + [`gate_precision`]. `gate_precision` checks each
+//! machine-checkable claim in a declared `PrecisionGuarantee` against
+//! `has_pass` for the current `kernel_revision_hash`; any unbacked claim
+//! collapses the WHOLE guarantee to `UNAUDITED` plus a warning naming it.
+//! An audited-none (no machine-checkable bounds) guarantee passes through
+//! untouched. Declared here: `mod ledger` only.
 //!
 //! NOT yet implemented (later tasks in the same program — 4.4/4.5 per
 //! `docs/session-prompts/` — extend this file's `mod` list when they land):
 //! bit-stability / ULP / accept-coverage verifiers, and the CPU/CUDA/Vulkan
-//! kernel invokers that produce ledger entries.
+//! kernel invokers that produce ledger entries; and wiring `gate_precision`
+//! into the actual import path (this task ships the gate as pure logic
+//! only, not yet called from anywhere).
 
 mod ledger;
 
-pub use ledger::{LedgerRecord, VerificationLedger};
+pub use ledger::{gate_precision, LedgerQuery, LedgerRecord, VerificationLedger};
 
 /// The embedded (compile-time) verification ledger. Thin wrapper so callers
 /// outside this module can reach it as `verify::embedded()` without

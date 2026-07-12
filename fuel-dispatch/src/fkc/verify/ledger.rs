@@ -150,6 +150,68 @@ fn dtypes_match(rec: &[String], want: &[DType]) -> bool {
     rec.len() == want.len() && rec.iter().zip(want).all(|(s, d)| *s == format!("{d:?}"))
 }
 
+use crate::fkc::ImportWarning;
+use crate::fused::PrecisionGuarantee;
+
+/// A query key for [`gate_precision`]: identifies the kernel/backend/dtype/
+/// revision combination whose declared [`PrecisionGuarantee`] must be
+/// checked against the [`VerificationLedger`].
+pub struct LedgerQuery<'a> {
+    /// Diagnostic-only — NOT part of the match key (`has_pass` matches on
+    /// `backend`/`dtypes`/`kernel_revision_hash`/`claim` alone). Carried so
+    /// warnings can name the kernel without a second lookup.
+    pub kernel_ref: &'a str,
+    /// Backend the claim was declared for.
+    pub backend: BackendId,
+    /// Dtypes the claim was declared for (order-sensitive; see `dtypes_match`).
+    pub dtypes: &'a [DType],
+    /// The kernel-contract revision hash (`fkc::compute_revision`) the
+    /// declared guarantee is being checked against.
+    pub kernel_revision_hash: u64,
+}
+
+/// V-FKC-9 precision gate. Any machine-checkable claim in `declared`
+/// (`bit_stable_on_same_hardware` / `max_ulp` / `max_relative` /
+/// `max_absolute`) must have a matching `pass` ledger record for the
+/// CURRENT `kernel_revision_hash`, else the WHOLE guarantee collapses to
+/// [`PrecisionGuarantee::UNAUDITED`] plus one [`ImportWarning`] naming every
+/// unbacked claim. An audited-none (no machine-checkable bounds) guarantee
+/// passes through untouched — there's nothing for the ledger to back.
+pub fn gate_precision(
+    declared: PrecisionGuarantee,
+    q: &LedgerQuery,
+    ledger: &VerificationLedger,
+    warnings: &mut Vec<ImportWarning>,
+) -> PrecisionGuarantee {
+    let mut unbacked: Vec<&'static str> = Vec::new();
+    let check =
+        |c: &'static str| ledger.has_pass(q.backend, q.dtypes, q.kernel_revision_hash, c);
+    if declared.bit_stable_on_same_hardware && !check("bit_stable_on_same_hardware") {
+        unbacked.push("bit_stable_on_same_hardware");
+    }
+    if declared.max_ulp.is_some() && !check("max_ulp") {
+        unbacked.push("max_ulp");
+    }
+    if declared.max_relative.is_some() && !check("max_relative") {
+        unbacked.push("max_relative");
+    }
+    if declared.max_absolute.is_some() && !check("max_absolute") {
+        unbacked.push("max_absolute");
+    }
+    if unbacked.is_empty() {
+        return declared;
+    }
+    warnings.push(ImportWarning {
+        section: q.kernel_ref.to_string(),
+        message: format!(
+            "precision claim(s) {unbacked:?} for kernel `{}` ({:?}, dtypes {:?}, rev {}) have no passing \
+            verification-ledger entry — downgraded to UNAUDITED (run the fkc_verify harness to earn them)",
+            q.kernel_ref, q.backend, q.dtypes, q.kernel_revision_hash
+        ),
+    });
+    PrecisionGuarantee::UNAUDITED
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +234,64 @@ mod tests {
         let failing = VerificationLedger::from_json(&json.replace("\"pass\"", "\"fail\"")).unwrap();
         assert!(!failing.has_pass(BackendId::Cuda, &[DType::F32], 1234567890123456789, "bit_stable_on_same_hardware"));
         assert_eq!(VerificationLedger::embedded().len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use crate::fused::PrecisionGuarantee;
+    use fuel_ir::{probe::BackendId, DType};
+
+    fn claim() -> PrecisionGuarantee {
+        PrecisionGuarantee { bit_stable_on_same_hardware: true, max_ulp: Some(0), max_relative: None, max_absolute: None, notes: "audited exact f32 add" }
+    }
+    fn q() -> LedgerQuery<'static> {
+        LedgerQuery { kernel_ref: "rope_apply_f32", backend: BackendId::Cuda, dtypes: &[DType::F32], kernel_revision_hash: 42 }
+    }
+    fn pass(c: &str) -> LedgerRecord {
+        LedgerRecord { kernel_ref: "rope_apply_f32".into(), backend: "Cuda".into(), dtypes: vec!["F32".into()],
+            kernel_revision_hash: 42, claim: c.into(), result: "pass".into(), verified_at: "t".into(), protocol_version: 1, evidence: serde_json::Value::Null }
+    }
+
+    #[test]
+    fn no_ledger_entry_downgrades_to_unaudited_and_warns() {
+        let mut w = Vec::new();
+        let g = gate_precision(claim(), &q(), &VerificationLedger::default(), &mut w);
+        assert_eq!(g.notes, PrecisionGuarantee::UNAUDITED.notes);
+        assert!(!g.bit_stable_on_same_hardware);
+        assert!(g.max_ulp.is_none());
+        assert_eq!(w.len(), 1);
+        assert!(w[0].message.contains("rope_apply_f32") && w[0].message.contains("bit_stable_on_same_hardware") && w[0].message.contains("max_ulp"));
+    }
+    #[test]
+    fn matching_pass_entries_for_every_claim_are_honored() {
+        let ledger = VerificationLedger::from_records(vec![pass("bit_stable_on_same_hardware"), pass("max_ulp")]);
+        let mut w = Vec::new();
+        let g = gate_precision(claim(), &q(), &ledger, &mut w);
+        assert!(g.bit_stable_on_same_hardware && g.max_ulp == Some(0) && w.is_empty());
+    }
+    #[test]
+    fn partial_backing_still_downgrades_the_whole_claim() {
+        let ledger = VerificationLedger::from_records(vec![pass("bit_stable_on_same_hardware")]);
+        let mut w = Vec::new();
+        let g = gate_precision(claim(), &q(), &ledger, &mut w);
+        assert_eq!(g.notes, PrecisionGuarantee::UNAUDITED.notes);
+        assert!(w[0].message.contains("max_ulp"));
+    }
+    #[test]
+    fn stale_hash_downgrades_even_with_a_pass_for_the_old_hash() {
+        let mut old = pass("bit_stable_on_same_hardware"); old.kernel_revision_hash = 41;
+        let mut w = Vec::new();
+        let g = gate_precision(claim(), &q(), &VerificationLedger::from_records(vec![old]), &mut w);
+        assert_eq!(g.notes, PrecisionGuarantee::UNAUDITED.notes);
+    }
+    #[test]
+    fn no_verifiable_bound_passes_through_untouched() {
+        let declared = PrecisionGuarantee::none("audited; no static bound applies");
+        let mut w = Vec::new();
+        let g = gate_precision(declared, &q(), &VerificationLedger::default(), &mut w);
+        assert_eq!(g.notes, declared.notes);
+        assert!(w.is_empty());
     }
 }
