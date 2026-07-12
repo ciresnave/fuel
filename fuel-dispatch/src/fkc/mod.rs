@@ -558,4 +558,32 @@ kernel: demo2
             "got {err:?}"
         );
     }
+
+    // =====================================================================
+    // §3.1 orphan ```fkc block (outside any `## ` section) — a silent no-op
+    // import bug: `split_sections` drops everything before the first `## `
+    // heading, so a block placed there vanished with `Ok(FkcFile { kernels:
+    // [] })` instead of a typed error.
+    // =====================================================================
+
+    #[test]
+    fn orphan_fkc_block_outside_a_section_is_rejected() {
+        // A fkc block under only an H1, no `## ` heading — today silently dropped.
+        let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n# Title\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
+        let err = parse_file(src).expect_err("an fkc block outside any `## ` section must be rejected, not silently dropped");
+        assert!(matches!(err, FkcError::OrphanFkcBlock { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn fkc_block_with_no_sections_at_all_is_rejected() {
+        let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
+        assert!(matches!(parse_file(src).unwrap_err(), FkcError::OrphanFkcBlock { .. }));
+    }
+
+    #[test]
+    fn non_fkc_fence_before_first_heading_is_not_flagged() {
+        // A yaml doc example in the intro prose must NOT trigger the orphan check.
+        let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n# Title\n\n```yaml\nexample: true\n```\n\n## add_f32\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
+        parse_file(src).expect("a non-fkc intro fence + a real section parses fine");
+    }
 }

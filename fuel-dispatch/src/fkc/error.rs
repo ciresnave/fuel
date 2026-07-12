@@ -65,6 +65,16 @@ pub enum FkcError {
     #[error("FKC §3.1: section `{section}` has {count} ```fkc blocks (expected exactly 1)")]
     MultipleFkcBlocks { section: String, count: usize },
 
+    /// A `` ```fkc `` fenced block appears outside any `## ` section (before the
+    /// first heading, or in a file with no `## ` headings). Such a block is
+    /// silently dropped by section scanning, so the import would succeed while
+    /// adopting nothing — a no-op that looks like success (§3.1).
+    #[error(
+        "FKC §3.1: a ```fkc block (line {line}) is not under a `## ` heading — every kernel block \
+         must belong to a `## ` section (a block outside a section would be silently ignored)"
+    )]
+    OrphanFkcBlock { line: usize },
+
     // ===== deserialization / schema =====
     /// `serde_yml` failed to deserialize a YAML chunk into the schema. The
     /// string carries the underlying error (and the section name when known).
