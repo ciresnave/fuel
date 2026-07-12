@@ -204,6 +204,32 @@ pub fn check_slot_rank(section: &str, slot: &str, shape: &Shape) -> Result<(), F
     Ok(())
 }
 
+/// Finding 5.4 (FKC side, Task 3.6): extract a `return.bundle`'s per-slot
+/// NAMES, in declared order. `Vec::new()` when `ret` is `None`, or `ret`'s
+/// `bundle` is `None`/not a `Sequence`, or a slot is not a `Mapping` — never
+/// a false reject; the FDX bundle-arity check (`check_bundle_arity`) is the
+/// authority on WHETHER the slot count is right, this fn only reads names.
+/// A slot with no `name:` key falls back to `slot{i}` (mirrors the same
+/// fallback in `cross_check_fused_section`'s rank-check loop, §5.5).
+pub fn bundle_slot_names(ret: &Option<crate::fkc::schema::ReturnBlock>) -> Vec<String> {
+    let Some(ret) = ret.as_ref() else { return Vec::new() };
+    let Some(bundle) = ret.bundle.as_ref() else { return Vec::new() };
+    let serde_yml::Value::Sequence(slots) = bundle else { return Vec::new() };
+    slots
+        .iter()
+        .enumerate()
+        .map(|(i, slot)| {
+            let serde_yml::Value::Mapping(map) = slot else {
+                return format!("slot{i}");
+            };
+            map.get(serde_yml::Value::String("name".into()))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("slot{i}"))
+        })
+        .collect()
+}
+
 /// §5.5: the declared slot count of a `return.bundle` — a YAML `Sequence`,
 /// one entry per output slot. `None` for a malformed (non-sequence) bundle;
 /// callers treat that as not-evaluable, never a false reject.

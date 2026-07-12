@@ -278,6 +278,14 @@ impl ImportedProvider {
                     cost_expr: crate::fkc::cost_compile::stamp_fused_cost_expr(f),
                 },
             );
+            // Finding 5.4 (FKC side, Task 3.6): preserve the contract's
+            // `return.bundle` per-slot names in the side-table, keyed by the
+            // SAME (id, backend, dtypes) tuple just registered above. Empty
+            // for a single-output section (the common case) — skip the
+            // insert rather than recording a vacuous entry.
+            if !f.bundle_slot_names.is_empty() {
+                fused.record_bundle_slot_names(f.id, f.backend, dtypes, &f.bundle_slot_names);
+            }
         }
 
         // --- The duplicate-detection gate, surfaced as a typed error ---
