@@ -365,6 +365,16 @@ pub enum FkcError {
         rank: usize,
     },
 
+    /// A `shape_constraint:` segment committed to §3.5 vocabulary but its
+    /// argument is malformed (`rank=banana`, an unclosed `divisible(`, an empty
+    /// `dim[0]=`). Non-vocabulary segments degrade to free text (a warning), not
+    /// this error — this fires only on a real authoring mistake in the grammar.
+    #[error(
+        "FKC §3.5: kernel `{section}` operand `{operand}` shape_constraint segment `{raw}` \
+         uses vocabulary but is malformed"
+    )]
+    UnparseableShapeConstraint { section: String, operand: String, raw: String },
+
     /// A paged/gather operand is incoherent (V-FKC §10.14): `kind:
     /// paged_blocks` without `requires_ext: true` / `symbolic_extent:
     /// required`, or `block_table`/`context_lens` naming a non-existent
