@@ -7,6 +7,37 @@ use crate::fused::CostEstimate;
 use fuel_graph::registry::FusedOpParams;
 use fuel_ir::{DType, Shape};
 
+/// The closed classification of a contract's `cost:` block (§2.3 / V-FKC-9).
+/// Every non-placeholder cost must map to exactly one of these; `None` from
+/// [`classify_cost`] means the block is NOT load-bearing (a placeholder).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CostClassKind {
+    /// `class: free` — an honest metadata-only op (no coefficients needed).
+    Free,
+    /// `provenance: judge_measured` — the Judge populates the real cost;
+    /// shape-hint expressions or all-`~` are both legitimate.
+    JudgeMeasured,
+    /// `provenance: declared` with a usable `flops`/`bytes_moved` AST.
+    DeclaredFormula,
+    /// `provenance: declared` with a pinned `cost.cost_fn` (a real fn wins
+    /// outright over any declared AST).
+    VendorSpec,
+}
+
+/// Classify a contract's cost block. A cost block is load-bearing iff it maps
+/// to `Some(kind)`. `class: free` is the only no-expression license for a
+/// `declared` block; otherwise `declared` needs a pinned `cost_fn` OR a usable
+/// `flops`/`bytes_moved` expression to not be a bare placeholder.
+pub fn classify_cost(provenance: &str, class: &str, has_any_expr: bool, has_cost_fn: bool) -> Option<CostClassKind> {
+    if class == "free" { return Some(CostClassKind::Free); }
+    match provenance {
+        "judge_measured" => Some(CostClassKind::JudgeMeasured),
+        "declared" if has_cost_fn => Some(CostClassKind::VendorSpec),
+        "declared" if has_any_expr => Some(CostClassKind::DeclaredFormula),
+        _ => None,
+    }
+}
+
 /// Bounded, dedup'd process-lifetime leak (mirrors `register::intern`). Unknown → None.
 pub fn intern_cost_expr(expr: &CompiledCostExpr) -> Option<&'static CompiledCostExpr> {
     if matches!(expr, CompiledCostExpr::Unknown) { return None; }

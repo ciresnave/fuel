@@ -1047,25 +1047,28 @@ fn validate_cost(kernel: &FkcKernel, section: &str) -> Result<(), FkcError> {
         }
     }
 
-    // Rule 8a (placeholder): a `class: free` op with all-zero coefficients is
-    // the honest metadata-only declaration. Otherwise a cost that ships NO
-    // coefficient (all `~`) AND no `class` is a placeholder. A `judge_measured`
-    // cost legitimately ships shape-hint expressions OR all-`~` (the Judge
-    // populates it) — the corpus convention is `judge_measured` + `~`
-    // coefficients, which is NOT a placeholder (it is explicitly measured),
-    // so we DO NOT flag all-`~` under `judge_measured`.
+    // Rule 8a (placeholder): closed classifier (§2.3 / V-FKC-9,
+    // `cost_compile::classify_cost`). `class: free` is the honest
+    // metadata-only declaration (license for zero coefficients). A
+    // `judge_measured` cost legitimately ships shape-hint expressions OR
+    // all-`~` (the Judge populates it) — the corpus convention is
+    // `judge_measured` + `~` coefficients, which is NOT a placeholder (it is
+    // explicitly measured). Otherwise a `declared` cost needs a pinned
+    // `cost.cost_fn` OR a usable `flops`/`bytes_moved` expression; a
+    // NON-EMPTY-but-non-`free` `class` alone is NOT a license (closes the old
+    // `class.is_empty()` escape hatch: a `declared` block with a class but no
+    // flops/bytes/cost_fn is still a placeholder).
     let class = cost.class.as_deref().unwrap_or("");
     let has_any_expr = cost.flops.as_deref().is_some_and(|s| !s.trim().is_empty())
         || cost.bytes_moved.as_deref().is_some_and(|s| !s.trim().is_empty());
+    let has_cost_fn = cost.cost_fn.as_deref().is_some_and(|s| !s.trim().is_empty());
     if cost.provenance.as_deref() == Some("declared")
-        && !has_any_expr
-        && class != "free"
-        && class.is_empty()
+        && crate::fkc::cost_compile::classify_cost("declared", class, has_any_expr, has_cost_fn).is_none()
     {
         return Err(FkcError::PlaceholderCost {
             section: section.to_string(),
-            reason: "provenance: declared with no coefficient expressions and no class — a bare \
-                     placeholder (use class: free for an honest metadata-only op)"
+            reason: "provenance: declared with no usable cost path (no flops/bytes_moved \
+                     expression, no pinned cost.cost_fn) and class is not `free`"
                 .to_string(),
         });
     }
@@ -1502,6 +1505,21 @@ determinism: same_hardware_bitwise
             .replace("  flops: \"n\"\n", "  flops: ~\n")
             .replace("  bytes_moved: \"3 * n * 4\"\n", "  bytes_moved: ~\n");
         validate_str(&src).expect("judge_measured + ~ is fine");
+    }
+
+    #[test]
+    fn placeholder_cost_class_field() {
+        use crate::fkc::cost_compile::{classify_cost, CostClassKind};
+        assert!(classify_cost("declared", "cheap_elementwise", false, false).is_none());
+        assert!(matches!(classify_cost("declared", "free", false, false), Some(CostClassKind::Free)));
+        assert!(matches!(classify_cost("declared", "gemm_like", true, false), Some(CostClassKind::DeclaredFormula)));
+        assert!(matches!(classify_cost("declared", "gemm_like", false, true), Some(CostClassKind::VendorSpec)));
+        assert!(matches!(classify_cost("judge_measured", "gemm_like", false, false), Some(CostClassKind::JudgeMeasured)));
+        // integration: a declared+non-free class with NO flops/bytes/cost_fn is rejected on import
+        use crate::fkc::register::import_bundle_str;
+        let src = "---\nfkc_version: 1\nprovider:\n  name: ph-provider\n  backend: Cpu\n  kernel_source: \"ph-cpu\"\n---\n\n# ph\n\n## add_f32\n\nA.\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\nblurb: \"a\"\nentry_point: \"x::add_f32\"\naccept:\n  inputs:\n    - name: lhs\n      dtypes: [F32]\n      layout: { contiguous: required, strided: rejected }\n    - name: rhs\n      dtypes: [F32]\n      layout: { contiguous: required, strided: rejected }\n  op_params: { variant: None }\nreturn:\n  outputs:\n    - name: out\n      dtype_rule: passthrough(lhs)\ncost:\n  provenance: declared\n  class: cheap_elementwise\nprecision:\n  bit_stable_on_same_hardware: true\n  audited: true\ndeterminism: same_hardware_bitwise\n```\n";
+        let err = import_bundle_str(src, &StubLink::new()).expect_err("declared + non-free class + no usable cost path must reject");
+        assert!(matches!(err, FkcError::PlaceholderCost { .. }), "got {err:?}");
     }
 
     // ===== Rule 9 — determinism/precision =====
