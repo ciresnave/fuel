@@ -132,6 +132,11 @@ mod tests {
                    vec![ShapeAtom::Rank(RankSpec::Exact(4))]);
         assert_eq!(parse_shape_constraint("rank=2..=4", "s", "x").unwrap().atoms,
                    vec![ShapeAtom::Rank(RankSpec::Range { lo: 2, hi: Some(4) })]);
+        // `Any` and open-ended `Range{hi:None}` (parse_rank_spec branches otherwise unpinned)
+        assert_eq!(parse_shape_constraint("rank=any", "s", "x").unwrap().atoms,
+                   vec![ShapeAtom::Rank(RankSpec::Any)]);
+        assert_eq!(parse_shape_constraint("rank=2..", "s", "x").unwrap().atoms,
+                   vec![ShapeAtom::Rank(RankSpec::Range { lo: 2, hi: None })]);
         // negative axis + bare-symbol RHS (linear-quant.fkc.md:108)
         let a = parse_shape_constraint("dim[-1]=k; same_rank=b", "linear", "a").unwrap();
         assert_eq!(a.atoms.len(), 2);
@@ -147,6 +152,18 @@ mod tests {
             .unwrap().atoms[0], ShapeAtom::Divisible { .. }));
         assert!(matches!(parse_shape_constraint("capacity_ge(dim[0], seqlen)", "f", "kv")
             .unwrap().atoms[0], ShapeAtom::CapacityGe { .. }));
+        // bracket-depth-aware split_two_args: the outer `divisible(...)` comma
+        // must split at DEPTH 0, not at the nested comma inside `foo(a, b)`. A
+        // naive `inner.split_once(',')` would split lhs="foo(a" / rhs=" b), c" —
+        // "foo(a" fails to parse (unbalanced '(') and the whole call errors.
+        let nested = parse_shape_constraint("divisible(foo(a, b), c)", "f", "k").unwrap();
+        assert_eq!(nested.atoms, vec![ShapeAtom::Divisible {
+            lhs: CostNode::Call {
+                name: "foo".into(),
+                args: vec![CostNode::Sym("a".into()), CostNode::Sym("b".into())],
+            },
+            rhs: CostNode::Sym("c".into()),
+        }]);
         // free text: valid-vocab head + prose tail (shape-ops.fkc.md:639) — NOT rejected
         let mixed = parse_shape_constraint(
             "same_as=out; read-modify-written in place (this operand IS the output)",
