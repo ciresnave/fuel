@@ -80,8 +80,8 @@ pub use register::{
 };
 pub use revhash::compute_revision;
 pub use shape_constraint::{
-    parse_rank_spec, parse_shape_constraint, AxisIndex, ProbeCombo, RankSpec, ShapeAtom,
-    ShapeConstraint,
+    parse_rank_spec, parse_shape_constraint, solve_probe_shapes, AxisIndex, ProbeCombo, RankSpec,
+    ShapeAtom, ShapeConstraint,
 };
 pub use schema::{
     AcceptBlock, CapsBlock, CostBlock, CostMemory, FdxSpec, FkcFile, FkcFrontMatter, FkcKernel,
