@@ -555,6 +555,78 @@ Cross-references are fine — an architecture-decision-log entry can link to the
 
 ---
 
+## 2026-07-11 — CapturedRun 4b PAUSED: FKC contract verification + automatic kernel integration is a real, evidenced gap, not scope creep
+
+**Sections affected**: none directly (no core-claim text changes), but this entry documents a
+confirmed discrepancy between `docs/session-prompts/kernel-contract-adoption-plan.md`'s
+specified design (§10 V-FKC-9, §11 step 6's "ship → verify" gate) and what
+`fuel-dispatch/src/fkc/validate.rs`/`precision.rs` actually implement — worth a future reader's
+attention if `05-backend-contract.md` or the FKC spec itself gets revised.
+**Phase / PR**: closes out (by pausing) the CapturedRun executor build-out session covering
+tasks 4b-γ through 4b-δ/ζ and the two CUDA kernel precision-audit passes above. Full account:
+`docs/session-prompts/capturedrun-4b-paused-pending-fkc-verification.md`.
+
+**What happened**: tracing 4b-δ's real-decode capture-test blocker through six consecutive
+gaps (MatMul → MulElementwise → RmsNormLastDim → Softmax/LogSoftmax → `Op::Rope`[2-slot] → all
+audited/fixed and GPU-verified, commits `8d40f297`..`68eed195`) led to a seventh: `Op::Rope`'s
+4-slot (`x, cos, sin → out`) fused variant has zero CUDA registration at all. The kernel it
+needs, baracuda's `rope_apply_f32`, already exists and ships — built specifically in response
+to an earlier Fuel request — but was never wired into Fuel's dispatch table, has no FKC
+contract, and sat completely unconnected. Investigating why surfaced that
+`kernel-contract-adoption-plan.md` already specifies both a rejection rule for placeholder
+precision (V-FKC-9) and a claim-verification gate, but the shipped implementation is narrower
+than the design on both counts:
+
+- `precision.rs::lower_precision` (78-82) treats an explicit `audited: false` as a **valid**,
+  successfully-lowered case (`PrecisionGuarantee::UNAUDITED`) — not an error. `FkcError::
+  PlaceholderPrecision` (V-FKC-9's error type) only fires when a precision block is **entirely
+  absent**, never for a well-formed `audited: false`.
+- `validate.rs::validate_precision_coherence` ("Rule 9" as actually coded, 1080-1107) only
+  cross-checks that a `determinism: nondeterministic` declaration agrees with `bit_stable:
+  false` + `audited: true` in the *same* contract — an internal-consistency check between two
+  hand-authored fields, not a check against the kernel's real behavior, and it never fires at
+  all for a contract that simply omits a `nondeterministic` claim.
+- The adoption plan's "ship → verify" **equivalence test** (§11 step 6) only ever checked that
+  an FKC-imported registration reproduced the pre-existing **hand-written** registration's
+  values — a migration-safety check. Since the hand-written registrations were themselves plain
+  `register(...)` calls with no real claim (confirmed: every `audited: false` seed this
+  session's two audit passes touched carries the identical "author-declared UNAUDITED seed"
+  note), the equivalence test trivially passed by reproducing the same never-audited default.
+
+**Why this matters beyond one kernel**: this session's own two audit commits (`afcce809`,
+`0d5e58e4`) are direct evidence of the cost — 85 CUDA kernel precision claims had to be
+individually, manually re-derived by reading unfamiliar baracuda source, because nothing in the
+pipeline ever verified or even flagged them as unverified before they became load-bearing for
+placement decisions. `rope_apply` is sharper still: a kernel Fuel itself requested, delivered,
+and then never connected — a pure integration gap, invisible until a downstream feature
+(CapturedRun) happened to need exactly it.
+
+**Decision (per explicit user instruction)**: **pause** CapturedRun task 4b-δ/4b-ε and the
+"hand-audit whatever kernel the trace hits next" pattern. Do not hand-wire `rope_apply` or any
+future such gap as a one-off. Resume only once a real FKC contract-verification +
+automatic-kernel-integration mechanism exists (design sketch, explicitly marked
+not-yet-scoped, in the paused-work doc) — provider claims get automatically tested against real
+kernel behavior (starting with the highest-value, most mechanizable claim,
+`bit_stable_on_same_hardware`, via generalizing this session's cuBLAS `determinism_audit`
+protocol) before becoming trusted inputs to placement, and a verified kernel enters full
+rotation without a human wiring session per kernel. `rope_apply` is designated the acceptance
+test for that future mechanism: once built, it should unblock 4b-δ's capture test without
+further hand debugging.
+
+**Alternatives considered**: *Just wire `rope_apply` by hand and finish 4b-δ* — rejected by the
+user: this is exactly the pattern that produced the 85-kernel audit backlog and the fully-unwired
+`rope_apply` in the first place, and doing it again does nothing to prevent the next such gap
+(baracuda ships kernels regularly). *Keep going and treat FKC verification as a someday-later
+follow-up* — rejected: the whole point of stopping here, per the user, is that 4b-δ **must not**
+resume until the prerequisite lands, specifically to force the prerequisite to actually get
+built rather than being perpetually deferred behind the next hand-fixable symptom.
+
+**Implications going forward**: `docs/session-prompts/capturedrun-4b-paused-pending-fkc-verification.md`
+is the resume anchor — read it in full before touching 4b-δ/4b-ε again. `ROADMAP.md`'s frontier
+is updated to reflect the new blocking dependency in the same change as this entry.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
