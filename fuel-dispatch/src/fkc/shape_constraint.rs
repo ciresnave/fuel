@@ -242,6 +242,17 @@ fn dep_sources(atoms: &[ShapeAtom], input_roles: &HashSet<String>) -> Vec<String
             _ => {}
         }
     }
+    // Dedup: a predecessor referenced MORE THAN ONCE (same predecessor's dims
+    // used twice in one expr, e.g. `k.dim[0]+k.dim[1]`, or across `;`-segments)
+    // must still count as ONE indegree edge in `topo_order`'s Kahn pass. That
+    // pass's decrement step fires once per DISTINCT predecessor (membership
+    // via `deps.contains(cur)`, not a count), so an undeduped multi-entry list
+    // makes indegree overcount relative to how many times it can ever be
+    // decremented — an acyclic operand then never reaches indegree 0 and gets
+    // misclassified as part of a cycle (spurious `cycle` warning), silently
+    // reverting to source-order application (review Finding 1).
+    deps.sort();
+    deps.dedup();
     deps
 }
 
@@ -365,6 +376,14 @@ pub fn solve_probe_shapes(inputs: &[TensorDesc], section: &str, warnings: &mut V
     let mut roles = Vec::with_capacity(inputs.len());
     let mut keys = Vec::with_capacity(inputs.len());
     let mut ranks: HashMap<String, usize> = HashMap::with_capacity(inputs.len());
+    // Review Finding 2: two operands sharing the same EXPLICIT non-empty name
+    // collapse to one `key_to_idx` entry (last-write-wins over the
+    // `keys`/`key_to_idx` map built below), so only ONE operand's atoms are
+    // ever applied — a silent drop. This is an authoring bug (a duplicate
+    // name also makes `same_as=` ambiguous), so surface it with ONE warning
+    // per duplicated name rather than silently proceeding.
+    let mut seen_names: HashSet<String> = HashSet::with_capacity(inputs.len());
+    let mut warned_dup_names: HashSet<String> = HashSet::new();
     for (i, d) in inputs.iter().enumerate() {
         let operand = d.name.as_deref().unwrap_or("<unnamed>");
         let sc = match &d.shape_constraint {
@@ -373,6 +392,13 @@ pub fn solve_probe_shapes(inputs: &[TensorDesc], section: &str, warnings: &mut V
         };
         let role = d.name.clone().unwrap_or_default();
         let key = d.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("#unnamed{i}"));
+        if let Some(name) = d.name.as_deref().filter(|n| !n.is_empty()) {
+            if !seen_names.insert(name.to_string()) && warned_dup_names.insert(name.to_string()) {
+                warnings.push(warn(section, format!(
+                    "operand name `{name}` is declared more than once; references to it are ambiguous and only one operand's shape constraints are applied"
+                )));
+            }
+        }
         let rank = rank_for_probe(resolve_rank_spec_field(d.rank.as_ref()));
         ranks.insert(key.clone(), rank);
         roles.push(role);
@@ -665,5 +691,50 @@ mod tests {
         assert_eq!(combos.len(), 3);
         assert_eq!(combos[0][0].1, Shape::from_dims(&[2, 2]));
         assert!(w.iter().any(|x| x.message.to_lowercase().contains("cycle")), "warns: {w:?}");
+    }
+
+    /// Fix-pass Finding 1: `dep_sources` must dedup a predecessor referenced
+    /// MORE THAN ONCE (here, `k` appears twice in one `dim[0]=k.dim[0]+k.dim[1]`
+    /// expression) so `topo_order`'s Kahn indegree count matches the number
+    /// of times its decrement pass can ever fire (once per DISTINCT
+    /// predecessor, via `deps.contains(cur)` membership, not a per-occurrence
+    /// count). Undeduped, `x`'s indegree is counted as 2 but only ever
+    /// decremented once (when `k` — itself a leaf, indegree 0 — is
+    /// processed), so `x` never reaches indegree 0 and is misclassified as a
+    /// cycle residual: a spurious `cycle` warning on a genuinely acyclic DAG.
+    /// x before k in `inputs` order proves the fix also still applies the
+    /// correct DEPENDENCY order (k resolves before x), not source order.
+    #[test]
+    fn double_reference_to_one_predecessor_is_not_a_false_cycle() {
+        // x references k's dims TWICE — must NOT be flagged as a cycle, and must
+        // resolve AFTER k (topo order), not fall back to source order.
+        let mut x = desc("x", &["F32"], Some(2));
+        x.shape_constraint = Some("dim[0]=k.dim[0]+k.dim[1]".into());
+        let mut k = desc("k", &["F32"], Some(2));
+        k.shape_constraint = Some("divisible(dim[0], 8)".into()); // k.dim0: 2 -> 8
+        let mut w = Vec::new();
+        let combos = solve_probe_shapes(&[x, k], "s", &mut w).unwrap(); // x before k in source
+        assert!(!w.iter().any(|m| m.message.to_lowercase().contains("cycle")),
+            "a double reference to one predecessor is NOT a cycle: {w:?}");
+        // x.dim[0] = k.dim[0](8) + k.dim[1](2) = 10 — proves k resolved before x
+        let a0 = &combos[0];
+        let x0 = a0.iter().find(|(r, _, _)| r == "x").unwrap().1.dims()[0];
+        assert_eq!(x0, 10, "x.dim0 = rounded k.dim0(8) + k.dim1(2); proves k-before-x ordering");
+    }
+
+    /// Fix-pass Finding 2: two operands sharing the same EXPLICIT non-empty
+    /// name collapse to one `key_to_idx` entry (last-write-wins), silently
+    /// dropping one operand's shape-constraint atoms. That's an authoring
+    /// bug (a duplicate name also makes `same_as=` ambiguous), so it must
+    /// surface as an `ImportWarning` naming the duplicated operand, not
+    /// silently proceed. Must not panic or error.
+    #[test]
+    fn duplicate_operand_name_emits_a_warning() {
+        let a = desc("dup", &["F32"], Some(2));
+        let b = desc("dup", &["F32"], Some(2));
+        let mut w = Vec::new();
+        let _ = solve_probe_shapes(&[a, b], "s", &mut w).unwrap(); // no panic, Ok
+        assert!(w.iter().any(|m| m.message.contains("dup") && m.message.to_lowercase().contains("more than once")),
+            "duplicate operand name must be surfaced as a warning: {w:?}");
     }
 }
