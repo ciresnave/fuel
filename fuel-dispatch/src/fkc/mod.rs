@@ -5,9 +5,8 @@
 //! Fuel's dispatch surface (`KernelBindingTable` / `FusedKernelRegistry`) with
 //! zero hand-written registration glue.
 //!
-//! This module is gated behind the default-off `fkc` cargo feature
-//! (`fuel-dispatch/Cargo.toml`), so plain builds are untouched while the
-//! importer is WIP (kernel-contract adoption plan §1, §11).
+//! This module is unconditional production infrastructure (`pub mod fkc` in
+//! lib.rs, no feature gate; the `fkc` feature was removed in bd757464).
 //!
 //! ## Status — first slice
 //!
@@ -54,6 +53,7 @@ mod schema;
 mod validate;
 #[cfg(feature = "vulkan")]
 mod vulkan_link;
+mod warn;
 
 pub use caps_map::{is_generic_contract, ResolvedLayout, Tri};
 pub use cost_expr::{
@@ -84,6 +84,7 @@ pub use schema::{
     PrecisionBlock, QuantSpec, ReturnBlock, TensorDesc,
 };
 pub use validate::{validate_file, validate_kernel, FKC_VERSION_MAX};
+pub use warn::ImportWarning;
 #[cfg(feature = "cuda")]
 pub use cuda_link::{
     CudaLinkRegistry,
