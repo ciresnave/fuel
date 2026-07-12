@@ -141,6 +141,11 @@ pub struct ResolvedFused {
     /// verbatim from [`crate::fkc::schema::FkcKernel::variant`] (see
     /// [`ResolvedPrimitive::variant`]).
     pub variant: Option<String>,
+    /// §5.5 `return.bundle` slot names, in declared order (empty for a
+    /// single-output section). Set to `Vec::new()` for now — Task 3.6 wires
+    /// the real extraction (`bundle_slot_names(&kernel.return_)`) once that
+    /// helper exists; kept here so this task compiles independently.
+    pub bundle_slot_names: Vec<String>,
 }
 
 /// The result of lowering one kernel section: a primitive xor a fused
@@ -1049,8 +1054,12 @@ fn lower_fused(
     link: &dyn LinkRegistry,
     warnings: &mut Vec<crate::fkc::ImportWarning>,
 ) -> Result<Vec<ResolvedFused>, FkcError> {
-    // Not yet a producer (Phase 1); a later component pushes into this sink.
-    let _ = &warnings;
+    // §5 (Finding 5.1): cross-check the section's declared return rules
+    // against the REAL registered FusedOpEntry fn BEFORE anything else lowers
+    // — a disagreement fails the import (never silently drifts from the
+    // graph's single source of truth). See `return_check::cross_check_fused_section`
+    // for the never-panic guard + soft-catch-solver-errors invariants.
+    crate::fkc::return_check::cross_check_fused_section(kernel, id, warnings)?;
     let section = kernel.kernel.as_str();
     let backend_str = kernel.backend.as_deref().unwrap_or(defaults.backend);
     let backend = lower_backend(backend_str, section)?;
@@ -1105,6 +1114,9 @@ fn lower_fused(
             // Retain the opaque `variant:` tag verbatim (per-section, shared by
             // every dtype variant) so it survives to the emission step.
             variant: kernel.variant.clone(),
+            // Task 3.6 wires the real §5.5 bundle-slot-name extraction; empty
+            // for now so this task compiles independently.
+            bundle_slot_names: Vec::new(),
         });
     }
     Ok(out)
