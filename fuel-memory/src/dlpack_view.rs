@@ -52,6 +52,8 @@
 
 use core::ffi::c_void;
 use core::marker::PhantomData;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use fuel_ir::dlpack::abi::{
     device_type, DLDataType, DLDevice, DLTensor,
@@ -425,10 +427,36 @@ const fn zero_extent() -> FDXExtent {
     }
 }
 
+/// Process-global, append-only side table recovering a bundle slot's source
+/// name from its FNV-1a hash (Finding 5.4, FDX side). Populated by
+/// [`output_view_to_fdx`] whenever a slot carries `Some(name)`; looked up via
+/// [`fdx_slot_name`]. Never removes entries — a hash collision would silently
+/// overwrite the earlier name, but slot names are short, low-cardinality
+/// identifiers so this is accepted (same trade-off as the hash itself).
+static FDX_NAME_TABLE: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
+
+/// The lazily-initialized name table (see [`FDX_NAME_TABLE`]).
+fn name_table() -> &'static Mutex<HashMap<u64, String>> {
+    FDX_NAME_TABLE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Recover a bundle slot's source name from its FNV-1a hash (FDX §6.8 /
+/// FKC §5.5, Finding 5.4). `hash == 0` is the anonymous sentinel and always
+/// returns `None`; any other hash returns `Some(name)` iff some prior
+/// [`output_view_to_fdx`] call inserted it (a hash with no matching insert —
+/// e.g. from a different process — also yields `None`, never a panic).
+pub fn fdx_slot_name(hash: u64) -> Option<String> {
+    if hash == 0 {
+        return None;
+    }
+    name_table().lock().ok()?.get(&hash).cloned()
+}
+
 /// Map a Fuel [`OutputView`] bundle slot to an [`FDXOutputView`] (FDX §6.8 /
 /// FKC §5.5). Rank > 6 ⇒ `BundleRankExceeds6` (here surfaced as a typed
-/// `Error::Msg`). The slot name is reduced to a stable FNV-1a hash side-table
-/// entry (`name_hash`); 0 ⇒ anonymous.
+/// `Error::Msg`). The slot name is reduced to a stable FNV-1a hash
+/// (`name_hash`) AND inserted into the process-global [`FDX_NAME_TABLE`] side
+/// table, recoverable via [`fdx_slot_name`]; 0 ⇒ anonymous (no insert).
 fn output_view_to_fdx(ov: &OutputView) -> Result<FDXOutputView> {
     let dims = ov.shape.dims();
     let ndim = dims.len();
@@ -445,6 +473,21 @@ fn output_view_to_fdx(ov: &OutputView) -> Result<FDXOutputView> {
         shape[i] = dims[i] as u64;
         strides[i] = st[i] as i64;
     }
+    let name_hash = match ov.name {
+        Some(n) => {
+            let h = fnv1a(n);
+            // Never-panic: a poisoned lock (only reachable if some other
+            // caller already panicked while holding it) degrades to "the
+            // insert didn't happen" rather than propagating the panic here —
+            // `name_hash` on the wire is unaffected either way (additive
+            // side effect, see the fn doc comment).
+            if let Ok(mut table) = name_table().lock() {
+                table.insert(h, n.to_string());
+            }
+            h
+        }
+        None => 0,
+    };
     Ok(FDXOutputView {
         byte_offset: ov.byte_offset as u64,
         len_elements: ov.len_elements as u64,
@@ -453,7 +496,7 @@ fn output_view_to_fdx(ov: &OutputView) -> Result<FDXOutputView> {
         ndim: ndim as u32,
         shape,
         strides,
-        name_hash: ov.name.map_or(0, fnv1a),
+        name_hash,
         reserved: [0; 4],
     })
 }
