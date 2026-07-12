@@ -313,4 +313,26 @@ mod tests {
         assert_eq!(eval_shape_rule("matmul(a, b)", c, "k").unwrap(), None);
         assert_eq!(eval_shape_rule("same_as(does_not_exist)", c, "k").unwrap(), None);
     }
+
+    /// Finding 5.4 deliverable (Task 3.6 coverage gap): the extractor must
+    /// actually PULL the right names out of a real `ReturnBlock`, not merely
+    /// avoid panicking. Mirrors the real corpus shape
+    /// (`docs/kernel-contracts/fused/conv-rope.fkc.md`'s `SELECTIVE_SCAN`
+    /// bundle: `y` / `last_state`). Bare `y` is a YAML-1.1 "Norway problem"
+    /// candidate (`y`/`yes`/`on` historically coerce to bool `true`), but the
+    /// slot names live inside a `serde_yml::Value` (untyped) tree here, and
+    /// `serde_yml` 0.0.12 keeps bare `y` as the plain string `"y"` — pinned by
+    /// this assertion, not just asserted in prose.
+    #[test]
+    fn bundle_slot_names_extracts_names_from_a_real_return_block() {
+        let ret: crate::fkc::schema::ReturnBlock = serde_yml::from_str(
+            "outputs: []\nbundle:\n  - { name: y, shape_rule: same_as(u) }\n  - { name: last_state, shape_rule: from_params(state) }",
+        )
+        .expect("parses");
+        assert_eq!(
+            bundle_slot_names(&Some(ret)),
+            vec!["y".to_string(), "last_state".to_string()]
+        );
+        assert_eq!(bundle_slot_names(&None), Vec::<String>::new());
+    }
 }
