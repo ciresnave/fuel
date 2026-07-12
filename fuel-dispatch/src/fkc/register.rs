@@ -956,6 +956,29 @@ mod tests {
     }
 
     // =====================================================================
+    // §5 RETURN-CONTRACT CROSS-CHECK: a fused contract's declared shape_rule /
+    // dtype_rule must agree with the REAL registered `FusedOpEntry` fn — the
+    // born-red test for Task 3.3 (Finding 5.1).
+    // =====================================================================
+
+    #[test]
+    fn fused_contract_shape_rule_disagreeing_with_registered_fn_is_rejected() {
+        // Real SoftmaxLastDim dtype_rule is passthrough(input0) = F32 at the F32 probe.
+        // Mutate ONLY the first section's declared dtype_rule to fixed(F16): now it
+        // disagrees with the registered fused fn at every probe combo → hard reject.
+        let mutated = FUSED_NORM_SOFTMAX.replacen("dtype_rule: passthrough(x)", "dtype_rule: fixed(F16)", 1);
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
+            .expect_err("a return rule that disagrees with the registered fused fn must be rejected");
+        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+    }
+
+    #[test]
+    fn unmutated_fused_corpus_still_imports_after_return_check() {
+        import_bundle_str(FUSED_NORM_SOFTMAX, &crate::fkc::CpuLinkRegistry)
+            .expect("real corpus return rules agree with the registered fused fns");
+    }
+
+    // =====================================================================
     // DUPLICATE: two sections at the same key+pointer → DuplicateKernelRef
     // =====================================================================
 
@@ -1493,6 +1516,7 @@ determinism: same_hardware_bitwise
             kernel_source: "portable-cpu".to_string(),
             revision: KernelRevisionHash::UNTRACKED,
             variant: None,
+            bundle_slot_names: Vec::new(),
         };
 
         let provider = ImportedProvider {
