@@ -963,7 +963,10 @@ fn check_output_dtype_rule(section: &str, operand: &str, rule: &str) -> Result<(
 /// Rule 13: every bundle slot's declared shape must be rank ≤ 6 when a static
 /// shape is given (an inline `[d0, d1, ...]` literal). A `shape_rule:` string
 /// has no statically-knowable rank without evaluating the rule, so it is not
-/// rank-checked here (the register slice's FusedOpEntry cross-check covers it).
+/// rank-checked here — `fkc::return_check::check_slot_rank`, called from
+/// `cross_check_fused_section` for every bundle slot whose `shape_rule`
+/// evaluates against a real probe shape, covers that DERIVED case instead
+/// (Finding 5.3).
 fn check_bundle_ranks(
     section: &str,
     bundle: &serde_yml::Value,

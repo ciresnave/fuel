@@ -158,7 +158,48 @@ pub fn cross_check_fused_section(
             let in_dtypes: Vec<DType> = combo.iter().map(|(_, _, d)| *d).collect();
             let views = output_views(&in_shapes, &in_dtypes, p);
             check_bundle_arity(section, views.len(), bundle)?;
+            // Rule 13 (Finding 5.3): rank-check every bundle slot whose
+            // `shape_rule` is EVALUABLE against this probe combo. The static
+            // `shape:`-literal branch is already rank-checked pre-registration
+            // in `validate.rs::check_bundle_ranks`; this covers the DERIVED
+            // case that check never could (no statically-knowable rank for a
+            // `shape_rule` string without evaluating it against a real probe).
+            if let serde_yml::Value::Sequence(slots) = bundle {
+                for (i, slot) in slots.iter().enumerate() {
+                    let serde_yml::Value::Mapping(map) = slot else { continue };
+                    let slot_name = map
+                        .get(serde_yml::Value::String("name".into()))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("slot{i}"));
+                    if let Some(rule) = map
+                        .get(serde_yml::Value::String("shape_rule".into()))
+                        .and_then(|v| v.as_str())
+                    {
+                        if let Some(shape) = eval_shape_rule(rule, combo, section)? {
+                            check_slot_rank(section, &slot_name, &shape)?;
+                        }
+                    }
+                }
+            }
         }
+    }
+    Ok(())
+}
+
+/// Rule 13 (Finding 5.3): a bundle slot's shape rank must be ≤ 6, whether the
+/// slot's shape came from a static `shape:` literal (checked in
+/// `validate.rs::check_bundle_ranks`, pre-registration) or was DERIVED from a
+/// `shape_rule` and evaluated here against a real probe shape. The serialized
+/// `FDXOutputView` (`[u64; 6]`) cannot represent rank > 6 either way.
+pub fn check_slot_rank(section: &str, slot: &str, shape: &Shape) -> Result<(), FkcError> {
+    let rank = shape.rank();
+    if rank > 6 {
+        return Err(FkcError::BundleSlotRankExceeded {
+            section: section.into(),
+            slot: slot.into(),
+            rank,
+        });
     }
     Ok(())
 }
@@ -220,6 +261,15 @@ mod tests {
             .expect_err("declared 2 vs 3 real output_views slots must be rejected");
         assert!(matches!(err, FkcError::BundleArityMismatch { expected: 3, actual: 2, .. }), "got {err:?}");
         assert!(check_bundle_arity("selective_scan", 2, &two_slots).is_ok());
+    }
+
+    #[test]
+    fn shape_rule_derived_bundle_slot_over_rank6_is_rejected() {
+        use fuel_ir::Shape;
+        let rank7 = Shape::from_dims(&[2, 2, 2, 2, 2, 2, 2]);
+        let err = check_slot_rank("s", "big_slot", &rank7).expect_err("rank 7 must be rejected");
+        assert!(matches!(err, FkcError::BundleSlotRankExceeded { rank: 7, .. }), "got {err:?}");
+        assert!(check_slot_rank("s", "ok_slot", &Shape::from_dims(&[1,1,1,1,1,1])).is_ok());
     }
 
     #[test]
