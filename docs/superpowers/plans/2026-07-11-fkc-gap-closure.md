@@ -170,6 +170,107 @@ git add fuel-dispatch/src/fkc/register.rs fuel-dispatch/src/fkc/lower.rs
 git commit -m "feat(fkc): thread ImportWarning sink through the lower chain onto ImportedProvider"
 ```
 
+### Task 0.3 — Reject an orphan `` ```fkc `` block outside any `## ` section (silent no-op import bug)
+
+**Bug (found 2026-07-11, reported by a Baracuda agent):** `split_sections` (parse.rs:148-171) drops every line before the first `## ` heading. A `` ```fkc `` fenced block placed there — or in a file with no `## ` headings at all — is silently discarded; `parse_file` returns `Ok(FkcFile { kernels: [] })` and the import is a successful-looking no-op that adopts nothing. This is the exact silent-success failure mode this effort targets.
+
+**Fix:** detect a `` ```fkc `` opening fence in the pre-first-`## ` region and return a new typed `FkcError::OrphanFkcBlock { line }`. Only `` ```fkc `` openers trigger (a `` ```yaml `` doc example before the first heading must not).
+
+**Files:**
+- Modify: `fuel-dispatch/src/fkc/error.rs` (add `OrphanFkcBlock { line: usize }`)
+- Modify: `fuel-dispatch/src/fkc/parse.rs` (add `find_orphan_fkc_fence`; call it in `parse_file`)
+
+- [ ] **Step 1: Write the failing test** — in a `#[cfg(test)] mod tests` in `parse.rs` (or the existing parse tests in mod.rs):
+
+```rust
+#[test]
+fn orphan_fkc_block_outside_a_section_is_rejected() {
+    // A fkc block under only an H1, no `## ` heading — today silently dropped.
+    let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n# Title\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
+    let err = parse_file(src).expect_err("an fkc block outside any `## ` section must be rejected, not silently dropped");
+    assert!(matches!(err, FkcError::OrphanFkcBlock { .. }), "got {err:?}");
+}
+
+#[test]
+fn fkc_block_with_no_sections_at_all_is_rejected() {
+    let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
+    assert!(matches!(parse_file(src).unwrap_err(), FkcError::OrphanFkcBlock { .. }));
+}
+
+#[test]
+fn non_fkc_fence_before_first_heading_is_not_flagged() {
+    // A yaml doc example in the intro prose must NOT trigger the orphan check.
+    let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n# Title\n\n```yaml\nexample: true\n```\n\n## add_f32\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
+    parse_file(src).expect("a non-fkc intro fence + a real section parses fine");
+}
+```
+
+- [ ] **Step 2: Run it to verify it fails** — `cargo test -p fuel-dispatch fkc::parse` (or wherever parse tests live).
+  Expected: the first two FAIL — `parse_file` returns `Ok` today (block dropped, `kernels: []`), so `expect_err`/`unwrap_err` panic; `OrphanFkcBlock` doesn't exist yet (compile error).
+
+- [ ] **Step 3: Add the error variant** — in `error.rs`, inside the `#[non_exhaustive]` enum:
+
+```rust
+    /// A `` ```fkc `` fenced block appears outside any `## ` section (before the
+    /// first heading, or in a file with no `## ` headings). Such a block is
+    /// silently dropped by section scanning, so the import would succeed while
+    /// adopting nothing — a no-op that looks like success (§3.1).
+    #[error(
+        "FKC §3.1: a ```fkc block (line {line}) is not under a `## ` heading — every kernel block \
+         must belong to a `## ` section (a block outside a section would be silently ignored)"
+    )]
+    OrphanFkcBlock { line: usize },
+```
+
+- [ ] **Step 4: Implement the detector + call it** — in `parse.rs`:
+
+```rust
+/// Detect a `` ```fkc `` opening fence that appears BEFORE the first `## `
+/// heading (or anywhere in a file with no `## ` headings). Such a block is
+/// silently dropped by `split_sections`, yielding an Ok-but-empty import.
+/// Only a `` ```fkc `` opener triggers; a `` ```yaml `` (or other) intro fence
+/// is skipped. Line numbers are 1-based within `body` (same convention as
+/// `split_sections`).
+fn find_orphan_fkc_fence(body: &str) -> Option<usize> {
+    let mut in_fence = false;
+    for (idx, raw) in body.lines().enumerate() {
+        let trimmed = raw.trim_start();
+        if !in_fence && trimmed.starts_with("## ") {
+            return None; // first `## ` reached: the rest belongs to sections
+        }
+        if !in_fence {
+            if trimmed.trim_end() == "```fkc" {
+                return Some(idx + 1);
+            }
+            if trimmed.starts_with("```") {
+                in_fence = true; // some other intro fence — skip its body
+            }
+        } else if trimmed.trim_end() == "```" {
+            in_fence = false;
+        }
+    }
+    None
+}
+```
+
+  In `parse_file`, immediately after `let sections = split_sections(body);` (or right before it), add:
+
+```rust
+    if let Some(line) = find_orphan_fkc_fence(body) {
+        return Err(FkcError::OrphanFkcBlock { line });
+    }
+```
+
+- [ ] **Step 5: Run it to verify it passes** — `cargo test -p fuel-dispatch fkc::parse` then the whole `cargo test -p fuel-dispatch fkc::` to confirm no existing contract/test regressed (the real corpus always puts blocks under `## `, so nothing legitimate should break).
+  Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add fuel-dispatch/src/fkc/error.rs fuel-dispatch/src/fkc/parse.rs
+git commit -m "fix(fkc): reject an orphan ```fkc block outside a `## ` section (was a silent no-op import)"
+```
+
 ---
 
 ## Task Group 1 — Shape-constraint parser + solver (`shape_constraint.rs`)
