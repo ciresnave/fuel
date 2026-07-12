@@ -142,13 +142,23 @@ fn seed_axis(profile: SeedProfile, axis: usize, rank: usize) -> i64 {
     if profile.odd_last && rank > 0 && axis == rank - 1 { 3 } else { profile.base }
 }
 /// First declared dtype, else first `dtype_class` expansion, else F32.
+///
+/// The class -> dtype-list mapping is `lower::expand_dtype_class` (single
+/// source of truth with §3.4's real lowering path); this just takes its
+/// first element as the probe pick. `"any"` expands against an empty
+/// `enumerated` list here (no enumerated dtypes reach this branch — a
+/// non-empty `d.dtypes` returns early above), so it falls through to `None`
+/// -> `F32`, matching the pre-Task-1.5 inline match's behavior.
 fn first_probe_dtype(d: &TensorDesc) -> DType {
     if let Some(tok) = d.dtypes.first() {
         if let Ok(dt) = crate::fkc::lower::lower_dtype(tok, "", "") { return dt; }
     }
     match d.dtype_class.as_deref() {
-        Some("float") => DType::BF16, Some("int") => DType::I8, Some("uint") => DType::U8,
-        _ => DType::F32,
+        Some(class) => crate::fkc::lower::expand_dtype_class(class, &[], "", "")
+            .ok()
+            .and_then(|v| v.first().copied())
+            .unwrap_or(DType::F32),
+        None => DType::F32,
     }
 }
 
@@ -390,6 +400,14 @@ pub fn solve_probe_shapes(inputs: &[TensorDesc], section: &str, warnings: &mut V
             Some(raw) => parse_shape_constraint(raw, section, operand)?,
             None => ShapeConstraint::default(),
         };
+        // Soft diagnostic: a `;`-segment that didn't match any ratified §3.5
+        // keyword parses into `freetext` rather than hard-erroring (prose
+        // notes like "byte length >= 4 (one u32)" are legitimate authoring),
+        // but it should still be visible to the importer rather than
+        // vanishing silently.
+        for seg in &sc.freetext {
+            warnings.push(warn(section, format!("operand `{operand}` shape_constraint free text: {seg}")));
+        }
         let role = d.name.clone().unwrap_or_default();
         let key = d.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("#unnamed{i}"));
         if let Some(name) = d.name.as_deref().filter(|n| !n.is_empty()) {
@@ -399,7 +417,17 @@ pub fn solve_probe_shapes(inputs: &[TensorDesc], section: &str, warnings: &mut V
                 )));
             }
         }
-        let rank = rank_for_probe(resolve_rank_spec_field(d.rank.as_ref()));
+        let rank_spec = resolve_rank_spec_field(d.rank.as_ref());
+        // Soft diagnostic: `rank:` PRESENT but unrecognized (neither a plain
+        // integer, `any`, nor a `lo..`/`lo..=hi` range) silently defaulted to
+        // rank 4 before Task 1.5 — now surfaced so a typo'd `rank:` field
+        // doesn't quietly change probe behavior.
+        if d.rank.is_some() && rank_spec.is_none() {
+            warnings.push(warn(section, format!(
+                "operand `{operand}` rank field is malformed; defaulting to rank 4"
+            )));
+        }
+        let rank = rank_for_probe(rank_spec);
         ranks.insert(key.clone(), rank);
         roles.push(role);
         keys.push(key);
@@ -736,5 +764,48 @@ mod tests {
         let _ = solve_probe_shapes(&[a, b], "s", &mut w).unwrap(); // no panic, Ok
         assert!(w.iter().any(|m| m.message.contains("dup") && m.message.to_lowercase().contains("more than once")),
             "duplicate operand name must be surfaced as a warning: {w:?}");
+    }
+
+    /// Task 1.5: `first_probe_dtype`'s dtype pick (first-declared dtype wins;
+    /// else first `dtype_class` expansion), the ALREADY-SHIPPED (Task 1.3)
+    /// unknown-role warning for `same_as=out` (an output role absent from
+    /// `inputs`), and the NEW free-text soft-diagnostic warning (a `;`-segment
+    /// that parses to `ShapeConstraint::freetext` rather than a ratified atom
+    /// must still surface something to the importer, not vanish silently).
+    #[test]
+    fn dtype_pick_and_soft_fallback_warnings() {
+        use fuel_ir::{DType, Shape};
+        assert_eq!(solve_probe_shapes(&[desc("a", &["BF16", "F16", "F32"], Some(1))], "s", &mut Vec::new()).unwrap()[0][0].2, DType::BF16);
+        let mut c = desc("a", &[], Some(1));
+        c.dtype_class = Some("float".into());
+        assert_eq!(solve_probe_shapes(&[c], "s", &mut Vec::new()).unwrap()[0][0].2, DType::BF16);
+        // same_as=out (output role, absent from inputs) ⇒ seed shape + warning naming `out`
+        let mut r = desc("residual", &["F32"], Some(2));
+        r.shape_constraint = Some("same_as=out".into());
+        let mut w = Vec::new();
+        let combos = solve_probe_shapes(&[r], "norm-softmax", &mut w).unwrap();
+        assert_eq!(combos[0][0].1, Shape::from_dims(&[2, 2]));
+        assert!(w.iter().any(|x| x.message.contains("out")));
+        // pure free-text constraint ⇒ warning, still Ok
+        let mut f = desc("seed", &["U8"], Some(1));
+        f.shape_constraint = Some("byte length >= 4 (one u32)".into());
+        let mut w2 = Vec::new();
+        solve_probe_shapes(&[f], "shape-ops", &mut w2).unwrap();
+        assert!(!w2.is_empty());
+    }
+
+    /// Task 1.5: `rank:` PRESENT but unrecognized (not an integer, not `any`,
+    /// not a `lo..`/`lo..=hi` range) must warn (naming the operand) AND still
+    /// default to rank 4 (the pre-existing silent default in
+    /// `rank_for_probe`, now surfaced) — never a hard error.
+    #[test]
+    fn malformed_rank_field_warns_and_defaults_to_rank_4() {
+        let mut bad = desc("weird", &["F32"], None);
+        bad.rank = Some(serde_yml::Value::String("banana".into()));
+        let mut w = Vec::new();
+        let combos = solve_probe_shapes(&[bad], "s", &mut w).unwrap();
+        assert_eq!(combos[0][0].1.rank(), 4, "malformed rank field still defaults to rank 4");
+        assert!(w.iter().any(|x| x.message.contains("weird") && x.message.to_lowercase().contains("rank")),
+            "malformed rank field must surface a warning naming the operand: {w:?}");
     }
 }
