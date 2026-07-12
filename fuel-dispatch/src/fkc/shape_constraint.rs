@@ -2,7 +2,7 @@
 //!
 //! Structured like `cost_expr.rs`. The `<expr>` grammar inside `dim[i]=<expr>`,
 //! `divisible(...)`, `capacity_ge(...)` reuses `cost_expr::parse_expr`.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::fkc::cost_expr::{parse_expr as parse_cost_expr, CostNode};
 use crate::fkc::error::FkcError;
@@ -217,6 +217,61 @@ fn eval_dim_expr(node: &CostNode, s: &mut Solve, ranks: &HashMap<String, usize>,
 
 fn warn(section: &str, message: String) -> ImportWarning { ImportWarning { section: section.into(), message } }
 
+/// Input SOLVE-KEYS whose dims must resolve before `atoms` can apply. `roles`
+/// is the set of SOLVE-KEYS (Task 1.3), not raw operand names — a named
+/// operand's key IS its name, so `same_as=k` / `role.dim[i]` still match
+/// directly; an unnamed `#unnamed{i}` key is never referenced (nothing can
+/// name it), so it naturally gets no incoming edges.
+fn dep_sources(atoms: &[ShapeAtom], input_roles: &HashSet<String>) -> Vec<String> {
+    fn collect(n: &CostNode, roles: &HashSet<String>, out: &mut Vec<String>) {
+        if let Some((Some(r), _)) = as_dim_ref(n) { if roles.contains(&r) { out.push(r); } }
+        match n {
+            CostNode::Bin { lhs, rhs, .. } => { collect(lhs, roles, out); collect(rhs, roles, out); }
+            CostNode::Neg(i) => collect(i, roles, out),
+            CostNode::Index { base, index } => { collect(base, roles, out); collect(index, roles, out); }
+            CostNode::Call { args, .. } => for a in args { collect(a, roles, out); },
+            _ => {}
+        }
+    }
+    let mut deps = Vec::new();
+    for a in atoms {
+        match a {
+            ShapeAtom::SameAs(r) | ShapeAtom::BroadcastTo(r) | ShapeAtom::LastDimEq(r) if input_roles.contains(r) => deps.push(r.clone()),
+            ShapeAtom::DimEq { expr, .. } => collect(expr, input_roles, &mut deps),
+            ShapeAtom::Divisible { lhs, rhs } => { collect(lhs, input_roles, &mut deps); collect(rhs, input_roles, &mut deps); }
+            _ => {}
+        }
+    }
+    deps
+}
+
+/// Kahn topological order over input SOLVE-KEYS; residual (cyclic) keys get
+/// ONE `cycle` warning and are appended in source order so their atoms still
+/// run best-effort (copying whatever seed/partial value the other cyclic
+/// operand currently holds). Never errors, always terminates: the `while i <
+/// queue.len()` loop only ever advances `i` or grows `queue` with a key not
+/// already queued/emitted, so it's bounded by `order_in.len()`.
+fn topo_order(order_in: &[String], edges: &HashMap<String, Vec<String>>, section: &str, w: &mut Vec<ImportWarning>) -> Vec<String> {
+    let set: HashSet<&String> = order_in.iter().collect();
+    let mut indeg: HashMap<&String, usize> = order_in.iter().map(|r| (r, 0usize)).collect();
+    for (r, deps) in edges { if set.contains(r) { for d in deps { if set.contains(d) { *indeg.get_mut(r).unwrap() += 1; } } } }
+    let mut queue: Vec<&String> = order_in.iter().filter(|r| indeg[r] == 0).collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < queue.len() {
+        let cur = queue[i]; i += 1; out.push(cur.clone());
+        for r in order_in { if let Some(deps) = edges.get(r) {
+            if deps.contains(cur) { let e = indeg.get_mut(r).unwrap(); *e = e.saturating_sub(1); if *e == 0 && !out.contains(r) && !queue.contains(&r) { queue.push(r); } }
+        } }
+    }
+    if out.len() < order_in.len() {
+        let residual: Vec<&String> = order_in.iter().filter(|r| !out.contains(r)).collect();
+        w.push(warn(section, format!("shape_constraint dependency cycle among {residual:?}; using seed shapes")));
+        for r in order_in { if !out.contains(r) { out.push(r.clone()); } }
+    }
+    out
+}
+
 fn set_axis(s: &mut Solve, role: &str, axis: AxisIndex, rank: usize, v: i64) {
     if let Some(idx) = axis_to_index(axis, rank) {
         if let Some(d) = s.dims.get_mut(role) { if idx < d.len() { d[idx] = v.max(1); } }
@@ -279,10 +334,16 @@ fn apply_atom(atom: &ShapeAtom, self_role: &str, s: &mut Solve, ranks: &HashMap<
 /// operand's (already-solved) dims, `dim[i]=<expr>` evaluates an expression
 /// (reusing `cost_expr::CostNode`, including a bare shared symbol like
 /// matmul's `k`), and `divisible(dim[i], v)` rounds an axis UP to a multiple
-/// of `v`. Atoms are applied in SOURCE order (Task 1.4 adds dependency/topo
-/// ordering — deliberately not here). Parses each operand's `shape_constraint`
-/// up front so a malformed-vocabulary segment hard-errors before any probe is
-/// built.
+/// of `v`. Atoms are applied in DEPENDENCY order (Task 1.4): an operand whose
+/// `same_as=k`/`dim[i]` references another operand `k` is applied AFTER `k`,
+/// even if `k` is declared later in `inputs` — a bounded Kahn topo sort over
+/// the Task-1.3 SOLVE-KEYS, computed once (constraints don't vary by
+/// profile). A dependency cycle (`a: same_as=b`, `b: same_as=a`) never
+/// hard-errors: it degrades to ONE `cycle` `ImportWarning` and the cyclic
+/// operands are applied best-effort in source order (each copies whatever
+/// seed/partial value the other currently holds). Parses each operand's
+/// `shape_constraint` up front so a malformed-vocabulary segment hard-errors
+/// before any probe is built.
 pub fn solve_probe_shapes(inputs: &[TensorDesc], section: &str, warnings: &mut Vec<ImportWarning>)
     -> Result<Vec<ProbeCombo>, FkcError>
 {
@@ -319,6 +380,17 @@ pub fn solve_probe_shapes(inputs: &[TensorDesc], section: &str, warnings: &mut V
         parsed.push(sc);
     }
 
+    // Task 1.4: dependency edges + topo order over SOLVE-KEYS. Constraints
+    // are the same across all 3 profiles, so this is computed ONCE — a
+    // cyclic operand set therefore warns exactly once, not once per profile.
+    let key_set: HashSet<String> = keys.iter().cloned().collect();
+    let mut edges: HashMap<String, Vec<String>> = HashMap::with_capacity(keys.len());
+    for (i, key) in keys.iter().enumerate() {
+        edges.insert(key.clone(), dep_sources(&parsed[i].atoms, &key_set));
+    }
+    let topo = topo_order(&keys, &edges, section, warnings);
+    let key_to_idx: HashMap<&String, usize> = keys.iter().enumerate().map(|(i, k)| (k, i)).collect();
+
     let mut combos = Vec::with_capacity(PROFILES.len());
     for profile in PROFILES {
         // 1. Seed every operand's dims into `s.dims`, keyed by its unique SOLVE-KEY.
@@ -328,10 +400,15 @@ pub fn solve_probe_shapes(inputs: &[TensorDesc], section: &str, warnings: &mut V
             let dims: Vec<i64> = (0..rank).map(|a| seed_axis(profile, a, rank)).collect();
             s.dims.insert(key.clone(), dims);
         }
-        // 2. Apply every operand's atoms, in source order (Task 1.4: topo order).
-        for (i, key) in keys.iter().enumerate() {
-            for atom in &parsed[i].atoms {
-                apply_atom(atom, key, &mut s, &ranks, warnings, section);
+        // 2. Apply every operand's atoms, in DEPENDENCY order (Task 1.4): a
+        //    `same_as=k` operand resolves only after `k` does, regardless of
+        //    declaration order; cyclic operands (no valid order) apply
+        //    best-effort in source order (see `topo_order`).
+        for key in &topo {
+            if let Some(&i) = key_to_idx.get(key) {
+                for atom in &parsed[i].atoms {
+                    apply_atom(atom, key, &mut s, &ranks, warnings, section);
+                }
             }
         }
         // 3. Read the solved dims back into Shape, paired with the operand's
@@ -566,5 +643,27 @@ mod tests {
         let combos = solve_probe_shapes(&[a, b], "s", &mut Vec::new()).unwrap();
         assert_eq!(combos[0][0].1.rank(), 2, "first unnamed operand keeps rank 2");
         assert_eq!(combos[0][1].1.rank(), 3, "second unnamed operand keeps rank 3, not aliased to 2");
+    }
+
+    #[test]
+    fn dependency_ordering_resolves_and_cycles_fall_back_with_warning() {
+        use fuel_ir::Shape;
+        // ordering: v depends on k even though v is listed first
+        let mut k = desc("k", &["F32"], Some(2));
+        k.shape_constraint = Some("divisible(dim[0], 8)".into());
+        let mut v = desc("v", &["F32"], Some(2));
+        v.shape_constraint = Some("same_as=k".into());
+        let combos = solve_probe_shapes(&[v, k], "s", &mut Vec::new()).unwrap();
+        assert_eq!(combos[0].iter().find(|(r, _, _)| r == "v").unwrap().1, Shape::from_dims(&[8, 2]));
+        // cycle: no panic, no Err, Ok + a `cycle` warning + seed shapes
+        let mut ca = desc("a", &["F32"], Some(2));
+        ca.shape_constraint = Some("same_as=b".into());
+        let mut cb = desc("b", &["F32"], Some(2));
+        cb.shape_constraint = Some("same_as=a".into());
+        let mut w = Vec::new();
+        let combos = solve_probe_shapes(&[ca, cb], "cyc", &mut w).unwrap();
+        assert_eq!(combos.len(), 3);
+        assert_eq!(combos[0][0].1, Shape::from_dims(&[2, 2]));
+        assert!(w.iter().any(|x| x.message.to_lowercase().contains("cycle")), "warns: {w:?}");
     }
 }
