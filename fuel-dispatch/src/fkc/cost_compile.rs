@@ -22,6 +22,9 @@ pub fn stamp_primitive_cost_expr(p: &ResolvedPrimitive) -> Option<&'static Compi
     if p.cost_fn.is_some() { return None; }
     intern_cost_expr(&p.cost)
 }
+/// Intern a fused op's declared cost AST. Consumed by the fused registration
+/// path starting in Task 2.4 (BackendImpl.cost_expr wiring).
+#[allow(dead_code)] // wired in Task 2.4
 pub fn stamp_fused_cost_expr(f: &ResolvedFused) -> Option<&'static CompiledCostExpr> {
     intern_cost_expr(&f.cost)
 }
