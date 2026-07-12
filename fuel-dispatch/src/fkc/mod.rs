@@ -49,6 +49,7 @@ mod lower;
 mod parse;
 mod precision;
 mod register;
+mod return_check;
 mod revhash;
 mod schema;
 mod shape_constraint;
