@@ -700,8 +700,9 @@ pub struct DecodeSession {
     effective_target: NodeId,
     /// The logits node (pre-D2H-splice) — `effective_target`'s input.
     /// Retained for D3 attribution / debugging; the executor is asked
-    /// for `effective_target`.
-    #[allow(dead_code)]
+    /// for `effective_target`. Also the CapturedRun replay TARGET
+    /// (`CapturedDecodeSession::capture` must be given the pre-splice
+    /// node — see [`Self::logits_node`]'s doc for why).
     logits_node: NodeId,
     /// Stable re-bindable token-ids Const (`[seq]` U32).
     token_ids_node: NodeId,
@@ -869,6 +870,14 @@ impl DecodeSession {
         self.effective_target
     }
 
+    /// The logits node (pre-D2H-splice) — `capture_decode` hard-rejects
+    /// any `Op::Copy`/`Move` in the captured graph (cross-device, not
+    /// single-device-CUDA-capturable), so [`fuel_dispatch::pipelined::
+    /// CapturedDecodeSession::capture`] must target THIS node, not
+    /// [`Self::effective_target`] (the spliced D2H `Op::Copy` root).
+    /// The D2H happens OUTSIDE the capture, after `replay_token` returns
+    /// the device-resident output Arc.
+    pub fn logits_node(&self) -> NodeId { self.logits_node }
     pub fn token_ids_node(&self) -> NodeId { self.token_ids_node }
     pub fn rope_cos_node(&self) -> NodeId { self.rope_cos_node }
     pub fn rope_sin_node(&self) -> NodeId { self.rope_sin_node }
@@ -904,6 +913,18 @@ impl DecodeSession {
     /// sneaking a `cached_len`-dependent shape back in).
     pub fn graph_node_count(&self) -> usize {
         self.graph.read().map(|g| g.len()).unwrap_or(0)
+    }
+
+    /// The full realized [`StorageCache`] from the first realize (every
+    /// weight Const + the KV Arcs + the initial per-token data Consts).
+    /// The CapturedRun capture-building step clones this cheaply
+    /// (Arc-clones only, see [`InferenceContext::cloned_persistent`]'s
+    /// exact pattern) and overwrites the per-token entries with fresh
+    /// FIXED-address Arcs before handing the merged cache to
+    /// [`fuel_dispatch::pipelined::CapturedDecodeSession::capture`] as
+    /// `inputs`.
+    pub fn base_cache(&self) -> &StorageCache {
+        &self.base_cache
     }
 }
 

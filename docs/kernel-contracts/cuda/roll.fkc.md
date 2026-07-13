@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "cyclic shift along the roll axis; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda roll_kernel (baracuda_elementwise.cuh): grid-stride loop, one thread per output element, no atomics/shared memory/cross-thread reduction; pure index-remap copy y[off_y]=x[off_x] (in_c via deterministic modular arithmetic on shift) with no floating-point arithmetic at all; strided sibling reuses the identical launch_roll launcher. Deterministic given the same inputs + launch config."
 
 determinism: same_hardware_bitwise
 ```

@@ -17,7 +17,12 @@ each per-operand five-flag layout projects onto
 `KernelCaps.strided_input = (strided==accepted) && (broadcast_stride0==accepted)` (AND-ed across
 operands) - byte-for-byte the deleted hand-written `register_with_caps(..., strided)` regs. Cost is
 `judge_measured` (the fill_unset pass upgrades the imported unknown_cost sentinel to the shared
-per-OpKind CUDA cost fn); precision is the author-declared `audited: false` -> UNAUDITED seed.
+per-OpKind CUDA cost fn); precision is audited (2026-07-11 precision-audit program, inplace-unary
+family): all 21 kernels reasoned from their baracuda `.cu` source (the shared
+`unary_pointwise_contig_kernel` grid-stride template — one thread per output element, pure
+per-element math, no atomics/shared-memory/cross-thread state) — `bit_stable_on_same_hardware: true`,
+`audited: true`. `max_ulp`/`max_relative`/`max_absolute` remain unclaimed (`~`) pending numerical-
+accuracy evidence, which is a separate question from bit-stability.
 
 
 ---
@@ -70,8 +75,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=relu(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_relu_propagating_fp.cu ReluPropagatingFunctor via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone (branch-on-value, no atomics/shared-mem/cross-thread state); same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -126,8 +131,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=silu(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_silu_fp.cu SiluFunctor via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone (branch-on-value only, no atomics/shared-mem/cross-thread state); same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -182,8 +187,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=gelu(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_gelu_tanh_fp.cu GeluTanhFunctor (Fuel's GeluInplace binds the tanh-approx stem, not erf) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -238,8 +243,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=tanh(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_tanh_fp.cu TanhFunctor (plain tanhf/tanh intrinsic call) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -294,8 +299,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=sigmoid(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_sigmoid_fp.cu SigmoidFunctor via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone (branch-on-value only, no atomics/shared-mem/cross-thread state); same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -350,8 +355,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=neg(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_neg_fp.cu NegFunctor (`return -x`, generic template covers all 4 dtypes) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -406,8 +411,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=abs(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_abs_fp.cu AbsFunctor (fabsf/fabs/__habs intrinsics) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -462,8 +467,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=sqr(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_square_fp.cu SquareFunctor (`return x * x`, generic template covers all 4 dtypes) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run, bound via unary_square_* stems). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -518,8 +523,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=sqrt(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_sqrt_fp.cu SqrtFunctor (sqrtf/sqrt intrinsic call) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -574,8 +579,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=rsqrt(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_rsqrt_fp.cu RsqrtFunctor (rsqrtf intrinsic / 1.0/sqrt(x) for f64) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -630,8 +635,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=recip(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_reciprocal_fp.cu ReciprocalFunctor (`1/x` per-dtype) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run, bound via unary_reciprocal_* stems). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -686,8 +691,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=exp(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_exp_fp.cu ExpFunctor (expf/exp intrinsic call) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -742,8 +747,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=log(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_log_fp.cu LogFunctor (logf/log intrinsic call) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -798,8 +803,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=sin(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_sin_fp.cu SinFunctor (sinf/sin intrinsic call) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -854,8 +859,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=cos(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_cos_fp.cu CosFunctor (cosf/cos intrinsic call) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -910,8 +915,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=sign(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_sign_fp.cu SignFunctor (`(x>0)?1:(x<0)?-1:0` per-dtype, __hgt/__hlt for f16/bf16) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone (branch-on-value only), no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -966,8 +971,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=floor(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_floor_fp.cu FloorFunctor (floorf/floor intrinsic call) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1022,8 +1027,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=ceil(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_ceil_fp.cu CeilFunctor (ceilf/ceil intrinsic call) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1078,8 +1083,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=round(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_round_fp.cu RoundFunctor (rintf/rint — round-half-to-even, matching Fuel's RoundElementwise contract) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1134,8 +1139,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=erf(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_erf_fp.cu ErfFunctor (erff/erf intrinsic call, plain Gauss error function not a gelu flavor) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -1190,8 +1195,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=gelu_erf(x[i]) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda unary_gelu_erf_fp.cu GeluErfFunctor (`0.5*x*(1+erf(x/sqrt2))`) via the shared unary_pointwise_contig_kernel grid-stride template — each thread computes y[i]=op(x[i]) independently from x[i] alone, no atomics/shared-mem/cross-thread state; same-pointer in-place dispatch is safe since each thread reads x[i] before writing y[i] (fuel-cuda-backend unary_inplace_run). Bit-stable same hardware."
 
 determinism: same_hardware_bitwise
 ```

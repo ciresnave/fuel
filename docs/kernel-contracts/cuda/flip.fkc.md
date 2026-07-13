@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "reverse along the flip axis; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda flip_kernel (baracuda_elementwise.cuh): grid-stride loop, one thread per output element, no atomics/shared memory/cross-thread reduction; pure index-remap copy y[off_y]=x[off_x] with no floating-point arithmetic at all; strided sibling reuses the identical launch_flip launcher. Deterministic given the same inputs + launch config."
 
 determinism: same_hardware_bitwise
 ```

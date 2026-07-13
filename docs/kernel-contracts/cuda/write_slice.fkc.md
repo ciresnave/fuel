@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out=dest with the src slab written at ranges (in place); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source (baracuda_write_slice.cuh write_slice_byte_kernel, baracuda-kernels-sys/kernels/shape_layout/write_slice.cu): one thread per source element, no atomics, no shared memory, no cross-thread reduction; each thread computes its own dest_off via a pure coordinate-shift (bijective source->dest mapping, no write collisions) and does a single memcpy-style store. Pure byte copy, no floating-point arithmetic at all, so bit-identical output for bit-identical inputs on repeat calls follows directly from the launch config being a deterministic function of source_numel."
 
 determinism: same_hardware_bitwise
 ```

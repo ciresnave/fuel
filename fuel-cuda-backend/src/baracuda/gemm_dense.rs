@@ -379,3 +379,235 @@ gemm_dense_matmul!(matmul_f32,  sys::baracuda_kernels_gemm_dense_f32_run,  f32, 
 gemm_dense_matmul!(matmul_f64,  sys::baracuda_kernels_gemm_dense_f64_run,  f64, 8, "gemm_dense_f64");
 gemm_dense_matmul!(matmul_f16,  sys::baracuda_kernels_gemm_dense_f16_run,  f32, 2, "gemm_dense_f16");
 gemm_dense_matmul!(matmul_bf16, sys::baracuda_kernels_gemm_dense_bf16_run, f32, 2, "gemm_dense_bf16");
+
+// =============================================================================
+// cuBLAS same-hardware determinism audit (task-cublas-audit, 2026-07-10/11)
+// =============================================================================
+//
+// Empirical Part 3 of the audit documented in
+// `.superpowers/sdd/task-cublas-audit-report.md`: does `matmul_f32`
+// (`cublasGemmEx` / `cublasGemmStridedBatchedEx` under
+// `CUBLAS_GEMM_DEFAULT`, IEEE binary32 compute, via baracuda's pooled
+// cuBLAS handle) produce bit-identical output for bit-identical input
+// across (a) ≥100 repeat calls, (b) concurrent GPU load on a SEPARATE
+// CUDA context/stream, and (c) fresh process restarts (a golden file
+// on disk carries the expected bytes across `cargo test` invocations)?
+//
+// Shapes mirror `fuel-core`'s
+// `forward_with_kv_context_captured_matches_persistent` fixture
+// (`LlamaConfig { dim: 128, n_heads: 4, n_kv_heads: 2, head_dim: 32,
+// ffn_dim: 512, vocab_size: 512 }`) at a real decode step (`seq == 1`,
+// so `M == 1` — a GEMV-shaped `cublasGemmEx` launch): Q/O projection
+// (`dim -> dim`), K/V projection (`dim -> kv_dim`, GQA-narrow), FFN
+// up-proj (`dim -> ffn_dim`) and down-proj (`ffn_dim -> dim`), plus a
+// batched attention-score-shaped launch (`batch == n_heads`) to
+// exercise `cublasGemmStridedBatchedEx` too.
+#[cfg(test)]
+mod determinism_audit {
+    use super::*;
+    use crate::CudaDevice;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    fn dev_or_skip() -> Option<CudaDevice> {
+        match CudaDevice::new(0) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                None
+            }
+        }
+    }
+
+    /// Deterministic pseudo-random `f32` fill (fixed seed, xorshift64* —
+    /// no external RNG dependency, no reliance on host time/entropy).
+    /// MUST produce the exact same bytes on every process invocation:
+    /// the cross-process golden-file check below depends on identical
+    /// inputs, not just identical code.
+    fn fill_deterministic(len: usize, seed: u64) -> Vec<f32> {
+        let mut state = seed ^ 0x9E37_79B9_7F4A_7C15;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                // Map top 53 bits to [-1.0, 1.0); avoids the degenerate
+                // all-zero / all-equal inputs that could mask real
+                // nondeterminism behind trivial arithmetic.
+                (((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0) as f32
+            })
+            .collect()
+    }
+
+    fn to_bytes(v: &[f32]) -> Vec<u8> {
+        v.iter().flat_map(|f| f.to_le_bytes()).collect()
+    }
+
+    struct Shape {
+        label: &'static str,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
+    }
+
+    /// Real decode-graph matmul shapes (see module comment) plus one
+    /// batched shape to exercise `cublasGemmStridedBatchedEx`.
+    const SHAPES: &[Shape] = &[
+        Shape { label: "qkv_o_proj_dim128_gemv", batch: 1, m: 1, k: 128, n: 128 },
+        Shape { label: "kv_proj_narrow_gqa",     batch: 1, m: 1, k: 128, n: 64 },
+        Shape { label: "ffn_up_512",             batch: 1, m: 1, k: 128, n: 512 },
+        Shape { label: "ffn_down_512",           batch: 1, m: 1, k: 512, n: 128 },
+        Shape { label: "attn_scores_batched4",   batch: 4, m: 1, k: 32, n: 16 },
+    ];
+
+    /// Run one `matmul_f32` call for `shape` against fixed `lhs`/`rhs`
+    /// device buffers and read the result back to host bytes.
+    fn run_once(shape: &Shape, lhs: &CudaStorageBytes, rhs: &CudaStorageBytes) -> Vec<u8> {
+        let lhs_batch_dims = vec![shape.batch];
+        let rhs_batch_dims = vec![shape.batch];
+        let out = matmul_f32(lhs, rhs, &lhs_batch_dims, &rhs_batch_dims, shape.m, shape.n, shape.k)
+            .expect("matmul_f32 launch");
+        out.to_cpu_bytes().expect("to_cpu_bytes (device-synchronizing D2H)")
+    }
+
+    /// Part 3.1 + 3.3: repeat-call bit-exactness (≥100 calls per shape)
+    /// AND cross-process agreement (a golden file on disk is written on
+    /// the first process to reach this shape and compared against on
+    /// every subsequent process — run this test as 2-3 SEPARATE `cargo
+    /// test` invocations to exercise the cross-process leg; a single
+    /// invocation only exercises the repeat-call leg).
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    fn repeat_call_bit_exact_and_cross_process() {
+        const ITERS: usize = 150;
+        let Some(dev) = dev_or_skip() else { return };
+
+        for shape in SHAPES {
+            let lhs_data = fill_deterministic(shape.batch * shape.m * shape.k, 0xC0FFEE ^ shape.n as u64);
+            let rhs_data = fill_deterministic(shape.batch * shape.k * shape.n, 0xFACADE ^ shape.k as u64);
+            let lhs = CudaStorageBytes::from_cpu_bytes(&dev, &to_bytes(&lhs_data)).expect("lhs upload");
+            let rhs = CudaStorageBytes::from_cpu_bytes(&dev, &to_bytes(&rhs_data)).expect("rhs upload");
+
+            let first = run_once(shape, &lhs, &rhs);
+            for i in 1..ITERS {
+                let got = run_once(shape, &lhs, &rhs);
+                assert_eq!(
+                    got, first,
+                    "cuBLAS determinism audit FAILED: shape={} iteration={} diverged from \
+                     iteration 0 (repeat-call, same process, single stream)",
+                    shape.label, i,
+                );
+            }
+            eprintln!(
+                "[determinism_audit] shape={} : {ITERS} repeat calls bit-identical (in-process)",
+                shape.label
+            );
+
+            // Cross-process leg: compare against (or seed) a golden file.
+            let golden_path = std::env::temp_dir()
+                .join(format!("fuel_cublas_audit_golden_{}.bin", shape.label));
+            if golden_path.exists() {
+                let golden = std::fs::read(&golden_path).expect("read golden file");
+                assert_eq!(
+                    golden, first,
+                    "cuBLAS determinism audit FAILED: shape={} result differs from a PRIOR \
+                     process's golden output (fresh cuBLAS handle / context) at {}",
+                    shape.label,
+                    golden_path.display(),
+                );
+                eprintln!(
+                    "[determinism_audit] shape={} : matches prior-process golden at {}",
+                    shape.label,
+                    golden_path.display()
+                );
+            } else {
+                std::fs::write(&golden_path, &first).expect("write golden file");
+                eprintln!(
+                    "[determinism_audit] shape={} : wrote golden file at {} (first process to run)",
+                    shape.label,
+                    golden_path.display()
+                );
+            }
+        }
+    }
+
+    /// Part 3.2: repeat-call bit-exactness while a SEPARATE CUDA
+    /// context/stream (a second `CudaDevice::new(0)` — baracuda's
+    /// gemm_dense facade pools cuBLAS handles keyed by context, so this
+    /// genuinely exercises a second, concurrently-active stream, not
+    /// just a second thread serialized behind the same stream) hammers
+    /// the GPU with its own GEMM launches in a tight loop. This is
+    /// exactly the condition NVIDIA's cuBLAS docs flag as the one where
+    /// the same-hardware bit-reproducibility guarantee "no longer
+    /// holds" (multiple concurrent streams).
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    fn repeat_call_bit_exact_under_concurrent_stream_load() {
+        const ITERS: usize = 150;
+        let Some(dev) = dev_or_skip() else { return };
+
+        // Background "noisy neighbor": its own context + stream, its
+        // own cuBLAS handle (pooled per-context), hammering a
+        // deliberately-different, larger GEMM shape continuously.
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_bg = stop.clone();
+        let bg_handle = std::thread::spawn(move || {
+            let Some(bg_dev) = dev_or_skip() else { return 0usize };
+            let bg_shape = Shape { label: "bg_noise", batch: 1, m: 64, k: 512, n: 512 };
+            let lhs_data = fill_deterministic(bg_shape.m * bg_shape.k, 0x1234_5678);
+            let rhs_data = fill_deterministic(bg_shape.k * bg_shape.n, 0x8765_4321);
+            let lhs = CudaStorageBytes::from_cpu_bytes(&bg_dev, &to_bytes(&lhs_data)).expect("bg lhs upload");
+            let rhs = CudaStorageBytes::from_cpu_bytes(&bg_dev, &to_bytes(&rhs_data)).expect("bg rhs upload");
+            let mut count = 0usize;
+            while !stop_bg.load(Ordering::Relaxed) {
+                let _ = run_once(&bg_shape, &lhs, &rhs);
+                count += 1;
+            }
+            count
+        });
+
+        // Give the background thread a moment to actually start
+        // launching before we begin the measured loop, so the
+        // concurrent-stream window covers the whole measured run, not
+        // just the tail of it.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        for shape in SHAPES {
+            let lhs_data = fill_deterministic(shape.batch * shape.m * shape.k, 0x5EED_0001 ^ shape.n as u64);
+            let rhs_data = fill_deterministic(shape.batch * shape.k * shape.n, 0x5EED_0002 ^ shape.k as u64);
+            let lhs = CudaStorageBytes::from_cpu_bytes(&dev, &to_bytes(&lhs_data)).expect("lhs upload");
+            let rhs = CudaStorageBytes::from_cpu_bytes(&dev, &to_bytes(&rhs_data)).expect("rhs upload");
+
+            let first = run_once(shape, &lhs, &rhs);
+            for i in 1..ITERS {
+                let got = run_once(shape, &lhs, &rhs);
+                assert_eq!(
+                    got, first,
+                    "cuBLAS determinism audit FAILED under concurrent GPU load: shape={} \
+                     iteration={} diverged from iteration 0 while a second context/stream was \
+                     concurrently launching GEMMs",
+                    shape.label, i,
+                );
+            }
+            eprintln!(
+                "[determinism_audit] shape={} : {ITERS} repeat calls bit-identical UNDER \
+                 concurrent cross-stream GPU load",
+                shape.label
+            );
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        let bg_count = bg_handle.join().expect("bg thread join");
+        eprintln!(
+            "[determinism_audit] background noisy-neighbor thread completed {bg_count} GEMM \
+             launches on a separate context/stream during the measured window"
+        );
+        assert!(
+            bg_count > 0,
+            "background concurrent-load thread never got to launch a single GEMM — the \
+             concurrent-load leg of this test did not actually exercise concurrency; treat \
+             a pass here as inconclusive, not confirmatory"
+        );
+    }
+}

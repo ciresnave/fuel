@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "apply RoPE rotation; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda_attention.cuh rope_fp_kernel: grid-stride loop, one thread per output element, reads only its own rotation-pair partner from x (never another thread's write), computes theta via __powf/__cosf/__sinf fast-math intrinsics (per-input-deterministic, same hardware) and writes exactly one output slot. No atomics, no __shared__, no cross-thread synchronization anywhere in the kernel. Bit-identical for bit-identical inputs on the same hardware."
 
 determinism: same_hardware_bitwise
 ```

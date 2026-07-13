@@ -1021,9 +1021,21 @@ pub mod powi_inplace {
 // picker / Judge will tend to prefer the PTX 1-launch path for N > 2
 // in practice; baracuda still wins on N == 2 where there's no
 // launch-count tax.
+//
+// CapturedRun executor build-out (4b-γ): N==2 takes a WRITE-INTO path
+// (`$baracuda_into_fn` — no allocation, correct in Record/Reuse/None
+// executor modes per `op_kind_is_capture_writeinto`'s doc comment). N>2
+// PRESERVES the original allocate-and-replace behavior byte-for-byte
+// (this wrapper also serves ordinary, non-capture N-ary realize calls
+// elsewhere in the codebase) — it still allocates internally for its N-2
+// intermediates, then D2D-copies the chain's result into `outputs[0]` so
+// the output Arc's IDENTITY is preserved (only its contents change) rather
+// than replaced. `capture_decode`'s validation loop rejects N>2 Concat
+// before Reuse mode is ever entered, so this N>2 path — despite still
+// allocating — can never run mid-capture.
 
 macro_rules! cuda_concat_baracuda_wrapper {
-    ($wrapper_name:ident, $baracuda_fn:path $(,)?) => {
+    ($wrapper_name:ident, $baracuda_fn:path, $baracuda_into_fn:path $(,)?) => {
         pub fn $wrapper_name(
             inputs: &[Arc<RwLock<Storage>>],
             outputs: &mut [Arc<RwLock<Storage>>],
@@ -1080,14 +1092,29 @@ macro_rules! cuda_concat_baracuda_wrapper {
             for g in &in_guards {
                 in_cudas.push(cuda_input(g)?);
             }
-            let mut out_guard = write_storage(&outputs[0])?;
-            let result = $baracuda_fn(
-                &in_cudas, input_layouts, axis,
-                outer_count, &input_dim_sizes, inner_count,
-            )?;
-            let out_cuda = cuda_output(&mut out_guard)?;
-            *out_cuda = result;
-            Ok(())
+            if in_cudas.len() == 2 {
+                // Write-into path (CapturedRun-safe): write directly into
+                // outputs[0], no allocation.
+                let mut out_guard = write_storage(&outputs[0])?;
+                let out_cuda = cuda_output(&mut out_guard)?;
+                $baracuda_into_fn(
+                    &in_cudas, input_layouts, axis,
+                    outer_count, &input_dim_sizes, inner_count,
+                    out_cuda,
+                )
+            } else {
+                // N>2: unchanged allocate-and-replace behavior (this
+                // wrapper also serves ordinary N-ary realize calls outside
+                // any capture scope) — D2D-copy the chain's result into
+                // outputs[0] so its Arc identity is preserved.
+                let result = $baracuda_fn(
+                    &in_cudas, input_layouts, axis,
+                    outer_count, &input_dim_sizes, inner_count,
+                )?;
+                let mut out_guard = write_storage(&outputs[0])?;
+                let out_cuda = cuda_output(&mut out_guard)?;
+                out_cuda.copy_from_device(&result)
+            }
         }
     };
 }
@@ -1096,10 +1123,10 @@ pub mod concat {
     use super::*;
     use fuel_cuda_backend::baracuda::concat as bk;
 
-    cuda_concat_baracuda_wrapper!(concat_f32, bk::concat_f32);
-    cuda_concat_baracuda_wrapper!(concat_f64, bk::concat_f64);
-    cuda_concat_baracuda_wrapper!(concat_f16, bk::concat_f16);
-    cuda_concat_baracuda_wrapper!(concat_bf16, bk::concat_bf16);
+    cuda_concat_baracuda_wrapper!(concat_f32, bk::concat_f32, bk::concat_f32_into);
+    cuda_concat_baracuda_wrapper!(concat_f64, bk::concat_f64, bk::concat_f64_into);
+    cuda_concat_baracuda_wrapper!(concat_f16, bk::concat_f16, bk::concat_f16_into);
+    cuda_concat_baracuda_wrapper!(concat_bf16, bk::concat_bf16, bk::concat_bf16_into);
 }
 
 // ===========================================================================

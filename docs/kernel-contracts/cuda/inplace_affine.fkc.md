@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=mul*x[i]+add in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Reasoned from source: baracuda_random.cuh affine_inplace_kernel<T>/_strided_kernel<T> (instantiated in random_bernoulli.cu) is a grid-stride loop, one thread per output element, single read-modify-write per element (y[i] = scale*y[i]+offset), no atomics, no shared memory, no cross-thread accumulation; launch config (blocks/threads) is a pure function of numel, not data-dependent. Fuel's fuel-cuda-backend::baracuda::affine::affine_inplace_kernel! macro calls this FFI symbol directly with no added nondeterminism."
 
 determinism: same_hardware_bitwise
 ```

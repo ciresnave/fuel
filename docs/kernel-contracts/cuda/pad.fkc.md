@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out=pad(in, padding, mode); author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/include/baracuda_elementwise.cuh pad_{constant,reflect,replicate,circular}_kernel: one grid-stride thread per output cell, single index computation + single read (or constant-value write) + single write, no atomics/shared memory/cross-thread reduction; deterministic given identical inputs and launch config. Covers all four Pad modes Fuel emits (Constant/Reflect/Replicate/Circular)."
 
 determinism: same_hardware_bitwise
 ```

@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "softmax over the last dim; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda_softmax.cuh launch_softmax_fp dispatches between softmax_fp_kernel (legacy: one thread per output cell, two sequential fixed-order passes — row max then sum-of-exp, no cross-thread state) and softmax_smem_kernel (SMEM fast path: block_reduce_max_f32/block_reduce_sum_f32, a fixed warp-shuffle butterfly + cross-warp SMEM tree reduction, no atomics). Eligibility between the two paths (contig last axis, contig outer stride, SMEM budget) is a pure function of rank/shape/stride/dtype, not a runtime occupancy heuristic, so a fixed input shape always selects the same path. Neither path contains atomicAdd/atomicMax/atomicCAS (grepped the whole file: zero hits). Bit-identical for bit-identical inputs on the same hardware."
 
 determinism: same_hardware_bitwise
 ```
@@ -126,8 +126,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "log-softmax over the last dim; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Same structure and eligibility-dispatch pattern as softmax (baracuda_softmax.cuh launch_log_softmax_fp): log_softmax_fp_kernel (legacy, per-thread two-pass max+sum, no cross-thread state) vs log_softmax_smem_kernel (block_reduce_max_f32/block_reduce_sum_f32, fixed warp-shuffle + cross-warp SMEM reduction, no atomics), path choice a pure function of shape/stride/dtype. Zero atomics anywhere in the file. Bit-identical for bit-identical inputs on the same hardware."
 
 determinism: same_hardware_bitwise
 ```
