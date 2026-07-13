@@ -23,17 +23,32 @@
 //!   stub for the `accept` block's declared combos (full cross-check against
 //!   Group 3's return-rule interpreter is Task 4.6).
 //!
-//! NOT yet implemented (later tasks in the same program — 4.5/4.6 per
+//! ## Status — Task 4.5 (this slice)
+//!
+//! Adds the real CPU [`invoker_cpu::CpuInvoker`] — it drives an actual
+//! registered `BindingEntry::kernel` fn-pointer against host-resident
+//! bytes (no fake), the first invoker that can produce a genuine empirical
+//! result. Also adds `#[cfg(feature = "cuda")]` /
+//! `#[cfg(feature = "vulkan")]` device-invoker scaffolds
+//! ([`invoker_cuda`] / [`invoker_vulkan`]) that upload/download bytes to
+//! the respective device storage; their live-hardware tests are
+//! `#[ignore]`'d (no device in this build environment to verify against).
+//!
+//! NOT yet implemented (later tasks in the same program — 4.6 per
 //! `docs/session-prompts/` — extend this file's `mod` list when they land):
-//! the real CPU/CUDA/Vulkan kernel invokers that call actual device kernels
-//! and produce ledger entries; the full accept-coverage cross-check; and
-//! wiring `gate_precision` into the actual import path (it ships as pure
-//! logic only, not yet called from anywhere).
+//! the full accept-coverage cross-check; and wiring `gate_precision` into
+//! the actual import path (it ships as pure logic only, not yet called
+//! from anywhere).
 
 mod accept_coverage;
 mod bit_stability;
 mod ledger;
 mod ulp;
+mod invoker_cpu;
+#[cfg(feature = "cuda")]
+mod invoker_cuda;
+#[cfg(feature = "vulkan")]
+mod invoker_vulkan;
 
 pub use accept_coverage::verify_accept_coverage;
 pub use bit_stability::{
@@ -42,6 +57,11 @@ pub use bit_stability::{
 };
 pub use ledger::{gate_precision, LedgerQuery, LedgerRecord, VerificationLedger};
 pub use ulp::{verify_precision_bound, Bound};
+pub use invoker_cpu::CpuInvoker;
+#[cfg(feature = "cuda")]
+pub use invoker_cuda::CudaInvoker;
+#[cfg(feature = "vulkan")]
+pub use invoker_vulkan::VulkanInvoker;
 
 /// The embedded (compile-time) verification ledger. Thin wrapper so callers
 /// outside this module can reach it as `verify::embedded()` without
