@@ -39,12 +39,16 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 # FKC kernel-contract importer deps. FKC is unconditional core infrastructure
 # (the CPU elementwise-binary family registers from its contract in
-# `register_cpu_kernels`), so serde / serde_yml are always compiled — no
-# feature gate.
+# `register_cpu_kernels`), so serde / serde_yml / serde_json are always
+# compiled — no feature gate.
 serde = { workspace = true }
 serde_yml = { workspace = true }
-# Baracuda telemetry emission (default OFF — gated behind the `telemetry` feature).
-serde_json = { workspace = true, optional = true }
+# serde_json is unconditional core infrastructure: the FKC verification ledger
+# (`fkc/verify/ledger.rs`) parses a git-checked-in JSON ledger via `include_str!`
+# at import time in every build (u64 revision hashes exceed 2^53, so f64-based
+# YAML parsing would lose precision — serde_json parses u64 natively). Also used
+# by the (optional) `telemetry` feature's JSONL emission.
+serde_json = { workspace = true }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 fuel-metal-backend = { workspace = true, optional = true }
@@ -59,7 +63,7 @@ tempfile = { workspace = true }
 
 [features]
 # FKC is NOT a feature — it is unconditional core infrastructure. serde /
-# serde_yml are always-on deps and `pub mod fkc` is unconditional. There is
+# serde_yml / serde_json are always-on deps and `pub mod fkc` is unconditional. There is
 # deliberately no `fkc` gate: once a family's hand-written registration is
 # deleted on migration to its contract (the CPU elementwise-binary family
 # already is — see `register_cpu_kernels`), a build without the importer would
@@ -76,7 +80,7 @@ metal = ["dep:fuel-metal-backend", "fuel-memory/metal"]
 # DispatchRecord/MissRecord JSONL. Default OFF; pulls fuel-ir/serde so the
 # ImplId basis tuple (OpKind/DType/BackendId) serializes. (serde itself is now
 # an unconditional dep, so it is no longer listed here.)
-telemetry = ["dep:serde_json", "fuel-ir/serde"]
+telemetry = ["fuel-ir/serde"]
 # JIT-on-request adopt glue (the seam-consumption site): synthesize -> take_kernel
 # -> load kernel (caller-provided CUDA seam) -> adopt_runtime_fused. Pulls the
 # envelope crate + baracuda's OperandDesc (ElementKind). Default OFF.

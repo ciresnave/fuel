@@ -21,9 +21,11 @@
 //!
 //! measured (Judge, Layer-2) › declared (contract, Task-F) › **composed
 //! (this module)** › (never) zero. [`fused_layer1_cost`] is the accessor
-//! that enforces it: a fused op WITH a real `cost:` fn is priced by that
-//! fn unchanged; only the [`fused_unknown_cost`] sentinel derives its cost
-//! from the recipe.
+//! that enforces it: since Task 2.4, a contract-declared `cost_expr` is
+//! checked FIRST and outranks even a real (non-sentinel) `cost:` fn; only
+//! when there's no usable `cost_expr` does the [`fused_unknown_cost`]
+//! sentinel derive its cost from the recipe (composed), falling back to
+//! the plain `cost:` fn otherwise.
 
 use std::collections::HashSet;
 
@@ -60,12 +62,17 @@ pub fn is_fused_cost_sentinel(
 /// The fused-op Layer-1 cost accessor (spec §4 shape A — the sentinel
 /// fallback at the use site).
 ///
-/// - A fused op whose registered `cost` is the [`fused_unknown_cost`]
-///   sentinel gets [`cost_from_decompose`] (composed-from-recipe), never
-///   the zero.
-/// - A fused op WITH a declared/measured cost fn is priced by that fn,
-///   **unchanged** — the default only fires for the sentinel, keeping the
-///   layering measured › declared › composed › (never) zero.
+/// Layering, checked in this order (spec §5: measured › declared ›
+/// composed › (never) zero):
+/// - **declared** — if the contract carries a `cost_expr` (a declared cost
+///   AST, Task 2.4 / §2.3), it is checked FIRST and, when it compiles to an
+///   estimate, wins outright — it can override even a non-sentinel `cost`
+///   fn below.
+/// - **composed** — only once there's no usable `cost_expr`: a fused op
+///   whose registered `cost` is the [`fused_unknown_cost`] sentinel gets
+///   [`cost_from_decompose`] (composed-from-recipe), never the zero.
+/// - **the plain `cost` fn** — otherwise (no `cost_expr`, not the
+///   sentinel), the registered `cost` fn is used unchanged.
 ///
 /// [`fused_unknown_cost`]: crate::fkc::fused_unknown_cost
 pub fn fused_layer1_cost(
@@ -76,6 +83,15 @@ pub fn fused_layer1_cost(
     params: &FusedOpParams,
     caps: &BackendCapabilities,
 ) -> CostEstimate {
+    // FKC gap-closure Task 2.4 (§2.3): a declared cost AST outranks both the
+    // hand-written `cost` fn and the decompose-derived fallback below — it's
+    // the contract's own priced formula, layered above "composed" and below
+    // "measured" (spec §5: measured › declared › composed › never zero).
+    if let Some(expr) = impl_.cost_expr {
+        if let Ok(est) = crate::fkc::cost_compile::fused_cost_estimate(expr, input_shapes, input_dtypes, params) {
+            return est;
+        }
+    }
     if is_fused_cost_sentinel(impl_.cost) {
         cost_from_decompose(id, params, input_shapes, input_dtypes, caps)
     } else {
@@ -349,7 +365,28 @@ mod tests {
             precision: PrecisionGuarantee::UNAUDITED,
             caps: KernelCaps::empty(),
             revision: KernelRevisionHash::UNTRACKED,
+            cost_expr: None,
         }
+    }
+
+    // =====================================================================
+    // FKC gap-closure Task 2.4: a declared cost AST reaches Layer-1 pricing
+    // — not the sentinel/decompose fallback, even when `impl_.cost` IS the
+    // sentinel (as `sentinel_impl()` sets it to be).
+    // =====================================================================
+    #[test]
+    fn fused_declared_cost_reaches_layer1_not_sentinel() {
+        // NOTE (deviation from brief): `BackendCapabilities` has no `Default`
+        // impl in this tree (`#[derive(Debug, Clone)]` only, see
+        // `fuel-ir/src/backend.rs`) — using the module's existing
+        // `cpu_caps()` fixture in its place; the caps value doesn't matter
+        // here since the declared-AST path never reads `caps`.
+        use fuel_graph::registry::{FusedOps, FusedOpParams};
+        let expr = crate::fkc::cost_compile::intern_cost_expr(&crate::fkc::cost_expr::compile_field(Some("n")).unwrap()).unwrap();
+        let impl_ = BackendImpl { cost_expr: Some(expr), ..sentinel_impl() };
+        let caps = cpu_caps();
+        let est = fused_layer1_cost(&impl_, FusedOps::SOFTMAX_LAST_DIM, &[Shape::from_dims(&[8])], &[DType::F32], &FusedOpParams::SoftmaxLastDim, &caps);
+        assert_eq!(est.flops, 8, "declared fused flops = n = 8; not the sentinel/decompose fallback");
     }
 
     // =====================================================================

@@ -149,6 +149,8 @@ pub struct ImportedProvider {
     pub primitives: Vec<ResolvedPrimitive>,
     /// Lowered `fused_op` contracts → the fused registry.
     pub fused: Vec<ResolvedFused>,
+    /// Soft import diagnostics (§3.5 warns, precision downgrades, etc.).
+    pub warnings: Vec<crate::fkc::ImportWarning>,
 }
 
 impl ImportedProvider {
@@ -158,6 +160,7 @@ impl ImportedProvider {
         backend: BackendId,
         kernel_source: &'static str,
         resolved: Vec<Resolved>,
+        warnings: Vec<crate::fkc::ImportWarning>,
     ) -> Self {
         let mut primitives = Vec::new();
         let mut fused = Vec::new();
@@ -173,6 +176,7 @@ impl ImportedProvider {
             kernel_source,
             primitives,
             fused,
+            warnings,
         }
     }
 
@@ -219,6 +223,11 @@ impl ImportedProvider {
             // op/backend default (the Judge-bootstrapped path for every other
             // imported primitive).
             let cost_fn = p.cost_fn.unwrap_or(unknown_cost);
+            // FKC gap-closure Task 2.2 (§2.3): compile the contract's
+            // declared cost AST (if any, and if no pinned `cost_fn` already
+            // wins — see `stamp_primitive_cost_expr`) into the interned
+            // `'static` handle threaded onto the binding below.
+            let cost_expr = crate::fkc::cost_compile::stamp_primitive_cost_expr(p);
             // Structural-miss fallback bit (FKC §4.12): compute genericity
             // ONCE from the retained five-flag `ResolvedLayout` set and stamp
             // it onto the binding so the live dispatch pick site reads a
@@ -240,15 +249,21 @@ impl ImportedProvider {
                 kernel_source,
                 is_generic,
                 p.revision.0,
+                // FKC gap-closure Task 2.2: the compiled cost AST (or `None`
+                // when a pinned `cost_fn` already wins, or the contract
+                // declared no cost expression at all).
+                cost_expr,
             );
         }
 
         // --- Fused ops → FusedKernelRegistry (§2.2) ---
         for f in &self.fused {
-            // [consumer-ahead]: declared cost priors are retained on
-            // Resolved*.cost but not yet wired into a CostFn; the Judge
-            // bootstraps all imported costs for now. A follow-up slice
-            // adds the cost trampoline (plan §2.3 strategy A).
+            // FKC gap-closure Task 2.4 (§2.3): compile the contract's
+            // declared cost AST (if any) into the interned `'static` handle
+            // threaded onto `cost_expr` below. `fused_layer1_cost` prefers
+            // it over both the hand-written `cost` fn (still stamped as the
+            // `fused_unknown_cost` sentinel here) and the decompose-derived
+            // fallback.
             let dtypes: &'static [fuel_ir::DType] = intern_dtypes(&f.dtypes);
             fused.register(
                 f.id,
@@ -260,8 +275,17 @@ impl ImportedProvider {
                     precision: f.precision,
                     caps: f.caps,
                     revision: f.revision,
+                    cost_expr: crate::fkc::cost_compile::stamp_fused_cost_expr(f),
                 },
             );
+            // Finding 5.4 (FKC side, Task 3.6): preserve the contract's
+            // `return.bundle` per-slot names in the side-table, keyed by the
+            // SAME (id, backend, dtypes) tuple just registered above. Empty
+            // for a single-output section (the common case) — skip the
+            // insert rather than recording a vacuous entry.
+            if !f.bundle_slot_names.is_empty() {
+                fused.record_bundle_slot_names(f.id, f.backend, dtypes, &f.bundle_slot_names);
+            }
         }
 
         // --- The duplicate-detection gate, surfaced as a typed error ---
@@ -305,15 +329,57 @@ pub fn import_bundle_str(
     crate::fkc::validate::validate_file(&file)?;
     // `lower_file` then EXCLUDES describe-only sections from the registered set
     // (§3.10): they never become a Resolved* record and are never registered.
-    let resolved = lower_file(&file, link)?;
+    let mut warnings: Vec<crate::fkc::ImportWarning> = Vec::new();
+    let mut resolved = lower_file(&file, link, &mut warnings)?;
     let provider = &file.front_matter.provider;
     let backend = lower_backend_str(&provider.backend)?;
     let kernel_source = intern(&provider.kernel_source);
+
+    // V-FKC-9 (Task 4.3): gate every lowered record's declared precision
+    // against the empirical verification ledger BEFORE it reaches
+    // `from_resolved` / the binding table. Any machine-checkable claim
+    // (bit-stability, ULP, etc.) with no matching `pass` ledger entry for
+    // this exact `(kernel_source, backend, dtypes, kernel_revision_hash)`
+    // collapses to `PrecisionGuarantee::UNAUDITED` plus a warning — an
+    // asserted-but-never-measured claim must not survive import as if it
+    // had been verified. Task 4.5b seeded the embedded ledger with real
+    // empirical `pass` entries for the fused CPU ops flipped to
+    // `audited: true` on 2026-07-03, so THOSE records are honored here
+    // (same revision hash, since `default_kernel_registry()`'s
+    // `register_*_fused_from_contract` helpers stamp `BackendImpl.revision`
+    // from this SAME `ResolvedFused.revision`); a primitive `op_kind`
+    // contract like `add_f32` (never in Task 4.5b's fused-op scope) has no
+    // ledger entry and is downgraded.
+    let ledger = crate::fkc::verify::embedded();
+    for r in &mut resolved {
+        match r {
+            Resolved::Primitive(p) => {
+                let q = crate::fkc::verify::LedgerQuery {
+                    kernel_ref: p.kernel_source.as_str(),
+                    backend: p.backend,
+                    dtypes: p.dtypes.as_slice(),
+                    kernel_revision_hash: p.revision.0,
+                };
+                p.precision = crate::fkc::verify::gate_precision(p.precision, &q, ledger, &mut warnings);
+            }
+            Resolved::Fused(f) => {
+                let q = crate::fkc::verify::LedgerQuery {
+                    kernel_ref: f.kernel_source.as_str(),
+                    backend: f.backend,
+                    dtypes: f.dtypes.as_slice(),
+                    kernel_revision_hash: f.revision.0,
+                };
+                f.precision = crate::fkc::verify::gate_precision(f.precision, &q, ledger, &mut warnings);
+            }
+        }
+    }
+
     Ok(ImportedProvider::from_resolved(
         provider.name.clone(),
         backend,
         kernel_source,
         resolved,
+        warnings,
     ))
 }
 
@@ -397,6 +463,7 @@ pub fn import_glob(
                 // Agreed — fold this file's kernels into the merged provider.
                 acc.primitives.extend(provider.primitives);
                 acc.fused.extend(provider.fused);
+                acc.warnings.extend(provider.warnings);
             }
         }
     }
@@ -723,6 +790,52 @@ mod tests {
             .expect("the FKC-resolved add_f32 kernel executes on real storage");
     }
 
+    // =====================================================================
+    // V-FKC-9 IMPORT-TIME GATE: unverified precision claims are downgraded
+    // =====================================================================
+
+    #[test]
+    fn importing_elementwise_binary_downgrades_add_f32_against_the_ledger() {
+        // The authored elementwise-binary contract declares add_f32
+        // bit_stable_on_same_hardware + a max_ulp bound — but `add_f32` is a
+        // PRIMITIVE `AddElementwise` op_kind contract, not one of the Task
+        // 4.5b-seeded FUSED CPU ops, so the verification ledger has no
+        // passing entry for it at ITS `kernel_revision_hash`. Task 4.3 wires
+        // `gate_precision` into `import_bundle_str` so this import downgrades
+        // it to UNAUDITED and records a warning, rather than trusting an
+        // asserted-but-unverified claim.
+        let link = EntryPointLink::new();
+        let provider = import_bundle_str(ELEMENTWISE_BINARY, &link).expect("imports");
+        let add = provider
+            .primitives
+            .iter()
+            .find(|p| {
+                p.op == OpKind::AddElementwise
+                    && p.dtypes.as_slice() == [DType::F32, DType::F32, DType::F32]
+            })
+            .expect("add_f32 present");
+        assert!(
+            !add.precision.bit_stable_on_same_hardware,
+            "unverified bit_stable claim must be downgraded at import"
+        );
+        assert!(
+            add.precision.max_ulp.is_none(),
+            "unverified ulp bound must be dropped"
+        );
+        assert_eq!(
+            add.precision.notes,
+            crate::fused::PrecisionGuarantee::UNAUDITED.notes
+        );
+        assert!(
+            provider
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("bit_stable_on_same_hardware")),
+            "a downgrade warning was recorded: {:?}",
+            provider.warnings
+        );
+    }
+
     #[test]
     fn cpu_link_registry_binds_elementwise_binary_to_live_kernels() {
         // The CPU backend is the first FKC conformance reference: import its
@@ -937,6 +1050,29 @@ mod tests {
     }
 
     // =====================================================================
+    // §5 RETURN-CONTRACT CROSS-CHECK: a fused contract's declared shape_rule /
+    // dtype_rule must agree with the REAL registered `FusedOpEntry` fn — the
+    // born-red test for Task 3.3 (Finding 5.1).
+    // =====================================================================
+
+    #[test]
+    fn fused_contract_shape_rule_disagreeing_with_registered_fn_is_rejected() {
+        // Real SoftmaxLastDim dtype_rule is passthrough(input0) = F32 at the F32 probe.
+        // Mutate ONLY the first section's declared dtype_rule to fixed(F16): now it
+        // disagrees with the registered fused fn at every probe combo → hard reject.
+        let mutated = FUSED_NORM_SOFTMAX.replacen("dtype_rule: passthrough(x)", "dtype_rule: fixed(F16)", 1);
+        let err = import_bundle_str(&mutated, &crate::fkc::CpuLinkRegistry)
+            .expect_err("a return rule that disagrees with the registered fused fn must be rejected");
+        assert!(matches!(err, FkcError::ShapeRuleMismatch { .. }), "expected ShapeRuleMismatch, got {err:?}");
+    }
+
+    #[test]
+    fn unmutated_fused_corpus_still_imports_after_return_check() {
+        import_bundle_str(FUSED_NORM_SOFTMAX, &crate::fkc::CpuLinkRegistry)
+            .expect("real corpus return rules agree with the registered fused fns");
+    }
+
+    // =====================================================================
     // DUPLICATE: two sections at the same key+pointer → DuplicateKernelRef
     // =====================================================================
 
@@ -1034,6 +1170,27 @@ determinism: same_hardware_bitwise
             matches!(err, FkcError::DuplicateKernelRef(_)),
             "got {err:?}"
         );
+    }
+
+    // =====================================================================
+    // COST COMPILER (§2.3, FKC gap-closure Task 2.2): a contract's declared
+    // `cost.flops` expression must reach `BindingEntry.cost_expr` as a
+    // compiled AST, not be dropped in favor of the `unknown_cost` sentinel.
+    // =====================================================================
+
+    #[test]
+    fn imported_contract_declared_cost_reaches_binding_cost_fn() {
+        let src = "---\nfkc_version: 1\nprovider:\n  name: cost-provider\n  backend: Cpu\n  kernel_source: \"cost-cpu\"\n---\n\n# cost bundle\n\n## add_f32\n\nA.\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\nblurb: \"a\"\nentry_point: \"x::add_f32\"\naccept:\n  inputs:\n    - name: lhs\n      dtypes: [F32]\n      layout: { contiguous: required, strided: rejected }\n    - name: rhs\n      dtypes: [F32]\n      layout: { contiguous: required, strided: rejected }\n  op_params: { variant: None }\nreturn:\n  outputs:\n    - name: out\n      dtype_rule: passthrough(lhs)\ncost:\n  provenance: declared\n  class: cheap_elementwise\n  flops: \"n\"\nprecision:\n  bit_stable_on_same_hardware: true\n  audited: true\ndeterminism: same_hardware_bitwise\n```\n";
+        let provider = import_bundle_str(src, &SameLink).expect("declared-cost contract imports");
+        let mut table = KernelBindingTable::new();
+        let mut fused = FusedKernelRegistry::new();
+        provider.register_into(&mut table, &mut fused).expect("registers");
+        let alts = table.lookup_alternatives(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu);
+        let entry = alts.first().expect("binding present");
+        let expr = entry.cost_expr.expect("declared flops formula reaches the binding as a compiled AST");
+        let est = crate::fkc::cost_estimate(expr, OpKind::AddElementwise, &[fuel_ir::Shape::from_dims(&[4])],
+            &[DType::F32, DType::F32, DType::F32], &crate::kernel::OpParams::None).expect("declared cost evaluates");
+        assert_eq!(est.flops, 4, "flops = n = elem_count([4])");
     }
 
     // =====================================================================
@@ -1453,6 +1610,7 @@ determinism: same_hardware_bitwise
             kernel_source: "portable-cpu".to_string(),
             revision: KernelRevisionHash::UNTRACKED,
             variant: None,
+            bundle_slot_names: Vec::new(),
         };
 
         let provider = ImportedProvider {
@@ -1461,6 +1619,7 @@ determinism: same_hardware_bitwise
             kernel_source: intern("portable-cpu"),
             primitives: Vec::new(),
             fused: vec![f],
+            warnings: Vec::new(),
         };
 
         let mut table = KernelBindingTable::new();
@@ -2047,6 +2206,17 @@ determinism: same_hardware_bitwise
             crate::cost::cost_elementwise_binary_cpu as usize,
             "the pinned cost must NOT have been clobbered by the op-family default",
         );
+
+        // (4) FKC gap-closure Task 2.2: this contract ALSO declares
+        // `flops: "n"` alongside the pinned `cost_fn` — the pinned fn must
+        // win outright, so the binding's declared-AST slot stays None (the
+        // AST does not compete with a contract-pinned CostFn).
+        let alts = table.lookup_alternatives(OpKind::AddElementwise, &key, BackendId::Cpu);
+        let entry = alts.first().expect("binding present");
+        assert!(
+            entry.cost_expr.is_none(),
+            "a pinned cost_fn wins outright; the declared cost AST must not be stamped alongside it",
+        );
     }
 
     #[test]
@@ -2061,5 +2231,25 @@ determinism: same_hardware_bitwise
             matches!(err, FkcError::UnknownCostFn { ref cost_fn, .. } if cost_fn == "no_such_cost_fn"),
             "got {err:?}",
         );
+    }
+
+    // =====================================================================
+    // WARNINGS SINK (Task 0.2): ImportedProvider carries a warnings vec.
+    // =====================================================================
+
+    #[test]
+    fn imported_provider_exposes_warnings_field_defaulting_empty() {
+        // Direct struct construction (not via import) so this stays green across
+        // every later component (component 4's gate will make import-path warnings
+        // non-empty for precision-claiming contracts).
+        let p = ImportedProvider {
+            name: "p".into(),
+            backend: fuel_ir::probe::BackendId::Cpu,
+            kernel_source: "ks",
+            primitives: Vec::new(),
+            fused: Vec::new(),
+            warnings: Vec::new(),
+        };
+        assert!(p.warnings.is_empty());
     }
 }

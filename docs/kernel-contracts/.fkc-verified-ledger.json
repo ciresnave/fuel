@@ -1,0 +1,1416 @@
+[
+  {
+    "kernel_ref": "softmax_last_dim",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 9623966724840598430,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "softmax_last_dim",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 9623966724840598430,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "softmax_last_dim",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 9623966724840598430,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "softmax_last_dim",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 9623966724840598430,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "rms_norm_last_dim",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 184077302377363530,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "rms_norm_last_dim",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 184077302377363530,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "rms_norm_last_dim",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 184077302377363530,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "rms_norm_last_dim",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 184077302377363530,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "layer_norm_last_dim",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 11856884655523372542,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "layer_norm_last_dim",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 11856884655523372542,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "layer_norm_last_dim",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 11856884655523372542,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "layer_norm_last_dim",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 11856884655523372542,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "softmax_last_dim_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 5573739142387070294,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "softmax_last_dim_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 5573739142387070294,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "softmax_last_dim_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 5573739142387070294,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "softmax_last_dim_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 5573739142387070294,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "layer_norm_last_dim_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 2073979531925742051,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "layer_norm_last_dim_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 2073979531925742051,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "layer_norm_last_dim_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 2073979531925742051,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "layer_norm_last_dim_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 2073979531925742051,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "rms_norm_last_dim_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 6947858115612644932,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "rms_norm_last_dim_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 6947858115612644932,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "rms_norm_last_dim_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 6947858115612644932,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "rms_norm_last_dim_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 6947858115612644932,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "reduce_max_to_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 10003881755752150130,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "reduce_max_to_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 10003881755752150130,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "reduce_max_to_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 10003881755752150130,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "reduce_max_to_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 10003881755752150130,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "powi_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 11101176979021714333,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "powi_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 11101176979021714333,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "powi_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 11101176979021714333,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "powi_backward",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 11101176979021714333,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "fused_linear",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 13919906721168361784,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "fused_linear",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 13919906721168361784,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "fused_linear",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 13919906721168361784,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "fused_linear",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 13919906721168361784,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "qmatmul",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "U32",
+      "F32"
+    ],
+    "kernel_revision_hash": 1664908398012441538,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "inplace_affine",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 5178173878144725162,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "inplace_affine",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 5178173878144725162,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "inplace_affine",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 5178173878144725162,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "inplace_affine",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 5178173878144725162,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "fused_softmax_cross_entropy",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "I64",
+      "F32"
+    ],
+    "kernel_revision_hash": 5491275612960085717,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "fused_softmax_cross_entropy",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "I64",
+      "F32"
+    ],
+    "kernel_revision_hash": 5491275612960085717,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "fused_softmax_cross_entropy",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "I64",
+      "F32"
+    ],
+    "kernel_revision_hash": 5491275612960085717,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "fused_softmax_cross_entropy",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "I64",
+      "F32"
+    ],
+    "kernel_revision_hash": 5491275612960085717,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "rope",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 17267427002653231423,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "rope",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 17267427002653231423,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "rope",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 17267427002653231423,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "rope",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 17267427002653231423,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 15824185432062061561,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 15824185432062061561,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 15824185432062061561,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 15824185432062061561,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 15824185432062061561,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 15824185432062061561,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 15824185432062061561,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 15824185432062061561,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv_transpose2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 13980628086975229779,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv_transpose2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 13980628086975229779,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv_transpose2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 13980628086975229779,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv_transpose2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 13980628086975229779,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv_transpose2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 13980628086975229779,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv_transpose2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 13980628086975229779,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv_transpose2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 13980628086975229779,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "conv_transpose2d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 13980628086975229779,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "causal_conv1d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 371965303714832226,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "causal_conv1d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 371965303714832226,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "causal_conv1d",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 371965303714832226,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "causal_conv1d",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 371965303714832226,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "selective_scan",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 16840532650573022252,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "selective_scan",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64",
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 16840532650573022252,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "selective_scan",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16",
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 16840532650573022252,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "selective_scan",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16",
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 16840532650573022252,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "ssd_chunk_scan",
+    "backend": "Cpu",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 15885585335582178719,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "ssd_chunk_scan",
+    "backend": "Cpu",
+    "dtypes": [
+      "F64",
+      "F64",
+      "F64",
+      "F64",
+      "F64",
+      "F64"
+    ],
+    "kernel_revision_hash": 15885585335582178719,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "ssd_chunk_scan",
+    "backend": "Cpu",
+    "dtypes": [
+      "BF16",
+      "BF16",
+      "BF16",
+      "BF16",
+      "BF16",
+      "BF16"
+    ],
+    "kernel_revision_hash": 15885585335582178719,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  },
+  {
+    "kernel_ref": "ssd_chunk_scan",
+    "backend": "Cpu",
+    "dtypes": [
+      "F16",
+      "F16",
+      "F16",
+      "F16",
+      "F16",
+      "F16"
+    ],
+    "kernel_revision_hash": 15885585335582178719,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783902919",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.5b/seed_cpu_ledger",
+      "repeat_calls": 16
+    }
+  }
+]

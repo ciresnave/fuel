@@ -889,6 +889,16 @@ pub struct BindingEntry {
     /// by the Baracuda dispatch-telemetry `ImplId` at the plan pick site so the
     /// `chosen`/`candidates` ids carry a real revision instead of a stamped `0`.
     pub kernel_revision_hash: u64,
+    /// The contract's parsed cost-expression AST (FKC §4.4 / adoption plan
+    /// §2.3), when the kernel came from an FKC-imported contract that
+    /// declares one. `&'static` so the entry stays `Copy` (`CompiledCostExpr`
+    /// derives `Debug`, which is all `&'static T` needs to stay `Copy` /
+    /// `Clone` / `Debug` itself). `None` for every hand-written registration
+    /// (`register`/`register_full*`) — those carry no declared cost AST, only
+    /// a `CostFn` fn-pointer. Only the FKC importer, once it lowers a
+    /// contract's cost block to a live `CostFn` (a later Group-2 task),
+    /// stamps `Some(&CompiledCostExpr)` here.
+    pub cost_expr: Option<&'static crate::fkc::CompiledCostExpr>,
 }
 
 /// The binding table's op key — generalized so **runtime-registered** fused
@@ -1083,6 +1093,7 @@ impl KernelBindingTable {
             kernel_source,
             false,
             crate::fused::KernelRevisionHash::UNTRACKED.0,
+            None,
         );
     }
 
@@ -1109,6 +1120,7 @@ impl KernelBindingTable {
         kernel_source: &'static str,
         is_generic: bool,
         kernel_revision_hash: u64,
+        cost_expr: Option<&'static crate::fkc::CompiledCostExpr>,
     ) {
         let key = (op.into(), SmallVec::from_slice(dtypes), backend);
         let entry = BindingEntry {
@@ -1119,6 +1131,7 @@ impl KernelBindingTable {
             kernel_source,
             is_generic,
             kernel_revision_hash,
+            cost_expr,
         };
         // Append-only (never-panic): distinct `KernelRef`s compose as
         // sibling alternatives at one decision point; the *same*
@@ -1323,6 +1336,29 @@ impl KernelBindingTable {
             alts.iter()
                 .map(move |e| (op, dtypes.as_slice(), *backend, e.precision))
         })
+    }
+
+    /// Iterate `(op, dtypes, backend, &entry)` over every registered
+    /// alternative — one tuple per `BindingEntry`, mirroring
+    /// [`Self::iter_precision`] but yielding the FULL entry (by reference)
+    /// instead of projecting out just the `precision` field. Used by the
+    /// FKC empirical verification harness (Task 4.4+), which needs the
+    /// whole `BindingEntry` (the `kernel` fn pointer to invoke, `caps`,
+    /// `kernel_revision_hash` for ledger keys, ...), not just one field.
+    /// Runtime-fused/JIT entries are filtered out (`static_op()` returns
+    /// `None` for them) — same "static-kernel audit view" as
+    /// `iter_precision`/`iter_cost`.
+    pub fn iter_entries(
+        &self,
+    ) -> impl Iterator<Item = (OpKind, &[DType], BackendId, &BindingEntry)> {
+        self.bindings
+            .iter()
+            .filter_map(|((key, dtypes, backend), alts)| {
+                key.static_op().map(|op| (op, dtypes, backend, alts))
+            })
+            .flat_map(|(op, dtypes, backend, alts)| {
+                alts.iter().map(move |e| (op, dtypes.as_slice(), *backend, e))
+            })
     }
 
     /// Iterate `(op, dtypes, backend, cost_fn)` over every registered
@@ -1644,6 +1680,57 @@ mod tests {
         // Step-9a accounting helpers stay consistent.
         assert_eq!(table.key_count(), 1, "one decision point");
         assert_eq!(table.len(), 2, "two alternatives total");
+    }
+
+    /// FKC gap-closure Task 2.1: hand-written registrations (the
+    /// `register`/`register_full*` family that never touches the FKC
+    /// importer) carry no declared cost-expression AST — `cost_expr`
+    /// defaults to `None`. Only the FKC importer (a later Group-2 task)
+    /// stamps a real `Some(&CompiledCostExpr)`.
+    #[test]
+    fn cost_expr_field_defaults_none_for_hand_written_registration() {
+        use fuel_ir::probe::BackendId;
+        let mut table = KernelBindingTable::new();
+        let dts = [DType::F32, DType::F32, DType::F32];
+        table.register(OpKind::AddElementwise, &dts, BackendId::Cpu, ok_kernel);
+        let alts = table.lookup_alternatives(OpKind::AddElementwise, &dts, BackendId::Cpu);
+        assert_eq!(alts.len(), 1);
+        assert!(alts[0].cost_expr.is_none(), "hand-written registrations carry no declared cost AST");
+    }
+
+    /// Task 4.4: `iter_entries` mirrors `iter_precision`/`iter_cost` —
+    /// yields one `(op, dtypes, backend, &entry)` tuple per registered
+    /// alternative (both siblings at a shared key show up), and filters
+    /// out `RuntimeFused` keys just like the precision/cost audit
+    /// iterators (a "static-kernel audit view").
+    #[test]
+    fn iter_entries_yields_full_entries_and_filters_runtime_fused() {
+        use fuel_ir::probe::BackendId;
+        let mut table = KernelBindingTable::new();
+        let dts = [DType::F32, DType::F32, DType::F32];
+        table.register(OpKind::AddElementwise, &dts, BackendId::Cpu, ok_kernel);
+        table.register(OpKind::AddElementwise, &dts, BackendId::Cpu, ok_kernel_alt);
+        // A runtime-fused key — must be excluded from `iter_entries`.
+        table.register(
+            BindingKey::RuntimeFused(FusedOpId(FusedOpId::RUNTIME_FUSED_BASE)),
+            &dts,
+            BackendId::Cpu,
+            ok_kernel,
+        );
+
+        let entries: Vec<_> = table.iter_entries().collect();
+        assert_eq!(entries.len(), 2, "both AddElementwise alternatives, RuntimeFused excluded");
+        for (op, dtypes, backend, entry) in &entries {
+            assert_eq!(*op, OpKind::AddElementwise);
+            assert_eq!(*dtypes, dts.as_slice());
+            assert_eq!(*backend, BackendId::Cpu);
+            // Full entry is reachable, not just one projected field.
+            let _ = entry.caps;
+            let _ = entry.kernel_revision_hash;
+        }
+        let fns: Vec<usize> = entries.iter().map(|(_, _, _, e)| e.kernel as *const () as usize).collect();
+        assert!(fns.contains(&(ok_kernel as *const () as usize)));
+        assert!(fns.contains(&(ok_kernel_alt as *const () as usize)));
     }
 
     /// Never-panic (option B): registering the same `KernelRef` twice

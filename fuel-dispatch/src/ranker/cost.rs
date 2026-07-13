@@ -244,7 +244,11 @@ pub fn compute_static_costs(
         let Some(caps) = capabilities_for(backend) else {
             continue;
         };
-        let cost = (entry.cost)(shapes, dtypes, &op_params, caps);
+        let cost = match entry.cost_expr {
+            Some(expr) => crate::fkc::cost_estimate(expr, op_kind, shapes, dtypes, &op_params)
+                .unwrap_or_else(|_| (entry.cost)(shapes, dtypes, &op_params, caps)),
+            None => (entry.cost)(shapes, dtypes, &op_params, caps),
+        };
         set.set_static_cost(i, cost);
     }
 
@@ -519,6 +523,146 @@ mod tests {
 
         assert_eq!(set.alternatives()[0].static_cost.flops, 500);
         let _ = make_cost_fn; // silence unused-warning
+    }
+
+    /// Task 2.3: when a binding carries a declared `cost_expr` AST, the
+    /// ranking site prices the cell via [`crate::fkc::cost_estimate`]
+    /// instead of the registered `CostFn`. `entry.cost` is deliberately
+    /// `unknown_cost` (all-zero) here — if the assertion below passes,
+    /// the AST (not the fn pointer) priced the cell.
+    #[test]
+    fn compute_static_costs_prefers_declared_cost_expr() {
+        let expr = crate::fkc::cost_compile::intern_cost_expr(
+            &crate::fkc::cost_expr::compile_field(Some("2 * n")).unwrap(),
+        )
+        .expect("expr interns");
+
+        let mut bindings = KernelBindingTable::new();
+        let dtypes = [DType::F32, DType::F32, DType::F32];
+        bindings.register_full_with_source_generic(
+            OpKind::AddElementwise,
+            &dtypes,
+            BackendId::Cpu,
+            noop_a,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            unknown_cost,
+            "",
+            false,
+            0,
+            Some(expr),
+        );
+
+        let mut set = AlternativeSet::from_candidates(
+            vec![candidate_with_cost(noop_a, CostEstimate::default())],
+        );
+
+        let cpu_caps = caps_for_test(BackendId::Cpu);
+        let lookup: HashMap<BackendId, BackendCapabilities> =
+            [(BackendId::Cpu, cpu_caps)].into_iter().collect();
+
+        compute_static_costs(
+            &mut set,
+            OpKind::AddElementwise,
+            &dtypes,
+            &[Shape::from(vec![3])],
+            &bindings,
+            &|b| lookup.get(&b),
+            None,
+        );
+
+        assert_eq!(
+            set.alternatives()[0].static_cost.flops, 6,
+            "2 * n with n = elem_count([3]) = 3",
+        );
+    }
+
+    /// Sentinel `CostFn` returning a fixed non-zero, non-`unknown_cost`
+    /// flops count — used to discriminate "the fn-pointer fallback fired"
+    /// from both "the AST priced it" (would differ from 42 for any
+    /// realistic shape) and "the code panicked" (a passing assertion here
+    /// proves execution reached and returned from this fn).
+    fn sentinel_cost_42(
+        _s: &[Shape],
+        _d: &[DType],
+        _p: &OpParams,
+        _c: &BackendCapabilities,
+    ) -> CostEstimate {
+        CostEstimate { flops: 42, ..Default::default() }
+    }
+
+    /// Task 2.3 fallback safety property: when `cost_expr` is `Some` but
+    /// evaluating it errors (an undefined symbol — see below), the eval
+    /// site's `.unwrap_or_else(|_| (entry.cost)(...))` must degrade to the
+    /// registered `CostFn` rather than panicking.
+    ///
+    /// `"undefined_symbol_xyz"` is a bare identifier, so `compile_field`
+    /// parses it to `CompiledCostExpr::Expr(CostNode::Sym("undefined_symbol_xyz"))`
+    /// without error — per `cost_expr.rs`'s module doc, "any identifier
+    /// resolves at eval time from the supplied bindings (a missing symbol
+    /// is an eval error, not a parse error)". At eval time,
+    /// `bind_cost_symbols` for a non-`Matmul` op (this test uses
+    /// `AddElementwise`) only ever inserts `"dtype_bytes"` and `"n"`
+    /// (`cost_expr.rs:498-526`) — `"undefined_symbol_xyz"` is in neither,
+    /// so `eval_node`'s `CostNode::Sym` arm (`cost_expr.rs:440-443`) takes
+    /// the `bindings.get(name)` `None` branch and returns
+    /// `Err(CostEvalError("undefined cost symbol \`undefined_symbol_xyz\`"))`.
+    /// That error is exactly what `cost_estimate` (`cost_expr.rs:534-547`)
+    /// propagates up through `crate::fkc::cost_estimate(...)` at the eval
+    /// site, so `.unwrap_or_else` is guaranteed to run its closure here.
+    ///
+    /// Had the eval site instead used `.unwrap()` (the pre-Task-2.3-fix
+    /// shape this test pins against regressing to), this exact test would
+    /// panic — `cost_estimate(...)` returns `Err(..)` here, not `Ok(..)`,
+    /// so `.unwrap()` unwinds instead of falling through to
+    /// `sentinel_cost_42`, and the `flops == 42` assertion would never be
+    /// reached.
+    #[test]
+    fn compute_static_costs_degrades_to_fn_pointer_on_cost_expr_eval_error() {
+        let expr = crate::fkc::cost_compile::intern_cost_expr(
+            &crate::fkc::cost_expr::compile_field(Some("undefined_symbol_xyz")).unwrap(),
+        )
+        .expect("expr interns (a bare Sym node is never CompiledCostExpr::Unknown)");
+
+        let mut bindings = KernelBindingTable::new();
+        let dtypes = [DType::F32, DType::F32, DType::F32];
+        bindings.register_full_with_source_generic(
+            OpKind::AddElementwise,
+            &dtypes,
+            BackendId::Cpu,
+            noop_a,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            sentinel_cost_42,
+            "",
+            false,
+            0,
+            Some(expr),
+        );
+
+        let mut set = AlternativeSet::from_candidates(
+            vec![candidate_with_cost(noop_a, CostEstimate::default())],
+        );
+
+        let cpu_caps = caps_for_test(BackendId::Cpu);
+        let lookup: HashMap<BackendId, BackendCapabilities> =
+            [(BackendId::Cpu, cpu_caps)].into_iter().collect();
+
+        compute_static_costs(
+            &mut set,
+            OpKind::AddElementwise,
+            &dtypes,
+            &[Shape::from(vec![3])],
+            &bindings,
+            &|b| lookup.get(&b),
+            None,
+        );
+
+        assert_eq!(
+            set.alternatives()[0].static_cost.flops, 42,
+            "undefined symbol => cost_estimate errors => .unwrap_or_else falls back \
+             to sentinel_cost_42, never panics",
+        );
     }
 
     #[test]
