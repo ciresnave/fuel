@@ -981,8 +981,8 @@ fn check_bundle_ranks(
         let slot_name = map
             .get(serde_yml::Value::String("name".into()))
             .and_then(|v| v.as_str())
-            .unwrap_or(&format!("slot{i}"))
-            .to_string();
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("slot{i}"));
         // A static `shape:` literal list is rank-checkable.
         if let Some(serde_yml::Value::Sequence(dims)) =
             map.get(serde_yml::Value::String("shape".into()))
