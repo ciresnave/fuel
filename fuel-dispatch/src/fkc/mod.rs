@@ -5,9 +5,8 @@
 //! Fuel's dispatch surface (`KernelBindingTable` / `FusedKernelRegistry`) with
 //! zero hand-written registration glue.
 //!
-//! This module is gated behind the default-off `fkc` cargo feature
-//! (`fuel-dispatch/Cargo.toml`), so plain builds are untouched while the
-//! importer is WIP (kernel-contract adoption plan §1, §11).
+//! This module is unconditional production infrastructure (`pub mod fkc` in
+//! lib.rs, no feature gate; the `fkc` feature was removed in bd757464).
 //!
 //! ## Status — first slice
 //!
@@ -40,7 +39,8 @@
 //! - Authored corpus (valid instances): `docs/kernel-contracts/**/*.fkc.md`.
 
 mod caps_map;
-mod cost_expr;
+pub(crate) mod cost_compile;
+pub(crate) mod cost_expr;
 mod cpu_link;
 #[cfg(feature = "cuda")]
 mod cuda_link;
@@ -49,11 +49,15 @@ mod lower;
 mod parse;
 mod precision;
 mod register;
+mod return_check;
 mod revhash;
 mod schema;
+mod shape_constraint;
 mod validate;
+mod verify;
 #[cfg(feature = "vulkan")]
 mod vulkan_link;
+mod warn;
 
 pub use caps_map::{is_generic_contract, ResolvedLayout, Tri};
 pub use cost_expr::{
@@ -78,12 +82,17 @@ pub use register::{
     fused_unknown_cost, import_bundle, import_bundle_str, import_glob, ImportedProvider,
 };
 pub use revhash::compute_revision;
+pub use shape_constraint::{
+    parse_rank_spec, parse_shape_constraint, solve_probe_shapes, AxisIndex, ProbeCombo, RankSpec,
+    ShapeAtom, ShapeConstraint,
+};
 pub use schema::{
     AcceptBlock, CapsBlock, CostBlock, CostMemory, FdxSpec, FkcFile, FkcFrontMatter, FkcKernel,
     FkcProvider, GatherSpec, LayoutSpec, OpParamFieldSpec, OpParamsSchema, OutputDesc,
     PrecisionBlock, QuantSpec, ReturnBlock, TensorDesc,
 };
 pub use validate::{validate_file, validate_kernel, FKC_VERSION_MAX};
+pub use warn::ImportWarning;
 #[cfg(feature = "cuda")]
 pub use cuda_link::{
     CudaLinkRegistry,
@@ -140,6 +149,19 @@ mod tests {
     /// fdx.quant blocks).
     const QUANT_MATMUL: &str =
         include_str!("../../../docs/kernel-contracts/cpu/quant-matmul.fkc.md");
+    /// `rope-apply.fkc.md` (Task 4.6) — baracuda's `rope_apply_<dt>_run`,
+    /// shipped but never wired into any dispatch path before this task. Its
+    /// `entry_point` names raw baracuda FFI symbols resolved only by a
+    /// harness-local `LinkRegistry` (`fuel-dispatch/src/fkc/verify/
+    /// harness.rs`, `#[cfg(feature = "cuda")]`), so it can only be
+    /// `import_bundle_str`'d for real under `--features cuda`. What CAN run
+    /// here, in the default build: parse + validate + lower against a STUB
+    /// registry (below) that resolves only the four EXACT expected
+    /// symbols — proof the contract is structurally well-formed (dtype-fan,
+    /// entry_point suffixing, per-operand fixed-vs-varying dtypes) without
+    /// touching any real CUDA code.
+    const ROPE_APPLY: &str =
+        include_str!("../../../docs/kernel-contracts/cuda/rope-apply.fkc.md");
 
     // =====================================================================
     // PARSE A REAL CONTRACT — the key correctness test (§3.1/§3.3 schema match)
@@ -274,6 +296,104 @@ mod tests {
         let nf4_quant = w_packed.fdx.as_ref().unwrap().quant.as_ref().unwrap();
         assert_eq!(nf4_quant.family.as_deref(), Some("AFFINE_BLOCK"));
         assert_eq!(nf4_quant.scale_operand.as_deref(), Some("absmax"));
+    }
+
+    /// Task 4.6 — the rope-apply CUDA acceptance-kernel contract must
+    /// parse, pass the `V-FKC-*` validators, and LOWER structurally
+    /// correctly, all WITHOUT the `cuda` feature (a stub registry stands
+    /// in for the real link, matching `lower.rs`'s own `StubLink`
+    /// precedent). This is the default-feature verification the Task 4.6
+    /// brief explicitly permits in lieu of a real `--features cuda` import.
+    #[test]
+    fn parses_and_lowers_real_rope_apply_contract() {
+        use fuel_ir::dispatch::OpKind;
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let file = parse_file(ROPE_APPLY).expect("rope-apply.fkc.md must parse");
+        validate_file(&file).expect("rope-apply.fkc.md must pass the V-FKC-* validators");
+
+        assert_eq!(file.front_matter.provider.name, "fuel-cuda-backend");
+        assert_eq!(file.front_matter.provider.backend, "Cuda");
+        assert_eq!(file.front_matter.provider.kernel_source, "baracuda");
+
+        let names: Vec<&str> = file.kernels.iter().map(|k| k.kernel.as_str()).collect();
+        assert!(names.contains(&"rope_apply"), "expected a `rope_apply` section; got {names:?}");
+
+        let kernel = file.kernels.iter().find(|k| k.kernel == "rope_apply").unwrap();
+        assert_eq!(kernel.op_kind.as_deref(), Some("Rope"));
+        assert!(kernel.fused_op.is_none(), "rope_apply is a primitive op_kind contract, not fused");
+
+        // Three inputs: x (fans over the 4 dtypes), cos + sin (fixed F32 each,
+        // per baracuda's ABI — see the contract's front-matter note).
+        let accept = kernel.accept.as_ref().expect("rope_apply has accept");
+        assert_eq!(accept.inputs.len(), 3);
+        assert_eq!(accept.inputs[0].name.as_deref(), Some("x"));
+        assert_eq!(
+            accept.inputs[0].dtypes,
+            vec!["F32".to_string(), "F16".to_string(), "BF16".to_string(), "F64".to_string()],
+        );
+        assert_eq!(accept.inputs[1].name.as_deref(), Some("cos"));
+        assert_eq!(accept.inputs[1].dtypes, vec!["F32".to_string()]);
+        assert_eq!(accept.inputs[2].name.as_deref(), Some("sin"));
+        assert_eq!(accept.inputs[2].dtypes, vec!["F32".to_string()]);
+
+        // Lower against a stub that resolves ONLY the four raw baracuda symbols
+        // this contract's base entry_point ("baracuda_kernels_rope_apply") fans
+        // into — a wrong suffix, or a missing/extra variant, fails this.
+        fn dummy_kernel(
+            _inputs: &[std::sync::Arc<std::sync::RwLock<fuel_memory::Storage>>],
+            _outputs: &mut [std::sync::Arc<std::sync::RwLock<fuel_memory::Storage>>],
+            _layouts: &[fuel_ir::Layout],
+            _params: &crate::kernel::OpParams,
+        ) -> fuel_ir::Result<()> {
+            Ok(())
+        }
+        struct StubRopeApplyLink;
+        impl LinkRegistry for StubRopeApplyLink {
+            fn resolve_primitive(&self, symbol: &str) -> Option<crate::kernel::KernelRef> {
+                const KNOWN: &[&str] = &[
+                    "baracuda_kernels_rope_apply_f32",
+                    "baracuda_kernels_rope_apply_f16",
+                    "baracuda_kernels_rope_apply_bf16",
+                    "baracuda_kernels_rope_apply_f64",
+                ];
+                if KNOWN.contains(&symbol) { Some(dummy_kernel) } else { None }
+            }
+            fn resolve_fused(&self, _symbol: &str) -> Option<crate::kernel::KernelRef> {
+                None
+            }
+        }
+
+        let mut warnings = Vec::new();
+        let resolved = lower_file(&file, &StubRopeApplyLink, &mut warnings)
+            .expect("rope-apply.fkc.md must lower against a registry resolving its 4 real symbols");
+        let primitives: Vec<_> = resolved
+            .iter()
+            .filter_map(|r| match r {
+                Resolved::Primitive(p) => Some(p),
+                Resolved::Fused(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            primitives.len(), 4,
+            "expected 4 dtype variants (F32/F16/BF16/F64); got {}", primitives.len(),
+        );
+        for p in &primitives {
+            assert_eq!(p.op, OpKind::Rope);
+            assert_eq!(p.backend, BackendId::Cuda);
+            // Per-variant key: [x_dt, F32(cos), F32(sin), x_dt(out, passthrough)].
+            assert_eq!(p.dtypes.len(), 4, "expected [x, cos, sin, out] key; got {:?}", p.dtypes);
+            assert_eq!(p.dtypes[1], DType::F32, "cos is always F32");
+            assert_eq!(p.dtypes[2], DType::F32, "sin is always F32");
+            assert_eq!(p.dtypes[0], p.dtypes[3], "output passthrough(x) must match x's dtype");
+        }
+        let x_dtypes: std::collections::HashSet<DType> = primitives.iter().map(|p| p.dtypes[0]).collect();
+        assert_eq!(
+            x_dtypes,
+            [DType::F32, DType::F16, DType::BF16, DType::F64].into_iter().collect(),
+            "expected exactly the F32/F16/BF16/F64 fan",
+        );
     }
 
     // =====================================================================
@@ -551,5 +671,43 @@ kernel: demo2
             matches!(err, FkcError::MalformedFrontMatter(_)),
             "got {err:?}"
         );
+    }
+
+    // =====================================================================
+    // §3.1 orphan ```fkc block (outside any `## ` section) — a silent no-op
+    // import bug: `split_sections` drops everything before the first `## `
+    // heading, so a block placed there vanished with `Ok(FkcFile { kernels:
+    // [] })` instead of a typed error.
+    // =====================================================================
+
+    #[test]
+    fn orphan_fkc_block_outside_a_section_is_rejected() {
+        // A fkc block under only an H1, no `## ` heading — today silently dropped.
+        let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n# Title\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
+        let err = parse_file(src).expect_err("an fkc block outside any `## ` section must be rejected, not silently dropped");
+        assert!(matches!(err, FkcError::OrphanFkcBlock { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn fkc_block_with_no_sections_at_all_is_rejected() {
+        let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
+        assert!(matches!(parse_file(src).unwrap_err(), FkcError::OrphanFkcBlock { .. }));
+    }
+
+    #[test]
+    fn non_fkc_fence_before_first_heading_is_not_flagged() {
+        // A yaml doc example in the intro prose must NOT trigger the orphan check.
+        let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n# Title\n\n```yaml\nexample: true\n```\n\n## add_f32\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
+        parse_file(src).expect("a non-fkc intro fence + a real section parses fine");
+    }
+
+    #[test]
+    fn indented_pseudo_heading_does_not_hide_a_following_orphan_fkc_block() {
+        // An indented `  ## foo` is NOT a real heading to split_sections (column-0
+        // only), so a ```fkc block after it is still an orphan and must be rejected —
+        // the detector must not treat the indented line as "a section started".
+        let src = "---\nfkc_version: 1\nprovider:\n  name: p\n  backend: Cpu\n  kernel_source: \"ks\"\n---\n\n# Title\n\n  ## not-a-real-heading (indented)\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\n```\n";
+        let err = parse_file(src).expect_err("an indented pseudo-heading must not hide a following orphan fkc block");
+        assert!(matches!(err, FkcError::OrphanFkcBlock { .. }), "got {err:?}");
     }
 }

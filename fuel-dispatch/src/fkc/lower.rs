@@ -141,6 +141,12 @@ pub struct ResolvedFused {
     /// verbatim from [`crate::fkc::schema::FkcKernel::variant`] (see
     /// [`ResolvedPrimitive::variant`]).
     pub variant: Option<String>,
+    /// §5.5 `return.bundle` slot names, in declared order (empty for a
+    /// single-output section). Populated by
+    /// [`crate::fkc::return_check::bundle_slot_names`] (Finding 5.4, Task
+    /// 3.6); `register_into` (`register.rs`) threads non-empty values into
+    /// `FusedKernelRegistry::record_bundle_slot_names`.
+    pub bundle_slot_names: Vec<String>,
 }
 
 /// The result of lowering one kernel section: a primitive xor a fused
@@ -404,7 +410,11 @@ pub(crate) fn lower_dtype(token: &str, section: &str, operand: &str) -> Result<D
 
 /// Expand a `dtype_class` shorthand (§3.4) into its dtype list. `any`
 /// resolves to the operand's enumerated `dtypes` (passed in `enumerated`).
-fn expand_dtype_class(
+///
+/// `pub(crate)`: also the single source of truth for
+/// `shape_constraint::first_probe_dtype`'s dtype-class fallback pick (its
+/// first element), so the §3.4 class -> dtype-list mapping is defined once.
+pub(crate) fn expand_dtype_class(
     class: &str,
     enumerated: &[DType],
     section: &str,
@@ -895,6 +905,7 @@ fn lower_kernel(
     kernel: &FkcKernel,
     defaults: &Defaults<'_>,
     link: &dyn LinkRegistry,
+    warnings: &mut Vec<crate::fkc::ImportWarning>,
 ) -> Result<Vec<Resolved>, FkcError> {
     let section = kernel.kernel.as_str();
 
@@ -902,6 +913,7 @@ fn lower_kernel(
     match (kernel.op_kind.as_deref(), kernel.fused_op.as_deref()) {
         (Some(op_str), None) => {
             let op = lower_op_kind(op_str, section)?;
+            // Phase 1 has no primitive-side warnings producer yet.
             Ok(lower_primitive(kernel, op, defaults, link)?
                 .into_iter()
                 .map(Resolved::Primitive)
@@ -909,7 +921,7 @@ fn lower_kernel(
         }
         (None, Some(fused_str)) => {
             let id = lower_fused_op(fused_str, section)?;
-            Ok(lower_fused(kernel, id, defaults, link)?
+            Ok(lower_fused(kernel, id, defaults, link, warnings)?
                 .into_iter()
                 .map(Resolved::Fused)
                 .collect())
@@ -1041,7 +1053,14 @@ fn lower_fused(
     id: FusedOpId,
     defaults: &Defaults<'_>,
     link: &dyn LinkRegistry,
+    warnings: &mut Vec<crate::fkc::ImportWarning>,
 ) -> Result<Vec<ResolvedFused>, FkcError> {
+    // §5 (Finding 5.1): cross-check the section's declared return rules
+    // against the REAL registered FusedOpEntry fn BEFORE anything else lowers
+    // — a disagreement fails the import (never silently drifts from the
+    // graph's single source of truth). See `return_check::cross_check_fused_section`
+    // for the never-panic guard + soft-catch-solver-errors invariants.
+    crate::fkc::return_check::cross_check_fused_section(kernel, id, warnings)?;
     let section = kernel.kernel.as_str();
     let backend_str = kernel.backend.as_deref().unwrap_or(defaults.backend);
     let backend = lower_backend(backend_str, section)?;
@@ -1096,6 +1115,12 @@ fn lower_fused(
             // Retain the opaque `variant:` tag verbatim (per-section, shared by
             // every dtype variant) so it survives to the emission step.
             variant: kernel.variant.clone(),
+            // Finding 5.4 (Task 3.6): the real §5.5 bundle-slot-name
+            // extraction. Per-section (same for every dtype variant), so
+            // this recomputes per variant — cheap (a handful of YAML-slot
+            // reads), and keeps this call site a single self-contained
+            // expression rather than hoisting a shared local above the loop.
+            bundle_slot_names: crate::fkc::return_check::bundle_slot_names(&kernel.return_),
         });
     }
     Ok(out)
@@ -1113,6 +1138,7 @@ fn lower_fused(
 pub fn lower_file(
     file: &crate::fkc::schema::FkcFile,
     link: &dyn LinkRegistry,
+    warnings: &mut Vec<crate::fkc::ImportWarning>,
 ) -> Result<Vec<Resolved>, FkcError> {
     let provider = &file.front_matter.provider;
     let defaults = Defaults {
@@ -1126,7 +1152,7 @@ pub fn lower_file(
     let mut out = Vec::new();
     for kernel in file.kernels.iter().filter(|k| k.registrable) {
         // §3.10: describe-only documentation sections are skipped above.
-        out.extend(lower_kernel(kernel, &defaults, link)?);
+        out.extend(lower_kernel(kernel, &defaults, link, warnings)?);
     }
     Ok(out)
 }
@@ -1193,7 +1219,7 @@ mod tests {
             .iter()
             .find(|k| k.kernel == kernel_name)
             .unwrap_or_else(|| panic!("kernel {kernel_name} present"));
-        lower_kernel(kernel, &defaults, &StubLink)
+        lower_kernel(kernel, &defaults, &StubLink, &mut Vec::new())
     }
 
     /// The first (representative) variant of a section — convenience for the
@@ -1290,7 +1316,7 @@ mod tests {
     #[test]
     fn lower_file_lowers_every_kernel() {
         let file = parse_file(ELEMENTWISE_BINARY).expect("parses");
-        let resolved = lower_file(&file, &StubLink).expect("all lower");
+        let resolved = lower_file(&file, &StubLink, &mut Vec::new()).expect("all lower");
         // Every *registrable* section lowers; describe-only sections (§3.10,
         // e.g. the shared `binary` chassis umbrella) are filtered out first.
         let registrable = file.kernels.iter().filter(|k| k.registrable).count();
@@ -1306,7 +1332,7 @@ mod tests {
         // import previously dropped in favor of the `unknown_cost` sentinel.
         const MATMUL: &str = include_str!("../../../docs/kernel-contracts/cpu/matmul.fkc.md");
         let file = parse_file(MATMUL).expect("matmul contract parses");
-        let resolved = lower_file(&file, &StubLink).expect("matmul contract lowers");
+        let resolved = lower_file(&file, &StubLink, &mut Vec::new()).expect("matmul contract lowers");
         let prim = resolved
             .iter()
             .find_map(|r| match r {
@@ -1353,7 +1379,7 @@ mod tests {
         // the lowered set is 8 sections × 4 dtypes = 32 (was 8 pre-fan, when
         // `lower_fused` took only the representative first variant).
         let file = parse_file(FUSED_NORM_SOFTMAX).expect("parses");
-        let resolved = lower_file(&file, &StubLink).expect("all fused kernels lower");
+        let resolved = lower_file(&file, &StubLink, &mut Vec::new()).expect("all fused kernels lower");
         assert_eq!(
             resolved.len(),
             file.kernels.len() * 4,
@@ -1792,7 +1818,7 @@ return:
             revision_base: provider.revision_base.as_deref().unwrap_or(""),
         };
         let kernel = file.kernels.iter().find(|k| k.kernel == "add_f32").unwrap();
-        let err = lower_kernel(kernel, &defaults, &EmptyLink).expect_err("no entry point");
+        let err = lower_kernel(kernel, &defaults, &EmptyLink, &mut Vec::new()).expect_err("no entry point");
         assert!(matches!(err, FkcError::UnknownEntryPoint { .. }), "got {err:?}");
     }
 
@@ -1827,7 +1853,7 @@ return:
             kernel_source: "x",
             revision_base: "",
         };
-        let err = lower_kernel(&kernel, &defaults, &StubLink).expect_err("ambiguous");
+        let err = lower_kernel(&kernel, &defaults, &StubLink, &mut Vec::new()).expect_err("ambiguous");
         assert!(matches!(err, FkcError::OpTargetAmbiguous { .. }), "got {err:?}");
     }
 }

@@ -70,6 +70,13 @@ pub struct BackendImpl {
     /// drift and invalidate stale cache entries (see
     /// `docs/architecture/11-persistence.md`).
     pub revision: KernelRevisionHash,
+    /// Declared cost AST compiled from the contract's `cost:` field
+    /// (FKC gap-closure §2.3, Task 2.4). `None` when the contract
+    /// declared no cost expression, or for hand-written (non-FKC)
+    /// registrations. When present, [`crate::fused_cost::fused_layer1_cost`]
+    /// prefers it over the [`is_fused_cost_sentinel`](crate::fused_cost::is_fused_cost_sentinel)
+    /// decompose-derived fallback.
+    pub cost_expr: Option<&'static crate::fkc::CompiledCostExpr>,
 }
 
 /// Coarse cost model for one kernel invocation. Layer-1 of the
@@ -269,6 +276,15 @@ type BackendImplList = SmallVec<[(BackendId, BackendImpl); 4]>;
 #[derive(Default)]
 pub struct FusedKernelRegistry {
     by_id: HashMap<FusedOpId, BackendImplList>,
+    /// Finding 5.4 (FKC side, Task 3.6) side-table: preserves a fused
+    /// contract's `return.bundle` per-slot NAMES, keyed by the same
+    /// `(FusedOpId, BackendId, dtypes)` tuple the kernel itself was
+    /// registered under. Before this table existed the names were parsed
+    /// (`return_check::bundle_slot_names`) then discarded — a later
+    /// consumer (e.g. FDX output-view labeling) had no artifact to read
+    /// them from. `Vec<DType>` (not `&'static [DType]`) because the key is
+    /// built from a caller-owned slice at lookup time.
+    bundle_slot_names: HashMap<(FusedOpId, BackendId, Vec<DType>), Vec<String>>,
 }
 
 impl FusedKernelRegistry {
@@ -340,6 +356,38 @@ impl FusedKernelRegistry {
     pub fn is_empty(&self) -> bool {
         self.by_id.is_empty()
     }
+
+    /// Finding 5.4 (FKC side, Task 3.6): record a fused contract's
+    /// `return.bundle` per-slot names against the `(id, backend, dtypes)`
+    /// key it was registered under. Overwrites any prior entry at the same
+    /// key (re-import is idempotent, mirroring `register`'s append
+    /// semantics at the registration level — the side-table itself has no
+    /// duplicate-detection gate).
+    pub fn record_bundle_slot_names(
+        &mut self,
+        id: FusedOpId,
+        backend: BackendId,
+        dtypes: &[DType],
+        names: &[String],
+    ) {
+        self.bundle_slot_names
+            .insert((id, backend, dtypes.to_vec()), names.to_vec());
+    }
+
+    /// Look up the per-slot names recorded by [`Self::record_bundle_slot_names`]
+    /// for `(id, backend, dtypes)`. `None` when no bundle names were ever
+    /// recorded for that exact key (including a single-output section,
+    /// which never calls `record_bundle_slot_names` in the first place).
+    pub fn bundle_slot_names(
+        &self,
+        id: FusedOpId,
+        backend: BackendId,
+        dtypes: &[DType],
+    ) -> Option<&[String]> {
+        self.bundle_slot_names
+            .get(&(id, backend, dtypes.to_vec()))
+            .map(|v| v.as_slice())
+    }
 }
 
 /// Register a [`BackendImpl`] into a [`FusedKernelRegistry`] via the
@@ -394,6 +442,7 @@ macro_rules! register_fused {
                 precision: $precision,
                 caps,
                 revision,
+                cost_expr: None,
             },
         );
     }};
@@ -1612,6 +1661,7 @@ mod tests {
             precision: PrecisionGuarantee::UNAUDITED,
             caps: KernelCaps::empty(),
             revision: KernelRevisionHash::UNTRACKED,
+            cost_expr: None,
         }
     }
 
@@ -1919,6 +1969,7 @@ mod tests {
             precision: PrecisionGuarantee::UNAUDITED,
             caps: KernelCaps::empty(),
             revision: KernelRevisionHash::UNTRACKED,
+            cost_expr: None,
         };
         r.register(id, BackendId::Cpu, weak);
         let has_bit_stable_cpu = r.impls_for(id).iter().any(|(backend, impl_)| {
@@ -2045,5 +2096,25 @@ mod tests {
         // 2 · 2 · 4 · 16 · 8 = 2048 matmul FLOPs + 2 · 4 · 16 = 128 bias FLOPs
         assert_eq!(c.flops, 2048 + 128);
         assert!(c.bytes_moved > 0);
+    }
+
+    /// Finding 5.4 (FKC side, Task 3.6) — a `return.bundle`'s per-slot NAMES
+    /// round-trip through a side-table keyed on `(FusedOpId, BackendId,
+    /// dtypes)`. Before this task the names were parsed then discarded;
+    /// `record_bundle_slot_names` / `bundle_slot_names` preserve them so a
+    /// later consumer (e.g. FDX output-view labeling) can look them up by
+    /// the same key the kernel itself was registered under. A different
+    /// dtype key must miss (`None`), never fall back to an unrelated entry.
+    #[test]
+    fn bundle_slot_names_round_trip_through_the_fused_registry() {
+        use fuel_ir::{DType, probe::BackendId};
+        use fuel_graph::registry::FusedOps;
+        let mut reg = FusedKernelRegistry::new();
+        let dtypes = &[DType::F32, DType::F32][..];
+        reg.record_bundle_slot_names(FusedOps::SELECTIVE_SCAN, BackendId::Cpu, dtypes,
+            &["y".to_string(), "last_state".to_string()]);
+        assert_eq!(reg.bundle_slot_names(FusedOps::SELECTIVE_SCAN, BackendId::Cpu, dtypes),
+            Some(&["y".to_string(), "last_state".to_string()][..]));
+        assert_eq!(reg.bundle_slot_names(FusedOps::SELECTIVE_SCAN, BackendId::Cpu, &[DType::F16][..]), None);
     }
 }

@@ -46,6 +46,10 @@ pub fn parse_file(text: &str) -> Result<FkcFile, FkcError> {
     let front_matter: FkcFrontMatter =
         serde_yml::from_str(front_src).map_err(|e| FkcError::yaml(None, e))?;
 
+    if let Some(line) = find_orphan_fkc_fence(body) {
+        return Err(FkcError::OrphanFkcBlock { line });
+    }
+
     let sections = split_sections(body);
     let mut kernels = Vec::with_capacity(sections.len());
     for section in sections {
@@ -141,6 +145,41 @@ struct Section {
     title: String,
     /// Body lines paired with their absolute (1-based) line number in the file.
     lines: Vec<(usize, String)>,
+}
+
+/// Detect a `` ```fkc `` opening fence that appears BEFORE the first `## `
+/// heading (or anywhere in a file with no `## ` headings). Such a block is
+/// silently dropped by `split_sections`, yielding an Ok-but-empty import.
+/// Only a `` ```fkc `` opener triggers; a `` ```yaml `` (or other) intro fence
+/// is skipped. Line numbers are 1-based within `body` (same convention as
+/// `split_sections`).
+///
+/// The heading test deliberately mirrors `split_sections`'s column-0 `## `
+/// match exactly (`raw.strip_prefix("## ")`, NOT a whitespace-tolerant
+/// `trim_start()`ed check): the two must agree on where "before the first
+/// section" ends, or an indented pseudo-heading (e.g. `  ## foo`, ignored by
+/// `split_sections` because it isn't at column 0) could make this detector
+/// stop scanning early while `split_sections` keeps dropping lines — hiding a
+/// real orphan block that follows.
+fn find_orphan_fkc_fence(body: &str) -> Option<usize> {
+    let mut in_fence = false;
+    for (idx, raw) in body.lines().enumerate() {
+        if !in_fence && raw.strip_prefix("## ").is_some() {
+            return None; // first `## ` reached: the rest belongs to sections
+        }
+        let trimmed = raw.trim_start();
+        if !in_fence {
+            if trimmed.trim_end() == "```fkc" {
+                return Some(idx + 1);
+            }
+            if trimmed.starts_with("```") {
+                in_fence = true; // some other intro fence — skip its body
+            }
+        } else if trimmed.trim_end() == "```" {
+            in_fence = false;
+        }
+    }
+    None
 }
 
 /// Split the markdown body into `## `-delimited sections. A leading `# ` (H1)

@@ -460,6 +460,166 @@ rope_kernel!(rope_f16, f16, 2, "rope_f16");
 rope_kernel!(rope_bf16, bf16, 2, "rope_bf16");
 rope_kernel!(rope_f64, f64, 8, "rope_f64");
 
+// ---------------------------------------------------------------------------
+// Task 4.6 (FKC gap-closure): `rope_apply_<dt>_run` — baracuda's STANDALONE
+// caller-supplied-cos/sin RoPE kernel. A separate FFI family from
+// `rope_<dt>_run` above (which computes trig device-side from `base` +
+// `positions`); NOT the same op-wrapper as `rope_f32`/etc. This FFI family
+// had exactly ONE prior caller anywhere in the repo:
+// `storage::CudaStorage::rope` (`fuel-cuda-backend/src/storage.rs:3883`), a
+// method on the LEGACY dtype-tagged `CudaStorage`/`CudaStorageSlice`
+// storage representation that predates `CudaStorageBytes` and has NO call
+// sites anywhere — "shipped, never wired in" (the designated acceptance
+// kernel for the FKC verification harness, see
+// `docs/session-prompts/capturedrun-4b-paused-pending-fkc-verification.md`).
+// This driver is the `CudaStorageBytes`-based, write-into-output wiring the
+// CURRENT dispatch layer actually needs; it does not reuse the legacy
+// method or its storage type.
+//
+// baracuda ABI (verified against `baracuda-kernels-sys` 0.0.1-alpha.77,
+// `kernels/include/baracuda_attention.cuh:1703`'s `_INSTANTIATE` macro; FFI
+// decl `src/lib.rs:49243`): `cos`/`sin` are ALWAYS F32 regardless of the
+// operand dtype, shaped `[seq, head_dim/2]` — HALF the width of Fuel's
+// `OpParams::Rope`-wide `[seq, head_dim]` convention that the CPU
+// `rope_<dt>` family and the `rope_<dt>` driver above both use (those
+// re-index a FULL-width table per pair; this kernel wants only the
+// `head_dim/2` distinct trig values per position — see
+// `docs/kernel-contracts/cuda/rope-apply.fkc.md` for the full note).
+// `stride_b` is always 0 here (a single table shared across every one of
+// the `outer_count` = batch*heads rows) — Fuel's cos/sin are always
+// model-wide, never per-batch, so that is the only value ever needed.
+// Contiguous input ONLY — no strided path (unlike `rope_run_into` above);
+// a non-contiguous `x` must be Contiguized first (mirrors the CPU
+// `rope_<dt>` contract's posture).
+type RopeApplyRun = unsafe extern "C" fn(
+    bh: i32,
+    td: i32,
+    d: i32,
+    stride_b: i32,
+    x: *const std::ffi::c_void,
+    cos_tab: *const std::ffi::c_void,
+    sin_tab: *const std::ffi::c_void,
+    y: *mut std::ffi::c_void,
+    workspace: *mut std::ffi::c_void,
+    workspace_bytes: usize,
+    stream: *mut std::ffi::c_void,
+) -> i32;
+
+/// Write-into-output driver for baracuda's `rope_apply_<dt>_run` (Task 4.6
+/// FKC gap-closure acceptance kernel). See the module note above for the
+/// ABI (`cos`/`sin` always F32, half-width `[seq, head_dim/2]`, `stride_b
+/// == 0`). `out` must already hold at least `outer_count * seq * head_dim *
+/// dtype_size_bytes` bytes (same never-alloc contract as `rope_run_into`).
+#[allow(clippy::too_many_arguments)]
+fn rope_apply_run_into(
+    x: &CudaStorageBytes,
+    cos: &CudaStorageBytes,
+    sin: &CudaStorageBytes,
+    outer_count: usize,
+    seq: usize,
+    head_dim: usize,
+    out: &CudaStorageBytes,
+    run: RopeApplyRun,
+    op_label: &'static str,
+    dtype_size_bytes: usize,
+) -> Result<()> {
+    if head_dim % 2 != 0 {
+        return Err(Error::Msg(format!(
+            "{op_label}: head_dim must be even (got {head_dim})",
+        )).bt());
+    }
+    let device = x.device().clone();
+    let numel = outer_count * seq * head_dim;
+    let out_bytes = numel * dtype_size_bytes;
+    if out_bytes == 0 {
+        return Ok(());
+    }
+    if out.len_bytes() < out_bytes {
+        return Err(Error::Msg(format!(
+            "{op_label}: write-into output buffer too small ({} < {} bytes)",
+            out.len_bytes(), out_bytes,
+        )).bt());
+    }
+    // cos/sin are ALWAYS F32, half-width [seq, head_dim/2] — validate the
+    // byte length up front so a shape mismatch is a typed error, never an
+    // out-of-bounds device read.
+    let expected_trig_elems = seq * (head_dim / 2);
+    let expected_trig_bytes = expected_trig_elems * 4;
+    if cos.len_bytes() < expected_trig_bytes || sin.len_bytes() < expected_trig_bytes {
+        return Err(Error::Msg(format!(
+            "{op_label}: cos/sin table too small for [seq={seq}, head_dim/2={}] F32 \
+             (need >= {expected_trig_bytes} bytes each, got cos={} sin={})",
+            head_dim / 2, cos.len_bytes(), sin.len_bytes(),
+        )).bt());
+    }
+
+    let bh = i32::try_from(outer_count).map_err(|_| {
+        Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+            op: op_label, dim_index: 0, dim_value: outer_count,
+        })
+    })?;
+    let td = i32::try_from(seq * head_dim).map_err(|_| {
+        Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+            op: op_label, dim_index: 1, dim_value: seq * head_dim,
+        })
+    })?;
+    let d = i32::try_from(head_dim).map_err(|_| {
+        Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
+            op: op_label, dim_index: 2, dim_value: head_dim,
+        })
+    })?;
+    let stride_b: i32 = 0; // single shared cos/sin table across every outer row
+
+    let scratch = Workspace::alloc(&device, 0)?;
+    let stream = device.stream().as_raw() as *mut std::ffi::c_void;
+    let x_ptr = x.buffer().as_raw().0 as *const std::ffi::c_void;
+    let cos_ptr = cos.buffer().as_raw().0 as *const std::ffi::c_void;
+    let sin_ptr = sin.buffer().as_raw().0 as *const std::ffi::c_void;
+    let y_ptr = out.buffer().as_raw().0 as *mut std::ffi::c_void;
+
+    let status = unsafe {
+        run(
+            bh, td, d, stride_b,
+            x_ptr, cos_ptr, sin_ptr, y_ptr,
+            scratch.as_raw(), scratch.bytes(), stream,
+        )
+    };
+    check(status, op_label)
+}
+
+macro_rules! rope_apply_kernel {
+    ($name:ident, $dtype_stem:ident, $dtype_size:expr, $op_label:expr $(,)?) => {
+        ::paste::paste! {
+            #[doc = concat!(
+                "Write-into-output driver for baracuda `rope_apply_",
+                stringify!($dtype_stem), "` (Task 4.6 FKC acceptance kernel)."
+            )]
+            #[allow(clippy::too_many_arguments)]
+            pub fn [<$name _into>](
+                x: &CudaStorageBytes,
+                cos: &CudaStorageBytes,
+                sin: &CudaStorageBytes,
+                outer_count: usize,
+                seq: usize,
+                head_dim: usize,
+                out: &CudaStorageBytes,
+            ) -> Result<()> {
+                rope_apply_run_into(
+                    x, cos, sin, outer_count, seq, head_dim, out,
+                    sys::[<baracuda_kernels_rope_apply_ $dtype_stem _run>],
+                    $op_label,
+                    $dtype_size,
+                )
+            }
+        }
+    };
+}
+
+rope_apply_kernel!(rope_apply_f32, f32, 4, "rope_apply_f32");
+rope_apply_kernel!(rope_apply_f16, f16, 2, "rope_apply_f16");
+rope_apply_kernel!(rope_apply_bf16, bf16, 2, "rope_apply_bf16");
+rope_apply_kernel!(rope_apply_f64, f64, 8, "rope_apply_f64");
+
 flash_sdpa_kernel!(flash_sdpa_f32, f32, 4, "flash_sdpa_f32");
 flash_sdpa_kernel!(flash_sdpa_f16, f16, 2, "flash_sdpa_f16");
 flash_sdpa_kernel!(flash_sdpa_bf16, bf16, 2, "flash_sdpa_bf16");

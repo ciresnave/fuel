@@ -4143,6 +4143,7 @@ mod tests {
                 "baracuda-generic-strided",
                 true, // the FKC-computed generic-fallback bit
                 0,    // revision UNTRACKED (test binding carries no revision)
+                None, // no declared cost-expression AST (test binding)
             );
             table
         }

@@ -442,3 +442,22 @@ fn plain_storage_still_no_quant_sidecar() {
     let v = view(&storage, &layout, None).expect("view");
     assert!(v.sidecar.is_none(), "plain storage must stay sidecar-free");
 }
+
+// ── Finding 5.4 (FDX side): name-table side-car for bundle slot names ──────
+
+#[test]
+fn fdx_output_view_slot_name_is_recoverable_from_the_name_table() {
+    use fuel_ir::{DType, Shape, Layout};
+    let ov = OutputView {
+        byte_offset: 0,
+        len_elements: 6,
+        dtype: DType::F32,
+        shape: Shape::from_dims(&[2, 3]),
+        layout: Layout::contiguous(Shape::from_dims(&[2, 3])),
+        name: Some("last_state"),
+    };
+    let fdx = output_view_to_fdx(&ov).expect("rank 2 lowers");
+    assert_eq!(fdx.name_hash, fnv1a("last_state"));
+    assert_eq!(fdx_slot_name(fdx.name_hash), Some("last_state".to_string()));
+    assert_eq!(fdx_slot_name(0), None);
+}
