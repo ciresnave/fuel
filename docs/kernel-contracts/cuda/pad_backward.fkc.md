@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "grad_in=slice(grad_out) of the pad region; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda-kernels-sys/kernels/include/baracuda_elementwise.cuh pad_constant_backward_kernel: one grid-stride thread per dx cell, single index computation + single read from dy + single write to dx (pure slice, no arithmetic, no atomics/shared memory); deterministic given identical inputs and launch config. Only Constant-mode backward is wired (Reflect/Replicate/Circular backward is unimplemented, not covered by this contract)."
 
 determinism: same_hardware_bitwise
 ```

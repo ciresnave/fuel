@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "RMSNorm over the last dim; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "baracuda_norm.cuh launch_rms_norm_fp dispatches between rms_norm_fp_kernel (legacy: one thread per output cell, serial per-thread sum-of-squares over the row in fixed j=0..norm_total_extent order, no cross-thread state) and rms_norm_smem_kernel (SMEM fast path: block_reduce_sum_f32/f64, a fixed warp-shuffle butterfly + cross-warp SMEM tree reduction, no atomics). Eligibility (contig last axis, contig outer stride, SMEM budget) is a pure function of rank/shape/stride/dtype computed host-side before launch, not a runtime occupancy heuristic — a fixed input shape always selects the same path and launch config (kBlock=256 is a compile-time constant in both). Bit-identical for bit-identical inputs on the same hardware. (LayerNormLastDim, this file's other section, is a separate kernel/audit — not covered by this claim.)"
 
 determinism: same_hardware_bitwise
 ```

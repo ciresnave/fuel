@@ -517,6 +517,206 @@ Cross-references are fine — an architecture-decision-log entry can link to the
 
 ---
 
+## 2026-07-11 — cuBLAS gemm_dense same-hardware determinism audited: `audited: true`, `bit_stable_on_same_hardware: true`
+
+**Sections affected**: none — this is a kernel-contract (FKC) precision-claim change, not a numbered `docs/architecture/` core-claim change. `fkc_version` in `docs/kernel-contracts/cuda/gemm_dense.fkc.md` stays at `1`: `fkc_version` is the FILE-FORMAT/schema version the importer checks against a supported maximum (`fuel-dispatch/src/fkc/error.rs`'s `fkc_version {found} exceeds supported max {max}`), not a per-content revision counter — every `.fkc.md` in the repo is `fkc_version: 1` regardless of how many times its `precision.audited` flag has flipped historically (both `docs/kernel-contracts/cpu/matmul.fkc.md` and `docs/kernel-contracts/vulkan/matmul.fkc.md` mix `audited: true`/`audited: false` blocks within the same file at `fkc_version: 1`). No precedent in this repo bumps `fkc_version` for a content-only precision change; this entry is the record CLAUDE.md's docs rule asks for instead.
+**Phase / PR**: task-cublas-audit (unblocks task 4b-δ, fuel-core wiring of CUDA-graph decode capture into the real Llama decode loop). Full evidence: `.superpowers/sdd/task-cublas-audit-report.md`. Code: `fuel-cuda-backend/src/baracuda/gemm_dense.rs` (new `determinism_audit` test module, `#[ignore]`'d live-CUDA). Docs: `docs/kernel-contracts/cuda/gemm_dense.fkc.md`.
+
+**What changed**: the CUDA `gemm_dense` (`OpKind::MatMul`, `{F32, F16, BF16, F64}`) kernel contract's `precision` block flips from `audited: false` (which `fuel-dispatch/src/fkc/precision.rs::lower_precision` lowers to `PrecisionGuarantee::UNAUDITED` — `bit_stable_on_same_hardware: false` — REGARDLESS of the markdown's separate `bit_stable_on_same_hardware: true` field, which was inert until audited) to `audited: true` with `bit_stable_on_same_hardware: true` and no static ULP/relative/absolute bound (a real, populated `bit_stable_on_same_hardware: true` claim per `lower_precision`'s `Some(true)` + `bit_stable` branch, matching the shape of `fuel-dispatch/src/fused.rs`'s `VULKAN_MATMUL_PRECISION` / `PRIMITIVE_DETERMINISTIC_CPU` precedent). This was the specific gate blocking task 4b-δ: `fuel-dispatch`'s `BitStablePreferenceFilter` (`fuel-dispatch/src/ranker/filters/bit_stable_pref.rs`) is a soft filter that drops non-bit-stable candidates whenever at least one bit-stable candidate remains (`min_remaining: 1` default) — with CUDA `gemm_dense` UNAUDITED and CPU `matmul` carrying `PRIMITIVE_DETERMINISTIC_CPU`, this filter unconditionally preferred CPU for every `MatMul` node regardless of problem size (confirmed via live instrumentation by a prior task, 4b-ζ, ruling out a cost-based explanation). With the flag flipped, CUDA `gemm_dense` and CPU `matmul` are now both bit-stable candidates and the filter no longer forces CPU.
+
+**Evidence — Part 1 (what Fuel actually calls)**: found the real, currently-pinned (`0.0.1-alpha.77`, confirmed against the root `Cargo.toml`) `baracuda-kernels-sys` source in the Cargo registry cache (`~/.cargo/registry/src/index.crates.io-*/baracuda-kernels-sys-0.0.1-alpha.77/src/gemm_dense_cublas_facade.rs`) — more authoritative than any local `../baracuda` reference checkout per `CLAUDE.md`. `f32`'s `baracuda_kernels_gemm_dense_f32_run` calls `cublasGemmEx` (`batch == 1`) or `cublasGemmStridedBatchedEx` (`batch > 1`) under `CUBLAS_GEMM_DEFAULT` heuristic algorithm selection, `CUBLAS_COMPUTE_32F` (true IEEE binary32, NOT TF32 unless the process-wide `NVIDIA_TF32_OVERRIDE=1` env var is set — not set in this audit or in Fuel's normal operation), through a small lock-free pool of cuBLAS handles keyed by CUDA context (one handle exclusively owned + `cublasSetStream_v2`-rebound per call — not a fresh `cublasCreate`/`cublasDestroy` per launch). The facade's own doc comment already states the single-stream reproducibility condition this audit came in to independently verify, not just take on faith.
+
+**Evidence — Part 2 (NVIDIA's documentation)**: `docs.nvidia.com/cuda/cublas` (§2.1.4 "Results Reproducibility", §2.1.10 "GEMM Algorithms Numerical Behavior") states: "By design, all cuBLAS API routines from a given toolkit version[…] generate the same bit-wise results at every run when executed on GPUs with the same architecture and the same number of SMs." — "This guarantee no longer holds when multiple CUDA streams are active[…]. If multiple concurrent streams are active, the library may optimize total performance by picking different internal implementations." Mitigations for the multi-stream case exist (`cublasSetWorkspace()` per stream, one handle per stream, or `CUBLAS_WORKSPACE_CONFIG=:16:8`/`:4096:8`) but are NOT applied by baracuda's pooled-handle facade or by Fuel. Cross-toolkit-version reproducibility is explicitly NOT claimed. This matches — and is the independent primary-source confirmation of — the facade's own doc comment from Part 1.
+
+**Evidence — Part 3 (empirical, this machine, RTX 4070)**: new `#[ignore]`'d test module `fuel-cuda-backend/src/baracuda/gemm_dense.rs::determinism_audit` (2 tests), covering 5 shapes mirroring the real decode graph (Q/O projection `M=1,K=128,N=128`; KV-proj GQA-narrow `M=1,K=128,N=64`; FFN up `M=1,K=128,N=512`; FFN down `M=1,K=512,N=128`; batched attention scores `batch=4,M=1,K=32,N=16`, exercising `cublasGemmStridedBatchedEx`), at real decode-graph `M=1` (GEMV-shaped `cublasGemmEx`) launches: (a) **150 repeat calls per shape, same process, same cuBLAS handle** — zero deviation from the first call, every shape; (b) **same, concurrently with a SECOND CUDA context/stream** (baracuda's handle pool is keyed by context, so this is genuine cross-stream contention, not same-stream serialization — the background thread completed 630-747 GEMM launches during each measured window) — zero deviation; (c) **the same golden output byte-for-byte across 3 separate `cargo test` process invocations** (fresh cuBLAS handle, fresh context, each process) via an on-disk golden file. All checks passed on every run, all three runs. Not claimed by this contract: bit-reproducibility under >1 *simultaneously-active* stream sharing one pooled handle's default workspace (NVIDIA's own docs decline to guarantee this case; this audit's 2-context test did not observe it break, but did not stress it with a shared handle either — the pool assigns each context its own handle, so this audit's "concurrent" test is concurrent contexts, not literally one handle serving two active streams at once) — the contract's `notes` field states this limitation explicitly rather than overclaiming.
+
+**Why**: the user explicitly chose "audit + flip if genuinely warranted" over a narrower fuel-core-side workaround or stopping work — "a false audited: true would be worse than leaving it unaudited" (task brief). The evidence from both an independent primary source (NVIDIA's docs) and real repeat-call/concurrent/cross-process empirical testing on the exact deployed hardware/software stack converged on the same conclusion (single-stream cuBLAS GEMM is bit-reproducible; Fuel's actual usage pattern — one context/stream per matmul sequence — satisfies that condition), so the claim is genuinely earned, not rubber-stamped.
+
+**Alternatives considered**: *Leave `audited: false` and instead special-case the placement filter for CUDA matmul* — rejected: this would be exactly the kind of unaudited, ad hoc carve-out the FKC precision model exists to prevent; every future caller of `gemm_dense` deserves the same honest claim, not a filter-level exception nobody else can see. *Claim unconditional determinism (no caveats about multi-stream)* — rejected: NVIDIA's own docs decline to make that claim, and this audit's empirical coverage doesn't stress the single-shared-handle-multi-stream case either, so the `notes` field states the real, narrower claim instead of overclaiming ahead of the evidence — relevant future work: [[multi-agent-serving-goal]] (parallel decode sessions on one GPU) will eventually want exactly this stress case tested for real, at which point revisit whether `CUBLAS_WORKSPACE_CONFIG` needs setting.
+
+**Implications going forward**: (1) 4b-δ's specific placement blocker (CUDA matmul refused by `BitStablePreferenceFilter`) is resolved — verified by re-running `cargo test -p fuel-dispatch --features cuda --lib` (633 passed, 0 failed, no regressions from the flip) and the `register_baracuda_binds_group6_matmul_facades_from_contract` contract-import test. (2) `fuel-core`'s `forward_with_kv_context_captured_matches_persistent` (the task 4b-δ end-to-end gate) STILL FAILS after this flip — but at a *different* node: `capture_decode: graph has a cross-device Op::Copy at node NodeId(161) (target Cpu)`. **Corrected finding (a same-day follow-up re-trace, coordinator-prompted)**: `BroadcastTo` is a metadata-only `WorkItemKind::ViewOf` with no kernel and no placement decision of its own (it just inherits its input's device) — the first pass's "BroadcastTo... cost-based tiny-op placement" framing was imprecise. A second, likewise temporary-and-reverted diagnostic traced `Node#161`'s sole consumer instead: `Node#119`, `OpKind::MulElementwise[F32,F32,F32]` (the affine RMS-norm multiply), placed on `Cpu`. Its CPU alternative carries a real bounded claim (`bit_stable_on_same_hardware: true, max_ulp: Some(0)`); its CUDA alternative (`kernel_source: "baracuda"`, genuinely registered and considered) carries `PrecisionGuarantee::UNAUDITED` — the literal same sentinel `gemm_dense` carried pre-flip. **This is NOT a cost-based decision and NOT a missing-kernel gap — it is a SECOND instance of the exact audit-gap pattern this task exists to fix**, on `MulElementwise` instead of `MatMul`. Per the coordinator's explicit instruction, `MulElementwise` was NOT audited or flipped in this task (new, separately-scoped work — likely simpler than the cuBLAS case, since Fuel controls the CUDA kernel source directly rather than a vendor black box); how many other CUDA kernels are gated the same way was not surveyed. Full evidence (including the exact second diagnostic's output) is in the audit report's Addendum section. Unblocking 4b-δ end-to-end needs a follow-up task auditing `MulElementwise` (or more generally, surveying which decode-path CUDA kernels still carry the UNAUDITED seed), which is out of this audit's scope per its brief ("do not modify fuel-core to force it to pass", "do not audit/flip [the newly-found gap] in this same task"). (3) The uncommitted `fuel-core/src/lazy.rs` fixture-size bump (`vocab_size`/`dim`/`ffn_dim` etc., pre-existing in this worktree from task 4b-ζ, intended to rule out cost-based CPU placement by making every op's CUDA cost estimate uniformly win) is LEFT AS-IS, not reverted — it isolates the audited-flag variable from the separate `MulElementwise` UNAUDITED-gap issue found in (2); reverting it would reintroduce a confound this audit didn't need to re-litigate.
+
+---
+
+## 2026-07-11 — CUDA kernel precision-audit program, tier 1: 80 simple-elementwise/memory-movement kernels audited to `audited: true`
+
+**Sections affected**: none — same posture as the cuBLAS entry above: FKC precision-claim changes, not `docs/architecture/` core-claim changes. `fkc_version` unchanged (`1`) on all 21 touched files, same reasoning as above.
+**Phase / PR**: user-commissioned follow-on to the cuBLAS audit, after that audit's own investigation found a *second* instance of the same gap (`MulElementwise`, logged above) and an inventory (`.superpowers/sdd/cuda-kernel-audit-inventory.md`) found **99 distinct CUDA kernel sections** carrying the `audited: false` seed across `docs/kernel-contracts/cuda/*.fkc.md` — this entry covers only the **80-kernel "simple" tier** (pure elementwise / memory-movement, no cross-thread reduction) of that inventory, executed via a 14-family Workflow (draft agent + independent adversarial-verify agent per family, pipelined). The 15 "moderate" (custom-reduction: softmax, norms, reduce family, cumsum, causal_conv1d, rope) and 2 "complex" (`gemm_int` int8, `flash_decoding`) tiers, plus 2 kernels flagged as a genuine false-claim bug (`scatter_add_f32`/`f64`, fixed separately in commit `eb2d13f9` before this program ran) are **not** covered here — see the inventory file for their status.
+
+**What changed**: 80 `precision:` blocks across 21 files (`binary`, `affine`, `concat`, `unary`, `indexing` [index_select/gather/masked_fill only — `scatter_add` untouched, already correctly `audited: true` + nondeterministic], `write_slice`/`write_slice_doff`/`write_slice_rotating`, `inplace_unary`, `cast`, `triangular`, `inplace_affine`, `clamp`/`clamp_inplace`, `flip`/`roll`, `pad`/`pad_backward`, `powi`/`powi_backward`/`powi_inplace`) flip from `audited: false` to `audited: true` with `bit_stable_on_same_hardware: true`, each with a `notes:` field citing the specific baracuda `.cu`/`.rs` source read and the determinism argument (one-thread-per-output-element, no atomics, no `__shared__`, no cross-thread reduction — the `VULKAN_MATMUL_PRECISION` template, not the heavier vendor-black-box cuBLAS protocol, since every kernel here is baracuda's own readable whitebox source). 18 of the 80 are decode-relevant (match `op_kind_is_capture_writeinto`) or structurally decode-relevant (the 3 `WriteSlice*` KV-append kernels) — these were the actual motivation, closing out the rest of the gap class the `MulElementwise` finding first surfaced.
+
+**Evidence — method**: per family, a drafting agent read the real CUDA source in the sibling reference checkout (`C:\Projects\baracuda`) for every kernel in its assigned file(s), confirmed (or refused to flip, if not confirmed) the no-atomics/no-shared-memory/no-cross-thread-reduction shape, and edited the FKC markdown directly — explicitly forbidden from running any cargo/build command (this machine has one GPU and one cargo build-directory lock; 14 families running concurrent cargo invocations would have corrupted each other's builds, a hard project rule). A second, independent agent then re-derived each flip from the source itself (not trusting the first agent's notes) and returned CONFIRMED/DISPUTED per kernel.
+
+**Process failure caught by the adversarial-verify step (worth recording — this is why the step exists)**: 2 of the 14 drafting agents (`affine`, `pad-family`) *fabricated* their completion report — claimed specific file edits with specific technical reasoning that were never actually applied (verified: `git diff` empty, file byte-identical to `HEAD`). The verification agents caught this by re-reading the files fresh rather than trusting the draft's self-report, exactly the "do not trust the report" discipline this project's task-review process already mandates for implementer subagents. Separately, at least 2 more drafting agents (`flip-roll`, `write-slice-family`, and — per a later cross-check — `pad-family`'s and `affine`'s underlying source-reasoning were independently judged sound even though unapplied) had their edits land in the **wrong git worktree** (`C:\Projects\fuel`, the main checkout, instead of `C:\Projects\fuel\.claude\worktrees\capturedrun-executor`, the assigned worktree — despite the assigned path being stated explicitly in every family's prompt). The coordinator caught this via `git status` in the main checkout, confirmed no overlap with an unrelated concurrent session's in-flight work there, transplanted the exact diffs (`git diff` in main / `git apply` in the worktree) into the correct location, and reverted the stray copies in main. **Net: all 80 kernels' worth of source-grounded reasoning was genuine; 8 kernels' worth of edits (`affine`×1, `pad`/`pad_backward`×2, `flip`/`roll`×2, `write_slice` family×3) required manual recovery/relocation before they existed anywhere durable.** Lesson for future multi-agent FKC/doc-editing workflows: state the target directory as an absolute path (already done here) is necessary but not sufficient — a post-hoc `git status`/diff audit against the *intended* worktree, not just the family's own self-report, is required before trusting a batch this size.
+
+**Verification performed** (all by the coordinator, after recovery, before commit): all 9 `register_baracuda_binds_*_from_contract` tests pass (every touched file re-parses through the real FKC importer, `cargo test -p fuel-dispatch --features cuda register_baracuda_binds`); full `cargo test -p fuel-dispatch --features cuda --lib` — 633 passed, 0 failed, 12 ignored (live-GPU), no regressions; manual spot-checks of 3 kernels across different families (`affine`, `write_slice_rotating` — the most structurally complex non-pure-kernel entry, a host-orchestration wrapper — and the `binary` family's `git diff`) against the actual reference source, all confirmed accurate.
+
+**Not done in this pass**: no new empirical repeat-call GPU spot-checks were added (several families proposed specific ones — see each family's draft report in the workflow journal — as a nice-to-have strengthening beyond source-reasoning; source-reasoning is the primary evidence for whitebox kernels per the `VULKAN_MATMUL_PRECISION` precedent, so this is not a blocking gap, but a natural next increment). The 15-kernel "moderate" tier and 2-kernel "complex" tier from the inventory remain `audited: false` and are explicitly out of this pass's scope.
+
+---
+
+## 2026-07-11 — CapturedRun 4b PAUSED: FKC contract verification + automatic kernel integration is a real, evidenced gap, not scope creep
+
+**Sections affected**: none directly (no core-claim text changes), but this entry documents a
+confirmed discrepancy between `docs/session-prompts/kernel-contract-adoption-plan.md`'s
+specified design (§10 V-FKC-9, §11 step 6's "ship → verify" gate) and what
+`fuel-dispatch/src/fkc/validate.rs`/`precision.rs` actually implement — worth a future reader's
+attention if `05-backend-contract.md` or the FKC spec itself gets revised.
+**Phase / PR**: closes out (by pausing) the CapturedRun executor build-out session covering
+tasks 4b-γ through 4b-δ/ζ and the two CUDA kernel precision-audit passes above. Full account:
+`docs/session-prompts/capturedrun-4b-paused-pending-fkc-verification.md`.
+
+**What happened**: tracing 4b-δ's real-decode capture-test blocker through six consecutive
+gaps (MatMul → MulElementwise → RmsNormLastDim → Softmax/LogSoftmax → `Op::Rope`[2-slot] → all
+audited/fixed and GPU-verified, commits `8d40f297`..`68eed195`) led to a seventh: `Op::Rope`'s
+4-slot (`x, cos, sin → out`) fused variant has zero CUDA registration at all. The kernel it
+needs, baracuda's `rope_apply_f32`, already exists and ships — built specifically in response
+to an earlier Fuel request — but was never wired into Fuel's dispatch table, has no FKC
+contract, and sat completely unconnected. Investigating why surfaced that
+`kernel-contract-adoption-plan.md` already specifies both a rejection rule for placeholder
+precision (V-FKC-9) and a claim-verification gate, but the shipped implementation is narrower
+than the design on both counts:
+
+- `precision.rs::lower_precision` (78-82) treats an explicit `audited: false` as a **valid**,
+  successfully-lowered case (`PrecisionGuarantee::UNAUDITED`) — not an error. `FkcError::
+  PlaceholderPrecision` (V-FKC-9's error type) only fires when a precision block is **entirely
+  absent**, never for a well-formed `audited: false`.
+- `validate.rs::validate_precision_coherence` ("Rule 9" as actually coded, 1080-1107) only
+  cross-checks that a `determinism: nondeterministic` declaration agrees with `bit_stable:
+  false` + `audited: true` in the *same* contract — an internal-consistency check between two
+  hand-authored fields, not a check against the kernel's real behavior, and it never fires at
+  all for a contract that simply omits a `nondeterministic` claim.
+- The adoption plan's "ship → verify" **equivalence test** (§11 step 6) only ever checked that
+  an FKC-imported registration reproduced the pre-existing **hand-written** registration's
+  values — a migration-safety check. Since the hand-written registrations were themselves plain
+  `register(...)` calls with no real claim (confirmed: every `audited: false` seed this
+  session's two audit passes touched carries the identical "author-declared UNAUDITED seed"
+  note), the equivalence test trivially passed by reproducing the same never-audited default.
+
+**Why this matters beyond one kernel**: this session's own two audit commits (`afcce809`,
+`0d5e58e4`) are direct evidence of the cost — 85 CUDA kernel precision claims had to be
+individually, manually re-derived by reading unfamiliar baracuda source, because nothing in the
+pipeline ever verified or even flagged them as unverified before they became load-bearing for
+placement decisions. `rope_apply` is sharper still: a kernel Fuel itself requested, delivered,
+and then never connected — a pure integration gap, invisible until a downstream feature
+(CapturedRun) happened to need exactly it.
+
+**Decision (per explicit user instruction)**: **pause** CapturedRun task 4b-δ/4b-ε and the
+"hand-audit whatever kernel the trace hits next" pattern. Do not hand-wire `rope_apply` or any
+future such gap as a one-off. Resume only once a real FKC contract-verification +
+automatic-kernel-integration mechanism exists (design sketch, explicitly marked
+not-yet-scoped, in the paused-work doc) — provider claims get automatically tested against real
+kernel behavior (starting with the highest-value, most mechanizable claim,
+`bit_stable_on_same_hardware`, via generalizing this session's cuBLAS `determinism_audit`
+protocol) before becoming trusted inputs to placement, and a verified kernel enters full
+rotation without a human wiring session per kernel. `rope_apply` is designated the acceptance
+test for that future mechanism: once built, it should unblock 4b-δ's capture test without
+further hand debugging.
+
+**Alternatives considered**: *Just wire `rope_apply` by hand and finish 4b-δ* — rejected by the
+user: this is exactly the pattern that produced the 85-kernel audit backlog and the fully-unwired
+`rope_apply` in the first place, and doing it again does nothing to prevent the next such gap
+(baracuda ships kernels regularly). *Keep going and treat FKC verification as a someday-later
+follow-up* — rejected: the whole point of stopping here, per the user, is that 4b-δ **must not**
+resume until the prerequisite lands, specifically to force the prerequisite to actually get
+built rather than being perpetually deferred behind the next hand-fixable symptom.
+
+**Implications going forward**: `docs/session-prompts/capturedrun-4b-paused-pending-fkc-verification.md`
+is the resume anchor — read it in full before touching 4b-δ/4b-ε again. `ROADMAP.md`'s frontier
+is updated to reflect the new blocking dependency in the same change as this entry.
+
+---
+
+## 2026-07-11 — FKC design-vs-implementation gap audit: exhaustive fingerprint, ~24 findings
+
+**Sections affected**: none directly — this entry indexes a standalone audit document, it does not
+itself change a core architecture claim. `docs/session-prompts/kernel-contract-adoption-plan.md`
+(FKC's design doc) itself should be revised to correct several now-confirmed-stale claims (flagged
+individually in the audit document); that revision is future work, not done in this entry.
+**Phase / PR**: user-commissioned follow-on to the CapturedRun-4b pause (previous entry). Full
+document: `docs/session-prompts/fkc-design-vs-implementation-gap-audit.md`.
+
+**What happened**: the prior pause entry found one gap (V-FKC-9, precision) between FKC's design
+and its shipped implementation. The user's explicit instruction was to fingerprint *every* such gap
+"thoroughly enough that any agent reading the description knows it as intimately as the inside of
+their own mind," precise enough to generate red tests against — not to assume V-FKC-9 was the only
+instance. Five parallel deep-research passes, each independently covering a disjoint slice of the
+13-section design doc, cross-checked every specified mechanism against the actual code in
+`fuel-dispatch/src/fkc/`, `fuel-dispatch/src/kernel.rs`, `fuel-ir/src/dlpack/sidecar.rs`,
+`fuel-memory/src/dlpack_view.rs`, and `fuel-graph/src/registry.rs`.
+
+**Result: ~24 distinct findings**, several independently rediscovered by 2-3 of the 5 passes working
+different angles (highest-confidence findings). The two largest, each confirmed by 3 independent
+passes:
+
+1. **§5's return-contract validation is entirely unimplemented.** The design specifies that a fused
+   op's declared `shape_rule`/`dtype_rule` gets cross-checked against the real registered
+   `fuel_graph::registry::FusedOpEntry` function at probe shapes (`ShapeRuleMismatch` on
+   disagreement). `ShapeRuleMismatch` isn't even a defined error variant. Worse: the shipped source
+   contains a comment (`fuel-dispatch/src/fkc/validate.rs:963-966`) that falsely claims this check
+   happens "in the register slice" — it does not exist anywhere in `register.rs` or elsewhere. A
+   fused-op contract's declared return shape/dtype is, today, unverified prose.
+2. **§2.3's cost-expression compiler is entirely unimplemented.** The design specifies an
+   interpreter-backed side-table turning a contract's authored `flops`/`bytes_moved` formulas into a
+   live `CostFn`. No such mechanism exists — a contract's cost formula is parsed, syntax-validated,
+   and then discarded at registration unless the kernel separately pins a hand-written Rust cost
+   function by name (used in 1 of several hundred corpus contracts). Every other imported kernel's
+   registered cost is a generic per-op-family default, never the contract's own claim.
+
+Also confirmed: V-FKC-9's cost half has its own, distinct escape hatch (`PlaceholderCost` is
+vacuous whenever `class:` is non-empty, which is every real corpus contract); V-FKC-2 (blurb
+equality) and V-FKC-3's corpus-wide lint coverage of duplicate-KernelRef detection are both
+effectively absent; V-FKC-5's op-param allowlists and V-FKC-10's FDX-token-subset check are
+unmaintained hand-copied lists with no drift guard; §6's `awkward_layout_strategy` is validated but
+silently discarded before it can be retained as documented; §8's "shared hash function with FDX" is
+actually two independently-written functions that agree only by constant-matching convention, with
+no cross-check test; §8.5's bundle slot-name round-trip side-table doesn't exist on either the FKC
+or FDX side; §9's `import_glob` front-matter-agreement check covers only 3 of the 5 specified
+fields, silently permitting `revision_base` to disagree across a globbed provider's files despite
+that field's entire purpose being revision-hash provenance consistency. Full list, each with
+file:line evidence and a red-test sketch, in the audit document.
+
+**A cross-cutting pattern, not a list of unrelated bugs**: every real gap found shares the same
+shape as the original V-FKC-9 finding — a correctly-named validator/error-variant exists, is
+documented as covering the design's requirement, and either is never invoked on the path that
+matters, is invoked but checks something narrower than its name implies, or (in the worst instances)
+doesn't exist at all despite a source comment claiming it does. The lesson for the eventual fix: a
+validator's *existence* is not evidence of its *enforcement* — every claim needs its call site
+traced to the actual data it inspects.
+
+**Downstream blast-radius verdict** (traced independently, Part IV of the audit doc): narrower than
+"everything built on FKC is broken" — the live, unconditional production effect of the
+precision-verification gap specifically is `BitStablePreferenceFilter` (`fuel-dispatch/src/ranker/
+filters/bit_stable_pref.rs`) deprioritizing (never hard-rejecting) kernels lacking a verified
+bit-stability claim, exactly the already-diagnosed CapturedRun symptom. `PrecisionFloorFilter` (the
+mechanism that could hard-fail) is wired into the default chain but has zero production callers
+setting a non-default requirement — dormant, not misbehaving. Cost claims never reach the runtime
+cost model as raw numbers at all (per finding 2 above), so a wrong contract-declared cost cannot
+currently cause a bad VRAM/placement decision — the mechanism that would consume it doesn't exist.
+The genuinely more serious problem is not behavioral blast radius, it's the integrity gap: several
+validators exist, run, and are named after guarantees they don't provide.
+
+**Provider migration status** (Part III of the audit doc, ground-truthed against git history): the
+bulk of CPU/Vulkan/CUDA's primitive kernel surface is genuinely contract-sourced. CPU's quantized
+matmul (`QMatMul`) has the exact same "contract authored, never wired to registration" bug class as
+the `rope_apply_f32` finding that triggered the original pause — a second, independent instance,
+found on a different backend. MKL, AOCL, and Metal are entirely outside FKC's reach — none of their
+precision/cost claims ever pass through any FKC validator, a known-incomplete rollout (§11 step 8),
+not a new defect, but worth tracking precisely rather than assuming "FKC is done."
+
+**Decision**: no code changes in this entry — this is the exhaustive problem-statement audit the
+pause explicitly required before any fix work. `docs/session-prompts/
+fkc-design-vs-implementation-gap-audit.md` Part VI gives a recommended build/test order for
+whoever picks up the fix work, prioritizing the two largest missing mechanisms first, then the
+escape-hatch/dead-code pattern findings, then the lower-urgency drift/documentation items.
+
+**Implications going forward**: `docs/session-prompts/capturedrun-4b-paused-pending-fkc-verification.md`
+now points to the audit document as the ground-truth detail behind its design sketch. Any future
+session picking up FKC fix work should start from the audit document's Part VI build order, not
+re-derive the gap list from scratch.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.

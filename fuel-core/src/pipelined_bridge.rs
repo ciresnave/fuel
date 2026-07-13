@@ -1448,7 +1448,12 @@ fn host_buffer_dtype(buf: &HostBuffer) -> fuel_ir::DType {
 /// Extract the raw bytes from a `HostBuffer` via a per-variant match
 /// (`bytemuck::cast_slice` for typed numeric vecs; identity for the
 /// raw-byte sub-byte variants).
-fn host_buffer_to_bytes(buf: &HostBuffer) -> Vec<u8> {
+///
+/// `pub(crate)`: also reused by `LlamaModel::build_token_rope_mask_bytes`
+/// (CapturedRun replay wiring) to extract raw per-token bytes from the
+/// same `HostBuffer`s `build_token_rope_mask_arcs` uploads — one
+/// dtype-dispatch table, not two.
+pub(crate) fn host_buffer_to_bytes(buf: &HostBuffer) -> Vec<u8> {
     match buf {
         HostBuffer::U8(v) => v.clone(),
         HostBuffer::I8(v) => bytemuck::cast_slice(v).to_vec(),

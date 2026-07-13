@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x[i]=x[i]^exp in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "Source-audited (fuel-cuda-backend/src/baracuda/powi.rs powi_inplace_run, reusing unary_param_pointwise_contig_kernel with x==y pointer): each thread only reads/writes its own index i, no cross-thread aliasing; same one-thread-per-element, atomic-free kernel as powi forward — deterministic given identical inputs/scheduling."
 
 determinism: same_hardware_bitwise
 ```

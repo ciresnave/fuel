@@ -70,8 +70,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out[i]=clamp(x[i],min,max) in place; author-declared UNAUDITED seed (byte-for-byte the deleted plain register default); pointwise, bit-stable same hardware."
+  audited: true
+  notes: "fuel-cuda-backend/src/baracuda/clamp.rs clamp_inplace_run reuses the same ternary_pointwise_strided_kernel (baracuda_elementwise.cuh) with rank-1 contig stride and the same pointer for input `a` and output `y`; each thread reads its own a[i] then writes y[i] at the identical address, no cross-thread aliasing, no atomics. Deterministic same-hardware repeat calls."
 
 determinism: same_hardware_bitwise
 ```

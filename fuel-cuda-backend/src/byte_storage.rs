@@ -310,6 +310,35 @@ impl CudaStorageBytes {
         Ok(())
     }
 
+    /// Device → device: overwrite `self`'s buffer with `src`'s bytes,
+    /// preserving `self`'s device address (Arc identity unaffected — only
+    /// the buffer's CONTENTS change). `src.len_bytes()` must equal
+    /// `self.len_bytes` — the caller sizes both to the same shape.
+    ///
+    /// CapturedRun executor build-out (4b-γ): the N>2 Concat dispatch
+    /// wrapper's fallback path computes its result into a fresh allocation
+    /// (baracuda's N-1 chained `concat2` calls) and needs to copy that
+    /// result INTO the executor-provided `outputs[0]` so `outputs[0]`'s Arc
+    /// identity is preserved rather than replaced — this is that copy.
+    /// Async on the default stream (mirrors `write_from_host`'s H2D
+    /// counterpart, but no host round-trip and no sync — the executor's
+    /// existing wait-hint / event mechanism covers ordering).
+    pub fn copy_from_device(&self, src: &Self) -> Result<()> {
+        if src.len_bytes != self.len_bytes {
+            return Err(fuel_ir::Error::Msg(format!(
+                "CudaStorageBytes::copy_from_device: src.len_bytes ({}) != \
+                 self.len_bytes ({})",
+                src.len_bytes, self.len_bytes,
+            )).bt());
+        }
+        if self.len_bytes == 0 {
+            return Ok(());
+        }
+        let stream = self.device.cuda_stream();
+        src.buffer.copy_to_device_async(&self.buffer, &stream).w()?;
+        Ok(())
+    }
+
     /// Bridge-retirement Phase 3a follow-up: in-place device-side
     /// zero-fill via baracuda alpha.30's `DeviceBuffer::zero_async`
     /// (`cuMemsetD8Async`). The buffer's identity (CUdeviceptr)
