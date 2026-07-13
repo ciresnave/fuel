@@ -1412,5 +1412,24 @@
       "harness": "task-4.5b/seed_cpu_ledger",
       "repeat_calls": 16
     }
+  },
+  {
+    "kernel_ref": "rope_apply_f32",
+    "backend": "Cuda",
+    "dtypes": [
+      "F32",
+      "F32",
+      "F32",
+      "F32"
+    ],
+    "kernel_revision_hash": 10169552488739070290,
+    "claim": "bit_stable_on_same_hardware",
+    "result": "pass",
+    "verified_at": "epoch:1783949161",
+    "protocol_version": 1,
+    "evidence": {
+      "harness": "task-4.6/rope_apply_harness",
+      "repeat_calls": 16
+    }
   }
 ]
