@@ -21,7 +21,8 @@
 //!   `max_absolute` claims, candidate-vs-reference diffing.
 //! - [`accept_coverage::verify_accept_coverage`] — a Phase-1 smoke-check
 //!   stub for the `accept` block's declared combos (full cross-check against
-//!   Group 3's return-rule interpreter is Task 4.6).
+//!   Group 3's return-rule interpreter is a later, not-yet-scheduled task —
+//!   Task 4.6 turned out to be the rope-apply CUDA harness below, not this).
 //!
 //! ## Status — Task 4.5 (this slice)
 //!
@@ -34,11 +35,28 @@
 //! the respective device storage; their live-hardware tests are
 //! `#[ignore]`'d (no device in this build environment to verify against).
 //!
-//! NOT yet implemented (later tasks in the same program — 4.6 per
-//! `docs/session-prompts/` — extend this file's `mod` list when they land):
-//! the full accept-coverage cross-check; and wiring `gate_precision` into
-//! the actual import path (it ships as pure logic only, not yet called
-//! from anywhere).
+//! ## Status — Task 4.6 (this slice)
+//!
+//! Adds [`harness::run_fkc_verify_harness`] (`#[cfg(feature = "cuda")]`):
+//! the rope-apply CUDA acceptance harness. Imports
+//! `docs/kernel-contracts/cuda/rope-apply.fkc.md` (baracuda's
+//! `rope_apply_<dt>_run` — shipped, never wired into any dispatch path
+//! before this task) into a fresh, harness-local `KernelBindingTable`,
+//! drives `verify_bit_stability` through a real [`CudaInvoker`], and
+//! writes `pass`/`fail`/`no_reference` records keyed on
+//! `kernel_revision_hash`. Its acceptance test,
+//! `fkc_verify_rope_apply_writes_a_pass_ledger_entry`, is `#[ignore]`'d
+//! (needs a live CUDA device) — see `harness.rs`'s module doc for what it
+//! does and doesn't check (notably: no `verify_precision_bound` cross-check
+//! against a CPU reference yet — a documented gap, not an oversight).
+//!
+//! NOT yet implemented (later tasks in the same program extend this file's
+//! `mod` list when they land): the full accept-coverage cross-check; wiring
+//! `gate_precision` into the actual import path (it ships as pure logic
+//! only, not yet called from anywhere); and a `verify_precision_bound`-
+//! shaped helper that accepts per-invoker probes (needed for any op whose
+//! candidate/reference backends disagree on operand-shape convention, like
+//! rope-apply's half-width vs full-width cos/sin tables).
 
 mod accept_coverage;
 mod bit_stability;
@@ -50,6 +68,8 @@ mod seed_cpu_ledger;
 mod invoker_cuda;
 #[cfg(feature = "vulkan")]
 mod invoker_vulkan;
+#[cfg(feature = "cuda")]
+mod harness;
 
 pub use accept_coverage::verify_accept_coverage;
 pub use bit_stability::{
@@ -64,6 +84,8 @@ pub use seed_cpu_ledger::{run_cpu_verification, SeedAttempt};
 pub use invoker_cuda::CudaInvoker;
 #[cfg(feature = "vulkan")]
 pub use invoker_vulkan::VulkanInvoker;
+#[cfg(feature = "cuda")]
+pub use harness::run_fkc_verify_harness;
 
 /// The embedded (compile-time) verification ledger. Thin wrapper so callers
 /// outside this module can reach it as `verify::embedded()` without
