@@ -570,6 +570,7 @@ mod tests {
     /// (pass/fail/unverified + reason) — every op in [`TARGETS`] is
     /// accounted for, not just the ones that pass.
     #[test]
+    #[ignore = "re-seeding tool: writes docs/kernel-contracts/.fkc-verified-ledger.json; run manually via `cargo test -p fuel-dispatch seed_cpu_verified_ledger -- --ignored --nocapture` to regenerate the ledger. The verified ledger is committed; the default suite must not rewrite it."]
     fn seed_cpu_verified_ledger() {
         let (records, log) = run_cpu_verification();
         for attempt in &log {
