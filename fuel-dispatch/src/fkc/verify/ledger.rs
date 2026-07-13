@@ -100,6 +100,22 @@ impl VerificationLedger {
         self.records.push(r);
     }
 
+    /// Insert `r`, first removing any existing record with the same
+    /// verification key `(backend, dtypes, kernel_revision_hash, claim)` — the
+    /// same tuple `has_pass` matches on. This makes re-verification idempotent:
+    /// a re-run of a seeding/acceptance harness UPDATES an op's entry in place
+    /// rather than appending a duplicate (a verification ledger records the
+    /// latest verdict per key, not a history of runs).
+    pub fn upsert(&mut self, r: LedgerRecord) {
+        self.records.retain(|e| {
+            !(e.backend == r.backend
+                && e.dtypes == r.dtypes
+                && e.kernel_revision_hash == r.kernel_revision_hash
+                && e.claim == r.claim)
+        });
+        self.records.push(r);
+    }
+
     /// Number of records.
     pub fn len(&self) -> usize {
         self.records.len()

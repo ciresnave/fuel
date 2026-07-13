@@ -308,7 +308,7 @@ pub fn run_fkc_verify_harness(kernels: &[&str], force: bool) -> std::result::Res
             Err(_) => ("fail", serde_json::json!({ "panic": true })),
         };
 
-        ledger.push(LedgerRecord {
+        ledger.upsert(LedgerRecord {
             kernel_ref: name.to_string(),
             backend: "Cuda".to_string(),
             dtypes: dtypes.iter().map(|d| format!("{d:?}")).collect(),
