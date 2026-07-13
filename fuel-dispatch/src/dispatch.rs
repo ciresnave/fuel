@@ -6921,14 +6921,18 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
     // fused ops.
     register_cpu_conv_rope_fused_from_contract(r);
 
-    // CUDA FUSED-op candidates (CapturedRun 4b-resume): `FusedOps::ROPE` via
-    // baracuda's `rope_apply_<dt>_run`, imported from
-    // `docs/kernel-contracts/cuda/rope-apply-fused.fkc.md`. Only compiled when
-    // the `cuda` feature is on (mirrors `register_baracuda_cuda_kernels`'s own
-    // gating for the primitive CUDA families) — `crate::baracuda_dispatch` has
-    // no public items at all under the default feature set.
-    #[cfg(feature = "cuda")]
-    crate::baracuda_dispatch::register_baracuda_cuda_fused_kernels(r);
+    // NOTE (CapturedRun 4b-resume, 2026-07-13): a CUDA `FusedOps::ROPE`
+    // candidate via baracuda's `rope_apply_<dt>_run` was registered here
+    // (commit 3be28ab1) and then REVERTED — baracuda's `rope_apply` uses the
+    // INTERLEAVED pairing `(2k, 2k+1)` (GPT-J) while Fuel's `FusedOps::ROPE`
+    // (`Tensor::rope_with_tables`) is ROTATE-HALF `(j, j+head_dim/2)`
+    // (Llama/HF). They compute DIFFERENT functions, so the interleaved kernel
+    // must NOT be a candidate for the rotate-half op (a GPU numerical test
+    // caught the divergence: `fuel_cuda_backend::baracuda::attention::
+    // fused_rope_tests`). CUDA rope therefore runs via the correct rotate-half
+    // primitive decompose until baracuda ships a rotate-half table-driven
+    // `rope_apply` variant; the staged (unwired) driver + scratch cache live
+    // in `fuel-cuda-backend` ready for that kernel.
 
     // FlashAttn × 4 dtypes × {no-alibi, with-alibi}.
     register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F32_NOA,

@@ -127,7 +127,6 @@ pub use cuda_link::{
     CUDA_GEMM_INT_ENTRY_POINTS,
     CUDA_INDEXING_ENTRY_POINTS,
     CUDA_FLASH_DECODING_ENTRY_POINTS,
-    CUDA_ROPE_APPLY_FUSED_ENTRY_POINTS,
     CUDA_COST_FNS,
 };
 #[cfg(feature = "vulkan")]
@@ -163,19 +162,6 @@ mod tests {
     /// touching any real CUDA code.
     const ROPE_APPLY: &str =
         include_str!("../../../docs/kernel-contracts/cuda/rope-apply.fkc.md");
-    /// `rope-apply-fused.fkc.md` (CapturedRun 4b-resume) — baracuda's
-    /// `rope_apply_<dt>_run` registered as a CUDA candidate for the FUSED
-    /// `FusedOps::ROPE` key (the key the real Llama decode graph's fused
-    /// Rope node actually builds), distinct from `ROPE_APPLY` above (which
-    /// targets the primitive `op_kind: Rope` and resolves only through the
-    /// verification-harness-local link registry). Its `entry_point` resolves
-    /// through the production `CudaLinkRegistry`, so unlike `ROPE_APPLY` this
-    /// one CAN be `import_bundle_str`'d for real, but only under
-    /// `--features cuda`. What runs here, default-feature: parse + validate +
-    /// lower against a stub registry — the same posture `ROPE_APPLY`'s test
-    /// above takes.
-    const ROPE_APPLY_FUSED: &str =
-        include_str!("../../../docs/kernel-contracts/cuda/rope-apply-fused.fkc.md");
 
     // =====================================================================
     // PARSE A REAL CONTRACT — the key correctness test (§3.1/§3.3 schema match)
@@ -403,111 +389,6 @@ mod tests {
             assert_eq!(p.dtypes[0], p.dtypes[3], "output passthrough(x) must match x's dtype");
         }
         let x_dtypes: std::collections::HashSet<DType> = primitives.iter().map(|p| p.dtypes[0]).collect();
-        assert_eq!(
-            x_dtypes,
-            [DType::F32, DType::F16, DType::BF16, DType::F64].into_iter().collect(),
-            "expected exactly the F32/F16/BF16/F64 fan",
-        );
-    }
-
-    /// CapturedRun 4b-resume — the FUSED `FusedOps::ROPE` CUDA contract must
-    /// parse, pass the `V-FKC-*` validators, and LOWER structurally correctly
-    /// as a FUSED record, all WITHOUT the `cuda` feature (a stub registry
-    /// stands in for the real `CudaLinkRegistry`, mirroring
-    /// `parses_and_lowers_real_rope_apply_contract`'s own posture for the
-    /// sibling primitive contract).
-    #[test]
-    fn parses_and_lowers_real_rope_apply_fused_contract() {
-        use fuel_graph::registry::FusedOps;
-        use fuel_ir::probe::BackendId;
-        use fuel_ir::DType;
-
-        let file = parse_file(ROPE_APPLY_FUSED).expect("rope-apply-fused.fkc.md must parse");
-        validate_file(&file).expect("rope-apply-fused.fkc.md must pass the V-FKC-* validators");
-
-        assert_eq!(file.front_matter.provider.name, "fuel-cuda-backend");
-        assert_eq!(file.front_matter.provider.backend, "Cuda");
-        assert_eq!(file.front_matter.provider.kernel_source, "baracuda");
-
-        let names: Vec<&str> = file.kernels.iter().map(|k| k.kernel.as_str()).collect();
-        assert!(
-            names.contains(&"rope_apply_fused"),
-            "expected a `rope_apply_fused` section; got {names:?}"
-        );
-
-        let kernel = file.kernels.iter().find(|k| k.kernel == "rope_apply_fused").unwrap();
-        assert_eq!(kernel.fused_op.as_deref(), Some("ROPE"));
-        assert!(kernel.op_kind.is_none(), "rope_apply_fused is a fused_op contract, not primitive");
-
-        // Three inputs: x (fans over the 4 dtypes), cos + sin (fixed F32
-        // each, FULL-WIDTH [seq, head_dim] — see the contract's ABI-gap note).
-        let accept = kernel.accept.as_ref().expect("rope_apply_fused has accept");
-        assert_eq!(accept.inputs.len(), 3);
-        assert_eq!(accept.inputs[0].name.as_deref(), Some("x"));
-        assert_eq!(
-            accept.inputs[0].dtypes,
-            vec!["F32".to_string(), "F16".to_string(), "BF16".to_string(), "F64".to_string()],
-        );
-        assert_eq!(accept.inputs[1].name.as_deref(), Some("cos"));
-        assert_eq!(accept.inputs[1].dtypes, vec!["F32".to_string()]);
-        assert_eq!(accept.inputs[2].name.as_deref(), Some("sin"));
-        assert_eq!(accept.inputs[2].dtypes, vec!["F32".to_string()]);
-        let op_params = accept.op_params.as_ref().expect("rope_apply_fused has op_params");
-        assert_eq!(op_params.variant.as_deref(), Some("Rope"));
-
-        // Lower against a stub that resolves ONLY the four fanned symbols
-        // this contract's base entry_point ("fuel_cuda_backend::fkc::
-        // rope_apply_fused") fans into via resolve_fused (NOT
-        // resolve_primitive — this is a fused_op contract).
-        fn dummy_kernel(
-            _inputs: &[std::sync::Arc<std::sync::RwLock<fuel_memory::Storage>>],
-            _outputs: &mut [std::sync::Arc<std::sync::RwLock<fuel_memory::Storage>>],
-            _layouts: &[fuel_ir::Layout],
-            _params: &crate::kernel::OpParams,
-        ) -> fuel_ir::Result<()> {
-            Ok(())
-        }
-        struct StubRopeApplyFusedLink;
-        impl LinkRegistry for StubRopeApplyFusedLink {
-            fn resolve_primitive(&self, _symbol: &str) -> Option<crate::kernel::KernelRef> {
-                None
-            }
-            fn resolve_fused(&self, symbol: &str) -> Option<crate::kernel::KernelRef> {
-                const KNOWN: &[&str] = &[
-                    "fuel_cuda_backend::fkc::rope_apply_fused_f32",
-                    "fuel_cuda_backend::fkc::rope_apply_fused_f16",
-                    "fuel_cuda_backend::fkc::rope_apply_fused_bf16",
-                    "fuel_cuda_backend::fkc::rope_apply_fused_f64",
-                ];
-                if KNOWN.contains(&symbol) { Some(dummy_kernel) } else { None }
-            }
-        }
-
-        let mut warnings = Vec::new();
-        let resolved = lower_file(&file, &StubRopeApplyFusedLink, &mut warnings).expect(
-            "rope-apply-fused.fkc.md must lower against a registry resolving its 4 fused symbols",
-        );
-        let fused: Vec<_> = resolved
-            .iter()
-            .filter_map(|r| match r {
-                Resolved::Fused(f) => Some(f),
-                Resolved::Primitive(_) => None,
-            })
-            .collect();
-        assert_eq!(
-            fused.len(), 4,
-            "expected 4 dtype variants (F32/F16/BF16/F64); got {}", fused.len(),
-        );
-        for f in &fused {
-            assert_eq!(f.id, FusedOps::ROPE);
-            assert_eq!(f.backend, BackendId::Cuda);
-            // Per-variant key: [x_dt, F32(cos), F32(sin), x_dt(out, passthrough)].
-            assert_eq!(f.dtypes.len(), 4, "expected [x, cos, sin, out] key; got {:?}", f.dtypes);
-            assert_eq!(f.dtypes[1], DType::F32, "cos is always F32");
-            assert_eq!(f.dtypes[2], DType::F32, "sin is always F32");
-            assert_eq!(f.dtypes[0], f.dtypes[3], "output passthrough(x) must match x's dtype");
-        }
-        let x_dtypes: std::collections::HashSet<DType> = fused.iter().map(|f| f.dtypes[0]).collect();
         assert_eq!(
             x_dtypes,
             [DType::F32, DType::F16, DType::BF16, DType::F64].into_iter().collect(),
