@@ -717,6 +717,21 @@ re-derive the gap list from scratch.
 
 ---
 
+## 2026-07-13 — CapturedRun 4b COMPLETE; baracuda `rope_apply` is interleaved (revert) → rope runs decomposed on CUDA
+
+**Sections affected**: none bumped (implementation + verification, not a constitutional claim change)
+**Phase / PR**: CapturedRun 4b, branch `capturedrun-4b-resume`, commits `a127c190`..`9b7a5d1c`
+
+**What changed**: The CUDA-graph decode-capture path is complete and verified. The acceptance test `forward_with_kv_context_captured_matches_persistent` is byte-exact GREEN on the RTX 4070 (captured replay == plan-once persistent, whole decode single-device CUDA), and the 4b-ε bench measures a **10.4× captured-replay speedup, byte-exact** on TinyLlama-1.1B F32 (D2 plan-once ~267 ms/tok → D3 captured `cuGraphLaunch` replay ~25.8 ms/tok median). Getting there required (a) a new CUDA verification-ledger seeding harness (`seed_cuda_ledger.rs`) that GPU-verifies `bit_stable_on_same_hardware` (and `max_ulp` for the exact-copy indexing family, CUDA-vs-CPU-reference) for the decode-path kernels — without seeded ledger entries the V-FKC-9 gate downgrades CUDA kernels to UNAUDITED and `BitStablePreferenceFilter` routes the decode to CPU; and (b) running rope DECOMPOSED on CUDA.
+
+**Why rope decomposed**: The Step-2 registration of baracuda's `rope_apply` as the CUDA impl of `FusedOps::ROPE` was a correctness bug — a born-red GPU numerical test showed baracuda `rope_apply` uses the INTERLEAVED pairing `(2k, 2k+1)` (GPT-J) while Fuel's `FusedOps::ROPE` (`rope_with_tables`) is ROTATE-HALF `(j, j+head_dim/2)` (Llama/HF). Different functions; the `captured==persistent` test would NOT have caught it (both legs wrong identically). The registration was reverted; the decode now emits `rope_with_tables_decomposed` (rotate-half primitives, all with capture-safe CUDA kernels).
+
+**Alternatives considered**: (1) a fuel-side rotate-half CUDA rope kernel — deferred (more kernel work; decompose is forward-compatible). (2) ask baracuda for a rotate-half table-driven `rope_apply` — the clean long-term fix, deferred to a propose-first ask. (3) seed the interleaved kernel anyway — rejected (reintroduces the silent bug).
+
+**Implications going forward**: CapturedRun decode replay is available and correct. When a rotate-half fused CUDA rope kernel lands (baracuda ask), the decompose will auto-re-fuse ONLY once the rope `canonical_pattern` matcher (`fuel-graph/src/registry/rope.rs`, currently a `None` stub) is implemented — today the decomposed form stays decomposed. The seeding harness is the reusable template for auditing any provider's CUDA kernels into the ledger.
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
