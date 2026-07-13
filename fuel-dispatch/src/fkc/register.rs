@@ -330,10 +330,50 @@ pub fn import_bundle_str(
     // `lower_file` then EXCLUDES describe-only sections from the registered set
     // (§3.10): they never become a Resolved* record and are never registered.
     let mut warnings: Vec<crate::fkc::ImportWarning> = Vec::new();
-    let resolved = lower_file(&file, link, &mut warnings)?;
+    let mut resolved = lower_file(&file, link, &mut warnings)?;
     let provider = &file.front_matter.provider;
     let backend = lower_backend_str(&provider.backend)?;
     let kernel_source = intern(&provider.kernel_source);
+
+    // V-FKC-9 (Task 4.3): gate every lowered record's declared precision
+    // against the empirical verification ledger BEFORE it reaches
+    // `from_resolved` / the binding table. Any machine-checkable claim
+    // (bit-stability, ULP, etc.) with no matching `pass` ledger entry for
+    // this exact `(kernel_source, backend, dtypes, kernel_revision_hash)`
+    // collapses to `PrecisionGuarantee::UNAUDITED` plus a warning — an
+    // asserted-but-never-measured claim must not survive import as if it
+    // had been verified. Task 4.5b seeded the embedded ledger with real
+    // empirical `pass` entries for the fused CPU ops flipped to
+    // `audited: true` on 2026-07-03, so THOSE records are honored here
+    // (same revision hash, since `default_kernel_registry()`'s
+    // `register_*_fused_from_contract` helpers stamp `BackendImpl.revision`
+    // from this SAME `ResolvedFused.revision`); a primitive `op_kind`
+    // contract like `add_f32` (never in Task 4.5b's fused-op scope) has no
+    // ledger entry and is downgraded.
+    let ledger = crate::fkc::verify::embedded();
+    for r in &mut resolved {
+        match r {
+            Resolved::Primitive(p) => {
+                let q = crate::fkc::verify::LedgerQuery {
+                    kernel_ref: p.kernel_source.as_str(),
+                    backend: p.backend,
+                    dtypes: p.dtypes.as_slice(),
+                    kernel_revision_hash: p.revision.0,
+                };
+                p.precision = crate::fkc::verify::gate_precision(p.precision, &q, ledger, &mut warnings);
+            }
+            Resolved::Fused(f) => {
+                let q = crate::fkc::verify::LedgerQuery {
+                    kernel_ref: f.kernel_source.as_str(),
+                    backend: f.backend,
+                    dtypes: f.dtypes.as_slice(),
+                    kernel_revision_hash: f.revision.0,
+                };
+                f.precision = crate::fkc::verify::gate_precision(f.precision, &q, ledger, &mut warnings);
+            }
+        }
+    }
+
     Ok(ImportedProvider::from_resolved(
         provider.name.clone(),
         backend,
@@ -748,6 +788,52 @@ mod tests {
         ];
         resolved(&inputs, &mut outputs, &layouts, &crate::kernel::OpParams::None)
             .expect("the FKC-resolved add_f32 kernel executes on real storage");
+    }
+
+    // =====================================================================
+    // V-FKC-9 IMPORT-TIME GATE: unverified precision claims are downgraded
+    // =====================================================================
+
+    #[test]
+    fn importing_elementwise_binary_downgrades_add_f32_against_the_ledger() {
+        // The authored elementwise-binary contract declares add_f32
+        // bit_stable_on_same_hardware + a max_ulp bound — but `add_f32` is a
+        // PRIMITIVE `AddElementwise` op_kind contract, not one of the Task
+        // 4.5b-seeded FUSED CPU ops, so the verification ledger has no
+        // passing entry for it at ITS `kernel_revision_hash`. Task 4.3 wires
+        // `gate_precision` into `import_bundle_str` so this import downgrades
+        // it to UNAUDITED and records a warning, rather than trusting an
+        // asserted-but-unverified claim.
+        let link = EntryPointLink::new();
+        let provider = import_bundle_str(ELEMENTWISE_BINARY, &link).expect("imports");
+        let add = provider
+            .primitives
+            .iter()
+            .find(|p| {
+                p.op == OpKind::AddElementwise
+                    && p.dtypes.as_slice() == [DType::F32, DType::F32, DType::F32]
+            })
+            .expect("add_f32 present");
+        assert!(
+            !add.precision.bit_stable_on_same_hardware,
+            "unverified bit_stable claim must be downgraded at import"
+        );
+        assert!(
+            add.precision.max_ulp.is_none(),
+            "unverified ulp bound must be dropped"
+        );
+        assert_eq!(
+            add.precision.notes,
+            crate::fused::PrecisionGuarantee::UNAUDITED.notes
+        );
+        assert!(
+            provider
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("bit_stable_on_same_hardware")),
+            "a downgrade warning was recorded: {:?}",
+            provider.warnings
+        );
     }
 
     #[test]
