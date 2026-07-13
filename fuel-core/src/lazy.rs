@@ -12419,6 +12419,23 @@ mod generate_tests {
         (mean, min, max)
     }
 
+    /// Median of a slice of per-token durations, in ms (robust to the odd
+    /// scheduler/driver spike — the CapturedRun 4b-ε report uses it for the
+    /// steady replay window, median-of-≥8 per the worklist).
+    fn median_ms(times: &[std::time::Duration]) -> f64 {
+        if times.is_empty() {
+            return 0.0;
+        }
+        let mut ms: Vec<f64> = times.iter().map(|d| d.as_secs_f64() * 1e3).collect();
+        ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mid = ms.len() / 2;
+        if ms.len() % 2 == 0 {
+            (ms[mid - 1] + ms[mid]) / 2.0
+        } else {
+            ms[mid]
+        }
+    }
+
     /// The shared A/B benchmark body (device-agnostic). Runs D1 (replan
     /// every token) and D2 (plan-once persistent) over `n` decode tokens
     /// from a fixed hard-coded prompt, times each per-token step
@@ -12538,6 +12555,60 @@ mod generate_tests {
         }
         after_step();
 
+        // ---------------- D3: CapturedRun replay decode ----------------
+        // Third leg (CapturedRun 4b-ε): `forward_with_kv_context_captured`
+        // builds the SAME held session as D2 at token 1, captures a CUDA graph
+        // at token 2, then tokens 3..N are pure `cuGraphLaunch` replays — fresh
+        // per-token H2D of only the 4 small data buffers (token id, rope cos/sin,
+        // mask), no re-optimize, no re-realize. Must be byte-identical to D2
+        // (same plan → same kernels). F32-only (capture is f32-today); skipped
+        // for a BF16 cache. Own scope so its base_cache frees before D1.
+        // d3_* declared unconditionally so the report/stats below compile in
+        // every feature set; the capture leg itself is CUDA-only (the capture
+        // APIs `forward_with_kv_context_captured` / `CapturedDecodeSession` are
+        // `#[cfg(feature = "cuda")]`), so on a non-cuda build these stay empty.
+        let mut d3_tokens: Vec<u32> = Vec::with_capacity(n);
+        let mut d3_logits: Vec<Vec<f32>> = Vec::with_capacity(n);
+        let mut d3_times: Vec<std::time::Duration> = Vec::with_capacity(n);
+        let run_d3 = cfg!(feature = "cuda") && run_d2 && cache_dtype == DType::F32;
+        #[cfg(feature = "cuda")]
+        {
+            if run_d3 {
+                let mut cache3 = KvCache::with_capacity(
+                    cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, cache_dtype, device,
+                ).expect("d3 with_capacity");
+                let mut ctx3 = InferenceContext::new(device.clone());
+                let mut session3: Option<crate::inference_context::DecodeSession> = None;
+                let mut captured3: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
+                let t_pre3 = Instant::now();
+                let mut last3 = model
+                    .forward_with_kv_context_captured(&prompt, &mut cache3, &mut ctx3, &mut session3, &mut captured3)
+                    .expect("d3 prefill");
+                let d3_prefill = t_pre3.elapsed();
+                after_step();
+                eprintln!("  D3 prefill: {:.1} ms", d3_prefill.as_secs_f64() * 1e3);
+                let mut rng3 = 0u64;
+                for i in 0..n {
+                    let next = sample_logits(&last3, strategy, &mut rng3);
+                    d3_tokens.push(next);
+                    let t = Instant::now();
+                    last3 = model
+                        .forward_with_kv_context_captured(&[next], &mut cache3, &mut ctx3, &mut session3, &mut captured3)
+                        .expect("d3 decode");
+                    let dt = t.elapsed();
+                    after_step();
+                    d3_times.push(dt);
+                    d3_logits.push(last3.clone());
+                    eprintln!("  D3 tok {}/{n}: {:.1} ms", i + 1, dt.as_secs_f64() * 1e3);
+                }
+                assert!(captured3.is_some(), "D3: the capture must build by decode token 2");
+                // cache3/ctx3/session3/captured3 drop here — frees before D1.
+            } else if run_d2 && cache_dtype != DType::F32 {
+                eprintln!("  D3 captured-replay: SKIPPED (capture is f32-only; cache dtype {cache_dtype:?})");
+            }
+        }
+        after_step();
+
         // ---------------- D1: rebuild + re-optimize every token ----------------
         // The D1 loop tolerates a mid-run device-OOM: each D1 realize
         // re-uploads the full weight set, and (observed on Vulkan/12 GB)
@@ -12585,6 +12656,7 @@ mod generate_tests {
         }
         let n1 = d1_times.len();
         let n2 = d2_times.len();
+        let n3 = d3_times.len();
 
         // ---------------- byte-exactness between the two paths ----------------
         // Compared over the overlapping completed prefix (n1 == n2 == n
@@ -12611,6 +12683,19 @@ mod generate_tests {
         let d2_reuse = if n2 > 1 { &d2_times[1..] } else { &d2_times[..] };
         let (d2_mean_reuse, d2_min_reuse, d2_max_reuse) = ms_stats(d2_reuse);
         let (d2_mean_all, _, _) = ms_stats(&d2_times);
+        let d2_median_reuse = median_ms(d2_reuse);
+        // D3: token 1 build (== D2's), token 2 capture-build, tokens 3..N the
+        // pure cuGraphLaunch replay window (the number that matters).
+        let d3_build_ms = if n3 > 0 { d3_times[0].as_secs_f64() * 1e3 } else { 0.0 };
+        let d3_capture_ms = if n3 > 1 { d3_times[1].as_secs_f64() * 1e3 } else { 0.0 };
+        let d3_replay = if n3 > 2 { &d3_times[2..] } else { &d3_times[..0] };
+        let (d3_mean_replay, d3_min_replay, d3_max_replay) = ms_stats(d3_replay);
+        let d3_median_replay = median_ms(d3_replay);
+        // D2-vs-D3 byte-exactness (same plan → identical logits) over the
+        // overlapping prefix.
+        let cmp23 = n2.min(n3);
+        let d3_tokens_match = cmp23 == 0 || d2_tokens[..cmp23] == d3_tokens[..cmp23];
+        let d3_logits_bit_exact = cmp23 == 0 || d2_logits[..cmp23] == d3_logits[..cmp23];
 
         let ratio_steady = d1_mean_steady / d2_mean_reuse.max(1e-9);
         let ratio_all = d1_mean_all / d2_mean_all.max(1e-9);
@@ -12647,10 +12732,23 @@ mod generate_tests {
             eprintln!("   D2 plan-once: build (tok 1)  = {d2_build_ms:8.2}");
             eprintln!("   D2 plan-once: mean(tok 2..N) = {d2_mean_reuse:8.2}   [min {d2_min_reuse:.2}, max {d2_max_reuse:.2}]");
         }
+        if n3 > 0 {
+            eprintln!("   D3 captured : build(tok1)={d3_build_ms:8.2}  capture-build(tok2)={d3_capture_ms:8.2}");
+            eprintln!("   D3 captured : replay(tok 3..N) median={d3_median_replay:8.2}  mean={d3_mean_replay:8.2}   [min {d3_min_replay:.2}, max {d3_max_replay:.2}]");
+        } else if run_d2 && cache_dtype != DType::F32 {
+            eprintln!("   D3 captured : skipped (capture is f32-only; cache dtype {cache_dtype:?})");
+        }
         eprintln!("------------------------------------------------------------");
         if n1 > 0 && n2 > 1 {
             eprintln!(" RATIO (D1/D2), steady windows  : {ratio_steady:.3}x");
             eprintln!(" RATIO (D1/D2), all-token means : {ratio_all:.3}x");
+        }
+        if !d3_replay.is_empty() && n2 > 1 {
+            let ratio_replay = d2_median_reuse / d3_median_replay.max(1e-9);
+            eprintln!(
+                " RATIO (D2-reuse / D3-replay), medians : {ratio_replay:.3}x  \
+                 (captured cuGraphLaunch replay vs plan-once re-dispatch)",
+            );
         }
         eprintln!("------------------------------------------------------------");
         // Greedy token sequences — lets a d1-only and a d2-only run (in
@@ -12664,6 +12762,11 @@ mod generate_tests {
             eprintln!(" byte-exact D1 vs D2: n/a (single-path run — compare the token \
                        sequences across processes)");
         }
+        if run_d3 {
+            eprintln!(" D3 greedy tokens ({n3}): {d3_tokens:?}");
+            eprintln!(" byte-exact D2 vs D3 (over {cmp23} tokens): tokens_match={d3_tokens_match}  \
+                       logits_bit_exact={d3_logits_bit_exact}  (captured replay must equal plan-once)");
+        }
         eprintln!("============================================================\n");
 
         // Sanity (not perf) assertions — these SHOULD hold and catch a
@@ -12676,6 +12779,16 @@ mod generate_tests {
                 opt_decode_delta, 1,
                 "plan-once: the decode loop must optimize exactly ONCE (the build), \
                  regardless of N",
+            );
+        }
+        if run_d3 {
+            assert!(
+                d3_tokens_match,
+                "D3 captured-replay must generate the SAME greedy tokens as D2 plan-once",
+            );
+            assert!(
+                d3_logits_bit_exact,
+                "D3 captured-replay logits must be BYTE-IDENTICAL to D2 plan-once (same plan → same kernels)",
             );
         }
     }
