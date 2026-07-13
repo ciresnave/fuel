@@ -681,6 +681,21 @@ pub static CUDA_FLASH_DECODING_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     cuda_ep!("flash_decoding_bf16", crate::baracuda_dispatch::flash_decoding::flash_decoding_bf16),
 ];
 
+/// The CUDA FUSED `FusedOps::ROPE` candidate's `symbol -> production wrapper`
+/// map (`docs/kernel-contracts/cuda/rope-apply-fused.fkc.md`; CapturedRun
+/// 4b-resume). Unlike every other table in this file (all resolved through
+/// [`CudaLinkRegistry::resolve_primitive`], `op_kind` contracts), this one is
+/// resolved through [`CudaLinkRegistry::resolve_fused`] (`fused_op` contracts)
+/// — the FIRST entry that method ever actually resolves; before this table
+/// existed `resolve_fused` was a permanent `None` stub (no CUDA fused
+/// contract existed to populate it).
+pub static CUDA_ROPE_APPLY_FUSED_ENTRY_POINTS: &[(&str, KernelRef)] = &[
+    cuda_ep!("rope_apply_fused_f32",  crate::baracuda_dispatch::rope_apply_fused_f32_wrapper),
+    cuda_ep!("rope_apply_fused_f16",  crate::baracuda_dispatch::rope_apply_fused_f16_wrapper),
+    cuda_ep!("rope_apply_fused_bf16", crate::baracuda_dispatch::rope_apply_fused_bf16_wrapper),
+    cuda_ep!("rope_apply_fused_f64",  crate::baracuda_dispatch::rope_apply_fused_f64_wrapper),
+];
+
 /// The built-in CUDA (baracuda) backend's NAMED cost-fn table (§4.4 cost-fn
 /// trampoline, Task-F): maps a contract's `cost.cost_fn` NAME to the production
 /// [`CostFn`] pointer. The cost-model analogue of the `CUDA_*_ENTRY_POINTS`
@@ -748,10 +763,15 @@ impl LinkRegistry for CudaLinkRegistry {
             .map(|(_, k)| *k)
     }
 
-    fn resolve_fused(&self, _symbol: &str) -> Option<KernelRef> {
-        // No fused-op contracts in the CUDA cast corpus — every section is a
-        // primitive `op_kind`.
-        None
+    fn resolve_fused(&self, symbol: &str) -> Option<KernelRef> {
+        // Every other CUDA contract in the corpus declares a primitive
+        // `op_kind` (resolved above via `resolve_primitive`);
+        // `rope-apply-fused.fkc.md` (CapturedRun 4b-resume) is the FIRST
+        // CUDA `fused_op` contract, so this chain is one table today.
+        CUDA_ROPE_APPLY_FUSED_ENTRY_POINTS
+            .iter()
+            .find(|(s, _)| *s == symbol)
+            .map(|(_, k)| *k)
     }
 
     fn resolve_cost_fn(&self, name: &str) -> Option<CostFn> {
