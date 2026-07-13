@@ -233,7 +233,21 @@ mod tests {
         assert!(!ledger.has_pass(BackendId::Cuda, &[DType::F16], 1234567890123456789, "bit_stable_on_same_hardware"));
         let failing = VerificationLedger::from_json(&json.replace("\"pass\"", "\"fail\"")).unwrap();
         assert!(!failing.has_pass(BackendId::Cuda, &[DType::F32], 1234567890123456789, "bit_stable_on_same_hardware"));
-        assert_eq!(VerificationLedger::embedded().len(), 0);
+        // Task 4.1 shipped this as `assert_eq!(embedded().len(), 0)` — the
+        // ledger was an intentional Task-4.1 placeholder (`[]`). Task 4.5b
+        // (2026-07-12) populated it with REAL empirically-verified CPU
+        // fused-op `bit_stable_on_same_hardware` records (see
+        // `seed_cpu_ledger.rs`), so a bare emptiness check would now be
+        // false BY DESIGN. What must still hold — an unrelated, made-up
+        // revision hash never spuriously matches — is exactly the property
+        // `has_pass`'s revision-keying exists to guarantee, so assert that
+        // invariant against the embedded ledger instead of its length.
+        assert!(!VerificationLedger::embedded().has_pass(
+            BackendId::Cuda,
+            &[DType::F32],
+            0xDEAD_BEEF_u64,
+            "bit_stable_on_same_hardware",
+        ));
     }
 }
 

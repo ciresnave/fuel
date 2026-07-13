@@ -45,6 +45,7 @@ mod bit_stability;
 mod ledger;
 mod ulp;
 mod invoker_cpu;
+mod seed_cpu_ledger;
 #[cfg(feature = "cuda")]
 mod invoker_cuda;
 #[cfg(feature = "vulkan")]
@@ -58,6 +59,7 @@ pub use bit_stability::{
 pub use ledger::{gate_precision, LedgerQuery, LedgerRecord, VerificationLedger};
 pub use ulp::{verify_precision_bound, Bound};
 pub use invoker_cpu::CpuInvoker;
+pub use seed_cpu_ledger::{run_cpu_verification, SeedAttempt};
 #[cfg(feature = "cuda")]
 pub use invoker_cuda::CudaInvoker;
 #[cfg(feature = "vulkan")]
