@@ -79,6 +79,8 @@ mod invoker_cuda;
 mod invoker_vulkan;
 #[cfg(feature = "cuda")]
 mod harness;
+#[cfg(feature = "cuda")]
+mod seed_cuda_ledger;
 
 pub use accept_coverage::verify_accept_coverage;
 pub use bit_stability::{
@@ -95,6 +97,8 @@ pub use invoker_cuda::CudaInvoker;
 pub use invoker_vulkan::VulkanInvoker;
 #[cfg(feature = "cuda")]
 pub use harness::run_fkc_verify_harness;
+#[cfg(feature = "cuda")]
+pub use seed_cuda_ledger::{run_cuda_verification, CudaSeedAttempt};
 
 /// The embedded (compile-time) verification ledger. Thin wrapper so callers
 /// outside this module can reach it as `verify::embedded()` without
