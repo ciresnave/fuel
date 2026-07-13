@@ -189,67 +189,6 @@ macro_rules! cuda_rope_baracuda_wrapper {
     };
 }
 
-/// Generate a CUDA FUSED `FusedOps::ROPE` dispatch wrapper. Three inputs
-/// `(x, cos, sin)`; `OpParams::Rope { outer_count, seq, head_dim }` is
-/// derived generically from `x`'s real shape by `pipelined.rs`'s
-/// `Op::Fused(_, FusedOpParams::Rope)` arm — the SAME backend-agnostic param
-/// plumbing every other `FusedOps::ROPE` candidate (CPU included) uses, so
-/// no new param-translation code is needed here. Fuel's cos/sin are
-/// FULL-WIDTH `[seq, head_dim]` (`Tensor::rope_with_tables`'s hard assert);
-/// `$driver` (a `rope_apply_fused_<dt>_into`) narrows them to baracuda's
-/// half-width convention before launch — see
-/// `fuel_cuda_backend::baracuda::attention`'s module note for the
-/// correctness derivation. Mirrors the verification-harness-local
-/// `rope_apply_wrapper!` in `fkc/verify/harness.rs` (Task 4.6), promoted
-/// here to the shared PRODUCTION `CudaLinkRegistry` — that promotion was
-/// explicitly out of scope for Task 4.6 and is what this registration does.
-macro_rules! cuda_rope_apply_fused_baracuda_wrapper {
-    ($wrapper_name:ident, $driver:path) => {
-        pub fn $wrapper_name(
-            inputs: &[Arc<RwLock<Storage>>],
-            outputs: &mut [Arc<RwLock<Storage>>],
-            _layouts: &[Layout],
-            params: &OpParams,
-        ) -> Result<()> {
-            if inputs.len() != 3 || outputs.len() != 1 {
-                return Err(Error::Msg(format!(
-                    concat!(
-                        stringify!($wrapper_name),
-                        ": expected 3 inputs (x, cos, sin) + 1 output, got {} + {}",
-                    ),
-                    inputs.len(), outputs.len(),
-                ))
-                .bt());
-            }
-            let (outer_count, seq, head_dim) = match params {
-                OpParams::Rope { outer_count, seq, head_dim } => {
-                    (*outer_count, *seq, *head_dim)
-                }
-                other => {
-                    return Err(Error::Msg(format!(
-                        concat!(
-                            stringify!($wrapper_name),
-                            ": expected OpParams::Rope, got {:?}",
-                        ),
-                        other,
-                    ))
-                    .bt());
-                }
-            };
-            let x_guard = read_storage(&inputs[0])?;
-            let cos_guard = read_storage(&inputs[1])?;
-            let sin_guard = read_storage(&inputs[2])?;
-            let mut out_guard = write_storage(&outputs[0])?;
-            let x_cuda = cuda_input(&x_guard)?;
-            let cos_cuda = cuda_input(&cos_guard)?;
-            let sin_cuda = cuda_input(&sin_guard)?;
-            let out_cuda = cuda_output(&mut out_guard)?;
-            // Write-into-output (CapturedRun): `_into` writes into outputs[0].
-            $driver(x_cuda, cos_cuda, sin_cuda, outer_count, seq, head_dim, out_cuda)
-        }
-    };
-}
-
 /// Generate a CUDA index_select dispatch wrapper. Two inputs
 /// `(src, indices)`; pulls the shape params from
 /// `OpParams::IndexSelect`.
@@ -3084,73 +3023,20 @@ fn register_cuda_rope_from_contract(table: &mut KernelBindingTable) {
 }
 
 // ===========================================================================
-// FUSED FusedOps::ROPE — CapturedRun 4b-resume.
+// FUSED FusedOps::ROPE — CapturedRun 4b-resume: REVERTED (2026-07-13).
 // ===========================================================================
 //
-// See `docs/kernel-contracts/cuda/rope-apply-fused.fkc.md` for the full
-// contract (ABI-gap rationale, cos/sin narrowing derivation). Unlike every
-// `register_cuda_*_from_contract` fn above/below (which import a PRIMITIVE
-// `op_kind` contract into a `KernelBindingTable`), this imports a `fused_op:`
-// contract into a [`crate::fused::FusedKernelRegistry`] — the FIRST CUDA
-// fused-op contract the production `CudaLinkRegistry::resolve_fused` (see
-// `fkc/cuda_link.rs`) actually resolves.
-
-cuda_rope_apply_fused_baracuda_wrapper!(
-    rope_apply_fused_f32_wrapper,
-    fuel_cuda_backend::baracuda::attention::rope_apply_fused_f32_into
-);
-cuda_rope_apply_fused_baracuda_wrapper!(
-    rope_apply_fused_f16_wrapper,
-    fuel_cuda_backend::baracuda::attention::rope_apply_fused_f16_into
-);
-cuda_rope_apply_fused_baracuda_wrapper!(
-    rope_apply_fused_bf16_wrapper,
-    fuel_cuda_backend::baracuda::attention::rope_apply_fused_bf16_into
-);
-cuda_rope_apply_fused_baracuda_wrapper!(
-    rope_apply_fused_f64_wrapper,
-    fuel_cuda_backend::baracuda::attention::rope_apply_fused_f64_into
-);
-
-/// The authored CUDA (baracuda) FUSED rope-apply kernel contract
-/// (`include_str!`), imported by [`register_cuda_rope_apply_fused_from_contract`]
-/// — the SOLE registration path for this candidate (there is no prior
-/// hand-written registration to delete: `FusedOps::ROPE` had ZERO CUDA
-/// candidates before this contract).
-const CUDA_ROPE_APPLY_FUSED_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/rope-apply-fused.fkc.md");
-
-/// Register the CUDA FUSED rope-apply candidate FROM its FKC contract
-/// (per-dtype, fanned `rope_apply_fused_<dtype>` -> the production wrappers
-/// above via [`crate::fkc::CudaLinkRegistry`]'s `resolve_fused`). A throwaway
-/// primitive `KernelBindingTable` satisfies `register_into`'s signature (the
-/// contract declares only a fused op).
-fn register_cuda_rope_apply_fused_from_contract(fused: &mut crate::fused::FusedKernelRegistry) {
-    let provider = crate::fkc::import_bundle_str(
-        CUDA_ROPE_APPLY_FUSED_CONTRACT,
-        &crate::fkc::CudaLinkRegistry,
-    )
-    .expect(
-        "authored CUDA rope-apply-fused contract must import \
-         (embedded include_str!, CudaLinkRegistry)",
-    );
-    debug_assert!(
-        provider.primitives.is_empty(),
-        "cuda rope-apply-fused contract declares only a fused op",
-    );
-    let mut table = KernelBindingTable::new();
-    provider
-        .register_into(&mut table, fused)
-        .expect("CUDA rope-apply-fused contract must register into the fused registry");
-}
-
-/// Register every CUDA FUSED-op candidate this backend contributes. Called
-/// from [`crate::dispatch::register_default_fused_kernels`] under
-/// `#[cfg(feature = "cuda")]` — the CUDA analogue of that function's CPU
-/// `register_cpu_*_fused_from_contract` calls. Today: `FusedOps::ROPE` only.
-pub fn register_baracuda_cuda_fused_kernels(fused: &mut crate::fused::FusedKernelRegistry) {
-    register_cuda_rope_apply_fused_from_contract(fused);
-}
+// baracuda's `rope_apply_<dt>` was registered here as the CUDA impl of
+// `FusedOps::ROPE` (commit 3be28ab1) and then reverted: `rope_apply` uses the
+// INTERLEAVED pairing `(2k, 2k+1)` (GPT-J) while Fuel's `FusedOps::ROPE`
+// (`Tensor::rope_with_tables`) is ROTATE-HALF `(j, j+head_dim/2)` (Llama/HF)
+// — different functions (confirmed by baracuda's own `rope_fp.cu` "rotates
+// pairs (2i, 2i+1)" and a GPU numerical test in
+// `fuel_cuda_backend::baracuda::attention::fused_rope_tests`). CUDA rope runs
+// via the correct rotate-half primitive decompose; the staged (unwired)
+// `rope_apply_fused_<dt>_into` driver + `RopeTableCache` remain in
+// `fuel-cuda-backend`, ready to wire once baracuda ships a rotate-half
+// table-driven `rope_apply` variant.
 
 // ===========================================================================
 // GROUP3 CUDA FKC families - contract registration.

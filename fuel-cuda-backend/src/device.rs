@@ -148,6 +148,10 @@ pub struct CudaDevice {
     // `context` so its device buffer's stream-ordered free is enqueued while
     // this device's stream is still alive on Drop.
     flash_ws: Arc<crate::baracuda::scratch::WorkspaceCache>,
+    // Grow-only per-device cache of the fused-ROPE narrowed cos/sin tables
+    // (two slots). Declared alongside `flash_ws` (before `stream` / `context`)
+    // for the same stream-ordered-free-on-Drop reason.
+    rope_tables: Arc<crate::baracuda::scratch::RopeTableCache>,
     stream: Arc<baracuda_driver::Stream>,
     context: Arc<baracuda_driver::Context>,
 }
@@ -446,6 +450,16 @@ impl CudaDevice {
     pub fn flash_workspace(&self) -> &crate::baracuda::scratch::WorkspaceCache {
         &self.flash_ws
     }
+
+    /// Borrow this device's grow-only fused-ROPE cos/sin table cache. Shared
+    /// across `CudaDevice` clones (an `Arc`), so it is genuinely per-device.
+    /// The fused `FusedOps::ROPE` CUDA driver narrows Fuel's full-width cos/sin
+    /// into this cache's two slots once per shape and reuses them every step —
+    /// the CapturedRun zero-alloc-during-capture path. See
+    /// [`crate::baracuda::scratch::RopeTableCache`].
+    pub fn rope_tables(&self) -> &crate::baracuda::scratch::RopeTableCache {
+        &self.rope_tables
+    }
 }
 
 impl CudaDevice {
@@ -493,6 +507,7 @@ impl CudaDevice {
             curand: Arc::new(Mutex::new(CudaRng(curand))),
             custom_modules: Arc::new(std::sync::RwLock::new(HashMap::new())),
             flash_ws: Arc::new(crate::baracuda::scratch::WorkspaceCache::new()),
+            rope_tables: Arc::new(crate::baracuda::scratch::RopeTableCache::new()),
             seed_value: Arc::new(RwLock::new(299792458)),
         })
     }

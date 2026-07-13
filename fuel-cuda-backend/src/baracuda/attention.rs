@@ -21,7 +21,7 @@ use fuel_ir::{Error, Layout, Result};
 
 use crate::byte_storage::CudaStorageBytes;
 
-use super::scratch::Workspace;
+use super::scratch::{RopeTableSlot, Workspace};
 use super::status::check;
 
 type RopeRun = unsafe extern "C" fn(
@@ -621,53 +621,56 @@ rope_apply_kernel!(rope_apply_bf16, bf16, 2, "rope_apply_bf16");
 rope_apply_kernel!(rope_apply_f64, f64, 8, "rope_apply_f64");
 
 // ---------------------------------------------------------------------------
-// CapturedRun 4b-resume — FUSED `FusedOps::ROPE` CUDA candidate. See
-// `docs/kernel-contracts/cuda/rope-apply-fused.fkc.md` for the full contract
-// and the ABI-gap rationale; summary here:
+// STAGED, NOT WIRED — FUSED `FusedOps::ROPE` CUDA driver (CapturedRun 4b-resume).
 //
-// baracuda's `rope_apply_<dt>_run` wants HALF-WIDTH cos/sin `[seq,
-// head_dim/2]`. Fuel's real graph-level fused Rope builder
-// (`Tensor::rope_with_tables`, `fuel-graph/src/lib.rs:6423-6452`)
-// hard-asserts FULL-WIDTH `cos.shape() == sin.shape() == [seq, head_dim]` at
-// graph-build time, so a candidate that accepted half-width tables could
-// never match the real graph. `rope_apply_fused_<dt>_into` below instead
-// accepts Fuel's real full-width tables and narrows them before launch.
+// ⚠ These `rope_apply_fused_<dt>_into` drivers are NOT registered as the CUDA
+// impl of `FusedOps::ROPE`. baracuda's `rope_apply` uses the INTERLEAVED pairing
+// `(2k, 2k+1)` (GPT-J; confirmed by baracuda's `rope_fp.cu` "rotates pairs
+// (2i, 2i+1)" AND a GPU numerical test — see
+// `fused_rope_tests::fused_rope_driver_is_interleaved_not_fuel_rotate_half`
+// below). Fuel's `FusedOps::ROPE` (`Tensor::rope_with_tables`) is ROTATE-HALF
+// `(j, j+head_dim/2)` (Llama/HF; `rope_with_tables_decomposed`,
+// `fuel-graph/src/lib.rs:6502-6509`). They compute DIFFERENT functions, so
+// binding this kernel to the rotate-half op is a correctness bug — the Step-2
+// registration (commit 3be28ab1) was reverted on 2026-07-13. CUDA rope runs via
+// the correct rotate-half primitive decompose until baracuda ships a rotate-half
+// table-driven `rope_apply` variant.
 //
-// Correctness of the narrowing is DERIVED (not assumed) from
-// `Tensor::rope_with_tables_decomposed` (`fuel-graph/src/lib.rs:6486-6509`):
-// for pair index j in [0, half), `out[j] = x[j]*cos[j] - x[j+half]*sin[j]`
-// and `out[j+half] = x[j+half]*cos[j+half] + x[j]*sin[j+half]`. For this to
-// be the standard shared-angle RoPE rotation, `cos[j] == cos[j+half]` and
-// `sin[j] == sin[j+half]` for every j — Fuel's full-width table is BY
-// CONSTRUCTION the half-width table duplicated across both halves.
-// Extracting the first `head_dim/2` columns of the full-width table is
-// therefore byte-for-byte baracuda's half-width table, not an
-// approximation.
+// PRIOR (flawed) rationale, corrected: the Step-2 note claimed the narrow's
+// correctness was "DERIVED not assumed" from `rope_with_tables_decomposed`. That
+// derivation covered only the full-width→half-width narrowing and silently
+// ASSUMED baracuda's pairing matched Fuel's ("the standard shared-angle
+// rotation"). It does not. The narrow itself is still correct (see below); the
+// hidden assumption was the pairing convention.
 //
-// The narrow-copy is a single `cuMemcpy2DAsync` D2D copy — the same
-// pattern `super::mamba::strip_prepad_d2d` already uses in production for
-// the causal_conv1d pre-pad bridge (async-only on the device's stream, no
-// host sync).
+// WHY THE MACHINERY IS KEPT (ready to wire for a rotate-half baracuda kernel):
+// baracuda wants HALF-WIDTH cos/sin `[seq, head_dim/2]` while
+// `Tensor::rope_with_tables` hard-asserts FULL-WIDTH `[seq, head_dim]`. The
+// narrow extracts the first `head_dim/2` columns of each row; because Fuel's
+// full-width table is BY CONSTRUCTION the half-width table duplicated across
+// both halves (`cos[j] == cos[j+half]`), that extraction is byte-exact, not an
+// approximation — convention-INDEPENDENT, so it is reusable as-is once a
+// rotate-half `rope_apply` exists. The narrow-copy is one `cuMemcpy2DAsync` D2D
+// copy (same pattern as `super::mamba::strip_prepad_d2d`).
 //
-// KNOWN GAP (flagged, not hidden): `narrow_rope_table_f32` allocates a
-// FRESH device buffer every call (mirrors `strip_prepad_d2d`'s existing
-// alloc-per-call posture), NOT a capture-mode "never allocate" pattern like
-// `WorkspaceCache` / `device.flash_workspace()`. Correct for ordinary
-// (non-captured) `realize`; does NOT yet satisfy CapturedRun's
-// zero-alloc-during-capture invariant — the very use case this
-// registration exists to unblock. A grow-only scratch-cache integration
-// for the narrowed cos/sin buffers is a follow-up, not implemented here.
+// CAPTURE-SAFETY: `narrow_rope_table_f32` narrows into the device's grow-only
+// two-slot `RopeTableCache` (`device.rope_tables()`, one slot cos, one sin), so
+// a stable-capacity decode loop reuses a fixed device address after step 1 —
+// zero `cuMemAlloc` during a capture scope. The retained cache `Arc` keeps the
+// buffer live across the async copy + kernel. See `super::scratch::RopeTableCache`.
 
 /// Narrow a FULL-WIDTH `[seq, head_dim]` F32 table (Fuel's `rope_with_tables`
-/// convention) to baracuda's HALF-WIDTH `[seq, head_dim/2]` `rope_apply`
-/// convention via one `cuMemcpy2DAsync` D2D copy of each row's first
-/// `head_dim/2` F32 elements. See the module note above for why this is
-/// exact, not approximate. Allocates a fresh output buffer every call (see
-/// the KNOWN GAP note above).
+/// convention) to a HALF-WIDTH `[seq, head_dim/2]` table via one
+/// `cuMemcpy2DAsync` D2D copy of each row's first `head_dim/2` F32 elements.
+/// See the module note above for why this is exact, not approximate (and why
+/// it is convention-independent). Narrows into the device's grow-only
+/// [`RopeTableCache`](super::scratch::RopeTableCache) `slot` (capture-safe:
+/// reuses a fixed device buffer across a stable-capacity decode loop).
 fn narrow_rope_table_f32(
     full: &CudaStorageBytes,
     seq: usize,
     head_dim: usize,
+    slot: RopeTableSlot,
     op_label: &'static str,
 ) -> Result<CudaStorageBytes> {
     use baracuda_cuda_sys::driver;
@@ -688,7 +691,11 @@ fn narrow_rope_table_f32(
             full.len_bytes(),
         )).bt());
     }
-    let dst_buf = device.alloc_zeros::<u8>(dst_bytes)?;
+    // Grow-only capture-safe scratch: reuses a fixed device buffer per slot
+    // across a stable-capacity decode loop (no per-call `cuMemAlloc`). The
+    // returned `Arc` + the cache's retained `Arc` keep it live across the
+    // async copy and the downstream async `rope_apply` kernel.
+    let dst_arc = device.rope_tables().ensure(&device, slot, dst_bytes)?;
     let src_pitch = head_dim * elem_bytes;
     let dst_pitch = half * elem_bytes;
     let p = CUDA_MEMCPY2D {
@@ -696,7 +703,7 @@ fn narrow_rope_table_f32(
         src_device: full.buffer().as_raw(),
         src_pitch,
         dst_memory_type: CUmemorytype::DEVICE,
-        dst_device: dst_buf.as_raw(),
+        dst_device: dst_arc.as_raw(),
         dst_pitch,
         width_in_bytes: dst_pitch,
         height: seq,
@@ -707,20 +714,22 @@ fn narrow_rope_table_f32(
         Error::Msg(format!("{op_label}: cu_memcpy_2d_async: {e:?}")).bt()
     })?;
     let stream = device.stream().as_raw();
-    // SAFETY: src/dst are live device buffers of the checked byte sizes;
-    // pitches + width/height describe an in-bounds 2D rectangle for both
-    // (width_in_bytes == dst_pitch <= src_pitch, height == seq rows);
-    // stream is this device's stream.
+    // SAFETY: src/dst are live device buffers of the checked byte sizes (the
+    // cached slot buffer is >= dst_bytes, grow-only); pitches + width/height
+    // describe an in-bounds 2D rectangle for both (width_in_bytes == dst_pitch
+    // <= src_pitch, height == seq rows); stream is this device's stream. The
+    // narrowed region [0, dst_bytes) is fully overwritten here, so a reused
+    // slot's stale tail is never read downstream.
     let status = unsafe { cu(&p, stream) };
     if status.0 != 0 {
         return Err(Error::Msg(format!(
             "{op_label}: cuMemcpy2DAsync failed: status={status:?}",
         )).bt());
     }
-    Ok(CudaStorageBytes::from_parts(Arc::new(dst_buf), device, dst_bytes))
+    Ok(CudaStorageBytes::from_parts(dst_arc, device, dst_bytes))
 }
 
-/// Write-into-output driver for the CUDA FUSED `FusedOps::ROPE` candidate,
+/// Write-into-output driver for the STAGED (unwired, interleaved) rope_apply,
 /// F32 operand dtype. Narrows Fuel's full-width cos/sin (see the module
 /// note above) then forwards to [`rope_apply_f32_into`].
 pub fn rope_apply_fused_f32_into(
@@ -732,12 +741,12 @@ pub fn rope_apply_fused_f32_into(
     head_dim: usize,
     out: &CudaStorageBytes,
 ) -> Result<()> {
-    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, "rope_apply_fused_f32:cos")?;
-    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, "rope_apply_fused_f32:sin")?;
+    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, RopeTableSlot::Cos, "rope_apply_fused_f32:cos")?;
+    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, RopeTableSlot::Sin, "rope_apply_fused_f32:sin")?;
     rope_apply_f32_into(x, &cos_half, &sin_half, outer_count, seq, head_dim, out)
 }
 
-/// Write-into-output driver for the CUDA FUSED `FusedOps::ROPE` candidate,
+/// Write-into-output driver for the STAGED (unwired, interleaved) rope_apply,
 /// F16 operand dtype (cos/sin are always F32 regardless — see the module
 /// note above). Narrows Fuel's full-width cos/sin then forwards to
 /// [`rope_apply_f16_into`].
@@ -750,12 +759,12 @@ pub fn rope_apply_fused_f16_into(
     head_dim: usize,
     out: &CudaStorageBytes,
 ) -> Result<()> {
-    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, "rope_apply_fused_f16:cos")?;
-    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, "rope_apply_fused_f16:sin")?;
+    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, RopeTableSlot::Cos, "rope_apply_fused_f16:cos")?;
+    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, RopeTableSlot::Sin, "rope_apply_fused_f16:sin")?;
     rope_apply_f16_into(x, &cos_half, &sin_half, outer_count, seq, head_dim, out)
 }
 
-/// Write-into-output driver for the CUDA FUSED `FusedOps::ROPE` candidate,
+/// Write-into-output driver for the STAGED (unwired, interleaved) rope_apply,
 /// BF16 operand dtype (cos/sin are always F32 regardless — see the module
 /// note above). Narrows Fuel's full-width cos/sin then forwards to
 /// [`rope_apply_bf16_into`].
@@ -768,12 +777,12 @@ pub fn rope_apply_fused_bf16_into(
     head_dim: usize,
     out: &CudaStorageBytes,
 ) -> Result<()> {
-    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, "rope_apply_fused_bf16:cos")?;
-    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, "rope_apply_fused_bf16:sin")?;
+    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, RopeTableSlot::Cos, "rope_apply_fused_bf16:cos")?;
+    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, RopeTableSlot::Sin, "rope_apply_fused_bf16:sin")?;
     rope_apply_bf16_into(x, &cos_half, &sin_half, outer_count, seq, head_dim, out)
 }
 
-/// Write-into-output driver for the CUDA FUSED `FusedOps::ROPE` candidate,
+/// Write-into-output driver for the STAGED (unwired, interleaved) rope_apply,
 /// F64 operand dtype (cos/sin are always F32 regardless — see the module
 /// note above). Narrows Fuel's full-width cos/sin then forwards to
 /// [`rope_apply_f64_into`].
@@ -786,8 +795,8 @@ pub fn rope_apply_fused_f64_into(
     head_dim: usize,
     out: &CudaStorageBytes,
 ) -> Result<()> {
-    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, "rope_apply_fused_f64:cos")?;
-    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, "rope_apply_fused_f64:sin")?;
+    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, RopeTableSlot::Cos, "rope_apply_fused_f64:cos")?;
+    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, RopeTableSlot::Sin, "rope_apply_fused_f64:sin")?;
     rope_apply_f64_into(x, &cos_half, &sin_half, outer_count, seq, head_dim, out)
 }
 
@@ -1225,3 +1234,190 @@ macro_rules! flash_decoding_kernel {
 
 flash_decoding_kernel!(flash_decoding_f16,  f16,  2, "flash_decoding_f16");
 flash_decoding_kernel!(flash_decoding_bf16, bf16, 2, "flash_decoding_bf16");
+
+// ---------------------------------------------------------------------------
+// CapturedRun 4b-resume Step 2b — GPU acceptance for the FUSED `FusedOps::ROPE`
+// CUDA candidate: (b) numerical correctness of the full-width→half-width narrow
+// + rope math against Fuel's AUTHORITATIVE `rope_with_tables_decomposed`
+// semantics, and (a-verify) the `RopeTableCache` zero-alloc-during-capture
+// property end-to-end through the fused driver. Both need a live device →
+// `#[ignore]`'d (this crate only compiles under a CUDA toolchain anyway).
+#[cfg(test)]
+mod fused_rope_tests {
+    use super::*;
+    use crate::CudaDevice;
+
+    fn dev_or_skip() -> Option<CudaDevice> {
+        match CudaDevice::new(0) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                None
+            }
+        }
+    }
+
+    fn f32s_to_bytes(v: &[f32]) -> Vec<u8> {
+        v.iter().flat_map(|f| f.to_le_bytes()).collect()
+    }
+
+    fn bytes_to_f32s(b: &[u8]) -> Vec<f32> {
+        b.chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    }
+
+    /// GUARD (CapturedRun 4b-resume, 2026-07-13): pins the discovered fact
+    /// that baracuda's `rope_apply` is **INTERLEAVED** `(2k, 2k+1)` (GPT-J),
+    /// which is a DIFFERENT function than Fuel's `FusedOps::ROPE`
+    /// (`Tensor::rope_with_tables`), which is **ROTATE-HALF** `(j, j+half)`
+    /// (Llama/HF, `rope_with_tables_decomposed` in `fuel-graph`). This is
+    /// exactly why `rope_apply` is NOT wired as the CUDA impl of `FusedOps::ROPE`
+    /// (the registration was reverted — see the module note on
+    /// `rope_apply_fused_f32_into` and `dispatch.rs`).
+    ///
+    /// Computes BOTH references on the SAME full-width (shared-angle /
+    /// duplicated-half) tables and asserts the GPU output equals the
+    /// **interleaved** one and DIFFERS materially from the **rotate-half** one.
+    /// Regression tripwire: if baracuda ever switches `rope_apply` to
+    /// rotate-half, `got == interleaved` fails and `got != rotate_half` fails —
+    /// signalling the kernel is now wireable as `FusedOps::ROPE`.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    fn fused_rope_driver_is_interleaved_not_fuel_rotate_half() {
+        let Some(dev) = dev_or_skip() else { return };
+
+        const OUTER: usize = 2;
+        const SEQ: usize = 2;
+        const HD: usize = 4; // head_dim (even)
+        const HALF: usize = HD / 2;
+
+        // Full-width cos/sin [SEQ, HD] with the shared-angle duplication
+        // property Fuel's real `rope_with_tables` always produces:
+        // cos[s, j] == cos[s, j+half], sin[s, j] == sin[s, j+half].
+        let mut cos_full = vec![0f32; SEQ * HD];
+        let mut sin_full = vec![0f32; SEQ * HD];
+        for s in 0..SEQ {
+            for j in 0..HALF {
+                let theta = 0.3f64 * (s as f64) + 0.7f64 * (j as f64) + 0.1f64;
+                let (c, sn) = (theta.cos() as f32, theta.sin() as f32);
+                cos_full[s * HD + j] = c;
+                cos_full[s * HD + j + HALF] = c; // duplicated half
+                sin_full[s * HD + j] = sn;
+                sin_full[s * HD + j + HALF] = sn;
+            }
+        }
+
+        // Deterministic x [OUTER, SEQ, HD].
+        let n = OUTER * SEQ * HD;
+        let x: Vec<f32> = (0..n).map(|i| (i as f32) * 0.13 - 0.9).collect();
+
+        // Reference A — Fuel's ROTATE-HALF (`rope_with_tables_decomposed`):
+        // pairs (j, j+half). This is what a correct `FusedOps::ROPE` impl must
+        // produce; baracuda's kernel does NOT.
+        let mut rotate_half = vec![0f32; n];
+        for b in 0..OUTER {
+            for s in 0..SEQ {
+                for j in 0..HALF {
+                    let e0 = b * SEQ * HD + s * HD + j;
+                    let e1 = b * SEQ * HD + s * HD + j + HALF;
+                    let c = cos_full[s * HD + j] as f64;
+                    let sn = sin_full[s * HD + j] as f64;
+                    let (x0, x1) = (x[e0] as f64, x[e1] as f64);
+                    rotate_half[e0] = (x0 * c - x1 * sn) as f32;
+                    rotate_half[e1] = (x1 * c + x0 * sn) as f32;
+                }
+            }
+        }
+
+        // Reference B — baracuda's INTERLEAVED (`rope_apply`): pairs (2k, 2k+1),
+        // cos/sin indexed by pair k from the narrowed half-width table.
+        let mut interleaved = vec![0f32; n];
+        for b in 0..OUTER {
+            for s in 0..SEQ {
+                for k in 0..HALF {
+                    let e0 = b * SEQ * HD + s * HD + 2 * k;
+                    let e1 = e0 + 1;
+                    let c = cos_full[s * HD + k] as f64; // narrowed: first HALF cols
+                    let sn = sin_full[s * HD + k] as f64;
+                    let (x0, x1) = (x[e0] as f64, x[e1] as f64);
+                    interleaved[e0] = (x0 * c - x1 * sn) as f32;
+                    interleaved[e1] = (x0 * sn + x1 * c) as f32;
+                }
+            }
+        }
+
+        // Device round-trip through the (staged, unwired) fused driver.
+        let x_d = CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&x)).expect("x upload");
+        let cos_d = CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&cos_full)).expect("cos upload");
+        let sin_d = CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&sin_full)).expect("sin upload");
+        let out_d = CudaStorageBytes::alloc(&dev, n * 4).expect("out alloc");
+
+        rope_apply_fused_f32_into(&x_d, &cos_d, &sin_d, OUTER, SEQ, HD, &out_d)
+            .expect("fused rope launch");
+        let got = bytes_to_f32s(&out_d.to_cpu_bytes().expect("D2H"));
+        assert_eq!(got.len(), n);
+
+        // GPU output MATCHES interleaved (proves narrow + cache + baracuda ABI).
+        for (i, (g, r)) in got.iter().zip(interleaved.iter()).enumerate() {
+            assert!(
+                (g - r).abs() <= 1e-5,
+                "baracuda rope_apply element {i}: got {g}, interleaved-ref {r} (|Δ|={})",
+                (g - r).abs(),
+            );
+        }
+        // ...and DIFFERS materially from Fuel's rotate-half — the incompatibility
+        // that keeps this kernel unwired as `FusedOps::ROPE`.
+        let max_delta_vs_rothalf = got
+            .iter()
+            .zip(rotate_half.iter())
+            .map(|(g, r)| (g - r).abs())
+            .fold(0f32, f32::max);
+        assert!(
+            max_delta_vs_rothalf > 1e-3,
+            "baracuda rope_apply must DIFFER from Fuel rotate-half (max|Δ|={max_delta_vs_rothalf}); \
+             if this fails, baracuda may have switched to rotate-half — re-evaluate wiring it as ROPE",
+        );
+        eprintln!(
+            "[fused_rope] confirmed INTERLEAVED (== interleaved-ref, max|Δ| vs rotate-half = {max_delta_vs_rothalf:.4})",
+        );
+    }
+
+    /// Step 2b(a) verify — end-to-end capture-safety: two same-shape fused
+    /// launches must allocate the cos/sin scratch EXACTLY ONCE each (count 2
+    /// after both calls), proving the second launch reused the cache (zero
+    /// `cuMemAlloc` — the CapturedRun invariant). A fresh `CudaDevice::new(0)`
+    /// starts with an empty per-device cache (allocation_count 0).
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    fn fused_rope_is_capture_safe_zero_alloc_on_reuse() {
+        let Some(dev) = dev_or_skip() else { return };
+
+        const OUTER: usize = 2;
+        const SEQ: usize = 2;
+        const HD: usize = 4;
+        let n = OUTER * SEQ * HD;
+
+        let x: Vec<f32> = (0..n).map(|i| (i as f32) * 0.07).collect();
+        let trig: Vec<f32> = (0..SEQ * HD).map(|i| (i as f32) * 0.01).collect();
+        let x_d = CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&x)).expect("x upload");
+        let cos_d = CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&trig)).expect("cos upload");
+        let sin_d = CudaStorageBytes::from_cpu_bytes(&dev, &f32s_to_bytes(&trig)).expect("sin upload");
+        let out_d = CudaStorageBytes::alloc(&dev, n * 4).expect("out alloc");
+
+        assert_eq!(dev.rope_tables().allocation_count(), 0, "fresh device cache starts empty");
+
+        rope_apply_fused_f32_into(&x_d, &cos_d, &sin_d, OUTER, SEQ, HD, &out_d).expect("launch 1");
+        assert_eq!(
+            dev.rope_tables().allocation_count(), 2,
+            "first fused launch allocates cos + sin scratch once each",
+        );
+
+        rope_apply_fused_f32_into(&x_d, &cos_d, &sin_d, OUTER, SEQ, HD, &out_d).expect("launch 2");
+        assert_eq!(
+            dev.rope_tables().allocation_count(), 2,
+            "second same-shape fused launch must REUSE the scratch (zero alloc during capture)",
+        );
+        eprintln!("[fused_rope] capture-safe: 2 launches, 2 allocations total (reuse confirmed)");
+    }
+}

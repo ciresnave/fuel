@@ -27,6 +27,7 @@
 //! larger request grows the held buffer, a smaller one reuses the bigger
 //! one — so a stable-capacity decode loop allocates exactly once.
 
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -34,6 +35,15 @@ use baracuda_driver::DeviceBuffer;
 use fuel_ir::Result;
 
 use crate::CudaDevice;
+
+/// Grow-only reuse decision shared by every per-device scratch cache in this
+/// module ([`WorkspaceCache`], [`RopeTableCache`]): reuse the held buffer iff
+/// it exists and is at least as large as the request. `None` (nothing held) ⇒
+/// allocate; a larger request ⇒ allocate (grow); an equal-or-smaller request ⇒
+/// reuse (never shrink). Pure — the unit-testable core of every cache here.
+pub(crate) fn grow_only_should_reuse(held_bytes: Option<usize>, requested: usize) -> bool {
+    matches!(held_bytes, Some(held) if held >= requested)
+}
 
 /// Workspace buffer for one kernel launch.
 ///
@@ -112,12 +122,12 @@ impl WorkspaceCache {
         }
     }
 
-    /// The grow-only reuse decision: reuse the held buffer iff it exists and
-    /// is at least as large as the request. `None` (nothing held) ⇒ allocate;
-    /// a larger request ⇒ allocate (grow); an equal-or-smaller request ⇒
-    /// reuse (never shrink). Pure — the unit-testable core of the cache.
+    /// The grow-only reuse decision — delegates to the module-level
+    /// [`grow_only_should_reuse`] (shared with [`RopeTableCache`]). Kept as an
+    /// associated fn so the existing `grow_only_reuse_decision` unit test still
+    /// names it directly.
     fn should_reuse(held_bytes: Option<usize>, requested: usize) -> bool {
-        matches!(held_bytes, Some(held) if held >= requested)
+        grow_only_should_reuse(held_bytes, requested)
     }
 
     /// Run `f` with a workspace of at least `bytes` bytes: `(ptr, bytes)`.
@@ -156,6 +166,111 @@ impl WorkspaceCache {
     }
 }
 
+/// Which of the two independent RoPE-table slots a narrow targets. `cos` and
+/// `sin` MUST use DIFFERENT slots: the fused `rope_apply` launch reads both
+/// tables simultaneously, so a single shared buffer would make them alias.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RopeTableSlot {
+    /// The cosine table slot.
+    Cos,
+    /// The sine table slot.
+    Sin,
+}
+
+/// Per-device, grow-only cache of the two narrowed RoPE tables (cos, sin) for
+/// the fused `FusedOps::ROPE` CUDA candidate.
+///
+/// The fused driver narrows Fuel's FULL-WIDTH `[seq, head_dim]` cos/sin down to
+/// baracuda's HALF-WIDTH `[seq, head_dim/2]` via a D2D `cuMemcpy2DAsync` before
+/// each launch (see `baracuda/attention.rs`). Narrowing into a FRESH device
+/// buffer every call — the original posture — allocates inside a CapturedRun
+/// capture scope, which the zero-alloc-during-capture invariant forbids. This
+/// cache holds ONE grow-only `Arc<DeviceBuffer<u8>>` PER SLOT (cos, sin): a
+/// stable-capacity decode loop sizes both tables identically every step, so
+/// after the first step each slot converges to a single allocation and every
+/// later narrow reuses it (the D2D copy targets a fixed device address — zero
+/// alloc during capture).
+///
+/// Two SEPARATE slots (not one buffer) because the launch consumes cos AND sin
+/// at once: sharing one buffer would make them alias. The returned `Arc` keeps
+/// a slot's buffer live for the caller (and, crucially, for the async kernel
+/// that reads it) even after the caller's `CudaStorageBytes` view drops and
+/// even if a later, larger narrow grows that slot and replaces the held `Arc`.
+///
+/// Shared across `CudaDevice` clones behind an `Arc` on the device (per-device,
+/// exactly like [`WorkspaceCache`]). Fuel dispatches one stream per device, so
+/// the two per-slot `Mutex`es never actually contend on the common path; each
+/// is held only for the grow-or-reuse decision, not across the launch (the held
+/// `Arc` — not the lock — is what keeps the buffer live across the async copy +
+/// kernel).
+pub struct RopeTableCache {
+    /// The cos slot's held grow-only buffer (`None` until the first narrow).
+    cos: Mutex<Option<Arc<DeviceBuffer<u8>>>>,
+    /// The sin slot's held grow-only buffer (`None` until the first narrow).
+    sin: Mutex<Option<Arc<DeviceBuffer<u8>>>>,
+    /// Device allocations across BOTH slots (first fill + each grow). A pure
+    /// reuse does NOT bump it — the test-observable proof of zero-alloc reuse.
+    allocations: AtomicU64,
+}
+
+impl Default for RopeTableCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RopeTableCache {
+    /// A fresh, empty cache (no buffers held, zero allocations).
+    pub fn new() -> Self {
+        Self {
+            cos: Mutex::new(None),
+            sin: Mutex::new(None),
+            allocations: AtomicU64::new(0),
+        }
+    }
+
+    fn slot(&self, slot: RopeTableSlot) -> &Mutex<Option<Arc<DeviceBuffer<u8>>>> {
+        match slot {
+            RopeTableSlot::Cos => &self.cos,
+            RopeTableSlot::Sin => &self.sin,
+        }
+    }
+
+    /// Ensure `slot` holds a buffer of at least `bytes` bytes (grow-only) and
+    /// return an `Arc` clone of it for the caller to narrow into.
+    ///
+    /// A same-or-smaller request reuses the held buffer (no device allocation,
+    /// no counter bump); a larger request — or an empty slot — allocates the
+    /// requested size, replaces the held `Arc`, and bumps `allocation_count`.
+    /// The lock is released before the caller does its D2D copy; the returned
+    /// `Arc` (plus the cache's own retained `Arc`) is what keeps the buffer
+    /// live across that copy and the subsequent async kernel, so no lock need
+    /// be held for the launch. Callers must guarantee `bytes > 0` (a
+    /// zero-length narrow is short-circuited upstream before reaching here).
+    pub fn ensure(
+        &self,
+        device: &CudaDevice,
+        slot: RopeTableSlot,
+        bytes: usize,
+    ) -> Result<Arc<DeviceBuffer<u8>>> {
+        let mut guard = self.slot(slot).lock().expect("rope table cache poisoned");
+        let held = guard.as_ref().map(|b| b.len());
+        if !grow_only_should_reuse(held, bytes) {
+            *guard = Some(Arc::new(device.alloc_zeros::<u8>(bytes)?));
+            self.allocations.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(guard.as_ref().expect("buffer present after ensure").clone())
+    }
+
+    /// Total device allocations across BOTH slots so far (first fill + grows).
+    /// A pure reuse does not increment it — the observable proving a
+    /// same-capacity narrow reused its slot rather than allocating anew (the
+    /// CapturedRun zero-alloc-during-capture invariant).
+    pub fn allocation_count(&self) -> u64 {
+        self.allocations.load(Ordering::Relaxed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::WorkspaceCache;
@@ -188,5 +303,66 @@ mod tests {
             WorkspaceCache::should_reuse(Some(256), 128),
             "a smaller request must reuse the larger held buffer",
         );
+    }
+
+    /// The shared grow-only decision consumed by BOTH caches. Same table as
+    /// `grow_only_reuse_decision` but asserting the free function directly —
+    /// `RopeTableCache::ensure` allocates iff this returns `false`, so the
+    /// cache's zero-alloc reuse property is exactly this predicate.
+    #[test]
+    fn shared_grow_only_decision_table() {
+        use super::grow_only_should_reuse;
+        assert!(!grow_only_should_reuse(None, 128), "empty slot must allocate");
+        assert!(grow_only_should_reuse(Some(128), 128), "same size must reuse");
+        assert!(!grow_only_should_reuse(Some(128), 256), "larger must grow");
+        assert!(grow_only_should_reuse(Some(256), 128), "smaller must reuse (never shrink)");
+    }
+
+    /// GPU: the two-slot cache's zero-alloc reuse + non-aliasing invariants —
+    /// the CapturedRun-critical properties `grow_only_reuse_decision` can only
+    /// assert in the abstract. Requires a live device (it actually allocates),
+    /// so `#[ignore]`'d like every other GPU test in this crate.
+    ///
+    /// Asserts:
+    /// 1. First `ensure(Cos, N)` allocates (count 0 → 1).
+    /// 2. A SECOND same-size `ensure(Cos, N)` REUSES (count stays 1) and returns
+    ///    the SAME device pointer — the zero-alloc-during-capture property.
+    /// 3. `ensure(Sin, N)` allocates a SEPARATE buffer (count 1 → 2) whose
+    ///    pointer DIFFERS from the cos slot's — cos/sin never alias.
+    /// 4. A larger `ensure(Cos, 2N)` grows (count 2 → 3); a smaller follow-up
+    ///    reuses the grown buffer (count stays 3).
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    fn rope_table_cache_reuses_and_does_not_alias() {
+        use super::{RopeTableCache, RopeTableSlot};
+        use crate::CudaDevice;
+        let Ok(device) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+        let cache = RopeTableCache::new();
+        const N: usize = 2 * 2 * 4; // seq=2, head_dim/2=2, F32 → 16 bytes
+
+        let cos1 = cache.ensure(&device, RopeTableSlot::Cos, N).expect("cos ensure 1");
+        assert_eq!(cache.allocation_count(), 1, "first cos ensure allocates");
+
+        let cos2 = cache.ensure(&device, RopeTableSlot::Cos, N).expect("cos ensure 2");
+        assert_eq!(cache.allocation_count(), 1, "same-size cos ensure must REUSE (zero alloc)");
+        assert_eq!(
+            cos1.as_raw().0, cos2.as_raw().0,
+            "reused cos slot must hand back the SAME device address",
+        );
+
+        let sin1 = cache.ensure(&device, RopeTableSlot::Sin, N).expect("sin ensure 1");
+        assert_eq!(cache.allocation_count(), 2, "first sin ensure allocates a separate buffer");
+        assert_ne!(
+            cos1.as_raw().0, sin1.as_raw().0,
+            "cos and sin slots must NOT alias (the launch reads both at once)",
+        );
+
+        let _cos_grown = cache.ensure(&device, RopeTableSlot::Cos, 2 * N).expect("cos grow");
+        assert_eq!(cache.allocation_count(), 3, "a larger cos ensure must grow (allocate)");
+        let _cos_smaller = cache.ensure(&device, RopeTableSlot::Cos, N).expect("cos reuse grown");
+        assert_eq!(cache.allocation_count(), 3, "a smaller cos ensure reuses the grown buffer");
     }
 }
