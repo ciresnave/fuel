@@ -150,6 +150,14 @@ pub fn cross_check_fused_section(
     // allocates. Same never-panic guard as shape_rule/dtype_rule above:
     // `output_views` also takes `&FusedOpParams`, so it's only invoked when
     // `synth_probe_params` produced `Some(params)` for this variant.
+    //
+    // Consumer-ahead / dormant-on-corpus note: the only bundle-bearing fused
+    // ops today (SELECTIVE_SCAN, SSD_CHUNK_SCAN) are params-DEPENDENT, so
+    // `synth_probe_params` returns `None` for them and this whole `if let`
+    // (both `check_bundle_arity` below and the derived-rank `check_slot_rank`
+    // call further down) is skipped on the real corpus — exercised only by
+    // this module's unit tests, not corpus-live, until a bundle-bearing op
+    // becomes synth-supported. Conservative skip, never a false reject.
     if let (Some(bundle), Some(output_views), Some(p)) =
         (ret.bundle.as_ref(), entry.output_views, params.as_ref())
     {

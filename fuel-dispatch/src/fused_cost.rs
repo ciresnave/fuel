@@ -21,9 +21,11 @@
 //!
 //! measured (Judge, Layer-2) › declared (contract, Task-F) › **composed
 //! (this module)** › (never) zero. [`fused_layer1_cost`] is the accessor
-//! that enforces it: a fused op WITH a real `cost:` fn is priced by that
-//! fn unchanged; only the [`fused_unknown_cost`] sentinel derives its cost
-//! from the recipe.
+//! that enforces it: since Task 2.4, a contract-declared `cost_expr` is
+//! checked FIRST and outranks even a real (non-sentinel) `cost:` fn; only
+//! when there's no usable `cost_expr` does the [`fused_unknown_cost`]
+//! sentinel derive its cost from the recipe (composed), falling back to
+//! the plain `cost:` fn otherwise.
 
 use std::collections::HashSet;
 
@@ -60,12 +62,17 @@ pub fn is_fused_cost_sentinel(
 /// The fused-op Layer-1 cost accessor (spec §4 shape A — the sentinel
 /// fallback at the use site).
 ///
-/// - A fused op whose registered `cost` is the [`fused_unknown_cost`]
-///   sentinel gets [`cost_from_decompose`] (composed-from-recipe), never
-///   the zero.
-/// - A fused op WITH a declared/measured cost fn is priced by that fn,
-///   **unchanged** — the default only fires for the sentinel, keeping the
-///   layering measured › declared › composed › (never) zero.
+/// Layering, checked in this order (spec §5: measured › declared ›
+/// composed › (never) zero):
+/// - **declared** — if the contract carries a `cost_expr` (a declared cost
+///   AST, Task 2.4 / §2.3), it is checked FIRST and, when it compiles to an
+///   estimate, wins outright — it can override even a non-sentinel `cost`
+///   fn below.
+/// - **composed** — only once there's no usable `cost_expr`: a fused op
+///   whose registered `cost` is the [`fused_unknown_cost`] sentinel gets
+///   [`cost_from_decompose`] (composed-from-recipe), never the zero.
+/// - **the plain `cost` fn** — otherwise (no `cost_expr`, not the
+///   sentinel), the registered `cost` fn is used unchanged.
 ///
 /// [`fused_unknown_cost`]: crate::fkc::fused_unknown_cost
 pub fn fused_layer1_cost(

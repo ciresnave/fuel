@@ -50,13 +50,22 @@
 //! does and doesn't check (notably: no `verify_precision_bound` cross-check
 //! against a CPU reference yet — a documented gap, not an oversight).
 //!
+//! ## Status — Task 4.3 (wiring, landed earlier than this file's numbering
+//! suggests — commit `461c3bbc`)
+//!
+//! [`gate_precision`] is wired into the live import path: `register.rs`'s
+//! `import_bundle_str` calls it (see `register.rs:363` and `:372`, once per
+//! `precision` block on a plain and a fused kernel entry respectively)
+//! against the embedded ledger, so every FKC import downgrades any
+//! precision claim the ledger doesn't cover. It is no longer pure
+//! unwired logic.
+//!
 //! NOT yet implemented (later tasks in the same program extend this file's
-//! `mod` list when they land): the full accept-coverage cross-check; wiring
-//! `gate_precision` into the actual import path (it ships as pure logic
-//! only, not yet called from anywhere); and a `verify_precision_bound`-
-//! shaped helper that accepts per-invoker probes (needed for any op whose
-//! candidate/reference backends disagree on operand-shape convention, like
-//! rope-apply's half-width vs full-width cos/sin tables).
+//! `mod` list when they land): the full accept-coverage cross-check; and a
+//! `verify_precision_bound`-shaped helper that accepts per-invoker probes
+//! (needed for any op whose candidate/reference backends disagree on
+//! operand-shape convention, like rope-apply's half-width vs full-width
+//! cos/sin tables).
 
 mod accept_coverage;
 mod bit_stability;
