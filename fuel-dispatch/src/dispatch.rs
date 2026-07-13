@@ -6921,6 +6921,15 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
     // fused ops.
     register_cpu_conv_rope_fused_from_contract(r);
 
+    // CUDA FUSED-op candidates (CapturedRun 4b-resume): `FusedOps::ROPE` via
+    // baracuda's `rope_apply_<dt>_run`, imported from
+    // `docs/kernel-contracts/cuda/rope-apply-fused.fkc.md`. Only compiled when
+    // the `cuda` feature is on (mirrors `register_baracuda_cuda_kernels`'s own
+    // gating for the primitive CUDA families) — `crate::baracuda_dispatch` has
+    // no public items at all under the default feature set.
+    #[cfg(feature = "cuda")]
+    crate::baracuda_dispatch::register_baracuda_cuda_fused_kernels(r);
+
     // FlashAttn × 4 dtypes × {no-alibi, with-alibi}.
     register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F32_NOA,
         flash_attn_f32_cpu_wrapper,

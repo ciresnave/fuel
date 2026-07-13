@@ -620,6 +620,177 @@ rope_apply_kernel!(rope_apply_f16, f16, 2, "rope_apply_f16");
 rope_apply_kernel!(rope_apply_bf16, bf16, 2, "rope_apply_bf16");
 rope_apply_kernel!(rope_apply_f64, f64, 8, "rope_apply_f64");
 
+// ---------------------------------------------------------------------------
+// CapturedRun 4b-resume — FUSED `FusedOps::ROPE` CUDA candidate. See
+// `docs/kernel-contracts/cuda/rope-apply-fused.fkc.md` for the full contract
+// and the ABI-gap rationale; summary here:
+//
+// baracuda's `rope_apply_<dt>_run` wants HALF-WIDTH cos/sin `[seq,
+// head_dim/2]`. Fuel's real graph-level fused Rope builder
+// (`Tensor::rope_with_tables`, `fuel-graph/src/lib.rs:6423-6452`)
+// hard-asserts FULL-WIDTH `cos.shape() == sin.shape() == [seq, head_dim]` at
+// graph-build time, so a candidate that accepted half-width tables could
+// never match the real graph. `rope_apply_fused_<dt>_into` below instead
+// accepts Fuel's real full-width tables and narrows them before launch.
+//
+// Correctness of the narrowing is DERIVED (not assumed) from
+// `Tensor::rope_with_tables_decomposed` (`fuel-graph/src/lib.rs:6486-6509`):
+// for pair index j in [0, half), `out[j] = x[j]*cos[j] - x[j+half]*sin[j]`
+// and `out[j+half] = x[j+half]*cos[j+half] + x[j]*sin[j+half]`. For this to
+// be the standard shared-angle RoPE rotation, `cos[j] == cos[j+half]` and
+// `sin[j] == sin[j+half]` for every j — Fuel's full-width table is BY
+// CONSTRUCTION the half-width table duplicated across both halves.
+// Extracting the first `head_dim/2` columns of the full-width table is
+// therefore byte-for-byte baracuda's half-width table, not an
+// approximation.
+//
+// The narrow-copy is a single `cuMemcpy2DAsync` D2D copy — the same
+// pattern `super::mamba::strip_prepad_d2d` already uses in production for
+// the causal_conv1d pre-pad bridge (async-only on the device's stream, no
+// host sync).
+//
+// KNOWN GAP (flagged, not hidden): `narrow_rope_table_f32` allocates a
+// FRESH device buffer every call (mirrors `strip_prepad_d2d`'s existing
+// alloc-per-call posture), NOT a capture-mode "never allocate" pattern like
+// `WorkspaceCache` / `device.flash_workspace()`. Correct for ordinary
+// (non-captured) `realize`; does NOT yet satisfy CapturedRun's
+// zero-alloc-during-capture invariant — the very use case this
+// registration exists to unblock. A grow-only scratch-cache integration
+// for the narrowed cos/sin buffers is a follow-up, not implemented here.
+
+/// Narrow a FULL-WIDTH `[seq, head_dim]` F32 table (Fuel's `rope_with_tables`
+/// convention) to baracuda's HALF-WIDTH `[seq, head_dim/2]` `rope_apply`
+/// convention via one `cuMemcpy2DAsync` D2D copy of each row's first
+/// `head_dim/2` F32 elements. See the module note above for why this is
+/// exact, not approximate. Allocates a fresh output buffer every call (see
+/// the KNOWN GAP note above).
+fn narrow_rope_table_f32(
+    full: &CudaStorageBytes,
+    seq: usize,
+    head_dim: usize,
+    op_label: &'static str,
+) -> Result<CudaStorageBytes> {
+    use baracuda_cuda_sys::driver;
+    use baracuda_cuda_sys::types::{CUmemorytype, CUDA_MEMCPY2D};
+
+    let half = head_dim / 2;
+    let device = full.device().clone();
+    let elem_bytes = 4usize; // cos/sin are always F32 (baracuda ABI)
+    let dst_bytes = seq.saturating_mul(half).saturating_mul(elem_bytes);
+    if dst_bytes == 0 {
+        return CudaStorageBytes::alloc(&device, 0);
+    }
+    let expected_full_bytes = seq * head_dim * elem_bytes;
+    if full.len_bytes() < expected_full_bytes {
+        return Err(Error::Msg(format!(
+            "{op_label}: full-width cos/sin table too small for [seq={seq}, head_dim={head_dim}] \
+             F32 (need >= {expected_full_bytes} bytes, got {})",
+            full.len_bytes(),
+        )).bt());
+    }
+    let dst_buf = device.alloc_zeros::<u8>(dst_bytes)?;
+    let src_pitch = head_dim * elem_bytes;
+    let dst_pitch = half * elem_bytes;
+    let p = CUDA_MEMCPY2D {
+        src_memory_type: CUmemorytype::DEVICE,
+        src_device: full.buffer().as_raw(),
+        src_pitch,
+        dst_memory_type: CUmemorytype::DEVICE,
+        dst_device: dst_buf.as_raw(),
+        dst_pitch,
+        width_in_bytes: dst_pitch,
+        height: seq,
+        ..Default::default()
+    };
+    let d = driver().map_err(|e| Error::Msg(format!("{op_label}: driver(): {e:?}")).bt())?;
+    let cu = d.cu_memcpy_2d_async().map_err(|e| {
+        Error::Msg(format!("{op_label}: cu_memcpy_2d_async: {e:?}")).bt()
+    })?;
+    let stream = device.stream().as_raw();
+    // SAFETY: src/dst are live device buffers of the checked byte sizes;
+    // pitches + width/height describe an in-bounds 2D rectangle for both
+    // (width_in_bytes == dst_pitch <= src_pitch, height == seq rows);
+    // stream is this device's stream.
+    let status = unsafe { cu(&p, stream) };
+    if status.0 != 0 {
+        return Err(Error::Msg(format!(
+            "{op_label}: cuMemcpy2DAsync failed: status={status:?}",
+        )).bt());
+    }
+    Ok(CudaStorageBytes::from_parts(Arc::new(dst_buf), device, dst_bytes))
+}
+
+/// Write-into-output driver for the CUDA FUSED `FusedOps::ROPE` candidate,
+/// F32 operand dtype. Narrows Fuel's full-width cos/sin (see the module
+/// note above) then forwards to [`rope_apply_f32_into`].
+pub fn rope_apply_fused_f32_into(
+    x: &CudaStorageBytes,
+    cos_full: &CudaStorageBytes,
+    sin_full: &CudaStorageBytes,
+    outer_count: usize,
+    seq: usize,
+    head_dim: usize,
+    out: &CudaStorageBytes,
+) -> Result<()> {
+    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, "rope_apply_fused_f32:cos")?;
+    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, "rope_apply_fused_f32:sin")?;
+    rope_apply_f32_into(x, &cos_half, &sin_half, outer_count, seq, head_dim, out)
+}
+
+/// Write-into-output driver for the CUDA FUSED `FusedOps::ROPE` candidate,
+/// F16 operand dtype (cos/sin are always F32 regardless — see the module
+/// note above). Narrows Fuel's full-width cos/sin then forwards to
+/// [`rope_apply_f16_into`].
+pub fn rope_apply_fused_f16_into(
+    x: &CudaStorageBytes,
+    cos_full: &CudaStorageBytes,
+    sin_full: &CudaStorageBytes,
+    outer_count: usize,
+    seq: usize,
+    head_dim: usize,
+    out: &CudaStorageBytes,
+) -> Result<()> {
+    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, "rope_apply_fused_f16:cos")?;
+    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, "rope_apply_fused_f16:sin")?;
+    rope_apply_f16_into(x, &cos_half, &sin_half, outer_count, seq, head_dim, out)
+}
+
+/// Write-into-output driver for the CUDA FUSED `FusedOps::ROPE` candidate,
+/// BF16 operand dtype (cos/sin are always F32 regardless — see the module
+/// note above). Narrows Fuel's full-width cos/sin then forwards to
+/// [`rope_apply_bf16_into`].
+pub fn rope_apply_fused_bf16_into(
+    x: &CudaStorageBytes,
+    cos_full: &CudaStorageBytes,
+    sin_full: &CudaStorageBytes,
+    outer_count: usize,
+    seq: usize,
+    head_dim: usize,
+    out: &CudaStorageBytes,
+) -> Result<()> {
+    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, "rope_apply_fused_bf16:cos")?;
+    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, "rope_apply_fused_bf16:sin")?;
+    rope_apply_bf16_into(x, &cos_half, &sin_half, outer_count, seq, head_dim, out)
+}
+
+/// Write-into-output driver for the CUDA FUSED `FusedOps::ROPE` candidate,
+/// F64 operand dtype (cos/sin are always F32 regardless — see the module
+/// note above). Narrows Fuel's full-width cos/sin then forwards to
+/// [`rope_apply_f64_into`].
+pub fn rope_apply_fused_f64_into(
+    x: &CudaStorageBytes,
+    cos_full: &CudaStorageBytes,
+    sin_full: &CudaStorageBytes,
+    outer_count: usize,
+    seq: usize,
+    head_dim: usize,
+    out: &CudaStorageBytes,
+) -> Result<()> {
+    let cos_half = narrow_rope_table_f32(cos_full, seq, head_dim, "rope_apply_fused_f64:cos")?;
+    let sin_half = narrow_rope_table_f32(sin_full, seq, head_dim, "rope_apply_fused_f64:sin")?;
+    rope_apply_f64_into(x, &cos_half, &sin_half, outer_count, seq, head_dim, out)
+}
+
 flash_sdpa_kernel!(flash_sdpa_f32, f32, 4, "flash_sdpa_f32");
 flash_sdpa_kernel!(flash_sdpa_f16, f16, 2, "flash_sdpa_f16");
 flash_sdpa_kernel!(flash_sdpa_bf16, bf16, 2, "flash_sdpa_bf16");
