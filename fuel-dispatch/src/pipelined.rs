@@ -289,6 +289,10 @@ fn op_kind_is_capture_writeinto(op: OpKind) -> bool {
             | OpKind::SiluElementwise
             | OpKind::GeluElementwise
             | OpKind::GeluErfElementwise
+            // Negation (write-into + workspace-free) — the rope rotate-half
+            // decomposition's `neg_second` half (CapturedRun 4b-resume: rope
+            // runs decomposed on CUDA since there's no rotate-half fused kernel).
+            | OpKind::NegElementwise
             // N==2 concat only (rope rotate-half) — see the doc comment
             // above; N>2 is rejected explicitly in capture_decode's
             // validation loop, not by this predicate.
@@ -1119,6 +1123,35 @@ impl PipelinedExecutor {
         compiler
             .join()
             .map_err(|_| Error::Msg("compiler thread panicked".to_string()).bt())?;
+
+        // CapturedRun 4b Step-4 diagnostic: name every kernel placed OFF Cuda
+        // (an unseeded / audited-loser op that forces a cross-device copy and
+        // blocks capture), so verification-ledger seeding can target it
+        // precisely. Fires only when a capture is attempted AND something is
+        // mis-placed — otherwise silent.
+        {
+            let off: Vec<String> = items
+                .iter()
+                .filter_map(|it| match &it.kind {
+                    WorkItemKind::Kernel if it.target_backend != BackendId::Cuda => {
+                        let desc = it
+                            .compiled
+                            .as_ref()
+                            .map(|c| format!("{:?} dtypes={:?}", c.op, c.dtypes))
+                            .unwrap_or_else(|| "?".to_string());
+                        Some(format!("node {:?}: {desc} on {:?}", it.node_id, it.target_backend))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !off.is_empty() {
+                eprintln!(
+                    "[capture-diag] {} kernel(s) placed OFF Cuda (these block capture): {}",
+                    off.len(),
+                    off.join("; "),
+                );
+            }
+        }
 
         // Capture-safety validation — surface every gap up front, before any
         // launch, so a capture scope is never entered on an unsupported graph.

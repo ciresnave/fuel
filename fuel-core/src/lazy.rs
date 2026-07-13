@@ -1294,6 +1294,63 @@ impl LazyTensor {
         })
     }
 
+    /// Apply RoPE using caller-supplied `cos`/`sin` tables, emitting the
+    /// PRIMITIVE decomposition (slice + neg + concat + mul + add — the
+    /// rotate-half recipe) instead of a single fused `FusedOps::ROPE` node.
+    /// See [`fuel_graph::Tensor::rope_with_tables_decomposed`].
+    ///
+    /// CapturedRun 4b-resume: Fuel's `FusedOps::ROPE` is rotate-half (Llama/HF)
+    /// but has NO correct (rotate-half) CUDA kernel — baracuda's is interleaved
+    /// (see the rope-convention note). The fused op therefore places on CPU,
+    /// which breaks CUDA-graph capture. Emitting the decomposition makes every
+    /// step a primitive with a capture-safe CUDA kernel, so the decode runs
+    /// entirely on CUDA. Forward-compatible: once a rotate-half fused CUDA rope
+    /// kernel exists, the optimizer's re-fusion pattern will fold this subgraph
+    /// back into the fused op automatically (recipe principle).
+    ///
+    /// Byte-identical semantics to [`Self::rope_with_tables`] (same rotate-half
+    /// math); same validation.
+    pub fn rope_with_tables_decomposed(&self, cos: &Self, sin: &Self) -> std::result::Result<Self, fuel_ir::Error> {
+        if self.inner.dtype() != fuel_ir::DType::F32 {
+            return Err(fuel_ir::Error::Msg(format!(
+                "rope: only f32 is supported today, got {:?} (cast explicitly for other dtypes)",
+                self.inner.dtype(),
+            )).bt());
+        }
+        let in_shape = self.inner.shape();
+        let dims = in_shape.dims();
+        let rank = dims.len();
+        if rank < 2 {
+            return Err(fuel_ir::Error::Msg(format!(
+                "rope: input must have rank >= 2, got {dims:?}",
+            )).bt());
+        }
+        let seq = dims[rank - 2];
+        let d = dims[rank - 1];
+        if !d.is_multiple_of(2) {
+            return Err(fuel_ir::Error::Msg(format!(
+                "rope: feature dim {d} must be even",
+            )).bt());
+        }
+        let cos_dims = cos.inner.shape();
+        if cos_dims.dims() != [seq, d] {
+            return Err(fuel_ir::Error::Msg(format!(
+                "rope_with_tables_decomposed: cos shape {:?} does not match [seq, d] = [{seq}, {d}]",
+                cos_dims.dims(),
+            )).bt());
+        }
+        let sin_dims = sin.inner.shape();
+        if sin_dims.dims() != [seq, d] {
+            return Err(fuel_ir::Error::Msg(format!(
+                "rope_with_tables_decomposed: sin shape {:?} does not match [seq, d] = [{seq}, {d}]",
+                sin_dims.dims(),
+            )).bt());
+        }
+        Ok(Self {
+            inner: self.inner.rope_with_tables_decomposed(&cos.inner, &sin.inner),
+        })
+    }
+
     // ---- indexing ----
 
     /// Pick slices along `dim` using a 1-D U32 index tensor. Accepts
@@ -6290,11 +6347,16 @@ impl LlamaModel {
         // matching the F32-table design) and back to the running
         // activation dtype afterward. No-op casts (fast-path clones)
         // when `act_dtype` is already F32.
+        // CapturedRun 4b-resume: DECOMPOSED rope (rotate-half primitives) so the
+        // decode runs entirely on CUDA. Fuel's fused ROPE has no rotate-half CUDA
+        // kernel (baracuda's is interleaved) so it places on CPU and breaks
+        // capture; the primitive form has capture-safe CUDA kernels. Same
+        // rotate-half math. See `LazyTensor::rope_with_tables_decomposed`.
         let q_r = q_h.to_dtype(DType::F32)?
-            .rope_with_tables(rope_cos, rope_sin)?
+            .rope_with_tables_decomposed(rope_cos, rope_sin)?
             .to_dtype(act_dtype)?;
         let k_r = k_h.to_dtype(DType::F32)?
-            .rope_with_tables(rope_cos, rope_sin)?
+            .rope_with_tables_decomposed(rope_cos, rope_sin)?
             .to_dtype(act_dtype)?;
 
         // Write fresh K/V slabs into the pre-allocated cache buffers

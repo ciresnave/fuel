@@ -37,10 +37,39 @@ use fuel_ir::probe::BackendId;
 use fuel_ir::DType;
 
 use super::{
-    fill_deterministic, verify_bit_stability, CudaInvoker, HostTensor, LedgerRecord, ProbeInputs,
-    VerificationLedger, VerifyError, VerifyOutcome,
+    fill_deterministic, verify_bit_stability, CpuInvoker, CudaInvoker, HostTensor, KernelInvoker,
+    LedgerRecord, ProbeInputs, VerificationLedger, VerifyError, VerifyOutcome,
 };
 use crate::kernel::{KernelBindingTable, MatmulM, OpParams};
+
+/// CUDA ops whose contract declares a numeric `max_ulp` bound (only
+/// `indexing.fkc.md` today — exact copies, bound 0). The V-FKC-9 gate collapses
+/// the WHOLE guarantee if ANY declared machine-checkable claim is unbacked, so
+/// these need a `max_ulp` ledger entry IN ADDITION to `bit_stable`. Verified
+/// CUDA-candidate-vs-CPU-reference (0 ULP = byte-identical for an exact copy).
+const MAX_ULP_OPS: &[(OpKind, u32)] = &[
+    (OpKind::IndexSelect, 0),
+    (OpKind::Gather, 0),
+    (OpKind::MaskedFill, 0),
+];
+
+/// `true` iff every `f32` element of `cand` is within `bound` ULP of `refr`
+/// (mirrors `verify_precision_bound`'s `MaxUlp` arm). `Err` on a length/align
+/// mismatch rather than a panic.
+fn max_ulp_ok(cand: &[u8], refr: &[u8], bound: u32) -> std::result::Result<bool, String> {
+    if cand.len() % 4 != 0 || refr.len() != cand.len() {
+        return Err(format!("output length/align mismatch (cand {} ref {})", cand.len(), refr.len()));
+    }
+    let a: &[f32] = bytemuck::cast_slice(cand);
+    let b: &[f32] = bytemuck::cast_slice(refr);
+    for (x, y) in a.iter().zip(b.iter()) {
+        let ulp = (x.to_bits() as i64 - y.to_bits() as i64).unsigned_abs();
+        if ulp > bound as u64 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
 
 /// Repeat-call count per probe for `bit_stable_on_same_hardware` (≥16 floor,
 /// same as the CPU seeder + the rope-apply harness).
@@ -354,6 +383,97 @@ pub fn run_cuda_verification(
                 verified_at: verified_at_string(),
                 protocol_version: 1,
                 evidence,
+            });
+        }
+        log.push(CudaSeedAttempt {
+            op: format!("{op:?}"),
+            dtypes: dtypes_vec,
+            kernel_revision_hash: rev,
+            outcome,
+        });
+    }
+
+    // ---- Second pass: max_ulp claims (CUDA candidate vs CPU reference) ----
+    // The gate needs these for the few ops declaring a numeric bound (only the
+    // exact-copy indexing family). Reference is the registered CPU kernel for
+    // the SAME (op, dtypes); 0 ULP means byte-identical.
+    let mut cpu_table = KernelBindingTable::new();
+    crate::dispatch::register_cpu_kernels(&mut cpu_table);
+    for (op, dtypes, backend, cuda_entry) in table.iter_entries() {
+        if backend != BackendId::Cuda {
+            continue;
+        }
+        if let Some(set) = only {
+            if !set.contains(&op) {
+                continue;
+            }
+        }
+        let Some(&(_, bound)) = MAX_ULP_OPS.iter().find(|(o, _)| *o == op) else {
+            continue;
+        };
+        let dtypes_vec = dtypes.to_vec();
+        let rev = cuda_entry.kernel_revision_hash;
+        if !force && ledger.has_pass(BackendId::Cuda, dtypes, rev, "max_ulp") {
+            continue;
+        }
+        let seed = 0x2545_F491_4F6C_DD1D_u64
+            ^ (op as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (dtypes.len() as u64).wrapping_mul(0xD1B5_4A32_D192_ED03);
+        let Some(probe) = build_cuda_probe(op, dtypes, seed) else {
+            log.push(CudaSeedAttempt {
+                op: format!("{op:?}"),
+                dtypes: dtypes_vec,
+                kernel_revision_hash: rev,
+                outcome: "max_ulp skip: no probe recipe".to_string(),
+            });
+            continue;
+        };
+        let cpu_entry = cpu_table
+            .iter_entries()
+            .find(|(o, d, b, _)| *o == op && *d == dtypes && *b == BackendId::Cpu)
+            .map(|(_, _, _, e)| e);
+        let Some(cpu_entry) = cpu_entry else {
+            log.push(CudaSeedAttempt {
+                op: format!("{op:?}"),
+                dtypes: dtypes_vec,
+                kernel_revision_hash: rev,
+                outcome: "max_ulp skip: no CPU reference entry".to_string(),
+            });
+            continue;
+        };
+
+        let cand = CudaInvoker::new(device.clone(), probe.out_dtype, probe.out_shape.clone())
+            .with_params(probe.params.clone());
+        let refr = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
+            .with_params(probe.params.clone());
+        let inputs = probe.inputs.clone();
+        let attempt = catch_unwind(AssertUnwindSafe(|| -> std::result::Result<String, VerifyError> {
+            let a = cand.invoke(cuda_entry, &inputs)?;
+            let b = refr.invoke(cpu_entry, &inputs)?;
+            Ok(match max_ulp_ok(&a.bytes, &b.bytes, bound) {
+                Ok(true) => "pass".to_string(),
+                Ok(false) => format!("fail: exceeds max_ulp {bound}"),
+                Err(e) => format!("fail: {e}"),
+            })
+        }));
+
+        let (result, outcome) = match attempt {
+            Ok(Ok(s)) if s == "pass" => (Some("pass"), "max_ulp pass".to_string()),
+            Ok(Ok(s)) => (Some("fail"), format!("max_ulp {s}")),
+            Ok(Err(e)) => (Some("fail"), format!("max_ulp invoke error {e:?}")),
+            Err(_) => (Some("fail"), "max_ulp panicked".to_string()),
+        };
+        if let Some(result) = result {
+            ledger.upsert(LedgerRecord {
+                kernel_ref: cuda_entry.kernel_source.to_string(),
+                backend: "Cuda".to_string(),
+                dtypes: dtypes.iter().map(|d| format!("{d:?}")).collect(),
+                kernel_revision_hash: rev,
+                claim: "max_ulp".to_string(),
+                result: result.to_string(),
+                verified_at: verified_at_string(),
+                protocol_version: 1,
+                evidence: serde_json::json!({ "bound": bound, "reference": "cpu", "harness": "capturedrun-4b/seed_cuda_ledger" }),
             });
         }
         log.push(CudaSeedAttempt {
