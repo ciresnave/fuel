@@ -9562,6 +9562,38 @@ mod tests {
         assert_eq!(r[2], 3.0, "relu(3) must pass through");
     }
 
+    /// KISS-OPS-6.15-0002: `relu` is `select(x<0, 0, x)`, which PRESERVES
+    /// `-0.0` — it is NOT `max(x, 0)`, which normalizes `-0.0` to `+0.0`.
+    #[test]
+    fn relu_f32_preserves_negative_zero() {
+        let input = CpuStorageBytes::from_slice(&[-0.0_f32, 0.0_f32]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        relu_f32(&input, &mut out).expect("relu");
+        let r: &[f32] = out.as_slice().unwrap();
+        assert!(
+            r[0].is_sign_negative() && r[0] == 0.0,
+            "relu(-0.0) must stay -0.0 (sign bit set), got bits {:#010x}",
+            r[0].to_bits()
+        );
+        assert!(
+            r[1].is_sign_positive() && r[1] == 0.0,
+            "relu(+0.0) must stay +0.0"
+        );
+    }
+
+    #[test]
+    fn relu_f64_preserves_negative_zero() {
+        let input = CpuStorageBytes::from_slice(&[-0.0_f64]);
+        let mut out = CpuStorageBytes::from_zero_bytes(input.len_bytes());
+        relu_f64(&input, &mut out).expect("relu f64");
+        let r: &[f64] = out.as_slice().unwrap();
+        assert!(
+            r[0].is_sign_negative() && r[0] == 0.0,
+            "relu(-0.0_f64) must stay -0.0, got bits {:#018x}",
+            r[0].to_bits()
+        );
+    }
+
     #[test]
     fn unary_f32_round_trip() {
         let input = CpuStorageBytes::from_slice(&[1.0_f32, -2.0, 4.0, 0.5]);
