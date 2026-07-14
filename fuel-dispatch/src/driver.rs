@@ -74,6 +74,7 @@ use fuel_ir::probe::BackendId;
 use fuel_ir::Result;
 use fuel_graph::{Graph, Node, NodeId, Op};
 
+use crate::kernel::KernelBindingTable;
 use crate::plan::ExecutionPlan;
 
 /// Read-only context threaded to every [`Pathfinder::propose`] and
@@ -104,6 +105,22 @@ pub struct OptimizationContext<'a> {
     /// optimizer must not mutate any node in this set. Empty for batch
     /// `optimize_graph`.
     pub cycle_guard: &'a HashSet<NodeId>,
+    /// The kernel binding table `optimize_graph` was handed by its caller —
+    /// the SAME table `compile_plan` resolved placements against. Pathfinders
+    /// that need a capability-gate answer (e.g. "is a kernel bound for this
+    /// runtime-fused op on this backend?") read THIS reference rather than
+    /// re-acquiring `crate::dispatch::global_bindings()`, so a background
+    /// adopt's write can never nest against a pathfinder's read on the same
+    /// lock (Spec B Task 1 — see
+    /// `crate::runtime_fused_kernels::fused_kernel_available_in`).
+    pub bindings: &'a KernelBindingTable,
+}
+
+impl<'a> OptimizationContext<'a> {
+    /// The threaded binding table (see [`Self::bindings`]).
+    pub fn bindings(&self) -> &KernelBindingTable {
+        self.bindings
+    }
 }
 
 /// A **pathfinder** *ADDs* candidate paths / branches to the graph. The

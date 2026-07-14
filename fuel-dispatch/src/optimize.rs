@@ -268,6 +268,7 @@ fn optimize_graph_with_passes(
         order: &order,
         plan: &plan,
         cycle_guard: &cycle_guard,
+        bindings: bindings_table,
     };
     passes.run_lockstep(graph, &ctx)?;
 
@@ -1367,6 +1368,7 @@ mod tests {
                 order: &ref_order,
                 plan: &ref_plan,
                 cycle_guard: &guard,
+                bindings: &ref_table,
             };
             // Legacy order: the pathfinder ADDs, then the optimizer
             // prunes — the same two operations the hardcoded sequence ran.
@@ -1437,6 +1439,7 @@ mod tests {
             order: &order,
             plan: &plan,
             cycle_guard: &guard,
+            bindings: &table,
         };
         registry
             .run_lockstep(&mut g, &ctx)
@@ -1505,10 +1508,12 @@ mod tests {
         let plan = ExecutionPlan::empty();
         let order: Vec<NodeId> = Vec::new();
         let guard: HashSet<NodeId> = HashSet::new();
+        let table = KernelBindingTable::new();
         let ctx = OptimizationContext {
             order: &order,
             plan: &plan,
             cycle_guard: &guard,
+            bindings: &table,
         };
         registry.run_lockstep(&mut g, &ctx).expect("drive runs");
 

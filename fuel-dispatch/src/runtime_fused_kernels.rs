@@ -27,7 +27,7 @@ use fuel_ir::probe::BackendId;
 
 use crate::dispatch::{extend_global_bindings, global_bindings};
 use crate::fused::{PrecisionGuarantee, default_kernel_registry};
-use crate::kernel::{BindingKey, KernelCaps, KernelRef};
+use crate::kernel::{BindingKey, KernelBindingTable, KernelCaps, KernelRef};
 
 /// A runtime-fused binding row, as [`lookup_runtime_kernel`] returns it — a
 /// diagnostic/test view (dispatch resolves dtype-precisely through the binding
@@ -53,6 +53,24 @@ pub fn register_runtime_kernel(
     kernel: KernelRef,
 ) {
     extend_global_bindings(|t| t.register(BindingKey::RuntimeFused(id), dtypes, backend, kernel));
+}
+
+/// **TEST-ONLY.** Table-scoped sibling of [`register_runtime_kernel`] —
+/// binds into a caller-owned `table` instead of the global binding table, so
+/// a test can construct a `KernelBindingTable` carrying a runtime-fused row
+/// without touching (or being affected by) the global sidecar every other
+/// test in this binary shares. `#[doc(hidden)] pub`, not `#[cfg(test)]`, for
+/// the same reason as [`clear_runtime_fused_for_tests`]: integration tests
+/// compile this crate without `cfg(test)`.
+#[doc(hidden)]
+pub fn register_runtime_kernel_into(
+    table: &mut KernelBindingTable,
+    id: FusedOpId,
+    dtypes: &[DType],
+    backend: BackendId,
+    kernel: KernelRef,
+) {
+    table.register(BindingKey::RuntimeFused(id), dtypes, backend, kernel);
 }
 
 /// The first runtime-fused binding for `(id, backend)`, any dtype tuple.
@@ -94,34 +112,92 @@ pub fn lookup_runtime_kernel(id: FusedOpId, backend: BackendId) -> Option<Runtim
 ///   dtype admissibility is a separate gate, e.g.
 ///   `crate::decode_flash::flash_decode_admissible`).
 ///
-/// **LOCK DISCIPLINE (post binding-key fold, 2026-07-08).** This re-acquires the
-/// `global_bindings()` READ lock. Two constraints follow:
-/// 1. Never call it — nor `adopt_runtime_fused` / `clear_runtime_fused_for_tests`,
-///    which take the WRITE lock — while holding a `global_bindings()` guard on the
-///    same thread. Same-thread read-then-write (or write-then-anything)
-///    self-deadlocks. (Tests scope their read guards around each optimize call and
-///    never hold one across an adopt/reset; production adopts on the G7 *background*
-///    thread, never the realize thread that holds read guards.)
-/// 2. The optimizer's runtime-fusion pathfinder calls this while `optimize_graph`
-///    holds a *caller-passed* `&KernelBindingTable` derived from a
-///    `global_bindings()` read guard — a **nested read** on the same lock. Safe
-///    today (adopt is single-threaded in tests, not yet wired to a background
-///    thread). **Prerequisite before wiring the G7 background-adopt trigger:**
-///    eliminate the nesting — thread the already-held `&KernelBindingTable` into
-///    the pathfinder via `OptimizationContext`, or key runtime availability off a
-///    non-nesting index — else a background write queued between the pathfinder's
-///    two reads can deadlock a writer-preferring `RwLock`.
+/// **LOCK DISCIPLINE (post binding-key fold, 2026-07-08; nesting eliminated
+/// 2026-07-13 — Spec B Task 1).** This re-acquires the `global_bindings()`
+/// READ lock (once per `||` operand it actually evaluates — the checks are
+/// independent, short-lived acquisitions, not one held across the whole
+/// chain). One constraint remains:
+/// - Never call it — nor `adopt_runtime_fused` / `clear_runtime_fused_for_tests`,
+///   which take the WRITE lock — while holding a `global_bindings()` guard on the
+///   same thread. Same-thread read-then-write (or write-then-anything)
+///   self-deadlocks. (Tests scope their read guards around each optimize call and
+///   never hold one across an adopt/reset; production adopts on the G7 *background*
+///   thread, never the realize thread that holds read guards.)
+///
+/// The nested-read hazard this doc used to warn about — the optimizer's
+/// runtime-fusion pathfinder calling this while `optimize_graph` already
+/// holds a *caller-passed* `&KernelBindingTable` derived from a
+/// `global_bindings()` read guard — is now **eliminated**: the pathfinder
+/// calls [`fused_kernel_available_in`] against that already-held table
+/// (threaded in via `OptimizationContext::bindings`) instead of calling this
+/// function and re-acquiring the lock. This function stays the *global*
+/// entry point for callers with no table already in hand (the decode
+/// flash-arm gate, `jit_adopt`'s post-adopt check).
 pub fn fused_kernel_available(id: FusedOpId, backend: BackendId) -> bool {
-    default_kernel_registry().lookup(id, backend).is_some()
-        || global_bindings().has_runtime_fused(id, backend)
-        || static_binding_table_bridge(id, backend)
+    fused_kernel_available_core(
+        id,
+        backend,
+        || global_bindings().has_runtime_fused(id, backend),
+        || static_binding_table_bridge(id, backend),
+    )
+}
+
+/// Table-passing variant of [`fused_kernel_available`] — reads the CALLER'S
+/// binding table (the one `optimize_graph` already holds, threaded via
+/// `OptimizationContext::bindings`) instead of re-acquiring
+/// `global_bindings()`. This is the **non-nesting** gate: a background
+/// adopt's `global_bindings()` WRITE can never queue between two reads this
+/// function takes, because it takes none — `table` is a plain reference the
+/// caller already resolved.
+pub fn fused_kernel_available_in(table: &KernelBindingTable, id: FusedOpId, backend: BackendId) -> bool {
+    fused_kernel_available_core(
+        id,
+        backend,
+        || table.has_runtime_fused(id, backend),
+        || static_binding_table_bridge_in(table, id, backend),
+    )
+}
+
+/// The shared 3-way OR behind [`fused_kernel_available`] and
+/// [`fused_kernel_available_in`]: the (lock-free) default kernel registry,
+/// then a caller-supplied runtime-fused check, then a caller-supplied
+/// static-id bridge check — the latter two as thunks so each public wrapper
+/// controls exactly how (and whether) it touches `global_bindings()`, rather
+/// than this shared core baking in one lock policy for both.
+fn fused_kernel_available_core(
+    id: FusedOpId,
+    backend: BackendId,
+    has_runtime_fused: impl FnOnce() -> bool,
+    bridge: impl FnOnce() -> bool,
+) -> bool {
+    default_kernel_registry().lookup(id, backend).is_some() || has_runtime_fused() || bridge()
 }
 
 /// The static-id half of the [`fused_kernel_available`] bridge (see its doc
 /// comment). Returns `false` immediately for a runtime id — purely additive
 /// for the static-id path; a runtime id resolves only via its
-/// `BindingKey::RuntimeFused` rows.
+/// `BindingKey::RuntimeFused` rows. Acquires `global_bindings()` once, for
+/// the duration of the [`static_binding_table_bridge_over`] scan — unchanged
+/// from before this function existed.
 fn static_binding_table_bridge(id: FusedOpId, backend: BackendId) -> bool {
+    static_binding_table_bridge_over(&global_bindings(), id, backend)
+}
+
+/// Table-passing sibling of [`static_binding_table_bridge`] — scans the
+/// caller's `table` instead of `global_bindings()`. See
+/// [`fused_kernel_available_in`].
+fn static_binding_table_bridge_in(table: &KernelBindingTable, id: FusedOpId, backend: BackendId) -> bool {
+    static_binding_table_bridge_over(table, id, backend)
+}
+
+/// The scan shared by [`static_binding_table_bridge`] and
+/// [`static_binding_table_bridge_in`] — the only difference between the two
+/// is which `KernelBindingTable` reference they hand in here.
+fn static_binding_table_bridge_over(
+    table: &KernelBindingTable,
+    id: FusedOpId,
+    backend: BackendId,
+) -> bool {
     if id.is_runtime() {
         return false;
     }
@@ -130,7 +206,7 @@ fn static_binding_table_bridge(id: FusedOpId, backend: BackendId) -> bool {
     };
     // `iter_keys` is the static-entry view (RuntimeFused rows filtered), which
     // is exactly the population this bridge should scan.
-    global_bindings().iter_keys().any(|(op, _dtypes, b)| op == op_kind && b == backend)
+    table.iter_keys().any(|(op, _dtypes, b)| op == op_kind && b == backend)
 }
 
 /// The (deliberately small) set of *static* [`FusedOpId`]s whose kernel is
@@ -307,6 +383,41 @@ mod tests {
         assert!(
             !fused_kernel_available(FusedOps::FLASH_ATTN, BackendId::Cuda),
             "no cuda registration ran in this build; the static bridge finds nothing",
+        );
+    }
+
+    // ---- lock-nesting prerequisite: table-taking variant (Spec B Task 1) --
+
+    /// [`fused_kernel_available_in`] reads ONLY the table it is handed — a
+    /// row bound into a fresh, local `KernelBindingTable` (never touching
+    /// `global_bindings()`) is visible; the same id/backend against an
+    /// unrelated empty table is not. This is the non-nesting gate the
+    /// runtime-fused pathfinder now calls (via `OptimizationContext::bindings`)
+    /// instead of re-acquiring the global read lock it may already be
+    /// nested under.
+    #[test]
+    fn fused_kernel_available_in_reads_the_passed_table_only() {
+        let mut table = KernelBindingTable::new();
+        // A runtime-fused id bound in THIS table (not the global one).
+        let id = fuel_graph::runtime_fused::register_runtime_fused(
+            "test::fused_kernel_available_in::relu_add",
+            relu_add(),
+        )
+        .expect("relu(add) is a registrable region");
+        register_runtime_kernel_into(
+            &mut table,
+            id,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cuda,
+            noop_kernel as KernelRef,
+        );
+        assert!(
+            fused_kernel_available_in(&table, id, BackendId::Cuda),
+            "the row bound into THIS table is visible",
+        );
+        assert!(
+            !fused_kernel_available_in(&KernelBindingTable::new(), id, BackendId::Cuda),
+            "an unrelated empty table sees nothing — no fallback to the global table",
         );
     }
 

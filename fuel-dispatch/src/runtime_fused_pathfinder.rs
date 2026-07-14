@@ -9,8 +9,11 @@
 //! ([`fuel_graph::jit::match_region`]) and offers each match as a gated
 //! `Op::Branch` via [`offer_runtime_fused_arm`] — arm 0 stays the region's
 //! existing primitive subgraph (the correctness oracle), arm 1 is the
-//! synthesized kernel, offered only when [`fused_kernel_available`] gates it
-//! open. Same constitutional posture as [`crate::decode_flash`]: the
+//! synthesized kernel, offered only when
+//! [`fused_kernel_available_in`](crate::runtime_fused_kernels::fused_kernel_available_in)
+//! gates it open (reading the `OptimizationContext`-threaded binding table,
+//! never re-acquiring the global lock). Same constitutional posture as
+//! [`crate::decode_flash`]: the
 //! optimizer emits/prunes arms, backends never decide, and a graph with no
 //! adopted runtime op (or no structural match) is left byte-identical.
 //!
@@ -31,6 +34,7 @@ use fuel_ir::Result;
 use fuel_ir::probe::BackendId;
 
 use crate::driver::{OptimizationContext, Pathfinder};
+use crate::kernel::KernelBindingTable;
 use crate::runtime_fused_arm::{RuntimeFusedSpec, offer_runtime_fused_arm};
 
 /// A structural match of a registered runtime op's region against the base
@@ -60,7 +64,11 @@ struct RegionMatch {
 /// zero consumers is a dead end, ≥2 is ordinary fan-out neither arm can
 /// safely replace). Matches are collected first (read-only over `graph`),
 /// then spliced (mutating), exactly like the placement-fork pathfinder.
-pub fn emit_runtime_fused_arms(graph: &mut Graph) -> Result<usize> {
+///
+/// `table` is the binding table each match's capability gate reads —
+/// threaded straight through to [`offer_runtime_fused_arm`] (see its doc for
+/// why this is the non-nesting form of the gate).
+pub fn emit_runtime_fused_arms(graph: &mut Graph, table: &KernelBindingTable) -> Result<usize> {
     let entries = runtime_entries();
     if entries.is_empty() {
         return Ok(0);
@@ -132,7 +140,7 @@ pub fn emit_runtime_fused_arms(graph: &mut Graph) -> Result<usize> {
             // arm's `Runtime { scalars }`, launched as the trailing `p{i}` args.
             scalars: m.scalars,
         };
-        if offer_runtime_fused_arm(graph, &spec)?.is_some() {
+        if offer_runtime_fused_arm(graph, &spec, table)?.is_some() {
             emitted += 1;
         }
     }
@@ -151,8 +159,8 @@ impl Pathfinder for RuntimeFusedArmPathfinder {
         "RuntimeFusedArm"
     }
 
-    fn propose(&self, graph: &mut Graph, _ctx: &OptimizationContext<'_>) -> Result<()> {
-        emit_runtime_fused_arms(graph)?;
+    fn propose(&self, graph: &mut Graph, ctx: &OptimizationContext<'_>) -> Result<()> {
+        emit_runtime_fused_arms(graph, ctx.bindings())?;
         Ok(())
     }
 }
@@ -226,7 +234,10 @@ mod tests {
         let (mut g, tanh) = graph_with_region();
         let before = g.len();
 
-        let emitted = emit_runtime_fused_arms(&mut g).expect("no build-time error");
+        // adopt_runtime_fused binds into the GLOBAL table; pass it explicitly
+        // as the threaded table this test exercises the pathfinder against.
+        let emitted = emit_runtime_fused_arms(&mut g, &crate::dispatch::global_bindings())
+            .expect("no build-time error");
         assert_eq!(emitted, 1, "exactly one match ⇒ one arm emitted");
         assert!(g.len() > before, "the fused node + branch were appended");
 
@@ -260,7 +271,10 @@ mod tests {
         let _n = g.push(Node { op: Op::Neg, inputs: vec![a], shape: s.clone(), dtype: DType::F32 });
         let before = g.len();
 
-        let emitted = emit_runtime_fused_arms(&mut g).expect("no build-time error");
+        // The production table (any op other tests adopted lives here too —
+        // irrelevant, since none structurally matches this graph).
+        let emitted = emit_runtime_fused_arms(&mut g, &crate::dispatch::global_bindings())
+            .expect("no build-time error");
         assert_eq!(emitted, 0, "no structural match ⇒ no arm emitted");
         assert_eq!(g.len(), before, "graph untouched");
     }
@@ -308,7 +322,10 @@ mod tests {
         });
         let before = g.len();
 
-        let emitted = emit_runtime_fused_arms(&mut g).expect("no build-time error");
+        // adopt_runtime_fused binds into the GLOBAL table; pass it explicitly
+        // as the threaded table this test exercises the pathfinder against.
+        let emitted = emit_runtime_fused_arms(&mut g, &crate::dispatch::global_bindings())
+            .expect("no build-time error");
         assert_eq!(emitted, 1, "the slot region matched once");
 
         let mut found = false;
