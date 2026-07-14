@@ -57,6 +57,8 @@ pub mod jit_adopt;
 pub mod jit_cuda_load;
 #[cfg(feature = "jit")]
 mod jit_ingest;
+#[cfg(feature = "jit")]
+mod jit_ingest_probe;
 pub mod kernel;
 pub mod optimize;
 pub mod pipelined;

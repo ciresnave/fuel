@@ -33,7 +33,11 @@ use crate::runtime_fused_kernels::adopt_runtime_fused;
 
 /// Baracuda [`ElementKind`] → Fuel [`DType`] (the inverse of the telemetry
 /// provider's `map_element_kind`). `None` for a kind with no Fuel dtype.
-fn element_kind_to_dtype(ek: ElementKind) -> Option<DType> {
+///
+/// `pub(crate)` (widened from private) so [`crate::jit_ingest_probe`]'s
+/// `probe_from_operands` can reuse it instead of duplicating the match —
+/// both are `jit`-feature siblings, no visibility escapes the crate.
+pub(crate) fn element_kind_to_dtype(ek: ElementKind) -> Option<DType> {
     Some(match ek {
         ElementKind::U8 => DType::U8,
         ElementKind::S8 => DType::I8,
