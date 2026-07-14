@@ -588,7 +588,7 @@ fn queue_full_report(cand: &CandidateKernel) -> RejectionReport {
         entry_point: cand.entry_point.clone(),
         failed_claim: "queue_full",
         detail: format!(
-            "ingestion queue is at capacity ({}); candidate dropped under backpressure",
+            "ingestion queue is at capacity; candidate '{}' dropped under backpressure",
             cand.entry_point
         ),
         ledger_record: None,
@@ -709,27 +709,36 @@ where
             std::thread::sleep(Duration::from_millis(5));
         }
 
-        match std::panic::catch_unwind(AssertUnwindSafe(|| verify(&cand))) {
-            Ok(IngestOutcome::Adopted(id)) => {
+        // The ENTIRE per-item body — `verify` AND the resulting
+        // on_adopted/on_rejected callback dispatch — runs inside ONE
+        // `catch_unwind`. A `ProviderFeedback` implementation is
+        // third-party, injected code (a provider bug), the same trust
+        // boundary as `verify` itself; a panic from EITHER must not kill
+        // the worker thread, or every future `enqueue` would silently
+        // degrade to `Backpressure` for the process lifetime.
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| match verify(&cand) {
+            IngestOutcome::Adopted(id) => {
                 if let Some(fb) = &feedback {
                     fb.on_adopted(&cand.entry_point, id);
                 }
             }
-            Ok(IngestOutcome::Rejected(report)) => {
+            IngestOutcome::Rejected(report) => {
                 if let Some(fb) = &feedback {
                     fb.on_rejected(&report);
                 }
             }
-            Err(_) => {
-                // Never-panic: a candidate whose verify step panics is
-                // logged and skipped, never allowed to kill the worker
-                // thread — a subsequent enqueue must still be processed
-                // (see `worker_survives_a_panicking_verify`).
-                eprintln!(
-                    "jit_ingest: verify panicked for candidate '{}'; skipping (worker continues)",
-                    cand.entry_point
-                );
-            }
+        }));
+
+        if outcome.is_err() {
+            // Never-panic: a candidate whose verify step OR whose feedback
+            // callback panics is logged and skipped, never allowed to kill
+            // the worker thread — a subsequent enqueue must still be
+            // processed (see `worker_survives_a_panicking_verify` and
+            // `worker_survives_a_panicking_feedback_callback`).
+            eprintln!(
+                "jit_ingest: verify or feedback callback panicked for candidate '{}'; skipping (worker continues)",
+                cand.entry_point
+            );
         }
     }
 }
@@ -1222,6 +1231,70 @@ mod tests {
         assert_eq!(
             fb.rejected.lock().unwrap().as_slice(),
             &["mock_after_panic".to_string()],
+            "the post-panic item must be processed normally"
+        );
+        assert_eq!(call_count.load(Ordering::SeqCst), 2, "both candidates reached verify");
+
+        svc.shutdown();
+    }
+
+    /// A panicking `ProviderFeedback` CALLBACK (not `verify` itself) must
+    /// also NOT crash the worker thread — the same trust boundary as a
+    /// panicking `verify` (a third-party provider bug), and the whole
+    /// per-item body (verify + callback dispatch) now runs under one
+    /// `catch_unwind`. Mirrors `worker_survives_a_panicking_verify`'s
+    /// two-item structure: item 1's `verify` SUCCEEDS (`Adopted`) but its
+    /// feedback's `on_adopted` panics; item 2 is only reached if the worker
+    /// survived that and looped back to `recv()`, observed deterministically
+    /// via its own notify channel (no sleep).
+    #[test]
+    fn worker_survives_a_panicking_feedback_callback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct PanickingFeedback;
+        impl ProviderFeedback for PanickingFeedback {
+            fn on_rejected(&self, _report: &RejectionReport) {
+                panic!("mock on_rejected panics on purpose (Task 7 callback-panic-survival test)");
+            }
+            fn on_adopted(&self, _entry_point: &str, _id: fuel_graph::registry::FusedOpId) {
+                panic!("mock on_adopted panics on purpose (Task 7 callback-panic-survival test)");
+            }
+        }
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_worker = call_count.clone();
+        let adopted_id = fuel_graph::registry::FusedOpId(0x8002);
+        let cfg = IngestionConfig::default();
+        let svc = IngestionService::start_with_verify(
+            move |_cand| {
+                call_count_worker.fetch_add(1, Ordering::SeqCst);
+                IngestOutcome::Adopted(adopted_id)
+            },
+            cfg,
+        );
+
+        // First candidate: verify SUCCEEDS (Adopted), but the feedback it's
+        // paired with panics inside `on_adopted` — the callback dispatch,
+        // not verify. Proves Fix 1's widened guard, not just the
+        // pre-existing verify-panic guard.
+        let panicking_fb = Arc::new(PanickingFeedback);
+        svc.enqueue(test_candidate("panics-in-callback"), Some(panicking_fb))
+            .expect("enqueue accepted");
+
+        // Second candidate: only reached if the worker survived the
+        // callback panic and looped back to `recv()`. Wait on ITS notify
+        // channel — deterministic proof of liveness, no sleep.
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let fb = Arc::new(RecordingFeedback::with_notify(tx));
+        svc.enqueue(test_candidate("after-callback-panic"), Some(fb.clone()))
+            .expect("enqueue accepted");
+
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker must survive the on_adopted panic and process the next item");
+
+        assert_eq!(
+            fb.adopted.lock().unwrap().as_slice(),
+            &[("after-callback-panic".to_string(), adopted_id)],
             "the post-panic item must be processed normally"
         );
         assert_eq!(call_count.load(Ordering::SeqCst), 2, "both candidates reached verify");
