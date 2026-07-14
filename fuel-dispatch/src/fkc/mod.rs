@@ -54,7 +54,9 @@ mod revhash;
 mod schema;
 mod shape_constraint;
 mod validate;
-mod verify;
+// pub(crate): jit_ingest.rs (outside this module tree) reaches LedgerRecord
+// via crate::fkc::verify::LedgerRecord for RejectionReport::ledger_record.
+pub(crate) mod verify;
 #[cfg(feature = "vulkan")]
 mod vulkan_link;
 mod warn;
