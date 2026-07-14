@@ -19,6 +19,27 @@
 
 ---
 
+## Prerequisites / starting context (read FIRST)
+
+- **Branch.** This plan builds on branch `capturedrun-4b-resume` (commits `a127c190`..`525f93f4`), **NOT yet merged to `main`**. The verify-invoke template this plan reuses — `fuel-dispatch/src/fkc/verify/seed_cuda_ledger.rs` — and the 219-record verified ledger were added on this branch. **Start from this branch** (or after it merges to main). On `main` alone the foundation does not exist. Do the work on a fresh branch off `capturedrun-4b-resume`.
+- **Auto-loaded context.** A fresh session loads `CLAUDE.md` (build/GPU discipline; environment: Windows 11, RTX 4070, CUDA 13.3, cuDNN v9.23) and the per-machine memory index (`~/.claude/.../MEMORY.md` — the rope-convention finding, CapturedRun, and seeding memories). Read the **design doc** `docs/superpowers/specs/2026-07-13-jit-candidate-kernel-ingestion-spec-b-design.md` for the "why" before Task 1.
+- **CUDA build helper.** `C:\Windows\Temp\cuda_run.bat` (Global Constraints) is scratch and may not survive a reboot/temp-clear. If missing, recreate it verbatim:
+
+```bat
+@echo off
+call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+set "PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\bin;C:\Program Files\NVIDIA\CUDNN\v9.23\bin\13.3\x64;%PATH%"
+cd /d C:\Projects\fuel
+%* > C:\Windows\Temp\cuda_run.log 2>&1
+echo CUDA_RUN_EXITCODE: %ERRORLEVEL% >> C:\Windows\Temp\cuda_run.log
+```
+
+  Invoke as `cmd //c 'C:\Windows\Temp\cuda_run.bat' cargo test -p fuel-dispatch --features cuda,jit ...`; read `C:\Windows\Temp\cuda_run.log` for output + the `CUDA_RUN_EXITCODE` line (the background-run's own exit is the batch's, not cargo's).
+- **Baseline check (before Task 1).** Confirm the starting point is green: `cargo test -p fuel-dispatch --lib` (default), and `cmd //c 'C:\Windows\Temp\cuda_run.bat' cargo build -p fuel-dispatch --features cuda,jit` exits 0. If `--features jit` doesn't build on its own today, fix that baseline first — it's a prerequisite, not part of any task.
+- **No synthesizer dependency.** Spec B's tests use EXISTING kernels as candidates (the CUDA `add_f32` wrapper; baracuda's `rope_apply_f32`), NOT baracuda's JIT synthesizer (that's Spec A). So no baracuda alpha bump is needed for this plan.
+
+---
+
 ## File structure
 
 - **Create** `fuel-dispatch/src/jit_ingest.rs` — the ingestion module: `CandidateKernel`, `ProviderFeedback`, `RejectionReport`, `IngestOutcome`, `verify_candidate`, `ingest_one` (sync verify+adopt/reject), and `IngestionService` (queue + worker). Module declared `#[cfg(feature = "jit")]` in `lib.rs`.
