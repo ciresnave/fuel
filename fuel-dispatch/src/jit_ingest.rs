@@ -635,7 +635,11 @@ impl IngestionService {
         F: Fn(&CandidateKernel) -> IngestOutcome + Send + 'static,
     {
         let (sender, receiver) = sync_channel::<IngestItem>(cfg.queue_bound);
-        let idle_load_threshold = cfg.idle_load_threshold;
+        // Clamp to >= 1: `inflight_count(..) >= 0` is always true for a `u32`
+        // count, so an unclamped `idle_load_threshold: 0` would have the
+        // worker's idle-gate spin-sleep forever and never reach `verify` —
+        // 0 is treated as 1 (wait for the device to be fully idle).
+        let idle_load_threshold = cfg.idle_load_threshold.max(1);
         let worker =
             std::thread::spawn(move || worker_loop(receiver, verify, idle_load_threshold));
         Self { sender: Some(sender), worker: Some(worker) }
@@ -649,7 +653,12 @@ impl IngestionService {
     /// synchronous `on_rejected("queue_full")` before this call returns.
     ///
     /// Never panics: a full or disconnected channel degrades to
-    /// `Backpressure`, never an unwrap.
+    /// `Backpressure`, never an unwrap. Note the asymmetry with the worker
+    /// loop: the synchronous `queue_full` `on_rejected` call below runs
+    /// UNGUARDED on the caller's own thread (unlike the worker's
+    /// `catch_unwind`-guarded callbacks) — intentionally, so a panicking
+    /// `feedback` implementation surfaces to the caller (their bug, their
+    /// thread) rather than being silently swallowed.
     pub fn enqueue(
         &self,
         cand: CandidateKernel,
@@ -1020,6 +1029,96 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // Hardening — `adopt_verified`'s never-panic reject branches. Both are
+    // testable WITHOUT a live device: they return before (or without ever
+    // performing) any GPU work, so these are non-`#[ignore]` (run in the
+    // `cuda,jit` suite with no device attached).
+    // -----------------------------------------------------------------
+
+    /// `adopt_verified` never-panic branch: a `Pass`-verdict candidate with
+    /// `decompose: None` (nothing to register a region from) must be
+    /// `Rejected` with `failed_claim == "no_decompose"`, never unwrapped.
+    /// This branch returns before `adopt_runtime_fused` (or any GPU call) is
+    /// ever reached, so it needs no live CUDA device.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn adopt_verified_rejects_a_candidate_without_a_decompose() {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
+        let cand = CandidateKernel {
+            entry_point: "test::adopt_verified::no_decompose".to_string(),
+            kernel: crate::baracuda_dispatch::binary::add_f32,
+            op_params: crate::kernel::OpParams::None,
+            decompose: None,
+            operands: vec![od, od],
+            dtypes: vec![DType::F32, DType::F32],
+            kernel_revision_hash: 0x1_9E57_9001,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
+            backend: BackendId::Cuda,
+        };
+
+        match adopt_verified(&cand) {
+            IngestOutcome::Rejected(r) => {
+                assert_eq!(r.failed_claim, "no_decompose");
+            }
+            IngestOutcome::Adopted(_) => {
+                panic!("a candidate with no decompose must never be adopted")
+            }
+        }
+    }
+
+    /// `adopt_verified` never-panic branch: a `Pass`-verdict candidate whose
+    /// `decompose` region has non-contiguous binds (`{0, 2}`, missing `1`) is
+    /// one `register_runtime_fused` refuses with `NonContiguousBinds`, so
+    /// `adopt_runtime_fused` returns `None` (region not registrable) —
+    /// `adopt_verified` must surface that as `Rejected` with
+    /// `failed_claim == "adopt_failed"`, never panic. The rejection is
+    /// decided inside `register_runtime_fused`'s bind-index check, before any
+    /// GPU kernel is invoked, so this needs no live CUDA device.
+    /// `entry_point` carries a distinctive suffix (process-global registry)
+    /// though this path never actually registers anything.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn adopt_verified_rejects_when_the_region_is_not_registrable() {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        // Bind indices {0, 2} — missing 1 — register_runtime_fused rejects
+        // this as NonContiguousBinds.
+        let region = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 2 }],
+        };
+        let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
+        let cand = CandidateKernel {
+            entry_point: "test::adopt_verified::non_contiguous_binds::run_9002".to_string(),
+            kernel: crate::baracuda_dispatch::binary::add_f32,
+            op_params: crate::kernel::OpParams::None,
+            decompose: Some(region),
+            operands: vec![od, od],
+            dtypes: vec![DType::F32, DType::F32],
+            kernel_revision_hash: 0x1_9E57_9002,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
+            backend: BackendId::Cuda,
+        };
+
+        match adopt_verified(&cand) {
+            IngestOutcome::Rejected(r) => {
+                assert_eq!(r.failed_claim, "adopt_failed");
+            }
+            IngestOutcome::Adopted(_) => {
+                panic!("a non-contiguous-bind region must never be adopted")
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
     // Task 7 — IngestionService (NO GPU: `start_with_verify` is the seam;
     // these run under `--features jit` alone).
     // -----------------------------------------------------------------
@@ -1181,6 +1280,37 @@ mod tests {
             "on_adopted must fire with the entry_point and the adopted id"
         );
         assert!(fb.rejected.lock().unwrap().is_empty());
+
+        svc.shutdown();
+    }
+
+    /// Hardening regression: `idle_load_threshold == 0` must NOT starve the
+    /// worker forever. `inflight_count(..) >= 0` is always true for a `u32`
+    /// count, so an unclamped read of the config would have the worker's
+    /// idle-gate spin-sleep indefinitely and never reach `verify` — proven
+    /// here by asserting the callback still fires within a bounded timeout.
+    /// Mirrors `worker_fires_on_adopted_for_adopted_outcome`'s no-sleep
+    /// synchronization style, just with `idle_load_threshold: 0` in the
+    /// config.
+    #[test]
+    fn worker_does_not_stall_when_idle_threshold_is_zero() {
+        let cfg = IngestionConfig { idle_load_threshold: 0, ..Default::default() };
+        let adopted_id = fuel_graph::registry::FusedOpId(0x8003);
+        let svc =
+            IngestionService::start_with_verify(move |_cand| IngestOutcome::Adopted(adopted_id), cfg);
+
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let fb = Arc::new(RecordingFeedback::with_notify(tx));
+        svc.enqueue(test_candidate("zero-threshold"), Some(fb.clone())).expect("enqueue accepted");
+
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker must not stall forever with idle_load_threshold == 0");
+
+        assert_eq!(
+            fb.adopted.lock().unwrap().as_slice(),
+            &[("zero-threshold".to_string(), adopted_id)],
+            "on_adopted must fire once the worker processes the item"
+        );
 
         svc.shutdown();
     }

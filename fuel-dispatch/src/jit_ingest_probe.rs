@@ -87,9 +87,15 @@ pub fn probe_from_operands(operands: &[OperandDesc], seed: u64) -> Option<Vec<Ho
 /// would receive them from the candidate at a higher layer.
 ///
 /// Never panics on the production path — every device/realize/readback failure
-/// is returned as `Err`. (The only panic risk is a non-re-emittable `OpTag`
-/// inside `emit_region`; a *validated* decompose never carries one, and Task
-/// 5's verifier wraps the whole call in `catch_unwind`.)
+/// is returned as `Err`. (Two panic risks live inside `emit_region`: a
+/// non-re-emittable `OpTag` — a *validated* decompose never carries one — and
+/// its scalar-cursor fill, `scalars.split_at(arity)`, which panics if the
+/// passed `scalars` slice is shorter than the region's open-slot count;
+/// `decompose_region` guards that length elsewhere, but `emit_region` is a
+/// thin wrapper and deliberately does not, so the caller here passes `&[]`
+/// only for a parameterless region — see the `scalars` doc above. Either way,
+/// Task 5's verifier wraps the whole `reference_output` call in
+/// `catch_unwind`.)
 #[cfg(feature = "cuda")]
 pub fn reference_output(
     decompose: &PatternNode,
