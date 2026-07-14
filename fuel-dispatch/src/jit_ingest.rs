@@ -9,6 +9,11 @@
 //! synthesis step that feeds that verification). No consumer yet
 //! (Task 5/6 wire ingest + verify around it) — `dead_code` is expected.
 
+use std::panic::AssertUnwindSafe;
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
+use std::sync::Arc;
+use std::time::Duration;
+
 use crate::fkc::verify::LedgerRecord;
 
 #[cfg(feature = "cuda")]
@@ -534,6 +539,201 @@ fn adopt_verified(cand: &CandidateKernel) -> IngestOutcome {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Task 7 — IngestionService: bounded queue + idle-aware concurrency-1 worker.
+// ---------------------------------------------------------------------------
+
+/// Tunables for [`IngestionService`]. `Default` matches the plan's defaults.
+#[derive(Debug, Clone, Copy)]
+pub struct IngestionConfig {
+    /// Bounded `sync_channel` capacity. Once full, [`IngestionService::enqueue`]
+    /// returns [`Backpressure`] instead of growing unbounded — candidate
+    /// ingestion must never be able to out-race verification and pile up
+    /// memory behind it. Default 32.
+    pub queue_bound: usize,
+    /// How many verifies may run concurrently. **Only `1` (the default) is
+    /// implemented**: [`IngestionService::start_with_verify`] always spawns
+    /// exactly one worker thread, so a candidate is always verified strictly
+    /// serially with respect to any other candidate. A value other than `1`
+    /// is currently advisory — building a real bounded worker pool is
+    /// deferred until something actually needs concurrent verification
+    /// (YAGNI; see the Task-7 brief). Default 1.
+    pub max_concurrent: usize,
+    /// The worker's idle-gate threshold: before starting the next verify,
+    /// the worker waits (best-effort, bounded short sleeps — never
+    /// unbounded) while `inflight_count` for the CUDA device is `>=` this,
+    /// so candidate verification defers to live inference load rather than
+    /// competing with it. Default 1 (wait for the device to be fully idle).
+    pub idle_load_threshold: u32,
+}
+
+impl Default for IngestionConfig {
+    fn default() -> Self {
+        Self { queue_bound: 32, max_concurrent: 1, idle_load_threshold: 1 }
+    }
+}
+
+/// The bounded queue was full (or the worker is gone) when
+/// [`IngestionService::enqueue`] was called — the candidate was NOT
+/// accepted. If a `feedback` was supplied to `enqueue`, it already received
+/// a synchronous `on_rejected` (`failed_claim == "queue_full"`) on the
+/// caller's own thread before `enqueue` returned this.
+#[derive(Debug)]
+pub struct Backpressure;
+
+/// The [`RejectionReport`] `enqueue` hands a provider's `feedback` when the
+/// bounded queue is full.
+fn queue_full_report(cand: &CandidateKernel) -> RejectionReport {
+    RejectionReport {
+        entry_point: cand.entry_point.clone(),
+        failed_claim: "queue_full",
+        detail: format!(
+            "ingestion queue is at capacity ({}); candidate dropped under backpressure",
+            cand.entry_point
+        ),
+        ledger_record: None,
+    }
+}
+
+/// One queued offer: the candidate plus the (optional) feedback sink its
+/// eventual outcome should be reported to.
+type IngestItem = (CandidateKernel, Option<Arc<dyn ProviderFeedback>>);
+
+/// Bounded candidate-kernel ingestion queue + a single idle-aware background
+/// verify worker (Spec B Task 7). Candidates offered via [`Self::enqueue`]
+/// are handed to ONE worker thread that verifies them one at a time —
+/// against a live CUDA device in production ([`Self::start`]), or an
+/// injected closure in tests ([`Self::start_with_verify`], the test/
+/// production seam) — deferring to `inflight_count`-observed live GPU load
+/// between items, so a burst of candidate offers never competes with live
+/// inference for the device. A full queue backpressures the caller
+/// ([`Backpressure`]) instead of growing unbounded.
+pub struct IngestionService {
+    sender: Option<SyncSender<IngestItem>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl IngestionService {
+    /// Production entry point: verify each candidate with [`ingest_one`]
+    /// against `device`. `device` is captured by the verify closure handed
+    /// to [`Self::start_with_verify`] — this is a thin wrapper, all the
+    /// queue/worker/idle-gate/never-panic machinery lives there and is
+    /// exercised directly (no GPU) by this module's tests.
+    #[cfg(feature = "cuda")]
+    pub fn start(device: CudaDevice, cfg: IngestionConfig) -> Self {
+        Self::start_with_verify(move |cand| ingest_one(cand, &device), cfg)
+    }
+
+    /// Test/production seam: build the service around an injected verify
+    /// step rather than requiring a live CUDA device, so the queue,
+    /// backpressure, idle-gate, and panic-survival behavior are all
+    /// testable with NO GPU. Spawns the single worker thread that
+    /// `max_concurrent == 1` (the only implemented value — see
+    /// [`IngestionConfig::max_concurrent`]) requires.
+    pub fn start_with_verify<F>(verify: F, cfg: IngestionConfig) -> Self
+    where
+        F: Fn(&CandidateKernel) -> IngestOutcome + Send + 'static,
+    {
+        let (sender, receiver) = sync_channel::<IngestItem>(cfg.queue_bound);
+        let idle_load_threshold = cfg.idle_load_threshold;
+        let worker =
+            std::thread::spawn(move || worker_loop(receiver, verify, idle_load_threshold));
+        Self { sender: Some(sender), worker: Some(worker) }
+    }
+
+    /// Offer a candidate for background verification. `Ok(())` means it was
+    /// accepted into the bounded queue — NOT that it verified or adopted;
+    /// that happens asynchronously on the worker thread and is reported via
+    /// `feedback`. `Err(Backpressure)` means the queue was full (or the
+    /// worker is gone); when `feedback` was supplied it already received a
+    /// synchronous `on_rejected("queue_full")` before this call returns.
+    ///
+    /// Never panics: a full or disconnected channel degrades to
+    /// `Backpressure`, never an unwrap.
+    pub fn enqueue(
+        &self,
+        cand: CandidateKernel,
+        feedback: Option<Arc<dyn ProviderFeedback>>,
+    ) -> Result<(), Backpressure> {
+        let Some(sender) = &self.sender else {
+            return Err(Backpressure);
+        };
+        match sender.try_send((cand, feedback)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full((cand, feedback))) => {
+                if let Some(fb) = &feedback {
+                    fb.on_rejected(&queue_full_report(&cand));
+                }
+                Err(Backpressure)
+            }
+            Err(TrySendError::Disconnected(_)) => Err(Backpressure),
+        }
+    }
+
+    /// Stop accepting new candidates and wait for the worker to drain
+    /// whatever is already queued/in-flight, then exit. Dropping the sender
+    /// (rather than sending a sentinel) is what makes the worker's blocking
+    /// `recv()` return `Err` once the queue empties — that's its exit
+    /// signal, so `join()` below is guaranteed to return once any in-flight
+    /// verify finishes.
+    pub fn shutdown(mut self) {
+        self.sender.take();
+        if let Some(worker) = self.worker.take() {
+            // A worker that itself panicked shouldn't happen (`verify` is
+            // catch_unwind-wrapped in `worker_loop`), but `join()`'s Err is
+            // swallowed defensively either way — shutdown must never panic.
+            let _ = worker.join();
+        }
+    }
+}
+
+/// The single background worker: pull one `(CandidateKernel, feedback)` off
+/// `receiver` at a time, idle-gate on live CUDA load (best-effort), verify
+/// without ever letting a panicking `verify` kill the thread, and report the
+/// outcome to `feedback`. Returns once `receiver.recv()` errors — i.e. once
+/// [`IngestionService::shutdown`] drops the sender and the queue drains.
+fn worker_loop<F>(receiver: Receiver<IngestItem>, verify: F, idle_load_threshold: u32)
+where
+    F: Fn(&CandidateKernel) -> IngestOutcome,
+{
+    while let Ok((cand, feedback)) = receiver.recv() {
+        // Idle-gate (best-effort, bounded sleeps): defer verification until
+        // live CUDA inference isn't busy. `inflight_count` is
+        // backend-agnostic and reads 0 for a location that's never
+        // submitted async work, so this never blocks when there's no CUDA
+        // device at all (no-GPU tests / CPU-only builds) or when CUDA is
+        // simply idle.
+        while crate::dispatch::inflight_count(fuel_ir::DeviceLocation::Cuda { gpu_id: 0 })
+            >= idle_load_threshold
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        match std::panic::catch_unwind(AssertUnwindSafe(|| verify(&cand))) {
+            Ok(IngestOutcome::Adopted(id)) => {
+                if let Some(fb) = &feedback {
+                    fb.on_adopted(&cand.entry_point, id);
+                }
+            }
+            Ok(IngestOutcome::Rejected(report)) => {
+                if let Some(fb) = &feedback {
+                    fb.on_rejected(&report);
+                }
+            }
+            Err(_) => {
+                // Never-panic: a candidate whose verify step panics is
+                // logged and skipped, never allowed to kill the worker
+                // thread — a subsequent enqueue must still be processed
+                // (see `worker_survives_a_panicking_verify`).
+                eprintln!(
+                    "jit_ingest: verify panicked for candidate '{}'; skipping (worker continues)",
+                    cand.entry_point
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -808,5 +1008,224 @@ mod tests {
                 r.failed_claim, r.detail
             ),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Task 7 — IngestionService (NO GPU: `start_with_verify` is the seam;
+    // these run under `--features jit` alone).
+    // -----------------------------------------------------------------
+
+    /// A [`crate::kernel::KernelRef`]-shaped no-op — `IngestionService`'s
+    /// worker never actually calls `cand.kernel` (verification is injected
+    /// via `start_with_verify`), so this only needs to type-check as a valid
+    /// function pointer to build a [`CandidateKernel`] with no CUDA/GPU
+    /// dependency at all.
+    fn dummy_kernel(
+        _inputs: &[Arc<std::sync::RwLock<fuel_memory::Storage>>],
+        _outputs: &mut [Arc<std::sync::RwLock<fuel_memory::Storage>>],
+        _layouts: &[fuel_ir::Layout],
+        _params: &crate::kernel::OpParams,
+    ) -> fuel_ir::Result<()> {
+        Ok(())
+    }
+
+    /// A minimal, GPU-free [`CandidateKernel`] — `decompose: None` because
+    /// none of the Task-7 tests ever reach real verification (it's always
+    /// mocked out via `start_with_verify`), so there's nothing to realize a
+    /// reference from.
+    fn test_candidate(entry_point: &str) -> CandidateKernel {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
+        CandidateKernel {
+            entry_point: entry_point.to_string(),
+            kernel: dummy_kernel,
+            op_params: crate::kernel::OpParams::None,
+            decompose: None,
+            operands: vec![od, od],
+            dtypes: vec![DType::F32, DType::F32],
+            kernel_revision_hash: 0xDEAD_BEEF,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
+            backend: BackendId::Cuda,
+        }
+    }
+
+    /// Records every `on_rejected`/`on_adopted` callback it receives, and
+    /// (if built with `with_notify`) fires a one-shot signal on the first
+    /// callback — the deterministic "the worker finished processing an
+    /// item" synchronization point the async tests below wait on instead of
+    /// sleeping.
+    #[derive(Default)]
+    struct RecordingFeedback {
+        rejected: std::sync::Mutex<Vec<String>>,
+        adopted: std::sync::Mutex<Vec<(String, fuel_graph::registry::FusedOpId)>>,
+        notify: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    }
+
+    impl RecordingFeedback {
+        fn with_notify(tx: std::sync::mpsc::Sender<()>) -> Self {
+            Self { notify: std::sync::Mutex::new(Some(tx)), ..Default::default() }
+        }
+
+        fn fire_notify(&self) {
+            if let Some(tx) = self.notify.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    impl ProviderFeedback for RecordingFeedback {
+        fn on_rejected(&self, report: &RejectionReport) {
+            self.rejected.lock().unwrap().push(report.failed_claim.to_string());
+            self.fire_notify();
+        }
+
+        fn on_adopted(&self, entry_point: &str, id: fuel_graph::registry::FusedOpId) {
+            self.adopted.lock().unwrap().push((entry_point.to_string(), id));
+            self.fire_notify();
+        }
+    }
+
+    /// A bounded queue of 1 + a worker deterministically held mid-verify (it
+    /// signals `started_tx` the instant it's invoked, then blocks on
+    /// `release_rx`) means: enqueue #1 is taken by the worker (buffer empty
+    /// once `started_rx` fires), enqueue #2 fills the now-empty 1-slot
+    /// buffer, and enqueue #3 — issued while the worker is STILL blocked and
+    /// the buffer is STILL full — must deterministically backpressure. No
+    /// sleep anywhere: `started_rx.recv()` is the only synchronization point
+    /// needed before the buffer-state assertions become deterministic.
+    #[test]
+    fn enqueue_backpressures_and_notifies_when_full() {
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+        let cfg = IngestionConfig { queue_bound: 1, max_concurrent: 1, idle_load_threshold: 1 };
+        let svc = IngestionService::start_with_verify(
+            move |_cand| {
+                started_tx.send(()).ok();
+                // Block here until the test releases us — holds the worker
+                // out of `recv()` so the queue's buffer state is fully
+                // under the test's control.
+                release_rx.recv().ok();
+                IngestOutcome::Rejected(RejectionReport {
+                    entry_point: "mock".to_string(),
+                    failed_claim: "mock_verify_result",
+                    detail: "mock verify (Task 7 backpressure test)".to_string(),
+                    ledger_record: None,
+                })
+            },
+            cfg,
+        );
+
+        // #1: taken by the worker's recv() (may buffer briefly, but the
+        // worker will drain it as soon as it's scheduled).
+        svc.enqueue(test_candidate("c1"), None).expect("first enqueue is accepted");
+        // Deterministic sync point: by the time this returns, the worker
+        // has already called `recv()` (removing c1 from the buffer) and
+        // entered the verify closure.
+        started_rx.recv().expect("worker started processing the first candidate");
+
+        // #2: the buffer is now guaranteed empty (0/1) — this fills it.
+        svc.enqueue(test_candidate("c2"), None).expect("second enqueue fills the 1-slot buffer");
+
+        // #3: the buffer is guaranteed full (1/1) and the worker is
+        // guaranteed still blocked in verify (it hasn't been released yet)
+        // — this must backpressure.
+        let fb = Arc::new(RecordingFeedback::default());
+        let result = svc.enqueue(test_candidate("c3"), Some(fb.clone()));
+        assert!(matches!(result, Err(Backpressure)), "queue is full; expected Backpressure");
+        assert_eq!(
+            fb.rejected.lock().unwrap().as_slice(),
+            &["queue_full".to_string()],
+            "a full queue must synchronously notify the provided feedback with queue_full"
+        );
+
+        // Drain the worker (c1's verify, then c2's) so `shutdown` can join
+        // rather than hang on a still-blocked thread.
+        release_tx.send(()).ok();
+        release_tx.send(()).ok();
+        svc.shutdown();
+    }
+
+    /// A mock verify that returns `Adopted` must fire the feedback's
+    /// `on_adopted` — synchronized deterministically via `RecordingFeedback`'s
+    /// one-shot notify channel (no sleep).
+    #[test]
+    fn worker_fires_on_adopted_for_adopted_outcome() {
+        let cfg = IngestionConfig::default();
+        let adopted_id = fuel_graph::registry::FusedOpId(0x8001);
+        let svc =
+            IngestionService::start_with_verify(move |_cand| IngestOutcome::Adopted(adopted_id), cfg);
+
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let fb = Arc::new(RecordingFeedback::with_notify(tx));
+        svc.enqueue(test_candidate("adopted-one"), Some(fb.clone())).expect("enqueue accepted");
+
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker should report the adopted outcome");
+
+        assert_eq!(
+            fb.adopted.lock().unwrap().as_slice(),
+            &[("adopted-one".to_string(), adopted_id)],
+            "on_adopted must fire with the entry_point and the adopted id"
+        );
+        assert!(fb.rejected.lock().unwrap().is_empty());
+
+        svc.shutdown();
+    }
+
+    /// A verify that panics must NOT crash the worker thread — proven by
+    /// enqueueing a SECOND candidate afterward (with a non-panicking mock
+    /// outcome) and observing that it still gets processed. Synchronized
+    /// via the second item's notify channel; nothing waits on the panicking
+    /// first item beyond letting the worker move on to the second.
+    #[test]
+    fn worker_survives_a_panicking_verify() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_worker = call_count.clone();
+        let cfg = IngestionConfig::default();
+        let svc = IngestionService::start_with_verify(
+            move |_cand| {
+                let n = call_count_worker.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    panic!("mock verify panics on purpose (Task 7 panic-survival test)");
+                }
+                IngestOutcome::Rejected(RejectionReport {
+                    entry_point: "after-panic".to_string(),
+                    failed_claim: "mock_after_panic",
+                    detail: "mock verify, second call, after the first panicked".to_string(),
+                    ledger_record: None,
+                })
+            },
+            cfg,
+        );
+
+        // First candidate: its verify panics. No feedback attached — there
+        // is nothing to observe from this call directly; its only job is to
+        // try to kill the worker.
+        svc.enqueue(test_candidate("panics"), None).expect("enqueue accepted");
+
+        // Second candidate: only processed if the worker survived the first
+        // panic and looped back to `recv()`. Wait on ITS notification —
+        // deterministic proof the worker is alive and serial-processing.
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let fb = Arc::new(RecordingFeedback::with_notify(tx));
+        svc.enqueue(test_candidate("after-panic"), Some(fb.clone())).expect("enqueue accepted");
+
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker must survive the panic and process the next item");
+
+        assert_eq!(
+            fb.rejected.lock().unwrap().as_slice(),
+            &["mock_after_panic".to_string()],
+            "the post-panic item must be processed normally"
+        );
+        assert_eq!(call_count.load(Ordering::SeqCst), 2, "both candidates reached verify");
+
+        svc.shutdown();
     }
 }
