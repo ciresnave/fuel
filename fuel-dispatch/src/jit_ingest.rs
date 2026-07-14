@@ -250,6 +250,39 @@ fn verify_candidate_impl(
     let out_dtype = probe[0].dtype;
     let out_shape = probe[0].shape.clone();
 
+    // Numeric claims (checked ahead of the invoke below, for the f32-only
+    // guard right after) — the same declared-claim test the numeric block
+    // uses further down.
+    let numeric_declared = cand.declared.max_ulp.is_some()
+        || cand.declared.max_relative.is_some()
+        || cand.declared.max_absolute.is_some();
+
+    // (1a) Non-f32 numeric-claim guard. `verify_precision_bound` (`ulp.rs`)
+    // unconditionally reinterprets BOTH outputs' raw bytes as `f32`
+    // (`bytemuck::cast_slice`) — for a non-F32 `out_dtype` (BF16/F16/F64/...)
+    // that reinterpretation reads the wrong element count/values from bytes
+    // that were never f32 in the first place. A kernel computing the WRONG
+    // function could then land within `max_ulp` of the reinterpreted
+    // reference purely by accident and wrongly PASS — exactly the "wrong
+    // candidate adopted" defect this whole module exists to prevent. Refuse
+    // honestly instead: no numeric claim can be verified for a non-f32
+    // candidate yet. Placed here (before the GPU invoke below) so a
+    // candidate that can't be numerically verified doesn't waste GPU work
+    // being invoked at all — this short-circuits bit-stability too, matching
+    // the existing first-failure-wins posture (e.g. the probe checks above).
+    if numeric_declared && out_dtype != fuel_ir::DType::F32 {
+        let claim = first_numeric_claim(&cand.declared);
+        let detail =
+            "numeric bound verification is f32-only; non-f32 candidate cannot be numerically verified yet"
+                .to_string();
+        ledger.upsert(make_record(
+            claim,
+            "fail",
+            serde_json::json!({ "detail": detail.clone(), "out_dtype": format!("{out_dtype:?}") }),
+        ));
+        return (VerifyVerdict::Fail { claim, detail }, ledger.records().to_vec());
+    }
+
     // (2) Candidate output via a real CUDA invoke. The `BindingEntry` mirrors
     // `invoker_cuda.rs`'s wiring, carrying the candidate's DECLARED precision
     // (unverified until this fn checks it) + revision hash.
@@ -325,10 +358,6 @@ fn verify_candidate_impl(
     //     declared numeric claim then fails honestly (bit-stability above stays
     //     checkable). This branch is defensive — Task 6 requires a decompose to
     //     adopt at all, so it has no live consumer.
-    let numeric_declared = cand.declared.max_ulp.is_some()
-        || cand.declared.max_relative.is_some()
-        || cand.declared.max_absolute.is_some();
-
     if numeric_declared {
         let reference = match &cand.decompose {
             Some(dec) => match crate::jit_ingest_probe::reference_output(
@@ -500,5 +529,72 @@ mod tests {
         assert!(records.iter().any(|r| r.claim == "max_ulp"));
         assert!(records.iter().any(|r| r.claim == "max_relative"));
         assert!(records.iter().any(|r| r.claim == "max_absolute"));
+    }
+
+    /// Review-fix regression: `verify_precision_bound` (`ulp.rs`)
+    /// unconditionally reinterprets output bytes as `f32`
+    /// (`bytemuck::cast_slice::<f32>`), so a candidate whose real output
+    /// dtype is NOT f32 (BF16 here) must never reach that comparison — it
+    /// would silently reinterpret BF16 bytes as f32 and could wrongly PASS a
+    /// wrong-function kernel. A BF16 candidate declaring a numeric claim
+    /// (`max_ulp`) must get an honest `Fail` naming the f32-only limitation,
+    /// not a GPU invoke + mis-compare. `#[ignore]`'d (needs a live CUDA
+    /// device) — the guard fires before any GPU work, so the `kernel` fn
+    /// pointer is never actually called; reusing `add_f32` here is just a
+    /// valid `KernelRef` value, not a claim it computes anything meaningful
+    /// for BF16.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn verify_candidate_refuses_numeric_claim_for_non_f32() {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_cuda_backend::CudaDevice;
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+
+        let decompose = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+        let od = OperandDesc::new(1, &[4], &[1], ElementKind::Bf16, 16);
+        let cand = CandidateKernel {
+            entry_point: "add_bf16".to_string(),
+            kernel: crate::baracuda_dispatch::binary::add_f32,
+            op_params: crate::kernel::OpParams::None,
+            decompose: Some(decompose),
+            operands: vec![od, od],
+            dtypes: vec![DType::BF16, DType::BF16],
+            kernel_revision_hash: 0x00AD_DF16,
+            declared: crate::fused::PrecisionGuarantee {
+                bit_stable_on_same_hardware: false,
+                max_ulp: Some(1),
+                max_relative: None,
+                max_absolute: None,
+                notes: "test-only, f32-only guard regression",
+            },
+            backend: BackendId::Cuda,
+        };
+
+        let (verdict, records) = verify_candidate(&cand, &dev);
+        match verdict {
+            VerifyVerdict::Fail { claim, detail } => {
+                assert_eq!(claim, "max_ulp", "first (only) declared numeric claim");
+                assert!(
+                    detail.contains("f32-only"),
+                    "expected an f32-only refusal detail, got: {detail}"
+                );
+            }
+            other => panic!("expected Fail (f32-only guard), got {other:?}"),
+        }
+        assert_eq!(records.len(), 1, "one fail record for the refused claim: {records:?}");
+        assert_eq!(records[0].claim, "max_ulp");
+        assert_eq!(records[0].result, "fail");
     }
 }
