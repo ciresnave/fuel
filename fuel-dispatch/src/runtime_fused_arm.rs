@@ -5,8 +5,8 @@
 //! backends never decide.** Arm 0 is the region's **existing primitive subgraph**
 //! (the decompose / correctness oracle the graph already holds); arm 1 is the
 //! synthesized `Op::Fused(runtime_id, Runtime)` kernel, offered **only** when a
-//! kernel is bound for the target backend ([`fused_kernel_available`]) and pinned to
-//! that backend. `finalize_branches` guarantees the merge reads arm 0, so a
+//! kernel is bound for the target backend ([`fused_kernel_available_in`]) and pinned
+//! to that backend. `finalize_branches` guarantees the merge reads arm 0, so a
 //! finalized-but-unpicked graph — and every backend with no synthesized arm —
 //! realizes on the primitive route, byte-identical. The route picker chooses arm 1
 //! when it wins; the kernel resolves from the `FusedOpId`-keyed runtime sidecar.
@@ -22,7 +22,8 @@ use fuel_graph::{Graph, Node, NodeId, Op};
 use fuel_ir::Result;
 use fuel_ir::probe::BackendId;
 
-use crate::runtime_fused_kernels::fused_kernel_available;
+use crate::kernel::KernelBindingTable;
+use crate::runtime_fused_kernels::fused_kernel_available_in;
 
 /// A matched runtime-fused region the optimizer offers as an arm candidate. Arm 0
 /// (`primitive_sink`, the region's existing output) is already in the graph; this
@@ -54,15 +55,23 @@ pub struct RuntimeFusedSpec {
 /// when the gate declines (no kernel for `backend` → no arm; the region stays on
 /// arm 0's primitives). Never a realize-time decision — the capability gate and
 /// the backend pin happen here, in the optimizer.
+///
+/// `table` is the binding table the capability gate reads (threaded from
+/// `OptimizationContext::bindings` — see [`fused_kernel_available_in`]).
+/// Reading through this reference rather than re-acquiring
+/// `crate::dispatch::global_bindings()` is what makes this call safe to run
+/// while a background adopt holds (or is queued for) the write lock on that
+/// same global table.
 pub fn offer_runtime_fused_arm(
     graph: &mut Graph,
     spec: &RuntimeFusedSpec,
+    table: &KernelBindingTable,
 ) -> Result<Option<NodeId>> {
     debug_assert!(spec.runtime_id.is_runtime(), "offer_runtime_fused_arm on a static id");
 
     // The capability gate: only offer the fused arm when a kernel is bound for
     // this backend. No kernel ⇒ no arm ⇒ the region stays on its primitives.
-    if !fused_kernel_available(spec.runtime_id, spec.backend) {
+    if !fused_kernel_available_in(table, spec.runtime_id, spec.backend) {
         return Ok(None);
     }
     if spec.inputs.is_empty() {
@@ -159,7 +168,11 @@ mod tests {
             backend: BackendId::Cpu,
             scalars: vec![],
         };
-        let branch = offer_runtime_fused_arm(&mut g, &spec).expect("valid branch").expect("emitted");
+        // adopt_runtime_fused binds into the GLOBAL table; pass it explicitly
+        // as the threaded table this test exercises the arm-emitter against.
+        let branch = offer_runtime_fused_arm(&mut g, &spec, &crate::dispatch::global_bindings())
+            .expect("valid branch")
+            .expect("emitted");
         assert!(matches!(g.node(branch).op, Op::Branch { .. }), "an Op::Branch decision point");
     }
 
@@ -185,7 +198,9 @@ mod tests {
             scalars: vec![],
         };
         assert!(
-            offer_runtime_fused_arm(&mut g, &spec).expect("no error").is_none(),
+            offer_runtime_fused_arm(&mut g, &spec, &crate::dispatch::global_bindings())
+                .expect("no error")
+                .is_none(),
             "no kernel for Cuda ⇒ no fused arm (region stays primitive)",
         );
     }
