@@ -91,6 +91,10 @@ pub use ledger::{gate_precision, LedgerQuery, LedgerRecord, VerificationLedger};
 pub use ulp::{verify_precision_bound, Bound};
 pub use invoker_cpu::CpuInvoker;
 pub use seed_cpu_ledger::{run_cpu_verification, SeedAttempt};
+// `to_bytes` is `pub(crate)` on `seed_cpu_ledger` (not `pub`) — re-exported
+// here at crate visibility so `jit_ingest_probe::probe_from_operands` can
+// reuse the exact dtype-aware float→bytes encode without duplicating it.
+pub(crate) use seed_cpu_ledger::to_bytes;
 #[cfg(feature = "cuda")]
 pub use invoker_cuda::CudaInvoker;
 #[cfg(feature = "vulkan")]

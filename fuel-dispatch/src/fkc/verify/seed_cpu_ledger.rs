@@ -119,7 +119,13 @@ const TARGETS: &[(FusedOpId, Family, &str)] = &[
 /// Encode `vals` (logical float values) into `dt`'s byte representation.
 /// `None` for any dtype this harness doesn't know how to encode (never
 /// guesses — an unencodable dtype means the caller must skip the probe).
-fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
+///
+/// `pub(crate)` (widened from private) + re-exported via
+/// `fkc::verify::to_bytes` so [`crate::jit_ingest_probe`]'s
+/// `probe_from_operands` can reuse the exact same encode logic instead of
+/// duplicating it (this module is unconditional, not `cuda`-gated, so it's
+/// reachable from a `jit`-only build).
+pub(crate) fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
     Some(match dt {
         DType::F32 => bytemuck::cast_slice(vals).to_vec(),
         DType::F64 => {
