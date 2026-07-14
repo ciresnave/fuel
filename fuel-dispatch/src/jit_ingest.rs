@@ -19,6 +19,8 @@ use crate::fkc::verify::{
 #[cfg(feature = "cuda")]
 use crate::kernel::BindingEntry;
 #[cfg(feature = "cuda")]
+use crate::runtime_fused_kernels::adopt_runtime_fused;
+#[cfg(feature = "cuda")]
 use fuel_cuda_backend::CudaDevice;
 
 /// A not-yet-verified kernel a provider has offered Fuel: the callable
@@ -453,6 +455,85 @@ fn verify_candidate_impl(
     (VerifyVerdict::Pass, ledger.records().to_vec())
 }
 
+// ---------------------------------------------------------------------------
+// Task 6 — sync verify → adopt / reject-with-feedback (`ingest_one`).
+// ---------------------------------------------------------------------------
+
+/// Ingest one [`CandidateKernel`]: verify it ([`verify_candidate`]) against
+/// the reference realized from its `decompose`, then either adopt it as a
+/// runtime-fused kernel ([`adopt_runtime_fused`]) or build a
+/// [`RejectionReport`] a provider's [`ProviderFeedback::on_rejected`] can act
+/// on.
+///
+/// Never panics on the production path: `verify_candidate` is already
+/// `catch_unwind`-internal, and [`adopt_verified`] wraps its own registration
+/// call in `catch_unwind` too, so a candidate that panics invoking its
+/// kernel, realizing its reference, or registering with `fuel-graph`'s
+/// runtime-fused registry becomes a `Rejected(..)`, never a process crash —
+/// this deliberately deviates from the plan's literal
+/// `.expect("fused candidate has a decompose")`, which is a production panic
+/// the constitution's never-panic invariant forbids.
+#[cfg(feature = "cuda")]
+pub fn ingest_one(cand: &CandidateKernel, device: &CudaDevice) -> IngestOutcome {
+    let (verdict, records) = verify_candidate(cand, device);
+    match verdict {
+        VerifyVerdict::Pass => adopt_verified(cand),
+        VerifyVerdict::Fail { claim, detail } => {
+            // The ledger record for the FAILED claim, if verify_candidate
+            // earned one for it — it does for every fail path except the
+            // very earliest (probe synthesis / invoke / top-level panic),
+            // which return before any record is upserted.
+            let ledger_record = records.into_iter().find(|r| r.claim == claim);
+            IngestOutcome::Rejected(RejectionReport {
+                entry_point: cand.entry_point.clone(),
+                failed_claim: claim,
+                detail,
+                ledger_record,
+            })
+        }
+    }
+}
+
+/// The `Pass`-verdict half of [`ingest_one`]: adopt the candidate as a
+/// runtime-fused kernel bound for `cand.backend`. Never panics: a candidate
+/// that verified `Pass` but carries no `decompose` (nothing to register a
+/// region from) is `Rejected` rather than unwrapped, and the
+/// `adopt_runtime_fused` call itself runs inside `catch_unwind` — a `None`
+/// (region not registrable, e.g. a non-decomposable/shape-changing pattern)
+/// or a caught panic both become `Rejected`, never a crash.
+#[cfg(feature = "cuda")]
+fn adopt_verified(cand: &CandidateKernel) -> IngestOutcome {
+    let Some(region) = cand.decompose.clone() else {
+        return IngestOutcome::Rejected(RejectionReport {
+            entry_point: cand.entry_point.clone(),
+            failed_claim: "no_decompose",
+            detail: "Pass verdict but candidate has no decompose region to adopt".to_string(),
+            ledger_record: None,
+        });
+    };
+    let entry_point = cand.entry_point.clone();
+    let kernel = cand.kernel;
+    let dtypes = cand.dtypes.clone();
+    let backend = cand.backend;
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        adopt_runtime_fused(entry_point, region, kernel, dtypes, backend)
+    })) {
+        Ok(Some(id)) => IngestOutcome::Adopted(id),
+        Ok(None) => IngestOutcome::Rejected(RejectionReport {
+            entry_point: cand.entry_point.clone(),
+            failed_claim: "adopt_failed",
+            detail: "adopt_runtime_fused returned None (region not registrable)".to_string(),
+            ledger_record: None,
+        }),
+        Err(_) => IngestOutcome::Rejected(RejectionReport {
+            entry_point: cand.entry_point.clone(),
+            failed_claim: "adopt_failed",
+            detail: "adopt_runtime_fused panicked during registration".to_string(),
+            ledger_record: None,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -596,5 +677,136 @@ mod tests {
         assert_eq!(records.len(), 1, "one fail record for the refused claim: {records:?}");
         assert_eq!(records[0].claim, "max_ulp");
         assert_eq!(records[0].result, "fail");
+    }
+
+    /// Spec-B Task-6 acceptance (live GPU), REJECTION leg.
+    ///
+    /// The plan's original Step-1 test (interleaved `rope_apply_f32` candidate
+    /// vs a rotate-half `decompose`) is infeasible here: rotate-half rope
+    /// isn't expressible as a `PatternNode` (elementwise-only — `emit`/
+    /// `register_runtime_fused` reject non-representable/shape-changing ops),
+    /// and `rope_apply` is a reverted registration, not a wired `KernelRef`
+    /// (see `~/.claude/projects/.../rope-convention-mismatch-baracuda-fuel.md`).
+    /// This test exercises the SAME essential property — `ingest_one` must
+    /// reject a candidate that computes a DIFFERENT function than the region
+    /// it claims to replace — with an elementwise substitute: `kernel` is
+    /// CUDA `mul_f32` (elementwise product) offered for a 2-input `Add`
+    /// region. The candidate declares `PrecisionGuarantee::REFERENCE` (a
+    /// NUMERIC claim, not just bit-stability) so `verify_candidate` actually
+    /// compares candidate-vs-reference output — mul is just as deterministic
+    /// as add, so a bit-stable-only claim would wrongly pass without ever
+    /// comparing values. `1+2=3 != 1*2=2` on the synthetic probe, so the
+    /// numeric bound fails and `ingest_one` must return `Rejected`, never
+    /// `Adopted`.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn ingest_rejects_mul_candidate_for_the_add_region() {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_cuda_backend::CudaDevice;
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+
+        let decompose = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+        let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
+        let cand = CandidateKernel {
+            entry_point: "test::ingest::mul_for_add_region".to_string(),
+            kernel: crate::baracuda_dispatch::binary::mul_f32,
+            op_params: crate::kernel::OpParams::None,
+            decompose: Some(decompose),
+            operands: vec![od, od],
+            dtypes: vec![DType::F32, DType::F32],
+            kernel_revision_hash: 0x1_9E57_0001,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
+            backend: BackendId::Cuda,
+        };
+
+        match ingest_one(&cand, &dev) {
+            IngestOutcome::Rejected(r) => {
+                assert!(
+                    r.failed_claim.contains("max") || r.failed_claim == "vs_decompose",
+                    "expected a precision claim naming the mismatch, got: {:?}",
+                    r.failed_claim
+                );
+            }
+            IngestOutcome::Adopted(_) => {
+                panic!("mul_f32 must NOT be adopted for an Add region — it computes a different function")
+            }
+        }
+    }
+
+    /// Spec-B Task-6 acceptance (live GPU), ADOPTION leg — the counterpart to
+    /// [`ingest_rejects_mul_candidate_for_the_add_region`]: a candidate whose
+    /// kernel genuinely matches its `decompose` (CUDA `add_f32` for a 2-input
+    /// `Add` region) verifies `Pass` and is `Adopted`. After adoption, the
+    /// adopted id's kernel must be visible to the capability gate on Cuda via
+    /// [`crate::runtime_fused_kernels::fused_kernel_available_in`] — the same
+    /// predicate `offer_runtime_fused_arm` gates on before offering the fused
+    /// arm. `entry_point` carries a distinctive per-test-run suffix (unlike
+    /// the shared `add_f32`/`mul_f32` entry points above) because
+    /// `adopt_runtime_fused` registers into the PROCESS-GLOBAL runtime-fused
+    /// registry + binding table, which other `#[ignore]` tests in this binary
+    /// share — a colliding name across runs/tests would risk resolving a
+    /// stale/different registration rather than this call's own.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn ingest_adopts_add_candidate_for_the_add_region() {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_cuda_backend::CudaDevice;
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+
+        let decompose = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+        let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
+        let cand = CandidateKernel {
+            entry_point: "test::ingest::add_for_add_region::run_1nge_5702".to_string(),
+            kernel: crate::baracuda_dispatch::binary::add_f32,
+            op_params: crate::kernel::OpParams::None,
+            decompose: Some(decompose),
+            operands: vec![od, od],
+            dtypes: vec![DType::F32, DType::F32],
+            kernel_revision_hash: 0x1_9E57_0002,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
+            backend: BackendId::Cuda,
+        };
+
+        match ingest_one(&cand, &dev) {
+            IngestOutcome::Adopted(id) => {
+                let table = crate::dispatch::global_bindings();
+                assert!(
+                    crate::runtime_fused_kernels::fused_kernel_available_in(
+                        &table,
+                        id,
+                        BackendId::Cuda
+                    ),
+                    "the adopted candidate's kernel must be visible to the capability gate on Cuda",
+                );
+            }
+            IngestOutcome::Rejected(r) => panic!(
+                "add_f32 for an Add region must be Adopted, got Rejected: {} / {}",
+                r.failed_claim, r.detail
+            ),
+        }
     }
 }
