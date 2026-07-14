@@ -249,6 +249,25 @@ pub fn decompose_region(graph: &mut Graph, node_id: NodeId) -> NodeId {
     emit(graph, &region, &inputs, &mut cursor)
 }
 
+/// Re-emit a validated region on the given external input nodes (public entry
+/// for callers holding a raw [`PatternNode`] + input [`NodeId`]s — e.g. the
+/// reference realization during candidate-kernel verification, which has a raw
+/// region and freshly-pushed `Op::Const` input nodes rather than a Fused node
+/// already in the graph). `scalars` fill the region's open scalar slots in
+/// pre-order (the canonical order `match_region_extract` recorded them in);
+/// pass `&[]` for a parameterless region. Thin wrapper over the private
+/// [`emit`]; the same re-emittability caveat applies (a non-re-emittable
+/// `OpTag` panics inside `emit` — validated decomposes never carry one).
+pub fn emit_region(
+    graph: &mut Graph,
+    region: &PatternNode,
+    inputs: &[NodeId],
+    scalars: &[f64],
+) -> NodeId {
+    let mut cursor = scalars;
+    emit(graph, region, inputs, &mut cursor)
+}
+
 fn emit(
     graph: &mut Graph,
     node: &PatternNode,
