@@ -1301,4 +1301,222 @@ mod tests {
 
         svc.shutdown();
     }
+
+    // -----------------------------------------------------------------
+    // Task 8 — end-to-end GPU wiring: `IngestionService::start` (the
+    // PRODUCTION constructor, verifying against a real `CudaDevice` via
+    // `ingest_one`) driven through the whole stack: enqueue → worker →
+    // ingest_one → verify_candidate → reference_output → adopt_verified /
+    // rejection → ProviderFeedback callback.
+    // -----------------------------------------------------------------
+
+    /// A [`ProviderFeedback`] that fires a one-shot notify on EITHER
+    /// callback (unlike `RecordingFeedback` above, which is Task-7-local
+    /// and mock-verify-only) — the deterministic sync point Task 8's e2e
+    /// tests wait on instead of sleeping, mirroring `RecordingFeedback::
+    /// with_notify`'s pattern but against the real `ingest_one` path.
+    #[cfg(feature = "cuda")]
+    #[derive(Default)]
+    struct E2eFeedback {
+        adopted: std::sync::Mutex<Vec<(String, fuel_graph::registry::FusedOpId)>>,
+        rejected: std::sync::Mutex<Vec<RejectionReportSnapshot>>,
+        notify: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    }
+
+    /// An owned snapshot of a [`RejectionReport`] — the report itself
+    /// borrows nothing but `ledger_record` isn't `Clone`-needed here, so
+    /// this just lifts the two fields the assertions below check into an
+    /// owned, `'static` value the callback can push into a `Mutex` from
+    /// inside the borrowed `&RejectionReport`.
+    #[cfg(feature = "cuda")]
+    #[derive(Debug)]
+    struct RejectionReportSnapshot {
+        failed_claim: &'static str,
+        detail: String,
+    }
+
+    #[cfg(feature = "cuda")]
+    impl E2eFeedback {
+        fn with_notify(tx: std::sync::mpsc::Sender<()>) -> Self {
+            Self { notify: std::sync::Mutex::new(Some(tx)), ..Default::default() }
+        }
+
+        fn fire_notify(&self) {
+            if let Some(tx) = self.notify.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    impl ProviderFeedback for E2eFeedback {
+        fn on_rejected(&self, report: &RejectionReport) {
+            self.rejected.lock().unwrap().push(RejectionReportSnapshot {
+                failed_claim: report.failed_claim,
+                detail: report.detail.clone(),
+            });
+            self.fire_notify();
+        }
+
+        fn on_adopted(&self, entry_point: &str, id: fuel_graph::registry::FusedOpId) {
+            self.adopted.lock().unwrap().push((entry_point.to_string(), id));
+            self.fire_notify();
+        }
+    }
+
+    /// Build the `Add`-region `add_f32` candidate (matching function) with a
+    /// DISTINCTIVE `entry_point` so it doesn't collide with any other
+    /// `#[ignore]` test's process-global registration in this binary (same
+    /// discipline as `ingest_adopts_add_candidate_for_the_add_region`).
+    #[cfg(feature = "cuda")]
+    fn e2e_add_candidate() -> CandidateKernel {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let decompose = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+        let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
+        CandidateKernel {
+            entry_point: "test::e2e::add_for_add_region::run_e2e_8801".to_string(),
+            kernel: crate::baracuda_dispatch::binary::add_f32,
+            op_params: crate::kernel::OpParams::None,
+            decompose: Some(decompose),
+            operands: vec![od, od],
+            dtypes: vec![DType::F32, DType::F32],
+            kernel_revision_hash: 0x1_9E57_8801,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
+            backend: BackendId::Cuda,
+        }
+    }
+
+    /// Build the `mul_f32`-vs-`Add`-region MISMATCHED candidate — the plan's
+    /// original Step-1 interleaved-rope rejection leg is infeasible (rotate-
+    /// half rope isn't a `PatternNode`; `rope_apply` is a reverted
+    /// registration, not a wired `KernelRef` — see
+    /// `ingest_rejects_mul_candidate_for_the_add_region`'s doc comment above
+    /// for the full rationale). `declared: REFERENCE` is load-bearing: it
+    /// declares a NUMERIC claim so the mul-vs-add mismatch is actually
+    /// compared and caught, not just skipped as an unclaimed property.
+    #[cfg(feature = "cuda")]
+    fn e2e_mul_candidate() -> CandidateKernel {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let decompose = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+        let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
+        CandidateKernel {
+            entry_point: "test::e2e::mul_for_add_region::run_e2e_8802".to_string(),
+            kernel: crate::baracuda_dispatch::binary::mul_f32,
+            op_params: crate::kernel::OpParams::None,
+            decompose: Some(decompose),
+            operands: vec![od, od],
+            dtypes: vec![DType::F32, DType::F32],
+            kernel_revision_hash: 0x1_9E57_8802,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
+            backend: BackendId::Cuda,
+        }
+    }
+
+    /// Spec-B Task-8 acceptance (live GPU): drive the WHOLE ingestion
+    /// service end-to-end through its PRODUCTION constructor
+    /// (`IngestionService::start`, not the `start_with_verify` test seam
+    /// Task 7's tests use) — enqueue → worker thread → `ingest_one` →
+    /// `verify_candidate` → `reference_output` → `adopt_verified` →
+    /// `ProviderFeedback::on_adopted`. Asserts BOTH that the callback fired
+    /// AND that the adopted op is genuinely visible to the capability gate
+    /// (`fused_kernel_available_in`) — the same check
+    /// `ingest_adopts_add_candidate_for_the_add_region` makes directly
+    /// against `ingest_one`, now exercised through the async service.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn ingestion_service_adopts_a_matching_add_candidate_e2e() {
+        use fuel_ir::probe::BackendId;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+
+        let svc = IngestionService::start(dev, IngestionConfig::default());
+
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let fb = Arc::new(E2eFeedback::with_notify(tx));
+        svc.enqueue(e2e_add_candidate(), Some(fb.clone()))
+            .expect("enqueue accepted (queue starts empty)");
+
+        rx.recv_timeout(Duration::from_secs(30))
+            .expect("worker should report the adopted outcome within 30s");
+
+        let adopted = fb.adopted.lock().unwrap();
+        assert_eq!(adopted.len(), 1, "exactly one on_adopted callback: {adopted:?}");
+        let (entry_point, id) = &adopted[0];
+        assert_eq!(entry_point, "test::e2e::add_for_add_region::run_e2e_8801");
+        assert!(
+            fb.rejected.lock().unwrap().is_empty(),
+            "the matching add_f32 candidate must not be rejected"
+        );
+
+        let table = crate::dispatch::global_bindings();
+        assert!(
+            crate::runtime_fused_kernels::fused_kernel_available_in(&table, *id, BackendId::Cuda),
+            "the adopted candidate's kernel must be visible to the capability gate on Cuda"
+        );
+        drop(table);
+
+        svc.shutdown();
+    }
+
+    /// Spec-B Task-8 acceptance (live GPU), rejection leg — the counterpart
+    /// to [`ingestion_service_adopts_a_matching_add_candidate_e2e`]: the SAME
+    /// production service, driven end-to-end, must reject a candidate whose
+    /// kernel computes a different function than the region it claims to
+    /// replace (`mul_f32` offered for an `Add` region), reporting a
+    /// PRECISION claim (`failed_claim` contains "max") via `on_rejected` —
+    /// never `on_adopted`.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn ingestion_service_rejects_a_mismatched_mul_candidate_e2e() {
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+
+        let svc = IngestionService::start(dev, IngestionConfig::default());
+
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let fb = Arc::new(E2eFeedback::with_notify(tx));
+        svc.enqueue(e2e_mul_candidate(), Some(fb.clone()))
+            .expect("enqueue accepted (queue starts empty)");
+
+        rx.recv_timeout(Duration::from_secs(30))
+            .expect("worker should report the rejected outcome within 30s");
+
+        let rejected = fb.rejected.lock().unwrap();
+        assert_eq!(rejected.len(), 1, "exactly one on_rejected callback: {rejected:?}");
+        assert!(
+            rejected[0].failed_claim.contains("max"),
+            "expected a precision claim naming the mismatch, got: {} / {}",
+            rejected[0].failed_claim,
+            rejected[0].detail
+        );
+        assert!(
+            fb.adopted.lock().unwrap().is_empty(),
+            "the mismatched mul_f32 candidate must not be adopted"
+        );
+
+        svc.shutdown();
+    }
 }
