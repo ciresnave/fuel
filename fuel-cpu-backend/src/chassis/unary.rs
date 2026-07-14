@@ -125,15 +125,16 @@ where
 // Pre-refactor `unary_kernel!(*_bf16, ..., |x| half::bf16::from_f32(f32_op(x.to_f32())))`
 // invocations all collapse onto the bf16 blanket impl.
 
-/// ReLU: `max(0, x)`. NaN-propagating (torch parity — `torch.relu(nan) ==
-/// nan`), pinned 2026-07-08 (`docs/architecture/10-decisions-log.md`).
-/// Payload-preserving: a NaN input is returned unchanged (the `x.max(0.0)`
-/// scrub is only reached on non-NaN input), so the raw NaN bit pattern
-/// (sign + payload) survives, not just a canonical NaN.
+/// ReLU: `select(x < 0, 0, x)` — the `x<0 ? 0 : x` form, NOT `max(x, 0)`.
+/// Per KISS-OPS-6.15-0002 (and torch parity) `relu` is both **NaN-propagating**
+/// (`x < 0` is false for NaN → the NaN input is returned unchanged, sign +
+/// payload intact) and **`-0.0`-preserving** (`-0.0 < 0` is false → `-0.0`
+/// passes through, where `max(x, 0)` would normalize it to `+0.0`). Pinned
+/// 2026-07-08 (NaN) + 2026-07-14 (`-0.0`, `docs/architecture/10-decisions-log.md`).
 pub struct Relu;
 impl UnaryOpCore for Relu {
-    fn f32(x: f32) -> f32 { if x.is_nan() { x } else { x.max(0.0) } }
-    fn f64(x: f64) -> f64 { if x.is_nan() { x } else { x.max(0.0) } }
+    fn f32(x: f32) -> f32 { if x < 0.0 { 0.0 } else { x } }
+    fn f64(x: f64) -> f64 { if x < 0.0 { 0.0 } else { x } }
 }
 
 /// Negation: `-x`.
