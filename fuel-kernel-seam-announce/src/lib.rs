@@ -20,7 +20,14 @@
 //! the provider; this crate is pure + portable.
 
 /// `"SEAM"` — the envelope magic; never changes (§3.1).
-pub const SEAM_MAGIC: u32 = 0x5345_414D;
+///
+/// Chosen so the little-endian on-wire bytes at offset 0 read `53 45 41 4D` =
+/// ASCII `S E A M`. That requires the *numeric* constant `0x4D41_4553` (the
+/// bytes reversed): a u32 whose big-endian spelling is "SEAM" (`0x5345_414D`)
+/// serializes little-endian to `4D 41 45 53` = "MAES" — the endianness
+/// inversion this pins down. Matches KISS-ANNOUNCE §6.1-0004
+/// (`magic == 0x4D414553` read as an LE u32).
+pub const SEAM_MAGIC: u32 = 0x4D41_4553;
 /// The envelope's own version; designed never to bump (§3.1).
 pub const SEAM_ENVELOPE_VERSION: u8 = 1;
 /// Fixed cap on simultaneously-advertised profiles (§3.1).
@@ -69,6 +76,12 @@ pub struct SeamHello {
     pub profiles_len: u16,
     /// Ascending; entries `[profiles_len..]` are 0.
     pub profiles: [u16; SEAM_MAX_PROFILES],
+    /// Alignment padding between `profiles` (ends at offset 42) and the
+    /// 8-byte-aligned `capabilities` (offset 48) made **explicit** so it is a
+    /// managed field — zeroed by [`advertise`] and hard-rejected when nonzero
+    /// by [`SeamHello::validate`] — rather than implicit `#[repr(C)]` padding
+    /// Rust neither guarantees zeroed nor lets a reader inspect. == 0.
+    pub reserved1: [u8; 6],
     /// Optional-feature bitset within the selected profile (§3.4).
     pub capabilities: u64,
 }
@@ -84,6 +97,10 @@ pub enum SeamError {
     TooManyProfiles(u16),
     /// The advertised profile list is not strictly ascending (§3.1).
     NotAscending,
+    /// A reserved field (`reserved` or `reserved1`) carried a nonzero byte.
+    /// Reserved bytes are pinned to zero so a foreign or garbage-padded
+    /// envelope is hard-rejected rather than silently accepted (§3.1).
+    ReservedNonZero,
     /// No mutually-supported profile — the connection does NOT proceed (§3.2).
     VersionMismatch { local: Vec<u16>, remote: Vec<u16> },
 }
@@ -105,6 +122,9 @@ impl core::fmt::Display for SeamError {
             ),
             SeamError::NotAscending => {
                 write!(f, "seam: advertised profiles must be strictly ascending")
+            }
+            SeamError::ReservedNonZero => {
+                write!(f, "seam: a reserved field carried a nonzero byte (must be zero)")
             }
             SeamError::VersionMismatch { local, remote } => write!(
                 f,
@@ -148,6 +168,7 @@ impl SeamHello {
             reserved: [0; 3],
             profiles_len: n as u16,
             profiles: arr,
+            reserved1: [0; 6],
             capabilities,
         }
     }
@@ -165,6 +186,11 @@ impl SeamHello {
         }
         if self.envelope_version != SEAM_ENVELOPE_VERSION {
             return Err(SeamError::UnknownEnvelope(self.envelope_version));
+        }
+        // Fixed-prefix reserved bytes are pinned to zero: a foreign or garbage-
+        // padded envelope is hard-rejected, not silently accepted.
+        if self.reserved != [0; 3] || self.reserved1 != [0; 6] {
+            return Err(SeamError::ReservedNonZero);
         }
         let n = self.profiles_len as usize;
         if n > SEAM_MAX_PROFILES {
@@ -215,7 +241,60 @@ mod tests {
         assert_eq!(offset_of!(SeamHello, reserved), 5);
         assert_eq!(offset_of!(SeamHello, profiles_len), 8);
         assert_eq!(offset_of!(SeamHello, profiles), 10);
+        assert_eq!(offset_of!(SeamHello, reserved1), 42);
         assert_eq!(offset_of!(SeamHello, capabilities), 48);
+    }
+
+    #[test]
+    fn seam_magic_wire_bytes_spell_seam() {
+        // The envelope magic must appear on the wire (little-endian, offset 0)
+        // as the ASCII bytes `S E A M` = `53 45 41 4D`, matching KISS-ANNOUNCE
+        // §6.1-0004 (`magic == 0x4D414553` when read as an LE u32).
+        assert_eq!(
+            SEAM_MAGIC.to_le_bytes(),
+            *b"SEAM",
+            "SEAM_MAGIC must serialize little-endian to the bytes 'SEAM', not 'MAES'"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_nonzero_reserved() {
+        // A KISS-conform reader hard-rejects an envelope with nonzero reserved
+        // bytes; Fuel's own reader must do the same so a foreign or garbage-
+        // padded envelope never slips through.
+        let mut bad = SeamHello::fuel(0);
+        bad.reserved = [1, 0, 0];
+        assert!(
+            matches!(bad.validate(), Err(SeamError::ReservedNonZero)),
+            "validate() must reject nonzero reserved0 bytes"
+        );
+
+        let mut bad1 = SeamHello::fuel(0);
+        bad1.reserved1 = [0, 0, 7, 0, 0, 0];
+        assert!(
+            matches!(bad1.validate(), Err(SeamError::ReservedNonZero)),
+            "validate() must reject nonzero reserved1 (alignment-padding) bytes"
+        );
+    }
+
+    #[test]
+    fn advertise_zeroes_all_reserved_padding() {
+        // The 6 bytes between `profiles` (ends at 42) and `capabilities` (48)
+        // are real struct storage; advertise() MUST zero them so a struct-as-
+        // wire envelope never carries uninitialized garbage a foreign reader
+        // rejects. Inspect the raw bytes to prove it.
+        let hello = SeamHello::fuel(SEAM_CAP_FDX_V1);
+        let raw: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                &hello as *const SeamHello as *const u8,
+                size_of::<SeamHello>(),
+            )
+        };
+        assert!(
+            raw[42..48].iter().all(|&b| b == 0),
+            "reserved1 alignment padding (bytes 42..48) must be all-zero, got {:?}",
+            &raw[42..48]
+        );
     }
 
     #[test]

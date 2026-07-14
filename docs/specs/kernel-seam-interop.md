@@ -84,19 +84,27 @@ handshake to agree on the handshake"). So the envelope is deliberately tiny and 
 
 ```c
 /* The negotiation envelope — a FIXED-SIZE POD, STABLE FOR ALL TIME. */
-#define SEAM_MAGIC            0x5345414Du   /* "SEAM"; never changes                       */
+#define SEAM_MAGIC            0x4D414553u   /* on-wire bytes 53 45 41 4D = "SEAM" (LE u32); never changes */
 #define SEAM_ENVELOPE_VERSION 1u            /* the envelope's OWN version; designed never to bump */
 #define SEAM_MAX_PROFILES     16u           /* fixed cap on simultaneously-advertised profiles    */
 
 typedef struct {
-  uint32_t magic;             /* == SEAM_MAGIC                                              */
+  uint32_t magic;             /* == SEAM_MAGIC (LE bytes "SEAM", offset 0)                  */
   uint8_t  envelope_version;  /* == SEAM_ENVELOPE_VERSION                                   */
   uint8_t  reserved[3];       /* == 0                                                       */
   uint16_t profiles_len;      /* number of valid entries in profiles[] (<= SEAM_MAX_PROFILES) */
   uint16_t profiles[SEAM_MAX_PROFILES];  /* ascending; entries [profiles_len ..] are 0      */
+  uint8_t  reserved1[6];      /* == 0; alignment padding made explicit (offset 42), zeroed + validated */
   uint64_t capabilities;      /* optional-feature bitset within the selected profile (§3.4) */
 } SeamHello;                   /* fixed 56 bytes; offsets frozen, asserted like FDX structs  */
 ```
+
+> **Wire-magic pin (KISS-ANNOUNCE §6.1-0004).** `SEAM_MAGIC` is the *numeric* constant
+> `0x4D414553`, chosen so a little-endian `u32` write places the ASCII bytes `53 45 41 4D`
+> (`"SEAM"`) at offset 0. Do **not** use `0x5345414D` (the big-endian spelling of "SEAM"),
+> which serializes LE to `4D 41 45 53` = `"MAES"`. Both Fuel (`fuel-kernel-seam-announce`)
+> and any provider (e.g. `baracuda-seam`) MUST use `0x4D414553` so their envelopes are
+> byte-identical; this pairing was flipped from the earlier inverted value in lockstep.
 
 Everything mutable lives *inside* a negotiated profile; the envelope around it is immutable. New
 negotiable information goes into a *profile*, not the envelope.
