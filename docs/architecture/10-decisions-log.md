@@ -755,6 +755,28 @@ re-derive the gap list from scratch.
 
 ---
 
+## 2026-07-14 — Candidate-kernel ingestion service (Spec B): verify→adopt/reject + bounded idle-aware queue
+
+**Sections affected**: none bumped (realizes an already-canonical goal — the 2026-06-20 "Fuel-strategist / backend-synthesizer JIT loop" + the 2026-07-11 "automatic kernel integration" gap — as shipped infrastructure, not a new constitutional claim).
+
+**Phase / PR**: Spec B, branch `jit-candidate-ingestion-spec-b` (11 commits `16d12574`..`20d4e8a4`) merged to `capturedrun-4b-resume` @ `cbb2e289`. Design: [`docs/superpowers/specs/2026-07-13-jit-candidate-kernel-ingestion-spec-b-design.md`](../superpowers/specs/2026-07-13-jit-candidate-kernel-ingestion-spec-b-design.md); plan: [`docs/superpowers/plans/2026-07-13-jit-candidate-kernel-ingestion-spec-b.md`](../superpowers/plans/2026-07-13-jit-candidate-kernel-ingestion-spec-b.md); memory `spec-b-ingestion-complete`.
+
+**Context**: The 2026-07-11 "CapturedRun 4b PAUSED" decision called for a mechanism where a provider submits a kernel + FKC contract claims, Fuel automatically tests as many claims as it can, and a kernel whose claims verify enters rotation without a hand-wiring session per kernel. Spec B builds the *ingestion service* half of that: source-agnostic (its tests use existing kernels — the CUDA `add_f32`/`mul_f32` wrappers — as candidates, not a synthesizer, so no baracuda bump was needed).
+
+**What shipped** (`fuel-dispatch/src/jit_ingest.rs` + `jit_ingest_probe.rs`; all `#[cfg(feature="jit")]`, verify/adopt/reference cuda-gated):
+- `verify_candidate(cand, device) -> (VerifyVerdict, Vec<LedgerRecord>)` — probe synthesis from `OperandDesc`, candidate CUDA invoke, `verify_bit_stability`, a reference realized from the candidate's `decompose` (`reference_output`, which re-emits the `PatternNode` region on GPU consts via `PipelinedExecutor::realize` + a new `fuel-graph::runtime_fused::emit_region` public wrapper), declared-precision-claim comparison (reuses `verify_precision_bound` + the 2026-07-14 total-order `ulp_distance`), pass/fail records into a FRESH in-memory ledger (never the embedded one; `upsert` not `push`). Whole body `catch_unwind`-guarded — a panicking/erroring candidate becomes a `fail`, never a crash.
+- `ingest_one` → `adopt_runtime_fused` on Pass (never `.expect()` — a Pass with no decompose or a registration failure is `Rejected`, honoring never-panic) / `RejectionReport` + `ProviderFeedback::on_rejected` on Fail.
+- `IngestionService` — a bounded `sync_channel` + one idle-aware serial worker (defers to GPU-idle via `inflight_count`), so ingestion never swamps live inference; backpressure notifies the provider; the worker survives a panicking verify AND a panicking provider callback.
+- **Lock-nesting prerequisite** (Task 1): the runtime-fused availability gate the pathfinder triggers now reads the *threaded* binding table (`fused_kernel_available_in`) instead of re-acquiring `global_bindings()`, so a background adopt's write cannot deadlock the optimizer's read (verified sound against the real `std::RwLock` + the production guard-holding caller).
+
+**Two deliberate, verified deviations from the plan** (both documented in-code): (1) `verify_candidate`'s reference is the `decompose`; the plan's "CPU-reference-by-op-lookup" fallback is infeasible (`CandidateKernel` carries no `OpKind`) → no-decompose fails numeric claims honestly. An f32-only guard was added on adversarial review — `verify_precision_bound` reinterprets bytes as f32, so a non-f32 candidate would false-PASS a wrong function; it now refuses honestly. (2) The plan's flagship rope reject test (interleaved `rope_apply` vs a rotate-half decompose) is **architecturally infeasible** — a rope rotate-half is not expressible as a `PatternNode` (elementwise-only), and `rope_apply` is the reverted registration — so it was substituted (USER DECISION) by an elementwise mul-vs-add mismatch testing the identical property. See memory `rope-not-patternnode`.
+
+**Decision**: land the ingestion service as production infra; the two carried limitations (reference realized through Fuel's OWN backend + probes only `[-0.5, 0.5)`; `PatternNode`-only reference) are the natural first consumers of the KISS adopt-from goals 3/4/5 (decomposition-derived semantic oracle, determinism-class-selected comparators, oracle-independence + edge corpus) recorded in the 2026-07-14 KISS entry above — sequence the ingestion-service hardening THROUGH those goals rather than as a separate track.
+
+**Alternatives considered**: implementing the rope scenario now by extending `verify_candidate` with a non-`PatternNode` reference path + re-exposing `rope_apply` (rejected — multi-task scope, deferred to the follow-up backlog); using the `#[cfg(feature="cuda")] start(device)` production path only (rejected — a feature-light `start_with_verify` test seam keeps the queue/worker verifiable without a GPU).
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.
