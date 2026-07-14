@@ -732,6 +732,29 @@ re-derive the gap list from scratch.
 
 ---
 
+## 2026-07-14 — KISS conformance pass: four seam/verify latent-bug fixes + adopt-from-KISS goals
+
+**Sections affected**: none bumped (bug fixes + a tracking decision, not a constitutional claim change). Touches the kernel-seam interop spec (`docs/specs/kernel-seam-interop.md`) and the `relu` semantics pin below.
+
+**Phase / PR**: KISS interop-standard alignment pass (branch `jit-candidate-ingestion-spec-b`). Backing comparison: [`docs/outreach/kiss-conformance-and-divergences.md`](../outreach/kiss-conformance-and-divergences.md); ROADMAP "KISS interop-standard alignment" subsection.
+
+**Context**: Fuel's kernel seam is the named reference seed for the public **KISS — Kernel Interface Standards Suite** (github.com/ThinkersJournal/KISS, CC0). A dimension-by-dimension comparison against the now-drafted 9 sub-standards found deep alignment-by-construction plus a modest set of genuine deltas. Four were latent bugs invisible only because Fuel + baracuda are same-endian, same-backend, co-developed peers — precisely the reader class KISS's foreign-reader freeze gate mandates.
+
+**What changed** (each TDD-verified, born-red first):
+
+- **`SEAM_MAGIC` byte-order** — was `0x5345_414D`, whose little-endian wire bytes spell **"MAES"**; KISS-ANNOUNCE §6.1-0004 pins `0x4D41_4553` → wire `53 45 41 4D` = **"SEAM"**. Flipped the constant (`fuel-kernel-seam-announce`) + the mirrored C-header `#define` in `kernel-seam-interop.md`. Validate/negotiate logic unchanged; no envelope-version bump. **Requires `baracuda-seam` to adopt the same value in lockstep before any live handshake** (propose-first cross-project ask — no live call site today, so the two seeds being briefly out of sync is latent, not active).
+- **`SeamHello.reserved1`** — the 6 alignment-padding bytes between `profiles` (offset 42) and `capabilities` (offset 48) were implicit `#[repr(C)]` padding Rust neither guarantees zeroed nor lets a reader inspect. Made explicit as a managed `reserved1: [u8; 6]` field: zeroed by `advertise()`, hard-rejected when nonzero by `validate()` (new `SeamError::ReservedNonZero`), offset asserted in the frozen-layout test. Layout-preserving (still 56 bytes).
+- **Total-order ULP distance** — `fkc/verify` computed ULP as `bits_x - bits_y` on raw sign-magnitude patterns, correct only same-sign: it reported `2^31` ULP between `+0.0` and `-0.0` (adjacent, distance 1). Replaced with an IEEE total-order sign-magnitude mapping before differencing, extracted to one shared `ulp::ulp_distance` helper used by both `verify_precision_bound` and the CUDA seed harness (`seed_cuda_ledger.rs`) so they never drift.
+- **`relu` `-0.0` preservation** — the CPU chassis `Relu` was `if x.is_nan() { x } else { x.max(0.0) }`; `max(x, 0)` normalizes `-0.0` → `+0.0`, violating KISS-OPS-6.15-0002. Now `if x < 0.0 { 0.0 } else { x }` = `select(x<0, 0, x)`, which preserves `-0.0` AND keeps NaN propagation (NaN `< 0` is false). Extends the 2026-07-08 NaN-conventions pin; the NaN half was already correct.
+
+**Corrections to prior internal beliefs** (from the adversarial comparison): FKC cost expressions **are** wired to the ranker (`ranker/cost.rs` `compute_static_costs` → `fkc::cost_estimate`), and the verification ledger **does** check correctness (`max_ulp` records vs a CPU reference), not determinism-only — both contradict the FKC-verification-gap memory, which is stale on those two points. Also: the scalar CPU `Maximum`/`Minimum` already propagate NaN correctly, and the MKL `vs_max`/`vd_max` NaN-suppressing binding is **dormant** (defined, not wired to `Op::Maximum`) — a guard-when-wired item, not a live bug.
+
+**Decision**: adopt seven KISS disciplines Fuel is genuinely behind on as tracked roadmap goals (clause↔test traceability + build-fail gate; conformance + foreign-reader freeze gate; a decomposition-derived semantic oracle for pinned op edge-cases; determinism-class-selected verify comparators; oracle-independence + edge corpus; a `MathPrecision` reduced-mantissa axis; named `reference_function` + derived `audited_status`) — sequenced behind the active frontier but ahead of the first outside kernel provider. Deferred (coordination/reachability): the `OpTag::Gelu → GeluTanh` seam rename, `op_to_attrs` load-bearing-attr projection (frozen `OpAttrs` schema change), the integer wrapping path, and the MKL `vs_max` guard.
+
+**Alternatives considered**: fixing `SEAM_MAGIC` on the baracuda side too (rejected — sibling project, propose-first per the working agreement); blind-fixing the integer-wrapping and MKL paths (rejected — reachability unconfirmed / feature-gated + untestable here, and shipping unverified changes is banned).
+
+---
+
 ## See also
 
 - [00-index §Versioning convention](00-index.md#versioning-convention) — when to bump section versions.

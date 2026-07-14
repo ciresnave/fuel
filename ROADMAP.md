@@ -124,6 +124,78 @@ nowhere; now captured so they are not forgotten):
 half of symbolic extents (per-op-produced runtime counts over fixed-capacity buffers) —
 sequence that first; it is also already required by Phase 8.5.
 
+### KISS interop-standard alignment (2026-07-14)
+
+Fuel's kernel seam (FDX + FKC + `fuel-kernel-seam*` + the `SeamHello` handshake) is the
+named reference seed for the public **KISS — Kernel Interface Standards Suite**
+(github.com/ThinkersJournal/KISS, CC0). A full dimension-by-dimension comparison
+(2026-07-14) confirmed deep alignment-by-construction and surfaced a modest set of genuine
+deltas — most are small concrete adoption gaps, not design conflicts. Canonical record +
+per-item evidence: [`docs/outreach/kiss-conformance-and-divergences.md`](docs/outreach/kiss-conformance-and-divergences.md).
+The comparison also corrects two stale internal beliefs: FKC cost expressions **are** wired
+to the ranker (`ranker/cost.rs`), and the verification ledger **does** check correctness
+(not determinism-only).
+
+**Adopt-from-KISS goals (upcoming work — KISS is genuinely ahead of Fuel here).** These
+raise Fuel's structural discipline and are sequenced behind the active frontier but ahead
+of the first outside kernel provider (which Fuel's multi-agent-serving roadmap wants):
+
+1. **Clause↔test traceability + build-fail gate** — give every FKC §10 rule + FDX V1–V21
+   validator a stable append-only ID wired 1:1 to a named test, with a CI checker that
+   fails the build on any untested normative MUST (port KISS's `tools/kiss_trace.py`).
+   Directly targets the "shipped-never-wired validator" class (the FKC-verification-gap memory).
+2. **Conformance + foreign-reader freeze gate** — raise the bar for stamping a wire type
+   "RATIFIED/frozen" from same-author cosigner agreement to: a structurally-dissimilar
+   second implementation + a foreign / cross-endian byte read, signed by a role distinct
+   from the author. This is the gate that would have caught the `SEAM_MAGIC` byte-order bug.
+3. **Reference/decomposition semantic oracle for pinned op edge-cases** — a
+   decomposition-derived differential oracle over the primitive activations/atoms so
+   NaN-propagation, `-0.0` preservation, integer wrapping, and fmax-vs-max cannot drift
+   per backend (the root fix for the whole relu/-0.0, MKL-fmax, gelu-naming family below).
+4. **Determinism-class-selected verify comparators** — select the verify comparator from
+   the op's declared determinism class + a declared-ULP ceiling, instead of taking `Bound`
+   as a free caller argument (which invites a trivial-pass `MaxAbsolute(1000.0)`).
+5. **Oracle independence + edge-case corpus in verification** — require the differential
+   oracle to share no lowering module with the impl under test (machine-checkable), and a
+   deterministic edge corpus (±0/±inf/NaN+payload/subnormals/dtype-extremes). Today
+   `verify_candidate` realizes its reference through Fuel's own backend and probes only
+   `[-0.5, 0.5)`. (The ULP-distance total-order fix below is the first increment.)
+6. **`MathPrecision` reduced-mantissa axis** — an orthogonal `{bit-stable,
+   reduced-mantissa-permitted}` attribute so a DAG-first optimizer can offer a
+   TF32/bf16-accumulate matmul arm distinctly from a merely loose-ULP kernel (today smeared
+   into `max_relative` + free-text notes).
+7. **Named `reference_function` + derived `audited_status`** — a precision bound must NAME
+   its reference (gelu-erf vs gelu-tanh), and `audited_status` derives from (determinism,
+   reference, ULP tier) rather than an authored boolean. Keep Fuel's empirical ledger gate
+   (stronger than KISS's syntactic derivation) but adopt the naming.
+
+**Latent-bug fixes SHIPPED this pass (KISS's discipline caught these; TDD-verified green):**
+`SEAM_MAGIC` byte-order (emitted "MAES", now "SEAM" per KISS-ANNOUNCE §6.1-0004), the
+unmanaged `reserved1` alignment padding in `SeamHello` (now an explicit, zeroed, validated
+field), the raw-bits ULP distance (now an IEEE total-order mapping, correct across the
+sign/zero boundary, de-duped across `ulp.rs` + `seed_cuda_ledger.rs`), and `relu` `-0.0`
+preservation (`select(x<0,0,x)`, not `max(x,0)` — the NaN-propagation half was already pinned
+2026-07-08). See the Shipped ledger + the 2026-07-14 decisions-log entry.
+
+**Deferred/tracked latent-bug items (real, but need coordination or reachability
+confirmation — not safely fixable inline):**
+
+- **`OpTag::Gelu → GeluTanh` seam rename** — KISS pins `gelu`=exact-erf / `gelu_tanh`=tanh
+  (PyTorch-aligned); Fuel's bare `Gelu`=tanh inverts the token. The CPU chassis already uses
+  a `GeluTanh` marker internally; the collision is at the frozen `OpTag` seam vocabulary
+  (~20 cross-crate sites + `op_to_tag`). Coordinate the rename with baracuda + a KISS RFC.
+- **`op_to_attrs` load-bearing-attr projection** — Gather axis/OOB, Cast target-dtype,
+  Slice/Concat/Pad params fall through to `OpAttrs::default()` (a matcher wildcard), so a
+  fusion recipe can bind the wrong node. Needs new fields on the **frozen** `fuel-kernel-seam-types::OpAttrs`
+  (a coordinated schema change) + the projection + matcher guard.
+- **Integer wrapping vs saturating** — confirm the *live* CPU integer add/sub/mul path
+  (the float chassis is float-only; the `dyn_impl` f64-compute-then-saturate path's
+  reachability is unconfirmed) before switching to wrapping two's-complement.
+- **MKL `vs_max`/`vd_max` NaN-suppression guard** — `binary_op!(vs_max, f32, vsFmax)` binds
+  IEEE-fmax (NaN-suppressing) but is currently **dormant** (not wired to any `Op::Maximum`
+  dispatch — Maximum flows through the correct NaN-propagating scalar chassis). Guard or
+  re-route before `vs_max` is ever wired, so it can't silently violate the pinned convention.
+
 ### Shipped ledger
 
 Phases 0–7 and the shipped portions of 7.5/7.6 + Phase C are complete; full detail is in git history (verbose phase blocks condensed 2026-06-25). Highlights:
@@ -138,6 +210,7 @@ Phases 0–7 and the shipped portions of 7.5/7.6 + Phase C are complete; full de
 - **Adaptive runtime fusion / FKC / self-describing storage** — recipe principle, two-tier extensibility, kernel-seam, declarative fusion engine, SType/Encoding + DLPack/FDX. **FKC now 100% across all three real backends (2026-07-04)**: CPU + Vulkan (13 families) + CUDA (31/31 families, ~429 keys) register from `docs/kernel-contracts/**` via per-backend `LinkRegistry`s — the binding table is contract-sourced end to end (all one-time deferrals resolved). Cost model completed honest + contract-sourced: GPU caps + per-backend throughput + fused-op cost-from-decompose + the **cost-trampoline** (`cost.cost_fn` names a registered `CostFn`, e.g. `flash_decoding`'s infeasibility gate). Baracuda dispatch/miss telemetry schema pinned + emission built + structure-key provider wired. See [10-decisions-log 2026-07-04](docs/architecture/10-decisions-log.md).
 - **Judge Layer-2 decode coverage + optimize-time kernel-variant bake (2026-07-04)** — the Judge profiles f16/bf16 + decode-shaped ladders + `OpKind::FlashAttn`; a matmul `SizeClass` reconciliation fixed a latent bug (non-square matmul Judge cells were unreachable/poisoned). `variant_bake` collapses a same-device `Op::Branch` to the arm that wins on **measured** latency at optimize time (the picker resolves placement only) — the mechanism (flash-arm emitter → decode-builder wiring → bake → Judge) is proven end to end; a live CUDA flash win now needs only a bf16 decode path + a live profile.
 - **Dispatch-core cleanup Steps A/B/C/D** — backend-stamping + residency/layout-fixup → optimizer; `Op::Branch` arm-selection → the executor (`pick_route` at dispatch); `ExecutionPlan` deleted as a threaded type (`optimize_graph` returns only `OptimizedGraph`; the plan is optimizer-internal; the executor re-derives arm candidates from the graph + registry).
+- **KISS seam/verify latent-bug fixes (2026-07-14)** — four defects KISS's wire-discipline caught, each TDD-verified: `SEAM_MAGIC` "MAES"→"SEAM" byte-order (`fuel-kernel-seam-announce` + the C-header mirror in `kernel-seam-interop.md`); explicit zeroed+validated `reserved1` padding on `SeamHello`; IEEE total-order ULP distance (`fkc/verify/ulp.rs`, shared with `seed_cuda_ledger.rs`); `relu` `-0.0` preservation (`fuel-cpu-backend` chassis). See the KISS-alignment subsection for the goals/deferred items and [`docs/outreach/kiss-conformance-and-divergences.md`](docs/outreach/kiss-conformance-and-divergences.md).
 
 - **Missing-fusion telemetry (none today; build closed-world first).** The Judge feedback
   above measures fusions Fuel *performed*; it says nothing about fusions Fuel
