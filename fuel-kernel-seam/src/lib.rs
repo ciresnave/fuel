@@ -127,6 +127,12 @@ pub trait Synthesizer: Send + Sync {
     /// **after** the cost-gate decides to adopt, so a declined kernel's artifact is
     /// never transferred. `None` if never synthesized / already taken (single adopt).
     fn take_kernel(&self, entry_point: &str) -> Option<SynthArtifact>;
+
+    /// Fuel refused a kernel this synthesizer produced (verify-against-decompose
+    /// failed, over budget on re-offer, etc.). Default no-op; a synthesizer MAY
+    /// override to stop re-offering / to log. `report` is a JSON-ish detail
+    /// string (Fuel's RejectionReport rendered) so this crate stays dependency-light.
+    fn on_rejected(&self, _entry_point: &str, _report: &str) {}
 }
 
 #[cfg(test)]
