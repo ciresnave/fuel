@@ -258,6 +258,13 @@ pub fn decompose_region(graph: &mut Graph, node_id: NodeId) -> NodeId {
 /// pass `&[]` for a parameterless region. Thin wrapper over the private
 /// [`emit`]; the same re-emittability caveat applies (a non-re-emittable
 /// `OpTag` panics inside `emit` — validated decomposes never carry one).
+/// Second panic risk: `emit`'s scalar-cursor fill (`scalars.split_at(arity)`)
+/// panics if `scalars` is shorter than the region's total open-slot count.
+/// [`decompose_region`] (the node-driven caller) guards this with its own
+/// length check before ever calling `emit`; `emit_region` deliberately does
+/// NOT — it's a thin wrapper, so validating the length is the caller's job.
+/// Callers must pass a `scalars` slice at least as long as the region's
+/// open-slot count.
 pub fn emit_region(
     graph: &mut Graph,
     region: &PatternNode,
