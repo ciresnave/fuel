@@ -63,8 +63,9 @@ fn max_ulp_ok(cand: &[u8], refr: &[u8], bound: u32) -> std::result::Result<bool,
     let a: &[f32] = bytemuck::cast_slice(cand);
     let b: &[f32] = bytemuck::cast_slice(refr);
     for (x, y) in a.iter().zip(b.iter()) {
-        let ulp = (x.to_bits() as i64 - y.to_bits() as i64).unsigned_abs();
-        if ulp > bound as u64 {
+        // Shared total-order ULP distance — correct across the sign/zero
+        // boundary; never drifts from `verify_precision_bound`'s `MaxUlp` arm.
+        if super::ulp::ulp_distance(*x, *y) > bound as u64 {
             return Ok(false);
         }
     }
