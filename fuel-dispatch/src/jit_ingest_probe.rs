@@ -183,6 +183,27 @@ mod tests {
         assert_eq!(probe_from_operands(&[od, od], 0x1234).unwrap()[0].bytes, p[0].bytes); // deterministic
     }
 
+    /// Task-3 carry-forward (negative path, deferred to Task 5): an operand
+    /// whose `ElementKind` DOES map to a Fuel `DType` (`element_kind_to_dtype`
+    /// succeeds — `I32 → DType::I32`) but which `to_bytes` can't encode (only
+    /// F32/F64/BF16/F16 are encodable) makes `probe_from_operands` return
+    /// `None` — it never fabricates a probe for an operand it can't faithfully
+    /// represent. Non-GPU (`--features jit`).
+    #[test]
+    fn probe_from_operands_rejects_an_unencodable_integer_operand() {
+        // I32: element_kind_to_dtype(I32) = Some(DType::I32), but
+        // to_bytes(DType::I32, ..) = None (integer dtypes aren't float-encodable).
+        let int_od = OperandDesc::new(1, &[4], &[1], ElementKind::I32, 16);
+        assert!(
+            probe_from_operands(&[int_od], 0x1234).is_none(),
+            "an unencodable-dtype operand must yield None, not a fabricated probe"
+        );
+        // A valid F32 operand alongside the unencodable one still fails the
+        // whole probe (any un-encodable operand poisons the set).
+        let f32_od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
+        assert!(probe_from_operands(&[f32_od, int_od], 0x1234).is_none());
+    }
+
     /// Build a contiguous F32 `HostTensor` of shape `[vals.len()]`.
     #[cfg(feature = "cuda")]
     fn ht_f32(vals: &[f32]) -> HostTensor {
