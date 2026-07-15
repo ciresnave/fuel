@@ -236,23 +236,28 @@ fn fused_params_for(
 }
 
 /// Task-6 carry-forward guard predicate: does a candidate CLAIM an op
-/// (`claimed_op.is_some()`) while declaring NO machine-checkable guarantee —
-/// every numeric bound `None` AND not `bit_stable_on_same_hardware`?
+/// (`claimed_op.is_some()`) while declaring NO numeric bound (`max_ulp` /
+/// `max_relative` / `max_absolute` all `None`)?
 ///
 /// This is the latent-bypass check that pairs with `verify_candidate_impl`'s
 /// claimed-op gates. Those gates (the structural recipe-identity pre-check and
-/// the numeric registered-recipe reference) all live INSIDE the
-/// `numeric_declared` block, and bit-stability is only checked when declared —
-/// so a `claimed_op = Some` candidate that declares nothing checkable would run
-/// no gate at all and fall through to the trailing `Pass`, adopting an
-/// unverified claimant. A claimed-op candidate must declare SOMETHING a machine
-/// can check; if it declares nothing, `verify_candidate_impl` refuses it up
-/// front (`Fail { claim: "no_guarantee" }`). Device-free and NOT `cuda`-gated
-/// so the guard is unit-testable under `--features jit` alone.
+/// the numeric registered-recipe reference) both live INSIDE the
+/// `numeric_declared` block — so a `claimed_op = Some` candidate that declares
+/// no numeric bound would skip both and fall through to the trailing `Pass`,
+/// adopting a claimant whose OP IDENTITY was never checked against Fuel's
+/// registered recipe. Bit-stability alone doesn't rescue it: it only proves
+/// the kernel is DETERMINISTIC, never that it computes the CLAIMED op (that
+/// needs a numeric comparison against the reference realized from Fuel's
+/// registered recipe) — so `bit_stable_on_same_hardware` is deliberately NOT
+/// an exemption here, unlike the (retired) all-guarantees version of this
+/// guard. A claimed-op candidate must declare a numeric bound; if it declares
+/// none, `verify_candidate_impl` refuses it up front (`Fail { claim:
+/// "no_guarantee" }`). Device-free and NOT `cuda`-gated so the guard is
+/// unit-testable under `--features jit` alone.
 // The sole non-test caller (`verify_candidate_impl`) is `cuda`-gated; in a
 // non-`cuda` build only the `jit` unit test uses it, so silence dead-code there.
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
-fn claimed_op_without_guarantee(
+fn claimed_op_lacks_numeric_bound(
     claimed_op: Option<fuel_graph::registry::FusedOpId>,
     declared: &crate::fused::PrecisionGuarantee,
 ) -> bool {
@@ -260,7 +265,6 @@ fn claimed_op_without_guarantee(
         && declared.max_ulp.is_none()
         && declared.max_relative.is_none()
         && declared.max_absolute.is_none()
-        && !declared.bit_stable_on_same_hardware
 }
 
 /// The exact input arity Fuel's registered recipe for `id` positionally indexes
@@ -425,16 +429,19 @@ fn verify_candidate_impl(
         }
     };
 
-    // (0) Claimed-op-without-guarantee guard (Task-6 carry-forward). Every
+    // (0) Claimed-op-lacks-numeric-bound guard (Task-6 carry-forward). Every
     // claimed-op gate below (recipe-identity + the numeric registered-recipe
-    // reference) lives inside `if numeric_declared`, and bit-stability is only
-    // checked when declared — so a `claimed_op = Some` candidate declaring NO
-    // machine-checkable guarantee would skip every gate and reach the trailing
-    // `Pass`, adopting an unverified claimant. Refuse it before any probe/GPU
-    // work: a claimed-op candidate MUST declare something a machine can check.
-    if claimed_op_without_guarantee(cand.claimed_op, &cand.declared) {
-        let detail = "a claimed-op candidate must declare a machine-checkable guarantee \
-             to be verified/adopted"
+    // reference) lives inside `if numeric_declared` — so a `claimed_op = Some`
+    // candidate declaring NO numeric bound would skip both gates and reach the
+    // trailing `Pass`, adopting a claimant whose op identity was never checked
+    // against Fuel's registered recipe. Bit-stability alone does NOT rescue
+    // it: it only proves the kernel is deterministic, never that it computes
+    // the CLAIMED op (that needs a numeric comparison against the reference
+    // realized from Fuel's registered recipe). Refuse it before any probe/GPU
+    // work: a claimed-op candidate MUST declare a numeric bound.
+    if claimed_op_lacks_numeric_bound(cand.claimed_op, &cand.declared) {
+        let detail = "a claimed-op candidate must declare a numeric bound (max_ulp/max_relative/\
+             max_absolute) to verify against the registered recipe"
             .to_string();
         ledger.upsert(make_record(
             "no_guarantee",
@@ -1108,55 +1115,57 @@ mod tests {
         assert_eq!(rec.0.lock().unwrap().as_slice(), &["max_ulp".to_string()]);
     }
 
-    /// Task 6 (Increment 1) carry-forward — the claimed-op-without-guarantee
-    /// guard, structural + device-free (`--features jit` alone). Every
-    /// claimed-op verification gate (recipe-identity + the numeric
-    /// registered-recipe reference) lives behind a DECLARED machine-checkable
-    /// guarantee in `verify_candidate_impl`, so a `claimed_op = Some` candidate
-    /// declaring NONE (every numeric bound `None` AND not bit-stable) would slip
-    /// every gate and reach the trailing `Pass` — silently adopting an
-    /// unverified claimant. `claimed_op_without_guarantee` is the predicate that
-    /// closes that bypass (→ `Fail { claim: "no_guarantee" }` in
-    /// `verify_candidate_impl`); this exercises it directly with no CUDA device
-    /// (the guard fires before any probe/invoke/GPU work).
+    /// Task 6 (Increment 1) carry-forward — the claimed-op-lacks-numeric-bound
+    /// guard, structural + device-free (`--features jit` alone). Both
+    /// claimed-op verification gates (recipe-identity + the numeric
+    /// registered-recipe reference) live INSIDE `if numeric_declared` in
+    /// `verify_candidate_impl`, so a `claimed_op = Some` candidate declaring NO
+    /// numeric bound (`max_ulp`/`max_relative`/`max_absolute` all `None`) would
+    /// slip both gates and reach the trailing `Pass` — silently adopting a
+    /// claimant whose op identity was never checked. Declaring
+    /// `bit_stable_on_same_hardware` alone does NOT rescue it: bit-stability
+    /// only proves the kernel is deterministic, never that it computes the
+    /// CLAIMED op — verifying THAT requires a numeric comparison against the
+    /// reference realized from Fuel's registered recipe.
+    /// `claimed_op_lacks_numeric_bound` is the predicate that closes that
+    /// bypass (→ `Fail { claim: "no_guarantee" }` in `verify_candidate_impl`);
+    /// this exercises it directly with no CUDA device (the guard fires before
+    /// any probe/invoke/GPU work).
     #[test]
-    fn claimed_op_without_a_machine_checkable_guarantee_is_refused() {
+    fn claimed_op_without_a_numeric_bound_is_refused() {
         use fuel_graph::registry::FusedOps;
 
-        // The bypass case: claims ROPE but declares NOTHING checkable.
+        // The bypass case: claims ROPE but declares NO numeric bound (even
+        // though it claims bit-stability — determinism isn't op identity).
         let empty = crate::fused::PrecisionGuarantee {
-            bit_stable_on_same_hardware: false,
+            bit_stable_on_same_hardware: true,
             max_ulp: None,
             max_relative: None,
             max_absolute: None,
-            notes: "test-only: no machine-checkable guarantee",
+            notes: "test-only: bit-stable claim but no numeric bound",
         };
         assert!(
-            claimed_op_without_guarantee(Some(FusedOps::ROPE), &empty),
-            "a claimed-op candidate with an empty guarantee must be refused"
+            claimed_op_lacks_numeric_bound(Some(FusedOps::ROPE), &empty),
+            "a claimed-op candidate declaring only bit-stability (no numeric bound) must be refused"
         );
 
-        // Any single machine-checkable claim rescues it (nothing to bypass).
-        assert!(!claimed_op_without_guarantee(
+        // Any single numeric claim rescues it (nothing to bypass).
+        assert!(!claimed_op_lacks_numeric_bound(
             Some(FusedOps::ROPE),
             &crate::fused::PrecisionGuarantee { max_ulp: Some(1), ..empty }
         ));
-        assert!(!claimed_op_without_guarantee(
+        assert!(!claimed_op_lacks_numeric_bound(
             Some(FusedOps::ROPE),
             &crate::fused::PrecisionGuarantee { max_relative: Some(1e-3), ..empty }
         ));
-        assert!(!claimed_op_without_guarantee(
+        assert!(!claimed_op_lacks_numeric_bound(
             Some(FusedOps::ROPE),
             &crate::fused::PrecisionGuarantee { max_absolute: Some(1e-3), ..empty }
-        ));
-        assert!(!claimed_op_without_guarantee(
-            Some(FusedOps::ROPE),
-            &crate::fused::PrecisionGuarantee { bit_stable_on_same_hardware: true, ..empty }
         ));
 
         // No claimed op → not this guard's concern (the `claimed_op = None`
         // Spec-B path verifies against the candidate's own decompose).
-        assert!(!claimed_op_without_guarantee(None, &empty));
+        assert!(!claimed_op_lacks_numeric_bound(None, &empty));
     }
 
     /// Task 5 (Increment 1) — recipe-IDENTITY gate, structural, NO GPU
@@ -1594,6 +1603,22 @@ mod tests {
                     "expected a precision/identity rejection (interleaved != rotate-half), \
                      got: {} / {}",
                     r.failed_claim,
+                    r.detail
+                );
+                // Pin the REASON, not just the claim id: `first_numeric_claim`
+                // also names a `max_*` claim when the REFERENCE realize itself
+                // errors (`verify_candidate_impl`'s
+                // "reference realize from registered recipe failed: {e:?}"
+                // detail), which would ALSO satisfy `contains("max")` above for
+                // the WRONG reason (a broken reference, not a genuine
+                // interleaved-vs-rotate-half numeric mismatch). Rule that out
+                // explicitly so a future regression that breaks rotate-half
+                // reference realization fails LOUDLY here instead of being
+                // mistaken for this oracle working.
+                assert!(
+                    !r.detail.contains("reference realize"),
+                    "rejection must be a genuine numeric mismatch vs the realized rotate-half \
+                     reference, not a reference-realize failure: {}",
                     r.detail
                 );
             }
