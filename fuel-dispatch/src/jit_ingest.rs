@@ -235,6 +235,34 @@ fn fused_params_for(
     fuel_graph::registry::FusedOpParams::Rope
 }
 
+/// Task-6 carry-forward guard predicate: does a candidate CLAIM an op
+/// (`claimed_op.is_some()`) while declaring NO machine-checkable guarantee —
+/// every numeric bound `None` AND not `bit_stable_on_same_hardware`?
+///
+/// This is the latent-bypass check that pairs with `verify_candidate_impl`'s
+/// claimed-op gates. Those gates (the structural recipe-identity pre-check and
+/// the numeric registered-recipe reference) all live INSIDE the
+/// `numeric_declared` block, and bit-stability is only checked when declared —
+/// so a `claimed_op = Some` candidate that declares nothing checkable would run
+/// no gate at all and fall through to the trailing `Pass`, adopting an
+/// unverified claimant. A claimed-op candidate must declare SOMETHING a machine
+/// can check; if it declares nothing, `verify_candidate_impl` refuses it up
+/// front (`Fail { claim: "no_guarantee" }`). Device-free and NOT `cuda`-gated
+/// so the guard is unit-testable under `--features jit` alone.
+// The sole non-test caller (`verify_candidate_impl`) is `cuda`-gated; in a
+// non-`cuda` build only the `jit` unit test uses it, so silence dead-code there.
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+fn claimed_op_without_guarantee(
+    claimed_op: Option<fuel_graph::registry::FusedOpId>,
+    declared: &crate::fused::PrecisionGuarantee,
+) -> bool {
+    claimed_op.is_some()
+        && declared.max_ulp.is_none()
+        && declared.max_relative.is_none()
+        && declared.max_absolute.is_none()
+        && !declared.bit_stable_on_same_hardware
+}
+
 /// The exact input arity Fuel's registered recipe for `id` positionally indexes
 /// its probe by — so a candidate whose operand count wouldn't satisfy the
 /// recipe's `decompose` is refused (as `probe_arity`) BEFORE it panics indexing
@@ -396,6 +424,25 @@ fn verify_candidate_impl(
             evidence,
         }
     };
+
+    // (0) Claimed-op-without-guarantee guard (Task-6 carry-forward). Every
+    // claimed-op gate below (recipe-identity + the numeric registered-recipe
+    // reference) lives inside `if numeric_declared`, and bit-stability is only
+    // checked when declared — so a `claimed_op = Some` candidate declaring NO
+    // machine-checkable guarantee would skip every gate and reach the trailing
+    // `Pass`, adopting an unverified claimant. Refuse it before any probe/GPU
+    // work: a claimed-op candidate MUST declare something a machine can check.
+    if claimed_op_without_guarantee(cand.claimed_op, &cand.declared) {
+        let detail = "a claimed-op candidate must declare a machine-checkable guarantee \
+             to be verified/adopted"
+            .to_string();
+        ledger.upsert(make_record(
+            "no_guarantee",
+            "fail",
+            serde_json::json!({ "detail": detail.clone() }),
+        ));
+        return (VerifyVerdict::Fail { claim: "no_guarantee", detail }, ledger.records().to_vec());
+    }
 
     // (1) Probe synthesis. A candidate carrying an operand we can't faithfully
     // encode (e.g. a non-float dtype `to_bytes` rejects) yields NO probe — a
@@ -1061,6 +1108,57 @@ mod tests {
         assert_eq!(rec.0.lock().unwrap().as_slice(), &["max_ulp".to_string()]);
     }
 
+    /// Task 6 (Increment 1) carry-forward — the claimed-op-without-guarantee
+    /// guard, structural + device-free (`--features jit` alone). Every
+    /// claimed-op verification gate (recipe-identity + the numeric
+    /// registered-recipe reference) lives behind a DECLARED machine-checkable
+    /// guarantee in `verify_candidate_impl`, so a `claimed_op = Some` candidate
+    /// declaring NONE (every numeric bound `None` AND not bit-stable) would slip
+    /// every gate and reach the trailing `Pass` — silently adopting an
+    /// unverified claimant. `claimed_op_without_guarantee` is the predicate that
+    /// closes that bypass (→ `Fail { claim: "no_guarantee" }` in
+    /// `verify_candidate_impl`); this exercises it directly with no CUDA device
+    /// (the guard fires before any probe/invoke/GPU work).
+    #[test]
+    fn claimed_op_without_a_machine_checkable_guarantee_is_refused() {
+        use fuel_graph::registry::FusedOps;
+
+        // The bypass case: claims ROPE but declares NOTHING checkable.
+        let empty = crate::fused::PrecisionGuarantee {
+            bit_stable_on_same_hardware: false,
+            max_ulp: None,
+            max_relative: None,
+            max_absolute: None,
+            notes: "test-only: no machine-checkable guarantee",
+        };
+        assert!(
+            claimed_op_without_guarantee(Some(FusedOps::ROPE), &empty),
+            "a claimed-op candidate with an empty guarantee must be refused"
+        );
+
+        // Any single machine-checkable claim rescues it (nothing to bypass).
+        assert!(!claimed_op_without_guarantee(
+            Some(FusedOps::ROPE),
+            &crate::fused::PrecisionGuarantee { max_ulp: Some(1), ..empty }
+        ));
+        assert!(!claimed_op_without_guarantee(
+            Some(FusedOps::ROPE),
+            &crate::fused::PrecisionGuarantee { max_relative: Some(1e-3), ..empty }
+        ));
+        assert!(!claimed_op_without_guarantee(
+            Some(FusedOps::ROPE),
+            &crate::fused::PrecisionGuarantee { max_absolute: Some(1e-3), ..empty }
+        ));
+        assert!(!claimed_op_without_guarantee(
+            Some(FusedOps::ROPE),
+            &crate::fused::PrecisionGuarantee { bit_stable_on_same_hardware: true, ..empty }
+        ));
+
+        // No claimed op → not this guard's concern (the `claimed_op = None`
+        // Spec-B path verifies against the candidate's own decompose).
+        assert!(!claimed_op_without_guarantee(None, &empty));
+    }
+
     /// Task 5 (Increment 1) — recipe-IDENTITY gate, structural, NO GPU
     /// (`--features jit` alone). Register a small elementwise `Add` region as a
     /// known runtime op, then assert `recipe_identity_matches`:
@@ -1354,6 +1452,231 @@ mod tests {
             }
             IngestOutcome::Rejected(r) => panic!(
                 "add_f32 for an Add region must be Adopted, got Rejected: {} / {}",
+                r.failed_claim, r.detail
+            ),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Task 6 (Increment 1) — the ROPE ORACLE. A candidate claiming
+    // `FusedOps::ROPE` is verified against FUEL's registered ROTATE-HALF rope
+    // recipe (Task 4's `reference_from_registered_recipe`, wired into
+    // `verify_candidate` in Task 5) — NOT against its own decompose. The
+    // headline is the REJECTION leg: an INTERLEAVED rope candidate (GPT-J
+    // (2k, 2k+1) pairing) that claims ROPE must be REJECTED, because
+    // interleaved rope is a DIFFERENT function than Fuel's rotate-half
+    // (j, j+head_dim/2) ROPE — the real convention-mismatch bug the oracle
+    // exists to catch (see the memory note
+    // `rope-convention-mismatch-baracuda-fuel.md`). A matching ELEMENTWISE
+    // claimant is Adopted (positive leg).
+    // -----------------------------------------------------------------
+
+    /// TEST-ONLY [`crate::kernel::KernelRef`]: wraps the STAGED interleaved
+    /// `rope_apply` driver (`fuel_cuda_backend::baracuda::attention::
+    /// rope_apply_fused_f32_into`) as a candidate kernel. Takes the 3
+    /// rope-shaped inputs `(x, cos, sin)` + 1 output and `OpParams::Rope` —
+    /// exactly the arity Fuel's rotate-half ROPE reference uses. The driver
+    /// narrows Fuel's FULL-width cos/sin to baracuda's half-width tables
+    /// internally, then applies the INTERLEAVED (2k, 2k+1) rotation. This is
+    /// the faithful interleaved-vs-rotate-half bug (the plan's PREFER path):
+    /// the candidate invokes cleanly and deterministically, and its output
+    /// differs from Fuel's rotate-half recipe on the SAME probe → a numeric
+    /// ("max_*") rejection, never an adopt.
+    #[cfg(feature = "cuda")]
+    fn interleaved_rope_apply_candidate_kernel(
+        inputs: &[Arc<std::sync::RwLock<fuel_memory::Storage>>],
+        outputs: &mut [Arc<std::sync::RwLock<fuel_memory::Storage>>],
+        _layouts: &[fuel_ir::Layout],
+        params: &crate::kernel::OpParams,
+    ) -> fuel_ir::Result<()> {
+        use crate::dispatch::{cuda_input, cuda_output, read_storage, write_storage};
+        use crate::kernel::OpParams;
+
+        if inputs.len() != 3 || outputs.len() != 1 {
+            return Err(fuel_ir::Error::Msg(format!(
+                "interleaved_rope_apply_candidate_kernel: expected 3 inputs (x, cos, sin) + 1 \
+                 output, got {} + {}",
+                inputs.len(),
+                outputs.len()
+            )));
+        }
+        let (outer_count, seq, head_dim) = match params {
+            OpParams::Rope { outer_count, seq, head_dim } => (*outer_count, *seq, *head_dim),
+            other => {
+                return Err(fuel_ir::Error::Msg(format!(
+                    "interleaved_rope_apply_candidate_kernel: expected OpParams::Rope, got {other:?}"
+                )))
+            }
+        };
+        let x_guard = read_storage(&inputs[0])?;
+        let cos_guard = read_storage(&inputs[1])?;
+        let sin_guard = read_storage(&inputs[2])?;
+        let mut out_guard = write_storage(&outputs[0])?;
+        let x_cuda = cuda_input(&x_guard)?;
+        let cos_cuda = cuda_input(&cos_guard)?;
+        let sin_cuda = cuda_input(&sin_guard)?;
+        let out_cuda = cuda_output(&mut out_guard)?;
+        fuel_cuda_backend::baracuda::attention::rope_apply_fused_f32_into(
+            x_cuda, cos_cuda, sin_cuda, outer_count, seq, head_dim, out_cuda,
+        )
+    }
+
+    /// Spec-B Task-6 acceptance (live GPU), the ROPE ORACLE headline —
+    /// REJECTION leg. A candidate whose kernel is the STAGED INTERLEAVED
+    /// `rope_apply` driver (see [`interleaved_rope_apply_candidate_kernel`]),
+    /// claiming `FusedOps::ROPE` with rope-shaped F32 operands (x
+    /// `[1, seq, head_dim]`, cos/sin FULL-width `[seq, head_dim]`) and
+    /// `PrecisionGuarantee::REFERENCE`, must be REJECTED: `ingest_one` realizes
+    /// FUEL's registered ROTATE-HALF ROPE recipe on the SAME probe
+    /// (`reference_from_registered_recipe`), and the interleaved candidate's
+    /// output differs → the numeric bound fails (`failed_claim` contains
+    /// "max"). Never `Adopted` — a wrong-ROPE claimant must not enter the
+    /// binding table.
+    ///
+    /// APPROACH — the plan's PREFER path (faithful interleaved rope), NOT the
+    /// elementwise fallback: the candidate wraps the real
+    /// `rope_apply_fused_f32_into` driver (the genuine interleaved-vs-rotate-
+    /// half convention bug), which wraps cleanly here because its
+    /// `(x, cos, sin)` arity matches Fuel's rope reference and it tolerates
+    /// Fuel's full-width cos/sin (narrows to half-width internally). No
+    /// submitted `decompose` (rope isn't a `PatternNode`), so the structural
+    /// recipe-identity pre-check is correctly skipped and the NUMERIC
+    /// registered-recipe reference is what rejects it.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn rope_oracle_rejects_interleaved_rope_claiming_rope() {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_cuda_backend::CudaDevice;
+        use fuel_graph::registry::FusedOps;
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+
+        let (seq, head_dim) = (4usize, 8usize); // head_dim even (baracuda rope)
+        let x_od = OperandDesc::new(
+            3,
+            &[1, seq as i64, head_dim as i64],
+            &[(seq * head_dim) as i64, head_dim as i64, 1],
+            ElementKind::F32,
+            16,
+        );
+        // cos/sin FULL-width [seq, head_dim] — Fuel's rotate-half reference
+        // convention; the interleaved candidate narrows them internally.
+        let trig_od = OperandDesc::new(
+            2,
+            &[seq as i64, head_dim as i64],
+            &[head_dim as i64, 1],
+            ElementKind::F32,
+            16,
+        );
+        let cand = CandidateKernel {
+            entry_point: "test::rope_oracle::interleaved_rope_apply_claims_rope".to_string(),
+            kernel: interleaved_rope_apply_candidate_kernel,
+            op_params: crate::kernel::OpParams::Rope { outer_count: 1, seq, head_dim },
+            decompose: None,
+            operands: vec![x_od, trig_od, trig_od],
+            dtypes: vec![DType::F32, DType::F32, DType::F32],
+            kernel_revision_hash: 0x1_9E57_0003,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
+            backend: BackendId::Cuda,
+            claimed_op: Some(FusedOps::ROPE),
+        };
+
+        match ingest_one(&cand, &dev) {
+            IngestOutcome::Rejected(r) => {
+                assert!(
+                    r.failed_claim.contains("max") || r.failed_claim == "recipe_identity",
+                    "expected a precision/identity rejection (interleaved != rotate-half), \
+                     got: {} / {}",
+                    r.failed_claim,
+                    r.detail
+                );
+            }
+            IngestOutcome::Adopted(_) => panic!(
+                "interleaved rope claiming ROPE must NOT be adopted — it computes a different \
+                 function than Fuel's rotate-half rope"
+            ),
+        }
+    }
+
+    /// Spec-B Task-6 acceptance (live GPU), the ROPE ORACLE — ADOPTION leg
+    /// (positive counterpart). No CUDA ROTATE-HALF rope kernel exists as a
+    /// single callable `KernelRef` (Fuel's rotate-half rope runs via the
+    /// primitive decompose; every callable CUDA rope kernel is interleaved), so
+    /// — per the plan's documented FALLBACK — this adopts a MATCHING
+    /// ELEMENTWISE claimant, exercising the SAME claimed-op path the rope
+    /// rejection does (structural recipe-identity + the numeric
+    /// registered-recipe reference), just on an op that HAS a matching CUDA
+    /// kernel. A runtime-registered `Add` region is the claimed op; the
+    /// candidate's kernel is CUDA `add_f32` and its submitted decompose IS the
+    /// `Add` region → recipe-identity matches AND `add_f32`'s output equals the
+    /// registered recipe realized on the same probe (0 ULP) → `Adopted`, and
+    /// the adopted kernel is visible to the capability gate on Cuda. A
+    /// per-run-distinct id suffix avoids process-global registry collisions
+    /// with other `#[ignore]` tests in this binary.
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn rope_oracle_adopts_matching_elementwise_claimant() {
+        use baracuda_kernels_types::{ElementKind, OperandDesc};
+        use fuel_cuda_backend::CudaDevice;
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        use fuel_graph::runtime_fused::register_runtime_fused;
+        use fuel_ir::probe::BackendId;
+        use fuel_ir::DType;
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+
+        // A runtime-registered Add op is the CLAIMED op; the candidate submits
+        // the very same Add region as its decompose (recipe-identity matches).
+        let add_region = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+        let claimed_id = register_runtime_fused(
+            "test::rope_oracle::adopt::claimed_add::run_r0pe_0004",
+            add_region.clone(),
+        )
+        .expect("register the runtime Add op the candidate claims");
+
+        let od = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 16);
+        let cand = CandidateKernel {
+            entry_point: "test::rope_oracle::adopt::add_f32::run_r0pe_0004".to_string(),
+            kernel: crate::baracuda_dispatch::binary::add_f32,
+            op_params: crate::kernel::OpParams::None,
+            decompose: Some(add_region),
+            operands: vec![od, od],
+            dtypes: vec![DType::F32, DType::F32],
+            kernel_revision_hash: 0x1_9E57_0004,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
+            backend: BackendId::Cuda,
+            claimed_op: Some(claimed_id),
+        };
+
+        match ingest_one(&cand, &dev) {
+            IngestOutcome::Adopted(id) => {
+                let table = crate::dispatch::global_bindings();
+                assert!(
+                    crate::runtime_fused_kernels::fused_kernel_available_in(
+                        &table,
+                        id,
+                        BackendId::Cuda
+                    ),
+                    "the adopted claimant's kernel must be visible to the capability gate on Cuda"
+                );
+            }
+            IngestOutcome::Rejected(r) => panic!(
+                "a matching add_f32 claimant (recipe-identity + 0-ULP numeric) must be Adopted, \
+                 got Rejected: {} / {}",
                 r.failed_claim, r.detail
             ),
         }
