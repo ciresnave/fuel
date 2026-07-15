@@ -28,6 +28,12 @@ use fuel_graph::jit::PatternNode;
 #[cfg(feature = "cuda")]
 use fuel_graph::runtime_fused::emit_region;
 #[cfg(feature = "cuda")]
+use fuel_graph::opt::lower_to_base_map;
+#[cfg(feature = "cuda")]
+use fuel_graph::registry::{FusedOpId, FusedOpParams};
+#[cfg(feature = "cuda")]
+use fuel_graph::topo_order_multi;
+#[cfg(feature = "cuda")]
 use fuel_graph::{Graph, Node, NodeId, Op};
 #[cfg(feature = "cuda")]
 use fuel_ir::probe::BackendId;
@@ -172,6 +178,129 @@ pub fn reference_output(
     Ok(HostTensor { dtype: out_dtype, shape: out_shape, bytes })
 }
 
+/// Realize FUEL's **registered recipe** for `claimed_op` — its primitive base
+/// map — on the probe consts and read the output bytes back to host: the
+/// **oracle-independent** verification reference.
+///
+/// Where [`reference_output`] realizes a *candidate's own* `decompose`, this
+/// realizes the recipe Fuel has registered for `claimed_op`, lowered to
+/// primitives via [`fuel_graph::opt::lower_to_base_map`]. A candidate is thus
+/// checked against what Fuel says the op computes, not against its own
+/// (possibly wrong) decompose.
+///
+/// Mechanics: build `Op::Fused(claimed_op, params)` on one `Op::Const` leaf per
+/// `probe` (ids `0..probe.len()`, bound in order); `lower_to_base_map` dissolves
+/// the fused sink IN PLACE to its primitive base map (recursive fixpoint — for
+/// ROPE this is Reshape/BroadcastTo/Slice/Neg/Concat/Mul/Add); stamp
+/// `BackendId::Cuda` on every reachable NON-`Const` node of the lowered map;
+/// bind each probe's H2D storage to its `Op::Const` id in the [`StorageCache`];
+/// realize the lowered sink through [`PipelinedExecutor::realize`]; read the
+/// CUDA output D2H into a [`HostTensor`] carrying the caller-declared
+/// `out_dtype`/`out_shape`.
+///
+/// Never panics on the production path — every lock/H2D/lower/realize/D2H
+/// failure is returned as `Err`. (`lower_to_base_map` is itself never-panic: a
+/// self-returning `decompose` is a clean fixpoint, not a loop.)
+#[cfg(feature = "cuda")]
+pub fn reference_from_registered_recipe(
+    claimed_op: FusedOpId,
+    params: &FusedOpParams,
+    probe: &[HostTensor],
+    out_dtype: DType,
+    out_shape: Vec<usize>,
+    device: &CudaDevice,
+) -> Result<HostTensor> {
+    // (a) H2D: upload every probe into fresh CUDA-resident storage.
+    let mut storages: Vec<Arc<RwLock<fuel_memory::Storage>>> = Vec::with_capacity(probe.len());
+    for t in probe {
+        let cb = CudaStorageBytes::from_cpu_bytes(device, &t.bytes)?;
+        storages.push(Arc::new(RwLock::new(fuel_memory::Storage::new(
+            fuel_memory::BackendStorage::Cuda(cb),
+            t.dtype,
+        ))));
+    }
+
+    // (b) Build the reference graph: one Const leaf per probe (ids
+    // `0..n_inputs`) + the claimed fused op as the sink over those leaves.
+    let graph = Arc::new(RwLock::new(Graph::new()));
+    let (input_ids, fused_id) = {
+        let mut g = graph.write().map_err(|_| {
+            Error::Msg("reference_from_registered_recipe: graph RwLock poisoned".to_string())
+        })?;
+        let input_ids: Vec<NodeId> = probe
+            .iter()
+            .map(|t| {
+                g.push(Node {
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(&t.shape),
+                    dtype: t.dtype,
+                })
+            })
+            .collect();
+        let fused_id = g.push(Node {
+            op: Op::Fused(claimed_op, params.clone()),
+            inputs: input_ids.clone(),
+            shape: Shape::from_dims(&out_shape),
+            dtype: out_dtype,
+        });
+        (input_ids, fused_id)
+    };
+
+    // (c) Lower the fused sink to FUEL's registered primitive base map. The
+    // `Op::Fused` node dissolves IN PLACE (recursive fixpoint); `roots[0]` is
+    // the lowered sink. No graph guard is held — lowering locks internally.
+    let roots = lower_to_base_map(&graph, &[fused_id]);
+    let sink = *roots.first().ok_or_else(|| {
+        Error::Msg("reference_from_registered_recipe: lowering returned no roots".to_string())
+    })?;
+
+    // (d) Stamp CUDA on every reachable NON-`Const` node of the LOWERED base
+    // map (not just the original fused node — after lowering the primitives are
+    // what realize will dispatch). The `Op::Const` probe leaves are adopted
+    // from the StorageCache (no kernel), so they need no target backend.
+    {
+        let mut g = graph.write().map_err(|_| {
+            Error::Msg("reference_from_registered_recipe: graph RwLock poisoned".to_string())
+        })?;
+        for nid in topo_order_multi(&g, &roots) {
+            if !matches!(g.node(nid).op, Op::Const) {
+                g.set_target_backend(nid, BackendId::Cuda);
+            }
+        }
+    }
+
+    // (e) Bind each probe storage to its Const node id.
+    let mut cache = StorageCache::new();
+    for (id, storage) in input_ids.iter().zip(storages) {
+        cache.insert(*id, storage);
+    }
+
+    // (f) Realize the lowered base-map sink on the device.
+    let (out_arc, _layout) = PipelinedExecutor::realize(graph, sink, cache)?;
+
+    // (g) D2H: read the CUDA output storage back to host bytes.
+    let bytes = {
+        let guard = out_arc.read().map_err(|_| {
+            Error::Msg(
+                "reference_from_registered_recipe: output storage RwLock poisoned".to_string(),
+            )
+        })?;
+        match &guard.inner {
+            fuel_memory::BackendStorage::Cuda(c) => c.to_cpu_bytes()?,
+            #[allow(unreachable_patterns)]
+            _ => {
+                return Err(Error::Msg(
+                    "reference_from_registered_recipe: realized output storage is not CUDA"
+                        .to_string(),
+                ))
+            }
+        }
+    };
+
+    Ok(HostTensor { dtype: out_dtype, shape: out_shape, bytes })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +353,111 @@ mod tests {
     #[cfg(feature = "cuda")]
     fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
         bytemuck::cast_slice::<u8, f32>(bytes).to_vec()
+    }
+
+    /// Shared rope-probe builder (Task 4 acceptance test + Task 6 reuse):
+    /// deterministic F32 `x` of shape `[1, seq, head_dim]` (via
+    /// `fill_deterministic`) plus cos/sin tables `[seq, head_dim]` from
+    /// `build_rope_tables`. Returns `(x, cos, sin, x_shape)`.
+    #[cfg(feature = "cuda")]
+    fn rope_probe(
+        seq: usize,
+        head_dim: usize,
+        base: f64,
+    ) -> (HostTensor, HostTensor, HostTensor, Vec<usize>) {
+        use fuel_graph::build_rope_tables;
+        let x_shape = vec![1usize, seq, head_dim];
+        let x_vals = fill_deterministic(seq * head_dim, 0x5EED_D07);
+        let (cos, sin) = build_rope_tables(base, 0, seq, head_dim);
+        let x = HostTensor {
+            dtype: DType::F32,
+            shape: x_shape.clone(),
+            bytes: bytemuck::cast_slice(&x_vals).to_vec(),
+        };
+        let cos_t = HostTensor {
+            dtype: DType::F32,
+            shape: vec![seq, head_dim],
+            bytes: bytemuck::cast_slice(&cos).to_vec(),
+        };
+        let sin_t = HostTensor {
+            dtype: DType::F32,
+            shape: vec![seq, head_dim],
+            bytes: bytemuck::cast_slice(&sin).to_vec(),
+        };
+        (x, cos_t, sin_t, x_shape)
+    }
+
+    /// Host-side rotate-half rope — the SAME formula `registry::rope::decompose`
+    /// encodes: `out = x*cos + rotate_half(x)*sin`, where
+    /// `rotate_half(x) = concat(-x[half:], x[:half])` along the last dim. cos/sin
+    /// are `[seq, head_dim]`, broadcast over the leading batch dim of `x`.
+    #[cfg(feature = "cuda")]
+    fn expected_rotate_half(
+        x: &[f32],
+        cos: &[f32],
+        sin: &[f32],
+        seq: usize,
+        head_dim: usize,
+    ) -> Vec<f32> {
+        let half = head_dim / 2;
+        let mut out = vec![0.0f32; seq * head_dim];
+        for s in 0..seq {
+            let row = s * head_dim;
+            for d in 0..head_dim {
+                let rot = if d < half {
+                    -x[row + d + half]
+                } else {
+                    x[row + d - half]
+                };
+                out[row + d] = x[row + d] * cos[row + d] + rot * sin[row + d];
+            }
+        }
+        out
+    }
+
+    /// Live-GPU (Spec-B Task-4 acceptance test): `reference_from_registered_recipe`
+    /// builds `Op::Fused(FusedOps::ROPE, FusedOpParams::Rope)` on rope-shaped F32
+    /// probes, lowers it to Fuel's registered primitive base map, realizes it on
+    /// CUDA, and returns bytes equal (F32 tolerance) to a host-computed rotate-half
+    /// rope. `#[ignore]`'d (needs a live CUDA device).
+    #[test]
+    #[ignore = "requires a live CUDA device"]
+    #[cfg(feature = "cuda")]
+    fn reference_from_registered_recipe_realizes_rotate_half_rope() {
+        use fuel_cuda_backend::CudaDevice;
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+
+        let Ok(dev) = CudaDevice::new(0) else {
+            eprintln!("no CUDA device; skipping");
+            return;
+        };
+        let (seq, head_dim, base) = (4usize, 8usize, 10000.0f64);
+        let (x, cos_t, sin_t, x_shape) = rope_probe(seq, head_dim, base);
+
+        // Host reference computed from the SAME rotate-half formula the recipe encodes.
+        let x_vals = bytes_to_f32(&x.bytes);
+        let cos_vals = bytes_to_f32(&cos_t.bytes);
+        let sin_vals = bytes_to_f32(&sin_t.bytes);
+        let expected = expected_rotate_half(&x_vals, &cos_vals, &sin_vals, seq, head_dim);
+
+        let out = reference_from_registered_recipe(
+            FusedOps::ROPE,
+            &FusedOpParams::Rope,
+            &[x, cos_t, sin_t],
+            DType::F32,
+            x_shape,
+            &dev,
+        )
+        .expect("reference_from_registered_recipe should realize the lowered rope base map");
+
+        let got = bytes_to_f32(&out.bytes);
+        assert_eq!(got.len(), expected.len(), "output element count");
+        for (i, (g, e)) in got.iter().zip(&expected).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-4,
+                "rotate-half rope mismatch at {i}: got {g}, expected {e}"
+            );
+        }
     }
 
     /// Live-GPU: `reference_output` realizes a 2-input `Add` decompose region
