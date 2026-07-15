@@ -45,6 +45,12 @@ pub struct CandidateKernel {
     pub kernel_revision_hash: u64,
     pub declared: crate::fused::PrecisionGuarantee,
     pub backend: fuel_ir::probe::BackendId,
+    /// The op-identity this candidate asserts it implements. `Some(id)` →
+    /// verify against Fuel's registered recipe for `id` as the reference
+    /// (Task 5); `None` → the Spec B behavior (verify against the
+    /// candidate's own `decompose`) is retained. No consumer yet — Tasks
+    /// 4/5 are what resolve this into a verification reference.
+    pub claimed_op: Option<fuel_graph::registry::FusedOpId>,
 }
 
 /// Why Fuel refused a candidate kernel a provider offered — handed to
@@ -756,6 +762,31 @@ where
 mod tests {
     use super::*;
 
+    /// Task 3: `CandidateKernel.claimed_op` — the op-identity a candidate
+    /// asserts it implements. `Some(id)` round-trips; later tasks (4/5) use
+    /// this to resolve Fuel's registered recipe as the verification
+    /// reference instead of the candidate's own `decompose`. No CUDA/GPU
+    /// needed — this only exercises the struct field, so the kernel fn-ptr
+    /// is `dummy_kernel` (the same no-op used by the Task-7
+    /// `IngestionService` tests below, which run under `--features jit`
+    /// alone) rather than a real cuda-gated kernel.
+    #[test]
+    fn candidate_kernel_carries_claimed_op() {
+        let c = CandidateKernel {
+            entry_point: "k".into(),
+            kernel: dummy_kernel,
+            op_params: crate::kernel::OpParams::None,
+            decompose: None,
+            operands: vec![],
+            dtypes: vec![],
+            kernel_revision_hash: 0,
+            declared: crate::fused::PrecisionGuarantee::REFERENCE,
+            backend: fuel_ir::probe::BackendId::Cuda,
+            claimed_op: Some(fuel_graph::registry::FusedOps::ROPE),
+        };
+        assert_eq!(c.claimed_op, Some(fuel_graph::registry::FusedOps::ROPE));
+    }
+
     #[test]
     fn provider_feedback_receives_the_report() {
         use std::sync::Mutex;
@@ -815,6 +846,7 @@ mod tests {
             kernel_revision_hash: 0x00AD_DF32,
             declared: crate::fused::PrecisionGuarantee::REFERENCE,
             backend: BackendId::Cuda,
+            claimed_op: None,
         };
 
         let (verdict, records) = verify_candidate(&cand, &dev);
@@ -879,6 +911,7 @@ mod tests {
                 notes: "test-only, f32-only guard regression",
             },
             backend: BackendId::Cuda,
+            claimed_op: None,
         };
 
         let (verdict, records) = verify_candidate(&cand, &dev);
@@ -947,6 +980,7 @@ mod tests {
             kernel_revision_hash: 0x1_9E57_0001,
             declared: crate::fused::PrecisionGuarantee::REFERENCE,
             backend: BackendId::Cuda,
+            claimed_op: None,
         };
 
         match ingest_one(&cand, &dev) {
@@ -1007,6 +1041,7 @@ mod tests {
             kernel_revision_hash: 0x1_9E57_0002,
             declared: crate::fused::PrecisionGuarantee::REFERENCE,
             backend: BackendId::Cuda,
+            claimed_op: None,
         };
 
         match ingest_one(&cand, &dev) {
@@ -1058,6 +1093,7 @@ mod tests {
             kernel_revision_hash: 0x1_9E57_9001,
             declared: crate::fused::PrecisionGuarantee::REFERENCE,
             backend: BackendId::Cuda,
+            claimed_op: None,
         };
 
         match adopt_verified(&cand) {
@@ -1106,6 +1142,7 @@ mod tests {
             kernel_revision_hash: 0x1_9E57_9002,
             declared: crate::fused::PrecisionGuarantee::REFERENCE,
             backend: BackendId::Cuda,
+            claimed_op: None,
         };
 
         match adopt_verified(&cand) {
@@ -1157,6 +1194,7 @@ mod tests {
             kernel_revision_hash: 0xDEAD_BEEF,
             declared: crate::fused::PrecisionGuarantee::REFERENCE,
             backend: BackendId::Cuda,
+            claimed_op: None,
         }
     }
 
@@ -1521,6 +1559,7 @@ mod tests {
             kernel_revision_hash: 0x1_9E57_8801,
             declared: crate::fused::PrecisionGuarantee::REFERENCE,
             backend: BackendId::Cuda,
+            claimed_op: None,
         }
     }
 
@@ -1555,6 +1594,7 @@ mod tests {
             kernel_revision_hash: 0x1_9E57_8802,
             declared: crate::fused::PrecisionGuarantee::REFERENCE,
             backend: BackendId::Cuda,
+            claimed_op: None,
         }
     }
 
