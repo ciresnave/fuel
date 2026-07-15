@@ -355,6 +355,16 @@ impl RuleRegistry {
     }
 }
 
+/// Lower every reachable fused op in `graph` (rooted at `roots`) to its
+/// primitive base map — the fixpoint of `decompose` over every node. A thin
+/// named wrapper over [`RuleRegistry::lowering_only`] + `optimize_to_fixpoint`
+/// (the machinery every fused op — static-registry AND runtime — already flows
+/// through). Never panics: a self-returning `decompose` is a clean fixpoint
+/// (the never-panic total-decompose contract), not a loop.
+pub fn lower_to_base_map(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
+    RuleRegistry::lowering_only().optimize_to_fixpoint(graph, roots)
+}
+
 // ---- Auto-generated lowering + fusion rules from FusedOpRegistry ----------
 //
 // Phase 7.6 step 3: PR 3's hand-written `SoftmaxLastDimLowerRule` and
@@ -4062,6 +4072,38 @@ mod tests {
         let new_roots = RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[y.id()]);
         assert_eq!(new_roots, vec![y.id()]);
         assert_eq!(graph.read().unwrap().len(), pre_len);
+    }
+
+    /// `lower_to_base_map` is a named wrapper over
+    /// `RuleRegistry::lowering_only().optimize_to_fixpoint` — a fused ROPE
+    /// node dissolves to its primitive base map; no `Op::Fused(ROPE, _)`
+    /// remains reachable from the (possibly-remapped) roots.
+    #[test]
+    fn lower_to_base_map_dissolves_a_fused_op() {
+        use std::sync::RwLock;
+        // Build a graph: three Const leaves (x, cos, sin) + one Op::Fused(ROPE).
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let sink = {
+            let mut g = graph.write().unwrap();
+            let shape = Shape::from_dims(&[1, 4, 8]); // (batch, seq, head_dim=8, even)
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: shape.clone(), dtype: DType::F32 });
+            let cshape = Shape::from_dims(&[4, 8]);
+            let cos = g.push(Node { op: Op::Const, inputs: vec![], shape: cshape.clone(), dtype: DType::F32 });
+            let sin = g.push(Node { op: Op::Const, inputs: vec![], shape: cshape, dtype: DType::F32 });
+            g.push(Node {
+                op: Op::Fused(FusedOps::ROPE, FusedOpParams::Rope),
+                inputs: vec![x, cos, sin],
+                shape,
+                dtype: DType::F32,
+            })
+        };
+        let roots = lower_to_base_map(&graph, &[sink]);
+        let g = graph.read().unwrap();
+        // No Op::Fused(ROPE) remains reachable; the base map is primitives.
+        let reachable = topo_order_multi(&g, &roots);
+        let has_rope = reachable.iter()
+            .any(|&n| matches!(g.node(n).op, Op::Fused(fid, _) if fid == FusedOps::ROPE));
+        assert!(!has_rope, "ROPE must be lowered to its primitive base map");
     }
 
     /// G2 (2026-06-20): FlashAttn IS decomposable — the vanilla (non-causal,
