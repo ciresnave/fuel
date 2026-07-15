@@ -246,6 +246,32 @@ pub fn clear_runtime_fused_for_tests() {
 /// core dispatch layer stays free of the `fuel-kernel-seam` envelope crate.
 /// Returns `None` if the region is not registrable (non-decomposable / bad
 /// binds — surfaced by `register_runtime_fused`).
+///
+/// **Idempotent under region dedup (2026-07-15).** `register_runtime_fused`
+/// dedups structurally-identical regions to the SAME [`FusedOpId`] — so a
+/// second `adopt_runtime_fused` call for an already-adopted recipe returns
+/// the same `id` here too. Binding, however, is append-only
+/// ([`KernelBindingTable::register_full_with_source_generic`]): pushing the
+/// *same* `KernelRef` onto the *same* `(id, dtypes, backend)` key a second
+/// time would create a duplicate-identical sibling, which
+/// `KernelBindingTable::finalize` rejects (`Error::Msg`) — and the caller of
+/// `finalize` (`extend_global_bindings`'s `.expect()`) turns that `Err` into
+/// a panic *while holding the global bindings write lock*, poisoning it for
+/// every later caller.
+///
+/// Guard against this exactly at the idempotent-vs-genuinely-new boundary:
+/// before binding, check whether THIS `kernel` is already bound at `(id,
+/// dtypes, backend)` — the precise, dtypes-aware
+/// [`KernelBindingTable::lookup_alternatives`] view — and skip the bind if
+/// so. The check-then-bind runs inside a SINGLE [`extend_global_bindings`]
+/// write-lock critical section (not a separate read-lock check followed by
+/// a separate write-lock bind): two threads racing to adopt the same
+/// structurally-identical region + kernel + dtypes + backend (region dedup
+/// means unrelated call sites can land on the same `id`) would otherwise
+/// both observe "not yet bound" through a read-then-write race window and
+/// both bind, reproducing the duplicate-`KernelRef` panic anyway. A fresh
+/// id, or the same id with a different kernel / dtypes / backend, still
+/// binds exactly as before.
 pub fn adopt_runtime_fused(
     name: impl Into<String>,
     region: PatternNode,
@@ -254,7 +280,15 @@ pub fn adopt_runtime_fused(
     backend: BackendId,
 ) -> Option<FusedOpId> {
     let id = fuel_graph::runtime_fused::register_runtime_fused(name, region).ok()?;
-    register_runtime_kernel(id, &dtypes, backend, kernel);
+    extend_global_bindings(|table| {
+        let already_bound = table
+            .lookup_alternatives(BindingKey::RuntimeFused(id), &dtypes, backend)
+            .iter()
+            .any(|entry| std::ptr::fn_addr_eq(entry.kernel, kernel));
+        if !already_bound {
+            table.register(BindingKey::RuntimeFused(id), &dtypes, backend, kernel);
+        }
+    });
     Some(id)
 }
 
@@ -280,6 +314,29 @@ mod tests {
             attrs: OpAttrs::default(),
             operands: vec![PatternNode::Op {
                 op: OpTag::Add,
+                attrs: OpAttrs::default(),
+                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            }],
+        }
+    }
+
+    /// sqrt(div(a, b)) — deliberately NOT the `relu(add(a, b))` shape every
+    /// other adopted-op test in this crate uses (`fused_cost`, `jit_adopt`,
+    /// `runtime_fused_arm`, and this module's own `relu_add` tests above).
+    /// `register_runtime_fused`'s dedup index is a process-global sidecar
+    /// shared by every `#[test]` in this binary (see
+    /// `runtime_fused_pathfinder`'s `tanh_mul_region` doc comment for the
+    /// full collision rationale): a test asserting on the EXACT kernel
+    /// pointer `lookup_with_caps`/`first_runtime_fused` resolves needs a
+    /// region no other adopting test also registers, or whichever test's
+    /// kernel reaches the shared binding-table key first wins the "first
+    /// alternative" — nondeterministically, by thread scheduling.
+    fn sqrt_div() -> PatternNode {
+        PatternNode::Op {
+            op: OpTag::Sqrt,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Op {
+                op: OpTag::Div,
                 attrs: OpAttrs::default(),
                 operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
             }],
@@ -325,8 +382,8 @@ mod tests {
     #[test]
     fn adopted_kernel_lives_in_the_one_binding_table() {
         let id = adopt_runtime_fused(
-            "test::adopt::relu_add::one_registry",
-            relu_add(),
+            "test::adopt::sqrt_div::one_registry",
+            sqrt_div(),
             noop_kernel as KernelRef,
             vec![DType::F32, DType::F32, DType::F32],
             BackendId::Cpu,
@@ -353,6 +410,49 @@ mod tests {
                 )
                 .is_err(),
             "wrong dtype tuple ⇒ NoBackendForOp, not a wrong-kernel bind",
+        );
+    }
+
+    /// THE REGRESSION TEST (Task 7 cross-crate fix, 2026-07-15). Under
+    /// `register_runtime_fused`'s region-dedup, two `adopt_runtime_fused`
+    /// calls for the SAME region + kernel + dtypes + backend must resolve to
+    /// the SAME `FusedOpId` and must NOT panic on the second call (the
+    /// pre-fix bug: the second `register_runtime_kernel` pushed a
+    /// duplicate-identical `KernelRef` binding, and `finalize()`'s
+    /// `.expect()` in `extend_global_bindings` panicked while holding the
+    /// global bindings write lock, poisoning it for every later test in the
+    /// binary). The kernel must remain available after the re-adopt.
+    #[test]
+    fn adopt_runtime_fused_is_idempotent_for_an_identical_region_and_kernel() {
+        let id1 = adopt_runtime_fused(
+            "test::adopt::idempotent::sqrt_div",
+            sqrt_div(),
+            noop_kernel as KernelRef,
+            vec![DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+        )
+        .expect("sqrt(div) is a registrable region");
+
+        // Re-adopt: identical region ⇒ dedup returns the same id; identical
+        // kernel/dtypes/backend ⇒ must be a no-op bind, not a panic.
+        let id2 = adopt_runtime_fused(
+            "test::adopt::idempotent::sqrt_div::again",
+            sqrt_div(),
+            noop_kernel as KernelRef,
+            vec![DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+        )
+        .expect("re-adopting the same region is still Some");
+
+        assert_eq!(id1, id2, "structurally-identical regions dedup to the same FusedOpId");
+        assert!(
+            fused_kernel_available(id1, BackendId::Cpu),
+            "the kernel is still available after the idempotent re-adopt",
+        );
+        let row = lookup_runtime_kernel(id1, BackendId::Cpu).expect("row still bound on Cpu");
+        assert!(
+            std::ptr::fn_addr_eq(row.kernel, noop_kernel as KernelRef),
+            "the (single, non-duplicated) kernel resolves correctly",
         );
     }
 
