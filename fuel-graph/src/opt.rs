@@ -365,6 +365,126 @@ pub fn lower_to_base_map(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
     RuleRegistry::lowering_only().optimize_to_fixpoint(graph, roots)
 }
 
+/// `NodeId`-independent content hash of the subgraph rooted at `root`.
+///
+/// Recursively hashes each node as `(op identity, child hashes)`, folding in
+/// each child's *hash* rather than its `NodeId` — so two independently-built
+/// graphs (different arenas, different `NodeId` numbering) that are
+/// structurally identical hash equal. Reuses this module's existing
+/// canonicalization primitives rather than duplicating them:
+///
+/// - [`op_key`] for op identity when available (covers every primitive +
+///   `Op::Fused` variant CSE already relies on).
+/// - [`is_commutative`] to sort child hashes for `Add`/`Mul`/`Maximum`/
+///   `Minimum`, so `a + b` and `b + a` hash equal (mirrors CSE's own
+///   commutative-operand canonicalization).
+///
+/// `op_key` deliberately excludes `Op::Const` (its payload lives in the
+/// graph's `storage_map` slot, not the `Op` enum — see the comment on
+/// [`OpKey`]) and returns `None` for a handful of other ops (in-place,
+/// indexing, and anything else not explicitly listed). For those, this
+/// function falls back to `(discriminant, shape, dtype)` — and, for
+/// `Op::Const` specifically, additionally folds the constant's real bytes
+/// when they're readable (see `fold_const_bytes` below) so two
+/// independently-built recipes with equal constants hash equal, not just
+/// equal-shaped placeholders.
+///
+/// This is a cheap structural *pre-filter* for cross-graph recipe identity:
+/// structurally-equal-up-to-commutative-reordering-and-fusion-depth base
+/// maps hash equal. It does NOT canonicalize associativity or
+/// distributivity (`(a + b) + c` vs `a + (b + c)` hash differently) — a
+/// numeric verify pass covers that residual. Hashes are only stable within
+/// one process / `DefaultHasher` instance; never persist or compare them
+/// across processes.
+pub fn base_map_hash(graph: &Graph, root: NodeId) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    // Fold a `Const` node's real bytes into `hasher`, when they're
+    // readable without blocking. Const bytes live in the graph's
+    // `storage_map` slot (`lib.rs:218-223`), populated via
+    // `Graph::set_storage`/`storage_for` — NOT in the `Op` enum, so
+    // `op_key` can't see them (by design; see `OpKey`'s doc comment).
+    //
+    // Falls back to a silent no-op (the caller has already folded this
+    // node's shape/dtype via the `op_key -> None` branch) when:
+    // - the slot is unpopulated (e.g. a bare `Node { op: Op::Const, .. }`
+    //   pushed without ever calling `set_storage` — as the unit tests
+    //   below do for their placeholder consts), or
+    // - the slot's `RwLock` is held by a writer (`try_read` avoids
+    //   blocking a hash — a structural pre-filter — on live graph
+    //   mutation), or
+    // - the backend can't produce a host buffer right now (e.g.
+    //   device-only storage mid-capture).
+    //
+    // Documented limitation: in the fallback case, two *different*
+    // device-only (or unpopulated) consts of the same shape/dtype hash
+    // equal. `base_map_hash` is a pre-filter, not a full identity
+    // decision — a numeric verify pass is the source of truth when bytes
+    // aren't available at hash time.
+    fn fold_const_bytes(graph: &Graph, id: NodeId, hasher: &mut DefaultHasher) {
+        let Some(slot) = graph.storage_for(id) else { return };
+        let Ok(guard) = slot.try_read() else { return };
+        let Ok(host) = guard.to_cpu_storage() else { return };
+        fold_host_buffer(&host, hasher);
+    }
+
+    // Bridge every `HostBuffer` element dtype to something `Hash`. Integer
+    // variants (including the raw-byte-backed sub-byte dummy dtypes)
+    // already implement `Hash` directly; float variants don't (NaN
+    // equality is ambiguous under `Eq`, so std withholds `Hash`) — for
+    // those we fold each element's bit pattern via `to_bits()`, which is
+    // exact (including NaN payload bits) and matches the bit-pattern
+    // encoding `op_key` already uses for scalar payloads (e.g.
+    // `Op::AddScalar`'s `f64::to_bits()`).
+    fn fold_host_buffer(buf: &fuel_ir::HostBuffer, hasher: &mut DefaultHasher) {
+        use fuel_ir::HostBuffer as H;
+        match buf {
+            H::U8(v) | H::F6E2M3(v) | H::F6E3M2(v) | H::F4(v) | H::F8E8M0(v) => v.hash(hasher),
+            H::I8(v) => v.hash(hasher),
+            H::U32(v) => v.hash(hasher),
+            H::I16(v) => v.hash(hasher),
+            H::I32(v) => v.hash(hasher),
+            H::I64(v) => v.hash(hasher),
+            H::BF16(v) => for x in v { x.to_bits().hash(hasher); },
+            H::F16(v) => for x in v { x.to_bits().hash(hasher); },
+            H::F32(v) => for x in v { x.to_bits().hash(hasher); },
+            H::F64(v) => for x in v { x.to_bits().hash(hasher); },
+            H::F8E4M3(v) => for x in v { x.to_bits().hash(hasher); },
+        }
+    }
+
+    fn go(graph: &Graph, id: NodeId, memo: &mut HashMap<NodeId, u64>) -> u64 {
+        if let Some(&h) = memo.get(&id) {
+            return h;
+        }
+        let n = graph.node(id);
+        let mut hasher = DefaultHasher::new();
+        match op_key(&n.op) {
+            Some(k) => k.hash(&mut hasher),
+            None => {
+                std::mem::discriminant(&n.op).hash(&mut hasher);
+                n.shape.dims().hash(&mut hasher);
+                n.dtype.hash(&mut hasher);
+                if matches!(n.op, Op::Const) {
+                    fold_const_bytes(graph, id, &mut hasher);
+                }
+            }
+        }
+        let mut child_hashes: Vec<u64> =
+            n.inputs.iter().map(|&c| go(graph, c, memo)).collect();
+        if is_commutative(&n.op) {
+            child_hashes.sort_unstable();
+        }
+        child_hashes.hash(&mut hasher);
+        let h = hasher.finish();
+        memo.insert(id, h);
+        h
+    }
+
+    go(graph, root, &mut HashMap::new())
+}
+
 // ---- Auto-generated lowering + fusion rules from FusedOpRegistry ----------
 //
 // Phase 7.6 step 3: PR 3's hand-written `SoftmaxLastDimLowerRule` and
@@ -4104,6 +4224,112 @@ mod tests {
         let has_rope = reachable.iter()
             .any(|&n| matches!(g.node(n).op, Op::Fused(fid, _) if fid == FusedOps::ROPE));
         assert!(!has_rope, "ROPE must be lowered to its primitive base map");
+    }
+
+    /// `base_map_hash` canonicalizes commutative-operand order: two
+    /// independently-built graphs computing `a + b` and `b + a` (same
+    /// consts, swapped operand order on the `Add`) hash equal.
+    #[test]
+    fn base_map_hash_commutative_reorder_is_equal() {
+        let mk = |swap: bool| {
+            let mut g = Graph::new();
+            let s = Shape::from_dims(&[4]);
+            let a = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let b = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let ins = if swap { vec![b, a] } else { vec![a, b] };
+            let sink = g.push(Node { op: Op::Add, inputs: ins, shape: s, dtype: DType::F32 });
+            (g, sink)
+        };
+        let (g0, r0) = mk(false);
+        let (g1, r1) = mk(true);
+        assert_eq!(base_map_hash(&g0, r0), base_map_hash(&g1, r1), "a+b == b+a");
+    }
+
+    /// `base_map_hash` distinguishes distinct ops over the same operands:
+    /// `Add(a, b)` and `Mul(a, b)` must hash differently.
+    #[test]
+    fn base_map_hash_distinct_ops_differ() {
+        let mk = |op: Op| {
+            let mut g = Graph::new();
+            let s = Shape::from_dims(&[4]);
+            let a = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let b = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let sink = g.push(Node { op, inputs: vec![a, b], shape: s, dtype: DType::F32 });
+            (g, sink)
+        };
+        let (ga, ra) = mk(Op::Add);
+        let (gm, rm) = mk(Op::Mul);
+        assert_ne!(base_map_hash(&ga, ra), base_map_hash(&gm, rm), "add != mul");
+    }
+
+    /// `op_key` already carries explicit arms for `Op::Slice` and
+    /// `Op::Concat` (tags 81/80) — the two ops rope's rotate-half base map
+    /// relies on. This test forces that path: a tiny `Slice`-then-`Concat`
+    /// fragment (the first half of rope's rotate-half idiom) hashes
+    /// deterministically across two independently-built, structurally
+    /// identical copies.
+    #[test]
+    fn base_map_hash_slice_concat_fragment_is_deterministic() {
+        let mk = || {
+            let mut g = Graph::new();
+            let s = Shape::from_dims(&[4, 8]);
+            let half = Shape::from_dims(&[4, 4]);
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let lo = g.push(Node {
+                op: Op::Slice { dim: 1, start: 0, len: 4 },
+                inputs: vec![x],
+                shape: half.clone(),
+                dtype: DType::F32,
+            });
+            let hi = g.push(Node {
+                op: Op::Slice { dim: 1, start: 4, len: 4 },
+                inputs: vec![x],
+                shape: half,
+                dtype: DType::F32,
+            });
+            let sink = g.push(Node {
+                op: Op::Concat { dim: 1 },
+                inputs: vec![hi, lo],
+                shape: s,
+                dtype: DType::F32,
+            });
+            (g, sink)
+        };
+        let (g0, r0) = mk();
+        let (g1, r1) = mk();
+        assert_eq!(
+            base_map_hash(&g0, r0),
+            base_map_hash(&g1, r1),
+            "two independently-built Slice->Concat fragments must hash equal"
+        );
+    }
+
+    /// `base_map_hash` folds a `Const`'s real bytes when its storage slot
+    /// is populated (unlike the bare `Node { op: Op::Const, .. }` pushes
+    /// used above, `Tensor::from_f32` populates real storage via
+    /// `set_storage`). Two consts with equal bytes hash equal; two consts
+    /// of the same shape/dtype but different bytes hash differently — this
+    /// is the behavior that distinguishes real recipe identity from the
+    /// shape/dtype-only fallback (documented on `fold_const_bytes`).
+    #[test]
+    fn base_map_hash_folds_real_const_bytes() {
+        let shape = Shape::from_dims(&[4]);
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], shape.clone(), cpu_dev());
+        let b = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], shape.clone(), cpu_dev());
+        let c = Tensor::from_f32(vec![9.0, 9.0, 9.0, 9.0], shape, cpu_dev());
+        let ga = a.graph().read().unwrap();
+        let gb = b.graph().read().unwrap();
+        let gc = c.graph().read().unwrap();
+        assert_eq!(
+            base_map_hash(&ga, a.id()),
+            base_map_hash(&gb, b.id()),
+            "identical const bytes must hash equal across independently-built graphs"
+        );
+        assert_ne!(
+            base_map_hash(&ga, a.id()),
+            base_map_hash(&gc, c.id()),
+            "different const bytes (same shape/dtype) must hash differently"
+        );
     }
 
     /// G2 (2026-06-20): FlashAttn IS decomposable — the vanilla (non-causal,
