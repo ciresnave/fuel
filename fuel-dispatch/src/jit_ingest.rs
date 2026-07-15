@@ -82,6 +82,176 @@ pub enum IngestOutcome {
 }
 
 // ---------------------------------------------------------------------------
+// Task 5 (Increment 1) — recipe-IDENTITY gate (structural, jit-level, NO CUDA).
+//
+// `recipe_identity_matches` answers one yes/no: does a candidate's submitted
+// decompose lower to the SAME primitive base map as FUEL's own registered
+// recipe for the op it CLAIMS to implement? It's the cheap, device-free,
+// structural pre-check that pairs with the numeric registered-recipe reference
+// (`reference_from_registered_recipe`, Task 4) — run FIRST, before any GPU
+// work, so a candidate that computes a different function than the op it claims
+// is rejected structurally rather than only numerically.
+// ---------------------------------------------------------------------------
+
+/// Number of leading input `Op::Const` leaves a region needs so `emit_region`'s
+/// positional `inputs[index]` bind resolution can never index out of bounds:
+/// one past the largest bind index the region references (0 for a bind-free
+/// region).
+fn region_arity(region: &fuel_graph::jit::PatternNode) -> usize {
+    region.bind_indices().iter().max().map(|m| *m as usize + 1).unwrap_or(0)
+}
+
+/// Push `arity` uniform placeholder leaves (`Op::Const`, F32 `[1]`, NO storage)
+/// onto `g` and return their ids. Uniform + storage-free is load-bearing: two
+/// independently-built graphs' leaves must hash IDENTICALLY under
+/// [`base_map_hash`](fuel_graph::opt::base_map_hash) (which folds a const's
+/// shape/dtype and silently no-ops on an unpopulated storage slot) for a
+/// cross-graph base-map comparison to be meaningful.
+fn push_placeholder_leaves(
+    g: &mut fuel_graph::Graph,
+    arity: usize,
+) -> Vec<fuel_graph::NodeId> {
+    (0..arity)
+        .map(|_| {
+            g.push(fuel_graph::Node {
+                op: fuel_graph::Op::Const,
+                inputs: vec![],
+                shape: fuel_ir::Shape::from_dims(&[1]),
+                dtype: fuel_ir::DType::F32,
+            })
+        })
+        .collect()
+}
+
+/// Lower a `PatternNode` region to its primitive base map on placeholder leaves
+/// and return its [`base_map_hash`](fuel_graph::opt::base_map_hash). `None` on
+/// any structural failure (a non-re-emittable `OpTag` panics inside
+/// `emit_region` — caught by [`recipe_identity_matches`]'s wrapper — a poisoned
+/// lock, or an empty lowering result); the caller treats `None` as "not a
+/// match" (conservative reject).
+fn base_map_hash_of_region(region: &fuel_graph::jit::PatternNode) -> Option<u64> {
+    let graph = std::sync::Arc::new(std::sync::RwLock::new(fuel_graph::Graph::new()));
+    let sink = {
+        let mut g = graph.write().ok()?;
+        let inputs = push_placeholder_leaves(&mut g, region_arity(region));
+        fuel_graph::runtime_fused::emit_region(&mut g, region, &inputs, &[])
+    };
+    let roots = fuel_graph::opt::lower_to_base_map(&graph, &[sink]);
+    let root = *roots.first()?;
+    let g = graph.read().ok()?;
+    Some(fuel_graph::opt::base_map_hash(&g, root))
+}
+
+/// Lower Fuel's registered recipe for a STATIC `claimed_op` — built as a fresh
+/// `Op::Fused(claimed_op, ..)` over `arity` placeholder leaves, dissolved in
+/// place by [`lower_to_base_map`](fuel_graph::opt::lower_to_base_map) — to its
+/// base map and hash it. Used only when `claimed_op` is NOT a runtime op
+/// (runtime ops resolve via their region, the symmetric
+/// [`base_map_hash_of_region`] path). `arity` mirrors the submitted region's
+/// bind count so the leaf hashes line up; a genuine same-op match has equal
+/// arity, a mismatch merely yields a different base map (conservative
+/// non-match). `None` on any structural failure.
+fn base_map_hash_of_fused(
+    claimed_op: fuel_graph::registry::FusedOpId,
+    arity: usize,
+) -> Option<u64> {
+    let graph = std::sync::Arc::new(std::sync::RwLock::new(fuel_graph::Graph::new()));
+    let fused = {
+        let mut g = graph.write().ok()?;
+        let inputs = push_placeholder_leaves(&mut g, arity);
+        g.push(fuel_graph::Node {
+            op: fuel_graph::Op::Fused(claimed_op, fused_params_for(claimed_op)),
+            inputs,
+            shape: fuel_ir::Shape::from_dims(&[1]),
+            dtype: fuel_ir::DType::F32,
+        })
+    };
+    let roots = fuel_graph::opt::lower_to_base_map(&graph, &[fused]);
+    let root = *roots.first()?;
+    let g = graph.read().ok()?;
+    Some(fuel_graph::opt::base_map_hash(&g, root))
+}
+
+/// Structural recipe-identity: does `submitted` lower to the SAME primitive
+/// base map as Fuel's registered recipe for `claimed_op`? Both sides are
+/// lowered to primitives ([`lower_to_base_map`](fuel_graph::opt::lower_to_base_map))
+/// and compared via the `NodeId`-independent
+/// [`base_map_hash`](fuel_graph::opt::base_map_hash); equal hash ⇒ same op.
+///
+/// The registered recipe resolves two ways, BOTH ending in the same
+/// lower-then-hash comparison: a RUNTIME-registered op via its `PatternNode`
+/// region ([`runtime_region`](fuel_graph::runtime_fused::runtime_region)),
+/// emitted exactly like the submitted side (fully symmetric); a STATIC registry
+/// op via a fresh `Op::Fused` node dissolved by its registered `decompose`.
+///
+/// SCOPE (elementwise-now, by design): the submitted side is materialized with
+/// `emit_region`, which is elementwise-only today, so this fires only for
+/// elementwise-expressible submitted decomposes. A non-elementwise claim (e.g.
+/// rope) carries no submittable `PatternNode` decompose, skips this check
+/// entirely, and rests on the numeric registered-recipe reference (Task 4/6).
+///
+/// CONSERVATIVE FALSE + NEVER-PANIC: any inability to resolve / emit / lower /
+/// hash EITHER side (a missing region, a non-re-emittable op, a poisoned lock,
+/// an arity that would panic `emit`) returns `false` = "not a match". A
+/// candidate whose recipe identity cannot be ESTABLISHED must not silently pass
+/// the gate; rejecting it is the safe direction. The whole body is
+/// `catch_unwind`-wrapped so it never panics even when called directly (no
+/// outer guard) from unit tests.
+fn recipe_identity_matches(
+    claimed_op: fuel_graph::registry::FusedOpId,
+    submitted: &fuel_graph::jit::PatternNode,
+) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(submitted_hash) = base_map_hash_of_region(submitted) else {
+            return false;
+        };
+        let registered_hash = match fuel_graph::runtime_fused::runtime_region(claimed_op) {
+            Some(region) => base_map_hash_of_region(&region),
+            None => base_map_hash_of_fused(claimed_op, region_arity(submitted)),
+        };
+        registered_hash == Some(submitted_hash)
+    }))
+    .unwrap_or(false)
+}
+
+/// The [`FusedOpParams`](fuel_graph::registry::FusedOpParams) to instantiate an
+/// `Op::Fused(id, ..)` with when lowering / realizing Fuel's registered recipe
+/// for `id`.
+///
+/// Increment 1 (the "Rope Oracle") has one static consumer — `FusedOps::ROPE`
+/// → `FusedOpParams::Rope`. Runtime-registered ops lower their region
+/// INDEPENDENT of the param payload (`runtime_lowering_decompose` ignores it),
+/// so the value is irrelevant for them. Every id reachable here today therefore
+/// wants `Rope`; a future STATIC op with real params (e.g. RmsNorm's eps) adds
+/// a match arm keyed on `id`. Anything unmapped falling through to `Rope` at
+/// worst yields a non-matching base map or a wrong realize that fails the
+/// numeric bound — a conservative reject, never a wrong adopt.
+fn fused_params_for(
+    id: fuel_graph::registry::FusedOpId,
+) -> fuel_graph::registry::FusedOpParams {
+    // No per-id branch needed yet — see doc above. `id` is bound for the
+    // future match arm and to document intent.
+    let _ = id;
+    fuel_graph::registry::FusedOpParams::Rope
+}
+
+/// The exact input arity Fuel's registered recipe for `id` positionally indexes
+/// its probe by — so a candidate whose operand count wouldn't satisfy the
+/// recipe's `decompose` is refused (as `probe_arity`) BEFORE it panics indexing
+/// a short `Vec`. `Some(n)` for ops known here (Increment 1: ROPE = 3 → x, cos,
+/// sin); `None` = unknown → the caller falls back to the candidate's own
+/// operand count. Cuda-gated: only the numeric reference path (which needs a
+/// live device) consults it.
+#[cfg(feature = "cuda")]
+fn expected_input_arity(id: fuel_graph::registry::FusedOpId) -> Option<usize> {
+    if id == fuel_graph::registry::FusedOps::ROPE {
+        Some(3)
+    } else {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Task 5 — candidate-kernel verification (`verify_candidate`).
 // ---------------------------------------------------------------------------
 
@@ -362,28 +532,124 @@ fn verify_candidate_impl(
         }
     }
 
-    // (4)+(5) Numeric claims. These need a REFERENCE. Resolution (Task-5;
-    // deviates from the plan's literal "CPU-reference path"):
-    //   - `decompose.is_some()` → realize it on the same probe (`reference_output`).
-    //   - `decompose.is_none()` → there is NO reference. We do NOT attempt a
-    //     CPU-op lookup: `CandidateKernel` carries no `OpKind`, so the plan's
-    //     "look up the CPU kernel for the same op" is infeasible here. Any
-    //     declared numeric claim then fails honestly (bit-stability above stays
-    //     checkable). This branch is defensive — Task 6 requires a decompose to
-    //     adopt at all, so it has no live consumer.
+    // (4)+(5) Numeric claims. These need a REFERENCE. Resolution (Task-5):
+    //   - `claimed_op.is_some()` → verify against FUEL's REGISTERED recipe for
+    //     the claimed op (`reference_from_registered_recipe`) — the candidate
+    //     is checked against what Fuel says the op computes, not against its
+    //     own (possibly-wrong) decompose. When the candidate ALSO carries a
+    //     submitted decompose, a structural recipe-identity pre-check
+    //     (`recipe_identity_matches`) first confirms it lowers to the SAME
+    //     primitive base map as Fuel's recipe (else it's simply not the same
+    //     op — a `recipe_identity` fail, before any GPU work).
+    //   - `claimed_op.is_none()` → the UNCHANGED Spec B path: realize the
+    //     candidate's OWN `decompose` on the same probe (`reference_output`);
+    //     no decompose ⇒ no reference ⇒ the declared numeric claim fails
+    //     honestly (bit-stability above stays checkable). This branch is
+    //     defensive — Task 6 requires a decompose to adopt at all.
     if numeric_declared {
-        let reference = match &cand.decompose {
-            Some(dec) => match crate::jit_ingest_probe::reference_output(
-                dec,
-                &probe,
-                out_dtype,
-                out_shape.clone(),
-                device,
-            ) {
-                Ok(r) => r,
-                Err(e) => {
+        let reference = match cand.claimed_op {
+            Some(claimed) => {
+                // (i) Structural recipe-identity pre-check — only fires when
+                // the candidate carries a submitted (elementwise-expressible)
+                // decompose. A submitted recipe whose primitive base map
+                // differs from Fuel's registered recipe for `claimed` is not
+                // the same op; reject before spending any GPU work.
+                if let Some(dec) = &cand.decompose {
+                    if !recipe_identity_matches(claimed, dec) {
+                        let detail = "submitted recipe's base map differs from Fuel's registered \
+                             recipe for the claimed op — not the same op"
+                            .to_string();
+                        ledger.upsert(make_record(
+                            "recipe_identity",
+                            "fail",
+                            serde_json::json!({ "detail": detail.clone() }),
+                        ));
+                        return (
+                            VerifyVerdict::Fail { claim: "recipe_identity", detail },
+                            ledger.records().to_vec(),
+                        );
+                    }
+                }
+
+                // (ii) Probe-arity guard (Task-4 carry-forward): the registered
+                // recipe's `decompose` indexes the probe POSITIONALLY, so a
+                // probe whose length doesn't match the claimed op's expected
+                // input count would panic that `Vec` indexing (it'd be caught by
+                // the outer `catch_unwind` and surface as a generic `panic`, but
+                // an explicit, named refusal is cleaner). Expected count comes
+                // from the claimed op when known (Increment 1: ROPE = 3);
+                // otherwise fall back to the candidate's own operand count —
+                // probe synthesis is 1:1 with operands, so that fallback only
+                // guards the empty-probe degenerate (documented conservative
+                // choice — no per-op arity table exists in the registry).
+                let expected_inputs =
+                    expected_input_arity(claimed).unwrap_or(cand.operands.len());
+                if probe.len() != expected_inputs {
+                    let detail = format!(
+                        "probe arity {} does not match the claimed op's expected input count {}",
+                        probe.len(),
+                        expected_inputs
+                    );
+                    ledger.upsert(make_record(
+                        "probe_arity",
+                        "fail",
+                        serde_json::json!({ "detail": detail.clone() }),
+                    ));
+                    return (
+                        VerifyVerdict::Fail { claim: "probe_arity", detail },
+                        ledger.records().to_vec(),
+                    );
+                }
+
+                // (iii) Reference = FUEL's registered recipe for `claimed`,
+                // lowered to primitives and realized on the same probe.
+                let params = fused_params_for(claimed);
+                match crate::jit_ingest_probe::reference_from_registered_recipe(
+                    claimed,
+                    &params,
+                    &probe,
+                    out_dtype,
+                    out_shape.clone(),
+                    device,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let claim = first_numeric_claim(&cand.declared);
+                        let detail =
+                            format!("reference realize from registered recipe failed: {e:?}");
+                        ledger.upsert(make_record(
+                            claim,
+                            "fail",
+                            serde_json::json!({ "detail": detail.clone() }),
+                        ));
+                        return (VerifyVerdict::Fail { claim, detail }, ledger.records().to_vec());
+                    }
+                }
+            }
+            None => match &cand.decompose {
+                Some(dec) => match crate::jit_ingest_probe::reference_output(
+                    dec,
+                    &probe,
+                    out_dtype,
+                    out_shape.clone(),
+                    device,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let claim = first_numeric_claim(&cand.declared);
+                        let detail = format!("reference realize from decompose failed: {e:?}");
+                        ledger.upsert(make_record(
+                            claim,
+                            "fail",
+                            serde_json::json!({ "detail": detail.clone() }),
+                        ));
+                        return (VerifyVerdict::Fail { claim, detail }, ledger.records().to_vec());
+                    }
+                },
+                None => {
                     let claim = first_numeric_claim(&cand.declared);
-                    let detail = format!("reference realize from decompose failed: {e:?}");
+                    let detail =
+                        "no decompose: cannot verify numeric claim against a reference".to_string();
                     ledger.upsert(make_record(
                         claim,
                         "fail",
@@ -392,17 +658,6 @@ fn verify_candidate_impl(
                     return (VerifyVerdict::Fail { claim, detail }, ledger.records().to_vec());
                 }
             },
-            None => {
-                let claim = first_numeric_claim(&cand.declared);
-                let detail =
-                    "no decompose: cannot verify numeric claim against a reference".to_string();
-                ledger.upsert(make_record(
-                    claim,
-                    "fail",
-                    serde_json::json!({ "detail": detail.clone() }),
-                ));
-                return (VerifyVerdict::Fail { claim, detail }, ledger.records().to_vec());
-            }
         };
 
         // Check each declared numeric bound in order; FIRST failure returns.
@@ -804,6 +1059,47 @@ mod tests {
             ledger_record: None,
         });
         assert_eq!(rec.0.lock().unwrap().as_slice(), &["max_ulp".to_string()]);
+    }
+
+    /// Task 5 (Increment 1) — recipe-IDENTITY gate, structural, NO GPU
+    /// (`--features jit` alone). Register a small elementwise `Add` region as a
+    /// known runtime op, then assert `recipe_identity_matches`:
+    ///   - TRUE for the SAME region (the submitted decompose that IS the
+    ///     registered recipe lowers to the same primitive base map), and
+    ///   - FALSE for a `Mul` region (a different function → a different base
+    ///     map → not the same op).
+    /// This exercises the genuine lower-both-and-compare path (emit → lower to
+    /// base map → `base_map_hash`), not a stub.
+    #[test]
+    fn recipe_identity_rejects_a_mismatched_submitted_decompose() {
+        use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
+        use fuel_graph::runtime_fused::register_runtime_fused;
+
+        let add_region = PatternNode::Op {
+            op: OpTag::Add,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+        let mul_region = PatternNode::Op {
+            op: OpTag::Mul,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+        };
+
+        // Register the Add region → a known claimed id whose registered recipe
+        // is exactly `add_region`.
+        let claimed_id =
+            register_runtime_fused("test::recipe_identity::add", add_region.clone())
+                .expect("register add region");
+
+        assert!(
+            recipe_identity_matches(claimed_id, &add_region),
+            "the submitted decompose that IS the registered recipe must match"
+        );
+        assert!(
+            !recipe_identity_matches(claimed_id, &mul_region),
+            "a Mul-region decompose must NOT match an Add-region registered recipe"
+        );
     }
 
     /// Spec-B Task-5 acceptance (live GPU): a candidate whose kernel is the
