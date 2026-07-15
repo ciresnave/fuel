@@ -100,12 +100,25 @@ mod tests {
         Ok(())
     }
 
-    fn relu_add() -> PatternNode {
+    /// abs(sub(a, b)) as a PatternNode region. Deliberately NOT the
+    /// `relu(add(a, b))` shape every other adopted-op test in this crate
+    /// uses (`fused_cost`, `runtime_fused_arm`, `runtime_fused_kernels`) —
+    /// `register_runtime_fused`'s dedup index is a process-global sidecar
+    /// shared by every `#[test]` in this binary (see
+    /// `runtime_fused_pathfinder`'s `tanh_mul_region` doc comment for the
+    /// full collision rationale): this file's `dtypes` is inputs-only
+    /// (`operand_dtypes` over `req.operands`, which — like every other
+    /// `CandidateKernel`/`JitRequest.operands` fixture in this crate — lists
+    /// only the op's inputs, not its output), so a shared `relu_add()` slot
+    /// whose winning row came from a 3-element (input+input+output) `dtypes`
+    /// registration elsewhere would leave `adopts_a_synthesized_kernel_end_to_end`
+    /// depending on `#[test]` scheduling order to avoid a mismatched-arity row.
+    fn abs_sub() -> PatternNode {
         PatternNode::Op {
-            op: OpTag::Relu,
+            op: OpTag::Abs,
             attrs: OpAttrs::default(),
             operands: vec![PatternNode::Op {
-                op: OpTag::Add,
+                op: OpTag::Sub,
                 attrs: OpAttrs::default(),
                 operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
             }],
@@ -136,7 +149,7 @@ mod tests {
             if self.decline {
                 JitResponse::Declined { reason: "mock decline".into() }
             } else {
-                JitResponse::Synthesized { entry_point: "mock::relu_add".into() }
+                JitResponse::Synthesized { entry_point: "mock::abs_sub".into() }
             }
         }
         fn take_kernel(&self, _entry_point: &str) -> Option<SynthArtifact> {
@@ -146,7 +159,7 @@ mod tests {
 
     fn req() -> JitRequest {
         JitRequest {
-            region: relu_add(),
+            region: abs_sub(),
             operands: vec![
                 OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256),
                 OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256),
@@ -159,7 +172,7 @@ mod tests {
     #[test]
     fn adopts_a_synthesized_kernel_end_to_end() {
         let synth =
-            MockSynth { decline: false, art: Mutex::new(Some(artifact("mock::relu_add"))) };
+            MockSynth { decline: false, art: Mutex::new(Some(artifact("mock::abs_sub"))) };
         // The load_kernel seam: a real backend loads art.artifact as a module +
         // resolves art.link.symbol; here it just yields a no-op KernelRef.
         let id = adopt_from_response(&synth, &req(), BackendId::Cpu, |_art| {
