@@ -15,6 +15,7 @@
 //! follow-up — a re-emitted node takes its first operand's shape/dtype, exact
 //! for type-preserving same-shape ops and rejected-at-registration otherwise.
 
+use std::collections::HashMap;
 use std::sync::RwLock;
 
 use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
@@ -52,21 +53,131 @@ pub enum RuntimeFusedError {
 
 static RUNTIME_FUSED_OPS: RwLock<Vec<RuntimeFusedOpEntry>> = RwLock::new(Vec::new());
 
-/// Register a runtime fused op for `region`, returning its freshly-allocated
-/// runtime [`FusedOpId`]. Validates **before** allocating that the region's
-/// bind indices form the op's input list and that every op re-emits to
+/// The recipe-identity index for runtime-registered ops: base-map content
+/// hash ([`crate::opt::base_map_hash`]) → the [`FusedOpId`] that first
+/// registered a region hashing to it. A **sibling** to `RUNTIME_FUSED_OPS`,
+/// not a reuse of [`crate::registry::FusedOpRegistry::by_pattern_hash`] —
+/// that field lives on the STATIC catalog (`FusedOpRegistry`, an
+/// `OnceLock`-frozen struct built at process startup for build-time-known
+/// ids `1..RUNTIME_FUSED_BASE`); runtime ops never populate a
+/// `FusedOpRegistry` instance at all, they live in this module's own
+/// `RUNTIME_FUSED_OPS` global with the disjoint `RUNTIME_FUSED_BASE..` id
+/// space, so `by_pattern_hash` is unreachable from here. This index is the
+/// natural home for runtime-region dedup: same lifetime/global-ness as
+/// `RUNTIME_FUSED_OPS`, cleared in the same breath by
+/// `clear_runtime_fused_for_tests`.
+///
+/// `HashMap::new()` isn't `const`, so this can't be a plain
+/// `static … : RwLock<HashMap<..>> = RwLock::new(HashMap::new())` the way
+/// `RUNTIME_FUSED_OPS` is a plain `RwLock::new(Vec::new())` — `Vec::new()`
+/// is `const`, `HashMap::new()` is not. `OnceLock` lazy-inits it instead
+/// (same pattern as `registry.rs`'s `static REGISTRY: OnceLock<..>` and the
+/// per-function `OnceLock` CPU-device singletons in `opt.rs`/`grad.rs`).
+fn hash_index() -> &'static RwLock<HashMap<u64, FusedOpId>> {
+    static IDX: std::sync::OnceLock<RwLock<HashMap<u64, FusedOpId>>> = std::sync::OnceLock::new();
+    IDX.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Push `arity` uniform placeholder leaves (`Op::Const`, F32 `[1]`, no
+/// storage) onto `g` and return their ids. Uniform + storage-free is
+/// load-bearing: two independently-built graphs' leaves must hash
+/// IDENTICALLY under [`crate::opt::base_map_hash`] (which folds a const's
+/// shape/dtype and silently no-ops on an unpopulated storage slot) for the
+/// dedup comparison to be meaningful. Mirrors
+/// `fuel_dispatch::jit_ingest::push_placeholder_leaves` — that crate
+/// depends on this one (not the other way around), so the few-line helper
+/// is duplicated here rather than shared.
+fn push_placeholder_leaves(graph: &mut Graph, arity: usize) -> Vec<NodeId> {
+    (0..arity)
+        .map(|_| {
+            graph.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: fuel_ir::Shape::from_dims(&[1]),
+                dtype: fuel_ir::DType::F32,
+            })
+        })
+        .collect()
+}
+
+/// `region`'s structural-identity hash: emit it onto placeholder leaves
+/// (via [`emit_region`]), lower to the primitive base map
+/// ([`crate::opt::lower_to_base_map`]), hash the result
+/// ([`crate::opt::base_map_hash`]). `None` on any structural failure (a
+/// poisoned lock or an empty lowering result) — the caller
+/// (`register_runtime_fused`) treats `None` as "hash unavailable" and skips
+/// dedup for this registration, never blocking it.
+///
+/// Every caller in this module runs this AFTER `validate_representable`
+/// already passed for the same region, so `emit_region`'s own panic risks
+/// (an unrepresentable `OpTag`, a `Bind` index out of range) are already
+/// ruled out here — `register_runtime_fused` still wraps the call in
+/// `catch_unwind` as the never-panic contract's last-resort guard for
+/// anything this doesn't anticipate.
+fn region_base_map_hash(region: &PatternNode) -> Option<u64> {
+    let n_binds = region.bind_indices().len();
+    let scalars = vec![0.0; count_scalar_slots(region)];
+    let graph: crate::SharedGraph = std::sync::Arc::new(RwLock::new(Graph::new()));
+    let sink = {
+        let mut g = graph.write().ok()?;
+        let inputs = push_placeholder_leaves(&mut g, n_binds);
+        emit_region(&mut g, region, &inputs, &scalars)
+    };
+    let roots = crate::opt::lower_to_base_map(&graph, &[sink]);
+    let root = *roots.first()?;
+    let g = graph.read().ok()?;
+    Some(crate::opt::base_map_hash(&g, root))
+}
+
+/// Register a runtime fused op for `region`, returning its runtime
+/// [`FusedOpId`]. Validates **before** allocating that the region's bind
+/// indices form the op's input list and that every op re-emits to
 /// primitives (totality) — a non-decomposable region is rejected, never
 /// registered.
+///
+/// **Dedup (recipe identity):** a region that is structurally identical
+/// (same [`crate::opt::base_map_hash`] over its primitive lowering) to an
+/// already-registered region resolves to the EXISTING [`FusedOpId`] instead
+/// of minting a duplicate — two calls with the same shape but different
+/// `name`s return the same id, and only the first call's `name`/region is
+/// kept in `RUNTIME_FUSED_OPS`. Never-panic: hashing runs inside
+/// `catch_unwind`; any failure (a poisoned lock, an unanticipated panic) is
+/// treated as "hash unavailable" and simply skips the dedup check —
+/// registration always proceeds to today's allocate-fresh path either way.
 pub fn register_runtime_fused(
     name: impl Into<String>,
     region: PatternNode,
 ) -> Result<FusedOpId, RuntimeFusedError> {
+    let name = name.into();
     let binds = region.bind_indices();
     let n = binds.len() as u8;
     if binds != (0..n).collect::<Vec<_>>() {
         return Err(RuntimeFusedError::NonContiguousBinds(binds));
     }
     validate_representable(&region)?;
+
+    let hash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        region_base_map_hash(&region)
+    }))
+    .unwrap_or(None);
+    if hash.is_none() {
+        eprintln!(
+            "register_runtime_fused: base-map hash unavailable for {name:?}; \
+             registering without dedup (allocate-fresh fallback)"
+        );
+    }
+
+    // Hold the hash index's write lock across the whole check-then-insert
+    // sequence below (not read-then-separately-write) so two concurrent
+    // registrations of the same NEW region can't both miss the lookup and
+    // each mint their own id: the second caller blocks on this lock and,
+    // once it acquires it, observes the first caller's insert.
+    let mut idx = hash_index().write().unwrap();
+    if let Some(h) = hash {
+        if let Some(&existing) = idx.get(&h) {
+            return Ok(existing);
+        }
+    }
 
     // The Vec length under the write lock is the allocator: id = BASE + index,
     // so the index is always `id - BASE` with no allocate/push race.
@@ -76,7 +187,13 @@ pub fn register_runtime_fused(
         return Err(RuntimeFusedError::IdSpaceExhausted);
     }
     let id = FusedOpId(raw as u16);
-    w.push(RuntimeFusedOpEntry { id, name: name.into(), region });
+    w.push(RuntimeFusedOpEntry { id, name, region });
+    drop(w);
+
+    if let Some(h) = hash {
+        idx.insert(h, id);
+    }
+
     Ok(id)
 }
 
@@ -106,19 +223,26 @@ pub fn runtime_entries() -> Vec<RuntimeFusedOpEntry> {
     RUNTIME_FUSED_OPS.read().unwrap().clone()
 }
 
-/// **TEST-ONLY.** Clear the metadata sidecar. Because the Vec length *is* the
-/// id allocator (`id = BASE + index`), clearing restarts allocation — any
-/// kernel sidecar keyed by prior runtime ids MUST be cleared in the same
-/// breath or a reused id resolves a stale kernel
-/// (`fuel_dispatch::runtime_fused_kernels::clear_runtime_fused_for_tests`
-/// does both; call that one, not this, from dispatch-level tests). Adopting
-/// tests share one process, so callers must also serialize with any other
-/// adopting test (dd-shapes coordination, 2026-07-08: the hook alone races).
-/// `#[doc(hidden)] pub` rather than `#[cfg(test)]` because adopting tests
-/// live in downstream crates, which compile this crate without `cfg(test)`.
+/// **TEST-ONLY.** Clear the metadata sidecar AND the recipe-identity
+/// `hash_index` in the same breath. Because the Vec length *is* the id
+/// allocator (`id = BASE + index`), clearing restarts allocation — any
+/// sidecar keyed by prior runtime ids MUST be cleared alongside it or a
+/// reused id resolves stale data. This was already true for
+/// `fuel_dispatch::runtime_fused_kernels::clear_runtime_fused_for_tests`'s
+/// kernel sidecar (call that one, not this, from dispatch-level tests) and
+/// is now ALSO true for `hash_index`: leaving a stale `hash → old_id`
+/// entry after a clear would let a later registration's dedup lookup
+/// return an id that no longer names the region it was hashed from (the
+/// slot at that index now holds whatever the NEXT registration after the
+/// clear pushed there). Adopting tests share one process, so callers must
+/// also serialize with any other adopting test (dd-shapes coordination,
+/// 2026-07-08: the hook alone races). `#[doc(hidden)] pub` rather than
+/// `#[cfg(test)]` because adopting tests live in downstream crates, which
+/// compile this crate without `cfg(test)`.
 #[doc(hidden)]
 pub fn clear_runtime_fused_for_tests() {
     RUNTIME_FUSED_OPS.write().unwrap().clear();
+    hash_index().write().unwrap().clear();
 }
 
 // ---- the region → primitive re-emit (the runtime op's `decompose`) ---------
@@ -341,12 +465,48 @@ mod tests {
         }
     }
 
+    /// Structurally DISTINCT from `relu_add_region()` (`Mul` inner op, not
+    /// `Add`) — used only by
+    /// `register_allocates_a_runtime_id_and_keeps_the_region`, whose
+    /// assertion on `runtime_name` needs a region no OTHER test in this
+    /// module also registers. Since Task 7's dedup (`register_runtime_fused`
+    /// above) resolves any two structurally-identical regions registered
+    /// anywhere in the process to the SAME id — and `RUNTIME_FUSED_OPS` /
+    /// `hash_index` are process-global statics shared by every `#[test]` in
+    /// this binary, which `cargo test` runs concurrently by default — a
+    /// `runtime_name` assertion tied to one specific registration call would
+    /// be racy against any other test using `relu_add_region()` (both
+    /// `decompose_region_re_emits_relu_add` and
+    /// `register_runtime_fused_dedups_structurally_identical_regions` do):
+    /// whichever call reaches the shared hash slot FIRST wins the name, and
+    /// thread scheduling decides which that is. Those other two tests never
+    /// assert on `runtime_name`, so they're unaffected by dedup either way;
+    /// this one needs its own hash to stay deterministic.
+    fn relu_mul_region() -> PatternNode {
+        PatternNode::Op {
+            op: OpTag::Relu,
+            attrs: OpAttrs::default(),
+            operands: vec![PatternNode::Op {
+                op: OpTag::Mul,
+                attrs: OpAttrs::default(),
+                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            }],
+        }
+    }
+
     #[test]
     fn register_allocates_a_runtime_id_and_keeps_the_region() {
-        let id = register_runtime_fused("test::relu_add", relu_add_region()).unwrap();
+        let id = register_runtime_fused("test::relu_mul", relu_mul_region()).unwrap();
         assert!(id.is_runtime(), "allocated id is in the runtime range");
-        assert_eq!(runtime_region(id), Some(relu_add_region()));
-        assert_eq!(runtime_name(id).as_deref(), Some("test::relu_add"));
+        assert_eq!(runtime_region(id), Some(relu_mul_region()));
+        assert_eq!(runtime_name(id).as_deref(), Some("test::relu_mul"));
+    }
+
+    #[test]
+    fn register_runtime_fused_dedups_structurally_identical_regions() {
+        let id1 = register_runtime_fused("dedup::a", relu_add_region()).unwrap();
+        let id2 = register_runtime_fused("dedup::b", relu_add_region()).unwrap(); // same region, different name
+        assert_eq!(id1, id2, "an identical region must resolve to the same FusedOpId, not a duplicate");
     }
 
     #[test]
