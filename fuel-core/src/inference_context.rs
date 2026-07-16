@@ -380,6 +380,88 @@ impl KvCache {
     }
 }
 
+/// Allocate `n_layers` pairs of zero-initialized `[k, n_kv_heads,
+/// max_seq_len, head_dim]` K/V buffers on `device` with `dtype` — the shared
+/// batch-slot KV buffer for the multi-session batched decode arm (serving
+/// Increment 1, C3). Same `Op::Alloc`→`Op::ZeroFill` emission +
+/// `PipelinedExecutor::realize_many` pattern as [`KvCache::with_capacity`],
+/// with the leading dim `k` (the batch slot) instead of `1`. Returns the
+/// per-layer `(K_arc, V_arc)` pairs; the caller binds them into a batched
+/// decode graph.
+///
+/// Returns `Err` if any allocation fails (fail-on-OOM, spec #6).
+pub(crate) fn alloc_batched_kv(
+    k: usize,
+    n_layers: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
+    max_seq_len: usize,
+    dtype: DType,
+    device: &Device,
+) -> Result<Vec<(Arc<RwLock<Storage>>, Arc<RwLock<Storage>>)>> {
+    let shape = Shape::from_dims(&[k, n_kv_heads, max_seq_len, head_dim]);
+    let target_loc = device.location();
+
+    let graph = Arc::new(RwLock::new(Graph::new()));
+    let mut cache = StorageCache::new();
+    if let Some(seed) = crate::pipelined_bridge::device_seed_storage(device)? {
+        let anchor_id = {
+            let mut g = graph
+                .write()
+                .map_err(|_| Error::Msg("graph lock poisoned during alloc_batched_kv".into()).bt())?;
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[4]),
+                dtype: DType::U8,
+            })
+        };
+        cache.insert(anchor_id, Arc::new(RwLock::new(seed)));
+    }
+
+    let zero_fill_ids: Vec<NodeId> = {
+        let mut g = graph
+            .write()
+            .map_err(|_| Error::Msg("graph lock poisoned during alloc_batched_kv".into()).bt())?;
+        (0..(2 * n_layers))
+            .map(|_| {
+                let alloc_id = g.push(Node {
+                    op: Op::Alloc { target: target_loc },
+                    inputs: vec![],
+                    shape: shape.clone(),
+                    dtype,
+                });
+                g.push(Node {
+                    op: Op::ZeroFill,
+                    inputs: vec![alloc_id],
+                    shape: shape.clone(),
+                    dtype,
+                })
+            })
+            .collect()
+    };
+
+    let realized =
+        PipelinedExecutor::realize_many(Arc::clone(&graph), &zero_fill_ids, cache)?;
+    if realized.len() != 2 * n_layers {
+        return Err(Error::Msg(format!(
+            "alloc_batched_kv: realize_many returned {} storages for {} Op::ZeroFill targets",
+            realized.len(),
+            2 * n_layers,
+        ))
+        .bt());
+    }
+
+    let mut it = realized.into_iter();
+    let mut pairs = Vec::with_capacity(n_layers);
+    for _ in 0..n_layers {
+        let (k_arc, _) = it.next().expect("checked above");
+        let (v_arc, _) = it.next().expect("checked above");
+        pairs.push((k_arc, v_arc));
+    }
+    Ok(pairs)
+}
+
 // ===========================================================================
 // LatentKvCache — N-slot generalization of KvCache (MLA increment 4)
 // ===========================================================================
