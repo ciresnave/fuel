@@ -23,6 +23,16 @@ fn need<'a>(shapes: &'a [Shape], n: usize, op: &Op) -> Result<&'a [Shape], Error
 /// params off the `Op`, not off `OpAttrs`. Never panics: a malformed op/shape,
 /// a leaf/bookkeeping op with no pure inference, or a higher-order/basis-gap op
 /// is an honest `Err`.
+///
+/// M-2: on the **emit** path this fn is intentionally **more permissive than the
+/// `Tensor` builders** — it computes the output shape/dtype but does NOT re-run
+/// every builder-side precondition (broadcast-compatibility for `BroadcastTo`/
+/// `ReduceSumTo`/`ReduceMaxTo`, the size-1 check for `Squeeze`, the elem-count
+/// check for `Reshape`, duplicate-axis for `Permute`). The builders validate
+/// those *before* calling in (Task 6), and `emit` re-emits **already-validated
+/// recipes**, so the derived-shape math is the only thing needed here. It still
+/// range-checks the arithmetic it performs (dim bounds, matmul inner dim, …) so
+/// a malformed authored region is an `Err`, never an out-of-bounds panic.
 pub fn primitive_shape(
     op: &Op,
     input_shapes: &[Shape],
