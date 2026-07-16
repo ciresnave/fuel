@@ -452,11 +452,19 @@ pub(crate) fn alloc_batched_kv(
         .bt());
     }
 
+    // Never-panic: the length is checked above, but the production path must
+    // not `.expect()` — surface a typed `Err` if the iterator is short.
     let mut it = realized.into_iter();
     let mut pairs = Vec::with_capacity(n_layers);
+    let short = || {
+        Error::Msg(
+            "alloc_batched_kv: realize_many yielded fewer storages than expected".to_string(),
+        )
+        .bt()
+    };
     for _ in 0..n_layers {
-        let (k_arc, _) = it.next().expect("checked above");
-        let (v_arc, _) = it.next().expect("checked above");
+        let (k_arc, _) = it.next().ok_or_else(short)?;
+        let (v_arc, _) = it.next().ok_or_else(short)?;
         pairs.push((k_arc, v_arc));
     }
     Ok(pairs)

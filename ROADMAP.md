@@ -128,7 +128,9 @@ nowhere; now captured so they are not forgotten):
   serving substrate shipped** (`fuel-core/src/multi_session.rs`): host-side `SessionState`
   + `SessionScheduler` (serial arm = byte-exact oracle, T1 no-cross-session-contamination)
   + a live `BatchedDecode` arm (shared `[K,…]` KV buffer + `flash_decoding` batch, lockstep-
-  only, byte-equal to serial on CPU; the CUDA bf16 flash-arm parity test is local/`#[ignore]`).
+  only; a separate batch=K plan-once graph, so ε-close (logits within 1e-4) and token-identical
+  to serial on the tested CPU shapes, not bit-exact; the CUDA bf16 flash-arm parity test is
+  local/`#[ignore]`).
   No IR op, no kernel — host orchestration over the existing persistent-decode machinery.
   KV-content sharing/splice + the block-pool allocator stay Increment 2+.
 - **GRPO** + **RLVR** verifiable post-training — greenfield on the existing `fuel-training`

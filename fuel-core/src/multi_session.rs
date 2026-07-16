@@ -24,7 +24,10 @@
 //! - [`BatchedDecode`] (C3) — the live batched-decode arm: a Fuel-internal
 //!   shared `[K, n_kv_heads, capacity, head_dim]` batch-slot KV buffer +
 //!   `flash_decoding` batch wiring, lockstep-only (a single shared `k_len`, so
-//!   sessions batch only at equal `cached_len`), byte-equal to the serial arm.
+//!   sessions batch only at equal `cached_len`). It is a SEPARATE batch=K
+//!   plan-once graph (different reduction order than the batch=1 serial arm),
+//!   so it is **ε-close** (logits within 1e-4) and **token-identical** to the
+//!   serial arm on tested shapes — not bit-exact.
 //!
 //! Llama-first but trait-shaped ([`ModelDims`]): `PhiModel`'s identical
 //! four-local quartet is a later drop-in.
@@ -269,7 +272,9 @@ impl BatchedDecode {
         }
 
         // Live batched arm: one batch=K decode step over a shared [K,..] KV
-        // buffer, byte-equal to K serial steps.
+        // buffer — ε-close (logits within 1e-4) and token-identical to K serial
+        // steps on tested shapes (a SEPARATE batch=K plan-once graph, so not
+        // bit-exact; see build_batched_decode_logits).
         //
         // Each session's last token is the decode input. An empty token
         // history is impossible after a validated prefill, but the production
@@ -288,9 +293,12 @@ impl BatchedDecode {
             }
         };
         // Borrow each session's own KvCache. `build_batched_decode_logits`
-        // copies-in, decodes, copies-out, and bumps these caches only after the
-        // decode realize succeeds (all-or-nothing commit); on any Err no cache
-        // is mutated.
+        // copies-in, decodes, then copies-out + bumps these caches only after
+        // the decode realize succeeds. Session KV is private (T1), so a copy-out
+        // fault can only leave the FAULTING batch's own caches partially
+        // rewritten — and on any `Err` the scheduler's `advance_batched` Err arm
+        // finishes every batch member, so no partial cache is ever decoded again
+        // (all-or-nothing; see build_batched_decode_logits step 4's WARNING).
         let mut caches: Vec<&mut crate::inference_context::KvCache> =
             sessions.iter_mut().map(|s| &mut s.cache).collect();
         let rows = model.build_batched_decode_logits(&mut caches, &last_tokens, device, dtype)?;
@@ -1058,6 +1066,105 @@ mod tests {
                 assert!(close(&rows[1], &sb), "batched row 1 != serial B (bf16 ε={eps})");
             }
             BatchOutcome::NotBatchable => panic!("uniform bf16 sessions must batch"),
+        }
+    }
+
+    // Fix C — build_batched_decode_logits must reject a cache whose dtype
+    // disagrees with the requested (scheduler) dtype, rather than silently
+    // binding its bytes to a different-width placeholder (reinterpretation).
+    #[test]
+    fn build_batched_decode_logits_rejects_dtype_mismatch() {
+        use crate::inference_context::KvCache;
+        let model = tiny_model(9999);
+        let cfg = &model.config;
+        let msl = 4;
+        // Both caches BF16 (uniform among themselves in cached_len/msl/n_layers)
+        // but the requested dtype is F32 → a byte-reinterpretation hazard.
+        let mut c0 = KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, DType::BF16, &Device::cpu()).unwrap();
+        let mut c1 = KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, DType::BF16, &Device::cpu()).unwrap();
+        let mut caches: Vec<&mut KvCache> = vec![&mut c0, &mut c1];
+        let last_tokens = [1u32, 2];
+        let err = model
+            .build_batched_decode_logits(&mut caches, &last_tokens, &Device::cpu(), DType::F32)
+            .expect_err("dtype mismatch (cache BF16 vs requested F32) must Err");
+        let msg = err.to_string();
+        // Require the EARLY validation error (fail-fast at call time), not a
+        // deep byte-width error surfaced later inside realize.
+        assert!(
+            msg.contains("requested dtype"),
+            "expected the early dtype-validation error, got: {msg}"
+        );
+    }
+
+    // Coverage E — serial↔batched transition: K=3 under Batched{max_batch:2}
+    // with STAGGERED eos. A session that is overflow-serial in early steps
+    // shifts INTO the batch after an earlier session finishes. Assert parity
+    // (token-identical / ε-close on tokens) vs 3 standalone generate runs.
+    #[test]
+    fn batched_serial_transition_k3_max_batch_2_staggered_eos() {
+        let model = tiny_model(9999);
+        // Distinct prompts; distinct eos ids so the three sessions finish at
+        // different steps (staggered), forcing the overflow-serial session to
+        // migrate into the batch as earlier ones retire.
+        let pa = [1u32, 2, 3];
+        let pb = [4u32, 5];
+        let pc = [6u32, 7, 8, 9];
+        let cases: [(&[u32], Option<u32>, usize); 3] =
+            [(&pa, Some(5), 8), (&pb, Some(7), 8), (&pc, None, 8)];
+
+        let solo: Vec<Vec<u32>> = cases
+            .iter()
+            .map(|(p, eos, mn)| {
+                model
+                    .generate_with_kv_context(p, *mn, SamplingStrategy::Greedy, *eos, &Device::cpu(), DType::F32)
+                    .unwrap()
+            })
+            .collect();
+
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::Batched { max_batch: 2 });
+        let ids: Vec<SessionId> = cases
+            .iter()
+            .map(|(p, eos, mn)| sched.add_session(p, SamplingStrategy::Greedy, *eos, *mn).unwrap())
+            .collect();
+        let out = sched.run_to_completion().unwrap();
+
+        for (i, id) in ids.iter().enumerate() {
+            let got = out.iter().find(|(x, _)| x == id).unwrap().1.clone();
+            assert_eq!(got, solo[i], "session {i} (K=3, max_batch=2 transition) != standalone");
+        }
+    }
+
+    // Coverage F — K>2 AND a GQA config (n_kv_heads < n_heads). Exercises slot
+    // indexing beyond K=2 and the GQA-batched attention head layout.
+    #[test]
+    fn batched_parity_k3_gqa() {
+        // GQA: 4 query heads, 2 kv heads (head_dim 4 → dim 16).
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 16, n_layers: 2, n_heads: 4,
+            n_kv_heads: 2, head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        assert!(cfg.n_kv_heads < cfg.n_heads, "must be a GQA config");
+        let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 4242) };
+        // Same prompt LENGTH across the 3 sessions so they stay lockstep
+        // (equal cached_len) and the batched arm is used every step.
+        let prompts: [[u32; 3]; 3] = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
+        let max_new = 6;
+
+        let solo: Vec<Vec<u32>> = prompts
+            .iter()
+            .map(|p| model.generate_with_kv_context(p, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap())
+            .collect();
+
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::Batched { max_batch: 4 });
+        let ids: Vec<SessionId> = prompts
+            .iter()
+            .map(|p| sched.add_session(p, SamplingStrategy::Greedy, None, max_new).unwrap())
+            .collect();
+        let out = sched.run_to_completion().unwrap();
+
+        for (i, id) in ids.iter().enumerate() {
+            let got = out.iter().find(|(x, _)| x == id).unwrap().1.clone();
+            assert_eq!(got, solo[i], "GQA K=3 session {i} != standalone");
         }
     }
 }
