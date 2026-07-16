@@ -248,13 +248,22 @@ pub fn clear_runtime_fused_for_tests() {
 // ---- the region → primitive re-emit (the runtime op's `decompose`) ---------
 
 /// Project a region [`OpTag`] (+ its [`OpAttrs`]) back to a primitive [`Op`].
-/// The inverse of `jit::op_to_tag`, over the **v1 re-emit vocabulary**:
-/// type-preserving elementwise + scalar-param ops. Returns `None` for ops that
-/// need structural params or change dtype (comparisons, `Where`, reductions,
-/// `MatMul`, shape/index ops) — those are rejected at registration so this is
-/// total for every registered region.
+/// The inverse of `jit::op_to_tag`, over the **full first-order re-emit
+/// vocabulary** (Convergence Increment A): every non-basis-gap, non-`Scan`,
+/// non-`Fused` op — elementwise, comparison, `Where`, `Cast`, shape/layout
+/// (Transpose/Permute/Reshape/BroadcastTo/(Un)squeeze/Slice/Concat/Flip/Roll/
+/// Pad/Triu/Tril), reductions (SumDim/MeanDim/ReduceSumTo/ReduceMaxTo/CumSum/
+/// SumAll/MaxAll/MinAll/MeanAll), `MatMul`, `Iota`, and indexing (IndexSelect/
+/// Gather/IndexAdd/ScatterAdd). Structural params are decoded from the
+/// (extended) [`OpAttrs`]. Returns `None` (an honest miss, rejected at
+/// registration) for ops with no first-order re-emission: `PowI`/`Clamp`
+/// (no i32/two-scalar carrier), `MaskedFill` (no `Scalar::from_f64`
+/// reconstructor yet), fused/basis-gap tags, and any tag whose required attrs
+/// are unset (e.g. `Iota` with no `target_shape`).
 fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
     use OpTag as T;
+    use fuel_ir::{DType, Shape};
+    use std::str::FromStr;
     Some(match tag {
         T::Add => Op::Add,
         T::Sub => Op::Sub,
@@ -290,8 +299,83 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         // live-value substitution via the `extract:` path is a follow-up).
         T::AddScalar => Op::AddScalar(*attrs.scalars.first()?),
         T::MulScalar => Op::MulScalar(*attrs.scalars.first()?),
+
+        // --- Convergence Increment A: the full first-order set ---
+        // Comparison (dtype→U8 handled by primitive_shape, not here).
+        T::Equal => Op::Equal,
+        T::Ne => Op::Ne,
+        T::Lt => Op::Lt,
+        T::Le => Op::Le,
+        T::Gt => Op::Gt,
+        T::Ge => Op::Ge,
+        // Ternary select.
+        T::Where => Op::Where,
+        // Dtype-changing: target dtype rides `cast_dtype` (the stable name).
+        T::Cast => Op::Cast(DType::from_str(attrs.cast_dtype.as_deref()?).ok()?),
+        // MatMul + last-dim log-softmax (no structural params).
+        T::MatMul => Op::MatMul,
+        T::LogSoftmaxLastDim => Op::LogSoftmaxLastDim,
+        // Shape / layout.
+        T::Transpose => Op::Transpose,
+        T::Permute => Op::Permute(attrs.perm.iter().map(|&x| x as usize).collect()),
+        T::Reshape => Op::Reshape(shape_from_attr(attrs)?),
+        T::BroadcastTo => Op::BroadcastTo(shape_from_attr(attrs)?),
+        T::ReduceSumTo => Op::ReduceSumTo(shape_from_attr(attrs)?),
+        T::ReduceMaxTo => Op::ReduceMaxTo(shape_from_attr(attrs)?),
+        T::Unsqueeze => Op::Unsqueeze { dim: *attrs.dims.first()? as usize },
+        T::Squeeze => Op::Squeeze { dim: *attrs.dims.first()? as usize },
+        T::Slice => Op::Slice {
+            dim: attrs.axis? as usize,
+            start: attrs.slice_start? as usize,
+            len: attrs.slice_len? as usize,
+        },
+        T::Concat => Op::Concat { dim: attrs.axis? as usize },
+        T::Flip => Op::Flip { dim: attrs.axis? as usize },
+        T::Roll => Op::Roll { dim: attrs.axis? as usize, shift: attrs.roll_shift? },
+        T::Pad => Op::Pad {
+            padding: attrs.pad_amounts.iter().map(|&(b, e)| (b as usize, e as usize)).collect(),
+            mode: match attrs.pad_mode? {
+                0 => crate::PadMode::Constant,
+                1 => crate::PadMode::Reflect,
+                2 => crate::PadMode::Replicate,
+                _ => return None,
+            },
+            value: attrs.pad_value.unwrap_or(0.0),
+        },
+        T::Triu => Op::Triu { diagonal: attrs.axis? },
+        T::Tril => Op::Tril { diagonal: attrs.axis? },
+        // Reductions (dim rides `axis`; keepdim reductions ride `target_shape`).
+        T::SumDim => Op::SumDim(attrs.axis? as usize),
+        T::MeanDim => Op::MeanDim(attrs.axis? as usize),
+        T::SumAll => Op::SumAll,
+        T::MaxAll => Op::MaxAll,
+        T::MinAll => Op::MinAll,
+        T::MeanAll => Op::MeanAll,
+        T::CumSum => Op::CumSum { dim: attrs.axis? as usize },
+        // Value source leaf (len rides `target_shape` as a 1-element shape).
+        T::Iota => Op::Iota { len: *attrs.target_shape.first()? as usize },
+        // Indexing (dim rides `axis`).
+        T::IndexSelect => Op::IndexSelect { dim: attrs.axis? as usize },
+        T::Gather => Op::Gather { dim: attrs.axis? as usize },
+        T::IndexAdd => Op::IndexAdd { dim: attrs.axis? as usize },
+        T::ScatterAdd => Op::ScatterAdd { dim: attrs.axis? as usize },
+
+        // Honest misses (rejected at registration): PowI/Clamp (no carrier),
+        // MaskedFill (no Scalar::from_f64 reconstructor yet), and any tag whose
+        // required attrs are unset or that is added to OpTag later.
         _ => return None,
     })
+}
+
+/// Decode a target [`fuel_ir::Shape`] from `attrs.target_shape` (the shared
+/// LOGICAL-shape carrier for Reshape/BroadcastTo/ReduceSumTo/ReduceMaxTo).
+/// `None` for an unset (empty) target — an honest miss, not a rank-0 shape.
+fn shape_from_attr(attrs: &OpAttrs) -> Option<fuel_ir::Shape> {
+    if attrs.target_shape.is_empty() {
+        return None;
+    }
+    let dims: Vec<usize> = attrs.target_shape.iter().map(|&d| d as usize).collect();
+    Some(fuel_ir::Shape::from_dims(&dims))
 }
 
 /// How many scalar values `tag` consumes from `attrs.scalars` when re-emitted.
@@ -525,16 +609,78 @@ mod tests {
 
     #[test]
     fn register_rejects_unrepresentable_region() {
-        // MatMul has no v1 primitive re-emission.
+        // Convergence A made MatMul/shape/reduction ops representable; PowI
+        // stays an honest miss (no i32-exponent carrier in OpAttrs), so it is
+        // the current canonical still-unrepresentable tag.
         let region = PatternNode::Op {
-            op: OpTag::MatMul,
+            op: OpTag::PowI,
             attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            operands: vec![PatternNode::Bind { index: 0 }],
         };
         assert_eq!(
             register_runtime_fused("bad", region),
-            Err(RuntimeFusedError::UnRepresentable(OpTag::MatMul))
+            Err(RuntimeFusedError::UnRepresentable(OpTag::PowI))
         );
+    }
+
+    #[test]
+    fn tag_to_op_reconstructs_shape_changing_ops() {
+        use fuel_ir::Shape;
+        // Slice{dim:1,start:2,len:3}
+        let attrs = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..OpAttrs::default() };
+        assert!(matches!(super::tag_to_op(OpTag::Slice, &attrs), Some(Op::Slice { dim: 1, start: 2, len: 3 })));
+        // Concat{dim:0}
+        let attrs = OpAttrs { axis: Some(0), ..OpAttrs::default() };
+        assert!(matches!(super::tag_to_op(OpTag::Concat, &attrs), Some(Op::Concat { dim: 0 })));
+        // Reshape([6])
+        let attrs = OpAttrs { target_shape: vec![6], ..OpAttrs::default() };
+        assert_eq!(super::tag_to_op(OpTag::Reshape, &attrs), Some(Op::Reshape(Shape::from_dims(&[6]))));
+        // BroadcastTo([2,3])
+        let attrs = OpAttrs { target_shape: vec![2, 3], ..OpAttrs::default() };
+        assert_eq!(super::tag_to_op(OpTag::BroadcastTo, &attrs), Some(Op::BroadcastTo(Shape::from_dims(&[2, 3]))));
+        // ReduceMaxTo([2,1])
+        let attrs = OpAttrs { target_shape: vec![2, 1], ..OpAttrs::default() };
+        assert_eq!(super::tag_to_op(OpTag::ReduceMaxTo, &attrs), Some(Op::ReduceMaxTo(Shape::from_dims(&[2, 1]))));
+    }
+
+    #[test]
+    fn tag_to_op_reconstructs_reductions_dtype_and_matmul() {
+        use fuel_ir::DType;
+        assert!(matches!(super::tag_to_op(OpTag::MeanDim, &OpAttrs { axis: Some(1), ..OpAttrs::default() }), Some(Op::MeanDim(1))));
+        assert!(matches!(super::tag_to_op(OpTag::MatMul, &OpAttrs::default()), Some(Op::MatMul)));
+        // Cast target dtype via name.
+        let attrs = OpAttrs { cast_dtype: Some("f16".into()), ..OpAttrs::default() };
+        assert_eq!(super::tag_to_op(OpTag::Cast, &attrs), Some(Op::Cast(DType::F16)));
+        // Comparison.
+        assert!(matches!(super::tag_to_op(OpTag::Lt, &OpAttrs::default()), Some(Op::Lt)));
+    }
+
+    #[test]
+    fn tag_to_op_still_rejects_basis_gap_and_scan() {
+        // qmatmul/conv flow through Op::Fused (no OpTag); Scan is higher-order.
+        assert_eq!(super::tag_to_op(OpTag::Iota, &OpAttrs::default()), None, "Iota needs a len (target_shape) — empty attrs is a miss");
+    }
+
+    #[test]
+    fn validate_representable_now_accepts_a_slice_region() {
+        // Region: Concat{0}(Neg(Slice{...}(bind0)), bind0) — the rope rotate-half shape.
+        let region = PatternNode::Op {
+            op: OpTag::Concat,
+            attrs: OpAttrs { axis: Some(0), ..OpAttrs::default() },
+            operands: vec![
+                PatternNode::Op {
+                    op: OpTag::Neg,
+                    attrs: OpAttrs::default(),
+                    operands: vec![PatternNode::Op {
+                        op: OpTag::Slice,
+                        attrs: OpAttrs { axis: Some(0), slice_start: Some(0), slice_len: Some(1), ..OpAttrs::default() },
+                        operands: vec![PatternNode::Bind { index: 0 }],
+                    }],
+                },
+                PatternNode::Bind { index: 0 },
+            ],
+        };
+        assert!(super::validate_representable(&region).is_ok(), "slice/concat region must now validate");
     }
 
     #[test]
