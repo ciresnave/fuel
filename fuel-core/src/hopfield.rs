@@ -180,4 +180,37 @@ mod tests {
         assert!(count < 20, "early-exit must stop before bound (converged in {count} < 20 iters)");
         assert!(count >= 1);
     }
+
+    #[test]
+    fn hopfield_gradient_matches_finite_difference() {
+        let dev = Device::cpu();
+        // Forward loss L(X) = sum(unroll(retrieve(q, X, beta, eps, 3))), FD over X[0].
+        let build = |x_vals: &[f32]| -> (std::sync::Arc<std::sync::RwLock<fuel_graph::Graph>>, fuel_graph::Tensor, fuel_graph::Tensor) {
+            let x = Tensor::from_f32(x_vals.to_vec(), Shape::from_dims(&[2, 3]), &*dev.as_dyn());
+            let q = Tensor::from_existing(x.graph().clone(), x.id()).const_f32_like(vec![0.6, 0.3, 0.1], Shape::from_dims(&[1, 3]));
+            let r = crate::hopfield::hopfield_retrieve(&q, &x, 4.0, 1e-6, 3).expect("retrieve");
+            (x.graph().clone(), x, r)
+        };
+        let x0 = vec![1.0f32, 0.0, 0.0,  0.0, 1.0, 0.0];
+        // Forward via unroll+realize+sum.
+        let fwd = |x_vals: &[f32]| -> f32 {
+            let (g, _x, r) = build(x_vals);
+            let scan_id = { let gr = g.read().unwrap(); gr.node(r.id()).inputs[0] };
+            let bound = { let gr = g.read().unwrap(); match gr.node(scan_id).op { fuel_graph::Op::Scan { bound, .. } => bound, _ => unreachable!() } };
+            let carry = { let mut gw = g.write().unwrap(); fuel_graph::scan::unroll_scan(&mut gw, scan_id, bound).expect("unroll").0 };
+            crate::pipelined_bridge::realize_one_as::<f32>(&g, carry, &dev).expect("realize").iter().sum()
+        };
+        // Autograd at x0: loss = sum(retrieval). Build a scalar loss node, backward, grad w.r.t X.
+        let (g, x, r) = build(&x0);
+        let loss = r.reduce_sum_to(fuel_ir::Shape::from_dims(&[1, 1])); // sum -> scalar
+        let grads = loss.backward();
+        let g_x_id = grads.get(&x).expect("grad X").id();
+        let g_x = crate::pipelined_bridge::realize_one_as::<f32>(&g, g_x_id, &dev).expect("realize gradX");
+        // Central FD on X[0].
+        let h = 1e-3f32;
+        let mut xp = x0.clone(); xp[0] += h;
+        let mut xm = x0.clone(); xm[0] -= h;
+        let fd0 = (fwd(&xp) - fwd(&xm)) / (2.0*h);
+        assert!((g_x[0] - fd0).abs() < 5e-2, "hopfield dL/dX[0]: autograd {} vs FD {fd0}", g_x[0]);
+    }
 }
