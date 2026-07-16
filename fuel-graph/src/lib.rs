@@ -1110,7 +1110,68 @@ pub enum Op {
     /// fallible paths (shape inference, autograd, lowering) return a
     /// descriptive `Err` rather than panicking.
     Branch { reconverge_at: NodeId },
+
+    /// Fuel's first sub-graph-carrying primitive: a bounded `lax.scan`-shaped
+    /// recurrence `scan(body, init_carry, xs, consts) -> (final_carry, ys)`.
+    ///
+    /// The body is encoded in this node's own `inputs`, exactly like
+    /// [`Op::Branch`]'s arms. Node layout:
+    /// `inputs = [ init_carry, xs_0..xs_{n_xs-1}, consts..., body_new_carry, body_y ]`
+    /// — the two body-exit NodeIds are the LAST two inputs, so `base_map_hash`,
+    /// `topo_order_multi`, and reachability see the body for free. The body
+    /// references `Op::ScanPlaceholder{Carry,0}` for the per-step carry and
+    /// `Op::ScanPlaceholder{Elem,i}` for the per-step slice of `xs[i]`; consts
+    /// are referenced by real NodeId. Single carry tensor in v1.
+    ///
+    /// An optimization/verification-time node: it never reaches the executor
+    /// un-lowered (the SSM decompose emits it, but the executor dispatches the
+    /// fused op to its kernel; `unroll_scan` materializes primitives on demand
+    /// for the verify oracle / kernel-absent fallback). No `LoweringRule`
+    /// matches it — it is a terminal in the base map, which is correct: it IS
+    /// the primitive. Always a 2-slot bundle (slot 0 = stacked `ys`, slot 1 =
+    /// final carry). `early_exit` is Phase-2 (see [`ScanPredicate`]).
+    Scan {
+        n_xs: usize,
+        bound: usize,
+        emit: ScanEmit,
+        early_exit: Option<ScanPredicate>,
+    },
+
+    /// Inert body-hole leaf for [`Op::Scan`] (no inputs). Substituted by
+    /// `unroll_scan` per step. Never directly realized.
+    ScanPlaceholder {
+        role: ScanRole,
+        index: usize,
+    },
 }
+
+/// What a [`Op::Scan`] emits. `All` stacks the per-step `body_y` over the
+/// bound (slot 0); `Final` returns only the final carry (slot 1). The op
+/// always produces the 2-slot bundle; `emit` selects the builder's default
+/// projection. (`Op::Reduce` is `Op::Scan { emit: Final }` conceptually —
+/// no separate variant.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanEmit {
+    All,
+    Final,
+}
+
+/// Which body hole a [`Op::ScanPlaceholder`] stands in for. `Carry` is the
+/// per-step recurrent carry (always index 0 in v1's single-carry model);
+/// `Elem` is the per-step slice of `xs[index]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanRole {
+    Carry,
+    Elem,
+}
+
+/// Phase-1 placeholder for [`Op::Scan`]'s `early_exit` field. The FIELD is
+/// defined now so the enum shape is final (one `03-ir` MAJOR bump); the
+/// data-dependent early-exit MECHANISM is Phase 2. It is never `Some` on any
+/// live Phase-1 path; if a realize/lowering path sees `Some`, that path
+/// returns a clear `Err` (a surfaced Phase-2 gap), never a panic.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScanPredicate;
 
 impl Op {
     /// Index into `inputs` that this op destroys on execution. `None`
@@ -1344,6 +1405,8 @@ fn op_short_name(op: &Op) -> &'static str {
         Op::ScatterIntoSlot{..}  => "ScatterIntoSlot",
         // PR-A0 inert scaffold (the multi-path phi/merge node).
         Op::Branch{..}           => "Branch",
+        Op::Scan{..}             => "Scan",
+        Op::ScanPlaceholder{..}  => "ScanPlaceholder",
     }
 }
 
@@ -9429,6 +9492,23 @@ impl Tensor {
                     // the Op::Const / Op::ScatterIntoSlot treatment above.
                     // The real per-arm routing lands with the builders.
                 }
+                Op::Scan { .. } => {
+                    // Not differentiable in Phase 1. BPTT (differentiate the
+                    // unrolled body) lands in Phase 2; mirrors the QMatMul /
+                    // PagedAttn "no backward" precedent in this infallible
+                    // (-> GradMap) walk. A differentiated graph that reaches an
+                    // Op::Scan is a usage error until Phase 2 wires it.
+                    panic!(
+                        "Tensor::backward: Op::Scan is not differentiable in \
+                         Phase 1. BPTT over the unrolled body lands in Phase 2.",
+                    );
+                }
+                Op::ScanPlaceholder { .. } => {
+                    // Inert body-hole leaf (no inputs) — never a real
+                    // differentiation target. Drop gradient like Op::Const /
+                    // Op::Iota; a live backward never reaches it (the body is
+                    // materialized by unroll_scan before any realize).
+                }
                 Op::View { slot } | Op::ViewOwned { slot } => {
                     // Multi-output projection — item 4 backward
                     // composition (Option C, 2026-06-01).
@@ -13753,5 +13833,41 @@ mod tests {
             "Graph::verify_no_dangling found a dangling reference: {:?}",
             g.verify_no_dangling().err(),
         );
+    }
+
+    #[test]
+    fn scan_variants_construct_and_name() {
+        use crate::{Graph, Node, Op, ScanEmit, ScanRole, ScanPredicate};
+        use fuel_ir::{DType, Shape};
+        let mut g = Graph::new();
+        let s = Shape::from_dims(&[1, 1, 1]);
+        let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+        // A ScanPlaceholder leaf (the per-step carry hole).
+        let hole = g.push(Node {
+            op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 },
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+        // A trivial body: new_carry = hole (identity); body_y = hole.
+        // Op::Scan node: inputs = [init_carry, <no xs>, <no consts>, body_new_carry, body_y].
+        let scan = g.push(Node {
+            op: Op::Scan { n_xs: 0, bound: 1, emit: ScanEmit::All, early_exit: None },
+            inputs: vec![carry, hole, hole],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+        assert_eq!(g.node(scan).op.short_name(), "Scan");
+        assert_eq!(g.node(hole).op.short_name(), "ScanPlaceholder");
+        // early_exit is constructible (guarded elsewhere) but never Some on a live path.
+        let _guarded = Op::Scan { n_xs: 0, bound: 1, emit: ScanEmit::Final, early_exit: Some(ScanPredicate) };
+        // derive_view_output_layout: Scan is NOT a view op -> Err (handled by the catch-all).
+        let lay = fuel_ir::Layout::contiguous(s.clone());
+        let derived = crate::derive_view_output_layout(
+            &Op::Scan { n_xs: 0, bound: 1, emit: ScanEmit::All, early_exit: None },
+            &lay,
+        );
+        assert!(derived.is_err(), "Op::Scan must not be treated as a view op");
+        let _ = scan;
     }
 }
