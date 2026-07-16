@@ -1080,12 +1080,13 @@ pub enum Op {
     /// composed bundle gradient as its upstream.
     ///
     /// **Status**: IR-level primitive only in this session. No CPU
-    /// kernel registration yet — the production multi-output ops
-    /// (SelectiveScan, SsdChunkScan) are `BackwardKind::NotDifferentiable`,
-    /// so the autograd never reaches a `ScatterIntoSlot` realization.
-    /// When the first differentiable multi-output op materializes (the
-    /// Mamba training session), it lights up the kernel side along
-    /// with its own backward.
+    /// kernel registration yet. The production multi-output SSM ops
+    /// (SelectiveScan, SsdChunkScan) are now differentiable via the
+    /// Op::Scan Phase-2 `lower_scans_for_backward` pre-pass (decompose →
+    /// `Op::Scan` → `unroll_scan` → node-general autograd), which lowers
+    /// them to primitives BEFORE the reverse walk — so the autograd
+    /// differentiates the unrolled `View` projections directly and never
+    /// reaches a `ScatterIntoSlot` realization on the SSM path.
     ScatterIntoSlot { slot: u32 },
 
     /// In-place multi-path (phi/merge) node — the arena representation
@@ -7356,9 +7357,16 @@ impl Tensor {
     pub fn backward(&self) -> GradMap {
         let graph_handle = self.graph.clone();
 
+        // C3 pre-pass (Op::Scan Phase 2): lower every reachable Op::Scan to
+        // primitives + decompose the SSM fused recipes BEFORE the topo order is
+        // taken, so the reverse walk sees only differentiable primitives. A
+        // no-op on scan-free graphs (one extra topo scan, no rewiring). The
+        // (possibly remapped) root replaces self.id everywhere below.
+        let root = lower_scans_for_backward(&graph_handle, self.id);
+
         // Compute topological order of reachable nodes, then reverse it
         // so we walk from the root (output) toward the leaves (inputs).
-        let mut order = topo_order(&graph_handle.read().unwrap(), self.id);
+        let mut order = topo_order(&graph_handle.read().unwrap(), root);
         order.reverse();
 
         // Initial upstream gradient for the root: ones tensor of matching
@@ -7366,13 +7374,13 @@ impl Tensor {
         // outputs it seeds each element with weight 1.
         let (root_shape, root_dtype) = {
             let g = graph_handle.read().unwrap();
-            let n = g.node(self.id);
+            let n = g.node(root);
             (n.shape.clone(), n.dtype)
         };
         let ones_id = build_ones(&graph_handle, root_shape, root_dtype);
 
         let mut upstream: HashMap<NodeId, NodeId> = HashMap::new();
-        upstream.insert(self.id, ones_id);
+        upstream.insert(root, ones_id);
 
         for id in order {
             let up_id = match upstream.get(&id).copied() {
@@ -9695,15 +9703,14 @@ impl Tensor {
                     // The real per-arm routing lands with the builders.
                 }
                 Op::Scan { .. } => {
-                    // Not differentiable in Phase 1. BPTT (differentiate the
-                    // unrolled body) lands in Phase 2; mirrors the QMatMul /
-                    // PagedAttn "no backward" precedent in this infallible
-                    // (-> GradMap) walk. A differentiated graph that reaches an
-                    // Op::Scan is a usage error until Phase 2 wires it.
-                    panic!(
-                        "Tensor::backward: Op::Scan is not differentiable in \
-                         Phase 1. BPTT over the unrolled body lands in Phase 2.",
-                    );
+                    // Unreachable on any graph that went through backward(): the
+                    // C3 pre-pass (lower_scans_for_backward) unrolls every
+                    // Op::Scan to primitives before the topo order is taken.
+                    // Reaching here means the pre-pass did not run (or a
+                    // malformed scan that unroll rejected survived) — an
+                    // internal bug / usage error, not a live differentiation.
+                    panic!("Tensor::backward: Op::Scan reached the reverse walk un-lowered — \
+                            the C3 lower_scans_for_backward pre-pass did not run (internal bug).");
                 }
                 Op::ScanPlaceholder { .. } => {
                     // Inert body-hole leaf (no inputs) — never a real
@@ -10065,6 +10072,98 @@ impl GradMap {
 }
 
 // -------- internal helpers shared by the backward pass --------------------
+
+/// The generic decompose-backward hook (Op::Scan Phase 2, C3): before the
+/// reverse walk takes its topo order, lower every reachable `Op::Scan` to
+/// `bound` primitives and decompose the two SSM `Op::Fused` recipes into their
+/// `Op::Scan` form, rewiring consumers so the walk sees only differentiable
+/// primitives. BPTT differentiates the static-`bound` unroll (the runtime
+/// early-exit predicate is a forward-only optimization, ignored here — spec C3
+/// static-horizon note). Operates in place on the shared graph (a `backward()`
+/// caller is a training step that wants the unrolled activations anyway).
+/// Returns the (possibly remapped) root NodeId to walk from.
+fn lower_scans_for_backward(graph: &SharedGraph, root: NodeId) -> NodeId {
+    use std::collections::HashMap;
+    let mut root = root;
+    // helper: apply a remap to every consumer's inputs + the root, in place.
+    fn apply_remap(graph: &SharedGraph, remap: &HashMap<NodeId, NodeId>, root: &mut NodeId) {
+        if remap.is_empty() { return; }
+        let mut g = graph.write().unwrap();
+        let n = g.len();
+        for nid in 0..n {
+            let ilen = g.node(NodeId(nid)).inputs.len();
+            for i in 0..ilen {
+                let cur = g.node(NodeId(nid)).inputs[i];
+                if let Some(&new) = remap.get(&cur) { g.rewrite_input(NodeId(nid), cur, new); }
+            }
+        }
+        if let Some(&new) = remap.get(root) { *root = new; }
+    }
+
+    // --- Pass 1: decompose SSM Op::Fused(SELECTIVE_SCAN|SSD_CHUNK_SCAN) into Op::Scan.
+    {
+        let ssm = [crate::registry::FusedOps::SELECTIVE_SCAN, crate::registry::FusedOps::SSD_CHUNK_SCAN];
+        let targets: Vec<(NodeId, crate::registry::FusedOpId, crate::registry::FusedOpParams)> = {
+            let g = graph.read().unwrap();
+            crate::topo_order(&g, root).into_iter().filter_map(|id| match &g.node(id).op {
+                Op::Fused(fid, params) if ssm.contains(fid) => Some((id, *fid, params.clone())),
+                _ => None,
+            }).collect()
+        };
+        let mut remap = HashMap::new();
+        for (id, fid, params) in targets {
+            if let Some(entry) = crate::registry::default_registry().entry(fid) {
+                let y = { let mut g = graph.write().unwrap(); (entry.decompose)(&mut g, id, &params) };
+                if y != id { remap.insert(id, y); }
+            }
+        }
+        apply_remap(graph, &remap, &mut root);
+    }
+
+    // --- Pass 2: unroll every reachable Op::Scan to `bound` primitives.
+    loop {
+        let scans: Vec<(NodeId, usize, ScanEmit)> = {
+            let g = graph.read().unwrap();
+            crate::topo_order(&g, root).into_iter().filter_map(|id| match &g.node(id).op {
+                Op::Scan { bound, emit, .. } => Some((id, *bound, *emit)),
+                _ => None,
+            }).collect()
+        };
+        if scans.is_empty() { break; }
+        let mut remap = HashMap::new();
+        for (scan_id, bound, emit) in scans {
+            let (a, b) = { let mut g = graph.write().unwrap();
+                match crate::scan::unroll_scan(&mut g, scan_id, bound) {
+                    Ok(pair) => pair,
+                    Err(_) => continue, // malformed scan: leave it; the C4 guard describes it.
+                }
+            };
+            // Normalize to (slot0 = stacked_ys, slot1 = final_carry).
+            let (slot0, slot1) = match emit { ScanEmit::All => (a, b), ScanEmit::Final => (b, a) };
+            // Remap the scan's View{slot}/ViewOwned{slot} consumers to the unroll outputs.
+            let g = graph.read().unwrap();
+            for nid in 0..g.len() {
+                let node = g.node(NodeId(nid));
+                if let Op::View { slot } | Op::ViewOwned { slot } = node.op {
+                    if node.inputs.first() == Some(&scan_id) {
+                        remap.insert(NodeId(nid), if slot == 0 { slot0 } else { slot1 });
+                    }
+                }
+            }
+        }
+        // Defensive never-hang guard: if a full pass lowered no scan to a
+        // consumer remap (e.g. a malformed scan that unroll rejects, or a raw
+        // scan producer with no View consumers), stop rather than re-scanning
+        // the same unchanged graph forever. Any residual Op::Scan then reaches
+        // the C4 defensive backward arm (a usage error), never an infinite loop.
+        if remap.is_empty() { break; }
+        apply_remap(graph, &remap, &mut root);
+        // Unrolled graphs contain no Op::Scan, so a well-formed graph terminates
+        // in <= 2 iterations (the loop re-scans in case a decomposed body itself
+        // contained a scan; the current SSM decompose does not).
+    }
+    root
+}
 
 /// Read a node's shape without holding the borrow past the call site.
 fn node_shape(graph: &SharedGraph, id: NodeId) -> Shape {

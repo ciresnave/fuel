@@ -80,13 +80,17 @@
 //! runs the fused kernel (which writes both slots) and the oracle unrolls `ys`
 //! directly, this is an inert, documented Phase-1 gap — not a live path.
 //!
-//! ## Why `BackwardKind::NotDifferentiable` for v1
+//! ## Why `BackwardKind::Decompose` (Op::Scan Phase 2)
 //!
-//! Mamba-2 inference is the only consumer surface today (and it's
-//! on the eager Tensor path — see
-//! `docs/session-prompts/mamba-eager-to-lazy-migration.md`).
-//! baracuda's backward variant exists; wiring `SSD_CHUNK_SCAN_BACKWARD`
-//! is mechanical when a training consumer materializes.
+//! Differentiability comes from the Phase-2 `lower_scans_for_backward`
+//! pre-pass (`fuel-graph/src/lib.rs`), NOT a bespoke `SSD_CHUNK_SCAN_BACKWARD`
+//! fused op: `backward()` decomposes this node into its `Op::Scan` recipe,
+//! `unroll_scan`s that to `bound` primitives, and runs the node-general
+//! autograd over the unroll (truncated BPTT to the static `bound`).
+//! `BackwardKind::Decompose` documents that intent — the field is
+//! verified-dead metadata (the reverse walk never reads it; the pre-pass
+//! replaces these nodes before the walk), so this is honesty about the
+//! mechanism, not the mechanism itself.
 
 use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
@@ -107,7 +111,7 @@ pub fn entry() -> FusedOpEntry {
         family:       FusedOpFamily::Forward,
         pattern:      SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:     BackwardKind::NotDifferentiable,
+        backward:     BackwardKind::Decompose,
         shape_rule,
         dtype_rule,
         output_views: Some(output_views),
