@@ -4,9 +4,11 @@
 
 > **User note (2026-07-15):** approved as the chosen foundation, not certain to be final. The two alternatives (an emit-only per-op shape-rule table; routing `emit` through the `Tensor` builders) are on record if `primitive_shape` extraction proves wrong.
 
+> **Grammar-pin update (2026-07-15, after Op::Scan Phase 1 shipped + both Baracuda recipe-grammar replies RELAYED):** the shared recipe grammar is now **pinned** (KISS §6.4-0009 node schema `Op{op_name,op_attrs,child_edges} | Bind` + §6.19 positional-blob `op_attrs` with the §6.19.3 per-op schemas Fuel confirmed — see [[recipe-grammar-codesign]], `docs/outreach/baracuda-recipe-grammar-codesign-reply-2.md`). So this increment **conforms to the pinned grammar rather than leading it**: §A.2 is reframed from "Fuel-led additive `OpAttrs` fields" to "make `OpAttrs` the §6.19 canonical positional blob matching the confirmed per-op schemas." §A.5 (the flat-DAG reply) is **DONE** (it collapsed into the co-design, both replies relayed). The basis-gap boundary shrank (Op::Scan shipped — selective_scan/ssd_chunk_scan now decompose to it), and **Op::Scan is a higher-order body-carrying op explicitly scoped OUT of the first-order `primitive_shape`/`emit`** (its output shape depends on the body sub-DAG, not just leaf input shapes — it gets its own shape rule, not the shared first-order fn).
+
 ## Goal
 
-Make the runtime `emit` (`PatternNode` → primitive subgraph, `fuel-graph/src/runtime_fused.rs`) handle the **full op set** — everything except the 6 basis-gap ops (conv2d/conv_transpose_2d/qmatmul/inplace_affine/selective_scan/ssd_chunk_scan) — with correct per-op shape/dtype, so the convergence's decompose-migration (Increment C) becomes pure data-movement. Achieve it by extracting **one** `primitive_shape` function that is the single source of truth for primitive op shape+dtype inference, called by BOTH the `Tensor` builders and `emit` (no drift). Also draft the pending Baracuda flat-DAG reply.
+Make the runtime `emit` (`PatternNode` → primitive subgraph, `fuel-graph/src/runtime_fused.rs`) handle the **full first-order op set** — everything except the 4 basis-gap ops (conv2d/conv_transpose_2d/qmatmul/inplace_affine) and the higher-order `Op::Scan` (body-carrying; its own shape rule, see the grammar-pin note) — with correct per-op shape/dtype, so the convergence's decompose-migration (Increment C) becomes pure data-movement. Achieve it by extracting **one** `primitive_shape` function that is the single source of truth for primitive op shape+dtype inference, called by BOTH the `Tensor` builders and `emit` (no drift).
 
 Today `emit` is elementwise-only (every re-emitted node's shape/dtype = `operand[0]`'s, runtime_fused.rs), and `tag_to_op` covers 32 of ~72 `OpTag`s. That forced Increment 1 to realize the rope reference via the hand-written `registry::rope::decompose` instead of a `PatternNode` recipe. Closing this gap is the prerequisite for representing non-elementwise recipes as data.
 
@@ -27,9 +29,12 @@ Today `emit` is elementwise-only (every re-emitted node's shape/dtype = `operand
 
 **dtype:** most ops are dtype-preserving (= `input_dtypes[0]`); `Cast` → its target dtype; comparisons (Equal/Ne/Lt/Le/Gt/Ge) → `U8`. `primitive_shape` returns both so `emit` (and the migration) get dtype right, not just shape.
 
-### A.2 `OpAttrs` additive extension (Fuel-led, Baracuda mirrors)
+### A.2 `OpAttrs` → the §6.19 canonical positional blob (conform to the pinned grammar)
 
-Extend `OpAttrs` (fuel-kernel-seam-types) additively — the F1 precedent — with exactly the fields the full set needs but can't express today: Slice's `start`/`len` (dim rides `axis`), Cast's target dtype, reduction `keepdim`, Pad's per-dim amounts. Additive optional fields → backward-compatible; the frozen `size_of`/layout tests update. This is the seam grammar, so it's noted for Baracuda to mirror when it emits those ops (Fuel leads the grammar per the conformance record §2.A; not a blocking coordination gate). Confirm the exact minimal field set against what `tag_to_op` needs to reconstruct each `Op` variant.
+Two parts, both now targeting the **pinned** grammar (not leading it):
+
+1. **Field coverage.** Extend `OpAttrs` (fuel-kernel-seam-types) with the fields the full first-order set needs but can't express today: Slice's `start`/`len` (dim rides `axis`), Cast's target dtype, reduction `keepdim`, Pad's per-dim amounts. Additive optional fields → backward-compatible; the frozen `size_of`/layout tests update. Confirm the minimal set against what `tag_to_op` needs to reconstruct each `Op` variant.
+2. **Canonical §6.19 serialization (the pinned-grammar conformance — the §2.A gap fix).** Give `OpAttrs` a canonical, no-elision **positional little-endian blob** serialization matching the **§6.19.3 per-op schemas Fuel confirmed** in `baracuda-recipe-grammar-codesign-reply-2.md`: `reduce{monoid,axes,keepdim}`, `gather{axis,oob,index_operand,index_dtype}`, `scatter{axis,scatter_combine,oob,index_operand,index_dtype}`, etc.; an op with an empty schema serializes as a **zero-length** length-prefixed blob (one canonical byte form). Fuel's internal `OpAttrs` may stay a struct as long as it has this canonical serialization. This is what makes a Fuel recipe byte-comparable with a Baracuda-emitted one. Record the encoding in `kernel-seam-interop.md`. (The `scan`/`scan_placeholder`/`runtime_scalar` tokens Fuel proposed are higher-order / leaf ops handled outside this first-order `OpAttrs` set.)
 
 ### A.3 `emit` + `tag_to_op` + `validate_representable` growth
 
@@ -46,9 +51,9 @@ The existing hand-written `registry::*::decompose` fns are the ground truth. For
 - (optionally a `Cast`-bearing region to exercise dtype.)
 This is both the acceptance test for A and the de-risking for the C migration (an extraction error surfaces as a decompose mismatch, not a silent wrong shape).
 
-### A.5 The Baracuda flat-DAG reply (parallel deliverable)
+### A.5 The Baracuda flat-DAG reply — ✅ DONE (superseded)
 
-Draft `docs/outreach/baracuda-flat-dag-pattern-reply.md`: agree to KISS-Grammar §6.4-0011 (flat indexed node table + maximal CSE); propose the **shared node-ordering / canonicalization rule = Increment 1's `base_map_hash` canonicalization** (op-key signature + commutative-operand sort + post-order-from-root) — Fuel's CSE'd base map is already essentially that flat DAG; the cap bit goes in the **KISS FEAT range** co-allocated with Baracuda (per the KISC-reply precedent). Note that the flat-DAG *code* (container change) is a later convergence step; this reply aligns the design. (This is correspondence, not code; no OpAttrs/emit dependency.)
+This deliverable is **complete**. The flat-DAG reply collapsed into the recipe-grammar co-design, and **both replies are relayed** (2026-07-15): `baracuda-recipe-grammar-codesign-reply.md` (positions on all 6 questions — the canonicalization rule *is* `base_map_hash`, cap bit in the KISS FEAT range) + `baracuda-recipe-grammar-codesign-reply-2.md` (KISS §6.4-0009 schema adoption, all 4 open items). The flat-DAG *container code* remains a later convergence step; no correspondence deliverable is left in Increment A.
 
 ## Error handling / never-panic
 
@@ -62,8 +67,9 @@ The byte-for-byte decompose-diff tests (A.4) + the full fuel-graph builder test 
 
 - **The decompose MIGRATION** (Increment C — moving the ~16 migratable `registry::*::decompose` Rust fns to `PatternNode` data). A only makes `emit` *capable*; the migration is C.
 - **Unify internal+external registry + wire the 18 stubbed matchers** (Increment D).
-- **KISC framing** (Increment E) and the **flat-DAG container code** (only the reply here).
-- The 6 **basis-gap ops** — excluded until their IR primitives (`Im2Col`/`Col2Im`, GGUF unpack, `AffineInplace`, higher-order `Scan`) land.
+- **KISC framing** (Increment E) and the **flat-DAG container code** (the reply is done — §A.5).
+- The 4 remaining **basis-gap ops** — `conv2d`/`conv_transpose_2d` (need `Im2Col`/`Col2Im`), `qmatmul` (GGUF unpack), `inplace_affine` (`AffineInplace`) — excluded until their IR primitives land. (The higher-order `Scan` basis gap is CLOSED — Op::Scan shipped 2026-07-15.)
+- **`Op::Scan` itself** (the shipped higher-order body-carrying primitive) — explicitly OUT of the first-order `primitive_shape`/`emit` (its shape depends on the body sub-DAG, not just leaf input shapes). It gets its own shape rule; migrating scan-bearing decomposes to a `PatternNode`-with-scan form is later convergence work (the scan grammar Fuel just proposed to Baracuda), not Increment A.
 
 ## Open questions / risks
 
