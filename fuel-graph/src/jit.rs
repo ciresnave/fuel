@@ -21,8 +21,11 @@ pub use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 
 /// Project a graph [`Op`] to its functional [`OpTag`]. Returns `None` for
 /// in-place variants, structural/bookkeeping ops, and `Op::Fused` (a fused op
-/// isn't a region node — its *decomposition* is). A `None` op in a region is an
-/// honest "outside the vocabulary" miss, never a crash.
+/// isn't a region node — its *decomposition* is). Same for `Op::Scan` /
+/// `Op::ScanPlaceholder`: a scan isn't a region node either — its body
+/// (referenced via `inputs`, not a `PatternNode`) is what a region walk
+/// would see. A `None` op in a region is an honest "outside the vocabulary"
+/// miss, never a crash.
 pub fn op_to_tag(op: &Op) -> Option<OpTag> {
     Some(match op {
         Op::Add => OpTag::Add,
