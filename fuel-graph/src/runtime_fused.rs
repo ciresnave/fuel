@@ -508,10 +508,18 @@ fn emit(
             let prim = tag_to_op(*op, attrs).expect("region validated re-emittable at registration");
             let child_ids: Vec<NodeId> =
                 operands.iter().map(|o| emit(graph, o, inputs, scalars)).collect();
-            // v1 same-shape elementwise: a node's shape/dtype = its first
-            // operand's (these ops are type-preserving + shape-preserving).
-            let s = graph.node(child_ids[0]).shape.clone();
-            let d = graph.node(child_ids[0]).dtype;
+            // Convergence Increment A: full-parity (shape, dtype) via the single
+            // source of truth (`primitive_shape`) — correct for shape-changing,
+            // reducing, and dtype-changing ops, not just same-shape elementwise.
+            // On Err (only reachable for a malformed authored region — a
+            // registration-validated region's ops all infer) fall back to
+            // operand[0]'s shape/dtype so emit stays panic-free + total.
+            let child_shapes: Vec<fuel_ir::Shape> =
+                child_ids.iter().map(|&c| graph.node(c).shape.clone()).collect();
+            let child_dtypes: Vec<fuel_ir::DType> =
+                child_ids.iter().map(|&c| graph.node(c).dtype).collect();
+            let (s, d) = crate::shape::primitive_shape(&prim, &child_shapes, &child_dtypes)
+                .unwrap_or_else(|_| (child_shapes[0].clone(), child_dtypes[0]));
             graph.push(Node { op: prim, inputs: child_ids, shape: s, dtype: d })
         }
         PatternNode::Any | PatternNode::SeeThrough { .. } => {
@@ -681,6 +689,40 @@ mod tests {
             ],
         };
         assert!(super::validate_representable(&region).is_ok(), "slice/concat region must now validate");
+    }
+
+    #[test]
+    fn emit_gets_shape_right_for_a_reduction_region() {
+        use fuel_ir::{DType, Shape};
+        // Region: ReduceSumTo([2,1])(bind0). Input [2,5] → output [2,1].
+        let region = PatternNode::Op {
+            op: OpTag::ReduceSumTo,
+            attrs: OpAttrs { target_shape: vec![2, 1], ..OpAttrs::default() },
+            operands: vec![PatternNode::Bind { index: 0 }],
+        };
+        let mut g = Graph::new();
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 5]), dtype: DType::F32 });
+        let root = emit_region(&mut g, &region, &[x], &[]);
+        assert!(matches!(g.node(root).op, Op::ReduceSumTo(_)));
+        assert_eq!(g.node(root).shape, Shape::from_dims(&[2, 1]), "emit must use the reduced shape, not operand[0]");
+        assert_eq!(g.node(root).dtype, DType::F32);
+    }
+
+    #[test]
+    fn emit_gets_dtype_right_for_a_cast_region() {
+        use fuel_ir::{DType, Shape};
+        // Region: Cast(F16)(bind0). Input F32 → output F16, same shape.
+        let region = PatternNode::Op {
+            op: OpTag::Cast,
+            attrs: OpAttrs { cast_dtype: Some("f16".into()), ..OpAttrs::default() },
+            operands: vec![PatternNode::Bind { index: 0 }],
+        };
+        let mut g = Graph::new();
+        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 3]), dtype: DType::F32 });
+        let root = emit_region(&mut g, &region, &[x], &[]);
+        assert!(matches!(g.node(root).op, Op::Cast(DType::F16)));
+        assert_eq!(g.node(root).dtype, DType::F16, "emit must take Cast's target dtype, not operand[0]'s");
+        assert_eq!(g.node(root).shape, Shape::from_dims(&[3, 3]));
     }
 
     #[test]
