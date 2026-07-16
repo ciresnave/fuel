@@ -89,15 +89,17 @@
 //! native kernel: once it has one, an un-composed `view(1)` would read past
 //! the slot-0 buffer instead of hitting today's typed dispatch error.
 //!
-//! ## Why `BackwardKind::NotDifferentiable` for v1
+//! ## Why `BackwardKind::Decompose` (Op::Scan Phase 2)
 //!
-//! Mamba inference is the only consumer surface today (and it's on
-//! the eager Tensor path — see
-//! `docs/session-prompts/mamba-eager-to-lazy-migration.md`). Training
-//! support requires a real Mamba training consumer to materialize
-//! AND the migration to LazyTensor to land. The baracuda kernel
-//! has a backward variant ready, so adding `SELECTIVE_SCAN_BACKWARD`
-//! is mechanical when those preconditions are met.
+//! Differentiability comes from the Phase-2 `lower_scans_for_backward`
+//! pre-pass (`fuel-graph/src/lib.rs`), NOT from a bespoke
+//! `SELECTIVE_SCAN_BACKWARD` fused op: `backward()` decomposes this node into
+//! its `Op::Scan` recipe (below), `unroll_scan`s that to `bound` primitives,
+//! and runs the node-general autograd over the unroll (truncated BPTT to the
+//! static `bound`). `BackwardKind::Decompose` documents that intent — the
+//! field is verified-dead metadata (the reverse walk never reads it; the
+//! pre-pass replaces these nodes before the walk), so this is honesty about
+//! the mechanism, not the mechanism itself.
 
 use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
@@ -120,7 +122,7 @@ pub fn entry() -> FusedOpEntry {
         family:       FusedOpFamily::Forward,
         pattern:      SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:     BackwardKind::NotDifferentiable,
+        backward:     BackwardKind::Decompose,
         shape_rule,
         dtype_rule,
         output_views: Some(output_views),
