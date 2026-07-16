@@ -67,6 +67,7 @@ pub mod dyn_backend;
 mod dtype;
 pub mod dummy_dtype;
 pub mod error;
+pub mod hopfield;
 mod indexer;
 pub mod lazy;
 pub mod lazy_based;
