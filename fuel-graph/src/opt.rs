@@ -39,7 +39,7 @@
 use crate::registry::{
     default_registry, FusedOpEntry, FusedOpId, FusedOpParams, FusedOps, SubgraphPattern,
 };
-use crate::{topo_order_multi, Graph, Node, NodeId, Op, SharedGraph};
+use crate::{topo_order_multi, Graph, Node, NodeId, Op, ScanEmit, ScanRole, SharedGraph};
 use fuel_ir::{DeviceLocation, DType, Shape};
 use std::collections::HashMap;
 
@@ -937,7 +937,7 @@ impl Rule for CastFusionRule {
 /// of which is `Hash + Eq`. We keep `Const` out of CSE entirely
 /// (identity-dedup happens via the executor's Arc-pointer const pool
 /// already) and encode scalar payloads as their bit patterns.
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 struct OpKey {
     tag: u16,
     ints: Vec<i64>,
@@ -1103,6 +1103,24 @@ fn op_key(op: &Op) -> Option<OpKey> {
             ints.push(pk.tag as i64);
             ints.extend_from_slice(&pk.ints);
             (200, ints, pk.bits, vec![], None, None)
+        }
+
+        // Op::Scan folds ONLY its own params (n_xs, bound, emit tag,
+        // early_exit-present flag). The BODY is hashed automatically by
+        // base_map_hash's child-recursion, because the body-exit NodeIds are
+        // the last two entries of the node's `inputs` (the lax.scan encoding).
+        // Two scans with identical params but different bodies therefore get
+        // different child-hashes and different base_map_hash. Tag 210.
+        Op::Scan { n_xs, bound, emit, early_exit } => {
+            let emit_tag: i64 = match emit { ScanEmit::All => 0, ScanEmit::Final => 1 };
+            let exit_flag: i64 = if early_exit.is_some() { 1 } else { 0 };
+            (210, vec![*n_xs as i64, *bound as i64, emit_tag, exit_flag], vec![], vec![], None, None)
+        }
+        // Op::ScanPlaceholder folds role tag + index so Carry/0, Elem/0,
+        // Carry/1 are all distinct in the body hash. Tag 211.
+        Op::ScanPlaceholder { role, index } => {
+            let role_tag: i64 = match role { ScanRole::Carry => 0, ScanRole::Elem => 1 };
+            (211, vec![role_tag, *index as i64], vec![], vec![], None, None)
         }
 
         // Indexing and anything else we haven't explicitly listed:
@@ -4330,6 +4348,83 @@ mod tests {
             base_map_hash(&gc, c.id()),
             "different const bytes (same shape/dtype) must hash differently"
         );
+    }
+
+    #[test]
+    fn scan_base_map_hash_differs_for_different_bodies() {
+        use crate::{Graph, Node, Op, ScanEmit, ScanRole};
+        use fuel_ir::{DType, Shape};
+        // Two scans, IDENTICAL carry shape / n_xs / bound / emit, but STRUCTURALLY
+        // DIFFERENT bodies: body A = carry*2 (MulScalar), body B = carry+1
+        // (AddScalar). Without a dedicated op_key arm they fall to the None branch
+        // (discriminant+shape+dtype only) and collide -> silent CSE / recipe-identity
+        // corruption. THIS red run is the evidence the trap is real.
+        let mk = |mul: bool| {
+            let mut g = Graph::new();
+            let s = Shape::from_dims(&[1]);
+            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let new_carry = g.push(Node {
+                op: if mul { Op::MulScalar(2.0) } else { Op::AddScalar(1.0) },
+                inputs: vec![hole], shape: s.clone(), dtype: DType::F32,
+            });
+            // inputs = [init_carry, body_new_carry, body_y]  (n_xs = 0, no consts)
+            let scan = g.push(Node {
+                op: Op::Scan { n_xs: 0, bound: 3, emit: ScanEmit::All, early_exit: None },
+                inputs: vec![carry, new_carry, new_carry],
+                shape: s, dtype: DType::F32,
+            });
+            (g, scan)
+        };
+        let (ga, ra) = mk(true);
+        let (gb, rb) = mk(false);
+        assert_ne!(
+            base_map_hash(&ga, ra), base_map_hash(&gb, rb),
+            "scans with structurally different bodies must hash differently",
+        );
+    }
+
+    #[test]
+    fn scan_base_map_hash_equal_for_same_body_cross_graph() {
+        use crate::{Graph, Node, Op, ScanEmit, ScanRole};
+        use fuel_ir::{DType, Shape};
+        // Same body built independently in two graphs -> equal hash (the
+        // recipe-identity positive case). base_map_hash is NodeId-independent.
+        let mk = || {
+            let mut g = Graph::new();
+            let s = Shape::from_dims(&[1]);
+            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let new_carry = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: s.clone(), dtype: DType::F32 });
+            let scan = g.push(Node {
+                op: Op::Scan { n_xs: 0, bound: 3, emit: ScanEmit::All, early_exit: None },
+                inputs: vec![carry, new_carry, new_carry], shape: s, dtype: DType::F32,
+            });
+            (g, scan)
+        };
+        let (g0, r0) = mk();
+        let (g1, r1) = mk();
+        assert_eq!(base_map_hash(&g0, r0), base_map_hash(&g1, r1), "same body -> equal hash");
+    }
+
+    #[test]
+    fn scan_emit_and_placeholder_role_participate_in_op_key() {
+        use crate::{Op, ScanEmit, ScanRole};
+        // emit=All vs emit=Final differ.
+        let all = op_key(&Op::Scan { n_xs: 0, bound: 3, emit: ScanEmit::All, early_exit: None });
+        let fin = op_key(&Op::Scan { n_xs: 0, bound: 3, emit: ScanEmit::Final, early_exit: None });
+        assert!(all.is_some() && fin.is_some(), "Op::Scan must produce an op_key, not None");
+        assert_ne!(all, fin, "emit=All vs emit=Final must differ in op_key");
+        // n_xs / bound participate.
+        assert_ne!(op_key(&Op::Scan { n_xs: 1, bound: 3, emit: ScanEmit::All, early_exit: None }), all);
+        assert_ne!(op_key(&Op::Scan { n_xs: 0, bound: 4, emit: ScanEmit::All, early_exit: None }), all);
+        // ScanPlaceholder Carry/0 vs Elem/0 vs Carry/1 all differ.
+        let c0 = op_key(&Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 });
+        let e0 = op_key(&Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 });
+        let c1 = op_key(&Op::ScanPlaceholder { role: ScanRole::Carry, index: 1 });
+        assert!(c0.is_some());
+        assert_ne!(c0, e0, "Carry vs Elem must differ");
+        assert_ne!(c0, c1, "index must participate");
     }
 
     /// G2 (2026-06-20): FlashAttn IS decomposable — the vanilla (non-causal,
