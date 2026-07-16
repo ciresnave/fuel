@@ -212,5 +212,9 @@ mod tests {
         let mut xm = x0.clone(); xm[0] -= h;
         let fd0 = (fwd(&xp) - fwd(&xm)) / (2.0*h);
         assert!((g_x[0] - fd0).abs() < 5e-2, "hopfield dL/dX[0]: autograd {} vs FD {fd0}", g_x[0]);
+        // Non-triviality: guard against a future fixture that silently zeros the
+        // gradient (a zero grad would pass the |autograd - FD| check vacuously).
+        // The gradient is ~O(1) here, so this has ample headroom.
+        assert!(g_x[0].abs() > 1e-3, "hopfield gradient must be non-vacuous, got {}", g_x[0]);
     }
 }

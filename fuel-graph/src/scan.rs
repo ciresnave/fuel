@@ -8,6 +8,42 @@ use std::collections::HashMap;
 
 use crate::{Graph, Node, NodeId, Op, ScanEmit, ScanRole};
 
+/// Validate every `Op::ScanPlaceholder` reachable from the scan body's exit
+/// `roots` (`[body_new_carry, body_y]`, optionally the predicate) has an
+/// in-range index: v1 is **single-carry** (`Carry` index must be 0), and every
+/// `Elem` index must address one of the `n_xs` per-step slices. This keeps the
+/// later `clone_body_node`/`build_scan_step` `elem[index]` access infallible by
+/// construction — so a malformed body is a typed **build-time** `Err` (from the
+/// `Tensor::scan` / `Tensor::scan_until` builders) rather than a mid-realize
+/// `elem[index]` panic on the forward-driver path. Short immutable borrow only.
+pub(crate) fn validate_scan_body_placeholders(
+    graph: &Graph,
+    roots: &[NodeId],
+    n_xs: usize,
+) -> std::result::Result<(), fuel_ir::Error> {
+    let reachable = crate::topo_order_multi(graph, roots);
+    for &id in &reachable {
+        if let Op::ScanPlaceholder { role, index } = &graph.node(id).op {
+            match *role {
+                ScanRole::Carry if *index != 0 => {
+                    return Err(fuel_ir::Error::Msg(format!(
+                        "scan: body node {} is ScanPlaceholder{{Carry, {index}}} — v1 is single-carry, index must be 0",
+                        id.0,
+                    )).bt());
+                }
+                ScanRole::Elem if *index >= n_xs => {
+                    return Err(fuel_ir::Error::Msg(format!(
+                        "scan: body node {} is ScanPlaceholder{{Elem, {index}}} out of range (n_xs = {n_xs})",
+                        id.0,
+                    )).bt());
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Unroll `steps` iterations of the `Op::Scan` at `scan_id` into primitives.
 ///
 /// Returns `(selected, complementary)`: `emit=All` -> `(stacked_ys,
@@ -70,32 +106,9 @@ pub fn unroll_scan(
     let consts_set: std::collections::HashSet<NodeId> = consts.iter().copied().collect();
 
     // 2. Validate every ScanPlaceholder reachable from the body's two exit
-    // nodes has an in-range index, BEFORE any cloning/mutation: v1 is
-    // single-carry (Carry index must be 0), and Elem index must address one
-    // of the n_xs per-step slices. This keeps `clone_body_node`'s `elem[index]`
-    // access infallible by construction. Short immutable borrow only.
-    {
-        let reachable = crate::topo_order_multi(graph, &[body_new_carry, body_y]);
-        for &id in &reachable {
-            if let Op::ScanPlaceholder { role, index } = &graph.node(id).op {
-                match *role {
-                    ScanRole::Carry if *index != 0 => {
-                        return Err(fuel_ir::Error::Msg(format!(
-                            "unroll_scan: body node {} is ScanPlaceholder{{Carry, {index}}} — v1 is single-carry, index must be 0",
-                            id.0,
-                        )).bt());
-                    }
-                    ScanRole::Elem if *index >= n_xs => {
-                        return Err(fuel_ir::Error::Msg(format!(
-                            "unroll_scan: body node {} is ScanPlaceholder{{Elem, {index}}} out of range (n_xs = {n_xs})",
-                            id.0,
-                        )).bt());
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
+    // nodes has an in-range index, BEFORE any cloning/mutation (shared with the
+    // build-time check in Tensor::scan / Tensor::scan_until).
+    validate_scan_body_placeholders(graph, &[body_new_carry, body_y], n_xs)?;
 
     // 3. Validate every xs[i] has a leading (scan-axis) dim >= steps: the
     // per-step `Slice { dim: 0, start: t, len: 1 }` below needs `t` in range
@@ -592,6 +605,56 @@ mod tests {
         // The Ge's first input IS the step's new_carry — proof there was no double-clone.
         let ge_inputs = &g.node(stop).inputs;
         assert_eq!(ge_inputs[0], step.new_carry, "predicate's post-step operand is the shared new_carry");
+    }
+
+    #[test]
+    fn scan_until_rejects_out_of_range_elem_placeholder_at_build_time() {
+        use crate::Tensor;
+        // n_xs = 1, but the body references ScanPlaceholder{Elem, 5} — out of
+        // range. Must be a typed BUILD-TIME Err (before this fix the node built
+        // fine and the forward driver's build_scan_step -> clone_body_node
+        // panicked with elem[5] index-OOB — a never-panic regression).
+        let init = Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let graph = init.graph().clone();
+        let (x, nc, thr, pred) = {
+            let mut g = graph.write().unwrap();
+            let s = Shape::from_dims(&[1]);
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 1]), dtype: DType::F32 });
+            let bad_elem = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 5 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let carry_hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let nc = g.push(Node { op: Op::Add, inputs: vec![carry_hole, bad_elem], shape: s.clone(), dtype: DType::F32 });
+            let thr = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let pred = g.push(Node { op: Op::Ge, inputs: vec![carry_hole, thr], shape: s.clone(), dtype: DType::U8 });
+            (x, nc, thr, pred)
+        };
+        let x_t = Tensor::from_existing(graph.clone(), x);
+        let thr_t = Tensor::from_existing(graph.clone(), thr);
+        let nc_t = Tensor::from_existing(graph.clone(), nc);
+        let pred_t = Tensor::from_existing(graph.clone(), pred);
+        let r = init.scan_until(&[x_t], &[thr_t], &nc_t, &nc_t, &pred_t, 3, ScanEmit::Final);
+        assert!(r.is_err(), "scan_until must reject body Elem{{index >= n_xs}} at build time, not panic in the driver");
+    }
+
+    #[test]
+    fn scan_rejects_out_of_range_elem_placeholder_at_build_time() {
+        use crate::Tensor;
+        // Base builder shares the same missing build-time check (Phase 1 only
+        // avoided the panic because unroll_scan was its sole forward path).
+        let init = Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let graph = init.graph().clone();
+        let (x, nc) = {
+            let mut g = graph.write().unwrap();
+            let s = Shape::from_dims(&[1]);
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 1]), dtype: DType::F32 });
+            let bad_elem = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 5 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let carry_hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let nc = g.push(Node { op: Op::Add, inputs: vec![carry_hole, bad_elem], shape: s.clone(), dtype: DType::F32 });
+            (x, nc)
+        };
+        let x_t = Tensor::from_existing(graph.clone(), x);
+        let nc_t = Tensor::from_existing(graph.clone(), nc);
+        let r = init.scan(&[x_t], &[], &nc_t, &nc_t, 3, ScanEmit::Final);
+        assert!(r.is_err(), "base scan must also reject body Elem{{index >= n_xs}} at build time");
     }
 
     #[test]
