@@ -458,6 +458,43 @@ see the §6.19 schema table added there).
 `[len]`; value on `scalars[0]`) — the `OpTag` disambiguates, as it already does
 for `target_shape` serving both `BroadcastTo` and `Reshape`.
 
+#### 7.3.2 `OpAttrs` §6.19 canonical positional-blob serialization (Convergence Increment A, 2026-07-16)
+
+`OpAttrs::to_canonical_bytes(op) -> Vec<u8>` (`fuel-kernel-seam-types`) emits the
+pinned KISS **§6.19 canonical positional blob**: a per-op **positional**
+little-endian body (no field names, **no elision** — the `OpTag` fixes the
+schema), length-prefixed with a `u32` LE byte count. This makes a Fuel recipe
+**byte-comparable** with a Baracuda-emitted one — the §2.A conformance-gap fix
+(pinned per `baracuda-recipe-grammar-codesign-reply-2.md`). It is the canonical
+serialization *onto* Fuel's internal `OpAttrs` struct, which stays a struct.
+Registered under the recipe-import capability **`SEAM_CAP_RECIPE_IMPORT = FEAT
+bit 35`** (the KISS FEAT range; see the co-design reply-2). std-only, dependency-
+free, deterministic. **Baracuda to mirror the encoding.**
+
+Envelope: `u32` LE `body.len()` ++ `body`. **Empty-schema op** (`Add`, `Neg`,
+`MatMul`, `Where`, comparisons, unary math, scalar reductions, `LogSoftmaxLastDim`,
+…): `body` empty → the single canonical form `[0,0,0,0]`.
+
+Per-op `body` field order (all little-endian; lists are `u32` count then elements):
+
+| Op(s) | Positional body |
+|---|---|
+| `Reshape` / `BroadcastTo` / `ReduceSumTo` / `ReduceMaxTo` / `Iota` | `target_shape`: `i64` list (Iota = `[len]`) |
+| `Permute` / `Transpose` | `perm`: `u32` list (absolute axis order) |
+| `Unsqueeze` / `Squeeze` | `dims`: `u32` list |
+| `Slice` | `axis: u32`, `start: u64`, `len: u64` |
+| `Concat` / `Flip` / `Triu` / `Tril` / `IndexSelect` / `Gather` / `IndexAdd` / `ScatterAdd` | `axis: i64` |
+| `Roll` | `axis: i64`, `shift: i64` |
+| `SumDim` / `MeanDim` / `CumSum` | `axis: i64`, `keepdim: u8` |
+| `Cast` | `dtype_name`: length-prefixed UTF-8 (`DType::as_str()`) |
+| `Pad` | `amounts`: `u32` count then `(before:u64, after:u64)` pairs; `mode: u8`; `value: f64` |
+| `AddScalar` / `MulScalar` / `Clamp` / `PowI` | `scalars`: `f64` list |
+| `MaskedFill` | `scalars`: `f64` list; `dtype_name`: length-prefixed UTF-8 |
+| all others (empty schema) | *(empty)* → `[0,0,0,0]` |
+
+The `scan` / `scan_placeholder` / `runtime_scalar` tokens Fuel proposed are
+higher-order / leaf ops handled outside this first-order `OpAttrs` set.
+
 ---
 
 ## 8. Ratification & implementation plan
