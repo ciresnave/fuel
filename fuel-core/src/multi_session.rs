@@ -436,6 +436,26 @@ impl<'m> SessionScheduler<'m> {
     pub fn is_all_finished(&self) -> bool {
         self.sessions.iter().all(|s| s.phase == SessionPhase::Finished)
     }
+
+    /// Add a session whose FIRST advance is forced to error, for the isolation
+    /// gate (T4). After building a normal `SessionState`, this truncates its
+    /// `KvCache::layers` to empty so `cache.n_layers() == 0 != model.n_layers`,
+    /// which `forward_with_kv_context*` rejects with a typed `Error::Msg`
+    /// through the true advance path — no panic, no test-only error branch. The
+    /// scheduler catches that `Err` into `StepReport::errored` and continues.
+    #[doc(hidden)]
+    pub fn add_poisoned_session_for_test(
+        &mut self,
+        prompt: &[u32],
+        max_new: usize,
+    ) -> crate::Result<SessionId> {
+        let id = self.add_session(prompt, SamplingStrategy::Greedy, None, max_new)?;
+        if let Some(s) = self.sessions.last_mut() {
+            // Corrupt the real cache so the real forward path errors.
+            s.cache.layers.truncate(0);
+        }
+        Ok(id)
+    }
 }
 
 #[cfg(test)]
@@ -627,5 +647,47 @@ mod tests {
             &prompt, max_new, SamplingStrategy::Temperature{temp:1.0, seed:1}, None,
             &Device::cpu(), DType::F32).unwrap();
         assert_eq!(g(id1), solo, "seed 1 must match its standalone run");
+    }
+
+    #[test]
+    fn t4_session_isolation_on_error() {
+        let model = tiny_model(9999);
+        let good = [1u32,2,3];
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let bad_id  = sched.add_poisoned_session_for_test(&[4u32,5], 5).unwrap();
+        let good_id = sched.add_session(&good, SamplingStrategy::Greedy, None, 5).unwrap();
+
+        // First step: the poisoned session errors, the good one advances. No panic.
+        let r0 = sched.step().unwrap();
+        assert!(r0.errored.iter().any(|(id,_)| *id==bad_id), "poisoned session must be reported errored");
+
+        let out = sched.run_to_completion().unwrap();
+        let solo_good = model.generate_with_kv_context(
+            &good, 5, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
+        let g = out.iter().find(|(i,_)| *i==good_id).unwrap().1.clone();
+        assert_eq!(g, solo_good, "the healthy session must complete unaffected");
+    }
+
+    #[test]
+    fn t7_mid_run_add_prefills_and_joins() {
+        let model = tiny_model(9999);
+        let pa = [1u32,2,3];
+        let pb = [8u32,1];
+        let max_new = 6;
+
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let ida = sched.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
+        // Advance A alone for two steps.
+        sched.step().unwrap();
+        sched.step().unwrap();
+        // Now add B mid-run.
+        let idb = sched.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let out = sched.run_to_completion().unwrap();
+
+        let solo_a = model.generate_with_kv_context(&pa, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
+        let solo_b = model.generate_with_kv_context(&pb, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
+        let g = |id: SessionId| out.iter().find(|(i,_)| *i==id).unwrap().1.clone();
+        assert_eq!(g(ida), solo_a, "A unaffected by mid-run B");
+        assert_eq!(g(idb), solo_b, "B prefills correctly mid-run");
     }
 }
