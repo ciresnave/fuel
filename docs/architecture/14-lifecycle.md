@@ -1,6 +1,6 @@
 # Lifecycle: from model file to finished inference/training
 
-**Status**: v0.6 (2026-06-25). v0.6 reconciles the glossary + narrative to the 2026-06-20 adaptive-runtime-fusion decision ([10-decisions-log](10-decisions-log.md)): the fused-op registry is **no longer "frozen"** but two-tier runtime-extensible (G4 — Tier-1 binding table already extensible, Tier-2 trusted Fuel-orchestrated fused-op registration the new goal; untrusted user ops/rules + new primitives stay closed); the base-map/`decompose` narrative gains the **total + never-panic + primitive→self** invariant (G2); **missing-fusion telemetry** is named as distinct from the Judge (G5); the run-capture/replay passage positions the **megakernel** as the narrow, highest-risk, non-default step above captured-run replay (G6); and the optimizer narrative references the **closed-loop adaptive optimizer** with its Fuel-strategist / backend-synthesizer division (G7). v0.6 also refines Stage 5's autoregressive-barrier story: the per-pass re-bind substrate (realize binds the runtime KV append offset / `cached_len` into one stable graph instead of baking it into a fresh per-token graph) has landed at the executor/session level, framed honestly as the Intended mechanism whose substrate has shipped but is not yet wired into production decode. Core claim unchanged.
+**Status**: v0.7 (2026-07-15). **v0.7 fixes a stale claim in the Stage 2 narrative**: the "three current panicking decomposes" it once named (`nf4_matmul`, `flash_attn`, `selective_scan`) are no longer accurate — all three now carry real recipes. `nf4_matmul` and `flash_attn`'s concrete-`k_len` decode were resolved 2026-07-03; `selective_scan` (and its Mamba-2 sibling `ssd_chunk_scan`) now `decompose` to `Op::Scan` — Fuel's first sub-graph-carrying primitive, [03-ir](03-ir.md#higher-order-primitives-opscan) — closing decision G3 2026-07-15 ([10-decisions-log](10-decisions-log.md)). `flash_attn`'s symbolic-`k_len` decode remains the one separately-documented, never-crash basis gap. No core-claim change. v0.6 reconciles the glossary + narrative to the 2026-06-20 adaptive-runtime-fusion decision ([10-decisions-log](10-decisions-log.md)): the fused-op registry is **no longer "frozen"** but two-tier runtime-extensible (G4 — Tier-1 binding table already extensible, Tier-2 trusted Fuel-orchestrated fused-op registration the new goal; untrusted user ops/rules + new primitives stay closed); the base-map/`decompose` narrative gains the **total + never-panic + primitive→self** invariant (G2); **missing-fusion telemetry** is named as distinct from the Judge (G5); the run-capture/replay passage positions the **megakernel** as the narrow, highest-risk, non-default step above captured-run replay (G6); and the optimizer narrative references the **closed-loop adaptive optimizer** with its Fuel-strategist / backend-synthesizer division (G7). v0.6 also refines Stage 5's autoregressive-barrier story: the per-pass re-bind substrate (realize binds the runtime KV append offset / `cached_len` into one stable graph instead of baking it into a fresh per-token graph) has landed at the executor/session level, framed honestly as the Intended mechanism whose substrate has shipped but is not yet wired into production decode. Core claim unchanged.
 
 This is the one document that walks the **whole path**, in order: from "load a model
 from disk" to "inference or training has finished." Every other architecture section
@@ -257,8 +257,14 @@ membership, never by the return value**; a non-basis op that fails to decompose 
 opaque-op gap** (a base-map flag → the missing-fusion telemetry below), never a crash and never
 silently masquerading as a primitive. This is load-bearing for optimization *itself* — optimization
 *is* lower-to-base-map + find-best-cover, so an op that won't decompose breaks the optimizer. The
-three current panicking decomposes (`nf4_matmul.rs:120`, `flash_attn`, `selective_scan`) are **bugs
-to fix**, not a permanent category.
+three ops once flagged as panicking decomposes (`nf4_matmul.rs:120`, `flash_attn`, `selective_scan`)
+are **resolved**, not a permanent category: none actually panicked (a prior pass had already
+converted each to a self-return), and the residual work was supplying a genuine recipe rather than
+stopping a crash. `nf4_matmul` and `flash_attn`'s concrete-`k_len` decode carry total primitive
+recipes (2026-07-03); `selective_scan` (and its Mamba-2 sibling `ssd_chunk_scan`) now `decompose` to
+`Op::Scan` — Fuel's first sub-graph-carrying primitive, [03-ir](03-ir.md#higher-order-primitives-opscan)
+— closing decision G3 (2026-07-15, [10-decisions-log](10-decisions-log.md)). `flash_attn`'s
+**symbolic** `k_len` decode remains the one separately-documented, never-crash surfaced basis gap.
 
 **Intended** ([03-ir](03-ir.md), 2026-06-14 redirection): the graph is **input-independent**
 and built **at load**, not inside `forward`. Loading a native `.fuel` via `map_from_file`

@@ -87,15 +87,24 @@ Full per-item status + consumers + citations: **[`docs/frontier-architecture-gap
 
 *Already phased* (no new tracking needed, cross-referenced in the catalog): data-dependent
 shapes → Phase 8.5 `Op::NonZeroIndices` + [`data-dependent-shapes-design.md`](docs/session-prompts/data-dependent-shapes-design.md); agentic/search-on-generation hooks → Phase 9;
-graph-rewrite autograd → Phase 7.5 C; symbolic-`k_len` flash + the `Scan` gap are
-*documented* in [10-decisions-log 2026-07-03](docs/architecture/10-decisions-log.md).
+graph-rewrite autograd → Phase 7.5 C; symbolic-`k_len` flash remains a documented,
+never-crash basis gap in [10-decisions-log 2026-07-03](docs/architecture/10-decisions-log.md);
+the `Scan` gap is **CLOSED** — `Op::Scan` Phase 1 shipped, see
+[10-decisions-log 2026-07-15](docs/architecture/10-decisions-log.md).
 
 *Newly tracked orphans* (had no planning-doc home — lived only in source comments or
 nowhere; now captured so they are not forgotten):
 
-- **Higher-order `Scan` `Op`** (G3 SSM basis gap) — the constitution names the *precise ask*
-  (a build-time associative/chunked-scan enum extension) but nothing **scheduled** it. It is
-  the root unblocker for `selective_scan` + `ssd_chunk_scan`.
+- **Higher-order `Scan` `Op` — SHIPPED (2026-07-15), G3 CLOSED.** `Op::Scan` / `Op::ScanPlaceholder`
+  (Fuel's first sub-graph-carrying primitive, Phase 1) landed; `selective_scan` +
+  `ssd_chunk_scan`'s `decompose` now emit it instead of surfacing the G3 basis gap —
+  `decompose` is total over genuine primitives for the whole registered fused-op set.
+  `Op::Scan` is a base-map terminal with no native kernel in Phase 1; the fused CPU/CUDA
+  kernels remain the executed path, so this is optimizer-basis closure, not new runtime
+  capability. **Phase 2** (tracked, not yet scheduled in detail): the `early_exit`
+  data-dependent mechanism, BPTT differentiability through a scan body, and a first
+  consumer beyond SSM re-decompose (e.g. a Hopfield/associative-memory op). See
+  [10-decisions-log 2026-07-15](docs/architecture/10-decisions-log.md).
 - **SSM autoregressive decode** (`Op::SelectiveScanWithInitState`, feed `last_state` back) +
   **GPU scan dispatch** (wire the ported baracuda mamba kernels to `OpKind`) — the SSM
   long-context-decode payoff; plus the **GraniteMoEHybrid** Mamba branch (currently bails).
@@ -211,6 +220,15 @@ Phases 0–7 and the shipped portions of 7.5/7.6 + Phase C are complete; full de
 - **Judge Layer-2 decode coverage + optimize-time kernel-variant bake (2026-07-04)** — the Judge profiles f16/bf16 + decode-shaped ladders + `OpKind::FlashAttn`; a matmul `SizeClass` reconciliation fixed a latent bug (non-square matmul Judge cells were unreachable/poisoned). `variant_bake` collapses a same-device `Op::Branch` to the arm that wins on **measured** latency at optimize time (the picker resolves placement only) — the mechanism (flash-arm emitter → decode-builder wiring → bake → Judge) is proven end to end; a live CUDA flash win now needs only a bf16 decode path + a live profile.
 - **Dispatch-core cleanup Steps A/B/C/D** — backend-stamping + residency/layout-fixup → optimizer; `Op::Branch` arm-selection → the executor (`pick_route` at dispatch); `ExecutionPlan` deleted as a threaded type (`optimize_graph` returns only `OptimizedGraph`; the plan is optimizer-internal; the executor re-derives arm candidates from the graph + registry).
 - **KISS seam/verify latent-bug fixes (2026-07-14)** — four defects KISS's wire-discipline caught, each TDD-verified: `SEAM_MAGIC` "MAES"→"SEAM" byte-order (`fuel-kernel-seam-announce` + the C-header mirror in `kernel-seam-interop.md`); explicit zeroed+validated `reserved1` padding on `SeamHello`; IEEE total-order ULP distance (`fkc/verify/ulp.rs`, shared with `seed_cuda_ledger.rs`); `relu` `-0.0` preservation (`fuel-cpu-backend` chassis). See the KISS-alignment subsection for the goals/deferred items and [`docs/outreach/kiss-conformance-and-divergences.md`](docs/outreach/kiss-conformance-and-divergences.md).
+- **`Op::Scan` Phase 1 shipped (2026-07-15) — G3 CLOSED.** Fuel's first sub-graph-carrying
+  primitive (`Op::Scan` / `Op::ScanPlaceholder`, body encoded as the node's own `inputs`,
+  single-carry v1, always a 2-slot bundle); `selective_scan` + `ssd_chunk_scan`'s `decompose`
+  now emit it instead of surfacing the G3 basis gap — `decompose` is total over genuine
+  primitives for the whole registered fused-op set. `Op::Scan` is a base-map terminal with no
+  native kernel; the fused CPU/CUDA kernels remain the executed path — the payoff is
+  optimizer-basis closure, not new runtime capability. Phase 2 (early-exit mechanism, BPTT
+  differentiability, a Hopfield/associative-memory consumer) is a separate spec. See
+  [10-decisions-log 2026-07-15](docs/architecture/10-decisions-log.md).
 
 - **Missing-fusion telemetry (none today; build closed-world first).** The Judge feedback
   above measures fusions Fuel *performed*; it says nothing about fusions Fuel
