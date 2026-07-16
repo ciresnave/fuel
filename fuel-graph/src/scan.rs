@@ -220,6 +220,15 @@ mod tests {
     use fuel_ir::{DType, Shape};
     use std::sync::{Arc, RwLock};
 
+    /// Tests that build data `Const` tensors need a real device for the
+    /// slot-populating constructors. Singleton CpuBackendDevice via OnceLock
+    /// (mirrors grad.rs:216).
+    fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice> {
+        static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice>>
+            = std::sync::OnceLock::new();
+        D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+    }
+
     // Build a trivial scan: carry [1], body new_carry = carry*2, body_y =
     // new_carry, n_xs = 0, bound = 3, emit = All. Returns (graph_arc, scan_id).
     fn trivial_scan(bound: usize, emit: ScanEmit, early_exit: Option<ScanPredicate>) -> (Arc<RwLock<Graph>>, crate::NodeId) {
@@ -389,5 +398,64 @@ mod tests {
         // dedups by NodeId), never re-cloned per step.
         let const_occurrences = reachable.iter().filter(|&&n| n == const_id).count();
         assert_eq!(const_occurrences, 1, "const node must be shared (not cloned) across steps");
+    }
+
+    #[test]
+    fn scan_until_builds_early_exit_node_hashes_distinctly_and_validates() {
+        use crate::Tensor;
+        // init_carry [1]; body new_carry = carry*2; consts include threshold.
+        let init = Tensor::from_f32(vec![1.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let graph = init.graph().clone();
+        // Build the shared body + predicate at graph level, wrap as Tensor handles.
+        let (nc, thr, pred_ok) = {
+            let mut g = graph.write().unwrap();
+            let s = Shape::from_dims(&[1]);
+            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let nc   = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: s.clone(), dtype: DType::F32 });
+            let thr  = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let pred = g.push(Node { op: Op::Ge, inputs: vec![nc, thr], shape: s.clone(), dtype: DType::U8 });
+            (nc, thr, pred)
+        };
+        let nc_t   = Tensor::from_existing(graph.clone(), nc);
+        let thr_t  = Tensor::from_existing(graph.clone(), thr);
+        let pred_t = Tensor::from_existing(graph.clone(), pred_ok);
+
+        let out = init.scan_until(&[], &[thr_t.clone()], &nc_t, &nc_t, &pred_t, 5, ScanEmit::Final)
+            .expect("well-formed scan_until must build");
+        // The producer node behind the emit=Final view is an Op::Scan{early_exit: Some}.
+        let scan_id = { let g = graph.read().unwrap(); g.node(out.id()).inputs[0] };
+        {
+            let g = graph.read().unwrap();
+            match &g.node(scan_id).op {
+                Op::Scan { early_exit, .. } => assert!(early_exit.is_some(), "early_exit must be Some"),
+                other => panic!("expected Op::Scan, got {}", other.short_name()),
+            }
+            // pred_exit is the LAST input (trailing), so reachability sees it.
+            assert_eq!(*g.node(scan_id).inputs.last().unwrap(), pred_ok);
+        }
+
+        // base_map_hash distinctness: a scan with the SAME body but a DIFFERENT predicate hashes differently.
+        let thr2 = { let mut g = graph.write().unwrap();
+            g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1]), dtype: DType::F32 }) };
+        let pred2 = { let mut g = graph.write().unwrap();
+            g.push(Node { op: Op::Le, inputs: vec![nc, thr2], shape: Shape::from_dims(&[1]), dtype: DType::U8 }) };
+        let pred2_t = Tensor::from_existing(graph.clone(), pred2);
+        let out2 = init.scan_until(&[], &[Tensor::from_existing(graph.clone(), thr2)], &nc_t, &nc_t, &pred2_t, 5, ScanEmit::Final)
+            .expect("second scan_until builds");
+        let scan2 = { let g = graph.read().unwrap(); g.node(out2.id()).inputs[0] };
+        let (h1, h2) = { let g = graph.read().unwrap();
+            (crate::opt::base_map_hash(&g, scan_id), crate::opt::base_map_hash(&g, scan2)) };
+        assert_ne!(h1, h2, "different predicates must hash distinctly (predicate is a trailing input)");
+
+        // Rejection: a NON-scalar predicate is a typed Err (never a panic).
+        let big = Tensor::from_f32(vec![0.0f32, 1.0], Shape::from_dims(&[2]), cpu_dev()); // wrong graph AND non-scalar
+        assert!(init.scan_until(&[], &[thr_t.clone()], &nc_t, &nc_t, &big, 5, ScanEmit::Final).is_err(),
+            "non-same-graph / non-scalar predicate must be a typed Err");
+        // Rejection: a non-U8 predicate.
+        let f32pred = { let mut g = graph.write().unwrap();
+            g.push(Node { op: Op::Sqr, inputs: vec![nc], shape: Shape::from_dims(&[1]), dtype: DType::F32 }) };
+        let f32pred_t = Tensor::from_existing(graph.clone(), f32pred);
+        assert!(init.scan_until(&[], &[thr_t], &nc_t, &nc_t, &f32pred_t, 5, ScanEmit::Final).is_err(),
+            "non-U8 predicate must be a typed Err");
     }
 }

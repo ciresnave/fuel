@@ -5224,6 +5224,125 @@ impl Tensor {
         }
     }
 
+    /// Append an early-exit [`Op::Scan`] node — the `Result`-returning sibling
+    /// of [`Tensor::scan`] that carries a convergence predicate as the extra
+    /// trailing input (`early_exit = Some(ScanPredicate)`). `self` is the
+    /// `init_carry`; `pred_exit` is a scalar-`U8` sub-DAG over the carry
+    /// (`Op::ScanPlaceholder{Carry,0}` for the pre-step carry, and the shared
+    /// `body_new_carry` node for the post-step carry) that stops iteration when
+    /// it fires. The runtime stop count is data-dependent under the static
+    /// capacity `bound`.
+    ///
+    /// **`consts` must include every const referenced by the body OR the
+    /// predicate** — the clone/unroll machinery shares only `consts`; a
+    /// predicate const outside `consts` would be re-cloned dataless and fail at
+    /// realize.
+    ///
+    /// **Returns `Result`**: a malformed body/carry/bound, or a non-scalar /
+    /// non-`U8` / `Elem`-referencing predicate, surfaces as a typed error —
+    /// never a panic (validated at graph-build time).
+    #[allow(clippy::too_many_arguments)]
+    pub fn scan_until(
+        &self,
+        xs: &[Tensor],
+        consts: &[Tensor],
+        body_new_carry: &Tensor,
+        body_y: &Tensor,
+        pred_exit: &Tensor,
+        bound: usize,
+        emit: ScanEmit,
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
+        let same_graph = |t: &Tensor| Arc::ptr_eq(&self.graph, &t.graph);
+        if !same_graph(body_new_carry) || !same_graph(body_y) || !same_graph(pred_exit)
+            || !xs.iter().all(same_graph) || !consts.iter().all(same_graph)
+        {
+            return Err(fuel_ir::Error::Msg(
+                "scan_until: init_carry, xs, consts, body exits, and pred_exit must live on one graph".into(),
+            ).bt());
+        }
+        if bound == 0 {
+            return Err(fuel_ir::Error::Msg("scan_until: bound must be >= 1".into()).bt());
+        }
+        let carry_shape = self.shape();
+        if body_new_carry.shape().dims() != carry_shape.dims() {
+            return Err(fuel_ir::Error::Msg(format!(
+                "scan_until: body_new_carry shape {:?} must equal init_carry shape {:?}",
+                body_new_carry.shape().dims(), carry_shape.dims(),
+            )).bt());
+        }
+        // Predicate must be a scalar U8 boolean (shape [] or product == 1) — a
+        // convergence flag, not a per-element mask. Validate at build time.
+        if pred_exit.dtype() != fuel_ir::DType::U8 {
+            return Err(fuel_ir::Error::Msg(format!(
+                "scan_until: pred_exit must be U8 (a boolean flag), got {:?}", pred_exit.dtype(),
+            )).bt());
+        }
+        let pred_dims = pred_exit.shape();
+        let pred_numel: usize = pred_dims.dims().iter().product();
+        if pred_numel != 1 {
+            return Err(fuel_ir::Error::Msg(format!(
+                "scan_until: pred_exit must be a scalar (shape [] or [1]/all-ones), got {:?}",
+                pred_dims.dims(),
+            )).bt());
+        }
+        // Every ScanPlaceholder reachable from pred_exit must be Carry{0} — the
+        // predicate is over the carry, never a per-step Elem slice.
+        {
+            let g = self.graph.read().unwrap();
+            for &id in &crate::topo_order_multi(&g, &[pred_exit.id]) {
+                if let Op::ScanPlaceholder { role, index } = &g.node(id).op {
+                    let bad = matches!(role, ScanRole::Elem) || *index != 0;
+                    if bad {
+                        return Err(fuel_ir::Error::Msg(format!(
+                            "scan_until: pred_exit references ScanPlaceholder{{{role:?}, {index}}} — \
+                             the predicate may only read the carry (Carry, index 0)",
+                        )).bt());
+                    }
+                }
+            }
+        }
+        let carry_dtype = self.dtype();
+        let y_dtype = body_y.dtype();
+
+        // 2-slot bundle: slot 0 = stacked ys, slot 1 = final carry.
+        let mut ys_dims: Vec<usize> = Vec::with_capacity(1 + body_y.shape().dims().len());
+        ys_dims.push(bound);
+        ys_dims.extend_from_slice(body_y.shape().dims());
+        let ys_shape = Shape::from_dims(&ys_dims);
+        let specs = vec![
+            fuel_ir::storage::OutputViewSpec::contiguous(y_dtype, ys_shape.clone()),
+            fuel_ir::storage::OutputViewSpec::contiguous(carry_dtype, carry_shape.clone()),
+        ];
+        let (_bytes, views) = fuel_ir::storage::compose_bundle(&specs)
+            .map_err(|e| fuel_ir::Error::Msg(format!("scan_until: compose_bundle failed: {e}")).bt())?;
+
+        let mut inputs: Vec<NodeId> = Vec::with_capacity(3 + xs.len() + consts.len());
+        inputs.push(self.id);
+        inputs.extend(xs.iter().map(|t| t.id));
+        inputs.extend(consts.iter().map(|t| t.id));
+        inputs.push(body_new_carry.id);
+        inputs.push(body_y.id);
+        inputs.push(pred_exit.id);            // <-- the C1 trailing predicate
+
+        let id = {
+            let mut g = self.graph.write().unwrap();
+            let id = g.push(Node {
+                op: Op::Scan { n_xs: xs.len(), bound, emit, early_exit: Some(ScanPredicate) },
+                inputs,
+                shape: ys_shape,
+                dtype: y_dtype,
+            });
+            g.set_output_views(id, Arc::from(views.into_boxed_slice()))
+                .map_err(|e| fuel_ir::Error::Msg(format!("scan_until: set_output_views failed: {e}")).bt())?;
+            id
+        };
+        let producer = Self { graph: self.graph.clone(), id };
+        match emit {
+            ScanEmit::All => producer.view(0),
+            ScanEmit::Final => producer.view(1),
+        }
+    }
+
     /// Append a `Tril` node — lower-triangular mask along the last two
     /// dims. `diagonal = 0` keeps the main diagonal and below.
     /// `tril(diagonal = 0)` is the canonical causal-attention mask.
