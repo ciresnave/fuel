@@ -255,7 +255,6 @@ impl BatchedDecode {
         dtype: DType,
         sessions: &mut [&mut SessionState],
     ) -> crate::Result<BatchOutcome> {
-        let _ = (model, device, dtype);
         let descs: Vec<BatchDescriptor> = sessions
             .iter()
             .map(|s| BatchDescriptor {
@@ -268,11 +267,34 @@ impl BatchedDecode {
         if !batch_uniform(&descs) {
             return Ok(BatchOutcome::NotBatchable);
         }
-        // Task 8: live batched arm goes here (shared [K,..] KV buffer +
-        // flash_decoding batch wiring). Until then, a uniform ready set still
-        // returns NotBatchable so the serial fallback remains the executed,
-        // byte-exact path.
-        Ok(BatchOutcome::NotBatchable)
+
+        // Live batched arm: one batch=K decode step over a shared [K,..] KV
+        // buffer, byte-equal to K serial steps.
+        //
+        // Each session's last token is the decode input. An empty token
+        // history is impossible after a validated prefill, but the production
+        // path must not `unwrap`.
+        let last_tokens: Vec<u32> = match sessions
+            .iter()
+            .map(|s| s.tokens.last().copied())
+            .collect::<Option<Vec<u32>>>()
+        {
+            Some(v) => v,
+            None => {
+                return Err(Error::Msg(
+                    "BatchedDecode::try_batched_step: a session has no last token".to_string(),
+                )
+                .bt())
+            }
+        };
+        // Borrow each session's own KvCache. `build_batched_decode_logits`
+        // copies-in, decodes, copies-out, and bumps these caches only after the
+        // decode realize succeeds (all-or-nothing commit); on any Err no cache
+        // is mutated.
+        let mut caches: Vec<&mut crate::inference_context::KvCache> =
+            sessions.iter_mut().map(|s| &mut s.cache).collect();
+        let rows = model.build_batched_decode_logits(&mut caches, &last_tokens, device, dtype)?;
+        Ok(BatchOutcome::Advanced(rows))
     }
 }
 
@@ -896,5 +918,146 @@ mod tests {
         let g = |o: &Vec<(SessionId,Vec<u32>)>, id: SessionId| o.iter().find(|(i,_)| *i==id).unwrap().1.clone();
         assert_eq!(g(&rr,a1), g(&ba,a2));
         assert_eq!(g(&rr,b1), g(&ba,b2));
+    }
+
+    #[test]
+    fn t5_cpu_batched_step_equals_serial_step() {
+        // Two sessions, SAME prompt length, prefilled to equal cached_len,
+        // then ONE batched decode step must equal one serial step each.
+        let model = tiny_model(9999);
+        let pa = [1u32, 2, 3];
+        let pb = [4u32, 5, 6];
+
+        // Serial oracle: prefill each, take one decode step, record logits.
+        let serial_logits = |prompt: &[u32]| -> Vec<f32> {
+            use crate::inference_context::{KvCache, InferenceContext};
+            let cfg = &model.config;
+            let msl = prompt.len() + 2;
+            let mut cache = KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, DType::F32, &Device::cpu()).unwrap();
+            let mut ctx = InferenceContext::new(Device::cpu());
+            let mut sess = None;
+            let pre = model.forward_with_kv_context_persistent(prompt, &mut cache, &mut ctx, &mut sess).unwrap();
+            let next = crate::lazy::sample_logits(&pre, SamplingStrategy::Greedy, &mut 0u64);
+            model.forward_with_kv_context_persistent(&[next], &mut cache, &mut ctx, &mut sess).unwrap()
+        };
+        let sa = serial_logits(&pa);
+        let sb = serial_logits(&pb);
+
+        // Batched: build two SessionStates prefilled + first token sampled,
+        // at equal cached_len, then one try_batched_step.
+        let mut states: Vec<SessionState> = Vec::new();
+        for (id, p) in [(0u64, &pa[..]), (1u64, &pb[..])] {
+            let mut s = SessionState::new(SessionId(id),
+                ModelDims { n_layers: model.config.n_layers, n_kv_heads: model.config.n_kv_heads, head_dim: model.config.head_dim },
+                p, SamplingStrategy::Greedy, None, 2, &Device::cpu(), DType::F32).unwrap();
+            // Prefill + sample first token so cached_len == prompt.len() and
+            // last token is set (mirrors scheduler.step prefill pass).
+            s.last_logits = Some(model.forward_with_kv_context_persistent(&s.tokens.clone(), &mut s.cache, &mut s.ctx, &mut s.session).unwrap());
+            s.sample_and_append().unwrap();
+            states.push(s);
+        }
+        assert_eq!(states[0].cache.cached_len, states[1].cache.cached_len, "equal cached_len (uniform)");
+        let mut refs: Vec<&mut SessionState> = states.iter_mut().collect();
+        let outcome = BatchedDecode::try_batched_step(&model, &Device::cpu(), DType::F32, &mut refs).unwrap();
+        match outcome {
+            BatchOutcome::Advanced(rows) => {
+                assert_eq!(rows.len(), 2);
+                // Batched decode step logits == serial decode step logits (f32, ε-tol).
+                let close = |a: &[f32], b: &[f32]| a.len()==b.len() && a.iter().zip(b).all(|(x,y)| (x-y).abs() < 1e-4);
+                assert!(close(&rows[0], &sa), "batched row 0 != serial A");
+                assert!(close(&rows[1], &sb), "batched row 1 != serial B");
+            }
+            BatchOutcome::NotBatchable => panic!("uniform sessions must batch"),
+        }
+    }
+
+    #[test]
+    #[ignore = "live-GPU: RTX 4070, run locally after CUDA build; one live suite at a time"]
+    fn t5_gpu_batched_flash_equals_serial_bf16() {
+        // Same structure as t5_cpu, but Device::cuda(0) + DType::BF16 so the
+        // optimizer offers the flash_decoding batch arm. bf16 weights required
+        // (mirror lazy.rs generate_tests::make_tiny_weights_bf16).
+        //
+        // Assert batched rows == serial rows within a sabotage-calibrated ε
+        // (batched GEMM reduction order may differ from serial — see
+        // [[sabotage-test-calibration]]). Start ε = 5e-3, tighten to the
+        // measured serial-vs-serial bf16 drift floor. Confirm the flash arm is
+        // actually PICKED (temporary eprintln of the chosen arm) and that a
+        // KV-perturbation sabotage makes the test FAIL (a passing sabotage run
+        // is invalid without confirmed recompilation).
+        use crate::lazy::{LlamaConfig, LlamaModel, LayerWeights, LlamaWeights, WeightStorage};
+
+        fn bf16_weights(cfg: &LlamaConfig) -> LlamaWeights {
+            // f32 tiny weights → BF16 for every WeightStorage matrix (embedding
+            // + norm gains stay f32, per make_tiny_weights_bf16's frozen seams).
+            let mut s: u32 = 9999;
+            let mut next = || { s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1 };
+            let mut vec_of = |n: usize| -> std::sync::Arc<[f32]> {
+                std::sync::Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
+            let to_bf16 = |a: std::sync::Arc<[f32]>| -> WeightStorage {
+                WeightStorage::BF16(std::sync::Arc::from(
+                    a.iter().map(|&v| half::bf16::from_f32(v)).collect::<Vec<_>>())) };
+            let kv = cfg.n_kv_heads * cfg.head_dim;
+            LlamaWeights {
+                token_embedding: vec_of(cfg.vocab_size * cfg.dim),
+                layers: (0..cfg.n_layers).map(|_| LayerWeights {
+                    attn_q: to_bf16(vec_of(cfg.dim*cfg.dim)), attn_q_bias: None,
+                    attn_k: to_bf16(vec_of(cfg.dim*kv)), attn_k_bias: None,
+                    attn_v: to_bf16(vec_of(cfg.dim*kv)), attn_v_bias: None,
+                    attn_o: to_bf16(vec_of(cfg.dim*cfg.dim)),
+                    ffn_gate: to_bf16(vec_of(cfg.dim*cfg.ffn_dim)),
+                    ffn_up: to_bf16(vec_of(cfg.dim*cfg.ffn_dim)),
+                    ffn_down: to_bf16(vec_of(cfg.ffn_dim*cfg.dim)),
+                    attn_norm_gain: std::sync::Arc::from(vec![1.0f32; cfg.dim]),
+                    ffn_norm_gain: std::sync::Arc::from(vec![1.0f32; cfg.dim]),
+                }).collect(),
+                final_norm_gain: std::sync::Arc::from(vec![1.0f32; cfg.dim]),
+                output: to_bf16(vec_of(cfg.dim*cfg.vocab_size)),
+            }
+        }
+
+        let cfg = tiny_cfg();
+        let model = LlamaModel { config: cfg.clone(), weights: bf16_weights(&cfg) };
+        let dev = crate::cuda_backend::new_device(0).expect("cuda device 0");
+        let dt = DType::BF16;
+        let pa = [1u32, 2, 3];
+        let pb = [4u32, 5, 6];
+
+        let serial_logits = |prompt: &[u32]| -> Vec<f32> {
+            use crate::inference_context::{KvCache, InferenceContext};
+            let msl = prompt.len() + 2;
+            let mut cache = KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, dt, &dev).unwrap();
+            let mut ctx = InferenceContext::new(dev.clone());
+            let mut sess = None;
+            let pre = model.forward_with_kv_context_persistent(prompt, &mut cache, &mut ctx, &mut sess).unwrap();
+            let next = crate::lazy::sample_logits(&pre, SamplingStrategy::Greedy, &mut 0u64);
+            model.forward_with_kv_context_persistent(&[next], &mut cache, &mut ctx, &mut sess).unwrap()
+        };
+        let sa = serial_logits(&pa);
+        let sb = serial_logits(&pb);
+
+        let mut states: Vec<SessionState> = Vec::new();
+        for (id, p) in [(0u64, &pa[..]), (1u64, &pb[..])] {
+            let mut s = SessionState::new(SessionId(id),
+                ModelDims { n_layers: cfg.n_layers, n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim },
+                p, SamplingStrategy::Greedy, None, 2, &dev, dt).unwrap();
+            s.last_logits = Some(model.forward_with_kv_context_persistent(&s.tokens.clone(), &mut s.cache, &mut s.ctx, &mut s.session).unwrap());
+            s.sample_and_append().unwrap();
+            states.push(s);
+        }
+        assert_eq!(states[0].cache.cached_len, states[1].cache.cached_len, "equal cached_len (uniform)");
+        let mut refs: Vec<&mut SessionState> = states.iter_mut().collect();
+        let outcome = BatchedDecode::try_batched_step(&model, &dev, dt, &mut refs).unwrap();
+        match outcome {
+            BatchOutcome::Advanced(rows) => {
+                assert_eq!(rows.len(), 2);
+                let eps = 5e-3_f32;
+                let close = |a: &[f32], b: &[f32]| a.len()==b.len() && a.iter().zip(b).all(|(x,y)| (x-y).abs() < eps);
+                assert!(close(&rows[0], &sa), "batched row 0 != serial A (bf16 ε={eps})");
+                assert!(close(&rows[1], &sb), "batched row 1 != serial B (bf16 ε={eps})");
+            }
+            BatchOutcome::NotBatchable => panic!("uniform bf16 sessions must batch"),
+        }
     }
 }
