@@ -12,7 +12,10 @@ use crate::{Graph, Node, NodeId, Op, ScanEmit, ScanRole};
 ///
 /// Returns `(selected, complementary)`: `emit=All` -> `(stacked_ys,
 /// final_carry)`, `emit=Final` -> `(final_carry, stacked_ys)`. `early_exit =
-/// Some` -> `Err` (a surfaced Phase-2 gap, never a panic).
+/// Some` peels the trailing `pred_exit` and IGNORES it — the build-time
+/// backward/oracle unroll differentiates the full static `bound` (spec C3
+/// static-horizon note); the runtime early-exit is a forward-only optimization
+/// driven by the step driver, not this unroll.
 pub fn unroll_scan(
     graph: &mut Graph,
     scan_id: NodeId,
@@ -39,32 +42,31 @@ pub fn unroll_scan(
             }
         }
     };
-    if has_exit {
-        return Err(fuel_ir::Error::Msg(
-            "unroll_scan: early_exit = Some is a Phase-2 mechanism (not implemented)".into(),
-        ).bt());
-    }
     if steps == 0 || steps > bound {
         return Err(fuel_ir::Error::Msg(format!(
             "unroll_scan: steps {steps} must be in 1..={bound}",
         )).bt());
     }
-    // inputs = [init_carry, xs_0..xs_{n_xs-1}, consts.., body_new_carry, body_y]
-    // Minimum well-formed layout: init_carry(1) + n_xs + consts(>=0) +
-    // body_exits(2) = n_xs + 3. (n_xs + 2 is one short of the two body-exit
-    // slots — reject it here, before the `consts` slice below can panic with
-    // start > end.)
-    if inputs.len() < 3 + n_xs {
+    // inputs = [init_carry, xs_0..xs_{n_xs-1}, consts.., body_new_carry, body_y, [pred_exit]]
+    // Trailing slots: body_new_carry + body_y (+ pred_exit when early_exit = Some).
+    // Minimum well-formed layout: init_carry(1) + n_xs + consts(>=0) + n_trailing.
+    // (One short of the trailing slots — reject it here, before the `consts`
+    // slice below can panic with start > end.)
+    let n_trailing = if has_exit { 3 } else { 2 }; // body_new_carry, body_y, [pred_exit]
+    if inputs.len() < 1 + n_xs + n_trailing {
         return Err(fuel_ir::Error::Msg(format!(
-            "unroll_scan: malformed Op::Scan inputs — need >= {} (n_xs={n_xs} + 3), got {}",
-            3 + n_xs, inputs.len(),
+            "unroll_scan: malformed Op::Scan inputs — need >= {} (init_carry + n_xs={n_xs} + {n_trailing} trailing), got {}",
+            1 + n_xs + n_trailing, inputs.len(),
         )).bt());
     }
     let init_carry = inputs[0];
     let xs: Vec<NodeId> = inputs[1..1 + n_xs].to_vec();
-    let consts: Vec<NodeId> = inputs[1 + n_xs..inputs.len() - 2].to_vec();
-    let body_new_carry = inputs[inputs.len() - 2];
-    let body_y = inputs[inputs.len() - 1];
+    let consts: Vec<NodeId> = inputs[1 + n_xs..inputs.len() - n_trailing].to_vec();
+    let body_new_carry = inputs[inputs.len() - n_trailing];
+    let body_y = inputs[inputs.len() - n_trailing + 1];
+    // pred_exit = inputs[inputs.len() - 1] when has_exit — intentionally NOT read; the
+    // build-time backward unroll differentiates the full static `bound` and ignores the
+    // runtime early-exit predicate (spec C3 "static-horizon note").
     let consts_set: std::collections::HashSet<NodeId> = consts.iter().copied().collect();
 
     // 2. Validate every ScanPlaceholder reachable from the body's two exit
@@ -256,11 +258,36 @@ mod tests {
     }
 
     #[test]
-    fn unroll_scan_rejects_early_exit_some() {
-        let (graph, scan) = trivial_scan(2, ScanEmit::All, Some(ScanPredicate));
-        let mut g = graph.write().unwrap();
-        let r = unroll_scan(&mut g, scan, 2);
-        assert!(r.is_err(), "early_exit = Some must be a typed Err (Phase-2 gap), never a panic");
+    fn unroll_scan_early_exit_some_peels_predicate_and_unrolls() {
+        // early_exit = Some layout: [carry, consts=[thr], body_new_carry, body_y, pred_exit].
+        // unroll must PEEL pred_exit, IGNORE it, and emit a 3-step Concat with no scan nodes.
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let scan = {
+            let mut g = graph.write().unwrap();
+            let s = Shape::from_dims(&[1]);
+            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let thr   = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let hole  = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let nc    = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: s.clone(), dtype: DType::F32 });
+            // predicate sub-DAG over the post-step carry (ignored by unroll).
+            let pred  = g.push(Node { op: Op::Ge, inputs: vec![nc, thr], shape: s.clone(), dtype: DType::U8 });
+            g.push(Node {
+                op: Op::Scan { n_xs: 0, bound: 3, emit: ScanEmit::All, early_exit: Some(ScanPredicate) },
+                inputs: vec![carry, thr, nc, nc, pred], // consts=[thr], new_carry=nc, y=nc, pred_exit=pred
+                shape: Shape::from_dims(&[3, 1]),
+                dtype: DType::F32,
+            })
+        };
+        let (ys, _carry) = {
+            let mut g = graph.write().unwrap();
+            unroll_scan(&mut g, scan, 3).expect("unroll must peel + ignore the predicate")
+        };
+        let g = graph.read().unwrap();
+        assert!(matches!(g.node(ys).op, Op::Concat { .. }), "emit=All ys root should be Concat");
+        assert_eq!(g.node(ys).inputs.len(), 3, "one input per step");
+        let reachable = crate::topo_order_multi(&g, &[ys]);
+        assert!(!reachable.iter().any(|&n| matches!(g.node(n).op, Op::Scan { .. } | Op::ScanPlaceholder { .. })),
+            "unrolled graph must contain no Scan/ScanPlaceholder nodes");
     }
 
     #[test]
