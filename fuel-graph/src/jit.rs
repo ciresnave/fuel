@@ -144,6 +144,40 @@ fn op_to_attrs(op: &Op) -> OpAttrs {
         }
         // Squeeze/Unsqueeze → single-element `dims` (F1).
         Op::Unsqueeze { dim } | Op::Squeeze { dim } => a.dims = vec![*dim as u8],
+        // --- Convergence Increment A: the full first-order set ---
+        // Slice → axis(dim) + start + len.
+        Op::Slice { dim, start, len } => {
+            a.axis = Some(*dim as i64);
+            a.slice_start = Some(*start as u64);
+            a.slice_len = Some(*len as u64);
+        }
+        // Concat/Flip → axis(dim).
+        Op::Concat { dim } | Op::Flip { dim } => a.axis = Some(*dim as i64),
+        // Roll → axis(dim) + signed shift.
+        Op::Roll { dim, shift } => {
+            a.axis = Some(*dim as i64);
+            a.roll_shift = Some(*shift);
+        }
+        // Cast → target dtype name (dep-free; fuel-graph maps back via FromStr).
+        Op::Cast(dt) => a.cast_dtype = Some(dt.as_str().to_string()),
+        // Iota len rides `target_shape` as the single-element output shape
+        // (mirrors how `target_shape` already serves BroadcastTo + Reshape).
+        Op::Iota { len } => a.target_shape = vec![*len as i64],
+        // Pad → per-axis amounts + mode code + constant value.
+        Op::Pad { padding, mode, value } => {
+            a.pad_amounts = padding.iter().map(|&(b, e)| (b as u64, e as u64)).collect();
+            a.pad_mode = Some(match mode {
+                crate::PadMode::Constant => 0,
+                crate::PadMode::Reflect => 1,
+                crate::PadMode::Replicate => 2,
+            });
+            a.pad_value = Some(*value);
+        }
+        // MaskedFill → value on scalars[0] + its dtype on cast_dtype.
+        Op::MaskedFill { value } => {
+            a.scalars = vec![value.to_f64()];
+            a.cast_dtype = Some(value.dtype().as_str().to_string());
+        }
         _ => {}
     }
     a
@@ -328,6 +362,30 @@ mod tests {
         assert_eq!(op_to_tag(&Op::ReluInplace), None);
         assert_eq!(op_to_tag(&Op::Const), None);
         assert_eq!(op_to_tag(&Op::Release), None);
+    }
+
+    #[test]
+    fn op_to_attrs_projects_new_first_order_params() {
+        use fuel_ir::DType;
+        // Cast → cast_dtype name.
+        let a = op_to_attrs(&Op::Cast(DType::F16));
+        assert_eq!(a.cast_dtype.as_deref(), Some("f16"));
+        // Slice → axis(dim) + start + len.
+        let a = op_to_attrs(&Op::Slice { dim: 2, start: 3, len: 5 });
+        assert_eq!((a.axis, a.slice_start, a.slice_len), (Some(2), Some(3), Some(5)));
+        // Concat → axis(dim).
+        assert_eq!(op_to_attrs(&Op::Concat { dim: 1 }).axis, Some(1));
+        // Roll → axis(dim) + roll_shift.
+        let a = op_to_attrs(&Op::Roll { dim: 0, shift: -2 });
+        assert_eq!((a.axis, a.roll_shift), (Some(0), Some(-2)));
+        // Flip → axis(dim).
+        assert_eq!(op_to_attrs(&Op::Flip { dim: 1 }).axis, Some(1));
+        // Pad → amounts + mode + value.
+        let a = op_to_attrs(&Op::Pad { padding: vec![(1, 1), (0, 2)], mode: crate::PadMode::Constant, value: 0.5 });
+        assert_eq!(a.pad_amounts, vec![(1, 1), (0, 2)]);
+        assert_eq!((a.pad_mode, a.pad_value), (Some(0), Some(0.5)));
+        // Iota len rides target_shape.
+        assert_eq!(op_to_attrs(&Op::Iota { len: 7 }).target_shape, vec![7]);
     }
 
     // ---- the structural matcher (match_region) -------------------------------
