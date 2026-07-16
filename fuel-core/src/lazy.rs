@@ -7375,8 +7375,15 @@ impl LlamaModel {
     }
 
     /// Multi-session serving Increment 1 (C3): one **live batched** decode step
-    /// over K sessions' KV caches, byte-equal to K serial single-session
+    /// over K sessions' KV caches, matching K serial single-session
     /// `forward_with_kv_context_persistent([last_token], …)` steps.
+    ///
+    /// This is a SEPARATE batch=K plan-once graph, so its float reduction order
+    /// differs from the batch=1 serial arm: the guarantee is **ε-close** (logits
+    /// within 1e-4) and **token-identical** on tested shapes, NOT bit-exact.
+    /// KNOWN LIMITATION: on a real model with near-tied logits, ε-level drift
+    /// could flip a greedy argmax and diverge the batched token stream from the
+    /// serial one — the parity gates use tiny models where this does not occur.
     ///
     /// All K caches must be **uniform** — equal `cached_len`, `max_seq_len`,
     /// `n_layers`, dtype (the scheduler's uniformity gate guarantees this so
@@ -7451,6 +7458,18 @@ impl LlamaModel {
                     "build_batched_decode_logits: non-uniform caches (cached_len/max_seq_len)"
                         .to_string(),
                 )
+                .bt());
+            }
+            // Fail-fast: the cache's own dtype must match the requested
+            // (scheduler) dtype. The shared buffer + graph placeholders are
+            // built at `dtype`; binding a different-width cache Arc would be a
+            // byte-reinterpretation (caught deep inside realize as a confusing
+            // byte-count error — reject it here at call time instead).
+            if c.dtype != Some(cache_dtype) {
+                return Err(fuel_ir::Error::Msg(format!(
+                    "build_batched_decode_logits: cache {i} dtype {:?} != requested dtype {:?}",
+                    c.dtype, cache_dtype
+                ))
                 .bt());
             }
         }
@@ -7606,9 +7625,28 @@ impl LlamaModel {
 
         // ---- (4) Copy-out + commit: overwrite each session's cache with its
         // slot (prefix + the freshly-written position `cached_len`), then bump.
-        // Only reached after the decode realize above SUCCEEDED — no cache was
-        // mutated before this point, so an earlier Err leaves every session
-        // untouched (all-or-nothing). ----
+        //
+        // Safety of the all-or-nothing contract (spec risk #7). Copy-out is
+        // ITSELF a fallible batched realize — the whole `realize_kv_write_targets`
+        // call below writes all 2·n_layers·K slabs in one shot, and a failure
+        // mid-way could leave some session caches rewritten and others not.
+        // That partial state is nonetheless benign, for THREE reasons, none of
+        // which is "no cache was mutated":
+        //   (a) each session's KV is PRIVATE (T1 isolation) — a copy-out into
+        //       session i can never touch session j's buffer;
+        //   (b) on ANY `Err` returned from here, the scheduler's `advance_batched`
+        //       Err arm forces EVERY batch member to Finished-with-error (see
+        //       `multi_session::SessionScheduler::advance_batched`), so no
+        //       partially-written session is ever decoded again;
+        //   (c) `cached_len` is NOT bumped until AFTER copy-out fully succeeds,
+        //       and the copy-out rewrite is idempotent over the read region
+        //       `[0, cached_len)` (it re-copies the identical prefix), so a
+        //       partial copy-out cannot corrupt what a subsequent read would see.
+        // WARNING: this safety hinges on (c) — NEVER commit `cached_len`
+        // separately from (before) copy-out, and NEVER retry a batch-errored
+        // session. Either change turns a partial copy-out into silent KV
+        // corruption (a bumped `cached_len` over a half-written position, or a
+        // retry that reads stale/partial slots). ----
         {
             let anchor =
                 LazyTensor::from_f32(Arc::from(vec![0.0f32]), Shape::from_dims(&[1]), &Device::cpu());
