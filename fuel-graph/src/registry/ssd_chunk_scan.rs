@@ -5,7 +5,8 @@
 //!
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry` (shape/dtype rules,
-//!   panicking `decompose`, stubbed pattern).
+//!   a total `decompose` to an `Op::Scan` recipe (G3 closed — see the
+//!   architectural note below), stubbed pattern).
 //!
 //! Inputs: `[x, dt, a, b, c]` — matches baracuda's
 //! `ssd_chunk_scan_*_run` 5-input signature exactly (no optional
@@ -44,14 +45,40 @@
 //! continuation. That wrapping is the caller's responsibility today;
 //! v1 of the fused op mirrors baracuda's bare signature.
 //!
-//! ## Architectural note — no primitive decomposition
+//! ## Architectural note — the SSM `Scan` primitive (G3 closed)
 //!
-//! Same precedent as [`super::selective_scan`] and
-//! [`super::causal_conv1d`]: the recurrence is sequential, and
-//! synthesizing it from primitives would yield `O(seqlen)` nodes
-//! (or `O(seqlen × heads × head_dim × state_dim)` for the fully
-//! unrolled form). [`decompose`] panics; backends without a native
-//! kernel use the executor's `cpu_fallback` path.
+//! Same precedent as [`super::selective_scan`]: SsdChunkScan *was* the twin of
+//! the constitution's **canonical basis gap** (decisions-log G3, 2026-06-20 —
+//! "a higher-order `Scan` for SSMs"). Synthesizing the recurrence from
+//! pre-`Scan` primitives was inadmissible — the `O(seqlen)` unroll is an
+//! unbounded, un-re-fusable explosion, and `CumSum` is only an *unweighted*
+//! cumulative sum that cannot carry the per-step gating coefficient
+//! `exp(dt·a)`. That primitive now exists ([`crate::Op::Scan`], Phase 1), so
+//! [`decompose`] emits it — closing G3 (part 2).
+//!
+//! [`decompose`] lowers `Op::Fused(SSD_CHUNK_SCAN)` to an `Op::Scan` whose body
+//! is the affine step `h ← exp(dt·a)·h + dt·b·x`; `y_t = Σ_state(h·c)`. The gate
+//! `exp(dt·a_h)` is a per-head **scalar** (`a` is `[heads]`, broadcast across the
+//! whole `head_dim×state_dim` block — simpler than selective_scan's per-`(dim,
+//! dstate)` vector gate); there is **no** softplus. `Op::Scan` is a base-map
+//! terminal (no `LoweringRule` matches it), realized either by `unroll_scan`
+//! (the numeric verify oracle / kernel-absent fallback) or — the **executed
+//! production path** — by dispatching the *fused* op to its CPU/CUDA kernel.
+//! `chunk_size` is a documented CPU no-op: both the chunked GPU path and this
+//! recipe re-decompose to the SAME sequential affine scan over all `seqlen`
+//! tokens (the mathematical result is identical).
+//!
+//! **Phase-1 multi-output limitation.** The fused node is a 2-slot bundle
+//! (slot 0 = `y`, slot 1 = `last_state`). The `Op::Scan` naturally stacks each
+//! per-step `y_t` on axis 0 (`[seqlen,batch,heads,head_dim]`); the decompose
+//! transposes it back to `y [batch,seqlen,heads,head_dim]` (slot 0, correct for
+//! general seqlen) and re-attaches the `output_views` bundle contract so
+//! `Op::View(0)/(1)` keep their shapes. Realizing `last_state` (slot 1) *via the
+//! decomposed graph* fails loudly today (the kernel-less `Op::Scan` makes any
+//! realize-through-decompose surface a typed error, not silent garbage); wiring
+//! it is a Phase-2 item before `Op::Scan` gets a kernel. Because the executor
+//! runs the fused kernel (which writes both slots) and the oracle unrolls `ys`
+//! directly, this is an inert, documented Phase-1 gap — not a live path.
 //!
 //! ## Why `BackwardKind::NotDifferentiable` for v1
 //!
@@ -65,9 +92,10 @@ use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
     PatternMatch, SubgraphPattern,
 };
-use crate::{Graph, NodeId};
+use crate::{Graph, Node, NodeId, Op, ScanEmit, ScanRole};
 use fuel_ir::storage::OutputViewSpec;
 use fuel_ir::{DType, Layout, Shape};
+use std::sync::Arc;
 
 /// Metadata-side registry entry for SsdChunkScan. Multi-output (item
 /// 3 consumer migration, 2026-06-01): slot 0 = `y`, slot 1 =
@@ -154,20 +182,204 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// SsdChunkScan is a genuine **basis gap** (G2, 2026-06-20). Mamba-2's
-/// State-Space-Duality scan is a sequential state-space recurrence (per-token
-/// decay `exp(dt·a)` threaded through a hidden state, plus the chunked
-/// algorithm's inter-chunk state propagation — a second sequential layer).
-/// Fuel lacks the higher-order **`Scan`** primitive (a parameterized linear/
-/// associative recurrence over the sequence dim) needed to express it without
-/// unrolling to `O(seqlen)` nodes; `CumSum` is only an *unweighted* cumulative
-/// sum and cannot carry the per-step gating coefficient. Per G2 `decompose` is
-/// total + never-panic: with no expressible recipe it returns **self** (a
-/// surfaced opaque-op gap), decomposing once a `Scan` primitive lands — the
-/// identical gap as `selective_scan::decompose`. Backends without a native
-/// kernel use the executor's `cpu_fallback`.
-pub fn decompose(_graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
-    id
+/// Total decomposition of SsdChunkScan to an [`crate::Op::Scan`] recipe —
+/// closing decisions-log G3 ("a higher-order `Scan` for SSMs"), part 2 (the twin
+/// of `selective_scan`). The `Op::Scan` carries the affine Mamba-2 SSD step as
+/// its body: carry `h [batch,heads,head_dim,state_dim]` initialized to zero,
+/// four per-step slices (`x_t`, `dt_t`, `b_t`, `c_t`), and `a` as the single
+/// const; `bound = seqlen`, `emit = All`, **no** softplus. The body is
+/// `gate = exp(bc(dt_t)·bc(a))` — a per-head SCALAR gate broadcast across the
+/// whole `head_dim×state_dim` block (`a` is `[heads]`) — `dbx = bc(dt_t)·bc(b_t)·
+/// bc(x_t)`, `h_new = gate·h + dbx`, `y_t = Σ_state(h_new·bc(c_t))`.
+///
+/// The per-step series are transposed to be seqlen-major (scan axis 0) for
+/// `unroll_scan`'s `Slice{dim:0}`. The returned node re-attaches the 2-slot
+/// `output_views` bundle contract (slot 0 = `y`, transposed to
+/// `[batch,seqlen,heads,head_dim]`; slot 1 = `last_state`) — see the module note
+/// on the Phase-1 `last_state`-realize limitation. `chunk_size` is a documented
+/// CPU no-op (both this and the chunked GPU path re-decompose to the SAME
+/// sequential scan), so it does not appear in the recipe.
+///
+/// Per G2 (2026-06-20) this is total + never-panic: the only self-returns are
+/// the belt-and-suspenders wrong-params / malformed-shape guards (structurally
+/// impossible for a well-formed `SSD_CHUNK_SCAN` node), which are the driver's
+/// fixpoint signal, not a crash. The recipe is the *math* the kernel computes;
+/// the fused CPU/CUDA kernel stays the executed production path — the optimizer
+/// chooses between them by cost, and `unroll_scan` provides the verify oracle.
+pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
+    // Confirm this id really is an SSD_CHUNK_SCAN node. `chunk_size` is a
+    // documented CPU no-op (same sequential scan regardless), so we don't read
+    // its value into the recipe.
+    match params {
+        FusedOpParams::SsdChunkScan { .. } => {}
+        // Wrong params for this id — can't decompose; return self (fixpoint).
+        _ => return id,
+    }
+
+    // Read the 5 input NodeIds + shapes/dtype in a short borrow.
+    let (x_id, dt_id, a_id, b_id, c_id, x_shape, dt_shape, a_shape, b_shape, c_shape, dtype) = {
+        let n = graph.node(id);
+        // Defensive: a well-formed SSD_CHUNK_SCAN node has exactly 5 inputs.
+        // Malformed → fixpoint self-return (never panic).
+        if n.inputs.len() != 5 {
+            return id;
+        }
+        let x_shape = graph.node(n.inputs[0]).shape.clone();
+        let dt_shape = graph.node(n.inputs[1]).shape.clone();
+        let a_shape = graph.node(n.inputs[2]).shape.clone();
+        let b_shape = graph.node(n.inputs[3]).shape.clone();
+        let c_shape = graph.node(n.inputs[4]).shape.clone();
+        (
+            n.inputs[0], n.inputs[1], n.inputs[2], n.inputs[3], n.inputs[4],
+            x_shape, dt_shape, a_shape, b_shape, c_shape, n.dtype,
+        )
+    };
+
+    let x_dims = x_shape.dims();
+    let b_dims = b_shape.dims();
+    // Defensive shape guards — malformed → fixpoint self-return.
+    if x_dims.len() != 4 || b_dims.len() != 4 {
+        return id;
+    }
+    let batch = x_dims[0];
+    let seqlen = x_dims[1];
+    let heads = x_dims[2];
+    let head_dim = x_dims[3];
+    let state_dim = b_dims[3];
+
+    let carry_shape = Shape::from_dims(&[batch, heads, head_dim, state_dim]);
+    let elem_x = Shape::from_dims(&[batch, heads, head_dim]); // x_t
+    let elem_dt = Shape::from_dims(&[batch, heads]); // dt_t
+    let elem_state = Shape::from_dims(&[batch, heads, state_dim]); // b_t / c_t
+
+    // Broadcast helpers up to the carry shape [batch,heads,head_dim,state_dim].
+    // Each captures only the Copy extents + dtype (no Shape borrow), building
+    // the full target locally — mirrors selective_scan's `bc_from_*`.
+    // dt_t [batch,heads] -> [batch,heads,1,1] -> carry.
+    let bc_dt = |graph: &mut Graph, src: NodeId| -> NodeId {
+        let mid = Shape::from_dims(&[batch, heads, 1, 1]);
+        let full = Shape::from_dims(&[batch, heads, head_dim, state_dim]);
+        let re = graph.push(Node { op: Op::Reshape(mid.clone()), inputs: vec![src], shape: mid, dtype });
+        graph.push(Node { op: Op::BroadcastTo(full.clone()), inputs: vec![re], shape: full, dtype })
+    };
+    // x_t [batch,heads,head_dim] -> [batch,heads,head_dim,1] -> carry.
+    let bc_x = |graph: &mut Graph, src: NodeId| -> NodeId {
+        let mid = Shape::from_dims(&[batch, heads, head_dim, 1]);
+        let full = Shape::from_dims(&[batch, heads, head_dim, state_dim]);
+        let re = graph.push(Node { op: Op::Reshape(mid.clone()), inputs: vec![src], shape: mid, dtype });
+        graph.push(Node { op: Op::BroadcastTo(full.clone()), inputs: vec![re], shape: full, dtype })
+    };
+    // {b_t,c_t} [batch,heads,state_dim] -> [batch,heads,1,state_dim] -> carry.
+    let bc_state = |graph: &mut Graph, src: NodeId| -> NodeId {
+        let mid = Shape::from_dims(&[batch, heads, 1, state_dim]);
+        let full = Shape::from_dims(&[batch, heads, head_dim, state_dim]);
+        let re = graph.push(Node { op: Op::Reshape(mid.clone()), inputs: vec![src], shape: mid, dtype });
+        graph.push(Node { op: Op::BroadcastTo(full.clone()), inputs: vec![re], shape: full, dtype })
+    };
+    // a [heads] -> [1,heads,1,1] -> carry (the scalar-per-head gate coefficient).
+    let bc_a = |graph: &mut Graph, src: NodeId| -> NodeId {
+        let mid = Shape::from_dims(&[1, heads, 1, 1]);
+        let full = Shape::from_dims(&[batch, heads, head_dim, state_dim]);
+        let re = graph.push(Node { op: Op::Reshape(mid.clone()), inputs: vec![src], shape: mid, dtype });
+        graph.push(Node { op: Op::BroadcastTo(full.clone()), inputs: vec![re], shape: full, dtype })
+    };
+
+    // ---- 1. per-step series with the scan (seqlen) axis moved to dim 0, so
+    // `unroll_scan`'s `Slice{dim:0}` addresses each timestep.
+    // x/b/c: Permute([1,0,2,3]); dt (rank 3): Permute([1,0,2]).
+    let x_ser_shape = Shape::from_dims(&[seqlen, batch, heads, head_dim]);
+    let dt_ser_shape = Shape::from_dims(&[seqlen, batch, heads]);
+    let bc_ser_shape = Shape::from_dims(&[seqlen, batch, heads, state_dim]);
+    let x_ser = graph.push(Node { op: Op::Permute(vec![1, 0, 2, 3]), inputs: vec![x_id], shape: x_ser_shape.clone(), dtype });
+    let dt_ser = graph.push(Node { op: Op::Permute(vec![1, 0, 2]), inputs: vec![dt_id], shape: dt_ser_shape, dtype });
+    let b_ser = graph.push(Node { op: Op::Permute(vec![1, 0, 2, 3]), inputs: vec![b_id], shape: bc_ser_shape.clone(), dtype });
+    let c_ser = graph.push(Node { op: Op::Permute(vec![1, 0, 2, 3]), inputs: vec![c_id], shape: bc_ser_shape, dtype });
+
+    // ---- 2. init_carry: zero [batch,heads,head_dim,state_dim], derived without
+    // a data-carrying Const (a `decompose` fn has no device handle): broadcast
+    // `a` up to the carry shape and multiply by 0.
+    let a_bc0 = bc_a(graph, a_id);
+    let init_carry = graph.push(Node {
+        op: Op::MulScalar(0.0), inputs: vec![a_bc0], shape: carry_shape.clone(), dtype,
+    });
+
+    // ---- 3. the body: h ← exp(dt·a)·h + dt·b·x ; y = Σ_state(h·c). Carry h and
+    // the per-step holes reference ScanPlaceholders; `a` is the const.
+    let h = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: carry_shape.clone(), dtype });
+    let x_t = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 }, inputs: vec![], shape: elem_x.clone(), dtype });
+    let dt_t = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 1 }, inputs: vec![], shape: elem_dt.clone(), dtype });
+    let b_t = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 2 }, inputs: vec![], shape: elem_state.clone(), dtype });
+    let c_t = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 3 }, inputs: vec![], shape: elem_state.clone(), dtype });
+
+    // gate = Exp( bc(dt_t) ⊙ bc(a) ) — SCALAR-per-head gate (a is [heads])
+    // broadcast across the whole head_dim×state_dim block.
+    let dt_g = bc_dt(graph, dt_t);
+    let a_g = bc_a(graph, a_id);
+    let da = graph.push(Node { op: Op::Mul, inputs: vec![dt_g, a_g], shape: carry_shape.clone(), dtype });
+    let gate = graph.push(Node { op: Op::Exp, inputs: vec![da], shape: carry_shape.clone(), dtype });
+
+    // dbx = bc(dt_t) ⊙ bc(b_t) ⊙ bc(x_t)  (= dt · b · x, no softplus)
+    let dt_b = bc_dt(graph, dt_t);
+    let b_body = bc_state(graph, b_t);
+    let x_body = bc_x(graph, x_t);
+    let db = graph.push(Node { op: Op::Mul, inputs: vec![dt_b, b_body], shape: carry_shape.clone(), dtype });
+    let dbx = graph.push(Node { op: Op::Mul, inputs: vec![db, x_body], shape: carry_shape.clone(), dtype });
+
+    // h_new = gate ⊙ h + dbx   (body_new_carry)
+    let gh = graph.push(Node { op: Op::Mul, inputs: vec![gate, h], shape: carry_shape.clone(), dtype });
+    let h_new = graph.push(Node { op: Op::Add, inputs: vec![gh, dbx], shape: carry_shape.clone(), dtype });
+
+    // y_t = ReduceSumTo_state( h_new ⊙ bc(c_t) ) -> [batch,heads,head_dim] (body_y)
+    let c_body = bc_state(graph, c_t);
+    let hc = graph.push(Node { op: Op::Mul, inputs: vec![h_new, c_body], shape: carry_shape.clone(), dtype });
+    let y_keep_shape = Shape::from_dims(&[batch, heads, head_dim, 1]);
+    let y_keep = graph.push(Node {
+        op: Op::ReduceSumTo(y_keep_shape.clone()), inputs: vec![hc], shape: y_keep_shape, dtype,
+    });
+    let y_t = graph.push(Node {
+        op: Op::Reshape(elem_x.clone()), inputs: vec![y_keep], shape: elem_x.clone(), dtype,
+    });
+
+    // ---- 4. the Op::Scan node. Natural 2-slot bundle: slot 0 = stacked ys
+    // [seqlen,batch,heads,head_dim], slot 1 = final carry.
+    let ys_stacked_shape = Shape::from_dims(&[seqlen, batch, heads, head_dim]);
+    let scan = graph.push(Node {
+        op: Op::Scan { n_xs: 4, bound: seqlen, emit: ScanEmit::All, early_exit: None },
+        inputs: vec![init_carry, x_ser, dt_ser, b_ser, c_ser, a_id, h_new, y_t],
+        shape: ys_stacked_shape.clone(),
+        dtype,
+    });
+    let scan_specs = vec![
+        OutputViewSpec::contiguous(dtype, ys_stacked_shape.clone()),
+        OutputViewSpec::contiguous(dtype, carry_shape.clone()),
+    ];
+    if let Ok((_bytes, views)) = fuel_ir::storage::compose_bundle(&scan_specs) {
+        let _ = graph.set_output_views(scan, Arc::from(views.into_boxed_slice()));
+    }
+
+    // ---- 5. reconcile the axis order. `Op::Scan{emit=All}` stacks each y_t on
+    // axis 0 -> [seqlen,batch,heads,head_dim]; `y` must be
+    // [batch,seqlen,heads,head_dim]. Project slot 0 and transpose seqlen/batch.
+    let ys_raw = graph.push(Node {
+        op: Op::View { slot: 0 }, inputs: vec![scan], shape: ys_stacked_shape, dtype,
+    });
+    let y_shape = Shape::from_dims(&[batch, seqlen, heads, head_dim]);
+    let y = graph.push(Node {
+        op: Op::Permute(vec![1, 0, 2, 3]), inputs: vec![ys_raw], shape: y_shape, dtype,
+    });
+
+    // ---- 6. re-present the SsdChunkScan 2-slot bundle contract (slot 0 = y
+    // [batch,seqlen,heads,head_dim], slot 1 = last_state [batch,heads,head_dim,
+    // state_dim]) on the return node so the existing `Op::View(0)/(1)` consumers
+    // keep their shapes. See the module note on the Phase-1 `last_state` realize
+    // gap (kernel-less Op::Scan makes realize-through-decompose fail loudly).
+    let input_shapes = [x_shape, dt_shape, a_shape, b_shape, c_shape];
+    let input_dtypes = [dtype, dtype, dtype, dtype, dtype];
+    let ss_specs = output_views(&input_shapes, &input_dtypes, params);
+    if let Ok((_bytes, views)) = fuel_ir::storage::compose_bundle(&ss_specs) {
+        let _ = graph.set_output_views(y, Arc::from(views.into_boxed_slice()));
+    }
+    y
 }
 
 /// Matcher stub — SsdChunkScan nodes originate from the explicit

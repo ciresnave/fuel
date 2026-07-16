@@ -6328,10 +6328,11 @@ nonzero_indices_kernel!(nonzero_indices_u32, u32, |v: &u32| *v != 0);
 // SsdChunkScan — Mamba-2's State-Space Duality chunked scan (forward)
 // =============================================================================
 //
-// v1 supports only the single-chunk case (chunk_size == seqlen) —
-// the chunked algorithm degenerates to a multi-head selective scan
-// in this regime. Multi-chunk with proper inter-chunk decay
-// propagation is a follow-up.
+// The CPU kernel runs a straight sequential scan over all `seqlen`
+// tokens (`chunk_size` is a validated-but-inert GPU parallelism knob
+// on CPU — see the `ssd_chunk_scan_kernel!` doc comment below for the
+// full rationale). The mathematical result is identical for any
+// `chunk_size ∈ [1, seqlen]` that divides seqlen.
 //
 // Per-timestep recurrence (per (batch b, head h, head_dim i)):
 //
