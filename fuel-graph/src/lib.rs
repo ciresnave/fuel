@@ -5182,6 +5182,13 @@ impl Tensor {
                 body_new_carry.shape().dims(), carry_shape.dims(),
             )).bt());
         }
+        // Validate body placeholders at graph-build time (single-carry; every
+        // Elem index < n_xs) so a malformed body is a typed Err here, not a
+        // later `elem[index]` panic on the unroll / forward-driver path.
+        {
+            let g = self.graph.read().unwrap();
+            crate::scan::validate_scan_body_placeholders(&g, &[body_new_carry.id, body_y.id], xs.len())?;
+        }
         let carry_dtype = self.dtype();
         let y_dtype = body_y.dtype();
 
@@ -5270,6 +5277,13 @@ impl Tensor {
                 "scan_until: body_new_carry shape {:?} must equal init_carry shape {:?}",
                 body_new_carry.shape().dims(), carry_shape.dims(),
             )).bt());
+        }
+        // Validate body placeholders at graph-build time (single-carry; every
+        // Elem index < n_xs) so a malformed body is a typed Err here, not a
+        // later `elem[index]` panic in the forward driver's build_scan_step.
+        {
+            let g = self.graph.read().unwrap();
+            crate::scan::validate_scan_body_placeholders(&g, &[body_new_carry.id, body_y.id], xs.len())?;
         }
         // Predicate must be a scalar U8 boolean (shape [] or product == 1) — a
         // convergence flag, not a per-element mask. Validate at build time.
@@ -7359,9 +7373,10 @@ impl Tensor {
 
         // C3 pre-pass (Op::Scan Phase 2): lower every reachable Op::Scan to
         // primitives + decompose the SSM fused recipes BEFORE the topo order is
-        // taken, so the reverse walk sees only differentiable primitives. A
-        // no-op on scan-free graphs (one extra topo scan, no rewiring). The
-        // (possibly remapped) root replaces self.id everywhere below.
+        // taken, so the reverse walk sees only differentiable primitives. On a
+        // scan-free graph it is a near-no-op — two topo scans (Pass 1's SSM
+        // collect + Pass 2's first iteration, which finds no scans and breaks),
+        // no rewiring. The (possibly remapped) root replaces self.id below.
         let root = lower_scans_for_backward(&graph_handle, self.id);
 
         // Compute topological order of reachable nodes, then reverse it
@@ -9698,12 +9713,16 @@ impl Tensor {
                     // The real per-arm routing lands with the builders.
                 }
                 Op::Scan { .. } => {
-                    // Unreachable on any graph that went through backward(): the
-                    // C3 pre-pass (lower_scans_for_backward) unrolls every
-                    // Op::Scan to primitives before the topo order is taken.
-                    // Reaching here means the pre-pass did not run (or a
-                    // malformed scan that unroll rejected survived) — an
-                    // internal bug / usage error, not a live differentiation.
+                    // Defensive `panic!` — `backward() -> GradMap` is infallible
+                    // (no Err channel), so this is an internal-error guard in the
+                    // same infallible walk that already panics for QMatMul /
+                    // PagedAttn, NOT a recoverable typed error. It is unreachable
+                    // via the public builders: the C3 pre-pass
+                    // (lower_scans_for_backward) unrolls every Op::Scan to
+                    // primitives before the topo order is taken, and the builders
+                    // always emit the View consumers the pre-pass's remap +
+                    // never-hang guard lower away. Reaching here means the
+                    // pre-pass did not run (an internal bug).
                     panic!("Tensor::backward: Op::Scan reached the reverse walk un-lowered — \
                             the C3 lower_scans_for_backward pre-pass did not run (internal bug).");
                 }
@@ -10172,7 +10191,8 @@ fn lower_scans_for_backward(graph: &SharedGraph, root: NodeId) -> NodeId {
         // consumer remap (e.g. a malformed scan that unroll rejects, or a raw
         // scan producer with no View consumers), stop rather than re-scanning
         // the same unchanged graph forever. Any residual Op::Scan then reaches
-        // the C4 defensive backward arm (a usage error), never an infinite loop.
+        // the C4 defensive `panic!` guard (backward is infallible, so it cannot
+        // return an error) — an internal-bug signal, never an infinite loop.
         if remap.is_empty() { break; }
         apply_remap(graph, &remap, &mut root);
         // Unrolled graphs contain no Op::Scan, so a well-formed graph terminates
