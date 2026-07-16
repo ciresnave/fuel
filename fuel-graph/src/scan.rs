@@ -8,11 +8,50 @@ use std::collections::HashMap;
 
 use crate::{Graph, Node, NodeId, Op, ScanEmit, ScanRole};
 
+/// Validate every `Op::ScanPlaceholder` reachable from the scan body's exit
+/// `roots` (`[body_new_carry, body_y]`, optionally the predicate) has an
+/// in-range index: v1 is **single-carry** (`Carry` index must be 0), and every
+/// `Elem` index must address one of the `n_xs` per-step slices. This keeps the
+/// later `clone_body_node`/`build_scan_step` `elem[index]` access infallible by
+/// construction — so a malformed body is a typed **build-time** `Err` (from the
+/// `Tensor::scan` / `Tensor::scan_until` builders) rather than a mid-realize
+/// `elem[index]` panic on the forward-driver path. Short immutable borrow only.
+pub(crate) fn validate_scan_body_placeholders(
+    graph: &Graph,
+    roots: &[NodeId],
+    n_xs: usize,
+) -> std::result::Result<(), fuel_ir::Error> {
+    let reachable = crate::topo_order_multi(graph, roots);
+    for &id in &reachable {
+        if let Op::ScanPlaceholder { role, index } = &graph.node(id).op {
+            match *role {
+                ScanRole::Carry if *index != 0 => {
+                    return Err(fuel_ir::Error::Msg(format!(
+                        "scan: body node {} is ScanPlaceholder{{Carry, {index}}} — v1 is single-carry, index must be 0",
+                        id.0,
+                    )).bt());
+                }
+                ScanRole::Elem if *index >= n_xs => {
+                    return Err(fuel_ir::Error::Msg(format!(
+                        "scan: body node {} is ScanPlaceholder{{Elem, {index}}} out of range (n_xs = {n_xs})",
+                        id.0,
+                    )).bt());
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Unroll `steps` iterations of the `Op::Scan` at `scan_id` into primitives.
 ///
 /// Returns `(selected, complementary)`: `emit=All` -> `(stacked_ys,
 /// final_carry)`, `emit=Final` -> `(final_carry, stacked_ys)`. `early_exit =
-/// Some` -> `Err` (a surfaced Phase-2 gap, never a panic).
+/// Some` peels the trailing `pred_exit` and IGNORES it — the build-time
+/// backward/oracle unroll differentiates the full static `bound` (spec C3
+/// static-horizon note); the runtime early-exit is a forward-only optimization
+/// driven by the step driver, not this unroll.
 pub fn unroll_scan(
     graph: &mut Graph,
     scan_id: NodeId,
@@ -39,61 +78,37 @@ pub fn unroll_scan(
             }
         }
     };
-    if has_exit {
-        return Err(fuel_ir::Error::Msg(
-            "unroll_scan: early_exit = Some is a Phase-2 mechanism (not implemented)".into(),
-        ).bt());
-    }
     if steps == 0 || steps > bound {
         return Err(fuel_ir::Error::Msg(format!(
             "unroll_scan: steps {steps} must be in 1..={bound}",
         )).bt());
     }
-    // inputs = [init_carry, xs_0..xs_{n_xs-1}, consts.., body_new_carry, body_y]
-    // Minimum well-formed layout: init_carry(1) + n_xs + consts(>=0) +
-    // body_exits(2) = n_xs + 3. (n_xs + 2 is one short of the two body-exit
-    // slots — reject it here, before the `consts` slice below can panic with
-    // start > end.)
-    if inputs.len() < 3 + n_xs {
+    // inputs = [init_carry, xs_0..xs_{n_xs-1}, consts.., body_new_carry, body_y, [pred_exit]]
+    // Trailing slots: body_new_carry + body_y (+ pred_exit when early_exit = Some).
+    // Minimum well-formed layout: init_carry(1) + n_xs + consts(>=0) + n_trailing.
+    // (One short of the trailing slots — reject it here, before the `consts`
+    // slice below can panic with start > end.)
+    let n_trailing = if has_exit { 3 } else { 2 }; // body_new_carry, body_y, [pred_exit]
+    if inputs.len() < 1 + n_xs + n_trailing {
         return Err(fuel_ir::Error::Msg(format!(
-            "unroll_scan: malformed Op::Scan inputs — need >= {} (n_xs={n_xs} + 3), got {}",
-            3 + n_xs, inputs.len(),
+            "unroll_scan: malformed Op::Scan inputs — need >= {} (init_carry + n_xs={n_xs} + {n_trailing} trailing), got {}",
+            1 + n_xs + n_trailing, inputs.len(),
         )).bt());
     }
     let init_carry = inputs[0];
     let xs: Vec<NodeId> = inputs[1..1 + n_xs].to_vec();
-    let consts: Vec<NodeId> = inputs[1 + n_xs..inputs.len() - 2].to_vec();
-    let body_new_carry = inputs[inputs.len() - 2];
-    let body_y = inputs[inputs.len() - 1];
+    let consts: Vec<NodeId> = inputs[1 + n_xs..inputs.len() - n_trailing].to_vec();
+    let body_new_carry = inputs[inputs.len() - n_trailing];
+    let body_y = inputs[inputs.len() - n_trailing + 1];
+    // pred_exit = inputs[inputs.len() - 1] when has_exit — intentionally NOT read; the
+    // build-time backward unroll differentiates the full static `bound` and ignores the
+    // runtime early-exit predicate (spec C3 "static-horizon note").
     let consts_set: std::collections::HashSet<NodeId> = consts.iter().copied().collect();
 
     // 2. Validate every ScanPlaceholder reachable from the body's two exit
-    // nodes has an in-range index, BEFORE any cloning/mutation: v1 is
-    // single-carry (Carry index must be 0), and Elem index must address one
-    // of the n_xs per-step slices. This keeps `clone_body_node`'s `elem[index]`
-    // access infallible by construction. Short immutable borrow only.
-    {
-        let reachable = crate::topo_order_multi(graph, &[body_new_carry, body_y]);
-        for &id in &reachable {
-            if let Op::ScanPlaceholder { role, index } = &graph.node(id).op {
-                match *role {
-                    ScanRole::Carry if *index != 0 => {
-                        return Err(fuel_ir::Error::Msg(format!(
-                            "unroll_scan: body node {} is ScanPlaceholder{{Carry, {index}}} — v1 is single-carry, index must be 0",
-                            id.0,
-                        )).bt());
-                    }
-                    ScanRole::Elem if *index >= n_xs => {
-                        return Err(fuel_ir::Error::Msg(format!(
-                            "unroll_scan: body node {} is ScanPlaceholder{{Elem, {index}}} out of range (n_xs = {n_xs})",
-                            id.0,
-                        )).bt());
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
+    // nodes has an in-range index, BEFORE any cloning/mutation (shared with the
+    // build-time check in Tensor::scan / Tensor::scan_until).
+    validate_scan_body_placeholders(graph, &[body_new_carry, body_y], n_xs)?;
 
     // 3. Validate every xs[i] has a leading (scan-axis) dim >= steps: the
     // per-step `Slice { dim: 0, start: t, len: 1 }` below needs `t` in range
@@ -210,6 +225,105 @@ fn clone_body_node(
     mapped
 }
 
+/// The parsed input layout of an [`Op::Scan`] node — the fields the early-exit
+/// step driver needs, extracted from the trailing-input encoding.
+pub struct ScanLayout {
+    pub n_xs: usize,
+    pub bound: usize,
+    pub emit: ScanEmit,
+    pub init_carry: NodeId,
+    pub xs: Vec<NodeId>,
+    pub consts: Vec<NodeId>,
+    pub body_new_carry: NodeId,
+    pub body_y: NodeId,
+    /// `Some` when `early_exit = Some` — the scalar-`U8` convergence predicate.
+    pub pred_exit: Option<NodeId>,
+}
+
+/// One materialized scan step: the post-step carry, the emitted `y`, and the
+/// (optional) realized `stop` predicate node for this step.
+pub struct ScanStep {
+    pub new_carry: NodeId,
+    pub y: NodeId,
+    pub stop: Option<NodeId>,
+}
+
+/// Parse an [`Op::Scan`] node's trailing-input layout. Mirrors the parse in
+/// [`unroll_scan`], including the `early_exit`-aware trailing count, but yields
+/// a struct the step driver can drive one step at a time. Returns a typed
+/// `Err` for a non-`Op::Scan` node or a malformed (too-short) input layout.
+pub fn parse_scan_layout(graph: &Graph, scan_id: NodeId)
+    -> std::result::Result<ScanLayout, fuel_ir::Error>
+{
+    if scan_id.0 >= graph.len() {
+        return Err(fuel_ir::Error::Msg(format!(
+            "parse_scan_layout: scan_id {} is out of range (graph has {} nodes)",
+            scan_id.0, graph.len(),
+        )).bt());
+    }
+    let n = graph.node(scan_id);
+    let (n_xs, bound, emit, has_exit) = match &n.op {
+        Op::Scan { n_xs, bound, emit, early_exit } => (*n_xs, *bound, *emit, early_exit.is_some()),
+        other => {
+            return Err(fuel_ir::Error::Msg(format!(
+                "parse_scan_layout: node {} is not an Op::Scan ({})",
+                scan_id.0, other.short_name(),
+            )).bt());
+        }
+    };
+    let inputs = &n.inputs;
+    let n_trailing = if has_exit { 3 } else { 2 }; // body_new_carry, body_y, [pred_exit]
+    if inputs.len() < 1 + n_xs + n_trailing {
+        return Err(fuel_ir::Error::Msg(format!(
+            "parse_scan_layout: malformed Op::Scan inputs — need >= {} (init_carry + n_xs={n_xs} + {n_trailing} trailing), got {}",
+            1 + n_xs + n_trailing, inputs.len(),
+        )).bt());
+    }
+    let init_carry = inputs[0];
+    let xs: Vec<NodeId> = inputs[1..1 + n_xs].to_vec();
+    let consts: Vec<NodeId> = inputs[1 + n_xs..inputs.len() - n_trailing].to_vec();
+    let body_new_carry = inputs[inputs.len() - n_trailing];
+    let body_y = inputs[inputs.len() - n_trailing + 1];
+    let pred_exit = has_exit.then(|| inputs[inputs.len() - 1]);
+    Ok(ScanLayout { n_xs, bound, emit, init_carry, xs, consts, body_new_carry, body_y, pred_exit })
+}
+
+/// Materialize one step of a scan at step index `t` with the given `carry`
+/// NodeId. Slices each `xs[i]` at `[t, t+1)` (squeezed), clones `body_new_carry`
+/// / `body_y` / `pred_exit` with a **single shared** substitution map so that a
+/// `pred_exit` referencing `body_new_carry` resolves to *this step's* new carry
+/// (no double-clone). Returns the post-step carry, `y`, and the optional `stop`
+/// predicate node.
+pub fn build_scan_step(graph: &mut Graph, layout: &ScanLayout, t: usize, carry: NodeId)
+    -> std::result::Result<ScanStep, fuel_ir::Error>
+{
+    // per-step elem slices: xs[i] sliced [t,t+1) on axis 0, squeezed.
+    let mut elem: Vec<NodeId> = Vec::with_capacity(layout.n_xs);
+    for &x in &layout.xs {
+        let (x_shape, x_dtype) = { let n = graph.node(x); (n.shape.clone(), n.dtype) };
+        if x_shape.dims().first().map_or(true, |&d0| d0 <= t) {
+            return Err(fuel_ir::Error::Msg(format!(
+                "build_scan_step: xs slice at t={t} out of range for shape {:?}", x_shape.dims())).bt());
+        }
+        let sliced: Vec<usize> = std::iter::once(1usize).chain(x_shape.dims().iter().skip(1).copied()).collect();
+        let sl = graph.push(Node { op: Op::Slice { dim: 0, start: t, len: 1 },
+            inputs: vec![x], shape: fuel_ir::Shape::from_dims(&sliced), dtype: x_dtype });
+        let sq_dims: Vec<usize> = x_shape.dims().iter().skip(1).copied().collect();
+        let sq = graph.push(Node { op: Op::Squeeze { dim: 0 },
+            inputs: vec![sl], shape: fuel_ir::Shape::from_dims(&sq_dims), dtype: x_dtype });
+        elem.push(sq);
+    }
+    let consts_set: std::collections::HashSet<NodeId> = layout.consts.iter().copied().collect();
+    let mut subst: HashMap<NodeId, NodeId> = HashMap::new();
+    // Clone body_new_carry FIRST so subst records body_new_carry -> new_carry,
+    // then clone body_y and pred_exit sharing subst (spec "Predicate referencing
+    // body_new_carry" — no double-clone).
+    let new_carry = clone_body_node(graph, layout.body_new_carry, carry, &elem, &consts_set, &mut subst);
+    let y = clone_body_node(graph, layout.body_y, carry, &elem, &consts_set, &mut subst);
+    let stop = layout.pred_exit.map(|p| clone_body_node(graph, p, carry, &elem, &consts_set, &mut subst));
+    Ok(ScanStep { new_carry, y, stop })
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{Graph, Node, Op, ScanEmit, ScanPredicate, ScanRole};
@@ -217,6 +331,15 @@ mod tests {
     use crate::opt::lower_to_base_map;
     use fuel_ir::{DType, Shape};
     use std::sync::{Arc, RwLock};
+
+    /// Tests that build data `Const` tensors need a real device for the
+    /// slot-populating constructors. Singleton CpuBackendDevice via OnceLock
+    /// (mirrors grad.rs:216).
+    fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice> {
+        static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice>>
+            = std::sync::OnceLock::new();
+        D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+    }
 
     // Build a trivial scan: carry [1], body new_carry = carry*2, body_y =
     // new_carry, n_xs = 0, bound = 3, emit = All. Returns (graph_arc, scan_id).
@@ -256,11 +379,36 @@ mod tests {
     }
 
     #[test]
-    fn unroll_scan_rejects_early_exit_some() {
-        let (graph, scan) = trivial_scan(2, ScanEmit::All, Some(ScanPredicate));
-        let mut g = graph.write().unwrap();
-        let r = unroll_scan(&mut g, scan, 2);
-        assert!(r.is_err(), "early_exit = Some must be a typed Err (Phase-2 gap), never a panic");
+    fn unroll_scan_early_exit_some_peels_predicate_and_unrolls() {
+        // early_exit = Some layout: [carry, consts=[thr], body_new_carry, body_y, pred_exit].
+        // unroll must PEEL pred_exit, IGNORE it, and emit a 3-step Concat with no scan nodes.
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let scan = {
+            let mut g = graph.write().unwrap();
+            let s = Shape::from_dims(&[1]);
+            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let thr   = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let hole  = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let nc    = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: s.clone(), dtype: DType::F32 });
+            // predicate sub-DAG over the post-step carry (ignored by unroll).
+            let pred  = g.push(Node { op: Op::Ge, inputs: vec![nc, thr], shape: s.clone(), dtype: DType::U8 });
+            g.push(Node {
+                op: Op::Scan { n_xs: 0, bound: 3, emit: ScanEmit::All, early_exit: Some(ScanPredicate) },
+                inputs: vec![carry, thr, nc, nc, pred], // consts=[thr], new_carry=nc, y=nc, pred_exit=pred
+                shape: Shape::from_dims(&[3, 1]),
+                dtype: DType::F32,
+            })
+        };
+        let (ys, _carry) = {
+            let mut g = graph.write().unwrap();
+            unroll_scan(&mut g, scan, 3).expect("unroll must peel + ignore the predicate")
+        };
+        let g = graph.read().unwrap();
+        assert!(matches!(g.node(ys).op, Op::Concat { .. }), "emit=All ys root should be Concat");
+        assert_eq!(g.node(ys).inputs.len(), 3, "one input per step");
+        let reachable = crate::topo_order_multi(&g, &[ys]);
+        assert!(!reachable.iter().any(|&n| matches!(g.node(n).op, Op::Scan { .. } | Op::ScanPlaceholder { .. })),
+            "unrolled graph must contain no Scan/ScanPlaceholder nodes");
     }
 
     #[test]
@@ -362,5 +510,178 @@ mod tests {
         // dedups by NodeId), never re-cloned per step.
         let const_occurrences = reachable.iter().filter(|&&n| n == const_id).count();
         assert_eq!(const_occurrences, 1, "const node must be shared (not cloned) across steps");
+    }
+
+    #[test]
+    fn scan_until_builds_early_exit_node_hashes_distinctly_and_validates() {
+        use crate::Tensor;
+        // init_carry [1]; body new_carry = carry*2; consts include threshold.
+        let init = Tensor::from_f32(vec![1.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let graph = init.graph().clone();
+        // Build the shared body + predicate at graph level, wrap as Tensor handles.
+        let (nc, thr, pred_ok) = {
+            let mut g = graph.write().unwrap();
+            let s = Shape::from_dims(&[1]);
+            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let nc   = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: s.clone(), dtype: DType::F32 });
+            let thr  = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let pred = g.push(Node { op: Op::Ge, inputs: vec![nc, thr], shape: s.clone(), dtype: DType::U8 });
+            (nc, thr, pred)
+        };
+        let nc_t   = Tensor::from_existing(graph.clone(), nc);
+        let thr_t  = Tensor::from_existing(graph.clone(), thr);
+        let pred_t = Tensor::from_existing(graph.clone(), pred_ok);
+
+        let out = init.scan_until(&[], &[thr_t.clone()], &nc_t, &nc_t, &pred_t, 5, ScanEmit::Final)
+            .expect("well-formed scan_until must build");
+        // The producer node behind the emit=Final view is an Op::Scan{early_exit: Some}.
+        let scan_id = { let g = graph.read().unwrap(); g.node(out.id()).inputs[0] };
+        {
+            let g = graph.read().unwrap();
+            match &g.node(scan_id).op {
+                Op::Scan { early_exit, .. } => assert!(early_exit.is_some(), "early_exit must be Some"),
+                other => panic!("expected Op::Scan, got {}", other.short_name()),
+            }
+            // pred_exit is the LAST input (trailing), so reachability sees it.
+            assert_eq!(*g.node(scan_id).inputs.last().unwrap(), pred_ok);
+        }
+
+        // base_map_hash distinctness: a scan with the SAME body but a DIFFERENT predicate hashes differently.
+        let thr2 = { let mut g = graph.write().unwrap();
+            g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1]), dtype: DType::F32 }) };
+        let pred2 = { let mut g = graph.write().unwrap();
+            g.push(Node { op: Op::Le, inputs: vec![nc, thr2], shape: Shape::from_dims(&[1]), dtype: DType::U8 }) };
+        let pred2_t = Tensor::from_existing(graph.clone(), pred2);
+        let out2 = init.scan_until(&[], &[Tensor::from_existing(graph.clone(), thr2)], &nc_t, &nc_t, &pred2_t, 5, ScanEmit::Final)
+            .expect("second scan_until builds");
+        let scan2 = { let g = graph.read().unwrap(); g.node(out2.id()).inputs[0] };
+        let (h1, h2) = { let g = graph.read().unwrap();
+            (crate::opt::base_map_hash(&g, scan_id), crate::opt::base_map_hash(&g, scan2)) };
+        assert_ne!(h1, h2, "different predicates must hash distinctly (predicate is a trailing input)");
+
+        // Rejection: a NON-scalar predicate is a typed Err (never a panic).
+        let big = Tensor::from_f32(vec![0.0f32, 1.0], Shape::from_dims(&[2]), cpu_dev()); // wrong graph AND non-scalar
+        assert!(init.scan_until(&[], &[thr_t.clone()], &nc_t, &nc_t, &big, 5, ScanEmit::Final).is_err(),
+            "non-same-graph / non-scalar predicate must be a typed Err");
+        // Rejection: a non-U8 predicate.
+        let f32pred = { let mut g = graph.write().unwrap();
+            g.push(Node { op: Op::Sqr, inputs: vec![nc], shape: Shape::from_dims(&[1]), dtype: DType::F32 }) };
+        let f32pred_t = Tensor::from_existing(graph.clone(), f32pred);
+        assert!(init.scan_until(&[], &[thr_t], &nc_t, &nc_t, &f32pred_t, 5, ScanEmit::Final).is_err(),
+            "non-U8 predicate must be a typed Err");
+    }
+
+    #[test]
+    fn build_scan_step_shares_subst_so_predicate_reads_this_steps_new_carry() {
+        // Scan: carry [1]; new_carry = carry*2; pred = Ge(new_carry, thr). n_xs=0, bound=4.
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let scan = {
+            let mut g = graph.write().unwrap();
+            let s = Shape::from_dims(&[1]);
+            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let thr   = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let hole  = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let nc    = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: s.clone(), dtype: DType::F32 });
+            let pred  = g.push(Node { op: Op::Ge, inputs: vec![nc, thr], shape: s.clone(), dtype: DType::U8 });
+            g.push(Node {
+                op: Op::Scan { n_xs: 0, bound: 4, emit: ScanEmit::Final, early_exit: Some(ScanPredicate) },
+                inputs: vec![carry, thr, nc, nc, pred],
+                shape: Shape::from_dims(&[4, 1]),
+                dtype: DType::F32,
+            })
+        };
+        let layout = { let g = graph.read().unwrap(); crate::scan::parse_scan_layout(&g, scan).expect("layout") };
+        assert!(layout.pred_exit.is_some());
+        let init = layout.init_carry;
+        let step = { let mut g = graph.write().unwrap(); crate::scan::build_scan_step(&mut g, &layout, 0, init).expect("step") };
+        let stop = step.stop.expect("early-exit scan yields a stop node");
+        // The predicate clone must reach step.new_carry (the shared post-step carry),
+        // and must reach NO ScanPlaceholder (all substituted away).
+        let g = graph.read().unwrap();
+        let reach = crate::topo_order_multi(&g, &[stop]);
+        assert!(reach.contains(&step.new_carry), "pred must read THIS step's new_carry (shared subst)");
+        assert!(!reach.iter().any(|&n| matches!(g.node(n).op, Op::ScanPlaceholder { .. })),
+            "no placeholders survive a materialized step");
+        // The Ge's first input IS the step's new_carry — proof there was no double-clone.
+        let ge_inputs = &g.node(stop).inputs;
+        assert_eq!(ge_inputs[0], step.new_carry, "predicate's post-step operand is the shared new_carry");
+    }
+
+    #[test]
+    fn scan_until_rejects_out_of_range_elem_placeholder_at_build_time() {
+        use crate::Tensor;
+        // n_xs = 1, but the body references ScanPlaceholder{Elem, 5} — out of
+        // range. Must be a typed BUILD-TIME Err (before this fix the node built
+        // fine and the forward driver's build_scan_step -> clone_body_node
+        // panicked with elem[5] index-OOB — a never-panic regression).
+        let init = Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let graph = init.graph().clone();
+        let (x, nc, thr, pred) = {
+            let mut g = graph.write().unwrap();
+            let s = Shape::from_dims(&[1]);
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 1]), dtype: DType::F32 });
+            let bad_elem = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 5 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let carry_hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let nc = g.push(Node { op: Op::Add, inputs: vec![carry_hole, bad_elem], shape: s.clone(), dtype: DType::F32 });
+            let thr = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let pred = g.push(Node { op: Op::Ge, inputs: vec![carry_hole, thr], shape: s.clone(), dtype: DType::U8 });
+            (x, nc, thr, pred)
+        };
+        let x_t = Tensor::from_existing(graph.clone(), x);
+        let thr_t = Tensor::from_existing(graph.clone(), thr);
+        let nc_t = Tensor::from_existing(graph.clone(), nc);
+        let pred_t = Tensor::from_existing(graph.clone(), pred);
+        let r = init.scan_until(&[x_t], &[thr_t], &nc_t, &nc_t, &pred_t, 3, ScanEmit::Final);
+        assert!(r.is_err(), "scan_until must reject body Elem{{index >= n_xs}} at build time, not panic in the driver");
+    }
+
+    #[test]
+    fn scan_rejects_out_of_range_elem_placeholder_at_build_time() {
+        use crate::Tensor;
+        // Base builder shares the same missing build-time check (Phase 1 only
+        // avoided the panic because unroll_scan was its sole forward path).
+        let init = Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let graph = init.graph().clone();
+        let (x, nc) = {
+            let mut g = graph.write().unwrap();
+            let s = Shape::from_dims(&[1]);
+            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 1]), dtype: DType::F32 });
+            let bad_elem = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 5 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let carry_hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let nc = g.push(Node { op: Op::Add, inputs: vec![carry_hole, bad_elem], shape: s.clone(), dtype: DType::F32 });
+            (x, nc)
+        };
+        let x_t = Tensor::from_existing(graph.clone(), x);
+        let nc_t = Tensor::from_existing(graph.clone(), nc);
+        let r = init.scan(&[x_t], &[], &nc_t, &nc_t, 3, ScanEmit::Final);
+        assert!(r.is_err(), "base scan must also reject body Elem{{index >= n_xs}} at build time");
+    }
+
+    #[test]
+    fn backward_lowers_op_scan_and_no_longer_panics() {
+        use crate::Tensor;
+        // Affine scan: carry[1]; consts a,b; new_carry = a*carry + b; emit=Final. bound=3.
+        let init = Tensor::from_f32(vec![1.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let a = Tensor::from_existing(init.graph().clone(), init.id()).const_f32_like(vec![0.5f32], Shape::from_dims(&[1]));
+        let b = Tensor::from_existing(init.graph().clone(), init.id()).const_f32_like(vec![0.1f32], Shape::from_dims(&[1]));
+        let graph = init.graph().clone();
+        let nc = {
+            let mut g = graph.write().unwrap();
+            let s = Shape::from_dims(&[1]);
+            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let ac   = g.push(Node { op: Op::Mul, inputs: vec![a.id(), hole], shape: s.clone(), dtype: DType::F32 });
+            g.push(Node { op: Op::Add, inputs: vec![ac, b.id()], shape: s.clone(), dtype: DType::F32 })
+        };
+        let nc_t = Tensor::from_existing(graph.clone(), nc);
+        let out = init.scan(&[], &[a.clone(), b.clone()], &nc_t, &nc_t, 3, ScanEmit::Final).expect("scan");
+        // backward() must NOT panic (Phase 1 arm panics here) and must yield a grad for init_carry.
+        let grads = out.backward();
+        let g_init = grads.get(&init).expect("gradient for init_carry");
+        // The gradient's subgraph must contain no Op::Scan/ScanPlaceholder (proof of lowering).
+        let g = graph.read().unwrap();
+        let reach = crate::topo_order_multi(&g, &[g_init.id()]);
+        assert!(!reach.iter().any(|&n| matches!(g.node(n).op, Op::Scan { .. } | Op::ScanPlaceholder { .. })),
+            "backward must lower the scan before differentiating");
+        assert!(grads.get(&a).is_some() && grads.get(&b).is_some(), "consts a,b get gradients (BPTT)");
     }
 }

@@ -2174,6 +2174,188 @@ mod tests {
         assert!(oracle.iter().any(|&v| (v - 12.0).abs() < 1e-4), "oracle y=12, got {oracle:?}");
     }
 
+    // ---- Op::Scan Phase 2 (C3/C4/C5): numeric BPTT finite-difference gates ---
+    //
+    // Prove the lower_scans_for_backward pre-pass gradients are correct against
+    // finite differences over the SAME unrolled graph (self-consistent, decoupled
+    // from kernel F64-accumulate parity). These need realize, so they live here.
+
+    #[test]
+    fn affine_scan_bptt_matches_finite_difference() {
+        use fuel_graph::{Tensor, ScanEmit, Node, Op, ScanRole};
+        use fuel_ir::{DType, Shape};
+        let dev = Device::cpu();
+        // f(init, a, b): carry_{t+1} = a*carry_t + b, carry_0 = init, bound = 3, loss = carry_3.
+        // Closed form: carry_3 = a^3*init + b*(a^2 + a + 1). d/dinit = a^3.
+        let build = |init_v: f32, a_v: f32, b_v: f32| -> (std::sync::Arc<std::sync::RwLock<fuel_graph::Graph>>, fuel_graph::NodeId, fuel_graph::Tensor, fuel_graph::Tensor, fuel_graph::Tensor) {
+            let init = Tensor::from_f32(vec![init_v], Shape::from_dims(&[1]), &*dev.as_dyn());
+            let g = init.graph().clone();
+            let a = Tensor::from_existing(g.clone(), init.id()).const_f32_like(vec![a_v], Shape::from_dims(&[1]));
+            let b = Tensor::from_existing(g.clone(), init.id()).const_f32_like(vec![b_v], Shape::from_dims(&[1]));
+            let nc = {
+                let mut gw = g.write().unwrap();
+                let s = Shape::from_dims(&[1]);
+                let hole = gw.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+                let ac = gw.push(Node { op: Op::Mul, inputs: vec![a.id(), hole], shape: s.clone(), dtype: DType::F32 });
+                gw.push(Node { op: Op::Add, inputs: vec![ac, b.id()], shape: s.clone(), dtype: DType::F32 })
+            };
+            let nc_t = Tensor::from_existing(g.clone(), nc);
+            let out = init.scan(&[], &[a.clone(), b.clone()], &nc_t, &nc_t, 3, ScanEmit::Final).expect("scan");
+            (g, out.id(), init, a, b)
+        };
+        // Forward value via unroll+realize (self-consistent oracle).
+        let fwd = |init_v: f32, a_v: f32, b_v: f32| -> f32 {
+            let (g, out_id, _i, _a, _b) = build(init_v, a_v, b_v);
+            let scan_id = { let gr = g.read().unwrap(); gr.node(out_id).inputs[0] };
+            let carry = { let mut gw = g.write().unwrap();
+                fuel_graph::scan::unroll_scan(&mut gw, scan_id, 3).expect("unroll").0 }; // emit=Final -> selected=final_carry
+            crate::pipelined_bridge::realize_one_as::<f32>(&g, carry, &dev).expect("realize")[0]
+        };
+        // Autograd grad w.r.t. init at (1.0, 0.5, 0.1).
+        let (g, out_id, init, a, b) = build(1.0, 0.5, 0.1);
+        let out = fuel_graph::Tensor::from_existing(g.clone(), out_id);
+        let grads = out.backward();
+        let realize_grad = |t: &fuel_graph::Tensor| crate::pipelined_bridge::realize_one_as::<f32>(&g, grads.get(t).expect("grad").id(), &dev).expect("realize grad")[0];
+        let g_init = realize_grad(&init);
+        let g_a = realize_grad(&a);
+        let g_b = realize_grad(&b);
+        // Central finite differences.
+        let h = 1e-3f32;
+        let fd = |dinit: f32, da: f32, db: f32| (fwd(1.0+dinit, 0.5+da, 0.1+db) - fwd(1.0-dinit, 0.5-da, 0.1-db)) / (2.0*h);
+        assert!((g_init - fd(h,0.0,0.0)).abs() < 2e-2, "d/dinit: autograd {g_init} vs FD {}", fd(h,0.0,0.0));
+        assert!((g_a - fd(0.0,h,0.0)).abs() < 2e-2, "d/da: autograd {g_a} vs FD {}", fd(0.0,h,0.0));
+        assert!((g_b - fd(0.0,0.0,h)).abs() < 2e-2, "d/db: autograd {g_b} vs FD {}", fd(0.0,0.0,h));
+    }
+
+    #[test]
+    fn selective_scan_is_differentiable_backward_matches_fd() {
+        let dev = Device::cpu();
+        let fwd = |u_v: f32| -> f32 {
+            let u = LazyTensor::from_f32(vec![u_v], Shape::from_dims(&[1,1,1]), &dev);
+            let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1,1,1]));
+            let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1,1]));
+            let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1,1,1]));
+            let c = u.const_f32_like(vec![4.0f32], Shape::from_dims(&[1,1,1]));
+            u.selective_scan(&delta, &a, &b, &c, false).realize_f32()[0]
+        };
+        // Autograd at u=2.0.
+        let u = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1,1,1]), &dev);
+        let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1,1,1]));
+        let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1,1]));
+        let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1,1,1]));
+        let c = u.const_f32_like(vec![4.0f32], Shape::from_dims(&[1,1,1]));
+        let y = u.selective_scan(&delta, &a, &b, &c, false);
+        let grads = y.inner.backward();
+        let g_u_id = grads.get(u.graph_tensor()).expect("grad u").id();
+        let g_u = crate::pipelined_bridge::realize_one_as::<f32>(&u.inner.graph().clone(), g_u_id, &dev).expect("realize")[0];
+        let h = 1e-3;
+        let fd = (fwd(2.0+h) - fwd(2.0-h)) / (2.0*h);
+        assert!((g_u - fd).abs() < 5e-2, "selective_scan d/du: autograd {g_u} vs FD {fd}");
+    }
+
+    #[test]
+    fn ssd_chunk_scan_is_differentiable_backward_matches_fd() {
+        let dev = Device::cpu();
+        // x [batch,seqlen,heads,head_dim]=[1,1,1,1]; dt [b,s,h]=[1,1,1]; a [heads]=[1];
+        // b/c [b,s,h,state]=[1,1,1,1]. Single step: h = dt*b*x = 1.5x, y = c*h = 6x (linear).
+        let fwd = |x_v: f32| -> f32 {
+            let x = LazyTensor::from_f32(vec![x_v], Shape::from_dims(&[1,1,1,1]), &dev);
+            let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1,1,1]));
+            let a = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
+            let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1,1,1,1]));
+            let c = x.const_f32_like(vec![4.0f32], Shape::from_dims(&[1,1,1,1]));
+            x.ssd_chunk_scan(&dt, &a, &b, &c, 1).realize_f32()[0]
+        };
+        // Autograd at x=2.0.
+        let x = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1,1,1,1]), &dev);
+        let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1,1,1]));
+        let a = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
+        let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1,1,1,1]));
+        let c = x.const_f32_like(vec![4.0f32], Shape::from_dims(&[1,1,1,1]));
+        let y = x.ssd_chunk_scan(&dt, &a, &b, &c, 1);
+        let grads = y.inner.backward();
+        let g_x_id = grads.get(x.graph_tensor()).expect("grad x").id();
+        let g_x = crate::pipelined_bridge::realize_one_as::<f32>(&x.inner.graph().clone(), g_x_id, &dev).expect("realize")[0];
+        let h = 1e-3;
+        let fd = (fwd(2.0+h) - fwd(2.0-h)) / (2.0*h);
+        assert!((g_x - fd).abs() < 5e-2, "ssd_chunk_scan d/dx: autograd {g_x} vs FD {fd}");
+    }
+
+    // Review Fix 2: the seqlen=1 SSM gates above multiply exp(dt*a) by a zero
+    // initial carry, so `y` is linear in the input and the multi-step recurrent
+    // gate is never FD-checked for the SSM ops. These seqlen>=2 gates carry a
+    // NON-ZERO h across steps (a < 0), so d(sum y)/d(early input) flows THROUGH
+    // the gate exp(dt*a) — the multi-step BPTT the headline SSM deliverable needs.
+
+    #[test]
+    fn selective_scan_seqlen2_bptt_matches_finite_difference() {
+        let dev = Device::cpu();
+        // u/delta [batch,seqlen,dim]=[1,2,1]; a [dim,dstate]=[1,1] (< 0, stable gate);
+        // b/c [batch,seqlen,dstate]=[1,2,1]. loss = sum(y) (ones-seed over [1,2,1]).
+        let fwd = |u_vals: &[f32]| -> f32 {
+            let u = LazyTensor::from_f32(u_vals.to_vec(), Shape::from_dims(&[1,2,1]), &dev);
+            let delta = u.const_f32_like(vec![0.7f32, 0.7], Shape::from_dims(&[1,2,1]));
+            let a = u.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1,1]));
+            let b = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1,2,1]));
+            let c = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1,2,1]));
+            u.selective_scan(&delta, &a, &b, &c, false).realize_f32().iter().sum()
+        };
+        let u0 = vec![1.0f32, 2.0];
+        let u = LazyTensor::from_f32(u0.clone(), Shape::from_dims(&[1,2,1]), &dev);
+        let delta = u.const_f32_like(vec![0.7f32, 0.7], Shape::from_dims(&[1,2,1]));
+        let a = u.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1,1]));
+        let b = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1,2,1]));
+        let c = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1,2,1]));
+        let y = u.selective_scan(&delta, &a, &b, &c, false);
+        let grads = y.inner.backward(); // ones-seed over [1,2,1] == grad of sum(y)
+        let g_u_id = grads.get(u.graph_tensor()).expect("grad u").id();
+        let g_u = crate::pipelined_bridge::realize_one_as::<f32>(&u.inner.graph().clone(), g_u_id, &dev).expect("realize");
+        // FD over u_1 (index 0): d(sum y)/d u_1 = dB + c*exp(dt*a)*dB — the second
+        // term is the recurrent gate carrying u_1 into y_2.
+        let h = 1e-3f32;
+        let mut up = u0.clone(); up[0] += h;
+        let mut um = u0.clone(); um[0] -= h;
+        let fd0 = (fwd(&up) - fwd(&um)) / (2.0*h);
+        assert!((g_u[0] - fd0).abs() < 5e-2, "selective_scan seqlen2 dL/du_1: autograd {} vs FD {fd0}", g_u[0]);
+        // Non-triviality: the gate contribution makes this strictly > the pure-dB
+        // seqlen=1 grad — a real, non-vacuous multi-step gradient (~1.19 here).
+        assert!(g_u[0].abs() > 0.5, "recurrent-gate grad must be non-trivial, got {g_u:?}");
+    }
+
+    #[test]
+    fn ssd_chunk_scan_seqlen4_chunk2_bptt_matches_finite_difference() {
+        let dev = Device::cpu();
+        // seqlen=4, chunk=2 -> a 2-CHUNK Op::Scan (bound=2): the inter-chunk state
+        // carry passes exp(dt*a) across chunks. x [b,s,h,hd]=[1,4,1,1]; dt [b,s,h]=[1,4,1];
+        // a [heads]=[1] (< 0); b/c [b,s,h,state]=[1,4,1,1].
+        let fwd = |x_vals: &[f32]| -> f32 {
+            let x = LazyTensor::from_f32(x_vals.to_vec(), Shape::from_dims(&[1,4,1,1]), &dev);
+            let dt = x.const_f32_like(vec![0.6f32, 0.6, 0.6, 0.6], Shape::from_dims(&[1,4,1]));
+            let a = x.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1]));
+            let b = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1,4,1,1]));
+            let c = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1,4,1,1]));
+            x.ssd_chunk_scan(&dt, &a, &b, &c, 2).realize_f32().iter().sum()
+        };
+        let x0 = vec![1.0f32, 2.0, 3.0, 4.0];
+        let x = LazyTensor::from_f32(x0.clone(), Shape::from_dims(&[1,4,1,1]), &dev);
+        let dt = x.const_f32_like(vec![0.6f32, 0.6, 0.6, 0.6], Shape::from_dims(&[1,4,1]));
+        let a = x.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1]));
+        let b = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1,4,1,1]));
+        let c = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1,4,1,1]));
+        let y = x.ssd_chunk_scan(&dt, &a, &b, &c, 2);
+        let grads = y.inner.backward();
+        let g_x_id = grads.get(x.graph_tensor()).expect("grad x").id();
+        let g_x = crate::pipelined_bridge::realize_one_as::<f32>(&x.inner.graph().clone(), g_x_id, &dev).expect("realize");
+        // FD over x_0 (a chunk-0 input): its contribution to y_3/y_4 (chunk 1)
+        // rides the cross-chunk gate exp(dt*a) — multi-step BPTT.
+        let h = 1e-3f32;
+        let mut xp = x0.clone(); xp[0] += h;
+        let mut xm = x0.clone(); xm[0] -= h;
+        let fd0 = (fwd(&xp) - fwd(&xm)) / (2.0*h);
+        assert!((g_x[0] - fd0).abs() < 5e-2, "ssd_chunk_scan seqlen4 dL/dx_0: autograd {} vs FD {fd0}", g_x[0]);
+        assert!(g_x[0].abs() > 0.5, "cross-chunk-gate grad must be non-trivial, got {g_x:?}");
+    }
+
     // ---- Task 8: general-dimension SSM parity gate (C7 non-regression) ------
     //
     // The all-1s gap-test fixtures above (Task 6/7) share a single flat order
