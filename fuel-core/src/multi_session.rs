@@ -200,6 +200,83 @@ impl SessionState {
 }
 
 // ===========================================================================
+// C3 — BatchedDecode: the live batched-decode arm (seam + uniformity gate)
+// ===========================================================================
+
+/// Result of a batched decode attempt.
+pub enum BatchOutcome {
+    /// N logits vectors, one per input session (same order as the input
+    /// slice).
+    Advanced(Vec<Vec<f32>>),
+    /// The ready set was not uniform enough to batch — a NORMAL control value,
+    /// not an `Err`. The scheduler serial-steps instead.
+    NotBatchable,
+}
+
+/// The per-session geometry the uniformity gate compares. All fields must be
+/// EQUAL across the batch to share one `flash_decoding` call — crucially
+/// `cached_len`, since the kernel takes a single shared `k_len`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BatchDescriptor {
+    pub cached_len: usize,
+    pub max_seq_len: usize,
+    pub n_layers: usize,
+    pub cache_dtype: DType,
+}
+
+/// Pure gate: are these sessions batchable together THIS step? `false` for
+/// fewer than 2 sessions, or if any descriptor differs from the first (in
+/// particular a ragged `cached_len` — the single shared `flash_decoding`
+/// `k_len` would be wrong for the odd rows). Unit-testable without CUDA (T6).
+pub(crate) fn batch_uniform(descs: &[BatchDescriptor]) -> bool {
+    if descs.len() < 2 {
+        return false;
+    }
+    descs.iter().all(|d| *d == descs[0])
+}
+
+/// The live batched-decode arm. Owns no persistent state — a unit type whose
+/// associated `try_batched_step` produces N logits vectors in one batch=K
+/// model pass over a shared `[K, n_kv_heads, capacity, head_dim]` KV buffer,
+/// or signals `NotBatchable` so the scheduler falls back to serial.
+pub(crate) struct BatchedDecode;
+
+impl BatchedDecode {
+    /// Attempt one live batched decode step over the given `Decode`-phase
+    /// sessions.
+    ///
+    /// Task 7 ships the SIGNATURE + the uniformity gate + the `NotBatchable`
+    /// path only — even a uniform ready set returns `NotBatchable` here so the
+    /// scheduler's serial fallback stays the executed path. Task 8 wires the
+    /// live `flash_decoding` batch arm into the `Advanced` branch.
+    pub(crate) fn try_batched_step(
+        model: &LlamaModel,
+        device: &Device,
+        dtype: DType,
+        sessions: &mut [&mut SessionState],
+    ) -> crate::Result<BatchOutcome> {
+        let _ = (model, device, dtype);
+        let descs: Vec<BatchDescriptor> = sessions
+            .iter()
+            .map(|s| BatchDescriptor {
+                cached_len: s.cache.cached_len,
+                max_seq_len: s.cache.max_seq_len.unwrap_or(0),
+                n_layers: s.cache.n_layers(),
+                cache_dtype: s.cache.dtype.unwrap_or(dtype),
+            })
+            .collect();
+        if !batch_uniform(&descs) {
+            return Ok(BatchOutcome::NotBatchable);
+        }
+        // Task 8: live batched arm goes here (shared [K,..] KV buffer +
+        // flash_decoding batch wiring). Until then, a uniform ready set still
+        // returns NotBatchable so the serial fallback remains the executed,
+        // byte-exact path.
+        Ok(BatchOutcome::NotBatchable)
+    }
+}
+
+// ===========================================================================
 // C2 — SessionScheduler: the K-way decode driver
 // ===========================================================================
 
@@ -330,25 +407,102 @@ impl<'m> SessionScheduler<'m> {
             .filter(|&i| self.sessions[i].phase == SessionPhase::Decode)
             .collect();
 
-        // (3) Advance the ready set. C2 ships the serial arm only; C3 (Task 7)
-        // wires the Batched policy here in front of the serial fallback.
+        // (3) Advance the ready set. The serial arm is always reachable and is
+        // the byte-exact oracle; the Batched policy tries the live C3 arm on a
+        // uniform prefix of the ready set and falls through to serial for the
+        // rest (or on NotBatchable).
         match self.policy {
             SchedulePolicy::RoundRobin => {
                 for idx in ready {
                     self.serial_advance_one(model, idx, &mut report);
                 }
             }
-            SchedulePolicy::Batched { .. } => {
-                // Task 7 replaces this with try_batched_step + serial
-                // fallthrough. Until then a Batched policy is pure serial —
-                // provably identical to RoundRobin (T6).
-                for idx in ready {
-                    self.serial_advance_one(model, idx, &mut report);
-                }
+            SchedulePolicy::Batched { max_batch } => {
+                self.advance_batched(model, &ready, max_batch, &mut report);
             }
         }
 
         Ok(report)
+    }
+
+    /// The `Batched`-policy advance: try [`BatchedDecode::try_batched_step`] on
+    /// up to `max_batch` ready sessions, then serial-advance everything the
+    /// batched arm did not consume (an overflow beyond `max_batch`, a
+    /// `NotBatchable` gate, or a batched-arm error — which finishes those
+    /// sessions in isolation, their private KV untouched). The serial arm
+    /// remains reachable for every session.
+    fn advance_batched(
+        &mut self,
+        model: &LlamaModel,
+        ready: &[usize],
+        max_batch: usize,
+        report: &mut StepReport,
+    ) {
+        // `ready` is ascending (built from a 0..len filter). The batched prefix
+        // and the serial remainder both preserve that order, so the batched
+        // slot ordering matches `batch_idxs`.
+        let batch_idxs: Vec<usize> = ready.iter().copied().take(max_batch).collect();
+        let serial_idxs: Vec<usize> = ready.iter().copied().skip(max_batch).collect();
+
+        let mut consumed_by_batch = false;
+        if batch_idxs.len() >= 2 {
+            let dev = self.device.clone();
+            let dt = self.dtype;
+            let outcome = {
+                let mut refs = collect_disjoint_mut(&mut self.sessions, &batch_idxs);
+                BatchedDecode::try_batched_step(model, &dev, dt, &mut refs)
+            };
+            match outcome {
+                Ok(BatchOutcome::Advanced(rows)) if rows.len() == batch_idxs.len() => {
+                    for (slot, &idx) in batch_idxs.iter().enumerate() {
+                        self.sessions[idx].last_logits = Some(rows[slot].clone());
+                    }
+                    report.used_batched_arm = true;
+                    consumed_by_batch = true;
+                    for &idx in &batch_idxs {
+                        // Logits already stored; sample + record per session.
+                        self.finalize_advance(idx, Ok(()), report);
+                    }
+                }
+                Ok(BatchOutcome::Advanced(rows)) => {
+                    // Malformed batched result (row count mismatch): treat as a
+                    // batched-arm error — finish those sessions in isolation
+                    // (their KV was not mutated). Never panic on a bad slice.
+                    let msg = format!(
+                        "BatchedDecode: Advanced returned {} rows for {} sessions",
+                        rows.len(),
+                        batch_idxs.len()
+                    );
+                    for &idx in &batch_idxs {
+                        self.record_error_msg(idx, msg.clone(), report);
+                    }
+                    consumed_by_batch = true;
+                }
+                Ok(BatchOutcome::NotBatchable) => {
+                    // Fall through to serial for the whole batch prefix.
+                }
+                Err(e) => {
+                    // All-or-nothing (spec risk #7): the batched arm returns
+                    // Err only BEFORE any session's KV is mutated, so no
+                    // session is half-written. Force the affected sessions to
+                    // Finished-with-error in isolation.
+                    let msg = e.to_string();
+                    for &idx in &batch_idxs {
+                        self.record_error_msg(idx, msg.clone(), report);
+                    }
+                    consumed_by_batch = true;
+                }
+            }
+        }
+
+        if !consumed_by_batch {
+            for idx in batch_idxs {
+                self.serial_advance_one(model, idx, report);
+            }
+        }
+        for idx in serial_idxs {
+            self.serial_advance_one(model, idx, report);
+        }
     }
 
     /// Advance one decode-ready session serially by exactly one forward on its
@@ -413,9 +567,16 @@ impl<'m> SessionScheduler<'m> {
     /// Force one session to `Finished`-with-error and record it. Isolation: the
     /// other sessions are untouched.
     fn record_error(&mut self, idx: usize, e: crate::Error, report: &mut StepReport) {
+        self.record_error_msg(idx, e.to_string(), report);
+    }
+
+    /// String-message variant of [`Self::record_error`] — used where the same
+    /// error message finishes several batched sessions (`fuel_ir::Error` is
+    /// not `Clone`, so the message is formatted once and cloned per session).
+    fn record_error_msg(&mut self, idx: usize, msg: String, report: &mut StepReport) {
         self.sessions[idx].phase = SessionPhase::Finished;
         let id = self.sessions[idx].id;
-        report.errored.push((id, e.to_string()));
+        report.errored.push((id, msg));
         report.finished.push(id);
     }
 
@@ -437,8 +598,8 @@ impl<'m> SessionScheduler<'m> {
         self.sessions.iter().all(|s| s.phase == SessionPhase::Finished)
     }
 
-    /// Add a session whose FIRST advance is forced to error, for the isolation
-    /// gate (T4). After building a normal `SessionState`, this truncates its
+    /// (test-support) Add a session whose FIRST advance is forced to error, for
+    /// the isolation gate (T4). After building a normal `SessionState`, this truncates its
     /// `KvCache::layers` to empty so `cache.n_layers() == 0 != model.n_layers`,
     /// which `forward_with_kv_context*` rejects with a typed `Error::Msg`
     /// through the true advance path — no panic, no test-only error branch. The
@@ -456,6 +617,25 @@ impl<'m> SessionScheduler<'m> {
         }
         Ok(id)
     }
+}
+
+/// Collect disjoint `&mut` references to the elements of `sessions` at the
+/// given `idxs`. Returned in ASCENDING index order (a single `iter_mut` pass),
+/// which matches the ascending `batch_idxs` the scheduler builds — so the
+/// returned slot ordering is the caller's slot ordering. `idxs` must be
+/// distinct; duplicates are silently taken once.
+fn collect_disjoint_mut<'a>(
+    sessions: &'a mut [SessionState],
+    idxs: &[usize],
+) -> Vec<&'a mut SessionState> {
+    let mut want: std::collections::HashSet<usize> = idxs.iter().copied().collect();
+    let mut out: Vec<&'a mut SessionState> = Vec::with_capacity(idxs.len());
+    for (i, s) in sessions.iter_mut().enumerate() {
+        if want.remove(&i) {
+            out.push(s);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -689,5 +869,32 @@ mod tests {
         let g = |id: SessionId| out.iter().find(|(i,_)| *i==id).unwrap().1.clone();
         assert_eq!(g(ida), solo_a, "A unaffected by mid-run B");
         assert_eq!(g(idb), solo_b, "B prefills correctly mid-run");
+    }
+
+    #[test]
+    fn t6_uniformity_gate_rejects_ragged_cached_len() {
+        let d = |cl: usize| BatchDescriptor { cached_len: cl, max_seq_len: 64, n_layers: 2, cache_dtype: DType::F32 };
+        assert!(batch_uniform(&[d(3), d(3)]));           // equal → batchable
+        assert!(!batch_uniform(&[d(3), d(4)]));          // ragged → not
+        assert!(!batch_uniform(&[d(3)]));                // <2 sessions → not
+    }
+
+    #[test]
+    fn t6_batched_policy_falls_back_to_serial_equals_roundrobin() {
+        // With Task 7's stub always returning NotBatchable, a Batched policy
+        // must produce byte-identical output to RoundRobin (pure serial).
+        let model = tiny_model(9999);
+        let (pa, pb, max_new) = ([1u32,2,3], [5u32,6,7], 6);
+        let run = |policy| {
+            let mut s = SessionScheduler::new(&model, Device::cpu(), DType::F32, policy);
+            let a = s.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
+            let b = s.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
+            (a, b, s.run_to_completion().unwrap())
+        };
+        let (a1,b1,rr) = run(SchedulePolicy::RoundRobin);
+        let (a2,b2,ba) = run(SchedulePolicy::Batched { max_batch: 4 });
+        let g = |o: &Vec<(SessionId,Vec<u32>)>, id: SessionId| o.iter().find(|(i,_)| *i==id).unwrap().1.clone();
+        assert_eq!(g(&rr,a1), g(&ba,a2));
+        assert_eq!(g(&rr,b1), g(&ba,b2));
     }
 }
