@@ -8851,32 +8851,27 @@ impl Tensor {
                     accumulate_grad(&mut upstream, src, grad_src, &graph_handle);
                 }
                 Op::Concat { dim } => {
-                    // Forward: out = concat(a, b, dim).
-                    // Backward: split upstream along `dim` at a.size(dim),
-                    // routing the left slice to a and the right slice to b.
-                    let a = inputs[0];
-                    let b = inputs[1];
-                    let a_shape = node_shape(&graph_handle, a);
-                    let b_shape = node_shape(&graph_handle, b);
-                    let dtype = node_dtype(&graph_handle, a);
-                    let a_len = a_shape.dims()[dim];
-                    let b_len = b_shape.dims()[dim];
-                    let grad_a = push_node(
-                        &graph_handle,
-                        Op::Slice { dim, start: 0, len: a_len },
-                        vec![up_id],
-                        a_shape,
-                        dtype,
-                    );
-                    let grad_b = push_node(
-                        &graph_handle,
-                        Op::Slice { dim, start: a_len, len: b_len },
-                        vec![up_id],
-                        b_shape,
-                        dtype,
-                    );
-                    accumulate_grad(&mut upstream, a, grad_a, &graph_handle);
-                    accumulate_grad(&mut upstream, b, grad_b, &graph_handle);
+                    // Forward: out = concat(inputs.., dim).
+                    // Backward: split upstream along `dim` into one slice per
+                    // input at the cumulative offset, routing each slice to its
+                    // input. N-ary (unroll_scan stacks N per-step ys into a
+                    // single Concat; the SSM/Hopfield BPTT unroll relies on
+                    // this). Duplicate inputs accumulate via accumulate_grad.
+                    let mut start = 0usize;
+                    for &inp in &inputs {
+                        let in_shape = node_shape(&graph_handle, inp);
+                        let dtype = node_dtype(&graph_handle, inp);
+                        let len = in_shape.dims()[dim];
+                        let grad_in = push_node(
+                            &graph_handle,
+                            Op::Slice { dim, start, len },
+                            vec![up_id],
+                            in_shape,
+                            dtype,
+                        );
+                        accumulate_grad(&mut upstream, inp, grad_in, &graph_handle);
+                        start += len;
+                    }
                 }
                 Op::Slice { dim, start, len: _ } => {
                     // Forward: out = slice(x, dim, start, len).
@@ -10114,7 +10109,29 @@ fn lower_scans_for_backward(graph: &SharedGraph, root: NodeId) -> NodeId {
         for (id, fid, params) in targets {
             if let Some(entry) = crate::registry::default_registry().entry(fid) {
                 let y = { let mut g = graph.write().unwrap(); (entry.decompose)(&mut g, id, &params) };
-                if y != id { remap.insert(id, y); }
+                if y != id {
+                    remap.insert(id, y);
+                    // Collapse the fused node's slot-0 View consumers DIRECTLY to
+                    // the decompose output. Slot 0 is the primary value (the
+                    // multi-output authoring contract: Node.shape == slot-0
+                    // shape), and the SSM decompose re-presents its primary AS
+                    // slot 0, so `View{0}(y) == y`. Without this collapse the
+                    // outer View{0} survives into the reverse walk and emits an
+                    // `Op::ScatterIntoSlot` (which has no CPU realize kernel),
+                    // so realizing the gradient would fail. Slot-1 (last_state)
+                    // consumers keep their `View{1}(y)` re-projection via the
+                    // default input rewrite (remap[id] = y) and are not
+                    // differentiated on this path.
+                    let g = graph.read().unwrap();
+                    for nid in 0..g.len() {
+                        let node = g.node(NodeId(nid));
+                        if let Op::View { slot: 0 } | Op::ViewOwned { slot: 0 } = node.op {
+                            if node.inputs.first() == Some(&id) {
+                                remap.insert(NodeId(nid), y);
+                            }
+                        }
+                    }
+                }
             }
         }
         apply_remap(graph, &remap, &mut root);
