@@ -2056,21 +2056,21 @@ mod tests {
         }
     }
 
-    /// Recipe principle (G2/G3): SelectiveScan is the constitution's canonical
-    /// **basis gap** (a higher-order `Scan` primitive Fuel lacks; the CumSum
-    /// closed-form overflows for `a < 0`). Its `decompose` must be the
-    /// never-crash fixpoint — return self, leaving an `Op::Fused` surfaced gap
-    /// — and the driver must **terminate** (not spin on the self-return). This
-    /// locks that posture: `lowering_only` returns and the node stays
-    /// `Op::Fused(SELECTIVE_SCAN)`; the fused CPU kernel still realizes it end
-    /// to end (never a crash). Contrast NF4 / concrete-k_len FlashAttn above,
-    /// which now carry real recipes.
+    /// Recipe principle (G2/G3 — part 1): SelectiveScan is the constitution's
+    /// canonical **basis gap** (a higher-order `Scan` primitive). Fuel now HAS
+    /// that primitive (`Op::Scan`), so `decompose` lowers to it — closing G3.
+    /// This test flips the former surfaced-gap posture: (a) NON-REGRESSION —
+    /// the fused CPU kernel still realizes `y = 12`; (b) VERIFICATION —
+    /// `lowering_only` leaves NO `Op::Fused(SELECTIVE_SCAN)`, an `Op::Scan`
+    /// terminal is present, and `unroll_scan` + realize of the ys oracle
+    /// contains `y = 12` (`h = 3`). The fused kernel remains the executed
+    /// production path; the `Op::Scan` recipe is the optimizer base-map cover
+    /// + the numeric verify oracle.
     #[test]
-    fn selective_scan_decompose_is_surfaced_gap_not_a_crash() {
+    fn selective_scan_decompose_lowers_to_scan_and_matches() {
         use fuel_graph::registry::FusedOps;
         use fuel_graph::Op;
         let dev = Device::cpu();
-        // B=1, T=1, dim=1, dstate=1. h = d·b·u; y = h·c (no softplus).
         let u = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev);
         let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
         let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]));
@@ -2078,47 +2078,41 @@ mod tests {
         let c = u.const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1]));
         let y = u.selective_scan(&delta, &a, &b, &c, /* delta_softplus */ false);
 
-        // Fixpoint termination + surfaced-gap posture. If the self-return ever
-        // spun the lowering loop, this call would hang (the test would time
-        // out) rather than return.
+        // (a) NON-REGRESSION: the fused kernel still runs and produces 12.0.
+        let got = y.realize_f32();
+        assert_eq!(got.len(), 1);
+        assert!((got[0] - 12.0).abs() < 1e-4, "fused kernel y: {}", got[0]);
+
+        // (b) VERIFICATION: lowering leaves NO Op::Fused(SELECTIVE_SCAN); an
+        // Op::Scan terminal is present; unroll+realize matches h=3,y=12.
         let graph = y.inner.graph().clone();
         let id = y.inner.id();
-        let roots = fuel_graph::opt::RuleRegistry::lowering_only()
-            .optimize_to_fixpoint(&graph, &[id]);
+        let roots = fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
         assert_eq!(roots.len(), 1);
-        {
-            // The `y` slot is an Op::View over the fused node; the gap posture
-            // is that the SELECTIVE_SCAN node *survives* lowering (undecomposed),
-            // still reachable from the root — a surfaced gap, not a silent drop.
+        let scan_id = {
             let g = graph.read().unwrap();
             let mut stack = vec![roots[0]];
             let mut seen = std::collections::HashSet::new();
-            let mut gap_present = false;
+            let mut scan_id = None;
             while let Some(nid) = stack.pop() {
-                if !seen.insert(nid) {
-                    continue;
-                }
+                if !seen.insert(nid) { continue; }
                 let node = g.node(nid);
-                if matches!(node.op, Op::Fused(fid, _) if fid == FusedOps::SELECTIVE_SCAN) {
-                    gap_present = true;
-                }
-                for &inp in &node.inputs {
-                    stack.push(inp);
-                }
+                assert!(!matches!(node.op, Op::Fused(fid, _) if fid == FusedOps::SELECTIVE_SCAN),
+                    "SelectiveScan must lower to Op::Scan, not remain fused");
+                if matches!(node.op, Op::Scan { .. }) { scan_id = Some(nid); }
+                for &inp in &node.inputs { stack.push(inp); }
             }
-            assert!(
-                gap_present,
-                "SelectiveScan is a documented basis gap: decompose returns self \
-                 (node survives lowering as Op::Fused) — a surfaced gap, never \
-                 crashed away or silently dropped",
-            );
-        }
-
-        // Never-crash end to end: the fused CPU kernel realizes it. h = 0.5·3·2
-        // = 3; y = 3·4 = 12.
-        let got = y.realize_f32();
-        assert_eq!(got.len(), 1);
-        assert!((got[0] - 12.0).abs() < 1e-4, "selective_scan y: {}", got[0]);
+            scan_id.expect("an Op::Scan terminal must be present after lowering")
+        };
+        // Unroll the Op::Scan (seqlen = 1) and realize the ys oracle.
+        let ys = {
+            let mut g = graph.write().unwrap();
+            fuel_graph::scan::unroll_scan(&mut g, scan_id, 1).expect("unroll").0
+        };
+        let oracle = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
+            .expect("realize unrolled selective_scan oracle on CPU");
+        assert!(oracle.iter().any(|&v| (v - 12.0).abs() < 1e-4),
+            "unroll oracle must contain y = 12, got {oracle:?}");
     }
 
     /// Recipe principle (G2): Nf4Matmul must decompose to a **fused-free**
