@@ -18,6 +18,12 @@ pub fn unroll_scan(
     scan_id: NodeId,
     steps: usize,
 ) -> std::result::Result<(NodeId, NodeId), fuel_ir::Error> {
+    if scan_id.0 >= graph.len() {
+        return Err(fuel_ir::Error::Msg(format!(
+            "unroll_scan: scan_id {} is out of range (graph has {} nodes)",
+            scan_id.0, graph.len(),
+        )).bt());
+    }
     // 1. Read the Scan node's params + input layout in a short borrow.
     let (n_xs, bound, emit, has_exit, inputs) = {
         let n = graph.node(scan_id);
@@ -44,8 +50,15 @@ pub fn unroll_scan(
         )).bt());
     }
     // inputs = [init_carry, xs_0..xs_{n_xs-1}, consts.., body_new_carry, body_y]
-    if inputs.len() < 2 + n_xs {
-        return Err(fuel_ir::Error::Msg("unroll_scan: malformed Op::Scan inputs".into()).bt());
+    // Minimum well-formed layout: init_carry(1) + n_xs + consts(>=0) +
+    // body_exits(2) = n_xs + 3. (n_xs + 2 is one short of the two body-exit
+    // slots — reject it here, before the `consts` slice below can panic with
+    // start > end.)
+    if inputs.len() < 3 + n_xs {
+        return Err(fuel_ir::Error::Msg(format!(
+            "unroll_scan: malformed Op::Scan inputs — need >= {} (n_xs={n_xs} + 3), got {}",
+            3 + n_xs, inputs.len(),
+        )).bt());
     }
     let init_carry = inputs[0];
     let xs: Vec<NodeId> = inputs[1..1 + n_xs].to_vec();
@@ -53,6 +66,53 @@ pub fn unroll_scan(
     let body_new_carry = inputs[inputs.len() - 2];
     let body_y = inputs[inputs.len() - 1];
     let consts_set: std::collections::HashSet<NodeId> = consts.iter().copied().collect();
+
+    // 2. Validate every ScanPlaceholder reachable from the body's two exit
+    // nodes has an in-range index, BEFORE any cloning/mutation: v1 is
+    // single-carry (Carry index must be 0), and Elem index must address one
+    // of the n_xs per-step slices. This keeps `clone_body_node`'s `elem[index]`
+    // access infallible by construction. Short immutable borrow only.
+    {
+        let reachable = crate::topo_order_multi(graph, &[body_new_carry, body_y]);
+        for &id in &reachable {
+            if let Op::ScanPlaceholder { role, index } = &graph.node(id).op {
+                match *role {
+                    ScanRole::Carry if *index != 0 => {
+                        return Err(fuel_ir::Error::Msg(format!(
+                            "unroll_scan: body node {} is ScanPlaceholder{{Carry, {index}}} — v1 is single-carry, index must be 0",
+                            id.0,
+                        )).bt());
+                    }
+                    ScanRole::Elem if *index >= n_xs => {
+                        return Err(fuel_ir::Error::Msg(format!(
+                            "unroll_scan: body node {} is ScanPlaceholder{{Elem, {index}}} out of range (n_xs = {n_xs})",
+                            id.0,
+                        )).bt());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // 3. Validate every xs[i] has a leading (scan-axis) dim >= steps: the
+    // per-step `Slice { dim: 0, start: t, len: 1 }` below needs `t` in range
+    // for every `t in 0..steps`, and needs a dim 0 to slice at all.
+    for (i, &x) in xs.iter().enumerate() {
+        let dims = graph.node(x).shape.dims().to_vec();
+        if dims.is_empty() {
+            return Err(fuel_ir::Error::Msg(format!(
+                "unroll_scan: xs[{i}] (node {}) is rank-0, needs a leading scan-axis of len >= steps ({steps})",
+                x.0,
+            )).bt());
+        }
+        if dims[0] < steps {
+            return Err(fuel_ir::Error::Msg(format!(
+                "unroll_scan: xs[{i}] (node {}) leading dim {} < steps ({steps})",
+                x.0, dims[0],
+            )).bt());
+        }
+    }
 
     let mut carry = init_carry;
     let mut ys_steps: Vec<NodeId> = Vec::with_capacity(steps);
@@ -213,5 +273,94 @@ mod tests {
         let reachable = crate::topo_order_multi(&g, &roots);
         assert!(reachable.iter().any(|&n| matches!(g.node(n).op, Op::Scan { .. })),
             "Op::Scan must remain a terminal after lower_to_base_map");
+    }
+
+    #[test]
+    fn unroll_scan_rejects_malformed_short_inputs() {
+        // n_xs = 0 well-formed minimum is init_carry(1) + body_exits(2) = 3.
+        // Build inputs of length 2 (one short) — must be a typed Err, not a
+        // panic from the `consts = inputs[1+n_xs..inputs.len()-2]` slice
+        // (start=1 > end=0 when inputs.len() == 2).
+        let mut g = Graph::new();
+        let s = Shape::from_dims(&[1]);
+        let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+        let body_exit = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+        let scan = g.push(Node {
+            op: Op::Scan { n_xs: 0, bound: 1, emit: ScanEmit::All, early_exit: None },
+            inputs: vec![carry, body_exit],
+            shape: Shape::from_dims(&[1, 1]),
+            dtype: DType::F32,
+        });
+        let r = unroll_scan(&mut g, scan, 1);
+        assert!(r.is_err(), "inputs.len() == n_xs + 2 must be rejected as malformed, not panic");
+    }
+
+    #[test]
+    fn unroll_scan_rejects_elem_index_out_of_range() {
+        // n_xs = 0 (no xs slots) but the body references ScanPlaceholder{Elem,
+        // 0} — index 0 is out of range since n_xs = 0. Must be a typed Err,
+        // not an `elem[index]` panic inside clone_body_node.
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let scan = {
+            let mut g = graph.write().unwrap();
+            let s = Shape::from_dims(&[1]);
+            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let elem_hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let nc = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![elem_hole], shape: s.clone(), dtype: DType::F32 });
+            g.push(Node {
+                op: Op::Scan { n_xs: 0, bound: 1, emit: ScanEmit::All, early_exit: None },
+                inputs: vec![carry, nc, nc],
+                shape: Shape::from_dims(&[1, 1]),
+                dtype: DType::F32,
+            })
+        };
+        let mut g = graph.write().unwrap();
+        let r = unroll_scan(&mut g, scan, 1);
+        assert!(r.is_err(), "Elem index >= n_xs must be a typed Err, never an elem[index] panic");
+    }
+
+    #[test]
+    fn unroll_scan_nxs_positive_slices_substitutes_and_shares_consts() {
+        // n_xs = 1, one shared const, bound = steps = 2, emit = All. Body:
+        // new_carry = carry + elem0; y = (carry + elem0) * const — references
+        // BOTH placeholders AND the shared const. xs[0] shape [2, 1] (leading
+        // dim = bound). Locks the slice/substitute/const-sharing semantics
+        // Tasks 6-7 depend on.
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (scan, const_id) = {
+            let mut g = graph.write().unwrap();
+            let carry_shape = Shape::from_dims(&[1]);
+            let xs_shape = Shape::from_dims(&[2, 1]);
+            let init_carry = g.push(Node { op: Op::Const, inputs: vec![], shape: carry_shape.clone(), dtype: DType::F32 });
+            let xs0 = g.push(Node { op: Op::Const, inputs: vec![], shape: xs_shape.clone(), dtype: DType::F32 });
+            let const_id = g.push(Node { op: Op::Const, inputs: vec![], shape: carry_shape.clone(), dtype: DType::F32 });
+            let carry_hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: carry_shape.clone(), dtype: DType::F32 });
+            let elem_hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 }, inputs: vec![], shape: carry_shape.clone(), dtype: DType::F32 });
+            let sum = g.push(Node { op: Op::Add, inputs: vec![carry_hole, elem_hole], shape: carry_shape.clone(), dtype: DType::F32 });
+            let new_carry = sum;
+            let y = g.push(Node { op: Op::Mul, inputs: vec![sum, const_id], shape: carry_shape.clone(), dtype: DType::F32 });
+            let scan = g.push(Node {
+                op: Op::Scan { n_xs: 1, bound: 2, emit: ScanEmit::All, early_exit: None },
+                inputs: vec![init_carry, xs0, const_id, new_carry, y],
+                shape: Shape::from_dims(&[2, 1]),
+                dtype: DType::F32,
+            });
+            (scan, const_id)
+        };
+        let (ys, _carry) = {
+            let mut g = graph.write().unwrap();
+            unroll_scan(&mut g, scan, 2).expect("unroll")
+        };
+        let g = graph.read().unwrap();
+        assert!(matches!(g.node(ys).op, Op::Concat { .. }), "emit=All ys root should be Concat, got {:?}", g.node(ys).op.short_name());
+        assert_eq!(g.node(ys).inputs.len(), 2, "one input per step");
+        let reachable = crate::topo_order_multi(&g, &[ys]);
+        assert!(!reachable.iter().any(|&n| matches!(g.node(n).op, Op::Scan { .. } | Op::ScanPlaceholder { .. })),
+            "unrolled graph must contain no Scan/ScanPlaceholder nodes");
+        // The const NodeId must be SHARED across both step clones — it
+        // appears exactly once in the reachable set (topo_order_multi
+        // dedups by NodeId), never re-cloned per step.
+        let const_occurrences = reachable.iter().filter(|&&n| n == const_id).count();
+        assert_eq!(const_occurrences, 1, "const node must be shared (not cloned) across steps");
     }
 }
