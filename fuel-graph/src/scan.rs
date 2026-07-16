@@ -593,4 +593,32 @@ mod tests {
         let ge_inputs = &g.node(stop).inputs;
         assert_eq!(ge_inputs[0], step.new_carry, "predicate's post-step operand is the shared new_carry");
     }
+
+    #[test]
+    fn backward_lowers_op_scan_and_no_longer_panics() {
+        use crate::Tensor;
+        // Affine scan: carry[1]; consts a,b; new_carry = a*carry + b; emit=Final. bound=3.
+        let init = Tensor::from_f32(vec![1.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let a = Tensor::from_existing(init.graph().clone(), init.id()).const_f32_like(vec![0.5f32], Shape::from_dims(&[1]));
+        let b = Tensor::from_existing(init.graph().clone(), init.id()).const_f32_like(vec![0.1f32], Shape::from_dims(&[1]));
+        let graph = init.graph().clone();
+        let nc = {
+            let mut g = graph.write().unwrap();
+            let s = Shape::from_dims(&[1]);
+            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+            let ac   = g.push(Node { op: Op::Mul, inputs: vec![a.id(), hole], shape: s.clone(), dtype: DType::F32 });
+            g.push(Node { op: Op::Add, inputs: vec![ac, b.id()], shape: s.clone(), dtype: DType::F32 })
+        };
+        let nc_t = Tensor::from_existing(graph.clone(), nc);
+        let out = init.scan(&[], &[a.clone(), b.clone()], &nc_t, &nc_t, 3, ScanEmit::Final).expect("scan");
+        // backward() must NOT panic (Phase 1 arm panics here) and must yield a grad for init_carry.
+        let grads = out.backward();
+        let g_init = grads.get(&init).expect("gradient for init_carry");
+        // The gradient's subgraph must contain no Op::Scan/ScanPlaceholder (proof of lowering).
+        let g = graph.read().unwrap();
+        let reach = crate::topo_order_multi(&g, &[g_init.id()]);
+        assert!(!reach.iter().any(|&n| matches!(g.node(n).op, Op::Scan { .. } | Op::ScanPlaceholder { .. })),
+            "backward must lower the scan before differentiating");
+        assert!(grads.get(&a).is_some() && grads.get(&b).is_some(), "consts a,b get gradients (BPTT)");
+    }
 }
