@@ -50,6 +50,7 @@ pub mod registry;
 pub mod runtime_fused;
 pub mod run;
 pub mod scan;
+mod shape;
 
 #[doc(inline)]
 pub use run::{
@@ -58,6 +59,8 @@ pub use run::{
     lower_picked_route_streaming, lower_run, lower_runs_arm0, passes_fewness_gate,
     walk_picked_route_streaming, PickedRoute, Run, FEWNESS_THRESHOLD,
 };
+
+pub use shape::primitive_shape;
 
 use crate::registry::{FusedOpId, FusedOpParams};
 use fuel_ir::{DeviceLocation, DType, DynScalar, Layout, Scalar, Shape, SymId, probe::BackendId};
@@ -3974,22 +3977,26 @@ impl Tensor {
                 "matmul: batch dim mismatch at axis {i}: {la} vs {ra} (not equal and not a GQA-divisible pair)",
             );
         }
-        let m = l[rank - 2];
         let k = l[rank - 1];
         let k2 = r[rank - 2];
-        let n = r[rank - 1];
         assert_eq!(
             k, k2,
             "matmul: inner dim mismatch (lhs k={k}, rhs k={k2})",
         );
-        let mut out_dims: Vec<usize> = l[..batch_rank].to_vec();
-        out_dims.push(m);
-        out_dims.push(n);
-        let dtype = self.dtype();
+        // Output shape + dtype now flow from primitive_shape (the single source
+        // of truth); the same-rank operands + validated batch prefix / inner
+        // dim above guarantee it infers cleanly. (The GQA batch-prefix carry
+        // uses lhs's batch dims, matching primitive_shape's `l[..rank-2]`.)
+        let (shape, dtype) = crate::shape::primitive_shape(
+            &Op::MatMul,
+            &[lhs_shape.clone(), rhs_shape.clone()],
+            &[lhs.dtype(), rhs.dtype()],
+        )
+        .expect("matmul: operands validated (same-rank, inner dim) before primitive_shape");
         let id = self.graph.write().unwrap().push(Node {
             op:     Op::MatMul,
             inputs: vec![lhs.id, rhs.id],
-            shape:  Shape::from_dims(&out_dims),
+            shape,
             dtype,
         });
         Self {
@@ -4621,8 +4628,7 @@ impl Tensor {
     /// typed error rather than panicking.
     pub fn try_permute(&self, axes: &[usize]) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_shape = self.shape();
-        let in_dims = in_shape.dims();
-        let rank = in_dims.len();
+        let rank = in_shape.dims().len();
         if axes.len() != rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "permute: axes length {} must equal tensor rank {}",
@@ -4643,12 +4649,12 @@ impl Tensor {
             }
             seen[ax] = true;
         }
-        let out_dims: Vec<usize> = axes.iter().map(|&ax| in_dims[ax]).collect();
-        let dtype = self.dtype();
+        let op = Op::Permute(axes.to_vec());
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])?;
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::Permute(axes.to_vec()),
+            op,
             inputs: vec![self.id],
-            shape: Shape::from_dims(&out_dims),
+            shape,
             dtype,
         });
         Ok(Self { graph: self.graph.clone(), id })
@@ -4659,21 +4665,19 @@ impl Tensor {
     /// tensor this is the ordinary matrix transpose; for higher ranks,
     /// every batch slice is transposed independently.
     pub fn transpose(&self) -> Tensor {
-        let in_dims = self.shape();
-        let d = in_dims.dims();
+        let in_shape = self.shape();
         assert!(
-            d.len() >= 2,
-            "transpose: input must be rank ≥ 2, got shape {d:?}",
+            in_shape.dims().len() >= 2,
+            "transpose: input must be rank ≥ 2, got shape {:?}",
+            in_shape.dims(),
         );
-        let rank = d.len();
-        let mut out: Vec<usize> = d.to_vec();
-        out.swap(rank - 2, rank - 1);
-        let out_shape = Shape::from_dims(&out);
-        let dtype = self.dtype();
+        let op = Op::Transpose;
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])
+            .expect("transpose: rank validated above");
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::Transpose,
+            op,
             inputs: vec![self.id],
-            shape: out_shape,
+            shape,
             dtype,
         });
         Self {
@@ -4685,22 +4689,19 @@ impl Tensor {
     /// Result-returning sibling of [`Self::transpose`]. Surfaces
     /// rank < 2 as a typed error rather than panicking.
     pub fn try_transpose(&self) -> std::result::Result<Tensor, fuel_ir::Error> {
-        let in_dims = self.shape();
-        let d = in_dims.dims();
-        if d.len() < 2 {
+        let in_shape = self.shape();
+        if in_shape.dims().len() < 2 {
             return Err(fuel_ir::Error::Msg(format!(
-                "transpose: input must be rank ≥ 2, got shape {d:?}",
+                "transpose: input must be rank ≥ 2, got shape {:?}",
+                in_shape.dims(),
             )).bt());
         }
-        let rank = d.len();
-        let mut out: Vec<usize> = d.to_vec();
-        out.swap(rank - 2, rank - 1);
-        let out_shape = Shape::from_dims(&out);
-        let dtype = self.dtype();
+        let op = Op::Transpose;
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])?;
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::Transpose,
+            op,
             inputs: vec![self.id],
-            shape: out_shape,
+            shape,
             dtype,
         });
         Ok(Self { graph: self.graph.clone(), id })
@@ -5049,11 +5050,12 @@ impl Tensor {
                 "flip: dim {dim} out of bounds for rank {rank}",
             )).bt());
         }
-        let dtype = self.dtype();
+        let op = Op::Flip { dim };
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])?;
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Flip { dim },
+            op,
             inputs: vec![self.id],
-            shape:  in_shape,
+            shape,
             dtype,
         });
         Ok(Self {
@@ -5076,11 +5078,12 @@ impl Tensor {
                 "roll: dim {dim} out of bounds for rank {rank}",
             )).bt());
         }
-        let dtype = self.dtype();
+        let op = Op::Roll { dim, shift };
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])?;
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Roll { dim, shift },
+            op,
             inputs: vec![self.id],
-            shape:  in_shape,
+            shape,
             dtype,
         });
         Ok(Self {
@@ -5305,10 +5308,15 @@ impl Tensor {
                 value.dtype(), self.dtype(),
             )).bt());
         }
-        let dtype = self.dtype();
-        let shape = self.shape();
+        let op = Op::MaskedFill { value };
+        let (shape, dtype) = crate::shape::primitive_shape(
+            &op,
+            &[self.shape(), mask.shape()],
+            &[self.dtype(), mask.dtype()],
+        )
+        .expect("masked_fill: shapes/dtypes validated above");
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::MaskedFill { value },
+            op,
             inputs: vec![self.id, mask.id],
             shape,
             dtype,
@@ -5338,22 +5346,19 @@ impl Tensor {
         value: f64,
     ) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_shape = self.shape();
-        let in_dims = in_shape.dims();
-        let rank = in_dims.len();
+        let rank = in_shape.dims().len();
         if padding.len() != rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "pad: padding.len() ({}) must equal tensor rank ({rank})",
                 padding.len(),
             )).bt());
         }
-        let out_dims: Vec<usize> = in_dims.iter().zip(padding.iter())
-            .map(|(&d, &(b, a))| d + b + a)
-            .collect();
-        let dtype = self.dtype();
+        let op = Op::Pad { padding, mode, value };
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])?;
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Pad { padding, mode, value },
+            op,
             inputs: vec![self.id],
-            shape:  Shape::from_dims(&out_dims),
+            shape,
             dtype,
         });
         Ok(Self {
@@ -5443,8 +5448,12 @@ impl Tensor {
             "where_cond: cond/b shape mismatch: cond={:?}, b={:?}",
             self.shape().dims(), b.shape().dims(),
         );
-        let shape = self.shape();
-        let dtype = a.dtype();
+        let (shape, dtype) = crate::shape::primitive_shape(
+            &Op::Where,
+            &[self.shape(), a.shape(), b.shape()],
+            &[self.dtype(), a.dtype(), b.dtype()],
+        )
+        .expect("where_cond: shapes/dtypes validated above");
         let id = self.graph.write().unwrap().push(Node {
             op: Op::Where,
             inputs: vec![self.id, a.id, b.id],
@@ -5466,12 +5475,14 @@ impl Tensor {
     /// special-cased at construction so every identity cast, however it
     /// arises (decompose, autograd, user), is removed in one place.
     pub fn cast(&self, target: DType) -> Tensor {
-        let shape = self.shape();
+        let op = Op::Cast(target);
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[self.shape()], &[self.dtype()])
+            .expect("cast: single input, dtype change always infers");
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::Cast(target),
+            op,
             inputs: vec![self.id],
             shape,
-            dtype: target,
+            dtype,
         });
         Self {
             graph: self.graph.clone(),
@@ -5489,11 +5500,13 @@ impl Tensor {
         // Validate broadcast compatibility up front so users hear about
         // bad target shapes at build time, not realize time.
         check_broadcast_compatible(src_dims.dims(), target.dims());
-        let dtype = self.dtype();
+        let op = Op::BroadcastTo(target);
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[self.shape()], &[self.dtype()])
+            .expect("broadcast_to: compatibility validated above");
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::BroadcastTo(target.clone()),
+            op,
             inputs: vec![self.id],
-            shape: target,
+            shape,
             dtype,
         });
         Self {
@@ -5508,11 +5521,12 @@ impl Tensor {
         let target = target.into();
         let src_dims = self.shape();
         try_check_broadcast_compatible(src_dims.dims(), target.dims())?;
-        let dtype = self.dtype();
+        let op = Op::BroadcastTo(target);
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[self.shape()], &[self.dtype()])?;
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::BroadcastTo(target.clone()),
+            op,
             inputs: vec![self.id],
-            shape: target,
+            shape,
             dtype,
         });
         Ok(Self { graph: self.graph.clone(), id })
@@ -5527,19 +5541,18 @@ impl Tensor {
     /// or broadcast) inputs flow through without auto-Contiguize.
     pub fn unsqueeze(&self, dim: usize) -> Tensor {
         let in_shape = self.shape();
-        let in_dims = in_shape.dims();
-        let rank = in_dims.len();
+        let rank = in_shape.dims().len();
         assert!(
             dim <= rank,
             "unsqueeze: dim {dim} out of bounds for rank {rank} (must be <= rank)",
         );
-        let mut out_dims: Vec<usize> = in_dims.to_vec();
-        out_dims.insert(dim, 1);
-        let dtype = self.dtype();
+        let op = Op::Unsqueeze { dim };
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])
+            .expect("unsqueeze: dim validated above");
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Unsqueeze { dim },
+            op,
             inputs: vec![self.id],
-            shape:  Shape::from_dims(&out_dims),
+            shape,
             dtype,
         });
         Self {
@@ -5552,20 +5565,18 @@ impl Tensor {
     /// `dim > rank` as a typed error rather than panicking.
     pub fn try_unsqueeze(&self, dim: usize) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_shape = self.shape();
-        let in_dims = in_shape.dims();
-        let rank = in_dims.len();
+        let rank = in_shape.dims().len();
         if dim > rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "unsqueeze: dim {dim} out of bounds for rank {rank} (must be <= rank)",
             )).bt());
         }
-        let mut out_dims: Vec<usize> = in_dims.to_vec();
-        out_dims.insert(dim, 1);
-        let dtype = self.dtype();
+        let op = Op::Unsqueeze { dim };
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])?;
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Unsqueeze { dim },
+            op,
             inputs: vec![self.id],
-            shape:  Shape::from_dims(&out_dims),
+            shape,
             dtype,
         });
         Ok(Self { graph: self.graph.clone(), id })
@@ -5581,27 +5592,24 @@ impl Tensor {
     /// (out of bounds OR `shape[dim] != 1`) surfaces as a typed error.
     pub fn squeeze(&self, dim: usize) -> std::result::Result<Tensor, fuel_ir::Error> {
         let in_shape = self.shape();
-        let in_dims = in_shape.dims();
-        let rank = in_dims.len();
+        let rank = in_shape.dims().len();
         if dim >= rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "squeeze: dim {dim} out of bounds for rank {rank} (must be < rank)",
             )).bt());
         }
-        if in_dims[dim] != 1 {
+        if in_shape.dims()[dim] != 1 {
             return Err(fuel_ir::Error::Msg(format!(
                 "squeeze: dim {dim} has size {}, expected 1",
-                in_dims[dim],
+                in_shape.dims()[dim],
             )).bt());
         }
-        let out_dims: Vec<usize> = in_dims.iter().enumerate()
-            .filter_map(|(i, &d)| if i == dim { None } else { Some(d) })
-            .collect();
-        let dtype = self.dtype();
+        let op = Op::Squeeze { dim };
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])?;
         let id = self.graph.write().unwrap().push(Node {
-            op:     Op::Squeeze { dim },
+            op,
             inputs: vec![self.id],
-            shape:  Shape::from_dims(&out_dims),
+            shape,
             dtype,
         });
         Ok(Self {
@@ -5647,11 +5655,13 @@ impl Tensor {
             self.shape().elem_count(),
             target.elem_count(),
         );
-        let dtype = self.dtype();
+        let op = Op::Reshape(target);
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[self.shape()], &[self.dtype()])
+            .expect("reshape: element count validated above");
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::Reshape(target.clone()),
+            op,
             inputs: vec![self.id],
-            shape: target,
+            shape,
             dtype,
         });
         Self {
@@ -5671,11 +5681,12 @@ impl Tensor {
                 "reshape: element count mismatch: from {from} to {to}",
             )).bt());
         }
-        let dtype = self.dtype();
+        let op = Op::Reshape(target);
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[self.shape()], &[self.dtype()])?;
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::Reshape(target.clone()),
+            op,
             inputs: vec![self.id],
-            shape: target,
+            shape,
             dtype,
         });
         Ok(Self { graph: self.graph.clone(), id })
@@ -5691,11 +5702,13 @@ impl Tensor {
         // smaller target. That is, the target must be broadcast-ready to
         // self.shape().
         check_broadcast_compatible(target.dims(), self.shape().dims());
-        let dtype = self.dtype();
+        let op = Op::ReduceSumTo(target);
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[self.shape()], &[self.dtype()])
+            .expect("reduce_sum_to: compatibility validated above");
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::ReduceSumTo(target.clone()),
+            op,
             inputs: vec![self.id],
-            shape: target,
+            shape,
             dtype,
         });
         Self {
@@ -5712,11 +5725,13 @@ impl Tensor {
     pub fn reduce_max_to(&self, target: impl Into<Shape>) -> Tensor {
         let target = target.into();
         check_broadcast_compatible(target.dims(), self.shape().dims());
-        let dtype = self.dtype();
+        let op = Op::ReduceMaxTo(target);
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[self.shape()], &[self.dtype()])
+            .expect("reduce_max_to: compatibility validated above");
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::ReduceMaxTo(target.clone()),
+            op,
             inputs: vec![self.id],
-            shape: target,
+            shape,
             dtype,
         });
         Self {
@@ -5789,22 +5804,20 @@ impl Tensor {
     /// `DType::U32` regardless of the input dtype.
     fn index_reduction(&self, name: &'static str, op: Op, dim: usize) -> Tensor {
         let in_shape = self.shape();
-        let in_dims = in_shape.dims();
         assert!(
-            dim < in_dims.len(),
-            "{name}: dim {dim} out of bounds for shape {in_dims:?}",
+            dim < in_shape.dims().len(),
+            "{name}: dim {dim} out of bounds for shape {:?}",
+            in_shape.dims(),
         );
-        let out_dims: Vec<usize> = in_dims
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != dim)
-            .map(|(_, &d)| d)
-            .collect();
+        // primitive_shape carries both the rank-reduced shape and the U32
+        // index dtype for ArgMaxDim/ArgMinDim (the single source of truth).
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])
+            .expect("index_reduction: dim validated above");
         let id = self.graph.write().unwrap().push(Node {
             op,
             inputs: vec![self.id],
-            shape: Shape::from_dims(&out_dims),
-            dtype: DType::U32,
+            shape,
+            dtype,
         });
         Self {
             graph: self.graph.clone(),
@@ -6740,13 +6753,17 @@ impl Tensor {
             "index_select: dim {dim} out of bounds for data shape {:?}",
             data_dims.dims(),
         );
-        let mut out_dims: Vec<usize> = data_dims.dims().to_vec();
-        out_dims[dim] = idx_dims.dims()[0];
-        let dtype = self.dtype();
+        let op = Op::IndexSelect { dim };
+        let (shape, dtype) = crate::shape::primitive_shape(
+            &op,
+            &[data_dims, idx_dims],
+            &[self.dtype(), indices.dtype()],
+        )
+        .expect("index_select: shapes/dims validated above");
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::IndexSelect { dim },
+            op,
             inputs: vec![self.id, indices.id],
-            shape: Shape::from_dims(&out_dims),
+            shape,
             dtype,
         });
         Self {
@@ -6779,12 +6796,17 @@ impl Tensor {
             dim < data_rank,
             "gather: dim {dim} out of bounds for rank {data_rank}",
         );
-        let dtype = self.dtype();
-        let out_shape = indices.shape();
+        let op = Op::Gather { dim };
+        let (shape, dtype) = crate::shape::primitive_shape(
+            &op,
+            &[self.shape(), indices.shape()],
+            &[self.dtype(), indices.dtype()],
+        )
+        .expect("gather: shapes/dims validated above");
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::Gather { dim },
+            op,
             inputs: vec![self.id, indices.id],
-            shape: out_shape,
+            shape,
             dtype,
         });
         Self {
@@ -6821,13 +6843,17 @@ impl Tensor {
                 );
             }
         }
-        let mut out_dims: Vec<usize> = ad.to_vec();
-        out_dims[dim] = ad[dim] + bd[dim];
-        let dtype = self.dtype();
+        let op = Op::Concat { dim };
+        let (shape, dtype) = crate::shape::primitive_shape(
+            &op,
+            &[a, b],
+            &[self.dtype(), other.dtype()],
+        )
+        .expect("concat: shapes/dtypes validated above");
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::Concat { dim },
+            op,
             inputs: vec![self.id, other.id],
-            shape: Shape::from_dims(&out_dims),
+            shape,
             dtype,
         });
         Self {
@@ -6847,13 +6873,13 @@ impl Tensor {
             "slice: [start={start}, len={len}) exceeds dim size {}",
             in_dims[dim],
         );
-        let mut out_dims: Vec<usize> = in_dims.to_vec();
-        out_dims[dim] = len;
-        let dtype = self.dtype();
+        let op = Op::Slice { dim, start, len };
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])
+            .expect("slice: dim/start/len validated above");
         let id = self.graph.write().unwrap().push(Node {
-            op: Op::Slice { dim, start, len },
+            op,
             inputs: vec![self.id],
-            shape: Shape::from_dims(&out_dims),
+            shape,
             dtype,
         });
         Self {
@@ -7036,11 +7062,12 @@ impl Tensor {
     // --- internal helpers for the new builders ---
 
     fn scalar_reduction(&self, op: Op) -> Tensor {
-        let dtype = self.dtype();
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[self.shape()], &[self.dtype()])
+            .expect("scalar_reduction: single input always infers a rank-0 shape");
         let id = self.graph.write().unwrap().push(Node {
             op,
             inputs: vec![self.id],
-            shape: Shape::from_dims(&[]),
+            shape,
             dtype,
         });
         Self {
@@ -7051,22 +7078,17 @@ impl Tensor {
 
     fn axis_reduction(&self, name: &'static str, op: Op, dim: usize) -> Tensor {
         let in_shape = self.shape();
-        let in_dims = in_shape.dims();
         assert!(
-            dim < in_dims.len(),
-            "{name}: dim {dim} out of bounds for shape {in_dims:?}",
+            dim < in_shape.dims().len(),
+            "{name}: dim {dim} out of bounds for shape {:?}",
+            in_shape.dims(),
         );
-        let out_dims: Vec<usize> = in_dims
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != dim)
-            .map(|(_, &d)| d)
-            .collect();
-        let dtype = self.dtype();
+        let (shape, dtype) = crate::shape::primitive_shape(&op, &[in_shape], &[self.dtype()])
+            .expect("axis_reduction: dim validated above");
         let id = self.graph.write().unwrap().push(Node {
             op,
             inputs: vec![self.id],
-            shape: Shape::from_dims(&out_dims),
+            shape,
             dtype,
         });
         Self {
@@ -10225,6 +10247,26 @@ mod tests {
         static D: std::sync::OnceLock<Arc<dyn fuel_backend_contract::DynBackendDevice>>
             = std::sync::OnceLock::new();
         D.get_or_init(|| Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
+    }
+
+    #[test]
+    fn builders_agree_with_primitive_shape() {
+        // No-drift guard (Convergence A, Task 6): every routed builder's output
+        // shape/dtype must equal primitive_shape's answer for the same Op. If a
+        // builder's inline math ever diverged from primitive_shape, this fails.
+        let x = Tensor::from_f32(vec![0.0_f32; 2 * 3 * 4], Shape::from_dims(&[2, 3, 4]), cpu_dev());
+        let checks: Vec<(Tensor, Op)> = vec![
+            (x.slice(1, 0, 2), Op::Slice { dim: 1, start: 0, len: 2 }),
+            (x.mean_dim(2), Op::MeanDim(2)),
+            (x.try_permute(&[2, 0, 1]).unwrap(), Op::Permute(vec![2, 0, 1])),
+            (x.cast(DType::F16), Op::Cast(DType::F16)),
+        ];
+        for (t, op) in checks {
+            let (ps_shape, ps_dtype) =
+                crate::shape::primitive_shape(&op, &[x.shape()], &[x.dtype()]).unwrap();
+            assert_eq!(t.shape(), ps_shape, "shape drift for {op:?}");
+            assert_eq!(t.dtype(), ps_dtype, "dtype drift for {op:?}");
+        }
     }
 
     #[test]

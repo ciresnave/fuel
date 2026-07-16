@@ -88,6 +88,162 @@ pub struct OpAttrs {
     /// Fuel's single-dim `Op::Squeeze`/`Op::Unsqueeze` emit a one-element list.
     /// Empty ⇒ not a squeeze/unsqueeze node (a matcher wildcard).
     pub dims: Vec<u8>,
+    /// `Cast` target dtype as the stable `DType::as_str()` name (dep-free:
+    /// this crate can't reference `fuel_ir::DType`; fuel-graph maps back via
+    /// `DType::from_str`). Also carries `MaskedFill`'s value dtype. `None` ⇒
+    /// not a dtype-carrying node (a matcher wildcard). Convergence Increment A.
+    pub cast_dtype: Option<String>,
+    /// `Slice` start offset along `axis` (the dim rides the existing `axis`
+    /// field). `None` ⇒ not a slice node. Convergence Increment A.
+    pub slice_start: Option<u64>,
+    /// `Slice` length along `axis`. `None` ⇒ not a slice node. Convergence
+    /// Increment A.
+    pub slice_len: Option<u64>,
+    /// `Roll` cyclic shift along `axis` (signed; the dim rides `axis`). `None`
+    /// ⇒ not a roll node. Convergence Increment A.
+    pub roll_shift: Option<i64>,
+    /// `Pad` per-axis `(before, after)` amounts, one pair per input dim. Empty
+    /// ⇒ not a pad node. Convergence Increment A.
+    pub pad_amounts: Vec<(u64, u64)>,
+    /// `Pad` fill mode code: `0=Constant, 1=Reflect, 2=Replicate` (mirrors
+    /// Fuel's `PadMode` order; dep-free integer code). `None` ⇒ not a pad node.
+    /// Convergence Increment A.
+    pub pad_mode: Option<u8>,
+    /// `Pad` constant fill value (used by `PadMode::Constant`). `None` ⇒ not a
+    /// pad node. Convergence Increment A.
+    pub pad_value: Option<f64>,
+    /// Reduction `keepdim` flag (§6.19 reduce-schema conformance — serialized
+    /// in the canonical blob). NOT consumed by `tag_to_op`: Fuel's reduce Ops
+    /// encode keepdim structurally (`ReduceSumTo`/`ReduceMaxTo` carry the kept
+    /// shape; `SumDim`/`MeanDim` are rank-reducing). Convergence Increment A.
+    pub keepdim: Option<bool>,
+}
+
+// --- §6.19-shaped canonical positional-blob serialization (Convergence Increment A) ---
+//
+// Little-endian byte writers. `OpAttrs::to_canonical_bytes` emits a per-op
+// **positional** body (no field names, no elision — the OpTag fixes the schema)
+// then length-prefixes it with a `u32` LE byte length, so an empty-schema op has
+// exactly one canonical form (`[0,0,0,0]`). std-only (no `fuel_ir`).
+//
+// SCOPE (do not overclaim): this is the §6.19 positional *shape*, and it is
+// byte-comparable with a Baracuda-emitted blob **for the positionally-conformant
+// ops** — elementwise, cast, slice, concat, roll, pad, flip, iota, permute,
+// (un)squeeze, shape-target. Two known divergences from the confirmed §6.19.3
+// schemas (see docs/outreach/baracuda-recipe-grammar-codesign-reply-2.md), which
+// the pinned node schema `Op{op_name, op_attrs, child_edges}` reconciles WITHOUT
+// widening this blob:
+//   * `reduce{monoid, reduce_axes, keepdim}` — Fuel emits single-axis
+//     `{axis, keepdim}`. `monoid` rides `op_name` (distinct SumDim/MaxDim/MinDim
+//     tags), and a multi-axis `reduce_axes` LIST is DEFERRED (Fuel models
+//     single-axis reduce; no consumer yet).
+//   * `gather/scatter{axis, oob_policy, index_operand, index_dtype, scatter_combine}`
+//     — Fuel emits `{axis}`. `scatter_combine` rides `op_name` (IndexAdd vs
+//     ScatterAdd), `index_operand` rides `child_edges`, `index_dtype` rides that
+//     operand node; `oob_policy` is a DEFERRED unwired slot (no carrier yet).
+// See kernel-seam-interop.md §7.3.2 for the per-op field-order table + this scope.
+
+fn put_u32(b: &mut Vec<u8>, x: u32) { b.extend_from_slice(&x.to_le_bytes()); }
+fn put_u64(b: &mut Vec<u8>, x: u64) { b.extend_from_slice(&x.to_le_bytes()); }
+fn put_i64(b: &mut Vec<u8>, x: i64) { b.extend_from_slice(&x.to_le_bytes()); }
+fn put_f64(b: &mut Vec<u8>, x: f64) { b.extend_from_slice(&x.to_le_bytes()); }
+fn put_str(b: &mut Vec<u8>, s: &str) { put_u32(b, s.len() as u32); b.extend_from_slice(s.as_bytes()); }
+fn put_i64_list(b: &mut Vec<u8>, xs: &[i64]) { put_u32(b, xs.len() as u32); for &x in xs { put_i64(b, x); } }
+fn put_u32_list(b: &mut Vec<u8>, xs: &[u32]) { put_u32(b, xs.len() as u32); for &x in xs { put_u32(b, x); } }
+fn put_f64_list(b: &mut Vec<u8>, xs: &[f64]) { put_u32(b, xs.len() as u32); for &x in xs { put_f64(b, x); } }
+
+impl OpAttrs {
+    /// Serialize these attrs to the KISS §6.19 canonical positional blob for
+    /// `op`: a per-op **positional** little-endian body (no elision — the
+    /// `OpTag` determines the fixed schema), length-prefixed with a `u32` LE
+    /// byte count. An op whose schema is empty (`Add`, `Neg`, `MatMul`, `Where`,
+    /// comparisons, …) serializes as the single canonical form `[0,0,0,0]`.
+    /// Deterministic + dependency-free.
+    ///
+    /// **Conformance scope (do not overclaim):** byte-comparable with a
+    /// Baracuda-emitted blob for the positionally-conformant ops (elementwise,
+    /// cast, slice, concat, roll, pad, flip, iota, permute, (un)squeeze,
+    /// shape-target). `reduce` emits Fuel's single-axis `{axis, keepdim}` and
+    /// `gather`/`scatter` emit `{axis}`; `oob_policy` and a multi-axis
+    /// `reduce_axes` list are DEFERRED (no carrier/consumer yet), while
+    /// `monoid`/`scatter_combine` ride `op_name` and the index operand/dtype
+    /// ride `child_edges`/that operand node per the pinned node schema — so they
+    /// legitimately do not belong in this blob. See the module comment above and
+    /// kernel-seam-interop.md §7.3.2.
+    ///
+    /// M-3: the `unwrap_or(...)` defaults below cannot distinguish an *unset*
+    /// field from a genuine zero (e.g. `axis: None` vs `Some(0)`). Harmless
+    /// today — there is no decoder; this is a forward-serialization only, and an
+    /// op that reaches a given arm always has the field set (`op_to_attrs` /
+    /// `tag_to_op` guarantee it). A future decoder must not round-trip `None`.
+    pub fn to_canonical_bytes(&self, op: OpTag) -> Vec<u8> {
+        use OpTag as T;
+        let mut body: Vec<u8> = Vec::new();
+        match op {
+            // Shape-target ops: the logical output shape (Iota's len rides it).
+            T::Reshape | T::BroadcastTo | T::ReduceSumTo | T::ReduceMaxTo | T::Iota => {
+                put_i64_list(&mut body, &self.target_shape);
+            }
+            // Permute/Transpose: the absolute axis order.
+            T::Permute | T::Transpose => {
+                let perm: Vec<u32> = self.perm.iter().map(|&p| p as u32).collect();
+                put_u32_list(&mut body, &perm);
+            }
+            // Squeeze/Unsqueeze: the affected dim list.
+            T::Unsqueeze | T::Squeeze => {
+                let dims: Vec<u32> = self.dims.iter().map(|&d| d as u32).collect();
+                put_u32_list(&mut body, &dims);
+            }
+            // Slice: axis(u32), start(u64), len(u64).
+            T::Slice => {
+                put_u32(&mut body, self.axis.unwrap_or(0) as u32);
+                put_u64(&mut body, self.slice_start.unwrap_or(0));
+                put_u64(&mut body, self.slice_len.unwrap_or(0));
+            }
+            // Single-axis ops (dim rides `axis`).
+            T::Concat | T::Flip | T::Triu | T::Tril
+            | T::IndexSelect | T::Gather | T::IndexAdd | T::ScatterAdd => {
+                put_i64(&mut body, self.axis.unwrap_or(0));
+            }
+            // Roll: axis(i64) + shift(i64).
+            T::Roll => {
+                put_i64(&mut body, self.axis.unwrap_or(0));
+                put_i64(&mut body, self.roll_shift.unwrap_or(0));
+            }
+            // Dim reductions + cumsum: axis(i64) + keepdim(u8).
+            T::SumDim | T::MeanDim | T::CumSum => {
+                put_i64(&mut body, self.axis.unwrap_or(0));
+                body.push(self.keepdim.unwrap_or(false) as u8);
+            }
+            // Cast: length-prefixed dtype name.
+            T::Cast => put_str(&mut body, self.cast_dtype.as_deref().unwrap_or("")),
+            // Pad: amounts (count + (before:u64, after:u64) each) + mode(u8) + value(f64).
+            T::Pad => {
+                put_u32(&mut body, self.pad_amounts.len() as u32);
+                for &(before, after) in &self.pad_amounts {
+                    put_u64(&mut body, before);
+                    put_u64(&mut body, after);
+                }
+                body.push(self.pad_mode.unwrap_or(0));
+                put_f64(&mut body, self.pad_value.unwrap_or(0.0));
+            }
+            // Scalar-param ops: the scalar list.
+            T::AddScalar | T::MulScalar | T::Clamp | T::PowI => {
+                put_f64_list(&mut body, &self.scalars);
+            }
+            // MaskedFill: scalar value(s) + value dtype name.
+            T::MaskedFill => {
+                put_f64_list(&mut body, &self.scalars);
+                put_str(&mut body, self.cast_dtype.as_deref().unwrap_or(""));
+            }
+            // Empty-schema ops (elementwise, comparison, Where, MatMul, scalar
+            // reductions, log-softmax, …) and any tag added later: zero-length.
+            _ => {}
+        }
+        let mut out = (body.len() as u32).to_le_bytes().to_vec();
+        out.extend_from_slice(&body);
+        out
+    }
 }
 
 /// A node of the §3 declarative subgraph grammar. One type, two directions: a
@@ -172,5 +328,48 @@ mod tests {
             operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 0 }],
         };
         assert_eq!(region.bind_indices(), vec![0]);
+    }
+
+    // ---- Task 7: §6.19 canonical positional-blob serialization --------------
+
+    #[test]
+    fn empty_schema_op_serializes_zero_length() {
+        // Add carries no attrs → one canonical byte form: u32 LE length 0.
+        assert_eq!(OpAttrs::default().to_canonical_bytes(OpTag::Add), vec![0, 0, 0, 0]);
+        assert_eq!(OpAttrs::default().to_canonical_bytes(OpTag::MatMul), vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn slice_serializes_positionally() {
+        // Slice schema (positional): axis(u32), start(u64), len(u64) — see kernel-seam-interop.md.
+        let a = OpAttrs { axis: Some(1), slice_start: Some(2), slice_len: Some(3), ..OpAttrs::default() };
+        let mut expect = Vec::new();
+        let body = {
+            let mut b = Vec::new();
+            b.extend_from_slice(&1u32.to_le_bytes());
+            b.extend_from_slice(&2u64.to_le_bytes());
+            b.extend_from_slice(&3u64.to_le_bytes());
+            b
+        };
+        expect.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        expect.extend_from_slice(&body);
+        assert_eq!(a.to_canonical_bytes(OpTag::Slice), expect);
+    }
+
+    #[test]
+    fn cast_serializes_dtype_name_length_prefixed() {
+        let a = OpAttrs { cast_dtype: Some("f16".into()), ..OpAttrs::default() };
+        let mut body = Vec::new();
+        body.extend_from_slice(&(3u32.to_le_bytes())); // name length
+        body.extend_from_slice(b"f16");
+        let mut expect = (body.len() as u32).to_le_bytes().to_vec();
+        expect.extend_from_slice(&body);
+        assert_eq!(a.to_canonical_bytes(OpTag::Cast), expect);
+    }
+
+    #[test]
+    fn canonical_bytes_are_deterministic() {
+        let a = OpAttrs { target_shape: vec![2, 3], ..OpAttrs::default() };
+        assert_eq!(a.to_canonical_bytes(OpTag::Reshape), a.to_canonical_bytes(OpTag::Reshape));
     }
 }
