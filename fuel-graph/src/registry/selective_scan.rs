@@ -78,12 +78,16 @@
 //! back to `y [batch,seqlen,dim]` (slot 0, correct for general seqlen) and
 //! re-attaches the `output_views` bundle contract so `Op::View(0)/(1)` keep
 //! their shapes. Realizing `last_state` (slot 1) *through the decomposed graph*
-//! would need a bundle-composer op (`Op::ScatterIntoSlot`, currently
-//! kernel-less) to re-unite the transposed `y` with the scan's final carry into
-//! one storage. Because the executor runs the fused kernel (which writes both
-//! slots) and the oracle unrolls `ys` directly, this is an inert, documented
-//! Phase-1 gap — not a live path. Closing it is a follow-up when a consumer
-//! realizes `last_state` off the decomposed (not fused) graph.
+//! fails loudly today (the kernel-less `Op::Scan` makes any realize-through-
+//! decompose surface a typed error, not silent garbage) and would need a
+//! bundle-composer op (`Op::ScatterIntoSlot`, currently kernel-less) to
+//! re-unite the transposed `y` with the scan's final carry into one storage.
+//! Because the executor runs the fused kernel (which writes both slots
+//! correctly) and the oracle unrolls `ys` directly, this is an inert,
+//! documented Phase-1 gap — not a live path. Wiring it (or dropping the
+//! slot-1 claim) is a Phase-2 item that must land BEFORE `Op::Scan` gets a
+//! native kernel: once it has one, an un-composed `view(1)` would read past
+//! the slot-0 buffer instead of hitting today's typed dispatch error.
 //!
 //! ## Why `BackwardKind::NotDifferentiable` for v1
 //!
