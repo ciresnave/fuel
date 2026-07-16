@@ -583,4 +583,49 @@ mod tests {
         assert_eq!(get(ida), solo_a, "session A contaminated by B");
         assert_eq!(get(idb), solo_b, "session B contaminated by A");
     }
+
+    #[test]
+    fn t2_interleave_order_invariance() {
+        let model = tiny_model(9999);
+        let (pa, pb, max_new) = ([1u32,2,3], [5u32,6], 6);
+
+        // Round-robin (both added, then run together).
+        let mut rr = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let a1 = rr.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let b1 = rr.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let out_rr = rr.run_to_completion().unwrap();
+
+        // One-then-the-other: A alone to completion, then B alone.
+        let mut s_a = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        s_a.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let just_a = s_a.run_to_completion().unwrap();
+        let mut s_b = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        s_b.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let just_b = s_b.run_to_completion().unwrap();
+
+        let get = |o: &Vec<(SessionId,Vec<u32>)>, id: SessionId| o.iter().find(|(i,_)| *i==id).unwrap().1.clone();
+        assert_eq!(get(&out_rr, a1), just_a[0].1);
+        assert_eq!(get(&out_rr, b1), just_b[0].1);
+    }
+
+    #[test]
+    fn t3_per_session_rng_independence() {
+        let model = tiny_model(9999);
+        let prompt = [1u32, 2, 3];
+        let max_new = 8;
+
+        // Same prompt, DIFFERENT seeds → different streams.
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let id1 = sched.add_session(&prompt, SamplingStrategy::Temperature{temp:1.0, seed:1}, None, max_new).unwrap();
+        let id2 = sched.add_session(&prompt, SamplingStrategy::Temperature{temp:1.0, seed:2}, None, max_new).unwrap();
+        let out = sched.run_to_completion().unwrap();
+        let g = |id: SessionId| out.iter().find(|(i,_)| *i==id).unwrap().1.clone();
+        assert_ne!(g(id1), g(id2), "different seeds must diverge");
+
+        // Same seed as a standalone Temperature run → identical.
+        let solo = model.generate_with_kv_context(
+            &prompt, max_new, SamplingStrategy::Temperature{temp:1.0, seed:1}, None,
+            &Device::cpu(), DType::F32).unwrap();
+        assert_eq!(g(id1), solo, "seed 1 must match its standalone run");
+    }
 }
