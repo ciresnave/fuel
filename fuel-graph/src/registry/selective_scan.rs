@@ -4,8 +4,8 @@
 //!
 //! Provides:
 //! - [`entry`] — the metadata-side `FusedOpEntry` (shape/dtype rules, a
-//!   self-returning `decompose` — a basis gap (needs a higher-order `Scan`
-//!   primitive), per G2 — and a stubbed pattern).
+//!   total `decompose` to an `Op::Scan` recipe (G3 closed — see the
+//!   architectural note below), and a stubbed pattern).
 //!
 //! Inputs: `[u, delta, a, b, c]` (5 required; the optional `d_skip`,
 //! `z`, `delta_bias` from baracuda's full signature are deferred to a
@@ -50,34 +50,40 @@
 //! - **F32 only**: per-dtype siblings follow the FSCE/CausalConv1d
 //!   precedent.
 //!
-//! ## Architectural note — a genuine basis gap (the SSM `Scan` primitive)
+//! ## Architectural note — the SSM `Scan` primitive (G3 closed)
 //!
-//! SelectiveScan is the **canonical basis gap** the constitution names:
-//! decisions-log G3 (2026-06-20) calls out "a higher-order `Scan` for SSMs"
-//! as exactly the kind of primitive Fuel lacks and that must be closed by a
-//! **build-time `Op`-enum extension**, not smuggled in at runtime. The
-//! textbook scan is a sequential recurrence with per-timestep state; the two
-//! ways to express it in *today's* basis are both rejected as recipes:
+//! SelectiveScan *was* the constitution's **canonical basis gap**: decisions-log
+//! G3 (2026-06-20) named "a higher-order `Scan` for SSMs" as exactly the kind of
+//! primitive Fuel lacked, to be closed by a **build-time `Op`-enum extension**,
+//! not smuggled in at runtime. That primitive now exists ([`crate::Op::Scan`],
+//! Phase 1), so [`decompose`] emits it — closing G3. Neither pre-`Scan` recipe
+//! was admissible: the `O(seqlen)` unroll is an unbounded, un-re-fusable
+//! explosion, and the `CumSum` closed-form (`h[t] = exp(a·D[t]) ⊙
+//! cumsum_t(exp(−a·D[s]) ⊙ x[s])`, `D = cumsum_t(Δ)`) **overflows** for Mamba's
+//! `a = −exp(a_log) < 0` (`exp(|a|·D[s])`), numerically invalid vs. the fused
+//! kernel. `Op::Scan` sidesteps both — it *is* the sequential recurrence as a
+//! bounded, sub-graph-carrying primitive.
 //!
-//! - **Unroll `O(seqlen)` per-step chains** (`Exp/Mul/Add`). Total, but the
-//!   node count is *shape-dependent and unbounded*, there is no finite
-//!   `pattern` that re-fuses it, and it defeats the very optimization the base
-//!   map exists for — not a recipe, an explosion.
-//! - **Closed-form parallel scan via `CumSum`.** A diagonal SSM *does* have
-//!   one: `h[t] = exp(a·D[t]) ⊙ cumsum_t(exp(−a·D[s]) ⊙ x[s])`, `D =
-//!   cumsum_t(Δ)`. But Mamba's `a = −exp(a_log) < 0`, so `exp(−a·D[s]) =
-//!   exp(|a|·D[s])` **overflows** for any realistic sequence — numerically
-//!   invalid, i.e. *not* IEEE-equivalent to the fused kernel. This is exactly
-//!   why Mamba's kernel uses a segmented/chunked scan, and why a stable
-//!   decomposition needs the missing primitive (a `Scan` / associative-scan,
-//!   or a chunked-scan op), not a cleverer rewrite.
+//! [`decompose`] lowers `Op::Fused(SELECTIVE_SCAN)` to an `Op::Scan` whose body
+//! is the affine step `h ← exp(d·a)·h + d·b·u`; `y_t = Σ_dstate(h·c)`. `Op::Scan`
+//! is a base-map terminal (no `LoweringRule` matches it), realized either by
+//! `unroll_scan` (the numeric verify oracle / kernel-absent fallback) or —
+//! the **executed production path** — by dispatching the *fused* op to its
+//! CPU/CUDA kernel. The decompose recipe exists for the optimizer's base-map
+//! cover-finding and the verify oracle; the fused kernel stays the fast path.
 //!
-//! So per G2 [`decompose`] is total + **never-panic** by returning **self** —
-//! the driver's fixpoint signal — leaving the node `Op::Fused` as a *surfaced
-//! opaque-op gap* the inventory telemetry can find. Backends without a native
-//! kernel use the executor's `cpu_fallback`. The precise ask to close it: add
-//! a higher-order scan primitive to the `Op` basis (a Fuel-side build-time
-//! extension per G3), then this decompose emits `cumsum`-scan-over-`Scan`.
+//! **Phase-1 multi-output limitation.** The fused node is a 2-slot bundle
+//! (slot 0 = `y`, slot 1 = `last_state`). The `Op::Scan` naturally stacks each
+//! per-step `y_t` on axis 0 (`[seqlen,batch,dim]`); the decompose transposes it
+//! back to `y [batch,seqlen,dim]` (slot 0, correct for general seqlen) and
+//! re-attaches the `output_views` bundle contract so `Op::View(0)/(1)` keep
+//! their shapes. Realizing `last_state` (slot 1) *through the decomposed graph*
+//! would need a bundle-composer op (`Op::ScatterIntoSlot`, currently
+//! kernel-less) to re-unite the transposed `y` with the scan's final carry into
+//! one storage. Because the executor runs the fused kernel (which writes both
+//! slots) and the oracle unrolls `ys` directly, this is an inert, documented
+//! Phase-1 gap — not a live path. Closing it is a follow-up when a consumer
+//! realizes `last_state` off the decomposed (not fused) graph.
 //!
 //! ## Why `BackwardKind::NotDifferentiable` for v1
 //!
@@ -93,9 +99,10 @@ use crate::registry::{
     BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
     PatternMatch, SubgraphPattern,
 };
-use crate::{Graph, NodeId};
+use crate::{Graph, Node, NodeId, Op, ScanEmit, ScanRole};
 use fuel_ir::storage::OutputViewSpec;
 use fuel_ir::{DType, Layout, Shape};
+use std::sync::Arc;
 
 /// Metadata-side registry entry for SelectiveScan. Multi-output (item
 /// 3 consumer migration, 2026-06-01): slot 0 = `y`, slot 1 =
@@ -193,22 +200,213 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     input_dtypes[0]
 }
 
-/// SelectiveScan is the constitution's canonical **basis gap** (decisions-log
-/// G3: "a higher-order `Scan` for SSMs"). No recipe over today's `Op` basis is
-/// both *total* and *numerically valid* — the `O(seqlen)` unroll is an
-/// unbounded, un-re-fusable explosion, and the `CumSum` closed-form overflows
-/// for Mamba's `a < 0` regime (see the module note). Per G2 (2026-06-20)
-/// `decompose` is therefore total and never panics by returning **self** — the
-/// driver's fixpoint signal ("can't decompose further") — leaving the node
-/// `Op::Fused` as a surfaced opaque-op gap for the inventory telemetry.
-/// Closing it is a build-time `Op`-basis extension (a `Scan` / associative- or
-/// chunked-scan primitive); backends without a native kernel use
-/// `cpu_fallback`. `nf4_matmul_decompose_matches_kernel` and
-/// `flash_attn_decompose_concrete_klen` (fuel-core) are the other two of the
-/// original three panicking-decompose bugs — both now closed with real
-/// recipes; this one remains a *documented* gap, not a bug.
-pub fn decompose(_graph: &mut Graph, id: NodeId, _params: &FusedOpParams) -> NodeId {
-    id
+/// Total decomposition of SelectiveScan to an [`crate::Op::Scan`] recipe —
+/// closing decisions-log G3 ("a higher-order `Scan` for SSMs"), the last of the
+/// original three self-returning decomposes (`nf4_matmul` + concrete-`k_len`
+/// `flash_attn` were the other two). The `Op::Scan` carries the affine Mamba
+/// step as its body: carry `h [batch,dim,dstate]` initialized to zero, four
+/// per-step slices (`u_t`, `d_t` = `[softplus]`-discretized `delta`, `b_t`,
+/// `c_t`), and `a` as the single const; `bound = seqlen`, `emit = All`. The
+/// body is `gate = exp(bc(d_t)·a)`, `bu = bc(d_t·u_t)·bc(b_t)`,
+/// `h_new = gate·h + bu`, `y_t = Σ_dstate(h_new·bc(c_t))`.
+///
+/// `softplus` (when set) is computed over the whole `delta` tensor *before* the
+/// scan (no recurrent dependency). The per-step series are transposed to be
+/// seqlen-major (scan axis 0). The returned node re-attaches the 2-slot
+/// `output_views` bundle contract (slot 0 = `y`, transposed to
+/// `[batch,seqlen,dim]`; slot 1 = `last_state`) — see the module note on the
+/// Phase-1 `last_state`-realize limitation.
+///
+/// Per G2 (2026-06-20) this is total + never-panic: the only self-returns are
+/// the belt-and-suspenders wrong-params / malformed-shape guards (structurally
+/// impossible for a well-formed `SELECTIVE_SCAN` node), which are the driver's
+/// fixpoint signal, not a crash. The recipe is the *math* the kernel computes;
+/// the fused CPU/CUDA kernel stays the executed production path — the optimizer
+/// chooses between them by cost, and `unroll_scan` provides the verify oracle.
+pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
+    let delta_softplus = match params {
+        FusedOpParams::SelectiveScan { delta_softplus } => *delta_softplus,
+        // Wrong params for this id — can't decompose; return self (fixpoint).
+        _ => return id,
+    };
+
+    // Read the 5 input NodeIds + shapes/dtype in a short borrow.
+    let (u_id, delta_id, a_id, b_id, c_id, u_shape, a_shape, b_shape, c_shape, dtype) = {
+        let n = graph.node(id);
+        // Defensive: a well-formed SELECTIVE_SCAN node has exactly 5 inputs.
+        // Malformed → fixpoint self-return (never panic).
+        if n.inputs.len() != 5 {
+            return id;
+        }
+        let u_shape = graph.node(n.inputs[0]).shape.clone();
+        let a_shape = graph.node(n.inputs[2]).shape.clone();
+        let b_shape = graph.node(n.inputs[3]).shape.clone();
+        let c_shape = graph.node(n.inputs[4]).shape.clone();
+        (
+            n.inputs[0], n.inputs[1], n.inputs[2], n.inputs[3], n.inputs[4],
+            u_shape, a_shape, b_shape, c_shape, n.dtype,
+        )
+    };
+
+    let u_dims = u_shape.dims();
+    let a_dims = a_shape.dims();
+    // Defensive shape guards — malformed → fixpoint self-return.
+    if u_dims.len() != 3 || a_dims.len() != 2 {
+        return id;
+    }
+    let batch = u_dims[0];
+    let seqlen = u_dims[1];
+    let dim = u_dims[2];
+    let dstate = a_dims[1];
+
+    let carry_shape = Shape::from_dims(&[batch, dim, dstate]);
+    let elem_ud = Shape::from_dims(&[batch, dim]);
+    let elem_bc = Shape::from_dims(&[batch, dstate]);
+
+    // Broadcast [batch,dim] -> [batch,dim,1] -> [batch,dim,dstate].
+    let bc_from_ud = |graph: &mut Graph, src: NodeId| -> NodeId {
+        let mid = Shape::from_dims(&[batch, dim, 1]);
+        let full = Shape::from_dims(&[batch, dim, dstate]);
+        let re = graph.push(Node {
+            op: Op::Reshape(mid.clone()), inputs: vec![src], shape: mid, dtype,
+        });
+        graph.push(Node {
+            op: Op::BroadcastTo(full.clone()), inputs: vec![re], shape: full, dtype,
+        })
+    };
+    // Broadcast [batch,dstate] -> [batch,1,dstate] -> [batch,dim,dstate].
+    let bc_from_bc = |graph: &mut Graph, src: NodeId| -> NodeId {
+        let mid = Shape::from_dims(&[batch, 1, dstate]);
+        let full = Shape::from_dims(&[batch, dim, dstate]);
+        let re = graph.push(Node {
+            op: Op::Reshape(mid.clone()), inputs: vec![src], shape: mid, dtype,
+        });
+        graph.push(Node {
+            op: Op::BroadcastTo(full.clone()), inputs: vec![re], shape: full, dtype,
+        })
+    };
+
+    // ---- 1. discretize delta -> d [batch,seqlen,dim] BEFORE the scan (softplus
+    // has no recurrent dependency). softplus(x) = max(x,0) + ln(1 + exp(-|x|))
+    // = Relu(x) + Log(1 + Exp(Neg(Abs(x)))) — the byte-kernel's stable form.
+    let delta_shape = Shape::from_dims(&[batch, seqlen, dim]);
+    let d_full = if !delta_softplus {
+        delta_id
+    } else {
+        let ax = graph.push(Node { op: Op::Abs, inputs: vec![delta_id], shape: delta_shape.clone(), dtype });
+        let nax = graph.push(Node { op: Op::Neg, inputs: vec![ax], shape: delta_shape.clone(), dtype });
+        let e = graph.push(Node { op: Op::Exp, inputs: vec![nax], shape: delta_shape.clone(), dtype });
+        let e1 = graph.push(Node { op: Op::AddScalar(1.0), inputs: vec![e], shape: delta_shape.clone(), dtype });
+        let l = graph.push(Node { op: Op::Log, inputs: vec![e1], shape: delta_shape.clone(), dtype });
+        let r = graph.push(Node { op: Op::Relu, inputs: vec![delta_id], shape: delta_shape.clone(), dtype });
+        graph.push(Node { op: Op::Add, inputs: vec![r, l], shape: delta_shape.clone(), dtype })
+    };
+
+    // ---- 2. per-step series with the scan (seqlen) axis moved to dim 0, so
+    // `unroll_scan`'s `Slice{dim:0}` addresses each timestep: Permute([1,0,2]).
+    let ud_ser_shape = Shape::from_dims(&[seqlen, batch, dim]);
+    let bc_ser_shape = Shape::from_dims(&[seqlen, batch, dstate]);
+    let permute3 = |graph: &mut Graph, src: NodeId, out: Shape| -> NodeId {
+        graph.push(Node { op: Op::Permute(vec![1, 0, 2]), inputs: vec![src], shape: out, dtype })
+    };
+    let u_ser = permute3(graph, u_id, ud_ser_shape.clone());
+    let d_ser = permute3(graph, d_full, ud_ser_shape.clone());
+    let b_ser = permute3(graph, b_id, bc_ser_shape.clone());
+    let c_ser = permute3(graph, c_id, bc_ser_shape.clone());
+
+    // ---- 3. init_carry: zero [batch,dim,dstate], derived without a
+    // data-carrying Const (a `decompose` fn has no device handle): broadcast
+    // `a` up to the carry shape and multiply by 0.
+    let a_re3 = graph.push(Node {
+        op: Op::Reshape(Shape::from_dims(&[1, dim, dstate])), inputs: vec![a_id],
+        shape: Shape::from_dims(&[1, dim, dstate]), dtype,
+    });
+    let a_bc = graph.push(Node {
+        op: Op::BroadcastTo(carry_shape.clone()), inputs: vec![a_re3], shape: carry_shape.clone(), dtype,
+    });
+    let init_carry = graph.push(Node {
+        op: Op::MulScalar(0.0), inputs: vec![a_bc], shape: carry_shape.clone(), dtype,
+    });
+
+    // ---- 4. the body: h ← exp(d·a)·h + d·b·u ; y = Σ_dstate(h·c). Carry h
+    // and the per-step holes reference ScanPlaceholders; `a` is the const.
+    let h = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: carry_shape.clone(), dtype });
+    let u_t = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 }, inputs: vec![], shape: elem_ud.clone(), dtype });
+    let d_t = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 1 }, inputs: vec![], shape: elem_ud.clone(), dtype });
+    let b_t = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 2 }, inputs: vec![], shape: elem_bc.clone(), dtype });
+    let c_t = graph.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 3 }, inputs: vec![], shape: elem_bc.clone(), dtype });
+
+    // gate = Exp( bc(d_t) ⊙ bc(a) )
+    let d_bc = bc_from_ud(graph, d_t);
+    let a_body = {
+        let mid = Shape::from_dims(&[1, dim, dstate]);
+        let re = graph.push(Node { op: Op::Reshape(mid.clone()), inputs: vec![a_id], shape: mid, dtype });
+        graph.push(Node { op: Op::BroadcastTo(carry_shape.clone()), inputs: vec![re], shape: carry_shape.clone(), dtype })
+    };
+    let da = graph.push(Node { op: Op::Mul, inputs: vec![d_bc, a_body], shape: carry_shape.clone(), dtype });
+    let gate = graph.push(Node { op: Op::Exp, inputs: vec![da], shape: carry_shape.clone(), dtype });
+
+    // bu = bc(d_t ⊙ u_t) ⊙ bc(b_t)
+    let du = graph.push(Node { op: Op::Mul, inputs: vec![d_t, u_t], shape: elem_ud.clone(), dtype });
+    let du_bc = bc_from_ud(graph, du);
+    let b_body = bc_from_bc(graph, b_t);
+    let bu = graph.push(Node { op: Op::Mul, inputs: vec![du_bc, b_body], shape: carry_shape.clone(), dtype });
+
+    // h_new = gate ⊙ h + bu   (body_new_carry)
+    let gh = graph.push(Node { op: Op::Mul, inputs: vec![gate, h], shape: carry_shape.clone(), dtype });
+    let h_new = graph.push(Node { op: Op::Add, inputs: vec![gh, bu], shape: carry_shape.clone(), dtype });
+
+    // y_t = ReduceSumTo_dstate( h_new ⊙ bc(c_t) ) -> [batch,dim]   (body_y)
+    let c_body = bc_from_bc(graph, c_t);
+    let hc = graph.push(Node { op: Op::Mul, inputs: vec![h_new, c_body], shape: carry_shape.clone(), dtype });
+    let y_keep_shape = Shape::from_dims(&[batch, dim, 1]);
+    let y_keep = graph.push(Node {
+        op: Op::ReduceSumTo(y_keep_shape.clone()), inputs: vec![hc], shape: y_keep_shape, dtype,
+    });
+    let y_t = graph.push(Node {
+        op: Op::Reshape(elem_ud.clone()), inputs: vec![y_keep], shape: elem_ud.clone(), dtype,
+    });
+
+    // ---- 5. the Op::Scan node. Natural 2-slot bundle: slot 0 = stacked ys
+    // [seqlen,batch,dim], slot 1 = final carry [batch,dim,dstate].
+    let ys_stacked_shape = Shape::from_dims(&[seqlen, batch, dim]);
+    let scan = graph.push(Node {
+        op: Op::Scan { n_xs: 4, bound: seqlen, emit: ScanEmit::All, early_exit: None },
+        inputs: vec![init_carry, u_ser, d_ser, b_ser, c_ser, a_id, h_new, y_t],
+        shape: ys_stacked_shape.clone(),
+        dtype,
+    });
+    let scan_specs = vec![
+        OutputViewSpec::contiguous(dtype, ys_stacked_shape.clone()),
+        OutputViewSpec::contiguous(dtype, carry_shape.clone()),
+    ];
+    if let Ok((_bytes, views)) = fuel_ir::storage::compose_bundle(&scan_specs) {
+        let _ = graph.set_output_views(scan, Arc::from(views.into_boxed_slice()));
+    }
+
+    // ---- 6. reconcile the axis order. `Op::Scan{emit=All}` stacks each y_t on
+    // axis 0 -> [seqlen,batch,dim]; `y` must be [batch,seqlen,dim]. Project
+    // slot 0 and transpose the seqlen/batch axes back.
+    let ys_raw = graph.push(Node {
+        op: Op::View { slot: 0 }, inputs: vec![scan], shape: ys_stacked_shape, dtype,
+    });
+    let y_shape = Shape::from_dims(&[batch, seqlen, dim]);
+    let y = graph.push(Node {
+        op: Op::Permute(vec![1, 0, 2]), inputs: vec![ys_raw], shape: y_shape, dtype,
+    });
+
+    // ---- 7. re-present the SelectiveScan 2-slot bundle contract (slot 0 = y
+    // [batch,seqlen,dim], slot 1 = last_state [batch,dim,dstate]) on the return
+    // node so the existing `Op::View(0)/(1)` consumers keep their shapes. See
+    // the module note on the Phase-1 `last_state` realize gap (needs a bundle-
+    // composer op; the executor runs the fused kernel, so this is inert today).
+    let input_shapes = [u_shape, delta_shape, a_shape, b_shape, c_shape];
+    let input_dtypes = [dtype, dtype, dtype, dtype, dtype];
+    let ss_specs = output_views(&input_shapes, &input_dtypes, params);
+    if let Ok((_bytes, views)) = fuel_ir::storage::compose_bundle(&ss_specs) {
+        let _ = graph.set_output_views(y, Arc::from(views.into_boxed_slice()));
+    }
+    y
 }
 
 /// Matcher stub — SelectiveScan nodes originate from the explicit
