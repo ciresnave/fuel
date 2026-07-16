@@ -65,6 +65,49 @@ pub fn drive_scan_until_final_f32(
     Ok((last, count))
 }
 
+/// Modern (dense) Hopfield retrieval: `xi <- softmax(beta * xi * X^T) * X`,
+/// iterated to a fixed point (carry = xi, early_exit = `||xi_new - xi|| < eps`,
+/// emit = Final). `query`: `[1, d]` (init_carry); patterns `X`: `[n, d]` (a
+/// const). Returns the retrieval Tensor (the emit=Final view). Runs forward
+/// through [`drive_scan_until_final_f32`] (converges early) and backward
+/// through the `lower_scans_for_backward` unroll pre-pass. No `Op::Scan`
+/// native kernel, no fused Hopfield op — every step is matmul + softmax,
+/// primitives that already have CPU kernels.
+pub fn hopfield_retrieve(
+    query: &fuel_graph::Tensor,
+    patterns: &fuel_graph::Tensor,
+    beta: f32, eps: f32, max_iters: usize,
+) -> std::result::Result<fuel_graph::Tensor, fuel_ir::Error> {
+    use fuel_graph::{Tensor, ScanEmit};
+    if !std::sync::Arc::ptr_eq(query.graph(), patterns.graph()) {
+        return Err(fuel_ir::Error::Msg("hopfield_retrieve: query and patterns must share a graph".into()).bt());
+    }
+    let d = { let dims = query.shape(); *dims.dims().last().ok_or_else(|| fuel_ir::Error::Msg("hopfield: query rank 0".into()).bt())? };
+    let g = query.graph().clone();
+    // carry placeholder xi [1, d].
+    let xi = {
+        let mut gw = g.write().unwrap();
+        gw.push(fuel_graph::Node { op: fuel_graph::Op::ScanPlaceholder { role: fuel_graph::ScanRole::Carry, index: 0 },
+            inputs: vec![], shape: fuel_ir::Shape::from_dims(&[1, d]), dtype: fuel_ir::DType::F32 })
+    };
+    let xi_t = Tensor::from_existing(g.clone(), xi);
+    // body: logits = mul_scalar(beta)(xi @ X^T) [1,n]; s = softmax_last(logits); new = s @ X [1,d].
+    let xt = patterns.transpose();                       // [d, n]
+    let logits = xi_t.matmul(&xt).mul_scalar(beta as f64);
+    let s = logits.softmax_last_dim();
+    let new_carry = s.matmul(patterns);                  // [1, d]
+    // pred: ||new - xi|| < eps  ->  Lt( sqrt(sum((new-xi)^2)), eps ) : U8 [1,1].
+    let delta = new_carry.sub(&xi_t);
+    let sq = delta.sqr();
+    let sumsq = sq.reduce_sum_to(fuel_ir::Shape::from_dims(&[1, 1]));
+    let norm = sumsq.sqrt();
+    let eps_c = Tensor::from_existing(g.clone(), query.id())
+        .const_f32_like(vec![eps], fuel_ir::Shape::from_dims(&[1, 1]));
+    let pred = norm.lt(&eps_c);                           // U8 [1,1]
+    // scan_until: consts must include EVERY const the body OR predicate reads: X and eps_c.
+    query.scan_until(&[], &[patterns.clone(), eps_c], &new_carry, &new_carry, &pred, max_iters, ScanEmit::Final)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{Device, hopfield::drive_scan_until_final_f32};
@@ -115,5 +158,26 @@ mod tests {
         let (carry, count) = drive_scan_until_final_f32(&graph, scan, &dev).expect("driver");
         assert_eq!(count, 6, "non-converging predicate runs to bound (no infinite loop)");
         assert!((carry[0] - 6.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn hopfield_retrieves_stored_pattern_and_exits_early() {
+        let dev = Device::cpu();
+        // Three orthogonal-ish stored patterns [n=3, d=4].
+        let x = Tensor::from_f32(
+            vec![1.0,0.0,0.0,0.0,  0.0,1.0,0.0,0.0,  0.0,0.0,1.0,0.0],
+            Shape::from_dims(&[3,4]), &*dev.as_dyn());
+        // Query near pattern 0.
+        let q = Tensor::from_existing(x.graph().clone(), x.id())
+            .const_f32_like(vec![0.9, 0.2, 0.1, 0.0], Shape::from_dims(&[1,4]));
+        let retrieval = crate::hopfield::hopfield_retrieve(&q, &x, /*beta*/ 8.0, /*eps*/ 1e-3, /*max_iters*/ 20)
+            .expect("build hopfield retrieval");
+        let scan_id = { let g = retrieval.graph().read().unwrap(); g.node(retrieval.id()).inputs[0] };
+        let (xi, count) = crate::hopfield::drive_scan_until_final_f32(&retrieval.graph().clone(), scan_id, &dev)
+            .expect("drive");
+        // Converged to pattern 0 (dominant coordinate 0), and stopped BEFORE the capacity.
+        assert!(xi[0] > 0.8 && xi[1] < 0.2 && xi[2] < 0.2, "retrieved xi should snap to pattern 0: {xi:?}");
+        assert!(count < 20, "early-exit must stop before bound (converged in {count} < 20 iters)");
+        assert!(count >= 1);
     }
 }
