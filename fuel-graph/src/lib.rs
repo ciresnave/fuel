@@ -49,6 +49,7 @@ pub mod opt;
 pub mod registry;
 pub mod runtime_fused;
 pub mod run;
+pub mod scan;
 
 #[doc(inline)]
 pub use run::{
