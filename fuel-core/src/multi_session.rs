@@ -33,7 +33,7 @@ use fuel_ir::{DType, Error};
 
 use crate::Device;
 use crate::inference_context::{DecodeSession, InferenceContext, KvCache};
-use crate::lazy::SamplingStrategy;
+use crate::lazy::{sample_logits, SamplingStrategy};
 
 /// Stable identity for one session within a [`SessionScheduler`]. Minted
 /// monotonically by `add_session`; used to correlate a session's output with
@@ -166,6 +166,37 @@ impl SessionState {
     pub fn tokens(&self) -> &[u32] {
         &self.tokens
     }
+
+    /// Consume `last_logits` with THIS session's own `rng_state`, append the
+    /// sampled token, decrement the budget, and transition to `Finished` on
+    /// eos / budget exhaustion. Returns the sampled token, or `None` if there
+    /// was nothing to sample (no `last_logits`, or already `Finished`).
+    ///
+    /// **Per-session RNG is the contamination firewall** — this reads/advances
+    /// ONLY `self.rng_state`, never a shared or global state, so two sessions
+    /// sampling the same logits with different seeds diverge and one with the
+    /// same seed as a standalone run matches it (T3).
+    pub fn sample_and_append(&mut self) -> crate::Result<Option<u32>> {
+        if self.phase == SessionPhase::Finished {
+            return Ok(None);
+        }
+        let logits = match self.last_logits.take() {
+            Some(l) => l,
+            None => return Ok(None),
+        };
+        let next = sample_logits(&logits, self.strategy, &mut self.rng_state);
+        self.tokens.push(next);
+        self.new_tokens.push(next);
+        self.remaining = self.remaining.saturating_sub(1);
+        if self.eos_id == Some(next) {
+            self.phase = SessionPhase::Finished;
+        } else if self.remaining == 0 {
+            self.phase = SessionPhase::Finished;
+        } else {
+            self.phase = SessionPhase::Decode;
+        }
+        Ok(Some(next))
+    }
 }
 
 #[cfg(test)]
@@ -233,5 +264,42 @@ mod tests {
             SamplingStrategy::Greedy, None, 5, &Device::cpu(), DType::F32).is_err());
         assert!(SessionState::new(SessionId(0), dims(&cfg), &[1,2],
             SamplingStrategy::Greedy, None, 0, &Device::cpu(), DType::F32).is_err());
+    }
+
+    #[test]
+    fn sample_and_append_greedy_appends_argmax_and_counts_budget() {
+        let cfg = tiny_cfg();
+        let mut s = SessionState::new(SessionId(0), dims(&cfg), &[1,2],
+            SamplingStrategy::Greedy, None, 2, &Device::cpu(), DType::F32).unwrap();
+        // argmax at index 3
+        s.last_logits = Some(vec![0.0, 0.1, 0.2, 0.9, 0.3]);
+        let t = s.sample_and_append().unwrap();
+        assert_eq!(t, Some(3));
+        assert_eq!(s.tokens(), &[1,2,3]);
+        assert_eq!(s.remaining, 1);
+        assert_eq!(s.phase, SessionPhase::Decode);
+        // exhaust the budget → Finished
+        s.last_logits = Some(vec![0.9, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(s.sample_and_append().unwrap(), Some(0));
+        assert_eq!(s.phase, SessionPhase::Finished);
+        assert!(!s.is_ready());
+    }
+
+    #[test]
+    fn sample_and_append_stops_on_eos() {
+        let cfg = tiny_cfg();
+        let mut s = SessionState::new(SessionId(0), dims(&cfg), &[1],
+            SamplingStrategy::Greedy, Some(3), 10, &Device::cpu(), DType::F32).unwrap();
+        s.last_logits = Some(vec![0.0,0.0,0.0,0.9,0.0]); // argmax 3 == eos
+        assert_eq!(s.sample_and_append().unwrap(), Some(3));
+        assert_eq!(s.phase, SessionPhase::Finished);
+    }
+
+    #[test]
+    fn sample_and_append_noop_without_logits() {
+        let cfg = tiny_cfg();
+        let mut s = SessionState::new(SessionId(0), dims(&cfg), &[1],
+            SamplingStrategy::Greedy, None, 3, &Device::cpu(), DType::F32).unwrap();
+        assert_eq!(s.sample_and_append().unwrap(), None);
     }
 }
