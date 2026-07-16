@@ -7185,6 +7185,20 @@ mod tests {
     use fuel_ir::Shape;
     use fuel_graph::Node;
 
+    /// Task 5 (C6): `Op::Scan` has no native kernel in Phase 1 — it is
+    /// always lowered/re-fused before execution — so `op_to_op_kind` must
+    /// fall through its `_ => None` wildcard for it, exactly like any other
+    /// not-yet-wired op. Regression lock, not born-red: this is expected to
+    /// pass immediately.
+    #[test]
+    fn scan_has_no_dispatch_op_kind() {
+        use fuel_graph::{Op, ScanEmit};
+        assert_eq!(
+            crate::pipelined::op_to_op_kind(&Op::Scan { n_xs: 0, bound: 2, emit: ScanEmit::All, early_exit: None }),
+            None,
+        );
+    }
+
     /// Step E A4b open question #4 — "event only where waited", step 1.
     /// `build_wait_set` collects exactly the producers of `Op::Copy`/`Move`
     /// nodes in the order: a same-device-only node (never copied/moved) must

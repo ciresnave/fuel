@@ -14021,4 +14021,42 @@ mod tests {
         let r = t(carry).scan(&[], &[], &t(new_carry), &t(body_y), 0, ScanEmit::All);
         assert!(r.is_err(), "bound == 0 must be a typed Err, not a panic");
     }
+
+    /// Task 5 (C6): every "opt-in" classifier/dispatch site over `Op` must
+    /// treat the new `Op::Scan` / `Op::ScanPlaceholder` variants via its
+    /// existing safe-conservative wildcard/allow-list — no site should need
+    /// a bespoke Scan arm in Phase 1. This is a regression LOCK, not a
+    /// born-red test: every assertion here is expected to pass immediately
+    /// because the wildcards already exist; a red assertion means that site
+    /// silently mishandles Scan and needs a conservative arm added.
+    ///
+    /// Also confirms reachability: `Op::Scan`'s body lives in its own
+    /// `inputs` (like `Op::Branch`'s arms), so the ordinary input-closure
+    /// walk (`topo_order_multi`) sees body nodes for free — no
+    /// `effective_roots` / `live_set` edit is needed.
+    #[test]
+    fn scan_opt_in_sites_are_safe_defaults() {
+        use crate::{Graph, Node, Op, ScanEmit, ScanRole};
+        use fuel_ir::{DType, Shape};
+        let scan = Op::Scan { n_xs: 0, bound: 2, emit: ScanEmit::All, early_exit: None };
+        let hole = Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 };
+        // Classifier defaults.
+        assert_eq!(scan.destructive_input(), None);
+        assert_eq!(hole.destructive_input(), None);
+        assert!(!scan.is_view_op());
+        assert!(!hole.is_view_op());
+        assert_eq!(crate::infer_storage_class(&scan), crate::StorageClass::Transient);
+        assert_eq!(crate::jit::op_to_tag(&scan), None);
+        // Reachability: build a graph with an Op::Scan whose body references a hole;
+        // the hole (a body node) is reachable from the Scan via inputs, no seeding.
+        let mut g = Graph::new();
+        let s = Shape::from_dims(&[1]);
+        let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+        let h = g.push(Node { op: hole.clone(), inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+        let nc = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![h], shape: s.clone(), dtype: DType::F32 });
+        let sc = g.push(Node { op: scan.clone(), inputs: vec![carry, nc, nc], shape: Shape::from_dims(&[2,1]), dtype: DType::F32 });
+        let reachable = crate::topo_order_multi(&g, &[sc]);
+        assert!(reachable.contains(&nc) && reachable.contains(&h),
+            "body nodes must be reachable from Op::Scan via inputs (no effective_roots edit needed)");
+    }
 }
