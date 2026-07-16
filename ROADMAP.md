@@ -124,7 +124,15 @@ nowhere; now captured so they are not forgotten):
   **absent** (no allocator/refcounting exists behind `Op::PagedAttn` today) — real but
   deferred, now that multi-agent/multi-session serving is a confirmed near-term personal
   roadmap goal (get Fuel's basics working first). Full detail + citations + the
-  reevaluation-cost menu: `docs/frontier-architecture-gaps.md` §4.
+  reevaluation-cost menu: `docs/frontier-architecture-gaps.md` §4. **Increment 1 of the
+  serving substrate shipped** (`fuel-core/src/multi_session.rs`): host-side `SessionState`
+  + `SessionScheduler` (serial arm = byte-exact oracle, T1 no-cross-session-contamination)
+  + a live `BatchedDecode` arm (shared `[K,…]` KV buffer + `flash_decoding` batch, lockstep-
+  only; a separate batch=K plan-once graph, so ε-close (logits within 1e-4) and token-identical
+  to serial on the tested CPU shapes, not bit-exact; the CUDA bf16 flash-arm parity test is
+  local/`#[ignore]`).
+  No IR op, no kernel — host orchestration over the existing persistent-decode machinery.
+  KV-content sharing/splice + the block-pool allocator stay Increment 2+.
 - **GRPO** + **RLVR** verifiable post-training — greenfield on the existing `fuel-training`
   stack (SGD/AdamW + autodiff + `cross_entropy`); needs the RNG/generator seam (above) for
   group sampling.

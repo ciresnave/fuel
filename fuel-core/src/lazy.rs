@@ -7374,6 +7374,340 @@ impl LlamaModel {
         Ok(logits_vec)
     }
 
+    /// Multi-session serving Increment 1 (C3): one **live batched** decode step
+    /// over K sessions' KV caches, matching K serial single-session
+    /// `forward_with_kv_context_persistent([last_token], …)` steps.
+    ///
+    /// This is a SEPARATE batch=K plan-once graph, so its float reduction order
+    /// differs from the batch=1 serial arm: the guarantee is **ε-close** (logits
+    /// within 1e-4) and **token-identical** on tested shapes, NOT bit-exact.
+    /// KNOWN LIMITATION: on a real model with near-tied logits, ε-level drift
+    /// could flip a greedy argmax and diverge the batched token stream from the
+    /// serial one — the parity gates use tiny models where this does not occur.
+    ///
+    /// All K caches must be **uniform** — equal `cached_len`, `max_seq_len`,
+    /// `n_layers`, dtype (the scheduler's uniformity gate guarantees this so
+    /// the single shared `flash_decoding` `k_len` = `cached_len + 1` is correct
+    /// for every row). `last_tokens[i]` is session `i`'s most recent token.
+    ///
+    /// Mechanism (spec risk #2 (a), copy-in/copy-out into a per-call shared
+    /// buffer; all-or-nothing commit, spec risk #7):
+    /// 1. Allocate a shared `[K, n_kv_heads, max_seq_len, head_dim]` K/V buffer
+    ///    per layer ([`crate::inference_context::alloc_batched_kv`]; fail-on-OOM).
+    /// 2. **Copy-in:** `Op::WriteSlice` each session's `[1,…]` KV history into
+    ///    its batch slot `i`.
+    /// 3. **Decode:** build a batch=`K` analogue of
+    ///    [`Self::build_and_realize_first_decode_token`] over the shared buffer
+    ///    (the projection GEMMs batch for free through the leading batch axis;
+    ///    the attention half reaches `flash_decoding`'s batch dim on CUDA) and
+    ///    realize `[K, vocab]` logits (non-captured plan-once, spec #4).
+    /// 4. **Copy-out + commit:** ONLY after realize succeeds, copy each slot
+    ///    back into its session's own cache and bump `cached_len`/versions. Any
+    ///    earlier `Err` returns before a single session cache is mutated — no
+    ///    session is left half-written.
+    ///
+    /// On CPU (f32) the flash arm is not offered — the batch=`K` graph runs the
+    /// decomposed batched attention, which still exercises the full shared-
+    /// buffer + scatter path and is the CPU parity gate. On CUDA (bf16) the
+    /// optimizer-emitted flash arm consumes the shared buffer's batch dim.
+    #[allow(clippy::needless_range_loop)]
+    pub(crate) fn build_batched_decode_logits(
+        &self,
+        caches: &mut [&mut KvCache],
+        last_tokens: &[u32],
+        device: &Device,
+        dtype: DType,
+    ) -> crate::Result<Vec<Vec<f32>>> {
+        let cfg = &self.config;
+        let weights = &self.weights;
+        let k = caches.len();
+        if k < 2 {
+            return Err(fuel_ir::Error::Msg(
+                "build_batched_decode_logits: need >= 2 sessions".to_string(),
+            )
+            .bt());
+        }
+        if last_tokens.len() != k {
+            return Err(fuel_ir::Error::Msg(format!(
+                "build_batched_decode_logits: {} last_tokens for {} caches",
+                last_tokens.len(),
+                k
+            ))
+            .bt());
+        }
+        let cached_len = caches[0].cached_len;
+        let max_seq_len = caches[0].max_seq_len.ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "build_batched_decode_logits: cache built via with_dims (no capacity)"
+                    .to_string(),
+            )
+            .bt()
+        })?;
+        let cache_dtype = dtype;
+        for (i, c) in caches.iter().enumerate() {
+            if c.n_layers() != cfg.n_layers {
+                return Err(fuel_ir::Error::Msg(format!(
+                    "build_batched_decode_logits: cache {i} n_layers {} != model {}",
+                    c.n_layers(),
+                    cfg.n_layers
+                ))
+                .bt());
+            }
+            if c.cached_len != cached_len || c.max_seq_len != Some(max_seq_len) {
+                return Err(fuel_ir::Error::Msg(
+                    "build_batched_decode_logits: non-uniform caches (cached_len/max_seq_len)"
+                        .to_string(),
+                )
+                .bt());
+            }
+            // Fail-fast: the cache's own dtype must match the requested
+            // (scheduler) dtype. The shared buffer + graph placeholders are
+            // built at `dtype`; binding a different-width cache Arc would be a
+            // byte-reinterpretation (caught deep inside realize as a confusing
+            // byte-count error — reject it here at call time instead).
+            if c.dtype != Some(cache_dtype) {
+                return Err(fuel_ir::Error::Msg(format!(
+                    "build_batched_decode_logits: cache {i} dtype {:?} != requested dtype {:?}",
+                    c.dtype, cache_dtype
+                ))
+                .bt());
+            }
+        }
+        if cached_len + 1 > max_seq_len {
+            return Err(fuel_ir::Error::Msg(format!(
+                "build_batched_decode_logits: cached_len ({cached_len}) + 1 > max_seq_len ({max_seq_len})"
+            ))
+            .bt());
+        }
+
+        let n_kv_heads = cfg.n_kv_heads;
+        let head_dim = cfg.head_dim;
+        let one_shape = Shape::from_dims(&[1, n_kv_heads, max_seq_len, head_dim]);
+        let shared_shape = Shape::from_dims(&[k, n_kv_heads, max_seq_len, head_dim]);
+
+        // (1) Allocate the shared [K, Hkv, msl, D] K/V buffer per layer.
+        let shared = crate::inference_context::alloc_batched_kv(
+            k,
+            cfg.n_layers,
+            n_kv_heads,
+            head_dim,
+            max_seq_len,
+            cache_dtype,
+            device,
+        )?;
+
+        // ---- (2) Copy-in: WriteSlice each session's KV history into slot i. ----
+        {
+            let anchor =
+                LazyTensor::from_f32(Arc::from(vec![0.0f32]), Shape::from_dims(&[1]), &Device::cpu());
+            let mut ctx_in = InferenceContext::new(device.clone());
+            let mut targets: Vec<fuel_graph::NodeId> = Vec::with_capacity(2 * cfg.n_layers);
+            for l in 0..cfg.n_layers {
+                let shared_k = anchor.const_placeholder_like(shared_shape.clone(), cache_dtype);
+                let shared_v = anchor.const_placeholder_like(shared_shape.clone(), cache_dtype);
+                ctx_in.insert(shared_k.inner.id(), Arc::clone(&shared[l].0));
+                ctx_in.insert(shared_v.inner.id(), Arc::clone(&shared[l].1));
+                let mut acc_k = shared_k;
+                let mut acc_v = shared_v;
+                for (i, c) in caches.iter().enumerate() {
+                    let sk = anchor.const_placeholder_like(one_shape.clone(), cache_dtype);
+                    let sv = anchor.const_placeholder_like(one_shape.clone(), cache_dtype);
+                    let k_arc = c.slot_storage(l, KvSlot::K).ok_or_else(|| {
+                        fuel_ir::Error::Msg(format!(
+                            "build_batched_decode_logits: cache {i} layer {l} has no K slot"
+                        ))
+                        .bt()
+                    })?;
+                    let v_arc = c.slot_storage(l, KvSlot::V).ok_or_else(|| {
+                        fuel_ir::Error::Msg(format!(
+                            "build_batched_decode_logits: cache {i} layer {l} has no V slot"
+                        ))
+                        .bt()
+                    })?;
+                    ctx_in.insert(sk.inner.id(), k_arc);
+                    ctx_in.insert(sv.inner.id(), v_arc);
+                    let ranges =
+                        vec![(i, i + 1), (0, n_kv_heads), (0, max_seq_len), (0, head_dim)];
+                    acc_k = acc_k.write_slice(&sk, ranges.clone())?;
+                    acc_v = acc_v.write_slice(&sv, ranges)?;
+                }
+                targets.push(acc_k.inner.id());
+                targets.push(acc_v.inner.id());
+            }
+            let graph = anchor.inner.graph().clone();
+            realize_kv_write_targets(&ctx_in, &graph, &targets, cache_dtype)?;
+        }
+
+        // ---- (3) Batch=K decode graph over the shared buffer → [K, vocab]. ----
+        let batch = k;
+        let seq = 1usize;
+        let embed = LazyTensor::from_f32(
+            weights.token_embedding.clone(),
+            Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
+            &Device::cpu(),
+        );
+        let token_ids = embed.const_u32_like(last_tokens.to_vec(), Shape::from_dims(&[k]));
+        let mut h = embed
+            .index_select(0, &token_ids)?
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
+        h = h.to_dtype(cache_dtype)?;
+
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const(cfg.rope_base, cached_len, seq, cfg.head_dim);
+
+        let cached_len_sym = fuel_ir::SymId(0);
+        let attended_len_sym = fuel_ir::SymId(1);
+
+        let mask_data = build_decode_causal_mask(cached_len, seq, max_seq_len);
+        let mask = h.const_like_dtype(
+            &mask_data,
+            Shape::from_dims(&[1, 1, seq, max_seq_len]),
+            cache_dtype,
+        )?;
+
+        let cache_shape =
+            Shape::from_dims(&[batch, cfg.n_kv_heads, max_seq_len, cfg.head_dim]);
+        let mut ctx_dec = InferenceContext::new(device.clone());
+        for (l, layer_weights) in weights.layers.iter().enumerate() {
+            let k_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
+            let v_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
+            ctx_dec.insert(k_cache_node.inner.id(), Arc::clone(&shared[l].0));
+            ctx_dec.insert(v_cache_node.inner.id(), Arc::clone(&shared[l].1));
+            h = self.apply_layer_with_kv_writes(
+                &h,
+                layer_weights,
+                &k_cache_node,
+                &v_cache_node,
+                cached_len_sym,
+                attended_len_sym,
+                // Non-captured plan-once batched realize: keep the backend-
+                // generic SymEnv WriteSlice offset (bit-identical KV write).
+                None,
+                &rope_cos,
+                &rope_sin,
+                &mask,
+            )?;
+        }
+
+        let h_norm =
+            apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
+        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size);
+        let last_pos = seq - 1;
+        let logits_root = logits
+            .slice(1, last_pos, 1)?
+            .reshape(Shape::from_dims(&[batch, cfg.vocab_size]))?;
+        let logits_root = logits_root.to_dtype(DType::F32)?;
+        let graph_dec = logits_root.inner.graph().clone();
+
+        let mut sym_env = fuel_ir::SymEnv::new();
+        sym_env
+            .bind(cached_len_sym, cached_len)
+            .map_err(crate::Error::from)?;
+        sym_env
+            .bind(attended_len_sym, cached_len + seq)
+            .map_err(crate::Error::from)?;
+        let flat = ctx_dec.realize_one_as_with_env::<f32>(
+            &graph_dec,
+            logits_root.inner.id(),
+            &sym_env,
+        )?;
+        if flat.len() != k * cfg.vocab_size {
+            return Err(fuel_ir::Error::Msg(format!(
+                "build_batched_decode_logits: realize returned {} floats, expected {}",
+                flat.len(),
+                k * cfg.vocab_size
+            ))
+            .bt());
+        }
+        let rows: Vec<Vec<f32>> = (0..k)
+            .map(|i| flat[i * cfg.vocab_size..(i + 1) * cfg.vocab_size].to_vec())
+            .collect();
+
+        // ---- (4) Copy-out + commit: overwrite each session's cache with its
+        // slot (prefix + the freshly-written position `cached_len`), then bump.
+        //
+        // Safety of the all-or-nothing contract (spec risk #7). Copy-out is
+        // ITSELF a fallible batched realize — the whole `realize_kv_write_targets`
+        // call below writes all 2·n_layers·K slabs in one shot, and a failure
+        // mid-way could leave some session caches rewritten and others not.
+        // That partial state is nonetheless benign, for THREE reasons, none of
+        // which is "no cache was mutated":
+        //   (a) each session's KV is PRIVATE (T1 isolation) — a copy-out into
+        //       session i can never touch session j's buffer;
+        //   (b) on ANY `Err` returned from here, the scheduler's `advance_batched`
+        //       Err arm forces EVERY batch member to Finished-with-error (see
+        //       `multi_session::SessionScheduler::advance_batched`), so no
+        //       partially-written session is ever decoded again;
+        //   (c) `cached_len` is NOT bumped until AFTER copy-out fully succeeds,
+        //       and the copy-out rewrite is idempotent over the read region
+        //       `[0, cached_len)` (it re-copies the identical prefix), so a
+        //       partial copy-out cannot corrupt what a subsequent read would see.
+        // WARNING: this safety hinges on (c) — NEVER commit `cached_len`
+        // separately from (before) copy-out, and NEVER retry a batch-errored
+        // session. Either change turns a partial copy-out into silent KV
+        // corruption (a bumped `cached_len` over a half-written position, or a
+        // retry that reads stale/partial slots). ----
+        {
+            let anchor =
+                LazyTensor::from_f32(Arc::from(vec![0.0f32]), Shape::from_dims(&[1]), &Device::cpu());
+            let mut ctx_out = InferenceContext::new(device.clone());
+            let mut targets: Vec<fuel_graph::NodeId> = Vec::with_capacity(2 * cfg.n_layers * k);
+            for l in 0..cfg.n_layers {
+                let shared_k = anchor.const_placeholder_like(shared_shape.clone(), cache_dtype);
+                let shared_v = anchor.const_placeholder_like(shared_shape.clone(), cache_dtype);
+                ctx_out.insert(shared_k.inner.id(), Arc::clone(&shared[l].0));
+                ctx_out.insert(shared_v.inner.id(), Arc::clone(&shared[l].1));
+                for (i, c) in caches.iter().enumerate() {
+                    // Slot i is a complete cache for session i (copied-in prefix
+                    // + the decode's position-`cached_len` write). Outermost-axis
+                    // slice → contiguous [1, Hkv, msl, D] source.
+                    let slot_k = shared_k.slice(0, i, 1)?;
+                    let slot_v = shared_v.slice(0, i, 1)?;
+                    let dst_k = anchor.const_placeholder_like(one_shape.clone(), cache_dtype);
+                    let dst_v = anchor.const_placeholder_like(one_shape.clone(), cache_dtype);
+                    ctx_out.insert(
+                        dst_k.inner.id(),
+                        c.slot_storage(l, KvSlot::K).ok_or_else(|| {
+                            fuel_ir::Error::Msg(format!(
+                                "build_batched_decode_logits: cache {i} layer {l} has no K slot (copy-out)"
+                            ))
+                            .bt()
+                        })?,
+                    );
+                    ctx_out.insert(
+                        dst_v.inner.id(),
+                        c.slot_storage(l, KvSlot::V).ok_or_else(|| {
+                            fuel_ir::Error::Msg(format!(
+                                "build_batched_decode_logits: cache {i} layer {l} has no V slot (copy-out)"
+                            ))
+                            .bt()
+                        })?,
+                    );
+                    let ranges =
+                        vec![(0, 1), (0, n_kv_heads), (0, max_seq_len), (0, head_dim)];
+                    let wk = dst_k.write_slice(&slot_k, ranges.clone())?;
+                    let wv = dst_v.write_slice(&slot_v, ranges)?;
+                    targets.push(wk.inner.id());
+                    targets.push(wv.inner.id());
+                }
+            }
+            let graph = anchor.inner.graph().clone();
+            realize_kv_write_targets(&ctx_out, &graph, &targets, cache_dtype)?;
+        }
+
+        // Commit: bump each session's cached_len + versions (identical to the
+        // single-session decode's post-write bump).
+        for c in caches.iter_mut() {
+            c.cached_len += seq;
+            for li in 0..cfg.n_layers {
+                c.bump_version(li, KvSlot::K);
+                c.bump_version(li, KvSlot::V);
+            }
+        }
+
+        Ok(rows)
+    }
+
     /// Re-bind the per-token data Consts (token-ids / RoPE / mask) into
     /// device Arcs, bind the `SymEnv`, and realize via the D2a prebuilt
     /// seam (SKIPPING optimize) over the held session's base cache. The
@@ -7805,6 +8139,35 @@ fn captured_output_to_f32(
 /// `pub(crate)`: also consumed by the DeepSeek-V2 MLA cached-decode path
 /// (`lazy_deepseek2.rs`), which shares this exact mask shape/semantics
 /// across its `LazyLatentCache`-threaded layers.
+/// Realize a set of `Op::WriteSlice` target nodes purely for their in-place
+/// side effect (KV copy-in/copy-out for the batched decode arm). The returned
+/// host data is discarded — the realize just forces the writes to execute. The
+/// element type must match the buffer dtype (reading f32 out of a bf16 buffer
+/// would be a byte-width mismatch), so this dispatches on `dtype`.
+fn realize_kv_write_targets(
+    ctx: &InferenceContext,
+    graph: &std::sync::Arc<std::sync::RwLock<fuel_graph::Graph>>,
+    targets: &[fuel_graph::NodeId],
+    dtype: DType,
+) -> crate::Result<()> {
+    let env = fuel_ir::SymEnv::new();
+    match dtype {
+        DType::F32 => {
+            ctx.realize_many_as_with_env::<f32>(graph, targets, &env)?;
+        }
+        DType::BF16 => {
+            ctx.realize_many_as_with_env::<half::bf16>(graph, targets, &env)?;
+        }
+        other => {
+            return Err(fuel_ir::Error::Msg(format!(
+                "build_batched_decode_logits: unsupported KV dtype {other:?}"
+            ))
+            .bt());
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn build_decode_causal_mask(cached_len: usize, seq: usize, max_seq_len: usize) -> Vec<f32> {
     let mut mask_data = vec![0.0_f32; seq * max_seq_len];
     for q_idx in 0..seq {

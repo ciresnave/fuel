@@ -1,0 +1,1170 @@
+//! Multi-session serving — Increment 1: the host-side multi-session decode
+//! substrate.
+//!
+//! Runs **K independent decode sessions concurrently on one `LlamaModel`,
+//! correctly** — each session generating its own token stream from its own
+//! prompt, reusing the existing single-session persistent decode machinery
+//! ([`crate::inference_context`] + [`crate::lazy::LlamaModel`]). It adds **no
+//! IR op** and **no kernel** — this is pure host orchestration.
+//!
+//! ## Components
+//!
+//! - [`SessionState`] (C1) — a faithful bundle of the four per-generation
+//!   loop locals that already exist in
+//!   [`crate::lazy::LlamaModel::generate_streaming_with_kv_context`]: one
+//!   [`crate::inference_context::KvCache`], one
+//!   [`crate::inference_context::InferenceContext`], the plan-once
+//!   [`crate::inference_context::DecodeSession`] (lazily built on the first
+//!   decode token), and the sampler/RNG/token state. Owns **nothing shared**
+//!   — independent `KvCache` allocations + an independent `rng_state` are what
+//!   make cross-session contamination structurally impossible.
+//! - [`SessionScheduler`] (C2) — the K-way serial driver. Advances K sessions
+//!   through prefill → decode, samples each with its own RNG, retires the
+//!   finished ones. The serial arm is the byte-exact correctness oracle.
+//! - [`BatchedDecode`] (C3) — the live batched-decode arm: a Fuel-internal
+//!   shared `[K, n_kv_heads, capacity, head_dim]` batch-slot KV buffer +
+//!   `flash_decoding` batch wiring, lockstep-only (a single shared `k_len`, so
+//!   sessions batch only at equal `cached_len`). It is a SEPARATE batch=K
+//!   plan-once graph (different reduction order than the batch=1 serial arm),
+//!   so it is **ε-close** (logits within 1e-4) and **token-identical** to the
+//!   serial arm on tested shapes — not bit-exact.
+//!
+//! Llama-first but trait-shaped ([`ModelDims`]): `PhiModel`'s identical
+//! four-local quartet is a later drop-in.
+
+use fuel_ir::{DType, Error};
+
+use crate::Device;
+use crate::inference_context::{DecodeSession, InferenceContext, KvCache};
+use crate::lazy::{sample_logits, LlamaModel, SamplingStrategy};
+
+/// Stable identity for one session within a [`SessionScheduler`]. Minted
+/// monotonically by `add_session`; used to correlate a session's output with
+/// its input across scheduling.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct SessionId(pub u64);
+
+/// Lifecycle phase of a [`SessionState`].
+///
+/// - `Prefill`: the prompt has not yet been run through the model. The next
+///   `step` runs one full-prompt forward and samples the first token.
+/// - `Decode`: prefill is done; each `step` advances one decode token.
+/// - `Finished`: eos was sampled, the budget is exhausted, or the session
+///   errored. It is never advanced again.
+#[derive(Clone, PartialEq, Debug)]
+pub enum SessionPhase {
+    Prefill,
+    Decode,
+    Finished,
+}
+
+/// Model geometry a session needs to size its [`KvCache`] (Llama-first;
+/// filled from `LlamaConfig` by the scheduler). The trait-shaped seam that
+/// lets a later `DecodeModel` (Phi/…) drop in — the scheduler only needs
+/// these three numbers to allocate a session's KV.
+#[derive(Clone, Copy, Debug)]
+pub struct ModelDims {
+    pub n_layers: usize,
+    pub n_kv_heads: usize,
+    pub head_dim: usize,
+}
+
+/// One decode session's mutable state — a faithful bundle of the four
+/// per-generation loop locals from
+/// [`crate::lazy::LlamaModel::generate_streaming_with_kv_context`]
+/// (`KvCache` + `InferenceContext` + `Option<DecodeSession>` +
+/// sampler/RNG/token state) plus scheduling bookkeeping. Owns **nothing
+/// shared**: the independent `KvCache` allocations and the independent
+/// `rng_state` are what make cross-session contamination structurally
+/// impossible (T1).
+pub struct SessionState {
+    pub(crate) cache: KvCache,
+    pub(crate) ctx: InferenceContext,
+    pub(crate) session: Option<DecodeSession>,
+    pub(crate) tokens: Vec<u32>,
+    pub(crate) rng_state: u64,
+    pub(crate) strategy: SamplingStrategy,
+    pub(crate) eos_id: Option<u32>,
+    /// `max_new_tokens` budget left — decremented once per sampled token.
+    pub(crate) remaining: usize,
+    pub(crate) phase: SessionPhase,
+    /// Logits produced by the last forward, consumed by `sample_and_append`.
+    pub(crate) last_logits: Option<Vec<f32>>,
+    pub(crate) id: SessionId,
+    /// Just the GENERATED tail (excludes the prompt) — for reporting.
+    pub(crate) new_tokens: Vec<u32>,
+}
+
+impl SessionState {
+    /// Construct a session seeded in the `Prefill` phase. Mirrors the
+    /// loop-local setup at the top of `generate_streaming_with_kv_context`:
+    /// validates a non-empty prompt and a positive budget, seeds the RNG from
+    /// a `Temperature` seed (else `0`), allocates the pre-sized `KvCache`
+    /// (propagating an OOM `Err`), and creates the per-session
+    /// `InferenceContext`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: SessionId,
+        dims: ModelDims,
+        prompt: &[u32],
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        max_new: usize,
+        device: &Device,
+        dtype: DType,
+    ) -> crate::Result<Self> {
+        if prompt.is_empty() {
+            return Err(Error::Msg("SessionState::new: prompt is empty".to_string()).bt());
+        }
+        if max_new == 0 {
+            return Err(
+                Error::Msg("SessionState::new: max_new must be > 0".to_string()).bt(),
+            );
+        }
+        // Per-session RNG seed — the contamination firewall. A Temperature
+        // strategy seeds from its `seed`; Greedy is deterministic (0).
+        let rng_state: u64 = match strategy {
+            SamplingStrategy::Temperature { seed, .. } => seed,
+            _ => 0,
+        };
+        let max_seq_len = prompt.len() + max_new;
+        // Propagates OOM (or unwired-device) `Err` in isolation — spec #6
+        // fail-on-OOM.
+        let cache = KvCache::with_capacity(
+            dims.n_layers,
+            dims.n_kv_heads,
+            dims.head_dim,
+            max_seq_len,
+            dtype,
+            device,
+        )?;
+        let ctx = InferenceContext::new(device.clone());
+        Ok(Self {
+            cache,
+            ctx,
+            session: None,
+            tokens: prompt.to_vec(),
+            rng_state,
+            strategy,
+            eos_id,
+            remaining: max_new,
+            phase: SessionPhase::Prefill,
+            last_logits: None,
+            id,
+            new_tokens: Vec::new(),
+        })
+    }
+
+    /// Whether this session can still advance (not `Finished`).
+    pub fn is_ready(&self) -> bool {
+        self.phase != SessionPhase::Finished
+    }
+
+    /// This session's stable id.
+    pub fn id(&self) -> SessionId {
+        self.id
+    }
+
+    /// The full running token sequence (prompt + generated).
+    pub fn tokens(&self) -> &[u32] {
+        &self.tokens
+    }
+
+    /// Consume `last_logits` with THIS session's own `rng_state`, append the
+    /// sampled token, decrement the budget, and transition to `Finished` on
+    /// eos / budget exhaustion. Returns the sampled token, or `None` if there
+    /// was nothing to sample (no `last_logits`, or already `Finished`).
+    ///
+    /// **Per-session RNG is the contamination firewall** — this reads/advances
+    /// ONLY `self.rng_state`, never a shared or global state, so two sessions
+    /// sampling the same logits with different seeds diverge and one with the
+    /// same seed as a standalone run matches it (T3).
+    pub fn sample_and_append(&mut self) -> crate::Result<Option<u32>> {
+        if self.phase == SessionPhase::Finished {
+            return Ok(None);
+        }
+        let logits = match self.last_logits.take() {
+            Some(l) => l,
+            None => return Ok(None),
+        };
+        let next = sample_logits(&logits, self.strategy, &mut self.rng_state);
+        self.tokens.push(next);
+        self.new_tokens.push(next);
+        self.remaining = self.remaining.saturating_sub(1);
+        if self.eos_id == Some(next) {
+            self.phase = SessionPhase::Finished;
+        } else if self.remaining == 0 {
+            self.phase = SessionPhase::Finished;
+        } else {
+            self.phase = SessionPhase::Decode;
+        }
+        Ok(Some(next))
+    }
+}
+
+// ===========================================================================
+// C3 — BatchedDecode: the live batched-decode arm (seam + uniformity gate)
+// ===========================================================================
+
+/// Result of a batched decode attempt.
+pub enum BatchOutcome {
+    /// N logits vectors, one per input session (same order as the input
+    /// slice).
+    Advanced(Vec<Vec<f32>>),
+    /// The ready set was not uniform enough to batch — a NORMAL control value,
+    /// not an `Err`. The scheduler serial-steps instead.
+    NotBatchable,
+}
+
+/// The per-session geometry the uniformity gate compares. All fields must be
+/// EQUAL across the batch to share one `flash_decoding` call — crucially
+/// `cached_len`, since the kernel takes a single shared `k_len`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BatchDescriptor {
+    pub cached_len: usize,
+    pub max_seq_len: usize,
+    pub n_layers: usize,
+    pub cache_dtype: DType,
+}
+
+/// Pure gate: are these sessions batchable together THIS step? `false` for
+/// fewer than 2 sessions, or if any descriptor differs from the first (in
+/// particular a ragged `cached_len` — the single shared `flash_decoding`
+/// `k_len` would be wrong for the odd rows). Unit-testable without CUDA (T6).
+pub(crate) fn batch_uniform(descs: &[BatchDescriptor]) -> bool {
+    if descs.len() < 2 {
+        return false;
+    }
+    descs.iter().all(|d| *d == descs[0])
+}
+
+/// The live batched-decode arm. Owns no persistent state — a unit type whose
+/// associated `try_batched_step` produces N logits vectors in one batch=K
+/// model pass over a shared `[K, n_kv_heads, capacity, head_dim]` KV buffer,
+/// or signals `NotBatchable` so the scheduler falls back to serial.
+pub(crate) struct BatchedDecode;
+
+impl BatchedDecode {
+    /// Attempt one live batched decode step over the given `Decode`-phase
+    /// sessions.
+    ///
+    /// Task 7 ships the SIGNATURE + the uniformity gate + the `NotBatchable`
+    /// path only — even a uniform ready set returns `NotBatchable` here so the
+    /// scheduler's serial fallback stays the executed path. Task 8 wires the
+    /// live `flash_decoding` batch arm into the `Advanced` branch.
+    pub(crate) fn try_batched_step(
+        model: &LlamaModel,
+        device: &Device,
+        dtype: DType,
+        sessions: &mut [&mut SessionState],
+    ) -> crate::Result<BatchOutcome> {
+        let descs: Vec<BatchDescriptor> = sessions
+            .iter()
+            .map(|s| BatchDescriptor {
+                cached_len: s.cache.cached_len,
+                max_seq_len: s.cache.max_seq_len.unwrap_or(0),
+                n_layers: s.cache.n_layers(),
+                cache_dtype: s.cache.dtype.unwrap_or(dtype),
+            })
+            .collect();
+        if !batch_uniform(&descs) {
+            return Ok(BatchOutcome::NotBatchable);
+        }
+
+        // Live batched arm: one batch=K decode step over a shared [K,..] KV
+        // buffer — ε-close (logits within 1e-4) and token-identical to K serial
+        // steps on tested shapes (a SEPARATE batch=K plan-once graph, so not
+        // bit-exact; see build_batched_decode_logits).
+        //
+        // Each session's last token is the decode input. An empty token
+        // history is impossible after a validated prefill, but the production
+        // path must not `unwrap`.
+        let last_tokens: Vec<u32> = match sessions
+            .iter()
+            .map(|s| s.tokens.last().copied())
+            .collect::<Option<Vec<u32>>>()
+        {
+            Some(v) => v,
+            None => {
+                return Err(Error::Msg(
+                    "BatchedDecode::try_batched_step: a session has no last token".to_string(),
+                )
+                .bt())
+            }
+        };
+        // Borrow each session's own KvCache. `build_batched_decode_logits`
+        // copies-in, decodes, then copies-out + bumps these caches only after
+        // the decode realize succeeds. Session KV is private (T1), so a copy-out
+        // fault can only leave the FAULTING batch's own caches partially
+        // rewritten — and on any `Err` the scheduler's `advance_batched` Err arm
+        // finishes every batch member, so no partial cache is ever decoded again
+        // (all-or-nothing; see build_batched_decode_logits step 4's WARNING).
+        let mut caches: Vec<&mut crate::inference_context::KvCache> =
+            sessions.iter_mut().map(|s| &mut s.cache).collect();
+        let rows = model.build_batched_decode_logits(&mut caches, &last_tokens, device, dtype)?;
+        Ok(BatchOutcome::Advanced(rows))
+    }
+}
+
+// ===========================================================================
+// C2 — SessionScheduler: the K-way decode driver
+// ===========================================================================
+
+/// How the scheduler advances the decode-ready set each `step`.
+///
+/// - `RoundRobin`: advance every ready session serially (the correctness
+///   oracle — always available, always byte-exact).
+/// - `Batched { max_batch }`: try the live batched arm ([`BatchedDecode`]) on
+///   up to `max_batch` uniform sessions, falling back to serial for any
+///   session the uniformity gate rejects. Opt-in fast path; provably equal to
+///   `RoundRobin`.
+#[derive(Clone, Copy, Debug)]
+pub enum SchedulePolicy {
+    RoundRobin,
+    Batched { max_batch: usize },
+}
+
+/// What one `step` did — which sessions produced a token, which finished, and
+/// which finished-with-error (isolated, never propagated out of `step`).
+#[derive(Clone, Debug, Default)]
+pub struct StepReport {
+    /// Sessions that produced a token this step.
+    pub advanced: Vec<SessionId>,
+    /// Sessions that transitioned to `Finished` this step (eos, budget, or
+    /// error).
+    pub finished: Vec<SessionId>,
+    /// Sessions that finished with an error this step (also present in
+    /// `finished`).
+    pub errored: Vec<(SessionId, String)>,
+    /// Set true only when the live C3 batched arm actually advanced sessions.
+    pub used_batched_arm: bool,
+}
+
+/// The K-way decode driver. Owns a `Vec<SessionState>` + a read-only
+/// `&LlamaModel` (shared weights) + the device/dtype. Decides which sessions
+/// advance together and how (serial in Increment 1's C2; batched once C3 is
+/// wired). Owns no tensor state of its own.
+pub struct SessionScheduler<'m> {
+    model: &'m LlamaModel,
+    device: Device,
+    dtype: DType,
+    sessions: Vec<SessionState>,
+    policy: SchedulePolicy,
+    next_id: u64,
+}
+
+impl<'m> SessionScheduler<'m> {
+    /// Create an empty scheduler over a shared read-only model.
+    pub fn new(
+        model: &'m LlamaModel,
+        device: Device,
+        dtype: DType,
+        policy: SchedulePolicy,
+    ) -> Self {
+        Self {
+            model,
+            device,
+            dtype,
+            sessions: Vec::new(),
+            policy,
+            next_id: 0,
+        }
+    }
+
+    /// Add a session from a prompt. Mints a fresh [`SessionId`], builds the
+    /// session's private `KvCache` + `InferenceContext` (all geometry is
+    /// uniform by construction — every session shares the one `&LlamaModel`),
+    /// and returns the id. Geometry/budget is validated at construction time
+    /// by [`SessionState::new`], never deferred to `step`. On a construction
+    /// error (empty prompt, zero budget, OOM) no id is consumed.
+    pub fn add_session(
+        &mut self,
+        prompt: &[u32],
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        max_new: usize,
+    ) -> crate::Result<SessionId> {
+        let id = SessionId(self.next_id);
+        let dims = ModelDims {
+            n_layers: self.model.config.n_layers,
+            n_kv_heads: self.model.config.n_kv_heads,
+            head_dim: self.model.config.head_dim,
+        };
+        let state = SessionState::new(
+            id,
+            dims,
+            prompt,
+            strategy,
+            eos_id,
+            max_new,
+            &self.device,
+            self.dtype,
+        )?;
+        self.next_id += 1;
+        self.sessions.push(state);
+        Ok(id)
+    }
+
+    /// Advance one scheduling quantum: (1) run any `Prefill` sessions serially
+    /// and sample their first token; (2) collect the `Decode`-ready set;
+    /// (3) advance it (serial in C2; batched wiring lands in C3); (4) sample
+    /// each. A per-session `Err` is isolated into that session finishing with
+    /// a recorded error — never propagated out to kill the batch.
+    pub fn step(&mut self) -> crate::Result<StepReport> {
+        // Copy the shared model reference out of `self` so the per-session
+        // `&mut self.sessions[idx]` borrows below don't conflict with reading
+        // `self.model`.
+        let model = self.model;
+        let mut report = StepReport::default();
+
+        // (1) Prefill pass (serial): forward the FULL prompt, transition to
+        // Decode, and sample the first token immediately (mirrors the
+        // streaming loop where prefill logits yield the first token).
+        for idx in 0..self.sessions.len() {
+            if self.sessions[idx].phase != SessionPhase::Prefill {
+                continue;
+            }
+            let prompt = self.sessions[idx].tokens.clone();
+            let advance = Self::forward_and_store(model, &mut self.sessions[idx], &prompt);
+            if advance.is_ok() {
+                self.sessions[idx].phase = SessionPhase::Decode;
+            }
+            self.finalize_advance(idx, advance, &mut report);
+        }
+
+        // (2) Decode ready set (includes sessions just prefilled above).
+        let ready: Vec<usize> = (0..self.sessions.len())
+            .filter(|&i| self.sessions[i].phase == SessionPhase::Decode)
+            .collect();
+
+        // (3) Advance the ready set. The serial arm is always reachable and is
+        // the byte-exact oracle; the Batched policy tries the live C3 arm on a
+        // uniform prefix of the ready set and falls through to serial for the
+        // rest (or on NotBatchable).
+        match self.policy {
+            SchedulePolicy::RoundRobin => {
+                for idx in ready {
+                    self.serial_advance_one(model, idx, &mut report);
+                }
+            }
+            SchedulePolicy::Batched { max_batch } => {
+                self.advance_batched(model, &ready, max_batch, &mut report);
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// The `Batched`-policy advance: try [`BatchedDecode::try_batched_step`] on
+    /// up to `max_batch` ready sessions, then serial-advance everything the
+    /// batched arm did not consume (an overflow beyond `max_batch`, a
+    /// `NotBatchable` gate, or a batched-arm error — which finishes those
+    /// sessions in isolation, their private KV untouched). The serial arm
+    /// remains reachable for every session.
+    fn advance_batched(
+        &mut self,
+        model: &LlamaModel,
+        ready: &[usize],
+        max_batch: usize,
+        report: &mut StepReport,
+    ) {
+        // `ready` is ascending (built from a 0..len filter). The batched prefix
+        // and the serial remainder both preserve that order, so the batched
+        // slot ordering matches `batch_idxs`.
+        let batch_idxs: Vec<usize> = ready.iter().copied().take(max_batch).collect();
+        let serial_idxs: Vec<usize> = ready.iter().copied().skip(max_batch).collect();
+
+        let mut consumed_by_batch = false;
+        if batch_idxs.len() >= 2 {
+            let dev = self.device.clone();
+            let dt = self.dtype;
+            let outcome = {
+                let mut refs = collect_disjoint_mut(&mut self.sessions, &batch_idxs);
+                BatchedDecode::try_batched_step(model, &dev, dt, &mut refs)
+            };
+            match outcome {
+                Ok(BatchOutcome::Advanced(rows)) if rows.len() == batch_idxs.len() => {
+                    for (slot, &idx) in batch_idxs.iter().enumerate() {
+                        self.sessions[idx].last_logits = Some(rows[slot].clone());
+                    }
+                    report.used_batched_arm = true;
+                    consumed_by_batch = true;
+                    for &idx in &batch_idxs {
+                        // Logits already stored; sample + record per session.
+                        self.finalize_advance(idx, Ok(()), report);
+                    }
+                }
+                Ok(BatchOutcome::Advanced(rows)) => {
+                    // Malformed batched result (row count mismatch): treat as a
+                    // batched-arm error — finish those sessions in isolation
+                    // (their KV was not mutated). Never panic on a bad slice.
+                    let msg = format!(
+                        "BatchedDecode: Advanced returned {} rows for {} sessions",
+                        rows.len(),
+                        batch_idxs.len()
+                    );
+                    for &idx in &batch_idxs {
+                        self.record_error_msg(idx, msg.clone(), report);
+                    }
+                    consumed_by_batch = true;
+                }
+                Ok(BatchOutcome::NotBatchable) => {
+                    // Fall through to serial for the whole batch prefix.
+                }
+                Err(e) => {
+                    // All-or-nothing (spec risk #7): the batched arm returns
+                    // Err only BEFORE any session's KV is mutated, so no
+                    // session is half-written. Force the affected sessions to
+                    // Finished-with-error in isolation.
+                    let msg = e.to_string();
+                    for &idx in &batch_idxs {
+                        self.record_error_msg(idx, msg.clone(), report);
+                    }
+                    consumed_by_batch = true;
+                }
+            }
+        }
+
+        if !consumed_by_batch {
+            for idx in batch_idxs {
+                self.serial_advance_one(model, idx, report);
+            }
+        }
+        for idx in serial_idxs {
+            self.serial_advance_one(model, idx, report);
+        }
+    }
+
+    /// Advance one decode-ready session serially by exactly one forward on its
+    /// last token, then sample. Errors isolate into a recorded per-session
+    /// failure.
+    fn serial_advance_one(&mut self, model: &LlamaModel, idx: usize, report: &mut StepReport) {
+        // Never-panic: an empty token history after a validated prefill is
+        // impossible, but the production path must not `unwrap`.
+        let last = self.sessions[idx].tokens.last().copied();
+        let advance = match last {
+            Some(t) => Self::forward_and_store(model, &mut self.sessions[idx], &[t]),
+            None => Err(Error::Msg(
+                "SessionScheduler: decode advance on empty token history".to_string(),
+            )
+            .bt()),
+        };
+        self.finalize_advance(idx, advance, report);
+    }
+
+    /// Run one forward and store its logits on the session. Shared by the
+    /// prefill (full prompt) and decode (last token) advances.
+    fn forward_and_store(
+        model: &LlamaModel,
+        s: &mut SessionState,
+        input: &[u32],
+    ) -> crate::Result<()> {
+        let logits = model.forward_with_kv_context_persistent(
+            input,
+            &mut s.cache,
+            &mut s.ctx,
+            &mut s.session,
+        )?;
+        s.last_logits = Some(logits);
+        Ok(())
+    }
+
+    /// Given the result of a single advance, sample the token (per-session
+    /// RNG) and record it in the report; on advance error, finish the session
+    /// with a recorded error. Never panics, never propagates.
+    fn finalize_advance(
+        &mut self,
+        idx: usize,
+        advance: crate::Result<()>,
+        report: &mut StepReport,
+    ) {
+        match advance {
+            Ok(()) => match self.sessions[idx].sample_and_append() {
+                Ok(Some(_)) => {
+                    let id = self.sessions[idx].id;
+                    report.advanced.push(id);
+                    if self.sessions[idx].phase == SessionPhase::Finished {
+                        report.finished.push(id);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => self.record_error(idx, e, report),
+            },
+            Err(e) => self.record_error(idx, e, report),
+        }
+    }
+
+    /// Force one session to `Finished`-with-error and record it. Isolation: the
+    /// other sessions are untouched.
+    fn record_error(&mut self, idx: usize, e: crate::Error, report: &mut StepReport) {
+        self.record_error_msg(idx, e.to_string(), report);
+    }
+
+    /// String-message variant of [`Self::record_error`] — used where the same
+    /// error message finishes several batched sessions (`fuel_ir::Error` is
+    /// not `Clone`, so the message is formatted once and cloned per session).
+    fn record_error_msg(&mut self, idx: usize, msg: String, report: &mut StepReport) {
+        self.sessions[idx].phase = SessionPhase::Finished;
+        let id = self.sessions[idx].id;
+        report.errored.push((id, msg));
+        report.finished.push(id);
+    }
+
+    /// Loop `step` until every session is `Finished`; return each session's
+    /// full token sequence (prompt + generated) in insertion order.
+    pub fn run_to_completion(&mut self) -> crate::Result<Vec<(SessionId, Vec<u32>)>> {
+        while !self.is_all_finished() {
+            self.step()?;
+        }
+        Ok(self
+            .sessions
+            .iter()
+            .map(|s| (s.id, s.tokens.clone()))
+            .collect())
+    }
+
+    /// Whether every session has finished (vacuously true when empty).
+    pub fn is_all_finished(&self) -> bool {
+        self.sessions.iter().all(|s| s.phase == SessionPhase::Finished)
+    }
+
+    /// (test-support) Add a session whose FIRST advance is forced to error, for
+    /// the isolation gate (T4). After building a normal `SessionState`, this truncates its
+    /// `KvCache::layers` to empty so `cache.n_layers() == 0 != model.n_layers`,
+    /// which `forward_with_kv_context*` rejects with a typed `Error::Msg`
+    /// through the true advance path — no panic, no test-only error branch. The
+    /// scheduler catches that `Err` into `StepReport::errored` and continues.
+    #[doc(hidden)]
+    pub fn add_poisoned_session_for_test(
+        &mut self,
+        prompt: &[u32],
+        max_new: usize,
+    ) -> crate::Result<SessionId> {
+        let id = self.add_session(prompt, SamplingStrategy::Greedy, None, max_new)?;
+        if let Some(s) = self.sessions.last_mut() {
+            // Corrupt the real cache so the real forward path errors.
+            s.cache.layers.truncate(0);
+        }
+        Ok(id)
+    }
+}
+
+/// Collect disjoint `&mut` references to the elements of `sessions` at the
+/// given `idxs`. Returned in ASCENDING index order (a single `iter_mut` pass),
+/// which matches the ascending `batch_idxs` the scheduler builds — so the
+/// returned slot ordering is the caller's slot ordering. `idxs` must be
+/// distinct; duplicates are silently taken once.
+fn collect_disjoint_mut<'a>(
+    sessions: &'a mut [SessionState],
+    idxs: &[usize],
+) -> Vec<&'a mut SessionState> {
+    let mut want: std::collections::HashSet<usize> = idxs.iter().copied().collect();
+    let mut out: Vec<&'a mut SessionState> = Vec::with_capacity(idxs.len());
+    for (i, s) in sessions.iter_mut().enumerate() {
+        if want.remove(&i) {
+            out.push(s);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lazy::{LlamaConfig, LlamaModel, LlamaWeights, LayerWeights, WeightStorage, SamplingStrategy};
+    // NOTE: `fuel_ir::Device` does not exist — the device type is `crate::Device`
+    // (fuel_core::Device), which is what `KvCache::with_capacity` takes. `DType`
+    // is `fuel_ir::DType`. This mirrors the `use` lines at the top of
+    // inference_context.rs (`use fuel_ir::{DType, ..}; use crate::Device;`).
+    use crate::Device;
+    use fuel_ir::DType;
+    use std::sync::Arc;
+
+    fn tiny_cfg() -> LlamaConfig {
+        LlamaConfig { vocab_size: 16, dim: 8, n_layers: 2, n_heads: 2,
+            n_kv_heads: 2, head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0 }
+    }
+    // Mirror lazy.rs generate_tests::make_tiny_weights_seeded.
+    fn tiny_weights(cfg: &LlamaConfig, seed: u32) -> LlamaWeights {
+        let mut s = seed;
+        let mut next = || { s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1 };
+        let mut vec_of = |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
+        let kv = cfg.n_kv_heads * cfg.head_dim;
+        LlamaWeights {
+            token_embedding: vec_of(cfg.vocab_size * cfg.dim),
+            layers: (0..cfg.n_layers).map(|_| LayerWeights {
+                attn_q: vec_of(cfg.dim*cfg.dim).into(), attn_q_bias: None,
+                attn_k: vec_of(cfg.dim*kv).into(), attn_k_bias: None,
+                attn_v: vec_of(cfg.dim*kv).into(), attn_v_bias: None,
+                attn_o: vec_of(cfg.dim*cfg.dim).into(),
+                ffn_gate: vec_of(cfg.dim*cfg.ffn_dim).into(),
+                ffn_up: vec_of(cfg.dim*cfg.ffn_dim).into(),
+                ffn_down: vec_of(cfg.ffn_dim*cfg.dim).into(),
+                attn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
+                ffn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
+            }).collect(),
+            final_norm_gain: Arc::from(vec![1.0; cfg.dim]),
+            output: vec_of(cfg.dim*cfg.vocab_size).into(),
+        }
+    }
+    fn tiny_model(seed: u32) -> LlamaModel {
+        let cfg = tiny_cfg();
+        LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, seed) }
+    }
+    fn dims(cfg: &LlamaConfig) -> ModelDims {
+        ModelDims { n_layers: cfg.n_layers, n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim }
+    }
+
+    #[test]
+    fn session_new_seeds_prefill_state() {
+        let cfg = tiny_cfg();
+        let s = SessionState::new(SessionId(0), dims(&cfg), &[1,2,3],
+            SamplingStrategy::Greedy, None, 5, &Device::cpu(), DType::F32).unwrap();
+        assert_eq!(s.tokens(), &[1,2,3]);
+        assert_eq!(s.phase, SessionPhase::Prefill);
+        assert!(s.is_ready());
+    }
+
+    #[test]
+    fn session_new_rejects_empty_prompt_and_zero_budget() {
+        let cfg = tiny_cfg();
+        assert!(SessionState::new(SessionId(0), dims(&cfg), &[],
+            SamplingStrategy::Greedy, None, 5, &Device::cpu(), DType::F32).is_err());
+        assert!(SessionState::new(SessionId(0), dims(&cfg), &[1,2],
+            SamplingStrategy::Greedy, None, 0, &Device::cpu(), DType::F32).is_err());
+    }
+
+    #[test]
+    fn sample_and_append_greedy_appends_argmax_and_counts_budget() {
+        let cfg = tiny_cfg();
+        let mut s = SessionState::new(SessionId(0), dims(&cfg), &[1,2],
+            SamplingStrategy::Greedy, None, 2, &Device::cpu(), DType::F32).unwrap();
+        // argmax at index 3
+        s.last_logits = Some(vec![0.0, 0.1, 0.2, 0.9, 0.3]);
+        let t = s.sample_and_append().unwrap();
+        assert_eq!(t, Some(3));
+        assert_eq!(s.tokens(), &[1,2,3]);
+        assert_eq!(s.remaining, 1);
+        assert_eq!(s.phase, SessionPhase::Decode);
+        // exhaust the budget → Finished
+        s.last_logits = Some(vec![0.9, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(s.sample_and_append().unwrap(), Some(0));
+        assert_eq!(s.phase, SessionPhase::Finished);
+        assert!(!s.is_ready());
+    }
+
+    #[test]
+    fn sample_and_append_stops_on_eos() {
+        let cfg = tiny_cfg();
+        let mut s = SessionState::new(SessionId(0), dims(&cfg), &[1],
+            SamplingStrategy::Greedy, Some(3), 10, &Device::cpu(), DType::F32).unwrap();
+        s.last_logits = Some(vec![0.0,0.0,0.0,0.9,0.0]); // argmax 3 == eos
+        assert_eq!(s.sample_and_append().unwrap(), Some(3));
+        assert_eq!(s.phase, SessionPhase::Finished);
+    }
+
+    #[test]
+    fn sample_and_append_noop_without_logits() {
+        let cfg = tiny_cfg();
+        let mut s = SessionState::new(SessionId(0), dims(&cfg), &[1],
+            SamplingStrategy::Greedy, None, 3, &Device::cpu(), DType::F32).unwrap();
+        assert_eq!(s.sample_and_append().unwrap(), None);
+    }
+
+    #[test]
+    fn scheduler_single_session_matches_standalone_generate() {
+        let model = tiny_model(9999);
+        let prompt = [1u32, 2, 3];
+        let max_new = 5;
+        let standalone = model.generate_with_kv_context(
+            &prompt, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
+
+        let mut sched = SessionScheduler::new(
+            &model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let id = sched.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let out = sched.run_to_completion().unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, id);
+        assert_eq!(out[0].1, standalone);   // byte-identical token stream
+    }
+
+    #[test]
+    fn t1_no_cross_session_contamination() {
+        let model = tiny_model(9999);
+        let prompt_a = [1u32, 2, 3];
+        let prompt_b = [7u32, 4, 9, 2];
+        let max_new = 6;
+
+        // Standalone oracles.
+        let solo_a = model.generate_with_kv_context(
+            &prompt_a, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
+        let solo_b = model.generate_with_kv_context(
+            &prompt_b, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
+
+        // K=2 scheduled together.
+        let mut sched = SessionScheduler::new(
+            &model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let ida = sched.add_session(&prompt_a, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let idb = sched.add_session(&prompt_b, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let out = sched.run_to_completion().unwrap();
+
+        let get = |id: SessionId| out.iter().find(|(i,_)| *i==id).map(|(_,t)| t.clone()).unwrap();
+        assert_eq!(get(ida), solo_a, "session A contaminated by B");
+        assert_eq!(get(idb), solo_b, "session B contaminated by A");
+    }
+
+    #[test]
+    fn t2_interleave_order_invariance() {
+        let model = tiny_model(9999);
+        let (pa, pb, max_new) = ([1u32,2,3], [5u32,6], 6);
+
+        // Round-robin (both added, then run together).
+        let mut rr = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let a1 = rr.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let b1 = rr.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let out_rr = rr.run_to_completion().unwrap();
+
+        // One-then-the-other: A alone to completion, then B alone.
+        let mut s_a = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        s_a.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let just_a = s_a.run_to_completion().unwrap();
+        let mut s_b = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        s_b.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let just_b = s_b.run_to_completion().unwrap();
+
+        let get = |o: &Vec<(SessionId,Vec<u32>)>, id: SessionId| o.iter().find(|(i,_)| *i==id).unwrap().1.clone();
+        assert_eq!(get(&out_rr, a1), just_a[0].1);
+        assert_eq!(get(&out_rr, b1), just_b[0].1);
+    }
+
+    #[test]
+    fn t3_per_session_rng_independence() {
+        let model = tiny_model(9999);
+        let prompt = [1u32, 2, 3];
+        let max_new = 8;
+
+        // Same prompt, DIFFERENT seeds → different streams.
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let id1 = sched.add_session(&prompt, SamplingStrategy::Temperature{temp:1.0, seed:1}, None, max_new).unwrap();
+        let id2 = sched.add_session(&prompt, SamplingStrategy::Temperature{temp:1.0, seed:2}, None, max_new).unwrap();
+        let out = sched.run_to_completion().unwrap();
+        let g = |id: SessionId| out.iter().find(|(i,_)| *i==id).unwrap().1.clone();
+        assert_ne!(g(id1), g(id2), "different seeds must diverge");
+
+        // Same seed as a standalone Temperature run → identical.
+        let solo = model.generate_with_kv_context(
+            &prompt, max_new, SamplingStrategy::Temperature{temp:1.0, seed:1}, None,
+            &Device::cpu(), DType::F32).unwrap();
+        assert_eq!(g(id1), solo, "seed 1 must match its standalone run");
+    }
+
+    #[test]
+    fn t4_session_isolation_on_error() {
+        let model = tiny_model(9999);
+        let good = [1u32,2,3];
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let bad_id  = sched.add_poisoned_session_for_test(&[4u32,5], 5).unwrap();
+        let good_id = sched.add_session(&good, SamplingStrategy::Greedy, None, 5).unwrap();
+
+        // First step: the poisoned session errors, the good one advances. No panic.
+        let r0 = sched.step().unwrap();
+        assert!(r0.errored.iter().any(|(id,_)| *id==bad_id), "poisoned session must be reported errored");
+
+        let out = sched.run_to_completion().unwrap();
+        let solo_good = model.generate_with_kv_context(
+            &good, 5, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
+        let g = out.iter().find(|(i,_)| *i==good_id).unwrap().1.clone();
+        assert_eq!(g, solo_good, "the healthy session must complete unaffected");
+    }
+
+    #[test]
+    fn t7_mid_run_add_prefills_and_joins() {
+        let model = tiny_model(9999);
+        let pa = [1u32,2,3];
+        let pb = [8u32,1];
+        let max_new = 6;
+
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let ida = sched.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
+        // Advance A alone for two steps.
+        sched.step().unwrap();
+        sched.step().unwrap();
+        // Now add B mid-run.
+        let idb = sched.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let out = sched.run_to_completion().unwrap();
+
+        let solo_a = model.generate_with_kv_context(&pa, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
+        let solo_b = model.generate_with_kv_context(&pb, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
+        let g = |id: SessionId| out.iter().find(|(i,_)| *i==id).unwrap().1.clone();
+        assert_eq!(g(ida), solo_a, "A unaffected by mid-run B");
+        assert_eq!(g(idb), solo_b, "B prefills correctly mid-run");
+    }
+
+    #[test]
+    fn t6_uniformity_gate_rejects_ragged_cached_len() {
+        let d = |cl: usize| BatchDescriptor { cached_len: cl, max_seq_len: 64, n_layers: 2, cache_dtype: DType::F32 };
+        assert!(batch_uniform(&[d(3), d(3)]));           // equal → batchable
+        assert!(!batch_uniform(&[d(3), d(4)]));          // ragged → not
+        assert!(!batch_uniform(&[d(3)]));                // <2 sessions → not
+    }
+
+    #[test]
+    fn t6_batched_policy_falls_back_to_serial_equals_roundrobin() {
+        // With Task 7's stub always returning NotBatchable, a Batched policy
+        // must produce byte-identical output to RoundRobin (pure serial).
+        let model = tiny_model(9999);
+        let (pa, pb, max_new) = ([1u32,2,3], [5u32,6,7], 6);
+        let run = |policy| {
+            let mut s = SessionScheduler::new(&model, Device::cpu(), DType::F32, policy);
+            let a = s.add_session(&pa, SamplingStrategy::Greedy, None, max_new).unwrap();
+            let b = s.add_session(&pb, SamplingStrategy::Greedy, None, max_new).unwrap();
+            (a, b, s.run_to_completion().unwrap())
+        };
+        let (a1,b1,rr) = run(SchedulePolicy::RoundRobin);
+        let (a2,b2,ba) = run(SchedulePolicy::Batched { max_batch: 4 });
+        let g = |o: &Vec<(SessionId,Vec<u32>)>, id: SessionId| o.iter().find(|(i,_)| *i==id).unwrap().1.clone();
+        assert_eq!(g(&rr,a1), g(&ba,a2));
+        assert_eq!(g(&rr,b1), g(&ba,b2));
+    }
+
+    #[test]
+    fn t5_cpu_batched_step_equals_serial_step() {
+        // Two sessions, SAME prompt length, prefilled to equal cached_len,
+        // then ONE batched decode step must equal one serial step each.
+        let model = tiny_model(9999);
+        let pa = [1u32, 2, 3];
+        let pb = [4u32, 5, 6];
+
+        // Serial oracle: prefill each, take one decode step, record logits.
+        let serial_logits = |prompt: &[u32]| -> Vec<f32> {
+            use crate::inference_context::{KvCache, InferenceContext};
+            let cfg = &model.config;
+            let msl = prompt.len() + 2;
+            let mut cache = KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, DType::F32, &Device::cpu()).unwrap();
+            let mut ctx = InferenceContext::new(Device::cpu());
+            let mut sess = None;
+            let pre = model.forward_with_kv_context_persistent(prompt, &mut cache, &mut ctx, &mut sess).unwrap();
+            let next = crate::lazy::sample_logits(&pre, SamplingStrategy::Greedy, &mut 0u64);
+            model.forward_with_kv_context_persistent(&[next], &mut cache, &mut ctx, &mut sess).unwrap()
+        };
+        let sa = serial_logits(&pa);
+        let sb = serial_logits(&pb);
+
+        // Batched: build two SessionStates prefilled + first token sampled,
+        // at equal cached_len, then one try_batched_step.
+        let mut states: Vec<SessionState> = Vec::new();
+        for (id, p) in [(0u64, &pa[..]), (1u64, &pb[..])] {
+            let mut s = SessionState::new(SessionId(id),
+                ModelDims { n_layers: model.config.n_layers, n_kv_heads: model.config.n_kv_heads, head_dim: model.config.head_dim },
+                p, SamplingStrategy::Greedy, None, 2, &Device::cpu(), DType::F32).unwrap();
+            // Prefill + sample first token so cached_len == prompt.len() and
+            // last token is set (mirrors scheduler.step prefill pass).
+            s.last_logits = Some(model.forward_with_kv_context_persistent(&s.tokens.clone(), &mut s.cache, &mut s.ctx, &mut s.session).unwrap());
+            s.sample_and_append().unwrap();
+            states.push(s);
+        }
+        assert_eq!(states[0].cache.cached_len, states[1].cache.cached_len, "equal cached_len (uniform)");
+        let mut refs: Vec<&mut SessionState> = states.iter_mut().collect();
+        let outcome = BatchedDecode::try_batched_step(&model, &Device::cpu(), DType::F32, &mut refs).unwrap();
+        match outcome {
+            BatchOutcome::Advanced(rows) => {
+                assert_eq!(rows.len(), 2);
+                // Batched decode step logits == serial decode step logits (f32, ε-tol).
+                let close = |a: &[f32], b: &[f32]| a.len()==b.len() && a.iter().zip(b).all(|(x,y)| (x-y).abs() < 1e-4);
+                assert!(close(&rows[0], &sa), "batched row 0 != serial A");
+                assert!(close(&rows[1], &sb), "batched row 1 != serial B");
+            }
+            BatchOutcome::NotBatchable => panic!("uniform sessions must batch"),
+        }
+    }
+
+    #[test]
+    #[ignore = "live-GPU: RTX 4070, run locally after CUDA build; one live suite at a time"]
+    fn t5_gpu_batched_flash_equals_serial_bf16() {
+        // Same structure as t5_cpu, but Device::cuda(0) + DType::BF16 so the
+        // optimizer offers the flash_decoding batch arm. bf16 weights required
+        // (mirror lazy.rs generate_tests::make_tiny_weights_bf16).
+        //
+        // Assert batched rows == serial rows within a sabotage-calibrated ε
+        // (batched GEMM reduction order may differ from serial — see
+        // [[sabotage-test-calibration]]). Start ε = 5e-3, tighten to the
+        // measured serial-vs-serial bf16 drift floor. Confirm the flash arm is
+        // actually PICKED (temporary eprintln of the chosen arm) and that a
+        // KV-perturbation sabotage makes the test FAIL (a passing sabotage run
+        // is invalid without confirmed recompilation).
+        use crate::lazy::{LlamaConfig, LlamaModel, LayerWeights, LlamaWeights, WeightStorage};
+
+        fn bf16_weights(cfg: &LlamaConfig) -> LlamaWeights {
+            // f32 tiny weights → BF16 for every WeightStorage matrix (embedding
+            // + norm gains stay f32, per make_tiny_weights_bf16's frozen seams).
+            let mut s: u32 = 9999;
+            let mut next = || { s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1 };
+            let mut vec_of = |n: usize| -> std::sync::Arc<[f32]> {
+                std::sync::Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
+            let to_bf16 = |a: std::sync::Arc<[f32]>| -> WeightStorage {
+                WeightStorage::BF16(std::sync::Arc::from(
+                    a.iter().map(|&v| half::bf16::from_f32(v)).collect::<Vec<_>>())) };
+            let kv = cfg.n_kv_heads * cfg.head_dim;
+            LlamaWeights {
+                token_embedding: vec_of(cfg.vocab_size * cfg.dim),
+                layers: (0..cfg.n_layers).map(|_| LayerWeights {
+                    attn_q: to_bf16(vec_of(cfg.dim*cfg.dim)), attn_q_bias: None,
+                    attn_k: to_bf16(vec_of(cfg.dim*kv)), attn_k_bias: None,
+                    attn_v: to_bf16(vec_of(cfg.dim*kv)), attn_v_bias: None,
+                    attn_o: to_bf16(vec_of(cfg.dim*cfg.dim)),
+                    ffn_gate: to_bf16(vec_of(cfg.dim*cfg.ffn_dim)),
+                    ffn_up: to_bf16(vec_of(cfg.dim*cfg.ffn_dim)),
+                    ffn_down: to_bf16(vec_of(cfg.ffn_dim*cfg.dim)),
+                    attn_norm_gain: std::sync::Arc::from(vec![1.0f32; cfg.dim]),
+                    ffn_norm_gain: std::sync::Arc::from(vec![1.0f32; cfg.dim]),
+                }).collect(),
+                final_norm_gain: std::sync::Arc::from(vec![1.0f32; cfg.dim]),
+                output: to_bf16(vec_of(cfg.dim*cfg.vocab_size)),
+            }
+        }
+
+        let cfg = tiny_cfg();
+        let model = LlamaModel { config: cfg.clone(), weights: bf16_weights(&cfg) };
+        let dev = crate::cuda_backend::new_device(0).expect("cuda device 0");
+        let dt = DType::BF16;
+        let pa = [1u32, 2, 3];
+        let pb = [4u32, 5, 6];
+
+        let serial_logits = |prompt: &[u32]| -> Vec<f32> {
+            use crate::inference_context::{KvCache, InferenceContext};
+            let msl = prompt.len() + 2;
+            let mut cache = KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, dt, &dev).unwrap();
+            let mut ctx = InferenceContext::new(dev.clone());
+            let mut sess = None;
+            let pre = model.forward_with_kv_context_persistent(prompt, &mut cache, &mut ctx, &mut sess).unwrap();
+            let next = crate::lazy::sample_logits(&pre, SamplingStrategy::Greedy, &mut 0u64);
+            model.forward_with_kv_context_persistent(&[next], &mut cache, &mut ctx, &mut sess).unwrap()
+        };
+        let sa = serial_logits(&pa);
+        let sb = serial_logits(&pb);
+
+        let mut states: Vec<SessionState> = Vec::new();
+        for (id, p) in [(0u64, &pa[..]), (1u64, &pb[..])] {
+            let mut s = SessionState::new(SessionId(id),
+                ModelDims { n_layers: cfg.n_layers, n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim },
+                p, SamplingStrategy::Greedy, None, 2, &dev, dt).unwrap();
+            s.last_logits = Some(model.forward_with_kv_context_persistent(&s.tokens.clone(), &mut s.cache, &mut s.ctx, &mut s.session).unwrap());
+            s.sample_and_append().unwrap();
+            states.push(s);
+        }
+        assert_eq!(states[0].cache.cached_len, states[1].cache.cached_len, "equal cached_len (uniform)");
+        let mut refs: Vec<&mut SessionState> = states.iter_mut().collect();
+        let outcome = BatchedDecode::try_batched_step(&model, &dev, dt, &mut refs).unwrap();
+        match outcome {
+            BatchOutcome::Advanced(rows) => {
+                assert_eq!(rows.len(), 2);
+                let eps = 5e-3_f32;
+                let close = |a: &[f32], b: &[f32]| a.len()==b.len() && a.iter().zip(b).all(|(x,y)| (x-y).abs() < eps);
+                assert!(close(&rows[0], &sa), "batched row 0 != serial A (bf16 ε={eps})");
+                assert!(close(&rows[1], &sb), "batched row 1 != serial B (bf16 ε={eps})");
+            }
+            BatchOutcome::NotBatchable => panic!("uniform bf16 sessions must batch"),
+        }
+    }
+
+    // Fix C — build_batched_decode_logits must reject a cache whose dtype
+    // disagrees with the requested (scheduler) dtype, rather than silently
+    // binding its bytes to a different-width placeholder (reinterpretation).
+    #[test]
+    fn build_batched_decode_logits_rejects_dtype_mismatch() {
+        use crate::inference_context::KvCache;
+        let model = tiny_model(9999);
+        let cfg = &model.config;
+        let msl = 4;
+        // Both caches BF16 (uniform among themselves in cached_len/msl/n_layers)
+        // but the requested dtype is F32 → a byte-reinterpretation hazard.
+        let mut c0 = KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, DType::BF16, &Device::cpu()).unwrap();
+        let mut c1 = KvCache::with_capacity(cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, DType::BF16, &Device::cpu()).unwrap();
+        let mut caches: Vec<&mut KvCache> = vec![&mut c0, &mut c1];
+        let last_tokens = [1u32, 2];
+        let err = model
+            .build_batched_decode_logits(&mut caches, &last_tokens, &Device::cpu(), DType::F32)
+            .expect_err("dtype mismatch (cache BF16 vs requested F32) must Err");
+        let msg = err.to_string();
+        // Require the EARLY validation error (fail-fast at call time), not a
+        // deep byte-width error surfaced later inside realize.
+        assert!(
+            msg.contains("requested dtype"),
+            "expected the early dtype-validation error, got: {msg}"
+        );
+    }
+
+    // Coverage E — serial↔batched transition: K=3 under Batched{max_batch:2}
+    // with STAGGERED eos. A session that is overflow-serial in early steps
+    // shifts INTO the batch after an earlier session finishes. Assert parity
+    // (token-identical / ε-close on tokens) vs 3 standalone generate runs.
+    #[test]
+    fn batched_serial_transition_k3_max_batch_2_staggered_eos() {
+        let model = tiny_model(9999);
+        // Distinct prompts; distinct eos ids so the three sessions finish at
+        // different steps (staggered), forcing the overflow-serial session to
+        // migrate into the batch as earlier ones retire.
+        let pa = [1u32, 2, 3];
+        let pb = [4u32, 5];
+        let pc = [6u32, 7, 8, 9];
+        let cases: [(&[u32], Option<u32>, usize); 3] =
+            [(&pa, Some(5), 8), (&pb, Some(7), 8), (&pc, None, 8)];
+
+        let solo: Vec<Vec<u32>> = cases
+            .iter()
+            .map(|(p, eos, mn)| {
+                model
+                    .generate_with_kv_context(p, *mn, SamplingStrategy::Greedy, *eos, &Device::cpu(), DType::F32)
+                    .unwrap()
+            })
+            .collect();
+
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::Batched { max_batch: 2 });
+        let ids: Vec<SessionId> = cases
+            .iter()
+            .map(|(p, eos, mn)| sched.add_session(p, SamplingStrategy::Greedy, *eos, *mn).unwrap())
+            .collect();
+        let out = sched.run_to_completion().unwrap();
+
+        for (i, id) in ids.iter().enumerate() {
+            let got = out.iter().find(|(x, _)| x == id).unwrap().1.clone();
+            assert_eq!(got, solo[i], "session {i} (K=3, max_batch=2 transition) != standalone");
+        }
+    }
+
+    // Coverage F — K>2 AND a GQA config (n_kv_heads < n_heads). Exercises slot
+    // indexing beyond K=2 and the GQA-batched attention head layout.
+    #[test]
+    fn batched_parity_k3_gqa() {
+        // GQA: 4 query heads, 2 kv heads (head_dim 4 → dim 16).
+        let cfg = LlamaConfig {
+            vocab_size: 16, dim: 16, n_layers: 2, n_heads: 4,
+            n_kv_heads: 2, head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+        };
+        assert!(cfg.n_kv_heads < cfg.n_heads, "must be a GQA config");
+        let model = LlamaModel { config: cfg.clone(), weights: tiny_weights(&cfg, 4242) };
+        // Same prompt LENGTH across the 3 sessions so they stay lockstep
+        // (equal cached_len) and the batched arm is used every step.
+        let prompts: [[u32; 3]; 3] = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
+        let max_new = 6;
+
+        let solo: Vec<Vec<u32>> = prompts
+            .iter()
+            .map(|p| model.generate_with_kv_context(p, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap())
+            .collect();
+
+        let mut sched = SessionScheduler::new(&model, Device::cpu(), DType::F32, SchedulePolicy::Batched { max_batch: 4 });
+        let ids: Vec<SessionId> = prompts
+            .iter()
+            .map(|p| sched.add_session(p, SamplingStrategy::Greedy, None, max_new).unwrap())
+            .collect();
+        let out = sched.run_to_completion().unwrap();
+
+        for (i, id) in ids.iter().enumerate() {
+            let got = out.iter().find(|(x, _)| x == id).unwrap().1.clone();
+            assert_eq!(got, solo[i], "GQA K=3 session {i} != standalone");
+        }
+    }
+}
