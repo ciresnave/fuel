@@ -33,7 +33,7 @@ use fuel_ir::{DType, Error};
 
 use crate::Device;
 use crate::inference_context::{DecodeSession, InferenceContext, KvCache};
-use crate::lazy::{sample_logits, SamplingStrategy};
+use crate::lazy::{sample_logits, LlamaModel, SamplingStrategy};
 
 /// Stable identity for one session within a [`SessionScheduler`]. Minted
 /// monotonically by `add_session`; used to correlate a session's output with
@@ -199,6 +199,245 @@ impl SessionState {
     }
 }
 
+// ===========================================================================
+// C2 — SessionScheduler: the K-way decode driver
+// ===========================================================================
+
+/// How the scheduler advances the decode-ready set each `step`.
+///
+/// - `RoundRobin`: advance every ready session serially (the correctness
+///   oracle — always available, always byte-exact).
+/// - `Batched { max_batch }`: try the live batched arm ([`BatchedDecode`]) on
+///   up to `max_batch` uniform sessions, falling back to serial for any
+///   session the uniformity gate rejects. Opt-in fast path; provably equal to
+///   `RoundRobin`.
+#[derive(Clone, Copy, Debug)]
+pub enum SchedulePolicy {
+    RoundRobin,
+    Batched { max_batch: usize },
+}
+
+/// What one `step` did — which sessions produced a token, which finished, and
+/// which finished-with-error (isolated, never propagated out of `step`).
+#[derive(Clone, Debug, Default)]
+pub struct StepReport {
+    /// Sessions that produced a token this step.
+    pub advanced: Vec<SessionId>,
+    /// Sessions that transitioned to `Finished` this step (eos, budget, or
+    /// error).
+    pub finished: Vec<SessionId>,
+    /// Sessions that finished with an error this step (also present in
+    /// `finished`).
+    pub errored: Vec<(SessionId, String)>,
+    /// Set true only when the live C3 batched arm actually advanced sessions.
+    pub used_batched_arm: bool,
+}
+
+/// The K-way decode driver. Owns a `Vec<SessionState>` + a read-only
+/// `&LlamaModel` (shared weights) + the device/dtype. Decides which sessions
+/// advance together and how (serial in Increment 1's C2; batched once C3 is
+/// wired). Owns no tensor state of its own.
+pub struct SessionScheduler<'m> {
+    model: &'m LlamaModel,
+    device: Device,
+    dtype: DType,
+    sessions: Vec<SessionState>,
+    policy: SchedulePolicy,
+    next_id: u64,
+}
+
+impl<'m> SessionScheduler<'m> {
+    /// Create an empty scheduler over a shared read-only model.
+    pub fn new(
+        model: &'m LlamaModel,
+        device: Device,
+        dtype: DType,
+        policy: SchedulePolicy,
+    ) -> Self {
+        Self {
+            model,
+            device,
+            dtype,
+            sessions: Vec::new(),
+            policy,
+            next_id: 0,
+        }
+    }
+
+    /// Add a session from a prompt. Mints a fresh [`SessionId`], builds the
+    /// session's private `KvCache` + `InferenceContext` (all geometry is
+    /// uniform by construction — every session shares the one `&LlamaModel`),
+    /// and returns the id. Geometry/budget is validated at construction time
+    /// by [`SessionState::new`], never deferred to `step`. On a construction
+    /// error (empty prompt, zero budget, OOM) no id is consumed.
+    pub fn add_session(
+        &mut self,
+        prompt: &[u32],
+        strategy: SamplingStrategy,
+        eos_id: Option<u32>,
+        max_new: usize,
+    ) -> crate::Result<SessionId> {
+        let id = SessionId(self.next_id);
+        let dims = ModelDims {
+            n_layers: self.model.config.n_layers,
+            n_kv_heads: self.model.config.n_kv_heads,
+            head_dim: self.model.config.head_dim,
+        };
+        let state = SessionState::new(
+            id,
+            dims,
+            prompt,
+            strategy,
+            eos_id,
+            max_new,
+            &self.device,
+            self.dtype,
+        )?;
+        self.next_id += 1;
+        self.sessions.push(state);
+        Ok(id)
+    }
+
+    /// Advance one scheduling quantum: (1) run any `Prefill` sessions serially
+    /// and sample their first token; (2) collect the `Decode`-ready set;
+    /// (3) advance it (serial in C2; batched wiring lands in C3); (4) sample
+    /// each. A per-session `Err` is isolated into that session finishing with
+    /// a recorded error — never propagated out to kill the batch.
+    pub fn step(&mut self) -> crate::Result<StepReport> {
+        // Copy the shared model reference out of `self` so the per-session
+        // `&mut self.sessions[idx]` borrows below don't conflict with reading
+        // `self.model`.
+        let model = self.model;
+        let mut report = StepReport::default();
+
+        // (1) Prefill pass (serial): forward the FULL prompt, transition to
+        // Decode, and sample the first token immediately (mirrors the
+        // streaming loop where prefill logits yield the first token).
+        for idx in 0..self.sessions.len() {
+            if self.sessions[idx].phase != SessionPhase::Prefill {
+                continue;
+            }
+            let prompt = self.sessions[idx].tokens.clone();
+            let advance = Self::forward_and_store(model, &mut self.sessions[idx], &prompt);
+            if advance.is_ok() {
+                self.sessions[idx].phase = SessionPhase::Decode;
+            }
+            self.finalize_advance(idx, advance, &mut report);
+        }
+
+        // (2) Decode ready set (includes sessions just prefilled above).
+        let ready: Vec<usize> = (0..self.sessions.len())
+            .filter(|&i| self.sessions[i].phase == SessionPhase::Decode)
+            .collect();
+
+        // (3) Advance the ready set. C2 ships the serial arm only; C3 (Task 7)
+        // wires the Batched policy here in front of the serial fallback.
+        match self.policy {
+            SchedulePolicy::RoundRobin => {
+                for idx in ready {
+                    self.serial_advance_one(model, idx, &mut report);
+                }
+            }
+            SchedulePolicy::Batched { .. } => {
+                // Task 7 replaces this with try_batched_step + serial
+                // fallthrough. Until then a Batched policy is pure serial —
+                // provably identical to RoundRobin (T6).
+                for idx in ready {
+                    self.serial_advance_one(model, idx, &mut report);
+                }
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// Advance one decode-ready session serially by exactly one forward on its
+    /// last token, then sample. Errors isolate into a recorded per-session
+    /// failure.
+    fn serial_advance_one(&mut self, model: &LlamaModel, idx: usize, report: &mut StepReport) {
+        // Never-panic: an empty token history after a validated prefill is
+        // impossible, but the production path must not `unwrap`.
+        let last = self.sessions[idx].tokens.last().copied();
+        let advance = match last {
+            Some(t) => Self::forward_and_store(model, &mut self.sessions[idx], &[t]),
+            None => Err(Error::Msg(
+                "SessionScheduler: decode advance on empty token history".to_string(),
+            )
+            .bt()),
+        };
+        self.finalize_advance(idx, advance, report);
+    }
+
+    /// Run one forward and store its logits on the session. Shared by the
+    /// prefill (full prompt) and decode (last token) advances.
+    fn forward_and_store(
+        model: &LlamaModel,
+        s: &mut SessionState,
+        input: &[u32],
+    ) -> crate::Result<()> {
+        let logits = model.forward_with_kv_context_persistent(
+            input,
+            &mut s.cache,
+            &mut s.ctx,
+            &mut s.session,
+        )?;
+        s.last_logits = Some(logits);
+        Ok(())
+    }
+
+    /// Given the result of a single advance, sample the token (per-session
+    /// RNG) and record it in the report; on advance error, finish the session
+    /// with a recorded error. Never panics, never propagates.
+    fn finalize_advance(
+        &mut self,
+        idx: usize,
+        advance: crate::Result<()>,
+        report: &mut StepReport,
+    ) {
+        match advance {
+            Ok(()) => match self.sessions[idx].sample_and_append() {
+                Ok(Some(_)) => {
+                    let id = self.sessions[idx].id;
+                    report.advanced.push(id);
+                    if self.sessions[idx].phase == SessionPhase::Finished {
+                        report.finished.push(id);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => self.record_error(idx, e, report),
+            },
+            Err(e) => self.record_error(idx, e, report),
+        }
+    }
+
+    /// Force one session to `Finished`-with-error and record it. Isolation: the
+    /// other sessions are untouched.
+    fn record_error(&mut self, idx: usize, e: crate::Error, report: &mut StepReport) {
+        self.sessions[idx].phase = SessionPhase::Finished;
+        let id = self.sessions[idx].id;
+        report.errored.push((id, e.to_string()));
+        report.finished.push(id);
+    }
+
+    /// Loop `step` until every session is `Finished`; return each session's
+    /// full token sequence (prompt + generated) in insertion order.
+    pub fn run_to_completion(&mut self) -> crate::Result<Vec<(SessionId, Vec<u32>)>> {
+        while !self.is_all_finished() {
+            self.step()?;
+        }
+        Ok(self
+            .sessions
+            .iter()
+            .map(|s| (s.id, s.tokens.clone()))
+            .collect())
+    }
+
+    /// Whether every session has finished (vacuously true when empty).
+    pub fn is_all_finished(&self) -> bool {
+        self.sessions.iter().all(|s| s.phase == SessionPhase::Finished)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +540,22 @@ mod tests {
         let mut s = SessionState::new(SessionId(0), dims(&cfg), &[1],
             SamplingStrategy::Greedy, None, 3, &Device::cpu(), DType::F32).unwrap();
         assert_eq!(s.sample_and_append().unwrap(), None);
+    }
+
+    #[test]
+    fn scheduler_single_session_matches_standalone_generate() {
+        let model = tiny_model(9999);
+        let prompt = [1u32, 2, 3];
+        let max_new = 5;
+        let standalone = model.generate_with_kv_context(
+            &prompt, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32).unwrap();
+
+        let mut sched = SessionScheduler::new(
+            &model, Device::cpu(), DType::F32, SchedulePolicy::RoundRobin);
+        let id = sched.add_session(&prompt, SamplingStrategy::Greedy, None, max_new).unwrap();
+        let out = sched.run_to_completion().unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, id);
+        assert_eq!(out[0].1, standalone);   // byte-identical token stream
     }
 }
